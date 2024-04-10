@@ -1,6 +1,9 @@
-mod raw_io;
 mod msg;
-mod quic;
+mod raw_io;
+mod quic {
+    mod error;
+    mod frame;
+}
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right
