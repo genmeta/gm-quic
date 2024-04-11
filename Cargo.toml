@@ -7,3 +7,7 @@ edition = "2021"
 
 [dependencies]
 bytes = "1"
+nom = "7"
+rustls = { version = "0.21.0", default-features = false, features = ["quic"], optional = true }
+derive_builder = "0.12.0"
+thiserror = "1"

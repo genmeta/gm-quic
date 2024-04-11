@@ -1,6 +1,11 @@
 // 这里封装协议识别层
 
-use std::{io::Result, net::{UdpSocket, SocketAddr}, task::{Context, Poll}, pin::Pin};
+use std::{
+    io::Result,
+    net::{SocketAddr, UdpSocket},
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 // 所有协议列表
 #[repr(u8)]
@@ -10,6 +15,8 @@ enum Proto {
 }
 
 // 所有协议在这里注册，一个协议只能有一个实例
+// 数据包为了不和Quic协议中的Packet混淆，这里称数据包为message
+// 该结构，就是个message路由到不同协议的路由器
 struct Protocol {
     // raw io实例
 
@@ -78,7 +85,11 @@ impl Protocol {
         todo!("查看有没有quic协议的包可读，有则返回；无则将quic协议的waker注册，等读到了再唤醒")
     }
 
-    fn poll_quic_send(self: Pin<&mut Self>, cx: &mut Context, packet: &Message) -> Poll<Result<usize>> {
+    fn poll_quic_send(
+        self: Pin<&mut Self>,
+        cx: &mut Context,
+        packet: &Message,
+    ) -> Poll<Result<usize>> {
         todo!("直接调用原始io的发送数据包能力即可，原始io发送子已经将waker注册了")
     }
 }
@@ -89,7 +100,11 @@ impl Protocol {
         todo!("查看有没有stun协议的包可读，有则返回；无则将stun协议的waker注册，等读到了再唤醒之")
     }
 
-    fn poll_stun_send(self: Pin<&mut Self>, cx: &mut Context, packet: &Message) -> Poll<Result<usize>> {
+    fn poll_stun_send(
+        self: Pin<&mut Self>,
+        cx: &mut Context,
+        packet: &Message,
+    ) -> Poll<Result<usize>> {
         todo!("直接调用原始io发送子")
     }
 }

@@ -1,6 +1,10 @@
 // quic协议的实现
 
-use std::{io::Result, pin::Pin, task::{Context, Poll}};
+use std::{
+    io::Result,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 struct QuicDriver {
     // 一个协议识别实例，可能是全局的
@@ -14,7 +18,6 @@ struct QuicDriver {
     // Acceptor子waker
 
     // 协议内部轮询接收子的Handle，drop时要取消该任务
-
 }
 
 impl QuicDriver {
@@ -37,7 +40,9 @@ impl Drop for QuicDriver {
     }
 }
 
+mod config;
 mod connection;
+mod varint;
 use connection::Connection;
 
 impl QuicDriver {
@@ -58,20 +63,31 @@ pub struct ConnectionId {
 }
 
 // quic协议的数据包，有长包头、短包头之分
-struct Packet {
+pub(crate) struct Packet {
     flag: u8,
     version: u8,
-    dest_id: ConnectionId,
+    // 如果是发送出去的数据包，这个连接id是对方的连接id
+    // 如果是接收到的数据包，这个连接id要路由到本地具体的连接
+    // 根据连接ID，能找到对应的path
+    dest_cid: ConnectionId,
     // TODO: 区分长包头、短包头
     payload: Vec<u8>,
 }
 
 impl QuicDriver {
-    fn poll_conn_recv(self: Pin<&mut Self>, cx: &mut Context, cid: &ConnectionId) -> Poll<Result<Packet>> {
+    fn poll_conn_recv(
+        self: Pin<&mut Self>,
+        cx: &mut Context,
+        cid: &ConnectionId,
+    ) -> Poll<Result<Packet>> {
         todo!("一个连接ID，接收数据包；查看该连接ID下是否有数据包，有返回Ready；无则等待，并注册waker待唤醒")
     }
 
-    fn poll_conn_send(self: Pin<&mut Self>, cx: &mut Context, packet: &Packet) -> Poll<Result<usize>> {
-        todo!("一个连接ID发送一个数据包")
+    fn poll_conn_send(
+        self: Pin<&mut Self>,
+        cx: &mut Context,
+        packet: &Packet,
+    ) -> Poll<Result<usize>> {
+        todo!("一个连接ID发送一个数据包，将数据包打包成message，通过协议底层发送子发送")
     }
 }
