@@ -1,6 +1,14 @@
 mod msg;
-mod quic;
 mod raw_io;
+mod quic {
+    mod coding;
+    mod crypto;
+    mod error;
+    mod frames;
+    mod range_set;
+    mod stream;
+    mod varint;
+}
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right

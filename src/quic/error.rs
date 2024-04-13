@@ -1,13 +1,20 @@
-use super::frame;
+use bytes::{Buf, BufMut};
+
+use super::{
+    coding::{self, BufExt, BufMutExt},
+    frames,
+};
 use std::fmt;
 
+pub type TransportError = Error;
+pub type TransportErrorCode = Code;
 /// Transport-level errors occur when a peer violates the protocol specification
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Error {
     /// Type of error
     pub code: Code,
     /// Frame type that triggered the error
-    pub frame: Option<frame::Type>,
+    pub frame: Option<frames::Type>,
     /// Human-readable explanation of the reason
     pub reason: String,
 }
@@ -48,15 +55,14 @@ impl Code {
     }
 }
 
-// TODO: 是否要实现 codec
-// impl coding::Codec for Code {
-//     fn decode<B: Buf>(buf: &mut B) -> coding::Result<Self> {
-//         Ok(Self(buf.get_var()?))
-//     }
-//     fn encode<B: BufMut>(&self, buf: &mut B) {
-//         buf.write_var(self.0)
-//     }
-// }
+impl coding::Codec for Code {
+    fn decode<B: Buf>(buf: &mut B) -> coding::Result<Self> {
+        Ok(Self(buf.get_var()?))
+    }
+    fn encode<B: BufMut>(&self, buf: &mut B) {
+        buf.write_var(self.0)
+    }
+}
 
 impl From<Code> for u64 {
     fn from(x: Code) -> Self {

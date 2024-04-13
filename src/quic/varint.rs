@@ -1,5 +1,10 @@
 use std::{convert::TryFrom, fmt};
 
+#[cfg(feature = "arbitrary")]
+use arbitrary::Arbitrary;
+
+use super::coding::{self, Codec, UnexpectedEnd};
+
 /// An integer less than 2^62
 ///
 /// Values of this type are suitable for encoding as QUIC variable-length integer.
@@ -126,15 +131,15 @@ pub mod ext {
     use bytes::{Buf, BufMut};
     use nom::{bits::complete::take, combinator::flat_map, error::Error};
 
-    pub(crate) trait BufExt {
+    pub(crate) trait BufExtVarint {
         fn get_varint(&mut self) -> Result<VarInt, err::Error>;
     }
 
-    pub(crate) trait BufMutExt {
+    pub(crate) trait BufMutExtVarint {
         fn put_varint(&mut self, value: &VarInt);
     }
 
-    impl<T: Buf> BufExt for T {
+    impl<T: Buf> BufExtVarint for T {
         fn get_varint(&mut self) -> Result<VarInt, err::Error> {
             let input = (self.chunk(), 0);
             let remained = self.remaining();
@@ -159,7 +164,7 @@ pub mod ext {
     }
 
     // 所有的BufMut都可以调用put_varint来写入VarInt了
-    impl<T: BufMut> BufMutExt for T {
+    impl<T: BufMut> BufMutExtVarint for T {
         fn put_varint(&mut self, value: &VarInt) {
             let x = value.0;
             if x < 2u64.pow(6) {
@@ -180,7 +185,7 @@ pub mod ext {
 mod tests {
     use super::{
         err,
-        ext::{BufExt, BufMutExt},
+        ext::{BufExtVarint, BufMutExtVarint},
         VarInt,
     };
     use bytes::{Buf, BufMut};
