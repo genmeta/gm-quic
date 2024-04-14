@@ -1,6 +1,6 @@
 [workspace]
-members = ["quix"]
-default-members = ["quix"]
+members = ["quix", "qrecovery"]
+default-members = ["quix", "qrecovery"]
 
 [profile.bench]
 debug = true
