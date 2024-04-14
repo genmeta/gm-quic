@@ -143,18 +143,14 @@ pub mod ext {
         fn get_varint(&mut self) -> Result<VarInt, err::Error> {
             let input = (self.chunk(), 0);
             let remained = self.remaining();
-            let result = flat_map(take(2usize), |prefix: u8| match prefix {
-                0b00 => take::<&[u8], u64, usize, Error<(&[u8], usize)>>(6),
-                0b01 => take::<&[u8], u64, usize, Error<(&[u8], usize)>>(14),
-                0b10 => take::<&[u8], u64, usize, Error<(&[u8], usize)>>(30),
-                0b11 => take::<&[u8], u64, usize, Error<(&[u8], usize)>>(62),
-                _ => unreachable!("malformed VarInt"),
+            let result = flat_map(take(2usize), |prefix: u8| {
+                take::<&[u8], u64, usize, Error<(&[u8], usize)>>((8 << prefix) - 2)
             })(input)
             .map_err(|_e| {
                 dbg!("nom parse varint error occured: {}", _e);
                 err::Error::ParseError
             })
-            .map(move |((_, remaining), value)| (remained - remaining, VarInt(value)));
+            .map(move |((buf, _), value)| (remained - buf.len(), VarInt(value)));
 
             result.map(|(consumed, val)| {
                 self.advance(consumed);
