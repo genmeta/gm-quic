@@ -532,7 +532,6 @@ impl Crypto {
 }
 
 pub(crate) struct Iter {
-    // TODO: ditch io::Cursor after bytes 0.5
     bytes: io::Cursor<Bytes>,
     last_ty: Option<Type>,
 }
@@ -1024,6 +1023,27 @@ impl fmt::Display for ConnectionId {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn reset_stream() {
+        let rest = ResetStream {
+            id: StreamId(256),
+            error_code: VarInt(0x01),
+            final_offset: VarInt(0),
+        };
+        let mut buf = Vec::new();
+        rest.encode(&mut buf);
+        let frames = Iter::new(Bytes::from(buf)).collect::<Vec<_>>();
+        assert_eq!(frames.len(), 1);
+        match frames[0] {
+            Frame::ResetStream(ref rest) => {
+                assert_eq!(rest.id, StreamId(256));
+                assert_eq!(rest.error_code.into_inner(), 1);
+                assert_eq!(rest.final_offset.into_inner(), 0);
+            }
+            ref x => panic!("incorrect frame {x:?}"),
+        }
+    }
 
     #[test]
     #[allow(clippy::range_plus_one)]

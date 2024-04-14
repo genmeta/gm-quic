@@ -1,8 +1,12 @@
 use core::fmt;
+use std::env::var;
 
 use super::{
     coding,
-    varint::{ext::BufExtVarint, VarInt},
+    varint::{
+        ext::{BufExtVarint, BufMutExtVarint},
+        VarInt,
+    },
 };
 
 use thiserror::Error;
@@ -17,7 +21,10 @@ impl coding::Codec for StreamId {
         Ok(Self(ret.into_inner()))
     }
     fn encode<B: bytes::BufMut>(&self, buf: &mut B) {
-        VarInt::from_u64(self.0).unwrap().0.encode(buf);
+        let varint = VarInt::from_u64(self.0);
+        if let Ok(varint) = varint {
+            buf.put_varint(&varint);
+        }
     }
 }
 

@@ -9,10 +9,20 @@ use super::varint::{
     VarInt,
 };
 
-use nom::IResult;
+use nom::{
+    multi::count,
+    number::complete::{be_u16, be_u32, be_u64, be_u8},
+};
 #[derive(Error, Debug, Copy, Clone, Eq, PartialEq)]
 #[error("unexpected end of buffer")]
 pub struct UnexpectedEnd;
+
+impl From<nom::Err<(&[u8], nom::error::ErrorKind)>> for UnexpectedEnd {
+    fn from(err: nom::Err<(&[u8], nom::error::ErrorKind)>) -> UnexpectedEnd {
+        dbg!("nom parse error {}", err);
+        UnexpectedEnd
+    }
+}
 
 impl From<err::Error> for UnexpectedEnd {
     fn from(_: err::Error) -> Self {
@@ -29,10 +39,10 @@ pub trait Codec: Sized {
 
 impl Codec for u8 {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
-        if buf.remaining() < 1 {
-            return Err(UnexpectedEnd);
-        }
-        Ok(buf.get_u8())
+        let input = buf.chunk();
+        let (_, value) = be_u8(input)?;
+        buf.advance(1);
+        Ok(value)
     }
     fn encode<B: BufMut>(&self, buf: &mut B) {
         buf.put_u8(*self);
@@ -41,10 +51,10 @@ impl Codec for u8 {
 
 impl Codec for u16 {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
-        if buf.remaining() < 2 {
-            return Err(UnexpectedEnd);
-        }
-        Ok(buf.get_u16())
+        let input = buf.chunk();
+        let (_, value) = be_u16(input)?;
+        buf.advance(2);
+        Ok(value)
     }
     fn encode<B: BufMut>(&self, buf: &mut B) {
         buf.put_u16(*self);
@@ -53,10 +63,10 @@ impl Codec for u16 {
 
 impl Codec for u32 {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
-        if buf.remaining() < 4 {
-            return Err(UnexpectedEnd);
-        }
-        Ok(buf.get_u32())
+        let input = buf.chunk();
+        let (_, value) = be_u32(input)?;
+        buf.advance(4);
+        Ok(value)
     }
     fn encode<B: BufMut>(&self, buf: &mut B) {
         buf.put_u32(*self);
@@ -65,10 +75,10 @@ impl Codec for u32 {
 
 impl Codec for u64 {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
-        if buf.remaining() < 8 {
-            return Err(UnexpectedEnd);
-        }
-        Ok(buf.get_u64())
+        let input = buf.chunk();
+        let (_, value) = be_u64(input)?;
+        buf.advance(8);
+        Ok(value)
     }
     fn encode<B: BufMut>(&self, buf: &mut B) {
         buf.put_u64(*self);
@@ -77,12 +87,10 @@ impl Codec for u64 {
 
 impl Codec for Ipv4Addr {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
-        if buf.remaining() < 4 {
-            return Err(UnexpectedEnd);
-        }
-        let mut octets = [0; 4];
-        buf.copy_to_slice(&mut octets);
-        Ok(octets.into())
+        let input = buf.chunk();
+        let (_, addr) = be_u32(input)?;
+        buf.advance(4);
+        Ok(Ipv4Addr::from(addr))
     }
     fn encode<B: BufMut>(&self, buf: &mut B) {
         buf.put_slice(&self.octets());
@@ -91,12 +99,13 @@ impl Codec for Ipv4Addr {
 
 impl Codec for Ipv6Addr {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
-        if buf.remaining() < 16 {
-            return Err(UnexpectedEnd);
-        }
-        let mut octets = [0; 16];
-        buf.copy_to_slice(&mut octets);
-        Ok(octets.into())
+        let input = buf.chunk();
+        let (_, addr_segments) = count(be_u16, 8)(input)?;
+        let array = <[u16; 8]>::try_from(addr_segments)
+            .map_err(|_| nom::Err::Failure((input, nom::error::ErrorKind::TooLarge)))?;
+        let addr = Ipv6Addr::from(array);
+        buf.advance(16);
+        Ok(addr)
     }
     fn encode<B: BufMut>(&self, buf: &mut B) {
         buf.put_slice(&self.octets());
