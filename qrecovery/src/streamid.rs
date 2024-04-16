@@ -19,9 +19,12 @@ use std::{fmt, ops};
 
 /// ## Example
 /// ```
-/// let role = Role::Client;
-/// let peer_role = !role;
-/// let is_client = match!(&role, Role::Client); // true
+/// use qrecovery::streamid::Role;
+///
+/// let local = Role::Client;
+/// let peer = !local;
+/// let is_client = matches!(local, Role::Client); // true
+/// let is_server = matches!(peer, Role::Server); // true
 /// ```
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Role {

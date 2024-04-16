@@ -1,5 +1,5 @@
-mod sndbuf;
-mod streamid;
+pub mod sndbuf;
+pub mod streamid;
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right

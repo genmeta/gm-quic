@@ -7,18 +7,13 @@ use std::{
 };
 
 // 标识一段数据的状态，既染色
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(Default, PartialEq, Eq, Clone, Copy, Debug)]
 pub(self) enum Color {
+    #[default]
     Pending,
     Flighting,
     Recved,
     Lost,
-}
-
-impl Default for Color {
-    fn default() -> Self {
-        Color::Pending
-    }
 }
 
 impl Color {
@@ -36,6 +31,7 @@ impl Color {
 struct State(u64);
 
 impl State {
+    #[allow(dead_code)]
     const PREFIX: u64 = 0b11 << 62;
     const SUFFIX: u64 = u64::MAX >> 2;
 
@@ -47,6 +43,7 @@ impl State {
         self.0 & Self::SUFFIX
     }
 
+    #[allow(dead_code)]
     fn set_offset(&mut self, value: u64) {
         debug_assert!(value <= Self::SUFFIX, "value({value}) overflow");
         self.0 = (self.0 & Self::PREFIX) | (value & Self::SUFFIX)
@@ -102,20 +99,10 @@ impl PartialOrd for State {
  * 之所以采用这种数据结构，是考虑到CPU缓存行有64字节，可一次处理8段数据，足够很多小流传输了，很高效。
  * 即便是大流，其中相同状态的合并起来，各种不同状态的区间也不会很多，相比于链表、跳表、线段树等结构依然很高效。
  */
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct BufMap(VecDeque<State>, u64);
 
-impl Default for BufMap {
-    fn default() -> Self {
-        Self(VecDeque::new(), 0)
-    }
-}
-
 impl BufMap {
-    fn empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     // 追加写数据
     fn extend_to(&mut self, pos: u64) -> u64 {
         debug_assert!(
@@ -146,8 +133,7 @@ impl BufMap {
         self.0
             .iter_mut()
             .enumerate()
-            .skip_while(|(_, s)| s.color() == Color::Flighting || s.color() == Color::Recved)
-            .next()
+            .find(|(_, s)| s.color() == Color::Pending || s.color() == Color::Lost)
             .map(|(index, s)| {
                 let state = *s; // 此处能归还self.0的可变借用
                 s.set_color(Color::Flighting);
@@ -307,7 +293,7 @@ impl BufMap {
     // 寻找到丢失区间覆盖的范围，其中若遇到Recved的区间，则忽略；只有Flighting/Lost的才可以丢失。
     // 然后检查Lost区间前后是否有需要合并的区间，合并之。
     // 同样地，Lost区间不能覆盖Pending的数据，因为Pending的数据尚未发送过，无法丢失。
-    fn may_loss(&mut self, mut range: Range<u64>) {
+    fn may_loss(&mut self, range: Range<u64>) {
         let pos = self.0.binary_search_by(|s| s.offset().cmp(&range.start));
         let (mut drain_start, need_insert_at_start, mut drain_end, mut pre_color) = match pos {
             Ok(idx) => {
@@ -548,6 +534,10 @@ impl SendBuf {
         n
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.offset == 0 && self.data.is_empty()
+    }
+
     // invoked by application layer
     // 发送缓冲区过去曾经累计写入到的数据总长度
     pub fn len(&self) -> u64 {
@@ -586,6 +576,10 @@ impl SendBuf {
     pub fn may_loss(&mut self, range: Range<u64>) {
         self.state.may_loss(range);
     }
+
+    pub fn is_all_recvd(&self) -> bool {
+        self.offset > 0 && self.data.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -595,7 +589,7 @@ mod test {
     #[test]
     fn test_bufmap_empty() {
         let buf_map = BufMap::default();
-        assert!(buf_map.empty());
+        assert!(buf_map.0.is_empty());
     }
 
     #[test]
@@ -622,7 +616,7 @@ mod test {
         let mut buf_map = BufMap::default();
         let range = buf_map.pick(20);
         assert_eq!(range, None);
-        assert!(buf_map.empty());
+        assert!(buf_map.0.is_empty());
 
         buf_map.extend_to(200);
         let range = buf_map.pick(20);
