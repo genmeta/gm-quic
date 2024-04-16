@@ -1,11 +1,8 @@
+use super::coding;
 use core::fmt;
-
-use super::{
-    coding,
-    varint::{
-        ext::{BufExtVarint, BufMutExtVarint},
-        VarInt,
-    },
+use qbase::varint::{
+    ext::{BufExt, BufMutExt},
+    VarInt,
 };
 
 // 这里实现流级别的控制

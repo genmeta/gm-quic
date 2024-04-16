@@ -6,22 +6,21 @@ use std::{
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-#[cfg(feature = "arbitrary")]
-use arbitrary::Arbitrary;
-use tinyvec::TinyVec;
-
 use super::{
     coding::{self, BufExt, BufMutExt, UnexpectedEnd},
     crypto::HmacKey,
     error::{TransportError, TransportErrorCode},
     range_set::ArrayRangeSet,
     stream::{Dir, StreamId},
-    varint::{
-        err,
-        ext::{BufExtVarint, BufMutExtVarint},
-        VarInt,
-    },
 };
+#[cfg(feature = "arbitrary")]
+use arbitrary::Arbitrary;
+use qbase::varint::{
+    err,
+    ext::{BufExt as VarIntBufExt, BufMutExt as VarIntBufMutExt},
+    VarInt,
+};
+use tinyvec::TinyVec;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Type(u64);
@@ -1028,8 +1027,8 @@ mod test {
     fn reset_stream() {
         let rest = ResetStream {
             id: StreamId(256),
-            error_code: VarInt(0x01),
-            final_offset: VarInt(0),
+            error_code: VarInt::from_u32(0x01),
+            final_offset: VarInt::default(),
         };
         let mut buf = Vec::new();
         rest.encode(&mut buf);

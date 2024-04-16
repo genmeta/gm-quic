@@ -3,9 +3,9 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use bytes::{Buf, BufMut};
 use thiserror::Error;
 
-use super::varint::{
+use qbase::varint::{
     err,
-    ext::{BufExtVarint, BufMutExtVarint},
+    ext::{BufExt as VarIntBufExt, BufMutExt as VarIntBufMutExt},
     VarInt,
 };
 

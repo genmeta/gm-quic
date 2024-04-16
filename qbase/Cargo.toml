@@ -1,0 +1,12 @@
+[package]
+name = "qbase"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+nom = "7"
+bytes = "1"
+getset = "0.1.2"
+thiserror = "1.0.21"

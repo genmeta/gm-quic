@@ -1,8 +1,5 @@
 use std::{convert::TryFrom, fmt};
 
-#[cfg(feature = "arbitrary")]
-use arbitrary::Arbitrary;
-
 /// An integer less than 2^62
 ///
 /// Values of this type are suitable for encoding as QUIC variable-length integer.
@@ -46,7 +43,7 @@ impl VarInt {
     }
 
     /// Compute the number of bytes needed to encode this value
-    pub(crate) fn size(self) -> usize {
+    pub fn size(self) -> usize {
         let x = self.0;
         if x < (1 << 6) {
             1
@@ -122,43 +119,56 @@ pub mod err {
         #[error("parse varint error")]
         ParseError,
     }
+
+    impl From<nom::Err<nom::error::Error<&[u8]>>> for Error {
+        fn from(_e: nom::Err<nom::error::Error<&[u8]>>) -> Self {
+            dbg!("nom parse varint error occured: {}", _e);
+            Self::ParseError
+        }
+    }
 }
 
 pub mod ext {
     use super::{err, VarInt};
     use bytes::{Buf, BufMut};
-    use nom::{bits::complete::take, combinator::flat_map, error::Error};
+    use nom::{bits::complete::take, combinator::flat_map, error::Error, IResult};
 
-    pub(crate) trait BufExtVarint {
+    /// Parse a variable-length integer, can be used like `be_u8/be_u16/be_u32` etc.
+    /// ## Example
+    /// ```
+    /// use qbase::varint::ext::be_varint;
+    ///
+    /// let input = &[0b01000000, 0x01][..];
+    /// let result = be_varint(input);
+    /// assert_eq!(result, Ok((&[][..], 1u32.into())));
+    /// ```
+    pub fn be_varint(input: &[u8]) -> IResult<&[u8], VarInt> {
+        flat_map(take(2usize), |prefix: u8| {
+            take::<&[u8], u64, usize, Error<(&[u8], usize)>>((8 << prefix) - 2)
+        })((input, 0))
+        .map_err(|err| err.map(|e| Error::new(e.input.0, e.code)))
+        .map(|((buf, _), value)| (buf, VarInt(value)))
+    }
+
+    pub trait BufExt {
         fn get_varint(&mut self) -> Result<VarInt, err::Error>;
     }
 
-    pub(crate) trait BufMutExtVarint {
+    pub trait BufMutExt {
         fn put_varint(&mut self, value: &VarInt);
     }
 
-    impl<T: Buf> BufExtVarint for T {
+    impl<T: Buf> BufExt for T {
         fn get_varint(&mut self) -> Result<VarInt, err::Error> {
-            let input = (self.chunk(), 0);
             let remained = self.remaining();
-            let result = flat_map(take(2usize), |prefix: u8| {
-                take::<&[u8], u64, usize, Error<(&[u8], usize)>>((8 << prefix) - 2)
-            })(input)
-            .map_err(|_e| {
-                dbg!("nom parse varint error occured: {}", _e);
-                err::Error::ParseError
-            })
-            .map(move |((buf, _), value)| (remained - buf.len(), VarInt(value)));
-
-            result.map(|(consumed, val)| {
-                self.advance(consumed);
-                val
-            })
+            let (remain, value) = be_varint(self.chunk())?;
+            self.advance(remained - remain.len());
+            Ok(value)
         }
     }
 
     // 所有的BufMut都可以调用put_varint来写入VarInt了
-    impl<T: BufMut> BufMutExtVarint for T {
+    impl<T: BufMut> BufMutExt for T {
         fn put_varint(&mut self, value: &VarInt) {
             let x = value.0;
             if x < 2u64.pow(6) {
@@ -180,7 +190,7 @@ pub mod ext {
 mod tests {
     use super::{
         err,
-        ext::{BufExtVarint, BufMutExtVarint},
+        ext::{BufExt, BufMutExt},
         VarInt,
     };
     use bytes::BufMut;
@@ -188,9 +198,28 @@ mod tests {
     #[test]
     fn reading_varint() {
         {
+            let mut buf = &[0b00000001u8, 0x01][..];
+            let r = buf.get_varint();
+            assert_eq!(r, Ok(VarInt(1)));
+            assert_eq!(buf, &[0x01][..]);
+        }
+        {
             let mut buf = &[0b01000000u8, 0x06u8][..];
             let r = buf.get_varint();
             assert_eq!(r, Ok(VarInt(6)));
+            assert_eq!(buf, &[][..]);
+        }
+        {
+            let mut buf = &[0b10000000u8, 1, 1, 1][..];
+            let r = buf.get_varint();
+            assert_eq!(r, Ok(VarInt(0x010101)));
+            assert_eq!(buf, &[][..]);
+        }
+        {
+            let mut buf = &[0b11000000u8, 1, 1, 1, 1, 1, 1, 1][..];
+            let r = buf.get_varint();
+            assert_eq!(r, Ok(VarInt(0x01010101010101)));
+            assert_eq!(buf, &[][..]);
         }
         {
             let mut buf = &[0b11000000u8, 0x06u8][..];
