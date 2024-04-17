@@ -6,7 +6,14 @@ use std::{
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+use cid::ConnectionId;
+
+#[cfg(feature = "arbitrary")]
+use arbitrary::Arbitrary;
+use tinyvec::TinyVec;
+
 use super::{
+    cid,
     coding::{self, BufExt, BufMutExt, UnexpectedEnd},
     crypto::HmacKey,
     error::{TransportError, TransportErrorCode},
@@ -20,7 +27,6 @@ use qbase::varint::{
     ext::{BufExt as VarIntBufExt, BufMutExt as VarIntBufMutExt},
     VarInt,
 };
-use tinyvec::TinyVec;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Type(u64);
@@ -840,7 +846,7 @@ impl StopSending {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub(crate) struct NewConnectionId {
+pub struct NewConnectionId {
     pub(crate) sequence: u64,
     pub(crate) retire_prior_to: u64,
     pub(crate) id: ConnectionId,
@@ -900,16 +906,19 @@ const RESET_TOKEN_SIZE: usize = 16;
 /// Used for an endpoint to securely communicate that it has lost state for a connection.
 #[allow(clippy::derived_hash_with_manual_eq)] // Custom PartialEq impl matches derived semantics
 #[derive(Debug, Copy, Clone, Hash)]
-pub(crate) struct ResetToken([u8; RESET_TOKEN_SIZE]);
+pub struct ResetToken([u8; RESET_TOKEN_SIZE]);
 
 impl ResetToken {
     pub(crate) fn new(key: &dyn HmacKey, id: &ConnectionId) -> Self {
         let mut signature = vec![0; key.signature_len()];
         key.sign(id, &mut signature);
-        // TODO: Server ID??
         let mut result = [0; RESET_TOKEN_SIZE];
         result.copy_from_slice(&signature[..RESET_TOKEN_SIZE]);
         result.into()
+    }
+
+    pub(crate) fn new_with(bytes: &[u8]) -> Self {
+        Self(bytes.try_into().unwrap())
     }
 }
 
@@ -935,82 +944,6 @@ impl std::ops::Deref for ResetToken {
 }
 
 impl fmt::Display for ResetToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in self.iter() {
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
-    }
-}
-#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct ConnectionId {
-    /// length of CID
-    len: u8,
-    /// CID in byte array
-    bytes: [u8; MAX_CID_SIZE],
-}
-
-impl ConnectionId {
-    /// Construct cid from byte array
-    pub fn new(bytes: &[u8]) -> Self {
-        debug_assert!(bytes.len() <= MAX_CID_SIZE);
-        let mut res = Self {
-            len: bytes.len() as u8,
-            bytes: [0; MAX_CID_SIZE],
-        };
-        res.bytes[..bytes.len()].copy_from_slice(bytes);
-        res
-    }
-
-    /// Constructs cid by reading `len` bytes from a `Buf`
-    ///
-    /// Callers need to assure that `buf.remaining() >= len`
-    pub(crate) fn from_buf(buf: &mut impl Buf, len: usize) -> Self {
-        debug_assert!(len <= MAX_CID_SIZE);
-        let mut res = Self {
-            len: len as u8,
-            bytes: [0; MAX_CID_SIZE],
-        };
-        buf.copy_to_slice(&mut res[..len]);
-        res
-    }
-
-    /// Decode from long header format
-    pub(crate) fn decode_long(buf: &mut impl Buf) -> Option<Self> {
-        let len = buf.get::<u8>().ok()? as usize;
-        match len > MAX_CID_SIZE || buf.remaining() < len {
-            false => Some(Self::from_buf(buf, len)),
-            true => None,
-        }
-    }
-
-    /// Encode in long header format
-    pub(crate) fn encode_long(&self, buf: &mut impl BufMut) {
-        buf.put_u8(self.len() as u8);
-        buf.put_slice(self);
-    }
-}
-
-impl ::std::ops::Deref for ConnectionId {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        &self.bytes[0..self.len as usize]
-    }
-}
-
-impl ::std::ops::DerefMut for ConnectionId {
-    fn deref_mut(&mut self) -> &mut [u8] {
-        &mut self.bytes[0..self.len as usize]
-    }
-}
-
-impl fmt::Debug for ConnectionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.bytes[0..self.len as usize].fmt(f)
-    }
-}
-
-impl fmt::Display for ConnectionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for byte in self.iter() {
             write!(f, "{byte:02x}")?;

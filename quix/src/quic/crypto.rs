@@ -1,5 +1,5 @@
 /// Generic crypto errors
-#[derive(Debug)]
+
 pub struct CryptoError;
 
 pub trait HmacKey: Send + Sync {

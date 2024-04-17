@@ -1,6 +1,7 @@
 mod msg;
 mod raw_io;
 mod quic {
+    mod cid;
     mod coding;
     mod crypto;
     mod error;

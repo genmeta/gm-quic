@@ -15,3 +15,4 @@ rustls = { version = "0.21.0", default-features = false, features = [
     "quic",
 ], optional = true }
 getset = "0.1.2"
+rand = "0.8"

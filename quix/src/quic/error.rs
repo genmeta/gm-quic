@@ -6,20 +6,18 @@ use super::{
 };
 use std::fmt;
 
-pub type TransportError = Error;
-pub type TransportErrorCode = Code;
 /// Transport-level errors occur when a peer violates the protocol specification
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct Error {
+pub struct TransportError {
     /// Type of error
-    pub code: Code,
+    pub code: TransportErrorCode,
     /// Frame type that triggered the error
     pub frame: Option<frames::Type>,
     /// Human-readable explanation of the reason
     pub reason: String,
 }
 
-impl fmt::Display for Error {
+impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.code.fmt(f)?;
         if let Some(frame) = self.frame {
@@ -32,10 +30,8 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
-
-impl From<Code> for Error {
-    fn from(x: Code) -> Self {
+impl From<TransportErrorCode> for TransportError {
+    fn from(x: TransportErrorCode) -> Self {
         Self {
             code: x,
             frame: None,
@@ -46,16 +42,16 @@ impl From<Code> for Error {
 
 /// Transport-level error code
 #[derive(Copy, Clone, Eq, PartialEq)]
-pub struct Code(u64);
+pub struct TransportErrorCode(u64);
 
-impl Code {
+impl TransportErrorCode {
     /// Create QUIC error code from TLS alert code
     pub fn crypto(code: u8) -> Self {
         Self(0x100 | u64::from(code))
     }
 }
 
-impl coding::Codec for Code {
+impl coding::Codec for TransportErrorCode {
     fn decode<B: Buf>(buf: &mut B) -> coding::Result<Self> {
         Ok(Self(buf.get_var()?))
     }
@@ -64,8 +60,8 @@ impl coding::Codec for Code {
     }
 }
 
-impl From<Code> for u64 {
-    fn from(x: Code) -> Self {
+impl From<TransportErrorCode> for u64 {
+    fn from(x: TransportErrorCode) -> Self {
         x.0
     }
 }
@@ -73,11 +69,11 @@ impl From<Code> for u64 {
 macro_rules! errors {
     {$($name:ident($val:expr) $desc:expr;)*} => {
         #[allow(non_snake_case, unused)]
-        impl Error {
+        impl TransportError {
             $(
             pub(crate) fn $name<T>(reason: T) -> Self where T: Into<String> {
                 Self {
-                    code: Code::$name,
+                    code: TransportErrorCode::$name,
                     frame: None,
                     reason: reason.into(),
                 }
@@ -85,11 +81,11 @@ macro_rules! errors {
             )*
         }
 
-        impl Code {
-            $(#[doc = $desc] pub const $name: Self = Code($val);)*
+        impl TransportErrorCode {
+            $(#[doc = $desc] pub const $name: Self = TransportErrorCode($val);)*
         }
 
-        impl fmt::Debug for Code {
+        impl fmt::Debug for TransportErrorCode {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 match self.0 {
                     $($val => f.write_str(stringify!($name)),)*
@@ -99,7 +95,7 @@ macro_rules! errors {
             }
         }
 
-        impl fmt::Display for Code {
+        impl fmt::Display for TransportErrorCode {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 match self.0 {
                     $($val => f.write_str($desc),)*
@@ -130,4 +126,17 @@ errors! {
     KEY_UPDATE_ERROR(0xE) "key update error";
     AEAD_LIMIT_REACHED(0xF) "the endpoint has reached the confidentiality or integrity limit for the AEAD algorithm";
     NO_VIABLE_PATH(0x10) "no viable network path exists";
+}
+
+// Application Protocol Error Codes
+#[derive(Debug, PartialEq)]
+pub enum Error {
+    /// Too many identifiers were provided.
+    IdLimit,
+    /// Not enough available identifiers.
+    OutOfIdentifiers,
+
+    InvalidState,
+
+    InvalidFrame,
 }
