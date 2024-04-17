@@ -17,6 +17,8 @@
  */
 use std::{fmt, ops};
 
+use qbase::varint::VarInt;
+
 /// ## Example
 /// ```
 /// use qrecovery::streamid::Role;
@@ -80,6 +82,7 @@ impl fmt::Display for StreamId {
 }
 
 /// StreamId没有构建的入口，它只能从每个QUIC连接维护的StreamId状态中取得；或者从对方的数据包中解析出来。
+/// StreamId::next以及迭代接口，都有相应的保护，防止溢出。
 impl StreamId {
     const MAX_STREAM_ID: u64 = (u64::MAX >> 2) - 1;
 
@@ -103,12 +106,13 @@ impl StreamId {
         self.0 >> 2
     }
 
-    pub fn next(&self) -> Self {
-        Self(self.0 + 4)
-    }
-
-    pub fn inc(&mut self) {
-        self.0 += 4;
+    pub fn next(&self) -> Option<Self> {
+        let next = self.0 + 4;
+        if next > Self::MAX_STREAM_ID {
+            None
+        } else {
+            Some(Self(next))
+        }
     }
 
     pub fn iter(&self) -> StreamIdIter {
@@ -116,7 +120,17 @@ impl StreamId {
     }
 }
 
-// TODO: 从VarInt变成StreamId
+impl From<VarInt> for StreamId {
+    fn from(v: VarInt) -> Self {
+        Self(v.into_inner())
+    }
+}
+
+impl From<StreamId> for VarInt {
+    fn from(s: StreamId) -> Self {
+        unsafe { Self::from_u64_unchecked(s.0) }
+    }
+}
 
 pub struct StreamIdIter(u64);
 
@@ -143,8 +157,8 @@ impl Default for StreamIds {
 }
 
 impl StreamIds {
-    pub fn get(&self, role: Role, dir: Dir) -> StreamId {
-        self.0[(role as usize) | (dir as usize)]
+    pub fn get(&self, role: Role, dir: Dir) -> &StreamId {
+        &self.0[(role as usize) | (dir as usize)]
     }
 
     pub fn get_mut(&mut self, role: Role, dir: Dir) -> &mut StreamId {
@@ -163,11 +177,26 @@ mod tests {
         assert_eq!(stream_ids.get(Role::Client, Dir::Uni).0, 2);
         assert_eq!(stream_ids.get(Role::Server, Dir::Bi).0, 1);
         assert_eq!(stream_ids.get(Role::Server, Dir::Uni).0, 3);
-        stream_ids.get_mut(Role::Client, Dir::Bi).inc();
+        let sid = stream_ids.get_mut(Role::Client, Dir::Bi);
+        *sid = sid.next().unwrap();
         assert_eq!(stream_ids.get(Role::Client, Dir::Bi).0, 4);
         assert_eq!(stream_ids.get(Role::Client, Dir::Uni).0, 2);
         assert_eq!(stream_ids.get(Role::Server, Dir::Bi).0, 1);
         assert_eq!(stream_ids.get(Role::Server, Dir::Uni).0, 3);
+    }
+
+    #[test]
+    fn test_stream_id_next() {
+        let stream_ids = StreamIds::default();
+        let sid = stream_ids.get(Role::Client, Dir::Bi);
+
+        let sid = sid.next().unwrap();
+        assert_eq!(sid.0, 4);
+        let mut sid = sid.next().unwrap();
+        assert_eq!(sid.0, 8);
+
+        sid.0 = StreamId::MAX_STREAM_ID - 3;
+        assert_eq!(sid.next(), None);
     }
 
     #[test]
@@ -179,7 +208,7 @@ mod tests {
         assert_eq!(iter.next().unwrap().0, 12);
         assert_eq!(iter.next().unwrap().0, 16);
 
-        let mut sid = stream_ids.get_mut(Role::Client, Dir::Bi);
+        let sid = stream_ids.get_mut(Role::Client, Dir::Bi);
         assert_eq!(sid.0, 0);
         sid.0 = StreamId::MAX_STREAM_ID - 3;
         let mut iter = sid.iter();

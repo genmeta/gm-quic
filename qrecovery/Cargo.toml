@@ -6,5 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+qbase = { path = "../qbase" }
 slice-deque = "0.3"
 bytes = "1"
