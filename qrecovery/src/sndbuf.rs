@@ -547,6 +547,13 @@ impl SendBuf {
     // 无需close：不在写入即可，具体到某个状态，才有close
     // 无需reset：状态转化间，需要reset，而Sender上下文直接释放即可
     // 无需clean：Sender上下文直接释放即可，
+}
+
+impl SendBuf {
+    /// There is no data to send, the data chain is broken.
+    pub fn is_broken(&self) -> bool {
+        self.data.is_empty()
+    }
 
     // 挑选出可供发送的数据，限制长度不能超过len，以满足一个数据包能容的下一个完整的数据帧。
     // 返回的是一个切片，该切片的生命周期必须不长于SendBuf的生命周期，该切片可以被缓存至数据包
