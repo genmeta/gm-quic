@@ -1,0 +1,63 @@
+use super::{recver::ArcRecver, Recver};
+use std::{
+    io,
+    ops::DerefMut,
+    pin::Pin,
+    task::{Context, Poll},
+};
+use tokio::io::{AsyncRead, ReadBuf};
+
+pub struct Reader(ArcRecver);
+
+// TODO: 还要实现abort
+
+impl AsyncRead for Reader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let mut recver = self.0.lock().unwrap();
+        let inner = recver.deref_mut();
+        let holder = std::mem::take(inner);
+        // 能相当清楚地看到应用层读取数据驱动的接收状态演变
+        match holder {
+            Recver::Recv(mut r) => {
+                let result = r.poll_read(cx, buf);
+                inner.replace(Recver::Recv(r));
+                result
+            }
+            Recver::SizeKnown(mut r) => {
+                let result = r.poll_read(cx, buf);
+                inner.replace(Recver::SizeKnown(r));
+                result
+            }
+            Recver::DataRecvd(mut r) => {
+                r.poll_read(buf);
+                if r.is_all_read() {
+                    inner.replace(Recver::DataRead);
+                } else {
+                    inner.replace(Recver::DataRecvd(r));
+                }
+                Poll::Ready(Ok(()))
+            }
+            Recver::DataRead => Poll::Ready(Ok(())),
+            Recver::ResetRecvd => {
+                inner.replace(Recver::ResetRead);
+                Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+            }
+            Recver::ResetRead => {
+                inner.replace(Recver::ResetRead);
+                Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn it_works() {
+        assert_eq!(2 + 2, 4);
+    }
+}

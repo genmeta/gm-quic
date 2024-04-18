@@ -6,7 +6,7 @@ use std::{
     ops::Range,
 };
 
-// 标识一段数据的状态，既染色
+/// To indicate the state of a data segment, it is colored.
 #[derive(Default, PartialEq, Eq, Clone, Copy, Debug)]
 pub(self) enum Color {
     #[default]
@@ -169,7 +169,7 @@ impl BufMap {
     // 收到了ack确认，确认的数据不需再发送，对于头部连续确认的数据，就可以删掉。
     // 寻找到ack区间所在的位置，将这些区间都染成Recved，然后检查前后是否有需要合并的区间，合并之。
     // ack区间，不能ack到Pending的数据，因为Pending的数据尚未发送过，当然无法被ack。
-    fn ack_recv(&mut self, range: Range<u64>) {
+    fn ack_recv(&mut self, range: &Range<u64>) {
         let pos = self.0.binary_search_by(|s| s.offset().cmp(&range.start));
         let (mut drain_start, need_insert_at_start, mut drain_end, mut pre_color) = match pos {
             Ok(idx) => {
@@ -293,7 +293,7 @@ impl BufMap {
     // 寻找到丢失区间覆盖的范围，其中若遇到Recved的区间，则忽略；只有Flighting/Lost的才可以丢失。
     // 然后检查Lost区间前后是否有需要合并的区间，合并之。
     // 同样地，Lost区间不能覆盖Pending的数据，因为Pending的数据尚未发送过，无法丢失。
-    fn may_loss(&mut self, range: Range<u64>) {
+    fn may_loss(&mut self, range: &Range<u64>) {
         let pos = self.0.binary_search_by(|s| s.offset().cmp(&range.start));
         let (mut drain_start, need_insert_at_start, mut drain_end, mut pre_color) = match pos {
             Ok(idx) => {
@@ -499,8 +499,6 @@ pub struct SendBuf {
     max_data_len: u64,
     // 写入数据的环形队列，与接收队列不同的是，它是连续的
     data: SliceDeque<u8>,
-    // 这是一个无锁的高效有序跳表
-    // 它的意义是，从前一段(如果是第一个，则是offset)到key的range范围的数据，是value这个Color的
     state: BufMap,
 }
 
@@ -568,7 +566,7 @@ impl SendBuf {
 
     // 通过传输层接收到的对方的ack帧，确认某些包已经被接收到，这些包携带的数据即被确认。
     // ack只能确认Flighting/Lost状态的区间；如果确认的是Lost区间，意味着之前的判定丢包是错误的。
-    pub fn ack_recv(&mut self, range: Range<u64>) {
+    pub fn ack_recv(&mut self, range: &Range<u64>) {
         self.state.ack_recv(range);
         // 对于头部连续确认接收到的，还要前进，以免浪费空间
         let min_unrecved_pos = self.state.shift();
@@ -580,7 +578,7 @@ impl SendBuf {
 
     // 通过传输层收到的ack帧，判定有些数据包丢失，因为它之后的数据包都被确认了，
     // 或者距离发送该段数据之后相当长一段时间都没收到它的确认。
-    pub fn may_loss(&mut self, range: Range<u64>) {
+    pub fn may_loss(&mut self, range: &Range<u64>) {
         self.state.may_loss(range);
     }
 
@@ -709,7 +707,7 @@ mod test {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
         buf_map.pick(120);
-        buf_map.ack_recv(0..20);
+        buf_map.ack_recv(&(0..20));
         assert_eq!(
             buf_map.0,
             vec![
@@ -719,7 +717,7 @@ mod test {
             ]
         );
 
-        buf_map.ack_recv(30..50);
+        buf_map.ack_recv(&(30..50));
         assert_eq!(
             buf_map.0,
             vec![
@@ -731,7 +729,7 @@ mod test {
             ]
         );
 
-        buf_map.ack_recv(25..55);
+        buf_map.ack_recv(&(25..55));
         assert_eq!(
             buf_map.0,
             vec![
@@ -743,7 +741,7 @@ mod test {
             ]
         );
 
-        buf_map.ack_recv(20..25);
+        buf_map.ack_recv(&(20..25));
         assert_eq!(
             buf_map.0,
             vec![
@@ -754,7 +752,7 @@ mod test {
         );
 
         buf_map.0.pop_front();
-        buf_map.ack_recv(20..55);
+        buf_map.ack_recv(&(20..55));
         assert_eq!(
             buf_map.0,
             vec![
@@ -763,7 +761,7 @@ mod test {
             ]
         );
 
-        buf_map.ack_recv(30..70);
+        buf_map.ack_recv(&(30..70));
         assert_eq!(
             buf_map.0,
             vec![
@@ -772,7 +770,7 @@ mod test {
             ]
         );
 
-        buf_map.ack_recv(100..119);
+        buf_map.ack_recv(&(100..119));
         assert_eq!(
             buf_map.0,
             vec![
@@ -793,7 +791,7 @@ mod test {
             ]
         );
 
-        buf_map.ack_recv(119..150);
+        buf_map.ack_recv(&(119..150));
         assert_eq!(
             buf_map.0,
             vec![
@@ -802,7 +800,7 @@ mod test {
                 State::encode(150, Color::Flighting),
             ]
         );
-        buf_map.ack_recv(150..200);
+        buf_map.ack_recv(&(150..200));
         assert_eq!(
             buf_map.0,
             vec![
@@ -818,7 +816,7 @@ mod test {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
         buf_map.pick(120);
-        buf_map.ack_recv(20..40);
+        buf_map.ack_recv(&(20..40));
         buf_map.0.insert(2, State::encode(30, Color::Pending));
         assert_eq!(
             buf_map.0,
@@ -831,7 +829,7 @@ mod test {
                 State::encode(120, Color::Pending)
             ]
         );
-        buf_map.ack_recv(0..50);
+        buf_map.ack_recv(&(0..50));
     }
 
     #[test]
@@ -847,7 +845,7 @@ mod test {
                 State::encode(120, Color::Pending),
             ]
         );
-        buf_map.ack_recv(110..121);
+        buf_map.ack_recv(&(110..121));
     }
 
     #[test]
@@ -857,7 +855,7 @@ mod test {
         buf_map.extend_to(200);
         buf_map.pick(200);
         assert_eq!(buf_map.0, vec![State::encode(0, Color::Pending),]);
-        buf_map.ack_recv(0..201);
+        buf_map.ack_recv(&(0..201));
     }
 
     #[test]
@@ -873,7 +871,7 @@ mod test {
             ]
         );
 
-        buf_map.may_loss(0..20);
+        buf_map.may_loss(&(0..20));
         assert_eq!(
             buf_map.0,
             vec![
@@ -883,7 +881,7 @@ mod test {
             ]
         );
 
-        buf_map.may_loss(30..50);
+        buf_map.may_loss(&(30..50));
         assert_eq!(
             buf_map.0,
             vec![
@@ -895,8 +893,8 @@ mod test {
             ]
         );
 
-        buf_map.ack_recv(0..10);
-        buf_map.ack_recv(70..100);
+        buf_map.ack_recv(&(0..10));
+        buf_map.ack_recv(&(70..100));
         buf_map.0.pop_front();
         assert_eq!(
             buf_map.0,
@@ -911,7 +909,7 @@ mod test {
             ]
         );
 
-        buf_map.may_loss(15..25);
+        buf_map.may_loss(&(15..25));
         assert_eq!(
             buf_map.0,
             vec![
@@ -925,7 +923,7 @@ mod test {
             ]
         );
 
-        buf_map.may_loss(10..20);
+        buf_map.may_loss(&(10..20));
         assert_eq!(
             buf_map.0,
             vec![
@@ -939,7 +937,7 @@ mod test {
             ]
         );
 
-        buf_map.may_loss(60..110);
+        buf_map.may_loss(&(60..110));
         assert_eq!(
             buf_map.0,
             vec![
@@ -955,7 +953,7 @@ mod test {
             ]
         );
 
-        buf_map.ack_recv(20..55);
+        buf_map.ack_recv(&(20..55));
         assert_eq!(
             buf_map.0,
             vec![
@@ -970,7 +968,7 @@ mod test {
             ]
         );
 
-        buf_map.may_loss(40..80);
+        buf_map.may_loss(&(40..80));
         assert_eq!(
             buf_map.0,
             vec![
@@ -984,7 +982,7 @@ mod test {
             ]
         );
 
-        buf_map.ack_recv(20..120);
+        buf_map.ack_recv(&(20..120));
         assert_eq!(
             buf_map.0,
             vec![
@@ -994,7 +992,7 @@ mod test {
             ]
         );
 
-        buf_map.may_loss(50..80);
+        buf_map.may_loss(&(50..80));
         assert_eq!(
             buf_map.0,
             vec![
@@ -1004,7 +1002,7 @@ mod test {
             ]
         );
 
-        buf_map.may_loss(2..10);
+        buf_map.may_loss(&(2..10));
         assert_eq!(
             buf_map.0,
             vec![
@@ -1014,7 +1012,7 @@ mod test {
             ]
         );
 
-        buf_map.may_loss(30..50);
+        buf_map.may_loss(&(30..50));
         assert_eq!(
             buf_map.0,
             vec![

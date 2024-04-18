@@ -53,11 +53,11 @@ impl SendingSender {
         self.inner.pick_up(max_len)
     }
 
-    pub fn ack_recv(&mut self, range: Range<u64>) {
+    pub fn ack_recv(&mut self, range: &Range<u64>) {
         self.inner.ack_recv(range)
     }
 
-    pub fn may_loss(&mut self, range: Range<u64>) {
+    pub fn may_loss(&mut self, range: &Range<u64>) {
         self.inner.may_loss(range)
     }
 
@@ -85,11 +85,11 @@ impl DataSentSender {
         self.inner.pick_up(max_len)
     }
 
-    pub fn ack_recv(&mut self, range: Range<u64>) {
+    pub fn ack_recv(&mut self, range: &Range<u64>) {
         self.inner.ack_recv(range)
     }
 
-    pub fn may_loss(&mut self, range: Range<u64>) {
+    pub fn may_loss(&mut self, range: &Range<u64>) {
         self.inner.may_loss(range)
     }
 
