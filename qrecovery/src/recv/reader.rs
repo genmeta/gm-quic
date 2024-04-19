@@ -1,4 +1,4 @@
-use super::{recver::ArcRecver, Recver};
+use super::recver::{ArcRecver, Recver};
 use std::{
     io,
     ops::DerefMut,
@@ -10,6 +10,7 @@ use tokio::io::{AsyncRead, ReadBuf};
 pub struct Reader(ArcRecver);
 
 // TODO: 还要实现abort
+// TODO: Reader的drop，意味着自动abort
 
 impl AsyncRead for Reader {
     fn poll_read(
@@ -54,8 +55,29 @@ impl AsyncRead for Reader {
     }
 }
 
+impl Drop for Reader {
+    fn drop(&mut self) {
+        let mut recver = self.0.lock().unwrap();
+        let inner = recver.deref_mut();
+        let holder = std::mem::take(inner);
+        match holder {
+            Recver::Recv(mut r) => {
+                r.abort();
+                inner.replace(Recver::ResetRecvd);
+            }
+            Recver::SizeKnown(mut r) => {
+                r.abort();
+                inner.replace(Recver::ResetRecvd);
+            }
+            other => {
+                inner.replace(other);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
-mod test {
+mod tests {
     #[test]
     fn it_works() {
         assert_eq!(2 + 2, 4);

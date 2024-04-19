@@ -495,8 +495,6 @@ impl BufMap {
 
 pub struct SendBuf {
     offset: u64,
-    // 通过MAX_DATA_FRAME帧及时告知，不会超过2^62
-    max_data_len: u64,
     // 写入数据的环形队列，与接收队列不同的是，它是连续的
     data: SliceDeque<u8>,
     state: BufMap,
@@ -506,27 +504,22 @@ impl SendBuf {
     pub fn with_capacity(n: usize) -> Self {
         Self {
             offset: 0,
-            max_data_len: n as u64,
             data: SliceDeque::with_capacity(n),
             state: BufMap::default(),
         }
     }
 
-    pub fn writeable(&self) -> bool {
-        self.max_data_len > self.len()
+    pub fn range(&self) -> Range<u64> {
+        self.offset..self.state.1
     }
 
     // invoked by application layer
     pub fn write(&mut self, data: &[u8]) -> usize {
-        assert!(!data.is_empty());
-
         // 写的数据量受流量控制限制
-        let wrote = self.len();
-        let writeable = self.max_data_len - wrote;
-        let n = std::cmp::min(writeable as usize, data.len());
+        let n = data.len();
         if n > 0 {
-            self.data.copy_from_slice(&data[..n]);
-            self.state.extend_to(wrote + n as u64);
+            self.data.copy_from_slice(data);
+            self.state.extend_to(self.len() + n as u64);
         }
 
         n
@@ -583,13 +576,13 @@ impl SendBuf {
     }
 
     pub fn is_all_recvd(&self) -> bool {
-        self.offset > 0 && self.data.is_empty()
+        self.data.is_empty()
     }
 }
 
 #[cfg(test)]
-mod test {
-    use crate::sndbuf::{BufMap, Color, State};
+mod tests {
+    use super::{BufMap, Color, State};
 
     #[test]
     fn test_bufmap_empty() {

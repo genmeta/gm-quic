@@ -1,4 +1,4 @@
-use super::{recver::ArcRecver, Recver};
+use super::recver::{ArcRecver, Recver};
 use bytes::Bytes;
 use std::{
     future::Future,
@@ -69,24 +69,24 @@ impl Incoming {
         }
     }
 
-    pub fn is_stopped(&mut self) -> IncomingStop<'_> {
-        IncomingStop { inner: self }
+    /// 应用层是否对流写入结束，如果是，那么应要发送STOP_SENDING
+    pub fn is_stopped(&self) -> IncomingStop {
+        IncomingStop(self.0.clone())
     }
 
-    pub fn window_update(&mut self) -> WindowUpdate<'_> {
-        WindowUpdate { inner: self }
+    /// 对流控来说，何时发送窗口更新？当连续确认接收数据一半以上时
+    pub fn window_update(&self) -> WindowUpdate {
+        WindowUpdate(self.0.clone())
     }
 }
 
-pub struct WindowUpdate<'a> {
-    inner: &'a Incoming,
-}
+pub struct WindowUpdate(ArcRecver);
 
-impl<'a> Future for WindowUpdate<'a> {
+impl Future for WindowUpdate {
     type Output = u64;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut recver = self.inner.0.lock().unwrap();
+        let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
         let holder = std::mem::take(inner);
         match holder {
@@ -103,15 +103,13 @@ impl<'a> Future for WindowUpdate<'a> {
     }
 }
 
-pub struct IncomingStop<'a> {
-    inner: &'a Incoming,
-}
+pub struct IncomingStop(ArcRecver);
 
-impl<'a> Future for IncomingStop<'a> {
+impl Future for IncomingStop {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut recver = self.inner.0.lock().unwrap();
+        let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
         let holder = std::mem::take(inner);
         match holder {
@@ -134,7 +132,7 @@ impl<'a> Future for IncomingStop<'a> {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     #[test]
     fn it_works() {
         assert_eq!(2 + 2, 4);

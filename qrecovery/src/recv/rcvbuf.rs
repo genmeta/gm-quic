@@ -104,8 +104,6 @@ impl RecvBuf {
         self.segments.is_empty()
     }
 
-    // TODO: 只是暂时没啥用，以后会判定读缓冲区底的时候，触发MAX_STREAM_DATA帧
-    #[allow(dead_code)]
     pub fn offset(&self) -> u64 {
         self.offset
     }
@@ -182,7 +180,7 @@ impl RecvBuf {
                         continue;
                     } else if next.offset < seg_end {
                         let repeat_len = seg_end - next.offset;
-                        seg.length += next.length - repeat_len;
+                        seg.length += frag.len() as u64 - repeat_len;
                         next.length -= frag.len() as u64;
                         next.offset += frag.len() as u64;
                         seg.fragments.push_back(frag.slice(repeat_len as usize..));
@@ -256,7 +254,7 @@ impl RecvBuf {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
 
     #[test]

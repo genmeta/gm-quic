@@ -1,6 +1,5 @@
 pub mod recv;
-pub mod sender;
-pub mod sndbuf;
+pub mod send;
 pub mod streamid;
 // pub mod data_space;
 
