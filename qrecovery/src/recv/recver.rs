@@ -284,6 +284,10 @@ impl Recver {
         }
     }
 
+    pub(super) fn take(&mut self) -> Self {
+        std::mem::take(self)
+    }
+
     pub(super) fn replace(&mut self, other: Self) {
         let _ = std::mem::replace(self, other);
     }

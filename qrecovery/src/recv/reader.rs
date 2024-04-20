@@ -20,9 +20,8 @@ impl AsyncRead for Reader {
     ) -> Poll<io::Result<()>> {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
-        let holder = std::mem::take(inner);
         // 能相当清楚地看到应用层读取数据驱动的接收状态演变
-        match holder {
+        match inner.take() {
             Recver::Recv(mut r) => {
                 let result = r.poll_read(cx, buf);
                 inner.replace(Recver::Recv(r));
@@ -59,8 +58,7 @@ impl Drop for Reader {
     fn drop(&mut self) {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
-        let holder = std::mem::take(inner);
-        match holder {
+        match inner.take() {
             Recver::Recv(mut r) => {
                 r.abort();
                 inner.replace(Recver::ResetRecvd);

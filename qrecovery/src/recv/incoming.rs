@@ -13,8 +13,7 @@ impl Incoming {
     pub fn recv(&mut self, offset: u64, buf: Bytes) {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
-        let holder = std::mem::take(inner);
-        match holder {
+        match inner.take() {
             Recver::Recv(mut r) => {
                 r.recv(offset, buf);
                 inner.replace(Recver::Recv(r));
@@ -37,8 +36,7 @@ impl Incoming {
     pub fn end(&mut self, final_size: u64) {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
-        let holder = std::mem::take(inner);
-        match holder {
+        match inner.take() {
             Recver::Recv(r) => {
                 inner.replace(Recver::SizeKnown(r.determin_size(final_size)));
             }
@@ -52,8 +50,7 @@ impl Incoming {
     pub fn recv_reset(&mut self) {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
-        let holder = std::mem::take(inner);
-        match holder {
+        match inner.take() {
             Recver::Recv(r) => {
                 r.recv_reset();
                 inner.replace(Recver::ResetRecvd);
@@ -75,7 +72,7 @@ impl Incoming {
     }
 
     /// 对流控来说，何时发送窗口更新？当连续确认接收数据一半以上时
-    pub fn window_update(&self) -> WindowUpdate {
+    pub fn need_window_update(&self) -> WindowUpdate {
         WindowUpdate(self.0.clone())
     }
 }
@@ -88,8 +85,7 @@ impl Future for WindowUpdate {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
-        let holder = std::mem::take(inner);
-        match holder {
+        match inner.take() {
             Recver::Recv(mut r) => {
                 let result = r.poll_window_update(cx);
                 inner.replace(Recver::Recv(r));
@@ -111,8 +107,7 @@ impl Future for IncomingStop {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
-        let holder = std::mem::take(inner);
-        match holder {
+        match inner.take() {
             Recver::Recv(mut r) => {
                 let result = r.poll_stop(cx);
                 inner.replace(Recver::Recv(r));
