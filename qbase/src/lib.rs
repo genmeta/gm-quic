@@ -1,4 +1,6 @@
 pub mod config;
+pub mod frame;
+pub mod streamid;
 pub mod varint;
 
 #[cfg(test)]

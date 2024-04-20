@@ -17,11 +17,11 @@
  */
 use std::{fmt, ops};
 
-use qbase::varint::VarInt;
+use super::varint::VarInt;
 
 /// ## Example
 /// ```
-/// use qrecovery::streamid::Role;
+/// use qbase::streamid::Role;
 ///
 /// let local = Role::Client;
 /// let peer = !local;
@@ -163,6 +163,28 @@ impl StreamIds {
 
     pub fn get_mut(&mut self, role: Role, dir: Dir) -> &mut StreamId {
         &mut self.0[(role as usize) | (dir as usize)]
+    }
+}
+
+pub mod ext {
+    use super::StreamId;
+
+    /// nom parser for stream id
+    pub fn be_streamid(input: &[u8]) -> nom::IResult<&[u8], StreamId> {
+        use crate::varint::ext::be_varint;
+        use nom::combinator::map;
+        map(be_varint, StreamId::from)(input)
+    }
+
+    pub trait BufMutExt {
+        fn put_streamid(&mut self, stream_id: &StreamId);
+    }
+
+    impl<T: bytes::BufMut> BufMutExt for T {
+        fn put_streamid(&mut self, stream_id: &StreamId) {
+            use crate::varint::ext::BufMutExt as VarIntBufMutExt;
+            self.put_varint(&(*stream_id).into());
+        }
     }
 }
 
