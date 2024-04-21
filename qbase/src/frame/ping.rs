@@ -17,11 +17,11 @@ pub mod ext {
 
     // BufMut write extension for PING_FRAME
     pub trait BufMutExt {
-        fn put_ping_frame(&mut self, frame: &PingFrame);
+        fn put_ping_frame(&mut self);
     }
 
     impl<T: bytes::BufMut> BufMutExt for T {
-        fn put_ping_frame(&mut self, _frame: &PingFrame) {
+        fn put_ping_frame(&mut self) {
             self.put_u8(super::PING_FRAME_TYPE);
         }
     }
@@ -53,7 +53,7 @@ mod tests {
     fn test_write_ping_frame() {
         use super::ext::BufMutExt;
         let mut buf = Vec::new();
-        buf.put_ping_frame(&PingFrame);
+        buf.put_ping_frame();
         assert_eq!(buf, vec![PING_FRAME_TYPE]);
     }
 }

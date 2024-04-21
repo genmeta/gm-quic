@@ -14,6 +14,8 @@ pub mod stream;
 pub mod stream_data_blocked;
 pub mod streams_blocked;
 
+use std::ops::RangeInclusive;
+
 use bytes::Bytes;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -42,16 +44,16 @@ impl TryFrom<u8> for FrameType {
         Ok(match frame_type {
             padding::PADDING_FRAME_TYPE => FrameType::Padding,
             ping::PING_FRAME_TYPE => FrameType::Ping,
-            0x2 | 0x3 => FrameType::Ack(frame_type & 0b1),
+            0b10 | 0b11 => FrameType::Ack(frame_type & 0b1),
             reset_stream::RESET_STREAM_FRAME_TYPE => FrameType::ResetStream,
             crypto::CRYPTO_FRAME_TYPE => FrameType::Crypto,
             data_blocked::DATA_BLOCKED_FRAME_TYPE => FrameType::DataBlocked,
             max_data::MAX_DATA_FRAME_TYPE => FrameType::MaxData,
             max_stream_data::MAX_STREAM_DATA_FRAME_TYPE => FrameType::MaxStreamData,
-            0x12 | 0x13 => FrameType::MaxStreams(frame_type & 0b1),
+            0b10010 | 0b10011 => FrameType::MaxStreams(frame_type & 0b1),
             stop_sending::STOP_SENDING_FRAME_TYPE => FrameType::StopSending,
             stream_data_blocked::STREAM_DATA_BLOCKED_FRAME_TYPE => FrameType::StreamDataBlocked,
-            8..=15 => FrameType::Stream(frame_type & 0b111),
+            0b1000..=0b1111 => FrameType::Stream(frame_type & 0b111),
             _ => return Err(InvalidFrameType(frame_type)),
         })
     }
@@ -63,12 +65,32 @@ impl TryFrom<u8> for FrameType {
 /// 在读取解析完一个包后才释放。
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ReadFrame {
-    Padding(padding::PaddingFrame),
-    Ping(ping::PingFrame),
+    Padding,
+    Ping,
     Ack(ack::AckFrame),
     Stream(stream::StreamFrame, Bytes),
     ResetStream(reset_stream::ResetStreamFrame),
     Crypto(crypto::CryptoFrame, Bytes),
+    DataBlocked(data_blocked::DataBlockedFrame),
+    MaxData(max_data::MaxDataFrame),
+    MaxStreamData(max_stream_data::MaxStreamDataFrame),
+    MaxStreams(max_streams::MaxStreamsFrame),
+    StreamDataBlocked(stream_data_blocked::StreamDataBlockedFrame),
+    StopSending(stop_sending::StopSendingFrame),
+}
+
+/// 写入Frame，仅仅是用于记录，当发送一个Packet时，那该Packet中的帧需要纪律下来，
+/// 以便在丢包检测时，决定里面的什么帧丢了，需要重传。
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum WriteFrame {
+    Padding,
+    Ping,
+    // 只作记录用，具体的AckFrame不必记录，因为每次AckFrame都要重新从最新的收包记录里生成
+    Ack(RangeInclusive<u64>),
+    // 数据帧也不包含数据，丢了的话不会原样重传此部分数据，而是向`Sender`标记为丢失
+    Stream(stream::StreamFrame),
+    ResetStream(reset_stream::ResetStreamFrame),
+    Crypto(crypto::CryptoFrame),
     DataBlocked(data_blocked::DataBlockedFrame),
     MaxData(max_data::MaxDataFrame),
     MaxStreamData(max_stream_data::MaxStreamDataFrame),
@@ -82,10 +104,9 @@ pub mod ext {
         ack::ext::ack_frame_with_flag, crypto::ext::be_crypto_frame,
         data_blocked::ext::be_data_blocked_frame, max_data::ext::be_max_data_frame,
         max_stream_data::ext::be_max_stream_data_frame,
-        max_streams::ext::max_streams_frame_with_dir, padding::ext::be_padding_frame,
-        ping::ext::be_ping_frame, reset_stream::ext::be_reset_stream_frame,
+        max_streams::ext::max_streams_frame_with_dir, reset_stream::ext::be_reset_stream_frame,
         stop_sending::ext::be_stop_sending_frame, stream::ext::stream_frame_with_flag,
-        stream_data_blocked::ext::be_stream_data_blocked_frame, FrameType, ReadFrame,
+        stream_data_blocked::ext::be_stream_data_blocked_frame, FrameType, ReadFrame, WriteFrame,
     };
 
     use bytes::Bytes;
@@ -109,8 +130,8 @@ pub mod ext {
         raw: Bytes,
     ) -> impl Fn(&[u8]) -> IResult<&[u8], ReadFrame> {
         move |input: &[u8]| match frame_type {
-            FrameType::Padding => map(be_padding_frame, ReadFrame::Padding)(input),
-            FrameType::Ping => map(be_ping_frame, ReadFrame::Ping)(input),
+            FrameType::Padding => Ok((input, ReadFrame::Padding)),
+            FrameType::Ping => Ok((input, ReadFrame::Ping)),
             FrameType::Ack(ecn) => map(ack_frame_with_flag(ecn), ReadFrame::Ack)(input),
             FrameType::ResetStream => map(be_reset_stream_frame, ReadFrame::ResetStream)(input),
             FrameType::DataBlocked => map(be_data_blocked_frame, ReadFrame::DataBlocked)(input),
@@ -157,23 +178,44 @@ pub mod ext {
         })(input)
     }
 
-    /*
     pub trait BufMutExt {
-        fn put_frame(&mut self, frame: &ReadFrame);
+        fn put_frame(&mut self, frame: &WriteFrame);
     }
 
     impl<T: bytes::BufMut> BufMutExt for T {
-        fn put_frame(&mut self, frame: &ReadFrame) {
+        fn put_frame(&mut self, frame: &WriteFrame) {
+            use super::{
+                data_blocked::ext::BufMutExt as DataBlockedBufMutExt,
+                max_data::ext::BufMutExt as MaxDataBufMutExt,
+                max_stream_data::ext::BufMutExt as MaxStreamDataBufMutExt,
+                max_streams::ext::BufMutExt as MaxStreamsBufMutExt,
+                padding::ext::BufMutExt as PaddingBufMutExt, ping::ext::BufMutExt as PingBufMutExt,
+                reset_stream::ext::BufMutExt as ResetStreamBufMutExt,
+                stop_sending::ext::BufMutExt as StopSendingBufMutExt,
+                stream_data_blocked::ext::BufMutExt as StreamDataBlockedBufMutExt,
+            };
             match frame {
-                ReadFrame::Padding(frame) => self.put_padding_frame(frame),
-                ReadFrame::Ping(frame) => self.put_ping_frame(frame),
-                //Frame::Ack(frame) => self.put_ack_frame(frame),
-                ReadFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
-                ReadFrame::Crypto(frame, data) => self.put_crypto_frame(frame, data),
+                WriteFrame::Padding => self.put_padding_frame(),
+                WriteFrame::Ping => self.put_ping_frame(),
+                WriteFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
+                WriteFrame::DataBlocked(frame) => self.put_data_blocked_frame(frame),
+                WriteFrame::MaxData(frame) => self.put_max_data_frame(frame),
+                WriteFrame::MaxStreamData(frame) => self.put_max_stream_data_frame(frame),
+                WriteFrame::MaxStreams(frame) => self.put_max_streams_frame(frame),
+                WriteFrame::StreamDataBlocked(frame) => self.put_stream_data_blocked_frame(frame),
+                WriteFrame::StopSending(frame) => self.put_stop_sending_frame(frame),
+                WriteFrame::Crypto(_) => {
+                    unimplemented!("Cannot write CRYPTO frame directly. Please request the latest data to be sent from crypto buffer.")
+                }
+                WriteFrame::Stream(_) => {
+                    unimplemented!("Cannot write STREAM frame directly. Please request the latest data to be sent from each stream.")
+                }
+                WriteFrame::Ack(_) => {
+                    unimplemented!("Cannot write ACK frame directly. Please regenerate the latest ACK information.")
+                }
             }
         }
     }
-    */
 }
 
 #[cfg(test)]

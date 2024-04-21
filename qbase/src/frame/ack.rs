@@ -38,7 +38,7 @@ impl AckFrame {
         })
     }
 
-    /// Safe: It is impossible
+    /// Safe: The number of gaps and ACK ranges to be acknowledged at a time cannot exceed 2^32.
     pub fn alternating_gap_and_range(&mut self, gap: u32, range: u32) {
         self.ranges
             .push((VarInt::from_u32(gap), VarInt::from_u32(range)));

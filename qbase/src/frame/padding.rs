@@ -16,11 +16,11 @@ pub mod ext {
     }
     // BufMut write extension for PADDING_FRAME
     pub trait BufMutExt {
-        fn put_padding_frame(&mut self, frame: &PaddingFrame);
+        fn put_padding_frame(&mut self);
     }
 
     impl<T: bytes::BufMut> BufMutExt for T {
-        fn put_padding_frame(&mut self, _frame: &PaddingFrame) {
+        fn put_padding_frame(&mut self) {
             self.put_u8(super::PADDING_FRAME_TYPE);
         }
     }
@@ -52,7 +52,7 @@ mod tests {
     fn test_write_padding_frame() {
         use super::ext::BufMutExt;
         let mut buf = Vec::new();
-        buf.put_padding_frame(&PaddingFrame);
+        buf.put_padding_frame();
         assert_eq!(buf, vec![PADDING_FRAME_TYPE]);
     }
 }
