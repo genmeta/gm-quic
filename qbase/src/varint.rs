@@ -1,4 +1,4 @@
-use std::{convert::TryFrom, fmt};
+use std::{cmp::Ordering, convert::TryFrom, fmt};
 
 /// An integer less than 2^62
 ///
@@ -15,7 +15,7 @@ impl VarInt {
     pub const MAX_SIZE: usize = 8;
 
     /// Construct a `VarInt` infallibly
-    pub const fn from_u32(x: u32) -> Self {
+    pub fn from_u32(x: u32) -> Self {
         Self(x as u64)
     }
 
@@ -33,12 +33,12 @@ impl VarInt {
     /// # Safety
     ///
     /// `x` must be less than 2^62.
-    pub const unsafe fn from_u64_unchecked(x: u64) -> Self {
+    pub unsafe fn from_u64_unchecked(x: u64) -> Self {
         Self(x)
     }
 
     /// Extract the integer value
-    pub const fn into_inner(self) -> u64 {
+    pub fn into_inner(self) -> u64 {
         self.0
     }
 
@@ -98,6 +98,18 @@ impl TryFrom<usize> for VarInt {
     /// Succeeds if `x` < 2^62
     fn try_from(x: usize) -> Result<Self, err::Error> {
         Self::try_from(x as u64)
+    }
+}
+
+impl PartialEq<u64> for VarInt {
+    fn eq(&self, other: &u64) -> bool {
+        self.0.eq(other)
+    }
+}
+
+impl PartialOrd<u64> for VarInt {
+    fn partial_cmp(&self, other: &u64) -> Option<Ordering> {
+        self.0.partial_cmp(other)
     }
 }
 
