@@ -20,7 +20,7 @@ pub struct AckFrame {
     pub ecn: Option<EcnCounts>,
 }
 
-pub const ACK_FRAME_TYPE: u8 = 0x02;
+pub(super) const ACK_FRAME_TYPE: u8 = 0x02;
 
 impl AckFrame {
     pub fn new(
@@ -43,17 +43,20 @@ impl AckFrame {
         self.ranges
             .push((VarInt::from_u32(gap), VarInt::from_u32(range)));
     }
-}
 
-impl AckFrame {
     pub fn take_ecn(&mut self) -> Option<EcnCounts> {
         self.ecn.take()
     }
+}
+
+impl IntoIterator for AckFrame {
+    type Item = RangeInclusive<u64>;
+    type IntoIter = IntoAckIter;
 
     /// Note: Calling `into_iter` will consume the ownership of the `AckFrame`.
     /// Before doing so, it is important to handle the ECN information in the `AckFrame`.
-    pub fn into_iter(self) -> IntoAckIter {
-        IntoAckIter {
+    fn into_iter(self) -> Self::IntoIter {
+        Self::IntoIter {
             largest: self.largest.into_inner(),
             first_range: Some(self.first_range.into_inner()),
             iter: self.ranges.into_iter(),
@@ -61,6 +64,7 @@ impl AckFrame {
     }
 }
 
+#[derive(Debug)]
 pub struct IntoAckIter {
     largest: u64,
     first_range: Option<u64>,
@@ -94,7 +98,7 @@ pub struct EcnCounts {
     pub ce: VarInt,
 }
 
-pub mod ext {
+pub(super) mod ext {
     use super::{AckFrame, EcnCounts};
     use crate::frame::ack::ACK_FRAME_TYPE;
     use crate::varint::ext::be_varint;

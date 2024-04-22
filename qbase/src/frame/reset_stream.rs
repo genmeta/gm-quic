@@ -14,9 +14,9 @@ pub struct ResetStreamFrame {
     pub final_size: VarInt,
 }
 
-pub const RESET_STREAM_FRAME_TYPE: u8 = 0x04;
+pub(super) const RESET_STREAM_FRAME_TYPE: u8 = 0x04;
 
-pub mod ext {
+pub(super) mod ext {
     use super::ResetStreamFrame;
 
     // nom parser for RESET_STREAM_FRAME

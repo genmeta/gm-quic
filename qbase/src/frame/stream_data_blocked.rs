@@ -12,9 +12,9 @@ pub struct StreamDataBlockedFrame {
     pub maximum_stream_data: VarInt,
 }
 
-pub const STREAM_DATA_BLOCKED_FRAME_TYPE: u8 = 0x15;
+pub(super) const STREAM_DATA_BLOCKED_FRAME_TYPE: u8 = 0x15;
 
-pub mod ext {
+pub(super) mod ext {
     use super::{StreamDataBlockedFrame, STREAM_DATA_BLOCKED_FRAME_TYPE};
 
     // nom parser for STREAM_DATA_BLOCKED_FRAME

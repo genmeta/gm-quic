@@ -11,9 +11,9 @@ pub enum MaxStreamsFrame {
     Uni(StreamId),
 }
 
-pub const MAX_STREAMS_FRAME_TYPE: u8 = 0x12;
+pub(super) const MAX_STREAMS_FRAME_TYPE: u8 = 0x12;
 
-pub mod ext {
+pub(super) mod ext {
     use super::{MaxStreamsFrame, MAX_STREAMS_FRAME_TYPE};
 
     // nom parser for MAX_STREAMS_FRAME

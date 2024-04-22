@@ -12,9 +12,9 @@ pub struct StopSendingFrame {
     pub app_err_code: VarInt,
 }
 
-pub const STOP_SENDING_FRAME_TYPE: u8 = 0x05;
+pub(super) const STOP_SENDING_FRAME_TYPE: u8 = 0x05;
 
-pub mod ext {
+pub(super) mod ext {
     use super::StopSendingFrame;
     use crate::{
         streamid::ext::be_streamid,

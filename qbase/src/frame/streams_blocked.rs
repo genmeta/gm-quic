@@ -11,21 +11,21 @@ pub enum StreamsBlockedFrame {
     Uni(StreamId),
 }
 
-pub const STREAMS_BLOCKED_FRAME_TYPE: u8 = 0x16;
+pub(super) const STREAMS_BLOCKED_FRAME_TYPE: u8 = 0x16;
 
-pub mod ext {
+pub(super) mod ext {
     use super::{StreamsBlockedFrame, STREAMS_BLOCKED_FRAME_TYPE};
 
     // nom parser for STREAMS_BLOCKED_FRAME
-    pub fn streams_blocked_frame_with_flag(
-        flag: u8,
+    pub fn streams_blocked_frame_with_dir(
+        dir: u8,
     ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], StreamsBlockedFrame> {
         move |input: &[u8]| {
             use crate::streamid::ext::be_streamid;
             let (input, stream_id) = be_streamid(input)?;
             Ok((
                 input,
-                if flag & 0x1 == 0 {
+                if dir & 0x1 == 0 {
                     StreamsBlockedFrame::Bi(stream_id)
                 } else {
                     StreamsBlockedFrame::Uni(stream_id)
@@ -63,14 +63,14 @@ mod tests {
 
     #[test]
     fn test_read_streams_blocked_frame() {
-        use super::ext::streams_blocked_frame_with_flag;
+        use super::ext::streams_blocked_frame_with_dir;
         use crate::varint::ext::be_varint;
         use nom::combinator::flat_map;
 
         let buf = vec![STREAMS_BLOCKED_FRAME_TYPE, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() == STREAMS_BLOCKED_FRAME_TYPE as u64 {
-                streams_blocked_frame_with_flag(frame_type.into_inner() as u8)
+                streams_blocked_frame_with_dir(frame_type.into_inner() as u8)
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
@@ -85,7 +85,7 @@ mod tests {
         let buf = vec![STREAMS_BLOCKED_FRAME_TYPE | 0x1, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() == (STREAMS_BLOCKED_FRAME_TYPE | 0x1) as u64 {
-                streams_blocked_frame_with_flag(frame_type.into_inner() as u8)
+                streams_blocked_frame_with_dir(frame_type.into_inner() as u8)
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }

@@ -12,9 +12,9 @@ pub struct MaxStreamDataFrame {
     pub max_stream_data: VarInt,
 }
 
-pub const MAX_STREAM_DATA_FRAME_TYPE: u8 = 0x11;
+pub(super) const MAX_STREAM_DATA_FRAME_TYPE: u8 = 0x11;
 
-pub mod ext {
+pub(super) mod ext {
     use super::{MaxStreamDataFrame, MAX_STREAM_DATA_FRAME_TYPE};
 
     // nom parser for MAX_STREAM_DATA_FRAME

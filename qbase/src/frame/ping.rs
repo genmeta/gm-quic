@@ -5,12 +5,13 @@
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PingFrame;
 
-pub const PING_FRAME_TYPE: u8 = 0x01;
+pub(super) const PING_FRAME_TYPE: u8 = 0x01;
 
-pub mod ext {
+pub(super) mod ext {
     use super::PingFrame;
 
     // nom parser for PING_FRAME
+    #[allow(unused)]
     pub fn be_ping_frame(input: &[u8]) -> nom::IResult<&[u8], PingFrame> {
         Ok((input, PingFrame))
     }

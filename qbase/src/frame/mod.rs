@@ -1,18 +1,33 @@
 // This folder defines all the frames, including their parsing and packaging processes.
 
-pub mod ack;
-pub mod crypto;
-pub mod data_blocked;
-pub mod max_data;
-pub mod max_stream_data;
-pub mod max_streams;
-pub mod padding;
-pub mod ping;
-pub mod reset_stream;
-pub mod stop_sending;
-pub mod stream;
-pub mod stream_data_blocked;
-pub mod streams_blocked;
+mod ack;
+mod crypto;
+mod data_blocked;
+mod max_data;
+mod max_stream_data;
+mod max_streams;
+mod padding;
+mod ping;
+mod reset_stream;
+mod stop_sending;
+mod stream;
+mod stream_data_blocked;
+mod streams_blocked;
+
+// re-export for convenience
+pub use ack::AckFrame;
+pub use crypto::CryptoFrame;
+pub use data_blocked::DataBlockedFrame;
+pub use max_data::MaxDataFrame;
+pub use max_stream_data::MaxStreamDataFrame;
+pub use max_streams::MaxStreamsFrame;
+pub use padding::PaddingFrame;
+pub use ping::PingFrame;
+pub use reset_stream::ResetStreamFrame;
+pub use stop_sending::StopSendingFrame;
+pub use stream::StreamFrame;
+pub use stream_data_blocked::StreamDataBlockedFrame;
+pub use streams_blocked::StreamsBlockedFrame;
 
 use std::ops::RangeInclusive;
 
@@ -32,6 +47,7 @@ pub enum FrameType {
     ResetStream,
     StopSending,
     Crypto,
+    StreamsBlocked(u8),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -54,6 +70,7 @@ impl TryFrom<u8> for FrameType {
             stop_sending::STOP_SENDING_FRAME_TYPE => FrameType::StopSending,
             stream_data_blocked::STREAM_DATA_BLOCKED_FRAME_TYPE => FrameType::StreamDataBlocked,
             0b1000..=0b1111 => FrameType::Stream(frame_type & 0b111),
+            0b10110 | 0b10111 => FrameType::StreamsBlocked(frame_type & 0b1),
             _ => return Err(InvalidFrameType(frame_type)),
         })
     }
@@ -67,16 +84,17 @@ impl TryFrom<u8> for FrameType {
 pub enum ReadFrame {
     Padding,
     Ping,
-    Ack(ack::AckFrame),
-    Stream(stream::StreamFrame, Bytes),
-    ResetStream(reset_stream::ResetStreamFrame),
-    Crypto(crypto::CryptoFrame, Bytes),
-    DataBlocked(data_blocked::DataBlockedFrame),
-    MaxData(max_data::MaxDataFrame),
-    MaxStreamData(max_stream_data::MaxStreamDataFrame),
-    MaxStreams(max_streams::MaxStreamsFrame),
-    StreamDataBlocked(stream_data_blocked::StreamDataBlockedFrame),
-    StopSending(stop_sending::StopSendingFrame),
+    Ack(AckFrame),
+    Stream(StreamFrame, Bytes),
+    ResetStream(ResetStreamFrame),
+    Crypto(CryptoFrame, Bytes),
+    DataBlocked(DataBlockedFrame),
+    MaxData(MaxDataFrame),
+    MaxStreamData(MaxStreamDataFrame),
+    MaxStreams(MaxStreamsFrame),
+    StreamDataBlocked(StreamDataBlockedFrame),
+    StopSending(StopSendingFrame),
+    StreamsBlocked(StreamsBlockedFrame),
 }
 
 /// 写入Frame，仅仅是用于记录，当发送一个Packet时，那该Packet中的帧需要纪律下来，
@@ -88,15 +106,16 @@ pub enum WriteFrame {
     // 只作记录用，具体的AckFrame不必记录，因为每次AckFrame都要重新从最新的收包记录里生成
     Ack(RangeInclusive<u64>),
     // 数据帧也不包含数据，丢了的话不会原样重传此部分数据，而是向`Sender`标记为丢失
-    Stream(stream::StreamFrame),
-    ResetStream(reset_stream::ResetStreamFrame),
-    Crypto(crypto::CryptoFrame),
-    DataBlocked(data_blocked::DataBlockedFrame),
-    MaxData(max_data::MaxDataFrame),
-    MaxStreamData(max_stream_data::MaxStreamDataFrame),
-    MaxStreams(max_streams::MaxStreamsFrame),
-    StreamDataBlocked(stream_data_blocked::StreamDataBlockedFrame),
-    StopSending(stop_sending::StopSendingFrame),
+    Stream(StreamFrame),
+    ResetStream(ResetStreamFrame),
+    Crypto(CryptoFrame),
+    DataBlocked(DataBlockedFrame),
+    MaxData(MaxDataFrame),
+    MaxStreamData(MaxStreamDataFrame),
+    StreamDataBlocked(StreamDataBlockedFrame),
+    MaxStreams(MaxStreamsFrame),
+    StreamsBlocked(StreamsBlockedFrame),
+    StopSending(StopSendingFrame),
 }
 
 pub mod ext {
@@ -106,7 +125,8 @@ pub mod ext {
         max_stream_data::ext::be_max_stream_data_frame,
         max_streams::ext::max_streams_frame_with_dir, reset_stream::ext::be_reset_stream_frame,
         stop_sending::ext::be_stop_sending_frame, stream::ext::stream_frame_with_flag,
-        stream_data_blocked::ext::be_stream_data_blocked_frame, FrameType, ReadFrame, WriteFrame,
+        stream_data_blocked::ext::be_stream_data_blocked_frame,
+        streams_blocked::ext::streams_blocked_frame_with_dir, FrameType, ReadFrame, WriteFrame,
     };
 
     use bytes::Bytes;
@@ -143,6 +163,10 @@ pub mod ext {
             FrameType::MaxStreams(dir) => {
                 map(max_streams_frame_with_dir(dir), ReadFrame::MaxStreams)(input)
             }
+            FrameType::StreamsBlocked(dir) => map(
+                streams_blocked_frame_with_dir(dir),
+                ReadFrame::StreamsBlocked,
+            )(input),
             FrameType::StreamDataBlocked => {
                 map(be_stream_data_blocked_frame, ReadFrame::StreamDataBlocked)(input)
             }
@@ -193,6 +217,7 @@ pub mod ext {
                 reset_stream::ext::BufMutExt as ResetStreamBufMutExt,
                 stop_sending::ext::BufMutExt as StopSendingBufMutExt,
                 stream_data_blocked::ext::BufMutExt as StreamDataBlockedBufMutExt,
+                streams_blocked::ext::BufMutExt as StreamsBlockedBufMutExt,
             };
             match frame {
                 WriteFrame::Padding => self.put_padding_frame(),
@@ -202,6 +227,7 @@ pub mod ext {
                 WriteFrame::MaxData(frame) => self.put_max_data_frame(frame),
                 WriteFrame::MaxStreamData(frame) => self.put_max_stream_data_frame(frame),
                 WriteFrame::MaxStreams(frame) => self.put_max_streams_frame(frame),
+                WriteFrame::StreamsBlocked(frame) => self.put_streams_blocked_frame(frame),
                 WriteFrame::StreamDataBlocked(frame) => self.put_stream_data_blocked_frame(frame),
                 WriteFrame::StopSending(frame) => self.put_stop_sending_frame(frame),
                 WriteFrame::Crypto(_) => {

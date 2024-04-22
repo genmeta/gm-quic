@@ -13,9 +13,9 @@ pub struct CryptoFrame {
     pub length: VarInt,
 }
 
-pub const CRYPTO_FRAME_TYPE: u8 = 0x06;
+pub(super) const CRYPTO_FRAME_TYPE: u8 = 0x06;
 
-pub mod ext {
+pub(super) mod ext {
     use super::{CryptoFrame, CRYPTO_FRAME_TYPE};
 
     // nom parser for CRYPTO_FRAME

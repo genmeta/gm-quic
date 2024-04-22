@@ -148,6 +148,7 @@ impl Iterator for StreamIdIter {
 }
 
 /// 每个QUIC连接维护着4个流ID，分别对应着4种流类型。
+#[derive(Debug)]
 pub struct StreamIds([StreamId; 4]);
 
 impl Default for StreamIds {

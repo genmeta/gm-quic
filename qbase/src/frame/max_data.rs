@@ -10,9 +10,9 @@ pub struct MaxDataFrame {
     pub max_data: VarInt,
 }
 
-pub const MAX_DATA_FRAME_TYPE: u8 = 0x10;
+pub(super) const MAX_DATA_FRAME_TYPE: u8 = 0x10;
 
-pub mod ext {
+pub(super) mod ext {
     use super::MaxDataFrame;
 
     // nom parser for MAX_DATA_FRAME

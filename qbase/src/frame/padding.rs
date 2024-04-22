@@ -5,12 +5,13 @@
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PaddingFrame;
 
-pub const PADDING_FRAME_TYPE: u8 = 0x00;
+pub(super) const PADDING_FRAME_TYPE: u8 = 0x00;
 
-pub mod ext {
+pub(super) mod ext {
     use super::PaddingFrame;
 
     // nom parser for PADDING_FRAME
+    #[allow(dead_code)]
     pub fn be_padding_frame(input: &[u8]) -> nom::IResult<&[u8], PaddingFrame> {
         Ok((input, PaddingFrame))
     }

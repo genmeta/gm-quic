@@ -14,13 +14,13 @@ use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamFrame {
-    pub stream_id: StreamId,
+    pub id: StreamId,
     pub offset: VarInt,
     pub length: usize,
     pub is_fin: bool,
 }
 
-pub const STREAM_FRAME_TYPE: u8 = 0x08;
+pub(super) const STREAM_FRAME_TYPE: u8 = 0x08;
 
 impl StreamFrame {
     pub fn range(&self) -> Range<u64> {
@@ -28,7 +28,7 @@ impl StreamFrame {
     }
 }
 
-pub mod ext {
+pub(super) mod ext {
     use crate::{
         frame::stream::{StreamFrame, STREAM_FRAME_TYPE},
         varint::VarInt,
@@ -37,7 +37,7 @@ pub mod ext {
     pub fn stream_frame_with_flag(flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8], StreamFrame> {
         use crate::{streamid::ext::be_streamid, varint::ext::be_varint};
         move |input| {
-            let (input, stream_id) = be_streamid(input)?;
+            let (input, id) = be_streamid(input)?;
             let (input, offset) = if flag & 0x04 != 0 {
                 be_varint(input)?
             } else {
@@ -52,7 +52,7 @@ pub mod ext {
             Ok((
                 input,
                 StreamFrame {
-                    stream_id,
+                    id,
                     offset,
                     length,
                     is_fin: flag & 0x01 != 0,
@@ -82,7 +82,7 @@ pub mod ext {
             }
 
             self.put_u8(stream_type);
-            self.put_streamid(&frame.stream_id);
+            self.put_streamid(&frame.id);
             if frame.offset.into_inner() != 0 {
                 self.put_varint(&frame.offset);
             }
@@ -127,7 +127,7 @@ mod tests {
         assert_eq!(
             frame,
             StreamFrame {
-                stream_id: VarInt::from_u32(0x1234).into(),
+                id: VarInt::from_u32(0x1234).into(),
                 offset: VarInt::from_u32(0x1234),
                 length: 11,
                 is_fin: false,
@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(
             frame,
             StreamFrame {
-                stream_id: VarInt::from_u32(0x1234).into(),
+                id: VarInt::from_u32(0x1234).into(),
                 offset: VarInt::from_u32(0x1234),
                 length: 11,
                 is_fin: false,
@@ -170,7 +170,7 @@ mod tests {
     fn test_write_initial_stream_frame() {
         let mut buf = Vec::new();
         let frame = StreamFrame {
-            stream_id: VarInt::from_u32(0x1234).into(),
+            id: VarInt::from_u32(0x1234).into(),
             offset: VarInt::from_u32(0),
             length: 11,
             is_fin: true,
@@ -183,7 +183,7 @@ mod tests {
     fn test_write_last_stream_frame() {
         let mut buf = Vec::new();
         let frame = StreamFrame {
-            stream_id: VarInt::from_u32(0x1234).into(),
+            id: VarInt::from_u32(0x1234).into(),
             offset: VarInt::from_u32(0),
             length: 11,
             is_fin: true,
@@ -196,7 +196,7 @@ mod tests {
     fn test_write_eos_frame() {
         let mut buf = Vec::new();
         let frame = StreamFrame {
-            stream_id: VarInt::from_u32(0x1234).into(),
+            id: VarInt::from_u32(0x1234).into(),
             offset: VarInt::from_u32(0x1234),
             length: 11,
             is_fin: true,
@@ -209,7 +209,7 @@ mod tests {
     fn test_write_unfinished_stream_frame() {
         let mut buf = Vec::new();
         let frame = StreamFrame {
-            stream_id: VarInt::from_u32(0x1234).into(),
+            id: VarInt::from_u32(0x1234).into(),
             offset: VarInt::from_u32(0x1234),
             length: 11,
             is_fin: false,

@@ -10,9 +10,9 @@ pub struct DataBlockedFrame {
     pub limit: VarInt,
 }
 
-pub const DATA_BLOCKED_FRAME_TYPE: u8 = 0x14;
+pub(super) const DATA_BLOCKED_FRAME_TYPE: u8 = 0x14;
 
-pub mod ext {
+pub(super) mod ext {
     use super::{DataBlockedFrame, DATA_BLOCKED_FRAME_TYPE};
 
     // nom parser for DATA_BLOCKED_FRAME
