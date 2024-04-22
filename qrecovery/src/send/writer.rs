@@ -8,6 +8,7 @@ use std::{
 use tokio::io::AsyncWrite;
 
 /// TODO: Drop视为自动cancel
+#[derive(Debug)]
 pub struct Writer(ArcSender);
 
 impl AsyncWrite for Writer {

@@ -7,6 +7,7 @@ use std::{
     task::{Context, Poll},
 };
 
+#[derive(Debug)]
 pub struct Incoming(ArcRecver);
 
 impl Incoming {

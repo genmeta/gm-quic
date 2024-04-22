@@ -7,6 +7,7 @@ use std::{
 };
 use tokio::io::{AsyncRead, ReadBuf};
 
+#[derive(Debug)]
 pub struct Reader(ArcRecver);
 
 // TODO: 还要实现abort

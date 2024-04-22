@@ -10,6 +10,7 @@ use std::{
 /// Stream data might be buffered in this state in preparation for sending.
 /// An implementation might choose to defer allocating a stream ID to a stream until it sends the first
 /// STREAM frame and enters this state, which can allow for better stream prioritization.
+#[derive(Debug)]
 pub struct ReadySender {
     sndbuf: SendBuf,
     max_data_size: u64,
@@ -101,6 +102,7 @@ impl ReadySender {
     }
 }
 
+#[derive(Debug)]
 pub struct SendingSender {
     sndbuf: SendBuf,
     max_data_size: u64,
@@ -208,6 +210,7 @@ impl SendingSender {
     }
 }
 
+#[derive(Debug)]
 pub struct DataSentSender {
     sndbuf: SendBuf,
     flush_waker: Option<Waker>,
@@ -281,7 +284,7 @@ impl DataSentSender {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub enum Sender {
     Ready(ReadySender),
     Sending(SendingSender),

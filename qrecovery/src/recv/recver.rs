@@ -246,7 +246,7 @@ impl DataRecvd {
 /// is_closed/is_reset are replaced by a state machine. This not only provides
 /// clearer semantics and aligns with the QUIC RFC specification but also
 /// allows the compiler to help us check if the state transitions are correct
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub enum Recver {
     Recv(Recv),
     SizeKnown(SizeKnown),

@@ -493,6 +493,7 @@ impl BufMap {
     }
 }
 
+#[derive(Debug)]
 pub struct SendBuf {
     offset: u64,
     // 写入数据的环形队列，与接收队列不同的是，它是连续的
