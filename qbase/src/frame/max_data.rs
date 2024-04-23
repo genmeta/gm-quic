@@ -58,7 +58,7 @@ mod tests {
         assert_eq!(
             frame,
             MaxDataFrame {
-                max_data: VarInt::from_u32(0x1234),
+                max_data: VarInt(0x1234),
             }
         );
     }
@@ -69,7 +69,7 @@ mod tests {
 
         let mut buf = Vec::new();
         buf.put_max_data_frame(&MaxDataFrame {
-            max_data: VarInt::from_u32(0x1234),
+            max_data: VarInt(0x1234),
         });
         assert_eq!(buf, vec![MAX_DATA_FRAME_TYPE, 0x52, 0x34]);
     }

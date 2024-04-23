@@ -57,8 +57,8 @@ mod tests {
         assert_eq!(
             frame,
             CryptoFrame {
-                offset: VarInt::from_u32(0x1234),
-                length: VarInt::from_u32(0x5678),
+                offset: VarInt(0x1234),
+                length: VarInt(0x5678),
             }
         );
     }
@@ -68,8 +68,8 @@ mod tests {
         use super::ext::BufMutExt;
         let mut buf = bytes::BytesMut::new();
         let frame = CryptoFrame {
-            offset: VarInt::from_u32(0x1234),
-            length: VarInt::from_u32(0x5678),
+            offset: VarInt(0x1234),
+            length: VarInt(0x5678),
         };
         buf.put_crypto_frame(&frame);
         assert_eq!(

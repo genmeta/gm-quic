@@ -57,8 +57,8 @@ mod tests {
         use super::ext::be_max_stream_data_frame;
         let buf = vec![0x52, 0x34, 0x80, 0, 0x56, 0x78];
         let (_, frame) = be_max_stream_data_frame(&buf).unwrap();
-        assert_eq!(frame.stream_id, VarInt::from_u32(0x1234).into());
-        assert_eq!(frame.max_stream_data, VarInt::from_u32(0x5678));
+        assert_eq!(frame.stream_id, VarInt(0x1234).into());
+        assert_eq!(frame.max_stream_data, VarInt(0x5678));
     }
 
     #[test]
@@ -66,8 +66,8 @@ mod tests {
         use super::ext::BufMutExt;
         let mut buf = Vec::new();
         buf.put_max_stream_data_frame(&MaxStreamDataFrame {
-            stream_id: VarInt::from_u32(0x1234).into(),
-            max_stream_data: VarInt::from_u32(0x5678),
+            stream_id: VarInt(0x1234).into(),
+            max_stream_data: VarInt(0x5678),
         });
         assert_eq!(
             buf,

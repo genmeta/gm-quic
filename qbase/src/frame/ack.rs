@@ -201,9 +201,9 @@ mod tests {
         assert_eq!(
             ecn,
             EcnCounts {
-                ect0: VarInt::from_u32(0x1234),
-                ect1: VarInt::from_u32(0x1234),
-                ce: VarInt::from_u32(0x1234),
+                ect0: VarInt(0x1234),
+                ect1: VarInt(0x1234),
+                ce: VarInt(0x1234),
             }
         );
     }
@@ -223,10 +223,10 @@ mod tests {
         assert_eq!(
             ack_frame,
             AckFrame {
-                largest: VarInt::from_u32(0x1234),
-                delay: VarInt::from_u32(0x1234),
-                first_range: VarInt::from_u32(0x1234),
-                ranges: vec![(VarInt::from_u32(3), VarInt::from_u32(20))],
+                largest: VarInt(0x1234),
+                delay: VarInt(0x1234),
+                first_range: VarInt(0x1234),
+                ranges: vec![(VarInt(3), VarInt(20))],
                 ecn: None,
             }
         );
@@ -236,9 +236,9 @@ mod tests {
     fn test_write_ecn_count() {
         let mut buf = Vec::new();
         let ecn = EcnCounts {
-            ect0: VarInt::from_u32(0x1234),
-            ect1: VarInt::from_u32(0x1234),
-            ce: VarInt::from_u32(0x1234),
+            ect0: VarInt(0x1234),
+            ect1: VarInt(0x1234),
+            ce: VarInt(0x1234),
         };
         buf.put_ecn_counts(&ecn);
         assert_eq!(buf, vec![0x52, 0x34, 0x52, 0x34, 0x52, 0x34]);

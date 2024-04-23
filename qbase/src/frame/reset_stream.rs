@@ -84,9 +84,9 @@ mod tests {
         assert_eq!(
             frame,
             ResetStreamFrame {
-                stream_id: VarInt::from_u32(0x1234).into(),
-                app_error_code: VarInt::from_u32(0x5678),
-                final_size: VarInt::from_u32(0x9abc),
+                stream_id: VarInt(0x1234).into(),
+                app_error_code: VarInt(0x5678),
+                final_size: VarInt(0x9abc),
             }
         );
     }
@@ -95,11 +95,11 @@ mod tests {
     fn test_write_reset_stream_frame() {
         let mut buf = Vec::new();
         buf.put_reset_stream_frame(&ResetStreamFrame {
-            stream_id: VarInt::from_u32(0x1234).into(),
+            stream_id: VarInt(0x1234).into(),
             // 0x5678 = 0b01010110 01111000 => 0b10000000 0x00 0x56 0x78
-            app_error_code: VarInt::from_u32(0x5678),
+            app_error_code: VarInt(0x5678),
             // 0x9abc = 0b10011010 10111100 => 0b10000000 0x00 0x9a 0xbc
-            final_size: VarInt::from_u32(0x9abc),
+            final_size: VarInt(0x9abc),
         });
         assert_eq!(
             buf,

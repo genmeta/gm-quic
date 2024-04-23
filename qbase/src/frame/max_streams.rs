@@ -81,7 +81,7 @@ mod tests {
         })(buf.as_ref())
         .unwrap();
         assert_eq!(input, &[]);
-        assert_eq!(frame, MaxStreamsFrame::Bi(VarInt::from_u32(0x1234)));
+        assert_eq!(frame, MaxStreamsFrame::Bi(VarInt(0x1234)));
 
         let buf = vec![MAX_STREAMS_FRAME_TYPE | 0x1, 0x52, 0x36];
         let (input, frame) = flat_map(be_varint, |frame_type| {
@@ -93,7 +93,7 @@ mod tests {
         })(buf.as_ref())
         .unwrap();
         assert_eq!(input, &[]);
-        assert_eq!(frame, MaxStreamsFrame::Uni(VarInt::from_u32(0x1236)));
+        assert_eq!(frame, MaxStreamsFrame::Uni(VarInt(0x1236)));
     }
 
     #[test]
@@ -131,10 +131,10 @@ mod tests {
     fn test_write_max_streams_frame() {
         use super::ext::BufMutExt;
         let mut buf = Vec::new();
-        buf.put_max_streams_frame(&MaxStreamsFrame::Bi(VarInt::from_u32(0x1234)));
+        buf.put_max_streams_frame(&MaxStreamsFrame::Bi(VarInt(0x1234)));
         assert_eq!(buf, vec![MAX_STREAMS_FRAME_TYPE, 0x52, 0x34]);
         buf.clear();
-        buf.put_max_streams_frame(&MaxStreamsFrame::Uni(VarInt::from_u32(0x1236)));
+        buf.put_max_streams_frame(&MaxStreamsFrame::Uni(VarInt(0x1236)));
         assert_eq!(buf, vec![0x13, 0x52, 0x36]);
     }
 }

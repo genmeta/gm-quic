@@ -58,8 +58,8 @@ mod tests {
         use crate::varint::ext::be_varint;
         use nom::combinator::flat_map;
         let frame = StopSendingFrame {
-            stream_id: VarInt::from_u32(0x1234).into(),
-            app_err_code: VarInt::from_u32(0x5678),
+            stream_id: VarInt(0x1234).into(),
+            app_err_code: VarInt(0x5678),
         };
         let mut buf = Vec::new();
         buf.put_stop_sending_frame(&frame);
@@ -79,8 +79,8 @@ mod tests {
     fn test_write_stop_sending_frame() {
         let mut buf = Vec::new();
         let frame = StopSendingFrame {
-            stream_id: VarInt::from_u32(0x1234).into(),
-            app_err_code: VarInt::from_u32(0x5678),
+            stream_id: VarInt(0x1234).into(),
+            app_err_code: VarInt(0x5678),
         };
         buf.put_stop_sending_frame(&frame);
         assert_eq!(

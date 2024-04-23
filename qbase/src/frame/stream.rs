@@ -127,8 +127,8 @@ mod tests {
         assert_eq!(
             frame,
             StreamFrame {
-                id: VarInt::from_u32(0x1234).into(),
-                offset: VarInt::from_u32(0x1234),
+                id: VarInt(0x1234).into(),
+                offset: VarInt(0x1234),
                 length: 11,
                 is_fin: false,
             }
@@ -158,8 +158,8 @@ mod tests {
         assert_eq!(
             frame,
             StreamFrame {
-                id: VarInt::from_u32(0x1234).into(),
-                offset: VarInt::from_u32(0x1234),
+                id: VarInt(0x1234).into(),
+                offset: VarInt(0x1234),
                 length: 11,
                 is_fin: false,
             }
@@ -170,8 +170,8 @@ mod tests {
     fn test_write_initial_stream_frame() {
         let mut buf = Vec::new();
         let frame = StreamFrame {
-            id: VarInt::from_u32(0x1234).into(),
-            offset: VarInt::from_u32(0),
+            id: VarInt(0x1234).into(),
+            offset: VarInt(0),
             length: 11,
             is_fin: true,
         };
@@ -183,8 +183,8 @@ mod tests {
     fn test_write_last_stream_frame() {
         let mut buf = Vec::new();
         let frame = StreamFrame {
-            id: VarInt::from_u32(0x1234).into(),
-            offset: VarInt::from_u32(0),
+            id: VarInt(0x1234).into(),
+            offset: VarInt(0),
             length: 11,
             is_fin: true,
         };
@@ -196,8 +196,8 @@ mod tests {
     fn test_write_eos_frame() {
         let mut buf = Vec::new();
         let frame = StreamFrame {
-            id: VarInt::from_u32(0x1234).into(),
-            offset: VarInt::from_u32(0x1234),
+            id: VarInt(0x1234).into(),
+            offset: VarInt(0x1234),
             length: 11,
             is_fin: true,
         };
@@ -209,8 +209,8 @@ mod tests {
     fn test_write_unfinished_stream_frame() {
         let mut buf = Vec::new();
         let frame = StreamFrame {
-            id: VarInt::from_u32(0x1234).into(),
-            offset: VarInt::from_u32(0x1234),
+            id: VarInt(0x1234).into(),
+            offset: VarInt(0x1234),
             length: 11,
             is_fin: false,
         };
