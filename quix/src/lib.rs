@@ -6,6 +6,7 @@ mod quic {
     mod crypto;
     mod error;
     mod frames;
+    mod packet;
     mod range_set;
     mod stream;
 }

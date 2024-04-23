@@ -138,5 +138,7 @@ pub enum Error {
 
     InvalidState,
 
+    InvalidPacket,
+
     InvalidFrame,
 }

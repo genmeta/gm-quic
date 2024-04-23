@@ -4,10 +4,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bytes::{Buf, BufMut};
+use bytes::{Buf, BufMut, BytesMut};
+use nom::{number::streaming::be_u8, IResult};
 use rand::RngCore;
 
-use crate::quic::{coding::BufExt, error::Error, frames::ResetToken};
+use crate::quic::{
+    coding::{BufExt, BufMutExt},
+    error::Error,
+    frames::ResetToken,
+};
 
 const MAX_CID_SIZE: usize = 20;
 
@@ -30,28 +35,21 @@ impl ConnectionId {
         res
     }
 
-    pub(crate) fn from_buf(buf: &mut impl Buf, len: usize) -> Self {
+    pub(crate) fn from_buf(input: &[u8], len: usize) -> IResult<&[u8], Self> {
         debug_assert!(len <= MAX_CID_SIZE);
-        let mut res = Self {
-            len: len as u8,
-            bytes: [0; MAX_CID_SIZE],
-        };
-        buf.copy_to_slice(&mut res[..len]);
-        res
+        let (input, bytes) = nom::bytes::complete::take(len)(input)?;
+        Ok((input, Self::new(bytes)))
     }
 
     /// Decode from long header format
-    pub(crate) fn decode_long(buf: &mut impl Buf) -> Option<Self> {
-        let len = buf.get::<u8>().ok()? as usize;
-        match len > MAX_CID_SIZE || buf.remaining() < len {
-            false => Some(Self::from_buf(buf, len)),
-            true => None,
-        }
+    pub(crate) fn decode_long(input: &[u8]) -> IResult<&[u8], Self> {
+        let (input, len) = be_u8(input)?;
+        Self::from_buf(input, len as usize)
     }
 
     /// Encode in long header format
     pub(crate) fn encode_long(&self, buf: &mut impl BufMut) {
-        buf.put_u8(self.len() as u8);
+        buf.write(self.len() as u8);
         buf.put_slice(self);
     }
 }
