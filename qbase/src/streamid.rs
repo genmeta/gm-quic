@@ -16,7 +16,10 @@
  * 低2位又是类型，所以每一个类型的流ID总共有2^60个。
  */
 use super::varint::VarInt;
-use std::{fmt, ops};
+use std::{
+    fmt, ops,
+    task::{Context, Poll, Waker},
+};
 
 /// ## Example
 /// ```
@@ -157,21 +160,23 @@ pub struct StreamIds {
     max: [StreamId; 4],
     // maybe exceed 2^62, if so meanings that all stream ids are allocated
     unallocated: [StreamId; 4],
+    concurrency: [u64; 2],
+    wakers: [Option<Waker>; 2],
 }
 
 #[derive(Debug, PartialEq)]
 pub enum AcceptSid {
     Old,
-    New(NewStreams),
+    New(NeedCreate, Option<VarInt>),
 }
 
 #[derive(Debug, PartialEq)]
-pub struct NewStreams {
+pub struct NeedCreate {
     start: StreamId,
     end: StreamId,
 }
 
-impl Iterator for NewStreams {
+impl Iterator for NeedCreate {
     type Item = StreamId;
     fn next(&mut self) -> Option<Self::Item> {
         if self.start > self.end {
@@ -196,6 +201,8 @@ impl StreamIds {
                 StreamId::new(Role::Server, Dir::Uni, max_uni_streams),
             ],
             unallocated: [StreamId(0), StreamId(1), StreamId(2), StreamId(3)],
+            concurrency: [max_bi_streams, max_uni_streams],
+            wakers: [None, None],
         }
     }
 
@@ -205,30 +212,32 @@ impl StreamIds {
 
     /// RFC9000: Before a stream is created, all streams of the same type
     /// with lower-numbered stream IDs MUST be created.
-    pub fn try_accept_sid(&mut self, id: StreamId) -> Result<AcceptSid, Error> {
-        if id.role() == self.role {
-            return Err(Error::Invalid(id.role()));
+    pub fn try_accept_sid(&mut self, sid: StreamId) -> Result<AcceptSid, Error> {
+        if sid.role() == self.role {
+            return Err(Error::Invalid(sid.role()));
         }
-        let max = self.max[(id.dir() as usize) | (!self.role as usize)];
-        if id > max {
-            return Err(Error::Limit(id, max));
+        let idx = (sid.dir() as usize) | (!self.role as usize);
+        let max = &mut self.max[idx];
+        if sid > *max {
+            return Err(Error::Limit(sid, *max));
         }
-        let cur = &mut self.unallocated[(id.dir() as usize) | (!self.role as usize)];
-        if id < *cur {
+        let cur = &mut self.unallocated[idx];
+        if sid < *cur {
             Ok(AcceptSid::Old)
         } else {
             let start = *cur;
-            *cur = unsafe { id.next_unchecked() };
-            Ok(AcceptSid::New(NewStreams { start, end: id }))
+            *cur = unsafe { sid.next_unchecked() };
+            let mut update_max_sid = None;
+            let step = self.concurrency[idx] >> 1;
+            if sid.id() + step > max.id() {
+                max.add(step);
+                update_max_sid = Some(unsafe { VarInt::from_u64_unchecked(max.id()) });
+            }
+            Ok(AcceptSid::New(
+                NeedCreate { start, end: sid },
+                update_max_sid,
+            ))
         }
-    }
-
-    /// Used to set the maximum stream ID of the peer, only allowing an increase from the current value.
-    /// The returned value can be used to generate a MaxStreamFrame to inform the peer.
-    pub fn add_max_sid(&mut self, dir: Dir, val: u64) -> StreamId {
-        let sid = &mut self.max[(dir as usize) | (!self.role as usize)];
-        sid.add(val);
-        *sid
     }
 
     /// The maximum stream ID that we can create is determined by our preference, and we agree to let the peer
@@ -240,6 +249,9 @@ impl StreamIds {
         // RFC9000: MAX_STREAMS frames that do not increase the stream limit MUST be ignored.
         if sid.id() < val {
             *sid = StreamId::new(self.role, dir, val);
+            if let Some(waker) = self.wakers[(dir as usize) >> 1].take() {
+                waker.wake();
+            }
         }
     }
 
@@ -249,14 +261,22 @@ impl StreamIds {
     /// to inform the other party to increase MAX_STREAMS. It is also possible that we have reached the
     /// maximum stream ID and cannot increase it further. In this case, we should close the connection
     /// because sending MAX_STREAMS will not be received and would violate the protocol.
-    pub fn allocate_sid(&mut self, dir: Dir) -> Option<StreamId> {
-        let cur = &mut self.unallocated[(dir as usize) | (self.role as usize)];
-        if *cur <= self.max[(dir as usize) | (self.role as usize)] {
+    pub fn poll_alloc_sid(&mut self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<StreamId>> {
+        let idx = (dir as usize) | (self.role as usize);
+        let cur = &mut self.unallocated[idx];
+        if cur.id() >= StreamId::STREAM_ID_LIMIT {
+            Poll::Ready(None)
+        } else if *cur <= self.max[idx] {
             let id = *cur;
             *cur = unsafe { cur.next_unchecked() };
-            Some(id)
+            Poll::Ready(Some(id))
         } else {
-            None
+            let idx = if dir == Dir::Bi { 0 } else { 1 };
+            assert!(self.wakers[idx].is_none());
+            // waiting for MAX_STREAMS frame from peer
+            self.wakers[idx] = Some(cx.waker().clone());
+            // if Poll::Pending is returned, connection can send a STREAMS_BLOCKED frame to peer
+            Poll::Pending
         }
     }
 }
@@ -286,6 +306,7 @@ pub mod ext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::task::{RawWaker, RawWakerVTable, Waker};
 
     #[test]
     fn test_stream_id_new() {
@@ -295,60 +316,102 @@ mod tests {
         assert_eq!(sid.dir(), Dir::Bi);
     }
 
+    fn empty_waker() -> Waker {
+        fn clone(_: *const ()) -> RawWaker {
+            RawWaker::new(std::ptr::null(), &EMPTY_WAKER_VTABLE)
+        }
+        fn wake(_: *const ()) {}
+        fn wake_by_ref(_: *const ()) {}
+        fn drop(_: *const ()) {}
+
+        static EMPTY_WAKER_VTABLE: RawWakerVTable =
+            RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+        unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &EMPTY_WAKER_VTABLE)) }
+    }
+
     #[test]
     fn test_set_max_sid() {
         let mut sids = StreamIds::new(Role::Client, 0, 0);
         sids.set_max_sid(Dir::Bi, 0);
-        assert_eq!(sids.allocate_sid(Dir::Bi), Some(StreamId(0)));
-        assert_eq!(sids.allocate_sid(Dir::Bi), None);
+        let waker = empty_waker();
+        let mut cx = Context::from_waker(&waker);
+        assert_eq!(
+            sids.poll_alloc_sid(&mut cx, Dir::Bi),
+            Poll::Ready(Some(StreamId(0)))
+        );
+        assert_eq!(sids.poll_alloc_sid(&mut cx, Dir::Bi), Poll::Pending);
+        assert!(sids.wakers[0].is_some());
         sids.set_max_sid(Dir::Bi, 1);
-        assert_eq!(sids.allocate_sid(Dir::Bi), Some(StreamId(4)));
-        assert_eq!(sids.allocate_sid(Dir::Bi), None);
+        let _ = sids.wakers[0].take();
+        assert_eq!(
+            sids.poll_alloc_sid(&mut cx, Dir::Bi),
+            Poll::Ready(Some(StreamId(4)))
+        );
+        assert_eq!(sids.poll_alloc_sid(&mut cx, Dir::Bi), Poll::Pending);
+        assert!(sids.wakers[0].is_some());
 
         sids.set_max_sid(Dir::Uni, 2);
-        assert_eq!(sids.allocate_sid(Dir::Uni), Some(StreamId(2)));
-        assert_eq!(sids.allocate_sid(Dir::Uni), Some(StreamId(6)));
-        assert_eq!(sids.allocate_sid(Dir::Uni), Some(StreamId(10)));
-        assert_eq!(sids.allocate_sid(Dir::Uni), None);
+        assert_eq!(
+            sids.poll_alloc_sid(&mut cx, Dir::Uni),
+            Poll::Ready(Some(StreamId(2)))
+        );
+        assert_eq!(
+            sids.poll_alloc_sid(&mut cx, Dir::Uni),
+            Poll::Ready(Some(StreamId(6)))
+        );
+        assert_eq!(
+            sids.poll_alloc_sid(&mut cx, Dir::Uni),
+            Poll::Ready(Some(StreamId(10)))
+        );
+        assert_eq!(sids.poll_alloc_sid(&mut cx, Dir::Uni), Poll::Pending);
+        assert!(sids.wakers[1].is_some());
     }
 
     #[test]
     fn test_try_accept_sid() {
-        let mut sids = StreamIds::new(Role::Client, 0, 0);
-        sids.add_max_sid(Dir::Bi, 10);
+        let mut sids = StreamIds::new(Role::Client, 10, 10);
         let result = sids.try_accept_sid(StreamId(0));
         assert_eq!(result, Err(Error::Invalid(Role::Client)));
 
         let result = sids.try_accept_sid(StreamId(21));
         assert_eq!(
             result,
-            Ok(AcceptSid::New(NewStreams {
-                start: StreamId(1),
-                end: StreamId(21)
-            }))
+            Ok(AcceptSid::New(
+                NeedCreate {
+                    start: StreamId(1),
+                    end: StreamId(21)
+                },
+                None
+            ))
         );
         assert_eq!(sids.unallocated[1], StreamId(25));
 
         let result = sids.try_accept_sid(StreamId(25));
         assert_eq!(
             result,
-            Ok(AcceptSid::New(NewStreams {
-                start: StreamId(25),
-                end: StreamId(25)
-            }))
+            Ok(AcceptSid::New(
+                NeedCreate {
+                    start: StreamId(25),
+                    end: StreamId(25)
+                },
+                Some(VarInt(15))
+            ))
         );
         assert_eq!(sids.unallocated[1], StreamId(29));
 
         let result = sids.try_accept_sid(StreamId(41));
         assert_eq!(
             result,
-            Ok(AcceptSid::New(NewStreams {
-                start: StreamId(29),
-                end: StreamId(41)
-            }))
+            Ok(AcceptSid::New(
+                NeedCreate {
+                    start: StreamId(29),
+                    end: StreamId(41)
+                },
+                None
+            ))
         );
         assert_eq!(sids.unallocated[1], StreamId(45));
-        if let Ok(AcceptSid::New(mut range)) = result {
+        if let Ok(AcceptSid::New(mut range, _)) = result {
             assert_eq!(range.next(), Some(StreamId(29)));
             assert_eq!(range.next(), Some(StreamId(33)));
             assert_eq!(range.next(), Some(StreamId(37)));
@@ -356,7 +419,7 @@ mod tests {
             assert_eq!(range.next(), None);
         }
 
-        let result = sids.try_accept_sid(StreamId(45));
-        assert_eq!(result, Err(Error::Limit(StreamId(45), StreamId(41))));
+        let result = sids.try_accept_sid(StreamId(65));
+        assert_eq!(result, Err(Error::Limit(StreamId(65), StreamId(61))));
     }
 }
