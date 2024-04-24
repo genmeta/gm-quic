@@ -11,8 +11,9 @@ bytes = "1"
 thiserror = "1.0.21"
 tinyvec = { version = "1.1", features = ["alloc"] }
 nom = "7"
-rustls = { version = "0.21.0", default-features = false, features = [
-    "quic",
-], optional = true }
+rustls = { version = "0.21.0", features = ["quic"] }
 getset = "0.1.2"
 rand = "0.8"
+ring = "0.16"
+libc = "0.2"
+hex-literal = "0.4.0"

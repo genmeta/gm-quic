@@ -1,20 +1,12 @@
-use std::{
-    collections::VecDeque,
-    fmt,
-    time::{Duration, Instant},
-};
+use std::{fmt, time::Duration};
 
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::BufMut;
 use nom::{number::streaming::be_u8, IResult};
 use rand::RngCore;
 
-use crate::quic::{
-    coding::{BufExt, BufMutExt},
-    error::Error,
-    frames::ResetToken,
-};
+use crate::quic::{coding::BufMutExt, frames::ResetToken};
 
-const MAX_CID_SIZE: usize = 20;
+pub(crate) const MAX_CID_SIZE: usize = 20;
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Default)]
 pub struct ConnectionId {

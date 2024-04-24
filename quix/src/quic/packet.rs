@@ -1,13 +1,17 @@
 use std::io;
 
-use bytes::{BufMut, Bytes};
-use nom::number::complete::{be_u32, be_u8};
+use bytes::BufMut;
+use nom::{
+    error::VerboseError,
+    number::complete::{be_u16, be_u24, be_u32, be_u8},
+    IResult,
+};
 use qbase::varint::{
     ext::{be_varint, BufMutExt},
     VarInt,
 };
 
-use super::cid::ConnectionId;
+use super::{cid::ConnectionId, crypto};
 
 const FORM_BIT: u8 = 0x80;
 const FIXED_BIT: u8 = 0x40;
@@ -22,15 +26,22 @@ pub const MAX_PKT_NUM_LEN: usize = 4;
 
 const SAMPLE_LEN: usize = 16;
 
-pub enum PackeError {
-    InvalidPacket,
-    UnexpectedEnd,
+pub enum Epoch {
+    Initial = 0,
+    Handshake = 1,
+    Application = 2,
 }
 
-impl From<nom::Err<(&[u8], nom::error::ErrorKind)>> for PackeError {
-    fn from(err: nom::Err<(&[u8], nom::error::ErrorKind)>) -> PackeError {
-        dbg!("nom parse error {}", err);
-        PackeError::UnexpectedEnd
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PacketError {
+    InvalidPacket,
+    UnexpectedEnd,
+    NomError,
+}
+
+impl From<nom::Err<VerboseError<&[u8]>>> for PacketError {
+    fn from(err: nom::Err<VerboseError<&[u8]>>) -> Self {
+        PacketError::NomError
     }
 }
 
@@ -72,19 +83,19 @@ impl Type {
         }
     }
 
-    pub fn to_space(self) -> Result<Space, PackeError> {
+    pub fn to_space(self) -> Result<Space, PacketError> {
         match self {
             Type::Initial => Ok(Space::Initial),
             Type::Handshake => Ok(Space::Handshake),
             Type::Short => Ok(Space::Application),
             Type::ZeroRTT => Ok(Space::Application),
-            _ => Err(PackeError::InvalidPacket),
+            _ => Err(PacketError::InvalidPacket),
         }
     }
 }
 
 /// A QUIC packet's header.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Header {
     /// The type of the packet.
     pub ty: Type,
@@ -117,26 +128,32 @@ pub struct Header {
     /// The key phase bit of the packet. It's only meaningful after the header
     /// protection is removed.
     pub(crate) key_phase: bool,
+
+    /// The length of the packet. Only present in `Initial` `ZeroRTT` and `Handshake` packets.
+    pub len: Option<usize>,
 }
 
 impl Header {
-    pub(crate) fn decode(input: &[u8], dcid_len: usize) -> Result<Header, PackeError> {
+    pub(crate) fn decode(input: &[u8], dcid_len: usize) -> nom::IResult<&[u8], Header> {
         let (remain, first) = be_u8(input)?;
         if !Header::is_long(first) {
-            let (remian, dcid) =
-                ConnectionId::from_buf(remain, dcid_len).map_err(|_| PackeError::InvalidPacket)?;
+            let (remain, dcid) = ConnectionId::from_buf(remain, dcid_len)?;
 
-            return Ok(Header {
-                ty: Type::Short,
-                version: 0,
-                dcid: dcid,
-                scid: ConnectionId::default(),
-                pkt_num: 0,
-                pkt_num_len: 0,
-                token: None,
-                versions: None,
-                key_phase: false,
-            });
+            return Ok((
+                remain,
+                Header {
+                    ty: Type::Short,
+                    version: 0,
+                    dcid: dcid,
+                    scid: ConnectionId::default(),
+                    pkt_num: 0,
+                    pkt_num_len: 0,
+                    token: None,
+                    versions: None,
+                    key_phase: false,
+                    len: None,
+                },
+            ));
         }
 
         let (remain, version) = be_u32(remain)?;
@@ -149,22 +166,40 @@ impl Header {
                 0x01 => Type::ZeroRTT,
                 0x02 => Type::Handshake,
                 0x03 => Type::Retry,
-                _ => return Err(PackeError::InvalidPacket),
+                _ => {
+                    return Err(nom::Err::Error(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::Char,
+                    )))
+                }
             }
         };
-        let (remain, dcid) =
-            ConnectionId::decode_long(remain).map_err(|_| PackeError::InvalidPacket)?;
-        let (remain, scid) =
-            ConnectionId::decode_long(remain).map_err(|_| PackeError::InvalidPacket)?;
+        let (remain, dcid) = ConnectionId::decode_long(remain)?;
+        let (mut remain, scid) = ConnectionId::decode_long(remain)?;
 
         let mut token: Option<Vec<u8>> = None;
         let mut versions: Option<Vec<u32>> = None;
 
-        match ty {
+        let mut len = None;
+
+        remain = match ty {
             Type::Initial => {
-                let (remain, token_len) =
-                    be_varint(remain).map_err(|_| PackeError::InvalidPacket)?;
-                let (remain, token) = nom::bytes::complete::take(token_len.into_inner())(remain)?;
+                let (remain, token_len) = be_varint(remain)?;
+                let (remain, token_bytes) =
+                    nom::bytes::complete::take(token_len.into_inner())(remain)?;
+                if token_len.into_inner() == 0 {
+                    token = None
+                } else {
+                    token = Some(token_bytes.to_vec());
+                }
+                let (remain, length) = be_varint(remain)?;
+                len = Some(length.into_inner() as usize);
+                remain
+            }
+            Type::Handshake | Type::ZeroRTT => {
+                let (remain, length) = be_varint(input)?;
+                len = Some(length.into_inner() as usize);
+                remain
             }
             Type::Retry => {
                 todo!("retry token")
@@ -172,40 +207,38 @@ impl Header {
             Type::VersionNegotiation => {
                 let mut list: Vec<u32> = Vec::new();
                 while !remain.is_empty() {
-                    let (remian, version) = be_u32(remain)?;
+                    let (remain, version) = be_u32(remain)?;
                     list.push(version);
                 }
                 versions = Some(list);
+                remain
             }
-            _ => (),
-        }
-        Ok(Header {
-            ty,
-            version,
-            dcid: dcid.into(),
-            scid: scid.into(),
-            pkt_num: 0,
-            pkt_num_len: 0,
-            token,
-            versions,
-            key_phase: false,
-        })
+            _ => remain,
+        };
+        Ok((
+            remain,
+            Header {
+                ty,
+                version,
+                dcid,
+                scid,
+                pkt_num: 0,
+                pkt_num_len: 0,
+                token,
+                versions,
+                key_phase: false,
+                len: len,
+            },
+        ))
     }
 
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W) -> Result<(), PackeError> {
+    pub(crate) fn encode<W: BufMut>(&self, out: &mut W) -> Result<(), PacketError> {
         let mut first = 0;
 
-        // Encode pkt num length.
         first |= self.pkt_num_len.saturating_sub(1) as u8;
-        // Encode short header.
         if self.ty == Type::Short {
-            // Unset form bit for short header.
             first &= !FORM_BIT;
-
-            // Set fixed bit.
             first |= FIXED_BIT;
-
-            // Set key phase bit.
             if self.key_phase {
                 first |= KEY_PHASE_BIT;
             } else {
@@ -216,14 +249,12 @@ impl Header {
             out.put_slice(&self.dcid);
             return Ok(());
         }
-
-        // Encode long header.
         let ty: u8 = match self.ty {
             Type::Initial => 0x00,
             Type::ZeroRTT => 0x01,
             Type::Handshake => 0x02,
             Type::Retry => 0x03,
-            _ => return Err(PackeError::InvalidPacket),
+            _ => return Err(PacketError::InvalidPacket),
         };
 
         first |= FORM_BIT | FIXED_BIT | (ty << 4);
@@ -232,23 +263,25 @@ impl Header {
         self.dcid.encode_long(out);
         self.scid.encode_long(out);
 
-        // Only Initial and Retry packets have a token.
         match self.ty {
             Type::Initial => {
                 match self.token {
                     Some(ref v) => {
-                        let len = VarInt::from_u64(v.len() as u64).unwrap();
-                        out.put_varint(&len);
+                        out.put_varint(&VarInt::from_u64(v.len() as u64).unwrap());
                         out.put_slice(v);
                     }
-                    // No token, so length = 0.
                     None => {
                         out.put_varint(&VarInt::from_u64(0).unwrap());
                     }
                 }
+                out.put_u16(0);
+                let _ = encode_pkt_num(self.pkt_num, out);
+            }
+            Type::ZeroRTT | Type::Handshake => {
+                out.put_u16(0);
+                let _ = encode_pkt_num(self.pkt_num, out);
             }
             Type::Retry => {
-                // Retry packets don't have a token length.
                 todo!("retry token")
             }
 
@@ -260,9 +293,77 @@ impl Header {
     fn is_long(b: u8) -> bool {
         b & FORM_BIT != 0
     }
+
+    fn encrypt(&self, pn_offset: usize, packet: &mut [u8], header_crypto: &dyn crypto::HeaderKey) {
+        header_crypto.encrypt(pn_offset, packet);
+    }
+
+    fn decrypt(
+        &mut self,
+        pn_offset: usize,
+        packet: &mut [u8],
+        header_crypto: &dyn crypto::HeaderKey,
+    ) -> Result<(), PacketError> {
+        header_crypto.decrypt(pn_offset, packet);
+        let first = packet[0];
+
+        if self.ty != Type::VersionNegotiation && self.ty != Type::Retry {
+            let pn_length = (packet[0] & PKT_NUM_MASK) + 1;
+            let (_, pn) = decode_pkt_num(&packet[pn_offset..], pn_length).map_err(|_| {
+                dbg!("decode packet number error");
+                PacketError::InvalidPacket
+            })?;
+
+            self.pkt_num_len = pn_length as usize;
+            self.pkt_num = pn;
+        }
+        if self.ty == Type::Short {
+            self.key_phase = (first & KEY_PHASE_BIT) != 0;
+        }
+        Ok(())
+    }
 }
 
-pub fn pkt_num_len(pn: u64) -> Result<usize, PackeError> {
+pub fn encrypy_packet(
+    header: &Header,
+    header_len: usize,
+    packet: &mut [u8],
+    header_crypto: &dyn crypto::HeaderKey,
+    packet_crypto: Option<&dyn crypto::PacketKey>,
+) -> Result<(), io::Error> {
+    let pn_offset = header_len - header.pkt_num_len;
+
+    if header.ty != Type::VersionNegotiation && header.ty != Type::Retry {
+        let len = packet.len() - header_len + header.pkt_num_len;
+        let mut slice = &mut packet[pn_offset - 2..pn_offset];
+        slice.put_u16(len as u16 | 0b01 << 14);
+    }
+
+    if let Some(crypto) = packet_crypto {
+        crypto.encrypt(header.pkt_num, packet, header_len);
+    }
+    header.encrypt(pn_offset, packet, header_crypto);
+    Ok(())
+}
+
+pub fn decrypt_packet<'a>(
+    header: &mut Header,
+    pn_offset: usize,
+    packet: &'a mut [u8],
+    packet_crypto: &dyn crypto::PacketKey,
+) -> Result<&'a [u8], PacketError> {
+    let header_len = pn_offset + header.pkt_num_len;
+    let (header_data, payload) = packet.split_at_mut(header_len);
+    let len = packet_crypto
+        .decrypt(header.pkt_num, &header_data, payload)
+        .map_err(|e| {
+            dbg!("decrypt error: {:?}", e);
+            PacketError::InvalidPacket
+        })?;
+    return Ok(&payload[..len]);
+}
+
+pub fn pkt_num_len(pn: u64) -> Result<usize, PacketError> {
     let len = if pn < u64::from(u8::MAX) {
         1
     } else if pn < u64::from(u16::MAX) {
@@ -272,8 +373,152 @@ pub fn pkt_num_len(pn: u64) -> Result<usize, PackeError> {
     } else if pn < u64::from(u32::MAX) {
         4
     } else {
-        return Err(PackeError::InvalidPacket);
+        return Err(PacketError::InvalidPacket);
     };
 
     Ok(len)
+}
+
+pub fn encode_pkt_num<W: BufMut>(pn: u64, b: &mut W) -> Result<(), PacketError> {
+    let len = pkt_num_len(pn)?;
+    match len {
+        1 => b.put_u8(pn as u8),
+        2 => b.put_u16(pn as u16),
+        3 => b.put_uint(u64::from(pn), 3),
+        4 => b.put_u32(pn as u32),
+        _ => return Err(PacketError::InvalidPacket),
+    };
+
+    Ok(())
+}
+
+pub fn decode_pkt_num(input: &[u8], len: u8) -> IResult<&[u8], u64> {
+    let pn = match len {
+        1 => {
+            let (remain, pn) = be_u8(input)?;
+            (remain, pn as u64)
+        }
+        2 => {
+            let (remain, pn) = be_u16(input)?;
+            (remain, pn as u64)
+        }
+        3 => {
+            let (remain, pn) = be_u24(input)?;
+            (remain, pn as u64)
+        }
+        4 => {
+            let (remain, pn) = be_u32(input)?;
+            (remain, pn as u64)
+        }
+        _ => {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Char,
+            )))
+        }
+    };
+
+    Ok(pn)
+}
+#[cfg(test)]
+mod tests {
+    use bytes::BytesMut;
+    use hex_literal::hex;
+    use rustls::Side;
+
+    use crate::quic::crypto::rustls::initial_keys;
+
+    use super::*;
+
+    #[test]
+    fn test_header_encode_decode() {
+        let header = Header {
+            ty: Type::Initial,
+            version: 1,
+            dcid: ConnectionId::new(&[0x01, 0x02, 0x03, 0x04]),
+            scid: ConnectionId::new(&[0x05, 0x06, 0x07, 0x08]),
+            pkt_num: 0,
+            pkt_num_len: 0,
+            token: None,
+            versions: None,
+            key_phase: false,
+            len: Some(0),
+        };
+        let mut buf = Vec::new();
+        header.encode(&mut buf).unwrap();
+        let buf = buf.as_slice();
+        let (remain, header2) = Header::decode(buf, 4).unwrap();
+        // 剩余 提前填充的 packet number
+        assert_eq!(remain.len(), 2);
+        assert_eq!(header, header2);
+    }
+
+    #[test]
+    fn init_packet_crypt() {
+        use rustls::quic::Version;
+
+        let dcid = ConnectionId::new(&hex!("06b858ec6f80452b"));
+        let client = initial_keys(Version::V1, &dcid, Side::Client);
+        let mut buf = BytesMut::new();
+        let header = Header {
+            ty: Type::Initial,
+            version: 0x00000001,
+            dcid: dcid,
+            scid: ConnectionId::new(&[]),
+            pkt_num: 0,
+            pkt_num_len: pkt_num_len(0).unwrap(),
+            token: None,
+            versions: None,
+            key_phase: false,
+            len: None,
+        };
+        let ret = header.encode(&mut buf);
+        assert!(ret.is_ok());
+
+        let header_len = buf.len();
+        buf.resize(
+            header_len + client.header.local.sample_size() + client.packet.local.tag_len(),
+            0,
+        );
+
+        let ret = encrypy_packet(
+            &header,
+            header_len,
+            &mut buf,
+            &*client.header.local,
+            Some(&*client.packet.local),
+        );
+        assert!(ret.is_ok());
+        for byte in &buf {
+            print!("{byte:02x}");
+        }
+        println!();
+        assert_eq!(
+            buf[..],
+            hex!(
+                "c8000000010806b858ec6f80452b00004021be
+                 3ef50807b84191a196f760a6dad1e9d1c430c48952cba0148250c21c0a6a70e1"
+            )[..]
+        );
+
+        let server = initial_keys(Version::V1, &dcid, Side::Server);
+        let len = buf.len();
+        let (remain, mut decode_header) = Header::decode(&mut buf, dcid.len()).unwrap();
+        let pn_offset = len - remain.len();
+
+        let ret = decode_header.decrypt(pn_offset, &mut buf, &*client.header.local);
+        assert!(ret.is_ok());
+        let ret = decrypt_packet(
+            &mut decode_header,
+            pn_offset,
+            &mut buf,
+            &*server.packet.remote,
+        );
+        assert!(ret.is_ok());
+        assert_eq!(ret.unwrap(), [0; 16]);
+        assert_eq!(
+            buf[..header_len],
+            hex!("c0000000010806b858ec6f80452b0000402100")[..]
+        );
+    }
 }

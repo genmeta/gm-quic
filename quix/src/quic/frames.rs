@@ -8,20 +8,17 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use cid::ConnectionId;
 
-#[cfg(feature = "arbitrary")]
-use arbitrary::Arbitrary;
-use tinyvec::TinyVec;
-
 use super::{
     cid,
     coding::{self, BufExt, BufMutExt, UnexpectedEnd},
-    crypto::HmacKey,
     error::{TransportError, TransportErrorCode},
     range_set::ArrayRangeSet,
     stream::{Dir, StreamId},
 };
-#[cfg(feature = "arbitrary")]
-use arbitrary::Arbitrary;
+
+use crate::quic::cid::cid::MAX_CID_SIZE;
+use tinyvec::TinyVec;
+
 use qbase::varint::{
     err,
     ext::{BufExt as VarIntBufExt, BufMutExt as VarIntBufMutExt},
@@ -897,8 +894,6 @@ impl Datagram {
     }
 }
 
-// TODO: 换个文件
-const MAX_CID_SIZE: usize = 20;
 const RESET_TOKEN_SIZE: usize = 16;
 
 /// Stateless reset token
@@ -909,14 +904,6 @@ const RESET_TOKEN_SIZE: usize = 16;
 pub struct ResetToken([u8; RESET_TOKEN_SIZE]);
 
 impl ResetToken {
-    pub(crate) fn new(key: &dyn HmacKey, id: &ConnectionId) -> Self {
-        let mut signature = vec![0; key.signature_len()];
-        key.sign(id, &mut signature);
-        let mut result = [0; RESET_TOKEN_SIZE];
-        result.copy_from_slice(&signature[..RESET_TOKEN_SIZE]);
-        result.into()
-    }
-
     pub(crate) fn new_with(bytes: &[u8]) -> Self {
         Self(bytes.try_into().unwrap())
     }
