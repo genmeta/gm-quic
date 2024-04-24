@@ -118,7 +118,7 @@ impl StreamId {
     }
 
     /// Safety: If adding self beyond the maximum range, it will stay within the maximum range.
-    pub(self) fn add(&mut self, n: u64) {
+    pub(self) fn saturating_add(&mut self, n: u64) {
         let (mut id, overflow) = self.id().overflowing_add(n);
         if overflow || id >= Self::STREAM_ID_LIMIT {
             id = Self::STREAM_ID_LIMIT - 1;
@@ -230,7 +230,7 @@ impl StreamIds {
             let mut update_max_sid = None;
             let step = self.concurrency[idx] >> 1;
             if sid.id() + step > max.id() {
-                max.add(step);
+                max.saturating_add(step);
                 update_max_sid = Some(unsafe { VarInt::from_u64_unchecked(max.id()) });
             }
             Ok(AcceptSid::New(
