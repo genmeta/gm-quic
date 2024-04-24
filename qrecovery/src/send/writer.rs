@@ -9,7 +9,7 @@ use tokio::io::AsyncWrite;
 
 /// TODO: Drop视为自动cancel
 #[derive(Debug)]
-pub struct Writer(ArcSender);
+pub struct Writer(pub(super) ArcSender);
 
 impl AsyncWrite for Writer {
     /// 往sndbuf里面写数据，直到写满MAX_STREAM_DATA，等通告窗口更新再写

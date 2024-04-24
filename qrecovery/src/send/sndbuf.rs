@@ -494,7 +494,7 @@ impl BufMap {
 }
 
 #[derive(Debug)]
-pub struct SendBuf {
+pub(super) struct SendBuf {
     offset: u64,
     // 写入数据的环形队列，与接收队列不同的是，它是连续的
     data: SliceDeque<u8>,
@@ -502,7 +502,7 @@ pub struct SendBuf {
 }
 
 impl SendBuf {
-    pub fn with_capacity(n: usize) -> Self {
+    pub(super) fn with_capacity(n: usize) -> Self {
         Self {
             offset: 0,
             data: SliceDeque::with_capacity(n),
@@ -510,12 +510,12 @@ impl SendBuf {
         }
     }
 
-    pub fn range(&self) -> Range<u64> {
+    pub(super) fn range(&self) -> Range<u64> {
         self.offset..self.state.1
     }
 
     // invoked by application layer
-    pub fn write(&mut self, data: &[u8]) -> usize {
+    pub(super) fn write(&mut self, data: &[u8]) -> usize {
         // 写的数据量受流量控制限制
         let n = data.len();
         if n > 0 {
@@ -526,13 +526,13 @@ impl SendBuf {
         n
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         self.offset == 0 && self.data.is_empty()
     }
 
     // invoked by application layer
     // 发送缓冲区过去曾经累计写入到的数据总长度
-    pub fn len(&self) -> u64 {
+    pub(super) fn len(&self) -> u64 {
         self.state.1
     }
 
@@ -543,14 +543,14 @@ impl SendBuf {
 
 impl SendBuf {
     /// There is no data to send, the data chain is broken.
-    pub fn is_broken(&self) -> bool {
+    pub(super) fn is_broken(&self) -> bool {
         self.data.is_empty()
     }
 
     // 挑选出可供发送的数据，限制长度不能超过len，以满足一个数据包能容的下一个完整的数据帧。
     // 返回的是一个切片，该切片的生命周期必须不长于SendBuf的生命周期，该切片可以被缓存至数据包
     // 被确认或者被判定丢失。
-    pub fn pick_up(&mut self, len: usize) -> Option<(u64, &[u8])> {
+    pub(super) fn pick_up(&mut self, len: usize) -> Option<(u64, &[u8])> {
         self.state.pick(len).map(|range| {
             let start = (range.start - self.offset) as usize;
             let end = (range.end - self.offset) as usize;
@@ -560,7 +560,7 @@ impl SendBuf {
 
     // 通过传输层接收到的对方的ack帧，确认某些包已经被接收到，这些包携带的数据即被确认。
     // ack只能确认Flighting/Lost状态的区间；如果确认的是Lost区间，意味着之前的判定丢包是错误的。
-    pub fn ack_recv(&mut self, range: &Range<u64>) {
+    pub(super) fn ack_recv(&mut self, range: &Range<u64>) {
         self.state.ack_recv(range);
         // 对于头部连续确认接收到的，还要前进，以免浪费空间
         let min_unrecved_pos = self.state.shift();
@@ -572,11 +572,11 @@ impl SendBuf {
 
     // 通过传输层收到的ack帧，判定有些数据包丢失，因为它之后的数据包都被确认了，
     // 或者距离发送该段数据之后相当长一段时间都没收到它的确认。
-    pub fn may_loss(&mut self, range: &Range<u64>) {
+    pub(super) fn may_loss(&mut self, range: &Range<u64>) {
         self.state.may_loss(range);
     }
 
-    pub fn is_all_recvd(&self) -> bool {
+    pub(super) fn is_all_recvd(&self) -> bool {
         self.data.is_empty()
     }
 }

@@ -3,7 +3,7 @@ use std::{collections::VecDeque, fmt, ops::Range};
 
 /// 一段连续的数据片段，每个片段都是Bytes
 #[derive(Debug, Default)]
-pub struct Segment {
+pub(super) struct Segment {
     offset: u64,
     length: u64,
     fragments: VecDeque<Bytes>,
@@ -67,24 +67,8 @@ impl Segment {
 /// that may not be continuous. It sequentially stores the received data
 /// fragments and then reassembles them into a continuous data stream for
 /// future reading by the application layer.
-/// ## Example
-/// ```
-/// use qrecovery::recv::rcvbuf::RecvBuf;
-/// use bytes::{Bytes, BufMut};
-///
-/// let mut rcvbuf = RecvBuf::default();
-/// rcvbuf.recv(0, Bytes::from("hello"));
-/// rcvbuf.recv(6, Bytes::from("world"));
-/// rcvbuf.recv(5, Bytes::from(" "));
-///
-/// let mut dst = [0u8; 20];
-/// let mut buf = &mut dst[..];
-/// rcvbuf.read(&mut buf);
-/// let n = 20 - buf.remaining_mut();
-/// assert_eq!(&dst[..n], b"hello world");
-/// ```
 #[derive(Default, Debug)]
-pub struct RecvBuf {
+pub(super) struct RecvBuf {
     offset: u64,
     segments: VecDeque<Segment>,
 }
@@ -100,15 +84,15 @@ impl fmt::Display for RecvBuf {
 }
 
 impl RecvBuf {
-    pub fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         self.segments.is_empty()
     }
 
-    pub fn offset(&self) -> u64 {
+    pub(super) fn offset(&self) -> u64 {
         self.offset
     }
 
-    pub fn recv(&mut self, mut offset: u64, mut data: Bytes) {
+    pub(super) fn recv(&mut self, mut offset: u64, mut data: Bytes) {
         if offset < self.offset {
             data = data.slice((self.offset - offset) as usize..);
             offset = self.offset;
@@ -213,7 +197,7 @@ impl RecvBuf {
     /// Otherwise, the data will be discontinuous and cannot be read. At most, buf.len()
     /// bytes will be read, and if it cannot read that many, it will return the number
     /// of bytes read.
-    pub fn read<T: BufMut>(&mut self, buf: &mut T) {
+    pub(super) fn read<T: BufMut>(&mut self, buf: &mut T) {
         if let Some(mut seg) = self.segments.pop_front() {
             if seg.offset > self.offset {
                 self.segments.push_front(seg);
@@ -236,7 +220,7 @@ impl RecvBuf {
 
     /// The maximum length of continuous readable data, which can be compared with the final size
     /// known as "SizeKnown." If they match, it indicates that all the data has been received.
-    pub fn available(&self) -> u64 {
+    pub(super) fn available(&self) -> u64 {
         if !self.segments.is_empty() && self.segments[0].offset == self.offset {
             self.offset + self.segments[0].length
         } else {
@@ -246,7 +230,7 @@ impl RecvBuf {
 
     /// Once the received data becomes continuous, it becomes readable. If necessary (if the application
     /// layer is blocked on reading), it is necessary to notify the application layer to read.
-    pub fn is_readable(&self) -> bool {
+    pub(super) fn is_readable(&self) -> bool {
         !self.segments.is_empty()
             && self.segments[0].offset == self.offset
             && self.segments[0].length > 0

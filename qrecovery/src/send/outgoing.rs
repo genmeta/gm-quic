@@ -6,8 +6,8 @@ use std::{
     task::{Context, Poll},
 };
 
-#[derive(Debug)]
-pub struct Outgoing(ArcSender);
+#[derive(Debug, Clone)]
+pub struct Outgoing(pub(super) ArcSender);
 
 impl Outgoing {
     pub fn update_window(&mut self, max_data_size: u64) {
@@ -40,7 +40,7 @@ impl Outgoing {
         todo!("正常有数据，还是没数据？没数据是因为结束，还是被流控，还是空闲？话要说清楚")
     }
 
-    pub fn ack_recv(&mut self, range: &Range<u64>) {
+    pub fn ack_recv(&mut self, range: &Range<u64>) -> bool {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {
@@ -55,6 +55,7 @@ impl Outgoing {
                 s.ack_recv(range);
                 if s.is_all_recvd() {
                     inner.replace(Sender::DataRecvd);
+                    return true;
                 } else {
                     inner.replace(Sender::DataSent(s));
                 }
@@ -62,6 +63,7 @@ impl Outgoing {
             // ignore recv
             other => inner.replace(other),
         };
+        return false;
     }
 
     pub fn may_loss(&mut self, range: &Range<u64>) {
@@ -92,28 +94,50 @@ impl Outgoing {
             Sender::Ready(_) => {
                 unreachable!("never send data before recv data");
             }
-            recvd @ (Sender::DataRecvd | Sender::ResetRecvd) => {
+            Sender::DataSent(s) => {
+                s.stop();
+                inner.replace(Sender::ResetSent);
+            }
+            Sender::Sending(s) => {
+                s.stop();
+                inner.replace(Sender::ResetSent);
+            }
+            recvd @ (Sender::DataRecvd | Sender::ResetSent | Sender::ResetRecvd) => {
                 inner.replace(recvd);
             }
-            _ => inner.replace(Sender::ResetSent),
         };
     }
 
-    pub fn is_cancelled_by_app(&self) -> OutgoingCancel {
-        OutgoingCancel(self.0.clone())
+    pub fn ack_reset(&mut self) {
+        let mut sender = self.0.lock().unwrap();
+        let inner = sender.deref_mut();
+        match inner.take() {
+            Sender::ResetSent | Sender::ResetRecvd => {
+                inner.replace(Sender::ResetRecvd);
+            }
+            _ => {
+                unreachable!(
+                    "If no RESET_STREAM has been sent, how can there be a received acknowledgment?"
+                );
+            }
+        };
+    }
+
+    pub fn is_cancelled_by_app(&self) -> IsCancelled {
+        IsCancelled(self.0.clone())
     }
 }
 
-pub struct OutgoingCancel(ArcSender);
+pub struct IsCancelled(ArcSender);
 
 #[derive(Debug)]
-pub enum CancelError {
+pub enum CancelTooLate {
     ResetRecvd,
     DataRecvd,
 }
 
-impl Future for OutgoingCancel {
-    type Output = Result<(), CancelError>;
+impl Future for IsCancelled {
+    type Output = Result<(), CancelTooLate>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut sender = self.0.lock().unwrap();
@@ -125,7 +149,7 @@ impl Future for OutgoingCancel {
             }
             Sender::ResetRecvd => {
                 inner.replace(Sender::ResetRecvd);
-                Poll::Ready(Err(CancelError::ResetRecvd))
+                Poll::Ready(Err(CancelTooLate::ResetRecvd))
             }
             Sender::Ready(mut s) => {
                 s.poll_cancel(cx);
@@ -144,7 +168,7 @@ impl Future for OutgoingCancel {
             }
             Sender::DataRecvd => {
                 inner.replace(Sender::DataRecvd);
-                Poll::Ready(Err(CancelError::DataRecvd))
+                Poll::Ready(Err(CancelTooLate::DataRecvd))
             }
         }
     }

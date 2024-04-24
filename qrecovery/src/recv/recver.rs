@@ -7,7 +7,7 @@ use std::{
 };
 
 #[derive(Debug)]
-pub struct Recv {
+pub(super) struct Recv {
     rcvbuf: rcvbuf::RecvBuf,
     read_waker: Option<Waker>,
     is_stopped: bool,
@@ -17,7 +17,7 @@ pub struct Recv {
 }
 
 impl Recv {
-    pub fn with(max_data_size: u64) -> Self {
+    pub(super) fn with(max_data_size: u64) -> Self {
         Self {
             rcvbuf: rcvbuf::RecvBuf::default(),
             read_waker: None,
@@ -28,7 +28,7 @@ impl Recv {
         }
     }
 
-    pub fn recv(&mut self, offset: u64, buf: Bytes) {
+    pub(super) fn recv(&mut self, offset: u64, buf: Bytes) {
         self.rcvbuf.recv(offset, buf);
         if self.rcvbuf.is_readable() {
             if let Some(waker) = self.read_waker.take() {
@@ -37,7 +37,9 @@ impl Recv {
         }
     }
 
-    pub fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
+    /// 仅供学习用
+    #[allow(dead_code)]
+    pub(super) fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
         if self.rcvbuf.is_readable() {
             let buflen = buf.remaining_mut();
             self.rcvbuf.read(&mut buf);
@@ -55,7 +57,7 @@ impl Recv {
         }
     }
 
-    pub fn poll_read<T: BufMut>(
+    pub(super) fn poll_read<T: BufMut>(
         &mut self,
         cx: &mut Context<'_>,
         buf: &mut T,
@@ -78,7 +80,7 @@ impl Recv {
         }
     }
 
-    pub fn poll_window_update(&mut self, cx: &mut Context<'_>) -> Poll<u64> {
+    pub(super) fn poll_window_update(&mut self, cx: &mut Context<'_>) -> Poll<u64> {
         assert!(self.low_buf_alert.is_none());
         let threshold = 1_000_000;
         if self.rcvbuf.offset() + threshold > self.max_data_size {
@@ -90,7 +92,7 @@ impl Recv {
         }
     }
 
-    pub fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    pub(super) fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         assert!(self.stop_waker.is_none());
         if self.is_stopped {
             Poll::Ready(())
@@ -100,7 +102,7 @@ impl Recv {
         }
     }
 
-    pub fn abort(&mut self) {
+    pub(super) fn abort(&mut self) {
         if !self.is_stopped {
             self.is_stopped = true;
         }
@@ -109,7 +111,7 @@ impl Recv {
         }
     }
 
-    pub fn determin_size(self, total_size: u64) -> SizeKnown {
+    pub(super) fn determin_size(self, total_size: u64) -> SizeKnown {
         SizeKnown {
             rcvbuf: self.rcvbuf,
             read_waker: self.read_waker,
@@ -119,7 +121,7 @@ impl Recv {
         }
     }
 
-    pub fn recv_reset(mut self) {
+    pub(super) fn recv_reset(mut self) {
         if let Some(waker) = self.read_waker.take() {
             waker.wake()
         }
@@ -139,7 +141,7 @@ pub struct SizeKnown {
 }
 
 impl SizeKnown {
-    pub fn recv(&mut self, offset: u64, buf: Bytes) {
+    pub(super) fn recv(&mut self, offset: u64, buf: Bytes) {
         self.rcvbuf.recv(offset, buf);
         if self.rcvbuf.is_readable() {
             if let Some(waker) = self.read_waker.take() {
@@ -148,11 +150,12 @@ impl SizeKnown {
         }
     }
 
-    pub fn is_all_rcvd(&self) -> bool {
+    pub(super) fn is_all_rcvd(&self) -> bool {
         self.rcvbuf.available() == self.total_size
     }
 
-    pub fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
+    #[allow(dead_code)]
+    pub(super) fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
         if self.rcvbuf.is_readable() {
             let buflen = buf.remaining_mut();
             self.rcvbuf.read(&mut buf);
@@ -162,7 +165,7 @@ impl SizeKnown {
         }
     }
 
-    pub fn poll_read<T: BufMut>(
+    pub(super) fn poll_read<T: BufMut>(
         &mut self,
         cx: &mut Context<'_>,
         buf: &mut T,
@@ -177,7 +180,7 @@ impl SizeKnown {
         }
     }
 
-    pub fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    pub(super) fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         assert!(self.stop_waker.is_none());
         if self.is_stopped {
             Poll::Ready(())
@@ -189,7 +192,7 @@ impl SizeKnown {
 
     /// Abort can be called multiple times at the application level,
     /// but only the first call is effective.
-    pub fn abort(&mut self) {
+    pub(super) fn abort(&mut self) {
         if !self.is_stopped {
             self.is_stopped = true;
         }
@@ -198,13 +201,13 @@ impl SizeKnown {
         }
     }
 
-    pub fn data_recvd(self) -> DataRecvd {
+    pub(super) fn data_recvd(self) -> DataRecvd {
         DataRecvd {
             rcvbuf: self.rcvbuf,
         }
     }
 
-    pub fn recv_reset(mut self) {
+    pub(super) fn recv_reset(mut self) {
         if let Some(waker) = self.read_waker.take() {
             waker.wake()
         }
@@ -224,7 +227,8 @@ pub struct DataRecvd {
 impl DataRecvd {
     /// Unlike the previous states, when there is no more data, it no longer returns
     /// "WouldBlock" but instead returns 0, which typically indicates the end.
-    pub fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
+    #[allow(dead_code)]
+    pub(super) fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
         let buflen = buf.remaining_mut();
         self.rcvbuf.read(&mut buf);
         Ok(buflen - buf.remaining_mut())
@@ -233,11 +237,11 @@ impl DataRecvd {
     /// Unlike the previous states, when there is no more data, it no longer returns
     /// "Pending" but instead returns "Ready". However, in reality, nothing has been
     /// read. This kind of result typically indicates the end.
-    pub fn poll_read<T: BufMut>(&mut self, buf: &mut T) {
+    pub(super) fn poll_read<T: BufMut>(&mut self, buf: &mut T) {
         self.rcvbuf.read(buf);
     }
 
-    pub fn is_all_read(&self) -> bool {
+    pub(super) fn is_all_read(&self) -> bool {
         self.rcvbuf.is_empty()
     }
 }
@@ -247,7 +251,7 @@ impl DataRecvd {
 /// clearer semantics and aligns with the QUIC RFC specification but also
 /// allows the compiler to help us check if the state transitions are correct
 #[derive(Default, Debug)]
-pub enum Recver {
+pub(super) enum Recver {
     Recv(Recv),
     SizeKnown(SizeKnown),
     DataRecvd(DataRecvd),
@@ -257,7 +261,7 @@ pub enum Recver {
     ResetRead,
 }
 
-pub enum RecvState {
+pub(super) enum RecvState {
     Recv,
     SizeKnown,
     DataRecvd,
@@ -269,11 +273,11 @@ pub enum RecvState {
 pub(super) type ArcRecver = Arc<Mutex<Recver>>;
 
 impl Recver {
-    pub fn with(max_data_size: u64) -> Self {
+    pub(super) fn new(max_data_size: u64) -> Self {
         Self::Recv(Recv::with(max_data_size))
     }
 
-    pub fn state(&self) -> RecvState {
+    pub(super) fn state(&self) -> RecvState {
         match self {
             Self::Recv(_) => RecvState::Recv,
             Self::SizeKnown(_) => RecvState::SizeKnown,

@@ -21,7 +21,7 @@ pub struct ReadySender {
 }
 
 impl ReadySender {
-    pub fn with_buf_size(initial_max_stream_data: u64) -> ReadySender {
+    pub(super) fn with_buf_size(initial_max_stream_data: u64) -> ReadySender {
         ReadySender {
             sndbuf: SendBuf::with_capacity(initial_max_stream_data as usize),
             max_data_size: initial_max_stream_data,
@@ -34,7 +34,9 @@ impl ReadySender {
 
     /// 非阻塞写，如果没有多余的发送缓冲区，将返回WouldBlock错误。
     /// 但什么时候可写，是没通知的，只能不断去尝试写，直到写入成功。
-    pub fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    /// 仅供展示学习
+    #[allow(dead_code)]
+    pub(self) fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let range = self.sndbuf.range();
         if range.end < self.max_data_size {
             let n = std::cmp::min((self.max_data_size - range.end) as usize, buf.len());
@@ -44,7 +46,11 @@ impl ReadySender {
         }
     }
 
-    pub fn poll_write(&mut self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    pub(super) fn poll_write(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
         assert!(self.writable_waker.is_none());
         let range = self.sndbuf.range();
         if range.end < self.max_data_size {
@@ -56,21 +62,21 @@ impl ReadySender {
         }
     }
 
-    pub fn poll_flush(&mut self, cx: &mut Context<'_>) {
+    pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) {
         assert!(self.flush_waker.is_none());
         self.flush_waker = Some(cx.waker().clone());
     }
 
-    pub fn poll_shutdown(&mut self, cx: &mut Context<'_>) {
+    pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) {
         assert!(self.shutdown_waker.is_none());
         self.shutdown_waker = Some(cx.waker().clone());
     }
 
-    pub fn is_shutdown(&self) -> bool {
+    pub(super) fn is_shutdown(&self) -> bool {
         self.shutdown_waker.is_some()
     }
 
-    pub fn begin(self) -> SendingSender {
+    pub(super) fn begin(self) -> SendingSender {
         SendingSender {
             sndbuf: self.sndbuf,
             max_data_size: self.max_data_size,
@@ -81,7 +87,7 @@ impl ReadySender {
         }
     }
 
-    pub fn end(self) -> DataSentSender {
+    pub(super) fn end(self) -> DataSentSender {
         DataSentSender {
             sndbuf: self.sndbuf,
             flush_waker: self.flush_waker,
@@ -90,12 +96,12 @@ impl ReadySender {
         }
     }
 
-    pub fn poll_cancel(&mut self, cx: &mut Context<'_>) {
+    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) {
         assert!(self.cancel_waker.is_none());
         self.cancel_waker = Some(cx.waker().clone());
     }
 
-    pub fn cancel(self) {
+    pub(super) fn cancel(self) {
         if let Some(waker) = self.cancel_waker {
             waker.wake();
         }
@@ -113,19 +119,11 @@ pub struct SendingSender {
 }
 
 impl SendingSender {
-    /// 非阻塞写，如果没有多余的发送缓冲区，将返回WouldBlock错误。
-    /// 但什么时候可写，是没通知的，只能不断去尝试写，直到写入成功。
-    pub fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let range = self.sndbuf.range();
-        if range.end < self.max_data_size {
-            let n = std::cmp::min((self.max_data_size - range.end) as usize, buf.len());
-            Ok(self.sndbuf.write(&buf[..n]))
-        } else {
-            Err(io::ErrorKind::WouldBlock.into())
-        }
-    }
-
-    pub fn poll_write(&mut self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    pub(super) fn poll_write(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
         assert!(self.writable_waker.is_none());
         let range = self.sndbuf.range();
         if range.end < self.max_data_size {
@@ -137,7 +135,7 @@ impl SendingSender {
         }
     }
 
-    pub fn update_window(&mut self, max_data_size: u64) {
+    pub(super) fn update_window(&mut self, max_data_size: u64) {
         assert!(max_data_size > self.max_data_size);
         self.max_data_size = max_data_size;
         if let Some(waker) = self.writable_waker.take() {
@@ -145,11 +143,11 @@ impl SendingSender {
         }
     }
 
-    pub fn pick_up(&mut self, max_len: usize) -> Option<(u64, &[u8])> {
+    pub(super) fn pick_up(&mut self, max_len: usize) -> Option<(u64, &[u8])> {
         self.sndbuf.pick_up(max_len)
     }
 
-    pub fn ack_recv(&mut self, range: &Range<u64>) {
+    pub(super) fn ack_recv(&mut self, range: &Range<u64>) {
         self.sndbuf.ack_recv(range);
         if self.sndbuf.is_all_recvd() {
             if let Some(waker) = self.flush_waker.take() {
@@ -158,11 +156,11 @@ impl SendingSender {
         }
     }
 
-    pub fn may_loss(&mut self, range: &Range<u64>) {
+    pub(super) fn may_loss(&mut self, range: &Range<u64>) {
         self.sndbuf.may_loss(range)
     }
 
-    pub fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         assert!(self.flush_waker.is_none());
         if self.sndbuf.is_all_recvd() {
             Poll::Ready(Ok(()))
@@ -172,7 +170,7 @@ impl SendingSender {
         }
     }
 
-    pub fn end(self) -> DataSentSender {
+    pub(super) fn end(self) -> DataSentSender {
         DataSentSender {
             sndbuf: self.sndbuf,
             flush_waker: self.flush_waker,
@@ -181,23 +179,23 @@ impl SendingSender {
         }
     }
 
-    pub fn poll_shutdown(&mut self, cx: &mut Context<'_>) {
+    pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) {
         assert!(self.shutdown_waker.is_none());
         self.shutdown_waker = Some(cx.waker().clone());
     }
 
-    pub fn poll_cancel(&mut self, cx: &mut Context<'_>) {
+    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) {
         assert!(self.cancel_waker.is_none());
         self.cancel_waker = Some(cx.waker().clone());
     }
 
-    pub fn cancel(self) {
+    pub(super) fn cancel(self) {
         if let Some(waker) = self.cancel_waker {
             waker.wake();
         }
     }
 
-    pub fn stop(self) {
+    pub(super) fn stop(self) {
         if let Some(waker) = self.writable_waker {
             waker.wake();
         }
@@ -219,11 +217,11 @@ pub struct DataSentSender {
 }
 
 impl DataSentSender {
-    pub fn pick_up(&mut self, max_len: usize) -> Option<(u64, &[u8])> {
+    pub(super) fn pick_up(&mut self, max_len: usize) -> Option<(u64, &[u8])> {
         self.sndbuf.pick_up(max_len)
     }
 
-    pub fn ack_recv(&mut self, range: &Range<u64>) {
+    pub(super) fn ack_recv(&mut self, range: &Range<u64>) {
         self.sndbuf.ack_recv(range);
         if self.sndbuf.is_all_recvd() {
             if let Some(waker) = self.flush_waker.take() {
@@ -235,15 +233,15 @@ impl DataSentSender {
         }
     }
 
-    pub fn is_all_recvd(&self) -> bool {
+    pub(super) fn is_all_recvd(&self) -> bool {
         self.sndbuf.is_all_recvd()
     }
 
-    pub fn may_loss(&mut self, range: &Range<u64>) {
+    pub(super) fn may_loss(&mut self, range: &Range<u64>) {
         self.sndbuf.may_loss(range)
     }
 
-    pub fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         assert!(self.flush_waker.is_none());
         if self.sndbuf.is_all_recvd() {
             Poll::Ready(Ok(()))
@@ -253,7 +251,7 @@ impl DataSentSender {
         }
     }
 
-    pub fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         assert!(self.shutdown_waker.is_none());
         if self.sndbuf.is_all_recvd() {
             Poll::Ready(Ok(()))
@@ -263,18 +261,18 @@ impl DataSentSender {
         }
     }
 
-    pub fn poll_cancel(&mut self, cx: &mut Context<'_>) {
+    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) {
         assert!(self.cancel_waker.is_none());
         self.cancel_waker = Some(cx.waker().clone());
     }
 
-    pub fn cancel(self) {
+    pub(super) fn cancel(self) {
         if let Some(waker) = self.cancel_waker {
             waker.wake();
         }
     }
 
-    pub fn stop(self) {
+    pub(super) fn stop(self) {
         if let Some(waker) = self.flush_waker {
             waker.wake();
         }
@@ -300,11 +298,11 @@ impl Sender {
         Sender::Ready(ReadySender::with_buf_size(initial_max_stream_data))
     }
 
-    pub fn take(&mut self) -> Self {
+    pub(super) fn take(&mut self) -> Self {
         std::mem::take(self)
     }
 
-    pub fn replace(&mut self, sender: Sender) {
+    pub(super) fn replace(&mut self, sender: Sender) {
         let _ = std::mem::replace(self, sender);
     }
 }

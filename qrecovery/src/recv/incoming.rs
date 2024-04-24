@@ -7,10 +7,14 @@ use std::{
     task::{Context, Poll},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Incoming(ArcRecver);
 
 impl Incoming {
+    pub(super) fn new(recver: ArcRecver) -> Self {
+        Self(recver)
+    }
+
     pub fn recv(&mut self, offset: u64, buf: Bytes) {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
@@ -68,8 +72,8 @@ impl Incoming {
     }
 
     /// 应用层是否对流写入结束，如果是，那么应要发送STOP_SENDING
-    pub fn is_stopped(&self) -> IncomingStop {
-        IncomingStop(self.0.clone())
+    pub fn is_stopped_by_app(&self) -> IsStopped {
+        IsStopped(self.0.clone())
     }
 
     /// 对流控来说，何时发送窗口更新？当连续确认接收数据一半以上时
@@ -100,9 +104,9 @@ impl Future for WindowUpdate {
     }
 }
 
-pub struct IncomingStop(ArcRecver);
+pub struct IsStopped(ArcRecver);
 
-impl Future for IncomingStop {
+impl Future for IsStopped {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

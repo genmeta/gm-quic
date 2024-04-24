@@ -10,6 +10,12 @@ use tokio::io::{AsyncRead, ReadBuf};
 #[derive(Debug)]
 pub struct Reader(ArcRecver);
 
+impl Reader {
+    pub(super) fn new(recver: ArcRecver) -> Self {
+        Self(recver)
+    }
+}
+
 // TODO: 还要实现abort
 // TODO: Reader的drop，意味着自动abort
 
