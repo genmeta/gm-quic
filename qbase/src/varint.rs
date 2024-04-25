@@ -8,9 +8,11 @@ use std::{cmp::Ordering, convert::TryFrom, fmt};
 #[derive(Default, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct VarInt(pub(crate) u64);
 
+pub const VARINT_MAX: u64 = 0x3fff_ffff_ffff_ffff;
+
 impl VarInt {
     /// The largest representable value
-    pub const MAX: Self = Self((1 << 62) - 1);
+    pub const MAX: Self = Self(VARINT_MAX);
     /// The largest encoded value length
     pub const MAX_SIZE: usize = 8;
 

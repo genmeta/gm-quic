@@ -2,6 +2,14 @@ pub mod data_space;
 pub mod recv;
 pub mod send;
 
+pub mod index_deque;
+
+pub enum AppStream {
+    ReadOnly(recv::Reader),
+    WriteOnly(send::Writer),
+    ReadWrite(recv::Reader, send::Writer),
+}
+
 pub fn add(left: usize, right: usize) -> usize {
     left + right
 }

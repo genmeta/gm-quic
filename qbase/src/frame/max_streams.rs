@@ -16,6 +16,8 @@ pub(super) const MAX_STREAMS_FRAME_TYPE: u8 = 0x12;
 pub(super) mod ext {
     use super::{MaxStreamsFrame, MAX_STREAMS_FRAME_TYPE};
 
+    const MAX_STREAMS: u64 = (1 << 60) - 1;
+
     // nom parser for MAX_STREAMS_FRAME
     pub fn max_streams_frame_with_dir(
         dir: u8,
@@ -23,7 +25,7 @@ pub(super) mod ext {
         move |input: &[u8]| {
             use crate::varint::ext::be_varint;
             let (remain, max_streams) = be_varint(input)?;
-            if max_streams >= 1 << 60 {
+            if max_streams > MAX_STREAMS {
                 Err(nom::Err::Error(nom::error::Error::new(
                     input,
                     nom::error::ErrorKind::TooLarge,
