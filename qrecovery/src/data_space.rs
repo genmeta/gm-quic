@@ -1,20 +1,22 @@
 use super::index_deque::IndexDeque;
 use crate::recv::{self, Incoming, Reader};
 use crate::send::{self, Outgoing, Writer};
+use crate::AppStream;
 use bytes::Bytes;
 use qbase::frame::*;
 use qbase::frame::{ReadFrame, WriteFrame};
-use qbase::streamid::{AcceptSid, Dir, NeedCreate, StreamId, StreamIds};
+use qbase::streamid::{AcceptSid, Dir, StreamId, StreamIds};
 use qbase::varint::VarInt;
 use qbase::varint::VARINT_MAX;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::task::{ready, Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 type Payload = Vec<WriteFrame>;
 type Packets = IndexDeque<(Bytes, Payload), VARINT_MAX>;
-type PacketRecords = IndexDeque<Option<(Instant, Payload)>, VARINT_MAX>;
+type SentPacketRecords = IndexDeque<Option<(Instant, Payload)>, VARINT_MAX>;
+type RcvdPacketRecords = IndexDeque<Option<(Instant, bool)>, VARINT_MAX>;
 
 /// DataSpace对外主要有2个接口：
 /// - `poll_collect_to_send`
@@ -40,6 +42,10 @@ pub struct DataSpace {
     // 该队列的frame拥有更高的优先级发送。
     frames_buf: Arc<Mutex<VecDeque<WriteFrame>>>,
 
+    // 对方主动创建的流
+    accepted_streams: VecDeque<AppStream>,
+    accpet_waker: Option<Waker>,
+
     // 由传输控制引擎激发的发包，通常发包需要持有底层网络socket才能发，但DataSpace
     // 并不该依赖底层网络socket，因为发包先进入发送缓冲区，并唤醒底层来读包进行实际发送，
     // 这样便可解藕。
@@ -51,22 +57,65 @@ pub struct DataSpace {
     // 确认的包自不必说，判丢的包里面的命令帧则进入frames队列重传
     // inflight packets多了发送时间以计算RTT，还有包id即索引，配合ACK_FRAME进行ack和判丢，
     // 如果被确认，就会变成None。变成None之后的数据包不用被重复确认。
-    inflight_packets: PacketRecords,
+    inflight_packets: SentPacketRecords,
 
     // 如果是tlp，那尾丢包超时器就会启动，判定丢包
 
     // 接收包记录，用于进行反馈ACK_FRAME；
     // Duration: 接收包的时间用于计算delay
     // bool: 接收包的内容决定是否需要产生ack信息
-    recved_packets: VecDeque<Option<(Instant, bool)>>,
-    // 加入有携带ack帧的包被对方确认了，那recved_pktid就要据此向前滑动
-    recved_pktid: u64,
+    recved_packets: RcvdPacketRecords,
     // congestion控制器，可以是BBR，也可以是传统的Cubic、Reno
     // 靠着6个定时器、RTT维护、传输速度等来驱动
 }
 
+/// 主动创建流和被动创建流的处理
 impl DataSpace {
-    pub fn create_sender(&mut self, sid: StreamId) -> Writer {
+    pub fn poll_create(&mut self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<AppStream>> {
+        if let Some(sid) = ready!(self.stream_ids.poll_alloc_sid(cx, dir)) {
+            let writer = self.create_sender(sid);
+            if dir == Dir::Bi {
+                let reader = self.create_recver(sid);
+                Poll::Ready(Some(AppStream::ReadWrite(reader, writer)))
+            } else {
+                Poll::Ready(Some(AppStream::WriteOnly(writer)))
+            }
+        } else {
+            Poll::Ready(None)
+        }
+    }
+
+    fn try_accept_sid(&mut self, sid: StreamId) {
+        let result = self.stream_ids.try_accept_sid(sid);
+        match result {
+            Ok(accept) => match accept {
+                AcceptSid::Old => return,
+                AcceptSid::New(need_create, _extend_max_streams) => {
+                    for sid in need_create {
+                        let reader = self.create_recver(sid);
+                        if sid.dir() == Dir::Bi {
+                            let writer = self.create_sender(sid);
+                            let stream = AppStream::ReadWrite(reader, writer);
+                            self.accepted_streams.push_back(stream);
+                        } else {
+                            let stream = AppStream::ReadOnly(reader);
+                            self.accepted_streams.push_back(stream);
+                        }
+                    }
+
+                    // accpet新连接
+                    if let Some(waker) = self.accpet_waker.take() {
+                        waker.wake();
+                    }
+                }
+            },
+            Err(_e) => {
+                // TODO: 错误处理，错误的角色，或创建了超过最大限值的流
+            }
+        }
+    }
+
+    fn create_sender(&mut self, sid: StreamId) -> Writer {
         let (outgoing, writer) = send::new(1000_1000);
         // 创建异步轮询子，监听来自应用层的cancel
         // 一旦cancel，直接向对方发送reset_stream
@@ -88,7 +137,7 @@ impl DataSpace {
         writer
     }
 
-    pub fn create_recver(&mut self, sid: StreamId) -> Reader {
+    fn create_recver(&mut self, sid: StreamId) -> Reader {
         let (incoming, reader) = recv::new(1000_1000);
         // 不停地检查，是否需要及时更新MaxStreamData
         tokio::spawn({
@@ -128,48 +177,29 @@ impl DataSpace {
 
 impl DataSpace {
     pub fn recv(&mut self, pktid: u64, payload: Vec<ReadFrame>) {
-        if pktid < self.recved_pktid {
+        if pktid < self.recved_packets.offset() {
             // 重复收到了，不用处理
+            // TODO: 可能增加乱序容忍度
             return;
         }
-        let idx = (pktid - self.recved_pktid) as usize;
-        if self.recved_packets.get(idx).is_some() {
+        if self.recved_packets.contain(pktid) {
             // 重复收到了，不用处理
             return;
         }
 
         let mut is_ack_elicited = false;
-        if idx >= self.recved_packets.len() {
-            self.recved_packets.resize(idx + 1, None);
-        }
-
         for frame in payload {
             match frame {
                 ReadFrame::Padding => {}
                 ReadFrame::Ping => {}
-                ReadFrame::Ack(ack) => self.recv_ack(ack),
+                ReadFrame::Ack(ack) => self.recv_ack_frame(ack),
                 ReadFrame::Stream(stream, body) => {
                     is_ack_elicited = true;
                     let sid = stream.id;
-                    let result = self.stream_ids.try_accept_sid(sid);
-                    match result {
-                        Ok(accept) => match accept {
-                            AcceptSid::Old => break,
-                            AcceptSid::New(need_create, _extend_max_streams) => {
-                                for sid in need_create {
-                                    let reader = self.create_recver(sid);
-                                    if sid.dir() == Dir::Bi {
-                                        let writer = self.create_sender(sid);
-                                    }
-                                }
-                            }
-                        },
-                        Err(_e) => {}
-                    }
-                    // TODO: 处理下这个sid，可能要新建流
-                    self.input.get_mut(&sid).map(|incoming| {
+                    self.try_accept_sid(sid);
+                    if let Some(incoming) = self.input.get_mut(&sid) {
                         incoming.recv(stream.offset.into_inner(), body);
-                    });
+                    }
                 }
                 ReadFrame::Crypto(_crypto, _body) => {
                     is_ack_elicited = true;
@@ -180,17 +210,17 @@ impl DataSpace {
                     let sid = reset.stream_id;
                     // TODO: 处理下这个sid
                     // TODO: ResetStream中还携带着error code、final size，需要处理下
-                    self.input.get_mut(&sid).map(|incoming| {
+                    if let Some(incoming) = self.input.get_mut(&sid) {
                         incoming.recv_reset();
-                    });
+                    }
                 }
                 ReadFrame::StopSending(stop) => {
                     is_ack_elicited = true;
                     let sid = stop.stream_id;
                     // TODO: 处理下这个sid
-                    self.output.get_mut(&sid).map(|outgoing| {
+                    if let Some(outgoing) = self.output.get_mut(&sid) {
                         outgoing.stop();
-                    });
+                    }
                     // 回写一个ResetStreamFrame
                     self.frames_buf
                         .lock()
@@ -209,9 +239,9 @@ impl DataSpace {
                     is_ack_elicited = true;
                     let sid = max_stream_data.stream_id;
                     // TODO: 处理下这个sid
-                    self.output.get_mut(&sid).map(|outgoing| {
+                    if let Some(outgoing) = self.output.get_mut(&sid) {
                         outgoing.update_window(max_stream_data.max_stream_data.into_inner());
-                    });
+                    }
                 }
                 ReadFrame::MaxStreams(max_streams) => {
                     is_ack_elicited = true;
@@ -239,14 +269,15 @@ impl DataSpace {
             }
         }
 
-        self.recved_packets[idx] = Some((Instant::now(), is_ack_elicited));
+        self.recved_packets
+            .insert(pktid, Some((Instant::now(), is_ack_elicited)));
     }
 
     pub fn gen_ack(&self) -> AckFrame {
         todo!("DataSpace::gen_ack")
     }
 
-    fn recv_ack(&mut self, mut ack: AckFrame) {
+    fn recv_ack_frame(&mut self, mut ack: AckFrame) {
         if let Some(_ecn) = ack.take_ecn() {
             // TODO: 处理ECN信息
         }
@@ -256,21 +287,24 @@ impl DataSpace {
             return;
         }
 
-        self.inflight_packets
+        if let Some((send_time, payload)) = self
+            .inflight_packets
             .get_mut(largest_acked)
             .and_then(|record| record.take())
-            .map(|(send_time, payload)| {
-                let _rtt_sample =
-                    send_time.elapsed() - Duration::from_micros(ack.delay.into_inner());
-                self.ack_recved(payload);
-            });
+        {
+            let _rtt_sample = send_time.elapsed() - Duration::from_micros(ack.delay.into_inner());
+            self.ack_recved(payload);
+        }
 
         for range in ack.into_iter() {
             for pktid in range {
-                self.inflight_packets
+                if let Some((_, payload)) = self
+                    .inflight_packets
                     .get_mut(pktid)
                     .and_then(|record| record.take())
-                    .map(|(_, payload)| self.ack_recved(payload));
+                {
+                    self.ack_recved(payload);
+                }
             }
         }
     }
@@ -283,14 +317,15 @@ impl DataSpace {
                     let start = stream.offset.into_inner();
                     let end = start + stream.length as u64;
                     let range = start..end;
-                    self.output
+                    if let Some(all_data_recved) = self
+                        .output
                         .get_mut(&sid)
                         .map(|outgoing| outgoing.ack_recv(&range))
-                        .map(|all_data_recved| {
-                            if all_data_recved {
-                                self.input.remove(&sid);
-                            }
-                        });
+                    {
+                        if all_data_recved {
+                            self.input.remove(&sid);
+                        }
+                    }
                 }
                 WriteFrame::Ack(range) => {
                     // 我方发送的ACK包，已经被对方确认，确认窗口要前移，使早期的确认不必再重发

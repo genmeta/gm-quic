@@ -4,6 +4,7 @@ pub mod send;
 
 pub mod index_deque;
 
+#[derive(Debug)]
 pub enum AppStream {
     ReadOnly(recv::Reader),
     WriteOnly(send::Writer),
