@@ -1,110 +1,241 @@
 // This folder defines all the frames, including their parsing and packaging processes.
 
 mod ack;
+mod connection_close;
 mod crypto;
 mod data_blocked;
+mod handshake_done;
 mod max_data;
 mod max_stream_data;
 mod max_streams;
+mod new_token;
 mod padding;
+mod path_challenge;
+mod path_response;
 mod ping;
 mod reset_stream;
+mod retire_connection_id;
 mod stop_sending;
 mod stream;
 mod stream_data_blocked;
 mod streams_blocked;
 
+mod error;
+pub use error::DecodingError as FrameDecodingError;
+
 // re-export for convenience
 pub use ack::{AckFrame, AckRecord};
+pub use connection_close::ConnectionCloseFrame;
 pub use crypto::CryptoFrame;
 pub use data_blocked::DataBlockedFrame;
+pub use handshake_done::HandshakeDoneFrame;
 pub use max_data::MaxDataFrame;
 pub use max_stream_data::MaxStreamDataFrame;
 pub use max_streams::MaxStreamsFrame;
+pub use new_token::NewTokenFrame;
 pub use padding::PaddingFrame;
+pub use path_challenge::PathChallengeFrame;
+pub use path_response::PathResponseFrame;
 pub use ping::PingFrame;
 pub use reset_stream::ResetStreamFrame;
+pub use retire_connection_id::RetireConnectionIdFrame;
 pub use stop_sending::StopSendingFrame;
 pub use stream::StreamFrame;
 pub use stream_data_blocked::StreamDataBlockedFrame;
 pub use streams_blocked::StreamsBlockedFrame;
 
 use bytes::Bytes;
-use enum_variant_macros::*;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum FrameType {
     Padding,
     Ping,
-    DataBlocked,
-    MaxData,
-    MaxStreamData,
-    MaxStreams(u8),
-    StreamDataBlocked,
     Ack(u8),
-    Stream(u8),
     ResetStream,
     StopSending,
     Crypto,
+    NewToken,
+    Stream(u8),
+    MaxData,
+    MaxStreamData,
+    MaxStreams(u8),
+    DataBlocked,
+    StreamDataBlocked,
     StreamsBlocked(u8),
+    NewConnectionId,
+    RetireConnectionId,
+    PathChallenge,
+    PathResponse,
+    ConnectionClose(u8),
+    HandshakeDone,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct InvalidFrameType(u8);
-
 impl TryFrom<u8> for FrameType {
-    type Error = InvalidFrameType;
+    type Error = FrameDecodingError;
 
     fn try_from(frame_type: u8) -> Result<Self, Self::Error> {
         Ok(match frame_type {
-            padding::PADDING_FRAME_TYPE => FrameType::Padding,
-            ping::PING_FRAME_TYPE => FrameType::Ping,
-            0b10 | 0b11 => FrameType::Ack(frame_type & 0b1),
-            reset_stream::RESET_STREAM_FRAME_TYPE => FrameType::ResetStream,
-            crypto::CRYPTO_FRAME_TYPE => FrameType::Crypto,
-            data_blocked::DATA_BLOCKED_FRAME_TYPE => FrameType::DataBlocked,
-            max_data::MAX_DATA_FRAME_TYPE => FrameType::MaxData,
-            max_stream_data::MAX_STREAM_DATA_FRAME_TYPE => FrameType::MaxStreamData,
-            0b10010 | 0b10011 => FrameType::MaxStreams(frame_type & 0b1),
-            stop_sending::STOP_SENDING_FRAME_TYPE => FrameType::StopSending,
-            stream_data_blocked::STREAM_DATA_BLOCKED_FRAME_TYPE => FrameType::StreamDataBlocked,
-            0b1000..=0b1111 => FrameType::Stream(frame_type & 0b111),
-            0b10110 | 0b10111 => FrameType::StreamsBlocked(frame_type & 0b1),
-            _ => return Err(InvalidFrameType(frame_type)),
+            0x00 => FrameType::Padding,
+            0x01 => FrameType::Ping,
+            0x02 | 0x03 => FrameType::Ack(frame_type & 0b1),
+            0x04 => FrameType::ResetStream,
+            0x05 => FrameType::StopSending,
+            0x06 => FrameType::Crypto,
+            0x07 => FrameType::NewToken,
+            0x08..=0x0f => FrameType::Stream(frame_type & 0b111),
+            0x10 => FrameType::MaxData,
+            0x11 => FrameType::MaxStreamData,
+            0x12 | 0x13 => FrameType::MaxStreams(frame_type & 0b1),
+            0x14 => FrameType::DataBlocked,
+            0x15 => FrameType::StreamDataBlocked,
+            0x16 | 0x17 => FrameType::StreamsBlocked(frame_type & 0b1),
+            0x18 => FrameType::NewConnectionId,
+            0x19 => FrameType::RetireConnectionId,
+            0x1a => FrameType::PathChallenge,
+            0x1b => FrameType::PathResponse,
+            0x1c | 0x1d => FrameType::ConnectionClose(frame_type & 0x1),
+            0x1e => FrameType::HandshakeDone,
+            _ => return Err(Self::Error::InvalidFrameType(frame_type)),
         })
     }
 }
 
-/// 读取的Frame，其中涉及数据体的，得用Bytes来保存，因为数据体可能很大，
-/// 放在Frame结构中会很占空间，且有copy的性能开销；如果使用`&[u8]`,
-/// 则有生命周期的限制，而数据体实际上要等应用读取后，才可以释放，而并非
-/// 在读取解析完一个包后才释放。
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum ReadFrame {
-    Padding,
+pub enum InfoFrame {
     Ping,
-    Ack(AckFrame),
-    Stream(StreamFrame, Bytes),
     ResetStream(ResetStreamFrame),
-    Crypto(CryptoFrame, Bytes),
-    DataBlocked(DataBlockedFrame),
+    StopSending(StopSendingFrame),
+    NewToken(NewTokenFrame),
     MaxData(MaxDataFrame),
     MaxStreamData(MaxStreamDataFrame),
     MaxStreams(MaxStreamsFrame),
+    DataBlocked(DataBlockedFrame),
     StreamDataBlocked(StreamDataBlockedFrame),
-    StopSending(StopSendingFrame),
     StreamsBlocked(StreamsBlockedFrame),
+    RetireConnectionId(RetireConnectionIdFrame),
+    PathChallenge(PathChallengeFrame),
+    PathResponse(PathResponseFrame),
+    HandshakeDone,
 }
 
-/// 写入Frame，仅仅是用于记录，当发送一个Packet时，那该Packet中的帧需要纪律下来，
-/// 以便在丢包检测时，决定里面的什么帧丢了，需要重传。
-#[derive(Debug, Clone, Eq, PartialEq, FromVariants)]
+// The initial packet and handshake packet only contain Ping frame.
+
+impl TryFrom<InfoFrame> for PingFrame {
+    type Error = FrameDecodingError;
+
+    fn try_from(value: InfoFrame) -> Result<Self, Self::Error> {
+        match value {
+            InfoFrame::Ping => Ok(PingFrame),
+            _ => Err(Self::Error::WrongFrame(value)),
+        }
+    }
+}
+
+impl From<PingFrame> for InfoFrame {
+    fn from(_value: PingFrame) -> Self {
+        InfoFrame::Ping
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum ZeroRttFrame {
+    Ping,
+    ResetStream(ResetStreamFrame),
+    StopSending(StopSendingFrame),
+    MaxData(MaxDataFrame),
+    MaxStreamData(MaxStreamDataFrame),
+    MaxStreams(MaxStreamsFrame),
+    DataBlocked(DataBlockedFrame),
+    StreamDataBlocked(StreamDataBlockedFrame),
+    StreamsBlocked(StreamsBlockedFrame),
+    RetireConnectionId(RetireConnectionIdFrame),
+    PathChallenge(PathChallengeFrame),
+}
+
+impl TryFrom<InfoFrame> for ZeroRttFrame {
+    type Error = FrameDecodingError;
+
+    fn try_from(value: InfoFrame) -> Result<Self, Self::Error> {
+        match value {
+            InfoFrame::Ping => Ok(ZeroRttFrame::Ping),
+            InfoFrame::ResetStream(frame) => Ok(ZeroRttFrame::ResetStream(frame)),
+            InfoFrame::StopSending(frame) => Ok(ZeroRttFrame::StopSending(frame)),
+            InfoFrame::MaxData(frame) => Ok(ZeroRttFrame::MaxData(frame)),
+            InfoFrame::MaxStreamData(frame) => Ok(ZeroRttFrame::MaxStreamData(frame)),
+            InfoFrame::MaxStreams(frame) => Ok(ZeroRttFrame::MaxStreams(frame)),
+            InfoFrame::DataBlocked(frame) => Ok(ZeroRttFrame::DataBlocked(frame)),
+            InfoFrame::StreamDataBlocked(frame) => Ok(ZeroRttFrame::StreamDataBlocked(frame)),
+            InfoFrame::StreamsBlocked(frame) => Ok(ZeroRttFrame::StreamsBlocked(frame)),
+            InfoFrame::RetireConnectionId(frame) => Ok(ZeroRttFrame::RetireConnectionId(frame)),
+            InfoFrame::PathChallenge(frame) => Ok(ZeroRttFrame::PathChallenge(frame)),
+            _ => Err(Self::Error::WrongFrame(value)),
+        }
+    }
+}
+
+impl From<ZeroRttFrame> for InfoFrame {
+    fn from(value: ZeroRttFrame) -> Self {
+        match value {
+            ZeroRttFrame::Ping => InfoFrame::Ping,
+            ZeroRttFrame::ResetStream(frame) => InfoFrame::ResetStream(frame),
+            ZeroRttFrame::StopSending(frame) => InfoFrame::StopSending(frame),
+            ZeroRttFrame::MaxData(frame) => InfoFrame::MaxData(frame),
+            ZeroRttFrame::MaxStreamData(frame) => InfoFrame::MaxStreamData(frame),
+            ZeroRttFrame::MaxStreams(frame) => InfoFrame::MaxStreams(frame),
+            ZeroRttFrame::DataBlocked(frame) => InfoFrame::DataBlocked(frame),
+            ZeroRttFrame::StreamDataBlocked(frame) => InfoFrame::StreamDataBlocked(frame),
+            ZeroRttFrame::StreamsBlocked(frame) => InfoFrame::StreamsBlocked(frame),
+            ZeroRttFrame::RetireConnectionId(frame) => InfoFrame::RetireConnectionId(frame),
+            ZeroRttFrame::PathChallenge(frame) => InfoFrame::PathChallenge(frame),
+        }
+    }
+}
+
+pub type OneRttFrame = InfoFrame;
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum DataFrame {
+    Crypto(CryptoFrame),
+    Stream(StreamFrame),
+}
+
+impl TryFrom<DataFrame> for CryptoFrame {
+    type Error = FrameDecodingError;
+
+    fn try_from(value: DataFrame) -> Result<Self, Self::Error> {
+        match value {
+            DataFrame::Crypto(frame) => Ok(frame),
+            _ => Err(Self::Error::WrongData(value)),
+        }
+    }
+}
+
+impl TryFrom<DataFrame> for StreamFrame {
+    type Error = FrameDecodingError;
+
+    fn try_from(value: DataFrame) -> Result<Self, Self::Error> {
+        match value {
+            DataFrame::Stream(frame) => Ok(frame),
+            _ => Err(Self::Error::WrongData(value)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum Frame {
+    Padding,
+    Ack(AckFrame),
+    Close(ConnectionCloseFrame),
+    Info(InfoFrame),
+    Data(DataFrame, Bytes),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum WriteFrame {
-    Padding(PaddingFrame),
-    Ping(PingFrame),
-    // 只作记录用，具体的AckFrame不必记录，因为每次AckFrame都要重新从最新的收包记录里生成
+    Padding,
+    Ping,
+    HandshakeDone,
     Ack(AckRecord),
-    // 数据帧也不包含数据，丢了的话不会原样重传此部分数据，而是向`Sender`标记为丢失
     Stream(StreamFrame),
     ResetStream(ResetStreamFrame),
     Crypto(CryptoFrame),
@@ -118,24 +249,28 @@ pub enum WriteFrame {
 }
 
 pub mod ext {
+    use super::*;
     use super::{
-        ack::ext::ack_frame_with_flag, crypto::ext::be_crypto_frame,
-        data_blocked::ext::be_data_blocked_frame, max_data::ext::be_max_data_frame,
-        max_stream_data::ext::be_max_stream_data_frame,
-        max_streams::ext::max_streams_frame_with_dir, reset_stream::ext::be_reset_stream_frame,
+        ack::ext::ack_frame_with_flag, connection_close::ext::connection_close_frame_at,
+        crypto::ext::be_crypto_frame, data_blocked::ext::be_data_blocked_frame,
+        max_data::ext::be_max_data_frame, max_stream_data::ext::be_max_stream_data_frame,
+        max_streams::ext::max_streams_frame_with_dir, new_token::ext::be_new_token_frame,
+        path_challenge::ext::be_path_challenge_frame, path_response::ext::be_path_response_frame,
+        reset_stream::ext::be_reset_stream_frame,
+        retire_connection_id::ext::be_retire_connection_id_frame,
         stop_sending::ext::be_stop_sending_frame, stream::ext::stream_frame_with_flag,
         stream_data_blocked::ext::be_stream_data_blocked_frame,
-        streams_blocked::ext::streams_blocked_frame_with_dir, FrameType, ReadFrame, WriteFrame,
+        streams_blocked::ext::streams_blocked_frame_with_dir,
     };
 
     use bytes::Bytes;
     use nom::{
         combinator::{flat_map, map, map_res},
         error::{Error, ErrorKind},
-        Err, IResult,
+        Err,
     };
 
-    fn be_frame_type(input: &[u8]) -> IResult<&[u8], FrameType> {
+    fn be_frame_type(input: &[u8]) -> nom::IResult<&[u8], FrameType> {
         use crate::varint::ext::be_varint;
         map_res(be_varint, |frame_type| {
             FrameType::try_from(frame_type.into_inner() as u8)
@@ -147,28 +282,52 @@ pub mod ext {
     fn complete_frame(
         frame_type: FrameType,
         raw: Bytes,
-    ) -> impl Fn(&[u8]) -> IResult<&[u8], ReadFrame> {
+    ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], Frame> {
         move |input: &[u8]| match frame_type {
-            FrameType::Padding => Ok((input, ReadFrame::Padding)),
-            FrameType::Ping => Ok((input, ReadFrame::Ping)),
-            FrameType::Ack(ecn) => map(ack_frame_with_flag(ecn), ReadFrame::Ack)(input),
-            FrameType::ResetStream => map(be_reset_stream_frame, ReadFrame::ResetStream)(input),
-            FrameType::DataBlocked => map(be_data_blocked_frame, ReadFrame::DataBlocked)(input),
-            FrameType::MaxData => map(be_max_data_frame, ReadFrame::MaxData)(input),
-            FrameType::StopSending => map(be_stop_sending_frame, ReadFrame::StopSending)(input),
-            FrameType::MaxStreamData => {
-                map(be_max_stream_data_frame, ReadFrame::MaxStreamData)(input)
+            FrameType::Padding => Ok((input, Frame::Padding)),
+            FrameType::Ping => Ok((input, Frame::Info(InfoFrame::Ping))),
+            FrameType::ConnectionClose(layer) => {
+                map(connection_close_frame_at(layer), Frame::Close)(input)
             }
-            FrameType::MaxStreams(dir) => {
-                map(max_streams_frame_with_dir(dir), ReadFrame::MaxStreams)(input)
+            FrameType::NewConnectionId => todo!(),
+            FrameType::RetireConnectionId => map(be_retire_connection_id_frame, |f| {
+                Frame::Info(InfoFrame::RetireConnectionId(f))
+            })(input),
+            FrameType::PathChallenge => map(be_path_challenge_frame, |f| {
+                Frame::Info(InfoFrame::PathChallenge(f))
+            })(input),
+            FrameType::PathResponse => map(be_path_response_frame, |f| {
+                Frame::Info(InfoFrame::PathResponse(f))
+            })(input),
+            FrameType::HandshakeDone => Ok((input, Frame::Info(InfoFrame::HandshakeDone))),
+            FrameType::NewToken => {
+                map(be_new_token_frame, |f| Frame::Info(InfoFrame::NewToken(f)))(input)
             }
-            FrameType::StreamsBlocked(dir) => map(
-                streams_blocked_frame_with_dir(dir),
-                ReadFrame::StreamsBlocked,
-            )(input),
-            FrameType::StreamDataBlocked => {
-                map(be_stream_data_blocked_frame, ReadFrame::StreamDataBlocked)(input)
+            FrameType::Ack(ecn) => map(ack_frame_with_flag(ecn), Frame::Ack)(input),
+            FrameType::ResetStream => map(be_reset_stream_frame, |f| {
+                Frame::Info(InfoFrame::ResetStream(f))
+            })(input),
+            FrameType::DataBlocked => map(be_data_blocked_frame, |f| {
+                Frame::Info(InfoFrame::DataBlocked(f))
+            })(input),
+            FrameType::MaxData => {
+                map(be_max_data_frame, |f| Frame::Info(InfoFrame::MaxData(f)))(input)
             }
+            FrameType::StopSending => map(be_stop_sending_frame, |f| {
+                Frame::Info(InfoFrame::StopSending(f))
+            })(input),
+            FrameType::MaxStreamData => map(be_max_stream_data_frame, |f| {
+                Frame::Info(InfoFrame::MaxStreamData(f))
+            })(input),
+            FrameType::MaxStreams(dir) => map(max_streams_frame_with_dir(dir), |f| {
+                Frame::Info(InfoFrame::MaxStreams(f))
+            })(input),
+            FrameType::StreamsBlocked(dir) => map(streams_blocked_frame_with_dir(dir), |f| {
+                Frame::Info(InfoFrame::StreamsBlocked(f))
+            })(input),
+            FrameType::StreamDataBlocked => map(be_stream_data_blocked_frame, |f| {
+                Frame::Info(InfoFrame::StreamDataBlocked(f))
+            })(input),
             FrameType::Crypto => {
                 let (input, frame) = be_crypto_frame(input)?;
                 let start = raw.len() - input.len();
@@ -177,7 +336,7 @@ pub mod ext {
                     Err(Err::Incomplete(nom::Needed::new(len - input.len())))
                 } else {
                     let data = raw.slice(start..start + len);
-                    Ok((&input[len..], ReadFrame::Crypto(frame, data)))
+                    Ok((&input[len..], Frame::Data(DataFrame::Crypto(frame), data)))
                 }
             }
             FrameType::Stream(flag) => {
@@ -188,39 +347,117 @@ pub mod ext {
                     Err(Err::Incomplete(nom::Needed::new(len - input.len())))
                 } else {
                     let data = raw.slice(start..start + len);
-                    Ok((&input[len..], ReadFrame::Stream(frame, data)))
+                    Ok((&input[len..], Frame::Data(DataFrame::Stream(frame), data)))
                 }
             }
         }
     }
 
     // nom parser for FRAME
-    pub fn be_frame<'a>(input: &'a [u8], raw: &Bytes) -> nom::IResult<&'a [u8], ReadFrame> {
-        flat_map(be_frame_type, |frame_type| {
-            complete_frame(frame_type, raw.clone())
-        })(input)
+    fn be_frame(raw: Bytes) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Frame> {
+        move |input: &[u8]| {
+            flat_map(be_frame_type, |frame_type| {
+                complete_frame(frame_type, raw.clone())
+            })(input)
+        }
     }
 
+    pub fn parse_frames_from_bytes(bytes: Bytes) -> Result<Vec<Frame>, FrameDecodingError> {
+        use nom::multi::many0;
+        let raw = bytes.clone();
+        let input = bytes.as_ref();
+        let (_, frames) = many0(be_frame(raw))(input)?;
+        Ok(frames)
+    }
+
+    use super::{
+        data_blocked::ext::BufMutExt as DataBlockedBufMutExt,
+        handshake_done::ext::BufMutExt as HandshakeDoneBufMutExt,
+        max_data::ext::BufMutExt as MaxDataBufMutExt,
+        max_stream_data::ext::BufMutExt as MaxStreamDataBufMutExt,
+        max_streams::ext::BufMutExt as MaxStreamsBufMutExt,
+        new_token::ext::BufMutExt as NewTokenBufMutExt,
+        padding::ext::BufMutExt as PaddingBufMutExt,
+        path_challenge::ext::BufMutExt as PathChallengeBufMutExt,
+        path_response::ext::BufMutExt as PathResponseBufMutExt,
+        reset_stream::ext::BufMutExt as ResetStreamBufMutExt,
+        retire_connection_id::ext::BufMutExt as RetireConnectionIdBufMutExt,
+        stop_sending::ext::BufMutExt as StopSendingBufMutExt,
+        stream_data_blocked::ext::BufMutExt as StreamDataBlockedBufMutExt,
+        streams_blocked::ext::BufMutExt as StreamsBlockedBufMutExt,
+    };
+
+    pub use super::{
+        ack::ext::BufMutExt as AckBufMutExt,
+        connection_close::ext::BufMutExt as ConnectionCloseBufMutExt,
+        crypto::ext::BufMutExt as CryptoBufMutExt, ping::ext::BufMutExt as PingBufMutExt,
+        stream::ext::BufMutExt as StreamBufMutExt,
+    };
+
     pub trait BufMutExt {
+        fn put_info_frame(&mut self, frame: &InfoFrame);
+        fn put_zero_rtt_frame(&mut self, frame: &ZeroRttFrame);
+        fn put_one_rtt_frame(&mut self, frame: &OneRttFrame);
+        fn put_data_frame(&mut self, frame: &DataFrame, data: &[u8]);
+
+        #[deprecated]
         fn put_frame(&mut self, frame: &WriteFrame);
     }
 
     impl<T: bytes::BufMut> BufMutExt for T {
-        fn put_frame(&mut self, frame: &WriteFrame) {
-            use super::{
-                data_blocked::ext::BufMutExt as DataBlockedBufMutExt,
-                max_data::ext::BufMutExt as MaxDataBufMutExt,
-                max_stream_data::ext::BufMutExt as MaxStreamDataBufMutExt,
-                max_streams::ext::BufMutExt as MaxStreamsBufMutExt,
-                padding::ext::BufMutExt as PaddingBufMutExt, ping::ext::BufMutExt as PingBufMutExt,
-                reset_stream::ext::BufMutExt as ResetStreamBufMutExt,
-                stop_sending::ext::BufMutExt as StopSendingBufMutExt,
-                stream_data_blocked::ext::BufMutExt as StreamDataBlockedBufMutExt,
-                streams_blocked::ext::BufMutExt as StreamsBlockedBufMutExt,
-            };
+        fn put_info_frame(&mut self, frame: &InfoFrame) {
             match frame {
-                WriteFrame::Padding(_) => self.put_padding_frame(),
-                WriteFrame::Ping(_) => self.put_ping_frame(),
+                InfoFrame::Ping => self.put_ping_frame(),
+                InfoFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
+                InfoFrame::StopSending(frame) => self.put_stop_sending_frame(frame),
+                InfoFrame::NewToken(frame) => self.put_new_token_frame(frame),
+                InfoFrame::MaxData(frame) => self.put_max_data_frame(frame),
+                InfoFrame::MaxStreamData(frame) => self.put_max_stream_data_frame(frame),
+                InfoFrame::MaxStreams(frame) => self.put_max_streams_frame(frame),
+                InfoFrame::DataBlocked(frame) => self.put_data_blocked_frame(frame),
+                InfoFrame::StreamDataBlocked(frame) => self.put_stream_data_blocked_frame(frame),
+                InfoFrame::StreamsBlocked(frame) => self.put_streams_blocked_frame(frame),
+                InfoFrame::RetireConnectionId(frame) => self.put_retire_connection_id_frame(frame),
+                InfoFrame::PathChallenge(frame) => self.put_path_challenge_frame(frame),
+                InfoFrame::PathResponse(frame) => self.put_path_response_frame(frame),
+                InfoFrame::HandshakeDone => self.put_handshake_done_frame(),
+            }
+        }
+
+        fn put_zero_rtt_frame(&mut self, frame: &ZeroRttFrame) {
+            match frame {
+                ZeroRttFrame::Ping => self.put_ping_frame(),
+                ZeroRttFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
+                ZeroRttFrame::StopSending(frame) => self.put_stop_sending_frame(frame),
+                ZeroRttFrame::MaxData(frame) => self.put_max_data_frame(frame),
+                ZeroRttFrame::MaxStreamData(frame) => self.put_max_stream_data_frame(frame),
+                ZeroRttFrame::MaxStreams(frame) => self.put_max_streams_frame(frame),
+                ZeroRttFrame::DataBlocked(frame) => self.put_data_blocked_frame(frame),
+                ZeroRttFrame::StreamDataBlocked(frame) => self.put_stream_data_blocked_frame(frame),
+                ZeroRttFrame::StreamsBlocked(frame) => self.put_streams_blocked_frame(frame),
+                ZeroRttFrame::RetireConnectionId(frame) => {
+                    self.put_retire_connection_id_frame(frame)
+                }
+                ZeroRttFrame::PathChallenge(frame) => self.put_path_challenge_frame(frame),
+            }
+        }
+
+        fn put_one_rtt_frame(&mut self, frame: &OneRttFrame) {
+            self.put_info_frame(frame);
+        }
+
+        fn put_data_frame(&mut self, frame: &DataFrame, data: &[u8]) {
+            match frame {
+                DataFrame::Crypto(frame) => self.put_crypto_frame(frame, data),
+                DataFrame::Stream(frame) => self.put_stream_frame(frame, data),
+            }
+        }
+
+        fn put_frame(&mut self, frame: &WriteFrame) {
+            match frame {
+                WriteFrame::Padding => self.put_padding_frame(),
+                WriteFrame::Ping => self.put_ping_frame(),
+                WriteFrame::HandshakeDone => self.put_handshake_done_frame(),
                 WriteFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
                 WriteFrame::DataBlocked(frame) => self.put_data_blocked_frame(frame),
                 WriteFrame::MaxData(frame) => self.put_max_data_frame(frame),
@@ -245,16 +482,9 @@ pub mod ext {
 
 #[cfg(test)]
 mod tests {
-    use super::PingFrame;
-    use super::WriteFrame;
-
-    fn test_bound<T: From<PingFrame>>(t: T) {
-        assert_eq!(t, WriteFrame::Ping(PingFrame));
-    }
 
     #[test]
     fn it_works() {
-        assert_eq!(WriteFrame::from(PingFrame), WriteFrame::Ping(PingFrame));
         assert_eq!(2 + 2, 4);
     }
 }

@@ -17,20 +17,45 @@ pub struct StreamFrame {
     pub id: StreamId,
     pub offset: VarInt,
     pub length: usize,
-    pub is_fin: bool,
+    flag: u8,
 }
 
 pub(super) const STREAM_FRAME_TYPE: u8 = 0x08;
 
+const OFF_BIT: u8 = 0x04;
+const LEN_BIT: u8 = 0x02;
+const FIN_BIT: u8 = 0x01;
+
 impl StreamFrame {
+    pub fn new(id: StreamId, offset: VarInt, length: usize) -> Self {
+        Self {
+            id,
+            offset,
+            length,
+            flag: OFF_BIT | LEN_BIT,
+        }
+    }
+
+    pub fn is_fin(&self) -> bool {
+        self.flag & FIN_BIT != 0
+    }
+
     pub fn range(&self) -> Range<u64> {
         self.offset.into_inner()..self.offset.into_inner() + self.length as u64
+    }
+
+    pub fn be_last_chunk(&mut self) {
+        self.flag |= FIN_BIT;
+    }
+
+    pub fn write_at_end(&mut self) {
+        self.flag &= !LEN_BIT;
     }
 }
 
 pub(super) mod ext {
     use crate::{
-        frame::stream::{StreamFrame, STREAM_FRAME_TYPE},
+        frame::stream::{StreamFrame, LEN_BIT, OFF_BIT, STREAM_FRAME_TYPE},
         varint::VarInt,
     };
 
@@ -38,12 +63,12 @@ pub(super) mod ext {
         use crate::{streamid::ext::be_streamid, varint::ext::be_varint};
         move |input| {
             let (input, id) = be_streamid(input)?;
-            let (input, offset) = if flag & 0x04 != 0 {
+            let (input, offset) = if flag & OFF_BIT != 0 {
                 be_varint(input)?
             } else {
                 (input, VarInt::default())
             };
-            let (input, length) = if flag & 0x02 != 0 {
+            let (input, length) = if flag & LEN_BIT != 0 {
                 let (input, length) = be_varint(input)?;
                 (input, length.into_inner() as usize)
             } else {
@@ -55,18 +80,18 @@ pub(super) mod ext {
                     id,
                     offset,
                     length,
-                    is_fin: flag & 0x01 != 0,
+                    flag,
                 },
             ))
         }
     }
 
     pub trait BufMutExt {
-        fn put_stream_frame(&mut self, frame: &StreamFrame, is_last: bool);
+        fn put_stream_frame(&mut self, frame: &StreamFrame, data: &[u8]);
     }
 
     impl<T: bytes::BufMut> BufMutExt for T {
-        fn put_stream_frame(&mut self, frame: &StreamFrame, is_last: bool) {
+        fn put_stream_frame(&mut self, frame: &StreamFrame, data: &[u8]) {
             use crate::{
                 streamid::ext::BufMutExt as SidBufMutExt, varint::ext::BufMutExt as VarIntBufMutExt,
             };
@@ -74,22 +99,17 @@ pub(super) mod ext {
             if frame.offset.into_inner() != 0 {
                 stream_type |= 0x04;
             }
-            if !is_last {
-                stream_type |= 0x02;
-            }
-            if frame.is_fin {
-                stream_type |= 0x01;
-            }
 
-            self.put_u8(stream_type);
+            self.put_u8(stream_type | frame.flag);
             self.put_streamid(&frame.id);
             if frame.offset.into_inner() != 0 {
                 self.put_varint(&frame.offset);
             }
-            if !is_last {
+            if frame.flag & LEN_BIT != 0 {
                 // Generally, a data frame will not exceed 4GB.
                 self.put_varint(&VarInt::from_u32(frame.length as u32));
             }
+            self.put_slice(data);
         }
     }
 }
@@ -113,7 +133,7 @@ mod tests {
         let input = raw.as_ref();
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() >= STREAM_FRAME_TYPE as u64 {
-                stream_frame_with_flag(frame_type.into_inner() as u8)
+                stream_frame_with_flag(frame_type.into_inner() as u8 & 0b111)
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
@@ -130,7 +150,7 @@ mod tests {
                 id: VarInt(0x1234).into(),
                 offset: VarInt(0x1234),
                 length: 11,
-                is_fin: false,
+                flag: 0b110,
             }
         );
     }
@@ -144,7 +164,7 @@ mod tests {
         let input = raw.as_ref();
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() >= STREAM_FRAME_TYPE as u64 {
-                stream_frame_with_flag(frame_type.into_inner() as u8)
+                stream_frame_with_flag(frame_type.into_inner() as u8 & 0b111)
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
@@ -161,7 +181,7 @@ mod tests {
                 id: VarInt(0x1234).into(),
                 offset: VarInt(0x1234),
                 length: 11,
-                is_fin: false,
+                flag: 0b100,
             }
         );
     }
@@ -173,10 +193,16 @@ mod tests {
             id: VarInt(0x1234).into(),
             offset: VarInt(0),
             length: 11,
-            is_fin: true,
+            flag: 0b011,
         };
-        buf.put_stream_frame(&frame, false);
-        assert_eq!(buf, vec![0xb, 0x52, 0x34, 0x0b]);
+        buf.put_stream_frame(&frame, b"hello world");
+        assert_eq!(
+            buf,
+            vec![
+                0xb, 0x52, 0x34, 0x0b, b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o', b'r', b'l',
+                b'd'
+            ]
+        );
     }
 
     #[test]
@@ -186,10 +212,13 @@ mod tests {
             id: VarInt(0x1234).into(),
             offset: VarInt(0),
             length: 11,
-            is_fin: true,
+            flag: 0b001,
         };
-        buf.put_stream_frame(&frame, true);
-        assert_eq!(buf, vec![0x9, 0x52, 0x34]);
+        buf.put_stream_frame(&frame, b"hello world");
+        assert_eq!(
+            buf,
+            vec![0x9, 0x52, 0x34, b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o', b'r', b'l', b'd']
+        );
     }
 
     #[test]
@@ -199,10 +228,16 @@ mod tests {
             id: VarInt(0x1234).into(),
             offset: VarInt(0x1234),
             length: 11,
-            is_fin: true,
+            flag: 0b111,
         };
-        buf.put_stream_frame(&frame, false);
-        assert_eq!(buf, vec![0x0f, 0x52, 0x34, 0x52, 0x34, 0x0b]);
+        buf.put_stream_frame(&frame, b"hello world");
+        assert_eq!(
+            buf,
+            vec![
+                0x0f, 0x52, 0x34, 0x52, 0x34, 0x0b, b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o',
+                b'r', b'l', b'd'
+            ]
+        );
     }
 
     #[test]
@@ -212,9 +247,15 @@ mod tests {
             id: VarInt(0x1234).into(),
             offset: VarInt(0x1234),
             length: 11,
-            is_fin: false,
+            flag: 0b110,
         };
-        buf.put_stream_frame(&frame, false);
-        assert_eq!(buf, vec![0x0e, 0x52, 0x34, 0x52, 0x34, 0x0b]);
+        buf.put_stream_frame(&frame, b"hello world");
+        assert_eq!(
+            buf,
+            vec![
+                0x0e, 0x52, 0x34, 0x52, 0x34, 0x0b, b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o',
+                b'r', b'l', b'd'
+            ]
+        );
     }
 }

@@ -30,15 +30,17 @@ pub(super) mod ext {
 
     // BufMut extension trait for CRYPTO_FRAME
     pub trait BufMutExt {
-        fn put_crypto_frame(&mut self, frame: &CryptoFrame);
+        fn put_crypto_frame(&mut self, frame: &CryptoFrame, data: &[u8]);
     }
 
     impl<T: bytes::BufMut> BufMutExt for T {
-        fn put_crypto_frame(&mut self, frame: &CryptoFrame) {
+        fn put_crypto_frame(&mut self, frame: &CryptoFrame, data: &[u8]) {
             use crate::varint::ext::BufMutExt as VarIntBufMutExt;
+            assert_eq!(frame.length.into_inner(), data.len() as u64);
             self.put_u8(CRYPTO_FRAME_TYPE);
             self.put_varint(&frame.offset);
             self.put_varint(&frame.length);
+            self.put_slice(data);
         }
     }
 }
@@ -69,12 +71,22 @@ mod tests {
         let mut buf = bytes::BytesMut::new();
         let frame = CryptoFrame {
             offset: VarInt(0x1234),
-            length: VarInt(0x5678),
+            length: VarInt(0x5),
         };
-        buf.put_crypto_frame(&frame);
+        buf.put_crypto_frame(&frame, b"hello");
         assert_eq!(
             buf,
-            bytes::Bytes::from_static(&[CRYPTO_FRAME_TYPE, 0x52, 0x34, 0x80, 0x00, 0x56, 0x78,])
+            bytes::Bytes::from_static(&[
+                CRYPTO_FRAME_TYPE,
+                0x52,
+                0x34,
+                0x05,
+                b'h',
+                b'e',
+                b'l',
+                b'l',
+                b'o'
+            ])
         );
     }
 }
