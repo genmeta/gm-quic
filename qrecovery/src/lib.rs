@@ -1,6 +1,7 @@
 pub mod data_space;
 pub mod recv;
 pub mod send;
+pub mod space;
 
 pub mod index_deque;
 

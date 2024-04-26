@@ -15,7 +15,7 @@ mod stream_data_blocked;
 mod streams_blocked;
 
 // re-export for convenience
-pub use ack::AckFrame;
+pub use ack::{AckFrame, AckRecord};
 pub use crypto::CryptoFrame;
 pub use data_blocked::DataBlockedFrame;
 pub use max_data::MaxDataFrame;
@@ -29,9 +29,8 @@ pub use stream::StreamFrame;
 pub use stream_data_blocked::StreamDataBlockedFrame;
 pub use streams_blocked::StreamsBlockedFrame;
 
-use std::ops::RangeInclusive;
-
 use bytes::Bytes;
+use enum_variant_macros::*;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum FrameType {
@@ -99,12 +98,12 @@ pub enum ReadFrame {
 
 /// 写入Frame，仅仅是用于记录，当发送一个Packet时，那该Packet中的帧需要纪律下来，
 /// 以便在丢包检测时，决定里面的什么帧丢了，需要重传。
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, FromVariants)]
 pub enum WriteFrame {
-    Padding,
-    Ping,
+    Padding(PaddingFrame),
+    Ping(PingFrame),
     // 只作记录用，具体的AckFrame不必记录，因为每次AckFrame都要重新从最新的收包记录里生成
-    Ack(RangeInclusive<u64>),
+    Ack(AckRecord),
     // 数据帧也不包含数据，丢了的话不会原样重传此部分数据，而是向`Sender`标记为丢失
     Stream(StreamFrame),
     ResetStream(ResetStreamFrame),
@@ -220,8 +219,8 @@ pub mod ext {
                 streams_blocked::ext::BufMutExt as StreamsBlockedBufMutExt,
             };
             match frame {
-                WriteFrame::Padding => self.put_padding_frame(),
-                WriteFrame::Ping => self.put_ping_frame(),
+                WriteFrame::Padding(_) => self.put_padding_frame(),
+                WriteFrame::Ping(_) => self.put_ping_frame(),
                 WriteFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
                 WriteFrame::DataBlocked(frame) => self.put_data_blocked_frame(frame),
                 WriteFrame::MaxData(frame) => self.put_max_data_frame(frame),
@@ -246,9 +245,16 @@ pub mod ext {
 
 #[cfg(test)]
 mod tests {
+    use super::PingFrame;
+    use super::WriteFrame;
+
+    fn test_bound<T: From<PingFrame>>(t: T) {
+        assert_eq!(t, WriteFrame::Ping(PingFrame));
+    }
 
     #[test]
     fn it_works() {
+        assert_eq!(WriteFrame::from(PingFrame), WriteFrame::Ping(PingFrame));
         assert_eq!(2 + 2, 4);
     }
 }

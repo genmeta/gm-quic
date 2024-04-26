@@ -12,6 +12,9 @@ use crate::varint::{err::Error, VarInt};
 use std::{ops::RangeInclusive, vec::IntoIter};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AckRecord(pub u64);
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AckFrame {
     pub largest: VarInt,
     pub delay: VarInt,
@@ -46,6 +49,12 @@ impl AckFrame {
 
     pub fn take_ecn(&mut self) -> Option<EcnCounts> {
         self.ecn.take()
+    }
+}
+
+impl std::convert::From<AckFrame> for AckRecord {
+    fn from(frame: AckFrame) -> Self {
+        AckRecord(frame.largest.into_inner())
     }
 }
 

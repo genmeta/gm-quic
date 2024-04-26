@@ -314,7 +314,7 @@ impl DataSpace {
         for (_, packet) in self.inflight_packets.drain_to(largest_acked - 3).flatten() {
             for frame in packet {
                 match frame {
-                    WriteFrame::Padding | WriteFrame::Ack(_) => { /* needn't resend */ }
+                    WriteFrame::Padding(_) | WriteFrame::Ack(_) => { /* needn't resend */ }
                     WriteFrame::Stream(data) => {
                         if let Some(outgoing) = self.output.get_mut(&data.id) {
                             outgoing.may_loss(&data.range());
@@ -349,10 +349,10 @@ impl DataSpace {
                         }
                     }
                 }
-                WriteFrame::Ack(range) => {
+                WriteFrame::Ack(record) => {
                     // 我方发送的ACK包，已经被对方确认，确认窗口要前移，使早期的确认不必再重发
                     const NDUP: u64 = 3;
-                    let _ = self.recved_packets.drain_to(range.end() - NDUP);
+                    let _ = self.recved_packets.drain_to(record.0 - NDUP);
                 }
                 WriteFrame::ResetStream(reset) => {
                     if let Some(outgoing) = self.output.get_mut(&reset.stream_id) {
