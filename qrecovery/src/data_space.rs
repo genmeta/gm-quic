@@ -89,7 +89,7 @@ impl DataSpace {
         let result = self.stream_ids.try_accept_sid(sid);
         match result {
             Ok(accept) => match accept {
-                AcceptSid::Old => return,
+                AcceptSid::Old => (),
                 AcceptSid::New(need_create, _extend_max_streams) => {
                     for sid in need_create {
                         let reader = self.create_recver(sid);
@@ -200,6 +200,7 @@ impl DataSpace {
                     if let Some(incoming) = self.input.get_mut(&sid) {
                         incoming.recv(stream.offset.into_inner(), body);
                     }
+                    // 否则，该流已经结束，再收到任何该流的frame，都将被忽略
                 }
                 ReadFrame::Crypto(_crypto, _body) => {
                     is_ack_elicited = true;
@@ -293,7 +294,7 @@ impl DataSpace {
             .and_then(|record| record.take())
         {
             let _rtt_sample = send_time.elapsed() - Duration::from_micros(ack.delay.into_inner());
-            self.ack_recved(payload);
+            self.confirm(payload);
         }
 
         for range in ack.into_iter() {
@@ -303,13 +304,34 @@ impl DataSpace {
                     .get_mut(pktid)
                     .and_then(|record| record.take())
                 {
-                    self.ack_recved(payload);
+                    self.confirm(payload);
+                }
+            }
+        }
+
+        // 没被确认的，要重传；对于大部分Frame直接重入frames_buf即可，但对于StreamFrame，得判定丢失
+        let mut frames_buf = self.frames_buf.lock().unwrap();
+        for (_, packet) in self.inflight_packets.drain_to(largest_acked - 3).flatten() {
+            for frame in packet {
+                match frame {
+                    WriteFrame::Padding | WriteFrame::Ack(_) => { /* needn't resend */ }
+                    WriteFrame::Stream(data) => {
+                        if let Some(outgoing) = self.output.get_mut(&data.id) {
+                            outgoing.may_loss(&data.range());
+                        }
+                    }
+                    WriteFrame::Crypto(_data) => {
+                        // TODO: 处理加密帧，应该类似于StreamFrame
+                    }
+                    other => {
+                        frames_buf.push_back(other);
+                    }
                 }
             }
         }
     }
 
-    fn ack_recved(&mut self, payload: Payload) {
+    fn confirm(&mut self, payload: Payload) {
         for frame in payload {
             match frame {
                 WriteFrame::Stream(stream) => {
@@ -329,11 +351,16 @@ impl DataSpace {
                 }
                 WriteFrame::Ack(range) => {
                     // 我方发送的ACK包，已经被对方确认，确认窗口要前移，使早期的确认不必再重发
+                    const NDUP: u64 = 3;
+                    let _ = self.recved_packets.drain_to(range.end() - NDUP);
                 }
                 WriteFrame::ResetStream(reset) => {
+                    if let Some(outgoing) = self.output.get_mut(&reset.stream_id) {
+                        outgoing.confirm_reset();
+                    }
                     self.input.remove(&reset.stream_id);
                 }
-                // 其他的帧被对方收到，有通知发送者的权利，但没必要通知
+                // 其他的帧被对方收到，有通知发送者的可选操作，但没必要通知
                 _ => println!("ignored"),
             }
         }

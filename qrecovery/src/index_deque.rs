@@ -79,7 +79,7 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
     /// The records of the sent packets can only be removed from the queue
     /// when the acknowledgment (ack) is received. Additionally, any unacknowledged
     /// elements in the records are considered lost and require retransmission.
-    pub fn drain_to(&mut self, end: u64) -> impl Iterator<Item = (u64, T)> + '_ {
+    pub fn drain_to(&mut self, end: u64) -> impl Iterator<Item = T> + '_ {
         #[cfg(not(test))]
         debug_assert!(end >= self.offset && end <= self.offset + self.deque.len() as u64);
         // avoid end < self.offset
@@ -88,10 +88,7 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
         // avoid end > self.offset + self.deque.len()
         self.offset = std::cmp::min(end, offset + self.deque.len() as u64);
         let end = (self.offset - offset) as usize;
-        self.deque
-            .drain(..end)
-            .enumerate()
-            .map(move |(i, v)| (i as u64 + offset, v))
+        self.deque.drain(..end)
     }
 }
 
@@ -163,9 +160,12 @@ mod tests {
         assert_eq!(deque[19], 20);
 
         assert_eq!(deque.drain_to(10).count(), 0);
-        deque.drain_to(15).for_each(|(i, v)| {
-            assert_eq!(i + 1, v);
-        });
+        let mut i = 10;
+        for item in deque.drain_to(15) {
+            i = i + 1;
+            assert_eq!(item, i);
+        }
+        assert_eq!(i, 15);
         assert!(deque.contain(15));
         assert_eq!(deque.offset, 15);
 

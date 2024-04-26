@@ -108,7 +108,7 @@ impl Outgoing {
         };
     }
 
-    pub fn ack_reset(&mut self) {
+    pub fn confirm_reset(&mut self) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {
