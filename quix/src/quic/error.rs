@@ -145,4 +145,6 @@ pub enum Error {
     InvalidFrame,
 
     InvalidDnsName,
+
+    InvaildServerConfig,
 }

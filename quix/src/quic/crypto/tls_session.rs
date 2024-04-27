@@ -1,4 +1,10 @@
-use std::{io, sync::Arc};
+use std::{
+    future::Future,
+    io,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use qbase::config::{self, TransportParameters};
 use ring::aead;
@@ -14,6 +20,11 @@ use crate::quic::{cid::ConnectionId, error::Error::UnsupportedVersion};
 use super::{HeaderKey, KeyPair, Keys, PacketKey};
 use crate::quic::error::Error::InvalidDnsName;
 
+/// 当从收到 crypto 数据时
+/// 1. 如果是当前 tls 密级，将数据排序到输入流中，如果有新的数据可用，按照顺序传递给 tls
+/// 2. 如果来自之前的密级，则该数据包不得包含超出该流中先前接收的数据末尾的数据，否则产生一个 PROTOCOL_VIOLATION类型的连接错误
+/// 3. 如果数据包来自一个新的加密级别，那么它将被TLS保存以备以后处理。 一旦TLS转向接收来自这个加密级别的数据，就可以将保存的数据提供给TLS。
+///    当TLS为更高的加密级别提供密钥时，如果有前一个加密级别的数据没有被TLS消耗掉，这必须作为PROTOCOL_VIOLATION类型的连接错误处理。
 pub enum TlsSession {
     Client(ClientSession),
     Server(ServerSession),
@@ -22,12 +33,12 @@ pub enum TlsSession {
 pub struct ClientSession {
     version: Version,
     next_secrets: Option<Secrets>,
-    inner: Connection,
+    pub inner: Connection,
 }
 
 pub struct ServerSession {
     version: Version,
-    inner: Connection,
+    pub inner: Connection,
     protocol: Option<Vec<u8>>,
     next_secrets: Option<Secrets>,
     name: Option<String>,
@@ -73,6 +84,10 @@ impl TlsSession {
         }))
     }
 
+    /// 生成 inital keys
+    /// initial_secret = HKDF-Extract(initial_salt,client_dst_connection_id)
+    /// client_initial_secret = HKDF-Expand-Label(initial_secret,"client in", "",Hash.length)
+    /// server_initial_secret = HKDF-Expand-Label(initial_secret,"server in", "",Hash.length)
     pub fn initial_keys(
         version: u32,
         dst_cid: &ConnectionId,
@@ -92,6 +107,8 @@ impl TlsSession {
         })
     }
 
+    /// 在TLS协议栈报告握手完成时，才认为TLS握手完成。
+    /// 当TLS协议栈发送了Finished消息，并校验了对端的Finished消息，TLS协议栈才会报告握手完成。
     pub fn is_handshaking(&self) -> bool {
         match self {
             TlsSession::Client(s) => s.inner.is_handshaking(),
@@ -99,8 +116,10 @@ impl TlsSession {
         }
     }
 
-    // 读取 crypto 握手数据，第一次握手完成后返回 true
-    pub fn read_handshake(&mut self, buf: &[u8]) -> Result<bool, TransportError> {
+    /// 每次TLS被提供新的数据时，都会向TLS请求新的握手字节。 即每次调用 read_shandshke 后，都要调用一下 write_handshake
+    /// 如果收到的握手信息不完整或者没有数据要发送，TLS可能不会提供任何字节。
+    /// 握手完成后，QUIC只需要向TLS提供CRYPTO流中到达的任何数据。与握手过程中使用的方式相同，在提供收到的数据后，会向TLS请求新的数据。
+    pub fn write_crypto(&mut self, buf: &[u8]) -> Result<(), TransportError> {
         let inner = match self {
             TlsSession::Client(s) => &mut s.inner,
             TlsSession::Server(s) => &mut s.inner,
@@ -116,18 +135,12 @@ impl TlsSession {
                 TransportError::PROTOCOL_VIOLATION(format!("TLS error: {e}"))
             }
         })?;
-
-        let have_server_name = match inner {
-            Connection::Client(_) => false,
-            Connection::Server(ref session) => session.server_name().is_some(),
-        };
-        if inner.alpn_protocol().is_some() || have_server_name || !self.is_handshaking() {
-            return Ok(true);
-        }
-        Ok(false)
+        Ok(())
     }
 
-    pub fn write_handshake(&mut self, buf: &mut Vec<u8>) -> Option<Keys> {
+    /// TLS产生的每个数据块都与TLS当前使用的密钥集相关联。
+    /// 如果QUIC需要重新传输该数据，即使TLS已经更新到更新的密钥，它也必须使用相同的密钥。
+    pub fn get_crypto(&mut self, buf: &mut Vec<u8>) -> Option<Keys> {
         let inner = match self {
             TlsSession::Client(s) => &mut s.inner,
             TlsSession::Server(s) => &mut s.inner,

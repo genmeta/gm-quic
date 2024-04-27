@@ -1,21 +1,30 @@
 use std::{
+    future::Future,
     ops::{Index, IndexMut},
+    pin::Pin,
     slice::SliceIndex,
+    sync::{Arc, Mutex},
+    task::{Context, Poll},
 };
 
 use bytes::Bytes;
+use libc::BUFSIZ;
 use qbase::config::TransportParameters;
-use rustls::Side;
+use rustls::{internal::msgs::handshake, Connection, Side};
 
 use super::{
-    crypto::Keys,
-    crypto::{tls_session::TlsSession, KeyPair, PacketKey, ZeroRttCrypto},
-    error::TransportError,
+    cid::ConnectionId,
+    crypto::{tls_session::server_config, Keys},
+    crypto::{
+        tls_session::{client_config, TlsSession},
+        KeyPair, PacketKey, ZeroRttCrypto,
+    },
+    error::{Error, TransportError},
     frames,
     packet::SpaceId,
 };
 
-pub(crate) struct Connection {
+pub(crate) struct Crypto {
     tls: Box<TlsSession>,
     space_crypto: [Option<Keys>; 3],
     zero_rtt_crypto: Option<ZeroRttCrypto>,
@@ -23,42 +32,118 @@ pub(crate) struct Connection {
     highest_space: SpaceId,
     side: Side,
     handshake_done: bool,
+    start_hanshake: bool,
 }
 
-impl Connection {
-    // 客户端主动发起tls握手
-    fn tls_handshake(&mut self) {
-        // todo: offset 应该是Space 维护
-        let offset = 0;
-        loop {
-            let space = self.highest_space;
-            let mut outgoing = Vec::new();
-            if let Some(crypto) = self.tls.write_handshake(&mut outgoing) {
-                match space {
-                    SpaceId::Initial => {
-                        self.upgrade_crypto(SpaceId::Handshake, crypto);
-                    }
-                    SpaceId::Handshake => {
-                        self.upgrade_crypto(SpaceId::Data, crypto);
-                    }
-                    _ => unreachable!("got updated secrets during 1-RTT"),
-                }
-            }
-            if outgoing.is_empty() {
-                if space == self.highest_space {
-                    break;
+struct HandshakeData {
+    pub protocol: Option<Vec<u8>>,
+    pub server_name: Option<String>,
+}
+
+impl Crypto {
+    fn new_client(
+        roots: rustls::RootCertStore,
+        version: u32,
+        server_name: &str,
+        init_cid: &ConnectionId,
+    ) -> Result<Self, Error> {
+        let mut client_config = Arc::new(client_config(roots));
+        let tls = TlsSession::start_client_session(
+            client_config,
+            version,
+            server_name,
+            &TransportParameters::default(),
+        )?;
+
+        let init_key = TlsSession::initial_keys(version, init_cid, Side::Client)?;
+        let tls = Box::new(tls);
+        Ok(Self {
+            tls,
+            space_crypto: [Some(init_key), None, None],
+            zero_rtt_crypto: None,
+            next_crypto: None,
+            highest_space: SpaceId::Initial,
+            side: Side::Client,
+            handshake_done: false,
+            start_hanshake: false,
+        })
+    }
+
+    fn new_server(
+        version: u32,
+        cert_chain: Vec<rustls::Certificate>,
+        key: rustls::PrivateKey,
+    ) -> Result<Self, Error> {
+        let server_config =
+            server_config(cert_chain, key).map_err(|_| Error::InvaildServerConfig)?;
+        let server_config = Arc::new(server_config);
+
+        let tls = TlsSession::start_server_session(
+            server_config,
+            version,
+            &TransportParameters::default(),
+        )?;
+        let tls = Box::new(tls);
+        Ok(Self {
+            tls,
+            space_crypto: [None, None, None],
+            zero_rtt_crypto: None,
+            next_crypto: None,
+            highest_space: SpaceId::Initial,
+            side: Side::Server,
+            handshake_done: false,
+            start_hanshake: false,
+        })
+    }
+
+    fn handshake_data(&mut self) -> Poll<HandshakeData> {
+        match self.tls.is_handshaking() {
+            true => Poll::Pending,
+            false => {
+                let inner = match &self.tls.as_ref() {
+                    TlsSession::Client(ref x) => &x.inner,
+                    TlsSession::Server(ref x) => &x.inner,
+                };
+                let server_name = match inner {
+                    rustls::quic::Connection::Client(_) => None,
+                    rustls::quic::Connection::Server(ref session) => session.server_name(),
+                };
+                if inner.alpn_protocol().is_some() {
+                    let name = if let Some(name) = server_name {
+                        Some(name.to_string())
+                    } else {
+                        None
+                    };
+
+                    Poll::Ready(HandshakeData {
+                        protocol: inner.alpn_protocol().map(|x| x.to_vec()),
+                        server_name: name,
+                    })
                 } else {
-                    // Keys updated, check for more data to send
-                    continue;
+                    Poll::Pending
                 }
             }
-            let outgoing = Bytes::from(outgoing);
-            let frame = frames::Crypto {
-                offset,
-                data: outgoing,
-            };
-            // 把帧交给 Space 发送
         }
+    }
+
+    async fn get_tls_data(&mut self) -> Poll<(Vec<u8>, Option<Keys>)> {
+        let mut outgoing = &mut Vec::new();
+        if let Some(keys) = self.tls.get_crypto(&mut outgoing) {
+            match self.highest_space {
+                SpaceId::Initial => {
+                    self.upgrade_crypto(SpaceId::Handshake, keys);
+                }
+                SpaceId::Handshake => {
+                    self.upgrade_crypto(SpaceId::Data, keys);
+                }
+                _ => unreachable!("got updated secrets during 1-RTT"),
+            }
+        }
+
+        if outgoing.is_empty() {
+            return Poll::Pending;
+        }
+        return Poll::Ready((outgoing.to_vec(), None));
     }
 
     fn init_0rtt(&mut self) {
@@ -109,12 +194,9 @@ impl Connection {
         }
     }
 
-    fn read_crypto(
-        &mut self,
-        space: SpaceId,
-        crypto: &frames::Crypto,
-        payload_len: usize,
-    ) -> Result<(), TransportError> {
+    /// 服务端向TLS提供客户端的握手字节来启动tls握手
+    /// 每次调用 write_tls_data 之后都要调用 get_tls_data
+    fn write_tls_data(&mut self, space: SpaceId, buf: &[u8]) -> Result<(), TransportError> {
         let expected = if self.handshake_done {
             SpaceId::Data
         } else if self.highest_space == SpaceId::Initial {
@@ -127,9 +209,8 @@ impl Connection {
 
         debug_assert!(space <= expected, "received out-of-order CRYPTO data");
 
-        if self.tls.read_handshake(&crypto.data[..payload_len])? {
-            self.handshake_done = true;
-        }
+        // 把数据写给 tls
+        self.tls.write_crypto(buf)?;
         Ok(())
     }
 }

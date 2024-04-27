@@ -74,4 +74,8 @@ impl TransportParameters {
     pub fn read<R: Buf>(r: &mut R) -> Result<Self, Error> {
         todo!("read from bytes")
     }
+
+    pub fn default() -> TransportParameters {
+        todo!("default")
+    }
 }
