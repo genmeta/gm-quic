@@ -4,10 +4,8 @@ use crate::send::{self, Outgoing, Writer};
 use crate::AppStream;
 use bytes::Bytes;
 use qbase::frame::*;
-use qbase::frame::{ReadFrame, WriteFrame};
 use qbase::streamid::{AcceptSid, Dir, StreamId, StreamIds};
-use qbase::varint::VarInt;
-use qbase::varint::VARINT_MAX;
+use qbase::varint::{VarInt, VARINT_MAX};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::task::{ready, Context, Poll, Waker};
@@ -176,7 +174,7 @@ impl DataSpace {
 }
 
 impl DataSpace {
-    pub fn recv(&mut self, pktid: u64, payload: Vec<ReadFrame>) {
+    pub fn recv(&mut self, pktid: u64, payload: Vec<Frame>) {
         if pktid < self.recved_packets.offset() {
             // 重复收到了，不用处理
             // TODO: 可能增加乱序容忍度
@@ -190,10 +188,10 @@ impl DataSpace {
         let mut is_ack_elicited = false;
         for frame in payload {
             match frame {
-                ReadFrame::Padding => {}
-                ReadFrame::Ping => {}
-                ReadFrame::Ack(ack) => self.recv_ack_frame(ack),
-                ReadFrame::Stream(stream, body) => {
+                Frame::Padding => {}
+                Frame::Info(InfoFrame::Ping) => {}
+                Frame::Ack(ack) => self.recv_ack_frame(ack),
+                Frame::Data(DataFrame::Stream(stream), body) => {
                     is_ack_elicited = true;
                     let sid = stream.id;
                     self.try_accept_sid(sid);
@@ -202,11 +200,11 @@ impl DataSpace {
                     }
                     // 否则，该流已经结束，再收到任何该流的frame，都将被忽略
                 }
-                ReadFrame::Crypto(_crypto, _body) => {
+                Frame::Data(DataFrame::Crypto(_crypto), _body) => {
                     is_ack_elicited = true;
                     // TODO: 处理加密帧
                 }
-                ReadFrame::ResetStream(reset) => {
+                Frame::Info(InfoFrame::ResetStream(reset)) => {
                     is_ack_elicited = true;
                     let sid = reset.stream_id;
                     // TODO: 处理下这个sid
@@ -215,7 +213,7 @@ impl DataSpace {
                         incoming.recv_reset();
                     }
                 }
-                ReadFrame::StopSending(stop) => {
+                Frame::Info(InfoFrame::StopSending(stop)) => {
                     is_ack_elicited = true;
                     let sid = stop.stream_id;
                     // TODO: 处理下这个sid
@@ -232,11 +230,11 @@ impl DataSpace {
                             final_size: VarInt::from_u32(0),
                         }));
                 }
-                ReadFrame::MaxData(_max_data) => {
+                Frame::Info(InfoFrame::MaxData(_max_data)) => {
                     is_ack_elicited = true;
                     // do nothing
                 }
-                ReadFrame::MaxStreamData(max_stream_data) => {
+                Frame::Info(InfoFrame::MaxStreamData(max_stream_data)) => {
                     is_ack_elicited = true;
                     let sid = max_stream_data.stream_id;
                     // TODO: 处理下这个sid
@@ -244,7 +242,7 @@ impl DataSpace {
                         outgoing.update_window(max_stream_data.max_stream_data.into_inner());
                     }
                 }
-                ReadFrame::MaxStreams(max_streams) => {
+                Frame::Info(InfoFrame::MaxStreams(max_streams)) => {
                     is_ack_elicited = true;
                     match max_streams {
                         MaxStreamsFrame::Bi(val) => {
@@ -255,18 +253,19 @@ impl DataSpace {
                         }
                     };
                 }
-                ReadFrame::DataBlocked(_data_blocked) => {
+                Frame::Info(InfoFrame::DataBlocked(_data_blocked)) => {
                     is_ack_elicited = true;
                     // 仅仅起到通知作用?
                 }
-                ReadFrame::StreamDataBlocked(_stream_data_blocked) => {
+                Frame::Info(InfoFrame::StreamDataBlocked(_stream_data_blocked)) => {
                     is_ack_elicited = true;
                     // 仅仅起到通知作用?
                 }
-                ReadFrame::StreamsBlocked(_streams_blocked) => {
+                Frame::Info(InfoFrame::StreamsBlocked(_streams_blocked)) => {
                     is_ack_elicited = true;
                     // 仅仅起到通知作用?
                 }
+                _ => todo!("需要整改"),
             }
         }
 
@@ -314,7 +313,7 @@ impl DataSpace {
         for (_, packet) in self.inflight_packets.drain_to(largest_acked - 3).flatten() {
             for frame in packet {
                 match frame {
-                    WriteFrame::Padding(_) | WriteFrame::Ack(_) => { /* needn't resend */ }
+                    WriteFrame::Padding | WriteFrame::Ack(_) => { /* needn't resend */ }
                     WriteFrame::Stream(data) => {
                         if let Some(outgoing) = self.output.get_mut(&data.id) {
                             outgoing.may_loss(&data.range());
