@@ -26,10 +26,17 @@ pub const MAX_PKT_NUM_LEN: usize = 4;
 
 const SAMPLE_LEN: usize = 16;
 
-pub enum Epoch {
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub enum SpaceId {
     Initial = 0,
     Handshake = 1,
-    Application = 2,
+    Data = 2,
+}
+
+impl SpaceId {
+    pub fn iter() -> impl Iterator<Item = Self> {
+        [Self::Initial, Self::Handshake, Self::Data].iter().cloned()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -426,7 +433,7 @@ mod tests {
     use hex_literal::hex;
     use rustls::Side;
 
-    use crate::quic::crypto::rustls::initial_keys;
+    use crate::quic::crypto::key::initial_keys;
 
     use super::*;
 

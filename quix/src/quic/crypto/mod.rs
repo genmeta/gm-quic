@@ -1,6 +1,7 @@
 use nom::error::VerboseError;
 
-pub mod rustls;
+pub mod key;
+pub mod tls_session;
 
 #[derive(Debug)]
 pub struct CryptoError;
@@ -51,4 +52,9 @@ pub struct Keys {
     pub header: KeyPair<Box<dyn HeaderKey>>,
     /// Packet protection keys
     pub packet: KeyPair<Box<dyn PacketKey>>,
+}
+
+pub struct ZeroRttCrypto {
+    pub header: Box<dyn HeaderKey>,
+    pub packet: Box<dyn PacketKey>,
 }

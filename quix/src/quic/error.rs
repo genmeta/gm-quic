@@ -136,9 +136,13 @@ pub enum Error {
     /// Not enough available identifiers.
     OutOfIdentifiers,
 
+    UnsupportedVersion,
+
     InvalidState,
 
     InvalidPacket,
 
     InvalidFrame,
+
+    InvalidDnsName,
 }

@@ -1,6 +1,8 @@
 use super::varint::VarInt;
+use bytes::Buf;
 use getset::{CopyGetters, Getters, MutGetters, Setters};
 use std::{net::SocketAddr, time::Duration};
+use thiserror::Error;
 
 /// Ref. https://www.iana.org/assignments/quic/quic.xhtml
 
@@ -52,4 +54,24 @@ pub struct TransportParameters {
     max_datagram_frame_size: VarInt,
     #[getset(get_copy = "pub", set = "pub")]
     grease_quic_bit: bool,
+}
+/// Errors encountered while decoding `TransportParameters`
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Error)]
+pub enum Error {
+    /// Parameters that are semantically invalid
+    #[error("parameter had illegal value")]
+    IllegalValue,
+    /// Catch-all error for problems while decoding transport parameters
+    #[error("parameters were malformed")]
+    Malformed,
+}
+
+impl TransportParameters {
+    pub fn to_vec(&self) -> Vec<u8> {
+        todo!("write to bytes")
+    }
+
+    pub fn read<R: Buf>(r: &mut R) -> Result<Self, Error> {
+        todo!("read from bytes")
+    }
 }
