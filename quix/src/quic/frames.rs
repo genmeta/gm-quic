@@ -561,8 +561,8 @@ impl From<UnexpectedEnd> for IterErr {
     }
 }
 
-impl From<err::Error> for IterErr {
-    fn from(_: err::Error) -> Self {
+impl From<err::Overflow> for IterErr {
+    fn from(_: err::Overflow) -> Self {
         Self::UnexpectedEnd
     }
 }

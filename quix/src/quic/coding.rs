@@ -24,8 +24,8 @@ impl From<nom::Err<(&[u8], nom::error::ErrorKind)>> for UnexpectedEnd {
     }
 }
 
-impl From<err::Error> for UnexpectedEnd {
-    fn from(_: err::Error) -> Self {
+impl From<err::Overflow> for UnexpectedEnd {
+    fn from(_: err::Overflow) -> Self {
         UnexpectedEnd
     }
 }
