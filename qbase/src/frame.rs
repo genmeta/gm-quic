@@ -1,5 +1,9 @@
 // This folder defines all the frames, including their parsing and packaging processes.
 
+pub trait BeFrame {
+    fn frame_type(&self) -> VarInt;
+}
+
 mod ack;
 mod connection_close;
 mod crypto;
@@ -44,6 +48,7 @@ pub use stream::StreamFrame;
 pub use stream_data_blocked::StreamDataBlockedFrame;
 pub use streams_blocked::StreamsBlockedFrame;
 
+use super::varint::VarInt;
 use bytes::Bytes;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -70,32 +75,32 @@ pub enum FrameType {
     HandshakeDone,
 }
 
-impl TryFrom<u8> for FrameType {
+impl TryFrom<VarInt> for FrameType {
     type Error = FrameDecodingError;
 
-    fn try_from(frame_type: u8) -> Result<Self, Self::Error> {
-        Ok(match frame_type {
+    fn try_from(frame_type: VarInt) -> Result<Self, Self::Error> {
+        Ok(match frame_type.into_inner() {
             0x00 => FrameType::Padding,
             0x01 => FrameType::Ping,
-            0x02 | 0x03 => FrameType::Ack(frame_type & 0b1),
+            ty @ (0x02 | 0x03) => FrameType::Ack(ty as u8 & 0b1),
             0x04 => FrameType::ResetStream,
             0x05 => FrameType::StopSending,
             0x06 => FrameType::Crypto,
             0x07 => FrameType::NewToken,
-            0x08..=0x0f => FrameType::Stream(frame_type & 0b111),
+            ty @ 0x08..=0x0f => FrameType::Stream(ty as u8 & 0b111),
             0x10 => FrameType::MaxData,
             0x11 => FrameType::MaxStreamData,
-            0x12 | 0x13 => FrameType::MaxStreams(frame_type & 0b1),
+            ty @ (0x12 | 0x13) => FrameType::MaxStreams(ty as u8 & 0b1),
             0x14 => FrameType::DataBlocked,
             0x15 => FrameType::StreamDataBlocked,
-            0x16 | 0x17 => FrameType::StreamsBlocked(frame_type & 0b1),
+            ty @ (0x16 | 0x17) => FrameType::StreamsBlocked(ty as u8 & 0b1),
             0x18 => FrameType::NewConnectionId,
             0x19 => FrameType::RetireConnectionId,
             0x1a => FrameType::PathChallenge,
             0x1b => FrameType::PathResponse,
-            0x1c | 0x1d => FrameType::ConnectionClose(frame_type & 0x1),
+            ty @ (0x1c | 0x1d) => FrameType::ConnectionClose(ty as u8 & 0x1),
             0x1e => FrameType::HandshakeDone,
-            _ => return Err(Self::Error::InvalidFrameType(frame_type)),
+            _ => return Err(Self::Error::InvalidType(frame_type)),
         })
     }
 }
@@ -264,19 +269,7 @@ pub mod ext {
     };
 
     use bytes::Bytes;
-    use nom::{
-        combinator::{flat_map, map, map_res},
-        error::{Error, ErrorKind},
-        Err,
-    };
-
-    fn be_frame_type(input: &[u8]) -> nom::IResult<&[u8], FrameType> {
-        use crate::varint::ext::be_varint;
-        map_res(be_varint, |frame_type| {
-            FrameType::try_from(frame_type.into_inner() as u8)
-                .map_err(|_| Error::new(input, ErrorKind::Alt))
-        })(input)
-    }
+    use nom::combinator::map;
 
     /// Some frames like `STREAM` and `CRYPTO` have a data body, which use `bytes::Bytes` to store.
     fn complete_frame(
@@ -333,7 +326,7 @@ pub mod ext {
                 let start = raw.len() - input.len();
                 let len = frame.length.into_inner() as usize;
                 if input.len() < len {
-                    Err(Err::Incomplete(nom::Needed::new(len - input.len())))
+                    Err(nom::Err::Incomplete(nom::Needed::new(len - input.len())))
                 } else {
                     let data = raw.slice(start..start + len);
                     Ok((&input[len..], Frame::Data(DataFrame::Crypto(frame), data)))
@@ -344,7 +337,7 @@ pub mod ext {
                 let start = raw.len() - input.len();
                 let len = frame.length;
                 if input.len() < len {
-                    Err(Err::Incomplete(nom::Needed::new(len - input.len())))
+                    Err(nom::Err::Incomplete(nom::Needed::new(len - input.len())))
                 } else {
                     let data = raw.slice(start..start + len);
                     Ok((&input[len..], Frame::Data(DataFrame::Stream(frame), data)))
@@ -354,11 +347,14 @@ pub mod ext {
     }
 
     // nom parser for FRAME
-    fn be_frame(raw: Bytes) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Frame> {
+    fn be_frame(raw: Bytes) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Frame, FrameDecodingError> {
         move |input: &[u8]| {
-            flat_map(be_frame_type, |frame_type| {
-                complete_frame(frame_type, raw.clone())
-            })(input)
+            use crate::varint::ext::be_varint;
+            let (input, fty) = be_varint(input)
+                .map_err(|e| nom::Err::Error(FrameDecodingError::IncompleteType(e.to_string())))?;
+            let frame_type = FrameType::try_from(fty).map_err(nom::Err::Error)?;
+            complete_frame(frame_type, raw.clone())(input)
+                .map_err(|e| nom::Err::Error(FrameDecodingError::ParseError(fty, e.to_string())))
         }
     }
 

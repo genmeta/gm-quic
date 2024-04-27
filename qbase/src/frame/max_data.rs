@@ -12,13 +12,20 @@ pub struct MaxDataFrame {
 
 pub(super) const MAX_DATA_FRAME_TYPE: u8 = 0x10;
 
+impl super::BeFrame for MaxDataFrame {
+    fn frame_type(&self) -> VarInt {
+        VarInt::from(MAX_DATA_FRAME_TYPE)
+    }
+}
+
 pub(super) mod ext {
     use super::MaxDataFrame;
 
     // nom parser for MAX_DATA_FRAME
     pub fn be_max_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxDataFrame> {
-        let (input, max_data) = crate::varint::ext::be_varint(input)?;
-        Ok((input, MaxDataFrame { max_data }))
+        use crate::varint::ext::be_varint;
+        use nom::combinator::map;
+        map(be_varint, |max_data| MaxDataFrame { max_data })(input)
     }
 
     // BufMut write extension for MAX_DATA_FRAME

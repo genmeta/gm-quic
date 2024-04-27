@@ -8,7 +8,7 @@
 //   [ECN Counts (..)],
 // }
 
-use crate::varint::{err::Error, VarInt};
+use crate::varint::{err::Overflow, VarInt};
 use std::{ops::RangeInclusive, vec::IntoIter};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -25,13 +25,25 @@ pub struct AckFrame {
 
 pub(super) const ACK_FRAME_TYPE: u8 = 0x02;
 
+const ECN_OPT: u8 = 0x1;
+
+impl super::BeFrame for AckFrame {
+    fn frame_type(&self) -> VarInt {
+        VarInt::from(if self.ecn.is_some() {
+            ACK_FRAME_TYPE | ECN_OPT
+        } else {
+            ACK_FRAME_TYPE
+        })
+    }
+}
+
 impl AckFrame {
     pub fn new(
         largest: u64,
         first_range: u32,
         delay: u64,
         ecn: Option<EcnCounts>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Overflow> {
         Ok(Self {
             largest: VarInt::try_from(largest)?,
             delay: VarInt::try_from(delay)?,
@@ -108,7 +120,7 @@ pub struct EcnCounts {
 }
 
 pub(super) mod ext {
-    use super::{AckFrame, EcnCounts};
+    use super::{AckFrame, EcnCounts, ECN_OPT};
     use crate::frame::ack::ACK_FRAME_TYPE;
     use crate::varint::ext::be_varint;
     use nom::combinator::map;
@@ -127,7 +139,7 @@ pub(super) mod ext {
                 input = i;
             }
 
-            let ecn = if ecn_flag & 0x01 == 0x01 {
+            let ecn = if ecn_flag & ECN_OPT != 0 {
                 let (i, ecn) = be_ecn_counts(input)?;
                 input = i;
                 Some(ecn)
@@ -173,7 +185,7 @@ pub(super) mod ext {
 
             let mut frame_type = ACK_FRAME_TYPE;
             if frame.ecn.is_some() {
-                frame_type |= 0x1;
+                frame_type |= ECN_OPT;
             }
             self.put_u8(frame_type);
             self.put_varint(&frame.largest);

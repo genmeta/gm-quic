@@ -12,6 +12,12 @@ pub struct RetireConnectionIdFrame {
 
 pub(super) const RETIRE_CONNECTION_ID_FRAME_TYPE: u8 = 0x19;
 
+impl super::BeFrame for RetireConnectionIdFrame {
+    fn frame_type(&self) -> VarInt {
+        VarInt::from(RETIRE_CONNECTION_ID_FRAME_TYPE)
+    }
+}
+
 pub(super) mod ext {
     use super::{RetireConnectionIdFrame, RETIRE_CONNECTION_ID_FRAME_TYPE};
     use crate::varint::ext::be_varint;

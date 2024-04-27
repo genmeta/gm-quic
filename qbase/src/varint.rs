@@ -22,11 +22,11 @@ impl VarInt {
     }
 
     /// Succeeds if `x` < 2^62
-    pub fn from_u64(x: u64) -> Result<Self, err::Error> {
+    pub fn from_u64(x: u64) -> Result<Self, err::Overflow> {
         if x < (1 << 62) {
             Ok(Self(x))
         } else {
-            Err(err::Error::Overflow(x))
+            Err(err::Overflow(x))
         }
     }
 
@@ -86,19 +86,19 @@ impl From<u32> for VarInt {
 }
 
 impl TryFrom<u64> for VarInt {
-    type Error = err::Error;
+    type Error = err::Overflow;
 
     /// Succeeds if `x` < 2^62
-    fn try_from(x: u64) -> Result<Self, err::Error> {
+    fn try_from(x: u64) -> Result<Self, Self::Error> {
         Self::from_u64(x)
     }
 }
 
 impl TryFrom<usize> for VarInt {
-    type Error = err::Error;
+    type Error = err::Overflow;
 
     /// Succeeds if `x` < 2^62
-    fn try_from(x: usize) -> Result<Self, err::Error> {
+    fn try_from(x: usize) -> Result<Self, Self::Error> {
         Self::try_from(x as u64)
     }
 }
@@ -126,26 +126,14 @@ pub mod err {
     use thiserror::Error;
 
     #[derive(Debug, Copy, Clone, Eq, PartialEq, Error)]
-    pub enum Error {
-        /// Error returned when constructing a `VarInt` from a value >= 2^62
-        #[error("value({0}) too large for varint encoding")]
-        Overflow(u64),
-        #[error("parse varint error")]
-        ParseError,
-    }
-
-    impl From<nom::Err<nom::error::Error<&[u8]>>> for Error {
-        fn from(_e: nom::Err<nom::error::Error<&[u8]>>) -> Self {
-            dbg!("nom parse varint error occured: {}", _e);
-            Self::ParseError
-        }
-    }
+    #[error("value({0}) too large for varint encoding")]
+    pub struct Overflow(pub(super) u64);
 }
 
 pub mod ext {
     use super::{err, VarInt};
     use bytes::{Buf, BufMut};
-    use nom::{bits::complete::take, combinator::flat_map, error::Error, IResult};
+    use nom::{bits::streaming::take, combinator::flat_map, error::Error, IResult};
 
     /// Parse a variable-length integer, can be used like `be_u8/be_u16/be_u32` etc.
     /// ## Example
@@ -165,7 +153,7 @@ pub mod ext {
     }
 
     pub trait BufExt {
-        fn get_varint(&mut self) -> Result<VarInt, err::Error>;
+        fn get_varint(&mut self) -> Result<VarInt, err::Overflow>;
     }
 
     pub trait BufMutExt {
@@ -173,9 +161,9 @@ pub mod ext {
     }
 
     impl<T: Buf> BufExt for T {
-        fn get_varint(&mut self) -> Result<VarInt, err::Error> {
+        fn get_varint(&mut self) -> Result<VarInt, err::Overflow> {
             let remained = self.remaining();
-            let (remain, value) = be_varint(self.chunk())?;
+            let (remain, value) = be_varint(self.chunk()).map_err(|_| err::Overflow(0))?;
             self.advance(remained - remain.len());
             Ok(value)
         }
@@ -202,43 +190,35 @@ pub mod ext {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        err,
-        ext::{BufExt, BufMutExt},
-        VarInt,
-    };
+    use super::{ext::BufMutExt, VarInt};
     use bytes::BufMut;
 
     #[test]
-    fn reading_varint() {
+    fn test_be_varint() {
         {
-            let mut buf = &[0b00000001u8, 0x01][..];
-            let r = buf.get_varint();
-            assert_eq!(r, Ok(VarInt(1)));
-            assert_eq!(buf, &[0x01][..]);
+            let buf = &[0b00000001u8, 0x01][..];
+            let r = super::ext::be_varint(buf);
+            assert_eq!(r, Ok((&[0x01][..], VarInt(1))));
         }
         {
-            let mut buf = &[0b01000000u8, 0x06u8][..];
-            let r = buf.get_varint();
-            assert_eq!(r, Ok(VarInt(6)));
-            assert_eq!(buf, &[][..]);
+            let buf = &[0b01000000u8, 0x06u8][..];
+            let r = super::ext::be_varint(buf);
+            assert_eq!(r, Ok((&[][..], VarInt(6))));
         }
         {
-            let mut buf = &[0b10000000u8, 1, 1, 1][..];
-            let r = buf.get_varint();
-            assert_eq!(r, Ok(VarInt(0x010101)));
-            assert_eq!(buf, &[][..]);
+            let buf = &[0b10000000u8, 1, 1, 1][..];
+            let r = super::ext::be_varint(buf);
+            assert_eq!(r, Ok((&[][..], VarInt(0x010101))));
         }
         {
-            let mut buf = &[0b11000000u8, 1, 1, 1, 1, 1, 1, 1][..];
-            let r = buf.get_varint();
-            assert_eq!(r, Ok(VarInt(0x01010101010101)));
-            assert_eq!(buf, &[][..]);
+            let buf = &[0b11000000u8, 1, 1, 1, 1, 1, 1, 1][..];
+            let r = super::ext::be_varint(buf);
+            assert_eq!(r, Ok((&[][..], VarInt(0x01010101010101))));
         }
         {
-            let mut buf = &[0b11000000u8, 0x06u8][..];
-            let r = buf.get_varint();
-            assert_eq!(r, Err(err::Error::ParseError));
+            let buf = &[0b11000000u8, 0x06u8][..];
+            let r = super::ext::be_varint(buf);
+            assert_eq!(r, Err(nom::Err::Incomplete(nom::Needed::new(62))));
         }
     }
 

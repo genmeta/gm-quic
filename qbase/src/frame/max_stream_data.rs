@@ -14,21 +14,26 @@ pub struct MaxStreamDataFrame {
 
 pub(super) const MAX_STREAM_DATA_FRAME_TYPE: u8 = 0x11;
 
+impl super::BeFrame for MaxStreamDataFrame {
+    fn frame_type(&self) -> VarInt {
+        VarInt::from(MAX_STREAM_DATA_FRAME_TYPE)
+    }
+}
+
 pub(super) mod ext {
     use super::{MaxStreamDataFrame, MAX_STREAM_DATA_FRAME_TYPE};
 
     // nom parser for MAX_STREAM_DATA_FRAME
     pub fn be_max_stream_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxStreamDataFrame> {
         use crate::{streamid::ext::be_streamid, varint::ext::be_varint};
-        let (input, stream_id) = be_streamid(input)?;
-        let (input, max_stream_data) = be_varint(input)?;
-        Ok((
-            input,
-            MaxStreamDataFrame {
+        use nom::{combinator::map, sequence::pair};
+        map(
+            pair(be_streamid, be_varint),
+            |(stream_id, max_stream_data)| MaxStreamDataFrame {
                 stream_id,
                 max_stream_data,
             },
-        ))
+        )(input)
     }
 
     // BufMut write extension for MAX_STREAM_DATA_FRAME

@@ -8,7 +8,21 @@ pub struct PathResponseFrame {
     pub data: [u8; 8],
 }
 
+impl PathResponseFrame {
+    pub fn from_slice(data: &[u8]) -> Self {
+        Self {
+            data: data.try_into().unwrap(),
+        }
+    }
+}
+
 pub(super) const PATH_RESPONSE_FRAME_TYPE: u8 = 0x1b;
+
+impl super::BeFrame for PathResponseFrame {
+    fn frame_type(&self) -> crate::varint::VarInt {
+        crate::varint::VarInt::from(PATH_RESPONSE_FRAME_TYPE)
+    }
+}
 
 pub(super) mod ext {
     use super::PathResponseFrame;
@@ -17,11 +31,7 @@ pub(super) mod ext {
     pub fn be_path_response_frame(input: &[u8]) -> nom::IResult<&[u8], PathResponseFrame> {
         use nom::bytes::complete::take;
         use nom::combinator::map;
-        map(take(8usize), |data: &[u8]| {
-            let mut buf = [0u8; 8];
-            buf.copy_from_slice(data);
-            PathResponseFrame { data: buf }
-        })(input)
+        map(take(8usize), PathResponseFrame::from_slice)(input)
     }
 
     // BufMut write extension for PATH_RESPONSE_FRAME

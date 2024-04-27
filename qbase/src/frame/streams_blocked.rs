@@ -13,19 +13,30 @@ pub enum StreamsBlockedFrame {
 
 pub(super) const STREAMS_BLOCKED_FRAME_TYPE: u8 = 0x16;
 
+const DIR_BIT: u8 = 0x1;
+
+impl super::BeFrame for StreamsBlockedFrame {
+    fn frame_type(&self) -> crate::varint::VarInt {
+        crate::varint::VarInt::from(match self {
+            StreamsBlockedFrame::Bi(_) => STREAMS_BLOCKED_FRAME_TYPE,
+            StreamsBlockedFrame::Uni(_) => STREAMS_BLOCKED_FRAME_TYPE | DIR_BIT,
+        })
+    }
+}
+
 pub(super) mod ext {
-    use super::{StreamsBlockedFrame, STREAMS_BLOCKED_FRAME_TYPE};
+    use super::{StreamsBlockedFrame, DIR_BIT, STREAMS_BLOCKED_FRAME_TYPE};
 
     // nom parser for STREAMS_BLOCKED_FRAME
     pub fn streams_blocked_frame_with_dir(
         dir: u8,
     ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], StreamsBlockedFrame> {
         move |input: &[u8]| {
-            use crate::streamid::ext::be_streamid;
+            use crate::streamid::{ext::be_streamid, Dir};
             let (input, stream_id) = be_streamid(input)?;
             Ok((
                 input,
-                if dir & 0x1 == 0 {
+                if dir & DIR_BIT == Dir::Bi as u8 {
                     StreamsBlockedFrame::Bi(stream_id)
                 } else {
                     StreamsBlockedFrame::Uni(stream_id)

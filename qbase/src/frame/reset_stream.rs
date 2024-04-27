@@ -16,6 +16,12 @@ pub struct ResetStreamFrame {
 
 pub(super) const RESET_STREAM_FRAME_TYPE: u8 = 0x04;
 
+impl super::BeFrame for ResetStreamFrame {
+    fn frame_type(&self) -> VarInt {
+        VarInt::from(RESET_STREAM_FRAME_TYPE)
+    }
+}
+
 pub(super) mod ext {
     use super::ResetStreamFrame;
 

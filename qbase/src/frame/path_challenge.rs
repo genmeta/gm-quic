@@ -8,20 +8,30 @@ pub struct PathChallengeFrame {
     pub data: [u8; 8],
 }
 
+impl PathChallengeFrame {
+    pub fn from_slice(data: &[u8]) -> Self {
+        Self {
+            data: data.try_into().unwrap(),
+        }
+    }
+}
+
 pub(super) const PATH_CHALLENGE_FRAME_TYPE: u8 = 0x1a;
+
+impl super::BeFrame for PathChallengeFrame {
+    fn frame_type(&self) -> crate::varint::VarInt {
+        crate::varint::VarInt::from(PATH_CHALLENGE_FRAME_TYPE)
+    }
+}
 
 pub(super) mod ext {
     use super::PathChallengeFrame;
 
     // nom parser for PATH_CHALLENGE_FRAME
     pub fn be_path_challenge_frame(input: &[u8]) -> nom::IResult<&[u8], PathChallengeFrame> {
-        use nom::bytes::complete::take;
+        use nom::bytes::streaming::take;
         use nom::combinator::map;
-        map(take(8usize), |data: &[u8]| {
-            let mut buf = [0u8; 8];
-            buf.copy_from_slice(data);
-            PathChallengeFrame { data: buf }
-        })(input)
+        map(take(8usize), PathChallengeFrame::from_slice)(input)
     }
 
     // BufMut write extension for PATH_CHALLENGE_FRAME

@@ -20,6 +20,16 @@ pub(super) const CONNECTION_CLOSE_FRAME_TYPE: u8 = 0x1c;
 const QUIC_LAYER: u8 = 1;
 const APP_LAYER: u8 = 0;
 
+impl super::BeFrame for ConnectionCloseFrame {
+    fn frame_type(&self) -> VarInt {
+        VarInt::from(if self.frame_type.is_some() {
+            CONNECTION_CLOSE_FRAME_TYPE | QUIC_LAYER
+        } else {
+            CONNECTION_CLOSE_FRAME_TYPE
+        })
+    }
+}
+
 pub(super) mod ext {
     use super::{ConnectionCloseFrame, APP_LAYER, CONNECTION_CLOSE_FRAME_TYPE, QUIC_LAYER};
 
@@ -28,7 +38,7 @@ pub(super) mod ext {
         layer: u8,
     ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], ConnectionCloseFrame> {
         use crate::varint::ext::be_varint;
-        use nom::bytes::complete::take;
+        use nom::bytes::streaming::take;
         use nom::combinator::map;
         move |input: &[u8]| {
             let (input, error_code) = be_varint(input)?;

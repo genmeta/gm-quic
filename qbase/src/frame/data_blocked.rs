@@ -12,13 +12,20 @@ pub struct DataBlockedFrame {
 
 pub(super) const DATA_BLOCKED_FRAME_TYPE: u8 = 0x14;
 
+impl super::BeFrame for DataBlockedFrame {
+    fn frame_type(&self) -> VarInt {
+        VarInt::from(DATA_BLOCKED_FRAME_TYPE)
+    }
+}
+
 pub(super) mod ext {
     use super::{DataBlockedFrame, DATA_BLOCKED_FRAME_TYPE};
 
     // nom parser for DATA_BLOCKED_FRAME
     pub fn be_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], DataBlockedFrame> {
-        let (input, limit) = crate::varint::ext::be_varint(input)?;
-        Ok((input, DataBlockedFrame { limit }))
+        use crate::varint::ext::be_varint;
+        use nom::combinator::map;
+        map(be_varint, |limit| DataBlockedFrame { limit })(input)
     }
 
     // BufMut write extension for DATA_BLOCKED_FRAME

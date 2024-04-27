@@ -26,6 +26,12 @@ const OFF_BIT: u8 = 0x04;
 const LEN_BIT: u8 = 0x02;
 const FIN_BIT: u8 = 0x01;
 
+impl super::BeFrame for StreamFrame {
+    fn frame_type(&self) -> VarInt {
+        VarInt::from(STREAM_FRAME_TYPE | self.flag)
+    }
+}
+
 impl StreamFrame {
     pub fn new(id: StreamId, offset: VarInt, length: usize) -> Self {
         Self {

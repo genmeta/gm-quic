@@ -15,6 +15,12 @@ pub struct CryptoFrame {
 
 pub(super) const CRYPTO_FRAME_TYPE: u8 = 0x06;
 
+impl super::BeFrame for CryptoFrame {
+    fn frame_type(&self) -> VarInt {
+        VarInt::from(CRYPTO_FRAME_TYPE)
+    }
+}
+
 pub(super) mod ext {
     use super::{CryptoFrame, CRYPTO_FRAME_TYPE};
 

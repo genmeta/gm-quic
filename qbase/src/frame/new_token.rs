@@ -11,14 +11,20 @@ pub struct NewTokenFrame {
 
 pub(super) const NEW_TOKEN_FRAME_TYPE: u8 = 0x07;
 
+impl super::BeFrame for NewTokenFrame {
+    fn frame_type(&self) -> crate::varint::VarInt {
+        crate::varint::VarInt::from(NEW_TOKEN_FRAME_TYPE)
+    }
+}
+
 pub(super) mod ext {
     use super::{NewTokenFrame, NEW_TOKEN_FRAME_TYPE};
-    use crate::varint::ext::be_varint;
-    use nom::bytes::complete::take;
-    use nom::combinator::{flat_map, map};
 
     // nom parser for NEW_TOKEN_FRAME
     pub fn be_new_token_frame(input: &[u8]) -> nom::IResult<&[u8], NewTokenFrame> {
+        use crate::varint::ext::be_varint;
+        use nom::bytes::streaming::take;
+        use nom::combinator::{flat_map, map};
         flat_map(be_varint, |length| {
             map(take(length.into_inner() as usize), |data: &[u8]| {
                 NewTokenFrame {

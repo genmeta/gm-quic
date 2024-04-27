@@ -14,6 +14,12 @@ pub struct StreamDataBlockedFrame {
 
 pub(super) const STREAM_DATA_BLOCKED_FRAME_TYPE: u8 = 0x15;
 
+impl super::BeFrame for StreamDataBlockedFrame {
+    fn frame_type(&self) -> VarInt {
+        VarInt::from(STREAM_DATA_BLOCKED_FRAME_TYPE)
+    }
+}
+
 pub(super) mod ext {
     use super::{StreamDataBlockedFrame, STREAM_DATA_BLOCKED_FRAME_TYPE};
 

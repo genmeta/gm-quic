@@ -7,6 +7,12 @@ pub struct HandshakeDoneFrame;
 
 pub(super) const HANDSHAKE_DONE_FRAME_TYPE: u8 = 0x1e;
 
+impl super::BeFrame for HandshakeDoneFrame {
+    fn frame_type(&self) -> crate::varint::VarInt {
+        crate::varint::VarInt::from(HANDSHAKE_DONE_FRAME_TYPE)
+    }
+}
+
 pub(super) mod ext {
     use super::HandshakeDoneFrame;
 

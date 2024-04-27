@@ -1,23 +1,37 @@
 use super::{DataFrame, InfoFrame};
-use nom::error::{Error, ErrorKind};
+use crate::varint::VarInt;
+use nom::error::ErrorKind;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum DecodingError {
-    InvalidFrameType(u8),
+    IncompleteType(String),
+    InvalidType(VarInt),
     WrongFrame(InfoFrame),
     WrongData(DataFrame),
-    Incomplete,
-    NomError(ErrorKind),
+    ParseError(VarInt, String),
 }
 
-impl From<nom::Err<Error<&[u8]>>> for DecodingError {
-    fn from(value: nom::Err<Error<&[u8]>>) -> Self {
-        // TODO: log with println is not ok, because it's not cross-platform
-        println!("[QUIC][Decoding Frame] nom error: {:?}", value);
+impl From<nom::Err<DecodingError>> for DecodingError {
+    fn from(value: nom::Err<DecodingError>) -> Self {
         match value {
-            nom::Err::Incomplete(_needed) => Self::Incomplete,
-            nom::Err::Error(err) | nom::Err::Failure(err) => Self::NomError(err.code),
+            nom::Err::Incomplete(_needed) => {
+                unreachable!("Because the parsing of QUIC packets and frames is not stream-based.")
+            }
+            nom::Err::Error(err) | nom::Err::Failure(err) => err,
         }
+    }
+}
+
+impl nom::error::ParseError<&[u8]> for DecodingError {
+    fn from_error_kind(_input: &[u8], _kind: ErrorKind) -> Self {
+        match _kind {
+            ErrorKind::Many0 => unreachable!("QUIC frame parsing will never encounter an infinite loop parsing that does not consume any bytes."),
+            _ => unimplemented!("never encounter other error kind while parsing QUIC frame.")
+        }
+    }
+
+    fn append(_input: &[u8], _kind: ErrorKind, other: Self) -> Self {
+        other
     }
 }
 
