@@ -1,7 +1,7 @@
 // This folder defines all the frames, including their parsing and packaging processes.
 
 pub trait BeFrame {
-    fn frame_type(&self) -> VarInt;
+    fn frame_type(&self) -> FrameType;
 }
 
 mod ack;
@@ -105,6 +105,33 @@ impl TryFrom<VarInt> for FrameType {
     }
 }
 
+impl From<FrameType> for VarInt {
+    fn from(frame_type: FrameType) -> Self {
+        match frame_type {
+            FrameType::Padding => VarInt(0x00),
+            FrameType::Ping => VarInt(0x01),
+            FrameType::Ack(ecn) => VarInt(0x02 | ecn as u64),
+            FrameType::ResetStream => VarInt(0x04),
+            FrameType::StopSending => VarInt(0x05),
+            FrameType::Crypto => VarInt(0x06),
+            FrameType::NewToken => VarInt(0x07),
+            FrameType::Stream(flag) => VarInt(0x08 | flag as u64),
+            FrameType::MaxData => VarInt(0x10),
+            FrameType::MaxStreamData => VarInt(0x11),
+            FrameType::MaxStreams(dir) => VarInt(0x12 | dir as u64),
+            FrameType::DataBlocked => VarInt(0x14),
+            FrameType::StreamDataBlocked => VarInt(0x15),
+            FrameType::StreamsBlocked(dir) => VarInt(0x16 | dir as u64),
+            FrameType::NewConnectionId => VarInt(0x18),
+            FrameType::RetireConnectionId => VarInt(0x19),
+            FrameType::PathChallenge => VarInt(0x1a),
+            FrameType::PathResponse => VarInt(0x1b),
+            FrameType::ConnectionClose(layer) => VarInt(0x1c | layer as u64),
+            FrameType::HandshakeDone => VarInt(0x1e),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum InfoFrame {
     Ping,
@@ -123,6 +150,27 @@ pub enum InfoFrame {
     HandshakeDone,
 }
 
+impl BeFrame for InfoFrame {
+    fn frame_type(&self) -> FrameType {
+        match self {
+            InfoFrame::Ping => FrameType::Ping,
+            InfoFrame::ResetStream(_) => FrameType::ResetStream,
+            InfoFrame::StopSending(_) => FrameType::StopSending,
+            InfoFrame::NewToken(_) => FrameType::NewToken,
+            InfoFrame::MaxData(_) => FrameType::MaxData,
+            InfoFrame::MaxStreamData(_) => FrameType::MaxStreamData,
+            InfoFrame::MaxStreams(f) => f.frame_type(),
+            InfoFrame::DataBlocked(_) => FrameType::DataBlocked,
+            InfoFrame::StreamDataBlocked(_) => FrameType::StreamDataBlocked,
+            InfoFrame::StreamsBlocked(f) => f.frame_type(),
+            InfoFrame::RetireConnectionId(_) => FrameType::RetireConnectionId,
+            InfoFrame::PathChallenge(_) => FrameType::PathChallenge,
+            InfoFrame::PathResponse(_) => FrameType::PathResponse,
+            InfoFrame::HandshakeDone => FrameType::HandshakeDone,
+        }
+    }
+}
+
 // The initial packet and handshake packet only contain Ping frame.
 
 impl TryFrom<InfoFrame> for PingFrame {
@@ -131,7 +179,10 @@ impl TryFrom<InfoFrame> for PingFrame {
     fn try_from(value: InfoFrame) -> Result<Self, Self::Error> {
         match value {
             InfoFrame::Ping => Ok(PingFrame),
-            _ => Err(Self::Error::WrongFrame(value)),
+            other => Err(Self::Error::WrongFrame(
+                other.frame_type(),
+                "Initial or Handshake",
+            )),
         }
     }
 }
@@ -173,7 +224,7 @@ impl TryFrom<InfoFrame> for ZeroRttFrame {
             InfoFrame::StreamsBlocked(frame) => Ok(ZeroRttFrame::StreamsBlocked(frame)),
             InfoFrame::RetireConnectionId(frame) => Ok(ZeroRttFrame::RetireConnectionId(frame)),
             InfoFrame::PathChallenge(frame) => Ok(ZeroRttFrame::PathChallenge(frame)),
-            _ => Err(Self::Error::WrongFrame(value)),
+            other => Err(Self::Error::WrongFrame(other.frame_type(), "Zero rtt data")),
         }
     }
 }
@@ -210,7 +261,10 @@ impl TryFrom<DataFrame> for CryptoFrame {
     fn try_from(value: DataFrame) -> Result<Self, Self::Error> {
         match value {
             DataFrame::Crypto(frame) => Ok(frame),
-            _ => Err(Self::Error::WrongData(value)),
+            DataFrame::Stream(f) => Err(Self::Error::WrongData(
+                f.frame_type(),
+                "Initail or Handshake",
+            )),
         }
     }
 }
@@ -221,7 +275,7 @@ impl TryFrom<DataFrame> for StreamFrame {
     fn try_from(value: DataFrame) -> Result<Self, Self::Error> {
         match value {
             DataFrame::Stream(frame) => Ok(frame),
-            _ => Err(Self::Error::WrongData(value)),
+            DataFrame::Crypto(_) => Err(Self::Error::WrongData(FrameType::Crypto, "Zero rtt data")),
         }
     }
 }
@@ -269,7 +323,10 @@ pub mod ext {
     };
 
     use bytes::Bytes;
-    use nom::combinator::map;
+    use nom::{
+        combinator::{eof, map},
+        multi::many_till,
+    };
 
     /// Some frames like `STREAM` and `CRYPTO` have a data body, which use `bytes::Bytes` to store.
     fn complete_frame(
@@ -350,19 +407,40 @@ pub mod ext {
     fn be_frame(raw: Bytes) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Frame, FrameDecodingError> {
         move |input: &[u8]| {
             use crate::varint::ext::be_varint;
-            let (input, fty) = be_varint(input)
-                .map_err(|e| nom::Err::Error(FrameDecodingError::IncompleteType(e.to_string())))?;
+            let (input, fty) = be_varint(input).map_err(|e| match e {
+                ne @ nom::Err::Incomplete(_) => {
+                    nom::Err::Error(FrameDecodingError::IncompleteType(ne.to_string()))
+                }
+                _ => unreachable!(
+                    "parsing frame type which is a varint never generates error or failure"
+                ),
+            })?;
             let frame_type = FrameType::try_from(fty).map_err(nom::Err::Error)?;
-            complete_frame(frame_type, raw.clone())(input)
-                .map_err(|e| nom::Err::Error(FrameDecodingError::ParseError(fty, e.to_string())))
+            complete_frame(frame_type, raw.clone())(input).map_err(|e| match e {
+                ne @ nom::Err::Incomplete(_) => nom::Err::Error(
+                    FrameDecodingError::IncompleteFrame(frame_type, ne.to_string()),
+                ),
+                nom::Err::Error(ne) => {
+                    debug_assert_eq!(ne.code, nom::error::ErrorKind::TooLarge);
+                    nom::Err::Error(FrameDecodingError::ParseError(
+                        frame_type,
+                        ne.code.description().to_owned(),
+                    ))
+                }
+                _ => unreachable!("parsing frame never fails"),
+            })
         }
     }
 
     pub fn parse_frames_from_bytes(bytes: Bytes) -> Result<Vec<Frame>, FrameDecodingError> {
-        use nom::multi::many0;
         let raw = bytes.clone();
         let input = bytes.as_ref();
-        let (_, frames) = many0(be_frame(raw))(input)?;
+        // many1 cannot check if it has reached EOF or if the last frame is incomplete;
+        // many_till eof cannot check if it contains at least one.
+        let (_, (frames, _)) = many_till(be_frame(raw), eof)(input)?;
+        if frames.is_empty() {
+            return Err(FrameDecodingError::NoFrames);
+        }
         Ok(frames)
     }
 

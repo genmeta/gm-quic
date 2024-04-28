@@ -148,7 +148,12 @@ pub mod ext {
         flat_map(take(2usize), |prefix: u8| {
             take::<&[u8], u64, usize, Error<(&[u8], usize)>>((8 << prefix) - 2)
         })((input, 0))
-        .map_err(|err| err.map(|e| Error::new(e.input.0, e.code)))
+        .map_err(|err| match err {
+            nom::Err::Incomplete(needed) => {
+                nom::Err::Incomplete(needed.map(|n| (n.get() + 7) / 8 - input.len()))
+            }
+            _ => unreachable!(),
+        })
         .map(|((buf, _), value)| (buf, VarInt(value)))
     }
 
@@ -218,7 +223,7 @@ mod tests {
         {
             let buf = &[0b11000000u8, 0x06u8][..];
             let r = super::ext::be_varint(buf);
-            assert_eq!(r, Err(nom::Err::Incomplete(nom::Needed::new(62))));
+            assert_eq!(r, Err(nom::Err::Incomplete(nom::Needed::new(6))));
         }
     }
 

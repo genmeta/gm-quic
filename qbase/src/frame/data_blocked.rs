@@ -13,8 +13,8 @@ pub struct DataBlockedFrame {
 pub(super) const DATA_BLOCKED_FRAME_TYPE: u8 = 0x14;
 
 impl super::BeFrame for DataBlockedFrame {
-    fn frame_type(&self) -> VarInt {
-        VarInt::from(DATA_BLOCKED_FRAME_TYPE)
+    fn frame_type(&self) -> super::FrameType {
+        super::FrameType::Crypto
     }
 }
 

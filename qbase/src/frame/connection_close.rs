@@ -21,12 +21,22 @@ const QUIC_LAYER: u8 = 1;
 const APP_LAYER: u8 = 0;
 
 impl super::BeFrame for ConnectionCloseFrame {
-    fn frame_type(&self) -> VarInt {
-        VarInt::from(if self.frame_type.is_some() {
-            CONNECTION_CLOSE_FRAME_TYPE | QUIC_LAYER
+    fn frame_type(&self) -> super::FrameType {
+        super::FrameType::ConnectionClose(if self.frame_type.is_some() {
+            QUIC_LAYER
         } else {
-            CONNECTION_CLOSE_FRAME_TYPE
+            APP_LAYER
         })
+    }
+}
+
+impl ConnectionCloseFrame {
+    pub fn new(error_kind: u64, frame_type: Option<VarInt>, reason: String) -> Self {
+        Self {
+            error_code: VarInt(error_kind),
+            frame_type,
+            reason,
+        }
     }
 }
 

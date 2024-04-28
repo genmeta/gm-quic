@@ -28,12 +28,8 @@ pub(super) const ACK_FRAME_TYPE: u8 = 0x02;
 const ECN_OPT: u8 = 0x1;
 
 impl super::BeFrame for AckFrame {
-    fn frame_type(&self) -> VarInt {
-        VarInt::from(if self.ecn.is_some() {
-            ACK_FRAME_TYPE | ECN_OPT
-        } else {
-            ACK_FRAME_TYPE
-        })
+    fn frame_type(&self) -> super::FrameType {
+        super::FrameType::Ack(if self.ecn.is_some() { 1 } else { 0 })
     }
 }
 

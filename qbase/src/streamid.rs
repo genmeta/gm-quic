@@ -1,3 +1,8 @@
+use super::varint::VarInt;
+use std::{
+    fmt, ops,
+    task::{Context, Poll, Waker},
+};
 /**
  * QUIC有4种流类型，对应着4个流ID空间，分别是：
  * | 低2位 | 流类型 ｜
@@ -15,11 +20,7 @@
  * 一个流ID是一个62比特的整数（0~2^62-1），这是为了便于VarInt编码。
  * 低2位又是类型，所以每一个类型的流ID总共有2^60个。
  */
-use super::varint::VarInt;
-use std::{
-    fmt, ops,
-    task::{Context, Poll, Waker},
-};
+use thiserror::Error;
 
 /// ## Example
 /// ```
@@ -139,19 +140,12 @@ impl From<StreamId> for VarInt {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Error)]
 pub enum Error {
+    #[error("invalid role: {0}")]
     Invalid(Role),
+    #[error("stream id {0} exceed limit: {1}")]
     Limit(StreamId, StreamId),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Invalid(role) => write!(f, "invalid role: {role}"),
-            Self::Limit(sid, max) => write!(f, "stream id {sid} exceed limit: {max}"),
-        }
-    }
 }
 
 #[derive(Debug)]

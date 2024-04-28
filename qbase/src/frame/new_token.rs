@@ -12,8 +12,8 @@ pub struct NewTokenFrame {
 pub(super) const NEW_TOKEN_FRAME_TYPE: u8 = 0x07;
 
 impl super::BeFrame for NewTokenFrame {
-    fn frame_type(&self) -> crate::varint::VarInt {
-        crate::varint::VarInt::from(NEW_TOKEN_FRAME_TYPE)
+    fn frame_type(&self) -> super::FrameType {
+        super::FrameType::NewToken
     }
 }
 

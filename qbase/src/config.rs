@@ -71,11 +71,13 @@ impl TransportParameters {
         todo!("write to bytes")
     }
 
-    pub fn read<R: Buf>(r: &mut R) -> Result<Self, Error> {
+    pub fn read<R: Buf>(_r: &mut R) -> Result<Self, Error> {
         todo!("read from bytes")
     }
+}
 
-    pub fn default() -> TransportParameters {
+impl Default for TransportParameters {
+    fn default() -> TransportParameters {
         todo!("default")
     }
 }

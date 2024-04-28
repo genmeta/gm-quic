@@ -1,14 +1,62 @@
-use super::{DataFrame, InfoFrame};
+use super::FrameType;
 use crate::varint::VarInt;
-use nom::error::ErrorKind;
+use nom::error::ErrorKind as NomErrorKind;
+use thiserror::Error;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Error)]
 pub enum DecodingError {
+    #[error("A packet containing no frames")]
+    NoFrames,
+    #[error("Incomplete frame type: {0}")]
     IncompleteType(String),
+    #[error("Invalid frame type from {0}")]
     InvalidType(VarInt),
-    WrongFrame(InfoFrame),
-    WrongData(DataFrame),
-    ParseError(VarInt, String),
+    #[error("Incomplete frame {0:?}: {1}")]
+    IncompleteFrame(FrameType, String),
+    #[error("Error occurred when parsing frame {0:?}: {1}")]
+    ParseError(FrameType, String),
+    #[error("{1} space does not contain frame {0:?}")]
+    WrongFrame(FrameType, &'static str),
+    #[error("{1} space does not contain data frame {0:?}")]
+    WrongData(FrameType, &'static str),
+}
+
+use crate::error::Error as TransportError;
+use crate::error::ErrorKind as TransportErrorKind;
+
+impl From<DecodingError> for TransportError {
+    fn from(e: DecodingError) -> Self {
+        match e {
+            // An endpoint MUST treat receipt of a packet containing no frames as a connection error of type PROTOCOL_VIOLATION.
+            DecodingError::NoFrames => Self::new(
+                TransportErrorKind::ProtocolViolation,
+                FrameType::Padding,
+                e.to_string(),
+            ),
+            DecodingError::IncompleteType(_) => Self::new(
+                TransportErrorKind::FrameEncoding,
+                FrameType::Padding,
+                e.to_string(),
+            ),
+            DecodingError::InvalidType(_) => Self::new(
+                TransportErrorKind::FrameEncoding,
+                FrameType::Padding,
+                e.to_string(),
+            ),
+            DecodingError::IncompleteFrame(fty, _) => {
+                Self::new(TransportErrorKind::FrameEncoding, fty, e.to_string())
+            }
+            DecodingError::ParseError(fty, _) => {
+                Self::new(TransportErrorKind::FrameEncoding, fty, e.to_string())
+            }
+            DecodingError::WrongFrame(fty, _) => {
+                Self::new(TransportErrorKind::ProtocolViolation, fty, e.to_string())
+            }
+            DecodingError::WrongData(fty, _) => {
+                Self::new(TransportErrorKind::ProtocolViolation, fty, e.to_string())
+            }
+        }
+    }
 }
 
 impl From<nom::Err<DecodingError>> for DecodingError {
@@ -23,15 +71,16 @@ impl From<nom::Err<DecodingError>> for DecodingError {
 }
 
 impl nom::error::ParseError<&[u8]> for DecodingError {
-    fn from_error_kind(_input: &[u8], _kind: ErrorKind) -> Self {
-        match _kind {
-            ErrorKind::Many0 => unreachable!("QUIC frame parsing will never encounter an infinite loop parsing that does not consume any bytes."),
-            _ => unimplemented!("never encounter other error kind while parsing QUIC frame.")
-        }
+    fn from_error_kind(_input: &[u8], _kind: NomErrorKind) -> Self {
+        debug_assert_eq!(_kind, NomErrorKind::ManyTill);
+        unreachable!("QUIC frame parser must always consume")
     }
 
-    fn append(_input: &[u8], _kind: ErrorKind, other: Self) -> Self {
-        other
+    fn append(_input: &[u8], _kind: NomErrorKind, source: Self) -> Self {
+        // 在解析帧时遇到了source错误，many_till期望通过ManyTill的错误类型告知
+        // 这里，源错误更有意义，所以直接返回源错误
+        debug_assert_eq!(_kind, NomErrorKind::ManyTill);
+        source
     }
 }
 

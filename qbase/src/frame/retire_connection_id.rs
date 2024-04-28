@@ -13,8 +13,8 @@ pub struct RetireConnectionIdFrame {
 pub(super) const RETIRE_CONNECTION_ID_FRAME_TYPE: u8 = 0x19;
 
 impl super::BeFrame for RetireConnectionIdFrame {
-    fn frame_type(&self) -> VarInt {
-        VarInt::from(RETIRE_CONNECTION_ID_FRAME_TYPE)
+    fn frame_type(&self) -> super::FrameType {
+        super::FrameType::RetireConnectionId
     }
 }
 

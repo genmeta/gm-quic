@@ -19,8 +19,8 @@ impl PathChallengeFrame {
 pub(super) const PATH_CHALLENGE_FRAME_TYPE: u8 = 0x1a;
 
 impl super::BeFrame for PathChallengeFrame {
-    fn frame_type(&self) -> crate::varint::VarInt {
-        crate::varint::VarInt::from(PATH_CHALLENGE_FRAME_TYPE)
+    fn frame_type(&self) -> super::FrameType {
+        super::FrameType::PathChallenge
     }
 }
 

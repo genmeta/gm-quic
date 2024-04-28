@@ -27,8 +27,8 @@ const LEN_BIT: u8 = 0x02;
 const FIN_BIT: u8 = 0x01;
 
 impl super::BeFrame for StreamFrame {
-    fn frame_type(&self) -> VarInt {
-        VarInt::from(STREAM_FRAME_TYPE | self.flag)
+    fn frame_type(&self) -> super::FrameType {
+        super::FrameType::Stream(self.flag)
     }
 }
 

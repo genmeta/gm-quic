@@ -16,8 +16,8 @@ pub struct CryptoFrame {
 pub(super) const CRYPTO_FRAME_TYPE: u8 = 0x06;
 
 impl super::BeFrame for CryptoFrame {
-    fn frame_type(&self) -> VarInt {
-        VarInt::from(CRYPTO_FRAME_TYPE)
+    fn frame_type(&self) -> super::FrameType {
+        super::FrameType::Crypto
     }
 }
 

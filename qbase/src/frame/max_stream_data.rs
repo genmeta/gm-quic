@@ -15,8 +15,8 @@ pub struct MaxStreamDataFrame {
 pub(super) const MAX_STREAM_DATA_FRAME_TYPE: u8 = 0x11;
 
 impl super::BeFrame for MaxStreamDataFrame {
-    fn frame_type(&self) -> VarInt {
-        VarInt::from(MAX_STREAM_DATA_FRAME_TYPE)
+    fn frame_type(&self) -> super::FrameType {
+        super::FrameType::MaxStreamData
     }
 }
 

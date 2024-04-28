@@ -15,8 +15,8 @@ pub struct StopSendingFrame {
 pub(super) const STOP_SENDING_FRAME_TYPE: u8 = 0x05;
 
 impl super::BeFrame for StopSendingFrame {
-    fn frame_type(&self) -> VarInt {
-        VarInt::from(STOP_SENDING_FRAME_TYPE)
+    fn frame_type(&self) -> super::FrameType {
+        super::FrameType::StopSending
     }
 }
 

@@ -16,8 +16,11 @@ pub(super) const MAX_STREAMS_FRAME_TYPE: u8 = 0x12;
 const DIR_BIT: u8 = 0x1;
 
 impl super::BeFrame for MaxStreamsFrame {
-    fn frame_type(&self) -> VarInt {
-        VarInt::from(MAX_STREAMS_FRAME_TYPE)
+    fn frame_type(&self) -> super::FrameType {
+        super::FrameType::MaxStreams(match self {
+            MaxStreamsFrame::Bi(_) => 0,
+            MaxStreamsFrame::Uni(_) => 1,
+        })
     }
 }
 

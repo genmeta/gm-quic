@@ -19,8 +19,8 @@ impl PathResponseFrame {
 pub(super) const PATH_RESPONSE_FRAME_TYPE: u8 = 0x1b;
 
 impl super::BeFrame for PathResponseFrame {
-    fn frame_type(&self) -> crate::varint::VarInt {
-        crate::varint::VarInt::from(PATH_RESPONSE_FRAME_TYPE)
+    fn frame_type(&self) -> super::FrameType {
+        super::FrameType::PathResponse
     }
 }
 

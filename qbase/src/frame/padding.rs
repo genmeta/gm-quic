@@ -8,8 +8,8 @@ pub struct PaddingFrame;
 pub(super) const PADDING_FRAME_TYPE: u8 = 0x00;
 
 impl super::BeFrame for PaddingFrame {
-    fn frame_type(&self) -> crate::varint::VarInt {
-        crate::varint::VarInt::from(PADDING_FRAME_TYPE)
+    fn frame_type(&self) -> super::FrameType {
+        super::FrameType::Padding
     }
 }
 
