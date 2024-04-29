@@ -163,12 +163,12 @@ pub(super) mod ext {
         )(input)
     }
 
-    pub trait BufMutExt {
+    pub trait WriteAckFrame {
         fn put_ecn_counts(&mut self, ecn: &EcnCounts);
         fn put_ack_frame(&mut self, frame: &AckFrame);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteAckFrame for T {
         fn put_ecn_counts(&mut self, ecn: &EcnCounts) {
             use crate::varint::ext::BufMutExt;
             self.put_varint(&ecn.ect0);
@@ -204,7 +204,7 @@ pub(super) mod ext {
 #[cfg(test)]
 mod tests {
     use super::{
-        ext::{ack_frame_with_flag, be_ecn_counts, BufMutExt},
+        ext::{ack_frame_with_flag, be_ecn_counts, WriteAckFrame},
         AckFrame, EcnCounts, ACK_FRAME_TYPE,
     };
     use crate::varint::{ext::be_varint, VarInt};

@@ -40,11 +40,11 @@ pub(super) mod ext {
     }
 
     // BufMut write extension for STOP_SENDING_FRAME
-    pub trait BufMutExt {
+    pub trait WriteStopSendingFrame {
         fn put_stop_sending_frame(&mut self, frame: &StopSendingFrame);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteStopSendingFrame for T {
         fn put_stop_sending_frame(&mut self, frame: &StopSendingFrame) {
             self.put_u8(super::STOP_SENDING_FRAME_TYPE);
             self.put_varint(&frame.stream_id.into());
@@ -55,7 +55,7 @@ pub(super) mod ext {
 
 #[cfg(test)]
 mod tests {
-    use super::{ext::BufMutExt, StopSendingFrame, STOP_SENDING_FRAME_TYPE};
+    use super::{ext::WriteStopSendingFrame, StopSendingFrame, STOP_SENDING_FRAME_TYPE};
     use crate::varint::VarInt;
 
     #[test]

@@ -29,11 +29,11 @@ pub(super) mod ext {
     }
 
     // BufMut write extension for DATA_BLOCKED_FRAME
-    pub trait BufMutExt {
+    pub trait WriteDataBlockedFrame {
         fn put_data_blocked_frame(&mut self, frame: &DataBlockedFrame);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteDataBlockedFrame for T {
         fn put_data_blocked_frame(&mut self, frame: &DataBlockedFrame) {
             use crate::varint::ext::BufMutExt as VarIntBufMutExt;
             self.put_u8(DATA_BLOCKED_FRAME_TYPE);
@@ -61,7 +61,7 @@ mod tests {
 
     #[test]
     fn test_write_data_blocked_frame() {
-        use super::ext::BufMutExt;
+        use super::ext::WriteDataBlockedFrame;
         let mut buf = Vec::new();
         buf.put_data_blocked_frame(&DataBlockedFrame {
             limit: crate::varint::VarInt(0x1234),

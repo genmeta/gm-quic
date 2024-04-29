@@ -35,11 +35,11 @@ pub(super) mod ext {
     }
 
     // BufMut extension trait for CRYPTO_FRAME
-    pub trait BufMutExt {
+    pub trait WriteCryptoFrame {
         fn put_crypto_frame(&mut self, frame: &CryptoFrame, data: &[u8]);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteCryptoFrame for T {
         fn put_crypto_frame(&mut self, frame: &CryptoFrame, data: &[u8]) {
             use crate::varint::ext::BufMutExt as VarIntBufMutExt;
             assert_eq!(frame.length.into_inner(), data.len() as u64);
@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn test_write_crypto_frame() {
-        use super::ext::BufMutExt;
+        use super::ext::WriteCryptoFrame;
         let mut buf = bytes::BytesMut::new();
         let frame = CryptoFrame {
             offset: VarInt(0x1234),

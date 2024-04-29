@@ -23,11 +23,11 @@ pub(super) mod ext {
     }
 
     // BufMut write extension for HANDSHAKE_DONE_FRAME
-    pub trait BufMutExt {
+    pub trait WriteHandshakeDoneFrame {
         fn put_handshake_done_frame(&mut self);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteHandshakeDoneFrame for T {
         fn put_handshake_done_frame(&mut self) {
             self.put_u8(super::HANDSHAKE_DONE_FRAME_TYPE);
         }
@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn test_write_handshake_done_frame() {
-        use super::ext::BufMutExt;
+        use super::ext::WriteHandshakeDoneFrame;
         let mut buf = Vec::new();
         buf.put_handshake_done_frame();
         assert_eq!(buf, vec![super::HANDSHAKE_DONE_FRAME_TYPE]);

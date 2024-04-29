@@ -92,11 +92,11 @@ pub(super) mod ext {
         }
     }
 
-    pub trait BufMutExt {
+    pub trait WriteStreamFrame {
         fn put_stream_frame(&mut self, frame: &StreamFrame, data: &[u8]);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteStreamFrame for T {
         fn put_stream_frame(&mut self, frame: &StreamFrame, data: &[u8]) {
             use crate::{
                 streamid::ext::BufMutExt as SidBufMutExt, varint::ext::BufMutExt as VarIntBufMutExt,
@@ -122,7 +122,7 @@ pub(super) mod ext {
 
 #[cfg(test)]
 mod tests {
-    use super::{ext::BufMutExt, StreamFrame};
+    use super::{ext::WriteStreamFrame, StreamFrame};
     use crate::{
         frame::stream::{ext::stream_frame_with_flag, STREAM_FRAME_TYPE},
         varint::{ext::be_varint, VarInt},

@@ -37,11 +37,11 @@ pub(super) mod ext {
     }
 
     // BufMut write extension for MAX_STREAM_DATA_FRAME
-    pub trait BufMutExt {
+    pub trait WriteMaxStreamDataFrame {
         fn put_max_stream_data_frame(&mut self, frame: &MaxStreamDataFrame);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteMaxStreamDataFrame for T {
         fn put_max_stream_data_frame(&mut self, frame: &MaxStreamDataFrame) {
             use crate::streamid::ext::BufMutExt as StreamIdBufMutExt;
             use crate::varint::ext::BufMutExt as VarIntBufMutExt;
@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn test_write_max_stream_data_frame() {
-        use super::ext::BufMutExt;
+        use super::ext::WriteMaxStreamDataFrame;
         let mut buf = Vec::new();
         buf.put_max_stream_data_frame(&MaxStreamDataFrame {
             stream_id: VarInt(0x1234).into(),

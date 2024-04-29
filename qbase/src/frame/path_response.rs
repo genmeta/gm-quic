@@ -35,11 +35,11 @@ pub(super) mod ext {
     }
 
     // BufMut write extension for PATH_RESPONSE_FRAME
-    pub trait BufMutExt {
+    pub trait WritePathResponseFrame {
         fn put_path_response_frame(&mut self, frame: &PathResponseFrame);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WritePathResponseFrame for T {
         fn put_path_response_frame(&mut self, frame: &PathResponseFrame) {
             self.put_u8(super::PATH_RESPONSE_FRAME_TYPE);
             self.put_slice(&frame.data);
@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn test_write_path_response_frame() {
-        use super::ext::BufMutExt;
+        use super::ext::WritePathResponseFrame;
         let mut buf = Vec::<u8>::new();
         let frame = super::PathResponseFrame {
             data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],

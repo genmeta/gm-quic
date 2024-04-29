@@ -34,11 +34,11 @@ pub(super) mod ext {
         })(input)
     }
 
-    pub trait BufMutExt {
+    pub trait WriteNewTokenFrame {
         fn put_new_token_frame(&mut self, frame: &NewTokenFrame);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteNewTokenFrame for T {
         fn put_new_token_frame(&mut self, frame: &NewTokenFrame) {
             use crate::varint::{ext::BufMutExt as VarIntBufMutExt, VarInt};
             self.put_u8(NEW_TOKEN_FRAME_TYPE);
@@ -61,7 +61,7 @@ mod tests {
 
     #[test]
     fn test_write_new_token_frame() {
-        use super::ext::BufMutExt;
+        use super::ext::WriteNewTokenFrame;
         let mut buf = Vec::<u8>::new();
         let frame = super::NewTokenFrame {
             token: vec![0x01, 0x02],

@@ -29,11 +29,11 @@ pub(super) mod ext {
     }
 
     // BufMut write extension for MAX_DATA_FRAME
-    pub trait BufMutExt {
+    pub trait WriteMaxDataFrame {
         fn put_max_data_frame(&mut self, frame: &MaxDataFrame);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteMaxDataFrame for T {
         fn put_max_data_frame(&mut self, frame: &MaxDataFrame) {
             use crate::varint::ext::BufMutExt as VarIntBufMutExt;
             self.put_u8(super::MAX_DATA_FRAME_TYPE);
@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn test_write_max_data_frame() {
-        use super::ext::BufMutExt;
+        use super::ext::WriteMaxDataFrame;
 
         let mut buf = Vec::new();
         buf.put_max_data_frame(&MaxDataFrame {

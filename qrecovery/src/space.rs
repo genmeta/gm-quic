@@ -357,7 +357,7 @@ where
 impl<F, D, T, B, const R: bool> TrySend<B> for Space<F, D, T, R>
 where
     T: Transmit<F, D> + Default + Debug,
-    B: BufMut + WriteFrame<F> + WriteDataFrame<D> + AckBufMutExt,
+    B: BufMut + WriteFrame<F> + WriteDataFrame<D> + WriteAckFrame,
 {
     fn try_send(&mut self, mut buf: B) -> Result<(u64, usize), Error> {
         let mut is_ack_eliciting = false;

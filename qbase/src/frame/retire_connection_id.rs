@@ -31,11 +31,11 @@ pub(super) mod ext {
     }
 
     // BufMut extension trait for RETIRE_CONNECTION_ID_FRAME
-    pub trait BufMutExt {
+    pub trait WriteRetireConnectionIdFrame {
         fn put_retire_connection_id_frame(&mut self, frame: &RetireConnectionIdFrame);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteRetireConnectionIdFrame for T {
         fn put_retire_connection_id_frame(&mut self, frame: &RetireConnectionIdFrame) {
             use crate::varint::ext::BufMutExt as VarIntBufMutExt;
             self.put_u8(RETIRE_CONNECTION_ID_FRAME_TYPE);
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn test_write_retire_connection_id_frame() {
-        use super::ext::BufMutExt;
+        use super::ext::WriteRetireConnectionIdFrame;
         let mut buf = Vec::new();
         let frame = RetireConnectionIdFrame {
             sequence: VarInt(0x1234),

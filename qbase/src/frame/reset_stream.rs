@@ -40,11 +40,11 @@ pub(super) mod ext {
     }
 
     // BufMut write extension for RESET_STREAM_FRAME
-    pub trait BufMutExt {
+    pub trait WriteResetStreamFrame {
         fn put_reset_stream_frame(&mut self, frame: &ResetStreamFrame);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteResetStreamFrame for T {
         fn put_reset_stream_frame(&mut self, frame: &ResetStreamFrame) {
             use crate::{
                 streamid::ext::BufMutExt as SidBufMutExt, varint::ext::BufMutExt as VarIntBufMutExt,
@@ -59,7 +59,7 @@ pub(super) mod ext {
 
 #[cfg(test)]
 mod tests {
-    use super::{ext::BufMutExt, ResetStreamFrame, RESET_STREAM_FRAME_TYPE};
+    use super::{ext::WriteResetStreamFrame, ResetStreamFrame, RESET_STREAM_FRAME_TYPE};
     use crate::varint::{ext::be_varint, VarInt};
     use nom::combinator::flat_map;
 

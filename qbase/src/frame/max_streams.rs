@@ -54,11 +54,11 @@ pub(super) mod ext {
         }
     }
 
-    pub trait BufMutExt {
+    pub trait WriteMaxStreamsFrame {
         fn put_max_streams_frame(&mut self, frame: &MaxStreamsFrame);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteMaxStreamsFrame for T {
         fn put_max_streams_frame(&mut self, frame: &MaxStreamsFrame) {
             use crate::varint::ext::BufMutExt as VarIntBufMutExt;
             match frame {
@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn test_write_max_streams_frame() {
-        use super::ext::BufMutExt;
+        use super::ext::WriteMaxStreamsFrame;
         let mut buf = Vec::new();
         buf.put_max_streams_frame(&MaxStreamsFrame::Bi(VarInt(0x1234)));
         assert_eq!(buf, vec![MAX_STREAMS_FRAME_TYPE, 0x52, 0x34]);

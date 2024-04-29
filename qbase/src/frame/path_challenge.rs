@@ -35,11 +35,11 @@ pub(super) mod ext {
     }
 
     // BufMut write extension for PATH_CHALLENGE_FRAME
-    pub trait BufMutExt {
+    pub trait WritePathChallengeFrame {
         fn put_path_challenge_frame(&mut self, frame: &PathChallengeFrame);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WritePathChallengeFrame for T {
         fn put_path_challenge_frame(&mut self, frame: &PathChallengeFrame) {
             self.put_u8(super::PATH_CHALLENGE_FRAME_TYPE);
             self.put_slice(&frame.data);
@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn test_write_path_challenge_frame() {
-        use super::ext::BufMutExt;
+        use super::ext::WritePathChallengeFrame;
         let mut buf = Vec::new();
         let frame = super::PathChallengeFrame {
             data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],

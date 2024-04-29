@@ -40,11 +40,11 @@ pub(super) mod ext {
     }
 
     // BufMut write extension for STREAM_DATA_BLOCKED_FRAME
-    pub trait BufMutExt {
+    pub trait WriteStreamDataBlockedFrame {
         fn put_stream_data_blocked_frame(&mut self, frame: &StreamDataBlockedFrame);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteStreamDataBlockedFrame for T {
         fn put_stream_data_blocked_frame(&mut self, frame: &StreamDataBlockedFrame) {
             use crate::streamid::ext::BufMutExt as StreamIdBufMutExt;
             use crate::varint::ext::BufMutExt as VarIntBufMutExt;
@@ -76,7 +76,7 @@ mod tests {
 
     #[test]
     fn test_write_stream_data_blocked_frame() {
-        use super::ext::BufMutExt;
+        use super::ext::WriteStreamDataBlockedFrame;
         let mut buf = Vec::new();
         buf.put_stream_data_blocked_frame(&StreamDataBlockedFrame {
             stream_id: VarInt(0x1234).into(),

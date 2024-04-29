@@ -292,7 +292,7 @@ pub enum Frame {
 pub mod ext {
     use super::*;
     use super::{
-        ack::ext::ack_frame_with_flag, connection_close::ext::connection_close_frame_at,
+        ack::ext::ack_frame_with_flag, connection_close::ext::connection_close_frame_at_layer,
         crypto::ext::be_crypto_frame, data_blocked::ext::be_data_blocked_frame,
         max_data::ext::be_max_data_frame, max_stream_data::ext::be_max_stream_data_frame,
         max_streams::ext::max_streams_frame_with_dir, new_token::ext::be_new_token_frame,
@@ -319,7 +319,7 @@ pub mod ext {
             FrameType::Padding => Ok((input, Frame::Padding)),
             FrameType::Ping => Ok((input, Frame::Info(InfoFrame::Ping))),
             FrameType::ConnectionClose(layer) => {
-                map(connection_close_frame_at(layer), Frame::Close)(input)
+                map(connection_close_frame_at_layer(layer), Frame::Close)(input)
             }
             FrameType::NewConnectionId => todo!(),
             FrameType::RetireConnectionId => map(be_retire_connection_id_frame, |f| {
@@ -427,26 +427,21 @@ pub mod ext {
     }
 
     use super::{
-        data_blocked::ext::BufMutExt as DataBlockedBufMutExt,
-        handshake_done::ext::BufMutExt as HandshakeDoneBufMutExt,
-        max_data::ext::BufMutExt as MaxDataBufMutExt,
-        max_stream_data::ext::BufMutExt as MaxStreamDataBufMutExt,
-        max_streams::ext::BufMutExt as MaxStreamsBufMutExt,
-        new_token::ext::BufMutExt as NewTokenBufMutExt,
-        path_challenge::ext::BufMutExt as PathChallengeBufMutExt,
-        path_response::ext::BufMutExt as PathResponseBufMutExt,
-        reset_stream::ext::BufMutExt as ResetStreamBufMutExt,
-        retire_connection_id::ext::BufMutExt as RetireConnectionIdBufMutExt,
-        stop_sending::ext::BufMutExt as StopSendingBufMutExt,
-        stream_data_blocked::ext::BufMutExt as StreamDataBlockedBufMutExt,
-        streams_blocked::ext::BufMutExt as StreamsBlockedBufMutExt,
+        data_blocked::ext::WriteDataBlockedFrame, handshake_done::ext::WriteHandshakeDoneFrame,
+        max_data::ext::WriteMaxDataFrame, max_stream_data::ext::WriteMaxStreamDataFrame,
+        max_streams::ext::WriteMaxStreamsFrame, new_token::ext::WriteNewTokenFrame,
+        path_challenge::ext::WritePathChallengeFrame, path_response::ext::WritePathResponseFrame,
+        reset_stream::ext::WriteResetStreamFrame,
+        retire_connection_id::ext::WriteRetireConnectionIdFrame,
+        stop_sending::ext::WriteStopSendingFrame,
+        stream_data_blocked::ext::WriteStreamDataBlockedFrame,
+        streams_blocked::ext::WriteStreamsBlockedFrame,
     };
 
     pub use super::{
-        ack::ext::BufMutExt as AckBufMutExt,
-        connection_close::ext::BufMutExt as ConnectionCloseBufMutExt,
-        crypto::ext::BufMutExt as CryptoBufMutExt, padding::ext::BufMutExt as PaddingBufMutExt,
-        ping::ext::BufMutExt as PingBufMutExt, stream::ext::BufMutExt as StreamBufMutExt,
+        ack::ext::WriteAckFrame, connection_close::ext::WriteConnectionCloseFrame,
+        crypto::ext::WriteCryptoFrame, padding::ext::WritePaddingFrame, ping::ext::WritePingFrame,
+        stream::ext::WriteStreamFrame,
     };
 
     pub trait WriteFrame<F> {

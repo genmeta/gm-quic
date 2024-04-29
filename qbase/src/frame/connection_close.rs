@@ -44,7 +44,7 @@ pub(super) mod ext {
     use super::{ConnectionCloseFrame, APP_LAYER, CONNECTION_CLOSE_FRAME_TYPE, QUIC_LAYER};
 
     // nom parser for CONNECTION_CLOSE_FRAME
-    pub fn connection_close_frame_at(
+    pub fn connection_close_frame_at_layer(
         layer: u8,
     ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], ConnectionCloseFrame> {
         use crate::varint::ext::be_varint;
@@ -69,11 +69,11 @@ pub(super) mod ext {
             ))
         }
     }
-    pub trait BufMutExt {
+    pub trait WriteConnectionCloseFrame {
         fn put_connection_close_frame(&mut self, frame: &ConnectionCloseFrame);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteConnectionCloseFrame for T {
         fn put_connection_close_frame(&mut self, frame: &ConnectionCloseFrame) {
             use crate::varint::{ext::BufMutExt as VarIntBufMutExt, VarInt};
             let layer = if frame.frame_type.is_some() {
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn test_read_connection_close_frame() {
-        use super::ext::connection_close_frame_at;
+        use super::ext::connection_close_frame_at_layer;
         use crate::varint::ext::be_varint;
         use nom::combinator::flat_map;
         let buf = vec![
@@ -114,7 +114,7 @@ mod tests {
         ];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() == super::CONNECTION_CLOSE_FRAME_TYPE as u64 {
-                connection_close_frame_at(0)
+                connection_close_frame_at_layer(0)
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_write_connection_close_frame() {
-        use super::ext::BufMutExt;
+        use super::ext::WriteConnectionCloseFrame;
         let mut buf = Vec::<u8>::new();
         let frame = super::ConnectionCloseFrame {
             error_code: VarInt(0x1234),
