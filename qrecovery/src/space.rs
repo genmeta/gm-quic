@@ -5,7 +5,7 @@ use bytes::{BufMut, Bytes};
 use qbase::{
     error::{Error, ErrorKind},
     frame::{self, ext::*, *},
-    varint::VARINT_MAX,
+    varint::{VarInt, VARINT_MAX},
 };
 use std::{
     collections::VecDeque,
@@ -26,6 +26,9 @@ pub trait Receive {
 
 /// 以下的泛型定义，F表示信令帧集合，D表示数据帧即可
 pub trait Transmit<F, D> {
+    type Buffer: BufMut + WriteFrame<F> + WriteDataFrame<D>;
+
+    fn try_send(&mut self, buf: Self::Buffer) -> D;
     fn confirm(&mut self, frame: F);
     fn confirm_data(&mut self, data_frame: D);
     fn may_loss(&mut self, data_frame: D);
@@ -45,15 +48,16 @@ pub(crate) enum Records<F, D> {
 type Payload<F, D> = Vec<Records<F, D>>;
 
 #[derive(Debug, Clone, Default)]
-enum State<T> {
-    Ignored(T),
-    Important(T),
+enum State {
     #[default]
-    Acked,
+    Unreceived,
+    Ignored(Instant),
+    Important(Instant),
+    Acked(Instant),
 }
 
-impl<T> State<T> {
-    fn new(t: T, is_ack_eliciting: bool) -> Self {
+impl State {
+    fn rcvd(t: Instant, is_ack_eliciting: bool) -> Self {
         if is_ack_eliciting {
             Self::Important(t)
         } else {
@@ -61,8 +65,14 @@ impl<T> State<T> {
         }
     }
 
-    fn ack(&mut self) {
-        *self = Self::Acked;
+    fn ack(&mut self) -> Option<Duration> {
+        match std::mem::take(self) {
+            Self::Ignored(t) | Self::Important(t) | Self::Acked(t) => {
+                *self = Self::Acked(t);
+                Some(t.elapsed())
+            }
+            Self::Unreceived => None,
+        }
     }
 }
 
@@ -79,7 +89,10 @@ const PACKET_THRESHOLD: u64 = 3;
 /// 可靠空间的抽象实现，需要实现上述所有trait
 /// 可靠空间中的重传、确认，由可靠空间内部实现，无需外露
 #[derive(Debug, Default)]
-pub struct Space<F, D, T: Transmit<F, D> + Default + Debug, const R: bool = true> {
+pub struct Space<F, D, T, const R: bool = true>
+where
+    T: Transmit<F, D> + Default + Debug,
+{
     // 将要发出的数据帧，包括重传的数据帧；可以是外部的功能帧，也可以是具体传输空间内部的
     // 起到“信号”作用的信令帧，比如数据空间内部的各类通信帧。
     // 需要注意的是，数据帧以及Ack帧(记录)，并不在此中保存，因为数据帧占数据空间，ack帧
@@ -104,7 +117,7 @@ pub struct Space<F, D, T: Transmit<F, D> + Default + Debug, const R: bool = true
     //   - 要末能转化成D，主要针对带数据的，或者直接就是D更合适
 
     // 用于产生ack frame，Instant用于计算ack_delay，bool表明是否ack eliciting
-    rcvd_packets: IndexDeque<Option<State<Instant>>, VARINT_MAX>,
+    rcvd_packets: IndexDeque<State, VARINT_MAX>,
 
     // 应该计算rtt的时候，传进来；或者收到ack frame的时候，将(last_rtt, ack_delay)传出去
     max_ack_delay: Duration,
@@ -118,6 +131,73 @@ where
 {
     pub fn write_frame(&mut self, frame: F) {
         self.frames.push_back(frame);
+    }
+
+    fn confirm(&mut self, payload: Payload<F, D>) {
+        for record in payload {
+            match record {
+                Records::Ack(ack) => {
+                    let _ = self
+                        .rcvd_packets
+                        .drain_to(ack.0.saturating_sub(self.disorder_tolerance));
+                }
+                Records::Frame(frame) => self.transmission.confirm(frame),
+                Records::Data(data) => self.transmission.confirm_data(data),
+            }
+        }
+    }
+
+    fn gen_ack_frame(&mut self) -> Option<AckFrame> {
+        let need_ack = self
+            .rcvd_packets
+            .iter()
+            .any(|p| matches!(p, State::Important(_)));
+        if !need_ack {
+            return None;
+        }
+
+        let largest = self.rcvd_packets.offset() + self.rcvd_packets.len() as u64 - 1;
+        let delay = self.rcvd_packets.get_mut(largest).unwrap().ack().unwrap();
+        let mut rcvd_iter = self.rcvd_packets.iter().rev();
+        let first_range = rcvd_iter
+            .by_ref()
+            .take_while(|s| !matches!(s, State::Unreceived))
+            .count()
+            - 1;
+        let mut ranges = Vec::with_capacity(16);
+        loop {
+            if rcvd_iter.next().is_none() {
+                break;
+            }
+            let gap = rcvd_iter
+                .by_ref()
+                .take_while(|s| matches!(s, State::Unreceived))
+                .count();
+
+            if rcvd_iter.next().is_none() {
+                break;
+            }
+            let acked = rcvd_iter
+                .by_ref()
+                .take_while(|s| !matches!(s, State::Unreceived))
+                .count();
+
+            ranges.push(unsafe {
+                (
+                    VarInt::from_u64_unchecked(gap as u64),
+                    VarInt::from_u64_unchecked(acked as u64),
+                )
+            });
+        }
+
+        Some(AckFrame {
+            largest: unsafe { VarInt::from_u64_unchecked(largest) },
+            delay: unsafe { VarInt::from_u64_unchecked(delay.as_micros() as u64) },
+            first_range: unsafe { VarInt::from_u64_unchecked(first_range as u64) },
+            ranges,
+            // TODO: support ECN
+            ecn: None,
+        })
     }
 
     fn recv_ack_frame(&mut self, mut ack: AckFrame, rtt: &mut Rtt) -> Option<usize> {
@@ -226,20 +306,6 @@ where
         Some(acked_bytes)
     }
 
-    fn confirm(&mut self, payload: Payload<F, D>) {
-        for record in payload {
-            match record {
-                Records::Ack(ack) => {
-                    let _ = self
-                        .rcvd_packets
-                        .drain_to(ack.0.saturating_sub(self.disorder_tolerance));
-                }
-                Records::Frame(frame) => self.transmission.confirm(frame),
-                Records::Data(data) => self.transmission.confirm_data(data),
-            }
-        }
-    }
-
     fn need_send_ack(&self) -> bool {
         // self.rcvd_packets.
         false
@@ -295,7 +361,7 @@ where
         if pktid < self.rcvd_packets.offset() {
             return Ok(());
         }
-        if let Some(Some(_)) = self.rcvd_packets.get(pktid) {
+        if !matches!(self.rcvd_packets.get(pktid), Some(State::Unreceived)) {
             // TODO: 收到重复的包，对乱序容忍度进行处理
             return Ok(());
         }
@@ -332,8 +398,14 @@ where
                 }
             }
         }
-        self.rcvd_packets
-            .insert(pktid, Some(State::new(Instant::now(), is_ack_eliciting)));
+        self.rcvd_packets.insert(
+            pktid,
+            if is_ack_eliciting {
+                State::Important(Instant::now())
+            } else {
+                State::Ignored(Instant::now())
+            },
+        );
         return Ok(());
     }
 }

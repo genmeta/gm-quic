@@ -74,22 +74,22 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
         })
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &T> {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &T> {
         self.deque.iter()
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+    pub fn iter_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut T> {
         self.deque.iter_mut()
     }
 
-    pub fn iter_mut_with_idx(&mut self) -> impl Iterator<Item = (u64, &mut T)> {
+    pub fn iter_mut_with_idx(&mut self) -> impl DoubleEndedIterator<Item = (u64, &mut T)> {
         self.deque
             .iter_mut()
             .enumerate()
             .map(|(idx, item)| (self.offset + idx as u64, item))
     }
 
-    pub fn drain<R>(&mut self, range: R) -> impl Iterator<Item = T> + '_
+    pub fn drain<R>(&mut self, range: R) -> impl DoubleEndedIterator<Item = T> + '_
     where
         R: RangeBounds<usize>,
     {
@@ -101,7 +101,7 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
     /// The records of the sent packets can only be removed from the queue
     /// when the acknowledgment (ack) is received. Additionally, any unacknowledged
     /// elements in the records are considered lost and require retransmission.
-    pub fn drain_to(&mut self, end: u64) -> impl Iterator<Item = T> + '_ {
+    pub fn drain_to(&mut self, end: u64) -> impl DoubleEndedIterator<Item = T> + '_ {
         #[cfg(not(test))]
         debug_assert!(end >= self.offset && end <= self.offset + self.deque.len() as u64);
         // avoid end < self.offset
