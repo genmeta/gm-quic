@@ -178,13 +178,13 @@ pub mod ext {
     impl<T: BufMut> BufMutExt for T {
         fn put_varint(&mut self, value: &VarInt) {
             let x = value.0;
-            if x < 2u64.pow(6) {
+            if x < 1u64 << 6 {
                 self.put_u8(x as u8);
-            } else if x < 2u64.pow(14) {
+            } else if x < 1u64 << 14 {
                 self.put_u16(0b01 << 14 | x as u16);
-            } else if x < 2u64.pow(30) {
+            } else if x < 2u64 << 30 {
                 self.put_u32(0b10 << 30 | x as u32);
-            } else if x < 2u64.pow(62) {
+            } else if x < 2u64 << 62 {
                 self.put_u64(0b11 << 62 | x);
             } else {
                 unreachable!("malformed VarInt")

@@ -433,7 +433,6 @@ pub mod ext {
         max_stream_data::ext::BufMutExt as MaxStreamDataBufMutExt,
         max_streams::ext::BufMutExt as MaxStreamsBufMutExt,
         new_token::ext::BufMutExt as NewTokenBufMutExt,
-        padding::ext::BufMutExt as PaddingBufMutExt,
         path_challenge::ext::BufMutExt as PathChallengeBufMutExt,
         path_response::ext::BufMutExt as PathResponseBufMutExt,
         reset_stream::ext::BufMutExt as ResetStreamBufMutExt,
@@ -446,8 +445,8 @@ pub mod ext {
     pub use super::{
         ack::ext::BufMutExt as AckBufMutExt,
         connection_close::ext::BufMutExt as ConnectionCloseBufMutExt,
-        crypto::ext::BufMutExt as CryptoBufMutExt, ping::ext::BufMutExt as PingBufMutExt,
-        stream::ext::BufMutExt as StreamBufMutExt,
+        crypto::ext::BufMutExt as CryptoBufMutExt, padding::ext::BufMutExt as PaddingBufMutExt,
+        ping::ext::BufMutExt as PingBufMutExt, stream::ext::BufMutExt as StreamBufMutExt,
     };
 
     pub trait WriteFrame<F> {
