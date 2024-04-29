@@ -82,6 +82,13 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
         self.deque.iter_mut()
     }
 
+    pub fn iter_with_idx(&self) -> impl DoubleEndedIterator<Item = (u64, &T)> {
+        self.deque
+            .iter()
+            .enumerate()
+            .map(|(idx, item)| (self.offset + idx as u64, item))
+    }
+
     pub fn iter_mut_with_idx(&mut self) -> impl DoubleEndedIterator<Item = (u64, &mut T)> {
         self.deque
             .iter_mut()
