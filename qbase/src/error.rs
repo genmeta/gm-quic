@@ -1,4 +1,5 @@
 use crate::{frame::FrameType, varint::VarInt};
+use std::borrow::Cow;
 use thiserror::Error;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -53,15 +54,19 @@ impl From<ErrorKind> for VarInt {
 pub struct Error {
     pub kind: ErrorKind,
     pub frame_type: FrameType,
-    pub reason: String,
+    pub reason: Cow<'static, str>,
 }
 
 impl Error {
-    pub fn new(kind: ErrorKind, frame_type: FrameType, reason: String) -> Self {
+    pub fn new<T: Into<Cow<'static, str>>>(
+        kind: ErrorKind,
+        frame_type: FrameType,
+        reason: T,
+    ) -> Self {
         Self {
             kind,
             frame_type,
-            reason,
+            reason: reason.into(),
         }
     }
 }
@@ -71,7 +76,7 @@ impl From<Error> for crate::frame::ConnectionCloseFrame {
         Self {
             error_code: e.kind.into(),
             frame_type: Some(e.frame_type.into()),
-            reason: e.reason,
+            reason: e.reason.into_owned(),
         }
     }
 }

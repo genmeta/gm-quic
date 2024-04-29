@@ -24,8 +24,8 @@ mod stream;
 mod stream_data_blocked;
 mod streams_blocked;
 
-mod error;
-pub use error::DecodingError as FrameDecodingError;
+pub mod error;
+pub use error::Error;
 
 // re-export for convenience
 pub use ack::{AckFrame, AckRecord};
@@ -76,7 +76,7 @@ pub enum FrameType {
 }
 
 impl TryFrom<VarInt> for FrameType {
-    type Error = FrameDecodingError;
+    type Error = Error;
 
     fn try_from(frame_type: VarInt) -> Result<Self, Self::Error> {
         Ok(match frame_type.into_inner() {
@@ -174,7 +174,7 @@ impl BeFrame for InfoFrame {
 // The initial packet and handshake packet only contain Ping frame.
 
 impl TryFrom<InfoFrame> for PingFrame {
-    type Error = FrameDecodingError;
+    type Error = Error;
 
     fn try_from(value: InfoFrame) -> Result<Self, Self::Error> {
         match value {
@@ -209,7 +209,7 @@ pub enum ZeroRttFrame {
 }
 
 impl TryFrom<InfoFrame> for ZeroRttFrame {
-    type Error = FrameDecodingError;
+    type Error = Error;
 
     fn try_from(value: InfoFrame) -> Result<Self, Self::Error> {
         match value {
@@ -256,7 +256,7 @@ pub enum DataFrame {
 }
 
 impl TryFrom<DataFrame> for CryptoFrame {
-    type Error = FrameDecodingError;
+    type Error = Error;
 
     fn try_from(value: DataFrame) -> Result<Self, Self::Error> {
         match value {
@@ -270,7 +270,7 @@ impl TryFrom<DataFrame> for CryptoFrame {
 }
 
 impl TryFrom<DataFrame> for StreamFrame {
-    type Error = FrameDecodingError;
+    type Error = Error;
 
     fn try_from(value: DataFrame) -> Result<Self, Self::Error> {
         match value {
@@ -287,24 +287,6 @@ pub enum Frame {
     Close(ConnectionCloseFrame),
     Info(InfoFrame),
     Data(DataFrame, Bytes),
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum WriteFrame {
-    Padding,
-    Ping,
-    HandshakeDone,
-    Ack(AckRecord),
-    Stream(StreamFrame),
-    ResetStream(ResetStreamFrame),
-    Crypto(CryptoFrame),
-    DataBlocked(DataBlockedFrame),
-    MaxData(MaxDataFrame),
-    MaxStreamData(MaxStreamDataFrame),
-    StreamDataBlocked(StreamDataBlockedFrame),
-    MaxStreams(MaxStreamsFrame),
-    StreamsBlocked(StreamsBlockedFrame),
-    StopSending(StopSendingFrame),
 }
 
 pub mod ext {
@@ -404,12 +386,12 @@ pub mod ext {
     }
 
     // nom parser for FRAME
-    fn be_frame(raw: Bytes) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Frame, FrameDecodingError> {
+    fn be_frame(raw: Bytes) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Frame, Error> {
         move |input: &[u8]| {
             use crate::varint::ext::be_varint;
             let (input, fty) = be_varint(input).map_err(|e| match e {
                 ne @ nom::Err::Incomplete(_) => {
-                    nom::Err::Error(FrameDecodingError::IncompleteType(ne.to_string()))
+                    nom::Err::Error(Error::IncompleteType(ne.to_string()))
                 }
                 _ => unreachable!(
                     "parsing frame type which is a varint never generates error or failure"
@@ -417,12 +399,12 @@ pub mod ext {
             })?;
             let frame_type = FrameType::try_from(fty).map_err(nom::Err::Error)?;
             complete_frame(frame_type, raw.clone())(input).map_err(|e| match e {
-                ne @ nom::Err::Incomplete(_) => nom::Err::Error(
-                    FrameDecodingError::IncompleteFrame(frame_type, ne.to_string()),
-                ),
+                ne @ nom::Err::Incomplete(_) => {
+                    nom::Err::Error(Error::IncompleteFrame(frame_type, ne.to_string()))
+                }
                 nom::Err::Error(ne) => {
                     debug_assert_eq!(ne.code, nom::error::ErrorKind::TooLarge);
-                    nom::Err::Error(FrameDecodingError::ParseError(
+                    nom::Err::Error(Error::ParseError(
                         frame_type,
                         ne.code.description().to_owned(),
                     ))
@@ -432,14 +414,14 @@ pub mod ext {
         }
     }
 
-    pub fn parse_frames_from_bytes(bytes: Bytes) -> Result<Vec<Frame>, FrameDecodingError> {
+    pub fn parse_frames_from_bytes(bytes: Bytes) -> Result<Vec<Frame>, Error> {
         let raw = bytes.clone();
         let input = bytes.as_ref();
         // many1 cannot check if it has reached EOF or if the last frame is incomplete;
         // many_till eof cannot check if it contains at least one.
         let (_, (frames, _)) = many_till(be_frame(raw), eof)(input)?;
         if frames.is_empty() {
-            return Err(FrameDecodingError::NoFrames);
+            return Err(Error::NoFrames);
         }
         Ok(frames)
     }
@@ -468,18 +450,54 @@ pub mod ext {
         stream::ext::BufMutExt as StreamBufMutExt,
     };
 
-    pub trait BufMutExt {
-        fn put_info_frame(&mut self, frame: &InfoFrame);
-        fn put_zero_rtt_frame(&mut self, frame: &ZeroRttFrame);
-        fn put_one_rtt_frame(&mut self, frame: &OneRttFrame);
-        fn put_data_frame(&mut self, frame: &DataFrame, data: &[u8]);
-
-        #[deprecated]
-        fn put_frame(&mut self, frame: &WriteFrame);
+    pub trait WriteFrame<F> {
+        fn put_frame(&mut self, frame: &F);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
-        fn put_info_frame(&mut self, frame: &InfoFrame) {
+    pub trait WriteDataFrame<D> {
+        fn put_frame_with_data(&mut self, frame: &D, data: &[u8]);
+    }
+
+    impl<T: bytes::BufMut> WriteFrame<PingFrame> for T {
+        fn put_frame(&mut self, _frame: &PingFrame) {
+            self.put_ping_frame();
+        }
+    }
+
+    impl<T: bytes::BufMut> WriteDataFrame<CryptoFrame> for T {
+        fn put_frame_with_data(&mut self, frame: &CryptoFrame, data: &[u8]) {
+            self.put_crypto_frame(frame, data);
+        }
+    }
+
+    impl<T: bytes::BufMut> WriteFrame<ZeroRttFrame> for T {
+        fn put_frame(&mut self, frame: &ZeroRttFrame) {
+            match frame {
+                ZeroRttFrame::Ping => self.put_ping_frame(),
+                ZeroRttFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
+                ZeroRttFrame::StopSending(frame) => self.put_stop_sending_frame(frame),
+                ZeroRttFrame::MaxData(frame) => self.put_max_data_frame(frame),
+                ZeroRttFrame::MaxStreamData(frame) => self.put_max_stream_data_frame(frame),
+                ZeroRttFrame::MaxStreams(frame) => self.put_max_streams_frame(frame),
+                ZeroRttFrame::DataBlocked(frame) => self.put_data_blocked_frame(frame),
+                ZeroRttFrame::StreamDataBlocked(frame) => self.put_stream_data_blocked_frame(frame),
+                ZeroRttFrame::StreamsBlocked(frame) => self.put_streams_blocked_frame(frame),
+                ZeroRttFrame::RetireConnectionId(frame) => {
+                    self.put_retire_connection_id_frame(frame)
+                }
+                ZeroRttFrame::PathChallenge(frame) => self.put_path_challenge_frame(frame),
+            }
+        }
+    }
+
+    impl<T: bytes::BufMut> WriteDataFrame<StreamFrame> for T {
+        fn put_frame_with_data(&mut self, frame: &StreamFrame, data: &[u8]) {
+            self.put_stream_frame(frame, data);
+        }
+    }
+
+    impl<T: bytes::BufMut> WriteFrame<InfoFrame> for T {
+        fn put_frame(&mut self, frame: &InfoFrame) {
             match frame {
                 InfoFrame::Ping => self.put_ping_frame(),
                 InfoFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
@@ -497,58 +515,13 @@ pub mod ext {
                 InfoFrame::HandshakeDone => self.put_handshake_done_frame(),
             }
         }
+    }
 
-        fn put_zero_rtt_frame(&mut self, frame: &ZeroRttFrame) {
-            match frame {
-                ZeroRttFrame::Ping => self.put_ping_frame(),
-                ZeroRttFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
-                ZeroRttFrame::StopSending(frame) => self.put_stop_sending_frame(frame),
-                ZeroRttFrame::MaxData(frame) => self.put_max_data_frame(frame),
-                ZeroRttFrame::MaxStreamData(frame) => self.put_max_stream_data_frame(frame),
-                ZeroRttFrame::MaxStreams(frame) => self.put_max_streams_frame(frame),
-                ZeroRttFrame::DataBlocked(frame) => self.put_data_blocked_frame(frame),
-                ZeroRttFrame::StreamDataBlocked(frame) => self.put_stream_data_blocked_frame(frame),
-                ZeroRttFrame::StreamsBlocked(frame) => self.put_streams_blocked_frame(frame),
-                ZeroRttFrame::RetireConnectionId(frame) => {
-                    self.put_retire_connection_id_frame(frame)
-                }
-                ZeroRttFrame::PathChallenge(frame) => self.put_path_challenge_frame(frame),
-            }
-        }
-
-        fn put_one_rtt_frame(&mut self, frame: &OneRttFrame) {
-            self.put_info_frame(frame);
-        }
-
-        fn put_data_frame(&mut self, frame: &DataFrame, data: &[u8]) {
+    impl<T: bytes::BufMut> WriteDataFrame<DataFrame> for T {
+        fn put_frame_with_data(&mut self, frame: &DataFrame, data: &[u8]) {
             match frame {
                 DataFrame::Crypto(frame) => self.put_crypto_frame(frame, data),
                 DataFrame::Stream(frame) => self.put_stream_frame(frame, data),
-            }
-        }
-
-        fn put_frame(&mut self, frame: &WriteFrame) {
-            match frame {
-                WriteFrame::Padding => self.put_padding_frame(),
-                WriteFrame::Ping => self.put_ping_frame(),
-                WriteFrame::HandshakeDone => self.put_handshake_done_frame(),
-                WriteFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
-                WriteFrame::DataBlocked(frame) => self.put_data_blocked_frame(frame),
-                WriteFrame::MaxData(frame) => self.put_max_data_frame(frame),
-                WriteFrame::MaxStreamData(frame) => self.put_max_stream_data_frame(frame),
-                WriteFrame::MaxStreams(frame) => self.put_max_streams_frame(frame),
-                WriteFrame::StreamsBlocked(frame) => self.put_streams_blocked_frame(frame),
-                WriteFrame::StreamDataBlocked(frame) => self.put_stream_data_blocked_frame(frame),
-                WriteFrame::StopSending(frame) => self.put_stop_sending_frame(frame),
-                WriteFrame::Crypto(_) => {
-                    unimplemented!("Cannot write CRYPTO frame directly. Please request the latest data to be sent from crypto buffer.")
-                }
-                WriteFrame::Stream(_) => {
-                    unimplemented!("Cannot write STREAM frame directly. Please request the latest data to be sent from each stream.")
-                }
-                WriteFrame::Ack(_) => {
-                    unimplemented!("Cannot write ACK frame directly. Please regenerate the latest ACK information.")
-                }
             }
         }
     }

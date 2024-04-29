@@ -74,6 +74,13 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
         })
     }
 
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (u64, &mut T)> {
+        self.deque
+            .iter_mut()
+            .enumerate()
+            .map(|(idx, item)| (self.offset + idx as u64, item))
+    }
+
     /// This API will be used for the records of the packets that have been
     /// sent and are awaiting confirmation.
     /// The records of the sent packets can only be removed from the queue

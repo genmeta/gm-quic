@@ -4,7 +4,7 @@ use nom::error::ErrorKind as NomErrorKind;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Eq, PartialEq, Error)]
-pub enum DecodingError {
+pub enum Error {
     #[error("A packet containing no frames")]
     NoFrames,
     #[error("Incomplete frame type: {0}")]
@@ -24,43 +24,43 @@ pub enum DecodingError {
 use crate::error::Error as TransportError;
 use crate::error::ErrorKind as TransportErrorKind;
 
-impl From<DecodingError> for TransportError {
-    fn from(e: DecodingError) -> Self {
+impl From<Error> for TransportError {
+    fn from(e: Error) -> Self {
         match e {
             // An endpoint MUST treat receipt of a packet containing no frames as a connection error of type PROTOCOL_VIOLATION.
-            DecodingError::NoFrames => Self::new(
+            Error::NoFrames => Self::new(
                 TransportErrorKind::ProtocolViolation,
                 FrameType::Padding,
                 e.to_string(),
             ),
-            DecodingError::IncompleteType(_) => Self::new(
+            Error::IncompleteType(_) => Self::new(
                 TransportErrorKind::FrameEncoding,
                 FrameType::Padding,
                 e.to_string(),
             ),
-            DecodingError::InvalidType(_) => Self::new(
+            Error::InvalidType(_) => Self::new(
                 TransportErrorKind::FrameEncoding,
                 FrameType::Padding,
                 e.to_string(),
             ),
-            DecodingError::IncompleteFrame(fty, _) => {
+            Error::IncompleteFrame(fty, _) => {
                 Self::new(TransportErrorKind::FrameEncoding, fty, e.to_string())
             }
-            DecodingError::ParseError(fty, _) => {
+            Error::ParseError(fty, _) => {
                 Self::new(TransportErrorKind::FrameEncoding, fty, e.to_string())
             }
-            DecodingError::WrongFrame(fty, _) => {
+            Error::WrongFrame(fty, _) => {
                 Self::new(TransportErrorKind::ProtocolViolation, fty, e.to_string())
             }
-            DecodingError::WrongData(fty, _) => {
+            Error::WrongData(fty, _) => {
                 Self::new(TransportErrorKind::ProtocolViolation, fty, e.to_string())
             }
         }
     }
 }
 
-impl From<nom::Err<DecodingError>> for DecodingError {
-    fn from(value: nom::Err<DecodingError>) -> Self {
+impl From<nom::Err<Error>> for Error {
+    fn from(value: nom::Err<Error>) -> Self {
         match value {
             nom::Err::Incomplete(_needed) => {
                 unreachable!("Because the parsing of QUIC packets and frames is not stream-based.")
@@ -70,7 +70,7 @@ impl From<nom::Err<DecodingError>> for DecodingError {
     }
 }
 
-impl nom::error::ParseError<&[u8]> for DecodingError {
+impl nom::error::ParseError<&[u8]> for Error {
     fn from_error_kind(_input: &[u8], _kind: NomErrorKind) -> Self {
         debug_assert_eq!(_kind, NomErrorKind::ManyTill);
         unreachable!("QUIC frame parser must always consume")

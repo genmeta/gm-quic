@@ -56,6 +56,7 @@ pub struct DataSpace {
     // inflight packets多了发送时间以计算RTT，还有包id即索引，配合ACK_FRAME进行ack和判丢，
     // 如果被确认，就会变成None。变成None之后的数据包不用被重复确认。
     inflight_packets: SentPacketRecords,
+    disorder_tolerance: usize,
 
     // 如果是tlp，那尾丢包超时器就会启动，判定丢包
 
