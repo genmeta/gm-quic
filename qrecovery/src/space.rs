@@ -21,7 +21,6 @@ pub trait TrySend<T: BufMut> {
 pub trait Receive {
     /// receive的数据，尚未解析，解析过程中可能会出错，
     /// 发生解析失败，或者解析出不该在该空间存在的帧
-    /// TODO: 错误类型待定
     fn receive(&mut self, pktid: u64, payload: Bytes, rtt: &mut Rtt) -> Result<(), Error>;
 }
 
@@ -75,6 +74,8 @@ struct Packet<F, D> {
     is_ack_eliciting: bool,
 }
 
+const PACKET_THRESHOLD: u64 = 3;
+
 /// 可靠空间的抽象实现，需要实现上述所有trait
 /// 可靠空间中的重传、确认，由可靠空间内部实现，无需外露
 #[derive(Debug, Default)]
@@ -121,18 +122,16 @@ where
 
     fn recv_ack_frame(&mut self, mut ack: AckFrame, rtt: &mut Rtt) -> Option<usize> {
         let largest_acked = ack.largest.into_inner();
-        if largest_acked < self.inflight_packets.offset() {
-            // TODO: self.disorder_tolerance可以进行相应的变化
+        if largest_acked < self.largest_acked_packet {
             return None;
         }
+        // largest_acked == self.largest_acked_packet，也是可以接受的，也许有新包被确认
         self.largest_acked_packet = largest_acked;
 
-        if let Some(_ecn) = ack.take_ecn() {
-            todo!("处理ECN信息");
-        }
-
+        let mut no_newly_acked = true;
         let mut includes_ack_eliciting = false;
         let mut acked_bytes = 0;
+        let ecn_in_ack = ack.take_ecn();
         let ack_delay = Duration::from_micros(ack.delay.into_inner());
         for range in ack.into_iter() {
             for pktid in range {
@@ -141,6 +140,7 @@ where
                     .get_mut(pktid)
                     .and_then(|record| record.take())
                 {
+                    no_newly_acked = false;
                     if packet.is_ack_eliciting {
                         includes_ack_eliciting = true;
                     }
@@ -148,6 +148,14 @@ where
                     acked_bytes += packet.sent_bytes;
                 }
             }
+        }
+
+        if no_newly_acked {
+            return None;
+        }
+
+        if let Some(_ecn) = ecn_in_ack {
+            todo!("处理ECN信息");
         }
 
         if let Some(packet) = self
@@ -159,14 +167,19 @@ where
                 includes_ack_eliciting = true;
             }
             if includes_ack_eliciting {
-                rtt.update(packet.send_time.elapsed(), ack_delay);
+                // TODO: is_handshake_confirmed is known from connection logic
+                rtt.update(packet.send_time.elapsed(), ack_delay, true);
             }
             self.confirm(packet.payload);
             acked_bytes += packet.sent_bytes;
         }
 
         // 没被确认的，要重传；对于大部分Frame直接重入frames_buf即可，但对于StreamFrame，得判定丢失
-        for packet in self.inflight_packets.drain_to(largest_acked - 3).flatten() {
+        for packet in self
+            .inflight_packets
+            .drain_to(largest_acked.saturating_sub(PACKET_THRESHOLD))
+            .flatten()
+        {
             acked_bytes += packet.sent_bytes;
             for record in packet.payload {
                 match record {
@@ -176,6 +189,40 @@ where
                 }
             }
         }
+
+        let loss_delay = rtt.loss_delay();
+        // Packets sent before this time are deemed lost.
+        let lost_send_time = Instant::now() - loss_delay;
+        self.loss_time = None;
+        for packet in self
+            .inflight_packets
+            .iter_mut()
+            .take(PACKET_THRESHOLD as usize)
+            .filter(|p| p.is_some())
+        {
+            let send_time = packet.as_ref().unwrap().send_time;
+            if send_time <= lost_send_time {
+                for record in packet.take().unwrap().payload {
+                    match record {
+                        Records::Ack(_) => { /* needn't resend */ }
+                        Records::Frame(frame) => self.frames.push_back(frame),
+                        Records::Data(data) => self.transmission.may_loss(data),
+                    }
+                }
+            } else {
+                self.loss_time = self
+                    .loss_time
+                    .map(|t| std::cmp::min(t, send_time + loss_delay))
+                    .or(Some(send_time + loss_delay));
+            }
+        }
+        // 一个小优化，如果inflight_packets队首存在连续的None，则向前滑动
+        let n = self
+            .inflight_packets
+            .iter()
+            .take_while(|p| p.is_none())
+            .count();
+        let _ = self.inflight_packets.drain(..n);
         Some(acked_bytes)
     }
 

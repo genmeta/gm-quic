@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    ops::{Index, IndexMut},
+    ops::{Index, IndexMut, RangeBounds},
 };
 
 /// This structure will be used for the packets to be sent and
@@ -74,11 +74,26 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
         })
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (u64, &mut T)> {
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.deque.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.deque.iter_mut()
+    }
+
+    pub fn iter_mut_with_idx(&mut self) -> impl Iterator<Item = (u64, &mut T)> {
         self.deque
             .iter_mut()
             .enumerate()
             .map(|(idx, item)| (self.offset + idx as u64, item))
+    }
+
+    pub fn drain<R>(&mut self, range: R) -> impl Iterator<Item = T> + '_
+    where
+        R: RangeBounds<usize>,
+    {
+        self.deque.drain(range)
     }
 
     /// This API will be used for the records of the packets that have been
