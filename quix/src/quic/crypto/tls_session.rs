@@ -13,6 +13,7 @@ use rustls::{
     quic::{Connection, KeyChange, Secrets, Version},
     ClientConfig, ServerConfig, Side,
 };
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::quic::error::{Error, TransportError, TransportErrorCode};
 use crate::quic::{cid::ConnectionId, error::Error::UnsupportedVersion};
@@ -180,6 +181,18 @@ impl TlsSession {
             local: Box::new(keys.local),
             remote: Box::new(keys.remote),
         })
+    }
+
+    /// Queues a close_notify warning alert to be sent in the next
+    /// [`Connection::write_tls`] call.  This informs the peer that the
+    /// connection is being closed.
+    pub fn shutdown(&mut self) -> Result<(), TransportError> {
+        let inner = match self {
+            TlsSession::Client(s) => &mut s.inner,
+            TlsSession::Server(s) => &mut s.inner,
+        };
+        inner.send_close_notify();
+        Ok(())
     }
 }
 

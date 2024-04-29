@@ -1,16 +1,12 @@
 use std::{
-    future::Future,
-    ops::{Index, IndexMut},
     pin::Pin,
-    slice::SliceIndex,
-    sync::{Arc, Mutex},
-    task::{Context, Poll},
+    sync::Arc,
+    task::{Context, Poll, Waker},
 };
 
-use bytes::Bytes;
-use libc::BUFSIZ;
 use qbase::config::TransportParameters;
-use rustls::{internal::msgs::handshake, Connection, Side};
+use rustls::Side;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{
     cid::ConnectionId,
@@ -19,13 +15,13 @@ use super::{
         tls_session::{client_config, TlsSession},
         KeyPair, PacketKey, ZeroRttCrypto,
     },
-    error::{Error, TransportError},
-    frames,
+    error::Error,
     packet::SpaceId,
 };
 
 pub(crate) struct Crypto {
     tls: Box<TlsSession>,
+    read_waker: Option<Waker>,
     space_crypto: [Option<Keys>; 3],
     zero_rtt_crypto: Option<ZeroRttCrypto>,
     next_crypto: Option<KeyPair<Box<dyn PacketKey>>>,
@@ -47,7 +43,7 @@ impl Crypto {
         server_name: &str,
         init_cid: &ConnectionId,
     ) -> Result<Self, Error> {
-        let mut client_config = Arc::new(client_config(roots));
+        let client_config = Arc::new(client_config(roots));
         let tls = TlsSession::start_client_session(
             client_config,
             version,
@@ -66,6 +62,7 @@ impl Crypto {
             side: Side::Client,
             handshake_done: false,
             start_hanshake: false,
+            read_waker: None,
         })
     }
 
@@ -93,10 +90,11 @@ impl Crypto {
             side: Side::Server,
             handshake_done: false,
             start_hanshake: false,
+            read_waker: None,
         })
     }
 
-    fn handshake_data(&mut self) -> Poll<HandshakeData> {
+    fn poll_handshake_data(&mut self) -> Poll<HandshakeData> {
         match self.tls.is_handshaking() {
             true => Poll::Pending,
             false => {
@@ -124,26 +122,6 @@ impl Crypto {
                 }
             }
         }
-    }
-
-    async fn get_tls_data(&mut self) -> Poll<(Vec<u8>, Option<Keys>)> {
-        let mut outgoing = &mut Vec::new();
-        if let Some(keys) = self.tls.get_crypto(&mut outgoing) {
-            match self.highest_space {
-                SpaceId::Initial => {
-                    self.upgrade_crypto(SpaceId::Handshake, keys);
-                }
-                SpaceId::Handshake => {
-                    self.upgrade_crypto(SpaceId::Data, keys);
-                }
-                _ => unreachable!("got updated secrets during 1-RTT"),
-            }
-        }
-
-        if outgoing.is_empty() {
-            return Poll::Pending;
-        }
-        return Poll::Ready((outgoing.to_vec(), None));
     }
 
     fn init_0rtt(&mut self) {
@@ -193,24 +171,73 @@ impl Crypto {
             self.zero_rtt_crypto = None;
         }
     }
+}
 
-    /// 服务端向TLS提供客户端的握手字节来启动tls握手
-    /// 每次调用 write_tls_data 之后都要调用 get_tls_data
-    fn write_tls_data(&mut self, space: SpaceId, buf: &[u8]) -> Result<(), TransportError> {
-        let expected = if self.handshake_done {
-            SpaceId::Data
-        } else if self.highest_space == SpaceId::Initial {
-            SpaceId::Initial
-        } else {
-            // server 收到 client 的第一个包后，最高密级为 Data
-            // 但在 Handshake done 之前仍然期望收到 Handshake 空间的 CRYPTO帧
-            SpaceId::Handshake
-        };
+impl AsyncRead for Crypto {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        assert!(self.read_waker.is_none());
 
-        debug_assert!(space <= expected, "received out-of-order CRYPTO data");
+        let tls = self.tls.as_mut();
+        let outgoing = &mut Vec::new();
+        if let Some(keys) = tls.get_crypto(outgoing) {
+            match self.highest_space {
+                SpaceId::Initial => {
+                    self.upgrade_crypto(SpaceId::Handshake, keys);
+                }
+                SpaceId::Handshake => {
+                    self.upgrade_crypto(SpaceId::Data, keys);
+                }
+                _ => unreachable!("got updated secrets during 1-RTT"),
+            }
+        }
 
-        // 把数据写给 tls
-        self.tls.write_crypto(buf)?;
-        Ok(())
+        if outgoing.is_empty() {
+            self.read_waker = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+        buf.put_slice(outgoing);
+        if let Some(waker) = self.read_waker.take() {
+            waker.wake();
+        }
+        return Poll::Ready(Ok(()));
+    }
+}
+
+impl AsyncWrite for Crypto {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        match self.tls.as_mut().write_crypto(buf) {
+            Ok(_) => Poll::Ready(Ok(buf.len())),
+            Err(e) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    /// 不会真正关闭 tls，生成 close_notify warning alert,
+    /// 需要调用 poll_read 读出来通过 crypto 流发送出去  
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        match self.tls.as_mut().shutdown() {
+            Ok(_) => Poll::Ready(Ok(())),
+            Err(e) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))),
+        }
     }
 }
