@@ -5,8 +5,8 @@ use std::{
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[error("the packet number reaches the limit {0}")]
-pub struct Overflow(u64);
+#[error("the packet number exceed the limit {0}")]
+pub struct ExceedLimit(u64);
 
 /// This structure will be used for the packets to be sent and
 /// the records of the packets that have been sent and are awaiting confirmation.
@@ -16,8 +16,8 @@ pub struct IndexDeque<T, const LIMIT: u64> {
     offset: u64,
 }
 
-impl From<Overflow> for qbase::error::Error {
-    fn from(err: Overflow) -> Self {
+impl From<ExceedLimit> for qbase::error::Error {
+    fn from(err: ExceedLimit) -> Self {
         qbase::error::Error::new(
             qbase::error::ErrorKind::None,
             qbase::frame::FrameType::Padding,
@@ -68,10 +68,10 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
 
     /// Append an element to the end of the queue and return the enqueue index of the element.
     /// If it exceeds the maximum limit of the enqueue index, return None
-    pub fn push(&mut self, value: T) -> Result<u64, Overflow> {
+    pub fn push(&mut self, value: T) -> Result<u64, ExceedLimit> {
         let next_idx = self.offset.overflowing_add(self.deque.len() as u64);
         if next_idx.1 || next_idx.0 > LIMIT {
-            Err(Overflow(LIMIT))
+            Err(ExceedLimit(LIMIT))
         } else {
             self.deque.push_back(value);
             Ok(self.deque.len() as u64 - 1 + self.offset)
@@ -137,9 +137,9 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
 }
 
 impl<T: Default + Clone, const LIMIT: u64> IndexDeque<T, LIMIT> {
-    pub fn insert(&mut self, idx: u64, value: T) -> Result<u64, Overflow> {
+    pub fn insert(&mut self, idx: u64, value: T) -> Result<u64, ExceedLimit> {
         if idx > LIMIT || idx < self.offset {
-            Err(Overflow(LIMIT))
+            Err(ExceedLimit(LIMIT))
         } else {
             let pos = (idx - self.offset) as usize;
             if pos >= self.deque.len() {
@@ -191,7 +191,7 @@ mod tests {
         for i in 10..20 {
             assert_eq!(deque.push(i + 1), Ok(i));
         }
-        assert_eq!(deque.push(21), Err(Overflow(19)));
+        assert_eq!(deque.push(21), Err(ExceedLimit(19)));
         assert_eq!(deque.offset, 10);
 
         assert!(!deque.contain(0));
