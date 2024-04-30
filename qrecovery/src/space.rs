@@ -44,7 +44,7 @@ pub trait Transmit<F, D> {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum Records<F, D> {
+enum Records<F, D> {
     Frame(F),
     Data(D),
     Ack(AckRecord),

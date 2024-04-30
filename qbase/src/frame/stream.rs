@@ -9,7 +9,11 @@
 // - LEN bit: 0x02
 // - FIN bit: 0x01
 
-use crate::{streamid::StreamId, varint::VarInt};
+use super::BeFrame;
+use crate::{
+    streamid::StreamId,
+    varint::{VarInt, VARINT_MAX},
+};
 use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +30,7 @@ const OFF_BIT: u8 = 0x04;
 const LEN_BIT: u8 = 0x02;
 const FIN_BIT: u8 = 0x01;
 
-impl super::BeFrame for StreamFrame {
+impl BeFrame for StreamFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Stream(self.flag)
     }
@@ -47,16 +51,24 @@ impl super::BeFrame for StreamFrame {
             } else {
                 0
             }
+            + self.length
     }
 }
 
+pub enum ShouldCarryLength {
+    NoProblem,
+    PaddingFirst(usize),
+    ShouldAfter(usize, usize),
+}
+
 impl StreamFrame {
-    pub fn new(id: StreamId, offset: VarInt, length: usize) -> Self {
+    pub fn new(id: StreamId, offset: u64, length: usize) -> Self {
+        assert!(offset <= VARINT_MAX);
         Self {
             id,
-            offset,
+            offset: VarInt(offset),
             length,
-            flag: OFF_BIT | LEN_BIT,
+            flag: 0,
         }
     }
 
@@ -68,12 +80,52 @@ impl StreamFrame {
         self.offset.into_inner()..self.offset.into_inner() + self.length as u64
     }
 
-    pub fn be_last_chunk(&mut self) {
+    pub fn set_eos_flag(&mut self) {
         self.flag |= FIN_BIT;
     }
 
-    pub fn write_at_end(&mut self) {
-        self.flag &= !LEN_BIT;
+    /// By default, a stream frame is considered the last frame within a data packet,
+    /// allowing it to carry data up to the maximum payload capacity. However, if the
+    ///  data does not fill the entire frame and there is sufficient space remaining
+    /// in the packet, other data frames can be carried after it. In this case, the
+    /// frame is designated as carrying length.
+    pub fn should_carry_length(&self, capacity: usize) -> ShouldCarryLength {
+        let frame_encoding_size = self.encoding_size();
+        assert!(frame_encoding_size <= capacity);
+        if frame_encoding_size == capacity {
+            ShouldCarryLength::NoProblem
+        } else {
+            let len_encoding_size = VarInt(self.length as u64).encoding_size();
+            let remaining = capacity - frame_encoding_size;
+            if remaining <= len_encoding_size {
+                ShouldCarryLength::PaddingFirst(remaining)
+            } else {
+                // Return this result, perhaps by invoking the carry_length function to
+                // set the LEN_BIT. This option is left to the packet assembly logic for handling.
+                ShouldCarryLength::ShouldAfter(remaining - len_encoding_size, remaining)
+
+                // For further optimization, if there are non-data frames following, the
+                // Stream frame can be forced to be placed at the end of the packet,
+                // freeing up additional bytes to accommodate other frames.
+            }
+        }
+    }
+
+    pub fn carry_length(&mut self) {
+        self.flag |= LEN_BIT;
+    }
+
+    pub fn estimate_max_capacity(capacity: usize, sid: StreamId, offset: u64) -> Option<usize> {
+        assert!(offset <= VARINT_MAX);
+        let mut least = 1 + sid.encoding_size();
+        if offset != 0 {
+            least += VarInt(offset).encoding_size();
+        }
+        if capacity <= least {
+            None
+        } else {
+            Some(capacity - least)
+        }
     }
 }
 

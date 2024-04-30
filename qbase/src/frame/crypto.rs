@@ -5,7 +5,7 @@
 //   Crypto Data (..),
 // }
 
-use crate::varint::VarInt;
+use crate::varint::{VarInt, VARINT_MAX};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CryptoFrame {
@@ -26,6 +26,29 @@ impl super::BeFrame for CryptoFrame {
 
     fn encoding_size(&self) -> usize {
         1 + self.offset.encoding_size() + self.length.encoding_size()
+    }
+}
+
+impl CryptoFrame {
+    /// Evaluate the maximum number of bytes of data that can be accommodated,
+    /// starting from a certain offset, within a given capacity. If it cannot
+    /// accommodate a CryptoFrame header or can only accommodate 0 bytes, return None.
+    /// Note: If the offset exceeds 2^62, panic.
+    pub fn estimate_max_capacity(capacity: usize, offset: u64) -> Option<usize> {
+        assert!(offset <= VARINT_MAX);
+        capacity
+            .checked_sub(1 + VarInt(offset).encoding_size() + 2)
+            .map(|remaining| match remaining + 2 {
+                0..=1 => unreachable!("crypto frame should contain at least one byte"),
+                // lenth编码占1字节
+                value @ 2..=64 => value - 1,
+                // length编码占2字节，其中65时length占1字节或2字节，都只能容纳63字节内容了
+                value @ 65..=16385 => value - 2,
+                // 以下长度，length编码占4字节反而容量更少，不如length编码占2字节
+                16386..=16387 => 16383,
+                value @ 16388..=1073741827 => value - 4,
+                _ => unreachable!("crypto frame length could not be too large"),
+            })
     }
 }
 
@@ -102,5 +125,33 @@ mod tests {
                 b'o'
             ])
         );
+    }
+
+    #[test]
+    fn test_encoding_capacity_estimate() {
+        assert_eq!(CryptoFrame::estimate_max_capacity(1, 0), None);
+        assert_eq!(CryptoFrame::estimate_max_capacity(4, 0), Some(1));
+        assert_eq!(CryptoFrame::estimate_max_capacity(4, 64), None);
+        assert_eq!(CryptoFrame::estimate_max_capacity(5, 65), Some(1));
+        assert_eq!(CryptoFrame::estimate_max_capacity(67, 65), Some(63));
+        assert_eq!(CryptoFrame::estimate_max_capacity(68, 65), Some(63));
+        assert_eq!(CryptoFrame::estimate_max_capacity(69, 65), Some(64));
+        assert_eq!(CryptoFrame::estimate_max_capacity(16387, 65), Some(16382));
+        assert_eq!(CryptoFrame::estimate_max_capacity(16388, 65), Some(16383));
+        assert_eq!(CryptoFrame::estimate_max_capacity(16389, 65), Some(16383));
+        assert_eq!(CryptoFrame::estimate_max_capacity(16390, 65), Some(16383));
+        assert_eq!(CryptoFrame::estimate_max_capacity(16391, 65), Some(16384));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_encoding_with_offset_exceeded() {
+        CryptoFrame::estimate_max_capacity(60, 1 << 62);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_encoding_with_length_too_large() {
+        CryptoFrame::estimate_max_capacity(1 << 31, 20);
     }
 }
