@@ -1,6 +1,4 @@
-use crate::rtt::Rtt;
-
-use super::index_deque::IndexDeque;
+use super::{index_deque::IndexDeque, rtt::Rtt};
 use bytes::{BufMut, Bytes};
 use qbase::{
     error::{Error, ErrorKind},
@@ -14,21 +12,28 @@ use std::{
 };
 
 pub trait TrySend<B: BufMut> {
-    fn try_send(&mut self, buf: B) -> Result<(u64, usize), Error>;
+    fn try_send(&mut self, buf: &mut B) -> Result<Option<(u64, usize)>, Error>;
 }
 
-/// 网络socket收到一个数据包，解析出属于该空间时，将数据包内容传递给该空间
+/// When a network socket receives a data packet and determines that it belongs
+/// to a specific space, the content of the packet is passed on to that space.
 pub trait Receive {
-    /// receive的数据，尚未解析，解析过程中可能会出错，
-    /// 发生解析失败，或者解析出不该在该空间存在的帧
     fn receive(&mut self, pktid: u64, payload: Bytes, rtt: &mut Rtt) -> Result<(), Error>;
 }
 
-/// 以下的泛型定义，F表示信令帧集合，D表示数据帧即可
+/// The following generic definition:
+/// - F represents a collection of signaling frames, and
+/// - D represents data frames.
 pub trait Transmit<F, D> {
     type Buffer: BufMut + WriteFrame<F> + WriteDataFrame<D>;
 
-    fn try_send(&mut self, buf: Self::Buffer) -> D;
+    // Attempt to collect data for transmission. If data is available, return the
+    // header of the data frame and the number of additional bytes added. If there
+    // is no data to send, return None.
+    // Note: Crypto data is not subject to flow control, congestion control,
+    // or amplification attack limitations. Therefore, the amount of Crypto data
+    // written should be ignored.
+    fn try_send(&mut self, buf: &mut Self::Buffer) -> Option<(D, usize)>;
     fn confirm(&mut self, frame: F);
     fn confirm_data(&mut self, data_frame: D);
     fn may_loss(&mut self, data_frame: D);
@@ -167,9 +172,11 @@ where
     }
 
     fn gen_ack_frame(&mut self) -> AckFrame {
-        // 一定是可靠空间；否则若是不可靠空间，即0-RTT空间，不需要发送ack frame
+        // must be a reliable space; otherwise, if it is an unreliable space,
+        // such as the 0-RTT space, never send an ACK frame.
         assert!(R);
-        // 肯定有ack-eliciting的包，否则不会触发发送ack frame
+        // There must be an ACK-eliciting packet; otherwise, it will not
+        // trigger the sending of an ACK frame.
         debug_assert!(self
             .rcvd_packets
             .iter()
@@ -225,7 +232,8 @@ where
         if largest_acked < self.largest_acked_pktid {
             return None;
         }
-        // largest_acked == self.largest_acked_packet，也是可以接受的，也许有新包被确认
+        // largest_acked == self.largest_acked_packet is also acceptable,
+        // perhaps indicating that new packets have been acknowledged.
         self.largest_acked_pktid = largest_acked;
 
         let mut no_newly_acked = true;
@@ -274,7 +282,7 @@ where
             acked_bytes += packet.sent_bytes;
         }
 
-        // 没被确认的，要重传；对于大部分Frame直接重入frames_buf即可，但对于StreamFrame，得判定丢失
+        // retranmission
         for packet in self
             .inflight_packets
             .drain_to(largest_acked.saturating_sub(PACKET_THRESHOLD))
@@ -291,7 +299,7 @@ where
         }
 
         let loss_delay = rtt.loss_delay();
-        // Packets sent before this time are deemed lost.
+        // Packets sent before this time are deemed lost too.
         let lost_send_time = Instant::now() - loss_delay;
         self.loss_time = None;
         for packet in self
@@ -316,7 +324,8 @@ where
                     .or(Some(send_time + loss_delay));
             }
         }
-        // 一个小优化，如果inflight_packets队首存在连续的None，则向前滑动
+        // A small optimization would be to slide forward if the first consecutive
+        // packets in the inflight_packets queue have been acknowledged.
         let n = self
             .inflight_packets
             .iter()
@@ -356,49 +365,69 @@ where
 
 impl<F, D, T, B, const R: bool> TrySend<B> for Space<F, D, T, R>
 where
-    T: Transmit<F, D> + Default + Debug,
-    B: BufMut + WriteFrame<F> + WriteDataFrame<D> + WriteAckFrame,
+    F: BeFrame,
+    T: Transmit<F, D, Buffer = B> + Default + Debug,
+    B: BufMut + WriteFrame<F> + WriteDataFrame<D>,
 {
-    fn try_send(&mut self, mut buf: B) -> Result<(u64, usize), Error> {
+    fn try_send(&mut self, buf: &mut B) -> Result<Option<(u64, usize)>, Error> {
         let mut is_ack_eliciting = false;
         let mut remaning = buf.remaining_mut();
-        let mut sent_bytes = 0;
         let mut payload = Payload::<F, D>::new();
         if self.need_send_ack_frame() {
             let ack = self.gen_ack_frame();
-            self.time_to_sync = None;
-            self.new_lost_event = false;
-            self.rcvd_unreached_packet = false;
-            self.last_synced_ack_largest = ack.largest.into_inner();
-            buf.put_ack_frame(&ack);
-            payload.push(Records::Ack(ack.into()));
-            // Ack frame不计入sent_bytes，不占用抗放大攻击，不受流控限制
-            remaning = buf.remaining_mut();
-            // 所有的收包信息，都要变为已同步过
-            self.rcvd_packets.iter_mut().for_each(|s| s.into_synced());
+            if remaning >= ack.max_encoding_size() || remaning >= ack.encoding_size() {
+                self.time_to_sync = None;
+                self.new_lost_event = false;
+                self.rcvd_unreached_packet = false;
+                self.last_synced_ack_largest = ack.largest.into_inner();
+                buf.put_ack_frame(&ack);
+                payload.push(Records::Ack(ack.into()));
+                // The ACK frame is not counted towards sent_bytes, is not subject to
+                // amplification attacks, and is not subject to flow control limitations.
+                remaning = buf.remaining_mut();
+                // All known packet information needs to be marked as synchronized.
+                self.rcvd_packets.iter_mut().for_each(|s| s.into_synced());
+            }
         }
 
-        for frame in self.frames.drain(..) {
-            // TODO: 确保不会超限，buf能容下
-            is_ack_eliciting = true;
-            buf.put_frame(&frame);
-            payload.push(Records::Frame(frame));
-            sent_bytes += remaning - buf.remaining_mut();
-            remaning = buf.remaining_mut();
+        // Prioritize retransmitting lost or info frames.
+        loop {
+            if let Some(frame) = self.frames.front() {
+                if remaning >= frame.max_encoding_size() || remaning >= frame.encoding_size() {
+                    buf.put_frame(frame);
+                    remaning = buf.remaining_mut();
+                    is_ack_eliciting = true;
+
+                    let frame = self.frames.pop_front().unwrap();
+                    payload.push(Records::Frame(frame));
+                    continue;
+                }
+            }
+            break;
         }
-        // TODO: 还要再去收集数据帧
+
+        // Consider transmitting data frames.
+        if let Some((data_frame, ignore)) = self.transmission.try_send(buf) {
+            payload.push(Records::Data(data_frame));
+            remaning += ignore;
+        }
+
+        // Record
+        let sent_bytes = remaning - buf.remaining_mut();
+        if sent_bytes == 0 {
+            // no data to send
+            return Ok(None);
+        }
         if is_ack_eliciting {
             self.time_of_last_sent_ack_eliciting_packet = Some(Instant::now());
         }
-        // 记录
         let pktid = self.inflight_packets.push(Some(Packet {
             send_time: Instant::now(),
             payload,
             sent_bytes,
             is_ack_eliciting,
-        }));
-        // 返回; TODO: 有可能超过最大pktid，此时要返回错误
-        Ok((pktid.unwrap(), sent_bytes))
+        }))?;
+        Ok(Some((pktid, sent_bytes)))
     }
 }
 
@@ -408,9 +437,7 @@ where
     D: TryFrom<DataFrame, Error = frame::Error>,
     T: Transmit<F, D> + Default + Debug,
 {
-    // 返回流控字节数，以及可能的rtt新采样
-    // 可能会遇到解析错误，可能遇到不合适的帧
-    // 收到重复的包，不作为错误，可能会增加NDU，乱序容忍度
+    // TODO: 返回流控字节数，以及可能的rtt新采样，还有需要上层立即处理的帧
     fn receive(&mut self, pktid: u64, payload: Bytes, rtt: &mut Rtt) -> Result<(), Error> {
         if pktid < self.rcvd_packets.offset() {
             return Ok(());
@@ -419,9 +446,9 @@ where
             self.rcvd_packets.get(pktid),
             Some(State::NotReceived) | Some(State::Unreached)
         ) {
-            // TODO: 收到重复的包，对乱序容忍度进行处理
             return Ok(());
         }
+        // TODO: 超过最新包号一定范围，仍然是不允许的，可能是某种错误
 
         let mut is_ack_eliciting = false;
         let frames = parse_frames_from_bytes(payload)?;
@@ -456,7 +483,8 @@ where
             }
         }
         self.rcvd_packets
-            .insert(pktid, State::rcvd(Instant::now(), is_ack_eliciting));
+            .insert(pktid, State::rcvd(Instant::now(), is_ack_eliciting))
+            .unwrap();
         if is_ack_eliciting {
             if self.largest_rcvd_ack_eliciting_pktid < pktid {
                 self.largest_rcvd_ack_eliciting_pktid = pktid;
@@ -482,8 +510,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
-
     #[test]
     fn it_works() {
         assert_eq!(2 + 2, 4);

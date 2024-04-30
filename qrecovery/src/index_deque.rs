@@ -2,6 +2,11 @@ use std::{
     collections::VecDeque,
     ops::{Index, IndexMut, RangeBounds},
 };
+use thiserror::Error;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("the packet number reaches the limit {0}")]
+pub struct Overflow(u64);
 
 /// This structure will be used for the packets to be sent and
 /// the records of the packets that have been sent and are awaiting confirmation.
@@ -9,6 +14,16 @@ use std::{
 pub struct IndexDeque<T, const LIMIT: u64> {
     deque: VecDeque<T>,
     offset: u64,
+}
+
+impl From<Overflow> for qbase::error::Error {
+    fn from(err: Overflow) -> Self {
+        qbase::error::Error::new(
+            qbase::error::ErrorKind::None,
+            qbase::frame::FrameType::Padding,
+            err.to_string(),
+        )
+    }
 }
 
 impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
@@ -53,13 +68,13 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
 
     /// Append an element to the end of the queue and return the enqueue index of the element.
     /// If it exceeds the maximum limit of the enqueue index, return None
-    pub fn push(&mut self, value: T) -> Option<u64> {
+    pub fn push(&mut self, value: T) -> Result<u64, Overflow> {
         let next_idx = self.offset.overflowing_add(self.deque.len() as u64);
         if next_idx.1 || next_idx.0 > LIMIT {
-            None
+            Err(Overflow(LIMIT))
         } else {
             self.deque.push_back(value);
-            Some(self.deque.len() as u64 - 1 + self.offset)
+            Ok(self.deque.len() as u64 - 1 + self.offset)
         }
     }
 
@@ -122,9 +137,9 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
 }
 
 impl<T: Default + Clone, const LIMIT: u64> IndexDeque<T, LIMIT> {
-    pub fn insert(&mut self, idx: u64, value: T) -> Option<u64> {
+    pub fn insert(&mut self, idx: u64, value: T) -> Result<u64, Overflow> {
         if idx > LIMIT || idx < self.offset {
-            None
+            Err(Overflow(LIMIT))
         } else {
             let pos = (idx - self.offset) as usize;
             if pos >= self.deque.len() {
@@ -135,7 +150,7 @@ impl<T: Default + Clone, const LIMIT: u64> IndexDeque<T, LIMIT> {
             } else {
                 self.deque[pos] = value;
             }
-            Some(idx)
+            Ok(idx)
         }
     }
 }
@@ -162,7 +177,7 @@ mod tests {
     fn test_index_queue() {
         let mut deque = IndexDeque::<u64, 19>::new();
         for i in 0..10 {
-            assert_eq!(deque.push(i + 1), Some(i));
+            assert_eq!(deque.push(i + 1), Ok(i));
         }
         assert_eq!(deque.offset, 0);
 
@@ -174,9 +189,9 @@ mod tests {
         assert_eq!(deque.offset, 10);
 
         for i in 10..20 {
-            assert_eq!(deque.push(i + 1), Some(i));
+            assert_eq!(deque.push(i + 1), Ok(i));
         }
-        assert_eq!(deque.push(21), None);
+        assert_eq!(deque.push(21), Err(Overflow(19)));
         assert_eq!(deque.offset, 10);
 
         assert!(!deque.contain(0));
@@ -206,7 +221,7 @@ mod tests {
     #[test]
     fn test_insert() {
         let mut deque = IndexDeque::<u64, 19>::new();
-        deque.insert(10, 11);
+        deque.insert(10, 11).unwrap();
         assert_eq!(deque.offset, 0);
         assert_eq!(deque.len(), 11);
 
