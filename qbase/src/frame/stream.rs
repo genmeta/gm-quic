@@ -132,12 +132,13 @@ impl StreamFrame {
 pub(super) mod ext {
     use crate::{
         frame::stream::{StreamFrame, LEN_BIT, OFF_BIT, STREAM_FRAME_TYPE},
-        varint::VarInt,
+        varint::{VarInt, VARINT_MAX},
     };
 
     pub fn stream_frame_with_flag(flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8], StreamFrame> {
         use crate::{streamid::ext::be_streamid, varint::ext::be_varint};
         move |input| {
+            let raw_input = input;
             let (input, id) = be_streamid(input)?;
             let (input, offset) = if flag & OFF_BIT != 0 {
                 be_varint(input)?
@@ -150,6 +151,12 @@ pub(super) mod ext {
             } else {
                 (input, input.len())
             };
+            if offset.into_inner() + length as u64 > VARINT_MAX {
+                return Err(nom::Err::Error(nom::error::make_error(
+                    raw_input,
+                    nom::error::ErrorKind::TooLarge,
+                )));
+            }
             Ok((
                 input,
                 StreamFrame {
