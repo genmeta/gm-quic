@@ -289,8 +289,10 @@ impl ConnectionClose {
         out.write_var(ty); // <= 8 bytes
         let max_len = max_len
             - 3
-            - VarInt::from_u64(ty).unwrap().size()
-            - VarInt::from_u64(self.reason.len() as u64).unwrap().size();
+            - VarInt::from_u64(ty).unwrap().encoding_size()
+            - VarInt::from_u64(self.reason.len() as u64)
+                .unwrap()
+                .encoding_size();
         let actual_len = self.reason.len().min(max_len);
         out.write_var(actual_len as u64); // <= 8 bytes
         out.put_slice(&self.reason[0..actual_len]); // whatever's left
@@ -328,7 +330,11 @@ impl ApplicationClose {
     pub(crate) fn encode<W: BufMut>(&self, out: &mut W, max_len: usize) {
         out.write(Type::APPLICATION_CLOSE); // 1 byte
         out.put_varint(&self.error_code); // <= 8 bytes
-        let max_len = max_len - 3 - VarInt::from_u64(self.reason.len() as u64).unwrap().size();
+        let max_len = max_len
+            - 3
+            - VarInt::from_u64(self.reason.len() as u64)
+                .unwrap()
+                .encoding_size();
         let actual_len = self.reason.len().min(max_len);
         out.write_var(actual_len as u64); // <= 8 bytes
         out.put_slice(&self.reason[0..actual_len]); // whatever's left
@@ -887,7 +893,9 @@ impl Datagram {
 
     pub(crate) fn size(&self, length: bool) -> usize {
         1 + if length {
-            VarInt::from_u64(self.data.len() as u64).unwrap().size()
+            VarInt::from_u64(self.data.len() as u64)
+                .unwrap()
+                .encoding_size()
         } else {
             0
         } + self.data.len()

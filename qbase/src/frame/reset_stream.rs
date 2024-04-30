@@ -20,6 +20,16 @@ impl super::BeFrame for ResetStreamFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::ResetStream
     }
+
+    fn max_encoding_size(&self) -> usize {
+        1 + 8 + 8 + 8
+    }
+
+    fn encoding_size(&self) -> usize {
+        1 + self.stream_id.encoding_size()
+            + self.app_error_code.encoding_size()
+            + self.final_size.encoding_size()
+    }
 }
 
 pub(super) mod ext {

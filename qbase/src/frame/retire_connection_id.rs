@@ -16,6 +16,14 @@ impl super::BeFrame for RetireConnectionIdFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::RetireConnectionId
     }
+
+    fn max_encoding_size(&self) -> usize {
+        1 + 8
+    }
+
+    fn encoding_size(&self) -> usize {
+        1 + self.sequence.encoding_size()
+    }
 }
 
 pub(super) mod ext {

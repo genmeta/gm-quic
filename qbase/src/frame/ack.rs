@@ -31,6 +31,24 @@ impl super::BeFrame for AckFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Ack(if self.ecn.is_some() { 1 } else { 0 })
     }
+    fn max_encoding_size(&self) -> usize {
+        1 + 8 + 8 + 8 + self.ranges.len() * 16 + if self.ecn.is_some() { 24 } else { 0 }
+    }
+    fn encoding_size(&self) -> usize {
+        1 + self.largest.encoding_size()
+            + self.delay.encoding_size()
+            + self.first_range.encoding_size()
+            + self
+                .ranges
+                .iter()
+                .map(|(gap, ack)| gap.encoding_size() + ack.encoding_size())
+                .sum::<usize>()
+            + if let Some(e) = self.ecn.as_ref() {
+                e.encoding_size()
+            } else {
+                0
+            }
+    }
 }
 
 impl AckFrame {
@@ -113,6 +131,12 @@ pub struct EcnCounts {
     pub ect0: VarInt,
     pub ect1: VarInt,
     pub ce: VarInt,
+}
+
+impl EcnCounts {
+    fn encoding_size(&self) -> usize {
+        self.ect0.encoding_size() + self.ect1.encoding_size() + self.ce.encoding_size()
+    }
 }
 
 pub(super) mod ext {

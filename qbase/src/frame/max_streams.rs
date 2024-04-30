@@ -22,6 +22,17 @@ impl super::BeFrame for MaxStreamsFrame {
             MaxStreamsFrame::Uni(_) => 1,
         })
     }
+
+    fn max_encoding_size(&self) -> usize {
+        1 + 8
+    }
+
+    fn encoding_size(&self) -> usize {
+        1 + match self {
+            MaxStreamsFrame::Bi(stream_id) => stream_id.encoding_size(),
+            MaxStreamsFrame::Uni(stream_id) => stream_id.encoding_size(),
+        }
+    }
 }
 
 pub(super) mod ext {

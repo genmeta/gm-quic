@@ -28,6 +28,23 @@ impl super::BeFrame for ConnectionCloseFrame {
             APP_LAYER
         })
     }
+
+    fn max_encoding_size(&self) -> usize {
+        // reason's length could not exceed 16KB
+        1 + 8 + if self.frame_type.is_some() { 8 } else { 0 } + 2 + self.reason.len()
+    }
+
+    fn encoding_size(&self) -> usize {
+        1 + self.error_code.encoding_size()
+            + if let Some(frame_type) = self.frame_type {
+                frame_type.encoding_size()
+            } else {
+                0
+            }
+            // reason's length could not exceed 16KB
+            + VarInt(self.reason.len() as u64).encoding_size()
+            + self.reason.len()
+    }
 }
 
 impl ConnectionCloseFrame {

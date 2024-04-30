@@ -22,6 +22,14 @@ impl super::BeFrame for PathChallengeFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::PathChallenge
     }
+
+    fn max_encoding_size(&self) -> usize {
+        1 + self.data.len()
+    }
+
+    fn encoding_size(&self) -> usize {
+        1 + self.data.len()
+    }
 }
 
 pub(super) mod ext {

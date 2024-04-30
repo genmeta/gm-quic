@@ -126,6 +126,10 @@ impl StreamId {
         }
         self.0 = (id << 2) | (self.0 & 0x3);
     }
+
+    pub fn encoding_size(&self) -> usize {
+        VarInt(self.0).encoding_size()
+    }
 }
 
 impl From<VarInt> for StreamId {

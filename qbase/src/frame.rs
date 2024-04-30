@@ -1,7 +1,16 @@
 // This folder defines all the frames, including their parsing and packaging processes.
+use enum_dispatch::enum_dispatch;
 
+#[enum_dispatch]
 pub trait BeFrame {
     fn frame_type(&self) -> FrameType;
+    fn max_encoding_size(&self) -> usize {
+        1
+    }
+
+    fn encoding_size(&self) -> usize {
+        1
+    }
 }
 
 mod ack;
@@ -133,8 +142,9 @@ impl From<FrameType> for VarInt {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+#[enum_dispatch(BeFrame)]
 pub enum InfoFrame {
-    Ping,
+    Ping(PingFrame),
     ResetStream(ResetStreamFrame),
     StopSending(StopSendingFrame),
     NewToken(NewTokenFrame),
@@ -147,38 +157,19 @@ pub enum InfoFrame {
     RetireConnectionId(RetireConnectionIdFrame),
     PathChallenge(PathChallengeFrame),
     PathResponse(PathResponseFrame),
-    HandshakeDone,
-}
-
-impl BeFrame for InfoFrame {
-    fn frame_type(&self) -> FrameType {
-        match self {
-            InfoFrame::Ping => FrameType::Ping,
-            InfoFrame::ResetStream(_) => FrameType::ResetStream,
-            InfoFrame::StopSending(_) => FrameType::StopSending,
-            InfoFrame::NewToken(_) => FrameType::NewToken,
-            InfoFrame::MaxData(_) => FrameType::MaxData,
-            InfoFrame::MaxStreamData(_) => FrameType::MaxStreamData,
-            InfoFrame::MaxStreams(f) => f.frame_type(),
-            InfoFrame::DataBlocked(_) => FrameType::DataBlocked,
-            InfoFrame::StreamDataBlocked(_) => FrameType::StreamDataBlocked,
-            InfoFrame::StreamsBlocked(f) => f.frame_type(),
-            InfoFrame::RetireConnectionId(_) => FrameType::RetireConnectionId,
-            InfoFrame::PathChallenge(_) => FrameType::PathChallenge,
-            InfoFrame::PathResponse(_) => FrameType::PathResponse,
-            InfoFrame::HandshakeDone => FrameType::HandshakeDone,
-        }
-    }
+    HandshakeDone(HandshakeDoneFrame),
 }
 
 // The initial packet and handshake packet only contain Ping frame.
+pub struct InitialFrame;
+pub type HandshakeFrame = InitialFrame;
 
-impl TryFrom<InfoFrame> for PingFrame {
+impl TryFrom<InfoFrame> for InitialFrame {
     type Error = Error;
 
     fn try_from(value: InfoFrame) -> Result<Self, Self::Error> {
         match value {
-            InfoFrame::Ping => Ok(PingFrame),
+            InfoFrame::Ping(_) => Ok(InitialFrame),
             other => Err(Self::Error::WrongFrame(
                 other.frame_type(),
                 "Initial or Handshake",
@@ -187,15 +178,16 @@ impl TryFrom<InfoFrame> for PingFrame {
     }
 }
 
-impl From<PingFrame> for InfoFrame {
-    fn from(_value: PingFrame) -> Self {
-        InfoFrame::Ping
+impl From<InitialFrame> for InfoFrame {
+    fn from(_value: InitialFrame) -> Self {
+        InfoFrame::Ping(PingFrame)
     }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+#[enum_dispatch(BeFrame)]
 pub enum ZeroRttFrame {
-    Ping,
+    Ping(PingFrame),
     ResetStream(ResetStreamFrame),
     StopSending(StopSendingFrame),
     MaxData(MaxDataFrame),
@@ -213,7 +205,7 @@ impl TryFrom<InfoFrame> for ZeroRttFrame {
 
     fn try_from(value: InfoFrame) -> Result<Self, Self::Error> {
         match value {
-            InfoFrame::Ping => Ok(ZeroRttFrame::Ping),
+            InfoFrame::Ping(_) => Ok(ZeroRttFrame::Ping(PingFrame)),
             InfoFrame::ResetStream(frame) => Ok(ZeroRttFrame::ResetStream(frame)),
             InfoFrame::StopSending(frame) => Ok(ZeroRttFrame::StopSending(frame)),
             InfoFrame::MaxData(frame) => Ok(ZeroRttFrame::MaxData(frame)),
@@ -232,7 +224,7 @@ impl TryFrom<InfoFrame> for ZeroRttFrame {
 impl From<ZeroRttFrame> for InfoFrame {
     fn from(value: ZeroRttFrame) -> Self {
         match value {
-            ZeroRttFrame::Ping => InfoFrame::Ping,
+            ZeroRttFrame::Ping(_) => InfoFrame::Ping(PingFrame),
             ZeroRttFrame::ResetStream(frame) => InfoFrame::ResetStream(frame),
             ZeroRttFrame::StopSending(frame) => InfoFrame::StopSending(frame),
             ZeroRttFrame::MaxData(frame) => InfoFrame::MaxData(frame),
@@ -317,7 +309,7 @@ pub mod ext {
     ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], Frame> {
         move |input: &[u8]| match frame_type {
             FrameType::Padding => Ok((input, Frame::Padding)),
-            FrameType::Ping => Ok((input, Frame::Info(InfoFrame::Ping))),
+            FrameType::Ping => Ok((input, Frame::Info(InfoFrame::Ping(PingFrame)))),
             FrameType::ConnectionClose(layer) => {
                 map(connection_close_frame_at_layer(layer), Frame::Close)(input)
             }
@@ -331,7 +323,10 @@ pub mod ext {
             FrameType::PathResponse => map(be_path_response_frame, |f| {
                 Frame::Info(InfoFrame::PathResponse(f))
             })(input),
-            FrameType::HandshakeDone => Ok((input, Frame::Info(InfoFrame::HandshakeDone))),
+            FrameType::HandshakeDone => Ok((
+                input,
+                Frame::Info(InfoFrame::HandshakeDone(HandshakeDoneFrame)),
+            )),
             FrameType::NewToken => {
                 map(be_new_token_frame, |f| Frame::Info(InfoFrame::NewToken(f)))(input)
             }
@@ -452,8 +447,8 @@ pub mod ext {
         fn put_frame_with_data(&mut self, frame: &D, data: &[u8]);
     }
 
-    impl<T: bytes::BufMut> WriteFrame<PingFrame> for T {
-        fn put_frame(&mut self, _frame: &PingFrame) {
+    impl<T: bytes::BufMut> WriteFrame<InitialFrame> for T {
+        fn put_frame(&mut self, _frame: &InitialFrame) {
             self.put_ping_frame();
         }
     }
@@ -467,7 +462,7 @@ pub mod ext {
     impl<T: bytes::BufMut> WriteFrame<ZeroRttFrame> for T {
         fn put_frame(&mut self, frame: &ZeroRttFrame) {
             match frame {
-                ZeroRttFrame::Ping => self.put_ping_frame(),
+                ZeroRttFrame::Ping(_) => self.put_ping_frame(),
                 ZeroRttFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
                 ZeroRttFrame::StopSending(frame) => self.put_stop_sending_frame(frame),
                 ZeroRttFrame::MaxData(frame) => self.put_max_data_frame(frame),
@@ -493,7 +488,7 @@ pub mod ext {
     impl<T: bytes::BufMut> WriteFrame<InfoFrame> for T {
         fn put_frame(&mut self, frame: &InfoFrame) {
             match frame {
-                InfoFrame::Ping => self.put_ping_frame(),
+                InfoFrame::Ping(_) => self.put_ping_frame(),
                 InfoFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
                 InfoFrame::StopSending(frame) => self.put_stop_sending_frame(frame),
                 InfoFrame::NewToken(frame) => self.put_new_token_frame(frame),
@@ -506,7 +501,7 @@ pub mod ext {
                 InfoFrame::RetireConnectionId(frame) => self.put_retire_connection_id_frame(frame),
                 InfoFrame::PathChallenge(frame) => self.put_path_challenge_frame(frame),
                 InfoFrame::PathResponse(frame) => self.put_path_response_frame(frame),
-                InfoFrame::HandshakeDone => self.put_handshake_done_frame(),
+                InfoFrame::HandshakeDone(_) => self.put_handshake_done_frame(),
             }
         }
     }
@@ -523,7 +518,6 @@ pub mod ext {
 
 #[cfg(test)]
 mod tests {
-
     #[test]
     fn it_works() {
         assert_eq!(2 + 2, 4);

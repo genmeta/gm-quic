@@ -19,6 +19,14 @@ impl super::BeFrame for CryptoFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Crypto
     }
+
+    fn max_encoding_size(&self) -> usize {
+        1 + 8 + 8
+    }
+
+    fn encoding_size(&self) -> usize {
+        1 + self.offset.encoding_size() + self.length.encoding_size()
+    }
 }
 
 pub(super) mod ext {

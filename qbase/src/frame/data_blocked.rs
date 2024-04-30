@@ -16,6 +16,14 @@ impl super::BeFrame for DataBlockedFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Crypto
     }
+
+    fn max_encoding_size(&self) -> usize {
+        1 + 8
+    }
+
+    fn encoding_size(&self) -> usize {
+        1 + self.limit.encoding_size()
+    }
 }
 
 pub(super) mod ext {

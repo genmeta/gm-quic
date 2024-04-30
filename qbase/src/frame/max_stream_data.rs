@@ -18,6 +18,14 @@ impl super::BeFrame for MaxStreamDataFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::MaxStreamData
     }
+
+    fn max_encoding_size(&self) -> usize {
+        1 + 8 + 8
+    }
+
+    fn encoding_size(&self) -> usize {
+        1 + self.stream_id.encoding_size() + self.max_stream_data.encoding_size()
+    }
 }
 
 pub(super) mod ext {

@@ -22,6 +22,14 @@ impl super::BeFrame for PathResponseFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::PathResponse
     }
+
+    fn max_encoding_size(&self) -> usize {
+        1 + self.data.len()
+    }
+
+    fn encoding_size(&self) -> usize {
+        1 + self.data.len()
+    }
 }
 
 pub(super) mod ext {

@@ -16,6 +16,14 @@ impl super::BeFrame for MaxDataFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::MaxData
     }
+
+    fn max_encoding_size(&self) -> usize {
+        1 + 8
+    }
+
+    fn encoding_size(&self) -> usize {
+        1 + self.max_data.encoding_size()
+    }
 }
 
 pub(super) mod ext {

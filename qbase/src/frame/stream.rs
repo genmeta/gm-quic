@@ -30,6 +30,24 @@ impl super::BeFrame for StreamFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Stream(self.flag)
     }
+
+    fn max_encoding_size(&self) -> usize {
+        1 + 8 + 8 + 8
+    }
+
+    fn encoding_size(&self) -> usize {
+        1 + self.id.encoding_size()
+            + if self.offset.into_inner() != 0 {
+                self.offset.encoding_size()
+            } else {
+                0
+            }
+            + if self.flag & LEN_BIT != 0 {
+                VarInt(self.length as u64).encoding_size()
+            } else {
+                0
+            }
+    }
 }
 
 impl StreamFrame {

@@ -15,6 +15,15 @@ impl super::BeFrame for NewTokenFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::NewToken
     }
+
+    fn max_encoding_size(&self) -> usize {
+        // token's length could not exceed 20
+        1 + 1 + self.token.len()
+    }
+
+    fn encoding_size(&self) -> usize {
+        1 + 1 + self.token.len()
+    }
 }
 
 pub(super) mod ext {

@@ -45,7 +45,7 @@ impl VarInt {
     }
 
     /// Compute the number of bytes needed to encode this value
-    pub fn size(self) -> usize {
+    pub fn encoding_size(self) -> usize {
         let x = self.0;
         if x < (1 << 6) {
             1
