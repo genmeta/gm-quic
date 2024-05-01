@@ -1,4 +1,13 @@
 use super::sender::{ArcSender, Sender};
+use bytes::BufMut;
+use qbase::{
+    frame::{
+        ext::{WritePaddingFrame, WriteStreamFrame},
+        ShouldCarryLength, StreamFrame,
+    },
+    streamid::StreamId,
+    varint::VARINT_MAX,
+};
 use std::{
     future::Future,
     ops::{DerefMut, Range},
@@ -11,6 +20,7 @@ pub struct Outgoing(pub(super) ArcSender);
 
 impl Outgoing {
     pub fn update_window(&mut self, max_data_size: u64) {
+        assert!(max_data_size <= VARINT_MAX);
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {
@@ -22,22 +32,59 @@ impl Outgoing {
         }
     }
 
-    pub fn pick_up(&mut self) -> Option<(u64, &[u8])> {
+    pub fn try_send<B>(&mut self, sid: StreamId, mut buffer: B) -> Option<StreamFrame>
+    where
+        B: BufMut,
+    {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
+        let mut result = None;
+        let capacity = buffer.remaining_mut();
+        let estimate_capacity = |offset| StreamFrame::estimate_max_capacity(capacity, sid, offset);
+        let write = |content: (u64, &[u8], bool)| {
+            let (offset, data, is_eos) = content;
+            let mut frame = StreamFrame::new(sid, offset, data.len());
+            frame.set_eos_flag(is_eos);
+            match frame.should_carry_length(buffer.remaining_mut()) {
+                ShouldCarryLength::NoProblem => {
+                    buffer.put_stream_frame(&frame, data);
+                }
+                ShouldCarryLength::PaddingFirst(n) => {
+                    for _ in 0..n {
+                        buffer.put_padding_frame();
+                    }
+                    buffer.put_stream_frame(&frame, data);
+                }
+                ShouldCarryLength::ShouldAfter(_not_carry_len, _carry_len) => {
+                    frame.carry_length();
+                    buffer.put_stream_frame(&frame, data);
+                }
+            }
+            frame
+        };
         match inner.take() {
             Sender::Ready(s) => {
-                inner.replace(Sender::Ready(s));
+                if s.is_shutdown() {
+                    let mut s = s.end();
+                    result = s.pick_up(estimate_capacity).map(write);
+                    inner.replace(Sender::DataSent(s));
+                } else {
+                    let mut s = s.begin_sending();
+                    result = s.pick_up(estimate_capacity).map(write);
+                    inner.replace(Sender::Sending(s));
+                }
             }
-            Sender::Sending(s) => {
+            Sender::Sending(mut s) => {
+                result = s.pick_up(estimate_capacity).map(write);
                 inner.replace(Sender::Sending(s));
             }
-            Sender::DataSent(s) => {
+            Sender::DataSent(mut s) => {
+                result = s.pick_up(estimate_capacity).map(write);
                 inner.replace(Sender::DataSent(s));
             }
             other => inner.replace(other),
         };
-        todo!("正常有数据，还是没数据？没数据是因为结束，还是被流控，还是空闲？话要说清楚")
+        result
     }
 
     pub fn ack_recv(&mut self, range: &Range<u64>) -> bool {

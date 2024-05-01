@@ -76,7 +76,7 @@ impl ReadySender {
         self.shutdown_waker.is_some()
     }
 
-    pub(super) fn begin(self) -> SendingSender {
+    pub(super) fn begin_sending(self) -> SendingSender {
         SendingSender {
             sndbuf: self.sndbuf,
             max_data_size: self.max_data_size,
@@ -143,11 +143,13 @@ impl SendingSender {
         }
     }
 
-    pub(super) fn pick_up<F>(&mut self, estimater: F) -> Option<(u64, &[u8])>
+    pub(super) fn pick_up<F>(&mut self, estimate_capacity: F) -> Option<(u64, &[u8], bool)>
     where
         F: Fn(u64) -> Option<usize>,
     {
-        self.sndbuf.pick_up(estimater)
+        self.sndbuf
+            .pick_up(estimate_capacity)
+            .map(|(offset, data)| (offset, data, false))
     }
 
     pub(super) fn ack_recv(&mut self, range: &Range<u64>) {
@@ -220,11 +222,17 @@ pub struct DataSentSender {
 }
 
 impl DataSentSender {
-    pub(super) fn pick_up<F>(&mut self, estimate_max_size: F) -> Option<(u64, &[u8])>
+    pub(super) fn pick_up<F>(&mut self, estimate_capacity: F) -> Option<(u64, &[u8], bool)>
     where
         F: Fn(u64) -> Option<usize>,
     {
-        self.sndbuf.pick_up(estimate_max_size)
+        let final_size = self.sndbuf.len();
+        self.sndbuf
+            .pick_up(estimate_capacity)
+            .map(|(offset, data)| {
+                let is_eos = offset + data.len() as u64 == final_size as u64;
+                (offset, data, is_eos)
+            })
     }
 
     pub(super) fn ack_recv(&mut self, range: &Range<u64>) {

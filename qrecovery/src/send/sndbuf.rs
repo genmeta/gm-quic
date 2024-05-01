@@ -128,18 +128,16 @@ impl BufMap {
 
     // 挑选Lost/Pending的数据发送。越靠前的数据，越高优先级发送；
     // 丢包重传的数据，相比于Pending数据更靠前，因此具有更高的优先级。
-    fn pick<F>(&mut self, estimater: F) -> Option<Range<u64>>
+    fn pick<F>(&mut self, estimate_capacity: F) -> Option<Range<u64>>
     where
         F: Fn(u64) -> Option<usize>,
     {
         // 先找到第一个能发送的区间，并将该区间染成Flight，返回原State
         self.0
             .iter_mut()
-            .map(|s| (estimater(s.offset()).unwrap_or(0), s))
+            .map(|s| (estimate_capacity(s.offset()).unwrap_or(0), s))
             .enumerate()
-            .find(|(_, (max, s))| {
-                s.color() == Color::Pending || s.color() == Color::Lost || *max > 0
-            })
+            .find(|(_, (max, s))| matches!(s.color(), Color::Pending | Color::Lost) && *max > 0)
             .map(|(index, (max, s))| {
                 let state = *s; // 此处能归还self.0的可变借用
                 s.set_color(Color::Flighting);
@@ -551,11 +549,11 @@ impl SendBuf {
     // 挑选出可供发送的数据，限制长度不能超过len，以满足一个数据包能容的下一个完整的数据帧。
     // 返回的是一个切片，该切片的生命周期必须不长于SendBuf的生命周期，该切片可以被缓存至数据包
     // 被确认或者被判定丢失。
-    pub fn pick_up<F>(&mut self, estimater: F) -> Option<(u64, &[u8])>
+    pub fn pick_up<F>(&mut self, estimate_capacity: F) -> Option<(u64, &[u8])>
     where
         F: Fn(u64) -> Option<usize>,
     {
-        self.state.pick(estimater).map(|range| {
+        self.state.pick(estimate_capacity).map(|range| {
             let start = (range.start - self.offset) as usize;
             let end = (range.end - self.offset) as usize;
             (range.start, &self.data[start..end])
