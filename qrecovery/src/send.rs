@@ -1,8 +1,9 @@
 use std::sync::{Arc, Mutex};
 
+pub mod sndbuf;
+
 mod outgoing;
 mod sender;
-mod sndbuf;
 mod writer;
 
 pub use outgoing::{CancelTooLate, IsCancelled, Outgoing};

@@ -143,12 +143,15 @@ impl SendingSender {
         }
     }
 
-    pub(super) fn pick_up(&mut self, max_len: usize) -> Option<(u64, &[u8])> {
-        self.sndbuf.pick_up(max_len)
+    pub(super) fn pick_up<F>(&mut self, estimater: F) -> Option<(u64, &[u8])>
+    where
+        F: Fn(u64) -> Option<usize>,
+    {
+        self.sndbuf.pick_up(estimater)
     }
 
     pub(super) fn ack_recv(&mut self, range: &Range<u64>) {
-        self.sndbuf.ack_recv(range);
+        self.sndbuf.ack_rcvd(range);
         if self.sndbuf.is_all_recvd() {
             if let Some(waker) = self.flush_waker.take() {
                 waker.wake();
@@ -217,12 +220,15 @@ pub struct DataSentSender {
 }
 
 impl DataSentSender {
-    pub(super) fn pick_up(&mut self, max_len: usize) -> Option<(u64, &[u8])> {
-        self.sndbuf.pick_up(max_len)
+    pub(super) fn pick_up<F>(&mut self, estimate_max_size: F) -> Option<(u64, &[u8])>
+    where
+        F: Fn(u64) -> Option<usize>,
+    {
+        self.sndbuf.pick_up(estimate_max_size)
     }
 
     pub(super) fn ack_recv(&mut self, range: &Range<u64>) {
-        self.sndbuf.ack_recv(range);
+        self.sndbuf.ack_rcvd(range);
         if self.sndbuf.is_all_recvd() {
             if let Some(waker) = self.flush_waker.take() {
                 waker.wake();

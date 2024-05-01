@@ -128,18 +128,24 @@ impl BufMap {
 
     // 挑选Lost/Pending的数据发送。越靠前的数据，越高优先级发送；
     // 丢包重传的数据，相比于Pending数据更靠前，因此具有更高的优先级。
-    fn pick(&mut self, max: usize) -> Option<Range<u64>> {
+    fn pick<F>(&mut self, estimater: F) -> Option<Range<u64>>
+    where
+        F: Fn(u64) -> Option<usize>,
+    {
         // 先找到第一个能发送的区间，并将该区间染成Flight，返回原State
         self.0
             .iter_mut()
+            .map(|s| (estimater(s.offset()).unwrap_or(0), s))
             .enumerate()
-            .find(|(_, s)| s.color() == Color::Pending || s.color() == Color::Lost)
-            .map(|(index, s)| {
+            .find(|(_, (max, s))| {
+                s.color() == Color::Pending || s.color() == Color::Lost || *max > 0
+            })
+            .map(|(index, (max, s))| {
                 let state = *s; // 此处能归还self.0的可变借用
                 s.set_color(Color::Flighting);
-                (index, state)
+                (index, state, max)
             })
-            .map(|(index, pre_state)| {
+            .map(|(index, pre_state, max)| {
                 // 找到了一个合适的区间来发送，但检查区间长度是否足够，过长的话，还要拆区间一分为二
                 let (start, color) = pre_state.decode();
                 let mut end = self.0.get(index + 1).map(|s| s.offset()).unwrap_or(self.1);
@@ -169,7 +175,7 @@ impl BufMap {
     // 收到了ack确认，确认的数据不需再发送，对于头部连续确认的数据，就可以删掉。
     // 寻找到ack区间所在的位置，将这些区间都染成Recved，然后检查前后是否有需要合并的区间，合并之。
     // ack区间，不能ack到Pending的数据，因为Pending的数据尚未发送过，当然无法被ack。
-    fn ack_recv(&mut self, range: &Range<u64>) {
+    fn ack_rcvd(&mut self, range: &Range<u64>) {
         let pos = self.0.binary_search_by(|s| s.offset().cmp(&range.start));
         let (mut drain_start, need_insert_at_start, mut drain_end, mut pre_color) = match pos {
             Ok(idx) => {
@@ -494,7 +500,7 @@ impl BufMap {
 }
 
 #[derive(Debug)]
-pub(super) struct SendBuf {
+pub struct SendBuf {
     offset: u64,
     // 写入数据的环形队列，与接收队列不同的是，它是连续的
     data: SliceDeque<u8>,
@@ -502,7 +508,7 @@ pub(super) struct SendBuf {
 }
 
 impl SendBuf {
-    pub(super) fn with_capacity(n: usize) -> Self {
+    pub fn with_capacity(n: usize) -> Self {
         Self {
             offset: 0,
             data: SliceDeque::with_capacity(n),
@@ -510,12 +516,12 @@ impl SendBuf {
         }
     }
 
-    pub(super) fn range(&self) -> Range<u64> {
+    pub fn range(&self) -> Range<u64> {
         self.offset..self.state.1
     }
 
     // invoked by application layer
-    pub(super) fn write(&mut self, data: &[u8]) -> usize {
+    pub fn write(&mut self, data: &[u8]) -> usize {
         // 写的数据量受流量控制限制
         let n = data.len();
         if n > 0 {
@@ -526,13 +532,13 @@ impl SendBuf {
         n
     }
 
-    pub(super) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.offset == 0 && self.data.is_empty()
     }
 
     // invoked by application layer
     // 发送缓冲区过去曾经累计写入到的数据总长度
-    pub(super) fn len(&self) -> u64 {
+    pub fn len(&self) -> u64 {
         self.state.1
     }
 
@@ -542,16 +548,14 @@ impl SendBuf {
 }
 
 impl SendBuf {
-    /// There is no data to send, the data chain is broken.
-    pub(super) fn is_broken(&self) -> bool {
-        self.data.is_empty()
-    }
-
     // 挑选出可供发送的数据，限制长度不能超过len，以满足一个数据包能容的下一个完整的数据帧。
     // 返回的是一个切片，该切片的生命周期必须不长于SendBuf的生命周期，该切片可以被缓存至数据包
     // 被确认或者被判定丢失。
-    pub(super) fn pick_up(&mut self, len: usize) -> Option<(u64, &[u8])> {
-        self.state.pick(len).map(|range| {
+    pub fn pick_up<F>(&mut self, estimater: F) -> Option<(u64, &[u8])>
+    where
+        F: Fn(u64) -> Option<usize>,
+    {
+        self.state.pick(estimater).map(|range| {
             let start = (range.start - self.offset) as usize;
             let end = (range.end - self.offset) as usize;
             (range.start, &self.data[start..end])
@@ -560,8 +564,8 @@ impl SendBuf {
 
     // 通过传输层接收到的对方的ack帧，确认某些包已经被接收到，这些包携带的数据即被确认。
     // ack只能确认Flighting/Lost状态的区间；如果确认的是Lost区间，意味着之前的判定丢包是错误的。
-    pub(super) fn ack_recv(&mut self, range: &Range<u64>) {
-        self.state.ack_recv(range);
+    pub fn ack_rcvd(&mut self, range: &Range<u64>) {
+        self.state.ack_rcvd(range);
         // 对于头部连续确认接收到的，还要前进，以免浪费空间
         let min_unrecved_pos = self.state.shift();
         if self.offset < min_unrecved_pos {
@@ -572,11 +576,11 @@ impl SendBuf {
 
     // 通过传输层收到的ack帧，判定有些数据包丢失，因为它之后的数据包都被确认了，
     // 或者距离发送该段数据之后相当长一段时间都没收到它的确认。
-    pub(super) fn may_loss(&mut self, range: &Range<u64>) {
+    pub fn may_loss(&mut self, range: &Range<u64>) {
         self.state.may_loss(range);
     }
 
-    pub(super) fn is_all_recvd(&self) -> bool {
+    pub fn is_all_recvd(&self) -> bool {
         self.data.is_empty()
     }
 }
@@ -613,12 +617,12 @@ mod tests {
     #[test]
     fn test_bufmap_pick() {
         let mut buf_map = BufMap::default();
-        let range = buf_map.pick(20);
+        let range = buf_map.pick(|_offset| Some(20));
         assert_eq!(range, None);
         assert!(buf_map.0.is_empty());
 
         buf_map.extend_to(200);
-        let range = buf_map.pick(20);
+        let range = buf_map.pick(|_offset| Some(20));
         assert_eq!(range, Some(0..20));
         assert_eq!(
             buf_map.0,
@@ -628,7 +632,7 @@ mod tests {
             ]
         );
 
-        let range = buf_map.pick(20);
+        let range = buf_map.pick(|_offset| Some(20));
         assert_eq!(range, Some(20..40));
         assert_eq!(
             buf_map.0,
@@ -640,7 +644,7 @@ mod tests {
 
         buf_map.0.insert(2, State::encode(50, Color::Lost));
         buf_map.0.insert(3, State::encode(120, Color::Pending));
-        let range = buf_map.pick(20);
+        let range = buf_map.pick(|_| Some(20));
         assert_eq!(range, Some(40..50));
         assert_eq!(
             buf_map.0,
@@ -652,7 +656,7 @@ mod tests {
         );
 
         buf_map.0.get_mut(0).unwrap().set_color(Color::Recved);
-        let range = buf_map.pick(20);
+        let range = buf_map.pick(|_| Some(20));
         assert_eq!(range, Some(50..70));
         assert_eq!(
             buf_map.0,
@@ -664,7 +668,7 @@ mod tests {
             ]
         );
 
-        let range = buf_map.pick(130);
+        let range = buf_map.pick(|_| Some(130));
         assert_eq!(range, Some(70..120));
         assert_eq!(
             buf_map.0,
@@ -675,7 +679,7 @@ mod tests {
             ]
         );
 
-        let range = buf_map.pick(130);
+        let range = buf_map.pick(|_| Some(130));
         assert_eq!(range, Some(120..200));
         assert_eq!(
             buf_map.0,
@@ -685,7 +689,7 @@ mod tests {
             ]
         );
 
-        let range = buf_map.pick(130);
+        let range = buf_map.pick(|_| Some(130));
         assert_eq!(range, None);
         assert_eq!(
             buf_map.0,
@@ -700,8 +704,8 @@ mod tests {
     fn test_bufmap_recved() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(120);
-        buf_map.ack_recv(&(0..20));
+        buf_map.pick(|_| Some(120));
+        buf_map.ack_rcvd(&(0..20));
         assert_eq!(
             buf_map.0,
             vec![
@@ -711,7 +715,7 @@ mod tests {
             ]
         );
 
-        buf_map.ack_recv(&(30..50));
+        buf_map.ack_rcvd(&(30..50));
         assert_eq!(
             buf_map.0,
             vec![
@@ -723,7 +727,7 @@ mod tests {
             ]
         );
 
-        buf_map.ack_recv(&(25..55));
+        buf_map.ack_rcvd(&(25..55));
         assert_eq!(
             buf_map.0,
             vec![
@@ -735,7 +739,7 @@ mod tests {
             ]
         );
 
-        buf_map.ack_recv(&(20..25));
+        buf_map.ack_rcvd(&(20..25));
         assert_eq!(
             buf_map.0,
             vec![
@@ -746,7 +750,7 @@ mod tests {
         );
 
         buf_map.0.pop_front();
-        buf_map.ack_recv(&(20..55));
+        buf_map.ack_rcvd(&(20..55));
         assert_eq!(
             buf_map.0,
             vec![
@@ -755,7 +759,7 @@ mod tests {
             ]
         );
 
-        buf_map.ack_recv(&(30..70));
+        buf_map.ack_rcvd(&(30..70));
         assert_eq!(
             buf_map.0,
             vec![
@@ -764,7 +768,7 @@ mod tests {
             ]
         );
 
-        buf_map.ack_recv(&(100..119));
+        buf_map.ack_rcvd(&(100..119));
         assert_eq!(
             buf_map.0,
             vec![
@@ -775,7 +779,7 @@ mod tests {
             ]
         );
 
-        buf_map.pick(200);
+        buf_map.pick(|_| Some(200));
         assert_eq!(
             buf_map.0,
             vec![
@@ -785,7 +789,7 @@ mod tests {
             ]
         );
 
-        buf_map.ack_recv(&(119..150));
+        buf_map.ack_rcvd(&(119..150));
         assert_eq!(
             buf_map.0,
             vec![
@@ -794,7 +798,7 @@ mod tests {
                 State::encode(150, Color::Flighting),
             ]
         );
-        buf_map.ack_recv(&(150..200));
+        buf_map.ack_rcvd(&(150..200));
         assert_eq!(
             buf_map.0,
             vec![
@@ -809,8 +813,8 @@ mod tests {
     fn test_bufmap_invalid_recved() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(120);
-        buf_map.ack_recv(&(20..40));
+        buf_map.pick(|_| Some(120));
+        buf_map.ack_rcvd(&(20..40));
         buf_map.0.insert(2, State::encode(30, Color::Pending));
         assert_eq!(
             buf_map.0,
@@ -823,7 +827,7 @@ mod tests {
                 State::encode(120, Color::Pending)
             ]
         );
-        buf_map.ack_recv(&(0..50));
+        buf_map.ack_rcvd(&(0..50));
     }
 
     #[test]
@@ -831,7 +835,7 @@ mod tests {
     fn test_bufmap_recved_overflow() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(120);
+        buf_map.pick(|_| Some(120));
         assert_eq!(
             buf_map.0,
             vec![
@@ -839,7 +843,7 @@ mod tests {
                 State::encode(120, Color::Pending),
             ]
         );
-        buf_map.ack_recv(&(110..121));
+        buf_map.ack_rcvd(&(110..121));
     }
 
     #[test]
@@ -847,16 +851,16 @@ mod tests {
     fn test_bufmap_recved_over_end() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(200);
+        buf_map.pick(|_| Some(200));
         assert_eq!(buf_map.0, vec![State::encode(0, Color::Pending),]);
-        buf_map.ack_recv(&(0..201));
+        buf_map.ack_rcvd(&(0..201));
     }
 
     #[test]
     fn test_bufmap_lost() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(120);
+        buf_map.pick(|_| Some(120));
         assert_eq!(
             buf_map.0,
             vec![
@@ -887,8 +891,8 @@ mod tests {
             ]
         );
 
-        buf_map.ack_recv(&(0..10));
-        buf_map.ack_recv(&(70..100));
+        buf_map.ack_rcvd(&(0..10));
+        buf_map.ack_rcvd(&(70..100));
         buf_map.0.pop_front();
         assert_eq!(
             buf_map.0,
@@ -947,7 +951,7 @@ mod tests {
             ]
         );
 
-        buf_map.ack_recv(&(20..55));
+        buf_map.ack_rcvd(&(20..55));
         assert_eq!(
             buf_map.0,
             vec![
@@ -976,7 +980,7 @@ mod tests {
             ]
         );
 
-        buf_map.ack_recv(&(20..120));
+        buf_map.ack_rcvd(&(20..120));
         assert_eq!(
             buf_map.0,
             vec![

@@ -80,8 +80,12 @@ impl StreamFrame {
         self.offset.into_inner()..self.offset.into_inner() + self.length as u64
     }
 
-    pub fn set_eos_flag(&mut self) {
-        self.flag |= FIN_BIT;
+    pub fn set_eos_flag(&mut self, is_eos: bool) {
+        if is_eos {
+            self.flag |= FIN_BIT;
+        } else {
+            self.flag &= !FIN_BIT;
+        }
     }
 
     /// By default, a stream frame is considered the last frame within a data packet,
