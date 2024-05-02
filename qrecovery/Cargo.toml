@@ -11,3 +11,4 @@ qbase = { path = "../qbase" }
 slice-deque = "0.3"
 bytes = "1"
 thiserror = "1.0.21"
+async-lock = "3.0.0"

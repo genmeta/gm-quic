@@ -281,6 +281,25 @@ pub enum Frame {
     Data(DataFrame, Bytes),
 }
 
+impl Frame {
+    pub fn is_conn_layer_interest(&self) -> bool {
+        match self {
+            Self::Close(_) => true,
+            Self::Info(info) => matches!(
+                info,
+                InfoFrame::NewToken(_)
+                    | InfoFrame::MaxData(_)
+                    | InfoFrame::DataBlocked(_)
+                    | InfoFrame::RetireConnectionId(_)
+                    | InfoFrame::PathChallenge(_)
+                    | InfoFrame::PathResponse(_)
+                    | InfoFrame::HandshakeDone(_)
+            ),
+            _ => false,
+        }
+    }
+}
+
 pub mod ext {
     use super::*;
     use super::{

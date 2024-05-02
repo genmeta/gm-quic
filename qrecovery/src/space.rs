@@ -8,8 +8,11 @@ use qbase::{
 use std::{
     collections::VecDeque,
     fmt::Debug,
+    ops::{Deref, DerefMut},
     time::{Duration, Instant},
 };
+
+pub mod data;
 
 pub trait TrySend<B: BufMut> {
     fn try_send(&mut self, buf: &mut B) -> Result<Option<(u64, usize)>, Error>;
@@ -18,7 +21,12 @@ pub trait TrySend<B: BufMut> {
 /// When a network socket receives a data packet and determines that it belongs
 /// to a specific space, the content of the packet is passed on to that space.
 pub trait Receive {
-    fn receive(&mut self, pktid: u64, payload: Bytes, rtt: &mut Rtt) -> Result<(), Error>;
+    fn receive(
+        &mut self,
+        pktid: u64,
+        payload: Bytes,
+        rtt: &mut Rtt,
+    ) -> Result<Option<Vec<Frame>>, Error>;
 }
 
 /// The following generic definition:
@@ -34,13 +42,19 @@ pub trait Transmit<F, D> {
     // or amplification attack limitations. Therefore, the amount of Crypto data
     // written should be ignored.
     fn try_send(&mut self, buf: &mut Self::Buffer) -> Option<(D, usize)>;
-    fn confirm(&mut self, frame: F);
+
+    // The signaling frame has been confirmed to be received successfully.
+    // Self may want to notify the relevant parties that the signaling frame has
+    //  been received, but this is unnecessary in a reliable space.
+    fn confirm(&mut self, _frame: F) {}
+
     fn confirm_data(&mut self, data_frame: D);
+
     fn may_loss(&mut self, data_frame: D);
 
     fn recv_frame(&mut self, frame: F);
+
     fn recv_data(&mut self, data_frame: D, data: Bytes);
-    fn recv_close(&mut self, frame: ConnectionCloseFrame);
 }
 
 #[derive(Debug, Clone)]
@@ -104,10 +118,10 @@ const PACKET_THRESHOLD: u64 = 3;
 
 /// 可靠空间的抽象实现，需要实现上述所有trait
 /// 可靠空间中的重传、确认，由可靠空间内部实现，无需外露
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Space<F, D, T, const R: bool = true>
 where
-    T: Transmit<F, D> + Default + Debug,
+    T: Transmit<F, D> + Debug,
 {
     // 将要发出的数据帧，包括重传的数据帧；可以是外部的功能帧，也可以是具体传输空间内部的
     // 起到“信号”作用的信令帧，比如数据空间内部的各类通信帧。
@@ -149,9 +163,29 @@ where
     transmission: T,
 }
 
+impl<F, D, T, const R: bool> Deref for Space<F, D, T, R>
+where
+    T: Transmit<F, D> + Debug,
+{
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.transmission
+    }
+}
+
+impl<F, D, T, const R: bool> DerefMut for Space<F, D, T, R>
+where
+    T: Transmit<F, D> + Debug,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.transmission
+    }
+}
+
 impl<F, D, T, const R: bool> Space<F, D, T, R>
 where
-    T: Transmit<F, D> + Default + Debug,
+    T: Transmit<F, D> + Debug,
 {
     pub fn write_frame(&mut self, frame: F) {
         self.frames.push_back(frame);
@@ -365,7 +399,7 @@ where
 impl<F, D, T, B, const R: bool> TrySend<B> for Space<F, D, T, R>
 where
     F: BeFrame,
-    T: Transmit<F, D, Buffer = B> + Default + Debug,
+    T: Transmit<F, D, Buffer = B> + Debug,
     B: BufMut + WriteFrame<F> + WriteDataFrame<D>,
 {
     fn try_send(&mut self, buf: &mut B) -> Result<Option<(u64, usize)>, Error> {
@@ -434,23 +468,31 @@ impl<F, D, T, const R: bool> Receive for Space<F, D, T, R>
 where
     F: TryFrom<InfoFrame, Error = frame::Error>,
     D: TryFrom<DataFrame, Error = frame::Error>,
-    T: Transmit<F, D> + Default + Debug,
+    T: Transmit<F, D> + Debug,
 {
     // TODO: 返回流控字节数，以及可能的rtt新采样，还有需要上层立即处理的帧
-    fn receive(&mut self, pktid: u64, payload: Bytes, rtt: &mut Rtt) -> Result<(), Error> {
+    fn receive(
+        &mut self,
+        pktid: u64,
+        payload: Bytes,
+        rtt: &mut Rtt,
+    ) -> Result<Option<Vec<Frame>>, Error> {
         if pktid < self.rcvd_packets.offset() {
-            return Ok(());
+            return Ok(None);
         }
         if !matches!(
             self.rcvd_packets.get(pktid),
             Some(State::NotReceived) | Some(State::Unreached)
         ) {
-            return Ok(());
+            return Ok(None);
         }
         // TODO: 超过最新包号一定范围，仍然是不允许的，可能是某种错误
 
         let mut is_ack_eliciting = false;
         let frames = parse_frames_from_bytes(payload)?;
+        let (conn_layer_interest, frames): (Vec<_>, Vec<_>) =
+            frames.into_iter().partition(Frame::is_conn_layer_interest);
+        // let i = frames.iter_mut().partition_in_place(Frame::is_conn_layer_interest);
         for frame in frames {
             match frame {
                 Frame::Padding => continue,
@@ -468,9 +510,6 @@ where
                         ));
                     }
                 }
-                Frame::Close(frame) => {
-                    self.transmission.recv_close(frame);
-                }
                 Frame::Data(frame, data) => {
                     is_ack_eliciting = true;
                     self.transmission.recv_data(frame.try_into()?, data);
@@ -479,6 +518,7 @@ where
                     is_ack_eliciting = true;
                     self.transmission.recv_frame(frame.try_into()?);
                 }
+                _ => unreachable!("these frames are partitioned to be conn-layer interest"),
             }
         }
         self.rcvd_packets
@@ -503,7 +543,11 @@ where
                 .time_to_sync
                 .or(Some(Instant::now() + self.max_ack_delay));
         }
-        Ok(())
+        Ok(if conn_layer_interest.is_empty() {
+            None
+        } else {
+            Some(conn_layer_interest)
+        })
     }
 }
 
