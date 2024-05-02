@@ -540,6 +540,10 @@ impl SendBuf {
         self.state.1
     }
 
+    pub fn remaining_mut(&self) -> usize {
+        self.data.capacity() - self.data.len()
+    }
+
     // 无需close：不在写入即可，具体到某个状态，才有close
     // 无需reset：状态转化间，需要reset，而Sender上下文直接释放即可
     // 无需clean：Sender上下文直接释放即可，
@@ -578,7 +582,7 @@ impl SendBuf {
         self.state.may_loss(range);
     }
 
-    pub fn is_all_recvd(&self) -> bool {
+    pub fn is_all_rcvd(&self) -> bool {
         self.data.is_empty()
     }
 }

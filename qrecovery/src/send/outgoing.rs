@@ -87,7 +87,7 @@ impl Outgoing {
         result
     }
 
-    pub fn ack_recv(&mut self, range: &Range<u64>) -> bool {
+    pub fn ack_rcvd(&mut self, range: &Range<u64>) -> bool {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {
@@ -95,12 +95,12 @@ impl Outgoing {
                 unreachable!("never send data before recv data");
             }
             Sender::Sending(mut s) => {
-                s.ack_recv(range);
+                s.ack_rcvd(range);
                 inner.replace(Sender::Sending(s));
             }
             Sender::DataSent(mut s) => {
-                s.ack_recv(range);
-                if s.is_all_recvd() {
+                s.ack_rcvd(range);
+                if s.is_all_rcvd() {
                     inner.replace(Sender::DataRecvd);
                     return true;
                 } else {

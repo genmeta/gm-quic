@@ -68,7 +68,7 @@ impl Segment {
 /// fragments and then reassembles them into a continuous data stream for
 /// future reading by the application layer.
 #[derive(Default, Debug)]
-pub(super) struct RecvBuf {
+pub struct RecvBuf {
     offset: u64,
     segments: VecDeque<Segment>,
 }
@@ -84,15 +84,15 @@ impl fmt::Display for RecvBuf {
 }
 
 impl RecvBuf {
-    pub(super) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.segments.is_empty()
     }
 
-    pub(super) fn offset(&self) -> u64 {
+    pub fn offset(&self) -> u64 {
         self.offset
     }
 
-    pub(super) fn recv(&mut self, mut offset: u64, mut data: Bytes) {
+    pub fn recv(&mut self, mut offset: u64, mut data: Bytes) {
         if offset < self.offset {
             data = data.slice((self.offset - offset) as usize..);
             offset = self.offset;
@@ -197,7 +197,7 @@ impl RecvBuf {
     /// Otherwise, the data will be discontinuous and cannot be read. At most, buf.len()
     /// bytes will be read, and if it cannot read that many, it will return the number
     /// of bytes read.
-    pub(super) fn read<T: BufMut>(&mut self, buf: &mut T) {
+    pub fn read<T: BufMut>(&mut self, buf: &mut T) {
         if let Some(mut seg) = self.segments.pop_front() {
             if seg.offset > self.offset {
                 self.segments.push_front(seg);
@@ -220,7 +220,7 @@ impl RecvBuf {
 
     /// The maximum length of continuous readable data, which can be compared with the final size
     /// known as "SizeKnown." If they match, it indicates that all the data has been received.
-    pub(super) fn available(&self) -> u64 {
+    pub fn available(&self) -> u64 {
         if !self.segments.is_empty() && self.segments[0].offset == self.offset {
             self.offset + self.segments[0].length
         } else {
@@ -230,7 +230,7 @@ impl RecvBuf {
 
     /// Once the received data becomes continuous, it becomes readable. If necessary (if the application
     /// layer is blocked on reading), it is necessary to notify the application layer to read.
-    pub(super) fn is_readable(&self) -> bool {
+    pub fn is_readable(&self) -> bool {
         !self.segments.is_empty()
             && self.segments[0].offset == self.offset
             && self.segments[0].length > 0

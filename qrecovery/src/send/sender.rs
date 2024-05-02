@@ -154,9 +154,9 @@ impl SendingSender {
             .map(|(offset, data)| (offset, data, false))
     }
 
-    pub(super) fn ack_recv(&mut self, range: &Range<u64>) {
+    pub(super) fn ack_rcvd(&mut self, range: &Range<u64>) {
         self.sndbuf.ack_rcvd(range);
-        if self.sndbuf.is_all_recvd() {
+        if self.sndbuf.is_all_rcvd() {
             if let Some(waker) = self.flush_waker.take() {
                 waker.wake();
             }
@@ -169,7 +169,7 @@ impl SendingSender {
 
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         assert!(self.flush_waker.is_none());
-        if self.sndbuf.is_all_recvd() {
+        if self.sndbuf.is_all_rcvd() {
             Poll::Ready(Ok(()))
         } else {
             self.flush_waker = Some(cx.waker().clone());
@@ -188,7 +188,8 @@ impl SendingSender {
 
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         assert!(self.shutdown_waker.is_none());
-        if self.sndbuf.is_all_recvd() {
+        if self.sndbuf.is_all_rcvd() {
+            // 都已经关闭了，不再写数据数据了，如果所有数据都已发送完，那就是已关闭了
             Poll::Ready(Ok(()))
         } else {
             self.shutdown_waker = Some(cx.waker().clone());
@@ -245,9 +246,9 @@ impl DataSentSender {
             })
     }
 
-    pub(super) fn ack_recv(&mut self, range: &Range<u64>) {
+    pub(super) fn ack_rcvd(&mut self, range: &Range<u64>) {
         self.sndbuf.ack_rcvd(range);
-        if self.sndbuf.is_all_recvd() {
+        if self.sndbuf.is_all_rcvd() {
             if let Some(waker) = self.flush_waker.take() {
                 waker.wake();
             }
@@ -257,8 +258,8 @@ impl DataSentSender {
         }
     }
 
-    pub(super) fn is_all_recvd(&self) -> bool {
-        self.sndbuf.is_all_recvd()
+    pub(super) fn is_all_rcvd(&self) -> bool {
+        self.sndbuf.is_all_rcvd()
     }
 
     pub(super) fn may_loss(&mut self, range: &Range<u64>) {
@@ -267,7 +268,7 @@ impl DataSentSender {
 
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         assert!(self.flush_waker.is_none());
-        if self.sndbuf.is_all_recvd() {
+        if self.sndbuf.is_all_rcvd() {
             Poll::Ready(Ok(()))
         } else {
             self.flush_waker = Some(cx.waker().clone());
@@ -277,7 +278,7 @@ impl DataSentSender {
 
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         assert!(self.shutdown_waker.is_none());
-        if self.is_all_recvd() {
+        if self.is_all_rcvd() {
             Poll::Ready(Ok(()))
         } else {
             self.shutdown_waker = Some(cx.waker().clone());

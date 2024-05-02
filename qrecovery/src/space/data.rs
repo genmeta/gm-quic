@@ -37,7 +37,7 @@ pub struct Transmission {
 impl super::Transmit<OneRttFrame, OneRttDataFrame> for Transmission {
     type Buffer = Vec<u8>;
 
-    fn try_send(&mut self, buf: &mut Self::Buffer) -> Option<(OneRttDataFrame, usize)> {
+    fn try_send(&mut self, _buf: &mut Self::Buffer) -> Option<(OneRttDataFrame, usize)> {
         todo!()
     }
 
@@ -51,7 +51,7 @@ impl super::Transmit<OneRttFrame, OneRttDataFrame> for Transmission {
                 if let Some(all_data_recved) = self
                     .output
                     .get_mut(&sid)
-                    .map(|outgoing| outgoing.ack_recv(&range))
+                    .map(|outgoing| outgoing.ack_rcvd(&range))
                 {
                     if all_data_recved {
                         self.input.remove(&sid);

@@ -1,7 +1,8 @@
 mod incoming;
-mod rcvbuf;
 mod reader;
 mod recver;
+
+pub mod rcvbuf;
 
 use recver::Recver;
 use std::sync::{Arc, Mutex};
