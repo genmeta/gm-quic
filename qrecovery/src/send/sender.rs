@@ -101,10 +101,11 @@ impl ReadySender {
         self.cancel_waker = Some(cx.waker().clone());
     }
 
-    pub(super) fn cancel(self) {
+    pub(super) fn cancel(self) -> u64 {
         if let Some(waker) = self.cancel_waker {
             waker.wake();
         }
+        self.sndbuf.len()
     }
 }
 
@@ -124,6 +125,7 @@ impl SendingSender {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
+        assert!(self.shutdown_waker.is_none());
         assert!(self.writable_waker.is_none());
         let range = self.sndbuf.range();
         if range.end < self.max_data_size {
@@ -184,9 +186,14 @@ impl SendingSender {
         }
     }
 
-    pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) {
+    pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         assert!(self.shutdown_waker.is_none());
-        self.shutdown_waker = Some(cx.waker().clone());
+        if self.sndbuf.is_all_recvd() {
+            Poll::Ready(Ok(()))
+        } else {
+            self.shutdown_waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
     }
 
     pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) {
@@ -194,13 +201,14 @@ impl SendingSender {
         self.cancel_waker = Some(cx.waker().clone());
     }
 
-    pub(super) fn cancel(self) {
+    pub(super) fn cancel(self) -> u64 {
         if let Some(waker) = self.cancel_waker {
             waker.wake();
         }
+        self.sndbuf.len()
     }
 
-    pub(super) fn stop(self) {
+    pub(super) fn stop(self) -> u64 {
         if let Some(waker) = self.writable_waker {
             waker.wake();
         }
@@ -210,6 +218,8 @@ impl SendingSender {
         if let Some(waker) = self.shutdown_waker {
             waker.wake();
         }
+        // Actually, these remaining data is not acked and will not be acked
+        self.sndbuf.len()
     }
 }
 
@@ -230,7 +240,7 @@ impl DataSentSender {
         self.sndbuf
             .pick_up(estimate_capacity)
             .map(|(offset, data)| {
-                let is_eos = offset + data.len() as u64 == final_size as u64;
+                let is_eos = offset + data.len() as u64 == final_size;
                 (offset, data, is_eos)
             })
     }
@@ -267,7 +277,7 @@ impl DataSentSender {
 
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         assert!(self.shutdown_waker.is_none());
-        if self.sndbuf.is_all_recvd() {
+        if self.is_all_recvd() {
             Poll::Ready(Ok(()))
         } else {
             self.shutdown_waker = Some(cx.waker().clone());
@@ -280,19 +290,22 @@ impl DataSentSender {
         self.cancel_waker = Some(cx.waker().clone());
     }
 
-    pub(super) fn cancel(self) {
+    pub(super) fn cancel(self) -> u64 {
         if let Some(waker) = self.cancel_waker {
             waker.wake();
         }
+        self.sndbuf.len()
     }
 
-    pub(super) fn stop(self) {
+    pub(super) fn stop(self) -> u64 {
         if let Some(waker) = self.flush_waker {
             waker.wake();
         }
         if let Some(waker) = self.shutdown_waker {
             waker.wake();
         }
+        // Actually, these remaining data is not acked and will not be acked
+        self.sndbuf.len()
     }
 }
 
@@ -301,7 +314,7 @@ pub enum Sender {
     Ready(ReadySender),
     Sending(SendingSender),
     DataSent(DataSentSender),
-    ResetSent,
+    ResetSent(u64),
     #[default]
     DataRecvd,
     ResetRecvd,

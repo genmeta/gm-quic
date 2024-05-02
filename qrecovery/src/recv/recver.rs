@@ -261,31 +261,11 @@ pub(super) enum Recver {
     ResetRead,
 }
 
-pub(super) enum RecvState {
-    Recv,
-    SizeKnown,
-    DataRecvd,
-    ResetRecvd,
-    DataRead,
-    ResetRead,
-}
-
 pub(super) type ArcRecver = Arc<Mutex<Recver>>;
 
 impl Recver {
     pub(super) fn new(max_data_size: u64) -> Self {
         Self::Recv(Recv::with(max_data_size))
-    }
-
-    pub(super) fn state(&self) -> RecvState {
-        match self {
-            Self::Recv(_) => RecvState::Recv,
-            Self::SizeKnown(_) => RecvState::SizeKnown,
-            Self::DataRecvd(_) => RecvState::DataRecvd,
-            Self::ResetRecvd => RecvState::ResetRecvd,
-            Self::DataRead => RecvState::DataRead,
-            Self::ResetRead => RecvState::ResetRead,
-        }
     }
 
     pub(super) fn take(&mut self) -> Self {

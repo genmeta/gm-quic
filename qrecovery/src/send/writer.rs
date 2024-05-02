@@ -39,8 +39,8 @@ impl AsyncWrite for Writer {
                 inner.replace(Sender::DataRecvd);
                 Poll::Ready(Err(io::ErrorKind::Unsupported.into()))
             }
-            Sender::ResetSent => {
-                inner.replace(Sender::ResetSent);
+            Sender::ResetSent(final_size) => {
+                inner.replace(Sender::ResetSent(final_size));
                 Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
             }
             Sender::ResetRecvd => {
@@ -76,8 +76,8 @@ impl AsyncWrite for Writer {
                 inner.replace(Sender::DataRecvd);
                 Poll::Ready(Ok(()))
             }
-            Sender::ResetSent => {
-                inner.replace(Sender::ResetSent);
+            Sender::ResetSent(final_size) => {
+                inner.replace(Sender::ResetSent(final_size));
                 Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
             }
             Sender::ResetRecvd => {
@@ -100,10 +100,15 @@ impl AsyncWrite for Writer {
                 Poll::Pending
             }
             Sender::Sending(mut s) => {
-                s.poll_shutdown(cx);
-                // 意味着写结束，等待真正的发送完成
-                inner.replace(Sender::DataSent(s.end()));
-                Poll::Pending
+                let result = s.poll_shutdown(cx);
+                match &result {
+                    Poll::Pending => inner.replace(Sender::DataSent(s.end())),
+                    Poll::Ready(_) => {
+                        // 所有数据已经被发送完，没有StreamFrame去告知结束，所以直接reset
+                        inner.replace(Sender::ResetSent(s.cancel()));
+                    }
+                }
+                result
             }
             Sender::DataSent(mut s) => {
                 let result = s.poll_shutdown(cx);
@@ -120,8 +125,8 @@ impl AsyncWrite for Writer {
                 inner.replace(Sender::DataRecvd);
                 Poll::Ready(Ok(()))
             }
-            Sender::ResetSent => {
-                inner.replace(Sender::ResetSent);
+            Sender::ResetSent(final_size) => {
+                inner.replace(Sender::ResetSent(final_size));
                 Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
             }
             Sender::ResetRecvd => {
@@ -136,9 +141,9 @@ impl Drop for Writer {
     fn drop(&mut self) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        match inner.take() {
+        let final_size = match inner.take() {
             // 正常结束，就算是想cancel，也是忽略掉
-            state @ (Sender::DataRecvd | Sender::ResetSent | Sender::ResetRecvd) => {
+            state @ (Sender::DataRecvd | Sender::ResetSent(_) | Sender::ResetRecvd) => {
                 inner.replace(state);
                 return;
             }
@@ -149,7 +154,7 @@ impl Drop for Writer {
             Sender::Sending(s) => s.cancel(),
             Sender::DataSent(s) => s.cancel(),
         };
-        inner.replace(Sender::ResetSent);
+        inner.replace(Sender::ResetSent(final_size));
     }
 }
 

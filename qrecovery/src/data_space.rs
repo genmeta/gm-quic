@@ -123,12 +123,12 @@ impl DataSpace {
             let outgoing = outgoing.clone();
             let frames = self.frames_buf.clone();
             async move {
-                let _ = outgoing.is_cancelled_by_app().await;
+                let final_size = outgoing.is_cancelled_by_app().await;
                 let mut frames = frames.lock().unwrap();
                 frames.push_back(WriteFrame::ResetStream(ResetStreamFrame {
                     stream_id: sid,
                     app_error_code: VarInt::from_u32(0),
-                    final_size: VarInt::from_u32(0),
+                    final_size: VarInt::from_u32(final_size),
                 }));
             }
         });

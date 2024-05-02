@@ -81,7 +81,7 @@ impl State {
         }
     }
 
-    fn into_synced(&mut self) {
+    fn be_synced(&mut self) {
         match self {
             Self::Ignored(t) | Self::Important(t) => {
                 *self = Self::Synced(*t);
@@ -188,7 +188,6 @@ where
         let first_range = rcvd_iter
             .by_ref()
             .take_while(|s| !matches!(s, State::NotReceived))
-            .map(|s| s.into_synced())
             .count()
             - 1;
         let mut ranges = Vec::with_capacity(16);
@@ -386,7 +385,7 @@ where
                 // amplification attacks, and is not subject to flow control limitations.
                 remaning = buf.remaining_mut();
                 // All known packet information needs to be marked as synchronized.
-                self.rcvd_packets.iter_mut().for_each(|s| s.into_synced());
+                self.rcvd_packets.iter_mut().for_each(|s| s.be_synced());
             }
         }
 
@@ -504,7 +503,7 @@ where
                 .time_to_sync
                 .or(Some(Instant::now() + self.max_ack_delay));
         }
-        return Ok(());
+        Ok(())
     }
 }
 

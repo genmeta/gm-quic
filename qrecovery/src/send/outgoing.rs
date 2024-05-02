@@ -110,7 +110,7 @@ impl Outgoing {
             // ignore recv
             other => inner.replace(other),
         };
-        return false;
+        false
     }
 
     pub fn may_loss(&mut self, range: &Range<u64>) {
@@ -141,15 +141,13 @@ impl Outgoing {
             Sender::Ready(_) => {
                 unreachable!("never send data before recv data");
             }
-            Sender::DataSent(s) => {
-                s.stop();
-                inner.replace(Sender::ResetSent);
-            }
             Sender::Sending(s) => {
-                s.stop();
-                inner.replace(Sender::ResetSent);
+                inner.replace(Sender::ResetSent(s.stop()));
             }
-            recvd @ (Sender::DataRecvd | Sender::ResetSent | Sender::ResetRecvd) => {
+            Sender::DataSent(s) => {
+                inner.replace(Sender::ResetSent(s.stop()));
+            }
+            recvd @ (Sender::DataRecvd | Sender::ResetSent(_) | Sender::ResetRecvd) => {
                 inner.replace(recvd);
             }
         };
@@ -159,7 +157,7 @@ impl Outgoing {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {
-            Sender::ResetSent | Sender::ResetRecvd => {
+            Sender::ResetSent(_) | Sender::ResetRecvd => {
                 inner.replace(Sender::ResetRecvd);
             }
             _ => {
@@ -184,15 +182,15 @@ pub enum CancelTooLate {
 }
 
 impl Future for IsCancelled {
-    type Output = Result<(), CancelTooLate>;
+    type Output = Result<u64, CancelTooLate>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {
-            Sender::ResetSent => {
-                inner.replace(Sender::ResetSent);
-                Poll::Ready(Ok(()))
+            Sender::ResetSent(final_size) => {
+                inner.replace(Sender::ResetSent(final_size));
+                Poll::Ready(Ok(final_size))
             }
             Sender::ResetRecvd => {
                 inner.replace(Sender::ResetRecvd);
