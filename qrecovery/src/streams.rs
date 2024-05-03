@@ -73,7 +73,7 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                 return Err(Error::new(
                     ErrorKind::ProtocolViolation,
                     stream_frame.frame_type(),
-                    "local unidirectional streams cannot receive STREAM_FRAME",
+                    format!("local {sid} cannot receive STREAM_FRAME"),
                 ));
             }
         }
@@ -97,7 +97,7 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                         return Err(Error::new(
                             ErrorKind::ProtocolViolation,
                             stream_info_frame.frame_type(),
-                            "local unidirectional streams cannot receive RESET_FRAME",
+                            format!("local {sid} cannot receive RESET_FRAME"),
                         ));
                     }
                 }
@@ -114,7 +114,7 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                         return Err(Error::new(
                             ErrorKind::ProtocolViolation,
                             stream_info_frame.frame_type(),
-                            "remote unidirectional streams must not send STOP_SENDING_FRAME",
+                            format!("remote {sid} must not send STOP_SENDING_FRAME"),
                         ));
                     }
                     self.try_accept_sid(sid);
@@ -140,7 +140,7 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                         return Err(Error::new(
                             ErrorKind::ProtocolViolation,
                             stream_info_frame.frame_type(),
-                            "remote unidirectional streams must not send MAX_STREAM_DATA_FRAME",
+                            format!("remote {sid} must not send MAX_STREAM_DATA_FRAME"),
                         ));
                     }
                     self.try_accept_sid(sid);
@@ -160,7 +160,7 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                         return Err(Error::new(
                             ErrorKind::ProtocolViolation,
                             stream_info_frame.frame_type(),
-                            "local unidirectional streams cannot receive STREAM_DATA_BLOCKED_FRAME",
+                            format!("local {sid} cannot receive STREAM_DATA_BLOCKED_FRAME"),
                         ));
                     }
                 }

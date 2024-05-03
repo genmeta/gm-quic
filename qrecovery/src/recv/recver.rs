@@ -148,7 +148,7 @@ impl Recv {
                 ErrorKind::FinalSize,
                 reset_frame.frame_type(),
                 format!(
-                    "{} reset with a wrong final size {final_size} which is smaller than the largest data offset sent {}",
+                    "{} reset with a wrong smaller final size {final_size} than the largest rcvd data offset {}",
                     reset_frame.stream_id, self.largest_data_size
                 ),
             ));
