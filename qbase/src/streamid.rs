@@ -149,7 +149,7 @@ pub enum Error {
     #[error("invalid role: {0}")]
     Invalid(Role),
     #[error("stream id {0} exceed limit: {1}")]
-    Limit(StreamId, StreamId),
+    ExceedLimit(StreamId, StreamId),
 }
 
 #[derive(Debug)]
@@ -217,7 +217,7 @@ impl StreamIds {
         let idx = (sid.dir() as usize) | (!self.role as usize);
         let max = &mut self.max[idx];
         if sid > *max {
-            return Err(Error::Limit(sid, *max));
+            return Err(Error::ExceedLimit(sid, *max));
         }
         let cur = &mut self.unallocated[idx];
         if sid < *cur {
@@ -418,6 +418,6 @@ mod tests {
         }
 
         let result = sids.try_accept_sid(StreamId(65));
-        assert_eq!(result, Err(Error::Limit(StreamId(65), StreamId(61))));
+        assert_eq!(result, Err(Error::ExceedLimit(StreamId(65), StreamId(61))));
     }
 }
