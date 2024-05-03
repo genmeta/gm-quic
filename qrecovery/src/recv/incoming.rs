@@ -1,5 +1,9 @@
 use super::recver::{ArcRecver, Recver};
 use bytes::Bytes;
+use qbase::{
+    error::Error,
+    frame::{ResetStreamFrame, StreamFrame},
+};
 use std::{
     future::Future,
     ops::DerefMut,
@@ -15,16 +19,16 @@ impl Incoming {
         Self(recver)
     }
 
-    pub fn recv(&mut self, offset: u64, buf: Bytes) {
+    pub fn recv(&mut self, stream_frame: StreamFrame, body: Bytes) -> Result<(), Error> {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
         match inner.take() {
             Recver::Recv(mut r) => {
-                r.recv(offset, buf);
+                r.recv(stream_frame, body)?;
                 inner.replace(Recver::Recv(r));
             }
             Recver::SizeKnown(mut r) => {
-                r.recv(offset, buf);
+                r.recv(stream_frame, body)?;
                 if r.is_all_rcvd() {
                     inner.replace(Recver::DataRecvd(r.data_recvd()));
                 } else {
@@ -32,10 +36,11 @@ impl Incoming {
                 }
             }
             other => {
-                println!("ignored from {offset} len {}", buf.len());
+                println!("ignored stream frame {:?}", stream_frame);
                 inner.replace(other);
             }
         }
+        Ok(())
     }
 
     pub fn end(&mut self, final_size: u64) {
@@ -52,23 +57,25 @@ impl Incoming {
         }
     }
 
-    pub fn recv_reset(&mut self) {
+    pub fn recv_reset(&mut self, reset_frame: ResetStreamFrame) -> Result<(), Error> {
+        // TODO: ResetStream中还有错误信息，比如http3的错误码，看是否能用到
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
         match inner.take() {
             Recver::Recv(r) => {
-                r.recv_reset();
-                inner.replace(Recver::ResetRecvd);
+                let final_size = r.recv_reset(reset_frame)?;
+                inner.replace(Recver::ResetRecvd(final_size));
             }
             Recver::SizeKnown(r) => {
-                r.recv_reset();
-                inner.replace(Recver::ResetRecvd);
+                let final_size = r.recv_reset(reset_frame)?;
+                inner.replace(Recver::ResetRecvd(final_size));
             }
             other => {
                 println!("there is sth wrong, ignored recv_reset");
                 inner.replace(other);
             }
         }
+        Ok(())
     }
 
     /// 应用层是否对流写入结束，如果是，那么应要发送STOP_SENDING

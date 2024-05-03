@@ -4,7 +4,12 @@ use crate::{
     space::Transmit,
     AppStream,
 };
-use qbase::{frame::*, streamid::*, varint::VarInt};
+use qbase::{
+    error::{Error, ErrorKind},
+    frame::*,
+    streamid::*,
+    varint::VarInt,
+};
 use std::{
     collections::{HashMap, VecDeque},
     task::{ready, Context, Poll, Waker},
@@ -29,7 +34,8 @@ pub struct Streams {
 impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
     type Buffer = Vec<u8>;
 
-    fn try_send(&mut self, buf: &mut Self::Buffer) -> Option<(StreamFrame, usize)> {
+    fn try_send(&mut self, _buf: &mut Self::Buffer) -> Option<(StreamFrame, usize)> {
+        // 遍历所有的Outgoing，看是否有数据要发送，一定要公平
         todo!()
     }
 
@@ -55,7 +61,7 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
         }
     }
 
-    fn recv_data(&mut self, stream_frame: StreamFrame, body: bytes::Bytes) {
+    fn recv_data(&mut self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error> {
         let sid = stream_frame.id;
         // 对方必须是发送端，才能发送此帧
         if sid.role() != self.stream_ids.role() {
@@ -63,32 +69,40 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
             self.try_accept_sid(sid);
         } else {
             // 我方的sid，那必须是双向流才能收到对方的数据，否则就是错误
-            if sid.dir() != Dir::Bi {
-                // return error
+            if sid.dir() == Dir::Uni {
+                return Err(Error::new(
+                    ErrorKind::ProtocolViolation,
+                    stream_frame.frame_type(),
+                    "local unidirectional streams cannot receive STREAM_FRAME",
+                ));
             }
         }
         if let Some(incoming) = self.input.get_mut(&sid) {
-            incoming.recv(stream_frame.offset.into_inner(), body);
+            incoming.recv(stream_frame, body)?;
         }
         // 否则，该流已经结束，再收到任何该流的frame，都将被忽略
+        Ok(())
     }
 
-    fn recv_frame(&mut self, stream_info_frame: StreamInfoFrame) {
+    fn recv_frame(&mut self, stream_info_frame: StreamInfoFrame) -> Result<(), Error> {
         match stream_info_frame {
-            StreamInfoFrame::ResetStream(reset) => {
-                let sid = reset.stream_id;
+            StreamInfoFrame::ResetStream(reset_frame) => {
+                let sid = reset_frame.stream_id;
                 // 对方必须是发送端，才能发送此帧
                 if sid.role() != self.stream_ids.role() {
                     self.try_accept_sid(sid);
                 } else {
                     // 我方创建的流必须是双向流，对方才能发送ResetStream,否则就是错误
-                    if sid.dir() != Dir::Bi {
-                        // return error
+                    if sid.dir() == Dir::Uni {
+                        return Err(Error::new(
+                            ErrorKind::ProtocolViolation,
+                            stream_info_frame.frame_type(),
+                            "local unidirectional streams cannot receive RESET_FRAME",
+                        ));
                     }
                 }
-                // TODO: ResetStream中还携带着error code、final size，需要处理下
                 if let Some(incoming) = self.input.get_mut(&sid) {
-                    incoming.recv_reset();
+                    incoming.recv_reset(reset_frame)?;
                 }
             }
             StreamInfoFrame::StopSending(stop) => {
@@ -97,14 +111,18 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                 if sid.role() != self.stream_ids.role() {
                     // 对方创建的单向流，接收端是我方，不可能收到对方的StopSendingFrame
                     if sid.dir() == Dir::Uni {
-                        // return error
+                        return Err(Error::new(
+                            ErrorKind::ProtocolViolation,
+                            stream_info_frame.frame_type(),
+                            "remote unidirectional streams must not send STOP_SENDING_FRAME",
+                        ));
                     }
                     self.try_accept_sid(sid);
                 }
                 if let Some(outgoing) = self.output.get_mut(&sid) {
                     outgoing.stop();
                 }
-                // 回写一个ResetStreamFrame
+
                 let _ = self
                     .frame_tx
                     .send(StreamInfoFrame::ResetStream(ResetStreamFrame {
@@ -119,7 +137,11 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                 if sid.role() != self.stream_ids.role() {
                     // 对方创建的单向流，接收端是我方，不可能收到对方的MaxStreamData
                     if sid.dir() == Dir::Uni {
-                        // return error
+                        return Err(Error::new(
+                            ErrorKind::ProtocolViolation,
+                            stream_info_frame.frame_type(),
+                            "remote unidirectional streams must not send MAX_STREAM_DATA_FRAME",
+                        ));
                     }
                     self.try_accept_sid(sid);
                 }
@@ -134,8 +156,12 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                     self.try_accept_sid(sid);
                 } else {
                     // 我方创建的，必须是双向流，对方才是发送端，才能发出StreamDataBlocked；否则就是错误
-                    if sid.dir() != Dir::Bi {
-                        // return error
+                    if sid.dir() == Dir::Uni {
+                        return Err(Error::new(
+                            ErrorKind::ProtocolViolation,
+                            stream_info_frame.frame_type(),
+                            "local unidirectional streams cannot receive STREAM_DATA_BLOCKED_FRAME",
+                        ));
                     }
                 }
                 // 仅仅起到通知作用?主动更新窗口的，此帧没多大用，或许要进一步放大缓冲区大小；被动更新窗口的，此帧有用
@@ -155,6 +181,7 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                 // 仅仅起到通知作用?也分主动和被动
             }
         }
+        Ok(())
     }
 }
 

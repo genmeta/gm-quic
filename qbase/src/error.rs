@@ -4,23 +4,48 @@ use thiserror::Error;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ErrorKind {
+    // the connection is being closed abruptly in the absence of any error
     None,
+    // the endpoint encountered an internal error and cannot continue with the connection
     Internal,
+    // the server refused to accept a new connection
     ConnectionRefused,
+    // received more data than permitted in advertised data limits
     FlowControl,
+    // received a frame for a stream identifier that exceeded advertised the stream
+    // limit for the corresponding stream type
     StreamLimit,
+    // received a frame for a stream that was not in a state that permitted that frame
     StreamState,
+    // received a STREAM frame or a RESET_STREAM frame containing a different final
+    // size to the one already established
     FinalSize,
+    // received a frame that was badly formatted
     FrameEncoding,
+    // received transport parameters that were badly formatted, included an invalid
+    // value, was absent even though it is mandatory, was present though it is forbidden,
+    // or is otherwise in error
     TransportParameter,
+    // the number of connection IDs provided by the peer exceeds the advertised
+    // active_connection_id_limit
     ConnectionIdLimit,
+    // detected an error with protocol compliance that was not covered by more specific
+    // error codes
     ProtocolViolation,
+    // received an invalid Retry Token in a client Initial
     InvalidToken,
+    // the application or application protocol caused the connection to be closed during
+    // the handshake
     Application,
+    // received more data in CRYPTO frames than can be buffered
     CryptoBufferExceeded,
+    // key update error
     KeyUpdate,
+    // the endpoint has reached the confidentiality or integrity limit for the AEAD algorithm
     AeadLimitReached,
+    // no viable network path exists
     NoViablePath,
+    // the cryptographic handshake failed
     Crypto(u8),
 }
 

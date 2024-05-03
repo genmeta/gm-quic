@@ -49,7 +49,7 @@ impl AsyncRead for Reader {
                 Poll::Ready(Ok(()))
             }
             Recver::DataRead => Poll::Ready(Ok(())),
-            Recver::ResetRecvd => {
+            Recver::ResetRecvd(_final_size) => {
                 inner.replace(Recver::ResetRead);
                 Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
             }
@@ -68,11 +68,11 @@ impl Drop for Reader {
         match inner.take() {
             Recver::Recv(mut r) => {
                 r.abort();
-                inner.replace(Recver::ResetRecvd);
+                inner.replace(Recver::Recv(r));
             }
             Recver::SizeKnown(mut r) => {
                 r.abort();
-                inner.replace(Recver::ResetRecvd);
+                inner.replace(Recver::SizeKnown(r));
             }
             other => {
                 inner.replace(other);

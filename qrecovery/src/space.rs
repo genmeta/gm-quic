@@ -52,9 +52,9 @@ pub trait Transmit<F, D> {
 
     fn may_loss(&mut self, data_frame: D);
 
-    fn recv_frame(&mut self, frame: F);
+    fn recv_frame(&mut self, frame: F) -> Result<(), Error>;
 
-    fn recv_data(&mut self, data_frame: D, data: Bytes);
+    fn recv_data(&mut self, data_frame: D, data: Bytes) -> Result<(), Error>;
 }
 
 #[derive(Debug, Clone)]
@@ -512,11 +512,11 @@ where
                 }
                 Frame::Data(frame, data) => {
                     is_ack_eliciting = true;
-                    self.transmission.recv_data(frame.try_into()?, data);
+                    self.transmission.recv_data(frame.try_into()?, data)?;
                 }
                 Frame::Info(frame) => {
                     is_ack_eliciting = true;
-                    self.transmission.recv_frame(frame.try_into()?);
+                    self.transmission.recv_frame(frame.try_into()?)?;
                 }
                 _ => unreachable!("these frames are partitioned to be conn-layer interest"),
             }

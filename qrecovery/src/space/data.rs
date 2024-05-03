@@ -1,16 +1,9 @@
 /// Application data space, 1-RTT data space
-use crate::{
-    recv::{self, Incoming, Reader},
-    send::{self, Outgoing, Writer},
-    AppStream,
-};
 use qbase::{
-    frame::{OneRttFrame, *},
-    streamid::*,
-    varint::VarInt,
+    error::Error,
+    frame::{DataFrame, OneRttFrame},
 };
 use std::{
-    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
     task::{ready, Context, Poll, Waker},
 };
@@ -22,13 +15,6 @@ pub struct OneRttDataSpace(Arc<Mutex<super::Space<OneRttFrame, OneRttDataFrame, 
 
 #[derive(Debug)]
 pub struct Transmission {
-    stream_ids: StreamIds,
-    // 所有流的待写端，要发送数据，就得向这些流索取
-    output: HashMap<StreamId, Outgoing>,
-    // 所有流的待读端，收到了数据，交付给这些流
-    input: HashMap<StreamId, Incoming>,
-    // 对方主动创建的流
-    accepted_streams: VecDeque<AppStream>,
     accpet_waker: Option<Waker>,
 
     frame_tx: UnboundedSender<OneRttFrame>,
@@ -59,22 +45,26 @@ impl super::Transmit<OneRttFrame, OneRttDataFrame> for Transmission {
         }
     }
 
-    fn recv_data(&mut self, data_frame: OneRttDataFrame, body: bytes::Bytes) {
+    fn recv_data(&mut self, data_frame: OneRttDataFrame, body: bytes::Bytes) -> Result<(), Error> {
         match data_frame {
             OneRttDataFrame::Stream(stream) => {}
             OneRttDataFrame::Crypto(_crypto) => {
                 // TODO: 处理加密数据
             }
         }
+        Ok(())
     }
 
-    fn recv_frame(&mut self, frame: OneRttFrame) {
+    fn recv_frame(&mut self, frame: OneRttFrame) -> Result<(), Error> {
         match frame {
             OneRttFrame::Ping(_) => (),
             OneRttFrame::Stream(_frame) => {}
             _ => unreachable!("these are handled in connection layer"),
         }
+        Ok(())
     }
+
+    fn confirm(&mut self, _frame: OneRttFrame) {}
 }
 
 impl OneRttDataSpace {}
