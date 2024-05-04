@@ -5,7 +5,7 @@
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PingFrame;
 
-pub(super) const PING_FRAME_TYPE: u8 = 0x01;
+const PING_FRAME_TYPE: u8 = 0x01;
 
 impl super::BeFrame for PingFrame {
     fn frame_type(&self) -> super::FrameType {

@@ -5,7 +5,7 @@
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PaddingFrame;
 
-pub(super) const PADDING_FRAME_TYPE: u8 = 0x00;
+const PADDING_FRAME_TYPE: u8 = 0x00;
 
 impl super::BeFrame for PaddingFrame {
     fn frame_type(&self) -> super::FrameType {

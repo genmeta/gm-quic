@@ -10,7 +10,7 @@ pub struct DataBlockedFrame {
     pub limit: VarInt,
 }
 
-pub(super) const DATA_BLOCKED_FRAME_TYPE: u8 = 0x14;
+const DATA_BLOCKED_FRAME_TYPE: u8 = 0x14;
 
 impl super::BeFrame for DataBlockedFrame {
     fn frame_type(&self) -> super::FrameType {

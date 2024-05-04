@@ -11,7 +11,7 @@ pub enum MaxStreamsFrame {
     Uni(VarInt),
 }
 
-pub(super) const MAX_STREAMS_FRAME_TYPE: u8 = 0x12;
+const MAX_STREAMS_FRAME_TYPE: u8 = 0x12;
 
 const DIR_BIT: u8 = 0x1;
 
@@ -37,8 +37,7 @@ impl super::BeFrame for MaxStreamsFrame {
 
 pub(super) mod ext {
     use super::{MaxStreamsFrame, DIR_BIT, MAX_STREAMS_FRAME_TYPE};
-
-    const MAX_STREAMS: u64 = (1 << 60) - 1;
+    use crate::streamid::MAX_STREAM_ID;
 
     // nom parser for MAX_STREAMS_FRAME
     pub fn max_streams_frame_with_dir(
@@ -47,7 +46,7 @@ pub(super) mod ext {
         move |input: &[u8]| {
             use crate::{streamid::Dir, varint::ext::be_varint};
             let (remain, max_streams) = be_varint(input)?;
-            if max_streams > MAX_STREAMS {
+            if max_streams > MAX_STREAM_ID {
                 Err(nom::Err::Error(nom::error::Error::new(
                     input,
                     nom::error::ErrorKind::TooLarge,

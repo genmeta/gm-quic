@@ -10,13 +10,13 @@ pub struct PathChallengeFrame {
 
 impl PathChallengeFrame {
     pub fn from_slice(data: &[u8]) -> Self {
-        Self {
-            data: data.try_into().unwrap(),
-        }
+        let mut frame = Self { data: [0; 8] };
+        frame.data.copy_from_slice(data);
+        frame
     }
 }
 
-pub(super) const PATH_CHALLENGE_FRAME_TYPE: u8 = 0x1a;
+const PATH_CHALLENGE_FRAME_TYPE: u8 = 0x1a;
 
 impl super::BeFrame for PathChallengeFrame {
     fn frame_type(&self) -> super::FrameType {

@@ -8,7 +8,7 @@
 //   [ECN Counts (..)],
 // }
 
-use crate::varint::{err::Overflow, VarInt};
+use crate::varint::VarInt;
 use std::{ops::RangeInclusive, vec::IntoIter};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -23,7 +23,7 @@ pub struct AckFrame {
     pub ecn: Option<EcnCounts>,
 }
 
-pub(super) const ACK_FRAME_TYPE: u8 = 0x02;
+const ACK_FRAME_TYPE: u8 = 0x02;
 
 const ECN_OPT: u8 = 0x1;
 
@@ -52,25 +52,8 @@ impl super::BeFrame for AckFrame {
 }
 
 impl AckFrame {
-    pub fn new(
-        largest: u64,
-        first_range: u32,
-        delay: u64,
-        ecn: Option<EcnCounts>,
-    ) -> Result<Self, Overflow> {
-        Ok(Self {
-            largest: VarInt::try_from(largest)?,
-            delay: VarInt::try_from(delay)?,
-            first_range: VarInt::from_u32(first_range),
-            ranges: Vec::new(),
-            ecn,
-        })
-    }
-
-    /// Safe: The number of gaps and ACK ranges to be acknowledged at a time cannot exceed 2^32.
-    pub fn alternating_gap_and_range(&mut self, gap: u32, range: u32) {
-        self.ranges
-            .push((VarInt::from_u32(gap), VarInt::from_u32(range)));
+    pub fn set_enc(&mut self, ecn: EcnCounts) {
+        self.ecn = Some(ecn);
     }
 
     pub fn take_ecn(&mut self) -> Option<EcnCounts> {
@@ -288,8 +271,13 @@ mod tests {
     #[test]
     fn test_write_ack_frame() {
         let mut buf = Vec::new();
-        let mut frame = AckFrame::new(0x1234, 0x1234, 0x1234, None).unwrap();
-        frame.alternating_gap_and_range(3, 20);
+        let frame = AckFrame {
+            largest: VarInt(0x1234),
+            delay: VarInt(0x1234),
+            first_range: VarInt(0x1234),
+            ranges: vec![(VarInt(3), VarInt(20))],
+            ecn: None,
+        };
 
         buf.put_ack_frame(&frame);
         assert_eq!(
@@ -300,10 +288,21 @@ mod tests {
 
     #[test]
     fn test_ack_frame_into_iter() {
-        let mut frame = AckFrame::new(1000, 0, 0x1234, None).unwrap();
-        frame.alternating_gap_and_range(0, 2);
-        frame.alternating_gap_and_range(4, 30);
-        frame.alternating_gap_and_range(7, 40);
+        // let mut frame = AckFrame::new(1000, 0, 0x1234, None).unwrap();
+        let frame = AckFrame {
+            largest: VarInt(1000),
+            delay: VarInt(0x1234),
+            first_range: VarInt(0),
+            ranges: vec![
+                (VarInt(0), VarInt(2)),
+                (VarInt(4), VarInt(30)),
+                (VarInt(7), VarInt(40)),
+            ],
+            ecn: None,
+        };
+        // frame.alternating_gap_and_range(0, 2);
+        // frame.alternating_gap_and_range(4, 30);
+        // frame.alternating_gap_and_range(7, 40);
 
         let mut iter = frame.into_iter();
         assert_eq!(iter.next(), Some(1000..=1000));

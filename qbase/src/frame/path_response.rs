@@ -10,13 +10,13 @@ pub struct PathResponseFrame {
 
 impl PathResponseFrame {
     pub fn from_slice(data: &[u8]) -> Self {
-        Self {
-            data: data.try_into().unwrap(),
-        }
+        let mut frame = Self { data: [0; 8] };
+        frame.data.copy_from_slice(data);
+        frame
     }
 }
 
-pub(super) const PATH_RESPONSE_FRAME_TYPE: u8 = 0x1b;
+const PATH_RESPONSE_FRAME_TYPE: u8 = 0x1b;
 
 impl super::BeFrame for PathResponseFrame {
     fn frame_type(&self) -> super::FrameType {

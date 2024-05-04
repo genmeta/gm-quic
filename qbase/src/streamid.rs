@@ -80,17 +80,23 @@ pub struct StreamId(u64);
 
 impl fmt::Display for StreamId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {} stream {}", self.role(), self.dir(), self.id())
+        write!(
+            f,
+            "{} side {} stream {}",
+            self.role(),
+            self.dir(),
+            self.id()
+        )
     }
 }
 
-impl StreamId {
-    const STREAM_ID_LIMIT: u64 = 1 << 60;
+pub const MAX_STREAM_ID: u64 = (1 << 60) - 1;
 
+impl StreamId {
     /// It is prohibited to directly create a StreamId from external sources. StreamId can
     /// only be allocated incrementally by the StreamId manager or received from the peer.
     pub(self) fn new(role: Role, dir: Dir, id: u64) -> Self {
-        assert!(id < Self::STREAM_ID_LIMIT);
+        assert!(id <= MAX_STREAM_ID);
         Self((id << 2) | (role as u64) | (dir as u64))
     }
 
@@ -121,8 +127,8 @@ impl StreamId {
     /// Safety: If adding self beyond the maximum range, it will stay within the maximum range.
     pub(self) fn saturating_add(&mut self, n: u64) {
         let (mut id, overflow) = self.id().overflowing_add(n);
-        if overflow || id >= Self::STREAM_ID_LIMIT {
-            id = Self::STREAM_ID_LIMIT - 1;
+        if overflow || id > MAX_STREAM_ID {
+            id = MAX_STREAM_ID;
         }
         self.0 = (id << 2) | (self.0 & 0x3);
     }
@@ -145,12 +151,8 @@ impl From<StreamId> for VarInt {
 }
 
 #[derive(Debug, PartialEq, Error)]
-pub enum Error {
-    #[error("invalid role: {0}")]
-    Invalid(Role),
-    #[error("stream id {0} exceed limit: {1}")]
-    ExceedLimit(StreamId, StreamId),
-}
+#[error("{0} exceed limit: {1}")]
+pub struct ExceedLimitError(StreamId, StreamId);
 
 #[derive(Debug)]
 pub struct StreamIds {
@@ -210,14 +212,12 @@ impl StreamIds {
 
     /// RFC9000: Before a stream is created, all streams of the same type
     /// with lower-numbered stream IDs MUST be created.
-    pub fn try_accept_sid(&mut self, sid: StreamId) -> Result<AcceptSid, Error> {
-        if sid.role() == self.role {
-            return Err(Error::Invalid(sid.role()));
-        }
+    pub fn try_accept_sid(&mut self, sid: StreamId) -> Result<AcceptSid, ExceedLimitError> {
+        debug_assert_ne!(sid.role(), self.role);
         let idx = (sid.dir() as usize) | (!self.role as usize);
         let max = &mut self.max[idx];
         if sid > *max {
-            return Err(Error::ExceedLimit(sid, *max));
+            return Err(ExceedLimitError(sid, *max));
         }
         let cur = &mut self.unallocated[idx];
         if sid < *cur {
@@ -242,7 +242,7 @@ impl StreamIds {
     /// set it to any larger value. Therefore, it mainly depends on the peer's attitude and is subject to the
     /// MAX_STREAM_FRAME frame sent by the peer.
     pub fn set_max_sid(&mut self, dir: Dir, val: u64) {
-        assert!(val < StreamId::STREAM_ID_LIMIT);
+        assert!(val <= MAX_STREAM_ID);
         let sid = &mut self.max[(dir as usize) | (self.role as usize)];
         // RFC9000: MAX_STREAMS frames that do not increase the stream limit MUST be ignored.
         if sid.id() < val {
@@ -262,7 +262,7 @@ impl StreamIds {
     pub fn poll_alloc_sid(&mut self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<StreamId>> {
         let idx = (dir as usize) | (self.role as usize);
         let cur = &mut self.unallocated[idx];
-        if cur.id() >= StreamId::STREAM_ID_LIMIT {
+        if cur.id() > MAX_STREAM_ID {
             Poll::Ready(None)
         } else if *cur <= self.max[idx] {
             let id = *cur;
@@ -368,9 +368,6 @@ mod tests {
     #[test]
     fn test_try_accept_sid() {
         let mut sids = StreamIds::new(Role::Client, 10, 10);
-        let result = sids.try_accept_sid(StreamId(0));
-        assert_eq!(result, Err(Error::Invalid(Role::Client)));
-
         let result = sids.try_accept_sid(StreamId(21));
         assert_eq!(
             result,
@@ -418,6 +415,6 @@ mod tests {
         }
 
         let result = sids.try_accept_sid(StreamId(65));
-        assert_eq!(result, Err(Error::ExceedLimit(StreamId(65), StreamId(61))));
+        assert_eq!(result, Err(ExceedLimitError(StreamId(65), StreamId(61))));
     }
 }

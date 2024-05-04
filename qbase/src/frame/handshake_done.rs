@@ -5,7 +5,7 @@
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HandshakeDoneFrame;
 
-pub(super) const HANDSHAKE_DONE_FRAME_TYPE: u8 = 0x1e;
+const HANDSHAKE_DONE_FRAME_TYPE: u8 = 0x1e;
 
 impl super::BeFrame for HandshakeDoneFrame {
     fn frame_type(&self) -> super::FrameType {

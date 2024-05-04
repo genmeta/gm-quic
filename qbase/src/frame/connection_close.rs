@@ -15,7 +15,7 @@ pub struct ConnectionCloseFrame {
     pub reason: String,
 }
 
-pub(super) const CONNECTION_CLOSE_FRAME_TYPE: u8 = 0x1c;
+const CONNECTION_CLOSE_FRAME_TYPE: u8 = 0x1c;
 
 const QUIC_LAYER: u8 = 1;
 const APP_LAYER: u8 = 0;

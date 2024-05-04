@@ -12,7 +12,7 @@ use crate::{
     varint::VarInt,
 };
 
-pub(super) const NEW_CONNECTION_ID_FRAME_TYPE: u8 = 0x18;
+const NEW_CONNECTION_ID_FRAME_TYPE: u8 = 0x18;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewConnectionIdFrame {

@@ -11,7 +11,7 @@ pub enum StreamsBlockedFrame {
     Uni(StreamId),
 }
 
-pub(super) const STREAMS_BLOCKED_FRAME_TYPE: u8 = 0x16;
+const STREAMS_BLOCKED_FRAME_TYPE: u8 = 0x16;
 
 const DIR_BIT: u8 = 0x1;
 

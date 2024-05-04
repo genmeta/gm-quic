@@ -12,7 +12,7 @@ pub struct StreamDataBlockedFrame {
     pub maximum_stream_data: VarInt,
 }
 
-pub(super) const STREAM_DATA_BLOCKED_FRAME_TYPE: u8 = 0x15;
+const STREAM_DATA_BLOCKED_FRAME_TYPE: u8 = 0x15;
 
 impl super::BeFrame for StreamDataBlockedFrame {
     fn frame_type(&self) -> super::FrameType {

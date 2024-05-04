@@ -10,7 +10,7 @@ pub struct MaxDataFrame {
     pub max_data: VarInt,
 }
 
-pub(super) const MAX_DATA_FRAME_TYPE: u8 = 0x10;
+const MAX_DATA_FRAME_TYPE: u8 = 0x10;
 
 impl super::BeFrame for MaxDataFrame {
     fn frame_type(&self) -> super::FrameType {

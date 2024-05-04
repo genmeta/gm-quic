@@ -24,7 +24,7 @@ pub struct StreamFrame {
     flag: u8,
 }
 
-pub(super) const STREAM_FRAME_TYPE: u8 = 0x08;
+const STREAM_FRAME_TYPE: u8 = 0x08;
 
 const OFF_BIT: u8 = 0x04;
 const LEN_BIT: u8 = 0x02;

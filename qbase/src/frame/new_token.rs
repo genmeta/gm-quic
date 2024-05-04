@@ -9,7 +9,7 @@ pub struct NewTokenFrame {
     pub token: Vec<u8>,
 }
 
-pub(super) const NEW_TOKEN_FRAME_TYPE: u8 = 0x07;
+const NEW_TOKEN_FRAME_TYPE: u8 = 0x07;
 
 impl super::BeFrame for NewTokenFrame {
     fn frame_type(&self) -> super::FrameType {
