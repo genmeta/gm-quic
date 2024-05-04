@@ -6,12 +6,15 @@ use nom::{
     number::complete::{be_u16, be_u24, be_u32, be_u8},
     IResult,
 };
-use qbase::varint::{
-    ext::{be_varint, BufMutExt},
-    VarInt,
+use qbase::{
+    cid::ConnectionId,
+    varint::{
+        ext::{be_varint, BufMutExt},
+        VarInt,
+    },
 };
 
-use super::{cid::ConnectionId, crypto};
+use super::crypto;
 
 const FORM_BIT: u8 = 0x80;
 const FIXED_BIT: u8 = 0x40;

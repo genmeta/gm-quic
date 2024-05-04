@@ -6,7 +6,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use qbase::config::{self, TransportParameters};
+use qbase::{
+    cid::ConnectionId,
+    config::{self, TransportParameters},
+};
 use ring::aead;
 use rustls::{
     client::InvalidDnsNameError,
@@ -15,8 +18,8 @@ use rustls::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+use crate::quic::error::Error::UnsupportedVersion;
 use crate::quic::error::{Error, TransportError, TransportErrorCode};
-use crate::quic::{cid::ConnectionId, error::Error::UnsupportedVersion};
 
 use super::{HeaderKey, KeyPair, Keys, PacketKey};
 use crate::quic::error::Error::InvalidDnsName;

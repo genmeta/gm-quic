@@ -1,3 +1,4 @@
+pub mod cid;
 pub mod config;
 pub mod error;
 pub mod frame;

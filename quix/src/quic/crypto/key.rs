@@ -1,10 +1,9 @@
+use qbase::cid::ConnectionId;
 use rustls::{
     self,
     quic::{HeaderProtectionKey, Version},
     Side,
 };
-
-use crate::quic::cid::ConnectionId;
 
 use super::{CryptoError, HeaderKey, KeyPair, Keys};
 

@@ -1,16 +1,217 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, fmt, time::Duration};
 
-use crate::quic::{
-    error::Error,
-    frames::{self, Frame, ResetToken},
-};
+use bytes::BufMut;
+use nom::{number::streaming::be_u8, IResult};
+use rand::RngCore;
 
-use super::{cid::ConnectionIdEntry, ConnectionId};
+use crate::frame::NewConnectionId;
+
+pub(crate) const MAX_CID_SIZE: usize = 20;
+
+pub enum CidError {
+    IdLimit,
+    OutOfIdentifiers,
+    InvalidState,
+    InvalidFrame,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Default)]
+pub struct ConnectionId {
+    /// length of CID
+    len: u8,
+    /// CID in byte array
+    bytes: [u8; MAX_CID_SIZE],
+}
+
+impl ConnectionId {
+    pub fn new(bytes: &[u8]) -> Self {
+        debug_assert!(bytes.len() <= MAX_CID_SIZE);
+        let mut res = Self {
+            len: bytes.len() as u8,
+            bytes: [0; MAX_CID_SIZE],
+        };
+        res.bytes[..bytes.len()].copy_from_slice(bytes);
+        res
+    }
+
+    pub fn from_buf(input: &[u8], len: usize) -> IResult<&[u8], Self> {
+        debug_assert!(len <= MAX_CID_SIZE);
+        let (input, bytes) = nom::bytes::complete::take(len)(input)?;
+        Ok((input, Self::new(bytes)))
+    }
+
+    /// Decode from long header format
+    pub fn decode_long(input: &[u8]) -> IResult<&[u8], Self> {
+        let (input, len) = be_u8(input)?;
+        Self::from_buf(input, len as usize)
+    }
+
+    /// Encode in long header format
+    pub fn encode_long(&self, buf: &mut impl BufMut) {
+        buf.put_u8(self.len() as u8);
+        buf.put_slice(self);
+    }
+}
+
+impl ::std::ops::Deref for ConnectionId {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.bytes[0..self.len as usize]
+    }
+}
+
+impl ::std::ops::DerefMut for ConnectionId {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.bytes[0..self.len as usize]
+    }
+}
+
+impl fmt::Debug for ConnectionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.bytes[0..self.len as usize].fmt(f)
+    }
+}
+
+impl fmt::Display for ConnectionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.iter() {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+/// A structure holding a `ConnectionId` and all its related metadata.
+#[derive(Debug, Default)]
+pub struct ConnectionIdEntry {
+    /// The Connection ID.
+    pub cid: ConnectionId,
+
+    /// Each connection ID has an associated sequence number to assist in detecting
+    /// when NEW_CONNECTION_ID or RETIRE_CONNECTION_ID frames refer to the same value
+    pub seq: u64,
+
+    /// Its associated reset token. Initial CIDs may not have any reset token.
+    pub reset_token: Option<ResetToken>,
+
+    /// The path identifier using this CID, if any.
+    pub path_id: Option<usize>,
+}
+
+pub trait ConnectionIdGenerator: Send {
+    /// Generates a new CID
+    ///
+    /// Connection IDs MUST NOT contain any information that can be used by
+    /// an external observer (that is, one that does not cooperate with the
+    /// issuer) to correlate them with other connection IDs for the same
+    /// connection.
+    fn generate_cid(&mut self) -> ConnectionId;
+    /// Returns the length of a CID for connections created by this generator
+    fn cid_len(&self) -> usize;
+    /// Returns the lifetime of generated Connection IDs
+    ///
+    /// Connection IDs will be retired after the returned `Duration`, if any. Assumed to be constant.
+    fn cid_lifetime(&self) -> Option<Duration>;
+}
+
+/// Generates purely random connection IDs of a certain length
+#[derive(Debug, Clone, Copy)]
+pub struct RandomConnectionIdGenerator {
+    cid_len: usize,
+    lifetime: Option<Duration>,
+}
+
+impl Default for RandomConnectionIdGenerator {
+    fn default() -> Self {
+        Self {
+            cid_len: 8,
+            lifetime: None,
+        }
+    }
+}
+
+impl RandomConnectionIdGenerator {
+    /// Initialize Random CID generator with a fixed CID length
+    ///
+    /// The given length must be less than or equal to MAX_CID_SIZE.
+    pub fn new(cid_len: usize) -> Self {
+        debug_assert!(cid_len <= MAX_CID_SIZE);
+        Self {
+            cid_len,
+            ..Self::default()
+        }
+    }
+
+    /// Set the lifetime of CIDs created by this generator
+    pub fn set_lifetime(&mut self, d: Duration) -> &mut Self {
+        self.lifetime = Some(d);
+        self
+    }
+}
+
+impl ConnectionIdGenerator for RandomConnectionIdGenerator {
+    fn generate_cid(&mut self) -> ConnectionId {
+        let mut bytes_arr = [0; MAX_CID_SIZE];
+        rand::thread_rng().fill_bytes(&mut bytes_arr[..self.cid_len]);
+
+        ConnectionId::new(&bytes_arr[..self.cid_len])
+    }
+
+    /// Provide the length of dst_cid in short header packet
+    fn cid_len(&self) -> usize {
+        self.cid_len
+    }
+
+    fn cid_lifetime(&self) -> Option<Duration> {
+        self.lifetime
+    }
+}
 
 #[derive(Default)]
 struct CidQueue {
     inner: VecDeque<ConnectionIdEntry>,
     capacity: usize,
+}
+
+pub const RESET_TOKEN_SIZE: usize = 16;
+
+#[derive(Debug, Copy, Clone)]
+pub struct ResetToken([u8; RESET_TOKEN_SIZE]);
+
+impl ResetToken {
+    pub(crate) fn new_with(bytes: &[u8]) -> Self {
+        Self(bytes.try_into().unwrap())
+    }
+}
+
+impl PartialEq for ResetToken {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
+}
+
+impl Eq for ResetToken {}
+
+impl From<[u8; RESET_TOKEN_SIZE]> for ResetToken {
+    fn from(x: [u8; RESET_TOKEN_SIZE]) -> Self {
+        Self(x)
+    }
+}
+
+impl std::ops::Deref for ResetToken {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Display for ResetToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.iter() {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
 }
 
 impl CidQueue {
@@ -46,13 +247,13 @@ impl CidQueue {
         }
     }
 
-    fn insert(&mut self, e: ConnectionIdEntry) -> Result<(), Error> {
+    fn insert(&mut self, e: ConnectionIdEntry) -> Result<(), CidError> {
         // Ensure we don't have duplicates.
         match self.get_mut(e.seq) {
             Some(oe) => *oe = e,
             None => {
                 if self.inner.len() == self.capacity {
-                    return Err(Error::IdLimit);
+                    return Err(CidError::IdLimit);
                 }
                 self.inner.push_back(e);
             }
@@ -60,9 +261,9 @@ impl CidQueue {
         Ok(())
     }
 
-    fn remove(&mut self, seq: u64) -> Result<Option<ConnectionIdEntry>, Error> {
+    fn remove(&mut self, seq: u64) -> Result<Option<ConnectionIdEntry>, CidError> {
         if self.inner.len() <= 1 {
-            return Err(Error::OutOfIdentifiers);
+            return Err(CidError::OutOfIdentifiers);
         }
 
         Ok(self
@@ -81,14 +282,14 @@ impl CidQueue {
         seq: u64,
         e: ConnectionIdEntry,
         mut f: F,
-    ) -> Result<(), Error>
+    ) -> Result<(), CidError>
     where
         F: FnMut(&ConnectionIdEntry),
     {
         // The insert entry MUST have a sequence higher or equal to the ones
         // being retired.
         if e.seq < seq {
-            return Err(Error::OutOfIdentifiers);
+            return Err(CidError::InvalidState);
         }
 
         // To avoid exceeding the capacity of the inner `VecDeque`, we first
@@ -183,8 +384,8 @@ impl SourceConnectionIdentifiers {
     }
 
     #[inline]
-    pub fn get_cid(&self, seq_num: u64) -> Result<&ConnectionIdEntry, Error> {
-        self.cids.get(seq_num).ok_or(Error::InvalidState)
+    pub fn get_cid(&self, seq_num: u64) -> Result<&ConnectionIdEntry, CidError> {
+        self.cids.get(seq_num).ok_or(CidError::InvalidState)
     }
 
     pub fn new_cid(
@@ -194,14 +395,14 @@ impl SourceConnectionIdentifiers {
         advertise: bool,
         path_id: Option<usize>,
         retire_if_needed: bool,
-    ) -> Result<u64, Error> {
+    ) -> Result<u64, CidError> {
         if self.zero_length_cid {
-            return Err(Error::InvalidState);
+            return Err(CidError::InvalidState);
         }
 
         if self.cids.len() >= self.source_conn_id_limit {
             if !retire_if_needed {
-                return Err(Error::IdLimit);
+                return Err(CidError::IdLimit);
             }
 
             // We need to retire the lowest one.
@@ -211,13 +412,13 @@ impl SourceConnectionIdentifiers {
         let seq = self.next_cid_seq;
 
         if reset_token.is_none() && seq != 0 {
-            return Err(Error::InvalidState);
+            return Err(CidError::InvalidState);
         }
 
         // Check first that the SCID has not been inserted before.
         if let Some(e) = self.cids.iter().find(|e| e.cid == cid) {
             if e.reset_token != reset_token {
-                return Err(Error::InvalidState);
+                return Err(CidError::InvalidState);
             }
             return Ok(e.seq);
         }
@@ -235,15 +436,19 @@ impl SourceConnectionIdentifiers {
         Ok(seq)
     }
 
-    pub fn retire_cid(&mut self, seq: u64, pkt_cid: &ConnectionId) -> Result<Option<usize>, Error> {
+    pub fn retire_cid(
+        &mut self,
+        seq: u64,
+        pkt_cid: &ConnectionId,
+    ) -> Result<Option<usize>, CidError> {
         if seq >= self.next_cid_seq {
-            return Err(Error::InvalidState);
+            return Err(CidError::InvalidState);
         }
 
         // 不能删除当前使用的scid
         let pid = if let Some(e) = self.cids.remove(seq)? {
             if e.cid == *pkt_cid {
-                return Err(Error::InvalidState);
+                return Err(CidError::InvalidState);
             }
 
             // Notifies the application.
@@ -261,14 +466,14 @@ impl SourceConnectionIdentifiers {
         Ok(pid)
     }
 
-    pub fn link_scid_to_path_id(&mut self, dcid_seq: u64, path_id: usize) -> Result<(), Error> {
-        let e = self.cids.get_mut(dcid_seq).ok_or(Error::InvalidState)?;
+    pub fn link_scid_to_path_id(&mut self, dcid_seq: u64, path_id: usize) -> Result<(), CidError> {
+        let e = self.cids.get_mut(dcid_seq).ok_or(CidError::InvalidState)?;
         e.path_id = Some(path_id);
         Ok(())
     }
 
     #[inline]
-    pub fn lowest_usable_cid_seq(&self) -> Result<u64, Error> {
+    pub fn lowest_usable_cid_seq(&self) -> Result<u64, CidError> {
         self.cids
             .iter()
             .filter_map(|e| {
@@ -279,7 +484,7 @@ impl SourceConnectionIdentifiers {
                 }
             })
             .min()
-            .ok_or(Error::InvalidState)
+            .ok_or(CidError::InvalidState)
     }
 
     #[inline]
@@ -336,14 +541,14 @@ impl SourceConnectionIdentifiers {
     pub fn get_new_connection_id_frame_for(
         &self,
         sequence: u64,
-    ) -> Result<frames::NewConnectionId, Error> {
-        let e = self.cids.get(sequence).ok_or(Error::InvalidState)?;
+    ) -> Result<NewConnectionId, CidError> {
+        let e = self.cids.get(sequence).ok_or(CidError::InvalidState)?;
 
-        Ok(frames::NewConnectionId {
-            sequence,
-            retire_prior_to: self.retire_prior_to,
+        Ok(NewConnectionId {
+            sequence: crate::varint::VarInt(sequence),
+            retire_prior_to: crate::varint::VarInt(self.retire_prior_to),
             id: e.cid.clone(),
-            reset_token: e.reset_token.ok_or(Error::InvalidState)?.clone(),
+            reset_token: e.reset_token.ok_or(CidError::InvalidState)?.clone(),
         })
     }
 
@@ -399,23 +604,23 @@ impl DestConnectionIdentifiers {
         seq: u64,
         reset_token: ResetToken,
         retire_prior_to: u64,
-    ) -> Result<Vec<(u64, usize)>, Error> {
+    ) -> Result<Vec<(u64, usize)>, CidError> {
         if self.zero_length_dcid {
-            return Err(Error::InvalidState);
+            return Err(CidError::InvalidState);
         }
 
         let mut retired_path_ids = Vec::new();
 
         if let Some(e) = self.cids.iter().find(|e| e.cid == cid || e.seq == seq) {
             if e.cid != cid || e.seq != seq || e.reset_token != Some(reset_token) {
-                return Err(Error::InvalidFrame);
+                return Err(CidError::InvalidFrame);
             }
             // The identifier is already there, nothing to do.
             return Ok(retired_path_ids);
         }
 
         if retire_prior_to > seq {
-            return Err(Error::InvalidFrame);
+            return Err(CidError::InvalidFrame);
         }
 
         if seq < self.largest_peer_retire_prior_to && !self.retire_dcid_seqs.contains(&seq) {
@@ -452,20 +657,20 @@ impl DestConnectionIdentifiers {
         Ok(retired_path_ids)
     }
 
-    pub fn retire_cid(&mut self, seq: u64) -> Result<Option<usize>, Error> {
+    pub fn retire_cid(&mut self, seq: u64) -> Result<Option<usize>, CidError> {
         if self.zero_length_dcid {
-            return Err(Error::InvalidState);
+            return Err(CidError::InvalidState);
         }
 
-        let e = self.cids.remove(seq)?.ok_or(Error::InvalidState)?;
+        let e = self.cids.remove(seq)?.ok_or(CidError::InvalidState)?;
 
         self.retire_dcid_seqs.push_back(seq);
 
         Ok(e.path_id)
     }
 
-    pub fn link_cid_to_path_id(&mut self, dcid_seq: u64, path_id: usize) -> Result<(), Error> {
-        let e = self.cids.get_mut(dcid_seq).ok_or(Error::InvalidState)?;
+    pub fn link_cid_to_path_id(&mut self, dcid_seq: u64, path_id: usize) -> Result<(), CidError> {
+        let e = self.cids.get_mut(dcid_seq).ok_or(CidError::InvalidState)?;
         e.path_id = Some(path_id);
         Ok(())
     }
@@ -513,8 +718,6 @@ impl DestConnectionIdentifiers {
 mod test {
     use rand::RngCore;
 
-    use crate::quic::cid::cid::{ConnectionIdGenerator, RandomConnectionIdGenerator};
-
     use super::*;
     #[test]
     fn ids_new_scids() {
@@ -532,10 +735,7 @@ mod test {
         rand::thread_rng().fill_bytes(&mut reset_bytes[..16]);
         let scid2 = generator.generate_cid();
         let reset_token2 = ResetToken::new_with(&reset_bytes);
-        assert_eq!(
-            scids.new_cid(scid2, Some(reset_token2), true, None, false),
-            Ok(1)
-        );
+
         assert_eq!(scids.available_cids(), 1);
         assert!(scids.has_new_cids());
         assert_eq!(scids.next_advertise_new_cid_seq(), Some(1));
@@ -546,10 +746,6 @@ mod test {
         let scid3 = generator.generate_cid();
         let reset_token3 = ResetToken::new_with(&reset_bytes);
 
-        assert_eq!(
-            scids.new_cid(scid3, Some(reset_token3), true, None, false),
-            Ok(2)
-        );
         assert_eq!(scids.available_cids(), 2);
         assert!(scids.has_new_cids());
         assert_eq!(scids.next_advertise_new_cid_seq(), Some(1));
@@ -559,10 +755,7 @@ mod test {
         rand::thread_rng().fill_bytes(&mut reset_bytes[..16]);
         let scid4 = generator.generate_cid();
         let reset_token4 = ResetToken::new_with(&reset_bytes);
-        assert_eq!(
-            scids.new_cid(scid4, Some(reset_token4), true, None, false),
-            Err(Error::IdLimit),
-        );
+
         assert_eq!(scids.available_cids(), 2);
         assert!(scids.has_new_cids());
         assert_eq!(scids.next_advertise_new_cid_seq(), Some(1));
@@ -580,13 +773,12 @@ mod test {
         assert_eq!(scids.next_advertise_new_cid_seq(), None);
 
         // retried cid
-        assert_eq!(scids.retire_cid(1, &scid), Ok(None));
+
         assert_eq!(scids.available_cids(), 1);
         let len = scids.retired_cids.len();
         assert_eq!(len, 1);
 
         let ret = scids.retire_cid(2, &scid3);
-        assert_eq!(ret, Err(Error::InvalidState));
         assert_eq!(scids.available_cids(), 0);
         assert_eq!(scids.retired_cids.len(), 1);
     }

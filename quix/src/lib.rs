@@ -1,12 +1,10 @@
 mod msg;
 mod raw_io;
 mod quic {
-    mod cid;
     mod coding;
     mod connection;
     mod crypto;
     mod error;
-    mod frames;
     mod packet;
     mod range_set;
     mod stream;

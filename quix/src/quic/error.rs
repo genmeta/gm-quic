@@ -1,9 +1,7 @@
 use bytes::{Buf, BufMut};
+use qbase::frame::FrameType;
 
-use super::{
-    coding::{self, BufExt, BufMutExt},
-    frames,
-};
+use super::coding::{self, BufExt, BufMutExt};
 use std::fmt;
 
 /// Transport-level errors occur when a peer violates the protocol specification
@@ -12,7 +10,7 @@ pub struct TransportError {
     /// Type of error
     pub code: TransportErrorCode,
     /// Frame type that triggered the error
-    pub frame: Option<frames::Type>,
+    pub frame: Option<FrameType>,
     /// Human-readable explanation of the reason
     pub reason: String,
 }
@@ -20,9 +18,6 @@ pub struct TransportError {
 impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.code.fmt(f)?;
-        if let Some(frame) = self.frame {
-            write!(f, " in {frame}")?;
-        }
         if !self.reason.is_empty() {
             write!(f, ": {}", self.reason)?;
         }
