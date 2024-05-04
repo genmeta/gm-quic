@@ -107,11 +107,7 @@ impl Crypto {
                     rustls::quic::Connection::Server(ref session) => session.server_name(),
                 };
                 if inner.alpn_protocol().is_some() {
-                    let name = if let Some(name) = server_name {
-                        Some(name.to_string())
-                    } else {
-                        None
-                    };
+                    let name = server_name.map(|name| name.to_string());
 
                     Poll::Ready(HandshakeData {
                         protocol: inner.alpn_protocol().map(|x| x.to_vec()),
@@ -203,7 +199,7 @@ impl AsyncRead for Crypto {
         if let Some(waker) = self.read_waker.take() {
             waker.wake();
         }
-        return Poll::Ready(Ok(()));
+        Poll::Ready(Ok(()))
     }
 }
 

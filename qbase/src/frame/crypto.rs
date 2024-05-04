@@ -6,7 +6,6 @@
 // }
 
 use std::ops::Range;
-
 use crate::varint::{VarInt, VARINT_MAX};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +55,9 @@ impl CryptoFrame {
     }
 
     pub fn range(&self) -> Range<u64> {
-        self.offset.into_inner()..self.offset.into_inner() + self.length.into_inner()
+        let start = self.offset.into_inner();
+        let end = start + self.length.into_inner();
+        start..end
     }
 }
 

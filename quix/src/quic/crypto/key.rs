@@ -47,11 +47,11 @@ impl super::PacketKey for rustls::quic::PacketKey {
         tag_storage.copy_from_slice(tag.as_ref());
     }
 
-    fn decrypt<'a>(
+    fn decrypt(
         &self,
         packet: u64,
         header: &[u8],
-        payload: &'a mut [u8],
+        payload: &mut [u8],
     ) -> Result<usize, CryptoError> {
         let plain = self
             .decrypt_in_place(packet, header, payload)
@@ -74,7 +74,7 @@ impl super::PacketKey for rustls::quic::PacketKey {
 }
 
 pub fn initial_keys(version: Version, dst_cid: &ConnectionId, side: Side) -> Keys {
-    let keys = rustls::quic::Keys::initial(version, dst_cid, side.into());
+    let keys = rustls::quic::Keys::initial(version, dst_cid, side);
     Keys {
         header: KeyPair {
             local: Box::new(keys.local.header),

@@ -1,4 +1,11 @@
 /// Application data space, 1-RTT data space
+
+use crate::{
+    crypto::{recv::CryptoIncoming, send::CryptoOutgoing},
+    recv::{self, Incoming, Reader},
+    send::{self, Outgoing, Writer},
+    AppStream,
+};
 use qbase::{
     error::Error,
     frame::{DataFrame, OneRttFrame},
@@ -18,6 +25,10 @@ pub struct Transmission {
     accpet_waker: Option<Waker>,
 
     frame_tx: UnboundedSender<OneRttFrame>,
+
+    // TODO: 创建加密流
+    crypto_output: CryptoOutgoing,
+    crypto_input: CryptoIncoming,
 }
 
 impl super::Transmit<OneRttFrame, OneRttDataFrame> for Transmission {

@@ -13,6 +13,7 @@ use std::{
 };
 
 pub mod data;
+pub mod initial;
 
 pub trait TrySend<B: BufMut> {
     fn try_send(&mut self, buf: &mut B) -> Result<Option<(u64, usize)>, Error>;
