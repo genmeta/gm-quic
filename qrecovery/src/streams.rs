@@ -17,7 +17,7 @@ use std::{
 use tokio::sync::mpsc::UnboundedSender;
 
 /// 专门根据Stream相关帧处理streams相关逻辑
-
+#[derive(Debug)]
 pub struct Streams {
     stream_ids: StreamIds,
     // 所有流的待写端，要发送数据，就得向这些流索取

@@ -12,8 +12,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub mod data;
-pub mod initial;
+mod initial_and_handshake;
+mod one_rtt_data;
+mod zero_rtt_data;
+
+pub use initial_and_handshake::{HandshakeSpace, InitailSpace};
+pub use one_rtt_data::OneRttDataSpace;
+pub use zero_rtt_data::ZeroRttDataSpace;
 
 pub trait TrySend<B: BufMut> {
     fn try_send(&mut self, buf: &mut B) -> Result<Option<(u64, usize)>, Error>;
@@ -222,7 +227,7 @@ where
         let mut rcvd_iter = self.rcvd_packets.iter_mut().rev();
         let first_range = rcvd_iter
             .by_ref()
-            .take_while(|s| !matches!(s, State::NotReceived))
+            .take_while(|s| !matches!(s, State::NotReceived | State::Unreached))
             .count()
             - 1;
         let mut ranges = Vec::with_capacity(16);
@@ -517,7 +522,10 @@ where
                 }
                 Frame::Info(frame) => {
                     is_ack_eliciting = true;
-                    self.transmission.recv_frame(frame.try_into()?)?;
+                    match frame {
+                        InfoFrame::Ping(_) => (),
+                        other => self.transmission.recv_frame(other.try_into()?)?,
+                    }
                 }
                 _ => unreachable!("these frames are partitioned to be conn-layer interest"),
             }

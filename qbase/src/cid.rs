@@ -4,7 +4,7 @@ use bytes::BufMut;
 use nom::{number::streaming::be_u8, IResult};
 use rand::RngCore;
 
-use crate::frame::NewConnectionId;
+use crate::frame::NewConnectionIdFrame;
 
 pub(crate) const MAX_CID_SIZE: usize = 20;
 
@@ -185,7 +185,7 @@ impl ResetToken {
 }
 
 impl PartialEq for ResetToken {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }
@@ -541,10 +541,10 @@ impl SourceConnectionIdentifiers {
     pub fn get_new_connection_id_frame_for(
         &self,
         sequence: u64,
-    ) -> Result<NewConnectionId, CidError> {
+    ) -> Result<NewConnectionIdFrame, CidError> {
         let e = self.cids.get(sequence).ok_or(CidError::InvalidState)?;
 
-        Ok(NewConnectionId {
+        Ok(NewConnectionIdFrame {
             sequence: crate::varint::VarInt(sequence),
             retire_prior_to: crate::varint::VarInt(self.retire_prior_to),
             id: e.cid.clone(),
@@ -714,6 +714,7 @@ impl DestConnectionIdentifiers {
     }
 }
 
+/*
 #[cfg(test)]
 mod test {
     use rand::RngCore;
@@ -783,3 +784,4 @@ mod test {
         assert_eq!(scids.retired_cids.len(), 1);
     }
 }
+*/

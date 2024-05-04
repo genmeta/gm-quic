@@ -5,8 +5,8 @@
 //   Crypto Data (..),
 // }
 
-use std::ops::Range;
 use crate::varint::{VarInt, VARINT_MAX};
+use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CryptoFrame {

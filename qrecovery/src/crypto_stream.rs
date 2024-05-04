@@ -311,8 +311,8 @@ impl Transmit<NoFrame, CryptoFrame> for CryptoStream {
         Ok(())
     }
 
-    fn recv_frame(&mut self, _frame: NoFrame) -> Result<(), Error> {
-        unreachable!()
+    fn recv_frame(&mut self, _: NoFrame) -> Result<(), Error> {
+        unreachable!("no signaling info frame in crypto stream")
     }
 }
 

@@ -46,7 +46,7 @@ pub use handshake_done::HandshakeDoneFrame;
 pub use max_data::MaxDataFrame;
 pub use max_stream_data::MaxStreamDataFrame;
 pub use max_streams::MaxStreamsFrame;
-pub use new_connection_id::NewConnectionId;
+pub use new_connection_id::NewConnectionIdFrame;
 pub use new_token::NewTokenFrame;
 pub use padding::PaddingFrame;
 pub use path_challenge::PathChallengeFrame;
@@ -144,9 +144,6 @@ impl From<FrameType> for VarInt {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct NoFrame;
-
-#[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
 pub enum StreamInfoFrame {
     ResetStream(ResetStreamFrame),
@@ -164,6 +161,7 @@ pub enum InfoFrame {
     NewToken(NewTokenFrame),
     MaxData(MaxDataFrame),
     DataBlocked(DataBlockedFrame),
+    NewConnectionId(NewConnectionIdFrame),
     RetireConnectionId(RetireConnectionIdFrame),
     PathChallenge(PathChallengeFrame),
     PathResponse(PathResponseFrame),
@@ -172,26 +170,17 @@ pub enum InfoFrame {
 }
 
 // The initial packet and handshake packet only contain Ping frame.
-pub struct InitialFrame;
-pub type HandshakeFrame = InitialFrame;
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct NoFrame;
 
-impl TryFrom<InfoFrame> for InitialFrame {
+impl TryFrom<InfoFrame> for NoFrame {
     type Error = Error;
 
     fn try_from(value: InfoFrame) -> Result<Self, Self::Error> {
-        match value {
-            InfoFrame::Ping(_) => Ok(InitialFrame),
-            other => Err(Self::Error::WrongFrame(
-                other.frame_type(),
-                "Initial or Handshake",
-            )),
-        }
-    }
-}
-
-impl From<InitialFrame> for InfoFrame {
-    fn from(_value: InitialFrame) -> Self {
-        InfoFrame::Ping(PingFrame)
+        Err(Self::Error::WrongFrame(
+            value.frame_type(),
+            "Initial or Handshake",
+        ))
     }
 }
 
@@ -201,6 +190,7 @@ pub enum ZeroRttFrame {
     Ping(PingFrame),
     MaxData(MaxDataFrame),
     DataBlocked(DataBlockedFrame),
+    NewConnectionId(NewConnectionIdFrame),
     RetireConnectionId(RetireConnectionIdFrame),
     PathChallenge(PathChallengeFrame),
     Stream(StreamInfoFrame),
@@ -214,6 +204,7 @@ impl TryFrom<InfoFrame> for ZeroRttFrame {
             InfoFrame::Ping(_) => Ok(ZeroRttFrame::Ping(PingFrame)),
             InfoFrame::MaxData(frame) => Ok(ZeroRttFrame::MaxData(frame)),
             InfoFrame::DataBlocked(frame) => Ok(ZeroRttFrame::DataBlocked(frame)),
+            InfoFrame::NewConnectionId(frame) => Ok(ZeroRttFrame::NewConnectionId(frame)),
             InfoFrame::RetireConnectionId(frame) => Ok(ZeroRttFrame::RetireConnectionId(frame)),
             InfoFrame::PathChallenge(frame) => Ok(ZeroRttFrame::PathChallenge(frame)),
             InfoFrame::Stream(frame) => Ok(ZeroRttFrame::Stream(frame)),
@@ -228,6 +219,7 @@ impl From<ZeroRttFrame> for InfoFrame {
             ZeroRttFrame::Ping(_) => InfoFrame::Ping(PingFrame),
             ZeroRttFrame::MaxData(frame) => InfoFrame::MaxData(frame),
             ZeroRttFrame::DataBlocked(frame) => InfoFrame::DataBlocked(frame),
+            ZeroRttFrame::NewConnectionId(frame) => InfoFrame::NewConnectionId(frame),
             ZeroRttFrame::RetireConnectionId(frame) => InfoFrame::RetireConnectionId(frame),
             ZeroRttFrame::PathChallenge(frame) => InfoFrame::PathChallenge(frame),
             ZeroRttFrame::Stream(frame) => InfoFrame::Stream(frame),
@@ -293,7 +285,8 @@ pub mod ext {
         ack::ext::ack_frame_with_flag, connection_close::ext::connection_close_frame_at_layer,
         crypto::ext::be_crypto_frame, data_blocked::ext::be_data_blocked_frame,
         max_data::ext::be_max_data_frame, max_stream_data::ext::be_max_stream_data_frame,
-        max_streams::ext::max_streams_frame_with_dir, new_token::ext::be_new_token_frame,
+        max_streams::ext::max_streams_frame_with_dir,
+        new_connection_id::ext::be_new_connection_id_frame, new_token::ext::be_new_token_frame,
         path_challenge::ext::be_path_challenge_frame, path_response::ext::be_path_response_frame,
         reset_stream::ext::be_reset_stream_frame,
         retire_connection_id::ext::be_retire_connection_id_frame,
@@ -319,7 +312,9 @@ pub mod ext {
             FrameType::ConnectionClose(layer) => {
                 map(connection_close_frame_at_layer(layer), Frame::Close)(input)
             }
-            FrameType::NewConnectionId => todo!(),
+            FrameType::NewConnectionId => map(be_new_connection_id_frame, |f| {
+                Frame::Info(InfoFrame::NewConnectionId(f))
+            })(input),
             FrameType::RetireConnectionId => map(be_retire_connection_id_frame, |f| {
                 Frame::Info(InfoFrame::RetireConnectionId(f))
             })(input),
@@ -430,9 +425,9 @@ pub mod ext {
     use super::{
         data_blocked::ext::WriteDataBlockedFrame, handshake_done::ext::WriteHandshakeDoneFrame,
         max_data::ext::WriteMaxDataFrame, max_stream_data::ext::WriteMaxStreamDataFrame,
-        max_streams::ext::WriteMaxStreamsFrame, new_token::ext::WriteNewTokenFrame,
-        path_challenge::ext::WritePathChallengeFrame, path_response::ext::WritePathResponseFrame,
-        reset_stream::ext::WriteResetStreamFrame,
+        max_streams::ext::WriteMaxStreamsFrame, new_connection_id::ext::WriteNewConnectionIdFrame,
+        new_token::ext::WriteNewTokenFrame, path_challenge::ext::WritePathChallengeFrame,
+        path_response::ext::WritePathResponseFrame, reset_stream::ext::WriteResetStreamFrame,
         retire_connection_id::ext::WriteRetireConnectionIdFrame,
         stop_sending::ext::WriteStopSendingFrame,
         stream_data_blocked::ext::WriteStreamDataBlockedFrame,
@@ -474,12 +469,6 @@ pub mod ext {
         }
     }
 
-    impl<T: bytes::BufMut> WriteFrame<InitialFrame> for T {
-        fn put_frame(&mut self, _frame: &InitialFrame) {
-            self.put_ping_frame();
-        }
-    }
-
     impl<T: bytes::BufMut> WriteDataFrame<CryptoFrame> for T {
         fn put_frame_with_data(&mut self, frame: &CryptoFrame, data: &[u8]) {
             self.put_crypto_frame(frame, data);
@@ -492,6 +481,7 @@ pub mod ext {
                 ZeroRttFrame::Ping(_) => self.put_ping_frame(),
                 ZeroRttFrame::MaxData(frame) => self.put_max_data_frame(frame),
                 ZeroRttFrame::DataBlocked(frame) => self.put_data_blocked_frame(frame),
+                ZeroRttFrame::NewConnectionId(frame) => self.put_new_connection_id_frame(frame),
                 ZeroRttFrame::RetireConnectionId(frame) => {
                     self.put_retire_connection_id_frame(frame)
                 }
@@ -516,6 +506,7 @@ pub mod ext {
                 InfoFrame::NewToken(frame) => self.put_new_token_frame(frame),
                 InfoFrame::MaxData(frame) => self.put_max_data_frame(frame),
                 InfoFrame::DataBlocked(frame) => self.put_data_blocked_frame(frame),
+                InfoFrame::NewConnectionId(frame) => self.put_new_connection_id_frame(frame),
                 InfoFrame::RetireConnectionId(frame) => self.put_retire_connection_id_frame(frame),
                 InfoFrame::PathChallenge(frame) => self.put_path_challenge_frame(frame),
                 InfoFrame::PathResponse(frame) => self.put_path_response_frame(frame),

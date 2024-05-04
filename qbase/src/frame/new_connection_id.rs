@@ -1,38 +1,43 @@
+// NEW_CONNECTION_ID Frame {
+//   Type (i) = 0x18,
+//   Sequence Number (i),
+//   Retire Prior To (i),
+//   Length (8),
+//   Connection ID (8..160),
+//   Stateless Reset Token (128),
+// }
+
 use crate::{
     cid::{ConnectionId, ResetToken},
     varint::VarInt,
 };
 
-use super::FrameType;
-
 pub(super) const NEW_CONNECTION_ID_FRAME_TYPE: u8 = 0x18;
 
-#[derive(Debug, Copy, Clone)]
-pub struct NewConnectionId {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewConnectionIdFrame {
     pub(crate) sequence: VarInt,
     pub(crate) retire_prior_to: VarInt,
     pub(crate) id: ConnectionId,
     pub(crate) reset_token: ResetToken,
 }
 
-impl super::BeFrame for NewConnectionId {
-    fn frame_type(&self) -> FrameType {
+impl super::BeFrame for NewConnectionIdFrame {
+    fn frame_type(&self) -> super::FrameType {
         super::FrameType::NewConnectionId
     }
 }
 
 pub(super) mod ext {
-    use nom::bytes::complete::take;
-    use nom::number::complete::be_u8;
-
+    use super::NewConnectionIdFrame;
     use crate::{
         cid::{ResetToken, RESET_TOKEN_SIZE},
         varint::ext::{be_varint, BufMutExt},
     };
 
-    use super::NewConnectionId;
-
-    pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnectionId> {
+    pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnectionIdFrame> {
+        use nom::bytes::complete::take;
+        use nom::number::complete::be_u8;
         let (remain, sequence) = be_varint(input)?;
         let (remain, retire_prior_to) = be_varint(remain)?;
         // todo: error type
@@ -53,7 +58,7 @@ pub(super) mod ext {
         let (remain, reset_token) = take(RESET_TOKEN_SIZE)(remain)?;
         Ok((
             remain,
-            NewConnectionId {
+            NewConnectionIdFrame {
                 sequence,
                 retire_prior_to,
                 id,
@@ -63,11 +68,11 @@ pub(super) mod ext {
     }
 
     pub trait WriteNewConnectionIdFrame {
-        fn put_new_connection_id_frame(&mut self, frame: &NewConnectionId);
+        fn put_new_connection_id_frame(&mut self, frame: &NewConnectionIdFrame);
     }
 
     impl<T: bytes::BufMut> WriteNewConnectionIdFrame for T {
-        fn put_new_connection_id_frame(&mut self, frame: &NewConnectionId) {
+        fn put_new_connection_id_frame(&mut self, frame: &NewConnectionIdFrame) {
             self.put_u8(super::NEW_CONNECTION_ID_FRAME_TYPE);
             self.put_varint(&frame.sequence);
             self.put_varint(&frame.retire_prior_to);
