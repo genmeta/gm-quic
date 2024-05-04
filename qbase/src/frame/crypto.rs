@@ -5,6 +5,8 @@
 //   Crypto Data (..),
 // }
 
+use std::ops::Range;
+
 use crate::varint::{VarInt, VARINT_MAX};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +53,10 @@ impl CryptoFrame {
                 value @ 16388..=1073741827 => value - 4,
                 _ => unreachable!("crypto frame length could not be too large"),
             })
+    }
+
+    pub fn range(&self) -> Range<u64> {
+        self.offset.into_inner()..self.offset.into_inner() + self.length.into_inner()
     }
 }
 

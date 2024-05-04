@@ -272,7 +272,7 @@ impl Streams {
             let incoming = incoming.clone();
             let frame_tx = self.frame_tx.clone();
             async move {
-                let _ = incoming.is_stopped_by_app().await;
+                incoming.is_stopped_by_app().await;
                 let _ = frame_tx.send(StreamInfoFrame::StopSending(StopSendingFrame {
                     stream_id: sid,
                     app_err_code: VarInt::from_u32(0),

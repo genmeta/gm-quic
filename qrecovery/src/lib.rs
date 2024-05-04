@@ -4,7 +4,7 @@ pub mod rtt;
 pub mod send;
 pub mod space;
 
-pub mod crypto;
+pub mod crypto_stream;
 pub mod index_deque;
 pub mod streams;
 

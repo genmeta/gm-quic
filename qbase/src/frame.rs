@@ -142,6 +142,20 @@ impl From<FrameType> for VarInt {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub struct NoFrame;
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[enum_dispatch(BeFrame)]
+pub enum StreamInfoFrame {
+    ResetStream(ResetStreamFrame),
+    StopSending(StopSendingFrame),
+    MaxStreamData(MaxStreamDataFrame),
+    MaxStreams(MaxStreamsFrame),
+    StreamDataBlocked(StreamDataBlockedFrame),
+    StreamsBlocked(StreamsBlockedFrame),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
 pub enum InfoFrame {
     Ping(PingFrame),
@@ -177,17 +191,6 @@ impl From<InitialFrame> for InfoFrame {
     fn from(_value: InitialFrame) -> Self {
         InfoFrame::Ping(PingFrame)
     }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame)]
-pub enum StreamInfoFrame {
-    ResetStream(ResetStreamFrame),
-    StopSending(StopSendingFrame),
-    MaxStreamData(MaxStreamDataFrame),
-    MaxStreams(MaxStreamsFrame),
-    StreamDataBlocked(StreamDataBlockedFrame),
-    StreamsBlocked(StreamsBlockedFrame),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -446,6 +449,12 @@ pub mod ext {
 
     pub trait WriteDataFrame<D> {
         fn put_frame_with_data(&mut self, frame: &D, data: &[u8]);
+    }
+
+    impl<T: bytes::BufMut> WriteFrame<NoFrame> for T {
+        fn put_frame(&mut self, _frame: &NoFrame) {
+            // do nothing
+        }
     }
 
     impl<T: bytes::BufMut> WriteFrame<StreamInfoFrame> for T {

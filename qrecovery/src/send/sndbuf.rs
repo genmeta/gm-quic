@@ -520,10 +520,10 @@ impl SendBuf {
 
     // invoked by application layer
     pub fn write(&mut self, data: &[u8]) -> usize {
-        // 写的数据量受流量控制限制
+        // 写的数据量受流量控制限制，Crypto流则受Crypto流自身控制
         let n = data.len();
         if n > 0 {
-            self.data.copy_from_slice(data);
+            self.data.extend_from_slice(data);
             self.state.extend_to(self.len() + n as u64);
         }
 
