@@ -67,16 +67,15 @@ pub(super) mod ext {
     // nom parser for CRYPTO_FRAME
     pub fn be_crypto_frame(input: &[u8]) -> nom::IResult<&[u8], CryptoFrame> {
         use crate::varint::{ext::be_varint, VARINT_MAX};
-        let raw_input = input;
-        let (input, offset) = be_varint(input)?;
-        let (input, length) = be_varint(input)?;
+        let (remain, offset) = be_varint(input)?;
+        let (remain, length) = be_varint(remain)?;
         if offset.into_inner() + offset.into_inner() > VARINT_MAX {
             return Err(nom::Err::Error(nom::error::make_error(
-                raw_input,
+                input,
                 nom::error::ErrorKind::TooLarge,
             )));
         }
-        Ok((input, CryptoFrame { offset, length }))
+        Ok((remain, CryptoFrame { offset, length }))
     }
 
     // BufMut extension trait for CRYPTO_FRAME
