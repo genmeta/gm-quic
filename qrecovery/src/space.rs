@@ -9,6 +9,7 @@ use std::{
     collections::VecDeque,
     fmt::Debug,
     ops::{Deref, DerefMut},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -133,7 +134,7 @@ where
     // 起到“信号”作用的信令帧，比如数据空间内部的各类通信帧。
     // 需要注意的是，数据帧以及Ack帧(记录)，并不在此中保存，因为数据帧占数据空间，ack帧
     // 则是内部可靠性的产物，他们在发包记录中会作记录保存。
-    frames: VecDeque<F>,
+    frames: Arc<Mutex<VecDeque<F>>>,
     // 记录着发包时间、发包内容，供收到ack frame时，确认那些内容被接收了，哪些丢失了，需要
     // 重传。如果是一般帧，直接进入帧队列就可以了，但有2种需要特殊处理：
     // - 数据帧记录：无论被确认还是判定丢失了，都要通知发送缓冲区
@@ -193,8 +194,28 @@ impl<F, D, T, const R: bool> Space<F, D, T, R>
 where
     T: Transmit<F, D> + Debug,
 {
+    pub(crate) fn build(frames: Arc<Mutex<VecDeque<F>>>, transmission: T) -> Self {
+        Self {
+            frames,
+            inflight_packets: IndexDeque::new(),
+            disorder_tolerance: 0,
+            time_of_last_sent_ack_eliciting_packet: None,
+            largest_acked_pktid: 0,
+            loss_time: None,
+            rcvd_packets: IndexDeque::new(),
+            largest_rcvd_ack_eliciting_pktid: 0,
+            last_synced_ack_largest: 0,
+            new_lost_event: false,
+            rcvd_unreached_packet: false,
+            time_to_sync: None,
+            max_ack_delay: Duration::from_millis(25),
+            transmission,
+        }
+    }
+
     pub fn write_frame(&mut self, frame: F) {
-        self.frames.push_back(frame);
+        let mut frames = self.frames.lock().unwrap();
+        frames.push_back(frame);
     }
 
     fn confirm(&mut self, payload: Payload<F, D>) {
@@ -331,7 +352,10 @@ where
             for record in packet.payload {
                 match record {
                     Records::Ack(_) => { /* needn't resend */ }
-                    Records::Frame(frame) => self.frames.push_back(frame),
+                    Records::Frame(frame) => {
+                        let mut frames = self.frames.lock().unwrap();
+                        frames.push_back(frame);
+                    }
                     Records::Data(data) => self.transmission.may_loss(data),
                 }
             }
@@ -352,7 +376,10 @@ where
                 for record in packet.take().unwrap().payload {
                     match record {
                         Records::Ack(_) => { /* needn't resend */ }
-                        Records::Frame(frame) => self.frames.push_back(frame),
+                        Records::Frame(frame) => {
+                            let mut frames = self.frames.lock().unwrap();
+                            frames.push_back(frame);
+                        }
                         Records::Data(data) => self.transmission.may_loss(data),
                     }
                 }
@@ -431,18 +458,20 @@ where
 
         // Prioritize retransmitting lost or info frames.
         loop {
-            if let Some(frame) = self.frames.front() {
+            let mut frames = self.frames.lock().unwrap();
+            if let Some(frame) = frames.front() {
                 if remaning >= frame.max_encoding_size() || remaning >= frame.encoding_size() {
                     buf.put_frame(frame);
                     remaning = buf.remaining_mut();
                     is_ack_eliciting = true;
 
-                    let frame = self.frames.pop_front().unwrap();
+                    let frame = frames.pop_front().unwrap();
                     payload.push(Records::Frame(frame));
                     continue;
+                } else {
+                    break;
                 }
             }
-            break;
         }
 
         // Consider transmitting data frames.

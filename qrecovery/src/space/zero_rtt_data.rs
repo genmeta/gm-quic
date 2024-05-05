@@ -1,9 +1,21 @@
 /// Application data space, 0-RTT data space
-use crate::streams::Streams;
+use crate::{crypto_stream::CryptoStream, streams::Streams};
 use qbase::{
     error::Error,
-    frame::{StreamFrame, ZeroRttFrame},
+    frame::{OneRttFrame, StreamFrame, StreamInfoFrame, ZeroRttFrame},
+    streamid::StreamIds,
 };
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
+use tokio::{
+    select,
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+};
+
+use super::{one_rtt_data, OneRttDataSpace};
 
 type ZeroRttDataFrame = StreamFrame;
 pub type ZeroRttDataSpace = super::Space<ZeroRttFrame, ZeroRttDataFrame, Transmission, false>;
@@ -11,13 +23,15 @@ pub type ZeroRttDataSpace = super::Space<ZeroRttFrame, ZeroRttDataFrame, Transmi
 #[derive(Debug)]
 pub struct Transmission {
     streams: Streams,
+    close_tx: oneshot::Sender<()>,
+    join_handler: JoinHandle<mpsc::UnboundedReceiver<StreamInfoFrame>>,
 }
 
 impl super::Transmit<ZeroRttFrame, ZeroRttDataFrame> for Transmission {
     type Buffer = Vec<u8>;
 
-    fn try_send(&mut self, _buf: &mut Self::Buffer) -> Option<(ZeroRttDataFrame, usize)> {
-        todo!()
+    fn try_send(&mut self, buf: &mut Self::Buffer) -> Option<(ZeroRttDataFrame, usize)> {
+        self.streams.try_send(buf)
     }
 
     fn confirm_data(&mut self, stream_frame: ZeroRttDataFrame) {
@@ -45,18 +59,62 @@ impl super::Transmit<ZeroRttFrame, ZeroRttDataFrame> for Transmission {
 }
 
 impl Transmission {
-    pub fn new(streams: Streams) -> Self {
-        Self { streams }
-    }
-
     pub fn streams(&mut self) -> &mut Streams {
         &mut self.streams
     }
 }
 
-impl From<ZeroRttDataSpace> for super::OneRttDataSpace {
-    fn from(_value: ZeroRttDataSpace) -> Self {
-        todo!()
+impl ZeroRttDataSpace {
+    pub fn new(stream_ids: StreamIds) -> Self {
+        let frames = Arc::new(Mutex::new(VecDeque::new()));
+        let (frame_tx, mut frame_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (close_tx, mut close_rx) = tokio::sync::oneshot::channel::<()>();
+        let join_handler = tokio::spawn({
+            let frames = frames.clone();
+            async move {
+                loop {
+                    select! {
+                        _ = &mut close_rx => break,
+                        frame = frame_rx.recv() => {
+                            if let Some(f) = frame {
+                                frames.lock().unwrap().push_back(ZeroRttFrame::Stream(f));
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+                frame_rx
+            }
+        });
+        let streams = Streams::new(stream_ids, frame_tx);
+        let transmission = Transmission {
+            streams,
+            close_tx,
+            join_handler,
+        };
+        ZeroRttDataSpace::build(frames, transmission)
+    }
+
+    pub async fn upgrade(self, crypto_stream: CryptoStream) -> OneRttDataSpace {
+        let frames = Arc::new(Mutex::new(VecDeque::new()));
+        self.transmission.close_tx.send(()).unwrap();
+        let mut stream_info_frame_rx = self.transmission.join_handler.await.unwrap();
+        frames
+            .lock()
+            .unwrap()
+            .extend(self.frames.lock().unwrap().drain(..).map(OneRttFrame::from));
+        tokio::spawn({
+            let frames = frames.clone();
+            async move {
+                while let Some(frame) = stream_info_frame_rx.recv().await {
+                    frames.lock().unwrap().push_back(OneRttFrame::Stream(frame));
+                }
+            }
+        });
+        let transmission =
+            one_rtt_data::Transmission::new(self.transmission.streams, crypto_stream);
+        OneRttDataSpace::build(frames, transmission)
     }
 }
 

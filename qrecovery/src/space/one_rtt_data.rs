@@ -62,7 +62,7 @@ impl super::Transmit<OneRttFrame, OneRttDataFrame> for Transmission {
 }
 
 impl Transmission {
-    pub fn new(streams: Streams, crypto_stream: CryptoStream) -> Self {
+    pub(super) fn new(streams: Streams, crypto_stream: CryptoStream) -> Self {
         Self {
             streams,
             crypto_stream,

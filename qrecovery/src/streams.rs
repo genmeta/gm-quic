@@ -186,6 +186,17 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
 }
 
 impl Streams {
+    pub fn new(stream_ids: StreamIds, frame_tx: UnboundedSender<StreamInfoFrame>) -> Self {
+        Self {
+            stream_ids,
+            output: HashMap::new(),
+            input: HashMap::new(),
+            accepted_streams: VecDeque::new(),
+            accpet_waker: None,
+            frame_tx,
+        }
+    }
+
     pub fn poll_create(&mut self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<AppStream>> {
         if let Some(sid) = ready!(self.stream_ids.poll_alloc_sid(cx, dir)) {
             let writer = self.create_sender(sid);
