@@ -1,52 +1,52 @@
 use crate::{frame::FrameType, varint::VarInt};
-use std::borrow::Cow;
+use std::{borrow::Cow, fmt::Display};
 use thiserror::Error;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ErrorKind {
-    // the connection is being closed abruptly in the absence of any error
     None,
-    // the endpoint encountered an internal error and cannot continue with the connection
     Internal,
-    // the server refused to accept a new connection
     ConnectionRefused,
-    // received more data than permitted in advertised data limits
     FlowControl,
-    // received a frame for a stream identifier that exceeded advertised the stream
-    // limit for the corresponding stream type
     StreamLimit,
-    // received a frame for a stream that was not in a state that permitted that frame
     StreamState,
-    // received a STREAM frame or a RESET_STREAM frame containing a different final
-    // size to the one already established
     FinalSize,
-    // received a frame that was badly formatted
     FrameEncoding,
-    // received transport parameters that were badly formatted, included an invalid
-    // value, was absent even though it is mandatory, was present though it is forbidden,
-    // or is otherwise in error
     TransportParameter,
-    // the number of connection IDs provided by the peer exceeds the advertised
-    // active_connection_id_limit
     ConnectionIdLimit,
-    // detected an error with protocol compliance that was not covered by more specific
-    // error codes
     ProtocolViolation,
-    // received an invalid Retry Token in a client Initial
     InvalidToken,
-    // the application or application protocol caused the connection to be closed during
-    // the handshake
     Application,
-    // received more data in CRYPTO frames than can be buffered
     CryptoBufferExceeded,
-    // key update error
     KeyUpdate,
-    // the endpoint has reached the confidentiality or integrity limit for the AEAD algorithm
     AeadLimitReached,
-    // no viable network path exists
     NoViablePath,
-    // the cryptographic handshake failed
     Crypto(u8),
+}
+
+impl Display for ErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", match self {
+            ErrorKind::None => "the connection is being closed abruptly in the absence of any error",
+            ErrorKind::Internal => "the endpoint encountered an internal error and cannot continue with the connection",
+            ErrorKind::ConnectionRefused => "the server refused to accept a new connection",
+            ErrorKind::FlowControl => "received more data than permitted in advertised data limits",
+            ErrorKind::StreamLimit => "received a frame for a stream identifier that exceeded advertised the stream limit for the corresponding stream type",
+            ErrorKind::StreamState => "received a frame for a stream that was not in a state that permitted that frame",
+            ErrorKind::FinalSize => "received a STREAM frame or a RESET_STREAM frame containing a different final size to the one already established",
+            ErrorKind::FrameEncoding => "received a frame that was badly formatted",
+            ErrorKind::TransportParameter => "received transport parameters that were badly formatted, included an invalid value, was absent even though it is mandatory, was present though it is forbidden, or is otherwise in error",
+            ErrorKind::ConnectionIdLimit => "the number of connection IDs provided by the peer exceeds the advertised active_connection_id_limit",
+            ErrorKind::ProtocolViolation => "detected an error with protocol compliance that was not covered by more specific error codes",
+            ErrorKind::InvalidToken => "received an invalid Retry Token in a client Initial",
+            ErrorKind::Application => "the application or application protocol caused the connection to be closed during the handshake",
+            ErrorKind::CryptoBufferExceeded => "received more data in CRYPTO frames than can be buffered",
+            ErrorKind::KeyUpdate => "key update error",
+            ErrorKind::AeadLimitReached => "the endpoint has reached the confidentiality or integrity limit for the AEAD algorithm",
+            ErrorKind::NoViablePath => "no viable network path exists",
+            ErrorKind::Crypto(x) => return write!(f, "crypto error: {}", x),
+        })
+    }
 }
 
 impl From<ErrorKind> for VarInt {
@@ -75,7 +75,7 @@ impl From<ErrorKind> for VarInt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("QUIC transport error occured in {frame_type:?}, kind: {kind:?}, reason: {reason}")]
+#[error("{kind} in {frame_type:?}, reason: {reason}")]
 pub struct Error {
     pub kind: ErrorKind,
     pub frame_type: FrameType,
@@ -101,7 +101,7 @@ impl From<Error> for crate::frame::ConnectionCloseFrame {
         Self {
             error_code: e.kind.into(),
             frame_type: Some(e.frame_type.into()),
-            reason: e.reason.into_owned(),
+            reason: e.reason,
         }
     }
 }

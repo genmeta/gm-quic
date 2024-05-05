@@ -399,7 +399,7 @@ pub mod ext {
                     nom::Err::Error(Error::IncompleteFrame(frame_type, ne.to_string()))
                 }
                 nom::Err::Error(ne) => {
-                    debug_assert_eq!(ne.code, nom::error::ErrorKind::TooLarge);
+                    // may be TooLarge in MaxStreamsFrame, or may be Verify in NewConnectionIdFrame
                     nom::Err::Error(Error::ParseError(
                         frame_type,
                         ne.code.description().to_owned(),

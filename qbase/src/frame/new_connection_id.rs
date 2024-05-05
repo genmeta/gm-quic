@@ -36,11 +36,14 @@ pub(super) mod ext {
     };
 
     pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnectionIdFrame> {
-        use nom::bytes::complete::take;
-        use nom::number::complete::be_u8;
+        use nom::bytes::streaming::take;
+        use nom::number::streaming::be_u8;
         let (remain, sequence) = be_varint(input)?;
         let (remain, retire_prior_to) = be_varint(remain)?;
-        // todo: error type
+        // The value in the Retire Prior To field MUST be less than or equal to the value in the
+        // Sequence Number field. Receiving a value in the Retire Prior To field that is greater
+        // than that in the Sequence Number field MUST be treated as a connection error of type
+        // FRAME_ENCODING_ERROR.
         if retire_prior_to > sequence {
             return Err(nom::Err::Error(nom::error::make_error(
                 input,

@@ -7,12 +7,13 @@
 // }
 
 use crate::varint::VarInt;
+use std::borrow::Cow;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionCloseFrame {
     pub error_code: VarInt,
     pub frame_type: Option<VarInt>,
-    pub reason: String,
+    pub reason: Cow<'static, str>, //String,
 }
 
 const CONNECTION_CLOSE_FRAME_TYPE: u8 = 0x1c;
@@ -48,7 +49,7 @@ impl super::BeFrame for ConnectionCloseFrame {
 }
 
 impl ConnectionCloseFrame {
-    pub fn new(error_kind: u64, frame_type: Option<VarInt>, reason: String) -> Self {
+    pub fn new(error_kind: u64, frame_type: Option<VarInt>, reason: Cow<'static, str>) -> Self {
         Self {
             error_code: VarInt(error_kind),
             frame_type,
@@ -67,6 +68,7 @@ pub(super) mod ext {
         use crate::varint::ext::be_varint;
         use nom::bytes::streaming::take;
         use nom::combinator::map;
+        use std::borrow::Cow;
         move |input: &[u8]| {
             let (input, error_code) = be_varint(input)?;
             let (input, frame_type) = if layer == QUIC_LAYER {
@@ -76,12 +78,13 @@ pub(super) mod ext {
             };
             let (input, rease_length) = be_varint(input)?;
             let (input, reason) = take(rease_length.into_inner() as usize)(input)?;
+            let cow = String::from_utf8_lossy(reason).into_owned();
             Ok((
                 input,
                 ConnectionCloseFrame {
                     error_code,
                     frame_type,
-                    reason: String::from_utf8_lossy(reason).to_string(),
+                    reason: Cow::Owned(cow),
                 },
             ))
         }
@@ -143,7 +146,7 @@ mod tests {
             super::ConnectionCloseFrame {
                 error_code: VarInt(0x1234),
                 frame_type: None,
-                reason: String::from("wrong"),
+                reason: "wrong".into(),
             }
         );
     }
@@ -155,7 +158,7 @@ mod tests {
         let frame = super::ConnectionCloseFrame {
             error_code: VarInt(0x1234),
             frame_type: Some(VarInt(0xe)),
-            reason: String::from("wrong"),
+            reason: "wrong".into(),
         };
         buf.put_connection_close_frame(&frame);
         assert_eq!(
