@@ -41,23 +41,19 @@ mod send {
                     length: VarInt::from_u32(data.len() as u32),
                 };
                 buffer.put_crypto_frame(&frame, data);
-                self.wake_write();
                 Some((frame, remaining - buffer.remaining_mut()))
             } else {
                 None
             }
         }
 
-        fn wake_write(&mut self) {
+        fn ack_rcvd(&mut self, range: &Range<u64>) {
+            self.sndbuf.ack_rcvd(range);
             if self.sndbuf.remaining_mut() > 0 {
                 if let Some(waker) = self.writable_waker.take() {
                     waker.wake();
                 }
             }
-        }
-
-        fn ack_rcvd(&mut self, range: &Range<u64>) {
-            self.sndbuf.ack_rcvd(range)
         }
 
         fn may_loss(&mut self, range: &Range<u64>) {
@@ -72,7 +68,7 @@ mod send {
             if self.sndbuf.len() + buf.len() as u64 > VARINT_MAX {
                 return Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
-                    "The largest offset delivered on a stream cannot exceed 2^62-1",
+                    "The largest offset delivered on the crypto stream cannot exceed 2^62-1",
                 )));
             }
 
