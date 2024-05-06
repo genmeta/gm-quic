@@ -31,6 +31,10 @@ pub struct Streams {
     frame_tx: UnboundedSender<StreamInfoFrame>,
 }
 
+fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> Error {
+    move |e| Error::new(ErrorKind::StreamLimit, fty, e.to_string())
+}
+
 impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
     type Buffer = Vec<u8>;
 
@@ -66,7 +70,8 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
         // 对方必须是发送端，才能发送此帧
         if sid.role() != self.stream_ids.role() {
             // 对方的sid，看是否跳跃，把跳跃的流给创建好
-            self.try_accept_sid(sid);
+            self.try_accept_sid(sid)
+                .map_err(wrapper_error(stream_frame.frame_type()))?;
         } else {
             // 我方的sid，那必须是双向流才能收到对方的数据，否则就是错误
             if sid.dir() == Dir::Uni {
@@ -90,7 +95,8 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                 let sid = reset_frame.stream_id;
                 // 对方必须是发送端，才能发送此帧
                 if sid.role() != self.stream_ids.role() {
-                    self.try_accept_sid(sid);
+                    self.try_accept_sid(sid)
+                        .map_err(wrapper_error(reset_frame.frame_type()))?;
                 } else {
                     // 我方创建的流必须是双向流，对方才能发送ResetStream,否则就是错误
                     if sid.dir() == Dir::Uni {
@@ -117,7 +123,8 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                             format!("remote {sid} must not send STOP_SENDING_FRAME"),
                         ));
                     }
-                    self.try_accept_sid(sid);
+                    self.try_accept_sid(sid)
+                        .map_err(wrapper_error(stop.frame_type()))?;
                 }
                 if let Some(outgoing) = self.output.get_mut(&sid) {
                     outgoing.stop();
@@ -143,7 +150,8 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                             format!("remote {sid} must not send MAX_STREAM_DATA_FRAME"),
                         ));
                     }
-                    self.try_accept_sid(sid);
+                    self.try_accept_sid(sid)
+                        .map_err(wrapper_error(max_stream_data.frame_type()))?;
                 }
                 if let Some(outgoing) = self.output.get_mut(&sid) {
                     outgoing.update_window(max_stream_data.max_stream_data.into_inner());
@@ -153,7 +161,8 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                 let sid = stream_data_blocked.stream_id;
                 // 对方必须是发送端，才能发送此帧
                 if sid.role() != self.stream_ids.role() {
-                    self.try_accept_sid(sid);
+                    self.try_accept_sid(sid)
+                        .map_err(wrapper_error(stream_data_blocked.frame_type()))?;
                 } else {
                     // 我方创建的，必须是双向流，对方才是发送端，才能发出StreamDataBlocked；否则就是错误
                     if sid.dir() == Dir::Uni {
@@ -211,32 +220,28 @@ impl Streams {
         }
     }
 
-    fn try_accept_sid(&mut self, sid: StreamId) {
-        let result = self.stream_ids.try_accept_sid(sid);
+    fn try_accept_sid(&mut self, sid: StreamId) -> Result<(), ExceedLimitError> {
+        let result = self.stream_ids.try_accept_sid(sid)?;
         match result {
-            Ok(accept) => match accept {
-                AcceptSid::Old => (),
-                AcceptSid::New(need_create, _extend_max_streams) => {
-                    for sid in need_create {
-                        let reader = self.create_recver(sid);
-                        if sid.dir() == Dir::Bi {
-                            let writer = self.create_sender(sid);
-                            let stream = AppStream::ReadWrite(reader, writer);
-                            self.accepted_streams.push_back(stream);
-                        } else {
-                            let stream = AppStream::ReadOnly(reader);
-                            self.accepted_streams.push_back(stream);
-                        }
-                    }
-
-                    // accpet新连接
-                    if let Some(waker) = self.accpet_waker.take() {
-                        waker.wake();
+            AcceptSid::Old => Ok(()),
+            AcceptSid::New(need_create, _extend_max_streams) => {
+                for sid in need_create {
+                    let reader = self.create_recver(sid);
+                    if sid.dir() == Dir::Bi {
+                        let writer = self.create_sender(sid);
+                        let stream = AppStream::ReadWrite(reader, writer);
+                        self.accepted_streams.push_back(stream);
+                    } else {
+                        let stream = AppStream::ReadOnly(reader);
+                        self.accepted_streams.push_back(stream);
                     }
                 }
-            },
-            Err(_e) => {
-                // TODO: 错误处理，错误的角色，或创建了超过最大限值的流
+
+                // accpet新连接
+                if let Some(waker) = self.accpet_waker.take() {
+                    waker.wake();
+                }
+                Ok(())
             }
         }
     }

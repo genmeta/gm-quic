@@ -87,12 +87,23 @@ enum State {
 }
 
 impl State {
-    fn rcvd(t: Instant, is_ack_eliciting: bool) -> Self {
+    fn new_rcvd(t: Instant, is_ack_eliciting: bool) -> Self {
         if is_ack_eliciting {
             Self::Important(t)
         } else {
             Self::Ignored(t)
         }
+    }
+
+    fn has_rcvd(&self) -> bool {
+        matches!(
+            self,
+            Self::Ignored(_) | Self::Important(_) | Self::Synced(_)
+        )
+    }
+
+    fn has_not_rcvd(&self) -> bool {
+        matches!(self, Self::NotReceived | Self::Unreached)
     }
 
     fn delay(&self) -> Option<Duration> {
@@ -246,28 +257,18 @@ where
         let largest = self.rcvd_packets.offset() + self.rcvd_packets.len() as u64 - 1;
         let delay = self.rcvd_packets.get_mut(largest).unwrap().delay().unwrap();
         let mut rcvd_iter = self.rcvd_packets.iter_mut().rev();
-        let first_range = rcvd_iter
-            .by_ref()
-            .take_while(|s| !matches!(s, State::NotReceived | State::Unreached))
-            .count()
-            - 1;
+        let first_range = rcvd_iter.by_ref().take_while(|s| s.has_rcvd()).count() - 1;
         let mut ranges = Vec::with_capacity(16);
         loop {
             if rcvd_iter.next().is_none() {
                 break;
             }
-            let gap = rcvd_iter
-                .by_ref()
-                .take_while(|s| matches!(s, State::NotReceived))
-                .count();
+            let gap = rcvd_iter.by_ref().take_while(|s| s.has_not_rcvd()).count();
 
             if rcvd_iter.next().is_none() {
                 break;
             }
-            let acked = rcvd_iter
-                .by_ref()
-                .take_while(|s| !matches!(s, State::NotReceived))
-                .count();
+            let acked = rcvd_iter.by_ref().take_while(|s| s.has_rcvd()).count();
 
             ranges.push(unsafe {
                 (
@@ -560,7 +561,7 @@ where
             }
         }
         self.rcvd_packets
-            .insert(pktid, State::rcvd(Instant::now(), is_ack_eliciting))
+            .insert(pktid, State::new_rcvd(Instant::now(), is_ack_eliciting))
             .unwrap();
         if is_ack_eliciting {
             if self.largest_rcvd_ack_eliciting_pktid < pktid {
