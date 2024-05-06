@@ -1,4 +1,5 @@
 /// Application data space, 0-RTT data space
+use super::{one_rtt_data, OneRttDataSpace};
 use crate::{crypto_stream::CryptoStream, streams::Streams};
 use qbase::{
     error::Error,
@@ -14,8 +15,6 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
-
-use super::{one_rtt_data, OneRttDataSpace};
 
 type ZeroRttDataFrame = StreamFrame;
 pub type ZeroRttDataSpace = super::Space<ZeroRttFrame, ZeroRttDataFrame, Transmission, false>;

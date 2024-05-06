@@ -12,6 +12,9 @@ use qbase::{
 };
 use std::{
     collections::{HashMap, VecDeque},
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
     task::{ready, Context, Poll, Waker},
 };
 use tokio::sync::mpsc::UnboundedSender;
@@ -25,8 +28,7 @@ pub struct Streams {
     // 所有流的待读端，收到了数据，交付给这些流
     input: HashMap<StreamId, Incoming>,
     // 对方主动创建的流
-    accepted_streams: VecDeque<AppStream>,
-    accpet_waker: Option<Waker>,
+    listener: Listener,
 
     frame_tx: UnboundedSender<StreamInfoFrame>,
 }
@@ -200,8 +202,7 @@ impl Streams {
             stream_ids,
             output: HashMap::new(),
             input: HashMap::new(),
-            accepted_streams: VecDeque::new(),
-            accpet_waker: None,
+            listener: Listener::default(),
             frame_tx,
         }
     }
@@ -220,6 +221,10 @@ impl Streams {
         }
     }
 
+    pub fn listener(&self) -> Listener {
+        self.listener.clone()
+    }
+
     fn try_accept_sid(&mut self, sid: StreamId) -> Result<(), ExceedLimitError> {
         let result = self.stream_ids.try_accept_sid(sid)?;
         match result {
@@ -227,19 +232,13 @@ impl Streams {
             AcceptSid::New(need_create, _extend_max_streams) => {
                 for sid in need_create {
                     let reader = self.create_recver(sid);
-                    if sid.dir() == Dir::Bi {
+                    let stream = if sid.dir() == Dir::Bi {
                         let writer = self.create_sender(sid);
-                        let stream = AppStream::ReadWrite(reader, writer);
-                        self.accepted_streams.push_back(stream);
+                        AppStream::ReadWrite(reader, writer)
                     } else {
-                        let stream = AppStream::ReadOnly(reader);
-                        self.accepted_streams.push_back(stream);
-                    }
-                }
-
-                // accpet新连接
-                if let Some(waker) = self.accpet_waker.take() {
-                    waker.wake();
+                        AppStream::ReadOnly(reader)
+                    };
+                    self.listener.push(stream);
                 }
                 Ok(())
             }
@@ -297,6 +296,63 @@ impl Streams {
         });
         self.input.insert(sid, incoming);
         reader
+    }
+}
+
+#[derive(Debug, Default)]
+struct RawListener {
+    // 对方主动创建的流
+    streams: VecDeque<AppStream>,
+    waker: Option<Waker>,
+}
+
+impl RawListener {
+    fn push(&mut self, stream: AppStream) {
+        self.streams.push_back(stream);
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
+    }
+
+    fn poll_accept(&mut self, cx: &mut Context<'_>) -> Poll<Result<AppStream, Error>> {
+        if let Some(stream) = self.streams.pop_front() {
+            Poll::Ready(Ok(stream))
+        } else {
+            self.waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Listener(Arc<Mutex<RawListener>>);
+
+impl Listener {
+    fn push(&self, stream: AppStream) {
+        self.0.lock().unwrap().push(stream);
+    }
+
+    pub fn accept(&self) -> Accept {
+        Accept {
+            inner: self.clone(),
+        }
+    }
+
+    pub fn poll_accept(&self, cx: &mut Context<'_>) -> Poll<Result<AppStream, Error>> {
+        self.0.lock().unwrap().poll_accept(cx)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Accept {
+    inner: Listener,
+}
+
+impl Future for Accept {
+    type Output = Result<AppStream, Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.inner.poll_accept(cx)
     }
 }
 
