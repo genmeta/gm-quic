@@ -399,7 +399,9 @@ pub mod ext {
                     nom::Err::Error(Error::IncompleteFrame(frame_type, ne.to_string()))
                 }
                 nom::Err::Error(ne) => {
-                    // may be TooLarge in MaxStreamsFrame, or may be Verify in NewConnectionIdFrame
+                    // may be TooLarge in MaxStreamsFrame/CryptoFrame/StreamFrame,
+                    // or may be Verify in NewConnectionIdFrame,
+                    // or may be Alt in ConnectionCloseFrame
                     nom::Err::Error(Error::ParseError(
                         frame_type,
                         ne.code.description().to_owned(),

@@ -49,6 +49,38 @@ impl Display for ErrorKind {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Error)]
+#[error("invalid error code {0}")]
+pub struct InvalidErrorKind(u64);
+
+impl TryFrom<VarInt> for ErrorKind {
+    type Error = InvalidErrorKind;
+
+    fn try_from(value: VarInt) -> Result<Self, Self::Error> {
+        Ok(match value.into_inner() {
+            0x00 => ErrorKind::None,
+            0x01 => ErrorKind::Internal,
+            0x02 => ErrorKind::ConnectionRefused,
+            0x03 => ErrorKind::FlowControl,
+            0x04 => ErrorKind::StreamLimit,
+            0x05 => ErrorKind::StreamState,
+            0x06 => ErrorKind::FinalSize,
+            0x07 => ErrorKind::FrameEncoding,
+            0x08 => ErrorKind::TransportParameter,
+            0x09 => ErrorKind::ConnectionIdLimit,
+            0x0a => ErrorKind::ProtocolViolation,
+            0x0b => ErrorKind::InvalidToken,
+            0x0c => ErrorKind::Application,
+            0x0d => ErrorKind::CryptoBufferExceeded,
+            0x0e => ErrorKind::KeyUpdate,
+            0x0f => ErrorKind::AeadLimitReached,
+            0x10 => ErrorKind::NoViablePath,
+            0x0100..=0x01ff => ErrorKind::Crypto((value.into_inner() & 0xff) as u8),
+            other => return Err(InvalidErrorKind(other)),
+        })
+    }
+}
+
 impl From<ErrorKind> for VarInt {
     fn from(value: ErrorKind) -> Self {
         match value {
@@ -99,8 +131,8 @@ impl Error {
 impl From<Error> for crate::frame::ConnectionCloseFrame {
     fn from(e: Error) -> Self {
         Self {
-            error_code: e.kind.into(),
-            frame_type: Some(e.frame_type.into()),
+            error_kind: e.kind,
+            frame_type: Some(e.frame_type),
             reason: e.reason,
         }
     }
