@@ -126,6 +126,14 @@ impl Error {
             reason: reason.into(),
         }
     }
+
+    pub fn new_with_default_fty<T: Into<Cow<'static, str>>>(kind: ErrorKind, reason: T) -> Self {
+        Self {
+            kind,
+            frame_type: FrameType::Padding,
+            reason: reason.into(),
+        }
+    }
 }
 
 impl From<Error> for crate::frame::ConnectionCloseFrame {

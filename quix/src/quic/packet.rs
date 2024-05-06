@@ -445,8 +445,8 @@ mod tests {
         let header = Header {
             ty: Type::Initial,
             version: 1,
-            dcid: ConnectionId::new(&[0x01, 0x02, 0x03, 0x04]),
-            scid: ConnectionId::new(&[0x05, 0x06, 0x07, 0x08]),
+            dcid: ConnectionId::from_slice(&[0x01, 0x02, 0x03, 0x04]),
+            scid: ConnectionId::from_slice(&[0x05, 0x06, 0x07, 0x08]),
             pkt_num: 0,
             pkt_num_len: 0,
             token: None,
@@ -467,14 +467,14 @@ mod tests {
     fn init_packet_crypt() {
         use rustls::quic::Version;
 
-        let dcid = ConnectionId::new(&hex!("06b858ec6f80452b"));
+        let dcid = ConnectionId::from_slice(&hex!("06b858ec6f80452b"));
         let client = initial_keys(Version::V1, &dcid, Side::Client);
         let mut buf = BytesMut::new();
         let header = Header {
             ty: Type::Initial,
             version: 0x00000001,
             dcid: dcid,
-            scid: ConnectionId::new(&[]),
+            scid: ConnectionId::from_slice(&[]),
             pkt_num: 0,
             pkt_num_len: pkt_num_len(0).unwrap(),
             token: None,

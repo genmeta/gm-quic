@@ -23,8 +23,31 @@ pub struct ConnectionId {
     bytes: [u8; MAX_CID_SIZE],
 }
 
+pub fn be_connection_id(input: &[u8]) -> nom::IResult<&[u8], ConnectionId> {
+    let (remain, len) = be_u8(input)?;
+    if len as usize > MAX_CID_SIZE {
+        return Err(nom::Err::Error(nom::error::make_error(
+            input,
+            nom::error::ErrorKind::TooLarge,
+        )));
+    }
+    let (remain, bytes) = nom::bytes::streaming::take(len as usize)(remain)?;
+    Ok((remain, ConnectionId::from_slice(bytes)))
+}
+
+pub trait WriteConnectionId {
+    fn put_connection_id(&mut self, cid: &ConnectionId);
+}
+
+impl<T: BufMut> WriteConnectionId for T {
+    fn put_connection_id(&mut self, cid: &ConnectionId) {
+        self.put_u8(cid.len);
+        self.put_slice(cid);
+    }
+}
+
 impl ConnectionId {
-    pub fn new(bytes: &[u8]) -> Self {
+    pub fn from_slice(bytes: &[u8]) -> Self {
         debug_assert!(bytes.len() <= MAX_CID_SIZE);
         let mut res = Self {
             len: bytes.len() as u8,
@@ -37,7 +60,7 @@ impl ConnectionId {
     pub fn from_buf(input: &[u8], len: usize) -> IResult<&[u8], Self> {
         debug_assert!(len <= MAX_CID_SIZE);
         let (input, bytes) = nom::bytes::complete::take(len)(input)?;
-        Ok((input, Self::new(bytes)))
+        Ok((input, Self::from_slice(bytes)))
     }
 
     /// Decode from long header format
@@ -154,7 +177,7 @@ impl ConnectionIdGenerator for RandomConnectionIdGenerator {
         let mut bytes_arr = [0; MAX_CID_SIZE];
         rand::thread_rng().fill_bytes(&mut bytes_arr[..self.cid_len]);
 
-        ConnectionId::new(&bytes_arr[..self.cid_len])
+        ConnectionId::from_slice(&bytes_arr[..self.cid_len])
     }
 
     /// Provide the length of dst_cid in short header packet
