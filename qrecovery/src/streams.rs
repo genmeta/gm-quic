@@ -78,7 +78,7 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
             // 我方的sid，那必须是双向流才能收到对方的数据，否则就是错误
             if sid.dir() == Dir::Uni {
                 return Err(Error::new(
-                    ErrorKind::ProtocolViolation,
+                    ErrorKind::StreamState,
                     stream_frame.frame_type(),
                     format!("local {sid} cannot receive STREAM_FRAME"),
                 ));
@@ -103,7 +103,7 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                     // 我方创建的流必须是双向流，对方才能发送ResetStream,否则就是错误
                     if sid.dir() == Dir::Uni {
                         return Err(Error::new(
-                            ErrorKind::ProtocolViolation,
+                            ErrorKind::StreamState,
                             stream_info_frame.frame_type(),
                             format!("local {sid} cannot receive RESET_FRAME"),
                         ));
@@ -120,7 +120,7 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                     // 对方创建的单向流，接收端是我方，不可能收到对方的StopSendingFrame
                     if sid.dir() == Dir::Uni {
                         return Err(Error::new(
-                            ErrorKind::ProtocolViolation,
+                            ErrorKind::StreamState,
                             stream_info_frame.frame_type(),
                             format!("remote {sid} must not send STOP_SENDING_FRAME"),
                         ));
@@ -147,7 +147,7 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                     // 对方创建的单向流，接收端是我方，不可能收到对方的MaxStreamData
                     if sid.dir() == Dir::Uni {
                         return Err(Error::new(
-                            ErrorKind::ProtocolViolation,
+                            ErrorKind::StreamState,
                             stream_info_frame.frame_type(),
                             format!("remote {sid} must not send MAX_STREAM_DATA_FRAME"),
                         ));
@@ -169,7 +169,7 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                     // 我方创建的，必须是双向流，对方才是发送端，才能发出StreamDataBlocked；否则就是错误
                     if sid.dir() == Dir::Uni {
                         return Err(Error::new(
-                            ErrorKind::ProtocolViolation,
+                            ErrorKind::StreamState,
                             stream_info_frame.frame_type(),
                             format!("local {sid} cannot receive STREAM_DATA_BLOCKED_FRAME"),
                         ));

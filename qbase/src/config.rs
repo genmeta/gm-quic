@@ -4,7 +4,7 @@ use getset::{CopyGetters, Getters, MutGetters, Setters};
 use std::{net::SocketAddr, time::Duration};
 use thiserror::Error;
 
-/// Ref. https://www.iana.org/assignments/quic/quic.xhtml
+/// Ref. `<https://www.iana.org/assignments/quic/quic.xhtml>`
 
 // QUIC的config配置
 #[derive(Getters, Setters, MutGetters, CopyGetters, Debug)]
