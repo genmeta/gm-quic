@@ -46,6 +46,10 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
         self.offset
     }
 
+    pub fn largest(&self) -> u64 {
+        self.offset + self.deque.len() as u64
+    }
+
     pub fn contain(&self, idx: u64) -> bool {
         idx >= self.offset && idx < self.offset + self.deque.len() as u64
     }

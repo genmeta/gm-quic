@@ -160,7 +160,7 @@ where
     inflight_packets: IndexDeque<Option<Packet<F, D>>, VARINT_MAX>,
     disorder_tolerance: u64,
     time_of_last_sent_ack_eliciting_packet: Option<Instant>,
-    largest_acked_pktid: u64,
+    largest_acked_pktid: Option<u64>,
     // 设计丢包重传定时器，在收到AckFrame的探测丢包时，可能会设置该定时器，实际上是过期时间
     loss_time: Option<Instant>,
 
@@ -217,7 +217,7 @@ where
             inflight_packets: IndexDeque::new(),
             disorder_tolerance: 0,
             time_of_last_sent_ack_eliciting_packet: None,
-            largest_acked_pktid: 0,
+            largest_acked_pktid: None,
             loss_time: None,
             rcvd_packets: IndexDeque::new(),
             largest_rcvd_ack_eliciting_pktid: 0,
@@ -296,12 +296,16 @@ where
 
     fn recv_ack_frame(&mut self, mut ack: AckFrame, rtt: &mut Rtt) -> Option<usize> {
         let largest_acked = ack.largest.into_inner();
-        if largest_acked < self.largest_acked_pktid {
+        if self
+            .largest_acked_pktid
+            .map(|v| v > largest_acked)
+            .unwrap_or(false)
+        {
             return None;
         }
         // largest_acked == self.largest_acked_packet is also acceptable,
-        // perhaps indicating that new packets have been acknowledged.
-        self.largest_acked_pktid = largest_acked;
+        // perhaps indicating that old 'lost' packets have been acknowledged.
+        self.largest_acked_pktid = Some(largest_acked);
 
         let mut no_newly_acked = true;
         let mut includes_ack_eliciting = false;

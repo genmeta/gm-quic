@@ -1,16 +1,40 @@
 use crate::{
     cid::{be_connection_id, ConnectionId},
-    error::Error,
+    packet_number::PacketNumber,
     varint::{ext::be_varint, VarInt},
 };
-use enum_dispatch::enum_dispatch;
+use bytes::{Bytes, BytesMut};
+use nom::ToUsize;
 use std::ops::{Deref, DerefMut};
 
-#[enum_dispatch]
-pub trait BePacket {
-    fn packet_type(&self) -> u8;
+pub trait GetLength {
+    /// The length of the remainder of the packet (that is, the Packet Number and Payload fields) in bytes:
+    /// * If the header does not have a length field, return None,
+    ///   meaning that the subsequent content of the datagram is the data of this packet.
+    /// * If the header has a length field, it is not encrypted and can be read directly,
+    ///   return Some(length)
+    fn get_length(&self) -> Option<usize>;
+}
 
-    fn packet_type_mut(&mut self) -> &mut u8;
+pub trait BeProtected: GetLength {
+    fn first_byte_mut(&mut self) -> &mut u8;
+}
+
+pub trait RemoveProtection {
+    type Target;
+    fn remove_protection_with_pn(self, pn: PacketNumber) -> Self::Target;
+}
+
+pub trait Validate {
+    /// The value included prior to protection MUST be set to 0.
+    /// An endpoint MUST treat receipt of a packet that has a non-zero value for these bits
+    /// after removing both packet and header protection as a connection error of type
+    /// PROTOCOL_VIOLATION. Discarding such a packet after only removing header protection
+    /// can expose the endpoint to attacks.
+    ///
+    /// see [Section 17.2](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.2-8.2) and
+    /// [Section 17.3.1](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.3.1-4.8) of QUIC.
+    fn check_if_reserved_bits_are_zero(&self) -> Result<(), crate::error::Error>;
 }
 
 #[derive(Debug, Default, Clone)]
@@ -41,14 +65,32 @@ pub struct Initial {
     pub length: VarInt,
 }
 
+impl GetLength for Initial {
+    fn get_length(&self) -> Option<usize> {
+        Some(self.length.to_usize())
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct ZeroRTT {
     pub length: VarInt,
 }
 
+impl GetLength for ZeroRTT {
+    fn get_length(&self) -> Option<usize> {
+        Some(self.length.to_usize())
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct Handshake {
     pub length: VarInt,
+}
+
+impl GetLength for Handshake {
+    fn get_length(&self) -> Option<usize> {
+        Some(self.length.to_usize())
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -58,16 +100,6 @@ pub struct LongHeaderWrapper<T> {
     pub dcid: ConnectionId,
     pub scid: ConnectionId,
     pub specific: T,
-}
-
-impl<T> BePacket for LongHeaderWrapper<T> {
-    fn packet_type(&self) -> u8 {
-        self.ty
-    }
-
-    fn packet_type_mut(&mut self) -> &mut u8 {
-        &mut self.ty
-    }
 }
 
 impl<T> Deref for LongHeaderWrapper<T> {
@@ -85,10 +117,70 @@ impl<T> DerefMut for LongHeaderWrapper<T> {
 }
 
 pub type VersionNegotiationHeader = LongHeaderWrapper<VersionNegotiation>;
-pub type InitialHeader = LongHeaderWrapper<Initial>;
-pub type HandshakeHeader = LongHeaderWrapper<Handshake>;
-pub type ZeroRTTHeader = LongHeaderWrapper<ZeroRTT>;
 pub type RetryHeader = LongHeaderWrapper<Retry>;
+
+pub type ProtectedInitialHeader = LongHeaderWrapper<Initial>;
+pub type ProtectedHandshakeHeader = LongHeaderWrapper<Handshake>;
+pub type ProtectedZeroRTTHeader = LongHeaderWrapper<ZeroRTT>;
+
+impl<S: GetLength> GetLength for LongHeaderWrapper<S> {
+    fn get_length(&self) -> Option<usize> {
+        self.specific.get_length()
+    }
+}
+
+impl<S: GetLength> BeProtected for LongHeaderWrapper<S> {
+    fn first_byte_mut(&mut self) -> &mut u8 {
+        &mut self.ty
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PlainHeaderWrapper<H: BeProtected> {
+    pub header: H,
+    pub pn: PacketNumber,
+}
+
+impl<H: BeProtected> Deref for PlainHeaderWrapper<H> {
+    type Target = H;
+
+    fn deref(&self) -> &Self::Target {
+        &self.header
+    }
+}
+
+impl<H: BeProtected> DerefMut for PlainHeaderWrapper<H> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.header
+    }
+}
+
+pub type PlainInitialHeader = PlainHeaderWrapper<ProtectedInitialHeader>;
+pub type PlainHandshakeHeader = PlainHeaderWrapper<ProtectedHandshakeHeader>;
+pub type PlainZeroRTTHeader = PlainHeaderWrapper<ProtectedZeroRTTHeader>;
+
+impl<T: BeProtected> RemoveProtection for LongHeaderWrapper<T> {
+    type Target = PlainHeaderWrapper<Self>;
+
+    fn remove_protection_with_pn(self, pn: PacketNumber) -> Self::Target {
+        Self::Target { header: self, pn }
+    }
+}
+
+impl<S: BeProtected> Validate for PlainHeaderWrapper<LongHeaderWrapper<S>> {
+    fn check_if_reserved_bits_are_zero(&self) -> Result<(), crate::error::Error> {
+        const RESERVED_MASK: u8 = 0x0c;
+        let reserved_bit = self.ty & RESERVED_MASK;
+        if reserved_bit == 0 {
+            Ok(())
+        } else {
+            Err(crate::error::Error::new_with_default_fty(
+                crate::error::ErrorKind::ProtocolViolation,
+                format!("invalid reserved bits {reserved_bit}"),
+            ))
+        }
+    }
+}
 
 /// header form bit
 const HEADER_FORM_MASK: u8 = 0x80;
@@ -110,118 +202,40 @@ const KEY_PHASE_BIT: u8 = 0x04;
 /// of byte 0 contain the length of the Packet Number field
 const PN_LEN_MASK: u8 = 0x03;
 
-impl VersionNegotiationHeader {
-    pub fn new(dcid: ConnectionId, scid: ConnectionId, supported_versions: Vec<u32>) -> Self {
-        Self {
-            ty: LONG_HEADER_BIT,
-            version: 0,
-            dcid,
-            scid,
-            specific: VersionNegotiation {
-                versions: supported_versions,
-            },
-        }
-    }
-}
-
-impl RetryHeader {
-    pub fn new(
-        version: u32,
-        dcid: ConnectionId,
-        scid: ConnectionId,
-        token: &[u8],
-        integrity: &[u8],
-    ) -> Self {
-        Self {
-            ty: LONG_HEADER_BIT | FIXED_BIT | RETRY_PACKET_TYPE,
-            version,
-            dcid,
-            scid,
-            specific: Retry::from_slice(token, integrity),
-        }
-    }
-}
-
-impl InitialHeader {
-    pub fn new(
-        version: u32,
-        dcid: ConnectionId,
-        scid: ConnectionId,
-        token: &[u8],
-        length: VarInt,
-    ) -> Self {
-        Self {
-            ty: LONG_HEADER_BIT | FIXED_BIT | INITIAL_PACKET_TYPE,
-            version,
-            dcid,
-            scid,
-            specific: Initial {
-                token: Vec::from(token),
-                length,
-            },
-        }
-    }
-
-    pub fn pn_len(&self) -> u8 {
-        self.ty & PN_LEN_MASK
-    }
-}
-
-impl ZeroRTTHeader {
-    pub fn new(version: u32, dcid: ConnectionId, scid: ConnectionId, length: VarInt) -> Self {
-        Self {
-            ty: LONG_HEADER_BIT | FIXED_BIT | ZERO_RTT_PACKET_TYPE,
-            version,
-            dcid,
-            scid,
-            specific: ZeroRTT { length },
-        }
-    }
-
-    pub fn pn_len(&self) -> u8 {
-        self.ty & PN_LEN_MASK
-    }
-}
-
-impl HandshakeHeader {
-    pub fn new(version: u32, dcid: ConnectionId, scid: ConnectionId, length: VarInt) -> Self {
-        Self {
-            ty: LONG_HEADER_BIT | FIXED_BIT | HANDSHAKE_PACKET_TYPE,
-            version,
-            dcid,
-            scid,
-            specific: Handshake { length },
-        }
-    }
-
-    pub fn pn_len(&self) -> u8 {
-        self.ty & PN_LEN_MASK
-    }
-}
-
-#[derive(Debug, Clone)]
-#[enum_dispatch(BePacket)]
-pub enum LongHeader {
-    VersionNegotiation(VersionNegotiationHeader),
-    Retry(RetryHeader),
-    Initial(InitialHeader),
-    ZeroRTT(ZeroRTTHeader),
-    Handshake(HandshakeHeader),
-}
-
+/// A packet with a short header does not include a length,
+/// so it can only be the last packet included in a UDP datagram.
 #[derive(Debug, Default, Clone)]
-pub struct OneRttHeader {
+pub struct ProtectedOneRttHeader {
     pub ty: u8,
     pub dcid: ConnectionId,
 }
 
-impl BePacket for OneRttHeader {
-    fn packet_type(&self) -> u8 {
-        self.ty
-    }
+pub type PlainOneRttHeader = PlainHeaderWrapper<ProtectedOneRttHeader>;
 
-    fn packet_type_mut(&mut self) -> &mut u8 {
+impl GetLength for ProtectedOneRttHeader {
+    fn get_length(&self) -> Option<usize> {
+        None
+    }
+}
+
+impl BeProtected for ProtectedOneRttHeader {
+    fn first_byte_mut(&mut self) -> &mut u8 {
         &mut self.ty
+    }
+}
+
+impl Validate for PlainOneRttHeader {
+    fn check_if_reserved_bits_are_zero(&self) -> Result<(), crate::error::Error> {
+        const RESERVED_MASK: u8 = 0x18;
+        let reserved_bit = self.ty & RESERVED_MASK;
+        if reserved_bit == 0 {
+            Ok(())
+        } else {
+            Err(crate::error::Error::new_with_default_fty(
+                crate::error::ErrorKind::ProtocolViolation,
+                format!("invalid reserved bits {reserved_bit}"),
+            ))
+        }
     }
 }
 
@@ -231,6 +245,9 @@ pub enum Toggle<const B: u8> {
     Off,
     On,
 }
+
+pub type SpinToggle = Toggle<SPIN_BIT>;
+pub type KeyPhaseToggle = Toggle<KEY_PHASE_BIT>;
 
 impl<const B: u8> Toggle<B> {
     pub fn change(&mut self) {
@@ -248,73 +265,41 @@ impl<const B: u8> Toggle<B> {
     }
 }
 
-impl OneRttHeader {
+impl PlainOneRttHeader {
     pub fn new(
         dcid: ConnectionId,
         spin: Toggle<SPIN_BIT>,
         key_phase: Toggle<KEY_PHASE_BIT>,
+        pn: PacketNumber,
     ) -> Self {
         Self {
-            ty: SHORT_HEADER_BIT | FIXED_BIT | spin.value() | key_phase.value(),
-            dcid,
+            header: ProtectedOneRttHeader {
+                ty: SHORT_HEADER_BIT | FIXED_BIT | spin.value() | key_phase.value(),
+                dcid,
+            },
+            pn,
         }
-    }
-
-    pub fn pn_len(&self) -> u8 {
-        self.ty & PN_LEN_MASK
     }
 }
 
 #[derive(Debug, Clone)]
-#[enum_dispatch(BePacket)]
-pub enum Header {
-    Long(LongHeader),
-    Short(OneRttHeader),
+pub enum ProtectedHeader {
+    Initial(ProtectedInitialHeader),
+    OneRtt(ProtectedOneRttHeader),
+    Handshake(ProtectedHandshakeHeader),
+    ZeroRTT(ProtectedZeroRTTHeader),
 }
 
-impl Header {
-    /// An endpoint MUST treat receipt of a packet that has a non-zero value for these bits
-    /// after removing both packet and header protection as a connection error of type
-    /// PROTOCOL_VIOLATION. Discarding such a packet after only removing header protection
-    /// can expose the endpoint to attacks.
-    ///
-    /// see Section 9.5 of [QUIC-TLS].
-    ///
-    /// Must be called after removing header protection
-    pub fn check_if_reserved_bits_zero(&self) -> Result<(), Error> {
-        match self {
-            Header::Long(long_header) => {
-                let reserve_bit = long_header.packet_type() & 0x0c;
-                if matches!(
-                    long_header,
-                    LongHeader::Initial(_) | LongHeader::Handshake(_) | LongHeader::ZeroRTT(_)
-                ) && reserve_bit == 0
-                {
-                    Ok(())
-                } else {
-                    Err(Error::new_with_default_fty(
-                        crate::error::ErrorKind::ProtocolViolation,
-                        format!("invalid reserved bits {reserve_bit}"),
-                    ))
-                }
-            }
-            Header::Short(one_rtt_header) => {
-                if one_rtt_header.ty & 0x18 == 0 {
-                    Ok(())
-                } else {
-                    Err(Error::new_with_default_fty(
-                        crate::error::ErrorKind::ProtocolViolation,
-                        "invalid reserved bits",
-                    ))
-                }
-            }
-        }
-    }
+#[derive(Debug, Clone)]
+pub enum Packet {
+    VersionNegotiation(VersionNegotiationHeader),
+    Retry(RetryHeader),
+    Protected(ProtectedHeader, BytesMut, usize /* pn offset */),
 }
 
 pub mod ext {
     use super::*;
-    use crate::{cid::WriteConnectionId, varint::ext::BufMutExt};
+    use crate::{cid::WriteConnectionId, packet_number::take_pn_len, varint::ext::BufMutExt};
     use bytes::{BufMut, BytesMut};
     use nom::{
         bytes::streaming::take,
@@ -324,6 +309,7 @@ pub mod ext {
         sequence::pair,
         Err,
     };
+    use rustls::quic::DirectionalKeys;
 
     fn be_version_negotiation(input: &[u8]) -> nom::IResult<&[u8], VersionNegotiation> {
         let (remain, (versions, _)) = many_till(be_u32, eof)(input)?;
@@ -357,7 +343,7 @@ pub mod ext {
         Ok((&[][..], Retry::from_slice(token, integrity)))
     }
 
-    struct LongHeaderBuilder {
+    pub struct LongHeaderBuilder {
         ty: u8,
         version: u32,
         dcid: ConnectionId,
@@ -365,6 +351,67 @@ pub mod ext {
     }
 
     impl LongHeaderBuilder {
+        fn new_plain(ty: u8, version: u32, dcid: ConnectionId, scid: ConnectionId) -> Self {
+            Self {
+                ty,
+                version,
+                dcid,
+                scid,
+            }
+        }
+
+        pub fn new_version_neotiation(
+            dcid: ConnectionId,
+            scid: ConnectionId,
+        ) -> impl FnOnce(VersionNegotiation) -> VersionNegotiationHeader {
+            move |vg| {
+                let ty = LONG_HEADER_BIT;
+                Self::new_plain(ty, 0, dcid, scid).wrap(vg)
+            }
+        }
+
+        pub fn new_retry(
+            dcid: ConnectionId,
+            scid: ConnectionId,
+        ) -> impl FnOnce(Retry) -> RetryHeader {
+            move |retry| {
+                let ty = LONG_HEADER_BIT | FIXED_BIT | RETRY_PACKET_TYPE;
+                Self::new_plain(ty, 1, dcid, scid).wrap(retry)
+            }
+        }
+
+        pub fn new_plain_initial_v1(dcid: ConnectionId, scid: ConnectionId) -> Self {
+            let ty = LONG_HEADER_BIT | FIXED_BIT | INITIAL_PACKET_TYPE;
+            Self::new_plain(ty, 1, dcid, scid)
+        }
+
+        pub fn new_plain_zero_rtt_v1(dcid: ConnectionId, scid: ConnectionId) -> Self {
+            let ty = LONG_HEADER_BIT | FIXED_BIT | ZERO_RTT_PACKET_TYPE;
+            Self::new_plain(ty, 1, dcid, scid)
+        }
+
+        pub fn new_plain_handshake_v1(dcid: ConnectionId, scid: ConnectionId) -> Self {
+            let ty = LONG_HEADER_BIT | FIXED_BIT | HANDSHAKE_PACKET_TYPE;
+            Self::new_plain(ty, 1, dcid, scid)
+        }
+
+        pub fn build<T: BeProtected>(
+            self,
+            specific: T,
+            pn: PacketNumber,
+        ) -> PlainHeaderWrapper<LongHeaderWrapper<T>> {
+            PlainHeaderWrapper {
+                header: LongHeaderWrapper {
+                    ty: self.ty,
+                    version: self.version,
+                    dcid: self.dcid,
+                    scid: self.scid,
+                    specific,
+                },
+                pn,
+            }
+        }
+
         fn wrap<T>(self, specific: T) -> LongHeaderWrapper<T> {
             LongHeaderWrapper {
                 ty: self.ty,
@@ -375,10 +422,15 @@ pub mod ext {
             }
         }
 
-        fn parse(self, ty: u8, input: &[u8]) -> nom::IResult<&[u8], LongHeader> {
+        fn parse(
+            self,
+            ty: u8,
+            input: &[u8],
+            mut datagram: BytesMut,
+        ) -> nom::IResult<&[u8], Packet> {
             if self.version == 0 {
                 let (remain, vn) = be_version_negotiation(input)?;
-                Ok((remain, LongHeader::VersionNegotiation(self.wrap(vn))))
+                Ok((remain, Packet::VersionNegotiation(self.wrap(vn))))
             } else {
                 // The next bit (0x40) of byte 0 is set to 1, unless the packet is a Version Negotiation
                 // packet. Packets containing a zero value for this bit are not valid packets in this
@@ -391,67 +443,142 @@ pub mod ext {
                     )));
                 }
 
-                match ty & LONG_PACKET_TYPE_MASK {
+                let (remain, length, protected_header) = match ty & LONG_PACKET_TYPE_MASK {
                     INITIAL_PACKET_TYPE => {
                         let (remain, initial) = be_initial(input)?;
-                        Ok((remain, LongHeader::Initial(self.wrap(initial))))
+                        (
+                            remain,
+                            initial.length.to_usize(),
+                            ProtectedHeader::Initial(self.wrap(initial)),
+                        )
                     }
                     ZERO_RTT_PACKET_TYPE => {
                         let (remain, zero_rtt) = be_zero_rtt(input)?;
-                        Ok((remain, LongHeader::ZeroRTT(self.wrap(zero_rtt))))
+                        (
+                            remain,
+                            zero_rtt.length.to_usize(),
+                            ProtectedHeader::ZeroRTT(self.wrap(zero_rtt)),
+                        )
                     }
                     HANDSHAKE_PACKET_TYPE => {
                         let (remain, handshake) = be_handshake(input)?;
-                        Ok((remain, LongHeader::Handshake(self.wrap(handshake))))
+                        (
+                            remain,
+                            handshake.length.to_usize(),
+                            ProtectedHeader::Handshake(self.wrap(handshake)),
+                        )
                     }
                     RETRY_PACKET_TYPE => {
                         let (remain, retry) = be_retry(input)?;
-                        Ok((remain, LongHeader::Retry(self.wrap(retry))))
+                        return Ok((remain, Packet::Retry(self.wrap(retry))));
                     }
                     _ => unreachable!(),
+                };
+                let pn_offset = datagram.len() - remain.len();
+                let packet_length = pn_offset + length;
+                if length < 20 {
+                    return Err(Err::Incomplete(nom::Needed::new(20)));
                 }
+                if length > remain.len() {
+                    return Err(Err::Incomplete(nom::Needed::new(length)));
+                }
+                datagram.truncate(packet_length);
+                Ok((
+                    remain,
+                    Packet::Protected(protected_header, datagram, pn_offset),
+                ))
             }
         }
     }
 
-    pub fn be_header(input: &[u8], dcid_len: usize) -> nom::IResult<&[u8], Header> {
-        let (remain, ty) = be_u8(input)?;
-        if ty & HEADER_FORM_MASK == LONG_HEADER_BIT {
-            // long header
-            let (remain, version) = be_u32(remain)?;
-            let (remain, scid) = be_connection_id(remain)?;
-            let (remain, dcid) = be_connection_id(remain)?;
-            let builder = LongHeaderBuilder {
-                ty,
-                version,
-                dcid,
-                scid,
-            };
-            let (remain, long_header) = builder.parse(ty, remain)?;
-            Ok((remain, Header::Long(long_header)))
-        } else {
-            // short header
-            let (remain, dcid) = take(dcid_len)(remain)?;
-            let header = OneRttHeader {
-                ty,
-                dcid: ConnectionId::from_slice(dcid),
-            };
-            Ok((remain, Header::Short(header)))
+    pub fn be_packet(
+        datagram: BytesMut,
+        dcid_len: usize,
+    ) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Packet> {
+        move |input| {
+            let mut datagram = datagram.clone();
+            let start = datagram.len() - input.len();
+            let _ = datagram.split_to(start);
+            let (remain, ty) = be_u8(input)?;
+            if ty & HEADER_FORM_MASK == LONG_HEADER_BIT {
+                // long header
+                let (remain, version) = be_u32(remain)?;
+                let (remain, scid) = be_connection_id(remain)?;
+                let (remain, dcid) = be_connection_id(remain)?;
+                let builder = LongHeaderBuilder {
+                    ty,
+                    version,
+                    dcid,
+                    scid,
+                };
+                builder.parse(ty, remain, datagram)
+            } else {
+                // short header
+                let (remain, dcid) = take(dcid_len)(remain)?;
+                if remain.len() < 20 {
+                    return Err(Err::Incomplete(nom::Needed::new(20)));
+                }
+                let header = ProtectedOneRttHeader {
+                    ty,
+                    dcid: ConnectionId::from_slice(dcid),
+                };
+                let pn_offset = datagram.len() - remain.len();
+                Ok((
+                    remain,
+                    Packet::Protected(ProtectedHeader::OneRtt(header), datagram, pn_offset),
+                ))
+            }
         }
     }
 
     /// 此处解析并不涉及去除头部保护、解密数据包的部分，只是解析出包类型、连接ID等信息，
     /// 找到连接ID为进一步向连接交付做准备，去除头部保护、解密数据包的部分则在连接层进行.
     /// 收到的一个数据包是BytesMut，是为了做尽量少的Copy，直到应用层读走
-    pub fn parse_packet(mut datagram: BytesMut, dcid_len: usize) -> Option<(Header, BytesMut)> {
-        let datagram_len = datagram.len();
-        if let Some((remain, header)) = be_header(&datagram, dcid_len).ok() {
-            let offset = datagram_len - remain.len();
-            unsafe { datagram.advance_mut(offset) };
-            Some((header, datagram))
-        } else {
-            None
-        }
+    pub fn parse_packet_from_datagram(datagram: BytesMut) -> Result<Vec<Packet>, ()> {
+        let raw = datagram.clone();
+        let input = datagram.as_ref();
+        let (_, (packets, _)) = many_till(be_packet(raw, 16), eof)(input).map_err(|_ne| ())?;
+        Ok(packets)
+    }
+
+    pub fn decrypt<H, T>(
+        mut protected: H,
+        mut packet: BytesMut,
+        pn_offset: usize,
+        expected_pn: u64,
+        remote_keys: &DirectionalKeys,
+    ) -> Result<(u64, Bytes), rustls::Error>
+    where
+        H: BeProtected + RemoveProtection<Target = T>,
+        T: Validate,
+    {
+        use nom::error::Error as NomError;
+        let first_byte = protected.first_byte_mut();
+        let (_, payload) = packet.split_at_mut(pn_offset);
+        let (pn_bytes, sample) = payload.split_at_mut(4);
+        remote_keys
+            .header
+            .decrypt_in_place(sample, first_byte, pn_bytes)?;
+
+        let pn_len = *first_byte & PN_LEN_MASK + 1;
+        let header_offset = pn_offset + pn_len as usize;
+        let pn_bytes = &payload[pn_offset..header_offset];
+        let (_, pn) = take_pn_len(pn_len)(pn_bytes).map_err(|_ne: nom::Err<NomError<&[u8]>>| {
+            rustls::Error::General(format!("parse pn error: {:?}", _ne))
+        })?;
+
+        let target = protected.remove_protection_with_pn(pn);
+        target
+            .check_if_reserved_bits_are_zero()
+            .map_err(|e| rustls::Error::General(format!("validate reserve bit error: {:?}", e)))?;
+
+        let mut body = packet.split_off(header_offset);
+        let header = packet.freeze();
+        let pn = pn.decode(expected_pn);
+        remote_keys
+            .packet
+            .decrypt_in_place(pn, &header, &mut body)?;
+        Ok((pn, body.freeze()))
     }
 
     trait Write<S> {
@@ -509,43 +636,14 @@ pub mod ext {
         }
     }
 
-    pub trait WriteLongHeader {
-        fn write_long_header(&mut self, header: &LongHeader);
-    }
-
-    impl<T: BufMut> WriteLongHeader for T {
-        fn write_long_header(&mut self, header: &LongHeader) {
-            match header {
-                LongHeader::Handshake(header) => self.write_long_header_wrapper(header),
-                LongHeader::Initial(header) => self.write_long_header_wrapper(header),
-                LongHeader::ZeroRTT(header) => self.write_long_header_wrapper(header),
-                LongHeader::Retry(header) => self.write_long_header_wrapper(header),
-                LongHeader::VersionNegotiation(header) => self.write_long_header_wrapper(header),
-            }
-        }
-    }
-
     pub trait WriteOneRttHeader {
-        fn put_one_rtt_header(&mut self, header: &OneRttHeader);
+        fn put_one_rtt_header(&mut self, header: &ProtectedOneRttHeader);
     }
 
     impl<T: BufMut> WriteOneRttHeader for T {
-        fn put_one_rtt_header(&mut self, header: &OneRttHeader) {
+        fn put_one_rtt_header(&mut self, header: &ProtectedOneRttHeader) {
             self.put_u8(header.ty);
             self.put_connection_id(&header.dcid);
-        }
-    }
-
-    pub trait WriteHeader {
-        fn pub_header(&mut self, header: &Header);
-    }
-
-    impl<T: BufMut> WriteHeader for T {
-        fn pub_header(&mut self, header: &Header) {
-            match header {
-                Header::Long(header) => self.write_long_header(header),
-                Header::Short(header) => self.put_one_rtt_header(header),
-            }
         }
     }
 }
