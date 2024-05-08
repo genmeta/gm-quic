@@ -1,5 +1,8 @@
 use bytes::BytesMut;
-use qbase::packet::{HandshakeHeader, InitialHeader, OneRttHeader, ZeroRTTHeader};
+use qbase::packet::{
+    KeyPhaseToggle, ProtectedHandshakeHeader, ProtectedInitialHeader, ProtectedOneRttHeader,
+    ProtectedZeroRTTHeader, SpinToggle,
+};
 use qrecovery::space::{
     DataSpace, HandshakeSpace, InitailSpace, OneRttDataSpace, ZeroRttDataSpace,
 };
@@ -29,22 +32,25 @@ pub struct Connection {
     initial_space: InitailSpace,
     handshake_space: HandshakeSpace,
     data_space: DataSpace,
+
+    spin: SpinToggle,
+    key_phase: KeyPhaseToggle,
 }
 
 impl Connection {
-    pub fn receive_initial_packet(&mut self, header: InitialHeader, packet: BytesMut) {
+    pub fn receive_initial_packet(&mut self, header: ProtectedInitialHeader, packet: BytesMut) {
         // todo
     }
 
-    pub fn receive_handshake_packet(&mut self, header: HandshakeHeader, packet: BytesMut) {
+    pub fn receive_handshake_packet(&mut self, header: ProtectedHandshakeHeader, packet: BytesMut) {
         // todo
     }
 
-    pub fn receive_zero_rtt_packet(&mut self, header: ZeroRTTHeader, packet: BytesMut) {
+    pub fn receive_zero_rtt_packet(&mut self, header: ProtectedZeroRTTHeader, packet: BytesMut) {
         // todo
     }
 
-    pub fn receive_one_rtt_packet(&mut self, header: OneRttHeader, packet: BytesMut) {
+    pub fn receive_one_rtt_packet(&mut self, header: ProtectedOneRttHeader, packet: BytesMut) {
         // todo
     }
 }
