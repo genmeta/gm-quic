@@ -21,6 +21,12 @@ pub use initial_and_handshake::{HandshakeSpace, InitailSpace};
 pub use one_rtt_data::OneRttDataSpace;
 pub use zero_rtt_data::ZeroRttDataSpace;
 
+#[derive(Debug)]
+pub enum DataSpace {
+    ZeroRTT(ZeroRttDataSpace),
+    OneRtt(OneRttDataSpace),
+}
+
 pub trait TrySend<B: BufMut> {
     fn try_send(&mut self, buf: &mut B) -> Result<Option<(u64, usize)>, Error>;
 }
