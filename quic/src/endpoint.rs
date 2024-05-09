@@ -2,7 +2,7 @@ use crate::connection::Connection;
 use bytes::BytesMut;
 use qbase::{
     cid::ConnectionId,
-    packet::{BeProtected, ProtectedInitialHeader},
+    packet::{ext::decrypt_packet, ProtectedInitialHeader},
 };
 use rustls::{
     quic::{Keys, Version},
@@ -32,16 +32,8 @@ impl Endpiont {
         } else {
             // new connection
             let keys = Keys::initial(Version::V1, dcid, Side::Server);
-            let first_bytes = header.first_byte_mut();
-            // let packet = &mut packet;
-            let (pn_offset, sample) = packet.split_at_mut(4);
-            let result = keys
-                .remote
-                .header
-                .decrypt_in_place(sample, first_bytes, pn_offset);
-            // 1.获取pn_length
-            // 2.读取pn
-            // 3.解密packet
+            // 下面这一步，应该在connection内部处理了
+            let (pn, body) = decrypt_packet(header, packet, pn_offset, 0, &keys.remote).unwrap();
         }
         // todo
     }

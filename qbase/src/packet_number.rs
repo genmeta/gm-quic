@@ -43,28 +43,28 @@ pub fn take_pn_len(pn_len: u8) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Packe
 }
 
 impl PacketNumber {
-    pub fn encode(n: u64, largest_acked: u64) -> Self {
-        let range = (n - largest_acked) * 2;
+    pub fn encode(pn: u64, largest_acked: u64) -> Self {
+        let range = (pn - largest_acked) * 2;
         if range < 1 << 8 {
-            Self::U8(n as u8)
+            Self::U8(pn as u8)
         } else if range < 1 << 16 {
-            Self::U16(n as u16)
+            Self::U16(pn as u16)
         } else if range < 1 << 24 {
-            Self::U24(n as u32)
+            Self::U24(pn as u32)
         } else if range < 1 << 32 {
-            Self::U32(n as u32)
+            Self::U32(pn as u32)
         } else {
             panic!("packet number too large to encode")
         }
     }
 
-    pub fn pn_len(self) -> u8 {
+    pub fn encoding_size(self) -> usize {
         use self::PacketNumber::*;
         match self {
-            U8(_) => 0b00,
-            U16(_) => 0b01,
-            U24(_) => 0b10,
-            U32(_) => 0b11,
+            U8(_) => 1,
+            U16(_) => 2,
+            U24(_) => 3,
+            U32(_) => 4,
         }
     }
 
