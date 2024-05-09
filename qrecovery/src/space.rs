@@ -17,7 +17,7 @@ mod initial_and_handshake;
 mod one_rtt_data;
 mod zero_rtt_data;
 
-pub use initial_and_handshake::{HandshakeSpace, InitailSpace};
+pub use initial_and_handshake::{HandshakeSpace, InitialSpace};
 pub use one_rtt_data::OneRttDataSpace;
 pub use zero_rtt_data::ZeroRttDataSpace;
 

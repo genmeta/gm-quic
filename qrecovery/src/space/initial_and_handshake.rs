@@ -5,7 +5,7 @@ use qbase::{
     frame::{CryptoFrame, NoFrame},
 };
 
-pub type InitailSpace = super::Space<NoFrame, CryptoFrame, Transmission>;
+pub type InitialSpace = super::Space<NoFrame, CryptoFrame, Transmission>;
 pub type HandshakeSpace = super::Space<NoFrame, CryptoFrame, Transmission>;
 
 #[derive(Debug)]

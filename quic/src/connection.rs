@@ -1,11 +1,17 @@
 use bytes::BytesMut;
-use qbase::packet::{
-    KeyPhaseToggle, ProtectedHandshakeHeader, ProtectedInitialHeader, ProtectedOneRttHeader,
-    ProtectedZeroRTTHeader, SpinToggle,
+use qbase::{
+    error::Error,
+    frame::Frame,
+    packet::{
+        ext::decrypt_packet, KeyPhaseToggle, ProtectedHandshakeHeader, ProtectedInitialHeader,
+        ProtectedOneRttHeader, ProtectedZeroRTTHeader, SpinToggle,
+    },
 };
-use qrecovery::space::{
-    DataSpace, HandshakeSpace, InitailSpace, OneRttDataSpace, ZeroRttDataSpace,
+use qrecovery::{
+    rtt::Rtt,
+    space::{DataSpace, HandshakeSpace, InitialSpace, OneRttDataSpace, Receive, ZeroRttDataSpace},
 };
+use rustls::quic::{Connection as TlsConnection, Keys};
 
 /// Key material for use in QUIC packet spaces
 ///
@@ -29,17 +35,49 @@ use qrecovery::space::{
 /// 调用write_hs()，获得1-rtt keys，
 /// 从ConnectionCommon::zero_rtt_keys()获取zero_rtt_keys,
 pub struct Connection {
-    initial_space: InitailSpace,
+    tls_connection: TlsConnection,
+    initial_keys: Keys,
+    handshake_keys: Keys,
+    zero_rtt_keys: Keys,
+    one_rtt_keys: Keys,
+
+    initial_space: InitialSpace,
     handshake_space: HandshakeSpace,
     data_space: DataSpace,
+
+    // 暂时性的，rtt应该跟path相关
+    rtt: Rtt,
 
     spin: SpinToggle,
     key_phase: KeyPhaseToggle,
 }
 
 impl Connection {
-    pub fn receive_initial_packet(&mut self, header: ProtectedInitialHeader, packet: BytesMut) {
-        // todo
+    pub fn receive_initial_packet(
+        &mut self,
+        header: ProtectedInitialHeader,
+        packet: BytesMut,
+        pn_offset: usize,
+    ) -> Result<(), Error> {
+        let (pn, body) = decrypt_packet(header, packet, pn_offset, 0, &self.initial_keys.remote)?;
+        for frame in self
+            .initial_space
+            .receive(pn, body, &mut self.rtt)?
+            .iter()
+            .flatten()
+        {
+            match frame {
+                Frame::Close(frame) => {}
+                other => {
+                    return Err(Error::new(
+                        qbase::error::ErrorKind::ProtocolViolation,
+                        other.frame_type(),
+                        reason,
+                    ))
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn receive_handshake_packet(&mut self, header: ProtectedHandshakeHeader, packet: BytesMut) {
