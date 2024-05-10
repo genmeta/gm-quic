@@ -6,6 +6,7 @@ use std::{
     task::{Context, Poll},
 };
 
+use bytes::buf;
 use qbase::{
     cid::ConnectionId,
     config::{self, TransportParameters},
@@ -56,19 +57,7 @@ impl TlsSession {
         params: &TransportParameters,
     ) -> Result<TlsSession, Error> {
         let version = interpret_version(version)?;
-        Ok(TlsSession::Client(ClientSession {
-            version,
-            next_secrets: None,
-            inner: rustls::quic::Connection::Client(
-                rustls::quic::ClientConnection::new(
-                    config,
-                    version,
-                    server_name.try_into().map_err(|_| InvalidDnsName)?,
-                    params.to_vec(),
-                )
-                .unwrap(),
-            ),
-        }))
+        todo!()
     }
 
     pub fn start_server_session(
@@ -77,15 +66,8 @@ impl TlsSession {
         params: &TransportParameters,
     ) -> Result<TlsSession, Error> {
         let version = interpret_version(version)?;
-        Ok(TlsSession::Server(ServerSession {
-            version,
-            inner: rustls::quic::Connection::Server(
-                rustls::quic::ServerConnection::new(config, version, params.to_vec()).unwrap(),
-            ),
-            next_secrets: None,
-            protocol: None,
-            name: None,
-        }))
+
+        todo!();
     }
 
     /// 生成 inital keys
@@ -216,12 +198,7 @@ impl ClientSession {
     pub fn transport_parameters(&self) -> Result<Option<TransportParameters>, TransportError> {
         match self.inner.quic_transport_parameters() {
             None => Ok(None),
-            Some(buf) => match TransportParameters::read(&mut io::Cursor::new(buf)) {
-                Ok(params) => Ok(Some(params)),
-                Err(e) => Err(TransportError::PROTOCOL_VIOLATION(format!(
-                    "failed to parse transport parameters: {e}"
-                ))),
-            },
+            Some(buf) => todo!(),
         }
     }
 }

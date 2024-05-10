@@ -198,7 +198,7 @@ struct CidQueue {
 
 pub const RESET_TOKEN_SIZE: usize = 16;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct ResetToken([u8; RESET_TOKEN_SIZE]);
 
 impl ResetToken {
@@ -208,16 +208,25 @@ impl ResetToken {
 }
 
 impl PartialEq for ResetToken {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.0[..] == other.0[..]
     }
 }
 
 impl Eq for ResetToken {}
 
-impl From<[u8; RESET_TOKEN_SIZE]> for ResetToken {
-    fn from(x: [u8; RESET_TOKEN_SIZE]) -> Self {
-        Self(x)
+pub fn be_reset_token(input: &[u8]) -> IResult<&[u8], ResetToken> {
+    let (input, bytes) = nom::bytes::complete::take(RESET_TOKEN_SIZE)(input)?;
+    Ok((input, ResetToken::new_with(bytes)))
+}
+
+pub trait WriteResetToken {
+    fn put_reset_token(&mut self, token: &ResetToken);
+}
+
+impl<T: BufMut> WriteResetToken for T {
+    fn put_reset_token(&mut self, token: &ResetToken) {
+        self.put_slice(&token.0);
     }
 }
 
