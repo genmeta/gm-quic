@@ -1,4 +1,5 @@
 pub mod connection;
+pub mod crypto;
 pub mod endpoint;
 
 pub fn add(left: usize, right: usize) -> usize {

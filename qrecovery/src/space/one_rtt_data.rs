@@ -2,7 +2,7 @@
 use crate::{crypto_stream::CryptoStream, streams::Streams};
 use qbase::{
     error::Error,
-    frame::{DataFrame, OneRttFrame},
+    frame::{ConnectionFrame, DataFrame, OneRttFrame},
 };
 
 type OneRttDataFrame = DataFrame;
@@ -53,10 +53,18 @@ impl super::Transmit<OneRttFrame, OneRttDataFrame> for Transmission {
         }
     }
 
-    fn recv_frame(&mut self, frame: OneRttFrame) -> Result<(), Error> {
+    fn recv_frame(&mut self, frame: OneRttFrame) -> Result<Option<ConnectionFrame>, Error> {
         match frame {
             OneRttFrame::Stream(frame) => self.streams.recv_frame(frame),
-            _ => unreachable!("these are handled in space or connection layer"),
+            OneRttFrame::DataBlocked(frame) => Ok(Some(frame.into())),
+            OneRttFrame::MaxData(frame) => Ok(Some(frame.into())),
+            OneRttFrame::NewToken(frame) => Ok(Some(frame.into())),
+            OneRttFrame::NewConnectionId(frame) => Ok(Some(frame.into())),
+            OneRttFrame::RetireConnectionId(frame) => Ok(Some(frame.into())),
+            OneRttFrame::PathChallenge(frame) => Ok(Some(frame.into())),
+            OneRttFrame::PathResponse(frame) => Ok(Some(frame.into())),
+            OneRttFrame::HandshakeDone(frame) => Ok(Some(frame.into())),
+            OneRttFrame::Ping(_) => unreachable!("these are handled in space or connection layer"),
         }
     }
 }

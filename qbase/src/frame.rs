@@ -169,6 +169,20 @@ pub enum InfoFrame {
     Stream(StreamInfoFrame),
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[enum_dispatch(BeFrame)]
+pub enum ConnectionFrame {
+    Close(ConnectionCloseFrame),
+    NewToken(NewTokenFrame),
+    MaxData(MaxDataFrame),
+    DataBlocked(DataBlockedFrame),
+    NewConnectionId(NewConnectionIdFrame),
+    RetireConnectionId(RetireConnectionIdFrame),
+    PathChallenge(PathChallengeFrame),
+    PathResponse(PathResponseFrame),
+    HandshakeDone(HandshakeDoneFrame),
+}
+
 // The initial packet and handshake packet only contain Ping frame.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NoFrame;
@@ -187,7 +201,7 @@ impl TryFrom<InfoFrame> for NoFrame {
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
 pub enum ZeroRttFrame {
-    Ping(PingFrame),
+    Ping(PingFrame), // 放在这里，应是没用?只可能想要写Ping帧时用得着
     MaxData(MaxDataFrame),
     DataBlocked(DataBlockedFrame),
     NewConnectionId(NewConnectionIdFrame),

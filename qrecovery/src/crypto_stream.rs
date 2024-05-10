@@ -2,7 +2,7 @@ use super::space::Transmit;
 /// Crypto data stream
 use qbase::{
     error::Error,
-    frame::{CryptoFrame, NoFrame},
+    frame::{ConnectionFrame, CryptoFrame, NoFrame},
 };
 
 mod send {
@@ -95,9 +95,9 @@ mod send {
 
     type ArcSender = Arc<Mutex<Sender>>;
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct CryptoStreamWriter(ArcSender);
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub(super) struct CryptoStreamOutgoing(ArcSender);
 
     impl AsyncWrite for CryptoStreamWriter {
@@ -196,9 +196,9 @@ mod recv {
 
     type ArcRecver = Arc<Mutex<Recver>>;
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct CryptoStreamReader(ArcRecver);
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub(super) struct CryptoStreamIncoming(ArcRecver);
 
     impl AsyncRead for CryptoStreamReader {
@@ -278,12 +278,12 @@ impl CryptoStream {
         }
     }
 
-    pub fn reader(&mut self) -> &mut recv::CryptoStreamReader {
-        &mut self.reader
+    pub fn reader(&self) -> recv::CryptoStreamReader {
+        self.reader.clone()
     }
 
-    pub fn writer(&mut self) -> &mut send::CryptoStreamWriter {
-        &mut self.writer
+    pub fn writer(&self) -> send::CryptoStreamWriter {
+        self.writer.clone()
     }
 }
 
@@ -307,7 +307,7 @@ impl Transmit<NoFrame, CryptoFrame> for CryptoStream {
         Ok(())
     }
 
-    fn recv_frame(&mut self, _: NoFrame) -> Result<(), Error> {
+    fn recv_frame(&mut self, _: NoFrame) -> Result<Option<ConnectionFrame>, Error> {
         unreachable!("no signaling info frame in crypto stream")
     }
 }

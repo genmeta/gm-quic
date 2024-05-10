@@ -91,7 +91,10 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
         Ok(())
     }
 
-    fn recv_frame(&mut self, stream_info_frame: StreamInfoFrame) -> Result<(), Error> {
+    fn recv_frame(
+        &mut self,
+        stream_info_frame: StreamInfoFrame,
+    ) -> Result<Option<ConnectionFrame>, Error> {
         match stream_info_frame {
             StreamInfoFrame::ResetStream(reset_frame) => {
                 let sid = reset_frame.stream_id;
@@ -192,7 +195,7 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                 // 仅仅起到通知作用?也分主动和被动
             }
         }
-        Ok(())
+        Ok(None)
     }
 }
 

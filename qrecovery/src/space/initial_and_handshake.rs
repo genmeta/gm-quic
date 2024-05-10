@@ -2,7 +2,7 @@ use super::Transmit;
 use crate::crypto_stream::CryptoStream;
 use qbase::{
     error::Error,
-    frame::{CryptoFrame, NoFrame},
+    frame::{ConnectionFrame, CryptoFrame, NoFrame},
 };
 
 pub type InitialSpace = super::Space<NoFrame, CryptoFrame, Transmission>;
@@ -28,7 +28,7 @@ impl Transmit<NoFrame, CryptoFrame> for Transmission {
         self.crypto_stream.may_loss(data_frame)
     }
 
-    fn recv_frame(&mut self, _: NoFrame) -> Result<(), Error> {
+    fn recv_frame(&mut self, _: NoFrame) -> Result<Option<ConnectionFrame>, Error> {
         unreachable!("no signaling frame in initial or handshake space")
     }
 

@@ -1,17 +1,18 @@
+use super::crypto::TlsSession;
 use bytes::BytesMut;
 use qbase::{
     error::Error,
-    frame::Frame,
+    frame::ConnectionFrame,
     packet::{
-        ext::decrypt_packet, KeyPhaseToggle, ProtectedHandshakeHeader, ProtectedInitialHeader,
-        ProtectedOneRttHeader, ProtectedZeroRTTHeader, SpinToggle,
+        ext::decrypt_packet, KeyPhaseToggle, ProtectedInitialHeader, ProtectedOneRttHeader,
+        ProtectedZeroRTTHeader, SpinToggle,
     },
 };
 use qrecovery::{
     rtt::Rtt,
-    space::{DataSpace, HandshakeSpace, InitialSpace, OneRttDataSpace, Receive, ZeroRttDataSpace},
+    space::{DataSpace, HandshakeSpace, InitialSpace, Receive},
 };
-use rustls::quic::{Connection as TlsConnection, Keys};
+use rustls::quic::Keys;
 
 /// Key material for use in QUIC packet spaces
 ///
@@ -35,7 +36,7 @@ use rustls::quic::{Connection as TlsConnection, Keys};
 /// 调用write_hs()，获得1-rtt keys，
 /// 从ConnectionCommon::zero_rtt_keys()获取zero_rtt_keys,
 pub struct Connection {
-    tls_connection: TlsConnection,
+    tls_session: TlsSession,
     initial_keys: Keys,
     handshake_keys: Keys,
     zero_rtt_keys: Keys,
@@ -60,28 +61,47 @@ impl Connection {
         pn_offset: usize,
     ) -> Result<(), Error> {
         let (pn, body) = decrypt_packet(header, packet, pn_offset, 0, &self.initial_keys.remote)?;
-        for frame in self
-            .initial_space
-            .receive(pn, body, &mut self.rtt)?
-            .iter()
-            .flatten()
-        {
+        for frame in self.initial_space.receive(pn, body, &mut self.rtt)? {
             match frame {
-                Frame::Close(frame) => {}
-                other => {
-                    return Err(Error::new(
-                        qbase::error::ErrorKind::ProtocolViolation,
-                        other.frame_type(),
-                        reason,
-                    ))
+                ConnectionFrame::Close(frame) => {
+                    if frame.frame_type.is_some() {
+                        return Err(Error::new(
+                            qbase::error::ErrorKind::ProtocolViolation,
+                            frame.frame_type.unwrap(),
+                            "The initial space does not allow the application layer to close the connection."
+                        ));
+                    }
+                    todo!("close connection")
                 }
+                _ => unreachable!("no signaling frame in initial space"),
             }
         }
         Ok(())
     }
 
-    pub fn receive_handshake_packet(&mut self, header: ProtectedHandshakeHeader, packet: BytesMut) {
-        // todo
+    pub fn receive_handshake_packet(
+        &mut self,
+        header: ProtectedInitialHeader,
+        packet: BytesMut,
+        pn_offset: usize,
+    ) -> Result<(), Error> {
+        let (pn, body) = decrypt_packet(header, packet, pn_offset, 0, &self.handshake_keys.remote)?;
+        for frame in self.initial_space.receive(pn, body, &mut self.rtt)? {
+            match frame {
+                ConnectionFrame::Close(frame) => {
+                    if frame.frame_type.is_some() {
+                        return Err(Error::new(
+                            qbase::error::ErrorKind::ProtocolViolation,
+                            frame.frame_type.unwrap(),
+                            "The handshake space does not allow the application layer to close the connection."
+                        ));
+                    }
+                    todo!("close connection")
+                }
+                _ => unreachable!("no signaling frame in initial space"),
+            }
+        }
+        Ok(())
     }
 
     pub fn receive_zero_rtt_packet(&mut self, header: ProtectedZeroRTTHeader, packet: BytesMut) {
@@ -90,5 +110,13 @@ impl Connection {
 
     pub fn receive_one_rtt_packet(&mut self, header: ProtectedOneRttHeader, packet: BytesMut) {
         // todo
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        assert_eq!(2 + 2, 4)
     }
 }

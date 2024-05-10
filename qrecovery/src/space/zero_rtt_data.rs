@@ -3,7 +3,7 @@ use super::{one_rtt_data, OneRttDataSpace};
 use crate::{crypto_stream::CryptoStream, streams::Streams};
 use qbase::{
     error::Error,
-    frame::{OneRttFrame, StreamFrame, StreamInfoFrame, ZeroRttFrame},
+    frame::{ConnectionFrame, OneRttFrame, StreamFrame, StreamInfoFrame, ZeroRttFrame},
     streamid::StreamIds,
 };
 use std::{
@@ -49,10 +49,15 @@ impl super::Transmit<ZeroRttFrame, ZeroRttDataFrame> for Transmission {
         self.streams.recv_data(stream_frame, body)
     }
 
-    fn recv_frame(&mut self, frame: ZeroRttFrame) -> Result<(), Error> {
+    fn recv_frame(&mut self, frame: ZeroRttFrame) -> Result<Option<ConnectionFrame>, Error> {
         match frame {
             ZeroRttFrame::Stream(frame) => self.streams.recv_frame(frame),
-            _ => unreachable!("these are handled in connection layer"),
+            ZeroRttFrame::MaxData(frame) => Ok(Some(frame.into())),
+            ZeroRttFrame::DataBlocked(frame) => Ok(Some(frame.into())),
+            ZeroRttFrame::NewConnectionId(frame) => Ok(Some(frame.into())),
+            ZeroRttFrame::RetireConnectionId(frame) => Ok(Some(frame.into())),
+            ZeroRttFrame::PathChallenge(frame) => Ok(Some(frame.into())),
+            ZeroRttFrame::Ping(_) => unreachable!("these are handled in connection layer"),
         }
     }
 }

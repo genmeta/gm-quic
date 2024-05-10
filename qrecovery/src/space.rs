@@ -39,7 +39,7 @@ pub trait Receive {
         pktid: u64,
         payload: Bytes,
         rtt: &mut Rtt,
-    ) -> Result<Option<Vec<Frame>>, Error>;
+    ) -> Result<Vec<ConnectionFrame>, Error>;
 }
 
 /// The following generic definition:
@@ -65,7 +65,7 @@ pub trait Transmit<F, D> {
 
     fn may_loss(&mut self, data_frame: D);
 
-    fn recv_frame(&mut self, frame: F) -> Result<(), Error>;
+    fn recv_frame(&mut self, frame: F) -> Result<Option<ConnectionFrame>, Error>;
 
     fn recv_data(&mut self, data_frame: D, data: Bytes) -> Result<(), Error>;
 }
@@ -522,26 +522,26 @@ where
         pktid: u64,
         payload: Bytes,
         rtt: &mut Rtt,
-    ) -> Result<Option<Vec<Frame>>, Error> {
-        if pktid < self.rcvd_packets.offset() {
-            return Ok(None);
-        }
+    ) -> Result<Vec<ConnectionFrame>, Error> {
+        let mut connection_frames = Vec::with_capacity(4);
+        // // Discard expired or duplicate packets, no further processing
         if !matches!(
             self.rcvd_packets.get(pktid),
             Some(State::NotReceived) | Some(State::Unreached)
-        ) {
-            return Ok(None);
+        ) || pktid < self.rcvd_packets.offset()
+        {
+            return Ok(connection_frames);
         }
         // TODO: 超过最新包号一定范围，仍然是不允许的，可能是某种错误
 
         let mut is_ack_eliciting = false;
         let frames = parse_frames_from_bytes(payload)?;
-        let (conn_layer_interest, frames): (Vec<_>, Vec<_>) =
-            frames.into_iter().partition(Frame::is_conn_layer_interest);
-        // let i = frames.iter_mut().partition_in_place(Frame::is_conn_layer_interest);
         for frame in frames {
             match frame {
                 Frame::Padding => continue,
+                Frame::Close(frame) => {
+                    connection_frames.push(ConnectionFrame::Close(frame));
+                }
                 Frame::Ack(ack) => {
                     if R {
                         self.recv_ack_frame(ack, rtt);
@@ -564,10 +564,13 @@ where
                     is_ack_eliciting = true;
                     match frame {
                         InfoFrame::Ping(_) => (),
-                        other => self.transmission.recv_frame(other.try_into()?)?,
+                        other => {
+                            if let Some(cf) = self.transmission.recv_frame(other.try_into()?)? {
+                                connection_frames.push(cf);
+                            }
+                        }
                     }
                 }
-                _ => unreachable!("these frames are partitioned to be conn-layer interest"),
             }
         }
         self.rcvd_packets
@@ -592,11 +595,7 @@ where
                 .time_to_sync
                 .or(Some(Instant::now() + self.max_ack_delay));
         }
-        Ok(if conn_layer_interest.is_empty() {
-            None
-        } else {
-            Some(conn_layer_interest)
-        })
+        Ok(connection_frames)
     }
 }
 
