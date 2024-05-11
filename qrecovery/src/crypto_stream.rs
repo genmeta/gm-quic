@@ -278,6 +278,10 @@ impl CryptoStream {
         }
     }
 
+    pub fn split_io(&self) -> (CryptoStreamReader, CryptoStreamWriter) {
+        (self.reader.clone(), self.writer.clone())
+    }
+
     pub fn reader(&self) -> recv::CryptoStreamReader {
         self.reader.clone()
     }
