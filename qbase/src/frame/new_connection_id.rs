@@ -16,10 +16,10 @@ const NEW_CONNECTION_ID_FRAME_TYPE: u8 = 0x18;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewConnectionIdFrame {
-    pub(crate) sequence: VarInt,
-    pub(crate) retire_prior_to: VarInt,
-    pub(crate) id: ConnectionId,
-    pub(crate) reset_token: ResetToken,
+    pub sequence: VarInt,
+    pub retire_prior_to: VarInt,
+    pub id: ConnectionId,
+    pub reset_token: ResetToken,
 }
 
 impl super::BeFrame for NewConnectionIdFrame {
@@ -31,7 +31,7 @@ impl super::BeFrame for NewConnectionIdFrame {
 pub(super) mod ext {
     use super::NewConnectionIdFrame;
     use crate::{
-        cid::{ResetToken, RESET_TOKEN_SIZE},
+        cid::{ResetToken, WriteConnectionId, RESET_TOKEN_SIZE},
         varint::ext::{be_varint, BufMutExt},
     };
 
@@ -79,8 +79,7 @@ pub(super) mod ext {
             self.put_u8(super::NEW_CONNECTION_ID_FRAME_TYPE);
             self.put_varint(&frame.sequence);
             self.put_varint(&frame.retire_prior_to);
-            self.put_u8(frame.id.len() as u8);
-            self.put_slice(&frame.id);
+            self.put_connection_id(&frame.id);
             self.put_slice(&frame.reset_token);
         }
     }

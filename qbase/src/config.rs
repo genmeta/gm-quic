@@ -335,7 +335,6 @@ mod test {
 
         let mut buf = bytes::BytesMut::new();
         buf.put_transport_parameters(&params);
-
         let params2 = ext::be_transport_parameters(&buf).unwrap().1;
         assert_eq!(params, params2);
     }

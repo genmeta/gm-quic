@@ -8,7 +8,7 @@ use nom::ToUsize;
 // It would be neat if we could express to Rust that the top two bits are available for use as enum
 // discriminants
 #[derive(Default, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct VarInt(pub(crate) u64);
+pub struct VarInt(pub u64);
 
 pub const VARINT_MAX: u64 = 0x3fff_ffff_ffff_ffff;
 

@@ -7,7 +7,7 @@ use nom::{
     IResult,
 };
 use qbase::{
-    cid::ConnectionId,
+    cid::{be_connection_id, ConnectionId, WriteConnectionId},
     varint::{
         ext::{be_varint, BufMutExt},
         VarInt,
@@ -184,8 +184,8 @@ impl Header {
                 }
             }
         };
-        let (remain, dcid) = ConnectionId::decode_long(remain)?;
-        let (mut remain, scid) = ConnectionId::decode_long(remain)?;
+        let (remain, dcid) = be_connection_id(remain)?;
+        let (mut remain, scid) = be_connection_id(remain)?;
 
         let mut token: Option<Vec<u8>> = None;
         let mut versions: Option<Vec<u32>> = None;
@@ -270,8 +270,8 @@ impl Header {
         first |= FORM_BIT | FIXED_BIT | (ty << 4);
         out.put_u8(first);
         out.put_u32(self.version);
-        self.dcid.encode_long(out);
-        self.scid.encode_long(out);
+        out.put_connection_id(&self.dcid);
+        out.put_connection_id(&self.scid);
 
         match self.ty {
             Type::Initial => {
