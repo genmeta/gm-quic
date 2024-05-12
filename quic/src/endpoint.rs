@@ -30,7 +30,6 @@ impl Endpiont {
             // new connection
             let keys = Keys::initial(Version::V1, dcid, Side::Server);
             // 下面这一步，应该在connection内部处理了
-            let (pn, body) = decrypt_packet(header, packet, pn_offset, 0, &keys.remote).unwrap();
         }
         // todo
     }
