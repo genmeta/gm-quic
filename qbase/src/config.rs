@@ -68,7 +68,7 @@ pub struct PreferredAddress {
     stateless_reset_token: ResetToken,
 }
 
-pub(super) mod ext {
+pub mod ext {
     use std::time::Duration;
 
     use bytes::BufMut as _;

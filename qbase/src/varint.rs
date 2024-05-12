@@ -1,7 +1,5 @@
 use std::{cmp::Ordering, convert::TryFrom, fmt};
 
-use nom::ToUsize;
-
 /// An integer less than 2^62
 ///
 /// Values of this type are suitable for encoding as QUIC variable-length integer.
@@ -105,7 +103,7 @@ impl TryFrom<usize> for VarInt {
     }
 }
 
-impl ToUsize for VarInt {
+impl nom::ToUsize for VarInt {
     fn to_usize(&self) -> usize {
         self.0 as usize
     }

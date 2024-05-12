@@ -1,5 +1,3 @@
-use std::ops::DerefMut;
-
 use bytes::BufMut;
 use nom::{number::streaming::be_u8, IResult};
 

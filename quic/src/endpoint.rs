@@ -1,9 +1,6 @@
 use crate::connection::Connection;
 use bytes::BytesMut;
-use qbase::{
-    cid::ConnectionId,
-    packet::{ext::decrypt_packet, ProtectedInitialHeader},
-};
+use qbase::{cid::ConnectionId, packet::ProtectedInitialHeader};
 use rustls::{
     quic::{Keys, Version},
     Side,
