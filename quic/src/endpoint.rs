@@ -25,7 +25,7 @@ impl Endpiont {
         assert_eq!(header.version, 1);
         let dcid = &header.dcid;
         if let Some(conn) = self.connections.get_mut(dcid) {
-            conn.receive_initial_packet(header, packet, pn_offset);
+            let _ = conn.receive_initial_packet(header, packet, pn_offset);
         } else {
             // new connection
             let keys = Keys::initial(Version::V1, dcid, Side::Server);

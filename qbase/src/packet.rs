@@ -346,7 +346,7 @@ impl<H: BeProtected + RemoveProtection> DecryptPacket for ProtectedPacketWrapper
 
 pub type ProtectedInitialPacket = ProtectedPacketWrapper<ProtectedInitialHeader>;
 pub type ProtectedHandshakePacket = ProtectedPacketWrapper<ProtectedHandshakeHeader>;
-pub type ProtectedZeroRTTPacket = ProtectedPacketWrapper<ProtectedZeroRTTHeader>;
+pub type ProtectedZeroRttPacket = ProtectedPacketWrapper<ProtectedZeroRTTHeader>;
 pub type ProtectedOneRttPacket = ProtectedPacketWrapper<ProtectedOneRttHeader>;
 
 #[derive(Debug, Clone)]
@@ -354,7 +354,7 @@ pub type ProtectedOneRttPacket = ProtectedPacketWrapper<ProtectedOneRttHeader>;
 pub enum ProtectedPacket {
     Initial(ProtectedInitialPacket),
     Handshake(ProtectedHandshakePacket),
-    ZeroRTT(ProtectedZeroRTTPacket),
+    ZeroRTT(ProtectedZeroRttPacket),
     OneRtt(ProtectedOneRttPacket),
 }
 
@@ -487,7 +487,7 @@ pub mod ext {
             }
         }
 
-        fn check<H>(
+        fn complete<H>(
             header: H,
             mut raw_data: BytesMut,
             remain: &[u8],
@@ -534,17 +534,20 @@ pub mod ext {
                 match ty & LONG_PACKET_TYPE_MASK {
                     INITIAL_PACKET_TYPE => {
                         let (remain, initial) = be_initial(input)?;
-                        let (remain, packet) = Self::check(self.wrap(initial), raw_data, remain)?;
+                        let (remain, packet) =
+                            Self::complete(self.wrap(initial), raw_data, remain)?;
                         Ok((remain, Packet::Protected(ProtectedPacket::Initial(packet))))
                     }
                     ZERO_RTT_PACKET_TYPE => {
                         let (remain, zero_rtt) = be_zero_rtt(input)?;
-                        let (remain, packet) = Self::check(self.wrap(zero_rtt), raw_data, remain)?;
+                        let (remain, packet) =
+                            Self::complete(self.wrap(zero_rtt), raw_data, remain)?;
                         Ok((remain, Packet::Protected(ProtectedPacket::ZeroRTT(packet))))
                     }
                     HANDSHAKE_PACKET_TYPE => {
                         let (remain, handshake) = be_handshake(input)?;
-                        let (remain, packet) = Self::check(self.wrap(handshake), raw_data, remain)?;
+                        let (remain, packet) =
+                            Self::complete(self.wrap(handshake), raw_data, remain)?;
                         Ok((
                             remain,
                             Packet::Protected(ProtectedPacket::Handshake(packet)),

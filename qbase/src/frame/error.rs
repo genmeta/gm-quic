@@ -24,6 +24,12 @@ pub enum Error {
 use crate::error::Error as TransportError;
 use crate::error::ErrorKind as TransportErrorKind;
 
+impl From<std::convert::Infallible> for Error {
+    fn from(_: std::convert::Infallible) -> Self {
+        unreachable!("never happen.")
+    }
+}
+
 impl From<Error> for TransportError {
     fn from(e: Error) -> Self {
         match e {

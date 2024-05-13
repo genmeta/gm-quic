@@ -1,14 +1,19 @@
 use super::{index_deque::IndexDeque, rtt::Rtt};
 use bytes::{BufMut, Bytes};
+use deref_derive::{Deref, DerefMut};
 use qbase::{
     error::{Error, ErrorKind},
     frame::{self, ext::*, *},
+    packet::{
+        DecryptPacket, ProtectedHandshakePacket, ProtectedInitialPacket, ProtectedOneRttPacket,
+        ProtectedZeroRttPacket,
+    },
     varint::{VarInt, VARINT_MAX},
 };
+use rustls::quic::{DirectionalKeys, Keys};
 use std::{
     collections::VecDeque,
     fmt::Debug,
-    ops::{Deref, DerefMut},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -27,13 +32,17 @@ pub enum DataSpace {
     OneRtt(OneRttDataSpace),
 }
 
-pub trait TrySend<B: BufMut> {
-    fn try_send(&mut self, buf: &mut B) -> Result<Option<(u64, usize)>, Error>;
+pub trait TrySend {
+    type Buffer: BufMut;
+
+    fn try_send(&mut self, buf: &mut Self::Buffer) -> Result<Option<(u64, usize)>, Error>;
 }
 
 /// When a network socket receives a data packet and determines that it belongs
 /// to a specific space, the content of the packet is passed on to that space.
 pub trait Receive {
+    fn expected_pn(&self) -> u64;
+
     fn receive(
         &mut self,
         pktid: u64,
@@ -142,7 +151,7 @@ const PACKET_THRESHOLD: u64 = 3;
 
 /// 可靠空间的抽象实现，需要实现上述所有trait
 /// 可靠空间中的重传、确认，由可靠空间内部实现，无需外露
-#[derive(Debug)]
+#[derive(Debug, Deref, DerefMut)]
 pub struct Space<F, D, T, const R: bool = true>
 where
     T: Transmit<F, D> + Debug,
@@ -184,27 +193,8 @@ where
     // 应该计算rtt的时候，传进来；或者收到ack frame的时候，将(last_rtt, ack_delay)传出去
     max_ack_delay: Duration,
 
+    #[deref]
     transmission: T,
-}
-
-impl<F, D, T, const R: bool> Deref for Space<F, D, T, R>
-where
-    T: Transmit<F, D> + Debug,
-{
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.transmission
-    }
-}
-
-impl<F, D, T, const R: bool> DerefMut for Space<F, D, T, R>
-where
-    T: Transmit<F, D> + Debug,
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.transmission
-    }
 }
 
 impl<F, D, T, const R: bool> Space<F, D, T, R>
@@ -440,13 +430,14 @@ where
     }
 }
 
-impl<F, D, T, B, const R: bool> TrySend<B> for Space<F, D, T, R>
+impl<F, D, T, const R: bool> TrySend for Space<F, D, T, R>
 where
     F: BeFrame,
-    T: Transmit<F, D, Buffer = B> + Debug,
-    B: BufMut + WriteFrame<F> + WriteDataFrame<D>,
+    T: Transmit<F, D> + Debug,
 {
-    fn try_send(&mut self, buf: &mut B) -> Result<Option<(u64, usize)>, Error> {
+    type Buffer = T::Buffer;
+
+    fn try_send(&mut self, buf: &mut T::Buffer) -> Result<Option<(u64, usize)>, Error> {
         let mut is_ack_eliciting = false;
         let mut remaning = buf.remaining_mut();
         let mut payload = Payload::<F, D>::new();
@@ -512,10 +503,19 @@ where
 
 impl<F, D, T, const R: bool> Receive for Space<F, D, T, R>
 where
-    F: TryFrom<InfoFrame, Error = frame::Error>,
-    D: TryFrom<DataFrame, Error = frame::Error>,
+    F: TryFrom<InfoFrame>,
+    D: TryFrom<DataFrame>,
     T: Transmit<F, D> + Debug,
+    // 奇怪的写法，不知道为什么，但是这样写，就能编译通过
+    // <F as TryFrom<InfoFrame>>::Error: Into<Error>,
+    // <D as TryFrom<DataFrame>>::Error: Into<Error>,
+    Error: From<<D as TryFrom<qbase::frame::DataFrame>>::Error>
+        + From<<F as TryFrom<qbase::frame::InfoFrame>>::Error>,
 {
+    fn expected_pn(&self) -> u64 {
+        self.rcvd_packets.largest()
+    }
+
     // TODO: 返回流控字节数，以及可能的rtt新采样，还有需要上层立即处理的帧
     fn receive(
         &mut self,
@@ -597,6 +597,110 @@ where
         }
         Ok(connection_frames)
     }
+}
+
+impl<F, D, T, const R: bool> Space<F, D, T, R>
+where
+    F: BeFrame + TryFrom<InfoFrame, Error = frame::Error>,
+    D: TryFrom<DataFrame, Error = frame::Error>,
+    T: Transmit<F, D> + Debug,
+{
+    pub fn into_split(self, keys: Keys) -> (ReceiveHalf<Self>, TransmitHalf<Self>) {
+        let arc_space = Arc::new(Mutex::new(self));
+        (
+            ReceiveHalf {
+                decrypt_key: keys.remote,
+                space: arc_space.clone(),
+            },
+            TransmitHalf {
+                encrypt_key: keys.local,
+                space: arc_space,
+            },
+        )
+    }
+}
+
+#[derive(Deref, DerefMut)]
+pub struct ReceiveHalf<S> {
+    decrypt_key: DirectionalKeys,
+    #[deref]
+    space: Arc<Mutex<S>>,
+}
+
+pub trait ReceivePacket<P>
+where
+    P: DecryptPacket,
+{
+    fn receive_packet(&self, packet: P, rtt: &mut Rtt) -> Result<Vec<ConnectionFrame>, Error>;
+}
+
+impl ReceivePacket<ProtectedInitialPacket> for ReceiveHalf<InitialSpace> {
+    fn receive_packet(
+        &self,
+        packet: ProtectedInitialPacket,
+        rtt: &mut Rtt,
+    ) -> Result<Vec<ConnectionFrame>, Error> {
+        let mut space = self.space.lock().unwrap();
+        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_key)?;
+        space.receive(pktid, payload, rtt)
+    }
+}
+
+impl ReceivePacket<ProtectedHandshakePacket> for ReceiveHalf<HandshakeSpace> {
+    fn receive_packet(
+        &self,
+        packet: ProtectedHandshakePacket,
+        rtt: &mut Rtt,
+    ) -> Result<Vec<ConnectionFrame>, Error> {
+        let mut space = self.space.lock().unwrap();
+        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_key)?;
+        space.receive(pktid, payload, rtt)
+    }
+}
+
+impl ReceivePacket<ProtectedZeroRttPacket> for ReceiveHalf<ZeroRttDataSpace> {
+    fn receive_packet(
+        &self,
+        packet: ProtectedZeroRttPacket,
+        rtt: &mut Rtt,
+    ) -> Result<Vec<ConnectionFrame>, Error> {
+        let mut space = self.space.lock().unwrap();
+        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_key)?;
+        space.receive(pktid, payload, rtt)
+    }
+}
+
+impl ReceivePacket<ProtectedOneRttPacket> for ReceiveHalf<OneRttDataSpace> {
+    fn receive_packet(
+        &self,
+        packet: ProtectedOneRttPacket,
+        rtt: &mut Rtt,
+    ) -> Result<Vec<ConnectionFrame>, Error> {
+        let mut space = self.space.lock().unwrap();
+        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_key)?;
+        space.receive(pktid, payload, rtt)
+    }
+}
+
+#[derive(Deref, DerefMut)]
+pub struct TransmitHalf<S> {
+    encrypt_key: DirectionalKeys,
+    #[deref]
+    space: Arc<Mutex<S>>,
+}
+
+pub trait TransmitPacket<P> {
+    type Buffer: BufMut;
+
+    // 必须是加密之后的数据包，若是有数据要发送，且buf能容下数据，那么调用此函数后，已经写进buf里了
+    // P应该是个明文header，或者是其他结构，如已经变成二进制的slice，只等第一字节加密
+    // 但又不至于，直接写进到buf里，因为可能空间不足，可能没数据发，岂不是浪费了一次写
+    // TODO: 后续再来处理写
+    fn transmit_packet(
+        &mut self,
+        plain_packet_header: P,
+        buf: &mut Self::Buffer,
+    ) -> Result<Option<(u64, usize)>, Error>;
 }
 
 #[cfg(test)]

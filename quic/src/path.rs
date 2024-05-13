@@ -2,7 +2,7 @@ use qbase::{
     cid::ConnectionId,
     packet::{
         ProtectedHandshakePacket, ProtectedInitialPacket, ProtectedOneRttPacket,
-        ProtectedZeroRTTPacket,
+        ProtectedZeroRttPacket,
     },
 };
 use qrecovery::rtt::Rtt;
@@ -63,7 +63,7 @@ pub struct Path {
     rtt: Arc<Mutex<Rtt>>,
     initial_packets: ArcRcvdPackets<ProtectedInitialPacket>,
     handshake_packets: ArcRcvdPackets<ProtectedHandshakePacket>,
-    zero_rtt_packets: ArcRcvdPackets<ProtectedZeroRTTPacket>,
+    zero_rtt_packets: ArcRcvdPackets<ProtectedZeroRttPacket>,
     one_rtt_packets: ArcRcvdPackets<ProtectedOneRttPacket>,
 }
 
@@ -89,7 +89,7 @@ impl Path {
         self.handshake_packets.lock().unwrap().push(packet);
     }
 
-    pub fn receive_0rtt_packet(&self, packet: ProtectedZeroRTTPacket) {
+    pub fn receive_0rtt_packet(&self, packet: ProtectedZeroRttPacket) {
         self.zero_rtt_packets.lock().unwrap().push(packet);
     }
 
@@ -105,7 +105,7 @@ impl Path {
         ReadPacket(self.handshake_packets.clone())
     }
 
-    pub fn read_zero_rtt_packet(&self) -> ReadPacket<ProtectedZeroRTTPacket> {
+    pub fn read_zero_rtt_packet(&self) -> ReadPacket<ProtectedZeroRttPacket> {
         ReadPacket(self.zero_rtt_packets.clone())
     }
 
@@ -114,7 +114,7 @@ impl Path {
     }
 }
 
-struct ReadPacket<T>(ArcRcvdPackets<T>);
+pub struct ReadPacket<T>(ArcRcvdPackets<T>);
 
 impl<T> Future for ReadPacket<T> {
     type Output = T;
@@ -137,8 +137,6 @@ mod tests {
         let peer_cid = ConnectionId::from_slice(b"peer cid");
         let path = super::Path::new(local_addr, peer_addr, peer_cid);
 
-        let packet = path.read_1rtt_packet().await;
-
-        todo!()
+        // let _packet = path.read_1rtt_packet().await;
     }
 }

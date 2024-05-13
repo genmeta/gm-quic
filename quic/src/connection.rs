@@ -68,48 +68,6 @@ impl Connection {
         loop_read.end().await?;
         Ok(key_change)
     }
-
-    pub fn async_handshake(&mut self) {
-        tokio::spawn({
-            let tls_session = self.tls_session.clone();
-            let initial_io = self
-                .initial_space
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .crypto_stream()
-                .split_io();
-            let handshake_space = self.handshake_space.clone();
-            async move {
-                let key_change = Self::exchange_hs(tls_session.clone(), initial_io).await?;
-                let handshake_io = match key_change {
-                    KeyChange::Handshake { keys } => {
-                        let (frames, handshake_io) = handshake_space
-                            .lock()
-                            .unwrap()
-                            .as_mut()
-                            .unwrap()
-                            .update_keys(keys)
-                            .unwrap();
-
-                        handshake_io
-                    }
-                    _ => unreachable!("can not upgrade to 1-rtt keys in initial space"),
-                };
-
-                let key_change = Self::exchange_hs(tls_session, handshake_io).await?;
-                match key_change {
-                    KeyChange::OneRtt { keys, next } => {
-                        // self.one_rtt_keys = Some(keys);
-                        // self.one_rtt_secrets = Some(next);
-                    }
-                    _ => unreachable!("no more handshake keys in handshake space"),
-                }
-                Ok::<(), std::io::Error>(())
-            }
-        });
-    }
 }
 
 impl Connection {
@@ -120,23 +78,7 @@ impl Connection {
         pn_offset: usize,
     ) -> Result<(), Error> {
         let mut initial_space = self.initial_space.lock().unwrap();
-        if let Some(ref mut space) = *initial_space {
-            for frame in space.receive_packet(header, packet, pn_offset, &mut self.rtt)? {
-                match frame {
-                    ConnectionFrame::Close(frame) => {
-                        if frame.frame_type.is_some() {
-                            return Err(Error::new(
-                                qbase::error::ErrorKind::ProtocolViolation,
-                                frame.frame_type.unwrap(),
-                                "The initial space does not allow the application layer to close the connection."
-                            ));
-                        }
-                        todo!("close connection")
-                    }
-                    _ => unreachable!("no signaling frame in initial space"),
-                }
-            }
-        }
+        if let Some(ref mut space) = *initial_space {}
         // 如果initial space不存在了，说明握手已经彻底完成，不需再对initial数据包进行处理
         Ok(())
     }
@@ -148,23 +90,7 @@ impl Connection {
         pn_offset: usize,
     ) -> Result<(), Error> {
         let mut handshake_space = self.handshake_space.lock().unwrap();
-        if let Some(ref mut space) = *handshake_space {
-            for frame in space.receive_packet(header, packet, pn_offset, &mut self.rtt)? {
-                match frame {
-                    ConnectionFrame::Close(frame) => {
-                        if frame.frame_type.is_some() {
-                            return Err(Error::new(
-                                qbase::error::ErrorKind::ProtocolViolation,
-                                frame.frame_type.unwrap(),
-                                "The handshake space does not allow the application layer to close the connection."
-                            ));
-                        }
-                        todo!("close connection")
-                    }
-                    _ => unreachable!("no signaling frame in initial space"),
-                }
-            }
-        }
+        if let Some(ref mut space) = *handshake_space {}
         // 如果handshake space不存在了，说明握手已经彻底完成，不需再对handshake数据包进行处理
         Ok(())
     }
