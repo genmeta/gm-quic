@@ -4,24 +4,33 @@ use qbase::packet::{
 };
 use tokio::sync::mpsc;
 
+use crate::ReceiveProtectedPacket;
+
 #[derive(Debug)]
 pub struct RxQueue<T> {
     tx: mpsc::Sender<T>,
     rx: Option<mpsc::Receiver<T>>,
 }
 
-impl<T> RxQueue<T> {
+impl<T: Send + 'static> RxQueue<T> {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel(4);
         Self { tx, rx: Some(rx) }
     }
 
-    async fn push(&mut self, value: T) {
-        if let Err(e) = self.tx.send(value).await {
-            // If an error occurs, it means that the receiver has been closed,
-            // and it is no longer necessary for the early spaces to receive data.
-            println!("rx queue send error: {}", e);
-        }
+    fn push(&self, value: T) {
+        // To prevent the receipt of data packets from blocking and affecting other
+        // connections, we use tokio::spawn for asynchronous processing here.
+        tokio::spawn({
+            let tx = self.tx.clone();
+            async move {
+                if let Err(e) = tx.send(value).await {
+                    // If an error occurs, it means that the receiver has been closed,
+                    // and it is no longer necessary for the early spaces to receive data.
+                    println!("rx queue send error: {}", e);
+                }
+            }
+        });
     }
 
     // // Can only be called once, otherwise it will panic
@@ -38,16 +47,18 @@ pub struct RxQueues {
     one_rtt: RxQueue<ProtectedOneRttPacket>,
 }
 
-impl RxQueues {
-    pub async fn receive_protected_packet(&mut self, packet: ProtectedPacket) {
-        match packet {
-            ProtectedPacket::Initial(packet) => self.initial.push(packet).await,
-            ProtectedPacket::Handshake(packet) => self.handshake.push(packet).await,
-            ProtectedPacket::ZeroRtt(packet) => self.zero_rtt.push(packet).await,
-            ProtectedPacket::OneRtt(packet) => self.one_rtt.push(packet).await,
+impl ReceiveProtectedPacket for RxQueues {
+    fn receive_protected_packet(&mut self, protected_packet: ProtectedPacket) {
+        match protected_packet {
+            ProtectedPacket::Initial(packet) => self.initial.push(packet),
+            ProtectedPacket::Handshake(packet) => self.handshake.push(packet),
+            ProtectedPacket::ZeroRtt(packet) => self.zero_rtt.push(packet),
+            ProtectedPacket::OneRtt(packet) => self.one_rtt.push(packet),
         }
     }
+}
 
+impl RxQueues {
     pub fn initial_receiver(&mut self) -> mpsc::Receiver<ProtectedInitialPacket> {
         self.initial.take_receiver()
     }

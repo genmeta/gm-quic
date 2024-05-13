@@ -12,4 +12,5 @@ rand = "0.8"
 getset = "0.1"
 thiserror = "1.0"
 enum_dispatch = "0.3"
+deref-derive = "0.1.0"
 rustls = { version = "0.21", features = ["quic"] }

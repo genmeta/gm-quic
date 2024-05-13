@@ -16,6 +16,8 @@ use qrecovery::{
 use rustls::quic::{KeyChange, Keys, Secrets};
 use std::sync::{Arc, Mutex};
 
+pub mod stable;
+
 /// Key material for use in QUIC packet spaces
 ///
 /// QUIC uses 4 different sets of keys (and progressive key updates for long-running connections):
@@ -67,40 +69,6 @@ impl Connection {
         let key_change = poll_writer.loop_write().await?;
         loop_read.end().await?;
         Ok(key_change)
-    }
-}
-
-impl Connection {
-    pub fn receive_initial_packet(
-        &mut self,
-        header: ProtectedInitialHeader,
-        packet: BytesMut,
-        pn_offset: usize,
-    ) -> Result<(), Error> {
-        let mut initial_space = self.initial_space.lock().unwrap();
-        if let Some(ref mut space) = *initial_space {}
-        // 如果initial space不存在了，说明握手已经彻底完成，不需再对initial数据包进行处理
-        Ok(())
-    }
-
-    pub fn receive_handshake_packet(
-        &mut self,
-        header: ProtectedHandshakeHeader,
-        packet: BytesMut,
-        pn_offset: usize,
-    ) -> Result<(), Error> {
-        let mut handshake_space = self.handshake_space.lock().unwrap();
-        if let Some(ref mut space) = *handshake_space {}
-        // 如果handshake space不存在了，说明握手已经彻底完成，不需再对handshake数据包进行处理
-        Ok(())
-    }
-
-    pub fn receive_zero_rtt_packet(&mut self, header: ProtectedZeroRTTHeader, packet: BytesMut) {
-        // todo
-    }
-
-    pub fn receive_one_rtt_packet(&mut self, header: ProtectedOneRttHeader, packet: BytesMut) {
-        // todo
     }
 }
 

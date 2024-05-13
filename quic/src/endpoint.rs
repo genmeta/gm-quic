@@ -1,9 +1,7 @@
-use crate::connection::Connection;
-use bytes::BytesMut;
-use qbase::{cid::ConnectionId, packet::ProtectedInitialHeader};
-use rustls::{
-    quic::{Keys, Version},
-    Side,
+use crate::{connection::Connection, ReceiveProtectedPacket};
+use qbase::{
+    cid::ConnectionId,
+    packet::{GetDcid, ProtectedPacket},
 };
 use std::collections::HashMap;
 
@@ -14,23 +12,20 @@ pub struct Endpiont {
     // listener: Listener,
 }
 
-impl Endpiont {
-    pub fn receive_initial_packet(
-        &mut self,
-        mut header: ProtectedInitialHeader,
-        mut packet: BytesMut,
-        pn_offset: usize,
-    ) {
-        // only support RFC9000 version 1
-        assert_eq!(header.version, 1);
-        let dcid = &header.dcid;
+impl ReceiveProtectedPacket for Endpiont {
+    fn receive_protected_packet(&mut self, protected_packet: ProtectedPacket) {
+        let dcid = protected_packet.get_dcid();
         if let Some(conn) = self.connections.get_mut(dcid) {
-            let _ = conn.receive_initial_packet(header, packet, pn_offset);
+            // let _ = conn.receive_protected_packet(protected_packet);
         } else {
-            // new connection
-            let keys = Keys::initial(Version::V1, dcid, Side::Server);
-            // 下面这一步，应该在connection内部处理了
+            match protected_packet {
+                ProtectedPacket::Initial(packet) => {
+                    // TODO: 创建新连接，并塞给Listener
+                }
+                _other => {
+                    // just ignore
+                }
+            }
         }
-        // todo
     }
 }
