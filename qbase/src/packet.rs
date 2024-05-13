@@ -1,7 +1,6 @@
 use crate::{
     cid::{be_connection_id, ConnectionId},
     error::{Error as QuicError, ErrorKind},
-    packet_number::take_pn_len,
 };
 use bytes::{Bytes, BytesMut};
 use deref_derive::{Deref, DerefMut};
@@ -18,6 +17,9 @@ pub use header::{
     PlainZeroRTTHeader, ProtectedHandshakeHeader, ProtectedHeader, ProtectedInitialHeader,
     ProtectedOneRttHeader, ProtectedZeroRTTHeader, RetryHeader, VersionNegotiationHeader,
 };
+
+pub mod number;
+pub use number::{take_pn_len, PacketNumber, WritePacketNumber};
 
 #[enum_dispatch]
 pub trait GetDcid {

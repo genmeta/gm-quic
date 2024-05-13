@@ -3,7 +3,6 @@ pub mod config;
 pub mod error;
 pub mod frame;
 pub mod packet;
-pub mod packet_number;
 pub mod streamid;
 pub mod varint;
 
