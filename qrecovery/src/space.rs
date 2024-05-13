@@ -605,7 +605,7 @@ where
     D: TryFrom<DataFrame, Error = frame::Error>,
     T: Transmit<F, D> + Debug,
 {
-    pub fn into_split(self, keys: Keys) -> (ReceiveHalf<Self>, TransmitHalf<Self>) {
+    pub fn split_with_keys(self, keys: Keys) -> (ReceiveHalf<Self>, TransmitHalf<Self>) {
         let arc_space = Arc::new(Mutex::new(self));
         (
             ReceiveHalf {

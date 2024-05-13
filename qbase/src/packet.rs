@@ -354,7 +354,7 @@ pub type ProtectedOneRttPacket = ProtectedPacketWrapper<ProtectedOneRttHeader>;
 pub enum ProtectedPacket {
     Initial(ProtectedInitialPacket),
     Handshake(ProtectedHandshakePacket),
-    ZeroRTT(ProtectedZeroRttPacket),
+    ZeroRtt(ProtectedZeroRttPacket),
     OneRtt(ProtectedOneRttPacket),
 }
 
@@ -542,7 +542,7 @@ pub mod ext {
                         let (remain, zero_rtt) = be_zero_rtt(input)?;
                         let (remain, packet) =
                             Self::complete(self.wrap(zero_rtt), raw_data, remain)?;
-                        Ok((remain, Packet::Protected(ProtectedPacket::ZeroRTT(packet))))
+                        Ok((remain, Packet::Protected(ProtectedPacket::ZeroRtt(packet))))
                     }
                     HANDSHAKE_PACKET_TYPE => {
                         let (remain, handshake) = be_handshake(input)?;

@@ -278,7 +278,7 @@ impl CryptoStream {
         }
     }
 
-    pub fn split_io(&self) -> (CryptoStreamReader, CryptoStreamWriter) {
+    pub fn split(&self) -> (CryptoStreamReader, CryptoStreamWriter) {
         (self.reader.clone(), self.writer.clone())
     }
 
