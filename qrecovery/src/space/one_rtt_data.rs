@@ -1,8 +1,10 @@
+use super::Receive;
 /// Application data space, 1-RTT data space
-use crate::{crypto_stream::CryptoStream, streams::Streams};
+use crate::{crypto_stream::CryptoStream, rtt::Rtt, streams::Streams};
 use qbase::{
     error::Error,
     frame::{ConnectionFrame, DataFrame, OneRttFrame},
+    packet::{DecryptPacket, ProtectedOneRttPacket},
 };
 
 type OneRttDataFrame = DataFrame;
@@ -83,6 +85,20 @@ impl Transmission {
 
     pub fn crypto_stream(&mut self) -> &mut CryptoStream {
         &mut self.crypto_stream
+    }
+}
+
+impl super::ReceivePacket for super::ReceiveHalf<OneRttDataSpace> {
+    type Packet = ProtectedOneRttPacket;
+
+    fn receive_packet(
+        &self,
+        packet: ProtectedOneRttPacket,
+        rtt: &mut Rtt,
+    ) -> Result<Vec<ConnectionFrame>, Error> {
+        let mut space = self.space.lock().unwrap();
+        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_keys)?;
+        space.receive(pktid, payload, rtt)
     }
 }
 

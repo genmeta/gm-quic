@@ -1,8 +1,10 @@
-use super::Transmit;
-use crate::crypto_stream::CryptoStream;
+use super::{Receive, Transmit};
+use crate::{crypto_stream::CryptoStream, rtt::Rtt};
+use deref_derive::{Deref, DerefMut};
 use qbase::{
     error::Error,
     frame::{ConnectionFrame, CryptoFrame, NoFrame},
+    packet::{DecryptPacket, ProtectedHandshakePacket, ProtectedInitialPacket},
 };
 
 #[derive(Debug)]
@@ -10,8 +12,10 @@ pub struct Transmission {
     crypto_stream: CryptoStream,
 }
 
-pub type InitialSpace = super::Space<NoFrame, CryptoFrame, Transmission>;
-pub type HandshakeSpace = super::Space<NoFrame, CryptoFrame, Transmission>;
+#[derive(Debug, Deref, DerefMut)]
+pub struct InitialSpace(#[deref] super::Space<NoFrame, CryptoFrame, Transmission>);
+#[derive(Debug, Deref, DerefMut)]
+pub struct HandshakeSpace(#[deref] super::Space<NoFrame, CryptoFrame, Transmission>);
 
 impl Transmit<NoFrame, CryptoFrame> for Transmission {
     type Buffer = Vec<u8>;
@@ -44,5 +48,33 @@ impl Transmission {
 
     pub fn crypto_stream(&self) -> &CryptoStream {
         &self.crypto_stream
+    }
+}
+
+impl super::ReceivePacket for super::ReceiveHalf<InitialSpace> {
+    type Packet = ProtectedInitialPacket;
+
+    fn receive_packet(
+        &self,
+        packet: ProtectedInitialPacket,
+        rtt: &mut Rtt,
+    ) -> Result<Vec<ConnectionFrame>, Error> {
+        let mut space = self.space.lock().unwrap();
+        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_keys)?;
+        space.receive(pktid, payload, rtt)
+    }
+}
+
+impl super::ReceivePacket for super::ReceiveHalf<HandshakeSpace> {
+    type Packet = ProtectedHandshakePacket;
+
+    fn receive_packet(
+        &self,
+        packet: ProtectedHandshakePacket,
+        rtt: &mut Rtt,
+    ) -> Result<Vec<ConnectionFrame>, Error> {
+        let mut space = self.space.lock().unwrap();
+        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_keys)?;
+        space.receive(pktid, payload, rtt)
     }
 }

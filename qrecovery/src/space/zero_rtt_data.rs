@@ -1,9 +1,10 @@
 /// Application data space, 0-RTT data space
-use super::{one_rtt_data, OneRttDataSpace};
-use crate::{crypto_stream::CryptoStream, streams::Streams};
+use super::{one_rtt_data, OneRttDataSpace, Receive};
+use crate::{crypto_stream::CryptoStream, rtt::Rtt, streams::Streams};
 use qbase::{
     error::Error,
     frame::{ConnectionFrame, OneRttFrame, StreamFrame, StreamInfoFrame, ZeroRttFrame},
+    packet::{DecryptPacket, ProtectedZeroRttPacket},
     streamid::StreamIds,
 };
 use std::{
@@ -119,6 +120,20 @@ impl ZeroRttDataSpace {
         let transmission =
             one_rtt_data::Transmission::new(self.transmission.streams, crypto_stream);
         OneRttDataSpace::build(frames, transmission)
+    }
+}
+
+impl super::ReceivePacket for super::ReceiveHalf<ZeroRttDataSpace> {
+    type Packet = ProtectedZeroRttPacket;
+
+    fn receive_packet(
+        &self,
+        packet: ProtectedZeroRttPacket,
+        rtt: &mut Rtt,
+    ) -> Result<Vec<ConnectionFrame>, Error> {
+        let mut space = self.space.lock().unwrap();
+        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_keys)?;
+        space.receive(pktid, payload, rtt)
     }
 }
 

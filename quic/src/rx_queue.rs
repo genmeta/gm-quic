@@ -1,24 +1,24 @@
+use crate::ReceiveProtectedPacket;
 use qbase::packet::{
-    ProtectedHandshakePacket, ProtectedInitialPacket, ProtectedOneRttPacket, ProtectedPacket,
-    ProtectedZeroRttPacket,
+    DecryptPacket, ProtectedHandshakePacket, ProtectedInitialPacket, ProtectedOneRttPacket,
+    ProtectedPacket, ProtectedZeroRttPacket,
 };
+use qrecovery::{rtt::Rtt, space};
 use tokio::sync::mpsc;
 
-use crate::ReceiveProtectedPacket;
-
 #[derive(Debug)]
-pub struct RxQueue<T> {
-    tx: mpsc::Sender<T>,
-    rx: Option<mpsc::Receiver<T>>,
+pub struct RxQueue<P> {
+    tx: mpsc::Sender<P>,
+    rx: Option<mpsc::Receiver<P>>,
 }
 
-impl<T: Send + 'static> RxQueue<T> {
+impl<P: Send + 'static> RxQueue<P> {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel(4);
         Self { tx, rx: Some(rx) }
     }
 
-    fn push(&self, value: T) {
+    pub fn push(&self, value: P) {
         // To prevent the receipt of data packets from blocking and affecting other
         // connections, we use tokio::spawn for asynchronous processing here.
         tokio::spawn({
@@ -32,10 +32,29 @@ impl<T: Send + 'static> RxQueue<T> {
             }
         });
     }
+}
 
-    // // Can only be called once, otherwise it will panic
-    fn take_receiver(&mut self) -> mpsc::Receiver<T> {
+impl<P> RxQueue<P>
+where
+    P: DecryptPacket + Send + 'static,
+{
+    // Can only be called once, otherwise it will panic
+    fn take_receiver(&mut self) -> mpsc::Receiver<P> {
         self.rx.take().unwrap()
+    }
+
+    pub async fn pipe(&mut self, space: impl space::ReceivePacket<Packet = P>, rtt: &mut Rtt) {
+        let mut rx = self.take_receiver();
+        loop {
+            match rx.recv().await {
+                Some(packet) => {
+                    let _ = space.receive_packet(packet, rtt);
+                }
+                None => {
+                    break;
+                }
+            }
+        }
     }
 }
 

@@ -4,10 +4,7 @@ use deref_derive::{Deref, DerefMut};
 use qbase::{
     error::{Error, ErrorKind},
     frame::{self, ext::*, *},
-    packet::{
-        DecryptPacket, ProtectedHandshakePacket, ProtectedInitialPacket, ProtectedOneRttPacket,
-        ProtectedZeroRttPacket,
-    },
+    packet::DecryptPacket,
     varint::{VarInt, VARINT_MAX},
 };
 use rustls::quic::{DirectionalKeys, Keys};
@@ -605,11 +602,11 @@ where
     D: TryFrom<DataFrame, Error = frame::Error>,
     T: Transmit<F, D> + Debug,
 {
-    pub fn split_with_keys(self, keys: Keys) -> (ReceiveHalf<Self>, TransmitHalf<Self>) {
+    pub fn into_split_with_keys(self, keys: Keys) -> (ReceiveHalf<Self>, TransmitHalf<Self>) {
         let arc_space = Arc::new(Mutex::new(self));
         (
             ReceiveHalf {
-                decrypt_key: keys.remote,
+                decrypt_keys: keys.remote,
                 space: arc_space.clone(),
             },
             TransmitHalf {
@@ -622,64 +619,21 @@ where
 
 #[derive(Deref, DerefMut)]
 pub struct ReceiveHalf<S> {
-    decrypt_key: DirectionalKeys,
+    decrypt_keys: DirectionalKeys,
     #[deref]
     space: Arc<Mutex<S>>,
 }
 
-pub trait ReceivePacket<P>
-where
-    P: DecryptPacket,
-{
-    fn receive_packet(&self, packet: P, rtt: &mut Rtt) -> Result<Vec<ConnectionFrame>, Error>;
-}
+pub trait ReceivePacket {
+    // The clever use of associated types, establishing the connection between the
+    // packet type and the specific space, can be used for constraints later.
+    type Packet: DecryptPacket;
 
-impl ReceivePacket<ProtectedInitialPacket> for ReceiveHalf<InitialSpace> {
     fn receive_packet(
         &self,
-        packet: ProtectedInitialPacket,
+        packet: Self::Packet,
         rtt: &mut Rtt,
-    ) -> Result<Vec<ConnectionFrame>, Error> {
-        let mut space = self.space.lock().unwrap();
-        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_key)?;
-        space.receive(pktid, payload, rtt)
-    }
-}
-
-impl ReceivePacket<ProtectedHandshakePacket> for ReceiveHalf<HandshakeSpace> {
-    fn receive_packet(
-        &self,
-        packet: ProtectedHandshakePacket,
-        rtt: &mut Rtt,
-    ) -> Result<Vec<ConnectionFrame>, Error> {
-        let mut space = self.space.lock().unwrap();
-        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_key)?;
-        space.receive(pktid, payload, rtt)
-    }
-}
-
-impl ReceivePacket<ProtectedZeroRttPacket> for ReceiveHalf<ZeroRttDataSpace> {
-    fn receive_packet(
-        &self,
-        packet: ProtectedZeroRttPacket,
-        rtt: &mut Rtt,
-    ) -> Result<Vec<ConnectionFrame>, Error> {
-        let mut space = self.space.lock().unwrap();
-        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_key)?;
-        space.receive(pktid, payload, rtt)
-    }
-}
-
-impl ReceivePacket<ProtectedOneRttPacket> for ReceiveHalf<OneRttDataSpace> {
-    fn receive_packet(
-        &self,
-        packet: ProtectedOneRttPacket,
-        rtt: &mut Rtt,
-    ) -> Result<Vec<ConnectionFrame>, Error> {
-        let mut space = self.space.lock().unwrap();
-        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_key)?;
-        space.receive(pktid, payload, rtt)
-    }
+    ) -> Result<Vec<ConnectionFrame>, Error>;
 }
 
 #[derive(Deref, DerefMut)]
@@ -687,6 +641,12 @@ pub struct TransmitHalf<S> {
     encrypt_key: DirectionalKeys,
     #[deref]
     space: Arc<Mutex<S>>,
+}
+
+impl TransmitHalf<OneRttDataSpace> {
+    pub fn update_encrypt_key(&mut self, key: DirectionalKeys) {
+        self.encrypt_key = key;
+    }
 }
 
 pub trait TransmitPacket<P> {
