@@ -1,13 +1,5 @@
 use crate::crypto::TlsIO;
-use bytes::BytesMut;
-use qbase::{
-    error::Error,
-    frame::ConnectionFrame,
-    packet::{
-        KeyPhaseToggle, ProtectedHandshakeHeader, ProtectedInitialHeader, ProtectedOneRttHeader,
-        ProtectedZeroRTTHeader, SpinToggle,
-    },
-};
+use qbase::packet::{KeyPhaseBit, SpinBit};
 use qrecovery::{
     crypto_stream::{CryptoStreamReader, CryptoStreamWriter},
     rtt::Rtt,
@@ -54,8 +46,8 @@ pub struct Connection {
     // 暂时性的，rtt应该跟path相关
     rtt: Rtt,
 
-    spin: SpinToggle,
-    key_phase: KeyPhaseToggle,
+    spin: SpinBit,
+    key_phase: KeyPhaseBit,
 }
 
 impl Connection {

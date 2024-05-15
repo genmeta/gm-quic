@@ -10,11 +10,11 @@ pub enum PacketNumber {
 }
 
 pub trait WritePacketNumber {
-    fn write_packet_number(&mut self, pn: PacketNumber);
+    fn put_packet_number(&mut self, pn: PacketNumber);
 }
 
 impl<T: BufMut> WritePacketNumber for T {
-    fn write_packet_number(&mut self, pn: PacketNumber) {
+    fn put_packet_number(&mut self, pn: PacketNumber) {
         use self::PacketNumber::*;
         match pn {
             U8(x) => self.put_u8(x),
@@ -58,7 +58,7 @@ impl PacketNumber {
         }
     }
 
-    pub fn encoding_size(self) -> usize {
+    pub fn size(self) -> usize {
         use self::PacketNumber::*;
         match self {
             U8(_) => 1,

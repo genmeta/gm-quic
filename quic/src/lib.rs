@@ -1,4 +1,4 @@
-use qbase::packet::ProtectedPacket;
+use qbase::packet::SpacePacket;
 
 pub mod connection;
 pub mod crypto;
@@ -7,7 +7,7 @@ pub mod path;
 pub mod rx_queue;
 
 pub trait ReceiveProtectedPacket {
-    fn receive_protected_packet(&mut self, protected_packet: ProtectedPacket);
+    fn receive_protected_packet(&mut self, protected_packet: SpacePacket);
 }
 
 pub fn add(left: usize, right: usize) -> usize {

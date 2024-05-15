@@ -4,7 +4,7 @@ use deref_derive::{Deref, DerefMut};
 use qbase::{
     error::{Error, ErrorKind},
     frame::{self, ext::*, *},
-    packet::DecryptPacket,
+    packet::decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
     varint::{VarInt, VARINT_MAX},
 };
 use rustls::quic::{DirectionalKeys, Keys};
@@ -627,7 +627,7 @@ pub struct ReceiveHalf<S> {
 pub trait ReceivePacket {
     // The clever use of associated types, establishing the connection between the
     // packet type and the specific space, can be used for constraints later.
-    type Packet: DecryptPacket;
+    type Packet: RemoteProtection + DecodeHeader + DecryptPacket;
 
     fn receive_packet(
         &self,

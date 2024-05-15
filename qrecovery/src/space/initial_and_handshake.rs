@@ -4,7 +4,10 @@ use deref_derive::{Deref, DerefMut};
 use qbase::{
     error::Error,
     frame::{ConnectionFrame, CryptoFrame, NoFrame},
-    packet::{DecryptPacket, ProtectedHandshakePacket, ProtectedInitialPacket},
+    packet::{
+        decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
+        HandshakeHeader, InitialHeader, PacketWrapper,
+    },
 };
 
 #[derive(Debug)]
@@ -52,29 +55,47 @@ impl Transmission {
 }
 
 impl super::ReceivePacket for super::ReceiveHalf<InitialSpace> {
-    type Packet = ProtectedInitialPacket;
+    type Packet = PacketWrapper<InitialHeader>;
 
     fn receive_packet(
         &self,
-        packet: ProtectedInitialPacket,
+        mut packet: Self::Packet,
         rtt: &mut Rtt,
     ) -> Result<Vec<ConnectionFrame>, Error> {
         let mut space = self.space.lock().unwrap();
-        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_keys)?;
-        space.receive(pktid, payload, rtt)
+
+        let ok = packet.remove_protection(&self.decrypt_keys.header);
+        if ok {
+            let pn = packet.decode_header()?;
+            let (pktid, payload) = packet
+                .decrypt_packet(pn, space.expected_pn(), &self.decrypt_keys.packet)
+                .unwrap();
+            space.receive(pktid, payload, rtt)
+        } else {
+            todo!()
+        }
     }
 }
 
 impl super::ReceivePacket for super::ReceiveHalf<HandshakeSpace> {
-    type Packet = ProtectedHandshakePacket;
+    type Packet = PacketWrapper<HandshakeHeader>;
 
     fn receive_packet(
         &self,
-        packet: ProtectedHandshakePacket,
+        mut packet: Self::Packet,
         rtt: &mut Rtt,
     ) -> Result<Vec<ConnectionFrame>, Error> {
         let mut space = self.space.lock().unwrap();
-        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_keys)?;
-        space.receive(pktid, payload, rtt)
+
+        let ok = packet.remove_protection(&self.decrypt_keys.header);
+        if ok {
+            let pn = packet.decode_header()?;
+            let (pktid, payload) = packet
+                .decrypt_packet(pn, space.expected_pn(), &self.decrypt_keys.packet)
+                .unwrap();
+            space.receive(pktid, payload, rtt)
+        } else {
+            todo!()
+        }
     }
 }

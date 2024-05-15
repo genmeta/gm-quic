@@ -4,7 +4,10 @@ use crate::{crypto_stream::CryptoStream, rtt::Rtt, streams::Streams};
 use qbase::{
     error::Error,
     frame::{ConnectionFrame, OneRttFrame, StreamFrame, StreamInfoFrame, ZeroRttFrame},
-    packet::{DecryptPacket, ProtectedZeroRttPacket},
+    packet::{
+        decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
+        PacketWrapper, ZeroRttHeader,
+    },
     streamid::StreamIds,
 };
 use std::{
@@ -124,16 +127,25 @@ impl ZeroRttDataSpace {
 }
 
 impl super::ReceivePacket for super::ReceiveHalf<ZeroRttDataSpace> {
-    type Packet = ProtectedZeroRttPacket;
+    type Packet = PacketWrapper<ZeroRttHeader>;
 
     fn receive_packet(
         &self,
-        packet: ProtectedZeroRttPacket,
+        mut packet: Self::Packet,
         rtt: &mut Rtt,
     ) -> Result<Vec<ConnectionFrame>, Error> {
         let mut space = self.space.lock().unwrap();
-        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_keys)?;
-        space.receive(pktid, payload, rtt)
+
+        let ok = packet.remove_protection(&self.decrypt_keys.header);
+        if ok {
+            let pn = packet.decode_header()?;
+            let (pktid, payload) = packet
+                .decrypt_packet(pn, space.expected_pn(), &self.decrypt_keys.packet)
+                .unwrap();
+            space.receive(pktid, payload, rtt)
+        } else {
+            todo!()
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::{connection::Connection, ReceiveProtectedPacket};
 use qbase::{
     cid::ConnectionId,
-    packet::{GetDcid, ProtectedPacket},
+    packet::{header::GetDcid, SpacePacket},
 };
 use std::collections::HashMap;
 
@@ -13,13 +13,13 @@ pub struct Endpiont {
 }
 
 impl ReceiveProtectedPacket for Endpiont {
-    fn receive_protected_packet(&mut self, protected_packet: ProtectedPacket) {
+    fn receive_protected_packet(&mut self, protected_packet: SpacePacket) {
         let dcid = protected_packet.get_dcid();
         if let Some(conn) = self.connections.get_mut(dcid) {
             // let _ = conn.receive_protected_packet(protected_packet);
         } else {
             match protected_packet {
-                ProtectedPacket::Initial(packet) => {
+                SpacePacket::Initial(packet) => {
                     // TODO: 创建新连接，并塞给Listener
                 }
                 _other => {

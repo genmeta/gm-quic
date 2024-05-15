@@ -4,7 +4,10 @@ use crate::{crypto_stream::CryptoStream, rtt::Rtt, streams::Streams};
 use qbase::{
     error::Error,
     frame::{ConnectionFrame, DataFrame, OneRttFrame},
-    packet::{DecryptPacket, ProtectedOneRttPacket},
+    packet::{
+        decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
+        OneRttHeader, PacketWrapper,
+    },
 };
 
 type OneRttDataFrame = DataFrame;
@@ -89,16 +92,26 @@ impl Transmission {
 }
 
 impl super::ReceivePacket for super::ReceiveHalf<OneRttDataSpace> {
-    type Packet = ProtectedOneRttPacket;
+    type Packet = PacketWrapper<OneRttHeader>;
 
     fn receive_packet(
         &self,
-        packet: ProtectedOneRttPacket,
+        mut packet: Self::Packet,
         rtt: &mut Rtt,
     ) -> Result<Vec<ConnectionFrame>, Error> {
         let mut space = self.space.lock().unwrap();
-        let (pktid, payload) = packet.decrypt_packet(space.expected_pn(), &self.decrypt_keys)?;
-        space.receive(pktid, payload, rtt)
+        let ok = packet.remove_protection(&self.decrypt_keys.header);
+        if ok {
+            let (pn, _key_phase_bit) = packet.decode_header()?;
+            // TODO: 判断key_phase有没有翻转，若有翻转，则需要更新密钥
+            let (pktid, payload) = packet
+                .decrypt_packet(pn, space.expected_pn(), &self.decrypt_keys.packet)
+                .unwrap();
+            space.receive(pktid, payload, rtt)
+        } else {
+            // TODO: 去除保护失败，得用下一个密钥或者旧密钥尝试
+            todo!()
+        }
     }
 }
 

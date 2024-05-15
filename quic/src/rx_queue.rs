@@ -1,8 +1,5 @@
 use crate::ReceiveProtectedPacket;
-use qbase::packet::{
-    DecryptPacket, ProtectedHandshakePacket, ProtectedInitialPacket, ProtectedOneRttPacket,
-    ProtectedPacket, ProtectedZeroRttPacket,
-};
+use qbase::packet::{HandshakePacket, InitialPacket, OneRttPacket, SpacePacket, ZeroRttPacket};
 use qrecovery::{rtt::Rtt, space};
 use tokio::sync::mpsc;
 
@@ -36,7 +33,7 @@ impl<P: Send + 'static> RxQueue<P> {
 
 impl<P> RxQueue<P>
 where
-    P: DecryptPacket + Send + 'static,
+    P: Send + 'static,
 {
     // Can only be called once, otherwise it will panic
     fn take_receiver(&mut self) -> mpsc::Receiver<P> {
@@ -60,37 +57,37 @@ where
 
 #[derive(Debug)]
 pub struct RxQueues {
-    initial: RxQueue<ProtectedInitialPacket>,
-    handshake: RxQueue<ProtectedHandshakePacket>,
-    zero_rtt: RxQueue<ProtectedZeroRttPacket>,
-    one_rtt: RxQueue<ProtectedOneRttPacket>,
+    initial: RxQueue<InitialPacket>,
+    handshake: RxQueue<HandshakePacket>,
+    zero_rtt: RxQueue<ZeroRttPacket>,
+    one_rtt: RxQueue<OneRttPacket>,
 }
 
 impl ReceiveProtectedPacket for RxQueues {
-    fn receive_protected_packet(&mut self, protected_packet: ProtectedPacket) {
+    fn receive_protected_packet(&mut self, protected_packet: SpacePacket) {
         match protected_packet {
-            ProtectedPacket::Initial(packet) => self.initial.push(packet),
-            ProtectedPacket::Handshake(packet) => self.handshake.push(packet),
-            ProtectedPacket::ZeroRtt(packet) => self.zero_rtt.push(packet),
-            ProtectedPacket::OneRtt(packet) => self.one_rtt.push(packet),
+            SpacePacket::Initial(packet) => self.initial.push(packet),
+            SpacePacket::Handshake(packet) => self.handshake.push(packet),
+            SpacePacket::ZeroRtt(packet) => self.zero_rtt.push(packet),
+            SpacePacket::OneRtt(packet) => self.one_rtt.push(packet),
         }
     }
 }
 
 impl RxQueues {
-    pub fn initial_receiver(&mut self) -> mpsc::Receiver<ProtectedInitialPacket> {
+    pub fn initial_receiver(&mut self) -> mpsc::Receiver<InitialPacket> {
         self.initial.take_receiver()
     }
 
-    pub fn handshake_receiver(&mut self) -> mpsc::Receiver<ProtectedHandshakePacket> {
+    pub fn handshake_receiver(&mut self) -> mpsc::Receiver<HandshakePacket> {
         self.handshake.take_receiver()
     }
 
-    pub fn zero_rtt_receiver(&mut self) -> mpsc::Receiver<ProtectedZeroRttPacket> {
+    pub fn zero_rtt_receiver(&mut self) -> mpsc::Receiver<ZeroRttPacket> {
         self.zero_rtt.take_receiver()
     }
 
-    pub fn one_rtt_receiver(&mut self) -> mpsc::Receiver<ProtectedOneRttPacket> {
+    pub fn one_rtt_receiver(&mut self) -> mpsc::Receiver<OneRttPacket> {
         self.one_rtt.take_receiver()
     }
 }

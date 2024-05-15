@@ -1,124 +1,64 @@
-use crate::{
-    cid::{be_connection_id, ConnectionId},
-    error::{Error as QuicError, ErrorKind},
-};
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use deref_derive::{Deref, DerefMut};
-use enum_dispatch::enum_dispatch;
-use rustls::quic::DirectionalKeys;
 use thiserror::Error;
 
 pub mod signal;
-pub use signal::{KeyPhaseToggle, SpinToggle};
+pub use signal::{KeyPhaseBit, SpinBit};
+
+pub mod r#type;
+pub use r#type::{GetPacketNumberLength, LongClearBits, ShortClearBits};
 
 pub mod header;
 pub use header::{
-    LongHeaderBuilder, PlainHandshakeHeader, PlainInitialHeader, PlainOneRttHeader,
-    PlainZeroRTTHeader, ProtectedHandshakeHeader, ProtectedHeader, ProtectedInitialHeader,
-    ProtectedOneRttHeader, ProtectedZeroRTTHeader, RetryHeader, VersionNegotiationHeader,
+    HandshakeHeader, Header, InitialHeader, LongHeaderBuilder, OneRttHeader, RetryHeader,
+    VersionNegotiationHeader, ZeroRttHeader,
 };
 
 pub mod number;
 pub use number::{take_pn_len, PacketNumber, WritePacketNumber};
 
-#[enum_dispatch]
-pub trait GetDcid {
-    fn get_dcid(&self) -> &ConnectionId;
-}
+use self::header::GetDcid;
 
-#[enum_dispatch]
-pub trait DecryptPacket {
-    fn decrypt_packet(
-        self,
-        expected_pn: u64,
-        remote_keys: &DirectionalKeys,
-    ) -> Result<(u64, Bytes), QuicError>;
-}
+pub mod decrypt;
+pub mod encrypt;
 
 #[derive(Debug, Clone, Deref, DerefMut)]
-pub struct ProtectedPacketWrapper<H> {
+pub struct PacketWrapper<H> {
     #[deref]
     pub header: H,
     pub raw_data: BytesMut,
     pub pn_offset: usize,
 }
 
-impl<H: header::GetVersion> header::GetVersion for ProtectedPacketWrapper<H> {
-    fn get_version(&self) -> u32 {
-        self.header.get_version()
-    }
-}
-
-impl<H: GetDcid> GetDcid for ProtectedPacketWrapper<H> {
-    fn get_dcid(&self) -> &ConnectionId {
-        self.header.get_dcid()
-    }
-}
-
-impl<H> DecryptPacket for ProtectedPacketWrapper<H>
-where
-    H: header::BeProtected + header::RemoveProtection,
-{
-    fn decrypt_packet(
-        mut self,
-        expected_pn: u64,
-        remote_keys: &DirectionalKeys,
-    ) -> Result<(u64, Bytes), QuicError> {
-        let mut packet_type = self.header.cipher_packet_type();
-        let (_, payload) = self.raw_data.split_at_mut(self.pn_offset);
-        let (pn_bytes, sample) = payload.split_at_mut(4);
-        remote_keys
-            .header
-            .decrypt_in_place(sample, &mut packet_type, pn_bytes)
-            .map_err(|e| {
-                QuicError::new_with_default_fty(
-                    ErrorKind::Crypto(rustls::AlertDescription::DecryptError.get_u8()),
-                    format!("decrypt header of packet type {} error: {}", packet_type, e),
-                )
-            })?;
-
-        let pn_len = self.header.remove_protection(packet_type)?;
-        let header_offset = self.pn_offset + pn_len as usize;
-        let pn_bytes = &payload[self.pn_offset..header_offset];
-        let (_, pn) = take_pn_len(pn_len)(pn_bytes).unwrap();
-
-        let mut raw_data = self.raw_data;
-        raw_data[0] = packet_type;
-        let mut body = raw_data.split_off(header_offset);
-        let header = raw_data.freeze();
-        let pn = pn.decode(expected_pn);
-        remote_keys
-            .packet
-            .decrypt_in_place(pn, &header, &mut body)
-            .map_err(|e| {
-                QuicError::new_with_default_fty(
-                    ErrorKind::Crypto(rustls::AlertDescription::DecryptError.get_u8()),
-                    format!("decrypt packet({}) error: {}", packet_type, e),
-                )
-            })?;
-        Ok((pn, body.freeze()))
-    }
-}
-
-pub type ProtectedInitialPacket = ProtectedPacketWrapper<ProtectedInitialHeader>;
-pub type ProtectedHandshakePacket = ProtectedPacketWrapper<ProtectedHandshakeHeader>;
-pub type ProtectedZeroRttPacket = ProtectedPacketWrapper<ProtectedZeroRTTHeader>;
-pub type ProtectedOneRttPacket = ProtectedPacketWrapper<ProtectedOneRttHeader>;
+pub type InitialPacket = PacketWrapper<InitialHeader>;
+pub type HandshakePacket = PacketWrapper<HandshakeHeader>;
+pub type ZeroRttPacket = PacketWrapper<ZeroRttHeader>;
+pub type OneRttPacket = PacketWrapper<OneRttHeader>;
 
 #[derive(Debug, Clone)]
-#[enum_dispatch(DecryptPacket, GetDcid)]
-pub enum ProtectedPacket {
-    Initial(ProtectedInitialPacket),
-    Handshake(ProtectedHandshakePacket),
-    ZeroRtt(ProtectedZeroRttPacket),
-    OneRtt(ProtectedOneRttPacket),
+pub enum SpacePacket {
+    Initial(InitialPacket),
+    Handshake(HandshakePacket),
+    ZeroRtt(ZeroRttPacket),
+    OneRtt(OneRttPacket),
+}
+
+impl GetDcid for SpacePacket {
+    fn get_dcid(&self) -> &crate::cid::ConnectionId {
+        match self {
+            Self::Initial(packet) => packet.header.get_dcid(),
+            Self::Handshake(packet) => packet.header.get_dcid(),
+            Self::ZeroRtt(packet) => packet.header.get_dcid(),
+            Self::OneRtt(packet) => packet.header.get_dcid(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum Packet {
-    VersionNegotiation(VersionNegotiationHeader),
+    VN(VersionNegotiationHeader),
     Retry(RetryHeader),
-    Protected(ProtectedPacket),
+    Space(SpacePacket),
 }
 
 #[derive(Debug, Clone, Error)]
@@ -126,43 +66,29 @@ pub enum Packet {
 pub struct ParsePacketError;
 
 pub mod ext {
-    use super::*;
-    use bytes::BytesMut;
-    use nom::{
-        bytes::streaming::take,
-        combinator::eof,
-        multi::many_till,
-        number::streaming::{be_u32, be_u8},
-        Err,
+    use super::{
+        header::{ext::be_header, GetLength},
+        r#type::ext::be_packet_type,
+        *,
     };
-    use rustls::quic::DirectionalKeys;
+    use bytes::BytesMut;
+    use nom::{combinator::eof, multi::many_till};
 
-    pub(super) fn complete<H>(
-        header: H,
+    fn complete(
+        length: usize,
         mut raw_data: BytesMut,
-        remain: &[u8],
-    ) -> nom::IResult<&[u8], ProtectedPacketWrapper<H>>
-    where
-        H: header::BeProtected + header::RemoveProtection + header::GetLength,
-    {
-        let pn_offset = raw_data.len() - remain.len();
-        let length = header.get_length();
+        input: &[u8],
+    ) -> nom::IResult<&[u8], (usize, BytesMut)> {
+        let pn_offset = raw_data.len() - input.len();
         let packet_length = pn_offset + length;
         if length < 20 {
             return Err(nom::Err::Incomplete(nom::Needed::new(20)));
         }
-        if length > remain.len() {
+        if length > input.len() {
             return Err(nom::Err::Incomplete(nom::Needed::new(length)));
         }
         raw_data.truncate(packet_length);
-        Ok((
-            &remain[length..],
-            ProtectedPacketWrapper {
-                header,
-                raw_data,
-                pn_offset,
-            },
-        ))
+        Ok((&input[length..], (pn_offset, raw_data)))
     }
 
     pub fn be_packet(
@@ -173,38 +99,59 @@ pub mod ext {
             let mut raw_data = datagram.clone();
             let start = raw_data.len() - input.len();
             let _ = raw_data.split_to(start);
-            let (remain, ty) = be_u8(input)?;
-            if ty & header::HEADER_FORM_MASK == header::LONG_HEADER_BIT {
-                // long header
-                let (remain, version) = be_u32(remain)?;
-                let (remain, scid) = be_connection_id(remain)?;
-                let (remain, dcid) = be_connection_id(remain)?;
-                let builder = header::LongHeaderBuilder {
-                    ty,
-                    version,
-                    dcid,
-                    scid,
-                };
-                builder.parse(ty, remain, raw_data)
-            } else {
-                // short header
-                let (remain, dcid) = take(dcid_len)(remain)?;
-                if remain.len() < 20 {
-                    return Err(Err::Incomplete(nom::Needed::new(20)));
+
+            let (remain, packet_type) = be_packet_type(input)?;
+            let (remain, header) = be_header(packet_type, dcid_len, remain)?;
+            match header {
+                Header::VN(header) => Ok((remain, Packet::VN(header))),
+                Header::Retry(header) => Ok((remain, Packet::Retry(header))),
+                Header::Initial(header) => {
+                    let (remain, (pn_offset, raw_data)) =
+                        complete(header.get_length(), raw_data, remain)?;
+                    Ok((
+                        remain,
+                        Packet::Space(SpacePacket::Initial(InitialPacket {
+                            header,
+                            raw_data,
+                            pn_offset,
+                        })),
+                    ))
                 }
-                let header = ProtectedOneRttHeader {
-                    ty,
-                    dcid: ConnectionId::from_slice(dcid),
-                };
-                let pn_offset = raw_data.len() - remain.len();
-                Ok((
-                    remain,
-                    Packet::Protected(ProtectedPacket::OneRtt(ProtectedOneRttPacket {
-                        header,
-                        raw_data,
-                        pn_offset,
-                    })),
-                ))
+                Header::ZeroRtt(header) => {
+                    let (remain, (pn_offset, raw_data)) =
+                        complete(header.get_length(), raw_data, remain)?;
+                    Ok((
+                        remain,
+                        Packet::Space(SpacePacket::ZeroRtt(ZeroRttPacket {
+                            header,
+                            raw_data,
+                            pn_offset,
+                        })),
+                    ))
+                }
+                Header::Handshake(header) => {
+                    let (remain, (pn_offset, raw_data)) =
+                        complete(header.get_length(), raw_data, remain)?;
+                    Ok((
+                        remain,
+                        Packet::Space(SpacePacket::Handshake(HandshakePacket {
+                            header,
+                            raw_data,
+                            pn_offset,
+                        })),
+                    ))
+                }
+                Header::OneRtt(header) => {
+                    let (remain, (pn_offset, raw_data)) = complete(remain.len(), raw_data, remain)?;
+                    Ok((
+                        remain,
+                        Packet::Space(SpacePacket::OneRtt(OneRttPacket {
+                            header,
+                            raw_data,
+                            pn_offset,
+                        })),
+                    ))
+                }
             }
         }
     }
@@ -219,41 +166,13 @@ pub mod ext {
             many_till(be_packet(raw, 16), eof)(input).map_err(|_ne| ParsePacketError)?;
         Ok(packets)
     }
-
-    pub fn encrypy_packet(
-        packet: &mut [u8],
-        pn: u64,
-        pn_offset: usize,
-        header_offset: usize,
-        local_keys: &DirectionalKeys,
-    ) {
-        let (header, body) = packet.split_at_mut(header_offset);
-        local_keys
-            .packet
-            .encrypt_in_place(pn, header, body)
-            .unwrap();
-
-        let (header, payload) = packet.split_at_mut(pn_offset);
-        let first_byte = &mut header[0];
-        let (pn_bytes, sample) = payload.split_at_mut(4);
-        let pn_bytes = &mut pn_bytes[..header_offset - pn_offset];
-        local_keys
-            .header
-            .encrypt_in_place(sample, first_byte, pn_bytes)
-            .unwrap();
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::RetryHeader;
 
     #[test]
     fn it_works() {
         assert_eq!(2 + 2, 4);
-
-        let retry_packet = RetryHeader::default();
-        let token = &retry_packet.token;
-        println!("{:?}", token);
     }
 }

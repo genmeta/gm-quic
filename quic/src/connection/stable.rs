@@ -1,8 +1,8 @@
 use crate::{crypto::TlsIO, rx_queue::RxQueue, ReceiveProtectedPacket};
-use qbase::packet::{KeyPhaseToggle, ProtectedOneRttPacket, ProtectedPacket, SpinToggle};
+use qbase::packet::{KeyPhaseBit, OneRttPacket, SpacePacket, SpinBit};
 use qrecovery::{
     rtt::Rtt,
-    space::{OneRttDataSpace, ReceiveHalf, ReceivePacket, TransmitHalf},
+    space::{OneRttDataSpace, TransmitHalf},
 };
 use rustls::quic::Secrets;
 
@@ -10,19 +10,19 @@ use rustls::quic::Secrets;
 pub struct StableConnection {
     tls_session: TlsIO,
     tx: TransmitHalf<OneRttDataSpace>,
-    rx_queue: RxQueue<ProtectedOneRttPacket>,
+    rx_queue: RxQueue<OneRttPacket>,
 
-    spin: SpinToggle,
-    key_phase: KeyPhaseToggle,
+    spin: SpinBit,
+    key_phase: KeyPhaseBit,
     secrets: Secrets,
     // 暂时性的，rtt应该跟path相关
     rtt: Rtt,
 }
 
 impl ReceiveProtectedPacket for StableConnection {
-    fn receive_protected_packet(&mut self, protected_packet: ProtectedPacket) {
+    fn receive_protected_packet(&mut self, protected_packet: SpacePacket) {
         match protected_packet {
-            ProtectedPacket::OneRtt(packet) => {
+            SpacePacket::OneRtt(packet) => {
                 self.rx_queue.push(packet);
             }
             _other => {

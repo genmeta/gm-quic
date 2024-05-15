@@ -1,32 +1,24 @@
-use crate::error::Error as QuicError;
-use deref_derive::{Deref, DerefMut};
+use crate::cid::ConnectionId;
 use enum_dispatch::enum_dispatch;
 
 pub mod long;
 pub mod short;
 
 pub use long::{
-    ext::LongHeaderBuilder, PlainHandshakeHeader, PlainInitialHeader, PlainZeroRTTHeader,
-    ProtectedHandshakeHeader, ProtectedInitialHeader, ProtectedZeroRTTHeader, RetryHeader,
-    VersionNegotiationHeader,
+    ext::LongHeaderBuilder, HandshakeHeader, InitialHeader, RetryHeader, VersionNegotiationHeader,
+    ZeroRttHeader,
 };
-pub use short::{PlainOneRttHeader, ProtectedOneRttHeader};
+pub use short::OneRttHeader;
 
-/// header form bit
-pub const HEADER_FORM_MASK: u8 = 0x80;
-pub const LONG_HEADER_BIT: u8 = 0x80;
-const SHORT_HEADER_BIT: u8 = 0x00;
-/// The next bit (0x40) of byte 0 is set to 1, unless the packet is a Version Negotiation packet.
-const FIXED_BIT: u8 = 0x40;
-/// The next two bits (those with a mask of 0x30) of byte 0 contain a packet type.
-const LONG_PACKET_TYPE_MASK: u8 = 0x30;
-const INITIAL_PACKET_TYPE: u8 = 0x00;
-const ZERO_RTT_PACKET_TYPE: u8 = 0x10;
-const HANDSHAKE_PACKET_TYPE: u8 = 0x20;
-const RETRY_PACKET_TYPE: u8 = 0x30;
-/// The least significant two bits (those with a mask of 0x03)
-/// of byte 0 contain the length of the Packet Number field
-const PN_LEN_MASK: u8 = 0x03;
+use super::r#type::{
+    long::{v1, Type as LongType, Version},
+    short::OneRtt,
+    Type,
+};
+
+pub trait GetType {
+    fn get_type(&self) -> Type;
+}
 
 pub trait Protect {}
 
@@ -34,74 +26,89 @@ pub trait GetLength {
     fn get_length(&self) -> usize;
 }
 
-pub trait GetVersion {
-    fn get_version(&self) -> u32;
-}
-
-use super::GetDcid;
-
 #[enum_dispatch]
-pub trait BeProtected {
-    fn cipher_packet_type(&self) -> u8;
+pub trait GetDcid {
+    fn get_dcid(&self) -> &ConnectionId;
 }
-
-#[enum_dispatch]
-pub trait RemoveProtection {
-    fn remove_protection(self, plain_packet_type: u8) -> Result<u8, QuicError>;
-}
-
-pub trait BePlain {
-    /// The value included prior to protection MUST be set to 0.
-    /// An endpoint MUST treat receipt of a packet that has a non-zero value for these bits
-    /// after removing both packet and header protection as a connection error of type
-    /// PROTOCOL_VIOLATION. Discarding such a packet after only removing header protection
-    /// can expose the endpoint to attacks.
-    ///
-    /// see [Section 17.2](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.2-8.2) and
-    /// [Section 17.3.1](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.3.1-4.8) of QUIC.
-    fn pn_len(&self) -> Result<u8, QuicError>;
-}
-
-#[derive(Debug, Clone, Deref, DerefMut)]
-pub struct PlainHeaderWrapper<H: BeProtected>(#[deref] H);
 
 #[derive(Debug, Clone)]
-#[enum_dispatch(BeProtected, GetDcid, RemoveProtection)]
-pub enum ProtectedHeader {
-    Initial(ProtectedInitialHeader),
-    OneRtt(ProtectedOneRttHeader),
-    Handshake(ProtectedHandshakeHeader),
-    ZeroRTT(ProtectedZeroRTTHeader),
+#[enum_dispatch(GetDcid)]
+pub enum Header {
+    VN(long::VersionNegotiationHeader),
+    Retry(long::RetryHeader),
+    Initial(long::InitialHeader),
+    ZeroRtt(long::ZeroRttHeader),
+    Handshake(long::HandshakeHeader),
+    OneRtt(short::OneRttHeader),
 }
 
 pub mod ext {
     use super::{
-        long::{ext::WriteLongHeader, LongHeaderWrapper},
+        long::{
+            ext::{LongHeaderBuilder, WriteLongHeader},
+            Handshake, Initial, Retry, VersionNegotiation, ZeroRtt,
+        },
         short::ext::WriteOneRttHeader,
-        BeProtected, PlainHeaderWrapper, Protect, ProtectedOneRttHeader,
+        Header,
     };
-    use bytes::BufMut;
+    use crate::{
+        cid::be_connection_id,
+        packet::{
+            header::short::ext::be_one_rtt_header,
+            r#type::{short::OneRtt, Type},
+        },
+    };
 
-    pub trait WritePlainHeader<T: BeProtected> {
-        fn write_plain_header(&mut self, header: &PlainHeaderWrapper<T>);
-    }
-
-    impl<T, S> WritePlainHeader<LongHeaderWrapper<S>> for T
-    where
-        T: BufMut + WriteLongHeader<S>,
-        S: Protect,
-    {
-        fn write_plain_header(&mut self, header: &PlainHeaderWrapper<LongHeaderWrapper<S>>) {
-            self.write_long_header(&header.0)
+    pub fn be_header(
+        packet_type: Type,
+        dcid_len: usize,
+        input: &[u8],
+    ) -> nom::IResult<&[u8], Header> {
+        match packet_type {
+            Type::Long(long_ty) => {
+                let (remain, dcid) = be_connection_id(input)?;
+                let (remain, scid) = be_connection_id(remain)?;
+                let builder = LongHeaderBuilder { dcid, scid };
+                builder.parse(long_ty, remain)
+            }
+            Type::Short(OneRtt(spin)) => {
+                let (remain, one_rtt) = be_one_rtt_header(spin, dcid_len, input)?;
+                Ok((remain, Header::OneRtt(one_rtt)))
+            }
         }
     }
 
-    impl<T> WritePlainHeader<ProtectedOneRttHeader> for T
+    pub trait WriteHeader {
+        fn put_header(&mut self, header: &Header);
+    }
+
+    impl<T> WriteHeader for T
     where
-        T: BufMut + WriteOneRttHeader,
+        T: bytes::BufMut
+            + WriteLongHeader<VersionNegotiation>
+            + WriteLongHeader<Retry>
+            + WriteLongHeader<Initial>
+            + WriteLongHeader<ZeroRtt>
+            + WriteLongHeader<Handshake>
+            + WriteOneRttHeader,
     {
-        fn write_plain_header(&mut self, header: &PlainHeaderWrapper<ProtectedOneRttHeader>) {
-            self.put_one_rtt_header(&header.0)
+        fn put_header(&mut self, header: &Header) {
+            match header {
+                Header::VN(vn) => self.put_long_header(vn),
+                Header::Retry(retry) => self.put_long_header(retry),
+                Header::Initial(initial) => self.put_long_header(initial),
+                Header::ZeroRtt(zero_rtt) => self.put_long_header(zero_rtt),
+                Header::Handshake(handshake) => self.put_long_header(handshake),
+                Header::OneRtt(one_rtt) => self.put_one_rtt_header(one_rtt),
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        assert_eq!(2 + 2, 4);
     }
 }
