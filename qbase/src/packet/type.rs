@@ -14,10 +14,10 @@ const FIXED_BIT: u8 = 0x40;
 /// 'R' represents the reserved bits. The long packet header is 0x0C, and
 /// the short packet header is 0x18.
 #[derive(Debug, Clone, Copy, Deref)]
-pub struct ClearBits<const R: u8>(#[deref] pub(crate) u8);
+pub(super) struct ClearBits<const R: u8>(#[deref] pub(super) u8);
 
-pub type ShortClearBits = ClearBits<0x18>;
-pub type LongClearBits = ClearBits<0xC>;
+pub(super) type ShortClearBits = ClearBits<0x18>;
+pub(super) type LongClearBits = ClearBits<0xC>;
 
 impl<const R: u8> ClearBits<R> {
     pub fn by(pn: &PacketNumber) -> Self {
@@ -26,14 +26,14 @@ impl<const R: u8> ClearBits<R> {
 }
 
 impl ShortClearBits {
-    pub fn set_key_phase_bit(&mut self, key_phase_bit: KeyPhaseBit) {
+    pub(super) fn set_key_phase_bit(&mut self, key_phase_bit: KeyPhaseBit) {
         match key_phase_bit {
             KeyPhaseBit::On => self.0 |= key_phase_bit.value(),
             KeyPhaseBit::Off => self.0 &= key_phase_bit.value(),
         }
     }
 
-    pub fn key_phase_bit(&self) -> KeyPhaseBit {
+    pub(super) fn key_phase_bit(&self) -> KeyPhaseBit {
         KeyPhaseBit::from(self.0)
     }
 }
