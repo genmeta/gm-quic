@@ -65,6 +65,43 @@ pub enum Packet {
 #[error("parse packet error")]
 pub struct ParsePacketError;
 
+/// 此处解析并不涉及去除头部保护、解密数据包的部分，只是解析出包类型、连接ID等信息，
+/// 找到连接ID为进一步向连接交付做准备，去除头部保护、解密数据包的部分则在连接层进行.
+/// 收到的一个数据包是BytesMut，是为了做尽量少的Copy，直到应用层读走
+#[derive(Debug)]
+pub struct PacketReader {
+    raw: BytesMut,
+    dcid_len: usize,
+    // TODO: 添加leve，各种包类型顺序不能错乱，否则失败
+}
+
+impl PacketReader {
+    pub fn new(raw: BytesMut, dcid_len: usize) -> Self {
+        Self { raw, dcid_len }
+    }
+}
+
+impl Iterator for PacketReader {
+    type Item = Result<Packet, ParsePacketError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.raw.is_empty() {
+            return None;
+        }
+
+        match ext::be_packet(&self.raw, self.dcid_len) {
+            Ok((consumed, packet)) => {
+                self.raw.truncate(consumed);
+                Some(Ok(packet))
+            }
+            Err(_) => {
+                self.raw.clear(); // no longer parsing
+                Some(Err(ParsePacketError))
+            }
+        }
+    }
+}
+
 pub mod ext {
     use super::{
         header::{ext::be_header, GetLength},
@@ -72,99 +109,91 @@ pub mod ext {
         *,
     };
     use bytes::BytesMut;
-    use nom::{combinator::eof, multi::many_till};
 
     fn complete(
         length: usize,
         mut raw_data: BytesMut,
         input: &[u8],
-    ) -> nom::IResult<&[u8], (usize, BytesMut)> {
+    ) -> Result<(&[u8], usize, BytesMut), ParsePacketError> {
         let pn_offset = raw_data.len() - input.len();
         let packet_length = pn_offset + length;
         if length < 20 {
-            return Err(nom::Err::Incomplete(nom::Needed::new(20)));
+            // payload至少需要20字节，才能有足够的sample采样去除包头保护
+            return Err(ParsePacketError);
         }
         if length > input.len() {
-            return Err(nom::Err::Incomplete(nom::Needed::new(length)));
+            // payload数据不足
+            return Err(ParsePacketError);
         }
         raw_data.truncate(packet_length);
-        Ok((&input[length..], (pn_offset, raw_data)))
+        Ok((&input[length..], pn_offset, raw_data))
     }
 
     pub fn be_packet(
-        datagram: BytesMut,
+        datagram: &BytesMut,
         dcid_len: usize,
-    ) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Packet> {
-        move |input| {
-            let mut raw_data = datagram.clone();
-            let start = raw_data.len() - input.len();
-            let _ = raw_data.split_to(start);
-
-            let (remain, packet_type) = be_packet_type(input)?;
-            let (remain, header) = be_header(packet_type, dcid_len, remain)?;
-            match header {
-                Header::VN(header) => Ok((remain, Packet::VN(header))),
-                Header::Retry(header) => Ok((remain, Packet::Retry(header))),
-                Header::Initial(header) => {
-                    let (remain, (pn_offset, raw_data)) =
-                        complete(header.get_length(), raw_data, remain)?;
-                    Ok((
-                        remain,
-                        Packet::Space(SpacePacket::Initial(InitialPacket {
-                            header,
-                            raw_data,
-                            pn_offset,
-                        })),
-                    ))
-                }
-                Header::ZeroRtt(header) => {
-                    let (remain, (pn_offset, raw_data)) =
-                        complete(header.get_length(), raw_data, remain)?;
-                    Ok((
-                        remain,
-                        Packet::Space(SpacePacket::ZeroRtt(ZeroRttPacket {
-                            header,
-                            raw_data,
-                            pn_offset,
-                        })),
-                    ))
-                }
-                Header::Handshake(header) => {
-                    let (remain, (pn_offset, raw_data)) =
-                        complete(header.get_length(), raw_data, remain)?;
-                    Ok((
-                        remain,
-                        Packet::Space(SpacePacket::Handshake(HandshakePacket {
-                            header,
-                            raw_data,
-                            pn_offset,
-                        })),
-                    ))
-                }
-                Header::OneRtt(header) => {
-                    let (remain, (pn_offset, raw_data)) = complete(remain.len(), raw_data, remain)?;
-                    Ok((
-                        remain,
-                        Packet::Space(SpacePacket::OneRtt(OneRttPacket {
-                            header,
-                            raw_data,
-                            pn_offset,
-                        })),
-                    ))
-                }
+    ) -> Result<(usize, Packet), ParsePacketError> {
+        let input = datagram.as_ref();
+        let (remain, packet_type) = be_packet_type(input).map_err(|_e| {
+            // Fixed bits error or unsupport long header version
+            ParsePacketError
+        })?;
+        let (remain, header) = be_header(packet_type, dcid_len, remain).map_err(|_e| {
+            // Parse header error
+            ParsePacketError
+        })?;
+        match header {
+            Header::VN(header) => Ok((datagram.len() - remain.len(), Packet::VN(header))),
+            Header::Retry(header) => Ok((datagram.len() - remain.len(), Packet::Retry(header))),
+            Header::Initial(header) => {
+                let (remain, pn_offset, raw_data) =
+                    complete(header.get_length(), datagram.clone(), remain)?;
+                Ok((
+                    datagram.len() - remain.len(),
+                    Packet::Space(SpacePacket::Initial(InitialPacket {
+                        header,
+                        raw_data,
+                        pn_offset,
+                    })),
+                ))
+            }
+            Header::ZeroRtt(header) => {
+                let (remain, pn_offset, raw_data) =
+                    complete(header.get_length(), datagram.clone(), remain)?;
+                Ok((
+                    datagram.len() - remain.len(),
+                    Packet::Space(SpacePacket::ZeroRtt(ZeroRttPacket {
+                        header,
+                        raw_data,
+                        pn_offset,
+                    })),
+                ))
+            }
+            Header::Handshake(header) => {
+                let (remain, pn_offset, raw_data) =
+                    complete(header.get_length(), datagram.clone(), remain)?;
+                Ok((
+                    datagram.len() - remain.len(),
+                    Packet::Space(SpacePacket::Handshake(HandshakePacket {
+                        header,
+                        raw_data,
+                        pn_offset,
+                    })),
+                ))
+            }
+            Header::OneRtt(header) => {
+                let (remain, pn_offset, raw_data) =
+                    complete(remain.len(), datagram.clone(), remain)?;
+                Ok((
+                    datagram.len() - remain.len(),
+                    Packet::Space(SpacePacket::OneRtt(OneRttPacket {
+                        header,
+                        raw_data,
+                        pn_offset,
+                    })),
+                ))
             }
         }
-    }
-
-    /// 此处解析并不涉及去除头部保护、解密数据包的部分，只是解析出包类型、连接ID等信息，
-    /// 找到连接ID为进一步向连接交付做准备，去除头部保护、解密数据包的部分则在连接层进行.
-    /// 收到的一个数据包是BytesMut，是为了做尽量少的Copy，直到应用层读走
-    pub fn parse_packet_from_datagram(datagram: BytesMut) -> Result<Vec<Packet>, ParsePacketError> {
-        let raw = datagram.clone();
-        let input = datagram.as_ref();
-        let (_, (packets, _)) =
-            many_till(be_packet(raw, 16), eof)(input).map_err(|_ne| ParsePacketError)?;
-        Ok(packets)
     }
 }
 

@@ -60,7 +60,7 @@ pub use stream_data_blocked::StreamDataBlockedFrame;
 pub use streams_blocked::StreamsBlockedFrame;
 
 use super::varint::VarInt;
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum FrameType {
@@ -293,6 +293,37 @@ impl Frame {
     }
 }
 
+pub struct FrameReader {
+    raw: Bytes,
+}
+
+impl FrameReader {
+    pub fn new(raw: Bytes) -> Self {
+        Self { raw }
+    }
+}
+
+impl Iterator for FrameReader {
+    type Item = Result<Frame, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.raw.is_empty() {
+            return None;
+        }
+
+        match ext::be_frame(&self.raw) {
+            Ok((consumed, frame)) => {
+                self.raw.advance(consumed);
+                Some(Ok(frame))
+            }
+            Err(e) => {
+                self.raw.clear(); // no longer parsing
+                Some(Err(e))
+            }
+        }
+    }
+}
+
 pub mod ext {
     use super::*;
     use super::{
@@ -395,8 +426,39 @@ pub mod ext {
         }
     }
 
+    pub(super) fn be_frame(raw: &Bytes) -> Result<(usize, Frame), Error> {
+        use crate::varint::ext::be_varint;
+        let input = raw.as_ref();
+        let (remain, fty) = be_varint(input).map_err(|e| match e {
+            ne @ nom::Err::Incomplete(_) => nom::Err::Error(Error::IncompleteType(ne.to_string())),
+            _ => unreachable!(
+                "parsing frame type which is a varint never generates error or failure"
+            ),
+        })?;
+        let frame_type = FrameType::try_from(fty).map_err(nom::Err::Error)?;
+        let (remain, frame) =
+            complete_frame(frame_type, raw.clone())(remain).map_err(|e| match e {
+                ne @ nom::Err::Incomplete(_) => {
+                    nom::Err::Error(Error::IncompleteFrame(frame_type, ne.to_string()))
+                }
+                nom::Err::Error(ne) => {
+                    // may be TooLarge in MaxStreamsFrame/CryptoFrame/StreamFrame,
+                    // or may be Verify in NewConnectionIdFrame,
+                    // or may be Alt in ConnectionCloseFrame
+                    nom::Err::Error(Error::ParseError(
+                        frame_type,
+                        ne.code.description().to_owned(),
+                    ))
+                }
+                _ => unreachable!("parsing frame never fails"),
+            })?;
+        Ok((input.len() - remain.len(), frame))
+    }
+
     // nom parser for FRAME
-    fn be_frame(raw: Bytes) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Frame, Error> {
+    pub fn be_frame_deprecated(
+        raw: Bytes,
+    ) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Frame, Error> {
         move |input: &[u8]| {
             use crate::varint::ext::be_varint;
             let (input, fty) = be_varint(input).map_err(|e| match e {
@@ -431,7 +493,7 @@ pub mod ext {
         let input = bytes.as_ref();
         // many1 cannot check if it has reached EOF or if the last frame is incomplete;
         // many_till eof cannot check if it contains at least one.
-        let (_, (frames, _)) = many_till(be_frame(raw), eof)(input)?;
+        let (_, (frames, _)) = many_till(be_frame_deprecated(raw), eof)(input)?;
         if frames.is_empty() {
             return Err(Error::NoFrames);
         }
