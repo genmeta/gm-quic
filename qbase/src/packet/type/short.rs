@@ -4,7 +4,7 @@ use deref_derive::Deref;
 
 const SHORT_HEADER_BIT: u8 = 0x00;
 
-#[derive(Debug, Clone, Copy, Deref)]
+#[derive(Debug, Clone, Copy, Deref, PartialEq, Eq)]
 pub struct OneRtt(#[deref] pub(crate) SpinBit);
 
 impl From<u8> for OneRtt {

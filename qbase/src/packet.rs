@@ -1,6 +1,7 @@
 use bytes::BytesMut;
 use deref_derive::{Deref, DerefMut};
-use thiserror::Error;
+
+pub mod error;
 
 pub mod signal;
 pub use signal::{KeyPhaseBit, SpinBit};
@@ -62,18 +63,14 @@ pub enum Packet {
     Space(SpacePacket),
 }
 
-#[derive(Debug, Clone, Error)]
-#[error("parse packet error")]
-pub struct ParsePacketError;
-
-/// 此处解析并不涉及去除头部保护、解密数据包的部分，只是解析出包类型、连接ID等信息，
-/// 找到连接ID为进一步向连接交付做准备，去除头部保护、解密数据包的部分则在连接层进行.
-/// 收到的一个数据包是BytesMut，是为了做尽量少的Copy，直到应用层读走
+/// The parsing here does not involve removing header protection or decrypting the packet. It only parses information such as packet type and connection ID,
+/// and prepares for further delivery to the connection by finding the connection ID. The removal of header protection and decryption of the packet is done at the connection layer.
+/// The received packet is a BytesMut, in order to make as few copies as possible until it is read by the application layer.
 #[derive(Debug)]
 pub struct PacketReader {
     raw: BytesMut,
     dcid_len: usize,
-    // TODO: 添加leve，各种包类型顺序不能错乱，否则失败
+    // TODO: 添加level，各种包类型顺序不能错乱，否则失败
 }
 
 impl PacketReader {
@@ -83,7 +80,7 @@ impl PacketReader {
 }
 
 impl Iterator for PacketReader {
-    type Item = Result<Packet, ParsePacketError>;
+    type Item = Result<Packet, error::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.raw.is_empty() {
@@ -95,9 +92,9 @@ impl Iterator for PacketReader {
                 self.raw.truncate(consumed);
                 Some(Ok(packet))
             }
-            Err(_) => {
+            Err(e) => {
                 self.raw.clear(); // no longer parsing
-                Some(Err(ParsePacketError))
+                Some(Err(e))
             }
         }
     }
@@ -105,50 +102,50 @@ impl Iterator for PacketReader {
 
 pub mod ext {
     use super::{
+        error::Error,
         header::{ext::be_header, GetLength},
-        r#type::ext::be_packet_type,
+        r#type::{ext::be_packet_type, Type},
         *,
     };
     use bytes::BytesMut;
 
     fn complete(
+        packet_type: Type,
         length: usize,
         mut raw_data: BytesMut,
         input: &[u8],
-    ) -> Result<(&[u8], usize, BytesMut), ParsePacketError> {
+    ) -> Result<(&[u8], usize, BytesMut), Error> {
         let pn_offset = raw_data.len() - input.len();
         let packet_length = pn_offset + length;
         if length < 20 {
-            // payload至少需要20字节，才能有足够的sample采样去除包头保护
-            return Err(ParsePacketError);
+            // The payload needs at least 20 bytes to have enough samples to remove the packet header protection.
+            return Err(Error::UnderSampling(length));
         }
         if length > input.len() {
-            // payload数据不足
-            return Err(ParsePacketError);
+            // Insufficient payload data
+            return Err(Error::IncompletePacket(packet_type, length, input.len()));
         }
         raw_data.truncate(packet_length);
         Ok((&input[length..], pn_offset, raw_data))
     }
 
-    pub fn be_packet(
-        datagram: &BytesMut,
-        dcid_len: usize,
-    ) -> Result<(usize, Packet), ParsePacketError> {
+    pub fn be_packet(datagram: &BytesMut, dcid_len: usize) -> Result<(usize, Packet), Error> {
         let input = datagram.as_ref();
-        let (remain, packet_type) = be_packet_type(input).map_err(|_e| {
-            // Fixed bits error or unsupport long header version
-            ParsePacketError
+        let (remain, pkty) = be_packet_type(input).map_err(|e| match e {
+            ne @ nom::Err::Incomplete(_) => Error::IncompleteType(ne.to_string()),
+            nom::Err::Error(e) => e,
+            _ => unreachable!("parsing packet type never generates failure"),
         })?;
-        let (remain, header) = be_header(packet_type, dcid_len, remain).map_err(|_e| {
-            // Parse header error
-            ParsePacketError
+        let (remain, header) = be_header(pkty, dcid_len, remain).map_err(|e| match e {
+            ne @ nom::Err::Incomplete(_) => Error::IncompleteHeader(pkty, ne.to_string()),
+            _ => unreachable!("parsing packet header never generates error or failure"),
         })?;
         match header {
             Header::VN(header) => Ok((datagram.len() - remain.len(), Packet::VN(header))),
             Header::Retry(header) => Ok((datagram.len() - remain.len(), Packet::Retry(header))),
             Header::Initial(header) => {
                 let (remain, pn_offset, raw_data) =
-                    complete(header.get_length(), datagram.clone(), remain)?;
+                    complete(pkty, header.get_length(), datagram.clone(), remain)?;
                 Ok((
                     datagram.len() - remain.len(),
                     Packet::Space(SpacePacket::Initial(InitialPacket {
@@ -160,7 +157,7 @@ pub mod ext {
             }
             Header::ZeroRtt(header) => {
                 let (remain, pn_offset, raw_data) =
-                    complete(header.get_length(), datagram.clone(), remain)?;
+                    complete(pkty, header.get_length(), datagram.clone(), remain)?;
                 Ok((
                     datagram.len() - remain.len(),
                     Packet::Space(SpacePacket::ZeroRtt(ZeroRttPacket {
@@ -172,7 +169,7 @@ pub mod ext {
             }
             Header::Handshake(header) => {
                 let (remain, pn_offset, raw_data) =
-                    complete(header.get_length(), datagram.clone(), remain)?;
+                    complete(pkty, header.get_length(), datagram.clone(), remain)?;
                 Ok((
                     datagram.len() - remain.len(),
                     Packet::Space(SpacePacket::Handshake(HandshakePacket {
@@ -184,7 +181,7 @@ pub mod ext {
             }
             Header::OneRtt(header) => {
                 let (remain, pn_offset, raw_data) =
-                    complete(remain.len(), datagram.clone(), remain)?;
+                    complete(pkty, remain.len(), datagram.clone(), remain)?;
                 Ok((
                     datagram.len() - remain.len(),
                     Packet::Space(SpacePacket::OneRtt(OneRttPacket {

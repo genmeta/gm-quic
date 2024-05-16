@@ -1,0 +1,51 @@
+use super::r#type::Type;
+use nom::error::ErrorKind as NomErrorKind;
+use thiserror::Error;
+
+#[derive(Debug, PartialEq, Eq, Error)]
+pub enum Error {
+    #[error("Unsupport version {0}")]
+    UnsupportedVersion(u32),
+    #[error("Invalid fixed bit in long header")]
+    InvalidFixedBit,
+    #[error("Incomplete packet type: {0}")]
+    IncompleteType(String),
+    #[error("Incomplete packet header {0:?}: {1}")]
+    IncompleteHeader(Type, String),
+    #[error("Incomplete packet {0:?}: Need {1} bytes, but only {2} bytes left in the packet")]
+    IncompletePacket(Type, usize, usize),
+    #[error("Sampling of packet content less than 20 bytes, only {0} bytes available")]
+    UnderSampling(usize),
+    #[error("Fail to remove protection")]
+    RemoveProtectionFailure,
+    #[error("Invalid reserved bits {0}")]
+    InvalidReservedBits(u8),
+    #[error("Fail to decrypt packet")]
+    DecryptPacketFailure,
+}
+
+impl nom::error::ParseError<&[u8]> for Error {
+    fn from_error_kind(_input: &[u8], _kind: NomErrorKind) -> Self {
+        debug_assert_eq!(_kind, NomErrorKind::ManyTill);
+        unreachable!("QUIC frame parser must always consume")
+    }
+
+    fn append(_input: &[u8], _kind: NomErrorKind, source: Self) -> Self {
+        // 在解析帧时遇到了source错误，many_till期望通过ManyTill的错误类型告知
+        // 这里，源错误更有意义，所以直接返回源错误
+        debug_assert_eq!(_kind, NomErrorKind::ManyTill);
+        source
+    }
+}
+
+impl From<Error> for crate::error::Error {
+    fn from(e: Error) -> Self {
+        match e {
+            Error::InvalidReservedBits(_) => crate::error::Error::new_with_default_fty(
+                crate::error::ErrorKind::ProtocolViolation,
+                e.to_string(),
+            ),
+            _ => unreachable!(),
+        }
+    }
+}

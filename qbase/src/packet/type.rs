@@ -1,5 +1,5 @@
+use super::error::Error;
 use super::{KeyPhaseBit, PacketNumber};
-use crate::error::Error;
 use deref_derive::Deref;
 
 pub mod long;
@@ -66,10 +66,7 @@ impl<const R: u8> GetPacketNumberLength for ClearBits<R> {
         if reserved_bit == 0 {
             Ok((self.0 & Self::PN_LEN_MASK) + 1)
         } else {
-            Err(Error::new_with_default_fty(
-                crate::error::ErrorKind::ProtocolViolation,
-                format!("invalid reserved bits {reserved_bit}"),
-            ))
+            Err(Error::InvalidReservedBits(reserved_bit))
         }
     }
 }
@@ -82,7 +79,7 @@ impl<const R: u8> GetPacketNumberLength for ClearBits<R> {
 /// whether future versions of QUIC will still have Initial packets.
 /// The SpinBit of the short packet header is part of the short packet header Type, but for
 /// simplicity, the SpinBit is also part of the 1RTT header.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     Long(long::Type),
     Short(short::OneRtt),
@@ -102,7 +99,7 @@ pub mod ext {
     use super::{long::ext::WriteLongType, short::WriteShortType, *};
     use bytes::BufMut;
 
-    pub fn be_packet_type(input: &[u8]) -> nom::IResult<&[u8], Type> {
+    pub fn be_packet_type(input: &[u8]) -> nom::IResult<&[u8], Type, Error> {
         let (remain, ty) = nom::number::streaming::be_u8(input)?;
         if ty & HEADER_FORM_MASK == 0 {
             Ok((remain, Type::Short(short::OneRtt::from(ty))))

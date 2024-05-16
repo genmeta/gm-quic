@@ -1,9 +1,9 @@
+use super::error::Error;
 use super::{
     header::{long::LongHeader, Protect},
     take_pn_len, GetPacketNumberLength, KeyPhaseBit, LongClearBits, OneRttHeader, PacketNumber,
     PacketWrapper, ShortClearBits,
 };
-use crate::error::Error as QuicError;
 use bytes::Bytes;
 use rustls::quic::{HeaderProtectionKey, PacketKey};
 
@@ -13,7 +13,9 @@ pub trait RemoteProtection {
 
 pub trait DecodeHeader {
     type Output;
-    fn decode_header(&self) -> Result<Self::Output, QuicError>;
+
+    /// Will return Error::InvalidReservedBits if the reserved bits are not 0.
+    fn decode_header(&self) -> Result<Self::Output, Error>;
 }
 
 pub trait DecryptPacket {
@@ -22,7 +24,7 @@ pub trait DecryptPacket {
         pn: PacketNumber,
         expected_pn: u64,
         packet_key: &PacketKey,
-    ) -> Result<(u64, Bytes), ()>;
+    ) -> Result<(u64, Bytes), Error>;
 }
 
 impl<H: Protect> RemoteProtection for PacketWrapper<H> {
@@ -35,7 +37,7 @@ impl<H: Protect> RemoteProtection for PacketWrapper<H> {
         // and should be discarded. In any case, it won't cause a connection error!
         header_protection_key
             .decrypt_in_place(sample, first_byte, pn_bytes)
-            .map_err(|e| println!("decrypt header error: {}", e))
+            .map_err(|_| Error::RemoveProtectionFailure)
             .is_ok()
     }
 }
@@ -43,7 +45,7 @@ impl<H: Protect> RemoteProtection for PacketWrapper<H> {
 impl DecodeHeader for PacketWrapper<OneRttHeader> {
     type Output = (PacketNumber, KeyPhaseBit);
 
-    fn decode_header(&self) -> Result<Self::Output, QuicError> {
+    fn decode_header(&self) -> Result<Self::Output, Error> {
         let clear_bits = ShortClearBits::from(self.raw_data[0]);
         let pn_len = clear_bits.pn_len()?;
         let pn_bytes = &self.raw_data[self.pn_offset..self.pn_offset + pn_len as usize];
@@ -55,7 +57,7 @@ impl DecodeHeader for PacketWrapper<OneRttHeader> {
 impl<S> DecodeHeader for PacketWrapper<LongHeader<S>> {
     type Output = PacketNumber;
 
-    fn decode_header(&self) -> Result<PacketNumber, QuicError> {
+    fn decode_header(&self) -> Result<PacketNumber, Error> {
         let clear_bits = LongClearBits::from(self.raw_data[0]);
         let pn_len = clear_bits.pn_len()?;
         let pn_bytes = &self.raw_data[self.pn_offset..self.pn_offset + pn_len as usize];
@@ -70,7 +72,7 @@ impl<H: Protect> DecryptPacket for PacketWrapper<H> {
         pn: PacketNumber,
         expected_pn: u64,
         remote_keys: &PacketKey,
-    ) -> Result<(u64, Bytes), ()> {
+    ) -> Result<(u64, Bytes), Error> {
         // decrypt packet
         let mut raw_data = self.raw_data;
         let packet_number = pn.decode(expected_pn);
@@ -79,7 +81,7 @@ impl<H: Protect> DecryptPacket for PacketWrapper<H> {
         let header = raw_data;
         remote_keys
             .decrypt_in_place(packet_number, &header, &mut body)
-            .map_err(|e| println!("decrypt packet error: {}", e))?;
+            .map_err(|_| Error::DecryptPacketFailure)?;
         Ok((expected_pn, body.freeze()))
     }
 }

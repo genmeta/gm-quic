@@ -5,7 +5,7 @@ pub mod v1;
 
 /// The long packet header contains version information, so the packet type of a certain
 /// version is considered as one type.
-#[derive(Debug, Clone, Copy, Deref)]
+#[derive(Debug, Clone, Copy, Deref, PartialEq, Eq)]
 pub struct Version<const N: u32, Ty>(#[deref] pub(crate) Ty);
 
 pub trait GetVersion {
@@ -18,7 +18,7 @@ impl<const N: u32, Ty> GetVersion for Version<N, Ty> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     VersionNegotiation,
     V1(Version<1, v1::Type>),
@@ -30,27 +30,33 @@ use super::FIXED_BIT;
 
 pub mod ext {
     use super::*;
+    use crate::packet::error::Error;
     use bytes::BufMut;
     use nom::number::streaming::be_u32;
 
-    pub fn parse_long_type(ty: u8) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Type> {
+    pub fn parse_long_type(ty: u8) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Type, Error> {
         move |input| {
             // The next bit (0x40) of byte 0 is set to 1, unless the packet is a Version Negotiation
             // packet. Packets containing a zero value for this bit are not valid packets in this
             // version and MUST be discarded. A value of 1 for this bit allows QUIC to coexist with
             // other protocols; see [RFC7983].
             if ty & super::FIXED_BIT == 0 {
-                return Err(nom::Err::Error(nom::error::Error::new(
-                    input,
-                    nom::error::ErrorKind::Fix,
-                )));
+                return Err(nom::Err::Error(Error::InvalidFixedBit));
             }
 
             let (remain, version) = be_u32(input)?;
+            /*
+            let (remain, version) = be_u32::<_, ()>(input).map_err(|e| match e {
+                ne @ nom::Err::Incomplete(_) => {
+                    nom::Err::Error(Error::IncompleteType(ne.to_string()))
+                }
+                _ => unreachable!("parsing packet type never generates error or failure"),
+            })?;
+            */
             match version {
                 0 => Ok((remain, Type::VersionNegotiation)),
                 1 => Ok((remain, Type::V1(Version::<1, v1::Type>(ty.into())))),
-                _ => unimplemented!("not supported version"),
+                v => Err(nom::Err::Error(Error::UnsupportedVersion(v))),
             }
         }
     }
@@ -73,5 +79,13 @@ pub mod ext {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        assert_eq!(2 + 2, 4);
     }
 }
