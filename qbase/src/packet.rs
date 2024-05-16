@@ -21,6 +21,7 @@ use self::header::GetDcid;
 
 pub mod decrypt;
 pub mod encrypt;
+pub mod keys;
 
 #[derive(Debug, Clone, Deref, DerefMut)]
 pub struct PacketWrapper<H> {

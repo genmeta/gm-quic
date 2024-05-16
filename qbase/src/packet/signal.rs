@@ -27,9 +27,16 @@ impl<const B: u8> Toggle<B> {
             Toggle::On => B,
         }
     }
+
+    pub(crate) fn index(&self) -> usize {
+        match self {
+            Toggle::Off => 0,
+            Toggle::On => 1,
+        }
+    }
 }
 
-impl std::ops::Not for Toggle<SPIN_BIT> {
+impl<const B: u8> std::ops::Not for Toggle<B> {
     type Output = Self;
 
     fn not(self) -> Self::Output {
@@ -40,8 +47,6 @@ impl std::ops::Not for Toggle<SPIN_BIT> {
     }
 }
 
-/// 若更严格一点，只能从短头部的类型字段中解析出来
-/// from short::header::PlainType(u8)中得到
 impl<const B: u8> From<u8> for Toggle<B> {
     fn from(value: u8) -> Self {
         if value & B == 0 {
