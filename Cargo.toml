@@ -1,6 +1,6 @@
 [workspace]
-members = ["qrecovery", "qbase", "quic"]
-default-members = ["qrecovery", "qbase", "quic"]
+members = ["qrecovery", "qbase", "quic", "qcongestion"]
+default-members = ["qrecovery", "qbase", "quic", "qcongestion"]
 
 [profile.bench]
 debug = true

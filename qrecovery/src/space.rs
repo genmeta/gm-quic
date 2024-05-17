@@ -137,7 +137,7 @@ impl State {
 }
 
 #[derive(Debug, Clone)]
-struct Packet<F, D> {
+pub struct Packet<F, D> {
     send_time: Instant,
     payload: Payload<F, D>,
     sent_bytes: usize,
@@ -327,7 +327,7 @@ where
         if let Some(packet) = self
             .inflight_packets
             .get_mut(largest_acked)
-            .and_then(|record| record.take())
+            .and_then(|record: &mut Option<Packet<F, D>>| record.take())
         {
             if packet.is_ack_eliciting {
                 includes_ack_eliciting = true;

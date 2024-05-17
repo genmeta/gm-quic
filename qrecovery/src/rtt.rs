@@ -9,9 +9,9 @@ pub struct Rtt {
     max_ack_delay: Duration,
     first_rtt_sample: Option<Instant>,
     latest_rtt: Duration,
-    smoothed_rtt: Duration,
-    rttvar: Duration,
-    min_rtt: Duration,
+    pub smoothed_rtt: Duration,
+    pub rttvar: Duration,
+    pub min_rtt: Duration,
 }
 
 impl Default for Rtt {
