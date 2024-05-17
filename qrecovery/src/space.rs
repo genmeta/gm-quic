@@ -137,7 +137,7 @@ impl State {
 }
 
 #[derive(Debug, Clone)]
-pub struct Packet<F, D> {
+struct Packet<F, D> {
     send_time: Instant,
     payload: Payload<F, D>,
     sent_bytes: usize,
@@ -327,7 +327,7 @@ where
         if let Some(packet) = self
             .inflight_packets
             .get_mut(largest_acked)
-            .and_then(|record: &mut Option<Packet<F, D>>| record.take())
+            .and_then(|record| record.take())
         {
             if packet.is_ack_eliciting {
                 includes_ack_eliciting = true;
@@ -500,14 +500,14 @@ where
 
 impl<F, D, T, const R: bool> Receive for Space<F, D, T, R>
 where
-    F: TryFrom<InfoFrame>,
+    F: TryFrom<OneRttFrame>,
     D: TryFrom<DataFrame>,
     T: Transmit<F, D> + Debug,
     // 奇怪的写法，不知道为什么，但是这样写，就能编译通过
     // <F as TryFrom<InfoFrame>>::Error: Into<Error>,
     // <D as TryFrom<DataFrame>>::Error: Into<Error>,
     Error: From<<D as TryFrom<qbase::frame::DataFrame>>::Error>
-        + From<<F as TryFrom<qbase::frame::InfoFrame>>::Error>,
+        + From<<F as TryFrom<qbase::frame::OneRttFrame>>::Error>,
 {
     fn expected_pn(&self) -> u64 {
         self.rcvd_packets.largest()
@@ -560,7 +560,7 @@ where
                 Frame::Info(frame) => {
                     is_ack_eliciting = true;
                     match frame {
-                        InfoFrame::Ping(_) => (),
+                        OneRttFrame::Ping(_) => (),
                         other => {
                             if let Some(cf) = self.transmission.recv_frame(other.try_into()?)? {
                                 connection_frames.push(cf);
@@ -598,7 +598,7 @@ where
 
 impl<F, D, T, const R: bool> Space<F, D, T, R>
 where
-    F: BeFrame + TryFrom<InfoFrame, Error = frame::Error>,
+    F: BeFrame + TryFrom<OneRttFrame, Error = frame::Error>,
     D: TryFrom<DataFrame, Error = frame::Error>,
     T: Transmit<F, D> + Debug,
 {

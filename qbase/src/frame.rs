@@ -145,6 +145,16 @@ impl From<FrameType> for VarInt {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
+pub enum ConnFrame {
+    Close(ConnectionCloseFrame),
+    MaxData(MaxDataFrame),
+    DataBlocked(DataBlockedFrame),
+    NewConnectionId(NewConnectionIdFrame),
+    RetireConnectionId(RetireConnectionIdFrame),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[enum_dispatch(BeFrame)]
 pub enum StreamInfoFrame {
     ResetStream(ResetStreamFrame),
     StopSending(StopSendingFrame),
@@ -156,30 +166,19 @@ pub enum StreamInfoFrame {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
-pub enum InfoFrame {
-    Ping(PingFrame),
-    NewToken(NewTokenFrame),
-    MaxData(MaxDataFrame),
-    DataBlocked(DataBlockedFrame),
-    NewConnectionId(NewConnectionIdFrame),
-    RetireConnectionId(RetireConnectionIdFrame),
-    PathChallenge(PathChallengeFrame),
-    PathResponse(PathResponseFrame),
-    HandshakeDone(HandshakeDoneFrame),
-    Stream(StreamInfoFrame),
+pub enum PathFrame {
+    Challenge(PathChallengeFrame),
+    Response(PathResponseFrame),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
-pub enum ConnectionFrame {
-    Close(ConnectionCloseFrame),
+pub enum OneRttFrame {
+    Ping(PingFrame),
     NewToken(NewTokenFrame),
-    MaxData(MaxDataFrame),
-    DataBlocked(DataBlockedFrame),
-    NewConnectionId(NewConnectionIdFrame),
-    RetireConnectionId(RetireConnectionIdFrame),
-    PathChallenge(PathChallengeFrame),
-    PathResponse(PathResponseFrame),
+    Conn(ConnFrame),
+    Stream(StreamInfoFrame),
+    Path(PathFrame),
     HandshakeDone(HandshakeDoneFrame),
 }
 
@@ -187,10 +186,10 @@ pub enum ConnectionFrame {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NoFrame;
 
-impl TryFrom<InfoFrame> for NoFrame {
+impl TryFrom<OneRttFrame> for NoFrame {
     type Error = Error;
 
-    fn try_from(value: InfoFrame) -> Result<Self, Self::Error> {
+    fn try_from(value: OneRttFrame) -> Result<Self, Self::Error> {
         Err(Self::Error::WrongFrame(
             value.frame_type(),
             "Initial or Handshake",
@@ -202,46 +201,38 @@ impl TryFrom<InfoFrame> for NoFrame {
 #[enum_dispatch(BeFrame)]
 pub enum ZeroRttFrame {
     Ping(PingFrame), // 放在这里，应是没用?只可能想要写Ping帧时用得着
-    MaxData(MaxDataFrame),
-    DataBlocked(DataBlockedFrame),
-    NewConnectionId(NewConnectionIdFrame),
-    RetireConnectionId(RetireConnectionIdFrame),
-    PathChallenge(PathChallengeFrame),
+    Conn(ConnFrame),
     Stream(StreamInfoFrame),
+    PathChallenge(PathChallengeFrame),
 }
 
-impl TryFrom<InfoFrame> for ZeroRttFrame {
+impl TryFrom<OneRttFrame> for ZeroRttFrame {
     type Error = Error;
 
-    fn try_from(value: InfoFrame) -> Result<Self, Self::Error> {
+    fn try_from(value: OneRttFrame) -> Result<Self, Self::Error> {
         match value {
-            InfoFrame::Ping(_) => Ok(ZeroRttFrame::Ping(PingFrame)),
-            InfoFrame::MaxData(frame) => Ok(ZeroRttFrame::MaxData(frame)),
-            InfoFrame::DataBlocked(frame) => Ok(ZeroRttFrame::DataBlocked(frame)),
-            InfoFrame::NewConnectionId(frame) => Ok(ZeroRttFrame::NewConnectionId(frame)),
-            InfoFrame::RetireConnectionId(frame) => Ok(ZeroRttFrame::RetireConnectionId(frame)),
-            InfoFrame::PathChallenge(frame) => Ok(ZeroRttFrame::PathChallenge(frame)),
-            InfoFrame::Stream(frame) => Ok(ZeroRttFrame::Stream(frame)),
+            OneRttFrame::Ping(_) => Ok(ZeroRttFrame::Ping(PingFrame)),
+            OneRttFrame::Conn(frame) => Ok(ZeroRttFrame::Conn(frame)),
+            OneRttFrame::Stream(frame) => Ok(ZeroRttFrame::Stream(frame)),
+            OneRttFrame::Path(frame) => match frame {
+                PathFrame::Challenge(frame) => Ok(ZeroRttFrame::PathChallenge(frame)),
+                _ => Err(Self::Error::WrongFrame(frame.frame_type(), "Zero rtt data")),
+            },
             other => Err(Self::Error::WrongFrame(other.frame_type(), "Zero rtt data")),
         }
     }
 }
 
-impl From<ZeroRttFrame> for InfoFrame {
+impl From<ZeroRttFrame> for OneRttFrame {
     fn from(value: ZeroRttFrame) -> Self {
         match value {
-            ZeroRttFrame::Ping(_) => InfoFrame::Ping(PingFrame),
-            ZeroRttFrame::MaxData(frame) => InfoFrame::MaxData(frame),
-            ZeroRttFrame::DataBlocked(frame) => InfoFrame::DataBlocked(frame),
-            ZeroRttFrame::NewConnectionId(frame) => InfoFrame::NewConnectionId(frame),
-            ZeroRttFrame::RetireConnectionId(frame) => InfoFrame::RetireConnectionId(frame),
-            ZeroRttFrame::PathChallenge(frame) => InfoFrame::PathChallenge(frame),
-            ZeroRttFrame::Stream(frame) => InfoFrame::Stream(frame),
+            ZeroRttFrame::Ping(_) => OneRttFrame::Ping(PingFrame),
+            ZeroRttFrame::Conn(frame) => OneRttFrame::Conn(frame),
+            ZeroRttFrame::PathChallenge(frame) => OneRttFrame::Path(PathFrame::Challenge(frame)),
+            ZeroRttFrame::Stream(frame) => OneRttFrame::Stream(frame),
         }
     }
 }
-
-pub type OneRttFrame = InfoFrame;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum DataFrame {
@@ -277,20 +268,15 @@ impl TryFrom<DataFrame> for StreamFrame {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Frame {
     Padding,
+    Ping(PingFrame),
     Ack(AckFrame),
     Close(ConnectionCloseFrame),
-    Info(InfoFrame),
+    NewToken(NewTokenFrame),
+    Conn(ConnFrame),
+    Stream(StreamInfoFrame),
+    Path(PathFrame),
+    HandshakeDone(HandshakeDoneFrame),
     Data(DataFrame, Bytes),
-}
-
-impl Frame {
-    pub fn is_conn_layer_interest(&self) -> bool {
-        match self {
-            Self::Close(_) => true,
-            Self::Info(info) => !matches!(info, InfoFrame::Ping(_) | InfoFrame::Stream(_)),
-            _ => false,
-        }
-    }
 }
 
 pub struct FrameReader {
@@ -353,54 +339,49 @@ pub mod ext {
     ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], Frame> {
         move |input: &[u8]| match frame_type {
             FrameType::Padding => Ok((input, Frame::Padding)),
-            FrameType::Ping => Ok((input, Frame::Info(InfoFrame::Ping(PingFrame)))),
+            FrameType::Ping => Ok((input, Frame::Ping(PingFrame))),
             FrameType::ConnectionClose(layer) => {
                 map(connection_close_frame_at_layer(layer), Frame::Close)(input)
             }
             FrameType::NewConnectionId => map(be_new_connection_id_frame, |f| {
-                Frame::Info(InfoFrame::NewConnectionId(f))
+                Frame::Conn(ConnFrame::NewConnectionId(f))
             })(input),
             FrameType::RetireConnectionId => map(be_retire_connection_id_frame, |f| {
-                Frame::Info(InfoFrame::RetireConnectionId(f))
-            })(input),
-            FrameType::PathChallenge => map(be_path_challenge_frame, |f| {
-                Frame::Info(InfoFrame::PathChallenge(f))
-            })(input),
-            FrameType::PathResponse => map(be_path_response_frame, |f| {
-                Frame::Info(InfoFrame::PathResponse(f))
-            })(input),
-            FrameType::HandshakeDone => Ok((
-                input,
-                Frame::Info(InfoFrame::HandshakeDone(HandshakeDoneFrame)),
-            )),
-            FrameType::NewToken => {
-                map(be_new_token_frame, |f| Frame::Info(InfoFrame::NewToken(f)))(input)
-            }
-            FrameType::Ack(ecn) => map(ack_frame_with_flag(ecn), Frame::Ack)(input),
-            FrameType::ResetStream => map(be_reset_stream_frame, |f| {
-                Frame::Info(InfoFrame::Stream(f.into()))
+                Frame::Conn(ConnFrame::RetireConnectionId(f))
             })(input),
             FrameType::DataBlocked => map(be_data_blocked_frame, |f| {
-                Frame::Info(InfoFrame::DataBlocked(f))
+                Frame::Conn(ConnFrame::DataBlocked(f))
             })(input),
             FrameType::MaxData => {
-                map(be_max_data_frame, |f| Frame::Info(InfoFrame::MaxData(f)))(input)
+                map(be_max_data_frame, |f| Frame::Conn(ConnFrame::MaxData(f)))(input)
             }
-            FrameType::StopSending => map(be_stop_sending_frame, |f| {
-                Frame::Info(InfoFrame::Stream(f.into()))
+            FrameType::PathChallenge => map(be_path_challenge_frame, |f| {
+                Frame::Path(PathFrame::Challenge(f))
             })(input),
-            FrameType::MaxStreamData => map(be_max_stream_data_frame, |f| {
-                Frame::Info(InfoFrame::Stream(f.into()))
+            FrameType::PathResponse => map(be_path_response_frame, |f| {
+                Frame::Path(PathFrame::Response(f))
             })(input),
-            FrameType::MaxStreams(dir) => map(max_streams_frame_with_dir(dir), |f| {
-                Frame::Info(InfoFrame::Stream(f.into()))
-            })(input),
+            FrameType::HandshakeDone => Ok((input, Frame::HandshakeDone(HandshakeDoneFrame))),
+            FrameType::NewToken => map(be_new_token_frame, |f| Frame::NewToken(f))(input),
+            FrameType::Ack(ecn) => map(ack_frame_with_flag(ecn), Frame::Ack)(input),
+            FrameType::ResetStream => {
+                map(be_reset_stream_frame, |f| Frame::Stream(f.into()))(input)
+            }
+            FrameType::StopSending => {
+                map(be_stop_sending_frame, |f| Frame::Stream(f.into()))(input)
+            }
+            FrameType::MaxStreamData => {
+                map(be_max_stream_data_frame, |f| Frame::Stream(f.into()))(input)
+            }
+            FrameType::MaxStreams(dir) => {
+                map(max_streams_frame_with_dir(dir), |f| Frame::Stream(f.into()))(input)
+            }
             FrameType::StreamsBlocked(dir) => map(streams_blocked_frame_with_dir(dir), |f| {
-                Frame::Info(InfoFrame::Stream(f.into()))
+                Frame::Stream(f.into())
             })(input),
-            FrameType::StreamDataBlocked => map(be_stream_data_blocked_frame, |f| {
-                Frame::Info(InfoFrame::Stream(f.into()))
-            })(input),
+            FrameType::StreamDataBlocked => {
+                map(be_stream_data_blocked_frame, |f| Frame::Stream(f.into()))(input)
+            }
             FrameType::Crypto => {
                 let (input, frame) = be_crypto_frame(input)?;
                 let start = raw.len() - input.len();
@@ -532,6 +513,18 @@ pub mod ext {
         }
     }
 
+    impl<T: bytes::BufMut> WriteFrame<ConnFrame> for T {
+        fn put_frame(&mut self, frame: &ConnFrame) {
+            match frame {
+                ConnFrame::Close(frame) => self.put_connection_close_frame(frame),
+                ConnFrame::MaxData(frame) => self.put_max_data_frame(frame),
+                ConnFrame::DataBlocked(frame) => self.put_data_blocked_frame(frame),
+                ConnFrame::NewConnectionId(frame) => self.put_new_connection_id_frame(frame),
+                ConnFrame::RetireConnectionId(frame) => self.put_retire_connection_id_frame(frame),
+            }
+        }
+    }
+
     impl<T: bytes::BufMut> WriteFrame<StreamInfoFrame> for T {
         fn put_frame(&mut self, frame: &StreamInfoFrame) {
             match frame {
@@ -547,6 +540,15 @@ pub mod ext {
         }
     }
 
+    impl<T: bytes::BufMut> WriteFrame<PathFrame> for T {
+        fn put_frame(&mut self, frame: &PathFrame) {
+            match frame {
+                PathFrame::Challenge(frame) => self.put_path_challenge_frame(frame),
+                PathFrame::Response(frame) => self.put_path_response_frame(frame),
+            }
+        }
+    }
+
     impl<T: bytes::BufMut> WriteDataFrame<CryptoFrame> for T {
         fn put_frame_with_data(&mut self, frame: &CryptoFrame, data: &[u8]) {
             self.put_crypto_frame(frame, data);
@@ -557,12 +559,7 @@ pub mod ext {
         fn put_frame(&mut self, frame: &ZeroRttFrame) {
             match frame {
                 ZeroRttFrame::Ping(_) => self.put_ping_frame(),
-                ZeroRttFrame::MaxData(frame) => self.put_max_data_frame(frame),
-                ZeroRttFrame::DataBlocked(frame) => self.put_data_blocked_frame(frame),
-                ZeroRttFrame::NewConnectionId(frame) => self.put_new_connection_id_frame(frame),
-                ZeroRttFrame::RetireConnectionId(frame) => {
-                    self.put_retire_connection_id_frame(frame)
-                }
+                ZeroRttFrame::Conn(frame) => self.put_frame(frame),
                 ZeroRttFrame::PathChallenge(frame) => self.put_path_challenge_frame(frame),
                 ZeroRttFrame::Stream(frame) => {
                     (self as &mut dyn WriteFrame<StreamInfoFrame>).put_frame(frame)
@@ -577,21 +574,15 @@ pub mod ext {
         }
     }
 
-    impl<T: bytes::BufMut> WriteFrame<InfoFrame> for T {
-        fn put_frame(&mut self, frame: &InfoFrame) {
+    impl<T: bytes::BufMut> WriteFrame<OneRttFrame> for T {
+        fn put_frame(&mut self, frame: &OneRttFrame) {
             match frame {
-                InfoFrame::Ping(_) => self.put_ping_frame(),
-                InfoFrame::NewToken(frame) => self.put_new_token_frame(frame),
-                InfoFrame::MaxData(frame) => self.put_max_data_frame(frame),
-                InfoFrame::DataBlocked(frame) => self.put_data_blocked_frame(frame),
-                InfoFrame::NewConnectionId(frame) => self.put_new_connection_id_frame(frame),
-                InfoFrame::RetireConnectionId(frame) => self.put_retire_connection_id_frame(frame),
-                InfoFrame::PathChallenge(frame) => self.put_path_challenge_frame(frame),
-                InfoFrame::PathResponse(frame) => self.put_path_response_frame(frame),
-                InfoFrame::HandshakeDone(_) => self.put_handshake_done_frame(),
-                InfoFrame::Stream(frame) => {
-                    (self as &mut dyn WriteFrame<StreamInfoFrame>).put_frame(frame)
-                }
+                OneRttFrame::Ping(_) => self.put_ping_frame(),
+                OneRttFrame::NewToken(frame) => self.put_new_token_frame(frame),
+                OneRttFrame::Conn(frame) => self.put_frame(frame),
+                OneRttFrame::Stream(frame) => self.put_frame(frame),
+                OneRttFrame::Path(frame) => self.put_frame(frame),
+                OneRttFrame::HandshakeDone(_) => self.put_handshake_done_frame(),
             }
         }
     }

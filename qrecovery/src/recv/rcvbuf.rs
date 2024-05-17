@@ -242,7 +242,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_recvbuf_Recv() {
+    fn test_recvbuf_recv() {
         let mut buf = RecvBuf::default();
         buf.recv(0, Bytes::from("hello"));
         buf.recv(6, Bytes::from("world"));
