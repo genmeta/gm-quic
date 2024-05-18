@@ -8,7 +8,7 @@
 //   [ECN Counts (..)],
 // }
 
-use crate::varint::VarInt;
+use crate::{varint::VarInt, SpaceId};
 use std::{ops::RangeInclusive, vec::IntoIter};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -31,9 +31,16 @@ impl super::BeFrame for AckFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Ack(if self.ecn.is_some() { 1 } else { 0 })
     }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // IH_1, except for not belonging to 0-RTT.
+        space_id != SpaceId::ZeroRtt
+    }
+
     fn max_encoding_size(&self) -> usize {
         1 + 8 + 8 + 8 + self.ranges.len() * 16 + if self.ecn.is_some() { 24 } else { 0 }
     }
+
     fn encoding_size(&self) -> usize {
         1 + self.largest.encoding_size()
             + self.delay.encoding_size()

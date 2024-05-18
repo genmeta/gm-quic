@@ -3,7 +3,7 @@
 //   Sequence Number (i),
 // }
 
-use crate::varint::VarInt;
+use crate::{varint::VarInt, SpaceId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetireConnectionIdFrame {
@@ -15,6 +15,11 @@ const RETIRE_CONNECTION_ID_FRAME_TYPE: u8 = 0x19;
 impl super::BeFrame for RetireConnectionIdFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::RetireConnectionId
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // __01
+        space_id == SpaceId::ZeroRtt || space_id == SpaceId::OneRtt
     }
 
     fn max_encoding_size(&self) -> usize {

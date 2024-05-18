@@ -5,7 +5,7 @@
 //   Final Size (i),
 // }
 
-use crate::{streamid::StreamId, varint::VarInt};
+use crate::{streamid::StreamId, varint::VarInt, SpaceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResetStreamFrame {
@@ -19,6 +19,11 @@ const RESET_STREAM_FRAME_TYPE: u8 = 0x04;
 impl super::BeFrame for ResetStreamFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::ResetStream
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // __01
+        space_id == SpaceId::ZeroRtt || space_id == SpaceId::OneRtt
     }
 
     fn max_encoding_size(&self) -> usize {

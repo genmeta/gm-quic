@@ -225,7 +225,7 @@ pub mod ext {
             std::net::SocketAddrV4::new(addr.into(), port)
         })(input)?;
 
-        let mut address_v4 = Some(v4.into());
+        let mut address_v4 = Some(v4);
         if v4.ip().is_unspecified() {
             address_v4 = None;
         }
@@ -237,7 +237,7 @@ pub mod ext {
             std::net::SocketAddrV6::new(addr.into(), port, 0, 0)
         })(input)?;
 
-        let mut address_v6 = Some(v6.into());
+        let mut address_v6 = Some(v6);
         if v6.ip().is_unspecified() {
             address_v6 = None;
         }

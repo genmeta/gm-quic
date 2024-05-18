@@ -2,6 +2,8 @@
 //   Type (i) = 0x1e,
 // }
 
+use crate::SpaceId;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HandshakeDoneFrame;
 
@@ -10,6 +12,11 @@ const HANDSHAKE_DONE_FRAME_TYPE: u8 = 0x1e;
 impl super::BeFrame for HandshakeDoneFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::HandshakeDone
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // ___1
+        space_id == SpaceId::OneRtt
     }
 }
 

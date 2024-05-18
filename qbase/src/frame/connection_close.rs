@@ -7,7 +7,7 @@
 // }
 
 use super::FrameType;
-use crate::{error::ErrorKind, varint::VarInt};
+use crate::{error::ErrorKind, varint::VarInt, SpaceId};
 use std::borrow::Cow;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +29,16 @@ impl super::BeFrame for ConnectionCloseFrame {
         } else {
             APP_LAYER
         })
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // ih01: Only a CONNECTION_CLOSE frame of type 0x1c can appear in Initial or Handshake packets.
+        if (space_id == SpaceId::Initial || space_id == SpaceId::Handshake)
+            && self.frame_type.is_none()
+        {
+            return false;
+        }
+        true
     }
 
     fn max_encoding_size(&self) -> usize {

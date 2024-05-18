@@ -5,7 +5,10 @@
 //   Crypto Data (..),
 // }
 
-use crate::varint::{VarInt, VARINT_MAX};
+use crate::{
+    varint::{VarInt, VARINT_MAX},
+    SpaceId,
+};
 use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +22,11 @@ const CRYPTO_FRAME_TYPE: u8 = 0x06;
 impl super::BeFrame for CryptoFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Crypto
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // IH_1
+        space_id != SpaceId::ZeroRtt
     }
 
     fn max_encoding_size(&self) -> usize {

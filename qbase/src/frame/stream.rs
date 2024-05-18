@@ -13,6 +13,7 @@ use super::BeFrame;
 use crate::{
     streamid::StreamId,
     varint::{VarInt, VARINT_MAX},
+    SpaceId,
 };
 use std::ops::Range;
 
@@ -33,6 +34,11 @@ const FIN_BIT: u8 = 0x01;
 impl BeFrame for StreamFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Stream(self.flag)
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // __01
+        space_id == SpaceId::ZeroRtt || space_id == SpaceId::OneRtt
     }
 
     fn max_encoding_size(&self) -> usize {

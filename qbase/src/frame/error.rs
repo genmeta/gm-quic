@@ -15,10 +15,6 @@ pub enum Error {
     IncompleteFrame(FrameType, String),
     #[error("Error occurred when parsing frame {0:?}: {1}")]
     ParseError(FrameType, String),
-    #[error("{1} space does not contain frame {0:?}")]
-    WrongFrame(FrameType, &'static str),
-    #[error("{1} space does not contain data frame {0:?}")]
-    WrongData(FrameType, &'static str),
 }
 
 use crate::error::Error as TransportError;
@@ -54,12 +50,6 @@ impl From<Error> for TransportError {
             }
             Error::ParseError(fty, _) => {
                 Self::new(TransportErrorKind::FrameEncoding, fty, e.to_string())
-            }
-            Error::WrongFrame(fty, _) => {
-                Self::new(TransportErrorKind::ProtocolViolation, fty, e.to_string())
-            }
-            Error::WrongData(fty, _) => {
-                Self::new(TransportErrorKind::ProtocolViolation, fty, e.to_string())
             }
         }
     }

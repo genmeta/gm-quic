@@ -3,7 +3,7 @@
 //   Maximum Streams (i),
 // }
 
-use crate::varint::VarInt;
+use crate::{varint::VarInt, SpaceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaxStreamsFrame {
@@ -21,6 +21,11 @@ impl super::BeFrame for MaxStreamsFrame {
             MaxStreamsFrame::Bi(_) => 0,
             MaxStreamsFrame::Uni(_) => 1,
         })
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // __01
+        space_id == SpaceId::ZeroRtt || space_id == SpaceId::OneRtt
     }
 
     fn max_encoding_size(&self) -> usize {

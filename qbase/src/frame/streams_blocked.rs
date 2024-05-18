@@ -3,7 +3,7 @@
 //   Maximum Streams (i),
 // }
 
-use crate::streamid::StreamId;
+use crate::{streamid::StreamId, SpaceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamsBlockedFrame {
@@ -21,6 +21,11 @@ impl super::BeFrame for StreamsBlockedFrame {
             StreamsBlockedFrame::Bi(_) => 0,
             StreamsBlockedFrame::Uni(_) => 1,
         })
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // __01
+        space_id == SpaceId::ZeroRtt || space_id == SpaceId::OneRtt
     }
 
     fn max_encoding_size(&self) -> usize {

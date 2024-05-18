@@ -4,6 +4,8 @@
 //   Token (..),
 // }
 
+use crate::SpaceId;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewTokenFrame {
     pub token: Vec<u8>,
@@ -14,6 +16,11 @@ const NEW_TOKEN_FRAME_TYPE: u8 = 0x07;
 impl super::BeFrame for NewTokenFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::NewToken
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // ___1
+        space_id == SpaceId::OneRtt
     }
 
     fn max_encoding_size(&self) -> usize {

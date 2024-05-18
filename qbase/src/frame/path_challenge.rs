@@ -3,6 +3,8 @@
 //   Data (64),
 // }
 
+use crate::SpaceId;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PathChallengeFrame {
     pub data: [u8; 8],
@@ -21,6 +23,11 @@ const PATH_CHALLENGE_FRAME_TYPE: u8 = 0x1a;
 impl super::BeFrame for PathChallengeFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::PathChallenge
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // __01
+        space_id == SpaceId::ZeroRtt || space_id == SpaceId::OneRtt
     }
 
     fn max_encoding_size(&self) -> usize {

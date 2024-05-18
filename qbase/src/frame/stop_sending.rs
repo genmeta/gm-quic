@@ -4,7 +4,7 @@
 //   Application Protocol Error Code (i),
 // }
 
-use crate::{streamid::StreamId, varint::VarInt};
+use crate::{streamid::StreamId, varint::VarInt, SpaceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StopSendingFrame {
@@ -17,6 +17,11 @@ const STOP_SENDING_FRAME_TYPE: u8 = 0x05;
 impl super::BeFrame for StopSendingFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::StopSending
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // __01
+        space_id == SpaceId::ZeroRtt || space_id == SpaceId::OneRtt
     }
 
     fn max_encoding_size(&self) -> usize {

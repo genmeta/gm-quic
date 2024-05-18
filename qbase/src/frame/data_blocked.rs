@@ -3,7 +3,7 @@
 //   Maximum Data (i),
 // }
 
-use crate::varint::VarInt;
+use crate::{varint::VarInt, SpaceId};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DataBlockedFrame {
@@ -15,6 +15,11 @@ const DATA_BLOCKED_FRAME_TYPE: u8 = 0x14;
 impl super::BeFrame for DataBlockedFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Crypto
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // __01
+        space_id == SpaceId::ZeroRtt || space_id == SpaceId::OneRtt
     }
 
     fn max_encoding_size(&self) -> usize {

@@ -4,7 +4,7 @@
 //   Maximum Stream Data (i),
 // }
 
-use crate::{streamid::StreamId, varint::VarInt};
+use crate::{streamid::StreamId, varint::VarInt, SpaceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaxStreamDataFrame {
@@ -17,6 +17,11 @@ const MAX_STREAM_DATA_FRAME_TYPE: u8 = 0x11;
 impl super::BeFrame for MaxStreamDataFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::MaxStreamData
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // __01
+        space_id == SpaceId::ZeroRtt || space_id == SpaceId::OneRtt
     }
 
     fn max_encoding_size(&self) -> usize {

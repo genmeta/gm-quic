@@ -4,7 +4,7 @@
 //   Maximum Stream Data (i),
 // }
 
-use crate::{streamid::StreamId, varint::VarInt};
+use crate::{streamid::StreamId, varint::VarInt, SpaceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamDataBlockedFrame {
@@ -21,6 +21,11 @@ impl super::BeFrame for StreamDataBlockedFrame {
 
     fn max_encoding_size(&self) -> usize {
         1 + 8 + 8
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // __01
+        space_id == SpaceId::ZeroRtt || space_id == SpaceId::OneRtt
     }
 
     fn encoding_size(&self) -> usize {

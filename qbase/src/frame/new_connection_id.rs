@@ -10,6 +10,7 @@
 use crate::{
     cid::{ConnectionId, ResetToken},
     varint::VarInt,
+    SpaceId,
 };
 
 const NEW_CONNECTION_ID_FRAME_TYPE: u8 = 0x18;
@@ -25,6 +26,19 @@ pub struct NewConnectionIdFrame {
 impl super::BeFrame for NewConnectionIdFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::NewConnectionId
+    }
+
+    fn belongs_to(&self, space_id: SpaceId) -> bool {
+        // __01
+        space_id == SpaceId::ZeroRtt || space_id == SpaceId::OneRtt
+    }
+
+    fn encoding_size(&self) -> usize {
+        todo!()
+    }
+
+    fn max_encoding_size(&self) -> usize {
+        todo!()
     }
 }
 
