@@ -483,6 +483,16 @@ pub mod ext {
         }
     }
 
+    impl<T: bytes::BufMut> WriteFrame<PureFrame> for T {
+        fn put_frame(&mut self, frame: &PureFrame) {
+            match frame {
+                PureFrame::Conn(frame) => self.put_frame(frame),
+                PureFrame::Stream(frame) => self.put_frame(frame),
+                PureFrame::Path(frame) => self.put_frame(frame),
+            }
+        }
+    }
+
     impl<T: bytes::BufMut> WriteDataFrame<CryptoFrame> for T {
         fn put_frame_with_data(&mut self, frame: &CryptoFrame, data: &[u8]) {
             self.put_crypto_frame(frame, data);

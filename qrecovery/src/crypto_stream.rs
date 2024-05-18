@@ -1,9 +1,5 @@
-use super::space::Transmit;
 /// Crypto data stream
-use qbase::{
-    error::Error,
-    frame::{ConnectionFrame, CryptoFrame, NoFrame},
-};
+use qbase::{error::Error, frame::CryptoFrame};
 
 mod send {
     use crate::send::sndbuf::SendBuf;
@@ -237,8 +233,7 @@ pub use send::CryptoStreamWriter;
 /// ```rust
 /// use bytes::Bytes;
 /// use qbase::{frame::CryptoFrame, varint::VarInt};
-/// use qrecovery::crypto_stream::CryptoStream;
-/// use qrecovery::space::Transmit;
+/// use qrecovery::crypto_stream::{CryptoStream, TransmitCrypto};
 /// use tokio::io::{AsyncWriteExt, AsyncReadExt};
 ///
 /// #[tokio::main]
@@ -291,8 +286,20 @@ impl CryptoStream {
     }
 }
 
-impl Transmit<NoFrame, CryptoFrame> for CryptoStream {
-    type Buffer = Vec<u8>;
+pub trait TransmitCrypto {
+    type Buffer: bytes::BufMut;
+
+    fn try_send(&mut self, buf: &mut Self::Buffer) -> Option<(CryptoFrame, usize)>;
+
+    fn confirm_data(&mut self, data_frame: CryptoFrame);
+
+    fn may_loss(&mut self, data_frame: CryptoFrame);
+
+    fn recv_data(&mut self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error>;
+}
+
+impl TransmitCrypto for CryptoStream {
+    type Buffer = bytes::BytesMut;
 
     fn try_send(&mut self, buf: &mut Self::Buffer) -> Option<(CryptoFrame, usize)> {
         self.outgoing.try_send(buf)
@@ -310,15 +317,36 @@ impl Transmit<NoFrame, CryptoFrame> for CryptoStream {
         self.incoming.recv(crypto_frame.offset.into_inner(), body);
         Ok(())
     }
+}
 
-    fn recv_frame(&mut self, _: NoFrame) -> Result<Option<ConnectionFrame>, Error> {
-        unreachable!("no signaling info frame in crypto stream")
+/// 在0-RTT中，不允许传输CryptoFrame，CryptoFrame只能承担加密握手的Message
+/// 实际上，1-RTT中也没任何传输CryptoFrame的需求，只是未来可能会有，且1-RTT是经过验证的安全
+#[derive(Debug)]
+pub struct NoCrypto;
+
+impl TransmitCrypto for NoCrypto {
+    type Buffer = bytes::BytesMut;
+
+    fn try_send(&mut self, _buf: &mut Self::Buffer) -> Option<(CryptoFrame, usize)> {
+        unreachable!()
+    }
+
+    fn confirm_data(&mut self, _data_frame: CryptoFrame) {
+        unreachable!()
+    }
+
+    fn may_loss(&mut self, _data_frame: CryptoFrame) {
+        unreachable!()
+    }
+
+    fn recv_data(&mut self, _crypto_frame: CryptoFrame, _body: bytes::Bytes) -> Result<(), Error> {
+        unreachable!()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::space::Transmit;
+    use super::TransmitCrypto;
     use qbase::{frame::CryptoFrame, varint::VarInt};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

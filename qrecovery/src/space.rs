@@ -1,11 +1,14 @@
-use super::{index_deque::IndexDeque, rtt::Rtt};
+use super::{
+    crypto_stream::TransmitCrypto, index_deque::IndexDeque, rtt::Rtt, streams::TransmitStream,
+};
 use bytes::{BufMut, Bytes};
 use deref_derive::{Deref, DerefMut};
 use qbase::{
     error::{Error, ErrorKind},
-    frame::{self, ext::*, *},
+    frame::{ext::*, *},
     packet::decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
     varint::{VarInt, VARINT_MAX},
+    SpaceId,
 };
 use rustls::quic::{DirectionalKeys, Keys};
 use std::{
@@ -45,45 +48,17 @@ pub trait Receive {
         pktid: u64,
         payload: Bytes,
         rtt: &mut Rtt,
-    ) -> Result<Vec<ConnectionFrame>, Error>;
-}
-
-/// The following generic definition:
-/// - F represents a collection of signaling frames, and
-/// - D represents data frames.
-pub trait Transmit<F, D> {
-    type Buffer: BufMut + WriteFrame<F> + WriteDataFrame<D>;
-
-    // Attempt to collect data for transmission. If data is available, return the
-    // header of the data frame and the number of additional bytes added. If there
-    // is no data to send, return None.
-    // Note: Crypto data is not subject to flow control, congestion control,
-    // or amplification attack limitations. Therefore, the amount of Crypto data
-    // written should be ignored.
-    fn try_send(&mut self, buf: &mut Self::Buffer) -> Option<(D, usize)>;
-
-    // The signaling frame has been confirmed to be received successfully.
-    // Self may want to notify the relevant parties that the signaling frame has
-    //  been received, but this is unnecessary in a reliable space.
-    fn confirm(&mut self, _frame: F) {}
-
-    fn confirm_data(&mut self, data_frame: D);
-
-    fn may_loss(&mut self, data_frame: D);
-
-    fn recv_frame(&mut self, frame: F) -> Result<Option<ConnectionFrame>, Error>;
-
-    fn recv_data(&mut self, data_frame: D, data: Bytes) -> Result<(), Error>;
+    ) -> Result<Vec<ConnFrame>, Error>;
 }
 
 #[derive(Debug, Clone)]
-enum Records<F, D> {
-    Frame(F),
-    Data(D),
+enum Record {
+    Pure(PureFrame),
+    Data(DataFrame),
     Ack(AckRecord),
 }
 
-type Payload<F, D> = Vec<Records<F, D>>;
+type Payload = Vec<Record>;
 
 #[derive(Debug, Clone, Default)]
 enum State {
@@ -137,9 +112,9 @@ impl State {
 }
 
 #[derive(Debug, Clone)]
-struct Packet<F, D> {
+struct Packet {
     send_time: Instant,
-    payload: Payload<F, D>,
+    payload: Payload,
     sent_bytes: usize,
     is_ack_eliciting: bool,
 }
@@ -148,33 +123,29 @@ const PACKET_THRESHOLD: u64 = 3;
 
 /// 可靠空间的抽象实现，需要实现上述所有trait
 /// 可靠空间中的重传、确认，由可靠空间内部实现，无需外露
-#[derive(Debug, Deref, DerefMut)]
-pub struct Space<F, D, T, const R: bool = true>
+#[derive(Debug)]
+pub struct Space<CT, ST>
 where
-    T: Transmit<F, D> + Debug,
+    CT: TransmitCrypto,
+    ST: TransmitStream,
 {
+    space_id: SpaceId,
     // 将要发出的数据帧，包括重传的数据帧；可以是外部的功能帧，也可以是具体传输空间内部的
     // 起到“信号”作用的信令帧，比如数据空间内部的各类通信帧。
     // 需要注意的是，数据帧以及Ack帧(记录)，并不在此中保存，因为数据帧占数据空间，ack帧
     // 则是内部可靠性的产物，他们在发包记录中会作记录保存。
-    frames: Arc<Mutex<VecDeque<F>>>,
+    frames: Arc<Mutex<VecDeque<PureFrame>>>,
     // 记录着发包时间、发包内容，供收到ack frame时，确认那些内容被接收了，哪些丢失了，需要
     // 重传。如果是一般帧，直接进入帧队列就可以了，但有2种需要特殊处理：
     // - 数据帧记录：无论被确认还是判定丢失了，都要通知发送缓冲区
     // - ack帧记录：被确认了，要滑动ack记录队列到合适位置
     // 另外，因为发送信令帧，是自动重传的，因此无需其他实现干扰
-    inflight_packets: IndexDeque<Option<Packet<F, D>>, VARINT_MAX>,
+    inflight_packets: IndexDeque<Option<Packet>, VARINT_MAX>,
     disorder_tolerance: u64,
     time_of_last_sent_ack_eliciting_packet: Option<Instant>,
     largest_acked_pktid: Option<u64>,
     // 设计丢包重传定时器，在收到AckFrame的探测丢包时，可能会设置该定时器，实际上是过期时间
     loss_time: Option<Instant>,
-
-    // 接收到数据包，帧可以是任意帧，需要调用具体空间的处理函数来具体处理，但需注意
-    // - Ack帧，涉及可用空间基本功能，必须在可用空间处理
-    // - 其他帧，交给具体空间处理。需判定是否是该空间的帧。由具体空间，唤醒相关读取子来处理
-    //   * 要末能转化成F
-    //   * 要末能转化成D，主要针对带数据的
 
     // 用于产生ack frame，Instant用于计算ack_delay，bool表明是否ack eliciting
     rcvd_packets: IndexDeque<State, VARINT_MAX>,
@@ -190,17 +161,19 @@ where
     // 应该计算rtt的时候，传进来；或者收到ack frame的时候，将(last_rtt, ack_delay)传出去
     max_ack_delay: Duration,
 
-    #[deref]
-    transmission: T,
+    stm_trans: ST,
+    tls_trans: CT,
 }
 
-impl<F, D, T, const R: bool> Space<F, D, T, R>
+impl<CT, ST> Space<CT, ST>
 where
-    T: Transmit<F, D> + Debug,
+    CT: TransmitCrypto,
+    ST: TransmitStream,
 {
-    pub(crate) fn build(frames: Arc<Mutex<VecDeque<F>>>, transmission: T) -> Self {
+    pub(crate) fn build(space_id: SpaceId, tls_transmission: CT, streams_transmission: ST) -> Self {
         Self {
-            frames,
+            space_id,
+            frames: Arc::new(Mutex::new(VecDeque::new())),
             inflight_packets: IndexDeque::new(),
             disorder_tolerance: 0,
             time_of_last_sent_ack_eliciting_packet: None,
@@ -213,25 +186,32 @@ where
             rcvd_unreached_packet: false,
             time_to_sync: None,
             max_ack_delay: Duration::from_millis(25),
-            transmission,
+            tls_trans: tls_transmission,
+            stm_trans: streams_transmission,
         }
     }
 
-    pub fn write_frame(&mut self, frame: F) {
+    pub fn write_frame(&mut self, frame: PureFrame) {
+        assert!(frame.belongs_to(self.space_id));
         let mut frames = self.frames.lock().unwrap();
         frames.push_back(frame);
     }
 
-    fn confirm(&mut self, payload: Payload<F, D>) {
+    fn confirm(&mut self, payload: Payload) {
         for record in payload {
             match record {
-                Records::Ack(ack) => {
+                Record::Ack(ack) => {
                     let _ = self
                         .rcvd_packets
                         .drain_to(ack.0.saturating_sub(self.disorder_tolerance));
                 }
-                Records::Frame(frame) => self.transmission.confirm(frame),
-                Records::Data(data) => self.transmission.confirm_data(data),
+                Record::Pure(_frame) => {
+                    todo!("哪些帧需要确认呢？")
+                }
+                Record::Data(data) => match data {
+                    DataFrame::Crypto(f) => self.tls_trans.confirm_data(f),
+                    DataFrame::Stream(f) => self.stm_trans.confirm_data(f),
+                },
             }
         }
     }
@@ -239,7 +219,7 @@ where
     fn gen_ack_frame(&mut self) -> AckFrame {
         // must be a reliable space; otherwise, if it is an unreliable space,
         // such as the 0-RTT space, never send an ACK frame.
-        assert!(R);
+        assert!(self.space_id != SpaceId::ZeroRtt);
         // There must be an ACK-eliciting packet; otherwise, it will not
         // trigger the sending of an ACK frame.
         debug_assert!(self
@@ -349,12 +329,15 @@ where
             acked_bytes += packet.sent_bytes;
             for record in packet.payload {
                 match record {
-                    Records::Ack(_) => { /* needn't resend */ }
-                    Records::Frame(frame) => {
+                    Record::Ack(_) => { /* needn't resend */ }
+                    Record::Pure(frame) => {
                         let mut frames = self.frames.lock().unwrap();
                         frames.push_back(frame);
                     }
-                    Records::Data(data) => self.transmission.may_loss(data),
+                    Record::Data(data) => match data {
+                        DataFrame::Crypto(f) => self.tls_trans.may_loss(f),
+                        DataFrame::Stream(f) => self.stm_trans.may_loss(f),
+                    },
                 }
             }
         }
@@ -373,12 +356,15 @@ where
             if send_time <= lost_send_time {
                 for record in packet.take().unwrap().payload {
                     match record {
-                        Records::Ack(_) => { /* needn't resend */ }
-                        Records::Frame(frame) => {
+                        Record::Ack(_) => { /* needn't resend */ }
+                        Record::Pure(frame) => {
                             let mut frames = self.frames.lock().unwrap();
                             frames.push_back(frame);
                         }
-                        Records::Data(data) => self.transmission.may_loss(data),
+                        Record::Data(data) => match data {
+                            DataFrame::Crypto(f) => self.tls_trans.may_loss(f),
+                            DataFrame::Stream(f) => self.stm_trans.may_loss(f),
+                        },
                     }
                 }
             } else {
@@ -401,7 +387,7 @@ where
 
     fn need_send_ack_frame(&self) -> bool {
         // non-reliable space such as 0-RTT space, never send ack frame
-        if !R {
+        if self.space_id == SpaceId::ZeroRtt {
             return false;
         }
 
@@ -427,17 +413,17 @@ where
     }
 }
 
-impl<F, D, T, const R: bool> TrySend for Space<F, D, T, R>
+impl<CT, ST> TrySend for Space<CT, ST>
 where
-    F: BeFrame,
-    T: Transmit<F, D> + Debug,
+    CT: TransmitCrypto<Buffer = bytes::BytesMut>,
+    ST: TransmitStream<Buffer = bytes::BytesMut>,
 {
-    type Buffer = T::Buffer;
+    type Buffer = bytes::BytesMut;
 
-    fn try_send(&mut self, buf: &mut T::Buffer) -> Result<Option<(u64, usize)>, Error> {
+    fn try_send(&mut self, buf: &mut Self::Buffer) -> Result<Option<(u64, usize)>, Error> {
         let mut is_ack_eliciting = false;
         let mut remaning = buf.remaining_mut();
-        let mut payload = Payload::<F, D>::new();
+        let mut payload = Payload::new();
         if self.need_send_ack_frame() {
             let ack = self.gen_ack_frame();
             if remaning >= ack.max_encoding_size() || remaning >= ack.encoding_size() {
@@ -446,7 +432,7 @@ where
                 self.rcvd_unreached_packet = false;
                 self.last_synced_ack_largest = ack.largest.into_inner();
                 buf.put_ack_frame(&ack);
-                payload.push(Records::Ack(ack.into()));
+                payload.push(Record::Ack(ack.into()));
                 // The ACK frame is not counted towards sent_bytes, is not subject to
                 // amplification attacks, and is not subject to flow control limitations.
                 remaning = buf.remaining_mut();
@@ -465,7 +451,7 @@ where
                     is_ack_eliciting = true;
 
                     let frame = frames.pop_front().unwrap();
-                    payload.push(Records::Frame(frame));
+                    payload.push(Record::Pure(frame));
                     continue;
                 } else {
                     break;
@@ -473,10 +459,18 @@ where
             }
         }
 
+        // Consider transmit stream info frames if has
+        if let Some((stream_info_frame, _len)) = self.stm_trans.try_send_frame(buf) {
+            payload.push(Record::Pure(PureFrame::Stream(stream_info_frame)));
+        }
+
         // Consider transmitting data frames.
-        if let Some((data_frame, ignore)) = self.transmission.try_send(buf) {
-            payload.push(Records::Data(data_frame));
+        while let Some((data_frame, ignore)) = self.tls_trans.try_send(buf) {
+            payload.push(Record::Data(DataFrame::Crypto(data_frame)));
             remaning += ignore;
+        }
+        while let Some((data_frame, _)) = self.stm_trans.try_send_data(buf) {
+            payload.push(Record::Data(DataFrame::Stream(data_frame)));
         }
 
         // Record
@@ -498,16 +492,10 @@ where
     }
 }
 
-impl<F, D, T, const R: bool> Receive for Space<F, D, T, R>
+impl<CT, ST> Receive for Space<CT, ST>
 where
-    F: TryFrom<OneRttFrame>,
-    D: TryFrom<DataFrame>,
-    T: Transmit<F, D> + Debug,
-    // 奇怪的写法，不知道为什么，但是这样写，就能编译通过
-    // <F as TryFrom<InfoFrame>>::Error: Into<Error>,
-    // <D as TryFrom<DataFrame>>::Error: Into<Error>,
-    Error: From<<D as TryFrom<qbase::frame::DataFrame>>::Error>
-        + From<<F as TryFrom<qbase::frame::OneRttFrame>>::Error>,
+    CT: TransmitCrypto,
+    ST: TransmitStream,
 {
     fn expected_pn(&self) -> u64 {
         self.rcvd_packets.largest()
@@ -519,9 +507,9 @@ where
         pktid: u64,
         payload: Bytes,
         rtt: &mut Rtt,
-    ) -> Result<Vec<ConnectionFrame>, Error> {
+    ) -> Result<Vec<ConnFrame>, Error> {
         let mut connection_frames = Vec::with_capacity(4);
-        // // Discard expired or duplicate packets, no further processing
+        // Discard expired or duplicate packets, no further processing
         if !matches!(
             self.rcvd_packets.get(pktid),
             Some(State::NotReceived) | Some(State::Unreached)
@@ -536,36 +524,49 @@ where
         for frame in frames {
             match frame {
                 Frame::Padding => continue,
-                Frame::Close(frame) => {
-                    connection_frames.push(ConnectionFrame::Close(frame));
-                }
+                Frame::Ping(_) => is_ack_eliciting = true,
                 Frame::Ack(ack) => {
-                    if R {
-                        self.recv_ack_frame(ack, rtt);
-                    } else {
-                        // Note that it is not possible to send the following frames in 0-RTT packets for various reasons:
-                        // ACK, CRYPTO, HANDSHAKE_DONE, NEW_TOKEN, PATH_RESPONSE, and RETIRE_CONNECTION_ID. A server MAY
-                        // treat receipt of these frames in 0-RTT packets as a connection error of type PROTOCOL_VIOLATION.
+                    if !ack.belongs_to(self.space_id) {
                         return Err(Error::new(
                             ErrorKind::ProtocolViolation,
                             ack.frame_type(),
-                            "No ACK frame can be received in 0-RTT packets",
+                            format!("cann't be received in {}", self.space_id),
                         ));
                     }
+
+                    self.recv_ack_frame(ack, rtt);
                 }
-                Frame::Data(frame, data) => {
+                Frame::Pure(f) => {
+                    if !f.belongs_to(self.space_id) {
+                        return Err(Error::new(
+                            ErrorKind::ProtocolViolation,
+                            f.frame_type(),
+                            format!("cann't be received in {}", self.space_id),
+                        ));
+                    }
+
                     is_ack_eliciting = true;
-                    self.transmission.recv_data(frame.try_into()?, data)?;
-                }
-                Frame::Info(frame) => {
-                    is_ack_eliciting = true;
-                    match frame {
-                        OneRttFrame::Ping(_) => (),
-                        other => {
-                            if let Some(cf) = self.transmission.recv_frame(other.try_into()?)? {
-                                connection_frames.push(cf);
-                            }
+                    match f {
+                        PureFrame::Conn(f) => connection_frames.push(f),
+                        PureFrame::Stream(f) => self.stm_trans.recv_frame(f)?,
+                        PureFrame::Path(_f) => {
+                            todo!("交给Path自行处理")
                         }
+                    }
+                }
+                Frame::Data(f, data) => {
+                    if !f.belongs_to(self.space_id) {
+                        return Err(Error::new(
+                            ErrorKind::ProtocolViolation,
+                            f.frame_type(),
+                            format!("cann't be received in {}", self.space_id),
+                        ));
+                    }
+
+                    is_ack_eliciting = true;
+                    match f {
+                        DataFrame::Crypto(f) => self.tls_trans.recv_data(f, data)?,
+                        DataFrame::Stream(f) => self.stm_trans.recv_data(f, data)?,
                     }
                 }
             }
@@ -596,11 +597,10 @@ where
     }
 }
 
-impl<F, D, T, const R: bool> Space<F, D, T, R>
+impl<CT, ST> Space<CT, ST>
 where
-    F: BeFrame + TryFrom<OneRttFrame, Error = frame::Error>,
-    D: TryFrom<DataFrame, Error = frame::Error>,
-    T: Transmit<F, D> + Debug,
+    CT: TransmitCrypto,
+    ST: TransmitStream,
 {
     pub fn into_split_with_keys(self, keys: Keys) -> (ReceiveHalf<Self>, TransmitHalf<Self>) {
         let arc_space = Arc::new(Mutex::new(self));
@@ -629,11 +629,7 @@ pub trait ReceivePacket {
     // packet type and the specific space, can be used for constraints later.
     type Packet: RemoteProtection + DecodeHeader + DecryptPacket;
 
-    fn receive_packet(
-        &self,
-        packet: Self::Packet,
-        rtt: &mut Rtt,
-    ) -> Result<Vec<ConnectionFrame>, Error>;
+    fn receive_packet(&self, packet: Self::Packet, rtt: &mut Rtt) -> Result<Vec<ConnFrame>, Error>;
 }
 
 #[derive(Deref, DerefMut)]
@@ -641,12 +637,6 @@ pub struct TransmitHalf<S> {
     encrypt_key: DirectionalKeys,
     #[deref]
     space: Arc<Mutex<S>>,
-}
-
-impl TransmitHalf<OneRttDataSpace> {
-    pub fn update_encrypt_key(&mut self, key: DirectionalKeys) {
-        self.encrypt_key = key;
-    }
 }
 
 pub trait TransmitPacket<P> {

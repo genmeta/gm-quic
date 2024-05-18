@@ -1,7 +1,6 @@
 use crate::{
     recv::{self, Incoming, Reader},
     send::{self, Outgoing, Writer},
-    space::Transmit,
     AppStream,
 };
 use qbase::{
@@ -17,7 +16,6 @@ use std::{
     sync::{Arc, Mutex},
     task::{ready, Context, Poll, Waker},
 };
-use tokio::sync::mpsc::UnboundedSender;
 
 /// 专门根据Stream相关帧处理streams相关逻辑
 #[derive(Debug)]
@@ -30,18 +28,42 @@ pub struct Streams {
     // 对方主动创建的流
     listener: Listener,
 
-    frame_tx: UnboundedSender<StreamInfoFrame>,
+    // 其实，是拿Space中的frames放在这里，当Outgoing、Incoming发生状态变更时，要发送StreamInfoStream。
+    // 也可以将StreamInfoFrame放在这里，提供函数，供读取，发送的时候，直接从这里读取
+    // 这种更好，而且，Streams不关心帧的丢失、重传。一旦被Space读取并发送，就由Space负责可靠传输
+    frames: Arc<Mutex<VecDeque<StreamInfoFrame>>>,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> Error {
     move |e| Error::new(ErrorKind::StreamLimit, fty, e.to_string())
 }
 
-impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
-    type Buffer = Vec<u8>;
+pub trait TransmitStream {
+    type Buffer: bytes::BufMut;
 
-    fn try_send(&mut self, _buf: &mut Self::Buffer) -> Option<(StreamFrame, usize)> {
-        // 遍历所有的Outgoing，看是否有数据要发送，一定要公平
+    fn try_send_frame(&mut self, buf: &mut Self::Buffer) -> Option<(StreamInfoFrame, usize)>;
+
+    fn try_send_data(&mut self, buf: &mut Self::Buffer) -> Option<(StreamFrame, usize)>;
+
+    fn confirm_data(&mut self, stream_frame: StreamFrame);
+
+    fn may_loss(&mut self, stream_frame: StreamFrame);
+
+    fn recv_frame(&mut self, stream_info_frame: StreamInfoFrame) -> Result<(), Error>;
+
+    fn recv_data(&mut self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error>;
+}
+
+impl TransmitStream for Streams {
+    type Buffer = bytes::BytesMut;
+
+    fn try_send_frame(&mut self, _buf: &mut Self::Buffer) -> Option<(StreamInfoFrame, usize)> {
+        // 遍历所有的Outgoing，看是否有StreamInfoFrame要发送, 且buf还剩余足够的空间
+        todo!()
+    }
+
+    fn try_send_data(&mut self, _buf: &mut Self::Buffer) -> Option<(StreamFrame, usize)> {
+        // 遍历所有的Outgoing，看是否有数据要发送，且buf还剩余足够的空间容纳，一定要公平
         todo!()
     }
 
@@ -91,10 +113,7 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
         Ok(())
     }
 
-    fn recv_frame(
-        &mut self,
-        stream_info_frame: StreamInfoFrame,
-    ) -> Result<Option<ConnectionFrame>, Error> {
+    fn recv_frame(&mut self, stream_info_frame: StreamInfoFrame) -> Result<(), Error> {
         match stream_info_frame {
             StreamInfoFrame::ResetStream(reset_frame) => {
                 let sid = reset_frame.stream_id;
@@ -136,8 +155,10 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                 }
 
                 let _ = self
-                    .frame_tx
-                    .send(StreamInfoFrame::ResetStream(ResetStreamFrame {
+                    .frames
+                    .lock()
+                    .unwrap()
+                    .push_back(StreamInfoFrame::ResetStream(ResetStreamFrame {
                         stream_id: sid,
                         app_error_code: VarInt::from_u32(0),
                         final_size: VarInt::from_u32(0),
@@ -195,18 +216,50 @@ impl Transmit<StreamInfoFrame, StreamFrame> for Streams {
                 // 仅仅起到通知作用?也分主动和被动
             }
         }
-        Ok(None)
+        Ok(())
+    }
+}
+
+/// 在Initial和Handshake空间中，是不需要传输Streams的，此时可以使用NoStreams
+#[derive(Debug)]
+pub struct NoStreams;
+
+impl TransmitStream for NoStreams {
+    type Buffer = bytes::BytesMut;
+
+    fn try_send_frame(&mut self, _buf: &mut Self::Buffer) -> Option<(StreamInfoFrame, usize)> {
+        unreachable!()
+    }
+
+    fn try_send_data(&mut self, _buf: &mut Self::Buffer) -> Option<(StreamFrame, usize)> {
+        unreachable!()
+    }
+
+    fn confirm_data(&mut self, _stream_frame: StreamFrame) {
+        unreachable!()
+    }
+
+    fn may_loss(&mut self, _stream_frame: StreamFrame) {
+        unreachable!()
+    }
+
+    fn recv_frame(&mut self, _stream_info_frame: StreamInfoFrame) -> Result<(), Error> {
+        unreachable!()
+    }
+
+    fn recv_data(&mut self, _stream_frame: StreamFrame, _body: bytes::Bytes) -> Result<(), Error> {
+        unreachable!()
     }
 }
 
 impl Streams {
-    pub fn new(stream_ids: StreamIds, frame_tx: UnboundedSender<StreamInfoFrame>) -> Self {
+    pub fn new(stream_ids: StreamIds) -> Self {
         Self {
             stream_ids,
             output: HashMap::new(),
             input: HashMap::new(),
             listener: Listener::default(),
-            frame_tx,
+            frames: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -255,14 +308,17 @@ impl Streams {
         // 但要等ResetRecved才能真正释放该流
         tokio::spawn({
             let outgoing = outgoing.clone();
-            let frame_tx = self.frame_tx.clone();
+            let frames = self.frames.clone();
             async move {
                 let final_size = outgoing.is_cancelled_by_app().await;
-                let _ = frame_tx.send(StreamInfoFrame::ResetStream(ResetStreamFrame {
-                    stream_id: sid,
-                    app_error_code: VarInt::from_u32(0),
-                    final_size: unsafe { VarInt::from_u64_unchecked(final_size.unwrap()) },
-                }));
+                let _ = frames
+                    .lock()
+                    .unwrap()
+                    .push_back(StreamInfoFrame::ResetStream(ResetStreamFrame {
+                        stream_id: sid,
+                        app_error_code: VarInt::from_u32(0),
+                        final_size: unsafe { VarInt::from_u64_unchecked(final_size.unwrap()) },
+                    }));
             }
         });
         self.output.insert(sid, outgoing);
@@ -274,27 +330,33 @@ impl Streams {
         // 不停地检查，是否需要及时更新MaxStreamData
         tokio::spawn({
             let incoming = incoming.clone();
-            let frame_tx = self.frame_tx.clone();
+            let frames = self.frames.clone();
             async move {
                 loop {
                     let max_data = incoming.need_window_update().await;
-                    let _ = frame_tx.send(StreamInfoFrame::MaxStreamData(MaxStreamDataFrame {
-                        stream_id: sid,
-                        max_stream_data: unsafe { VarInt::from_u64_unchecked(max_data) },
-                    }));
+                    let _ = frames
+                        .lock()
+                        .unwrap()
+                        .push_back(StreamInfoFrame::MaxStreamData(MaxStreamDataFrame {
+                            stream_id: sid,
+                            max_stream_data: unsafe { VarInt::from_u64_unchecked(max_data) },
+                        }));
                 }
             }
         });
         // 监听是否被应用stop了。如果是，则要发送一个StopSendingFrame
         tokio::spawn({
             let incoming = incoming.clone();
-            let frame_tx = self.frame_tx.clone();
+            let frames = self.frames.clone();
             async move {
                 incoming.is_stopped_by_app().await;
-                let _ = frame_tx.send(StreamInfoFrame::StopSending(StopSendingFrame {
-                    stream_id: sid,
-                    app_err_code: VarInt::from_u32(0),
-                }));
+                let _ = frames
+                    .lock()
+                    .unwrap()
+                    .push_back(StreamInfoFrame::StopSending(StopSendingFrame {
+                        stream_id: sid,
+                        app_err_code: VarInt::from_u32(0),
+                    }));
             }
         });
         self.input.insert(sid, incoming);
