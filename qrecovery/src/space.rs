@@ -184,8 +184,8 @@ where
             rcvd_unreached_packet: false,
             time_to_sync: None,
             max_ack_delay: Duration::from_millis(25),
-            tls_trans: tls_transmission,
             stm_trans: streams_transmission,
+            tls_trans: tls_transmission,
         }
     }
 
