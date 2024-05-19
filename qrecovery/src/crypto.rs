@@ -44,7 +44,7 @@ mod send {
         }
 
         fn ack_rcvd(&mut self, range: &Range<u64>) {
-            self.sndbuf.ack_rcvd(range);
+            self.sndbuf.confirm_rcvd(range);
             if self.sndbuf.remaining_mut() > 0 {
                 if let Some(waker) = self.writable_waker.take() {
                     waker.wake();

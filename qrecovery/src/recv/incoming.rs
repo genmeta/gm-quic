@@ -92,7 +92,7 @@ impl Incoming {
 pub struct WindowUpdate(ArcRecver);
 
 impl Future for WindowUpdate {
-    type Output = u64;
+    type Output = Option<u64>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut recver = self.0.lock().unwrap();
@@ -105,7 +105,9 @@ impl Future for WindowUpdate {
             }
             other => {
                 inner.replace(other);
-                Poll::Pending
+                // In other states, the window will no longer be updated, so return None
+                // to inform the streams controller to stop polling for window updates.
+                Poll::Ready(None)
             }
         }
     }
@@ -114,7 +116,9 @@ impl Future for WindowUpdate {
 pub struct IsStopped(ArcRecver);
 
 impl Future for IsStopped {
-    type Output = ();
+    // true means stopped by app.
+    // false means it was never stopped until the end.
+    type Output = bool;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut recver = self.0.lock().unwrap();
@@ -130,9 +134,17 @@ impl Future for IsStopped {
                 inner.replace(Recver::SizeKnown(r));
                 result
             }
-            other => {
-                inner.replace(other);
-                Poll::Pending
+            finished @ (Recver::DataRead | Recver::DataRecvd(_)) => {
+                inner.replace(finished);
+                Poll::Ready(false)
+            }
+            reset @ (Recver::ResetRead | Recver::ResetRecvd(_)) => {
+                inner.replace(reset);
+                // Even in the Reset state, it is because the sender's reset was received,
+                // not because the receiver actively stopped. The receiver's active stop
+                // will not change the state, so it can only receive stop notifications in
+                // the Recv/SizeKnown state.
+                Poll::Ready(false)
             }
         }
     }

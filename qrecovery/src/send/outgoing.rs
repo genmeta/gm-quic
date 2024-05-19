@@ -87,7 +87,7 @@ impl Outgoing {
         result
     }
 
-    pub fn ack_rcvd(&mut self, range: &Range<u64>) -> bool {
+    pub fn confirm_rcvd(&mut self, range: &Range<u64>) -> bool {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {
@@ -95,11 +95,11 @@ impl Outgoing {
                 unreachable!("never send data before recv data");
             }
             Sender::Sending(mut s) => {
-                s.ack_rcvd(range);
+                s.confirm_rcvd(range);
                 inner.replace(Sender::Sending(s));
             }
             Sender::DataSent(mut s) => {
-                s.ack_rcvd(range);
+                s.confirm_rcvd(range);
                 if s.is_all_rcvd() {
                     inner.replace(Sender::DataRecvd);
                     return true;
@@ -133,8 +133,8 @@ impl Outgoing {
         };
     }
 
-    // 被动reset
-    pub fn stop(&mut self) {
+    /// 被动stop，返回true说明成功stop了；返回false则表明流没有必要stop，要么已经完成，要么已经reset
+    pub fn stop(&mut self) -> bool {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {
@@ -143,14 +143,17 @@ impl Outgoing {
             }
             Sender::Sending(s) => {
                 inner.replace(Sender::ResetSent(s.stop()));
+                true
             }
             Sender::DataSent(s) => {
                 inner.replace(Sender::ResetSent(s.stop()));
+                true
             }
-            recvd @ (Sender::DataRecvd | Sender::ResetSent(_) | Sender::ResetRecvd) => {
-                inner.replace(recvd);
+            other => {
+                inner.replace(other);
+                false
             }
-        };
+        }
     }
 
     pub fn confirm_reset(&mut self) {
@@ -175,45 +178,46 @@ impl Outgoing {
 
 pub struct IsCancelled(ArcSender);
 
-#[derive(Debug)]
-pub enum CancelTooLate {
-    ResetRecvd,
-    DataRecvd,
-}
-
 impl Future for IsCancelled {
-    type Output = Result<u64, CancelTooLate>;
+    type Output = Option<u64>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {
-            Sender::ResetSent(final_size) => {
-                inner.replace(Sender::ResetSent(final_size));
-                Poll::Ready(Ok(final_size))
-            }
-            Sender::ResetRecvd => {
-                inner.replace(Sender::ResetRecvd);
-                Poll::Ready(Err(CancelTooLate::ResetRecvd))
-            }
-            Sender::Ready(mut s) => {
-                s.poll_cancel(cx);
-                inner.replace(Sender::Ready(s));
-                Poll::Pending
-            }
-            Sender::Sending(mut s) => {
-                s.poll_cancel(cx);
-                inner.replace(Sender::Sending(s));
-                Poll::Pending
-            }
-            Sender::DataSent(mut s) => {
-                s.poll_cancel(cx);
-                inner.replace(Sender::DataSent(s));
-                Poll::Pending
-            }
-            Sender::DataRecvd => {
-                inner.replace(Sender::DataRecvd);
-                Poll::Ready(Err(CancelTooLate::DataRecvd))
+            Sender::Ready(mut s) => match s.poll_cancel(cx) {
+                Poll::Ready(final_size) => {
+                    inner.replace(Sender::ResetSent(final_size));
+                    Poll::Ready(Some(final_size))
+                }
+                Poll::Pending => {
+                    inner.replace(Sender::Ready(s));
+                    Poll::Pending
+                }
+            },
+            Sender::Sending(mut s) => match s.poll_cancel(cx) {
+                Poll::Ready(final_size) => {
+                    inner.replace(Sender::ResetSent(final_size));
+                    Poll::Ready(Some(final_size))
+                }
+                Poll::Pending => {
+                    inner.replace(Sender::Sending(s));
+                    Poll::Pending
+                }
+            },
+            Sender::DataSent(mut s) => match s.poll_cancel(cx) {
+                Poll::Ready(final_size) => {
+                    inner.replace(Sender::ResetSent(final_size));
+                    Poll::Ready(Some(final_size))
+                }
+                Poll::Pending => {
+                    inner.replace(Sender::DataSent(s));
+                    Poll::Pending
+                }
+            },
+            other => {
+                inner.replace(other);
+                Poll::Ready(None)
             }
         }
     }

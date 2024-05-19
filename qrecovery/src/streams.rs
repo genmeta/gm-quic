@@ -75,7 +75,7 @@ impl TransmitStream for Streams {
         if let Some(all_data_recved) = self
             .output
             .get_mut(&sid)
-            .map(|outgoing| outgoing.ack_rcvd(&range))
+            .map(|outgoing| outgoing.confirm_rcvd(&range))
         {
             if all_data_recved {
                 self.input.remove(&sid);
@@ -151,18 +151,17 @@ impl TransmitStream for Streams {
                         .map_err(wrapper_error(stop.frame_type()))?;
                 }
                 if let Some(outgoing) = self.output.get_mut(&sid) {
-                    outgoing.stop();
+                    if outgoing.stop() {
+                        self.frames
+                            .lock()
+                            .unwrap()
+                            .push_back(StreamInfoFrame::ResetStream(ResetStreamFrame {
+                                stream_id: sid,
+                                app_error_code: VarInt::from_u32(0),
+                                final_size: VarInt::from_u32(0),
+                            }));
+                    }
                 }
-
-                let _ = self
-                    .frames
-                    .lock()
-                    .unwrap()
-                    .push_back(StreamInfoFrame::ResetStream(ResetStreamFrame {
-                        stream_id: sid,
-                        app_error_code: VarInt::from_u32(0),
-                        final_size: VarInt::from_u32(0),
-                    }));
             }
             StreamInfoFrame::MaxStreamData(max_stream_data) => {
                 let sid = max_stream_data.stream_id;
@@ -310,15 +309,16 @@ impl Streams {
             let outgoing = outgoing.clone();
             let frames = self.frames.clone();
             async move {
-                let final_size = outgoing.is_cancelled_by_app().await;
-                let _ = frames
-                    .lock()
-                    .unwrap()
-                    .push_back(StreamInfoFrame::ResetStream(ResetStreamFrame {
-                        stream_id: sid,
-                        app_error_code: VarInt::from_u32(0),
-                        final_size: unsafe { VarInt::from_u64_unchecked(final_size.unwrap()) },
-                    }));
+                if let Some(final_size) = outgoing.is_cancelled_by_app().await {
+                    frames
+                        .lock()
+                        .unwrap()
+                        .push_back(StreamInfoFrame::ResetStream(ResetStreamFrame {
+                            stream_id: sid,
+                            app_error_code: VarInt::from_u32(0),
+                            final_size: unsafe { VarInt::from_u64_unchecked(final_size) },
+                        }));
+                }
             }
         });
         self.output.insert(sid, outgoing);
@@ -327,13 +327,12 @@ impl Streams {
 
     fn create_recver(&mut self, sid: StreamId) -> Reader {
         let (incoming, reader) = recv::new(1000_1000);
-        // 不停地检查，是否需要及时更新MaxStreamData
+        // Continuously check whether the MaxStreamData window needs to be updated.
         tokio::spawn({
             let incoming = incoming.clone();
             let frames = self.frames.clone();
             async move {
-                loop {
-                    let max_data = incoming.need_window_update().await;
+                while let Some(max_data) = incoming.need_window_update().await {
                     let _ = frames
                         .lock()
                         .unwrap()
@@ -349,14 +348,15 @@ impl Streams {
             let incoming = incoming.clone();
             let frames = self.frames.clone();
             async move {
-                incoming.is_stopped_by_app().await;
-                let _ = frames
-                    .lock()
-                    .unwrap()
-                    .push_back(StreamInfoFrame::StopSending(StopSendingFrame {
-                        stream_id: sid,
-                        app_err_code: VarInt::from_u32(0),
-                    }));
+                if incoming.is_stopped_by_app().await {
+                    frames
+                        .lock()
+                        .unwrap()
+                        .push_back(StreamInfoFrame::StopSending(StopSendingFrame {
+                            stream_id: sid,
+                            app_err_code: VarInt::from_u32(0),
+                        }));
+                }
             }
         });
         self.input.insert(sid, incoming);

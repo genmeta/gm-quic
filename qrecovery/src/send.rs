@@ -6,7 +6,7 @@ mod outgoing;
 mod sender;
 mod writer;
 
-pub use outgoing::{CancelTooLate, IsCancelled, Outgoing};
+pub use outgoing::{IsCancelled, Outgoing};
 pub use sender::Sender;
 pub use writer::Writer;
 

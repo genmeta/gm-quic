@@ -55,9 +55,9 @@ impl AsyncWrite for Writer {
         let inner = sender.deref_mut();
         match inner.take() {
             Sender::Ready(mut s) => {
-                s.poll_flush(cx);
+                let result = s.poll_flush(cx);
                 inner.replace(Sender::Ready(s));
-                Poll::Pending
+                result
             }
             Sender::Sending(mut s) => {
                 let result = s.poll_flush(cx);
@@ -92,22 +92,20 @@ impl AsyncWrite for Writer {
         let inner = sender.deref_mut();
         match inner.take() {
             Sender::Ready(mut s) => {
-                s.poll_shutdown(cx);
+                let result = s.poll_shutdown(cx);
                 // 鉴于Ready是尚未分配StreamId的，所以还不具备直接变成DataSent资格
                 // THINK: 如果将来实现的Sender，确实不需要StreamId选项，那可以直接
                 // 转化成DataSent
                 inner.replace(Sender::Ready(s));
-                Poll::Pending
+                result
             }
             Sender::Sending(mut s) => {
                 let result = s.poll_shutdown(cx);
                 match &result {
                     Poll::Pending => inner.replace(Sender::DataSent(s.end())),
-                    Poll::Ready(_) => {
-                        // 所有数据已经被发送完，没有StreamFrame去告知结束，所以直接reset
-                        inner.replace(Sender::ResetSent(s.cancel()));
-                    }
+                    Poll::Ready(_) => inner.replace(Sender::DataRecvd),
                 }
+                // 有可能是Poll::Pending，也有可能是已经发送完数据的Poll::Ready
                 result
             }
             Sender::DataSent(mut s) => {
@@ -141,20 +139,23 @@ impl Drop for Writer {
     fn drop(&mut self) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        let final_size = match inner.take() {
-            // 正常结束，就算是想cancel，也是忽略掉
-            state @ (Sender::DataRecvd | Sender::ResetSent(_) | Sender::ResetRecvd) => {
-                inner.replace(state);
-                return;
+        match inner.take() {
+            Sender::Ready(mut s) => {
+                s.cancel();
+                inner.replace(Sender::Ready(s));
             }
-            // THINK: 需要将poll_write/flush/shutdown任务全部唤醒吗？
-            // 好像唤醒也没什么必要，不如让这些任务永远石沉大海。
-            // 况且，Writer都drop了，唤醒了，谁来poll？
-            Sender::Ready(s) => s.cancel(),
-            Sender::Sending(s) => s.cancel(),
-            Sender::DataSent(s) => s.cancel(),
+            Sender::Sending(mut s) => {
+                s.cancel();
+                inner.replace(Sender::Sending(s));
+            }
+            Sender::DataSent(mut s) => {
+                s.cancel();
+                inner.replace(Sender::DataSent(s));
+            }
+            other => {
+                inner.replace(other);
+            }
         };
-        inner.replace(Sender::ResetSent(final_size));
     }
 }
 

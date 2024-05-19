@@ -18,7 +18,7 @@ pub(super) struct Recv {
     stop_waker: Option<Waker>,
     largest_data_size: u64,
     max_data_size: u64,
-    buf_half_full_waker: Option<Waker>,
+    buf_exceeds_half_waker: Option<Waker>,
 }
 
 impl Recv {
@@ -30,7 +30,7 @@ impl Recv {
             stop_waker: None,
             largest_data_size: 0,
             max_data_size,
-            buf_half_full_waker: None,
+            buf_exceeds_half_waker: None,
         }
     }
 
@@ -66,7 +66,7 @@ impl Recv {
 
             let threshold = 1_000_000;
             if self.rcvbuf.offset() + threshold > self.max_data_size {
-                if let Some(waker) = self.buf_half_full_waker.take() {
+                if let Some(waker) = self.buf_exceeds_half_waker.take() {
                     waker.wake()
                 }
             }
@@ -88,7 +88,7 @@ impl Recv {
 
             let threshold = 1_000_000;
             if self.rcvbuf.offset() + threshold > self.max_data_size {
-                if let Some(waker) = self.buf_half_full_waker.take() {
+                if let Some(waker) = self.buf_exceeds_half_waker.take() {
                     waker.wake()
                 }
             }
@@ -100,22 +100,22 @@ impl Recv {
         }
     }
 
-    pub(super) fn poll_window_update(&mut self, cx: &mut Context<'_>) -> Poll<u64> {
-        assert!(self.buf_half_full_waker.is_none());
+    pub(super) fn poll_window_update(&mut self, cx: &mut Context<'_>) -> Poll<Option<u64>> {
+        assert!(self.buf_exceeds_half_waker.is_none());
         let threshold = 1_000_000;
         if self.rcvbuf.offset() + threshold > self.max_data_size {
             self.max_data_size = self.rcvbuf.offset() + threshold * 2;
-            Poll::Ready(self.max_data_size)
+            Poll::Ready(Some(self.max_data_size))
         } else {
-            self.buf_half_full_waker = Some(cx.waker().clone());
+            self.buf_exceeds_half_waker = Some(cx.waker().clone());
             Poll::Pending
         }
     }
 
-    pub(super) fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    pub(super) fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
         assert!(self.stop_waker.is_none());
         if self.is_stopped {
-            Poll::Ready(())
+            Poll::Ready(true)
         } else {
             self.stop_waker = Some(cx.waker().clone());
             Poll::Pending
@@ -125,13 +125,16 @@ impl Recv {
     pub(super) fn abort(&mut self) {
         if !self.is_stopped {
             self.is_stopped = true;
-        }
-        if let Some(waker) = self.stop_waker.take() {
-            waker.wake()
+            if let Some(waker) = self.stop_waker.take() {
+                waker.wake()
+            }
         }
     }
 
     pub(super) fn determin_size(self, total_size: u64) -> SizeKnown {
+        if let Some(waker) = self.buf_exceeds_half_waker {
+            waker.wake();
+        }
         SizeKnown {
             rcvbuf: self.rcvbuf,
             read_waker: self.read_waker,
@@ -152,6 +155,12 @@ impl Recv {
                     reset_frame.stream_id, self.largest_data_size
                 ),
             ));
+        }
+        if let Some(waker) = self.buf_exceeds_half_waker {
+            waker.wake();
+        }
+        if let Some(waker) = self.stop_waker {
+            waker.wake();
         }
         if let Some(waker) = self.read_waker.take() {
             waker.wake()
@@ -235,10 +244,10 @@ impl SizeKnown {
         }
     }
 
-    pub(super) fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    pub(super) fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
         assert!(self.stop_waker.is_none());
         if self.is_stopped {
-            Poll::Ready(())
+            Poll::Ready(true)
         } else {
             self.stop_waker = Some(cx.waker().clone());
             Poll::Pending
@@ -250,14 +259,19 @@ impl SizeKnown {
     pub(super) fn abort(&mut self) -> u64 {
         if !self.is_stopped {
             self.is_stopped = true;
-        }
-        if let Some(waker) = self.stop_waker.take() {
-            waker.wake()
+            if let Some(waker) = self.stop_waker.take() {
+                waker.wake()
+            }
         }
         self.total_size
     }
 
     pub(super) fn data_recvd(self) -> DataRecvd {
+        // Notify the stop function that it will not be stopped anymore,
+        // this stream will not send STOP_SENDING frames in the future.
+        if let Some(waker) = self.stop_waker {
+            waker.wake();
+        }
         DataRecvd {
             rcvbuf: self.rcvbuf,
         }
@@ -274,6 +288,9 @@ impl SizeKnown {
                     reset_frame.stream_id, self.total_size
                 ),
             ));
+        }
+        if let Some(waker) = self.stop_waker {
+            waker.wake();
         }
         if let Some(waker) = self.read_waker.take() {
             waker.wake()
