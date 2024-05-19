@@ -1,7 +1,7 @@
 /// Application data space, 0-RTT data space
 use super::{OneRttDataSpace, Receive};
 use crate::{
-    crypto_stream::{CryptoStream, NoCrypto},
+    crypto::{CryptoStream, NoCrypto},
     rtt::Rtt,
     streams::Streams,
 };

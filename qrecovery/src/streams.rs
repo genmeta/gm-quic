@@ -47,7 +47,7 @@ pub trait TransmitStream {
 
     fn confirm_data(&mut self, stream_frame: StreamFrame);
 
-    fn may_loss(&mut self, stream_frame: StreamFrame);
+    fn may_loss_data(&mut self, stream_frame: StreamFrame);
 
     fn recv_frame(&mut self, stream_info_frame: StreamInfoFrame) -> Result<(), Error>;
 
@@ -83,7 +83,7 @@ impl TransmitStream for Streams {
         }
     }
 
-    fn may_loss(&mut self, stream_frame: StreamFrame) {
+    fn may_loss_data(&mut self, stream_frame: StreamFrame) {
         if let Some(outgoing) = self.output.get_mut(&stream_frame.id) {
             outgoing.may_loss(&stream_frame.range());
         }
@@ -228,18 +228,18 @@ impl TransmitStream for NoStreams {
     type Buffer = bytes::BytesMut;
 
     fn try_send_frame(&mut self, _buf: &mut Self::Buffer) -> Option<(StreamInfoFrame, usize)> {
-        unreachable!()
+        None
     }
 
     fn try_send_data(&mut self, _buf: &mut Self::Buffer) -> Option<(StreamFrame, usize)> {
-        unreachable!()
+        None
     }
 
     fn confirm_data(&mut self, _stream_frame: StreamFrame) {
         unreachable!()
     }
 
-    fn may_loss(&mut self, _stream_frame: StreamFrame) {
+    fn may_loss_data(&mut self, _stream_frame: StreamFrame) {
         unreachable!()
     }
 

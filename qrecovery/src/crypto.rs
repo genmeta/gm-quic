@@ -233,7 +233,7 @@ pub use send::CryptoStreamWriter;
 /// ```rust
 /// use bytes::Bytes;
 /// use qbase::{frame::CryptoFrame, varint::VarInt};
-/// use qrecovery::crypto_stream::{CryptoStream, TransmitCrypto};
+/// use qrecovery::crypto::{CryptoStream, TransmitCrypto};
 /// use tokio::io::{AsyncWriteExt, AsyncReadExt};
 ///
 /// #[tokio::main]
@@ -289,11 +289,11 @@ impl CryptoStream {
 pub trait TransmitCrypto {
     type Buffer: bytes::BufMut;
 
-    fn try_send(&mut self, buf: &mut Self::Buffer) -> Option<(CryptoFrame, usize)>;
+    fn try_send_data(&mut self, buf: &mut Self::Buffer) -> Option<(CryptoFrame, usize)>;
 
     fn confirm_data(&mut self, data_frame: CryptoFrame);
 
-    fn may_loss(&mut self, data_frame: CryptoFrame);
+    fn may_loss_data(&mut self, data_frame: CryptoFrame);
 
     fn recv_data(&mut self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error>;
 }
@@ -301,7 +301,7 @@ pub trait TransmitCrypto {
 impl TransmitCrypto for CryptoStream {
     type Buffer = bytes::BytesMut;
 
-    fn try_send(&mut self, buf: &mut Self::Buffer) -> Option<(CryptoFrame, usize)> {
+    fn try_send_data(&mut self, buf: &mut Self::Buffer) -> Option<(CryptoFrame, usize)> {
         self.outgoing.try_send(buf)
     }
 
@@ -309,7 +309,7 @@ impl TransmitCrypto for CryptoStream {
         self.outgoing.ack_rcvd(&data_frame.range());
     }
 
-    fn may_loss(&mut self, data_frame: CryptoFrame) {
+    fn may_loss_data(&mut self, data_frame: CryptoFrame) {
         self.outgoing.may_loss(&data_frame.range())
     }
 
@@ -327,15 +327,15 @@ pub struct NoCrypto;
 impl TransmitCrypto for NoCrypto {
     type Buffer = bytes::BytesMut;
 
-    fn try_send(&mut self, _buf: &mut Self::Buffer) -> Option<(CryptoFrame, usize)> {
-        unreachable!()
+    fn try_send_data(&mut self, _buf: &mut Self::Buffer) -> Option<(CryptoFrame, usize)> {
+        None
     }
 
     fn confirm_data(&mut self, _data_frame: CryptoFrame) {
         unreachable!()
     }
 
-    fn may_loss(&mut self, _data_frame: CryptoFrame) {
+    fn may_loss_data(&mut self, _data_frame: CryptoFrame) {
         unreachable!()
     }
 
@@ -346,13 +346,13 @@ impl TransmitCrypto for NoCrypto {
 
 #[cfg(test)]
 mod tests {
-    use super::TransmitCrypto;
+    use super::{CryptoStream, TransmitCrypto};
     use qbase::{frame::CryptoFrame, varint::VarInt};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test]
     async fn test_read() {
-        let mut crypto_stream = super::CryptoStream::new(1000_0000, 0);
+        let mut crypto_stream = CryptoStream::new(1000_0000, 0);
         crypto_stream.writer().write(b"hello world").await.unwrap();
 
         crypto_stream

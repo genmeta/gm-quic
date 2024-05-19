@@ -1,4 +1,4 @@
-use qrecovery::crypto_stream::{CryptoStreamReader, CryptoStreamWriter};
+use qrecovery::crypto::{CryptoStreamReader, CryptoStreamWriter};
 use rustls::quic::{Connection as TlsConnection, KeyChange};
 use std::{
     future::Future,

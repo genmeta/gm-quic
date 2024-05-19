@@ -1,6 +1,4 @@
-use super::{
-    crypto_stream::TransmitCrypto, index_deque::IndexDeque, rtt::Rtt, streams::TransmitStream,
-};
+use super::{crypto::TransmitCrypto, index_deque::IndexDeque, rtt::Rtt, streams::TransmitStream};
 use bytes::{BufMut, Bytes};
 use deref_derive::{Deref, DerefMut};
 use qbase::{
@@ -335,8 +333,8 @@ where
                         frames.push_back(frame);
                     }
                     Record::Data(data) => match data {
-                        DataFrame::Crypto(f) => self.tls_trans.may_loss(f),
-                        DataFrame::Stream(f) => self.stm_trans.may_loss(f),
+                        DataFrame::Crypto(f) => self.tls_trans.may_loss_data(f),
+                        DataFrame::Stream(f) => self.stm_trans.may_loss_data(f),
                     },
                 }
             }
@@ -362,8 +360,8 @@ where
                             frames.push_back(frame);
                         }
                         Record::Data(data) => match data {
-                            DataFrame::Crypto(f) => self.tls_trans.may_loss(f),
-                            DataFrame::Stream(f) => self.stm_trans.may_loss(f),
+                            DataFrame::Crypto(f) => self.tls_trans.may_loss_data(f),
+                            DataFrame::Stream(f) => self.stm_trans.may_loss_data(f),
                         },
                     }
                 }
@@ -465,7 +463,7 @@ where
         }
 
         // Consider transmitting data frames.
-        while let Some((data_frame, ignore)) = self.tls_trans.try_send(buf) {
+        while let Some((data_frame, ignore)) = self.tls_trans.try_send_data(buf) {
             payload.push(Record::Data(DataFrame::Crypto(data_frame)));
             remaning += ignore;
         }

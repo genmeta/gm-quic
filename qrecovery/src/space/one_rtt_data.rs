@@ -1,6 +1,6 @@
 use super::Receive;
 /// Application data space, 1-RTT data space
-use crate::{crypto_stream::CryptoStream, rtt::Rtt, streams::Streams};
+use crate::{crypto::CryptoStream, rtt::Rtt, streams::Streams};
 use qbase::{
     error::Error,
     frame::ConnFrame,

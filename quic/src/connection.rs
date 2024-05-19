@@ -1,7 +1,7 @@
 use crate::crypto::TlsIO;
 use qbase::packet::{KeyPhaseBit, SpinBit};
 use qrecovery::{
-    crypto_stream::{CryptoStreamReader, CryptoStreamWriter},
+    crypto::{CryptoStreamReader, CryptoStreamWriter},
     rtt::Rtt,
     space::{DataSpace, HandshakeSpace, InitialSpace},
 };

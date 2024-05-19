@@ -1,5 +1,5 @@
 use super::Receive;
-use crate::{crypto_stream::CryptoStream, rtt::Rtt, streams::NoStreams};
+use crate::{crypto::CryptoStream, rtt::Rtt, streams::NoStreams};
 use deref_derive::{Deref, DerefMut};
 use qbase::{
     error::Error,
