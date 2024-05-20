@@ -4,7 +4,6 @@ pub mod connection;
 pub mod crypto;
 pub mod endpoint;
 pub mod path;
-pub mod rx_queue;
 
 pub trait ReceiveProtectedPacket {
     fn receive_protected_packet(&mut self, protected_packet: SpacePacket);
