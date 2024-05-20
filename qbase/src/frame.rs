@@ -240,34 +240,28 @@ impl Iterator for FrameReader {
 }
 
 pub mod ext {
-    use super::handshake_done::ext::WriteHandshakeDoneFrame;
-    use super::new_token::ext::WriteNewTokenFrame;
-    use super::*;
     use super::{
         ack::ext::ack_frame_with_flag, connection_close::ext::connection_close_frame_at_layer,
         crypto::ext::be_crypto_frame, data_blocked::ext::be_data_blocked_frame,
-        max_data::ext::be_max_data_frame, max_stream_data::ext::be_max_stream_data_frame,
+        handshake_done::ext::WriteHandshakeDoneFrame, max_data::ext::be_max_data_frame,
+        max_stream_data::ext::be_max_stream_data_frame,
         max_streams::ext::max_streams_frame_with_dir,
         new_connection_id::ext::be_new_connection_id_frame, new_token::ext::be_new_token_frame,
-        path_challenge::ext::be_path_challenge_frame, path_response::ext::be_path_response_frame,
-        reset_stream::ext::be_reset_stream_frame,
+        new_token::ext::WriteNewTokenFrame, path_challenge::ext::be_path_challenge_frame,
+        path_response::ext::be_path_response_frame, reset_stream::ext::be_reset_stream_frame,
         retire_connection_id::ext::be_retire_connection_id_frame,
         stop_sending::ext::be_stop_sending_frame, stream::ext::stream_frame_with_flag,
         stream_data_blocked::ext::be_stream_data_blocked_frame,
-        streams_blocked::ext::streams_blocked_frame_with_dir,
+        streams_blocked::ext::streams_blocked_frame_with_dir, *,
     };
-
     use bytes::Bytes;
-    use nom::{
-        combinator::{eof, map},
-        multi::many_till,
-    };
 
     /// Some frames like `STREAM` and `CRYPTO` have a data body, which use `bytes::Bytes` to store.
     fn complete_frame(
         frame_type: FrameType,
         raw: Bytes,
     ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], Frame> {
+        use nom::combinator::map;
         move |input: &[u8]| match frame_type {
             FrameType::Padding => Ok((input, Frame::Padding)),
             FrameType::Ping => Ok((input, Frame::Ping(PingFrame))),
@@ -372,51 +366,6 @@ pub mod ext {
                 _ => unreachable!("parsing frame never fails"),
             })?;
         Ok((input.len() - remain.len(), frame))
-    }
-
-    // nom parser for FRAME
-    pub fn be_frame_deprecated(
-        raw: Bytes,
-    ) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Frame, Error> {
-        move |input: &[u8]| {
-            use crate::varint::ext::be_varint;
-            let (input, fty) = be_varint(input).map_err(|e| match e {
-                ne @ nom::Err::Incomplete(_) => {
-                    nom::Err::Error(Error::IncompleteType(ne.to_string()))
-                }
-                _ => unreachable!(
-                    "parsing frame type which is a varint never generates error or failure"
-                ),
-            })?;
-            let frame_type = FrameType::try_from(fty).map_err(nom::Err::Error)?;
-            complete_frame(frame_type, raw.clone())(input).map_err(|e| match e {
-                ne @ nom::Err::Incomplete(_) => {
-                    nom::Err::Error(Error::IncompleteFrame(frame_type, ne.to_string()))
-                }
-                nom::Err::Error(ne) => {
-                    // may be TooLarge in MaxStreamsFrame/CryptoFrame/StreamFrame,
-                    // or may be Verify in NewConnectionIdFrame,
-                    // or may be Alt in ConnectionCloseFrame
-                    nom::Err::Error(Error::ParseError(
-                        frame_type,
-                        ne.code.description().to_owned(),
-                    ))
-                }
-                _ => unreachable!("parsing frame never fails"),
-            })
-        }
-    }
-
-    pub fn parse_frames_from_bytes(bytes: Bytes) -> Result<Vec<Frame>, Error> {
-        let raw = bytes.clone();
-        let input = bytes.as_ref();
-        // many1 cannot check if it has reached EOF or if the last frame is incomplete;
-        // many_till eof cannot check if it contains at least one.
-        let (_, (frames, _)) = many_till(be_frame_deprecated(raw), eof)(input)?;
-        if frames.is_empty() {
-            return Err(Error::NoFrames);
-        }
-        Ok(frames)
     }
 
     use super::{

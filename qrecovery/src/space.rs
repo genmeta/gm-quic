@@ -311,8 +311,12 @@ where
                 includes_ack_eliciting = true;
             }
             if includes_ack_eliciting {
-                // TODO: is_handshake_confirmed is known from connection logic
-                rtt.update(packet.send_time.elapsed(), ack_delay, true);
+                let is_handshake_confirmed = self.space_id == SpaceId::OneRtt;
+                rtt.update(
+                    packet.send_time.elapsed(),
+                    ack_delay,
+                    is_handshake_confirmed,
+                );
             }
             self.confirm(packet.payload);
             acked_bytes += packet.sent_bytes;
@@ -518,9 +522,9 @@ where
         // TODO: 超过最新包号一定范围，仍然是不允许的，可能是某种错误
 
         let mut is_ack_eliciting = false;
-        let frames = parse_frames_from_bytes(payload)?;
-        for frame in frames {
-            match frame {
+        let mut frame_reader = FrameReader::new(payload);
+        while let Some(frame) = frame_reader.next() {
+            match frame? {
                 Frame::Padding => continue,
                 Frame::Ping(_) => is_ack_eliciting = true,
                 Frame::Ack(ack) => {
