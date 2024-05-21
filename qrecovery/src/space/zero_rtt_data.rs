@@ -1,20 +1,10 @@
 /// Application data space, 0-RTT data space
-use super::{OneRttDataSpace, Receive};
+use super::OneRttDataSpace;
 use crate::{
     crypto::{CryptoStream, NoCrypto},
-    rtt::Rtt,
     streams::Streams,
 };
-use qbase::{
-    error::Error,
-    frame::ConnFrame,
-    packet::{
-        decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
-        PacketWrapper, ZeroRttHeader,
-    },
-    streamid::StreamIds,
-    SpaceId,
-};
+use qbase::{streamid::StreamIds, SpaceId};
 
 pub type ZeroRttDataSpace = super::Space<NoCrypto, Streams>;
 
@@ -42,29 +32,6 @@ impl ZeroRttDataSpace {
             max_ack_delay: self.max_ack_delay,
             stm_trans: self.stm_trans,
             tls_trans: crypto_stream,
-        }
-    }
-}
-
-impl super::ReceivePacket for super::ReceiveHalf<ZeroRttDataSpace> {
-    type Packet = PacketWrapper<ZeroRttHeader>;
-
-    fn receive_packet(
-        &self,
-        mut packet: Self::Packet,
-        rtt: &mut Rtt,
-    ) -> Result<Vec<ConnFrame>, Error> {
-        let mut space = self.space.lock().unwrap();
-
-        let ok = packet.remove_protection(&self.decrypt_keys.header);
-        if ok {
-            let pn = packet.decode_header()?;
-            let (pktid, payload) = packet
-                .decrypt_packet(pn, space.expected_pn(), &self.decrypt_keys.packet)
-                .unwrap();
-            space.receive(pktid, payload, rtt)
-        } else {
-            todo!()
         }
     }
 }

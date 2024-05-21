@@ -1,14 +1,11 @@
 use super::{crypto::TransmitCrypto, index_deque::IndexDeque, rtt::Rtt, streams::TransmitStream};
 use bytes::{BufMut, Bytes};
-use deref_derive::{Deref, DerefMut};
 use qbase::{
-    error::{Error, ErrorKind},
+    error::Error,
     frame::{ext::*, *},
-    packet::decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
     varint::{VarInt, VARINT_MAX},
     SpaceId,
 };
-use rustls::quic::{DirectionalKeys, Keys};
 use std::{
     collections::VecDeque,
     fmt::Debug,
@@ -30,6 +27,13 @@ pub enum DataSpace {
     OneRtt(OneRttDataSpace),
 }
 
+#[derive(Debug, Clone)]
+pub enum SpaceFrame {
+    Ack(AckFrame, Arc<Mutex<Rtt>>),
+    Stream(StreamInfoFrame),
+    Data(DataFrame, Bytes),
+}
+
 pub trait TrySend {
     type Buffer: BufMut;
 
@@ -41,12 +45,9 @@ pub trait TrySend {
 pub trait Receive {
     fn expected_pn(&self) -> u64;
 
-    fn receive(
-        &mut self,
-        pktid: u64,
-        payload: Bytes,
-        rtt: &mut Rtt,
-    ) -> Result<Vec<ConnFrame>, Error>;
+    fn record(&mut self, pktid: u64, is_ack_eliciting: bool);
+
+    fn recv_frame(&mut self, frame: SpaceFrame) -> Result<(), Error>;
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +190,10 @@ where
         }
     }
 
+    pub fn space_id(&self) -> SpaceId {
+        self.space_id
+    }
+
     pub fn write_frame(&mut self, frame: PureFrame) {
         assert!(frame.belongs_to(self.space_id));
         let mut frames = self.frames.lock().unwrap();
@@ -259,7 +264,7 @@ where
         }
     }
 
-    fn recv_ack_frame(&mut self, mut ack: AckFrame, rtt: &mut Rtt) -> Option<usize> {
+    fn recv_ack_frame(&mut self, mut ack: AckFrame, rtt: Arc<Mutex<Rtt>>) -> Option<usize> {
         let largest_acked = ack.largest.into_inner();
         if self
             .largest_acked_pktid
@@ -312,7 +317,7 @@ where
             }
             if includes_ack_eliciting {
                 let is_handshake_confirmed = self.space_id == SpaceId::OneRtt;
-                rtt.update(
+                rtt.lock().unwrap().update(
                     packet.send_time.elapsed(),
                     ack_delay,
                     is_handshake_confirmed,
@@ -344,7 +349,7 @@ where
             }
         }
 
-        let loss_delay = rtt.loss_delay();
+        let loss_delay = rtt.lock().unwrap().loss_delay();
         // Packets sent before this time are deemed lost too.
         let lost_send_time = Instant::now() - loss_delay;
         self.loss_time = None;
@@ -503,143 +508,47 @@ where
         self.rcvd_packets.largest()
     }
 
-    // TODO: 返回流控字节数，以及可能的rtt新采样，还有需要上层立即处理的帧
-    fn receive(
-        &mut self,
-        pktid: u64,
-        payload: Bytes,
-        rtt: &mut Rtt,
-    ) -> Result<Vec<ConnFrame>, Error> {
-        let mut connection_frames = Vec::with_capacity(4);
-        // Discard expired or duplicate packets, no further processing
-        if !matches!(
-            self.rcvd_packets.get(pktid),
-            Some(State::NotReceived) | Some(State::Unreached)
-        ) || pktid < self.rcvd_packets.offset()
-        {
-            return Ok(connection_frames);
-        }
-        // TODO: 超过最新包号一定范围，仍然是不允许的，可能是某种错误
-
-        let mut is_ack_eliciting = false;
-        let mut frame_reader = FrameReader::new(payload);
-        while let Some(frame) = frame_reader.next() {
-            match frame? {
-                Frame::Padding => continue,
-                Frame::Ping(_) => is_ack_eliciting = true,
-                Frame::Ack(ack) => {
-                    if !ack.belongs_to(self.space_id) {
-                        return Err(Error::new(
-                            ErrorKind::ProtocolViolation,
-                            ack.frame_type(),
-                            format!("cann't be received in {}", self.space_id),
-                        ));
-                    }
-
-                    self.recv_ack_frame(ack, rtt);
-                }
-                Frame::Pure(f) => {
-                    if !f.belongs_to(self.space_id) {
-                        return Err(Error::new(
-                            ErrorKind::ProtocolViolation,
-                            f.frame_type(),
-                            format!("cann't be received in {}", self.space_id),
-                        ));
-                    }
-
-                    is_ack_eliciting = true;
-                    match f {
-                        PureFrame::Conn(f) => connection_frames.push(f),
-                        PureFrame::Stream(f) => self.stm_trans.recv_frame(f)?,
-                        PureFrame::Path(_f) => {
-                            todo!("交给Path自行处理")
-                        }
-                    }
-                }
-                Frame::Data(f, data) => {
-                    if !f.belongs_to(self.space_id) {
-                        return Err(Error::new(
-                            ErrorKind::ProtocolViolation,
-                            f.frame_type(),
-                            format!("cann't be received in {}", self.space_id),
-                        ));
-                    }
-
-                    is_ack_eliciting = true;
-                    match f {
-                        DataFrame::Crypto(f) => self.tls_trans.recv_data(f, data)?,
-                        DataFrame::Stream(f) => self.stm_trans.recv_data(f, data)?,
-                    }
-                }
+    fn recv_frame(&mut self, frame: SpaceFrame) -> Result<(), Error> {
+        match frame {
+            SpaceFrame::Ack(ack, rtt) => {
+                let _ = self.recv_ack_frame(ack, rtt);
             }
-        }
+            SpaceFrame::Stream(f) => self.stm_trans.recv_frame(f)?,
+            SpaceFrame::Data(f, data) => match f {
+                DataFrame::Crypto(f) => self.tls_trans.recv_data(f, data)?,
+                DataFrame::Stream(f) => self.stm_trans.recv_data(f, data)?,
+            },
+        };
+        Ok(())
+    }
+
+    fn record(&mut self, pn: u64, is_ack_eliciting: bool) {
         self.rcvd_packets
-            .insert(pktid, State::new_rcvd(Instant::now(), is_ack_eliciting))
+            .insert(pn, State::new_rcvd(Instant::now(), is_ack_eliciting))
             .unwrap();
         if is_ack_eliciting {
-            if self.largest_rcvd_ack_eliciting_pktid < pktid {
-                self.largest_rcvd_ack_eliciting_pktid = pktid;
+            if self.largest_rcvd_ack_eliciting_pktid < pn {
+                self.largest_rcvd_ack_eliciting_pktid = pn;
                 self.new_lost_event |= self
                     .rcvd_packets
                     .iter_with_idx()
                     .rev()
-                    .skip_while(|(pn, _)| pn >= &pktid)
+                    .skip_while(|(pn, _)| pn >= &pn)
                     .skip(PACKET_THRESHOLD as usize)
                     .take_while(|(pn, _)| pn > &self.last_synced_ack_largest)
                     .any(|(_, s)| matches!(s, State::NotReceived));
             }
-            if pktid < self.last_synced_ack_largest {
+            if pn < self.last_synced_ack_largest {
                 self.rcvd_unreached_packet = true;
             }
             self.time_to_sync = self
                 .time_to_sync
                 .or(Some(Instant::now() + self.max_ack_delay));
         }
-        Ok(connection_frames)
     }
 }
 
-impl<CT, ST> Space<CT, ST>
-where
-    CT: TransmitCrypto,
-    ST: TransmitStream,
-{
-    pub fn into_split_with_keys(self, keys: Keys) -> (ReceiveHalf<Self>, TransmitHalf<Self>) {
-        let arc_space = Arc::new(Mutex::new(self));
-        (
-            ReceiveHalf {
-                decrypt_keys: keys.remote,
-                space: arc_space.clone(),
-            },
-            TransmitHalf {
-                encrypt_key: keys.local,
-                space: arc_space,
-            },
-        )
-    }
-}
-
-#[derive(Deref, DerefMut)]
-pub struct ReceiveHalf<S> {
-    decrypt_keys: DirectionalKeys,
-    #[deref]
-    space: Arc<Mutex<S>>,
-}
-
-pub trait ReceivePacket {
-    // The clever use of associated types, establishing the connection between the
-    // packet type and the specific space, can be used for constraints later.
-    type Packet: RemoteProtection + DecodeHeader + DecryptPacket;
-
-    fn receive_packet(&self, packet: Self::Packet, rtt: &mut Rtt) -> Result<Vec<ConnFrame>, Error>;
-}
-
-#[derive(Deref, DerefMut)]
-pub struct TransmitHalf<S> {
-    encrypt_key: DirectionalKeys,
-    #[deref]
-    space: Arc<Mutex<S>>,
-}
+type ArcSpace<CT, ST> = Arc<Mutex<Space<CT, ST>>>;
 
 pub trait TransmitPacket<P> {
     type Buffer: BufMut;

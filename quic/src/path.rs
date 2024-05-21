@@ -1,4 +1,5 @@
-use qbase::cid::ConnectionId;
+use super::ArcFrameQueue;
+use qbase::{cid::ConnectionId, frame::PathFrame};
 use qrecovery::rtt::Rtt;
 use std::{
     net::SocketAddr,
@@ -14,19 +15,39 @@ pub struct Path {
     local_addr: SocketAddr,
     peer_addr: SocketAddr,
     // local_cid: ConnectionId,
-    peer_cid: ConnectionId, // peer_cid.len == 0 表示没有使用连接id
+    scid: ConnectionId, // scid.len == 0 表示没有使用连接id
+    dcid: ConnectionId, // dcid.len == 0 表示没有使用连接id
 
+    // 待发包队列
+    frames: ArcFrameQueue<PathFrame>,
     rtt: Arc<Mutex<Rtt>>,
 }
 
-impl Path {
-    pub fn new(local_addr: SocketAddr, peer_addr: SocketAddr, peer_cid: ConnectionId) -> Self {
-        Self {
+pub struct ArcPath(Arc<Path>);
+
+impl ArcPath {
+    pub fn new(
+        local_addr: SocketAddr,
+        peer_addr: SocketAddr,
+        scid: ConnectionId,
+        dcid: ConnectionId,
+    ) -> Self {
+        Self(Arc::new(Path {
             local_addr,
             peer_addr,
-            peer_cid,
+            scid,
+            dcid,
+            frames: ArcFrameQueue::new(),
             rtt: Arc::new(Mutex::new(Rtt::default())),
-        }
+        }))
+    }
+
+    pub fn rtt(&self) -> Arc<Mutex<Rtt>> {
+        self.0.as_ref().rtt.clone()
+    }
+
+    pub fn frames(&self) -> &ArcFrameQueue<PathFrame> {
+        &(self.0.as_ref().frames)
     }
 }
 
@@ -41,7 +62,7 @@ mod tests {
         let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8081);
         let peer_cid = ConnectionId::from_slice(b"peer cid");
-        let path = super::Path::new(local_addr, peer_addr, peer_cid);
+        // let path = super::Path::new(local_addr, peer_addr, peer_cid);
 
         // let _packet = path.read_1rtt_packet().await;
     }
