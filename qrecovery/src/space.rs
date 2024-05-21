@@ -1,3 +1,5 @@
+use crate::streams::NoStreams;
+
 use super::{
     crypto::{CryptoStream, TransmitCrypto},
     index_deque::IndexDeque,
@@ -539,17 +541,43 @@ where
 /// 对于InitialSpace和HandshakeSpace，十分适用ArcSpace
 type ArcSpace<CT, ST> = Arc<Mutex<Space<CT, ST>>>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SpaceIO<CT, ST>(ArcSpace<CT, ST>)
 where
     CT: TransmitCrypto,
     ST: TransmitStream;
+
+impl SpaceIO<CryptoStream, NoStreams> {
+    pub fn new_initial(crypto_stream: CryptoStream) -> Self {
+        Self(Arc::new(Mutex::new(Space::build(
+            SpaceId::Initial,
+            crypto_stream,
+            NoStreams,
+        ))))
+    }
+
+    pub fn new_handshake(crypto_stream: CryptoStream) -> Self {
+        Self(Arc::new(Mutex::new(Space::build(
+            SpaceId::Handshake,
+            crypto_stream,
+            NoStreams,
+        ))))
+    }
+}
 
 /// Data space, initially it's a 0RTT space, and later it needs to be upgraded to a 1RTT space.
 /// The data in the 0RTT space is unreliable and cannot transmit CryptoFrame. It is constrained
 /// by the space_id when sending, and a judgment is also made in the task of receiving and unpacking.
 /// Therefore, when upgrading, just change the space_id to 1RTT, no other operations are needed.
 impl SpaceIO<CryptoStream, Streams> {
+    pub fn new(crypto_stream: CryptoStream, streams: Streams) -> Self {
+        Self(Arc::new(Mutex::new(Space::build(
+            SpaceId::ZeroRtt,
+            crypto_stream,
+            streams,
+        ))))
+    }
+
     pub fn upgrade(&mut self) {
         let mut ds = self.0.lock().unwrap();
         assert_eq!(ds.space_id, SpaceId::ZeroRtt);
@@ -572,6 +600,16 @@ where
 
     fn recv_frame(&self, frame: SpaceFrame) -> Result<(), Error> {
         self.0.lock().unwrap().recv_frame(frame)
+    }
+}
+
+impl<CT, ST> Clone for SpaceIO<CT, ST>
+where
+    CT: TransmitCrypto,
+    ST: TransmitStream,
+{
+    fn clone(&self) -> Self {
+        SpaceIO(self.0.clone())
     }
 }
 

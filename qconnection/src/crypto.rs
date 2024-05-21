@@ -13,17 +13,27 @@ use tokio::{
 };
 
 #[derive(Debug)]
-pub struct TlsSession {
+pub(crate) struct TlsSession {
     connection: TlsConnection,
     wants_write: Option<Waker>,
 }
 
-pub type ArcTlsSession = Arc<Mutex<TlsSession>>;
+pub(crate) type ArcTlsSession = Arc<Mutex<TlsSession>>;
 
 #[derive(Debug, Clone)]
 pub struct TlsIO(ArcTlsSession);
 
 impl TlsIO {
+    pub fn new_client() -> Self {
+        /*
+        Self(Arc::new(Mutex::new(TlsSession {
+            connection: todo!(),
+            wants_write: None,
+        })))
+        */
+        todo!()
+    }
+
     pub fn split_io(&self) -> (TlsReader, TlsWriter) {
         (TlsReader(self.0.clone()), TlsWriter(self.0.clone()))
     }

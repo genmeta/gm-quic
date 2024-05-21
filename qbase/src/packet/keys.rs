@@ -187,7 +187,7 @@ impl ArcOneRttKeys {
         })))
     }
 
-    pub fn set_keys(&mut self, keys: Keys, secret: Secrets) {
+    pub fn set_keys(&self, keys: Keys, secret: Secrets) {
         let mut state = self.0.lock().unwrap();
         match &mut *state {
             OneRttKeysState::Pending { rx_waker, tx_waker } => {

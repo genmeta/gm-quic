@@ -253,7 +253,7 @@ pub use send::CryptoStreamWriter;
 ///     assert_eq!(&buf[..], b"hello world");
 /// }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CryptoStream {
     incoming: recv::CryptoStreamIncoming,
     outgoing: send::CryptoStreamOutgoing,
@@ -321,7 +321,7 @@ impl TransmitCrypto for CryptoStream {
 
 /// 在0-RTT中，不允许传输CryptoFrame，CryptoFrame只能承担加密握手的Message
 /// 实际上，1-RTT中也没任何传输CryptoFrame的需求，只是未来可能会有，且1-RTT是经过验证的安全
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NoCrypto;
 
 impl TransmitCrypto for NoCrypto {

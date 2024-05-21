@@ -1,63 +1,189 @@
-use crate::crypto::TlsIO;
-use qbase::packet::{KeyPhaseBit, SpinBit};
-use qrecovery::{
-    crypto::{CryptoStream, CryptoStreamReader, CryptoStreamWriter},
-    rtt::Rtt,
-    space::SpaceIO,
-    streams::NoStreams,
+use crate::{auto, crypto::TlsIO, frame_queue::ArcFrameQueue, path::ArcPath};
+use qbase::{
+    packet::{
+        keys::{ArcKeys, ArcOneRttKeys},
+        HandshakePacket, InitialPacket, OneRttPacket, SpacePacket, SpinBit, ZeroRttPacket,
+    },
+    streamid::{Role, StreamIds},
+    SpaceId,
 };
-use rustls::quic::{KeyChange, Keys, Secrets};
+use qrecovery::{
+    crypto::CryptoStream,
+    space::SpaceIO,
+    streams::{NoStreams, Streams},
+};
+use tokio::sync::mpsc;
 
-/// Key material for use in QUIC packet spaces
-///
-/// QUIC uses 4 different sets of keys (and progressive key updates for long-running connections):
-///
-/// * Initial: these can be created from [`Keys::initial()`]
-/// * 0-RTT keys: can be retrieved from [`ConnectionCommon::zero_rtt_keys()`]
-/// * Handshake: these are returned from [`ConnectionCommon::write_hs()`] after `ClientHello` and
-///   `ServerHello` messages have been exchanged
-/// * 1-RTT keys: these are returned from [`ConnectionCommon::write_hs()`] after the handshake is done
-///
-/// Once the 1-RTT keys have been exchanged, either side may initiate a key update. Progressive
-/// update keys can be obtained from the [`Secrets`] returned in [`KeyChange::OneRtt`]. Note that
-/// only packet keys are updated by key updates; header protection keys remain the same.
+/// Option是为了能丢弃前期空间，包括这些空间的收包队列，
+/// 一旦丢弃，后续再收到该空间的包，直接丢弃。
+type RxPacketsQueue<T> = Option<mpsc::UnboundedSender<(T, ArcPath)>>;
 
-/// 所以，先从Keys::initial()获得initial_keys，这是在endpoint层，都可以默认存在的
-/// 收到init数据包，用initial_keys去除包头保护，解密包体，写给initial空间，然后从initial空间的crypto流中读出数据，写入
-/// 调用write_hs()，获得handshake keys,
-
-/// 收到handshake数据包，用handshake keys去除包头保护，解密包体，写给handshake空间，然后从handshake空间的额crypto流中读出数据，写入
-/// 调用write_hs()，获得1-rtt keys，
-/// 从ConnectionCommon::zero_rtt_keys()获取zero_rtt_keys,
 pub struct Connection {
-    tls_session: TlsIO,
-    // initial阶段是创建时自带，握手成功之后丢弃
+    initial_keys: ArcKeys,
+    initial_pkt_queue: RxPacketsQueue<InitialPacket>,
+    // 发送数据，也可以随着升级到Handshake空间而丢弃
     initial_space: SpaceIO<CryptoStream, NoStreams>,
+
+    handshake_keys: ArcKeys,
+    handshake_pkt_queue: RxPacketsQueue<HandshakePacket>,
+    // 发送数据，也可以随着升级到1RTT空间而丢弃
     handshake_space: SpaceIO<CryptoStream, NoStreams>,
-    data_space: SpaceIO<CryptoStream, NoStreams>,
 
-    zero_rtt_keys: Option<Box<Keys>>,
-    one_rtt_keys: Option<Keys>,
-    one_rtt_secrets: Option<Secrets>,
-
-    // 暂时性的，rtt应该跟path相关
-    rtt: Rtt,
-
+    zero_rtt_keys: ArcKeys,
+    // 发送数据，也可以随着升级到1RTT空间而丢弃
+    zero_rtt_pkt_queue: RxPacketsQueue<ZeroRttPacket>,
+    one_rtt_pkt_queue: mpsc::UnboundedSender<(OneRttPacket, ArcPath)>,
+    data_space: SpaceIO<CryptoStream, Streams>,
     spin: SpinBit,
-    key_phase: KeyPhaseBit,
 }
 
 impl Connection {
-    async fn exchange_hs(
-        tls_session: TlsIO,
-        (stream_reader, stream_writer): (CryptoStreamReader, CryptoStreamWriter),
-    ) -> std::io::Result<KeyChange> {
-        let (tls_reader, tls_writer) = tls_session.split_io();
-        let loop_read = tls_reader.loop_read_from(stream_reader);
-        let mut poll_writer = tls_writer.write_to(stream_writer);
-        let key_change = poll_writer.loop_write().await?;
-        loop_read.end().await?;
-        Ok(key_change)
+    pub fn new(tls_session: TlsIO) -> Self {
+        let rcvd_conn_frames = ArcFrameQueue::new();
+
+        let (initial_pkt_tx, initial_pkt_rx) =
+            mpsc::unbounded_channel::<(InitialPacket, ArcPath)>();
+        let initial_crypto_stream = CryptoStream::new(1000_000, 1000_000);
+        let initial_crypto_handler = initial_crypto_stream.split();
+        let initial_keys = ArcKeys::new_pending();
+        let initial_space_frame_queue = ArcFrameQueue::new();
+        let initial_space = SpaceIO::new_initial(initial_crypto_stream);
+        tokio::spawn(
+            auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
+                initial_pkt_rx,
+                SpaceId::Initial,
+                initial_keys.clone(),
+                initial_space.clone(),
+                rcvd_conn_frames.clone(),
+                initial_space_frame_queue.clone(),
+                true,
+            ),
+        );
+        tokio::spawn(auto::loop_read_space_frame_and_dispatch_to_space(
+            initial_space_frame_queue,
+            initial_space.clone(),
+        ));
+
+        let (handshake_pkt_tx, handshake_pkt_rx) =
+            mpsc::unbounded_channel::<(HandshakePacket, ArcPath)>();
+        let handshake_crypto_stream = CryptoStream::new(1000_000, 1000_000);
+        let handshake_crypto_handler = handshake_crypto_stream.split();
+        let handshake_keys = ArcKeys::new_pending();
+        let handshake_space_frame_queue = ArcFrameQueue::new();
+        let handshake_space = SpaceIO::new_initial(handshake_crypto_stream);
+        tokio::spawn(
+            auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
+                handshake_pkt_rx,
+                SpaceId::Handshake,
+                handshake_keys.clone(),
+                handshake_space.clone(),
+                rcvd_conn_frames.clone(),
+                handshake_space_frame_queue.clone(),
+                true,
+            ),
+        );
+        tokio::spawn(auto::loop_read_space_frame_and_dispatch_to_space(
+            handshake_space_frame_queue,
+            handshake_space.clone(),
+        ));
+        tokio::spawn(
+            auto::exchange_initial_crypto_msg_until_getting_handshake_key(
+                tls_session.clone(),
+                handshake_keys.clone(),
+                initial_crypto_handler,
+            ),
+        );
+
+        let (zero_rtt_pkt_tx, zero_rtt_pkt_rx) =
+            mpsc::unbounded_channel::<(ZeroRttPacket, ArcPath)>();
+        let (one_rtt_pkt_tx, one_rtt_pkt_rx) = mpsc::unbounded_channel::<(OneRttPacket, ArcPath)>();
+        let zero_rtt_keys = ArcKeys::new_pending();
+        let one_rtt_keys = ArcOneRttKeys::new_pending();
+        let one_rtt_crypto_stream = CryptoStream::new(1000_000, 1000_000);
+        let _one_rtt_crypto_handler = one_rtt_crypto_stream.split();
+        let streams = Streams::new(StreamIds::new(Role::Client, 20, 10));
+        let data_space = SpaceIO::new(one_rtt_crypto_stream, streams);
+        let data_space_frame_queue = ArcFrameQueue::new();
+        tokio::spawn(
+            auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
+                zero_rtt_pkt_rx,
+                SpaceId::ZeroRtt,
+                zero_rtt_keys.clone(),
+                data_space.clone(),
+                rcvd_conn_frames.clone(),
+                data_space_frame_queue.clone(),
+                false,
+            ),
+        );
+        tokio::spawn(
+            auto::loop_read_short_packet_and_then_dispatch_to_space_frame_queue(
+                one_rtt_pkt_rx,
+                one_rtt_keys.clone(),
+                data_space.clone(),
+                rcvd_conn_frames.clone(),
+                data_space_frame_queue.clone(),
+            ),
+        );
+        tokio::spawn(auto::loop_read_space_frame_and_dispatch_to_space(
+            data_space_frame_queue,
+            data_space.clone(),
+        ));
+        tokio::spawn(auto::exchange_handshake_crypto_msg_until_getting_1rtt_key(
+            tls_session,
+            one_rtt_keys,
+            handshake_crypto_handler,
+        ));
+
+        Self {
+            initial_keys,
+            initial_pkt_queue: Some(initial_pkt_tx),
+            initial_space,
+            handshake_keys,
+            handshake_pkt_queue: Some(handshake_pkt_tx),
+            handshake_space,
+            zero_rtt_keys,
+            zero_rtt_pkt_queue: Some(zero_rtt_pkt_tx),
+            one_rtt_pkt_queue: one_rtt_pkt_tx,
+            data_space,
+            spin: SpinBit::default(),
+        }
+    }
+
+    pub fn receive_protected_packet(&mut self, packet: SpacePacket, path: ArcPath) {
+        match packet {
+            SpacePacket::Initial(pkt) => {
+                self.initial_pkt_queue.as_mut().map(|q| {
+                    let _ = q.send((pkt, path));
+                });
+            }
+            SpacePacket::Handshake(pkt) => {
+                self.handshake_pkt_queue.as_mut().map(|q| {
+                    let _ = q.send((pkt, path));
+                });
+            }
+            SpacePacket::ZeroRtt(pkt) => {
+                self.zero_rtt_pkt_queue.as_mut().map(|q| {
+                    let _ = q.send((pkt, path));
+                });
+            }
+            SpacePacket::OneRtt(pkt) => {
+                self.one_rtt_pkt_queue
+                    .send((pkt, path))
+                    .expect("must success");
+            }
+        };
+    }
+
+    pub fn expire_initial_keys(&self) {
+        self.initial_keys.expire();
+    }
+
+    pub fn expire_handshake_keys(&self) {
+        self.handshake_keys.expire();
+    }
+
+    pub fn expire_zero_rtt_keys(&self) {
+        self.zero_rtt_keys.expire();
     }
 }
 

@@ -220,7 +220,7 @@ impl TransmitStream for Streams {
 }
 
 /// 在Initial和Handshake空间中，是不需要传输Streams的，此时可以使用NoStreams
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NoStreams;
 
 impl TransmitStream for NoStreams {
