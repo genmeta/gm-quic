@@ -164,36 +164,39 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
 ) {
     while let Some((mut packet, path)) = packet_rx.recv().await {
         // 1rtt空间的header protection key是固定的，packet key则是根据包头中的key_phase_bit变化的
-        let (hk, pk) = keys.get_remote_keys().await;
-        let ok = packet.remove_protection(&hk.as_ref());
-        if !ok {
-            // Failed to remove packet header protection, just discard it.
-            continue;
-        }
+        if let Some((hk, pk)) = keys.get_remote_keys().await {
+            let ok = packet.remove_protection(&hk.as_ref());
+            if !ok {
+                // Failed to remove packet header protection, just discard it.
+                continue;
+            }
 
-        let (pn, key_phase) = packet.decode_header().unwrap();
-        let pkt_id = pn.decode(space.expected_pn());
-        // 要根据key_phase_bit来获取packet key
-        let pkt_key = pk.lock().unwrap().get_remote(key_phase, pkt_id);
-        match packet.decrypt_packet(pkt_id, pn.size(), &pkt_key.as_ref()) {
-            Ok(payload) => {
-                match parse_packet_and_then_dispatch(
-                    payload,
-                    SpaceId::OneRtt,
-                    &path,
-                    &conn_frame_queue,
-                    &space_frame_queue,
-                ) {
-                    Ok(is_ack_eliciting) => space.record(pkt_id, is_ack_eliciting),
-                    Err(_e) => {
-                        // 解析包失败，丢弃
-                        // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
-                        continue;
+            let (pn, key_phase) = packet.decode_header().unwrap();
+            let pkt_id = pn.decode(space.expected_pn());
+            // 要根据key_phase_bit来获取packet key
+            let pkt_key = pk.lock().unwrap().get_remote(key_phase, pkt_id);
+            match packet.decrypt_packet(pkt_id, pn.size(), &pkt_key.as_ref()) {
+                Ok(payload) => {
+                    match parse_packet_and_then_dispatch(
+                        payload,
+                        SpaceId::OneRtt,
+                        &path,
+                        &conn_frame_queue,
+                        &space_frame_queue,
+                    ) {
+                        Ok(is_ack_eliciting) => space.record(pkt_id, is_ack_eliciting),
+                        Err(_e) => {
+                            // 解析包失败，丢弃
+                            // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
+                            continue;
+                        }
                     }
                 }
+                // Decryption failed, just ignore/discard it.
+                Err(_) => continue,
             }
-            // Decryption failed, just ignore/discard it.
-            Err(_) => continue,
+        } else {
+            break;
         }
     }
     space_frame_queue.close();

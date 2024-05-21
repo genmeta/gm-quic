@@ -2,7 +2,7 @@ use crate::{auto, crypto::TlsIO, frame_queue::ArcFrameQueue, path::ArcPath};
 use qbase::{
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
-        HandshakePacket, InitialPacket, OneRttPacket, SpacePacket, SpinBit, ZeroRttPacket,
+        HandshakePacket, InitialPacket, OneRttPacket, SpinBit, ZeroRttPacket,
     },
     streamid::{Role, StreamIds},
     SpaceId,
@@ -112,7 +112,7 @@ impl Connection {
                 data_space.clone(),
                 rcvd_conn_frames.clone(),
                 data_space_frame_queue.clone(),
-                false,
+                true,
             ),
         );
         tokio::spawn(
@@ -149,41 +149,40 @@ impl Connection {
         }
     }
 
-    pub fn receive_protected_packet(&mut self, packet: SpacePacket, path: ArcPath) {
-        match packet {
-            SpacePacket::Initial(pkt) => {
-                self.initial_pkt_queue.as_mut().map(|q| {
-                    let _ = q.send((pkt, path));
-                });
-            }
-            SpacePacket::Handshake(pkt) => {
-                self.handshake_pkt_queue.as_mut().map(|q| {
-                    let _ = q.send((pkt, path));
-                });
-            }
-            SpacePacket::ZeroRtt(pkt) => {
-                self.zero_rtt_pkt_queue.as_mut().map(|q| {
-                    let _ = q.send((pkt, path));
-                });
-            }
-            SpacePacket::OneRtt(pkt) => {
-                self.one_rtt_pkt_queue
-                    .send((pkt, path))
-                    .expect("must success");
-            }
-        };
+    pub fn recv_initial_packet(&mut self, pkt: InitialPacket, path: ArcPath) {
+        self.initial_pkt_queue.as_mut().map(|q| {
+            let _ = q.send((pkt, path));
+        });
     }
 
-    pub fn expire_initial_keys(&self) {
-        self.initial_keys.expire();
+    pub fn recv_handshake_packet(&mut self, pkt: HandshakePacket, path: ArcPath) {
+        self.handshake_pkt_queue.as_mut().map(|q| {
+            let _ = q.send((pkt, path));
+        });
     }
 
-    pub fn expire_handshake_keys(&self) {
-        self.handshake_keys.expire();
+    pub fn recv_0rtt_packet(&mut self, pkt: ZeroRttPacket, path: ArcPath) {
+        self.zero_rtt_pkt_queue.as_mut().map(|q| {
+            let _ = q.send((pkt, path));
+        });
     }
 
-    pub fn expire_zero_rtt_keys(&self) {
-        self.zero_rtt_keys.expire();
+    pub fn recv_1rtt_packet(&mut self, pkt: OneRttPacket, path: ArcPath) {
+        self.one_rtt_pkt_queue
+            .send((pkt, path))
+            .expect("must success");
+    }
+
+    pub fn invalid_initial_keys(&self) {
+        self.initial_keys.invalid();
+    }
+
+    pub fn invalid_handshake_keys(&self) {
+        self.handshake_keys.invalid();
+    }
+
+    pub fn invalid_zero_rtt_keys(&self) {
+        self.zero_rtt_keys.invalid();
     }
 }
 

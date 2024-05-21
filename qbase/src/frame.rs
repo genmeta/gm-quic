@@ -168,7 +168,7 @@ pub enum ConnFrame {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
-pub enum StreamInfoFrame {
+pub enum StreamCtlFrame {
     ResetStream(ResetStreamFrame),
     StopSending(StopSendingFrame),
     MaxStreamData(MaxStreamDataFrame),
@@ -195,7 +195,7 @@ pub enum DataFrame {
 #[enum_dispatch(BeFrame)]
 pub enum PureFrame {
     Conn(ConnFrame),
-    Stream(StreamInfoFrame),
+    Stream(StreamCtlFrame),
     Path(PathFrame),
 }
 
@@ -408,17 +408,17 @@ pub mod ext {
         }
     }
 
-    impl<T: bytes::BufMut> WriteFrame<StreamInfoFrame> for T {
-        fn put_frame(&mut self, frame: &StreamInfoFrame) {
+    impl<T: bytes::BufMut> WriteFrame<StreamCtlFrame> for T {
+        fn put_frame(&mut self, frame: &StreamCtlFrame) {
             match frame {
-                StreamInfoFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
-                StreamInfoFrame::StopSending(frame) => self.put_stop_sending_frame(frame),
-                StreamInfoFrame::MaxStreamData(frame) => self.put_max_stream_data_frame(frame),
-                StreamInfoFrame::MaxStreams(frame) => self.put_max_streams_frame(frame),
-                StreamInfoFrame::StreamDataBlocked(frame) => {
+                StreamCtlFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
+                StreamCtlFrame::StopSending(frame) => self.put_stop_sending_frame(frame),
+                StreamCtlFrame::MaxStreamData(frame) => self.put_max_stream_data_frame(frame),
+                StreamCtlFrame::MaxStreams(frame) => self.put_max_streams_frame(frame),
+                StreamCtlFrame::StreamDataBlocked(frame) => {
                     self.put_stream_data_blocked_frame(frame)
                 }
-                StreamInfoFrame::StreamsBlocked(frame) => self.put_streams_blocked_frame(frame),
+                StreamCtlFrame::StreamsBlocked(frame) => self.put_streams_blocked_frame(frame),
             }
         }
     }

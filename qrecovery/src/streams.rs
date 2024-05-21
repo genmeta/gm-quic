@@ -31,7 +31,7 @@ pub struct Streams {
     // 其实，是拿Space中的frames放在这里，当Outgoing、Incoming发生状态变更时，要发送StreamInfoStream。
     // 也可以将StreamInfoFrame放在这里，提供函数，供读取，发送的时候，直接从这里读取
     // 这种更好，而且，Streams不关心帧的丢失、重传。一旦被Space读取并发送，就由Space负责可靠传输
-    frames: Arc<Mutex<VecDeque<StreamInfoFrame>>>,
+    frames: Arc<Mutex<VecDeque<StreamCtlFrame>>>,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> Error {
@@ -41,7 +41,7 @@ fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> Error {
 pub trait TransmitStream {
     type Buffer: bytes::BufMut;
 
-    fn try_send_frame(&mut self, buf: &mut Self::Buffer) -> Option<(StreamInfoFrame, usize)>;
+    fn try_send_frame(&mut self, buf: &mut Self::Buffer) -> Option<(StreamCtlFrame, usize)>;
 
     fn try_send_data(&mut self, buf: &mut Self::Buffer) -> Option<(StreamFrame, usize)>;
 
@@ -49,7 +49,7 @@ pub trait TransmitStream {
 
     fn may_loss_data(&mut self, stream_frame: StreamFrame);
 
-    fn recv_frame(&mut self, stream_info_frame: StreamInfoFrame) -> Result<(), Error>;
+    fn recv_frame(&mut self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error>;
 
     fn recv_data(&mut self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error>;
 }
@@ -57,7 +57,7 @@ pub trait TransmitStream {
 impl TransmitStream for Streams {
     type Buffer = bytes::BytesMut;
 
-    fn try_send_frame(&mut self, _buf: &mut Self::Buffer) -> Option<(StreamInfoFrame, usize)> {
+    fn try_send_frame(&mut self, _buf: &mut Self::Buffer) -> Option<(StreamCtlFrame, usize)> {
         // 遍历所有的Outgoing，看是否有StreamInfoFrame要发送, 且buf还剩余足够的空间
         todo!()
     }
@@ -113,9 +113,9 @@ impl TransmitStream for Streams {
         Ok(())
     }
 
-    fn recv_frame(&mut self, stream_info_frame: StreamInfoFrame) -> Result<(), Error> {
-        match stream_info_frame {
-            StreamInfoFrame::ResetStream(reset_frame) => {
+    fn recv_frame(&mut self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error> {
+        match stream_ctl_frame {
+            StreamCtlFrame::ResetStream(reset_frame) => {
                 let sid = reset_frame.stream_id;
                 // 对方必须是发送端，才能发送此帧
                 if sid.role() != self.stream_ids.role() {
@@ -126,7 +126,7 @@ impl TransmitStream for Streams {
                     if sid.dir() == Dir::Uni {
                         return Err(Error::new(
                             ErrorKind::StreamState,
-                            stream_info_frame.frame_type(),
+                            stream_ctl_frame.frame_type(),
                             format!("local {sid} cannot receive RESET_FRAME"),
                         ));
                     }
@@ -135,7 +135,7 @@ impl TransmitStream for Streams {
                     incoming.recv_reset(reset_frame)?;
                 }
             }
-            StreamInfoFrame::StopSending(stop) => {
+            StreamCtlFrame::StopSending(stop) => {
                 let sid = stop.stream_id;
                 // 对方必须是接收端，才能发送此帧
                 if sid.role() != self.stream_ids.role() {
@@ -143,7 +143,7 @@ impl TransmitStream for Streams {
                     if sid.dir() == Dir::Uni {
                         return Err(Error::new(
                             ErrorKind::StreamState,
-                            stream_info_frame.frame_type(),
+                            stream_ctl_frame.frame_type(),
                             format!("remote {sid} must not send STOP_SENDING_FRAME"),
                         ));
                     }
@@ -155,7 +155,7 @@ impl TransmitStream for Streams {
                         self.frames
                             .lock()
                             .unwrap()
-                            .push_back(StreamInfoFrame::ResetStream(ResetStreamFrame {
+                            .push_back(StreamCtlFrame::ResetStream(ResetStreamFrame {
                                 stream_id: sid,
                                 app_error_code: VarInt::from_u32(0),
                                 final_size: VarInt::from_u32(0),
@@ -163,7 +163,7 @@ impl TransmitStream for Streams {
                     }
                 }
             }
-            StreamInfoFrame::MaxStreamData(max_stream_data) => {
+            StreamCtlFrame::MaxStreamData(max_stream_data) => {
                 let sid = max_stream_data.stream_id;
                 // 对方必须是接收端，才能发送此帧
                 if sid.role() != self.stream_ids.role() {
@@ -171,7 +171,7 @@ impl TransmitStream for Streams {
                     if sid.dir() == Dir::Uni {
                         return Err(Error::new(
                             ErrorKind::StreamState,
-                            stream_info_frame.frame_type(),
+                            stream_ctl_frame.frame_type(),
                             format!("remote {sid} must not send MAX_STREAM_DATA_FRAME"),
                         ));
                     }
@@ -182,7 +182,7 @@ impl TransmitStream for Streams {
                     outgoing.update_window(max_stream_data.max_stream_data.into_inner());
                 }
             }
-            StreamInfoFrame::StreamDataBlocked(stream_data_blocked) => {
+            StreamCtlFrame::StreamDataBlocked(stream_data_blocked) => {
                 let sid = stream_data_blocked.stream_id;
                 // 对方必须是发送端，才能发送此帧
                 if sid.role() != self.stream_ids.role() {
@@ -193,14 +193,14 @@ impl TransmitStream for Streams {
                     if sid.dir() == Dir::Uni {
                         return Err(Error::new(
                             ErrorKind::StreamState,
-                            stream_info_frame.frame_type(),
+                            stream_ctl_frame.frame_type(),
                             format!("local {sid} cannot receive STREAM_DATA_BLOCKED_FRAME"),
                         ));
                     }
                 }
                 // 仅仅起到通知作用?主动更新窗口的，此帧没多大用，或许要进一步放大缓冲区大小；被动更新窗口的，此帧有用
             }
-            StreamInfoFrame::MaxStreams(max_streams) => {
+            StreamCtlFrame::MaxStreams(max_streams) => {
                 // 主要更新我方能创建的单双向流
                 match max_streams {
                     MaxStreamsFrame::Bi(val) => {
@@ -211,7 +211,7 @@ impl TransmitStream for Streams {
                     }
                 };
             }
-            StreamInfoFrame::StreamsBlocked(_streams_blocked) => {
+            StreamCtlFrame::StreamsBlocked(_streams_blocked) => {
                 // 仅仅起到通知作用?也分主动和被动
             }
         }
@@ -226,7 +226,7 @@ pub struct NoStreams;
 impl TransmitStream for NoStreams {
     type Buffer = bytes::BytesMut;
 
-    fn try_send_frame(&mut self, _buf: &mut Self::Buffer) -> Option<(StreamInfoFrame, usize)> {
+    fn try_send_frame(&mut self, _buf: &mut Self::Buffer) -> Option<(StreamCtlFrame, usize)> {
         None
     }
 
@@ -242,7 +242,7 @@ impl TransmitStream for NoStreams {
         unreachable!()
     }
 
-    fn recv_frame(&mut self, _stream_info_frame: StreamInfoFrame) -> Result<(), Error> {
+    fn recv_frame(&mut self, _stream_ctl_frame: StreamCtlFrame) -> Result<(), Error> {
         unreachable!()
     }
 
@@ -313,7 +313,7 @@ impl Streams {
                     frames
                         .lock()
                         .unwrap()
-                        .push_back(StreamInfoFrame::ResetStream(ResetStreamFrame {
+                        .push_back(StreamCtlFrame::ResetStream(ResetStreamFrame {
                             stream_id: sid,
                             app_error_code: VarInt::from_u32(0),
                             final_size: unsafe { VarInt::from_u64_unchecked(final_size) },
@@ -336,7 +336,7 @@ impl Streams {
                     let _ = frames
                         .lock()
                         .unwrap()
-                        .push_back(StreamInfoFrame::MaxStreamData(MaxStreamDataFrame {
+                        .push_back(StreamCtlFrame::MaxStreamData(MaxStreamDataFrame {
                             stream_id: sid,
                             max_stream_data: unsafe { VarInt::from_u64_unchecked(max_data) },
                         }));
@@ -352,7 +352,7 @@ impl Streams {
                     frames
                         .lock()
                         .unwrap()
-                        .push_back(StreamInfoFrame::StopSending(StopSendingFrame {
+                        .push_back(StreamCtlFrame::StopSending(StopSendingFrame {
                             stream_id: sid,
                             app_err_code: VarInt::from_u32(0),
                         }));

@@ -1,10 +1,8 @@
-use crate::streams::NoStreams;
-
 use super::{
     crypto::{CryptoStream, TransmitCrypto},
     index_deque::IndexDeque,
     rtt::Rtt,
-    streams::{Streams, TransmitStream},
+    streams::{NoStreams, Streams, TransmitStream},
 };
 use bytes::{BufMut, Bytes};
 use qbase::{
@@ -23,7 +21,7 @@ use std::{
 #[derive(Debug, Clone)]
 pub enum SpaceFrame {
     Ack(AckFrame, Arc<Mutex<Rtt>>),
-    Stream(StreamInfoFrame),
+    Stream(StreamCtlFrame),
     Data(DataFrame, Bytes),
 }
 
@@ -116,7 +114,7 @@ const PACKET_THRESHOLD: u64 = 3;
 /// 可靠空间的抽象实现，需要实现上述所有trait
 /// 可靠空间中的重传、确认，由可靠空间内部实现，无需外露
 #[derive(Debug)]
-pub struct Space<CT, ST>
+struct Space<CT, ST>
 where
     CT: TransmitCrypto,
     ST: TransmitStream,
