@@ -1,14 +1,12 @@
 use crate::crypto::TlsIO;
 use qbase::packet::{KeyPhaseBit, SpinBit};
 use qrecovery::{
-    crypto::{CryptoStreamReader, CryptoStreamWriter},
+    crypto::{CryptoStream, CryptoStreamReader, CryptoStreamWriter},
     rtt::Rtt,
-    space::{DataSpace, HandshakeSpace, InitialSpace},
+    space::SpaceIO,
+    streams::NoStreams,
 };
 use rustls::quic::{KeyChange, Keys, Secrets};
-use std::sync::{Arc, Mutex};
-
-pub mod stable;
 
 /// Key material for use in QUIC packet spaces
 ///
@@ -34,14 +32,13 @@ pub mod stable;
 pub struct Connection {
     tls_session: TlsIO,
     // initial阶段是创建时自带，握手成功之后丢弃
-    initial_space: Arc<Mutex<Option<Box<InitialSpace>>>>,
-    handshake_space: Arc<Mutex<Option<Box<HandshakeSpace>>>>,
+    initial_space: SpaceIO<CryptoStream, NoStreams>,
+    handshake_space: SpaceIO<CryptoStream, NoStreams>,
+    data_space: SpaceIO<CryptoStream, NoStreams>,
 
     zero_rtt_keys: Option<Box<Keys>>,
     one_rtt_keys: Option<Keys>,
     one_rtt_secrets: Option<Secrets>,
-
-    data_space: DataSpace,
 
     // 暂时性的，rtt应该跟path相关
     rtt: Rtt,

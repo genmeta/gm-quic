@@ -11,12 +11,7 @@ use qbase::{
     },
     SpaceId,
 };
-use qrecovery::{
-    crypto::TransmitCrypto,
-    space::{OneRttDataSpace, Receive, Space, SpaceFrame},
-    streams::TransmitStream,
-};
-use std::sync::{Arc, Mutex};
+use qrecovery::space::{Receive, SpaceFrame};
 
 pub mod connection;
 pub mod crypto;
@@ -126,14 +121,14 @@ fn parse_packet_and_then_dispatch(
 ///   processing, or handle Path frames with Path when encountered.
 /// Finally, it returns the sending end of the packet receiving queue, which can be used to write packets into this
 /// queue when receiving packets for this space.
-pub fn build_space_reader<CT, ST, P>(
+pub fn build_space_reader<S, P>(
+    space_id: SpaceId,
     keys: ArcKeys,
-    space: Arc<Mutex<Space<CT, ST>>>,
+    space: S,
     conn_frames: ArcFrameQueue<ConnFrame>,
 ) -> UnboundedSender<(P, ArcPath)>
 where
-    CT: TransmitCrypto + Send + 'static,
-    ST: TransmitStream + Send + 'static,
+    S: Clone + Receive + Send + 'static,
     P: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection + Send + 'static,
 {
     let (packet_tx, mut packet_rx) = mpsc::unbounded_channel::<(P, ArcPath)>();
@@ -148,7 +143,7 @@ where
             while let Some(frame) = space_frames.next().await {
                 // TODO: 处理连接错误
                 // TODO: 0RTT和1RTT公用一个Space
-                let result = space.lock().unwrap().recv_frame(frame);
+                let result = space.recv_frame(frame);
             }
         }
     });
@@ -165,9 +160,7 @@ where
                 }
 
                 let pn = packet.decode_header().unwrap();
-                let mut s = space.lock().unwrap();
-                let pkt_id = pn.decode(s.expected_pn());
-                let space_id = s.space_id();
+                let pkt_id = pn.decode(space.expected_pn());
                 match packet.decrypt_packet(pkt_id, pn.size(), &k.as_ref().remote.packet) {
                     Ok(payload) => {
                         match parse_packet_and_then_dispatch(
@@ -177,7 +170,7 @@ where
                             &conn_frames,
                             &space_frames,
                         ) {
-                            Ok(is_ack_eliciting) => s.record(pkt_id, is_ack_eliciting),
+                            Ok(is_ack_eliciting) => space.record(pkt_id, is_ack_eliciting),
                             Err(_e) => {
                                 // 解析包失败，丢弃
                                 // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
@@ -199,9 +192,8 @@ where
 }
 
 pub fn build_1rtt_space_reader(
-    space_id: SpaceId,
     keys: ArcOneRttKeys,
-    space: OneRttDataSpace,
+    space: impl Receive + Send + 'static,
     conn_frames: ArcFrameQueue<ConnFrame>,
 ) -> UnboundedSender<(OneRttPacket, ArcPath)> {
     let (packet_tx, mut packet_rx) = mpsc::unbounded_channel::<(OneRttPacket, ArcPath)>();
@@ -219,20 +211,19 @@ pub fn build_1rtt_space_reader(
             }
 
             let (pn, key_phase) = packet.decode_header().unwrap();
-            let mut s = space.lock().unwrap();
-            let pkt_id = pn.decode(s.expected_pn());
+            let pkt_id = pn.decode(space.expected_pn());
             // 要根据key_phase_bit来获取packet key
             let pkt_key = pk.lock().unwrap().get_remote(key_phase, pkt_id);
             match packet.decrypt_packet(pkt_id, pn.size(), &pkt_key.as_ref()) {
                 Ok(payload) => {
                     match parse_packet_and_then_dispatch(
                         payload,
-                        space_id,
+                        SpaceId::OneRtt,
                         &path,
                         &conn_frames,
                         &space_frames,
                     ) {
-                        Ok(is_ack_eliciting) => s.record(pkt_id, is_ack_eliciting),
+                        Ok(is_ack_eliciting) => space.record(pkt_id, is_ack_eliciting),
                         Err(_e) => {
                             // 解析包失败，丢弃
                             // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接

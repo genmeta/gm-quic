@@ -1,4 +1,9 @@
-use super::{crypto::TransmitCrypto, index_deque::IndexDeque, rtt::Rtt, streams::TransmitStream};
+use super::{
+    crypto::{CryptoStream, TransmitCrypto},
+    index_deque::IndexDeque,
+    rtt::Rtt,
+    streams::{Streams, TransmitStream},
+};
 use bytes::{BufMut, Bytes};
 use qbase::{
     error::Error,
@@ -12,20 +17,6 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-
-mod initial_and_handshake;
-mod one_rtt_data;
-mod zero_rtt_data;
-
-pub use initial_and_handshake::{HandshakeSpace, InitialSpace};
-pub use one_rtt_data::OneRttDataSpace;
-pub use zero_rtt_data::ZeroRttDataSpace;
-
-#[derive(Debug)]
-pub enum DataSpace {
-    ZeroRTT(ZeroRttDataSpace),
-    OneRtt(OneRttDataSpace),
-}
 
 #[derive(Debug, Clone)]
 pub enum SpaceFrame {
@@ -45,9 +36,9 @@ pub trait TrySend {
 pub trait Receive {
     fn expected_pn(&self) -> u64;
 
-    fn record(&mut self, pktid: u64, is_ack_eliciting: bool);
+    fn record(&self, pktid: u64, is_ack_eliciting: bool);
 
-    fn recv_frame(&mut self, frame: SpaceFrame) -> Result<(), Error>;
+    fn recv_frame(&self, frame: SpaceFrame) -> Result<(), Error>;
 }
 
 #[derive(Debug, Clone)]
@@ -216,6 +207,49 @@ where
                     DataFrame::Stream(f) => self.stm_trans.confirm_data(f),
                 },
             }
+        }
+    }
+
+    fn expected_pn(&self) -> u64 {
+        self.rcvd_packets.largest()
+    }
+
+    fn recv_frame(&mut self, frame: SpaceFrame) -> Result<(), Error> {
+        match frame {
+            SpaceFrame::Ack(ack, rtt) => {
+                let _ = self.recv_ack_frame(ack, rtt);
+            }
+            SpaceFrame::Stream(f) => self.stm_trans.recv_frame(f)?,
+            SpaceFrame::Data(f, data) => match f {
+                DataFrame::Crypto(f) => self.tls_trans.recv_data(f, data)?,
+                DataFrame::Stream(f) => self.stm_trans.recv_data(f, data)?,
+            },
+        };
+        Ok(())
+    }
+
+    fn record(&mut self, pkt_id: u64, is_ack_eliciting: bool) {
+        self.rcvd_packets
+            .insert(pkt_id, State::new_rcvd(Instant::now(), is_ack_eliciting))
+            .unwrap();
+        if is_ack_eliciting {
+            if self.largest_rcvd_ack_eliciting_pktid < pkt_id {
+                self.largest_rcvd_ack_eliciting_pktid = pkt_id;
+                self.new_lost_event |= self
+                    .rcvd_packets
+                    .iter_with_idx()
+                    .rev()
+                    .skip_while(|(pn, _)| pn >= &pn)
+                    .skip(PACKET_THRESHOLD as usize)
+                    .take_while(|(pn, _)| pn > &self.last_synced_ack_largest)
+                    .any(|(_, s)| matches!(s, State::NotReceived));
+            }
+            if pkt_id < self.last_synced_ack_largest {
+                self.rcvd_unreached_packet = true;
+            }
+            self.time_to_sync = self
+                .time_to_sync
+                .or(Some(Instant::now() + self.max_ack_delay));
         }
     }
 
@@ -472,9 +506,11 @@ where
         }
 
         // Consider transmitting data frames.
-        while let Some((data_frame, ignore)) = self.tls_trans.try_send_data(buf) {
-            payload.push(Record::Data(DataFrame::Crypto(data_frame)));
-            remaning += ignore;
+        if self.space_id != SpaceId::ZeroRtt {
+            while let Some((data_frame, ignore)) = self.tls_trans.try_send_data(buf) {
+                payload.push(Record::Data(DataFrame::Crypto(data_frame)));
+                remaning += ignore;
+            }
         }
         while let Some((data_frame, _)) = self.stm_trans.try_send_data(buf) {
             payload.push(Record::Data(DataFrame::Stream(data_frame)));
@@ -499,69 +535,44 @@ where
     }
 }
 
-impl<CT, ST> Receive for Space<CT, ST>
+/// 为何Space需要时Arc的？因为Space既要收取数据，也要发送数据，而收发是独立的行为，因此要用Arc包裹。
+/// 对于InitialSpace和HandshakeSpace，十分适用ArcSpace
+type ArcSpace<CT, ST> = Arc<Mutex<Space<CT, ST>>>;
+
+#[derive(Debug, Clone)]
+pub struct SpaceIO<CT, ST>(ArcSpace<CT, ST>)
+where
+    CT: TransmitCrypto,
+    ST: TransmitStream;
+
+/// Data space, initially it's a 0RTT space, and later it needs to be upgraded to a 1RTT space.
+/// The data in the 0RTT space is unreliable and cannot transmit CryptoFrame. It is constrained
+/// by the space_id when sending, and a judgment is also made in the task of receiving and unpacking.
+/// Therefore, when upgrading, just change the space_id to 1RTT, no other operations are needed.
+impl SpaceIO<CryptoStream, Streams> {
+    pub fn upgrade(&mut self) {
+        let mut ds = self.0.lock().unwrap();
+        assert_eq!(ds.space_id, SpaceId::ZeroRtt);
+        ds.space_id = SpaceId::OneRtt;
+    }
+}
+
+impl<CT, ST> Receive for SpaceIO<CT, ST>
 where
     CT: TransmitCrypto,
     ST: TransmitStream,
 {
     fn expected_pn(&self) -> u64 {
-        self.rcvd_packets.largest()
+        self.0.lock().unwrap().expected_pn()
     }
 
-    fn recv_frame(&mut self, frame: SpaceFrame) -> Result<(), Error> {
-        match frame {
-            SpaceFrame::Ack(ack, rtt) => {
-                let _ = self.recv_ack_frame(ack, rtt);
-            }
-            SpaceFrame::Stream(f) => self.stm_trans.recv_frame(f)?,
-            SpaceFrame::Data(f, data) => match f {
-                DataFrame::Crypto(f) => self.tls_trans.recv_data(f, data)?,
-                DataFrame::Stream(f) => self.stm_trans.recv_data(f, data)?,
-            },
-        };
-        Ok(())
+    fn record(&self, pkt_id: u64, is_ack_eliciting: bool) {
+        self.0.lock().unwrap().record(pkt_id, is_ack_eliciting);
     }
 
-    fn record(&mut self, pkt_id: u64, is_ack_eliciting: bool) {
-        self.rcvd_packets
-            .insert(pkt_id, State::new_rcvd(Instant::now(), is_ack_eliciting))
-            .unwrap();
-        if is_ack_eliciting {
-            if self.largest_rcvd_ack_eliciting_pktid < pkt_id {
-                self.largest_rcvd_ack_eliciting_pktid = pkt_id;
-                self.new_lost_event |= self
-                    .rcvd_packets
-                    .iter_with_idx()
-                    .rev()
-                    .skip_while(|(pn, _)| pn >= &pn)
-                    .skip(PACKET_THRESHOLD as usize)
-                    .take_while(|(pn, _)| pn > &self.last_synced_ack_largest)
-                    .any(|(_, s)| matches!(s, State::NotReceived));
-            }
-            if pkt_id < self.last_synced_ack_largest {
-                self.rcvd_unreached_packet = true;
-            }
-            self.time_to_sync = self
-                .time_to_sync
-                .or(Some(Instant::now() + self.max_ack_delay));
-        }
+    fn recv_frame(&self, frame: SpaceFrame) -> Result<(), Error> {
+        self.0.lock().unwrap().recv_frame(frame)
     }
-}
-
-type ArcSpace<CT, ST> = Arc<Mutex<Space<CT, ST>>>;
-
-pub trait TransmitPacket<P> {
-    type Buffer: BufMut;
-
-    // 必须是加密之后的数据包，若是有数据要发送，且buf能容下数据，那么调用此函数后，已经写进buf里了
-    // P应该是个明文header，或者是其他结构，如已经变成二进制的slice，只等第一字节加密
-    // 但又不至于，直接写进到buf里，因为可能空间不足，可能没数据发，岂不是浪费了一次写
-    // TODO: 后续再来处理写
-    fn transmit_packet(
-        &mut self,
-        plain_packet_header: P,
-        buf: &mut Self::Buffer,
-    ) -> Result<Option<(u64, usize)>, Error>;
 }
 
 #[cfg(test)]
