@@ -1,7 +1,7 @@
 /// Application data space, 1-RTT data space
 use crate::{crypto::CryptoStream, streams::Streams};
 
-pub type OneRttDataSpace = super::Space<CryptoStream, Streams>;
+pub type OneRttDataSpace = super::ArcSpace<CryptoStream, Streams>;
 
 #[cfg(test)]
 mod tests {

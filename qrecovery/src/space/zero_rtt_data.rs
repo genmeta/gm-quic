@@ -14,6 +14,7 @@ impl ZeroRttDataSpace {
         ZeroRttDataSpace::build(SpaceId::ZeroRtt, NoCrypto, streams)
     }
 
+    /*
     pub fn upgrade(self, crypto_stream: CryptoStream) -> OneRttDataSpace {
         OneRttDataSpace {
             space_id: SpaceId::OneRtt,
@@ -34,6 +35,7 @@ impl ZeroRttDataSpace {
             tls_trans: crypto_stream,
         }
     }
+    */
 }
 
 #[cfg(test)]

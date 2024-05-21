@@ -21,10 +21,10 @@ pub trait DecodeHeader {
 pub trait DecryptPacket {
     fn decrypt_packet(
         self,
-        pn: PacketNumber,
-        expected_pn: u64,
+        pkt_id: u64,
+        pn_size: usize,
         packet_key: &PacketKey,
-    ) -> Result<(u64, Bytes), Error>;
+    ) -> Result<Bytes, Error>;
 }
 
 impl<H: Protect> RemoteProtection for PacketWrapper<H> {
@@ -69,19 +69,18 @@ impl<S> DecodeHeader for PacketWrapper<LongHeader<S>> {
 impl<H: Protect> DecryptPacket for PacketWrapper<H> {
     fn decrypt_packet(
         self,
-        pn: PacketNumber,
-        expected_pn: u64,
+        pktid: u64,
+        pn_size: usize,
         remote_keys: &PacketKey,
-    ) -> Result<(u64, Bytes), Error> {
+    ) -> Result<Bytes, Error> {
         // decrypt packet
         let mut raw_data = self.raw_data;
-        let packet_number = pn.decode(expected_pn);
-        let header_offset = self.pn_offset + pn.size();
+        let header_offset = self.pn_offset + pn_size;
         let mut body = raw_data.split_off(header_offset);
         let header = raw_data;
         remote_keys
-            .decrypt_in_place(packet_number, &header, &mut body)
+            .decrypt_in_place(pktid, &header, &mut body)
             .map_err(|_| Error::DecryptPacketFailure)?;
-        Ok((expected_pn, body.freeze()))
+        Ok(body.freeze())
     }
 }

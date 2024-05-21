@@ -522,13 +522,13 @@ where
         Ok(())
     }
 
-    fn record(&mut self, pn: u64, is_ack_eliciting: bool) {
+    fn record(&mut self, pkt_id: u64, is_ack_eliciting: bool) {
         self.rcvd_packets
-            .insert(pn, State::new_rcvd(Instant::now(), is_ack_eliciting))
+            .insert(pkt_id, State::new_rcvd(Instant::now(), is_ack_eliciting))
             .unwrap();
         if is_ack_eliciting {
-            if self.largest_rcvd_ack_eliciting_pktid < pn {
-                self.largest_rcvd_ack_eliciting_pktid = pn;
+            if self.largest_rcvd_ack_eliciting_pktid < pkt_id {
+                self.largest_rcvd_ack_eliciting_pktid = pkt_id;
                 self.new_lost_event |= self
                     .rcvd_packets
                     .iter_with_idx()
@@ -538,7 +538,7 @@ where
                     .take_while(|(pn, _)| pn > &self.last_synced_ack_largest)
                     .any(|(_, s)| matches!(s, State::NotReceived));
             }
-            if pn < self.last_synced_ack_largest {
+            if pkt_id < self.last_synced_ack_largest {
                 self.rcvd_unreached_packet = true;
             }
             self.time_to_sync = self
