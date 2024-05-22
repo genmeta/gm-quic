@@ -19,6 +19,9 @@ use tokio::sync::mpsc;
 type RxPacketsQueue<T> = Option<mpsc::UnboundedSender<(T, ArcPath)>>;
 
 pub struct Connection {
+    // Thus, a client MUST discard Initial keys when it first sends a Handshake packet
+    // and a server MUST discard Initial keys when it first successfully processes a
+    // Handshake packet. Endpoints MUST NOT send Initial packets after this point.
     initial_keys: ArcKeys,
     initial_pkt_queue: RxPacketsQueue<InitialPacket>,
     // 发送数据，也可以随着升级到Handshake空间而丢弃

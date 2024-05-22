@@ -223,8 +223,9 @@ pub(super) mod ext {
 
     impl<T: BufMut> Write<Initial> for T {
         fn put_specific(&mut self, specific: &Initial) {
-            self.put_varint(&specific.length);
+            self.put_varint(&VarInt(specific.token.len() as u64));
             self.put_slice(&specific.token);
+            self.put_varint(&specific.length);
         }
     }
 
