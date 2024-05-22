@@ -123,6 +123,11 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
 
             let pn = packet.decode_header().unwrap();
             let pkt_id = pn.decode(space.expected_pn());
+            if space.has_rcvd(pkt_id) {
+                // 重复包，丢弃。quic不允许重复包，收到重复包算错误？那肯定不行，不然太容易被重放攻击了
+                continue;
+            }
+
             match packet.decrypt_packet(pkt_id, pn.size(), &k.as_ref().remote.packet) {
                 Ok(payload) => {
                     match parse_packet_and_then_dispatch(

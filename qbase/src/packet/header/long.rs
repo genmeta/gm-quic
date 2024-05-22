@@ -47,11 +47,13 @@ pub struct Handshake {
 macro_rules! protect {
     ($($type:ty),*) => {
         $(
-            impl super::Protect for $type {}
-
-            impl super::GetLength for $type {
+            impl super::HasLength for $type {
                 fn get_length(&self) -> usize {
                     self.length.to_usize()
+                }
+
+                fn set_length(&mut self, length: usize) {
+                    self.length = VarInt(length as u64);
                 }
             }
         )*
@@ -59,6 +61,24 @@ macro_rules! protect {
 }
 
 protect!(Initial, ZeroRtt, Handshake);
+
+impl Encode for Initial {
+    fn max_size(&self) -> usize {
+        VarInt(self.token.len() as u64).encoding_size() + self.token.len() + 2
+    }
+}
+
+impl Encode for ZeroRtt {
+    fn max_size(&self) -> usize {
+        2
+    }
+}
+
+impl Encode for Handshake {
+    fn max_size(&self) -> usize {
+        2
+    }
+}
 
 #[derive(Debug, Default, Clone, Deref, DerefMut)]
 pub struct LongHeader<T> {
@@ -85,6 +105,14 @@ impl Protect for InitialHeader {}
 impl Protect for ZeroRttHeader {}
 impl Protect for HandshakeHeader {}
 
+impl<S: Encode> Encode for LongHeader<S> {
+    fn max_size(&self) -> usize {
+        1 + self.dcid.len()       // dcid长度最多20字节，长度编码只占1字节，加上cid本身的长度
+            + 1 + self.scid.len() // scid一样
+            + self.specific.max_size()
+    }
+}
+
 macro_rules! bind_type {
     ($($type:ty => $value:expr),*) => {
         $(
@@ -109,7 +137,10 @@ pub(super) mod ext {
     use super::*;
     use crate::{
         cid::WriteConnectionId,
-        packet::r#type::long::{v1::Type as LongV1Type, Type as LongType},
+        packet::r#type::{
+            ext::WritePacketType,
+            long::{v1::Type as LongV1Type, Type as LongType},
+        },
         varint::ext::{be_varint, BufMutExt},
     };
     use bytes::BufMut;
@@ -165,6 +196,21 @@ pub(super) mod ext {
             Self { dcid, scid }
         }
 
+        pub fn initial(self, token: Vec<u8>) -> LongHeader<Initial> {
+            self.wrap(Initial {
+                token,
+                length: VarInt(0),
+            })
+        }
+
+        pub fn zero_rtt(self) -> LongHeader<ZeroRtt> {
+            self.wrap(ZeroRtt { length: VarInt(0) })
+        }
+
+        pub fn handshake(self) -> LongHeader<Handshake> {
+            self.wrap(Handshake { length: VarInt(0) })
+        }
+
         pub fn wrap<T>(self, specific: T) -> LongHeader<T> {
             LongHeader {
                 dcid: self.dcid,
@@ -201,7 +247,7 @@ pub(super) mod ext {
         }
     }
 
-    trait Write<S> {
+    pub trait Write<S> {
         fn put_specific(&mut self, specific: &S);
     }
 
@@ -240,15 +286,18 @@ pub(super) mod ext {
         }
     }
 
-    pub trait WriteLongHeader<T> {
-        fn put_long_header(&mut self, wrapper: &LongHeader<T>);
+    pub trait WriteLongHeader<S> {
+        fn put_long_header(&mut self, wrapper: &LongHeader<S>);
     }
 
     impl<T, S> WriteLongHeader<S> for T
     where
         T: BufMut + Write<S>,
+        LongHeader<S>: GetType,
     {
         fn put_long_header(&mut self, long_header: &LongHeader<S>) {
+            let ty = long_header.get_type();
+            self.put_packet_type(&ty);
             self.put_connection_id(&long_header.dcid);
             self.put_connection_id(&long_header.scid);
             self.put_specific(&long_header.specific);

@@ -25,8 +25,8 @@ impl super::GetDcid for OneRttHeader {
 }
 
 pub mod ext {
-    use super::OneRttHeader;
-    use crate::packet::signal::SpinBit;
+    use super::{GetType, OneRttHeader};
+    use crate::packet::{r#type::ext::WritePacketType, signal::SpinBit};
     use bytes::BufMut;
 
     pub fn be_one_rtt_header(
@@ -46,6 +46,8 @@ pub mod ext {
 
     impl<T: BufMut> WriteOneRttHeader for T {
         fn put_one_rtt_header(&mut self, header: &OneRttHeader) {
+            let ty = header.get_type();
+            self.put_packet_type(&ty);
             // Note: Do not write the dcid's length
             self.put_slice(&header.dcid);
         }

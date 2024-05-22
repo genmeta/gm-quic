@@ -5,8 +5,8 @@ pub mod long;
 pub mod short;
 
 pub use long::{
-    ext::LongHeaderBuilder, HandshakeHeader, InitialHeader, RetryHeader, VersionNegotiationHeader,
-    ZeroRttHeader,
+    ext::{LongHeaderBuilder, Write, WriteLongHeader},
+    HandshakeHeader, InitialHeader, RetryHeader, VersionNegotiationHeader, ZeroRttHeader,
 };
 pub use short::OneRttHeader;
 
@@ -22,8 +22,14 @@ pub trait GetType {
 
 pub trait Protect {}
 
-pub trait GetLength {
+pub trait HasLength {
     fn get_length(&self) -> usize;
+
+    fn set_length(&mut self, length: usize);
+}
+
+pub trait Encode {
+    fn max_size(&self) -> usize;
 }
 
 #[enum_dispatch]

@@ -28,8 +28,8 @@ pub mod keys;
 pub struct PacketWrapper<H> {
     #[deref]
     pub header: H,
-    pub raw_data: BytesMut,
     pub pn_offset: usize,
+    pub raw_data: BytesMut,
 }
 
 pub type InitialPacket = PacketWrapper<InitialHeader>;
@@ -103,7 +103,7 @@ impl Iterator for PacketReader {
 pub mod ext {
     use super::{
         error::Error,
-        header::{ext::be_header, GetLength},
+        header::{ext::be_header, HasLength},
         r#type::{ext::be_packet_type, Type},
         *,
     };

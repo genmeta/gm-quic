@@ -8,6 +8,7 @@ use bytes::{BufMut, Bytes};
 use qbase::{
     error::Error,
     frame::{ext::*, *},
+    packet::{PacketNumber, WritePacketNumber},
     varint::{VarInt, VARINT_MAX},
     SpaceId,
 };
@@ -26,15 +27,17 @@ pub enum SpaceFrame {
 }
 
 pub trait TrySend {
-    type Buffer: BufMut;
+    fn next_pkt_no(&self) -> (u64, PacketNumber);
 
-    fn try_send(&mut self, buf: &mut Self::Buffer) -> Result<Option<(u64, usize)>, Error>;
+    fn try_send(&self, buf: &mut [u8]) -> usize;
 }
 
 /// When a network socket receives a data packet and determines that it belongs
 /// to a specific space, the content of the packet is passed on to that space.
 pub trait Receive {
     fn expected_pn(&self) -> u64;
+
+    fn has_rcvd(&self, pktid: u64) -> bool;
 
     fn record(&self, pktid: u64, is_ack_eliciting: bool);
 
@@ -77,10 +80,6 @@ impl State {
             self,
             Self::Ignored(_) | Self::Important(_) | Self::Synced(_)
         )
-    }
-
-    fn has_not_rcvd(&self) -> bool {
-        matches!(self, Self::NotReceived | Self::Unreached)
     }
 
     fn delay(&self) -> Option<Duration> {
@@ -214,6 +213,14 @@ where
         self.rcvd_packets.largest()
     }
 
+    fn has_rcvd(&self, pktid: u64) -> bool {
+        self.rcvd_packets
+            .get(pktid)
+            .map(|s| s.has_rcvd())
+            .unwrap_or(false)
+            || pktid < self.rcvd_packets.offset()
+    }
+
     fn recv_frame(&mut self, frame: SpaceFrame) -> Result<(), Error> {
         match frame {
             SpaceFrame::Ack(ack, rtt) => {
@@ -273,7 +280,7 @@ where
             if rcvd_iter.next().is_none() {
                 break;
             }
-            let gap = rcvd_iter.by_ref().take_while(|s| s.has_not_rcvd()).count();
+            let gap = rcvd_iter.by_ref().take_while(|s| !s.has_rcvd()).count();
 
             if rcvd_iter.next().is_none() {
                 break;
@@ -452,22 +459,23 @@ where
             None => false,
         }
     }
-}
 
-impl<CT, ST> TrySend for Space<CT, ST>
-where
-    CT: TransmitCrypto<Buffer = bytes::BytesMut>,
-    ST: TransmitStream<Buffer = bytes::BytesMut>,
-{
-    type Buffer = bytes::BytesMut;
+    fn next_pkt_no(&self) -> (u64, PacketNumber) {
+        let pkt_id = self.inflight_packets.largest();
+        let pn = PacketNumber::encode(pkt_id, self.largest_acked_pktid.unwrap_or(0));
+        (pkt_id, pn)
+    }
 
-    fn try_send(&mut self, buf: &mut Self::Buffer) -> Result<Option<(u64, usize)>, Error> {
+    fn try_send(&mut self, mut buf: &mut [u8]) -> usize {
         let mut is_ack_eliciting = false;
-        let mut remaning = buf.remaining_mut();
+        let remaning = buf.remaining_mut();
+
+        let mut ack_frame_size = 0;
         let mut records = Payload::new();
         if self.need_send_ack_frame() {
             let ack = self.gen_ack_frame();
             if remaning >= ack.max_encoding_size() || remaning >= ack.encoding_size() {
+                // 到这里，Ack帧肯定会被发送了
                 self.time_to_sync = None;
                 self.new_lost_event = false;
                 self.rcvd_unreached_packet = false;
@@ -476,24 +484,24 @@ where
                 records.push(Record::Ack(ack.into()));
                 // The ACK frame is not counted towards sent_bytes, is not subject to
                 // amplification attacks, and is not subject to flow control limitations.
-                remaning = buf.remaining_mut();
+                ack_frame_size = remaning - buf.remaining_mut();
                 // All known packet information needs to be marked as synchronized.
                 self.rcvd_packets.iter_mut().for_each(|s| s.be_synced());
             }
         }
 
-        // Prioritize retransmitting lost or info frames.
-        loop {
+        {
+            // Prioritize retransmitting lost or info frames.
             let mut frames = self.frames.lock().unwrap();
-            if let Some(frame) = frames.front() {
-                if remaning >= frame.max_encoding_size() || remaning >= frame.encoding_size() {
+            while let Some(frame) = frames.front() {
+                if buf.remaining_mut() >= frame.max_encoding_size()
+                    || buf.remaining_mut() >= frame.encoding_size()
+                {
                     buf.put_frame(frame);
-                    remaning = buf.remaining_mut();
                     is_ack_eliciting = true;
 
                     let frame = frames.pop_front().unwrap();
                     records.push(Record::Reliable(frame));
-                    continue;
                 } else {
                     break;
                 }
@@ -501,37 +509,51 @@ where
         }
 
         // Consider transmit stream info frames if has
-        if let Some((stream_info_frame, _len)) = self.stm_trans.try_send_frame(buf) {
+        if let Some((stream_info_frame, len)) = self.stm_trans.try_send_frame(buf) {
             records.push(Record::Reliable(ReliableFrame::Stream(stream_info_frame)));
+            unsafe {
+                buf.advance_mut(len);
+            }
         }
 
         // Consider transmitting data frames.
         if self.space_id != SpaceId::ZeroRtt {
-            while let Some((data_frame, ignore)) = self.tls_trans.try_send_data(buf) {
+            while let Some((data_frame, len)) = self.tls_trans.try_pick_data(buf) {
                 records.push(Record::Data(DataFrame::Crypto(data_frame)));
-                remaning += ignore;
+                unsafe {
+                    buf.advance_mut(len);
+                }
             }
         }
-        while let Some((data_frame, _)) = self.stm_trans.try_send_data(buf) {
+        while let Some((data_frame, len)) = self.stm_trans.try_send_data(buf) {
             records.push(Record::Data(DataFrame::Stream(data_frame)));
+            unsafe {
+                buf.advance_mut(len);
+            }
         }
 
         // Record
-        let sent_bytes = remaning - buf.remaining_mut();
-        if sent_bytes == 0 {
+        let data_sent = remaning - buf.remaining_mut();
+        if data_sent == 0 {
             // no data to send
-            return Ok(None);
+            return 0;
         }
         if is_ack_eliciting {
             self.time_of_last_sent_ack_eliciting_packet = Some(Instant::now());
         }
-        let pktid = self.inflight_packets.push(Some(Packet {
-            send_time: Instant::now(),
-            payload: records,
-            sent_bytes,
-            is_ack_eliciting,
-        }))?;
-        Ok(Some((pktid, sent_bytes)))
+        let _pktid = self
+            .inflight_packets
+            .push(Some(Packet {
+                send_time: Instant::now(),
+                payload: records,
+                sent_bytes: data_sent - ack_frame_size,
+                is_ack_eliciting,
+            }))
+            .expect(
+                r#"The packet number cannot exceed 2^62. Even if 100 million packets are sent 
+                per second, it would take more than a million years to exceed this limit."#,
+            );
+        data_sent
     }
 }
 
@@ -592,12 +614,30 @@ where
         self.0.lock().unwrap().expected_pn()
     }
 
+    fn has_rcvd(&self, pktid: u64) -> bool {
+        self.0.lock().unwrap().has_rcvd(pktid)
+    }
+
     fn record(&self, pkt_id: u64, is_ack_eliciting: bool) {
         self.0.lock().unwrap().record(pkt_id, is_ack_eliciting);
     }
 
     fn recv_frame(&self, frame: SpaceFrame) -> Result<(), Error> {
         self.0.lock().unwrap().recv_frame(frame)
+    }
+}
+
+impl<CT, ST> TrySend for SpaceIO<CT, ST>
+where
+    CT: TransmitCrypto,
+    ST: TransmitStream,
+{
+    fn next_pkt_no(&self) -> (u64, PacketNumber) {
+        self.0.lock().unwrap().next_pkt_no()
+    }
+
+    fn try_send(&self, buf: &mut [u8]) -> usize {
+        self.0.lock().unwrap().try_send(buf)
     }
 }
 
