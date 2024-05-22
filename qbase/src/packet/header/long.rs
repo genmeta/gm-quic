@@ -106,8 +106,6 @@ bind_type!(
 );
 
 pub(super) mod ext {
-    use std::ops::Deref;
-
     use super::*;
     use crate::{
         cid::WriteConnectionId,
@@ -123,6 +121,7 @@ pub(super) mod ext {
         sequence::pair,
         Err,
     };
+    use std::ops::Deref;
 
     pub fn be_version_negotiation(input: &[u8]) -> nom::IResult<&[u8], VersionNegotiation> {
         let (remain, (versions, _)) = many_till(be_u32, eof)(input)?;

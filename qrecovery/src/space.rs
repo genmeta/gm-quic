@@ -43,7 +43,7 @@ pub trait Receive {
 
 #[derive(Debug, Clone)]
 enum Record {
-    Pure(PureFrame),
+    Reliable(ReliableFrame),
     Data(DataFrame),
     Ack(AckRecord),
 }
@@ -124,7 +124,7 @@ where
     // 起到“信号”作用的信令帧，比如数据空间内部的各类通信帧。
     // 需要注意的是，数据帧以及Ack帧(记录)，并不在此中保存，因为数据帧占数据空间，ack帧
     // 则是内部可靠性的产物，他们在发包记录中会作记录保存。
-    frames: Arc<Mutex<VecDeque<PureFrame>>>,
+    frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
     // 记录着发包时间、发包内容，供收到ack frame时，确认那些内容被接收了，哪些丢失了，需要
     // 重传。如果是一般帧，直接进入帧队列就可以了，但有2种需要特殊处理：
     // - 数据帧记录：无论被确认还是判定丢失了，都要通知发送缓冲区
@@ -185,7 +185,7 @@ where
         self.space_id
     }
 
-    pub fn write_frame(&mut self, frame: PureFrame) {
+    pub fn write_frame(&mut self, frame: ReliableFrame) {
         assert!(frame.belongs_to(self.space_id));
         let mut frames = self.frames.lock().unwrap();
         frames.push_back(frame);
@@ -199,7 +199,7 @@ where
                         .rcvd_packets
                         .drain_to(ack.0.saturating_sub(self.disorder_tolerance));
                 }
-                Record::Pure(_frame) => {
+                Record::Reliable(_frame) => {
                     todo!("哪些帧需要确认呢？")
                 }
                 Record::Data(data) => match data {
@@ -371,7 +371,7 @@ where
             for record in packet.payload {
                 match record {
                     Record::Ack(_) => { /* needn't resend */ }
-                    Record::Pure(frame) => {
+                    Record::Reliable(frame) => {
                         let mut frames = self.frames.lock().unwrap();
                         frames.push_back(frame);
                     }
@@ -398,7 +398,7 @@ where
                 for record in packet.take().unwrap().payload {
                     match record {
                         Record::Ack(_) => { /* needn't resend */ }
-                        Record::Pure(frame) => {
+                        Record::Reliable(frame) => {
                             let mut frames = self.frames.lock().unwrap();
                             frames.push_back(frame);
                         }
@@ -464,7 +464,7 @@ where
     fn try_send(&mut self, buf: &mut Self::Buffer) -> Result<Option<(u64, usize)>, Error> {
         let mut is_ack_eliciting = false;
         let mut remaning = buf.remaining_mut();
-        let mut payload = Payload::new();
+        let mut records = Payload::new();
         if self.need_send_ack_frame() {
             let ack = self.gen_ack_frame();
             if remaning >= ack.max_encoding_size() || remaning >= ack.encoding_size() {
@@ -473,7 +473,7 @@ where
                 self.rcvd_unreached_packet = false;
                 self.last_synced_ack_largest = ack.largest.into_inner();
                 buf.put_ack_frame(&ack);
-                payload.push(Record::Ack(ack.into()));
+                records.push(Record::Ack(ack.into()));
                 // The ACK frame is not counted towards sent_bytes, is not subject to
                 // amplification attacks, and is not subject to flow control limitations.
                 remaning = buf.remaining_mut();
@@ -492,7 +492,7 @@ where
                     is_ack_eliciting = true;
 
                     let frame = frames.pop_front().unwrap();
-                    payload.push(Record::Pure(frame));
+                    records.push(Record::Reliable(frame));
                     continue;
                 } else {
                     break;
@@ -502,18 +502,18 @@ where
 
         // Consider transmit stream info frames if has
         if let Some((stream_info_frame, _len)) = self.stm_trans.try_send_frame(buf) {
-            payload.push(Record::Pure(PureFrame::Stream(stream_info_frame)));
+            records.push(Record::Reliable(ReliableFrame::Stream(stream_info_frame)));
         }
 
         // Consider transmitting data frames.
         if self.space_id != SpaceId::ZeroRtt {
             while let Some((data_frame, ignore)) = self.tls_trans.try_send_data(buf) {
-                payload.push(Record::Data(DataFrame::Crypto(data_frame)));
+                records.push(Record::Data(DataFrame::Crypto(data_frame)));
                 remaning += ignore;
             }
         }
         while let Some((data_frame, _)) = self.stm_trans.try_send_data(buf) {
-            payload.push(Record::Data(DataFrame::Stream(data_frame)));
+            records.push(Record::Data(DataFrame::Stream(data_frame)));
         }
 
         // Record
@@ -527,7 +527,7 @@ where
         }
         let pktid = self.inflight_packets.push(Some(Packet {
             send_time: Instant::now(),
-            payload,
+            payload: records,
             sent_bytes,
             is_ack_eliciting,
         }))?;

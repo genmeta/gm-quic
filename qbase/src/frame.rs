@@ -194,16 +194,23 @@ pub enum DataFrame {
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
 pub enum PureFrame {
+    Padding(PaddingFrame),
+    Ping(PingFrame),
+    Ack(AckFrame),
     Conn(ConnFrame),
     Stream(StreamCtlFrame),
     Path(PathFrame),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+#[enum_dispatch(BeFrame)]
+pub enum ReliableFrame {
+    Conn(ConnFrame),
+    Stream(StreamCtlFrame),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Frame {
-    Padding,
-    Ping(PingFrame),
-    Ack(AckFrame),
     Pure(PureFrame),
     Data(DataFrame, Bytes),
 }
@@ -263,8 +270,8 @@ pub mod ext {
     ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], Frame> {
         use nom::combinator::map;
         move |input: &[u8]| match frame_type {
-            FrameType::Padding => Ok((input, Frame::Padding)),
-            FrameType::Ping => Ok((input, Frame::Ping(PingFrame))),
+            FrameType::Padding => Ok((input, Frame::Pure(PureFrame::Padding(PaddingFrame)))),
+            FrameType::Ping => Ok((input, Frame::Pure(PureFrame::Ping(PingFrame)))),
             FrameType::ConnectionClose(layer) => map(connection_close_frame_at_layer(layer), |f| {
                 Frame::Pure(PureFrame::Conn(ConnFrame::Close(f)))
             })(input),
@@ -295,7 +302,9 @@ pub mod ext {
             FrameType::NewToken => map(be_new_token_frame, |f| {
                 Frame::Pure(PureFrame::Conn(ConnFrame::NewToken(f)))
             })(input),
-            FrameType::Ack(ecn) => map(ack_frame_with_flag(ecn), Frame::Ack)(input),
+            FrameType::Ack(ecn) => {
+                map(ack_frame_with_flag(ecn), |f| Frame::Pure(PureFrame::Ack(f)))(input)
+            }
             FrameType::ResetStream => map(be_reset_stream_frame, |f| {
                 Frame::Pure(PureFrame::Stream(f.into()))
             })(input),
@@ -435,9 +444,21 @@ pub mod ext {
     impl<T: bytes::BufMut> WriteFrame<PureFrame> for T {
         fn put_frame(&mut self, frame: &PureFrame) {
             match frame {
+                PureFrame::Padding(_) => self.put_padding_frame(),
+                PureFrame::Ping(_) => self.put_ping_frame(),
+                PureFrame::Ack(frame) => self.put_ack_frame(frame),
                 PureFrame::Conn(frame) => self.put_frame(frame),
                 PureFrame::Stream(frame) => self.put_frame(frame),
                 PureFrame::Path(frame) => self.put_frame(frame),
+            }
+        }
+    }
+
+    impl<T: bytes::BufMut> WriteFrame<ReliableFrame> for T {
+        fn put_frame(&mut self, frame: &ReliableFrame) {
+            match frame {
+                ReliableFrame::Conn(frame) => self.put_frame(frame),
+                ReliableFrame::Stream(frame) => self.put_frame(frame),
             }
         }
     }

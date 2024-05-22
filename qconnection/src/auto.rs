@@ -32,21 +32,6 @@ fn parse_packet_and_then_dispatch(
     while let Some(result) = frame_reader.next() {
         match result {
             Ok(frame) => match frame {
-                Frame::Padding => continue,
-                Frame::Ping(_) => is_ack_eliciting = true,
-                Frame::Ack(ack) => {
-                    if !ack.belongs_to(space_id) {
-                        space_frame_writer.rollback();
-                        conn_frame_writer.rollback();
-                        path_frame_writer.rollback();
-                        return Err(Error::new(
-                            ErrorKind::ProtocolViolation,
-                            ack.frame_type(),
-                            format!("cann't be received in {}", space_id),
-                        ));
-                    }
-                    space_frame_writer.push(SpaceFrame::Ack(ack, path.rtt()));
-                }
                 Frame::Pure(f) => {
                     if !f.belongs_to(space_id) {
                         space_frame_writer.rollback();
@@ -59,11 +44,24 @@ fn parse_packet_and_then_dispatch(
                         ));
                     }
 
-                    is_ack_eliciting = true;
                     match f {
-                        PureFrame::Conn(f) => conn_frame_writer.push(f),
-                        PureFrame::Stream(f) => space_frame_writer.push(SpaceFrame::Stream(f)),
-                        PureFrame::Path(f) => path_frame_writer.push(f),
+                        PureFrame::Padding(_) => continue,
+                        PureFrame::Ping(_) => is_ack_eliciting = true,
+                        PureFrame::Ack(ack) => {
+                            space_frame_writer.push(SpaceFrame::Ack(ack, path.rtt()))
+                        }
+                        PureFrame::Conn(f) => {
+                            is_ack_eliciting = true;
+                            conn_frame_writer.push(f);
+                        }
+                        PureFrame::Stream(f) => {
+                            is_ack_eliciting = true;
+                            space_frame_writer.push(SpaceFrame::Stream(f));
+                        }
+                        PureFrame::Path(f) => {
+                            is_ack_eliciting = true;
+                            path_frame_writer.push(f);
+                        }
                     }
                 }
                 Frame::Data(f, data) => {

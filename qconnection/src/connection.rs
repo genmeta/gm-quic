@@ -27,6 +27,7 @@ pub struct Connection {
     // 发送数据，也可以随着升级到Handshake空间而丢弃
     initial_space: SpaceIO<CryptoStream, NoStreams>,
 
+    // An endpoint MUST discard its Handshake keys when the TLS handshake is confirmed.
     handshake_keys: ArcKeys,
     handshake_pkt_queue: RxPacketsQueue<HandshakePacket>,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
