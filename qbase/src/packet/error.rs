@@ -18,8 +18,8 @@ pub enum Error {
     UnderSampling(usize),
     #[error("Fail to remove protection")]
     RemoveProtectionFailure,
-    #[error("Invalid reserved bits {0}")]
-    InvalidReservedBits(u8),
+    #[error("Invalid reserved bits: {0:05b} & {1:05b} must be 0")]
+    InvalidReservedBits(u8, u8),
     #[error("Fail to decrypt packet")]
     DecryptPacketFailure,
 }
@@ -41,7 +41,7 @@ impl nom::error::ParseError<&[u8]> for Error {
 impl From<Error> for crate::error::Error {
     fn from(e: Error) -> Self {
         match e {
-            Error::InvalidReservedBits(_) => crate::error::Error::new_with_default_fty(
+            Error::InvalidReservedBits(_, _) => crate::error::Error::new_with_default_fty(
                 crate::error::ErrorKind::ProtocolViolation,
                 e.to_string(),
             ),

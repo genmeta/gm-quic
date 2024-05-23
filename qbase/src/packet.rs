@@ -7,7 +7,7 @@ pub mod signal;
 pub use signal::{KeyPhaseBit, SpinBit};
 
 pub mod r#type;
-use r#type::{GetPacketNumberLength, LongClearBits, ShortClearBits};
+pub use r#type::{GetPacketNumberLength, LongClearBits, ShortClearBits};
 
 pub mod header;
 pub use header::{

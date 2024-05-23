@@ -116,7 +116,7 @@ impl OneRttPacketKeys {
     pub fn update(&mut self) {
         self.cur_key_phase.toggle();
         let key_set = self.secrets.next_packet_keys();
-        self.remote[self.cur_key_phase.index()] = Some(Arc::new(key_set.remote));
+        self.remote[self.cur_key_phase.as_index()] = Some(Arc::new(key_set.remote));
         self.local = Arc::new(key_set.local);
     }
 
@@ -125,7 +125,7 @@ impl OneRttPacketKeys {
     /// after actively changing the keys, leading to the failure of decrypting the data packets
     /// received from the other party.
     pub fn phase_out(&mut self) {
-        self.remote[(!self.cur_key_phase).index()].take();
+        self.remote[(!self.cur_key_phase).as_index()].take();
     }
 
     /// Get the remote key to decrypt the incoming packet.
@@ -133,10 +133,10 @@ impl OneRttPacketKeys {
     /// Returning Arc<PacketKey> is to encrypt and decrypt packets at the same time.
     /// Compared to &'a PacketKey, Arc<PacketKey> does not occupy mutable borrowing &mut self.
     pub fn get_remote(&mut self, key_phase: KeyPhaseBit, _pkt_id: u64) -> Arc<PacketKey> {
-        if key_phase != self.cur_key_phase && self.remote[key_phase.index()].is_none() {
+        if key_phase != self.cur_key_phase && self.remote[key_phase.as_index()].is_none() {
             self.update();
         }
-        self.remote[key_phase.index()].clone().unwrap()
+        self.remote[key_phase.as_index()].clone().unwrap()
     }
 
     /// Get the local key with the current key phase to encrypt the outgoing packet.

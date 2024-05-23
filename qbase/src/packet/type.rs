@@ -14,23 +14,25 @@ const FIXED_BIT: u8 = 0x40;
 /// 'R' represents the reserved bits. The long packet header is 0x0C, and
 /// the short packet header is 0x18.
 #[derive(Debug, Clone, Copy, Deref)]
-pub(super) struct ClearBits<const R: u8>(#[deref] pub(super) u8);
+pub struct ClearBits<const R: u8>(#[deref] pub(super) u8);
 
-pub(super) type ShortClearBits = ClearBits<0x18>;
-pub(super) type LongClearBits = ClearBits<0xC>;
+pub type ShortClearBits = ClearBits<0x18>;
+pub type LongClearBits = ClearBits<0xC>;
 
 impl<const R: u8> ClearBits<R> {
     pub fn by(pn: &PacketNumber) -> Self {
-        Self(R | (pn.size() as u8 - 1))
+        Self(pn.size() as u8 - 1)
+    }
+
+    pub fn with_pn_size(pn_size: usize) -> Self {
+        debug_assert!(pn_size <= 4 && pn_size > 0);
+        Self(pn_size as u8 - 1)
     }
 }
 
 impl ShortClearBits {
     pub(super) fn set_key_phase_bit(&mut self, key_phase_bit: KeyPhaseBit) {
-        match key_phase_bit {
-            KeyPhaseBit::On => self.0 |= key_phase_bit.value(),
-            KeyPhaseBit::Off => self.0 &= key_phase_bit.value(),
-        }
+        key_phase_bit.imply(&mut self.0);
     }
 
     pub(super) fn key_phase_bit(&self) -> KeyPhaseBit {
@@ -66,7 +68,7 @@ impl<const R: u8> GetPacketNumberLength for ClearBits<R> {
         if reserved_bit == 0 {
             Ok((self.0 & Self::PN_LEN_MASK) + 1)
         } else {
-            Err(Error::InvalidReservedBits(reserved_bit))
+            Err(Error::InvalidReservedBits(reserved_bit, R))
         }
     }
 }
@@ -120,5 +122,78 @@ pub mod ext {
                 Type::Long(long_type) => self.put_long_type(long_type),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_long_clear_bits() {
+        let clear_bits = ClearBits::<0x0C>(0x0C);
+        assert_eq!(
+            clear_bits.pn_len(),
+            Err(Error::InvalidReservedBits(0x0C, 0x0C))
+        );
+        let clear_bits = ClearBits::<0x0C>(0x04);
+        assert_eq!(
+            clear_bits.pn_len(),
+            Err(Error::InvalidReservedBits(0x04, 0x0C))
+        );
+        let clear_bits = ClearBits::<0x0C>(0x08);
+        assert_eq!(
+            clear_bits.pn_len(),
+            Err(Error::InvalidReservedBits(0x08, 0x0C))
+        );
+
+        let clear_bits = LongClearBits::with_pn_size(4);
+        assert_eq!(clear_bits.pn_len().unwrap(), 4);
+        let clear_bits = LongClearBits::with_pn_size(3);
+        assert_eq!(clear_bits.pn_len().unwrap(), 3);
+        let clear_bits = LongClearBits::with_pn_size(2);
+        assert_eq!(clear_bits.pn_len().unwrap(), 2);
+        let clear_bits = LongClearBits::with_pn_size(1);
+        assert_eq!(clear_bits.pn_len().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_short_clear_bits() {
+        let clear_bits = ClearBits::<0x18>(0x18);
+        assert_eq!(
+            clear_bits.pn_len(),
+            Err(Error::InvalidReservedBits(0x18, 0x18))
+        );
+        let clear_bits = ClearBits::<0x18>(0x11);
+        assert_eq!(
+            clear_bits.pn_len(),
+            Err(Error::InvalidReservedBits(0x10, 0x18))
+        );
+        let clear_bits = ClearBits::<0x18>(0x0A);
+        assert_eq!(
+            clear_bits.pn_len(),
+            Err(Error::InvalidReservedBits(0x08, 0x18))
+        );
+
+        let clear_bits = ShortClearBits::with_pn_size(4);
+        assert_eq!(clear_bits.pn_len().unwrap(), 4);
+        let clear_bits = ShortClearBits::with_pn_size(3);
+        assert_eq!(clear_bits.pn_len().unwrap(), 3);
+        let clear_bits = ShortClearBits::with_pn_size(2);
+        assert_eq!(clear_bits.pn_len().unwrap(), 2);
+        let clear_bits = ShortClearBits::with_pn_size(1);
+        assert_eq!(clear_bits.pn_len().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_set_key_phase_bit() {
+        let mut clear_bits = ShortClearBits::with_pn_size(4);
+        assert_eq!(clear_bits.0, 0x03);
+        clear_bits.set_key_phase_bit(KeyPhaseBit::On);
+        assert_eq!(clear_bits.0, 0x07);
+        assert_eq!(clear_bits.key_phase_bit(), KeyPhaseBit::On);
+        clear_bits.set_key_phase_bit(KeyPhaseBit::Off);
+        assert_eq!(clear_bits.0, 0x03);
+        assert_eq!(clear_bits.key_phase_bit(), KeyPhaseBit::Off);
     }
 }

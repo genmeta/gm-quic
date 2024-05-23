@@ -28,7 +28,14 @@ impl<const B: u8> Toggle<B> {
         }
     }
 
-    pub(crate) fn index(&self) -> usize {
+    pub fn imply(&self, byte: &mut u8) {
+        match self {
+            Toggle::Off => *byte &= !B,
+            Toggle::On => *byte |= B,
+        }
+    }
+
+    pub(crate) fn as_index(&self) -> usize {
         match self {
             Toggle::Off => 0,
             Toggle::On => 1,

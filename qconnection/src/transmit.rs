@@ -2,7 +2,7 @@ use bytes::BufMut;
 use qbase::packet::{
     header::{long::LongHeader, Encode, GetType, HasLength, Write, WriteLongHeader},
     keys::ArcKeys,
-    WritePacketNumber,
+    LongClearBits, WritePacketNumber,
 };
 use qrecovery::{
     crypto::CryptoStream,
@@ -45,17 +45,22 @@ where
     let pn_size = pn.size();
     let (mut hdr_buf, mut body_buf) = buffer.split_at_mut(max_header_size + pn_size);
 
-    let mut len = space.try_send(body_buf);
-    if len > 0 {
+    if body_buf.remaining_mut() + pn_size < 20 {
+        // Insufficient remaining space, unable to extract enough(16 bytes long) sample to add header protection.
+        return (0, 0);
+    }
+
+    let mut body_len = space.try_send(body_buf);
+    if body_len > 0 {
         unsafe {
-            body_buf.advance_mut(len);
+            body_buf.advance_mut(body_len);
         }
-        let mut length = len + pn.size();
+        let mut length = body_len + pn.size();
         if length < 20 {
             // The sample requires at least 16 bytes, so the length must be at least 20 bytes.
             // If it is not enough, Padding(0x0) needs to be added.
             body_buf.put_bytes(0x0, 20 - length);
-            len = 20 - pn_size;
+            body_len = 20 - pn_size;
             length = 20;
         }
 
@@ -83,11 +88,15 @@ where
             hdr_buf.put_packet_number(pn);
         }
 
-        // encrypt packet payload
         let header_size = max_header_size - offset;
         let header_and_pn_size = header_size + pn_size;
-        let pkt_size = header_and_pn_size + len;
+        let pkt_size = header_and_pn_size + body_len;
         let pkt_buffer = &mut buffer[offset..pkt_size];
+        // encode pn length in the first byte
+        let clear_bits = LongClearBits::with_pn_size(pn_size);
+        pkt_buffer[0] |= clear_bits.deref();
+
+        // encrypt packet payload
         let (header, body) = pkt_buffer.split_at_mut(header_and_pn_size);
         keys.deref()
             .local
