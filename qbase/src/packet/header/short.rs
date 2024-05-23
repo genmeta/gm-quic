@@ -12,6 +12,12 @@ pub struct OneRttHeader {
 
 impl Protect for OneRttHeader {}
 
+impl Encode for OneRttHeader {
+    fn size(&self) -> usize {
+        1 + self.dcid.len()
+    }
+}
+
 impl GetType for OneRttHeader {
     fn get_type(&self) -> Type {
         Type::Short(OneRtt(self.spin))

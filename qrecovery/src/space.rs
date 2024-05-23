@@ -113,9 +113,8 @@ const PACKET_THRESHOLD: u64 = 3;
 /// 可靠空间的抽象实现，需要实现上述所有trait
 /// 可靠空间中的重传、确认，由可靠空间内部实现，无需外露
 #[derive(Debug)]
-struct Space<CT, ST>
+struct Space<ST>
 where
-    CT: TransmitCrypto,
     ST: TransmitStream,
 {
     space_id: SpaceId,
@@ -149,17 +148,33 @@ where
     time_to_sync: Option<Instant>,
     // 应该计算rtt的时候，传进来；或者收到ack frame的时候，将(last_rtt, ack_delay)传出去
     max_ack_delay: Duration,
-
+    tls_trans: CryptoStream,
     stm_trans: ST,
-    tls_trans: CT,
 }
 
-impl<CT, ST> Space<CT, ST>
+impl Space<Streams> {
+    fn write_conn_frame(&mut self, frame: ConnFrame) {
+        assert!(frame.belongs_to(self.space_id));
+        let mut frames = self.frames.lock().unwrap();
+        frames.push_back(ReliableFrame::Conn(frame));
+    }
+
+    fn write_stream_frame(&mut self, frame: StreamCtlFrame) {
+        assert!(frame.belongs_to(self.space_id));
+        let mut frames = self.frames.lock().unwrap();
+        frames.push_back(ReliableFrame::Stream(frame));
+    }
+}
+
+impl<ST> Space<ST>
 where
-    CT: TransmitCrypto,
     ST: TransmitStream,
 {
-    pub(crate) fn build(space_id: SpaceId, tls_transmission: CT, streams_transmission: ST) -> Self {
+    pub(crate) fn build(
+        space_id: SpaceId,
+        tls_transmission: CryptoStream,
+        streams_transmission: ST,
+    ) -> Self {
         Self {
             space_id,
             frames: Arc::new(Mutex::new(VecDeque::new())),
@@ -180,14 +195,9 @@ where
         }
     }
 
-    pub fn space_id(&self) -> SpaceId {
+    #[allow(dead_code)]
+    fn space_id(&self) -> SpaceId {
         self.space_id
-    }
-
-    pub fn write_frame(&mut self, frame: ReliableFrame) {
-        assert!(frame.belongs_to(self.space_id));
-        let mut frames = self.frames.lock().unwrap();
-        frames.push_back(frame);
     }
 
     fn confirm(&mut self, payload: Payload) {
@@ -559,15 +569,14 @@ where
 
 /// 为何Space需要时Arc的？因为Space既要收取数据，也要发送数据，而收发是独立的行为，因此要用Arc包裹。
 /// 对于InitialSpace和HandshakeSpace，十分适用ArcSpace
-type ArcSpace<CT, ST> = Arc<Mutex<Space<CT, ST>>>;
+type ArcSpace<ST> = Arc<Mutex<Space<ST>>>;
 
 #[derive(Debug)]
-pub struct SpaceIO<CT, ST>(ArcSpace<CT, ST>)
+pub struct SpaceIO<ST>(ArcSpace<ST>)
 where
-    CT: TransmitCrypto,
     ST: TransmitStream;
 
-impl SpaceIO<CryptoStream, NoStreams> {
+impl SpaceIO<NoStreams> {
     pub fn new_initial(crypto_stream: CryptoStream) -> Self {
         Self(Arc::new(Mutex::new(Space::build(
             SpaceId::Initial,
@@ -589,7 +598,7 @@ impl SpaceIO<CryptoStream, NoStreams> {
 /// The data in the 0RTT space is unreliable and cannot transmit CryptoFrame. It is constrained
 /// by the space_id when sending, and a judgment is also made in the task of receiving and unpacking.
 /// Therefore, when upgrading, just change the space_id to 1RTT, no other operations are needed.
-impl SpaceIO<CryptoStream, Streams> {
+impl SpaceIO<Streams> {
     pub fn new(crypto_stream: CryptoStream, streams: Streams) -> Self {
         Self(Arc::new(Mutex::new(Space::build(
             SpaceId::ZeroRtt,
@@ -603,11 +612,18 @@ impl SpaceIO<CryptoStream, Streams> {
         assert_eq!(ds.space_id, SpaceId::ZeroRtt);
         ds.space_id = SpaceId::OneRtt;
     }
+
+    pub fn write_conn_frame(&self, frame: ConnFrame) {
+        self.0.lock().unwrap().write_conn_frame(frame);
+    }
+
+    pub fn write_stream_frame(&self, frame: StreamCtlFrame) {
+        self.0.lock().unwrap().write_stream_frame(frame);
+    }
 }
 
-impl<CT, ST> Receive for SpaceIO<CT, ST>
+impl<ST> Receive for SpaceIO<ST>
 where
-    CT: TransmitCrypto,
     ST: TransmitStream,
 {
     fn expected_pn(&self) -> u64 {
@@ -627,9 +643,8 @@ where
     }
 }
 
-impl<CT, ST> TryTransmit for SpaceIO<CT, ST>
+impl<ST> TryTransmit for SpaceIO<ST>
 where
-    CT: TransmitCrypto,
     ST: TransmitStream,
 {
     /// Get the next packet number. This number is not thread-safe.
@@ -649,9 +664,8 @@ where
     }
 }
 
-impl<CT, ST> Clone for SpaceIO<CT, ST>
+impl<ST> Clone for SpaceIO<ST>
 where
-    CT: TransmitCrypto,
     ST: TransmitStream,
 {
     fn clone(&self) -> Self {

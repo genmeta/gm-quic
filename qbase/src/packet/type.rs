@@ -20,7 +20,7 @@ pub type ShortClearBits = ClearBits<0x18>;
 pub type LongClearBits = ClearBits<0xC>;
 
 impl<const R: u8> ClearBits<R> {
-    pub fn by(pn: &PacketNumber) -> Self {
+    pub fn from_pn(pn: &PacketNumber) -> Self {
         Self(pn.size() as u8 - 1)
     }
 
@@ -31,11 +31,11 @@ impl<const R: u8> ClearBits<R> {
 }
 
 impl ShortClearBits {
-    pub(super) fn set_key_phase_bit(&mut self, key_phase_bit: KeyPhaseBit) {
+    pub fn set_key_phase(&mut self, key_phase_bit: KeyPhaseBit) {
         key_phase_bit.imply(&mut self.0);
     }
 
-    pub(super) fn key_phase_bit(&self) -> KeyPhaseBit {
+    pub fn key_phase_bit(&self) -> KeyPhaseBit {
         KeyPhaseBit::from(self.0)
     }
 }
@@ -189,10 +189,10 @@ mod tests {
     fn test_set_key_phase_bit() {
         let mut clear_bits = ShortClearBits::with_pn_size(4);
         assert_eq!(clear_bits.0, 0x03);
-        clear_bits.set_key_phase_bit(KeyPhaseBit::On);
+        clear_bits.set_key_phase(KeyPhaseBit::On);
         assert_eq!(clear_bits.0, 0x07);
         assert_eq!(clear_bits.key_phase_bit(), KeyPhaseBit::On);
-        clear_bits.set_key_phase_bit(KeyPhaseBit::Off);
+        clear_bits.set_key_phase(KeyPhaseBit::Off);
         assert_eq!(clear_bits.0, 0x03);
         assert_eq!(clear_bits.key_phase_bit(), KeyPhaseBit::Off);
     }

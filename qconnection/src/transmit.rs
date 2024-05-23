@@ -1,16 +1,18 @@
 use bytes::BufMut;
 use qbase::{
     packet::{
-        header::{long::LongHeader, Encode, GetType, HasLength, Write, WriteLongHeader},
-        keys::ArcKeys,
-        LongClearBits, WritePacketNumber,
+        header::{
+            long::LongHeader, short::ext::WriteOneRttHeader, Encode, GetType, HasLength, Write,
+            WriteLongHeader,
+        },
+        keys::{ArcKeys, ArcOneRttKeys},
+        LongClearBits, OneRttHeader, ShortClearBits, WritePacketNumber,
     },
     varint::{ext::BufMutExt, VarInt},
 };
 use qrecovery::{
-    crypto::CryptoStream,
     space::{SpaceIO, TryTransmit},
-    streams::NoStreams,
+    streams::{Streams, TransmitStream},
 };
 use std::ops::Deref;
 
@@ -27,16 +29,17 @@ pub enum FillPolicy {
     // Padding,     // Instead of padding frames, it's better to redundantly encode the Length.
 }
 
-pub fn read_space_and_encrypt<S>(
+pub fn read_space_and_encrypt<S, ST>(
     buffer: &mut [u8],
     header: LongHeader<S>,
     fill_policy: FillPolicy,
     keys: ArcKeys,
-    space: SpaceIO<CryptoStream, NoStreams>,
+    space: SpaceIO<ST>,
 ) -> (usize, usize)
 where
     for<'a> &'a mut [u8]: Write<S>,
     LongHeader<S>: HasLength + GetType + Encode,
+    ST: TransmitStream,
 {
     let keys = match keys.get_local_keys() {
         Some(keys) => keys,
@@ -125,6 +128,59 @@ where
         // nothing to send
         (0, 0)
     }
+}
+
+pub fn read_1rtt_data_and_encrypt(
+    buffer: &mut [u8],
+    header: OneRttHeader,
+    keys: ArcOneRttKeys,
+    space: SpaceIO<Streams>,
+) -> usize {
+    let (hpk, pk) = match keys.get_local_keys() {
+        Some(keys) => keys,
+        None => return 0,
+    };
+
+    let (pkt_id, pn) = space.next_pkt_no();
+    let header_size = header.size();
+    let pn_size = pn.size();
+    let (mut hdr_buf, body_buf) = buffer.split_at_mut(header_size + pn_size);
+
+    if body_buf.remaining_mut() + pn_size < 20 {
+        // Insufficient remaining space, unable to extract enough(16 bytes long) sample to add header protection.
+        return 0;
+    }
+
+    hdr_buf.put_one_rtt_header(&header);
+    hdr_buf.put_packet_number(pn);
+    debug_assert!(hdr_buf.is_empty());
+
+    let body_len = space.try_read(body_buf);
+    if body_len == 0 {
+        return 0;
+    }
+
+    let header_and_pn_size = header_size + pn_size;
+    let pkt_size = header_and_pn_size + body_len;
+    let pkt_buffer = &mut buffer[0..pkt_size];
+    // encode pn length in the first byte
+    let (key_phase, pk) = pk.lock().unwrap().get_local();
+    let mut clear_bits = ShortClearBits::with_pn_size(pn_size);
+    clear_bits.set_key_phase(key_phase);
+    pkt_buffer[0] |= clear_bits.deref();
+
+    // encrypt packet payload
+    let (header, body) = pkt_buffer.split_at_mut(header_and_pn_size);
+    pk.deref().encrypt_in_place(pkt_id, header, body).unwrap();
+
+    // add header protection
+    let (header, pn_and_body) = pkt_buffer.split_at_mut(header_size);
+    let (pn_max, sample) = pn_and_body.split_at_mut(4);
+    hpk.deref()
+        .encrypt_in_place(sample, &mut header[0], &mut pn_max[..pn_size])
+        .unwrap();
+
+    pkt_size
 }
 
 #[cfg(test)]

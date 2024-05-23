@@ -309,29 +309,6 @@ impl TransmitCrypto for CryptoStream {
     }
 }
 
-/// 在0-RTT中，不允许传输CryptoFrame，CryptoFrame只能承担加密握手的Message
-/// 实际上，1-RTT中也没任何传输CryptoFrame的需求，只是未来可能会有，且1-RTT是经过验证的安全
-#[derive(Debug, Clone)]
-pub struct NoCrypto;
-
-impl TransmitCrypto for NoCrypto {
-    fn try_read_data(&mut self, _buf: &mut [u8]) -> Option<(CryptoFrame, usize)> {
-        None
-    }
-
-    fn confirm_data(&mut self, _data_frame: CryptoFrame) {
-        unreachable!()
-    }
-
-    fn may_loss_data(&mut self, _data_frame: CryptoFrame) {
-        unreachable!()
-    }
-
-    fn recv_data(&mut self, _crypto_frame: CryptoFrame, _body: bytes::Bytes) -> Result<(), Error> {
-        unreachable!()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{CryptoStream, TransmitCrypto};

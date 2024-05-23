@@ -25,19 +25,19 @@ pub struct Connection {
     initial_keys: ArcKeys,
     initial_pkt_queue: RxPacketsQueue<InitialPacket>,
     // 发送数据，也可以随着升级到Handshake空间而丢弃
-    initial_space: SpaceIO<CryptoStream, NoStreams>,
+    initial_space: SpaceIO<NoStreams>,
 
     // An endpoint MUST discard its Handshake keys when the TLS handshake is confirmed.
     handshake_keys: ArcKeys,
     handshake_pkt_queue: RxPacketsQueue<HandshakePacket>,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
-    handshake_space: SpaceIO<CryptoStream, NoStreams>,
+    handshake_space: SpaceIO<NoStreams>,
 
     zero_rtt_keys: ArcKeys,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
     zero_rtt_pkt_queue: RxPacketsQueue<ZeroRttPacket>,
     one_rtt_pkt_queue: mpsc::UnboundedSender<(OneRttPacket, ArcPath)>,
-    data_space: SpaceIO<CryptoStream, Streams>,
+    data_space: SpaceIO<Streams>,
     spin: SpinBit,
 }
 
