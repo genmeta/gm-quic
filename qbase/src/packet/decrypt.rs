@@ -50,7 +50,7 @@ impl DecodeHeader for PacketWrapper<OneRttHeader> {
         let pn_len = clear_bits.pn_len()?;
         let pn_bytes = &self.raw_data[self.pn_offset..self.pn_offset + pn_len as usize];
         let (_, pn) = take_pn_len(pn_len)(pn_bytes).unwrap();
-        Ok((pn, clear_bits.key_phase_bit()))
+        Ok((pn, clear_bits.key_phase()))
     }
 }
 

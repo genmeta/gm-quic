@@ -93,14 +93,6 @@ fn parse_packet_and_then_dispatch(
     Ok(is_ack_eliciting)
 }
 
-/// This function concatenates the reading logic of all Spaces except the 1RTT Space. Just pass in the Space and Keys,
-/// it will build a packet receiving queue internally, and spawn two detached asynchronous tasks, respectively doing:
-/// - *Packet reading and parsing task*: Continuously read packets from the receiving queue, remove header protection,
-///   unpack, decode frames, and then write the frames into the corresponding receiving frame queue.
-/// - *Frame reading task*: Continuously read frames from the receiving frame queue, hand them over to Space for
-///   processing, or handle Path frames with Path when encountered.
-/// Finally, it returns the sending end of the packet receiving queue, which can be used to write packets into this
-/// queue when receiving packets for this space.
 pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue<P, S>(
     mut packet_rx: mpsc::UnboundedReceiver<(P, ArcPath)>,
     space_id: SpaceId,
@@ -124,7 +116,9 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
             let pn = packet.decode_header().unwrap();
             let pkt_id = pn.decode(space.expected_pn());
             if space.has_rcvd(pkt_id) {
-                // 重复包，丢弃。quic不允许重复包，收到重复包算错误？那肯定不行，不然太容易被重放攻击了
+                // Duplicate packet, discard. QUIC does not allow duplicate packets.
+                // Is it an error to receive duplicate packets? Definitely not,
+                // otherwise it would be too vulnerable to replay attacks.
                 continue;
             }
 

@@ -6,9 +6,10 @@ pub mod short;
 
 pub use long::{
     ext::{LongHeaderBuilder, Write, WriteLongHeader},
-    HandshakeHeader, InitialHeader, RetryHeader, VersionNegotiationHeader, ZeroRttHeader,
+    HandshakeHeader, InitialHeader, LongHeader, RetryHeader, VersionNegotiationHeader,
+    ZeroRttHeader,
 };
-pub use short::OneRttHeader;
+pub use short::{ext::WriteOneRttHeader, OneRttHeader};
 
 use super::r#type::{
     long::{v1, Type as LongType, Version},

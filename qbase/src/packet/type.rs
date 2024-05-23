@@ -35,7 +35,7 @@ impl ShortClearBits {
         key_phase_bit.imply(&mut self.0);
     }
 
-    pub fn key_phase_bit(&self) -> KeyPhaseBit {
+    pub fn key_phase(&self) -> KeyPhaseBit {
         KeyPhaseBit::from(self.0)
     }
 }
@@ -191,9 +191,9 @@ mod tests {
         assert_eq!(clear_bits.0, 0x03);
         clear_bits.set_key_phase(KeyPhaseBit::On);
         assert_eq!(clear_bits.0, 0x07);
-        assert_eq!(clear_bits.key_phase_bit(), KeyPhaseBit::On);
+        assert_eq!(clear_bits.key_phase(), KeyPhaseBit::On);
         clear_bits.set_key_phase(KeyPhaseBit::Off);
         assert_eq!(clear_bits.0, 0x03);
-        assert_eq!(clear_bits.key_phase_bit(), KeyPhaseBit::Off);
+        assert_eq!(clear_bits.key_phase(), KeyPhaseBit::Off);
     }
 }
