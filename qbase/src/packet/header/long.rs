@@ -51,10 +51,6 @@ macro_rules! protect {
                 fn get_length(&self) -> usize {
                     self.length.to_usize()
                 }
-
-                fn set_length(&mut self, length: usize) {
-                    self.length = VarInt(length as u64);
-                }
             }
         )*
     };
@@ -63,22 +59,13 @@ macro_rules! protect {
 protect!(Initial, ZeroRtt, Handshake);
 
 impl Encode for Initial {
-    fn max_size(&self) -> usize {
-        VarInt(self.token.len() as u64).encoding_size() + self.token.len() + 2
+    fn size(&self) -> usize {
+        VarInt(self.token.len() as u64).encoding_size() + self.token.len()
     }
 }
 
-impl Encode for ZeroRtt {
-    fn max_size(&self) -> usize {
-        2
-    }
-}
-
-impl Encode for Handshake {
-    fn max_size(&self) -> usize {
-        2
-    }
-}
+impl Encode for ZeroRtt {}
+impl Encode for Handshake {}
 
 #[derive(Debug, Default, Clone, Deref, DerefMut)]
 pub struct LongHeader<T> {
@@ -106,10 +93,10 @@ impl Protect for ZeroRttHeader {}
 impl Protect for HandshakeHeader {}
 
 impl<S: Encode> Encode for LongHeader<S> {
-    fn max_size(&self) -> usize {
+    fn size(&self) -> usize {
         1 + self.dcid.len()       // dcid长度最多20字节，长度编码只占1字节，加上cid本身的长度
             + 1 + self.scid.len() // scid一样
-            + self.specific.max_size()
+            + self.specific.size()
     }
 }
 
@@ -247,8 +234,11 @@ pub(super) mod ext {
         }
     }
 
+    /// If the last Length field of the long packet header is VarInt, it needs to be
+    /// handled separately. The Write trait does not write the Length, and leaves it
+    /// to be filled in when sending.
     pub trait Write<S> {
-        fn put_specific(&mut self, specific: &S);
+        fn put_specific(&mut self, _specific: &S) {}
     }
 
     impl<T: BufMut> Write<VersionNegotiation> for T {
@@ -270,21 +260,11 @@ pub(super) mod ext {
         fn put_specific(&mut self, specific: &Initial) {
             self.put_varint(&VarInt(specific.token.len() as u64));
             self.put_slice(&specific.token);
-            self.put_varint(&specific.length);
         }
     }
 
-    impl<T: BufMut> Write<ZeroRtt> for T {
-        fn put_specific(&mut self, specific: &ZeroRtt) {
-            self.put_varint(&specific.length);
-        }
-    }
-
-    impl<T: BufMut> Write<Handshake> for T {
-        fn put_specific(&mut self, specific: &Handshake) {
-            self.put_varint(&specific.length);
-        }
-    }
+    impl<T: BufMut> Write<ZeroRtt> for T {}
+    impl<T: BufMut> Write<Handshake> for T {}
 
     pub trait WriteLongHeader<S> {
         fn put_long_header(&mut self, wrapper: &LongHeader<S>);

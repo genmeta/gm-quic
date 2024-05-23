@@ -25,7 +25,7 @@ mod send {
     }
 
     impl Sender {
-        fn try_pick(&mut self, mut buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
+        fn try_read(&mut self, mut buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
             let remaining = buffer.remaining_mut();
             let estimater = |offset: u64| CryptoFrame::estimate_max_capacity(remaining, offset);
             if let Some((offset, data)) = self.sndbuf.pick_up(estimater) {
@@ -114,7 +114,7 @@ mod send {
 
     impl CryptoStreamOutgoing {
         pub(crate) fn try_pick(&mut self, buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
-            self.0.lock().unwrap().try_pick(buffer)
+            self.0.lock().unwrap().try_read(buffer)
         }
 
         pub(super) fn ack_rcvd(&mut self, range: &Range<u64>) {
@@ -281,7 +281,7 @@ impl CryptoStream {
 }
 
 pub trait TransmitCrypto {
-    fn try_pick_data(&mut self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)>;
+    fn try_read_data(&mut self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)>;
 
     fn confirm_data(&mut self, data_frame: CryptoFrame);
 
@@ -291,7 +291,7 @@ pub trait TransmitCrypto {
 }
 
 impl TransmitCrypto for CryptoStream {
-    fn try_pick_data(&mut self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)> {
+    fn try_read_data(&mut self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)> {
         self.outgoing.try_pick(buf)
     }
 
@@ -315,7 +315,7 @@ impl TransmitCrypto for CryptoStream {
 pub struct NoCrypto;
 
 impl TransmitCrypto for NoCrypto {
-    fn try_pick_data(&mut self, _buf: &mut [u8]) -> Option<(CryptoFrame, usize)> {
+    fn try_read_data(&mut self, _buf: &mut [u8]) -> Option<(CryptoFrame, usize)> {
         None
     }
 

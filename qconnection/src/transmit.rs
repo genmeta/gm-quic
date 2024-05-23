@@ -1,12 +1,15 @@
 use bytes::BufMut;
-use qbase::packet::{
-    header::{long::LongHeader, Encode, GetType, HasLength, Write, WriteLongHeader},
-    keys::ArcKeys,
-    LongClearBits, WritePacketNumber,
+use qbase::{
+    packet::{
+        header::{long::LongHeader, Encode, GetType, HasLength, Write, WriteLongHeader},
+        keys::ArcKeys,
+        LongClearBits, WritePacketNumber,
+    },
+    varint::{ext::BufMutExt, VarInt},
 };
 use qrecovery::{
     crypto::CryptoStream,
-    space::{SpaceIO, TrySend},
+    space::{SpaceIO, TryTransmit},
     streams::NoStreams,
 };
 use std::ops::Deref;
@@ -26,7 +29,7 @@ pub enum FillPolicy {
 
 pub fn read_space_and_encrypt<S>(
     buffer: &mut [u8],
-    mut header: LongHeader<S>,
+    header: LongHeader<S>,
     fill_policy: FillPolicy,
     keys: ArcKeys,
     space: SpaceIO<CryptoStream, NoStreams>,
@@ -41,7 +44,7 @@ where
     };
 
     let (pkt_id, pn) = space.next_pkt_no();
-    let max_header_size = header.max_size();
+    let max_header_size = header.size() + 2; // 2 bytes reserved for packet length, max 16KB
     let pn_size = pn.size();
     let (mut hdr_buf, mut body_buf) = buffer.split_at_mut(max_header_size + pn_size);
 
@@ -50,7 +53,7 @@ where
         return (0, 0);
     }
 
-    let mut body_len = space.try_send(body_buf);
+    let mut body_len = space.try_read(body_buf);
     if body_len > 0 {
         unsafe {
             body_buf.advance_mut(body_len);
@@ -74,19 +77,23 @@ where
                     unsafe {
                         hdr_buf.advance_mut(1);
                     }
-                    header.set_length(length);
                     hdr_buf.put_long_header(&header);
+                    hdr_buf.put_varint(&VarInt::from_u64(length as u64).unwrap());
                 }
                 FillPolicy::Redundancy => {
                     // Redundant encoding VarInt: If it is less than 64 bytes, use 2 bytes to encode the
-                    // length. The first byte is 0x01, and the second byte is the actual length.
-                    header.set_length(0x01);
+                    // length. The first byte is 0x40, meaning VarInt is 2 bytes long, and the second byte is the actual length.
                     hdr_buf.put_long_header(&header);
+                    hdr_buf.put_u8(0x40);
                     hdr_buf.put_u8(length as u8);
                 }
             }
-            hdr_buf.put_packet_number(pn);
+        } else {
+            hdr_buf.put_long_header(&header);
+            hdr_buf.put_varint(&VarInt::from_u64(length as u64).unwrap());
         }
+        hdr_buf.put_packet_number(pn);
+        debug_assert!(hdr_buf.is_empty());
 
         let header_size = max_header_size - offset;
         let header_and_pn_size = header_size + pn_size;

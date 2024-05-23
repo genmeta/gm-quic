@@ -32,7 +32,7 @@ impl Outgoing {
         }
     }
 
-    pub fn try_send<B>(&mut self, sid: StreamId, mut buffer: B) -> Option<StreamFrame>
+    pub fn try_read<B>(&mut self, sid: StreamId, mut buffer: B) -> Option<StreamFrame>
     where
         B: BufMut,
     {

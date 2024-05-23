@@ -39,9 +39,9 @@ fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> Error {
 }
 
 pub trait TransmitStream {
-    fn try_send_frame(&mut self, buf: &mut [u8]) -> Option<(StreamCtlFrame, usize)>;
+    fn try_read_frame(&mut self, buf: &mut [u8]) -> Option<(StreamCtlFrame, usize)>;
 
-    fn try_send_data(&mut self, buf: &mut [u8]) -> Option<(StreamFrame, usize)>;
+    fn try_read_data(&mut self, buf: &mut [u8]) -> Option<(StreamFrame, usize)>;
 
     fn confirm_data(&mut self, stream_frame: StreamFrame);
 
@@ -53,12 +53,12 @@ pub trait TransmitStream {
 }
 
 impl TransmitStream for Streams {
-    fn try_send_frame(&mut self, _buf: &mut [u8]) -> Option<(StreamCtlFrame, usize)> {
+    fn try_read_frame(&mut self, _buf: &mut [u8]) -> Option<(StreamCtlFrame, usize)> {
         // 遍历所有的Outgoing，看是否有StreamInfoFrame要发送, 且buf还剩余足够的空间
         todo!()
     }
 
-    fn try_send_data(&mut self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+    fn try_read_data(&mut self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
         // 遍历所有的Outgoing，看是否有数据要发送，且buf还剩余足够的空间容纳，一定要公平
         todo!()
     }
@@ -220,11 +220,11 @@ impl TransmitStream for Streams {
 pub struct NoStreams;
 
 impl TransmitStream for NoStreams {
-    fn try_send_frame(&mut self, _buf: &mut [u8]) -> Option<(StreamCtlFrame, usize)> {
+    fn try_read_frame(&mut self, _buf: &mut [u8]) -> Option<(StreamCtlFrame, usize)> {
         None
     }
 
-    fn try_send_data(&mut self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+    fn try_read_data(&mut self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
         None
     }
 

@@ -8,7 +8,7 @@ use bytes::{BufMut, Bytes};
 use qbase::{
     error::Error,
     frame::{ext::*, *},
-    packet::{PacketNumber, WritePacketNumber},
+    packet::PacketNumber,
     varint::{VarInt, VARINT_MAX},
     SpaceId,
 };
@@ -26,10 +26,10 @@ pub enum SpaceFrame {
     Data(DataFrame, Bytes),
 }
 
-pub trait TrySend {
+pub trait TryTransmit {
     fn next_pkt_no(&self) -> (u64, PacketNumber);
 
-    fn try_send(&self, buf: &mut [u8]) -> usize;
+    fn try_read(&self, buf: &mut [u8]) -> usize;
 }
 
 /// When a network socket receives a data packet and determines that it belongs
@@ -466,7 +466,7 @@ where
         (pkt_id, pn)
     }
 
-    fn try_send(&mut self, mut buf: &mut [u8]) -> usize {
+    fn try_read(&mut self, mut buf: &mut [u8]) -> usize {
         let mut is_ack_eliciting = false;
         let remaning = buf.remaining_mut();
 
@@ -509,7 +509,7 @@ where
         }
 
         // Consider transmit stream info frames if has
-        if let Some((stream_info_frame, len)) = self.stm_trans.try_send_frame(buf) {
+        if let Some((stream_info_frame, len)) = self.stm_trans.try_read_frame(buf) {
             records.push(Record::Reliable(ReliableFrame::Stream(stream_info_frame)));
             unsafe {
                 buf.advance_mut(len);
@@ -518,14 +518,14 @@ where
 
         // Consider transmitting data frames.
         if self.space_id != SpaceId::ZeroRtt {
-            while let Some((data_frame, len)) = self.tls_trans.try_pick_data(buf) {
+            while let Some((data_frame, len)) = self.tls_trans.try_read_data(buf) {
                 records.push(Record::Data(DataFrame::Crypto(data_frame)));
                 unsafe {
                     buf.advance_mut(len);
                 }
             }
         }
-        while let Some((data_frame, len)) = self.stm_trans.try_send_data(buf) {
+        while let Some((data_frame, len)) = self.stm_trans.try_read_data(buf) {
             records.push(Record::Data(DataFrame::Stream(data_frame)));
             unsafe {
                 buf.advance_mut(len);
@@ -627,17 +627,25 @@ where
     }
 }
 
-impl<CT, ST> TrySend for SpaceIO<CT, ST>
+impl<CT, ST> TryTransmit for SpaceIO<CT, ST>
 where
     CT: TransmitCrypto,
     ST: TransmitStream,
 {
+    /// Get the next packet number. This number is not thread-safe.
+    /// It does not lock the next packet number to be sent.
+    /// Before it is actually sent, other transmiting threads/tasks may get the
+    /// same next packet number, causing conflicts. Therefore, it is required
+    /// that there should only be one sending thread/task for a connection.
     fn next_pkt_no(&self) -> (u64, PacketNumber) {
         self.0.lock().unwrap().next_pkt_no()
     }
 
-    fn try_send(&self, buf: &mut [u8]) -> usize {
-        self.0.lock().unwrap().try_send(buf)
+    /// Read the data to be sent and put it into the buffer.
+    /// Returns the actual number of bytes read. If it is 0,
+    /// it means there is no suitable data to send.
+    fn try_read(&self, buf: &mut [u8]) -> usize {
+        self.0.lock().unwrap().try_read(buf)
     }
 }
 

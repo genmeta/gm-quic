@@ -22,14 +22,23 @@ pub trait GetType {
 
 pub trait Protect {}
 
+/// Some long packet headers such as Initial, Handshake, ZeroRtt, etc. have lengths,
+/// so they need to implement this trait.
+/// However, the length is variable-length encoding, and the length is unknown when
+/// writing. The special handling of variable-length encoding length is left to the
+/// sending logic to handle, so there is no method to set the length.
 pub trait HasLength {
     fn get_length(&self) -> usize;
-
-    fn set_length(&mut self, length: usize);
 }
 
+/// When encoding a packet for sending, we need to know the length of the packet,
+/// so this trait needs to be implemented.
+/// However, the length field of the packet header is variable-length encoded and
+/// requires special handling, which is not considered within the scope of Encode::size.
 pub trait Encode {
-    fn max_size(&self) -> usize;
+    fn size(&self) -> usize {
+        0
+    }
 }
 
 #[enum_dispatch]
