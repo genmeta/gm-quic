@@ -3,7 +3,13 @@
 //   Sequence Number (i),
 // }
 
-use crate::{varint::VarInt, SpaceId};
+use crate::{
+    varint::{
+        ext::{be_varint, WriteVarInt},
+        VarInt,
+    },
+    SpaceId,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetireConnectionIdFrame {
@@ -31,35 +37,27 @@ impl super::BeFrame for RetireConnectionIdFrame {
     }
 }
 
-pub(super) mod ext {
-    use super::{RetireConnectionIdFrame, RETIRE_CONNECTION_ID_FRAME_TYPE};
-    use crate::varint::ext::be_varint;
+// nom parser for RETIRE_CONNECTION_ID_FRAME
+pub fn be_retire_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], RetireConnectionIdFrame> {
     use nom::combinator::map;
+    map(be_varint, |sequence| RetireConnectionIdFrame { sequence })(input)
+}
 
-    // nom parser for RETIRE_CONNECTION_ID_FRAME
-    pub fn be_retire_connection_id_frame(
-        input: &[u8],
-    ) -> nom::IResult<&[u8], RetireConnectionIdFrame> {
-        map(be_varint, |sequence| RetireConnectionIdFrame { sequence })(input)
-    }
+// BufMut extension trait for RETIRE_CONNECTION_ID_FRAME
+pub trait WriteRetireConnectionIdFrame {
+    fn put_retire_connection_id_frame(&mut self, frame: &RetireConnectionIdFrame);
+}
 
-    // BufMut extension trait for RETIRE_CONNECTION_ID_FRAME
-    pub trait WriteRetireConnectionIdFrame {
-        fn put_retire_connection_id_frame(&mut self, frame: &RetireConnectionIdFrame);
-    }
-
-    impl<T: bytes::BufMut> WriteRetireConnectionIdFrame for T {
-        fn put_retire_connection_id_frame(&mut self, frame: &RetireConnectionIdFrame) {
-            use crate::varint::ext::WriteVarInt;
-            self.put_u8(RETIRE_CONNECTION_ID_FRAME_TYPE);
-            self.put_varint(&frame.sequence);
-        }
+impl<T: bytes::BufMut> WriteRetireConnectionIdFrame for T {
+    fn put_retire_connection_id_frame(&mut self, frame: &RetireConnectionIdFrame) {
+        self.put_u8(RETIRE_CONNECTION_ID_FRAME_TYPE);
+        self.put_varint(&frame.sequence);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ext::be_retire_connection_id_frame, RetireConnectionIdFrame};
+    use super::{be_retire_connection_id_frame, RetireConnectionIdFrame};
     use crate::varint::VarInt;
 
     #[test]
@@ -77,7 +75,7 @@ mod tests {
 
     #[test]
     fn test_write_retire_connection_id_frame() {
-        use super::ext::WriteRetireConnectionIdFrame;
+        use super::WriteRetireConnectionIdFrame;
         let mut buf = Vec::new();
         let frame = RetireConnectionIdFrame {
             sequence: VarInt(0x1234),

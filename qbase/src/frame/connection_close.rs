@@ -73,66 +73,60 @@ impl ConnectionCloseFrame {
     }
 }
 
-pub(super) mod ext {
-    use super::{ConnectionCloseFrame, APP_LAYER, CONNECTION_CLOSE_FRAME_TYPE, QUIC_LAYER};
-    use crate::{error::ErrorKind, frame::FrameType};
-
-    // nom parser for CONNECTION_CLOSE_FRAME
-    pub fn connection_close_frame_at_layer(
-        layer: u8,
-    ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], ConnectionCloseFrame> {
-        use crate::varint::ext::be_varint;
-        use nom::bytes::streaming::take;
-        use std::borrow::Cow;
-        move |input: &[u8]| {
-            let (remain, error_code) = be_varint(input)?;
-            let kind = ErrorKind::try_from(error_code).map_err(|_e| {
-                nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Alt))
-            })?;
-            let (remain, frame_type) = if layer == QUIC_LAYER {
-                let (remain, frame_type) = be_varint(remain)?;
-                (
-                    remain,
-                    Some(FrameType::try_from(frame_type).map_err(|_e| {
-                        nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Alt))
-                    })?),
-                )
-            } else {
-                (remain, None)
-            };
-            let (remain, rease_length) = be_varint(remain)?;
-            let (remain, reason) = take(rease_length.into_inner() as usize)(remain)?;
-            let cow = String::from_utf8_lossy(reason).into_owned();
-            Ok((
+// nom parser for CONNECTION_CLOSE_FRAME
+pub fn connection_close_frame_at_layer(
+    layer: u8,
+) -> impl Fn(&[u8]) -> nom::IResult<&[u8], ConnectionCloseFrame> {
+    use crate::varint::ext::be_varint;
+    use nom::bytes::streaming::take;
+    move |input: &[u8]| {
+        let (remain, error_code) = be_varint(input)?;
+        let kind = ErrorKind::try_from(error_code).map_err(|_e| {
+            nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Alt))
+        })?;
+        let (remain, frame_type) = if layer == QUIC_LAYER {
+            let (remain, frame_type) = be_varint(remain)?;
+            (
                 remain,
-                ConnectionCloseFrame {
-                    error_kind: kind,
-                    frame_type,
-                    reason: Cow::Owned(cow),
-                },
-            ))
-        }
+                Some(FrameType::try_from(frame_type).map_err(|_e| {
+                    nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Alt))
+                })?),
+            )
+        } else {
+            (remain, None)
+        };
+        let (remain, rease_length) = be_varint(remain)?;
+        let (remain, reason) = take(rease_length.into_inner() as usize)(remain)?;
+        let cow = String::from_utf8_lossy(reason).into_owned();
+        Ok((
+            remain,
+            ConnectionCloseFrame {
+                error_kind: kind,
+                frame_type,
+                reason: Cow::Owned(cow),
+            },
+        ))
     }
-    pub trait WriteConnectionCloseFrame {
-        fn put_connection_close_frame(&mut self, frame: &ConnectionCloseFrame);
-    }
+}
+pub trait WriteConnectionCloseFrame {
+    fn put_connection_close_frame(&mut self, frame: &ConnectionCloseFrame);
+}
 
-    impl<T: bytes::BufMut> WriteConnectionCloseFrame for T {
-        fn put_connection_close_frame(&mut self, frame: &ConnectionCloseFrame) {
-            use crate::varint::{ext::WriteVarInt, VarInt};
-            let layer = if frame.frame_type.is_some() {
-                QUIC_LAYER
-            } else {
-                APP_LAYER
-            };
-            self.put_u8(CONNECTION_CLOSE_FRAME_TYPE | layer);
-            self.put_varint(&frame.error_kind.into());
-            if let Some(frame_type) = frame.frame_type {
-                self.put_varint(&frame_type.into());
-            }
-            self.put_varint(&VarInt::from_u32(frame.reason.len() as u32));
-            self.put_slice(frame.reason.as_bytes());
+impl<T: bytes::BufMut> WriteConnectionCloseFrame for T {
+    fn put_connection_close_frame(&mut self, frame: &ConnectionCloseFrame) {
+        use crate::varint::ext::WriteVarInt;
+        let layer = if frame.frame_type.is_some() {
+            QUIC_LAYER
+        } else {
+            APP_LAYER
+        };
+        self.put_u8(CONNECTION_CLOSE_FRAME_TYPE | layer);
+        self.put_varint(&frame.error_kind.into());
+        if let Some(frame_type) = frame.frame_type {
+            self.put_varint(&frame_type.into());
         }
+        self.put_varint(&VarInt::from_u32(frame.reason.len() as u32));
+        self.put_slice(frame.reason.as_bytes());
     }
 }
 
@@ -142,7 +136,7 @@ mod tests {
 
     #[test]
     fn test_read_connection_close_frame() {
-        use super::ext::connection_close_frame_at_layer;
+        use super::connection_close_frame_at_layer;
         use crate::varint::ext::be_varint;
         use nom::combinator::flat_map;
         let buf = vec![
@@ -176,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_write_connection_close_frame() {
-        use super::{ext::WriteConnectionCloseFrame, FrameType};
+        use super::{FrameType, WriteConnectionCloseFrame};
         let mut buf = Vec::<u8>::new();
         let frame = super::ConnectionCloseFrame {
             error_kind: ErrorKind::FlowControl,

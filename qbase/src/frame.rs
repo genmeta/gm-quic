@@ -233,7 +233,7 @@ impl Iterator for FrameReader {
             return None;
         }
 
-        match ext::be_frame(&self.raw) {
+        match io::be_frame(&self.raw) {
             Ok((consumed, frame)) => {
                 self.raw.advance(consumed);
                 Some(Ok(frame))
@@ -246,20 +246,17 @@ impl Iterator for FrameReader {
     }
 }
 
-pub mod ext {
+pub mod io {
     use super::{
-        ack::ext::ack_frame_with_flag, connection_close::ext::connection_close_frame_at_layer,
-        crypto::ext::be_crypto_frame, data_blocked::ext::be_data_blocked_frame,
-        handshake_done::ext::WriteHandshakeDoneFrame, max_data::ext::be_max_data_frame,
-        max_stream_data::ext::be_max_stream_data_frame,
-        max_streams::ext::max_streams_frame_with_dir,
-        new_connection_id::ext::be_new_connection_id_frame, new_token::ext::be_new_token_frame,
-        new_token::ext::WriteNewTokenFrame, path_challenge::ext::be_path_challenge_frame,
-        path_response::ext::be_path_response_frame, reset_stream::ext::be_reset_stream_frame,
-        retire_connection_id::ext::be_retire_connection_id_frame,
-        stop_sending::ext::be_stop_sending_frame, stream::ext::stream_frame_with_flag,
-        stream_data_blocked::ext::be_stream_data_blocked_frame,
-        streams_blocked::ext::streams_blocked_frame_with_dir, *,
+        ack::ack_frame_with_flag, connection_close::connection_close_frame_at_layer,
+        crypto::be_crypto_frame, data_blocked::be_data_blocked_frame, max_data::be_max_data_frame,
+        max_stream_data::be_max_stream_data_frame, max_streams::max_streams_frame_with_dir,
+        new_connection_id::be_new_connection_id_frame, new_token::be_new_token_frame,
+        new_token::WriteNewTokenFrame, path_challenge::be_path_challenge_frame,
+        path_response::be_path_response_frame, reset_stream::be_reset_stream_frame,
+        retire_connection_id::be_retire_connection_id_frame, stop_sending::be_stop_sending_frame,
+        stream::stream_frame_with_flag, stream_data_blocked::be_stream_data_blocked_frame,
+        streams_blocked::streams_blocked_frame_with_dir, *,
     };
     use bytes::Bytes;
 
@@ -378,21 +375,18 @@ pub mod ext {
     }
 
     use super::{
-        data_blocked::ext::WriteDataBlockedFrame, max_data::ext::WriteMaxDataFrame,
-        max_stream_data::ext::WriteMaxStreamDataFrame, max_streams::ext::WriteMaxStreamsFrame,
-        new_connection_id::ext::WriteNewConnectionIdFrame,
-        path_challenge::ext::WritePathChallengeFrame, path_response::ext::WritePathResponseFrame,
-        reset_stream::ext::WriteResetStreamFrame,
-        retire_connection_id::ext::WriteRetireConnectionIdFrame,
-        stop_sending::ext::WriteStopSendingFrame,
-        stream_data_blocked::ext::WriteStreamDataBlockedFrame,
-        streams_blocked::ext::WriteStreamsBlockedFrame,
+        data_blocked::WriteDataBlockedFrame, handshake_done::WriteHandshakeDoneFrame,
+        max_data::WriteMaxDataFrame, max_stream_data::WriteMaxStreamDataFrame,
+        max_streams::WriteMaxStreamsFrame, new_connection_id::WriteNewConnectionIdFrame,
+        path_challenge::WritePathChallengeFrame, path_response::WritePathResponseFrame,
+        reset_stream::WriteResetStreamFrame, retire_connection_id::WriteRetireConnectionIdFrame,
+        stop_sending::WriteStopSendingFrame, stream_data_blocked::WriteStreamDataBlockedFrame,
+        streams_blocked::WriteStreamsBlockedFrame,
     };
 
     pub use super::{
-        ack::ext::WriteAckFrame, connection_close::ext::WriteConnectionCloseFrame,
-        crypto::ext::WriteCryptoFrame, padding::ext::WritePaddingFrame, ping::ext::WritePingFrame,
-        stream::ext::WriteStreamFrame,
+        ack::WriteAckFrame, connection_close::WriteConnectionCloseFrame, crypto::WriteCryptoFrame,
+        padding::WritePaddingFrame, ping::WritePingFrame, stream::WriteStreamFrame,
     };
 
     pub trait WriteFrame<F> {

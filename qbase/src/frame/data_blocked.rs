@@ -31,27 +31,23 @@ impl super::BeFrame for DataBlockedFrame {
     }
 }
 
-pub(super) mod ext {
-    use super::{DataBlockedFrame, DATA_BLOCKED_FRAME_TYPE};
+// nom parser for DATA_BLOCKED_FRAME
+pub fn be_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], DataBlockedFrame> {
+    use crate::varint::ext::be_varint;
+    use nom::combinator::map;
+    map(be_varint, |limit| DataBlockedFrame { limit })(input)
+}
 
-    // nom parser for DATA_BLOCKED_FRAME
-    pub fn be_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], DataBlockedFrame> {
-        use crate::varint::ext::be_varint;
-        use nom::combinator::map;
-        map(be_varint, |limit| DataBlockedFrame { limit })(input)
-    }
+// BufMut write extension for DATA_BLOCKED_FRAME
+pub trait WriteDataBlockedFrame {
+    fn put_data_blocked_frame(&mut self, frame: &DataBlockedFrame);
+}
 
-    // BufMut write extension for DATA_BLOCKED_FRAME
-    pub trait WriteDataBlockedFrame {
-        fn put_data_blocked_frame(&mut self, frame: &DataBlockedFrame);
-    }
-
-    impl<T: bytes::BufMut> WriteDataBlockedFrame for T {
-        fn put_data_blocked_frame(&mut self, frame: &DataBlockedFrame) {
-            use crate::varint::ext::WriteVarInt;
-            self.put_u8(DATA_BLOCKED_FRAME_TYPE);
-            self.put_varint(&frame.limit);
-        }
+impl<T: bytes::BufMut> WriteDataBlockedFrame for T {
+    fn put_data_blocked_frame(&mut self, frame: &DataBlockedFrame) {
+        use crate::varint::ext::WriteVarInt;
+        self.put_u8(DATA_BLOCKED_FRAME_TYPE);
+        self.put_varint(&frame.limit);
     }
 }
 
@@ -61,7 +57,7 @@ mod tests {
 
     #[test]
     fn test_read_data_blocked_frame() {
-        use super::ext::be_data_blocked_frame;
+        use super::be_data_blocked_frame;
         let buf = vec![0x52, 0x34];
         let (_, frame) = be_data_blocked_frame(&buf).unwrap();
         assert_eq!(
@@ -74,7 +70,7 @@ mod tests {
 
     #[test]
     fn test_write_data_blocked_frame() {
-        use super::ext::WriteDataBlockedFrame;
+        use super::WriteDataBlockedFrame;
         let mut buf = Vec::new();
         buf.put_data_blocked_frame(&DataBlockedFrame {
             limit: crate::varint::VarInt(0x1234),

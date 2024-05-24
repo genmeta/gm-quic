@@ -7,7 +7,7 @@ use super::{
 use bytes::{BufMut, Bytes};
 use qbase::{
     error::Error,
-    frame::{ext::*, *},
+    frame::{io::*, *},
     packet::PacketNumber,
     varint::{VarInt, VARINT_MAX},
     SpaceId,

@@ -5,7 +5,7 @@ mod send {
     use crate::send::sndbuf::SendBuf;
     use bytes::BufMut;
     use qbase::{
-        frame::{ext::WriteCryptoFrame, CryptoFrame},
+        frame::{io::WriteCryptoFrame, CryptoFrame},
         varint::{VarInt, VARINT_MAX},
     };
     use std::{

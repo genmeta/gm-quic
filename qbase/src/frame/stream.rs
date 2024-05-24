@@ -139,78 +139,68 @@ impl StreamFrame {
     }
 }
 
-pub(super) mod ext {
-    use crate::{
-        frame::stream::{StreamFrame, LEN_BIT, OFF_BIT, STREAM_FRAME_TYPE},
-        varint::{VarInt, VARINT_MAX},
-    };
-
-    pub fn stream_frame_with_flag(flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8], StreamFrame> {
-        use crate::{streamid::ext::be_streamid, varint::ext::be_varint};
-        move |input| {
-            let (remain, id) = be_streamid(input)?;
-            let (remain, offset) = if flag & OFF_BIT != 0 {
-                be_varint(remain)?
-            } else {
-                (remain, VarInt::default())
-            };
-            let (remain, length) = if flag & LEN_BIT != 0 {
-                let (remain, length) = be_varint(remain)?;
-                (remain, length.into_inner() as usize)
-            } else {
-                (remain, remain.len())
-            };
-            if offset.into_inner() + length as u64 > VARINT_MAX {
-                return Err(nom::Err::Error(nom::error::make_error(
-                    input,
-                    nom::error::ErrorKind::TooLarge,
-                )));
-            }
-            Ok((
-                remain,
-                StreamFrame {
-                    id,
-                    offset,
-                    length,
-                    flag,
-                },
-            ))
+pub fn stream_frame_with_flag(flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8], StreamFrame> {
+    use crate::{streamid::ext::be_streamid, varint::ext::be_varint};
+    move |input| {
+        let (remain, id) = be_streamid(input)?;
+        let (remain, offset) = if flag & OFF_BIT != 0 {
+            be_varint(remain)?
+        } else {
+            (remain, VarInt::default())
+        };
+        let (remain, length) = if flag & LEN_BIT != 0 {
+            let (remain, length) = be_varint(remain)?;
+            (remain, length.into_inner() as usize)
+        } else {
+            (remain, remain.len())
+        };
+        if offset.into_inner() + length as u64 > VARINT_MAX {
+            return Err(nom::Err::Error(nom::error::make_error(
+                input,
+                nom::error::ErrorKind::TooLarge,
+            )));
         }
+        Ok((
+            remain,
+            StreamFrame {
+                id,
+                offset,
+                length,
+                flag,
+            },
+        ))
     }
+}
 
-    pub trait WriteStreamFrame {
-        fn put_stream_frame(&mut self, frame: &StreamFrame, data: &[u8]);
-    }
+pub trait WriteStreamFrame {
+    fn put_stream_frame(&mut self, frame: &StreamFrame, data: &[u8]);
+}
 
-    impl<T: bytes::BufMut> WriteStreamFrame for T {
-        fn put_stream_frame(&mut self, frame: &StreamFrame, data: &[u8]) {
-            use crate::{streamid::ext::WriteStreamId, varint::ext::WriteVarInt};
-            let mut stream_type = STREAM_FRAME_TYPE;
-            if frame.offset.into_inner() != 0 {
-                stream_type |= 0x04;
-            }
-
-            self.put_u8(stream_type | frame.flag);
-            self.put_streamid(&frame.id);
-            if frame.offset.into_inner() != 0 {
-                self.put_varint(&frame.offset);
-            }
-            if frame.flag & LEN_BIT != 0 {
-                // Generally, a data frame will not exceed 4GB.
-                self.put_varint(&VarInt::from_u32(frame.length as u32));
-            }
-            self.put_slice(data);
+impl<T: bytes::BufMut> WriteStreamFrame for T {
+    fn put_stream_frame(&mut self, frame: &StreamFrame, data: &[u8]) {
+        use crate::{streamid::ext::WriteStreamId, varint::ext::WriteVarInt};
+        let mut stream_type = STREAM_FRAME_TYPE;
+        if frame.offset.into_inner() != 0 {
+            stream_type |= 0x04;
         }
+
+        self.put_u8(stream_type | frame.flag);
+        self.put_streamid(&frame.id);
+        if frame.offset.into_inner() != 0 {
+            self.put_varint(&frame.offset);
+        }
+        if frame.flag & LEN_BIT != 0 {
+            // Generally, a data frame will not exceed 4GB.
+            self.put_varint(&VarInt::from_u32(frame.length as u32));
+        }
+        self.put_slice(data);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ext::WriteStreamFrame, StreamFrame};
-    use crate::{
-        frame::stream::{ext::stream_frame_with_flag, STREAM_FRAME_TYPE},
-        varint::{ext::be_varint, VarInt},
-    };
+    use super::{stream_frame_with_flag, StreamFrame, WriteStreamFrame, STREAM_FRAME_TYPE};
+    use crate::varint::{ext::be_varint, VarInt};
     use bytes::Bytes;
     use nom::combinator::flat_map;
 

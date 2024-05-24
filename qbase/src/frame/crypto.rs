@@ -69,37 +69,33 @@ impl CryptoFrame {
     }
 }
 
-pub(super) mod ext {
-    use super::{CryptoFrame, CRYPTO_FRAME_TYPE};
-
-    // nom parser for CRYPTO_FRAME
-    pub fn be_crypto_frame(input: &[u8]) -> nom::IResult<&[u8], CryptoFrame> {
-        use crate::varint::{ext::be_varint, VARINT_MAX};
-        let (remain, offset) = be_varint(input)?;
-        let (remain, length) = be_varint(remain)?;
-        if offset.into_inner() + offset.into_inner() > VARINT_MAX {
-            return Err(nom::Err::Error(nom::error::make_error(
-                input,
-                nom::error::ErrorKind::TooLarge,
-            )));
-        }
-        Ok((remain, CryptoFrame { offset, length }))
+// nom parser for CRYPTO_FRAME
+pub fn be_crypto_frame(input: &[u8]) -> nom::IResult<&[u8], CryptoFrame> {
+    use crate::varint::ext::be_varint;
+    let (remain, offset) = be_varint(input)?;
+    let (remain, length) = be_varint(remain)?;
+    if offset.into_inner() + offset.into_inner() > VARINT_MAX {
+        return Err(nom::Err::Error(nom::error::make_error(
+            input,
+            nom::error::ErrorKind::TooLarge,
+        )));
     }
+    Ok((remain, CryptoFrame { offset, length }))
+}
 
-    // BufMut extension trait for CRYPTO_FRAME
-    pub trait WriteCryptoFrame {
-        fn put_crypto_frame(&mut self, frame: &CryptoFrame, data: &[u8]);
-    }
+// BufMut extension trait for CRYPTO_FRAME
+pub trait WriteCryptoFrame {
+    fn put_crypto_frame(&mut self, frame: &CryptoFrame, data: &[u8]);
+}
 
-    impl<T: bytes::BufMut> WriteCryptoFrame for T {
-        fn put_crypto_frame(&mut self, frame: &CryptoFrame, data: &[u8]) {
-            use crate::varint::ext::WriteVarInt;
-            assert_eq!(frame.length.into_inner(), data.len() as u64);
-            self.put_u8(CRYPTO_FRAME_TYPE);
-            self.put_varint(&frame.offset);
-            self.put_varint(&frame.length);
-            self.put_slice(data);
-        }
+impl<T: bytes::BufMut> WriteCryptoFrame for T {
+    fn put_crypto_frame(&mut self, frame: &CryptoFrame, data: &[u8]) {
+        use crate::varint::ext::WriteVarInt;
+        assert_eq!(frame.length.into_inner(), data.len() as u64);
+        self.put_u8(CRYPTO_FRAME_TYPE);
+        self.put_varint(&frame.offset);
+        self.put_varint(&frame.length);
+        self.put_slice(data);
     }
 }
 
@@ -110,7 +106,7 @@ mod tests {
 
     #[test]
     fn test_read_crypto_frame() {
-        use super::ext::be_crypto_frame;
+        use super::be_crypto_frame;
         let buf = vec![0x52, 0x34, 0x80, 0x00, 0x56, 0x78];
         let (remain, frame) = be_crypto_frame(&buf).unwrap();
         assert_eq!(remain, &[]);
@@ -125,7 +121,7 @@ mod tests {
 
     #[test]
     fn test_write_crypto_frame() {
-        use super::ext::WriteCryptoFrame;
+        use super::WriteCryptoFrame;
         let mut buf = bytes::BytesMut::new();
         let frame = CryptoFrame {
             offset: VarInt(0x1234),

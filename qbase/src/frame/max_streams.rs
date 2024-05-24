@@ -3,7 +3,7 @@
 //   Maximum Streams (i),
 // }
 
-use crate::{varint::VarInt, SpaceId};
+use crate::{streamid::MAX_STREAM_ID, varint::VarInt, SpaceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaxStreamsFrame {
@@ -40,51 +40,46 @@ impl super::BeFrame for MaxStreamsFrame {
     }
 }
 
-pub(super) mod ext {
-    use super::{MaxStreamsFrame, DIR_BIT, MAX_STREAMS_FRAME_TYPE};
-    use crate::streamid::MAX_STREAM_ID;
-
-    // nom parser for MAX_STREAMS_FRAME
-    pub fn max_streams_frame_with_dir(
-        dir: u8,
-    ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], MaxStreamsFrame> {
-        move |input: &[u8]| {
-            use crate::{streamid::Dir, varint::ext::be_varint};
-            let (remain, max_streams) = be_varint(input)?;
-            if max_streams > MAX_STREAM_ID {
-                Err(nom::Err::Error(nom::error::Error::new(
-                    input,
-                    nom::error::ErrorKind::TooLarge,
-                )))
-            } else {
-                Ok((
-                    remain,
-                    if dir & DIR_BIT == Dir::Bi as u8 {
-                        MaxStreamsFrame::Bi(max_streams)
-                    } else {
-                        MaxStreamsFrame::Uni(max_streams)
-                    },
-                ))
-            }
+// nom parser for MAX_STREAMS_FRAME
+pub fn max_streams_frame_with_dir(
+    dir: u8,
+) -> impl Fn(&[u8]) -> nom::IResult<&[u8], MaxStreamsFrame> {
+    move |input: &[u8]| {
+        use crate::{streamid::Dir, varint::ext::be_varint};
+        let (remain, max_streams) = be_varint(input)?;
+        if max_streams > MAX_STREAM_ID {
+            Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::TooLarge,
+            )))
+        } else {
+            Ok((
+                remain,
+                if dir & DIR_BIT == Dir::Bi as u8 {
+                    MaxStreamsFrame::Bi(max_streams)
+                } else {
+                    MaxStreamsFrame::Uni(max_streams)
+                },
+            ))
         }
     }
+}
 
-    pub trait WriteMaxStreamsFrame {
-        fn put_max_streams_frame(&mut self, frame: &MaxStreamsFrame);
-    }
+pub trait WriteMaxStreamsFrame {
+    fn put_max_streams_frame(&mut self, frame: &MaxStreamsFrame);
+}
 
-    impl<T: bytes::BufMut> WriteMaxStreamsFrame for T {
-        fn put_max_streams_frame(&mut self, frame: &MaxStreamsFrame) {
-            use crate::varint::ext::WriteVarInt;
-            match frame {
-                MaxStreamsFrame::Bi(stream_id) => {
-                    self.put_u8(MAX_STREAMS_FRAME_TYPE);
-                    self.put_varint(stream_id);
-                }
-                MaxStreamsFrame::Uni(stream_id) => {
-                    self.put_u8(MAX_STREAMS_FRAME_TYPE | 0x1);
-                    self.put_varint(stream_id);
-                }
+impl<T: bytes::BufMut> WriteMaxStreamsFrame for T {
+    fn put_max_streams_frame(&mut self, frame: &MaxStreamsFrame) {
+        use crate::varint::ext::WriteVarInt;
+        match frame {
+            MaxStreamsFrame::Bi(stream_id) => {
+                self.put_u8(MAX_STREAMS_FRAME_TYPE);
+                self.put_varint(stream_id);
+            }
+            MaxStreamsFrame::Uni(stream_id) => {
+                self.put_u8(MAX_STREAMS_FRAME_TYPE | 0x1);
+                self.put_varint(stream_id);
             }
         }
     }
@@ -97,7 +92,7 @@ mod tests {
 
     #[test]
     fn test_read_max_streams_frame() {
-        use super::ext::max_streams_frame_with_dir;
+        use super::max_streams_frame_with_dir;
         use nom::combinator::flat_map;
         let buf = vec![MAX_STREAMS_FRAME_TYPE, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
@@ -126,7 +121,7 @@ mod tests {
 
     #[test]
     fn test_read_too_large_max_streams_frame() {
-        use super::ext::max_streams_frame_with_dir;
+        use super::max_streams_frame_with_dir;
         use nom::combinator::flat_map;
         let buf = vec![
             MAX_STREAMS_FRAME_TYPE,
@@ -157,7 +152,7 @@ mod tests {
 
     #[test]
     fn test_write_max_streams_frame() {
-        use super::ext::WriteMaxStreamsFrame;
+        use super::WriteMaxStreamsFrame;
         let mut buf = Vec::new();
         buf.put_max_streams_frame(&MaxStreamsFrame::Bi(VarInt(0x1234)));
         assert_eq!(buf, vec![MAX_STREAMS_FRAME_TYPE, 0x52, 0x34]);

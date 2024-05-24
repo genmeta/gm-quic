@@ -31,27 +31,23 @@ impl super::BeFrame for MaxDataFrame {
     }
 }
 
-pub(super) mod ext {
-    use super::MaxDataFrame;
+// nom parser for MAX_DATA_FRAME
+pub fn be_max_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxDataFrame> {
+    use crate::varint::ext::be_varint;
+    use nom::combinator::map;
+    map(be_varint, |max_data| MaxDataFrame { max_data })(input)
+}
 
-    // nom parser for MAX_DATA_FRAME
-    pub fn be_max_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxDataFrame> {
-        use crate::varint::ext::be_varint;
-        use nom::combinator::map;
-        map(be_varint, |max_data| MaxDataFrame { max_data })(input)
-    }
+// BufMut write extension for MAX_DATA_FRAME
+pub trait WriteMaxDataFrame {
+    fn put_max_data_frame(&mut self, frame: &MaxDataFrame);
+}
 
-    // BufMut write extension for MAX_DATA_FRAME
-    pub trait WriteMaxDataFrame {
-        fn put_max_data_frame(&mut self, frame: &MaxDataFrame);
-    }
-
-    impl<T: bytes::BufMut> WriteMaxDataFrame for T {
-        fn put_max_data_frame(&mut self, frame: &MaxDataFrame) {
-            use crate::varint::ext::WriteVarInt;
-            self.put_u8(super::MAX_DATA_FRAME_TYPE);
-            self.put_varint(&frame.max_data);
-        }
+impl<T: bytes::BufMut> WriteMaxDataFrame for T {
+    fn put_max_data_frame(&mut self, frame: &MaxDataFrame) {
+        use crate::varint::ext::WriteVarInt;
+        self.put_u8(MAX_DATA_FRAME_TYPE);
+        self.put_varint(&frame.max_data);
     }
 }
 
@@ -62,7 +58,7 @@ mod tests {
 
     #[test]
     fn test_read_max_data_frame() {
-        use super::ext::be_max_data_frame;
+        use super::be_max_data_frame;
         use crate::varint::ext::be_varint;
         use nom::combinator::flat_map;
         let buf = vec![MAX_DATA_FRAME_TYPE, 0x52, 0x34];
@@ -85,7 +81,7 @@ mod tests {
 
     #[test]
     fn test_write_max_data_frame() {
-        use super::ext::WriteMaxDataFrame;
+        use super::WriteMaxDataFrame;
 
         let mut buf = Vec::new();
         buf.put_max_data_frame(&MaxDataFrame {

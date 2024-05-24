@@ -8,7 +8,14 @@
 //   [ECN Counts (..)],
 // }
 
-use crate::{varint::VarInt, SpaceId};
+use crate::{
+    varint::{
+        ext::{be_varint, WriteVarInt},
+        VarInt,
+    },
+    SpaceId,
+};
+use nom::{combinator::map, sequence::tuple};
 use std::{ops::RangeInclusive, vec::IntoIter};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -129,88 +136,77 @@ impl EcnCounts {
     }
 }
 
-pub(super) mod ext {
-    use super::{AckFrame, EcnCounts, ECN_OPT};
-    use crate::frame::ack::ACK_FRAME_TYPE;
-    use crate::varint::ext::be_varint;
-    use nom::combinator::map;
-    use nom::sequence::tuple;
-
-    pub fn ack_frame_with_flag(ecn_flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8], AckFrame> {
-        move |input: &[u8]| {
-            let (mut input, (largest, delay, count, first_range)) =
-                tuple((be_varint, be_varint, be_varint, be_varint))(input)?;
-            let mut ranges = Vec::new();
-            let mut count = count.into_inner() as usize;
-            while count > 0 {
-                let (i, (gap, ack)) = tuple((be_varint, be_varint))(input)?;
-                ranges.push((gap, ack));
-                count -= 1;
-                input = i;
-            }
-
-            let ecn = if ecn_flag & ECN_OPT != 0 {
-                let (i, ecn) = be_ecn_counts(input)?;
-                input = i;
-                Some(ecn)
-            } else {
-                None
-            };
-
-            Ok((
-                input,
-                AckFrame {
-                    largest,
-                    delay,
-                    first_range,
-                    ranges,
-                    ecn,
-                },
-            ))
-        }
-    }
-
-    pub(super) fn be_ecn_counts(input: &[u8]) -> nom::IResult<&[u8], EcnCounts> {
-        map(
-            tuple((be_varint, be_varint, be_varint)),
-            |(ect0, ect1, ce)| EcnCounts { ect0, ect1, ce },
-        )(input)
-    }
-
-    pub trait WriteAckFrame {
-        fn put_ecn_counts(&mut self, ecn: &EcnCounts);
-        fn put_ack_frame(&mut self, frame: &AckFrame);
-    }
-
-    impl<T: bytes::BufMut> WriteAckFrame for T {
-        fn put_ecn_counts(&mut self, ecn: &EcnCounts) {
-            use crate::varint::ext::WriteVarInt;
-            self.put_varint(&ecn.ect0);
-            self.put_varint(&ecn.ect1);
-            self.put_varint(&ecn.ce);
+pub fn ack_frame_with_flag(ecn_flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8], AckFrame> {
+    move |input: &[u8]| {
+        let (mut input, (largest, delay, count, first_range)) =
+            tuple((be_varint, be_varint, be_varint, be_varint))(input)?;
+        let mut ranges = Vec::new();
+        let mut count = count.into_inner() as usize;
+        while count > 0 {
+            let (i, (gap, ack)) = tuple((be_varint, be_varint))(input)?;
+            ranges.push((gap, ack));
+            count -= 1;
+            input = i;
         }
 
-        fn put_ack_frame(&mut self, frame: &AckFrame) {
-            use crate::varint::{ext::WriteVarInt, VarInt};
+        let ecn = if ecn_flag & ECN_OPT != 0 {
+            let (i, ecn) = be_ecn_counts(input)?;
+            input = i;
+            Some(ecn)
+        } else {
+            None
+        };
 
-            let mut frame_type = ACK_FRAME_TYPE;
-            if frame.ecn.is_some() {
-                frame_type |= ECN_OPT;
-            }
-            self.put_u8(frame_type);
-            self.put_varint(&frame.largest);
-            self.put_varint(&frame.delay);
+        Ok((
+            input,
+            AckFrame {
+                largest,
+                delay,
+                first_range,
+                ranges,
+                ecn,
+            },
+        ))
+    }
+}
 
-            let ack_range_count = VarInt::try_from(frame.ranges.len()).unwrap();
-            self.put_varint(&ack_range_count);
-            self.put_varint(&frame.first_range);
-            for (gap, ack) in &frame.ranges {
-                self.put_varint(gap);
-                self.put_varint(ack);
-            }
-            if let Some(ecn) = &frame.ecn {
-                self.put_ecn_counts(ecn);
-            }
+pub(super) fn be_ecn_counts(input: &[u8]) -> nom::IResult<&[u8], EcnCounts> {
+    map(
+        tuple((be_varint, be_varint, be_varint)),
+        |(ect0, ect1, ce)| EcnCounts { ect0, ect1, ce },
+    )(input)
+}
+
+pub trait WriteAckFrame {
+    fn put_ecn_counts(&mut self, ecn: &EcnCounts);
+    fn put_ack_frame(&mut self, frame: &AckFrame);
+}
+
+impl<T: bytes::BufMut> WriteAckFrame for T {
+    fn put_ecn_counts(&mut self, ecn: &EcnCounts) {
+        self.put_varint(&ecn.ect0);
+        self.put_varint(&ecn.ect1);
+        self.put_varint(&ecn.ce);
+    }
+
+    fn put_ack_frame(&mut self, frame: &AckFrame) {
+        let mut frame_type = ACK_FRAME_TYPE;
+        if frame.ecn.is_some() {
+            frame_type |= ECN_OPT;
+        }
+        self.put_u8(frame_type);
+        self.put_varint(&frame.largest);
+        self.put_varint(&frame.delay);
+
+        let ack_range_count = VarInt::try_from(frame.ranges.len()).unwrap();
+        self.put_varint(&ack_range_count);
+        self.put_varint(&frame.first_range);
+        for (gap, ack) in &frame.ranges {
+            self.put_varint(gap);
+            self.put_varint(ack);
+        }
+        if let Some(ecn) = &frame.ecn {
+            self.put_ecn_counts(ecn);
         }
     }
 }
@@ -218,8 +214,7 @@ pub(super) mod ext {
 #[cfg(test)]
 mod tests {
     use super::{
-        ext::{ack_frame_with_flag, be_ecn_counts, WriteAckFrame},
-        AckFrame, EcnCounts, ACK_FRAME_TYPE,
+        ack_frame_with_flag, be_ecn_counts, AckFrame, EcnCounts, WriteAckFrame, ACK_FRAME_TYPE,
     };
     use crate::varint::{ext::be_varint, VarInt};
     use nom::combinator::flat_map;

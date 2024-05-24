@@ -2,7 +2,7 @@ use super::sender::{ArcSender, Sender};
 use bytes::BufMut;
 use qbase::{
     frame::{
-        ext::{WritePaddingFrame, WriteStreamFrame},
+        io::{WritePaddingFrame, WriteStreamFrame},
         ShouldCarryLength, StreamFrame,
     },
     streamid::StreamId,

@@ -39,26 +39,22 @@ impl super::BeFrame for PathResponseFrame {
     }
 }
 
-pub(super) mod ext {
-    use super::PathResponseFrame;
+// nom parser for PATH_RESPONSE_FRAME
+pub fn be_path_response_frame(input: &[u8]) -> nom::IResult<&[u8], PathResponseFrame> {
+    use nom::bytes::complete::take;
+    use nom::combinator::map;
+    map(take(8usize), PathResponseFrame::from_slice)(input)
+}
 
-    // nom parser for PATH_RESPONSE_FRAME
-    pub fn be_path_response_frame(input: &[u8]) -> nom::IResult<&[u8], PathResponseFrame> {
-        use nom::bytes::complete::take;
-        use nom::combinator::map;
-        map(take(8usize), PathResponseFrame::from_slice)(input)
-    }
+// BufMut write extension for PATH_RESPONSE_FRAME
+pub trait WritePathResponseFrame {
+    fn put_path_response_frame(&mut self, frame: &PathResponseFrame);
+}
 
-    // BufMut write extension for PATH_RESPONSE_FRAME
-    pub trait WritePathResponseFrame {
-        fn put_path_response_frame(&mut self, frame: &PathResponseFrame);
-    }
-
-    impl<T: bytes::BufMut> WritePathResponseFrame for T {
-        fn put_path_response_frame(&mut self, frame: &PathResponseFrame) {
-            self.put_u8(super::PATH_RESPONSE_FRAME_TYPE);
-            self.put_slice(&frame.data);
-        }
+impl<T: bytes::BufMut> WritePathResponseFrame for T {
+    fn put_path_response_frame(&mut self, frame: &PathResponseFrame) {
+        self.put_u8(PATH_RESPONSE_FRAME_TYPE);
+        self.put_slice(&frame.data);
     }
 }
 
@@ -66,7 +62,7 @@ pub(super) mod ext {
 mod tests {
     #[test]
     fn test_read_path_response_frame() {
-        use super::ext::be_path_response_frame;
+        use super::be_path_response_frame;
         use crate::varint::ext::be_varint;
         use nom::combinator::flat_map;
         let buf = vec![
@@ -99,7 +95,7 @@ mod tests {
 
     #[test]
     fn test_write_path_response_frame() {
-        use super::ext::WritePathResponseFrame;
+        use super::WritePathResponseFrame;
         let mut buf = Vec::<u8>::new();
         let frame = super::PathResponseFrame {
             data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],

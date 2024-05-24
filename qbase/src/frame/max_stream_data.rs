@@ -33,35 +33,31 @@ impl super::BeFrame for MaxStreamDataFrame {
     }
 }
 
-pub(super) mod ext {
-    use super::{MaxStreamDataFrame, MAX_STREAM_DATA_FRAME_TYPE};
+// nom parser for MAX_STREAM_DATA_FRAME
+pub fn be_max_stream_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxStreamDataFrame> {
+    use crate::{streamid::ext::be_streamid, varint::ext::be_varint};
+    use nom::{combinator::map, sequence::pair};
+    map(
+        pair(be_streamid, be_varint),
+        |(stream_id, max_stream_data)| MaxStreamDataFrame {
+            stream_id,
+            max_stream_data,
+        },
+    )(input)
+}
 
-    // nom parser for MAX_STREAM_DATA_FRAME
-    pub fn be_max_stream_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxStreamDataFrame> {
-        use crate::{streamid::ext::be_streamid, varint::ext::be_varint};
-        use nom::{combinator::map, sequence::pair};
-        map(
-            pair(be_streamid, be_varint),
-            |(stream_id, max_stream_data)| MaxStreamDataFrame {
-                stream_id,
-                max_stream_data,
-            },
-        )(input)
-    }
+// BufMut write extension for MAX_STREAM_DATA_FRAME
+pub trait WriteMaxStreamDataFrame {
+    fn put_max_stream_data_frame(&mut self, frame: &MaxStreamDataFrame);
+}
 
-    // BufMut write extension for MAX_STREAM_DATA_FRAME
-    pub trait WriteMaxStreamDataFrame {
-        fn put_max_stream_data_frame(&mut self, frame: &MaxStreamDataFrame);
-    }
-
-    impl<T: bytes::BufMut> WriteMaxStreamDataFrame for T {
-        fn put_max_stream_data_frame(&mut self, frame: &MaxStreamDataFrame) {
-            use crate::streamid::ext::WriteStreamId;
-            use crate::varint::ext::WriteVarInt;
-            self.put_u8(MAX_STREAM_DATA_FRAME_TYPE);
-            self.put_streamid(&frame.stream_id);
-            self.put_varint(&frame.max_stream_data);
-        }
+impl<T: bytes::BufMut> WriteMaxStreamDataFrame for T {
+    fn put_max_stream_data_frame(&mut self, frame: &MaxStreamDataFrame) {
+        use crate::streamid::ext::WriteStreamId;
+        use crate::varint::ext::WriteVarInt;
+        self.put_u8(MAX_STREAM_DATA_FRAME_TYPE);
+        self.put_streamid(&frame.stream_id);
+        self.put_varint(&frame.max_stream_data);
     }
 }
 
@@ -72,7 +68,7 @@ mod tests {
 
     #[test]
     fn test_read_max_stream_data_frame() {
-        use super::ext::be_max_stream_data_frame;
+        use super::be_max_stream_data_frame;
         let buf = vec![0x52, 0x34, 0x80, 0, 0x56, 0x78];
         let (_, frame) = be_max_stream_data_frame(&buf).unwrap();
         assert_eq!(frame.stream_id, VarInt(0x1234).into());
@@ -81,7 +77,7 @@ mod tests {
 
     #[test]
     fn test_write_max_stream_data_frame() {
-        use super::ext::WriteMaxStreamDataFrame;
+        use super::WriteMaxStreamDataFrame;
         let mut buf = Vec::new();
         buf.put_max_stream_data_frame(&MaxStreamDataFrame {
             stream_id: VarInt(0x1234).into(),

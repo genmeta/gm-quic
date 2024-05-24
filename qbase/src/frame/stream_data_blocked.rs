@@ -33,38 +33,32 @@ impl super::BeFrame for StreamDataBlockedFrame {
     }
 }
 
-pub(super) mod ext {
-    use super::{StreamDataBlockedFrame, STREAM_DATA_BLOCKED_FRAME_TYPE};
+// nom parser for STREAM_DATA_BLOCKED_FRAME
+pub fn be_stream_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], StreamDataBlockedFrame> {
+    use crate::{streamid::ext::be_streamid, varint::ext::be_varint};
+    let (input, stream_id) = be_streamid(input)?;
+    let (input, maximum_stream_data) = be_varint(input)?;
+    Ok((
+        input,
+        StreamDataBlockedFrame {
+            stream_id,
+            maximum_stream_data,
+        },
+    ))
+}
 
-    // nom parser for STREAM_DATA_BLOCKED_FRAME
-    pub fn be_stream_data_blocked_frame(
-        input: &[u8],
-    ) -> nom::IResult<&[u8], StreamDataBlockedFrame> {
-        use crate::{streamid::ext::be_streamid, varint::ext::be_varint};
-        let (input, stream_id) = be_streamid(input)?;
-        let (input, maximum_stream_data) = be_varint(input)?;
-        Ok((
-            input,
-            StreamDataBlockedFrame {
-                stream_id,
-                maximum_stream_data,
-            },
-        ))
-    }
+// BufMut write extension for STREAM_DATA_BLOCKED_FRAME
+pub trait WriteStreamDataBlockedFrame {
+    fn put_stream_data_blocked_frame(&mut self, frame: &StreamDataBlockedFrame);
+}
 
-    // BufMut write extension for STREAM_DATA_BLOCKED_FRAME
-    pub trait WriteStreamDataBlockedFrame {
-        fn put_stream_data_blocked_frame(&mut self, frame: &StreamDataBlockedFrame);
-    }
-
-    impl<T: bytes::BufMut> WriteStreamDataBlockedFrame for T {
-        fn put_stream_data_blocked_frame(&mut self, frame: &StreamDataBlockedFrame) {
-            use crate::streamid::ext::WriteStreamId;
-            use crate::varint::ext::WriteVarInt;
-            self.put_u8(STREAM_DATA_BLOCKED_FRAME_TYPE);
-            self.put_streamid(&frame.stream_id);
-            self.put_varint(&frame.maximum_stream_data);
-        }
+impl<T: bytes::BufMut> WriteStreamDataBlockedFrame for T {
+    fn put_stream_data_blocked_frame(&mut self, frame: &StreamDataBlockedFrame) {
+        use crate::streamid::ext::WriteStreamId;
+        use crate::varint::ext::WriteVarInt;
+        self.put_u8(STREAM_DATA_BLOCKED_FRAME_TYPE);
+        self.put_streamid(&frame.stream_id);
+        self.put_varint(&frame.maximum_stream_data);
     }
 }
 
@@ -75,7 +69,7 @@ mod tests {
 
     #[test]
     fn test_read_stream_data_blocked() {
-        use super::ext::be_stream_data_blocked_frame;
+        use super::be_stream_data_blocked_frame;
         let buf = [0x52, 0x34, 0x80, 0, 0x56, 0x78];
         let (_, frame) = be_stream_data_blocked_frame(&buf).unwrap();
         assert_eq!(
@@ -89,7 +83,7 @@ mod tests {
 
     #[test]
     fn test_write_stream_data_blocked_frame() {
-        use super::ext::WriteStreamDataBlockedFrame;
+        use super::WriteStreamDataBlockedFrame;
         let mut buf = Vec::new();
         buf.put_stream_data_blocked_frame(&StreamDataBlockedFrame {
             stream_id: VarInt(0x1234).into(),

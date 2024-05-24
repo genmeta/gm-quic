@@ -40,44 +40,40 @@ impl super::BeFrame for StreamsBlockedFrame {
     }
 }
 
-pub(super) mod ext {
-    use super::{StreamsBlockedFrame, DIR_BIT, STREAMS_BLOCKED_FRAME_TYPE};
-
-    // nom parser for STREAMS_BLOCKED_FRAME
-    pub fn streams_blocked_frame_with_dir(
-        dir: u8,
-    ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], StreamsBlockedFrame> {
-        move |input: &[u8]| {
-            use crate::streamid::{ext::be_streamid, Dir};
-            let (input, stream_id) = be_streamid(input)?;
-            Ok((
-                input,
-                if dir & DIR_BIT == Dir::Bi as u8 {
-                    StreamsBlockedFrame::Bi(stream_id)
-                } else {
-                    StreamsBlockedFrame::Uni(stream_id)
-                },
-            ))
-        }
+// nom parser for STREAMS_BLOCKED_FRAME
+pub fn streams_blocked_frame_with_dir(
+    dir: u8,
+) -> impl Fn(&[u8]) -> nom::IResult<&[u8], StreamsBlockedFrame> {
+    move |input: &[u8]| {
+        use crate::streamid::{ext::be_streamid, Dir};
+        let (input, stream_id) = be_streamid(input)?;
+        Ok((
+            input,
+            if dir & DIR_BIT == Dir::Bi as u8 {
+                StreamsBlockedFrame::Bi(stream_id)
+            } else {
+                StreamsBlockedFrame::Uni(stream_id)
+            },
+        ))
     }
+}
 
-    // BufMut extension trait for STREAMS_BLOCKED_FRAME
-    pub trait WriteStreamsBlockedFrame {
-        fn put_streams_blocked_frame(&mut self, frame: &StreamsBlockedFrame);
-    }
+// BufMut extension trait for STREAMS_BLOCKED_FRAME
+pub trait WriteStreamsBlockedFrame {
+    fn put_streams_blocked_frame(&mut self, frame: &StreamsBlockedFrame);
+}
 
-    impl<T: bytes::BufMut> WriteStreamsBlockedFrame for T {
-        fn put_streams_blocked_frame(&mut self, frame: &StreamsBlockedFrame) {
-            use crate::streamid::ext::WriteStreamId;
-            match frame {
-                StreamsBlockedFrame::Bi(stream_id) => {
-                    self.put_u8(STREAMS_BLOCKED_FRAME_TYPE);
-                    self.put_streamid(stream_id);
-                }
-                StreamsBlockedFrame::Uni(stream_id) => {
-                    self.put_u8(STREAMS_BLOCKED_FRAME_TYPE | 0x1);
-                    self.put_streamid(stream_id);
-                }
+impl<T: bytes::BufMut> WriteStreamsBlockedFrame for T {
+    fn put_streams_blocked_frame(&mut self, frame: &StreamsBlockedFrame) {
+        use crate::streamid::ext::WriteStreamId;
+        match frame {
+            StreamsBlockedFrame::Bi(stream_id) => {
+                self.put_u8(STREAMS_BLOCKED_FRAME_TYPE);
+                self.put_streamid(stream_id);
+            }
+            StreamsBlockedFrame::Uni(stream_id) => {
+                self.put_u8(STREAMS_BLOCKED_FRAME_TYPE | 0x1);
+                self.put_streamid(stream_id);
             }
         }
     }
@@ -90,7 +86,7 @@ mod tests {
 
     #[test]
     fn test_read_streams_blocked_frame() {
-        use super::ext::streams_blocked_frame_with_dir;
+        use super::streams_blocked_frame_with_dir;
         use crate::varint::ext::be_varint;
         use nom::combinator::flat_map;
 
@@ -121,7 +117,7 @@ mod tests {
 
     #[test]
     fn test_write_streams_blocked_frame() {
-        use super::ext::WriteStreamsBlockedFrame;
+        use super::WriteStreamsBlockedFrame;
 
         let mut buf = Vec::new();
         buf.put_streams_blocked_frame(&StreamsBlockedFrame::Bi(VarInt(0x1234).into()));

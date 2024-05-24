@@ -13,24 +13,20 @@ impl super::BeFrame for PingFrame {
     }
 }
 
-pub(super) mod ext {
-    use super::PingFrame;
+// nom parser for PING_FRAME
+#[allow(unused)]
+pub fn be_ping_frame(input: &[u8]) -> nom::IResult<&[u8], PingFrame> {
+    Ok((input, PingFrame))
+}
 
-    // nom parser for PING_FRAME
-    #[allow(unused)]
-    pub fn be_ping_frame(input: &[u8]) -> nom::IResult<&[u8], PingFrame> {
-        Ok((input, PingFrame))
-    }
+// BufMut write extension for PING_FRAME
+pub trait WritePingFrame {
+    fn put_ping_frame(&mut self);
+}
 
-    // BufMut write extension for PING_FRAME
-    pub trait WritePingFrame {
-        fn put_ping_frame(&mut self);
-    }
-
-    impl<T: bytes::BufMut> WritePingFrame for T {
-        fn put_ping_frame(&mut self) {
-            self.put_u8(super::PING_FRAME_TYPE);
-        }
+impl<T: bytes::BufMut> WritePingFrame for T {
+    fn put_ping_frame(&mut self) {
+        self.put_u8(PING_FRAME_TYPE);
     }
 }
 
@@ -40,7 +36,7 @@ mod tests {
 
     #[test]
     fn test_read_ping_frame() {
-        use super::ext::be_ping_frame;
+        use super::be_ping_frame;
         use crate::varint::ext::be_varint;
         use nom::combinator::flat_map;
         let buf = vec![PING_FRAME_TYPE];
@@ -58,7 +54,7 @@ mod tests {
 
     #[test]
     fn test_write_ping_frame() {
-        use super::ext::WritePingFrame;
+        use super::WritePingFrame;
         let mut buf = Vec::new();
         buf.put_ping_frame();
         assert_eq!(buf, vec![PING_FRAME_TYPE]);

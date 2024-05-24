@@ -4,7 +4,14 @@
 //   Application Protocol Error Code (i),
 // }
 
-use crate::{streamid::StreamId, varint::VarInt, SpaceId};
+use crate::{
+    streamid::{ext::be_streamid, StreamId},
+    varint::{
+        ext::{be_varint, WriteVarInt},
+        VarInt,
+    },
+    SpaceId,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StopSendingFrame {
@@ -33,47 +40,39 @@ impl super::BeFrame for StopSendingFrame {
     }
 }
 
-pub(super) mod ext {
-    use super::StopSendingFrame;
-    use crate::{
-        streamid::ext::be_streamid,
-        varint::ext::{be_varint, WriteVarInt},
-    };
+// nom parser for STOP_SENDING_FRAME
+pub fn be_stop_sending_frame(input: &[u8]) -> nom::IResult<&[u8], StopSendingFrame> {
     use nom::{combinator::map, sequence::tuple};
+    map(
+        tuple((be_streamid, be_varint)),
+        |(stream_id, app_err_code)| StopSendingFrame {
+            stream_id,
+            app_err_code,
+        },
+    )(input)
+}
 
-    // nom parser for STOP_SENDING_FRAME
-    pub fn be_stop_sending_frame(input: &[u8]) -> nom::IResult<&[u8], StopSendingFrame> {
-        map(
-            tuple((be_streamid, be_varint)),
-            |(stream_id, app_err_code)| StopSendingFrame {
-                stream_id,
-                app_err_code,
-            },
-        )(input)
-    }
+// BufMut write extension for STOP_SENDING_FRAME
+pub trait WriteStopSendingFrame {
+    fn put_stop_sending_frame(&mut self, frame: &StopSendingFrame);
+}
 
-    // BufMut write extension for STOP_SENDING_FRAME
-    pub trait WriteStopSendingFrame {
-        fn put_stop_sending_frame(&mut self, frame: &StopSendingFrame);
-    }
-
-    impl<T: bytes::BufMut> WriteStopSendingFrame for T {
-        fn put_stop_sending_frame(&mut self, frame: &StopSendingFrame) {
-            self.put_u8(super::STOP_SENDING_FRAME_TYPE);
-            self.put_varint(&frame.stream_id.into());
-            self.put_varint(&frame.app_err_code);
-        }
+impl<T: bytes::BufMut> WriteStopSendingFrame for T {
+    fn put_stop_sending_frame(&mut self, frame: &StopSendingFrame) {
+        self.put_u8(STOP_SENDING_FRAME_TYPE);
+        self.put_varint(&frame.stream_id.into());
+        self.put_varint(&frame.app_err_code);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ext::WriteStopSendingFrame, StopSendingFrame, STOP_SENDING_FRAME_TYPE};
+    use super::{StopSendingFrame, WriteStopSendingFrame, STOP_SENDING_FRAME_TYPE};
     use crate::varint::VarInt;
 
     #[test]
     fn test_parse_stop_sending_frame() {
-        use super::ext::be_stop_sending_frame;
+        use super::be_stop_sending_frame;
         use crate::varint::ext::be_varint;
         use nom::combinator::flat_map;
         let frame = StopSendingFrame {
