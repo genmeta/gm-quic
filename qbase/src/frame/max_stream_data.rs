@@ -5,7 +5,7 @@
 // }
 
 use crate::{
-    streamid::StreamId,
+    streamid::{be_streamid, StreamId, WriteStreamId},
     varint::{be_varint, VarInt, WriteVarInt},
     SpaceId,
 };
@@ -39,7 +39,6 @@ impl super::BeFrame for MaxStreamDataFrame {
 
 // nom parser for MAX_STREAM_DATA_FRAME
 pub fn be_max_stream_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxStreamDataFrame> {
-    use crate::streamid::ext::be_streamid;
     use nom::{combinator::map, sequence::pair};
     map(
         pair(be_streamid, be_varint),
@@ -57,7 +56,6 @@ pub trait WriteMaxStreamDataFrame {
 
 impl<T: bytes::BufMut> WriteMaxStreamDataFrame for T {
     fn put_max_stream_data_frame(&mut self, frame: &MaxStreamDataFrame) {
-        use crate::streamid::ext::WriteStreamId;
         self.put_u8(MAX_STREAM_DATA_FRAME_TYPE);
         self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.max_stream_data);

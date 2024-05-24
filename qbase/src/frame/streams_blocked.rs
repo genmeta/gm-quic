@@ -3,7 +3,10 @@
 //   Maximum Streams (i),
 // }
 
-use crate::{streamid::StreamId, SpaceId};
+use crate::{
+    streamid::{be_streamid, Dir, StreamId, WriteStreamId},
+    SpaceId,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamsBlockedFrame {
@@ -45,7 +48,6 @@ pub fn streams_blocked_frame_with_dir(
     dir: u8,
 ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], StreamsBlockedFrame> {
     move |input: &[u8]| {
-        use crate::streamid::{ext::be_streamid, Dir};
         let (input, stream_id) = be_streamid(input)?;
         Ok((
             input,
@@ -65,7 +67,6 @@ pub trait WriteStreamsBlockedFrame {
 
 impl<T: bytes::BufMut> WriteStreamsBlockedFrame for T {
     fn put_streams_blocked_frame(&mut self, frame: &StreamsBlockedFrame) {
-        use crate::streamid::ext::WriteStreamId;
         match frame {
             StreamsBlockedFrame::Bi(stream_id) => {
                 self.put_u8(STREAMS_BLOCKED_FRAME_TYPE);

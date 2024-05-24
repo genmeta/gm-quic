@@ -6,7 +6,7 @@
 // }
 
 use crate::{
-    streamid::StreamId,
+    streamid::{be_streamid, StreamId, WriteStreamId},
     varint::{be_varint, VarInt, WriteVarInt},
     SpaceId,
 };
@@ -43,7 +43,6 @@ impl super::BeFrame for ResetStreamFrame {
 
 // nom parser for RESET_STREAM_FRAME
 pub fn be_reset_stream_frame(input: &[u8]) -> nom::IResult<&[u8], ResetStreamFrame> {
-    use crate::streamid::ext::be_streamid;
     use nom::{combinator::map, sequence::tuple};
     map(
         tuple((be_streamid, be_varint, be_varint)),
@@ -62,7 +61,6 @@ pub trait WriteResetStreamFrame {
 
 impl<T: bytes::BufMut> WriteResetStreamFrame for T {
     fn put_reset_stream_frame(&mut self, frame: &ResetStreamFrame) {
-        use crate::streamid::ext::WriteStreamId;
         self.put_u8(RESET_STREAM_FRAME_TYPE);
         self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.app_error_code);

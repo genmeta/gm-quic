@@ -1,4 +1,4 @@
-use super::varint::VarInt;
+use super::varint::{be_varint, VarInt, WriteVarInt};
 use std::{
     fmt, ops,
     task::{Context, Poll, Waker},
@@ -280,25 +280,19 @@ impl StreamIds {
     }
 }
 
-pub mod ext {
-    use super::StreamId;
+/// nom parser for stream id
+pub fn be_streamid(input: &[u8]) -> nom::IResult<&[u8], StreamId> {
+    use nom::combinator::map;
+    map(be_varint, StreamId::from)(input)
+}
 
-    /// nom parser for stream id
-    pub fn be_streamid(input: &[u8]) -> nom::IResult<&[u8], StreamId> {
-        use crate::varint::be_varint;
-        use nom::combinator::map;
-        map(be_varint, StreamId::from)(input)
-    }
+pub trait WriteStreamId {
+    fn put_streamid(&mut self, stream_id: &StreamId);
+}
 
-    pub trait WriteStreamId {
-        fn put_streamid(&mut self, stream_id: &StreamId);
-    }
-
-    impl<T: bytes::BufMut> WriteStreamId for T {
-        fn put_streamid(&mut self, stream_id: &StreamId) {
-            use crate::varint::WriteVarInt;
-            self.put_varint(&(*stream_id).into());
-        }
+impl<T: bytes::BufMut> WriteStreamId for T {
+    fn put_streamid(&mut self, stream_id: &StreamId) {
+        self.put_varint(&(*stream_id).into());
     }
 }
 

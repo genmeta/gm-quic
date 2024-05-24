@@ -5,7 +5,7 @@
 // }
 
 use crate::{
-    streamid::{ext::be_streamid, StreamId},
+    streamid::{be_streamid, StreamId, WriteStreamId},
     varint::{be_varint, VarInt, WriteVarInt},
     SpaceId,
 };
@@ -57,7 +57,7 @@ pub trait WriteStopSendingFrame {
 impl<T: bytes::BufMut> WriteStopSendingFrame for T {
     fn put_stop_sending_frame(&mut self, frame: &StopSendingFrame) {
         self.put_u8(STOP_SENDING_FRAME_TYPE);
-        self.put_varint(&frame.stream_id.into());
+        self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.app_err_code);
     }
 }
