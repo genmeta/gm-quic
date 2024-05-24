@@ -1,4 +1,4 @@
-use crate::{crypto::TlsIO, frame_queue::ArcFrameQueue, path::ArcPath};
+use crate::{frame_queue::ArcFrameQueue, path::ArcPath};
 use futures::StreamExt;
 use qbase::{
     error::{Error, ErrorKind},
@@ -10,11 +10,7 @@ use qbase::{
     },
     SpaceId,
 };
-use qrecovery::{
-    crypto::{CryptoStreamReader, CryptoStreamWriter},
-    space::{Receive, SpaceFrame},
-};
-use rustls::quic::KeyChange;
+use qrecovery::space::{Receive, SpaceFrame};
 use tokio::sync::mpsc;
 
 fn parse_packet_and_then_dispatch(
@@ -209,53 +205,5 @@ pub(crate) async fn loop_read_space_frame_and_dispatch_to_space(
         // TODO: 处理连接错误
         // TODO: 0RTT和1RTT公用一个Space
         let _result = space.recv_frame(frame);
-    }
-}
-
-async fn exchange_hs(
-    tls_session: TlsIO,
-    (stream_reader, stream_writer): (CryptoStreamReader, CryptoStreamWriter),
-) -> std::io::Result<KeyChange> {
-    let (tls_reader, tls_writer) = tls_session.split_io();
-    let loop_read = tls_reader.loop_read_from(stream_reader);
-    let mut poll_writer = tls_writer.write_to(stream_writer);
-    let key_change = poll_writer.loop_write().await?;
-    loop_read.end().await?;
-    Ok(key_change)
-}
-
-pub(crate) async fn exchange_initial_crypto_msg_until_getting_handshake_key(
-    tls_session: TlsIO,
-    handshake_keys: ArcKeys,
-    initial_crypto_handler: (CryptoStreamReader, CryptoStreamWriter),
-) {
-    match exchange_hs(tls_session, initial_crypto_handler).await {
-        Ok(key_change) => match key_change {
-            KeyChange::Handshake { keys } => {
-                handshake_keys.set_keys(keys);
-            }
-            _ => unreachable!(),
-        },
-        Err(_) => {
-            todo!()
-        }
-    }
-}
-
-pub(crate) async fn exchange_handshake_crypto_msg_until_getting_1rtt_key(
-    tls_session: TlsIO,
-    one_rtt_keys: ArcOneRttKeys,
-    handshake_crypto_handler: (CryptoStreamReader, CryptoStreamWriter),
-) {
-    match exchange_hs(tls_session, handshake_crypto_handler).await {
-        Ok(key_change) => match key_change {
-            KeyChange::OneRtt { keys, next } => {
-                one_rtt_keys.set_keys(keys, next);
-            }
-            _ => unreachable!(),
-        },
-        Err(_) => {
-            todo!()
-        }
     }
 }

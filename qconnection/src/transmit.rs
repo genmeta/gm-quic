@@ -166,7 +166,7 @@ pub fn read_1rtt_data_and_encrypt(
     let (key_phase, pk) = pk.lock().unwrap().get_local();
     let mut clear_bits = ShortClearBits::with_pn_size(pn_size);
     clear_bits.set_key_phase(key_phase);
-    pkt_buffer[0] |= clear_bits.deref();
+    pkt_buffer[0] |= *clear_bits;
 
     // encrypt packet payload
     let (header, body) = pkt_buffer.split_at_mut(header_and_pn_size);

@@ -5,6 +5,7 @@ pub mod frame_queue;
 pub mod path;
 
 pub(crate) mod auto;
+pub(crate) mod handshake;
 pub mod transmit;
 
 use frame_queue::ArcFrameQueue;

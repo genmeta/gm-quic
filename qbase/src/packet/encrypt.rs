@@ -36,7 +36,7 @@ impl EncodeHeader for PacketWrapper<OneRttHeader> {
         }
         let mut clear_bits = ShortClearBits::from_pn(&pn);
         clear_bits.set_key_phase(key_phase_bit);
-        header[0] |= clear_bits.deref();
+        header[0] |= *clear_bits;
         payload.put_packet_number(pn);
     }
 }

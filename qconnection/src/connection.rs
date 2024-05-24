@@ -1,4 +1,4 @@
-use crate::{auto, crypto::TlsIO, frame_queue::ArcFrameQueue, path::ArcPath};
+use crate::{auto, crypto::TlsIO, frame_queue::ArcFrameQueue, handshake, path::ArcPath};
 use qbase::{
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
@@ -91,7 +91,7 @@ impl Connection {
             handshake_space.clone(),
         ));
         tokio::spawn(
-            auto::exchange_initial_crypto_msg_until_getting_handshake_key(
+            handshake::exchange_initial_crypto_msg_until_getting_handshake_key(
                 tls_session.clone(),
                 handshake_keys.clone(),
                 initial_crypto_handler,
@@ -132,11 +132,13 @@ impl Connection {
             data_space_frame_queue,
             data_space.clone(),
         ));
-        tokio::spawn(auto::exchange_handshake_crypto_msg_until_getting_1rtt_key(
-            tls_session,
-            one_rtt_keys,
-            handshake_crypto_handler,
-        ));
+        tokio::spawn(
+            handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
+                tls_session,
+                one_rtt_keys,
+                handshake_crypto_handler,
+            ),
+        );
 
         Self {
             initial_keys,
