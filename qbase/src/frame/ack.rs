@@ -9,10 +9,7 @@
 // }
 
 use crate::{
-    varint::{
-        ext::{be_varint, WriteVarInt},
-        VarInt,
-    },
+    varint::{be_varint, VarInt, WriteVarInt},
     SpaceId,
 };
 use nom::{combinator::map, sequence::tuple};
@@ -216,7 +213,7 @@ mod tests {
     use super::{
         ack_frame_with_flag, be_ecn_counts, AckFrame, EcnCounts, WriteAckFrame, ACK_FRAME_TYPE,
     };
-    use crate::varint::{ext::be_varint, VarInt};
+    use crate::varint::{be_varint, VarInt};
     use nom::combinator::flat_map;
 
     #[test]

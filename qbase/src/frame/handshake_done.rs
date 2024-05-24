@@ -42,7 +42,7 @@ mod tests {
     #[test]
     fn test_read_handshake_done_frame() {
         use super::be_handshake_done_frame;
-        use crate::varint::ext::be_varint;
+        use crate::varint::be_varint;
         use nom::combinator::flat_map;
         let buf = vec![super::HANDSHAKE_DONE_FRAME_TYPE];
         let (input, frame) = flat_map(be_varint, |frame_type| {

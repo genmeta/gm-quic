@@ -285,7 +285,7 @@ pub mod ext {
 
     /// nom parser for stream id
     pub fn be_streamid(input: &[u8]) -> nom::IResult<&[u8], StreamId> {
-        use crate::varint::ext::be_varint;
+        use crate::varint::be_varint;
         use nom::combinator::map;
         map(be_varint, StreamId::from)(input)
     }
@@ -296,7 +296,7 @@ pub mod ext {
 
     impl<T: bytes::BufMut> WriteStreamId for T {
         fn put_streamid(&mut self, stream_id: &StreamId) {
-            use crate::varint::ext::WriteVarInt;
+            use crate::varint::WriteVarInt;
             self.put_varint(&(*stream_id).into());
         }
     }

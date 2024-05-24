@@ -136,99 +136,96 @@ pub mod err {
     pub struct Overflow(pub(super) u64);
 }
 
-pub mod ext {
-    use super::{err, VarInt};
-    use bytes::{Buf, BufMut};
-    use nom::{bits::streaming::take, combinator::flat_map, error::Error, IResult};
+use bytes::{Buf, BufMut};
+use nom::{bits::streaming::take, combinator::flat_map, error::Error, IResult};
 
-    /// Parse a variable-length integer, can be used like `be_u8/be_u16/be_u32` etc.
-    /// ## Example
-    /// ```
-    /// use qbase::varint::ext::be_varint;
-    ///
-    /// let input = &[0b01000000, 0x01][..];
-    /// let result = be_varint(input);
-    /// assert_eq!(result, Ok((&[][..], 1u32.into())));
-    /// ```
-    pub fn be_varint(input: &[u8]) -> IResult<&[u8], VarInt> {
-        flat_map(take(2usize), |prefix: u8| {
-            take::<&[u8], u64, usize, Error<(&[u8], usize)>>((8 << prefix) - 2)
-        })((input, 0))
-        .map_err(|err| match err {
-            nom::Err::Incomplete(needed) => {
-                nom::Err::Incomplete(needed.map(|n| (n.get() + 7) / 8 - input.len()))
-            }
-            _ => unreachable!(),
-        })
-        .map(|((buf, _), value)| (buf, VarInt(value)))
-    }
-
-    pub trait BufExt {
-        fn get_varint(&mut self) -> Result<VarInt, err::Overflow>;
-    }
-
-    pub trait WriteVarInt {
-        fn put_varint(&mut self, value: &VarInt);
-    }
-
-    impl<T: Buf> BufExt for T {
-        fn get_varint(&mut self) -> Result<VarInt, err::Overflow> {
-            let remained = self.remaining();
-            let (remain, value) = be_varint(self.chunk()).map_err(|_| err::Overflow(0))?;
-            self.advance(remained - remain.len());
-            Ok(value)
+/// Parse a variable-length integer, can be used like `be_u8/be_u16/be_u32` etc.
+/// ## Example
+/// ```
+/// use qbase::varint::be_varint;
+///
+/// let input = &[0b01000000, 0x01][..];
+/// let result = be_varint(input);
+/// assert_eq!(result, Ok((&[][..], 1u32.into())));
+/// ```
+pub fn be_varint(input: &[u8]) -> IResult<&[u8], VarInt> {
+    flat_map(take(2usize), |prefix: u8| {
+        take::<&[u8], u64, usize, Error<(&[u8], usize)>>((8 << prefix) - 2)
+    })((input, 0))
+    .map_err(|err| match err {
+        nom::Err::Incomplete(needed) => {
+            nom::Err::Incomplete(needed.map(|n| (n.get() + 7) / 8 - input.len()))
         }
-    }
+        _ => unreachable!(),
+    })
+    .map(|((buf, _), value)| (buf, VarInt(value)))
+}
 
-    // 所有的BufMut都可以调用put_varint来写入VarInt了
-    impl<T: BufMut> WriteVarInt for T {
-        fn put_varint(&mut self, value: &VarInt) {
-            let x = value.0;
-            if x < 1u64 << 6 {
-                self.put_u8(x as u8);
-            } else if x < 1u64 << 14 {
-                self.put_u16(0b01 << 14 | x as u16);
-            } else if x < 2u64 << 30 {
-                self.put_u32(0b10 << 30 | x as u32);
-            } else if x < 2u64 << 62 {
-                self.put_u64(0b11 << 62 | x);
-            } else {
-                unreachable!("malformed VarInt")
-            }
+pub trait BufExt {
+    fn get_varint(&mut self) -> Result<VarInt, err::Overflow>;
+}
+
+pub trait WriteVarInt {
+    fn put_varint(&mut self, value: &VarInt);
+}
+
+impl<T: Buf> BufExt for T {
+    fn get_varint(&mut self) -> Result<VarInt, err::Overflow> {
+        let remained = self.remaining();
+        let (remain, value) = be_varint(self.chunk()).map_err(|_| err::Overflow(0))?;
+        self.advance(remained - remain.len());
+        Ok(value)
+    }
+}
+
+// 所有的BufMut都可以调用put_varint来写入VarInt了
+impl<T: BufMut> WriteVarInt for T {
+    fn put_varint(&mut self, value: &VarInt) {
+        let x = value.0;
+        if x < 1u64 << 6 {
+            self.put_u8(x as u8);
+        } else if x < 1u64 << 14 {
+            self.put_u16(0b01 << 14 | x as u16);
+        } else if x < 2u64 << 30 {
+            self.put_u32(0b10 << 30 | x as u32);
+        } else if x < 2u64 << 62 {
+            self.put_u64(0b11 << 62 | x);
+        } else {
+            unreachable!("malformed VarInt")
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ext::WriteVarInt, VarInt};
+    use super::{VarInt, WriteVarInt};
     use bytes::BufMut;
 
     #[test]
     fn test_be_varint() {
         {
             let buf = &[0b00000001u8, 0x01][..];
-            let r = super::ext::be_varint(buf);
+            let r = super::be_varint(buf);
             assert_eq!(r, Ok((&[0x01][..], VarInt(1))));
         }
         {
             let buf = &[0b01000000u8, 0x06u8][..];
-            let r = super::ext::be_varint(buf);
+            let r = super::be_varint(buf);
             assert_eq!(r, Ok((&[][..], VarInt(6))));
         }
         {
             let buf = &[0b10000000u8, 1, 1, 1][..];
-            let r = super::ext::be_varint(buf);
+            let r = super::be_varint(buf);
             assert_eq!(r, Ok((&[][..], VarInt(0x010101))));
         }
         {
             let buf = &[0b11000000u8, 1, 1, 1, 1, 1, 1, 1][..];
-            let r = super::ext::be_varint(buf);
+            let r = super::be_varint(buf);
             assert_eq!(r, Ok((&[][..], VarInt(0x01010101010101))));
         }
         {
             let buf = &[0b11000000u8, 0x06u8][..];
-            let r = super::ext::be_varint(buf);
+            let r = super::be_varint(buf);
             assert_eq!(r, Err(nom::Err::Incomplete(nom::Needed::new(6))));
         }
     }

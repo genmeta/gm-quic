@@ -37,7 +37,7 @@ mod tests {
     #[test]
     fn test_read_ping_frame() {
         use super::be_ping_frame;
-        use crate::varint::ext::be_varint;
+        use crate::varint::be_varint;
         use nom::combinator::flat_map;
         let buf = vec![PING_FRAME_TYPE];
         let (input, frame) = flat_map(be_varint, |frame_type| {

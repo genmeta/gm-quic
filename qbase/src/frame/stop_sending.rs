@@ -6,10 +6,7 @@
 
 use crate::{
     streamid::{ext::be_streamid, StreamId},
-    varint::{
-        ext::{be_varint, WriteVarInt},
-        VarInt,
-    },
+    varint::{be_varint, VarInt, WriteVarInt},
     SpaceId,
 };
 
@@ -73,7 +70,7 @@ mod tests {
     #[test]
     fn test_parse_stop_sending_frame() {
         use super::be_stop_sending_frame;
-        use crate::varint::ext::be_varint;
+        use crate::varint::be_varint;
         use nom::combinator::flat_map;
         let frame = StopSendingFrame {
             stream_id: VarInt(0x1234).into(),

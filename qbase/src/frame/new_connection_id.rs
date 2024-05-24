@@ -8,8 +8,8 @@
 // }
 
 use crate::{
-    cid::{ConnectionId, ResetToken},
-    varint::VarInt,
+    cid::{ConnectionId, ResetToken, WriteConnectionId, RESET_TOKEN_SIZE},
+    varint::{be_varint, VarInt, WriteVarInt},
     SpaceId,
 };
 
@@ -41,11 +41,6 @@ impl super::BeFrame for NewConnectionIdFrame {
         todo!()
     }
 }
-
-use crate::{
-    cid::{WriteConnectionId, RESET_TOKEN_SIZE},
-    varint::ext::{be_varint, WriteVarInt},
-};
 
 pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnectionIdFrame> {
     use nom::bytes::streaming::take;

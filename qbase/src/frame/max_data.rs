@@ -3,7 +3,10 @@
 //   Maximum Data (i),
 // }
 
-use crate::{varint::VarInt, SpaceId};
+use crate::{
+    varint::{be_varint, VarInt, WriteVarInt},
+    SpaceId,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MaxDataFrame {
@@ -33,7 +36,6 @@ impl super::BeFrame for MaxDataFrame {
 
 // nom parser for MAX_DATA_FRAME
 pub fn be_max_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxDataFrame> {
-    use crate::varint::ext::be_varint;
     use nom::combinator::map;
     map(be_varint, |max_data| MaxDataFrame { max_data })(input)
 }
@@ -45,7 +47,6 @@ pub trait WriteMaxDataFrame {
 
 impl<T: bytes::BufMut> WriteMaxDataFrame for T {
     fn put_max_data_frame(&mut self, frame: &MaxDataFrame) {
-        use crate::varint::ext::WriteVarInt;
         self.put_u8(MAX_DATA_FRAME_TYPE);
         self.put_varint(&frame.max_data);
     }
@@ -59,7 +60,7 @@ mod tests {
     #[test]
     fn test_read_max_data_frame() {
         use super::be_max_data_frame;
-        use crate::varint::ext::be_varint;
+        use crate::varint::be_varint;
         use nom::combinator::flat_map;
         let buf = vec![MAX_DATA_FRAME_TYPE, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {

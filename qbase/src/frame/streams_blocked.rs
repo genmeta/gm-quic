@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn test_read_streams_blocked_frame() {
         use super::streams_blocked_frame_with_dir;
-        use crate::varint::ext::be_varint;
+        use crate::varint::be_varint;
         use nom::combinator::flat_map;
 
         let buf = vec![STREAMS_BLOCKED_FRAME_TYPE, 0x52, 0x34];

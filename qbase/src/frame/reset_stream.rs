@@ -5,7 +5,11 @@
 //   Final Size (i),
 // }
 
-use crate::{streamid::StreamId, varint::VarInt, SpaceId};
+use crate::{
+    streamid::StreamId,
+    varint::{be_varint, VarInt, WriteVarInt},
+    SpaceId,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResetStreamFrame {
@@ -39,7 +43,7 @@ impl super::BeFrame for ResetStreamFrame {
 
 // nom parser for RESET_STREAM_FRAME
 pub fn be_reset_stream_frame(input: &[u8]) -> nom::IResult<&[u8], ResetStreamFrame> {
-    use crate::{streamid::ext::be_streamid, varint::ext::be_varint};
+    use crate::streamid::ext::be_streamid;
     use nom::{combinator::map, sequence::tuple};
     map(
         tuple((be_streamid, be_varint, be_varint)),
@@ -58,7 +62,7 @@ pub trait WriteResetStreamFrame {
 
 impl<T: bytes::BufMut> WriteResetStreamFrame for T {
     fn put_reset_stream_frame(&mut self, frame: &ResetStreamFrame) {
-        use crate::{streamid::ext::WriteStreamId, varint::ext::WriteVarInt};
+        use crate::streamid::ext::WriteStreamId;
         self.put_u8(RESET_STREAM_FRAME_TYPE);
         self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.app_error_code);
@@ -69,7 +73,7 @@ impl<T: bytes::BufMut> WriteResetStreamFrame for T {
 #[cfg(test)]
 mod tests {
     use super::{ResetStreamFrame, WriteResetStreamFrame, RESET_STREAM_FRAME_TYPE};
-    use crate::varint::{ext::be_varint, VarInt};
+    use crate::varint::{be_varint, VarInt};
     use nom::combinator::flat_map;
 
     #[test]

@@ -79,10 +79,7 @@ pub mod ext {
             self, be_connection_id, be_reset_token, ConnectionId, ResetToken, WriteConnectionId,
             WriteResetToken as _,
         },
-        varint::{
-            ext::{be_varint, WriteVarInt},
-            VarInt,
-        },
+        varint::{be_varint, VarInt, WriteVarInt},
     };
 
     use super::{PreferredAddress, TransportParameters};

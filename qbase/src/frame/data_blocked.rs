@@ -3,7 +3,10 @@
 //   Maximum Data (i),
 // }
 
-use crate::{varint::VarInt, SpaceId};
+use crate::{
+    varint::{be_varint, VarInt, WriteVarInt},
+    SpaceId,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DataBlockedFrame {
@@ -33,7 +36,6 @@ impl super::BeFrame for DataBlockedFrame {
 
 // nom parser for DATA_BLOCKED_FRAME
 pub fn be_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], DataBlockedFrame> {
-    use crate::varint::ext::be_varint;
     use nom::combinator::map;
     map(be_varint, |limit| DataBlockedFrame { limit })(input)
 }
@@ -45,7 +47,6 @@ pub trait WriteDataBlockedFrame {
 
 impl<T: bytes::BufMut> WriteDataBlockedFrame for T {
     fn put_data_blocked_frame(&mut self, frame: &DataBlockedFrame) {
-        use crate::varint::ext::WriteVarInt;
         self.put_u8(DATA_BLOCKED_FRAME_TYPE);
         self.put_varint(&frame.limit);
     }

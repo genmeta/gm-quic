@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn test_read_path_challenge_frame() {
         use super::be_path_challenge_frame;
-        use crate::varint::ext::be_varint;
+        use crate::varint::be_varint;
         use nom::combinator::flat_map;
         let buf = vec![
             super::PATH_CHALLENGE_FRAME_TYPE,

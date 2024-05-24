@@ -3,7 +3,11 @@
 //   Maximum Streams (i),
 // }
 
-use crate::{streamid::MAX_STREAM_ID, varint::VarInt, SpaceId};
+use crate::{
+    streamid::MAX_STREAM_ID,
+    varint::{be_varint, VarInt, WriteVarInt},
+    SpaceId,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaxStreamsFrame {
@@ -45,7 +49,7 @@ pub fn max_streams_frame_with_dir(
     dir: u8,
 ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], MaxStreamsFrame> {
     move |input: &[u8]| {
-        use crate::{streamid::Dir, varint::ext::be_varint};
+        use crate::streamid::Dir;
         let (remain, max_streams) = be_varint(input)?;
         if max_streams > MAX_STREAM_ID {
             Err(nom::Err::Error(nom::error::Error::new(
@@ -71,7 +75,6 @@ pub trait WriteMaxStreamsFrame {
 
 impl<T: bytes::BufMut> WriteMaxStreamsFrame for T {
     fn put_max_streams_frame(&mut self, frame: &MaxStreamsFrame) {
-        use crate::varint::ext::WriteVarInt;
         match frame {
             MaxStreamsFrame::Bi(stream_id) => {
                 self.put_u8(MAX_STREAMS_FRAME_TYPE);
@@ -88,7 +91,7 @@ impl<T: bytes::BufMut> WriteMaxStreamsFrame for T {
 #[cfg(test)]
 mod tests {
     use super::{MaxStreamsFrame, MAX_STREAMS_FRAME_TYPE};
-    use crate::varint::{ext::be_varint, VarInt};
+    use crate::varint::{be_varint, VarInt};
 
     #[test]
     fn test_read_max_streams_frame() {

@@ -4,10 +4,7 @@
 // }
 
 use crate::{
-    varint::{
-        ext::{be_varint, WriteVarInt},
-        VarInt,
-    },
+    varint::{be_varint, VarInt, WriteVarInt},
     SpaceId,
 };
 

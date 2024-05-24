@@ -4,7 +4,11 @@
 //   Maximum Stream Data (i),
 // }
 
-use crate::{streamid::StreamId, varint::VarInt, SpaceId};
+use crate::{
+    streamid::StreamId,
+    varint::{be_varint, VarInt, WriteVarInt},
+    SpaceId,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamDataBlockedFrame {
@@ -35,7 +39,7 @@ impl super::BeFrame for StreamDataBlockedFrame {
 
 // nom parser for STREAM_DATA_BLOCKED_FRAME
 pub fn be_stream_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], StreamDataBlockedFrame> {
-    use crate::{streamid::ext::be_streamid, varint::ext::be_varint};
+    use crate::streamid::ext::be_streamid;
     let (input, stream_id) = be_streamid(input)?;
     let (input, maximum_stream_data) = be_varint(input)?;
     Ok((
@@ -55,7 +59,6 @@ pub trait WriteStreamDataBlockedFrame {
 impl<T: bytes::BufMut> WriteStreamDataBlockedFrame for T {
     fn put_stream_data_blocked_frame(&mut self, frame: &StreamDataBlockedFrame) {
         use crate::streamid::ext::WriteStreamId;
-        use crate::varint::ext::WriteVarInt;
         self.put_u8(STREAM_DATA_BLOCKED_FRAME_TYPE);
         self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.maximum_stream_data);

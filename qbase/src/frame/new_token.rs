@@ -4,6 +4,7 @@
 //   Token (..),
 // }
 
+use crate::varint::{be_varint, VarInt, WriteVarInt};
 use crate::SpaceId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +36,6 @@ impl super::BeFrame for NewTokenFrame {
 
 // nom parser for NEW_TOKEN_FRAME
 pub fn be_new_token_frame(input: &[u8]) -> nom::IResult<&[u8], NewTokenFrame> {
-    use crate::varint::ext::be_varint;
     use nom::bytes::streaming::take;
     use nom::combinator::{flat_map, map};
     flat_map(be_varint, |length| {
@@ -53,7 +53,6 @@ pub trait WriteNewTokenFrame {
 
 impl<T: bytes::BufMut> WriteNewTokenFrame for T {
     fn put_new_token_frame(&mut self, frame: &NewTokenFrame) {
-        use crate::varint::{ext::WriteVarInt, VarInt};
         self.put_u8(NEW_TOKEN_FRAME_TYPE);
         self.put_varint(&VarInt::from_u32(frame.token.len() as u32));
         self.put_slice(&frame.token);

@@ -6,7 +6,7 @@
 // }
 
 use crate::{
-    varint::{VarInt, VARINT_MAX},
+    varint::{be_varint, VarInt, WriteVarInt, VARINT_MAX},
     SpaceId,
 };
 use std::ops::Range;
@@ -71,7 +71,6 @@ impl CryptoFrame {
 
 // nom parser for CRYPTO_FRAME
 pub fn be_crypto_frame(input: &[u8]) -> nom::IResult<&[u8], CryptoFrame> {
-    use crate::varint::ext::be_varint;
     let (remain, offset) = be_varint(input)?;
     let (remain, length) = be_varint(remain)?;
     if offset.into_inner() + offset.into_inner() > VARINT_MAX {
@@ -90,7 +89,6 @@ pub trait WriteCryptoFrame {
 
 impl<T: bytes::BufMut> WriteCryptoFrame for T {
     fn put_crypto_frame(&mut self, frame: &CryptoFrame, data: &[u8]) {
-        use crate::varint::ext::WriteVarInt;
         assert_eq!(frame.length.into_inner(), data.len() as u64);
         self.put_u8(CRYPTO_FRAME_TYPE);
         self.put_varint(&frame.offset);

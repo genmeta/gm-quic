@@ -77,7 +77,7 @@ impl ConnectionCloseFrame {
 pub fn connection_close_frame_at_layer(
     layer: u8,
 ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], ConnectionCloseFrame> {
-    use crate::varint::ext::be_varint;
+    use crate::varint::be_varint;
     use nom::bytes::streaming::take;
     move |input: &[u8]| {
         let (remain, error_code) = be_varint(input)?;
@@ -114,7 +114,7 @@ pub trait WriteConnectionCloseFrame {
 
 impl<T: bytes::BufMut> WriteConnectionCloseFrame for T {
     fn put_connection_close_frame(&mut self, frame: &ConnectionCloseFrame) {
-        use crate::varint::ext::WriteVarInt;
+        use crate::varint::WriteVarInt;
         let layer = if frame.frame_type.is_some() {
             QUIC_LAYER
         } else {
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn test_read_connection_close_frame() {
         use super::connection_close_frame_at_layer;
-        use crate::varint::ext::be_varint;
+        use crate::varint::be_varint;
         use nom::combinator::flat_map;
         let buf = vec![
             super::CONNECTION_CLOSE_FRAME_TYPE,
