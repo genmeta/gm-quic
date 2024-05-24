@@ -6,35 +6,42 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct RelayAddr {
+    agent: SocketAddr,
+    target: SocketAddr,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PathId {
+    Direct {
+        local: SocketAddr,
+        remote: SocketAddr,
+    },
+    Relay {
+        local: RelayAddr,
+        remote: RelayAddr,
+    },
+}
+
 #[derive(Debug)]
 pub struct Path {
-    // 以下4个字段，唯一标识一个Path。
-    // 理论上，一个Path当前只能使用一个对方连接id，即便历史上有多个对方连接id应用在该Path上；
-    // 一个Path可能有多个自己的连接id，收到一个目标连接id为任意自己的连接的，都要转到此Path上。
-    // 根据quic规定，一个连接可能没有连接id，而仅使用地址4元组来唯一标识。
-    local_addr: SocketAddr,
-    peer_addr: SocketAddr,
-    // local_cid: ConnectionId,
+    path_id: PathId,
     scid: ConnectionId, // scid.len == 0 表示没有使用连接id
     dcid: ConnectionId, // dcid.len == 0 表示没有使用连接id
 
     // 待发包队列
     frames: ArcFrameQueue<PathFrame>,
     rtt: Arc<Mutex<Rtt>>,
+    // TODO: 维护PTO、路径丢失等状态
 }
 
 pub struct ArcPath(Arc<Path>);
 
 impl ArcPath {
-    pub fn new(
-        local_addr: SocketAddr,
-        peer_addr: SocketAddr,
-        scid: ConnectionId,
-        dcid: ConnectionId,
-    ) -> Self {
+    pub fn new(path_id: PathId, scid: ConnectionId, dcid: ConnectionId) -> Self {
         Self(Arc::new(Path {
-            local_addr,
-            peer_addr,
+            path_id,
             scid,
             dcid,
             frames: ArcFrameQueue::new(),
