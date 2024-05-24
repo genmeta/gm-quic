@@ -167,7 +167,7 @@ pub mod ext {
         fn get_varint(&mut self) -> Result<VarInt, err::Overflow>;
     }
 
-    pub trait BufMutExt {
+    pub trait WriteVarInt {
         fn put_varint(&mut self, value: &VarInt);
     }
 
@@ -181,7 +181,7 @@ pub mod ext {
     }
 
     // 所有的BufMut都可以调用put_varint来写入VarInt了
-    impl<T: BufMut> BufMutExt for T {
+    impl<T: BufMut> WriteVarInt for T {
         fn put_varint(&mut self, value: &VarInt) {
             let x = value.0;
             if x < 1u64 << 6 {
@@ -201,7 +201,7 @@ pub mod ext {
 
 #[cfg(test)]
 mod tests {
-    use super::{ext::BufMutExt, VarInt};
+    use super::{ext::WriteVarInt, VarInt};
     use bytes::BufMut;
 
     #[test]

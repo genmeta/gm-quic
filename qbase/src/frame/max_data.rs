@@ -48,7 +48,7 @@ pub(super) mod ext {
 
     impl<T: bytes::BufMut> WriteMaxDataFrame for T {
         fn put_max_data_frame(&mut self, frame: &MaxDataFrame) {
-            use crate::varint::ext::BufMutExt as VarIntBufMutExt;
+            use crate::varint::ext::WriteVarInt;
             self.put_u8(super::MAX_DATA_FRAME_TYPE);
             self.put_varint(&frame.max_data);
         }

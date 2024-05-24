@@ -93,7 +93,7 @@ pub(super) mod ext {
 
     impl<T: bytes::BufMut> WriteCryptoFrame for T {
         fn put_crypto_frame(&mut self, frame: &CryptoFrame, data: &[u8]) {
-            use crate::varint::ext::BufMutExt as VarIntBufMutExt;
+            use crate::varint::ext::WriteVarInt;
             assert_eq!(frame.length.into_inner(), data.len() as u64);
             self.put_u8(CRYPTO_FRAME_TYPE);
             self.put_varint(&frame.offset);

@@ -128,7 +128,7 @@ pub(super) mod ext {
             ext::WritePacketType,
             long::{v1::Type as LongV1Type, Type as LongType},
         },
-        varint::ext::{be_varint, BufMutExt},
+        varint::ext::{be_varint, WriteVarInt},
     };
     use bytes::BufMut;
     use nom::{

@@ -56,8 +56,8 @@ pub(super) mod ext {
 
     impl<T: bytes::BufMut> WriteMaxStreamDataFrame for T {
         fn put_max_stream_data_frame(&mut self, frame: &MaxStreamDataFrame) {
-            use crate::streamid::ext::BufMutExt as StreamIdBufMutExt;
-            use crate::varint::ext::BufMutExt as VarIntBufMutExt;
+            use crate::streamid::ext::WriteStreamId;
+            use crate::varint::ext::WriteVarInt;
             self.put_u8(MAX_STREAM_DATA_FRAME_TYPE);
             self.put_streamid(&frame.stream_id);
             self.put_varint(&frame.max_stream_data);

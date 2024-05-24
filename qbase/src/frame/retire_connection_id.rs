@@ -50,7 +50,7 @@ pub(super) mod ext {
 
     impl<T: bytes::BufMut> WriteRetireConnectionIdFrame for T {
         fn put_retire_connection_id_frame(&mut self, frame: &RetireConnectionIdFrame) {
-            use crate::varint::ext::BufMutExt as VarIntBufMutExt;
+            use crate::varint::ext::WriteVarInt;
             self.put_u8(RETIRE_CONNECTION_ID_FRAME_TYPE);
             self.put_varint(&frame.sequence);
         }

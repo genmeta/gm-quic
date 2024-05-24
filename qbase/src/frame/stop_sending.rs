@@ -37,7 +37,7 @@ pub(super) mod ext {
     use super::StopSendingFrame;
     use crate::{
         streamid::ext::be_streamid,
-        varint::ext::{be_varint, BufMutExt as VarIntBufMutExt},
+        varint::ext::{be_varint, WriteVarInt},
     };
     use nom::{combinator::map, sequence::tuple};
 

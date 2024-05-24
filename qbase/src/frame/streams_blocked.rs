@@ -68,7 +68,7 @@ pub(super) mod ext {
 
     impl<T: bytes::BufMut> WriteStreamsBlockedFrame for T {
         fn put_streams_blocked_frame(&mut self, frame: &StreamsBlockedFrame) {
-            use crate::streamid::ext::BufMutExt as StreamIdBufMutExt;
+            use crate::streamid::ext::WriteStreamId;
             match frame {
                 StreamsBlockedFrame::Bi(stream_id) => {
                     self.put_u8(STREAMS_BLOCKED_FRAME_TYPE);

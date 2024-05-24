@@ -184,14 +184,14 @@ pub(super) mod ext {
 
     impl<T: bytes::BufMut> WriteAckFrame for T {
         fn put_ecn_counts(&mut self, ecn: &EcnCounts) {
-            use crate::varint::ext::BufMutExt;
+            use crate::varint::ext::WriteVarInt;
             self.put_varint(&ecn.ect0);
             self.put_varint(&ecn.ect1);
             self.put_varint(&ecn.ce);
         }
 
         fn put_ack_frame(&mut self, frame: &AckFrame) {
-            use crate::varint::{ext::BufMutExt, VarInt};
+            use crate::varint::{ext::WriteVarInt, VarInt};
 
             let mut frame_type = ACK_FRAME_TYPE;
             if frame.ecn.is_some() {

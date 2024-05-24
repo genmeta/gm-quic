@@ -61,9 +61,7 @@ pub(super) mod ext {
 
     impl<T: bytes::BufMut> WriteResetStreamFrame for T {
         fn put_reset_stream_frame(&mut self, frame: &ResetStreamFrame) {
-            use crate::{
-                streamid::ext::BufMutExt as SidBufMutExt, varint::ext::BufMutExt as VarIntBufMutExt,
-            };
+            use crate::{streamid::ext::WriteStreamId, varint::ext::WriteVarInt};
             self.put_u8(super::RESET_STREAM_FRAME_TYPE);
             self.put_streamid(&frame.stream_id);
             self.put_varint(&frame.app_error_code);

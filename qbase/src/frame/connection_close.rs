@@ -119,7 +119,7 @@ pub(super) mod ext {
 
     impl<T: bytes::BufMut> WriteConnectionCloseFrame for T {
         fn put_connection_close_frame(&mut self, frame: &ConnectionCloseFrame) {
-            use crate::varint::{ext::BufMutExt as VarIntBufMutExt, VarInt};
+            use crate::varint::{ext::WriteVarInt, VarInt};
             let layer = if frame.frame_type.is_some() {
                 QUIC_LAYER
             } else {

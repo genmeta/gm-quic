@@ -46,7 +46,7 @@ pub(super) mod ext {
     use super::NewConnectionIdFrame;
     use crate::{
         cid::{ResetToken, WriteConnectionId, RESET_TOKEN_SIZE},
-        varint::ext::{be_varint, BufMutExt},
+        varint::ext::{be_varint, WriteVarInt},
     };
 
     pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnectionIdFrame> {

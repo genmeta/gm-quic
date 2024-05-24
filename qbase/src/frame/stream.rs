@@ -184,9 +184,7 @@ pub(super) mod ext {
 
     impl<T: bytes::BufMut> WriteStreamFrame for T {
         fn put_stream_frame(&mut self, frame: &StreamFrame, data: &[u8]) {
-            use crate::{
-                streamid::ext::BufMutExt as SidBufMutExt, varint::ext::BufMutExt as VarIntBufMutExt,
-            };
+            use crate::{streamid::ext::WriteStreamId, varint::ext::WriteVarInt};
             let mut stream_type = STREAM_FRAME_TYPE;
             if frame.offset.into_inner() != 0 {
                 stream_type |= 0x04;

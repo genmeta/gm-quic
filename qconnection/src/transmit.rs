@@ -7,7 +7,7 @@ use qbase::{
         keys::{ArcKeys, ArcOneRttKeys},
         LongClearBits, OneRttHeader, ShortClearBits, WritePacketNumber,
     },
-    varint::{ext::BufMutExt, VarInt},
+    varint::{ext::WriteVarInt, VarInt},
 };
 use qrecovery::{
     space::{SpaceIO, TryTransmit},

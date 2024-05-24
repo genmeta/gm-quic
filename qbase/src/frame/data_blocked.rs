@@ -48,7 +48,7 @@ pub(super) mod ext {
 
     impl<T: bytes::BufMut> WriteDataBlockedFrame for T {
         fn put_data_blocked_frame(&mut self, frame: &DataBlockedFrame) {
-            use crate::varint::ext::BufMutExt as VarIntBufMutExt;
+            use crate::varint::ext::WriteVarInt;
             self.put_u8(DATA_BLOCKED_FRAME_TYPE);
             self.put_varint(&frame.limit);
         }

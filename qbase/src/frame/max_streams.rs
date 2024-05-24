@@ -75,7 +75,7 @@ pub(super) mod ext {
 
     impl<T: bytes::BufMut> WriteMaxStreamsFrame for T {
         fn put_max_streams_frame(&mut self, frame: &MaxStreamsFrame) {
-            use crate::varint::ext::BufMutExt as VarIntBufMutExt;
+            use crate::varint::ext::WriteVarInt;
             match frame {
                 MaxStreamsFrame::Bi(stream_id) => {
                     self.put_u8(MAX_STREAMS_FRAME_TYPE);

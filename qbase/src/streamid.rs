@@ -290,13 +290,13 @@ pub mod ext {
         map(be_varint, StreamId::from)(input)
     }
 
-    pub trait BufMutExt {
+    pub trait WriteStreamId {
         fn put_streamid(&mut self, stream_id: &StreamId);
     }
 
-    impl<T: bytes::BufMut> BufMutExt for T {
+    impl<T: bytes::BufMut> WriteStreamId for T {
         fn put_streamid(&mut self, stream_id: &StreamId) {
-            use crate::varint::ext::BufMutExt as VarIntBufMutExt;
+            use crate::varint::ext::WriteVarInt;
             self.put_varint(&(*stream_id).into());
         }
     }

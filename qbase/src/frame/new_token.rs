@@ -56,7 +56,7 @@ pub(super) mod ext {
 
     impl<T: bytes::BufMut> WriteNewTokenFrame for T {
         fn put_new_token_frame(&mut self, frame: &NewTokenFrame) {
-            use crate::varint::{ext::BufMutExt as VarIntBufMutExt, VarInt};
+            use crate::varint::{ext::WriteVarInt, VarInt};
             self.put_u8(NEW_TOKEN_FRAME_TYPE);
             self.put_varint(&VarInt::from_u32(frame.token.len() as u32));
             self.put_slice(&frame.token);

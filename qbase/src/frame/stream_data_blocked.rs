@@ -59,8 +59,8 @@ pub(super) mod ext {
 
     impl<T: bytes::BufMut> WriteStreamDataBlockedFrame for T {
         fn put_stream_data_blocked_frame(&mut self, frame: &StreamDataBlockedFrame) {
-            use crate::streamid::ext::BufMutExt as StreamIdBufMutExt;
-            use crate::varint::ext::BufMutExt as VarIntBufMutExt;
+            use crate::streamid::ext::WriteStreamId;
+            use crate::varint::ext::WriteVarInt;
             self.put_u8(STREAM_DATA_BLOCKED_FRAME_TYPE);
             self.put_streamid(&frame.stream_id);
             self.put_varint(&frame.maximum_stream_data);

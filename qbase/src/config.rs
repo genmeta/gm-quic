@@ -71,7 +71,7 @@ pub struct PreferredAddress {
 pub mod ext {
     use std::time::Duration;
 
-    use bytes::BufMut as _;
+    use bytes::BufMut;
     use nom::{combinator::map, number::complete::be_u8};
 
     use crate::{
@@ -80,7 +80,7 @@ pub mod ext {
             WriteResetToken as _,
         },
         varint::{
-            ext::{be_varint, BufMutExt as _},
+            ext::{be_varint, WriteVarInt},
             VarInt,
         },
     };
@@ -286,11 +286,9 @@ impl Default for TransportParameters {
 
 #[cfg(test)]
 mod test {
-    use std::net::Ipv4Addr;
-
-    use crate::cid::{be_connection_id, RESET_TOKEN_SIZE};
-
     use super::{ext::BufMutExt as _, *};
+    use crate::cid::{be_connection_id, RESET_TOKEN_SIZE};
+    use std::net::Ipv4Addr;
 
     #[test]
     fn coding() {
