@@ -33,7 +33,8 @@ pub struct Path {
     // 待发包队列
     frames: ArcFrameQueue<PathFrame>,
     rtt: Arc<Mutex<Rtt>>,
-    // TODO: 维护PTO、路径丢失等状态
+    // TODO: 维护PTO、路径是否丢失等状态，还有BBR控制器
+    // 可重传的帧队列，因为判定了该path的包，要重传。但也可反馈给SentPacketManager，让其决定是否重传
 }
 
 pub struct ArcPath(Arc<Path>);

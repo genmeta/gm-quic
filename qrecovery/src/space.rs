@@ -3,6 +3,7 @@ use super::{
     index_deque::IndexDeque,
     rtt::Rtt,
     streams::{NoStreams, Streams, TransmitStream},
+    tx::{Packet, Payload, Record},
 };
 use bytes::{BufMut, Bytes};
 use qbase::{
@@ -43,15 +44,6 @@ pub trait Receive {
 
     fn recv_frame(&self, frame: SpaceFrame) -> Result<(), Error>;
 }
-
-#[derive(Debug, Clone)]
-enum Record {
-    Reliable(ReliableFrame),
-    Data(DataFrame),
-    Ack(AckRecord),
-}
-
-type Payload = Vec<Record>;
 
 #[derive(Debug, Clone, Default)]
 enum State {
@@ -100,23 +92,12 @@ impl State {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Packet {
-    send_time: Instant,
-    payload: Payload,
-    sent_bytes: usize,
-    is_ack_eliciting: bool,
-}
-
 const PACKET_THRESHOLD: u64 = 3;
 
 /// 可靠空间的抽象实现，需要实现上述所有trait
 /// 可靠空间中的重传、确认，由可靠空间内部实现，无需外露
 #[derive(Debug)]
-struct Space<ST>
-where
-    ST: TransmitStream,
-{
+struct Space<ST: TransmitStream> {
     space_id: SpaceId,
     // 将要发出的数据帧，包括重传的数据帧；可以是外部的功能帧，也可以是具体传输空间内部的
     // 起到“信号”作用的信令帧，比如数据空间内部的各类通信帧。

@@ -1,12 +1,12 @@
 // pub mod data_space;
+pub mod crypto;
+pub mod index_deque;
 pub mod recv;
 pub mod rtt;
 pub mod send;
 pub mod space;
-
-pub mod crypto;
-pub mod index_deque;
 pub mod streams;
+pub mod tx;
 
 #[derive(Debug)]
 pub enum AppStream {
