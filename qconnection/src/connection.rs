@@ -10,7 +10,7 @@ use qbase::{
 use qrecovery::{
     crypto::CryptoStream,
     frame_queue::ArcFrameQueue,
-    space::SpaceIO,
+    space::ArcSpace,
     streams::{NoStreams, Streams},
 };
 use tokio::sync::mpsc;
@@ -26,19 +26,19 @@ pub struct Connection {
     initial_keys: ArcKeys,
     initial_pkt_queue: RxPacketsQueue<InitialPacket>,
     // 发送数据，也可以随着升级到Handshake空间而丢弃
-    initial_space: SpaceIO<NoStreams>,
+    initial_space: ArcSpace<NoStreams>,
 
     // An endpoint MUST discard its Handshake keys when the TLS handshake is confirmed.
     handshake_keys: ArcKeys,
     handshake_pkt_queue: RxPacketsQueue<HandshakePacket>,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
-    handshake_space: SpaceIO<NoStreams>,
+    handshake_space: ArcSpace<NoStreams>,
 
     zero_rtt_keys: ArcKeys,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
     zero_rtt_pkt_queue: RxPacketsQueue<ZeroRttPacket>,
     one_rtt_pkt_queue: mpsc::UnboundedSender<(OneRttPacket, ArcPath)>,
-    data_space: SpaceIO<Streams>,
+    data_space: ArcSpace<Streams>,
     spin: SpinBit,
 }
 
@@ -52,7 +52,7 @@ impl Connection {
         let initial_crypto_handler = initial_crypto_stream.split();
         let initial_keys = ArcKeys::new_pending();
         let initial_space_frame_queue = ArcFrameQueue::new();
-        let initial_space = SpaceIO::new_initial(initial_crypto_stream);
+        let initial_space = ArcSpace::new_initial_space(initial_crypto_stream);
         tokio::spawn(
             auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
                 initial_pkt_rx,
@@ -75,7 +75,7 @@ impl Connection {
         let handshake_crypto_handler = handshake_crypto_stream.split();
         let handshake_keys = ArcKeys::new_pending();
         let handshake_space_frame_queue = ArcFrameQueue::new();
-        let handshake_space = SpaceIO::new_initial(handshake_crypto_stream);
+        let handshake_space = ArcSpace::new_initial_space(handshake_crypto_stream);
         tokio::spawn(
             auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
                 handshake_pkt_rx,
@@ -107,8 +107,8 @@ impl Connection {
         let one_rtt_crypto_stream = CryptoStream::new(1000_000, 1000_000);
         let _one_rtt_crypto_handler = one_rtt_crypto_stream.split();
         let streams = Streams::with_role_and_limit(Role::Client, 20, 10);
-        let data_space = SpaceIO::new(one_rtt_crypto_stream, streams);
         let data_space_frame_queue = ArcFrameQueue::new();
+        let data_space = ArcSpace::new_data_space(one_rtt_crypto_stream, streams);
         tokio::spawn(
             auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
                 zero_rtt_pkt_rx,

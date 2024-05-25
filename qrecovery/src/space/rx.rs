@@ -3,12 +3,13 @@ use crate::{
     frame_queue::ArcFrameQueue,
     index_deque::IndexDeque,
     space::SpaceFrame,
-    streams::TransmitStream,
+    streams::{Streams, TransmitStream},
 };
 use futures::StreamExt;
 use qbase::{
     error::Error,
     frame::{io::WriteAckFrame, AckFrame, AckRecord, BeFrame, DataFrame},
+    packet::PacketNumber,
     varint::{VarInt, VARINT_MAX},
     SpaceId,
 };
@@ -103,6 +104,10 @@ impl<ST: TransmitStream> Receiver<ST> {
             crypto_stream,
             data_stream,
         }
+    }
+
+    fn expected_pn(&self) -> u64 {
+        self.rcvd_packets.largest()
     }
 
     fn has_rcvd(&self, pktid: u64) -> bool {
@@ -225,6 +230,12 @@ impl<ST: TransmitStream> Receiver<ST> {
     }
 }
 
+impl Receiver<Streams> {
+    fn upgrade(&mut self) {
+        self.space_id = SpaceId::OneRtt;
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ArcReceiver<ST: TransmitStream> {
     inner: Arc<Mutex<Receiver<ST>>>,
@@ -235,7 +246,7 @@ impl<ST: TransmitStream + Send + 'static> ArcReceiver<ST> {
         space_id: SpaceId,
         crypto_stream: CryptoStream,
         data_stream: ST,
-        frame_queue: ArcFrameQueue<SpaceFrame>,
+        recv_frame_queue: ArcFrameQueue<SpaceFrame>,
         ack_record_rx: UnboundedReceiver<u64>,
     ) -> Self {
         let receiver = Arc::new(Mutex::new(Receiver::new(
@@ -247,9 +258,10 @@ impl<ST: TransmitStream + Send + 'static> ArcReceiver<ST> {
         tokio::spawn({
             let receiver = receiver.clone();
             async move {
-                let mut frame_queue = frame_queue;
+                let mut frame_queue = recv_frame_queue;
                 while let Some(frame) = frame_queue.next().await {
                     let mut receiver = receiver.lock().unwrap();
+                    // TODO: 可能某些帧引起违反协议的错误，需要处理错误
                     let _ = receiver.recv_frame(frame);
                 }
             }
@@ -267,10 +279,23 @@ impl<ST: TransmitStream + Send + 'static> ArcReceiver<ST> {
     }
 }
 
+impl ArcReceiver<Streams> {
+    pub fn upgrade(&self) {
+        self.inner.lock().unwrap().upgrade();
+    }
+}
+
 impl<ST: TransmitStream> ArcReceiver<ST> {
-    /// 重复数据包不重复处理，收到数据包并解析出包号后，要询问数据包是否曾收到过
-    pub fn has_rcvd(&self, pktid: u64) -> bool {
-        self.inner.lock().unwrap().has_rcvd(pktid)
+    /// 收到数据包，要根据已收数据包的最大包号，计算真正的包号
+    /// 收到数据包并解析出包号后，要询问数据包是否曾收到过，重复数据包不重复处理
+    pub fn receive_pkt_no(&self, pn: PacketNumber) -> Result<u64, u64> {
+        let mut guard = self.inner.lock().unwrap();
+        let pkt_id = pn.decode(guard.expected_pn());
+        if !guard.has_rcvd(pkt_id) {
+            Ok(pkt_id)
+        } else {
+            Err(pkt_id)
+        }
     }
 
     /// 如果真发出了AckFrame，那发包记录要记下AckRecord
@@ -298,7 +323,7 @@ impl<ST: TransmitStream> ArcReceiver<ST> {
         None
     }
 
-    /// 当收到一个数据包，该数据包正常，且能被正常解析出帧，需要等级该数据包的收取状态
+    /// 当收到一个数据包，该数据包正常，且能被正常解析出帧，需要登记该数据包的收取状态
     pub fn record(&self, pkt_id: u64, is_ack_eliciting: bool) {
         self.inner.lock().unwrap().record(pkt_id, is_ack_eliciting);
     }

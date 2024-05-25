@@ -10,7 +10,7 @@ use qbase::{
     varint::{VarInt, WriteVarInt},
 };
 use qrecovery::{
-    space::{SpaceIO, TryTransmit},
+    space::{ArcSpace, TransmitPacket},
     streams::{Streams, TransmitStream},
 };
 use std::ops::Deref;
@@ -33,7 +33,7 @@ pub fn read_space_and_encrypt<S, ST>(
     header: LongHeader<S>,
     fill_policy: FillPolicy,
     keys: ArcKeys,
-    space: SpaceIO<ST>,
+    space: ArcSpace<ST>,
 ) -> (usize, usize)
 where
     for<'a> &'a mut [u8]: Write<S>,
@@ -55,7 +55,7 @@ where
         return (0, 0);
     }
 
-    let mut body_len = space.try_read(body_buf);
+    let mut body_len = space.read(body_buf);
     if body_len == 0 {
         // nothing to send
         return (0, 0);
@@ -133,7 +133,7 @@ pub fn read_1rtt_data_and_encrypt(
     buffer: &mut [u8],
     header: OneRttHeader,
     keys: ArcOneRttKeys,
-    space: SpaceIO<Streams>,
+    space: ArcSpace<Streams>,
 ) -> usize {
     let (hpk, pk) = match keys.get_local_keys() {
         Some(keys) => keys,
@@ -150,7 +150,7 @@ pub fn read_1rtt_data_and_encrypt(
         return 0;
     }
 
-    let body_len = space.try_read(body_buf);
+    let body_len = space.read(body_buf);
     if body_len == 0 {
         return 0;
     }

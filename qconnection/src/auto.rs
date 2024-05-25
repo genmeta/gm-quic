@@ -12,7 +12,7 @@ use qbase::{
 };
 use qrecovery::{
     frame_queue::ArcFrameQueue,
-    space::{Receive, SpaceFrame},
+    space::{ReceivePacket, SpaceFrame},
 };
 use tokio::sync::mpsc;
 
@@ -101,7 +101,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
     space_frame_queue: ArcFrameQueue<SpaceFrame>,
     need_close_space_frame_queue_at_end: bool,
 ) where
-    S: Receive,
+    S: ReceivePacket,
     P: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
 {
     while let Some((mut packet, path)) = packet_rx.recv().await {
@@ -113,13 +113,15 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
             }
 
             let pn = packet.decode_header().unwrap();
-            let pkt_id = pn.decode(space.expected_pn());
-            if space.has_rcvd(pkt_id) {
-                // Duplicate packet, discard. QUIC does not allow duplicate packets.
-                // Is it an error to receive duplicate packets? Definitely not,
-                // otherwise it would be too vulnerable to replay attacks.
-                continue;
-            }
+            let pkt_id = match space.receive_pkt_no(pn) {
+                Ok(id) => id,
+                Err(_id) => {
+                    // Duplicate packet, discard. QUIC does not allow duplicate packets.
+                    // Is it an error to receive duplicate packets? Definitely not,
+                    // otherwise it would be too vulnerable to replay attacks.
+                    continue;
+                }
+            };
 
             match packet.decrypt_packet(pkt_id, pn.size(), &k.as_ref().remote.packet) {
                 Ok(payload) => {
@@ -154,7 +156,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
 pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queue(
     mut packet_rx: mpsc::UnboundedReceiver<(OneRttPacket, ArcPath)>,
     keys: ArcOneRttKeys,
-    space: impl Receive,
+    space: impl ReceivePacket,
     conn_frame_queue: ArcFrameQueue<ConnFrame>,
     space_frame_queue: ArcFrameQueue<SpaceFrame>,
 ) {
@@ -168,7 +170,16 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
             }
 
             let (pn, key_phase) = packet.decode_header().unwrap();
-            let pkt_id = pn.decode(space.expected_pn());
+            let pkt_id = match space.receive_pkt_no(pn) {
+                Ok(id) => id,
+                Err(_id) => {
+                    // Duplicate packet, discard. QUIC does not allow duplicate packets.
+                    // Is it an error to receive duplicate packets? Definitely not,
+                    // otherwise it would be too vulnerable to replay attacks.
+                    continue;
+                }
+            };
+
             // 要根据key_phase_bit来获取packet key
             let pkt_key = pk.lock().unwrap().get_remote(key_phase, pkt_id);
             match packet.decrypt_packet(pkt_id, pn.size(), &pkt_key.as_ref()) {
@@ -198,11 +209,12 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
     space_frame_queue.close();
 }
 
+/*
 /// Continuously read from the frame queue and hand it over to the space for processing.
 /// This task will automatically end with the close of space frames, no extra maintenance is needed.
 pub(crate) async fn loop_read_space_frame_and_dispatch_to_space(
     mut space_frames_queue: ArcFrameQueue<SpaceFrame>,
-    space: impl Receive,
+    space: impl ReceivePacket,
 ) {
     while let Some(frame) = space_frames_queue.next().await {
         // TODO: 处理连接错误
@@ -210,3 +222,4 @@ pub(crate) async fn loop_read_space_frame_and_dispatch_to_space(
         let _result = space.recv_frame(frame);
     }
 }
+*/

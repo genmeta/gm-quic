@@ -39,7 +39,7 @@ pub struct Packet {
 }
 
 #[derive(Debug)]
-struct Transmiter<ST: TransmitStream> {
+struct Transmitter<ST: TransmitStream> {
     space_id: SpaceId,
     // 以下三个字段，是为了重传需要，也为了发送数据需要
     frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
@@ -57,8 +57,8 @@ struct Transmiter<ST: TransmitStream> {
     largest_acked_pktid: Option<u64>,
 }
 
-impl<ST: TransmitStream> Transmiter<ST> {
-    pub fn new(
+impl<ST: TransmitStream> Transmitter<ST> {
+    fn new(
         space_id: SpaceId,
         crypto_stream: CryptoStream,
         data_stream: ST,
@@ -266,25 +266,30 @@ impl<ST: TransmitStream> Transmiter<ST> {
     }
 }
 
-impl Transmiter<Streams> {
-    fn write_conn_frame(&mut self, frame: ConnFrame) {
+impl Transmitter<Streams> {
+    fn upgrade(&mut self) {
+        self.space_id = SpaceId::OneRtt;
+    }
+
+    fn write_conn_frame(&self, frame: ConnFrame) {
         assert!(frame.belongs_to(self.space_id));
         let mut frames = self.frames.lock().unwrap();
         frames.push_back(ReliableFrame::Conn(frame));
     }
 
-    fn write_stream_frame(&mut self, frame: StreamCtlFrame) {
+    fn write_stream_frame(&self, frame: StreamCtlFrame) {
         assert!(frame.belongs_to(self.space_id));
         let mut frames = self.frames.lock().unwrap();
         frames.push_back(ReliableFrame::Stream(frame));
     }
 }
 
-pub struct ArcTransmiter<ST: TransmitStream> {
-    inner: Arc<Mutex<Transmiter<ST>>>,
+#[derive(Clone, Debug)]
+pub struct ArcTransmitter<ST: TransmitStream> {
+    inner: Arc<Mutex<Transmitter<ST>>>,
 }
 
-impl<ST: TransmitStream + Send + 'static> ArcTransmiter<ST> {
+impl<ST: TransmitStream + Send + 'static> ArcTransmitter<ST> {
     /// 一个Transmitter，不仅仅要发送数据，还要接收AckFrame，以及丢包序号去重传。
     /// 然后，接收端提供的AckFrame如果被确认了，也需要通知到接收端
     pub fn new(
@@ -295,7 +300,7 @@ impl<ST: TransmitStream + Send + 'static> ArcTransmiter<ST> {
         mut ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         mut loss_pkt_rx: UnboundedReceiver<u64>,
     ) -> Self {
-        let transmitter = Arc::new(Mutex::new(Transmiter::new(
+        let transmitter = Arc::new(Mutex::new(Transmitter::new(
             space_id,
             crypto_stream,
             data_stream,
@@ -327,7 +332,7 @@ impl<ST: TransmitStream + Send + 'static> ArcTransmiter<ST> {
     }
 }
 
-impl<ST: TransmitStream> ArcTransmiter<ST> {
+impl<ST: TransmitStream> ArcTransmitter<ST> {
     pub fn next_pkt_no(&self) -> (u64, PacketNumber) {
         self.inner.lock().unwrap().next_pkt_no()
     }
@@ -341,7 +346,11 @@ impl<ST: TransmitStream> ArcTransmiter<ST> {
     }
 }
 
-impl ArcTransmiter<Streams> {
+impl ArcTransmitter<Streams> {
+    pub fn upgrade(&self) {
+        self.inner.lock().unwrap().upgrade();
+    }
+
     pub fn write_conn_frame(&self, frame: ConnFrame) {
         self.inner.lock().unwrap().write_conn_frame(frame);
     }
