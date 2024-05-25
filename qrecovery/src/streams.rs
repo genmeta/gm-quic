@@ -20,6 +20,7 @@ use std::{
 /// 专门根据Stream相关帧处理streams相关逻辑
 #[derive(Debug)]
 pub struct Streams {
+    role: Role,
     stream_ids: StreamIds,
     // 所有流的待写端，要发送数据，就得向这些流索取
     output: HashMap<StreamId, Outgoing>,
@@ -88,7 +89,7 @@ impl TransmitStream for Streams {
     fn recv_data(&mut self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error> {
         let sid = stream_frame.id;
         // 对方必须是发送端，才能发送此帧
-        if sid.role() != self.stream_ids.role() {
+        if sid.role() != self.role {
             // 对方的sid，看是否跳跃，把跳跃的流给创建好
             self.try_accept_sid(sid)
                 .map_err(wrapper_error(stream_frame.frame_type()))?;
@@ -114,7 +115,7 @@ impl TransmitStream for Streams {
             StreamCtlFrame::ResetStream(reset_frame) => {
                 let sid = reset_frame.stream_id;
                 // 对方必须是发送端，才能发送此帧
-                if sid.role() != self.stream_ids.role() {
+                if sid.role() != self.role {
                     self.try_accept_sid(sid)
                         .map_err(wrapper_error(reset_frame.frame_type()))?;
                 } else {
@@ -134,7 +135,7 @@ impl TransmitStream for Streams {
             StreamCtlFrame::StopSending(stop) => {
                 let sid = stop.stream_id;
                 // 对方必须是接收端，才能发送此帧
-                if sid.role() != self.stream_ids.role() {
+                if sid.role() != self.role {
                     // 对方创建的单向流，接收端是我方，不可能收到对方的StopSendingFrame
                     if sid.dir() == Dir::Uni {
                         return Err(Error::new(
@@ -162,7 +163,7 @@ impl TransmitStream for Streams {
             StreamCtlFrame::MaxStreamData(max_stream_data) => {
                 let sid = max_stream_data.stream_id;
                 // 对方必须是接收端，才能发送此帧
-                if sid.role() != self.stream_ids.role() {
+                if sid.role() != self.role {
                     // 对方创建的单向流，接收端是我方，不可能收到对方的MaxStreamData
                     if sid.dir() == Dir::Uni {
                         return Err(Error::new(
@@ -181,7 +182,7 @@ impl TransmitStream for Streams {
             StreamCtlFrame::StreamDataBlocked(stream_data_blocked) => {
                 let sid = stream_data_blocked.stream_id;
                 // 对方必须是发送端，才能发送此帧
-                if sid.role() != self.stream_ids.role() {
+                if sid.role() != self.role {
                     self.try_accept_sid(sid)
                         .map_err(wrapper_error(stream_data_blocked.frame_type()))?;
                 } else {
@@ -200,10 +201,14 @@ impl TransmitStream for Streams {
                 // 主要更新我方能创建的单双向流
                 match max_streams {
                     MaxStreamsFrame::Bi(val) => {
-                        self.stream_ids.set_max_sid(Dir::Bi, val.into_inner());
+                        self.stream_ids
+                            .local
+                            .permit_max_sid(Dir::Bi, val.into_inner());
                     }
                     MaxStreamsFrame::Uni(val) => {
-                        self.stream_ids.set_max_sid(Dir::Uni, val.into_inner());
+                        self.stream_ids
+                            .local
+                            .permit_max_sid(Dir::Uni, val.into_inner());
                     }
                 };
             }
@@ -246,9 +251,10 @@ impl TransmitStream for NoStreams {
 }
 
 impl Streams {
-    pub fn new(stream_ids: StreamIds) -> Self {
+    pub fn with_role_and_limit(role: Role, max_bi_streams: u64, max_uni_streams: u64) -> Self {
         Self {
-            stream_ids,
+            role,
+            stream_ids: StreamIds::with_role_and_limit(role, max_bi_streams, max_uni_streams),
             output: HashMap::new(),
             input: HashMap::new(),
             listener: Listener::default(),
@@ -257,7 +263,7 @@ impl Streams {
     }
 
     pub fn poll_create(&mut self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<AppStream>> {
-        if let Some(sid) = ready!(self.stream_ids.poll_alloc_sid(cx, dir)) {
+        if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, dir)) {
             let writer = self.create_sender(sid);
             if dir == Dir::Bi {
                 let reader = self.create_recver(sid);
@@ -275,10 +281,10 @@ impl Streams {
     }
 
     fn try_accept_sid(&mut self, sid: StreamId) -> Result<(), ExceedLimitError> {
-        let result = self.stream_ids.try_accept_sid(sid)?;
+        let result = self.stream_ids.remote.try_accept_sid(sid)?;
         match result {
             AcceptSid::Old => Ok(()),
-            AcceptSid::New(need_create, _extend_max_streams) => {
+            AcceptSid::New(need_create) => {
                 for sid in need_create {
                     let reader = self.create_recver(sid);
                     let stream = if sid.dir() == Dir::Bi {

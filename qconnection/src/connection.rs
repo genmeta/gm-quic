@@ -106,7 +106,7 @@ impl Connection {
         let one_rtt_keys = ArcOneRttKeys::new_pending();
         let one_rtt_crypto_stream = CryptoStream::new(1000_000, 1000_000);
         let _one_rtt_crypto_handler = one_rtt_crypto_stream.split();
-        let streams = Streams::new(StreamIds::new(Role::Client, 20, 10));
+        let streams = Streams::with_role_and_limit(Role::Client, 20, 10);
         let data_space = SpaceIO::new(one_rtt_crypto_stream, streams);
         let data_space_frame_queue = ArcFrameQueue::new();
         tokio::spawn(
