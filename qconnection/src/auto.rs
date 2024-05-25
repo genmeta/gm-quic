@@ -1,4 +1,4 @@
-use crate::{frame_queue::ArcFrameQueue, path::ArcPath};
+use crate::path::ArcPath;
 use futures::StreamExt;
 use qbase::{
     error::{Error, ErrorKind},
@@ -10,7 +10,10 @@ use qbase::{
     },
     SpaceId,
 };
-use qrecovery::space::{Receive, SpaceFrame};
+use qrecovery::{
+    frame_queue::ArcFrameQueue,
+    space::{Receive, SpaceFrame},
+};
 use tokio::sync::mpsc;
 
 fn parse_packet_and_then_dispatch(

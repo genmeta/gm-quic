@@ -1,4 +1,4 @@
-use crate::{auto, crypto::TlsIO, frame_queue::ArcFrameQueue, handshake, path::ArcPath};
+use crate::{auto, crypto::TlsIO, handshake, path::ArcPath};
 use qbase::{
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
@@ -9,6 +9,7 @@ use qbase::{
 };
 use qrecovery::{
     crypto::CryptoStream,
+    frame_queue::ArcFrameQueue,
     space::SpaceIO,
     streams::{NoStreams, Streams},
 };

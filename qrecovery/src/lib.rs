@@ -1,8 +1,10 @@
 // pub mod data_space;
 pub mod crypto;
+pub mod frame_queue;
 pub mod index_deque;
 pub mod recv;
 pub mod rtt;
+pub mod rx;
 pub mod send;
 pub mod space;
 pub mod streams;

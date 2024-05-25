@@ -1,6 +1,5 @@
-use super::ArcFrameQueue;
 use qbase::{cid::ConnectionId, frame::PathFrame};
-use qrecovery::rtt::Rtt;
+use qrecovery::{frame_queue::ArcFrameQueue, rtt::Rtt};
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},

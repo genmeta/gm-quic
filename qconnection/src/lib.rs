@@ -1,14 +1,12 @@
 pub mod connection;
 pub mod crypto;
 pub mod endpoint;
-pub mod frame_queue;
 pub mod path;
 
 pub(crate) mod auto;
 pub(crate) mod handshake;
 pub mod transmit;
 
-use frame_queue::ArcFrameQueue;
 use qbase::packet::SpacePacket;
 
 pub trait ReceiveProtectedPacket {

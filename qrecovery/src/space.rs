@@ -2,6 +2,7 @@ use super::{
     crypto::{CryptoStream, TransmitCrypto},
     index_deque::IndexDeque,
     rtt::Rtt,
+    rx::State,
     streams::{NoStreams, Streams, TransmitStream},
     tx::{Packet, Payload, Record},
 };
@@ -43,53 +44,6 @@ pub trait Receive {
     fn record(&self, pktid: u64, is_ack_eliciting: bool);
 
     fn recv_frame(&self, frame: SpaceFrame) -> Result<(), Error>;
-}
-
-#[derive(Debug, Clone, Default)]
-enum State {
-    #[default]
-    NotReceived,
-    // aka NACK: negative acknowledgment or not acknowledged,
-    //     indicate that data transmitted over a network was received
-    //     with errors or was otherwise unreadable.
-    Unreached,
-    Ignored(Instant),
-    Important(Instant),
-    Synced(Instant),
-}
-
-impl State {
-    fn new_rcvd(t: Instant, is_ack_eliciting: bool) -> Self {
-        if is_ack_eliciting {
-            Self::Important(t)
-        } else {
-            Self::Ignored(t)
-        }
-    }
-
-    fn has_rcvd(&self) -> bool {
-        matches!(
-            self,
-            Self::Ignored(_) | Self::Important(_) | Self::Synced(_)
-        )
-    }
-
-    fn delay(&self) -> Option<Duration> {
-        match self {
-            Self::Ignored(t) | Self::Important(t) | Self::Synced(t) => Some(t.elapsed()),
-            _ => None,
-        }
-    }
-
-    fn be_synced(&mut self) {
-        match self {
-            Self::Ignored(t) | Self::Important(t) => {
-                *self = Self::Synced(*t);
-            }
-            Self::NotReceived => *self = Self::Unreached,
-            _ => (),
-        }
-    }
 }
 
 const PACKET_THRESHOLD: u64 = 3;
