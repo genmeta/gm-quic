@@ -2,9 +2,7 @@ use super::{
     crypto::{CryptoStream, TransmitCrypto},
     index_deque::IndexDeque,
     rtt::Rtt,
-    rx::State,
     streams::{NoStreams, Streams, TransmitStream},
-    tx::{Packet, Payload, Record},
 };
 use bytes::{BufMut, Bytes};
 use qbase::{
@@ -20,6 +18,9 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+
+pub mod rx;
+pub mod tx;
 
 #[derive(Debug, Clone)]
 pub enum SpaceFrame {
@@ -63,7 +64,7 @@ struct Space<ST: TransmitStream> {
     // - 数据帧记录：无论被确认还是判定丢失了，都要通知发送缓冲区
     // - ack帧记录：被确认了，要滑动ack记录队列到合适位置
     // 另外，因为发送信令帧，是自动重传的，因此无需其他实现干扰
-    inflight_packets: IndexDeque<Option<Packet>, VARINT_MAX>,
+    inflight_packets: IndexDeque<Option<tx::Packet>, VARINT_MAX>,
     disorder_tolerance: u64,
     time_of_last_sent_ack_eliciting_packet: Option<Instant>,
     largest_acked_pktid: Option<u64>,
@@ -71,7 +72,7 @@ struct Space<ST: TransmitStream> {
     loss_time: Option<Instant>,
 
     // 用于产生ack frame，Instant用于计算ack_delay，bool表明是否ack eliciting
-    rcvd_packets: IndexDeque<State, VARINT_MAX>,
+    rcvd_packets: IndexDeque<rx::State, VARINT_MAX>,
     // 收到的最大的ack-eliciting packet的pktid
     largest_rcvd_ack_eliciting_pktid: u64,
     last_synced_ack_largest: u64,
@@ -135,18 +136,18 @@ where
         self.space_id
     }
 
-    fn confirm(&mut self, payload: Payload) {
+    fn confirm(&mut self, payload: tx::Payload) {
         for record in payload {
             match record {
-                Record::Ack(ack) => {
+                tx::Record::Ack(ack) => {
                     let _ = self
                         .rcvd_packets
                         .drain_to(ack.0.saturating_sub(self.disorder_tolerance));
                 }
-                Record::Reliable(_frame) => {
+                tx::Record::Reliable(_frame) => {
                     todo!("哪些帧需要确认呢？")
                 }
-                Record::Data(data) => match data {
+                tx::Record::Data(data) => match data {
                     DataFrame::Crypto(f) => self.tls_trans.confirm_data(f),
                     DataFrame::Stream(f) => self.stm_trans.confirm_data(f),
                 },
@@ -182,7 +183,10 @@ where
 
     fn record(&mut self, pkt_id: u64, is_ack_eliciting: bool) {
         self.rcvd_packets
-            .insert(pkt_id, State::new_rcvd(Instant::now(), is_ack_eliciting))
+            .insert(
+                pkt_id,
+                rx::State::new_rcvd(Instant::now(), is_ack_eliciting),
+            )
             .unwrap();
         if is_ack_eliciting {
             if self.largest_rcvd_ack_eliciting_pktid < pkt_id {
@@ -194,7 +198,7 @@ where
                     .skip_while(|(pn, _)| pn >= &pn)
                     .skip(PACKET_THRESHOLD as usize)
                     .take_while(|(pn, _)| pn > &self.last_synced_ack_largest)
-                    .any(|(_, s)| matches!(s, State::NotReceived));
+                    .any(|(_, s)| matches!(s, rx::State::NotReceived));
             }
             if pkt_id < self.last_synced_ack_largest {
                 self.rcvd_unreached_packet = true;
@@ -214,7 +218,7 @@ where
         debug_assert!(self
             .rcvd_packets
             .iter()
-            .any(|p| matches!(p, State::Important(_))));
+            .any(|p| matches!(p, rx::State::Important(_))));
 
         let largest = self.rcvd_packets.offset() + self.rcvd_packets.len() as u64 - 1;
         let delay = self.rcvd_packets.get_mut(largest).unwrap().delay().unwrap();
@@ -322,12 +326,12 @@ where
             acked_bytes += packet.sent_bytes;
             for record in packet.payload {
                 match record {
-                    Record::Ack(_) => { /* needn't resend */ }
-                    Record::Reliable(frame) => {
+                    tx::Record::Ack(_) => { /* needn't resend */ }
+                    tx::Record::Reliable(frame) => {
                         let mut frames = self.frames.lock().unwrap();
                         frames.push_back(frame);
                     }
-                    Record::Data(data) => match data {
+                    tx::Record::Data(data) => match data {
                         DataFrame::Crypto(f) => self.tls_trans.may_loss_data(f),
                         DataFrame::Stream(f) => self.stm_trans.may_loss_data(f),
                     },
@@ -349,12 +353,12 @@ where
             if send_time <= lost_send_time {
                 for record in packet.take().unwrap().payload {
                     match record {
-                        Record::Ack(_) => { /* needn't resend */ }
-                        Record::Reliable(frame) => {
+                        tx::Record::Ack(_) => { /* needn't resend */ }
+                        tx::Record::Reliable(frame) => {
                             let mut frames = self.frames.lock().unwrap();
                             frames.push_back(frame);
                         }
-                        Record::Data(data) => match data {
+                        tx::Record::Data(data) => match data {
                             DataFrame::Crypto(f) => self.tls_trans.may_loss_data(f),
                             DataFrame::Stream(f) => self.stm_trans.may_loss_data(f),
                         },
@@ -416,7 +420,7 @@ where
         let remaning = buf.remaining_mut();
 
         let mut ack_frame_size = 0;
-        let mut records = Payload::new();
+        let mut records = tx::Payload::new();
         if self.need_send_ack_frame() {
             let ack = self.gen_ack_frame();
             if remaning >= ack.max_encoding_size() || remaning >= ack.encoding_size() {
@@ -426,12 +430,14 @@ where
                 self.rcvd_unreached_packet = false;
                 self.last_synced_ack_largest = ack.largest.into_inner();
                 buf.put_ack_frame(&ack);
-                records.push(Record::Ack(ack.into()));
+                records.push(tx::Record::Ack(ack.into()));
                 // The ACK frame is not counted towards sent_bytes, is not subject to
                 // amplification attacks, and is not subject to flow control limitations.
                 ack_frame_size = remaning - buf.remaining_mut();
                 // All known packet information needs to be marked as synchronized.
-                self.rcvd_packets.iter_mut().for_each(|s| s.be_synced());
+                self.rcvd_packets
+                    .iter_mut()
+                    .for_each(|s| s.change_into_synced());
             }
         }
 
@@ -446,7 +452,7 @@ where
                     is_ack_eliciting = true;
 
                     let frame = frames.pop_front().unwrap();
-                    records.push(Record::Reliable(frame));
+                    records.push(tx::Record::Reliable(frame));
                 } else {
                     break;
                 }
@@ -455,7 +461,9 @@ where
 
         // Consider transmit stream info frames if has
         if let Some((stream_info_frame, len)) = self.stm_trans.try_read_frame(buf) {
-            records.push(Record::Reliable(ReliableFrame::Stream(stream_info_frame)));
+            records.push(tx::Record::Reliable(ReliableFrame::Stream(
+                stream_info_frame,
+            )));
             unsafe {
                 buf.advance_mut(len);
             }
@@ -464,14 +472,14 @@ where
         // Consider transmitting data frames.
         if self.space_id != SpaceId::ZeroRtt {
             while let Some((data_frame, len)) = self.tls_trans.try_read_data(buf) {
-                records.push(Record::Data(DataFrame::Crypto(data_frame)));
+                records.push(tx::Record::Data(DataFrame::Crypto(data_frame)));
                 unsafe {
                     buf.advance_mut(len);
                 }
             }
         }
         while let Some((data_frame, len)) = self.stm_trans.try_read_data(buf) {
-            records.push(Record::Data(DataFrame::Stream(data_frame)));
+            records.push(tx::Record::Data(DataFrame::Stream(data_frame)));
             unsafe {
                 buf.advance_mut(len);
             }
@@ -488,7 +496,7 @@ where
         }
         let _pktid = self
             .inflight_packets
-            .push(Some(Packet {
+            .push(Some(tx::Packet {
                 send_time: Instant::now(),
                 payload: records,
                 sent_bytes: data_sent - ack_frame_size,

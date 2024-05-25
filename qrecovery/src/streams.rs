@@ -333,7 +333,7 @@ impl Streams {
             let frames = self.frames.clone();
             async move {
                 while let Some(max_data) = incoming.need_window_update().await {
-                    let _ = frames
+                    frames
                         .lock()
                         .unwrap()
                         .push_back(StreamCtlFrame::MaxStreamData(MaxStreamDataFrame {

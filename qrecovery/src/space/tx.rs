@@ -2,11 +2,14 @@ use crate::{
     crypto::{CryptoStream, TransmitCrypto},
     index_deque::IndexDeque,
     rtt::Rtt,
-    streams::TransmitStream,
+    streams::{Streams, TransmitStream},
 };
 use bytes::BufMut;
 use qbase::{
-    frame::{io::WriteFrame, AckFrame, AckRecord, BeFrame, DataFrame, ReliableFrame},
+    frame::{
+        io::WriteFrame, AckFrame, AckRecord, BeFrame, ConnFrame, DataFrame, ReliableFrame,
+        StreamCtlFrame,
+    },
     packet::PacketNumber,
     varint::VARINT_MAX,
     SpaceId,
@@ -263,6 +266,20 @@ impl<ST: TransmitStream> Transmiter<ST> {
     }
 }
 
+impl Transmiter<Streams> {
+    fn write_conn_frame(&mut self, frame: ConnFrame) {
+        assert!(frame.belongs_to(self.space_id));
+        let mut frames = self.frames.lock().unwrap();
+        frames.push_back(ReliableFrame::Conn(frame));
+    }
+
+    fn write_stream_frame(&mut self, frame: StreamCtlFrame) {
+        assert!(frame.belongs_to(self.space_id));
+        let mut frames = self.frames.lock().unwrap();
+        frames.push_back(ReliableFrame::Stream(frame));
+    }
+}
+
 pub struct ArcTransmiter<ST: TransmitStream> {
     inner: Arc<Mutex<Transmiter<ST>>>,
 }
@@ -321,6 +338,16 @@ impl<ST: TransmitStream> ArcTransmiter<ST> {
 
     pub fn record_sent_ack(&self, packet: Packet) {
         self.inner.lock().unwrap().record_sent_packet(packet);
+    }
+}
+
+impl ArcTransmiter<Streams> {
+    pub fn write_conn_frame(&self, frame: ConnFrame) {
+        self.inner.lock().unwrap().write_conn_frame(frame);
+    }
+
+    pub fn write_stream_frame(&self, frame: StreamCtlFrame) {
+        self.inner.lock().unwrap().write_stream_frame(frame);
     }
 }
 

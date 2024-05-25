@@ -31,10 +31,17 @@ impl<T> ArcFrameQueue<T> {
         }
     }
 
-    pub fn writer<'a>(&'a self) -> ArcFrameQueueWriter<'a, T> {
+    // pub fn writer<'a>(&'a self) -> ArcFrameQueueWriter<'a, T> {
+    pub fn writer(&self) -> ArcFrameQueueWriter<'_, T> {
         let guard = self.0.lock().unwrap();
         let old_len = guard.queue.as_ref().map(|q| q.len()).unwrap_or(0);
         ArcFrameQueueWriter { guard, old_len }
+    }
+}
+
+impl<T> Default for ArcFrameQueue<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

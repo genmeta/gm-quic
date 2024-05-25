@@ -4,11 +4,9 @@ pub mod frame_queue;
 pub mod index_deque;
 pub mod recv;
 pub mod rtt;
-pub mod rx;
 pub mod send;
 pub mod space;
 pub mod streams;
-pub mod tx;
 
 #[derive(Debug)]
 pub enum AppStream {
