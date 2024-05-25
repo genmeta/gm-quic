@@ -18,21 +18,19 @@ use std::{
 };
 
 /// 专门根据Stream相关帧处理streams相关逻辑
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Streams {
     role: Role,
     stream_ids: StreamIds,
     // 所有流的待写端，要发送数据，就得向这些流索取
-    output: HashMap<StreamId, Outgoing>,
+    output: Arc<Mutex<HashMap<StreamId, Outgoing>>>,
     // 所有流的待读端，收到了数据，交付给这些流
-    input: HashMap<StreamId, Incoming>,
+    input: Arc<Mutex<HashMap<StreamId, Incoming>>>,
     // 对方主动创建的流
-    listener: Listener,
+    listener: ArcListener,
 
-    // 其实，是拿Space中的frames放在这里，当Outgoing、Incoming发生状态变更时，要发送StreamInfoStream。
-    // 也可以将StreamInfoFrame放在这里，提供函数，供读取，发送的时候，直接从这里读取
-    // 这种更好，而且，Streams不关心帧的丢失、重传。一旦被Space读取并发送，就由Space负责可靠传输
-    frames: Arc<Mutex<VecDeque<StreamCtlFrame>>>,
+    // 该queue与space中的transmitter中的frame_queue共享，为了方便向transmitter中写入帧
+    frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> Error {
@@ -40,13 +38,11 @@ fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> Error {
 }
 
 pub trait TransmitStream {
-    fn try_read_frame(&mut self, buf: &mut [u8]) -> Option<(StreamCtlFrame, usize)>;
-
     fn try_read_data(&mut self, buf: &mut [u8]) -> Option<(StreamFrame, usize)>;
 
-    fn confirm_data(&mut self, stream_frame: StreamFrame);
+    fn confirm_data(&self, stream_frame: StreamFrame);
 
-    fn may_loss_data(&mut self, stream_frame: StreamFrame);
+    fn may_loss_data(&self, stream_frame: StreamFrame);
 
     fn recv_frame(&mut self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error>;
 
@@ -54,34 +50,30 @@ pub trait TransmitStream {
 }
 
 impl TransmitStream for Streams {
-    fn try_read_frame(&mut self, _buf: &mut [u8]) -> Option<(StreamCtlFrame, usize)> {
-        // 遍历所有的Outgoing，看是否有StreamInfoFrame要发送, 且buf还剩余足够的空间
-        todo!()
-    }
-
     fn try_read_data(&mut self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
         // 遍历所有的Outgoing，看是否有数据要发送，且buf还剩余足够的空间容纳，一定要公平
         todo!()
     }
 
-    fn confirm_data(&mut self, stream_frame: StreamFrame) {
+    fn confirm_data(&self, stream_frame: StreamFrame) {
         let sid = stream_frame.id;
         let start = stream_frame.offset.into_inner();
         let end = start + stream_frame.length as u64;
         let range = start..end;
-        if let Some(all_data_recved) = self
-            .output
+
+        let mut guard = self.output.lock().unwrap();
+        if let Some(all_data_recved) = guard
             .get_mut(&sid)
             .map(|outgoing| outgoing.confirm_rcvd(&range))
         {
             if all_data_recved {
-                self.input.remove(&sid);
+                guard.remove(&sid);
             }
         }
     }
 
-    fn may_loss_data(&mut self, stream_frame: StreamFrame) {
-        if let Some(outgoing) = self.output.get_mut(&stream_frame.id) {
+    fn may_loss_data(&self, stream_frame: StreamFrame) {
+        if let Some(outgoing) = self.output.lock().unwrap().get_mut(&stream_frame.id) {
             outgoing.may_loss(&stream_frame.range());
         }
     }
@@ -103,7 +95,7 @@ impl TransmitStream for Streams {
                 ));
             }
         }
-        if let Some(incoming) = self.input.get_mut(&sid) {
+        if let Some(incoming) = self.input.lock().unwrap().get_mut(&sid) {
             incoming.recv(stream_frame, body)?;
         }
         // 否则，该流已经结束，再收到任何该流的frame，都将被忽略
@@ -128,7 +120,7 @@ impl TransmitStream for Streams {
                         ));
                     }
                 }
-                if let Some(incoming) = self.input.get_mut(&sid) {
+                if let Some(incoming) = self.input.lock().unwrap().get_mut(&sid) {
                     incoming.recv_reset(reset_frame)?;
                 }
             }
@@ -147,16 +139,15 @@ impl TransmitStream for Streams {
                     self.try_accept_sid(sid)
                         .map_err(wrapper_error(stop.frame_type()))?;
                 }
-                if let Some(outgoing) = self.output.get_mut(&sid) {
+                if let Some(outgoing) = self.output.lock().unwrap().get_mut(&sid) {
                     if outgoing.stop() {
-                        self.frames
-                            .lock()
-                            .unwrap()
-                            .push_back(StreamCtlFrame::ResetStream(ResetStreamFrame {
+                        self.frames.lock().unwrap().push_back(ReliableFrame::Stream(
+                            StreamCtlFrame::ResetStream(ResetStreamFrame {
                                 stream_id: sid,
                                 app_error_code: VarInt::from_u32(0),
                                 final_size: VarInt::from_u32(0),
-                            }));
+                            }),
+                        ));
                     }
                 }
             }
@@ -175,7 +166,7 @@ impl TransmitStream for Streams {
                     self.try_accept_sid(sid)
                         .map_err(wrapper_error(max_stream_data.frame_type()))?;
                 }
-                if let Some(outgoing) = self.output.get_mut(&sid) {
+                if let Some(outgoing) = self.output.lock().unwrap().get_mut(&sid) {
                     outgoing.update_window(max_stream_data.max_stream_data.into_inner());
                 }
             }
@@ -225,19 +216,15 @@ impl TransmitStream for Streams {
 pub struct NoStreams;
 
 impl TransmitStream for NoStreams {
-    fn try_read_frame(&mut self, _buf: &mut [u8]) -> Option<(StreamCtlFrame, usize)> {
-        None
-    }
-
     fn try_read_data(&mut self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
         None
     }
 
-    fn confirm_data(&mut self, _stream_frame: StreamFrame) {
+    fn confirm_data(&self, _stream_frame: StreamFrame) {
         unreachable!()
     }
 
-    fn may_loss_data(&mut self, _stream_frame: StreamFrame) {
+    fn may_loss_data(&self, _stream_frame: StreamFrame) {
         unreachable!()
     }
 
@@ -251,14 +238,19 @@ impl TransmitStream for NoStreams {
 }
 
 impl Streams {
-    pub fn with_role_and_limit(role: Role, max_bi_streams: u64, max_uni_streams: u64) -> Self {
+    pub fn with_role_and_limit(
+        role: Role,
+        max_bi_streams: u64,
+        max_uni_streams: u64,
+        frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
+    ) -> Self {
         Self {
             role,
             stream_ids: StreamIds::with_role_and_limit(role, max_bi_streams, max_uni_streams),
-            output: HashMap::new(),
-            input: HashMap::new(),
-            listener: Listener::default(),
-            frames: Arc::new(Mutex::new(VecDeque::new())),
+            output: Arc::new(Mutex::new(HashMap::new())),
+            input: Arc::new(Mutex::new(HashMap::new())),
+            listener: ArcListener::default(),
+            frames,
         }
     }
 
@@ -276,7 +268,7 @@ impl Streams {
         }
     }
 
-    pub fn listener(&self) -> Listener {
+    pub fn listener(&self) -> ArcListener {
         self.listener.clone()
     }
 
@@ -310,18 +302,17 @@ impl Streams {
             let frames = self.frames.clone();
             async move {
                 if let Some(final_size) = outgoing.is_cancelled_by_app().await {
-                    frames
-                        .lock()
-                        .unwrap()
-                        .push_back(StreamCtlFrame::ResetStream(ResetStreamFrame {
+                    frames.lock().unwrap().push_back(ReliableFrame::Stream(
+                        StreamCtlFrame::ResetStream(ResetStreamFrame {
                             stream_id: sid,
                             app_error_code: VarInt::from_u32(0),
                             final_size: unsafe { VarInt::from_u64_unchecked(final_size) },
-                        }));
+                        }),
+                    ));
                 }
             }
         });
-        self.output.insert(sid, outgoing);
+        self.output.lock().unwrap().insert(sid, outgoing);
         writer
     }
 
@@ -333,13 +324,12 @@ impl Streams {
             let frames = self.frames.clone();
             async move {
                 while let Some(max_data) = incoming.need_window_update().await {
-                    frames
-                        .lock()
-                        .unwrap()
-                        .push_back(StreamCtlFrame::MaxStreamData(MaxStreamDataFrame {
+                    frames.lock().unwrap().push_back(ReliableFrame::Stream(
+                        StreamCtlFrame::MaxStreamData(MaxStreamDataFrame {
                             stream_id: sid,
                             max_stream_data: unsafe { VarInt::from_u64_unchecked(max_data) },
-                        }));
+                        }),
+                    ));
                 }
             }
         });
@@ -349,17 +339,16 @@ impl Streams {
             let frames = self.frames.clone();
             async move {
                 if incoming.is_stopped_by_app().await {
-                    frames
-                        .lock()
-                        .unwrap()
-                        .push_back(StreamCtlFrame::StopSending(StopSendingFrame {
+                    frames.lock().unwrap().push_back(ReliableFrame::Stream(
+                        StreamCtlFrame::StopSending(StopSendingFrame {
                             stream_id: sid,
                             app_err_code: VarInt::from_u32(0),
-                        }));
+                        }),
+                    ));
                 }
             }
         });
-        self.input.insert(sid, incoming);
+        self.input.lock().unwrap().insert(sid, incoming);
         reader
     }
 }
@@ -390,9 +379,9 @@ impl RawListener {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct Listener(Arc<Mutex<RawListener>>);
+pub struct ArcListener(Arc<Mutex<RawListener>>);
 
-impl Listener {
+impl ArcListener {
     fn push(&self, stream: AppStream) {
         self.0.lock().unwrap().push(stream);
     }
@@ -410,7 +399,7 @@ impl Listener {
 
 #[derive(Debug, Clone)]
 pub struct Accept {
-    inner: Listener,
+    inner: ArcListener,
 }
 
 impl Future for Accept {

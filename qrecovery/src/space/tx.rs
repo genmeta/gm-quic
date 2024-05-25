@@ -105,14 +105,6 @@ impl<ST: TransmitStream> Transmitter<ST> {
             }
         }
 
-        // Consider transmit stream info frames if has
-        if let Some((stream_info_frame, len)) = self.data_stream.try_read_frame(buf) {
-            records.push(Record::Reliable(ReliableFrame::Stream(stream_info_frame)));
-            unsafe {
-                buf.advance_mut(len);
-            }
-        }
-
         // Consider transmitting data frames.
         if self.space_id != SpaceId::ZeroRtt {
             while let Some((data_frame, len)) = self.crypto_stream.try_read_data(buf) {
