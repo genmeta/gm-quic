@@ -67,13 +67,13 @@ impl ArcDataStreams {
         role: Role,
         max_bi_streams: u64,
         max_uni_streams: u64,
-        frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
+        sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
     ) -> Self {
         Self(Arc::new(data::DataStreams::with_role_and_limit(
             role,
             max_bi_streams,
             max_uni_streams,
-            frames,
+            sending_frames,
         )))
     }
 

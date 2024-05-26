@@ -21,12 +21,13 @@ pub struct ArcOutput(Arc<Mutex<HashMap<StreamId, Outgoing>>>);
 
 impl ArcOutput {
     #[inline]
-    pub fn insert(&self, sid: StreamId, outgoing: Outgoing) {
+    fn insert(&self, sid: StreamId, outgoing: Outgoing) {
         self.0.lock().unwrap().insert(sid, outgoing);
     }
 
     #[inline]
-    pub fn remove(&self, sid: &StreamId) {
+    #[allow(dead_code)]
+    fn remove(&self, sid: &StreamId) {
         self.0.lock().unwrap().remove(sid);
     }
 }
@@ -65,16 +66,16 @@ impl TransmitStream for ArcOutput {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct ArcInput(Arc<Mutex<HashMap<StreamId, Incoming>>>);
+struct ArcInput(Arc<Mutex<HashMap<StreamId, Incoming>>>);
 
 impl ArcInput {
     #[inline]
-    pub fn insert(&self, sid: StreamId, incoming: Incoming) {
+    fn insert(&self, sid: StreamId, incoming: Incoming) {
         self.0.lock().unwrap().insert(sid, incoming);
     }
 
     #[inline]
-    pub fn remove(&self, sid: &StreamId) {
+    fn remove(&self, sid: &StreamId) {
         self.0.lock().unwrap().remove(sid);
     }
 }

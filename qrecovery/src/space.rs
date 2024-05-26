@@ -7,6 +7,7 @@ use super::{
 use bytes::Bytes;
 use qbase::{frame::*, packet::PacketNumber, SpaceId};
 use std::{
+    collections::VecDeque,
     fmt::Debug,
     sync::{Arc, Mutex},
 };
@@ -52,6 +53,7 @@ where
     pub(crate) fn build(
         space_id: SpaceId,
         crypto_stream: CryptoStream,
+        sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
         data_stream: S,
         ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
@@ -61,6 +63,7 @@ where
         let transmitter = tx::ArcTransmitter::new(
             space_id,
             crypto_stream.clone(),
+            sending_frames,
             data_stream.output(),
             ack_record_tx,
             ack_frame_rx,
@@ -93,6 +96,7 @@ impl ArcSpace<NoDataStreams> {
         Self(Arc::new(Space::build(
             SpaceId::Initial,
             crypto_stream,
+            Arc::new(Mutex::new(VecDeque::new())),
             NoDataStreams,
             ack_frame_rx,
             loss_pkt_rx,
@@ -109,6 +113,7 @@ impl ArcSpace<NoDataStreams> {
         Self(Arc::new(Space::build(
             SpaceId::Handshake,
             crypto_stream,
+            Arc::new(Mutex::new(VecDeque::new())),
             NoDataStreams,
             ack_frame_rx,
             loss_pkt_rx,
@@ -125,6 +130,7 @@ impl ArcSpace<ArcDataStreams> {
     pub fn new_data_space(
         crypto_stream: CryptoStream,
         streams: ArcDataStreams,
+        sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
         ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
         recv_frames_queue: ArcFrameQueue<SpaceFrame>,
@@ -132,6 +138,7 @@ impl ArcSpace<ArcDataStreams> {
         Self(Arc::new(Space::build(
             SpaceId::ZeroRtt,
             crypto_stream,
+            sending_frames,
             streams,
             ack_frame_rx,
             loss_pkt_rx,

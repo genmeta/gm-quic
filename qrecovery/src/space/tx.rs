@@ -42,7 +42,7 @@ pub struct Packet {
 struct Transmitter<TX> {
     space_id: SpaceId,
     // 以下三个字段，是为了重传需要，也为了发送数据需要
-    frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
+    sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
     // 其实只需要CryptoString的Outgoing部分
     crypto_stream: CryptoStream,
     // 其实只需要TransmitStream的Outgoing部分
@@ -62,11 +62,12 @@ impl<TX: TransmitStream> Transmitter<TX> {
         space_id: SpaceId,
         crypto_stream: CryptoStream,
         inner: TX,
+        sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
         ack_record_tx: UnboundedSender<u64>,
     ) -> Self {
         Self {
             space_id,
-            frames: Arc::new(Mutex::new(VecDeque::new())),
+            sending_frames,
             crypto_stream,
             inner,
             inflight_packets: IndexDeque::new(),
@@ -89,7 +90,7 @@ impl<TX: TransmitStream> Transmitter<TX> {
         let mut records = Payload::new();
         {
             // Prioritize retransmitting lost or info frames.
-            let mut frames = self.frames.lock().unwrap();
+            let mut frames = self.sending_frames.lock().unwrap();
             while let Some(frame) = frames.front() {
                 if buf.remaining_mut() >= frame.max_encoding_size()
                     || buf.remaining_mut() >= frame.encoding_size()
@@ -247,7 +248,7 @@ impl<TX: TransmitStream> Transmitter<TX> {
                 match record {
                     Record::Ack(_) => { /* needn't resend */ }
                     Record::Reliable(frame) => {
-                        let mut frames = self.frames.lock().unwrap();
+                        let mut frames = self.sending_frames.lock().unwrap();
                         frames.push_back(frame);
                     }
                     Record::Data(data) => match data {
@@ -267,13 +268,13 @@ impl Transmitter<ArcOutput> {
 
     fn write_conn_frame(&self, frame: ConnFrame) {
         assert!(frame.belongs_to(self.space_id));
-        let mut frames = self.frames.lock().unwrap();
+        let mut frames = self.sending_frames.lock().unwrap();
         frames.push_back(ReliableFrame::Conn(frame));
     }
 
     fn write_stream_frame(&self, frame: StreamCtlFrame) {
         assert!(frame.belongs_to(self.space_id));
-        let mut frames = self.frames.lock().unwrap();
+        let mut frames = self.sending_frames.lock().unwrap();
         frames.push_back(ReliableFrame::Stream(frame));
     }
 }
@@ -289,6 +290,7 @@ impl<ST: TransmitStream + Send + 'static> ArcTransmitter<ST> {
     pub fn new(
         space_id: SpaceId,
         crypto_stream: CryptoStream,
+        sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
         inner: ST,
         ack_record_tx: UnboundedSender<u64>,
         mut ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
@@ -298,6 +300,7 @@ impl<ST: TransmitStream + Send + 'static> ArcTransmitter<ST> {
             space_id,
             crypto_stream,
             inner,
+            sending_frames,
             ack_record_tx,
         )));
 

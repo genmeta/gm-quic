@@ -10,6 +10,7 @@ use qbase::{
 use qrecovery::{
     crypto::CryptoStream,
     frame_queue::ArcFrameQueue,
+    send,
     space::ArcSpace,
     streams::{none::NoDataStreams, ArcDataStreams},
 };
@@ -125,6 +126,7 @@ impl Connection {
         let data_space = ArcSpace::new_data_space(
             one_rtt_crypto_stream,
             streams,
+            sending_frames,
             data_ack_rx,
             data_loss_rx,
             data_space_frame_queue.clone(),
