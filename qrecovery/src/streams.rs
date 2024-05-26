@@ -17,15 +17,96 @@ use std::{
     task::{ready, Context, Poll, Waker},
 };
 
+/// For sending stream data
+pub trait TransmitStream {
+    /// read data to transmit
+    fn try_read_data(&mut self, buf: &mut [u8]) -> Option<(StreamFrame, usize)>;
+
+    fn confirm_data_rcvd(&self, stream_frame: StreamFrame);
+
+    fn may_loss_data(&self, stream_frame: StreamFrame);
+
+    fn confirm_reset_rcvd(&self, reset_frame: ResetStreamFrame);
+}
+
+pub trait ReceiveStream {
+    fn recv_frame(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error>;
+
+    fn recv_data(&self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error>;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ArcOutput(Arc<Mutex<HashMap<StreamId, Outgoing>>>);
+
+impl ArcOutput {
+    #[inline]
+    pub fn insert(&self, sid: StreamId, outgoing: Outgoing) {
+        self.0.lock().unwrap().insert(sid, outgoing);
+    }
+
+    #[inline]
+    pub fn remove(&self, sid: &StreamId) {
+        self.0.lock().unwrap().remove(sid);
+    }
+}
+
+impl TransmitStream for ArcOutput {
+    fn try_read_data(&mut self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+        todo!()
+    }
+
+    fn confirm_data_rcvd(&self, stream_frame: StreamFrame) {
+        let mut guard = self.0.lock().unwrap();
+        if let Some(all_data_recved) = guard
+            .get(&stream_frame.id)
+            .map(|outgoing| outgoing.confirm_rcvd(&stream_frame.range()))
+        {
+            if all_data_recved {
+                guard.remove(&stream_frame.id);
+            }
+        }
+    }
+
+    fn may_loss_data(&self, stream_frame: StreamFrame) {
+        if let Some(outgoing) = self.0.lock().unwrap().get(&stream_frame.id) {
+            outgoing.may_loss(&stream_frame.range());
+        }
+    }
+
+    fn confirm_reset_rcvd(&self, reset_frame: ResetStreamFrame) {
+        let mut guard = self.0.lock().unwrap();
+        if let Some(outgoing) = guard.get(&reset_frame.stream_id) {
+            outgoing.confirm_reset();
+        }
+        guard.remove(&reset_frame.stream_id);
+        // 如果流是双向的，接收部分的流独立地管理结束。其实是上层应用决定接收的部分是否同时结束
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ArcInput(Arc<Mutex<HashMap<StreamId, Incoming>>>);
+
+impl ArcInput {
+    #[inline]
+    pub fn insert(&self, sid: StreamId, incoming: Incoming) {
+        self.0.lock().unwrap().insert(sid, incoming);
+    }
+
+    #[inline]
+    pub fn remove(&self, sid: &StreamId) {
+        self.0.lock().unwrap().remove(sid);
+    }
+}
+
 /// 专门根据Stream相关帧处理streams相关逻辑
 #[derive(Debug, Clone)]
 pub struct Streams {
     role: Role,
     stream_ids: StreamIds,
     // 所有流的待写端，要发送数据，就得向这些流索取
-    output: Arc<Mutex<HashMap<StreamId, Outgoing>>>,
+    pub(crate) output: ArcOutput,
     // 所有流的待读端，收到了数据，交付给这些流
-    input: Arc<Mutex<HashMap<StreamId, Incoming>>>,
+    input: ArcInput,
     // 对方主动创建的流
     listener: ArcListener,
 
@@ -37,48 +118,8 @@ fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> Error {
     move |e| Error::new(ErrorKind::StreamLimit, fty, e.to_string())
 }
 
-pub trait TransmitStream {
-    fn try_read_data(&mut self, buf: &mut [u8]) -> Option<(StreamFrame, usize)>;
-
-    fn confirm_data(&self, stream_frame: StreamFrame);
-
-    fn may_loss_data(&self, stream_frame: StreamFrame);
-
-    fn recv_frame(&mut self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error>;
-
-    fn recv_data(&mut self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error>;
-}
-
-impl TransmitStream for Streams {
-    fn try_read_data(&mut self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
-        // 遍历所有的Outgoing，看是否有数据要发送，且buf还剩余足够的空间容纳，一定要公平
-        todo!()
-    }
-
-    fn confirm_data(&self, stream_frame: StreamFrame) {
-        let sid = stream_frame.id;
-        let start = stream_frame.offset.into_inner();
-        let end = start + stream_frame.length as u64;
-        let range = start..end;
-
-        let mut guard = self.output.lock().unwrap();
-        if let Some(all_data_recved) = guard
-            .get_mut(&sid)
-            .map(|outgoing| outgoing.confirm_rcvd(&range))
-        {
-            if all_data_recved {
-                guard.remove(&sid);
-            }
-        }
-    }
-
-    fn may_loss_data(&self, stream_frame: StreamFrame) {
-        if let Some(outgoing) = self.output.lock().unwrap().get_mut(&stream_frame.id) {
-            outgoing.may_loss(&stream_frame.range());
-        }
-    }
-
-    fn recv_data(&mut self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error> {
+impl ReceiveStream for Streams {
+    fn recv_data(&self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error> {
         let sid = stream_frame.id;
         // 对方必须是发送端，才能发送此帧
         if sid.role() != self.role {
@@ -95,14 +136,14 @@ impl TransmitStream for Streams {
                 ));
             }
         }
-        if let Some(incoming) = self.input.lock().unwrap().get_mut(&sid) {
+        if let Some(incoming) = self.input.0.lock().unwrap().get(&sid) {
             incoming.recv(stream_frame, body)?;
         }
         // 否则，该流已经结束，再收到任何该流的frame，都将被忽略
         Ok(())
     }
 
-    fn recv_frame(&mut self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error> {
+    fn recv_frame(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error> {
         match stream_ctl_frame {
             StreamCtlFrame::ResetStream(reset_frame) => {
                 let sid = reset_frame.stream_id;
@@ -120,8 +161,15 @@ impl TransmitStream for Streams {
                         ));
                     }
                 }
-                if let Some(incoming) = self.input.lock().unwrap().get_mut(&sid) {
+                /*
+                let mut guard = self.input.0.lock().unwrap();
+                let mut entry = guard.entry(sid);
+                entry.and_modify(|incoming| incoming.recv_reset(reset_frame));
+                guard.remove_entry(entry);
+                */
+                if let Some(incoming) = self.input.0.lock().unwrap().get(&sid) {
                     incoming.recv_reset(reset_frame)?;
+                    self.input.remove(&sid);
                 }
             }
             StreamCtlFrame::StopSending(stop) => {
@@ -139,7 +187,7 @@ impl TransmitStream for Streams {
                     self.try_accept_sid(sid)
                         .map_err(wrapper_error(stop.frame_type()))?;
                 }
-                if let Some(outgoing) = self.output.lock().unwrap().get_mut(&sid) {
+                if let Some(outgoing) = self.output.0.lock().unwrap().get(&sid) {
                     if outgoing.stop() {
                         self.frames.lock().unwrap().push_back(ReliableFrame::Stream(
                             StreamCtlFrame::ResetStream(ResetStreamFrame {
@@ -166,7 +214,7 @@ impl TransmitStream for Streams {
                     self.try_accept_sid(sid)
                         .map_err(wrapper_error(max_stream_data.frame_type()))?;
                 }
-                if let Some(outgoing) = self.output.lock().unwrap().get_mut(&sid) {
+                if let Some(outgoing) = self.output.0.lock().unwrap().get(&sid) {
                     outgoing.update_window(max_stream_data.max_stream_data.into_inner());
                 }
             }
@@ -213,14 +261,14 @@ impl TransmitStream for Streams {
 
 /// 在Initial和Handshake空间中，是不需要传输Streams的，此时可以使用NoStreams
 #[derive(Debug, Clone)]
-pub struct NoStreams;
+pub struct NoDataStreams;
 
-impl TransmitStream for NoStreams {
+impl TransmitStream for NoDataStreams {
     fn try_read_data(&mut self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
         None
     }
 
-    fn confirm_data(&self, _stream_frame: StreamFrame) {
+    fn confirm_data_rcvd(&self, _stream_frame: StreamFrame) {
         unreachable!()
     }
 
@@ -228,11 +276,17 @@ impl TransmitStream for NoStreams {
         unreachable!()
     }
 
-    fn recv_frame(&mut self, _stream_ctl_frame: StreamCtlFrame) -> Result<(), Error> {
+    fn confirm_reset_rcvd(&self, _reset_frame: ResetStreamFrame) {
+        unreachable!()
+    }
+}
+
+impl ReceiveStream for NoDataStreams {
+    fn recv_frame(&self, _stream_ctl_frame: StreamCtlFrame) -> Result<(), Error> {
         unreachable!()
     }
 
-    fn recv_data(&mut self, _stream_frame: StreamFrame, _body: bytes::Bytes) -> Result<(), Error> {
+    fn recv_data(&self, _stream_frame: StreamFrame, _body: bytes::Bytes) -> Result<(), Error> {
         unreachable!()
     }
 }
@@ -247,14 +301,14 @@ impl Streams {
         Self {
             role,
             stream_ids: StreamIds::with_role_and_limit(role, max_bi_streams, max_uni_streams),
-            output: Arc::new(Mutex::new(HashMap::new())),
-            input: Arc::new(Mutex::new(HashMap::new())),
+            output: ArcOutput::default(),
+            input: ArcInput::default(),
             listener: ArcListener::default(),
             frames,
         }
     }
 
-    pub fn poll_create(&mut self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<AppStream>> {
+    pub fn poll_create(&self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<AppStream>> {
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, dir)) {
             let writer = self.create_sender(sid);
             if dir == Dir::Bi {
@@ -272,7 +326,7 @@ impl Streams {
         self.listener.clone()
     }
 
-    fn try_accept_sid(&mut self, sid: StreamId) -> Result<(), ExceedLimitError> {
+    fn try_accept_sid(&self, sid: StreamId) -> Result<(), ExceedLimitError> {
         let result = self.stream_ids.remote.try_accept_sid(sid)?;
         match result {
             AcceptSid::Old => Ok(()),
@@ -292,7 +346,7 @@ impl Streams {
         }
     }
 
-    fn create_sender(&mut self, sid: StreamId) -> Writer {
+    fn create_sender(&self, sid: StreamId) -> Writer {
         let (outgoing, writer) = send::new(1000_1000);
         // 创建异步轮询子，监听来自应用层的cancel
         // 一旦cancel，直接向对方发送reset_stream
@@ -312,11 +366,11 @@ impl Streams {
                 }
             }
         });
-        self.output.lock().unwrap().insert(sid, outgoing);
+        self.output.insert(sid, outgoing);
         writer
     }
 
-    fn create_recver(&mut self, sid: StreamId) -> Reader {
+    fn create_recver(&self, sid: StreamId) -> Reader {
         let (incoming, reader) = recv::new(1000_1000);
         // Continuously check whether the MaxStreamData window needs to be updated.
         tokio::spawn({
@@ -348,7 +402,7 @@ impl Streams {
                 }
             }
         });
-        self.input.lock().unwrap().insert(sid, incoming);
+        self.input.insert(sid, incoming);
         reader
     }
 }

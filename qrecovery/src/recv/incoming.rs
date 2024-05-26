@@ -19,7 +19,7 @@ impl Incoming {
         Self(recver)
     }
 
-    pub fn recv(&mut self, stream_frame: StreamFrame, body: Bytes) -> Result<(), Error> {
+    pub fn recv(&self, stream_frame: StreamFrame, body: Bytes) -> Result<(), Error> {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
         match inner.take() {
@@ -43,7 +43,7 @@ impl Incoming {
         Ok(())
     }
 
-    pub fn end(&mut self, final_size: u64) {
+    pub fn end(&self, final_size: u64) {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
         match inner.take() {
@@ -57,7 +57,7 @@ impl Incoming {
         }
     }
 
-    pub fn recv_reset(&mut self, reset_frame: ResetStreamFrame) -> Result<(), Error> {
+    pub fn recv_reset(&self, reset_frame: ResetStreamFrame) -> Result<(), Error> {
         // TODO: ResetStream中还有错误信息，比如http3的错误码，看是否能用到
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();

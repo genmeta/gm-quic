@@ -2,14 +2,11 @@ use crate::{
     crypto::{CryptoStream, TransmitCrypto},
     index_deque::IndexDeque,
     rtt::Rtt,
-    streams::{ArcOutput, TransmitStream},
+    streams::TransmitStream,
 };
 use bytes::BufMut;
 use qbase::{
-    frame::{
-        io::WriteFrame, AckFrame, AckRecord, BeFrame, ConnFrame, DataFrame, ReliableFrame,
-        StreamCtlFrame,
-    },
+    frame::{io::WriteFrame, AckFrame, AckRecord, BeFrame, DataFrame, ReliableFrame},
     packet::PacketNumber,
     varint::VARINT_MAX,
     SpaceId,
@@ -39,14 +36,14 @@ pub struct Packet {
 }
 
 #[derive(Debug)]
-struct Transmitter<TX> {
+struct Transmiter<ST: TransmitStream> {
     space_id: SpaceId,
     // 以下三个字段，是为了重传需要，也为了发送数据需要
     frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
     // 其实只需要CryptoString的Outgoing部分
     crypto_stream: CryptoStream,
     // 其实只需要TransmitStream的Outgoing部分
-    inner: TX,
+    data_stream: ST,
 
     // 正在飞行中的数据包记录，如果某个包为None，说明已经确认到达了
     inflight_packets: IndexDeque<Option<Packet>, VARINT_MAX>,
@@ -57,18 +54,18 @@ struct Transmitter<TX> {
     largest_acked_pktid: Option<u64>,
 }
 
-impl<TX: TransmitStream> Transmitter<TX> {
-    fn new(
+impl<ST: TransmitStream> Transmiter<ST> {
+    pub fn new(
         space_id: SpaceId,
         crypto_stream: CryptoStream,
-        inner: TX,
+        data_stream: ST,
         ack_record_tx: UnboundedSender<u64>,
     ) -> Self {
         Self {
             space_id,
             frames: Arc::new(Mutex::new(VecDeque::new())),
             crypto_stream,
-            inner,
+            data_stream,
             inflight_packets: IndexDeque::new(),
             ack_record_tx,
             time_of_last_sent_ack_eliciting_packet: None,
@@ -105,6 +102,14 @@ impl<TX: TransmitStream> Transmitter<TX> {
             }
         }
 
+        // Consider transmit stream info frames if has
+        if let Some((stream_info_frame, len)) = self.data_stream.try_read_frame(buf) {
+            records.push(Record::Reliable(ReliableFrame::Stream(stream_info_frame)));
+            unsafe {
+                buf.advance_mut(len);
+            }
+        }
+
         // Consider transmitting data frames.
         if self.space_id != SpaceId::ZeroRtt {
             while let Some((data_frame, len)) = self.crypto_stream.try_read_data(buf) {
@@ -114,7 +119,7 @@ impl<TX: TransmitStream> Transmitter<TX> {
                 }
             }
         }
-        while let Some((data_frame, len)) = self.inner.try_read_data(buf) {
+        while let Some((data_frame, len)) = self.data_stream.try_read_data(buf) {
             records.push(Record::Data(DataFrame::Stream(data_frame)));
             unsafe {
                 buf.advance_mut(len);
@@ -223,14 +228,12 @@ impl<TX: TransmitStream> Transmitter<TX> {
                     // THINK: 这里需不需要减去3这个乱序容忍度
                     let _ = self.ack_record_tx.send(ack.0.saturating_sub(3));
                 }
-                Record::Reliable(frame) => {
-                    if let ReliableFrame::Stream(StreamCtlFrame::ResetStream(f)) = frame {
-                        self.inner.confirm_reset_rcvd(f);
-                    }
+                Record::Reliable(_frame) => {
+                    todo!("哪些帧需要确认呢？")
                 }
                 Record::Data(data) => match data {
                     DataFrame::Crypto(f) => self.crypto_stream.confirm_data(f),
-                    DataFrame::Stream(f) => self.inner.confirm_data_rcvd(f),
+                    DataFrame::Stream(f) => self.data_stream.confirm_data_rcvd(f),
                 },
             }
         }
@@ -252,7 +255,7 @@ impl<TX: TransmitStream> Transmitter<TX> {
                     }
                     Record::Data(data) => match data {
                         DataFrame::Crypto(f) => self.crypto_stream.may_loss_data(f),
-                        DataFrame::Stream(f) => self.inner.may_loss_data(f),
+                        DataFrame::Stream(f) => self.data_stream.may_loss_data(f),
                     },
                 }
             }
@@ -260,44 +263,25 @@ impl<TX: TransmitStream> Transmitter<TX> {
     }
 }
 
-impl Transmitter<ArcOutput> {
-    fn upgrade(&mut self) {
-        self.space_id = SpaceId::OneRtt;
-    }
-
-    fn write_conn_frame(&self, frame: ConnFrame) {
-        assert!(frame.belongs_to(self.space_id));
-        let mut frames = self.frames.lock().unwrap();
-        frames.push_back(ReliableFrame::Conn(frame));
-    }
-
-    fn write_stream_frame(&self, frame: StreamCtlFrame) {
-        assert!(frame.belongs_to(self.space_id));
-        let mut frames = self.frames.lock().unwrap();
-        frames.push_back(ReliableFrame::Stream(frame));
-    }
+pub struct ArcTransmiter<ST: TransmitStream> {
+    inner: Arc<Mutex<Transmiter<ST>>>,
 }
 
-#[derive(Clone, Debug)]
-pub struct ArcTransmitter<TX> {
-    inner: Arc<Mutex<Transmitter<TX>>>,
-}
-
-impl<ST: TransmitStream + Send + 'static> ArcTransmitter<ST> {
+impl<ST: TransmitStream + Send + 'static> ArcTransmiter<ST> {
     /// 一个Transmitter，不仅仅要发送数据，还要接收AckFrame，以及丢包序号去重传。
     /// 然后，接收端提供的AckFrame如果被确认了，也需要通知到接收端
     pub fn new(
         space_id: SpaceId,
         crypto_stream: CryptoStream,
-        inner: ST,
+        data_stream: ST,
         ack_record_tx: UnboundedSender<u64>,
         mut ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         mut loss_pkt_rx: UnboundedReceiver<u64>,
     ) -> Self {
-        let transmitter = Arc::new(Mutex::new(Transmitter::new(
+        let transmitter = Arc::new(Mutex::new(Transmiter::new(
             space_id,
             crypto_stream,
-            inner,
+            data_stream,
             ack_record_tx,
         )));
 
@@ -326,7 +310,7 @@ impl<ST: TransmitStream + Send + 'static> ArcTransmitter<ST> {
     }
 }
 
-impl<ST: TransmitStream> ArcTransmitter<ST> {
+impl<ST: TransmitStream> ArcTransmiter<ST> {
     pub fn next_pkt_no(&self) -> (u64, PacketNumber) {
         self.inner.lock().unwrap().next_pkt_no()
     }
@@ -337,20 +321,6 @@ impl<ST: TransmitStream> ArcTransmitter<ST> {
 
     pub fn record_sent_ack(&self, packet: Packet) {
         self.inner.lock().unwrap().record_sent_packet(packet);
-    }
-}
-
-impl ArcTransmitter<ArcOutput> {
-    pub fn upgrade(&self) {
-        self.inner.lock().unwrap().upgrade();
-    }
-
-    pub fn write_conn_frame(&self, frame: ConnFrame) {
-        self.inner.lock().unwrap().write_conn_frame(frame);
-    }
-
-    pub fn write_stream_frame(&self, frame: StreamCtlFrame) {
-        self.inner.lock().unwrap().write_stream_frame(frame);
     }
 }
 

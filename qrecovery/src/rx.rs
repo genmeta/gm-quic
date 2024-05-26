@@ -1,15 +1,12 @@
 use crate::{
-    crypto::{CryptoStream, TransmitCrypto},
-    frame_queue::ArcFrameQueue,
-    index_deque::IndexDeque,
+    crypto::TransmitCrypto,
+    frame_queue::{self, ArcFrameQueue},
     space::SpaceFrame,
-    streams::{ReceiveStream, Streams},
 };
 use futures::StreamExt;
 use qbase::{
     error::Error,
     frame::{io::WriteAckFrame, AckFrame, AckRecord, BeFrame, DataFrame},
-    packet::PacketNumber,
     varint::{VarInt, VARINT_MAX},
     SpaceId,
 };
@@ -18,6 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc::UnboundedReceiver;
+
+use super::{crypto::CryptoStream, index_deque::IndexDeque, streams::TransmitStream};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) enum State {
@@ -55,7 +54,7 @@ impl State {
         }
     }
 
-    pub fn change_into_synced(&mut self) {
+    pub fn be_synced(&mut self) {
         match self {
             Self::Ignored(t) | Self::Important(t) => {
                 *self = Self::Synced(*t);
@@ -70,7 +69,7 @@ impl State {
 // 生成ack frame，随发送端在合适的时机发送
 // 收ack的ack，推动接收记录窗口的滑动
 #[derive(Debug)]
-pub struct Receiver<RX> {
+pub struct Receiver<ST: TransmitStream> {
     space_id: SpaceId,
     // 用于产生ack frame，Instant用于计算ack_delay，bool表明是否ack eliciting
     rcvd_packets: IndexDeque<State, VARINT_MAX>,
@@ -87,11 +86,11 @@ pub struct Receiver<RX> {
     max_ack_delay: Duration,
     // 这里只需要Incoming的部分
     crypto_stream: CryptoStream,
-    inner: RX,
+    data_stream: ST,
 }
 
-impl<RX: ReceiveStream> Receiver<RX> {
-    fn new(space_id: SpaceId, crypto_stream: CryptoStream, inner: RX) -> Self {
+impl<ST: TransmitStream> Receiver<ST> {
+    fn new(space_id: SpaceId, crypto_stream: CryptoStream, data_stream: ST) -> Self {
         Self {
             space_id,
             rcvd_packets: IndexDeque::new(),
@@ -102,12 +101,8 @@ impl<RX: ReceiveStream> Receiver<RX> {
             time_to_sync: None,
             max_ack_delay: Duration::from_millis(100),
             crypto_stream,
-            inner,
+            data_stream,
         }
-    }
-
-    fn expected_pn(&self) -> u64 {
-        self.rcvd_packets.largest()
     }
 
     fn has_rcvd(&self, pktid: u64) -> bool {
@@ -123,10 +118,10 @@ impl<RX: ReceiveStream> Receiver<RX> {
             SpaceFrame::Ack(_ack, _rtt) => {
                 // let _ = self.recv_ack_frame(ack, rtt);
             }
-            SpaceFrame::Stream(f) => self.inner.recv_frame(f)?,
+            SpaceFrame::Stream(f) => self.data_stream.recv_frame(f)?,
             SpaceFrame::Data(f, data) => match f {
                 DataFrame::Crypto(f) => self.crypto_stream.recv_data(f, data)?,
-                DataFrame::Stream(f) => self.inner.recv_data(f, data)?,
+                DataFrame::Stream(f) => self.data_stream.recv_data(f, data)?,
             },
         };
         Ok(())
@@ -144,7 +139,7 @@ impl<RX: ReceiveStream> Receiver<RX> {
                     .iter_with_idx()
                     .rev()
                     .skip_while(|(pn, _)| *pn >= pkt_id)
-                    .skip(3_usize)
+                    .skip(3 as usize)
                     .take_while(|(pn, _)| pn > &self.last_synced_ack_largest)
                     .any(|(_, s)| matches!(s, State::NotReceived));
             }
@@ -230,34 +225,30 @@ impl<RX: ReceiveStream> Receiver<RX> {
     }
 }
 
-impl Receiver<Streams> {
-    fn upgrade(&mut self) {
-        self.space_id = SpaceId::OneRtt;
-    }
-}
-
 #[derive(Debug, Clone)]
-pub struct ArcReceiver<RX> {
-    inner: Arc<Mutex<Receiver<RX>>>,
+pub struct ArcReceiver<ST: TransmitStream> {
+    inner: Arc<Mutex<Receiver<ST>>>,
 }
 
-impl<RX: ReceiveStream + Send + 'static> ArcReceiver<RX> {
+impl<ST: TransmitStream + Send + 'static> ArcReceiver<ST> {
     pub fn new(
         space_id: SpaceId,
         crypto_stream: CryptoStream,
-        inner: RX,
-        recv_frame_queue: ArcFrameQueue<SpaceFrame>,
+        data_stream: ST,
+        frame_queue: ArcFrameQueue<SpaceFrame>,
         ack_record_rx: UnboundedReceiver<u64>,
     ) -> Self {
-        let receiver = Arc::new(Mutex::new(Receiver::new(space_id, crypto_stream, inner)));
-        // 创建Receiver时，自带一个不停地读取Frame的异步任务
+        let receiver = Arc::new(Mutex::new(Receiver::new(
+            space_id,
+            crypto_stream,
+            data_stream,
+        )));
         tokio::spawn({
             let receiver = receiver.clone();
             async move {
-                let mut frame_queue = recv_frame_queue;
+                let mut frame_queue = frame_queue;
                 while let Some(frame) = frame_queue.next().await {
                     let mut receiver = receiver.lock().unwrap();
-                    // TODO: 可能某些帧引起违反协议的错误，需要处理错误
                     let _ = receiver.recv_frame(frame);
                 }
             }
@@ -275,26 +266,9 @@ impl<RX: ReceiveStream + Send + 'static> ArcReceiver<RX> {
     }
 }
 
-impl ArcReceiver<Streams> {
-    pub fn upgrade(&self) {
-        self.inner.lock().unwrap().upgrade();
-    }
-}
-
-impl<RX: ReceiveStream> ArcReceiver<RX> {
-    /// Upon receiving a data packet, the actual packet number needs to be calculated
-    /// based on the maximum packet number of the received data packets.
-    /// After receiving a data packet and parsing the packet number, it is necessary
-    /// to inquire whether the packet has been received before. Duplicate packets are
-    /// not processed repeatedly.
-    pub fn receive_pkt_no(&self, pn: PacketNumber) -> (u64, bool) {
-        let guard = self.inner.lock().unwrap();
-        let pkt_id = pn.decode(guard.expected_pn());
-        (pkt_id, guard.has_rcvd(pkt_id))
-    }
-
-    /// 如果真发出了AckFrame，那发包记录要记下AckRecord
-    pub fn read_ack_frame(&self, mut buf: &mut [u8]) -> Option<(AckRecord, usize)> {
+impl<ST: TransmitStream> ArcReceiver<ST> {
+    /// 如果真发出了AckFrame，那发包记录要存好
+    pub fn read_ack_frame(&mut self, mut buf: &mut [u8]) -> Option<(AckRecord, usize)> {
         let mut guard = self.inner.lock().unwrap();
         if guard.need_send_ack_frame() {
             let remaning = buf.len();
@@ -308,19 +282,11 @@ impl<RX: ReceiveStream> ArcReceiver<RX> {
                 guard.last_synced_ack_largest = ack.largest.into_inner();
                 buf.put_ack_frame(&ack);
                 // All known packet information needs to be marked as synchronized.
-                guard
-                    .rcvd_packets
-                    .iter_mut()
-                    .for_each(|s| s.change_into_synced());
+                guard.rcvd_packets.iter_mut().for_each(|s| s.be_synced());
                 return Some((ack.into(), ack_size));
             }
         }
         None
-    }
-
-    /// 当收到一个数据包，该数据包正常，且能被正常解析出帧，需要登记该数据包的收取状态
-    pub fn record(&self, pkt_id: u64, is_ack_eliciting: bool) {
-        self.inner.lock().unwrap().record(pkt_id, is_ack_eliciting);
     }
 }
 

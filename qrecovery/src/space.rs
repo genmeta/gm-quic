@@ -1,16 +1,11 @@
-use crate::{frame_queue::ArcFrameQueue, recv};
-
 use super::{
     crypto::CryptoStream,
+    frame_queue::ArcFrameQueue,
     rtt::Rtt,
-    streams::{NoStreams, Streams, TransmitStream},
+    streams::{ArcOutput, NoDataStreams, ReceiveStream, Streams, TransmitStream},
 };
 use bytes::Bytes;
-use qbase::{
-    frame::{io::*, *},
-    packet::PacketNumber,
-    SpaceId,
-};
+use qbase::{frame::*, packet::PacketNumber, SpaceId};
 use std::{
     fmt::Debug,
     sync::{Arc, Mutex},
@@ -36,7 +31,7 @@ pub trait TransmitPacket {
 /// When a network socket receives a data packet and determines that it belongs
 /// to a specific space, the content of the packet is passed on to that space.
 pub trait ReceivePacket {
-    fn receive_pkt_no(&self, pn: PacketNumber) -> Result<u64, u64>;
+    fn receive_pkt_no(&self, pn: PacketNumber) -> (u64, bool);
 
     fn record(&self, pktid: u64, is_ack_eliciting: bool);
 }
@@ -44,19 +39,21 @@ pub trait ReceivePacket {
 /// 可靠空间的抽象实现，需要实现上述所有trait
 /// 可靠空间中的重传、确认，由可靠空间内部实现，无需外露
 #[derive(Debug)]
-struct Space<ST: TransmitStream> {
-    transmitter: tx::ArcTransmitter<ST>,
-    receiver: rx::ArcReceiver<ST>,
+struct Space<TX, RX> {
+    transmitter: tx::ArcTransmitter<TX>,
+    receiver: rx::ArcReceiver<RX>,
 }
 
-impl<ST> Space<ST>
+impl<TX, RX> Space<TX, RX>
 where
-    ST: TransmitStream + Clone + Send + 'static,
+    TX: TransmitStream + Clone + Send + 'static,
+    RX: ReceiveStream + Clone + Send + 'static,
 {
     pub(crate) fn build(
         space_id: SpaceId,
         crypto_stream: CryptoStream,
-        data_stream: ST,
+        data_stream_tx: TX,
+        data_stream_rx: RX,
         ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
         recv_frames_queue: ArcFrameQueue<SpaceFrame>,
@@ -65,7 +62,7 @@ where
         let transmitter = tx::ArcTransmitter::new(
             space_id,
             crypto_stream.clone(),
-            data_stream.clone(),
+            data_stream_tx,
             ack_record_tx,
             ack_frame_rx,
             loss_pkt_rx,
@@ -73,7 +70,7 @@ where
         let receiver = rx::ArcReceiver::new(
             space_id,
             crypto_stream,
-            data_stream,
+            data_stream_rx,
             recv_frames_queue,
             ack_record_rx,
         );
@@ -84,12 +81,10 @@ where
     }
 }
 
-#[derive(Debug)]
-pub struct ArcSpace<ST>(Arc<Space<ST>>)
-where
-    ST: TransmitStream;
+#[derive(Debug, Clone)]
+pub struct ArcSpace<TX, RX>(Arc<Space<TX, RX>>);
 
-impl ArcSpace<NoStreams> {
+impl ArcSpace<NoDataStreams, NoDataStreams> {
     pub fn new_initial_space(
         crypto_stream: CryptoStream,
         ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
@@ -99,7 +94,8 @@ impl ArcSpace<NoStreams> {
         Self(Arc::new(Space::build(
             SpaceId::Initial,
             crypto_stream,
-            NoStreams,
+            NoDataStreams,
+            NoDataStreams,
             ack_frame_rx,
             loss_pkt_rx,
             recv_frames_queue,
@@ -115,7 +111,8 @@ impl ArcSpace<NoStreams> {
         Self(Arc::new(Space::build(
             SpaceId::Handshake,
             crypto_stream,
-            NoStreams,
+            NoDataStreams,
+            NoDataStreams,
             ack_frame_rx,
             loss_pkt_rx,
             recv_frames_queue,
@@ -127,7 +124,7 @@ impl ArcSpace<NoStreams> {
 /// The data in the 0RTT space is unreliable and cannot transmit CryptoFrame. It is constrained
 /// by the space_id when sending, and a judgment is also made in the task of receiving and unpacking.
 /// Therefore, when upgrading, just change the space_id to 1RTT, no other operations are needed.
-impl ArcSpace<Streams> {
+impl ArcSpace<ArcOutput, Streams> {
     pub fn new_data_space(
         crypto_stream: CryptoStream,
         streams: Streams,
@@ -138,6 +135,7 @@ impl ArcSpace<Streams> {
         Self(Arc::new(Space::build(
             SpaceId::ZeroRtt,
             crypto_stream,
+            streams.output.clone(),
             streams,
             ack_frame_rx,
             loss_pkt_rx,
@@ -150,6 +148,7 @@ impl ArcSpace<Streams> {
         self.0.receiver.upgrade();
     }
 
+    /*
     pub fn write_conn_frame(&self, frame: ConnFrame) {
         self.0.transmitter.write_conn_frame(frame);
     }
@@ -157,13 +156,15 @@ impl ArcSpace<Streams> {
     pub fn write_stream_frame(&self, frame: StreamCtlFrame) {
         self.0.transmitter.write_stream_frame(frame);
     }
+    */
 }
 
-impl<ST> ReceivePacket for ArcSpace<ST>
+impl<TX, RX> ReceivePacket for ArcSpace<TX, RX>
 where
-    ST: TransmitStream,
+    TX: TransmitStream,
+    RX: ReceiveStream,
 {
-    fn receive_pkt_no(&self, pn: PacketNumber) -> Result<u64, u64> {
+    fn receive_pkt_no(&self, pn: PacketNumber) -> (u64, bool) {
         self.0.receiver.receive_pkt_no(pn)
     }
 
@@ -172,9 +173,10 @@ where
     }
 }
 
-impl<ST> TransmitPacket for ArcSpace<ST>
+impl<TX, RX> TransmitPacket for ArcSpace<TX, RX>
 where
-    ST: TransmitStream,
+    TX: TransmitStream,
+    RX: ReceiveStream,
 {
     /// Get the next packet number. This number is not thread-safe.
     /// It does not lock the next packet number to be sent.
@@ -190,15 +192,6 @@ where
     /// it means there is no suitable data to send.
     fn read(&self, buf: &mut [u8]) -> usize {
         self.0.transmitter.read(buf)
-    }
-}
-
-impl<ST> Clone for ArcSpace<ST>
-where
-    ST: TransmitStream,
-{
-    fn clone(&self) -> Self {
-        ArcSpace(self.0.clone())
     }
 }
 

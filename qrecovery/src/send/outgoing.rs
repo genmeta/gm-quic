@@ -19,7 +19,7 @@ use std::{
 pub struct Outgoing(pub(super) ArcSender);
 
 impl Outgoing {
-    pub fn update_window(&mut self, max_data_size: u64) {
+    pub fn update_window(&self, max_data_size: u64) {
         assert!(max_data_size <= VARINT_MAX);
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
@@ -32,7 +32,7 @@ impl Outgoing {
         }
     }
 
-    pub fn try_read<B>(&mut self, sid: StreamId, mut buffer: B) -> Option<StreamFrame>
+    pub fn try_read<B>(&self, sid: StreamId, mut buffer: B) -> Option<StreamFrame>
     where
         B: BufMut,
     {
@@ -87,7 +87,7 @@ impl Outgoing {
         result
     }
 
-    pub fn confirm_rcvd(&mut self, range: &Range<u64>) -> bool {
+    pub fn confirm_rcvd(&self, range: &Range<u64>) -> bool {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {
@@ -113,7 +113,7 @@ impl Outgoing {
         false
     }
 
-    pub fn may_loss(&mut self, range: &Range<u64>) {
+    pub fn may_loss(&self, range: &Range<u64>) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {
@@ -134,7 +134,7 @@ impl Outgoing {
     }
 
     /// 被动stop，返回true说明成功stop了；返回false则表明流没有必要stop，要么已经完成，要么已经reset
-    pub fn stop(&mut self) -> bool {
+    pub fn stop(&self) -> bool {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {
@@ -156,7 +156,7 @@ impl Outgoing {
         }
     }
 
-    pub fn confirm_reset(&mut self) {
+    pub fn confirm_reset(&self) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {

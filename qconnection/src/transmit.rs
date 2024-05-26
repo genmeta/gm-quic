@@ -11,7 +11,7 @@ use qbase::{
 };
 use qrecovery::{
     space::{ArcSpace, TransmitPacket},
-    streams::{Streams, TransmitStream},
+    streams::{ArcOutput, ReceiveStream, Streams, TransmitStream},
 };
 use std::ops::Deref;
 
@@ -28,17 +28,18 @@ pub enum FillPolicy {
     // Padding,     // Instead of padding frames, it's better to redundantly encode the Length.
 }
 
-pub fn read_space_and_encrypt<S, ST>(
+pub fn read_space_and_encrypt<S, TX, RX>(
     buffer: &mut [u8],
     header: LongHeader<S>,
     fill_policy: FillPolicy,
     keys: ArcKeys,
-    space: ArcSpace<ST>,
+    space: ArcSpace<TX, RX>,
 ) -> (usize, usize)
 where
     for<'a> &'a mut [u8]: Write<S>,
     LongHeader<S>: HasLength + GetType + Encode,
-    ST: TransmitStream,
+    TX: TransmitStream,
+    RX: ReceiveStream,
 {
     let keys = match keys.get_local_keys() {
         Some(keys) => keys,
@@ -133,7 +134,7 @@ pub fn read_1rtt_data_and_encrypt(
     buffer: &mut [u8],
     header: OneRttHeader,
     keys: ArcOneRttKeys,
-    space: ArcSpace<Streams>,
+    space: ArcSpace<ArcOutput, Streams>,
 ) -> usize {
     let (hpk, pk) = match keys.get_local_keys() {
         Some(keys) => keys,

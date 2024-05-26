@@ -1,5 +1,4 @@
 use crate::path::ArcPath;
-use futures::StreamExt;
 use qbase::{
     error::{Error, ErrorKind},
     frame::{BeFrame, ConnFrame, Frame, FrameReader, PureFrame},
@@ -113,15 +112,13 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
             }
 
             let pn = packet.decode_header().unwrap();
-            let pkt_id = match space.receive_pkt_no(pn) {
-                Ok(id) => id,
-                Err(_id) => {
-                    // Duplicate packet, discard. QUIC does not allow duplicate packets.
-                    // Is it an error to receive duplicate packets? Definitely not,
-                    // otherwise it would be too vulnerable to replay attacks.
-                    continue;
-                }
-            };
+            let (pkt_id, has_rcvd) = space.receive_pkt_no(pn);
+            if has_rcvd {
+                // Duplicate packet, discard. QUIC does not allow duplicate packets.
+                // Is it an error to receive duplicate packets? Definitely not,
+                // otherwise it would be too vulnerable to replay attacks.
+                continue;
+            }
 
             match packet.decrypt_packet(pkt_id, pn.size(), &k.as_ref().remote.packet) {
                 Ok(payload) => {
@@ -170,15 +167,13 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
             }
 
             let (pn, key_phase) = packet.decode_header().unwrap();
-            let pkt_id = match space.receive_pkt_no(pn) {
-                Ok(id) => id,
-                Err(_id) => {
-                    // Duplicate packet, discard. QUIC does not allow duplicate packets.
-                    // Is it an error to receive duplicate packets? Definitely not,
-                    // otherwise it would be too vulnerable to replay attacks.
-                    continue;
-                }
-            };
+            let (pkt_id, has_rcvd) = space.receive_pkt_no(pn);
+            if has_rcvd {
+                // Duplicate packet, discard. QUIC does not allow duplicate packets.
+                // Is it an error to receive duplicate packets? Definitely not,
+                // otherwise it would be too vulnerable to replay attacks.
+                continue;
+            }
 
             // 要根据key_phase_bit来获取packet key
             let pkt_key = pk.lock().unwrap().get_remote(key_phase, pkt_id);
