@@ -3,7 +3,7 @@ use crate::{
     frame_queue::ArcFrameQueue,
     index_deque::IndexDeque,
     space::SpaceFrame,
-    streams::{ReceiveStream, Streams},
+    streams::{data::DataStreams, ReceiveStream},
 };
 use futures::StreamExt;
 use qbase::{
@@ -230,7 +230,7 @@ impl<RX: ReceiveStream> Receiver<RX> {
     }
 }
 
-impl Receiver<Streams> {
+impl Receiver<DataStreams> {
     fn upgrade(&mut self) {
         self.space_id = SpaceId::OneRtt;
     }
@@ -275,7 +275,7 @@ impl<RX: ReceiveStream + Send + 'static> ArcReceiver<RX> {
     }
 }
 
-impl ArcReceiver<Streams> {
+impl ArcReceiver<DataStreams> {
     pub fn upgrade(&self) {
         self.inner.lock().unwrap().upgrade();
     }

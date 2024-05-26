@@ -2,7 +2,7 @@ use crate::{
     crypto::{CryptoStream, TransmitCrypto},
     index_deque::IndexDeque,
     rtt::Rtt,
-    streams::{ArcOutput, TransmitStream},
+    streams::{data::ArcOutput, TransmitStream},
 };
 use bytes::BufMut;
 use qbase::{

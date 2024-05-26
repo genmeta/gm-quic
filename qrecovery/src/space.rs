@@ -2,7 +2,7 @@ use super::{
     crypto::CryptoStream,
     frame_queue::ArcFrameQueue,
     rtt::Rtt,
-    streams::{ArcOutput, NoDataStreams, ReceiveStream, Streams, TransmitStream},
+    streams::{data::DataStreams, none::NoDataStreams, Output, ReceiveStream, TransmitStream},
 };
 use bytes::Bytes;
 use qbase::{frame::*, packet::PacketNumber, SpaceId};
@@ -39,21 +39,20 @@ pub trait ReceivePacket {
 /// 可靠空间的抽象实现，需要实现上述所有trait
 /// 可靠空间中的重传、确认，由可靠空间内部实现，无需外露
 #[derive(Debug)]
-struct Space<TX, RX> {
-    transmitter: tx::ArcTransmitter<TX>,
-    receiver: rx::ArcReceiver<RX>,
+struct Space<S: Output + Debug> {
+    transmitter: tx::ArcTransmitter<<S as Output>::Outgoing>,
+    receiver: rx::ArcReceiver<S>,
 }
 
-impl<TX, RX> Space<TX, RX>
+impl<S> Space<S>
 where
-    TX: TransmitStream + Clone + Send + 'static,
-    RX: ReceiveStream + Clone + Send + 'static,
+    S: Debug + Output + ReceiveStream + Clone + Send + 'static,
+    <S as Output>::Outgoing: TransmitStream + Clone + Send + 'static,
 {
     pub(crate) fn build(
         space_id: SpaceId,
         crypto_stream: CryptoStream,
-        data_stream_tx: TX,
-        data_stream_rx: RX,
+        data_stream: S,
         ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
         recv_frames_queue: ArcFrameQueue<SpaceFrame>,
@@ -62,7 +61,7 @@ where
         let transmitter = tx::ArcTransmitter::new(
             space_id,
             crypto_stream.clone(),
-            data_stream_tx,
+            data_stream.output(),
             ack_record_tx,
             ack_frame_rx,
             loss_pkt_rx,
@@ -70,7 +69,7 @@ where
         let receiver = rx::ArcReceiver::new(
             space_id,
             crypto_stream,
-            data_stream_rx,
+            data_stream,
             recv_frames_queue,
             ack_record_rx,
         );
@@ -82,9 +81,9 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct ArcSpace<TX, RX>(Arc<Space<TX, RX>>);
+pub struct ArcSpace<S: Debug + Output>(Arc<Space<S>>);
 
-impl ArcSpace<NoDataStreams, NoDataStreams> {
+impl ArcSpace<NoDataStreams> {
     pub fn new_initial_space(
         crypto_stream: CryptoStream,
         ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
@@ -94,7 +93,6 @@ impl ArcSpace<NoDataStreams, NoDataStreams> {
         Self(Arc::new(Space::build(
             SpaceId::Initial,
             crypto_stream,
-            NoDataStreams,
             NoDataStreams,
             ack_frame_rx,
             loss_pkt_rx,
@@ -112,7 +110,6 @@ impl ArcSpace<NoDataStreams, NoDataStreams> {
             SpaceId::Handshake,
             crypto_stream,
             NoDataStreams,
-            NoDataStreams,
             ack_frame_rx,
             loss_pkt_rx,
             recv_frames_queue,
@@ -124,10 +121,10 @@ impl ArcSpace<NoDataStreams, NoDataStreams> {
 /// The data in the 0RTT space is unreliable and cannot transmit CryptoFrame. It is constrained
 /// by the space_id when sending, and a judgment is also made in the task of receiving and unpacking.
 /// Therefore, when upgrading, just change the space_id to 1RTT, no other operations are needed.
-impl ArcSpace<ArcOutput, Streams> {
+impl ArcSpace<DataStreams> {
     pub fn new_data_space(
         crypto_stream: CryptoStream,
-        streams: Streams,
+        streams: DataStreams,
         ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
         recv_frames_queue: ArcFrameQueue<SpaceFrame>,
@@ -135,7 +132,6 @@ impl ArcSpace<ArcOutput, Streams> {
         Self(Arc::new(Space::build(
             SpaceId::ZeroRtt,
             crypto_stream,
-            streams.output.clone(),
             streams,
             ack_frame_rx,
             loss_pkt_rx,
@@ -159,10 +155,9 @@ impl ArcSpace<ArcOutput, Streams> {
     */
 }
 
-impl<TX, RX> ReceivePacket for ArcSpace<TX, RX>
+impl<S> ReceivePacket for ArcSpace<S>
 where
-    TX: TransmitStream,
-    RX: ReceiveStream,
+    S: Debug + ReceiveStream + Output,
 {
     fn receive_pkt_no(&self, pn: PacketNumber) -> (u64, bool) {
         self.0.receiver.receive_pkt_no(pn)
@@ -173,10 +168,10 @@ where
     }
 }
 
-impl<TX, RX> TransmitPacket for ArcSpace<TX, RX>
+impl<S> TransmitPacket for ArcSpace<S>
 where
-    TX: TransmitStream,
-    RX: ReceiveStream,
+    S: Debug + Output,
+    <S as Output>::Outgoing: TransmitStream,
 {
     /// Get the next packet number. This number is not thread-safe.
     /// It does not lock the next packet number to be sent.

@@ -11,9 +11,9 @@ use qbase::{
 };
 use qrecovery::{
     space::{ArcSpace, TransmitPacket},
-    streams::{ArcOutput, ReceiveStream, Streams, TransmitStream},
+    streams::{data::DataStreams, Output, ReceiveStream},
 };
-use std::ops::Deref;
+use std::{fmt::Debug, ops::Deref};
 
 /// In order to fill the packet efficiently and reduce unnecessary copying, the data of each
 /// space is directly written on the Buffer. However, the length of the packet header is
@@ -28,18 +28,17 @@ pub enum FillPolicy {
     // Padding,     // Instead of padding frames, it's better to redundantly encode the Length.
 }
 
-pub fn read_space_and_encrypt<S, TX, RX>(
+pub fn read_space_and_encrypt<T, S>(
     buffer: &mut [u8],
-    header: LongHeader<S>,
+    header: LongHeader<T>,
     fill_policy: FillPolicy,
     keys: ArcKeys,
-    space: ArcSpace<TX, RX>,
+    space: ArcSpace<S>,
 ) -> (usize, usize)
 where
-    for<'a> &'a mut [u8]: Write<S>,
-    LongHeader<S>: HasLength + GetType + Encode,
-    TX: TransmitStream,
-    RX: ReceiveStream,
+    for<'a> &'a mut [u8]: Write<T>,
+    LongHeader<T>: HasLength + GetType + Encode,
+    S: Debug + Output + ReceiveStream,
 {
     let keys = match keys.get_local_keys() {
         Some(keys) => keys,
@@ -134,7 +133,7 @@ pub fn read_1rtt_data_and_encrypt(
     buffer: &mut [u8],
     header: OneRttHeader,
     keys: ArcOneRttKeys,
-    space: ArcSpace<ArcOutput, Streams>,
+    space: ArcSpace<DataStreams>,
 ) -> usize {
     let (hpk, pk) = match keys.get_local_keys() {
         Some(keys) => keys,

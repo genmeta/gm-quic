@@ -1,8 +1,3 @@
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex},
-};
-
 use crate::{auto, crypto::TlsIO, handshake, path::ArcPath};
 use qbase::{
     packet::{
@@ -16,7 +11,11 @@ use qrecovery::{
     crypto::CryptoStream,
     frame_queue::ArcFrameQueue,
     space::ArcSpace,
-    streams::{ArcOutput, NoDataStreams, Streams},
+    streams::{data::DataStreams, none::NoDataStreams},
+};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
 };
 use tokio::sync::mpsc;
 
@@ -31,19 +30,19 @@ pub struct Connection {
     initial_keys: ArcKeys,
     initial_pkt_queue: RxPacketsQueue<InitialPacket>,
     // 发送数据，也可以随着升级到Handshake空间而丢弃
-    initial_space: ArcSpace<NoDataStreams, NoDataStreams>,
+    initial_space: ArcSpace<NoDataStreams>,
 
     // An endpoint MUST discard its Handshake keys when the TLS handshake is confirmed.
     handshake_keys: ArcKeys,
     handshake_pkt_queue: RxPacketsQueue<HandshakePacket>,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
-    handshake_space: ArcSpace<NoDataStreams, NoDataStreams>,
+    handshake_space: ArcSpace<NoDataStreams>,
 
     zero_rtt_keys: ArcKeys,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
     zero_rtt_pkt_queue: RxPacketsQueue<ZeroRttPacket>,
     one_rtt_pkt_queue: mpsc::UnboundedSender<(OneRttPacket, ArcPath)>,
-    data_space: ArcSpace<ArcOutput, Streams>,
+    data_space: ArcSpace<DataStreams>,
     spin: SpinBit,
 }
 
@@ -121,7 +120,8 @@ impl Connection {
         let (data_ack_tx, data_ack_rx) = mpsc::unbounded_channel();
         let (data_loss_tx, data_loss_rx) = mpsc::unbounded_channel();
         let sending_frames = Arc::new(Mutex::new(VecDeque::new()));
-        let streams = Streams::with_role_and_limit(Role::Client, 20, 10, sending_frames.clone());
+        let streams =
+            DataStreams::with_role_and_limit(Role::Client, 20, 10, sending_frames.clone());
         let data_space = ArcSpace::new_data_space(
             one_rtt_crypto_stream,
             streams,
