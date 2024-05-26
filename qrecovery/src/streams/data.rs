@@ -40,7 +40,7 @@ impl TransmitStream for ArcOutput {
         let mut guard = self.0.lock().unwrap();
         if let Some(all_data_recved) = guard
             .get(&stream_frame.id)
-            .map(|outgoing| outgoing.confirm_rcvd(&stream_frame.range()))
+            .map(|outgoing| outgoing.confirm_data_rcvd(&stream_frame.range()))
         {
             if all_data_recved {
                 guard.remove(&stream_frame.id);
@@ -50,14 +50,14 @@ impl TransmitStream for ArcOutput {
 
     fn may_loss_data(&self, stream_frame: StreamFrame) {
         if let Some(outgoing) = self.0.lock().unwrap().get(&stream_frame.id) {
-            outgoing.may_loss(&stream_frame.range());
+            outgoing.may_loss_data(&stream_frame.range());
         }
     }
 
     fn confirm_reset_rcvd(&self, reset_frame: ResetStreamFrame) {
         let mut guard = self.0.lock().unwrap();
         if let Some(outgoing) = guard.get(&reset_frame.stream_id) {
-            outgoing.confirm_reset();
+            outgoing.confirm_reset_rcvd();
         }
         guard.remove(&reset_frame.stream_id);
         // 如果流是双向的，接收部分的流独立地管理结束。其实是上层应用决定接收的部分是否同时结束
@@ -81,7 +81,7 @@ impl ArcInput {
 
 /// 专门根据Stream相关帧处理streams相关逻辑
 #[derive(Debug, Clone)]
-pub struct DataStreams {
+pub(super) struct DataStreams {
     role: Role,
     stream_ids: StreamIds,
     // 所有流的待写端，要发送数据，就得向这些流索取
@@ -92,7 +92,7 @@ pub struct DataStreams {
     listener: ArcListener,
 
     // 该queue与space中的transmitter中的frame_queue共享，为了方便向transmitter中写入帧
-    frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
+    sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> Error {
@@ -178,13 +178,16 @@ impl ReceiveStream for DataStreams {
                 }
                 if let Some(outgoing) = self.output.0.lock().unwrap().get(&sid) {
                     if outgoing.stop() {
-                        self.frames.lock().unwrap().push_back(ReliableFrame::Stream(
-                            StreamCtlFrame::ResetStream(ResetStreamFrame {
-                                stream_id: sid,
-                                app_error_code: VarInt::from_u32(0),
-                                final_size: VarInt::from_u32(0),
-                            }),
-                        ));
+                        self.sending_frames
+                            .lock()
+                            .unwrap()
+                            .push_back(ReliableFrame::Stream(StreamCtlFrame::ResetStream(
+                                ResetStreamFrame {
+                                    stream_id: sid,
+                                    app_error_code: VarInt::from_u32(0),
+                                    final_size: VarInt::from_u32(0),
+                                },
+                            )));
                     }
                 }
             }
@@ -249,11 +252,11 @@ impl ReceiveStream for DataStreams {
 }
 
 impl DataStreams {
-    pub fn with_role_and_limit(
+    pub(super) fn with_role_and_limit(
         role: Role,
         max_bi_streams: u64,
         max_uni_streams: u64,
-        frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
+        sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
     ) -> Self {
         Self {
             role,
@@ -261,11 +264,15 @@ impl DataStreams {
             output: ArcOutput::default(),
             input: ArcInput::default(),
             listener: ArcListener::default(),
-            frames,
+            sending_frames,
         }
     }
 
-    pub fn poll_create(&self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<AppStream>> {
+    pub(super) fn poll_create_stream(
+        &self,
+        cx: &mut Context<'_>,
+        dir: Dir,
+    ) -> Poll<Option<AppStream>> {
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, dir)) {
             let writer = self.create_sender(sid);
             if dir == Dir::Bi {
@@ -279,7 +286,7 @@ impl DataStreams {
         }
     }
 
-    pub fn listener(&self) -> ArcListener {
+    pub(super) fn listener(&self) -> ArcListener {
         self.listener.clone()
     }
 
@@ -310,7 +317,7 @@ impl DataStreams {
         // 但要等ResetRecved才能真正释放该流
         tokio::spawn({
             let outgoing = outgoing.clone();
-            let frames = self.frames.clone();
+            let frames = self.sending_frames.clone();
             async move {
                 if let Some(final_size) = outgoing.is_cancelled_by_app().await {
                     frames.lock().unwrap().push_back(ReliableFrame::Stream(
@@ -332,7 +339,7 @@ impl DataStreams {
         // Continuously check whether the MaxStreamData window needs to be updated.
         tokio::spawn({
             let incoming = incoming.clone();
-            let frames = self.frames.clone();
+            let frames = self.sending_frames.clone();
             async move {
                 while let Some(max_data) = incoming.need_window_update().await {
                     frames.lock().unwrap().push_back(ReliableFrame::Stream(
@@ -347,7 +354,7 @@ impl DataStreams {
         // 监听是否被应用stop了。如果是，则要发送一个StopSendingFrame
         tokio::spawn({
             let incoming = incoming.clone();
-            let frames = self.frames.clone();
+            let frames = self.sending_frames.clone();
             async move {
                 if incoming.is_stopped_by_app().await {
                     frames.lock().unwrap().push_back(ReliableFrame::Stream(

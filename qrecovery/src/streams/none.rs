@@ -1,7 +1,7 @@
 use super::{Output, ReceiveStream, TransmitStream};
 use qbase::{error::Error, frame::*};
 
-/// 在Initial和Handshake空间中，是不需要传输Streams的，此时可以使用NoStreams
+/// 在Initial和Handshake空间中，是不需要传输Streams的，此时可以使用NoDataStreams
 #[derive(Debug, Clone)]
 pub struct NoDataStreams;
 

@@ -11,7 +11,7 @@ use qbase::{
 };
 use qrecovery::{
     space::{ArcSpace, TransmitPacket},
-    streams::{data::DataStreams, Output, ReceiveStream},
+    streams::{ArcDataStreams, Output, ReceiveStream},
 };
 use std::{fmt::Debug, ops::Deref};
 
@@ -133,7 +133,7 @@ pub fn read_1rtt_data_and_encrypt(
     buffer: &mut [u8],
     header: OneRttHeader,
     keys: ArcOneRttKeys,
-    space: ArcSpace<DataStreams>,
+    space: ArcSpace<ArcDataStreams>,
 ) -> usize {
     let (hpk, pk) = match keys.get_local_keys() {
         Some(keys) => keys,

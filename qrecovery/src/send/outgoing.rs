@@ -87,7 +87,7 @@ impl Outgoing {
         result
     }
 
-    pub fn confirm_rcvd(&self, range: &Range<u64>) -> bool {
+    pub fn confirm_data_rcvd(&self, range: &Range<u64>) -> bool {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {
@@ -113,7 +113,7 @@ impl Outgoing {
         false
     }
 
-    pub fn may_loss(&self, range: &Range<u64>) {
+    pub fn may_loss_data(&self, range: &Range<u64>) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {
@@ -156,7 +156,7 @@ impl Outgoing {
         }
     }
 
-    pub fn confirm_reset(&self) {
+    pub fn confirm_reset_rcvd(&self) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner.take() {

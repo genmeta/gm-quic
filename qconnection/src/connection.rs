@@ -11,7 +11,7 @@ use qrecovery::{
     crypto::CryptoStream,
     frame_queue::ArcFrameQueue,
     space::ArcSpace,
-    streams::{data::DataStreams, none::NoDataStreams},
+    streams::{none::NoDataStreams, ArcDataStreams},
 };
 use std::{
     collections::VecDeque,
@@ -42,7 +42,7 @@ pub struct Connection {
     // 发送数据，也可以随着升级到1RTT空间而丢弃
     zero_rtt_pkt_queue: RxPacketsQueue<ZeroRttPacket>,
     one_rtt_pkt_queue: mpsc::UnboundedSender<(OneRttPacket, ArcPath)>,
-    data_space: ArcSpace<DataStreams>,
+    data_space: ArcSpace<ArcDataStreams>,
     spin: SpinBit,
 }
 
@@ -121,7 +121,7 @@ impl Connection {
         let (data_loss_tx, data_loss_rx) = mpsc::unbounded_channel();
         let sending_frames = Arc::new(Mutex::new(VecDeque::new()));
         let streams =
-            DataStreams::with_role_and_limit(Role::Client, 20, 10, sending_frames.clone());
+            ArcDataStreams::with_role_and_limit(Role::Client, 20, 10, sending_frames.clone());
         let data_space = ArcSpace::new_data_space(
             one_rtt_crypto_stream,
             streams,

@@ -2,7 +2,7 @@ use super::{
     crypto::CryptoStream,
     frame_queue::ArcFrameQueue,
     rtt::Rtt,
-    streams::{data::DataStreams, none::NoDataStreams, Output, ReceiveStream, TransmitStream},
+    streams::{none::NoDataStreams, ArcDataStreams, Output, ReceiveStream, TransmitStream},
 };
 use bytes::Bytes;
 use qbase::{frame::*, packet::PacketNumber, SpaceId};
@@ -121,10 +121,10 @@ impl ArcSpace<NoDataStreams> {
 /// The data in the 0RTT space is unreliable and cannot transmit CryptoFrame. It is constrained
 /// by the space_id when sending, and a judgment is also made in the task of receiving and unpacking.
 /// Therefore, when upgrading, just change the space_id to 1RTT, no other operations are needed.
-impl ArcSpace<DataStreams> {
+impl ArcSpace<ArcDataStreams> {
     pub fn new_data_space(
         crypto_stream: CryptoStream,
-        streams: DataStreams,
+        streams: ArcDataStreams,
         ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
         recv_frames_queue: ArcFrameQueue<SpaceFrame>,
