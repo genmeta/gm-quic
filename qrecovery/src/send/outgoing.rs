@@ -10,6 +10,7 @@ use qbase::{
 };
 use std::{
     future::Future,
+    io::Error,
     ops::{DerefMut, Range},
     pin::Pin,
     task::{Context, Poll},
@@ -23,12 +24,15 @@ impl Outgoing {
         assert!(max_data_size <= VARINT_MAX);
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        match inner.take() {
-            Sender::Sending(mut s) => {
-                s.update_window(max_data_size);
-                inner.replace(Sender::Sending(s));
-            }
-            other => inner.replace(other),
+        match inner {
+            Ok(sending_state) => match sending_state.take() {
+                Sender::Sending(mut s) => {
+                    s.update_window(max_data_size);
+                    sending_state.replace(Sender::Sending(s));
+                }
+                other => sending_state.replace(other),
+            },
+            Err(_) => (),
         }
     }
 
@@ -36,13 +40,10 @@ impl Outgoing {
     where
         B: BufMut,
     {
-        let mut sender = self.0.lock().unwrap();
-        let inner = sender.deref_mut();
         let mut result = None;
         let capacity = buffer.remaining_mut();
         let estimate_capacity = |offset| StreamFrame::estimate_max_capacity(capacity, sid, offset);
-        let write = |content: (u64, &[u8], bool)| {
-            let (offset, data, is_eos) = content;
+        let write = |(offset, data, is_eos): (u64, &[u8], bool)| {
             let mut frame = StreamFrame::new(sid, offset, data.len());
             frame.set_eos_flag(is_eos);
             match frame.should_carry_length(buffer.remaining_mut()) {
@@ -62,27 +63,33 @@ impl Outgoing {
             }
             frame
         };
-        match inner.take() {
-            Sender::Ready(s) => {
-                if s.is_shutdown() {
-                    let mut s = s.end();
-                    result = s.pick_up(estimate_capacity).map(write);
-                    inner.replace(Sender::DataSent(s));
-                } else {
-                    let mut s = s.begin_sending();
-                    result = s.pick_up(estimate_capacity).map(write);
-                    inner.replace(Sender::Sending(s));
+
+        let mut sender = self.0.lock().unwrap();
+        let inner = sender.deref_mut();
+        match inner {
+            Ok(sending_state) => match sending_state.take() {
+                Sender::Ready(s) => {
+                    if s.is_shutdown() {
+                        let mut s = s.end();
+                        result = s.pick_up(estimate_capacity).map(write);
+                        sending_state.replace(Sender::DataSent(s));
+                    } else {
+                        let mut s = s.begin_sending();
+                        result = s.pick_up(estimate_capacity).map(write);
+                        sending_state.replace(Sender::Sending(s));
+                    }
                 }
-            }
-            Sender::Sending(mut s) => {
-                result = s.pick_up(estimate_capacity).map(write);
-                inner.replace(Sender::Sending(s));
-            }
-            Sender::DataSent(mut s) => {
-                result = s.pick_up(estimate_capacity).map(write);
-                inner.replace(Sender::DataSent(s));
-            }
-            other => inner.replace(other),
+                Sender::Sending(mut s) => {
+                    result = s.pick_up(estimate_capacity).map(write);
+                    sending_state.replace(Sender::Sending(s));
+                }
+                Sender::DataSent(mut s) => {
+                    result = s.pick_up(estimate_capacity).map(write);
+                    sending_state.replace(Sender::DataSent(s));
+                }
+                other => sending_state.replace(other),
+            },
+            Err(_) => (),
         };
         result
     }
@@ -90,25 +97,28 @@ impl Outgoing {
     pub fn confirm_data_rcvd(&self, range: &Range<u64>) -> bool {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        match inner.take() {
-            Sender::Ready(_) => {
-                unreachable!("never send data before recv data");
-            }
-            Sender::Sending(mut s) => {
-                s.confirm_rcvd(range);
-                inner.replace(Sender::Sending(s));
-            }
-            Sender::DataSent(mut s) => {
-                s.confirm_rcvd(range);
-                if s.is_all_rcvd() {
-                    inner.replace(Sender::DataRecvd);
-                    return true;
-                } else {
-                    inner.replace(Sender::DataSent(s));
+        match inner {
+            Ok(sending_state) => match sending_state.take() {
+                Sender::Ready(_) => {
+                    unreachable!("never send data before recv data");
                 }
-            }
-            // ignore recv
-            other => inner.replace(other),
+                Sender::Sending(mut s) => {
+                    s.confirm_rcvd(range);
+                    sending_state.replace(Sender::Sending(s));
+                }
+                Sender::DataSent(mut s) => {
+                    s.confirm_rcvd(range);
+                    if s.is_all_rcvd() {
+                        sending_state.replace(Sender::DataRecvd);
+                        return true;
+                    } else {
+                        sending_state.replace(Sender::DataSent(s));
+                    }
+                }
+                // ignore recv
+                other => sending_state.replace(other),
+            },
+            Err(_) => (),
         };
         false
     }
@@ -116,20 +126,21 @@ impl Outgoing {
     pub fn may_loss_data(&self, range: &Range<u64>) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        match inner.take() {
-            Sender::Ready(_) => {
-                unreachable!("never send data before recv data");
-            }
-            Sender::Sending(mut s) => {
-                s.may_loss(range);
-                inner.replace(Sender::Sending(s));
-            }
-            Sender::DataSent(mut s) => {
-                s.may_loss(range);
-                inner.replace(Sender::DataSent(s));
-            }
-            // ignore loss
-            other => inner.replace(other),
+        match inner {
+            Ok(sending_state) => match sending_state {
+                Sender::Ready(_) => {
+                    unreachable!("never send data before recv data");
+                }
+                Sender::Sending(s) => {
+                    s.may_loss(range);
+                }
+                Sender::DataSent(s) => {
+                    s.may_loss(range);
+                }
+                // ignore loss
+                _ => (),
+            },
+            Err(_) => (),
         };
     }
 
@@ -137,38 +148,57 @@ impl Outgoing {
     pub fn stop(&self) -> bool {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        match inner.take() {
-            Sender::Ready(_) => {
-                unreachable!("never send data before recv data");
-            }
-            Sender::Sending(s) => {
-                inner.replace(Sender::ResetSent(s.stop()));
-                true
-            }
-            Sender::DataSent(s) => {
-                inner.replace(Sender::ResetSent(s.stop()));
-                true
-            }
-            other => {
-                inner.replace(other);
-                false
-            }
+        match inner {
+            Ok(sending_state) => match sending_state.take() {
+                Sender::Ready(_) => {
+                    unreachable!("never send data before recv data");
+                }
+                Sender::Sending(s) => {
+                    sending_state.replace(Sender::ResetSent(s.stop()));
+                    true
+                }
+                Sender::DataSent(s) => {
+                    sending_state.replace(Sender::ResetSent(s.stop()));
+                    true
+                }
+                other => {
+                    sending_state.replace(other);
+                    false
+                }
+            },
+            Err(_) => false,
         }
     }
 
     pub fn confirm_reset_rcvd(&self) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        match inner.take() {
-            Sender::ResetSent(_) | Sender::ResetRecvd => {
-                inner.replace(Sender::ResetRecvd);
+        match inner {
+            Ok(sending_state) => match sending_state.take() {
+                Sender::ResetSent(_) | Sender::ResetRecvd => {
+                    sending_state.replace(Sender::ResetRecvd);
+                }
+                _ => {
+                    unreachable!(
+                        "If no RESET_STREAM has been sent, how can there be a received acknowledgment?"
+                    );
+                }
+            },
+            Err(_) => (),
+        }
+    }
+
+    pub fn conn_error(&self, err: &qbase::error::Error) {
+        let mut sender = self.0.lock().unwrap();
+        let inner = sender.deref_mut();
+        match inner {
+            Ok(sending_state) => {
+                //  TODO: 激活里面的waker
+                // THINK: ResetSent/ResetRcvd/DataRecvd要不要也变成Err
             }
-            _ => {
-                unreachable!(
-                    "If no RESET_STREAM has been sent, how can there be a received acknowledgment?"
-                );
-            }
+            Err(_) => (),
         };
+        *inner = Err(Error::new(std::io::ErrorKind::BrokenPipe, err.to_string()));
     }
 
     pub fn is_cancelled_by_app(&self) -> IsCancelled {
@@ -184,41 +214,45 @@ impl Future for IsCancelled {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        match inner.take() {
-            Sender::Ready(mut s) => match s.poll_cancel(cx) {
-                Poll::Ready(final_size) => {
-                    inner.replace(Sender::ResetSent(final_size));
-                    Poll::Ready(Some(final_size))
-                }
-                Poll::Pending => {
-                    inner.replace(Sender::Ready(s));
-                    Poll::Pending
+        match inner {
+            Ok(sending_state) => match sending_state.take() {
+                Sender::Ready(mut s) => match s.poll_cancel(cx) {
+                    Poll::Ready(final_size) => {
+                        sending_state.replace(Sender::ResetSent(final_size));
+                        Poll::Ready(Some(final_size))
+                    }
+                    Poll::Pending => {
+                        sending_state.replace(Sender::Ready(s));
+                        Poll::Pending
+                    }
+                },
+                Sender::Sending(mut s) => match s.poll_cancel(cx) {
+                    Poll::Ready(final_size) => {
+                        sending_state.replace(Sender::ResetSent(final_size));
+                        Poll::Ready(Some(final_size))
+                    }
+                    Poll::Pending => {
+                        sending_state.replace(Sender::Sending(s));
+                        Poll::Pending
+                    }
+                },
+                Sender::DataSent(mut s) => match s.poll_cancel(cx) {
+                    Poll::Ready(final_size) => {
+                        sending_state.replace(Sender::ResetSent(final_size));
+                        Poll::Ready(Some(final_size))
+                    }
+                    Poll::Pending => {
+                        sending_state.replace(Sender::DataSent(s));
+                        Poll::Pending
+                    }
+                },
+                other => {
+                    sending_state.replace(other);
+                    Poll::Ready(None)
                 }
             },
-            Sender::Sending(mut s) => match s.poll_cancel(cx) {
-                Poll::Ready(final_size) => {
-                    inner.replace(Sender::ResetSent(final_size));
-                    Poll::Ready(Some(final_size))
-                }
-                Poll::Pending => {
-                    inner.replace(Sender::Sending(s));
-                    Poll::Pending
-                }
-            },
-            Sender::DataSent(mut s) => match s.poll_cancel(cx) {
-                Poll::Ready(final_size) => {
-                    inner.replace(Sender::ResetSent(final_size));
-                    Poll::Ready(Some(final_size))
-                }
-                Poll::Pending => {
-                    inner.replace(Sender::DataSent(s));
-                    Poll::Pending
-                }
-            },
-            other => {
-                inner.replace(other);
-                Poll::Ready(None)
-            }
+            // 既然发生连接错误了，那也没必要监听应用层的取消了
+            Err(_) => Poll::Ready(None),
         }
     }
 }

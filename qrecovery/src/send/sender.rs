@@ -413,7 +413,7 @@ impl Sender {
 /// Writer/Outgoing分别有不同的接口，而且生命周期独立，应用层可以在close、reset后
 /// 直接丢弃不管；然而Outgoing还有DataRecvd、ResetRecvd两个状态，需要等待对端确认。
 /// 所以Writer/Outgoing内部共享同一个Sender。
-pub type ArcSender = Arc<Mutex<Sender>>;
+pub type ArcSender = Arc<Mutex<io::Result<Sender>>>;
 
 #[cfg(test)]
 mod tests {
