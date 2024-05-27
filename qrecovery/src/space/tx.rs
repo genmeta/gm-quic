@@ -211,7 +211,7 @@ impl<TX: TransmitStream> Transmitter<TX> {
             .iter()
             .take_while(|p| p.is_none())
             .count();
-        let _ = self.inflight_packets.drain(..n);
+        self.inflight_packets.advance(n);
     }
 
     fn confirm_packet_rcvd(&mut self, _pkt_id: u64, packet: Packet) {

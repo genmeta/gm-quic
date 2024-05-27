@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    ops::{Index, IndexMut, RangeBounds},
+    ops::{Index, IndexMut},
 };
 use thiserror::Error;
 
@@ -115,11 +115,9 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
             .map(|(idx, item)| (self.offset + idx as u64, item))
     }
 
-    pub fn drain<R>(&mut self, range: R) -> impl DoubleEndedIterator<Item = T> + '_
-    where
-        R: RangeBounds<usize>,
-    {
-        self.deque.drain(range)
+    pub fn advance(&mut self, n: usize) {
+        self.offset += n as u64;
+        let _ = self.deque.drain(..n);
     }
 
     /// This API will be used for the records of the packets that have been
@@ -233,5 +231,21 @@ mod tests {
             assert_eq!(deque[i], u64::default());
         }
         assert_eq!(deque[10], 11);
+    }
+
+    #[test]
+    fn test_skip() {
+        let mut deque = IndexDeque::<u64, 19>::new();
+        for i in 0..10 {
+            assert_eq!(deque.push(i), Ok(i));
+        }
+        assert_eq!(deque.offset, 0);
+
+        deque.advance(5);
+        assert_eq!(deque.offset, 5);
+
+        deque.iter_with_idx().for_each(|(idx, item)| {
+            assert_eq!(idx, *item);
+        });
     }
 }
