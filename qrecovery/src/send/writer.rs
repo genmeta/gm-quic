@@ -1,6 +1,6 @@
 use super::sender::{ArcSender, Sender};
 use std::{
-    io::{Error, ErrorKind, Result},
+    io,
     ops::DerefMut,
     pin::Pin,
     task::{Context, Poll},
@@ -13,7 +13,11 @@ pub struct Writer(pub(super) ArcSender);
 
 impl AsyncWrite for Writer {
     /// 往sndbuf里面写数据，直到写满MAX_STREAM_DATA，等通告窗口更新再写
-    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner {
@@ -30,35 +34,38 @@ impl AsyncWrite for Writer {
                 }
                 Sender::DataSent(s) => {
                     sending_state.replace(Sender::DataSent(s));
-                    Poll::Ready(Err(Error::new(
-                        ErrorKind::Unsupported,
+                    Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
                         "all data has been written",
                     )))
                 }
                 Sender::DataRecvd => {
                     sending_state.replace(Sender::DataRecvd);
-                    Poll::Ready(Err(Error::new(
-                        ErrorKind::Unsupported,
+                    Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
                         "all data has been received",
                     )))
                 }
                 Sender::ResetSent(final_size) => {
                     sending_state.replace(Sender::ResetSent(final_size));
-                    Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "reset by local")))
+                    Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "reset by local",
+                    )))
                 }
                 Sender::ResetRecvd => {
                     sending_state.replace(Sender::ResetRecvd);
-                    Poll::Ready(Err(Error::new(
-                        ErrorKind::BrokenPipe,
+                    Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
                         "reset msg has been received by peer",
                     )))
                 }
             },
-            Err(e) => Poll::Ready(Err(Error::new(e.kind(), e.to_string()))),
+            Err(e) => Poll::Ready(Err(io::Error::new(e.kind(), e.to_string()))),
         }
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner {
@@ -87,21 +94,24 @@ impl AsyncWrite for Writer {
                 }
                 Sender::ResetSent(final_size) => {
                     sending_state.replace(Sender::ResetSent(final_size));
-                    Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "reset by local")))
+                    Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "reset by local",
+                    )))
                 }
                 Sender::ResetRecvd => {
                     sending_state.replace(Sender::ResetRecvd);
-                    Poll::Ready(Err(Error::new(
-                        ErrorKind::BrokenPipe,
+                    Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
                         "reset msg has been received by peer",
                     )))
                 }
             },
-            Err(e) => Poll::Ready(Err(Error::new(e.kind(), e.to_string()))),
+            Err(e) => Poll::Ready(Err(io::Error::new(e.kind(), e.to_string()))),
         }
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner {
@@ -140,17 +150,20 @@ impl AsyncWrite for Writer {
                 }
                 Sender::ResetSent(final_size) => {
                     sending_state.replace(Sender::ResetSent(final_size));
-                    Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "reset by local")))
+                    Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "reset by local",
+                    )))
                 }
                 Sender::ResetRecvd => {
                     sending_state.replace(Sender::ResetRecvd);
-                    Poll::Ready(Err(Error::new(
-                        ErrorKind::BrokenPipe,
+                    Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
                         "reset msg has been received by peer",
                     )))
                 }
             },
-            Err(e) => Poll::Ready(Err(Error::new(e.kind(), e.to_string()))),
+            Err(e) => Poll::Ready(Err(io::Error::new(e.kind(), e.to_string()))),
         }
     }
 }

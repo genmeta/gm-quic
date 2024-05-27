@@ -346,7 +346,7 @@ pub(super) enum Recver {
     ResetRead,
 }
 
-pub(super) type ArcRecver = Arc<Mutex<Recver>>;
+pub(super) type ArcRecver = Arc<Mutex<io::Result<Recver>>>;
 
 impl Recver {
     pub(super) fn new(max_data_size: u64) -> Self {

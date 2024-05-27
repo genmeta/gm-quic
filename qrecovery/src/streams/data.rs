@@ -127,7 +127,7 @@ impl ReceiveStream for DataStreams {
             }
         }
         if let Some(incoming) = self.input.0.lock().unwrap().get(&sid) {
-            incoming.recv(stream_frame, body)?;
+            incoming.recv_data(stream_frame, body)?;
         }
         // 否则，该流已经结束，再收到任何该流的frame，都将被忽略
         Ok(())

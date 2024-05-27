@@ -192,7 +192,7 @@ impl Outgoing {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner {
-            Ok(sending_state) => {
+            Ok(_sending_state) => {
                 //  TODO: 激活里面的waker
                 // THINK: ResetSent/ResetRcvd/DataRecvd要不要也变成Err
             }
