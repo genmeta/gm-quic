@@ -2,33 +2,28 @@ use super::{listener::ArcListener, Output, ReceiveStream, TransmitStream};
 use crate::{
     recv::{self, Incoming, Reader},
     send::{self, Outgoing, Writer},
-    AppStream,
 };
 use qbase::{
-    error::{Error, ErrorKind},
+    error::{Error as QuicError, ErrorKind},
     frame::*,
     streamid::{AcceptSid, Dir, ExceedLimitError, Role, StreamId, StreamIds},
     varint::VarInt,
 };
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     task::{ready, Context, Poll},
 };
 
-#[derive(Debug, Clone, Default)]
-pub struct ArcOutput(Arc<Mutex<HashMap<StreamId, Outgoing>>>);
+/// ArcOutput里面包含一个Result类型，一旦发生quic error，就会被替换为Err
+/// 发生quic error后，其操作将被忽略，不会再抛出QuicError或者panic，因为
+/// 有些异步任务可能还未完成，在置为Err后才会完成。
+#[derive(Debug, Clone)]
+pub struct ArcOutput(Arc<Mutex<Result<HashMap<StreamId, Outgoing>, QuicError>>>);
 
-impl ArcOutput {
-    #[inline]
-    fn insert(&self, sid: StreamId, outgoing: Outgoing) {
-        self.0.lock().unwrap().insert(sid, outgoing);
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    fn remove(&self, sid: &StreamId) {
-        self.0.lock().unwrap().remove(sid);
+impl Default for ArcOutput {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(Ok(HashMap::new()))))
     }
 }
 
@@ -38,45 +33,113 @@ impl TransmitStream for ArcOutput {
     }
 
     fn confirm_data_rcvd(&self, stream_frame: StreamFrame) {
-        let mut guard = self.0.lock().unwrap();
-        if let Some(all_data_recved) = guard
-            .get(&stream_frame.id)
-            .map(|outgoing| outgoing.confirm_data_rcvd(&stream_frame.range()))
-        {
-            if all_data_recved {
-                guard.remove(&stream_frame.id);
+        if let Ok(set) = self.0.lock().unwrap().as_mut() {
+            if let Some(all_data_rcvd) = set
+                .get(&stream_frame.id)
+                .map(|o| o.confirm_data_rcvd(&stream_frame.range()))
+            {
+                if all_data_rcvd {
+                    set.remove(&stream_frame.id);
+                }
             }
         }
     }
 
     fn may_loss_data(&self, stream_frame: StreamFrame) {
-        if let Some(outgoing) = self.0.lock().unwrap().get(&stream_frame.id) {
-            outgoing.may_loss_data(&stream_frame.range());
+        if let Some(o) = self
+            .0
+            .lock()
+            .unwrap()
+            .as_mut()
+            .ok()
+            .and_then(|set| set.get(&stream_frame.id))
+        {
+            o.may_loss_data(&stream_frame.range());
         }
     }
 
     fn confirm_reset_rcvd(&self, reset_frame: ResetStreamFrame) {
-        let mut guard = self.0.lock().unwrap();
-        if let Some(outgoing) = guard.get(&reset_frame.stream_id) {
-            outgoing.confirm_reset_rcvd();
+        if let Ok(set) = self.0.lock().unwrap().as_mut() {
+            if let Some(o) = set.remove(&reset_frame.stream_id) {
+                o.confirm_reset_rcvd();
+            }
+            // 如果流是双向的，接收部分的流独立地管理结束。其实是上层应用决定接收的部分是否同时结束
         }
-        guard.remove(&reset_frame.stream_id);
-        // 如果流是双向的，接收部分的流独立地管理结束。其实是上层应用决定接收的部分是否同时结束
     }
 }
 
-#[derive(Debug, Default, Clone)]
-struct ArcInput(Arc<Mutex<HashMap<StreamId, Incoming>>>);
+impl ArcOutput {
+    fn guard(&self) -> Result<ArcOutputGuard, QuicError> {
+        let guard = self.0.lock().unwrap();
+        match guard.as_ref() {
+            Ok(_) => Ok(ArcOutputGuard { inner: guard }),
+            Err(e) => Err(e.clone()),
+        }
+    }
+}
 
-impl ArcInput {
-    #[inline]
-    fn insert(&self, sid: StreamId, incoming: Incoming) {
-        self.0.lock().unwrap().insert(sid, incoming);
+struct ArcOutputGuard<'a> {
+    inner: MutexGuard<'a, Result<HashMap<StreamId, Outgoing>, QuicError>>,
+}
+
+impl ArcOutputGuard<'_> {
+    fn insert(&mut self, sid: StreamId, outgoing: Outgoing) {
+        match self.inner.as_mut() {
+            Ok(set) => set.insert(sid, outgoing),
+            Err(e) => unreachable!("output is invalid: {e}"),
+        };
     }
 
-    #[inline]
-    fn remove(&self, sid: &StreamId) {
-        self.0.lock().unwrap().remove(sid);
+    fn conn_error(&mut self, err: &QuicError) {
+        match self.inner.as_ref() {
+            Ok(set) => set.values().for_each(|o| o.conn_error(err)),
+            // 已经遇到过conn error了，不需要再次处理。然而guard()时就已经返回了Err，不会再走到这里来
+            Err(e) => unreachable!("output is invalid: {e}"),
+        };
+        *self.inner = Err(err.clone());
+    }
+}
+
+/// ArcInput里面包含一个Result类型，一旦发生quic error，就会被替换为Err
+/// 发生quic error后，其操作将被忽略，不会再抛出QuicError或者panic，因为
+/// 有些异步任务可能还未完成，在置为Err后才会完成。
+#[derive(Debug, Clone)]
+struct ArcInput(Arc<Mutex<Result<HashMap<StreamId, Incoming>, QuicError>>>);
+
+impl Default for ArcInput {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(Ok(HashMap::new()))))
+    }
+}
+
+impl ArcInput {
+    fn guard(&self) -> Result<ArcInputGuard, QuicError> {
+        let guard = self.0.lock().unwrap();
+        match guard.as_ref() {
+            Ok(_) => Ok(ArcInputGuard { inner: guard }),
+            Err(e) => Err(e.clone()),
+        }
+    }
+}
+
+struct ArcInputGuard<'a> {
+    inner: MutexGuard<'a, Result<HashMap<StreamId, Incoming>, QuicError>>,
+}
+
+impl ArcInputGuard<'_> {
+    fn insert(&mut self, sid: StreamId, incoming: Incoming) {
+        match self.inner.as_mut() {
+            Ok(set) => set.insert(sid, incoming),
+            Err(e) => unreachable!("input is invalid: {e}"),
+        };
+    }
+
+    fn conn_error(&mut self, err: &QuicError) {
+        match self.inner.as_ref() {
+            Ok(set) => set.values().for_each(|o| o.conn_error(err)),
+            Err(e) => unreachable!("output is invalid: {e}"),
+        };
+        *self.inner = Err(err.clone());
     }
 }
 
@@ -96,8 +159,8 @@ pub(super) struct DataStreams {
     sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
 }
 
-fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> Error {
-    move |e| Error::new(ErrorKind::StreamLimit, fty, e.to_string())
+fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
+    move |e| QuicError::new(ErrorKind::StreamLimit, fty, e.to_string())
 }
 
 impl Output for DataStreams {
@@ -109,7 +172,7 @@ impl Output for DataStreams {
 }
 
 impl ReceiveStream for DataStreams {
-    fn recv_data(&self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error> {
+    fn recv_data(&self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), QuicError> {
         let sid = stream_frame.id;
         // 对方必须是发送端，才能发送此帧
         if sid.role() != self.role {
@@ -119,21 +182,26 @@ impl ReceiveStream for DataStreams {
         } else {
             // 我方的sid，那必须是双向流才能收到对方的数据，否则就是错误
             if sid.dir() == Dir::Uni {
-                return Err(Error::new(
+                return Err(QuicError::new(
                     ErrorKind::StreamState,
                     stream_frame.frame_type(),
                     format!("local {sid} cannot receive STREAM_FRAME"),
                 ));
             }
         }
-        if let Some(incoming) = self.input.0.lock().unwrap().get(&sid) {
-            incoming.recv_data(stream_frame, body)?;
-        }
+        self.input
+            .0
+            .lock()
+            .unwrap()
+            .as_mut()
+            .ok()
+            .and_then(|set| set.get(&sid))
+            .map(|incoming| incoming.recv_data(stream_frame, body));
         // 否则，该流已经结束，再收到任何该流的frame，都将被忽略
         Ok(())
     }
 
-    fn recv_frame(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error> {
+    fn recv_frame(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), QuicError> {
         match stream_ctl_frame {
             StreamCtlFrame::ResetStream(reset_frame) => {
                 let sid = reset_frame.stream_id;
@@ -144,22 +212,17 @@ impl ReceiveStream for DataStreams {
                 } else {
                     // 我方创建的流必须是双向流，对方才能发送ResetStream,否则就是错误
                     if sid.dir() == Dir::Uni {
-                        return Err(Error::new(
+                        return Err(QuicError::new(
                             ErrorKind::StreamState,
                             stream_ctl_frame.frame_type(),
                             format!("local {sid} cannot receive RESET_FRAME"),
                         ));
                     }
                 }
-                /*
-                let mut guard = self.input.0.lock().unwrap();
-                let mut entry = guard.entry(sid);
-                entry.and_modify(|incoming| incoming.recv_reset(reset_frame));
-                guard.remove_entry(entry);
-                */
-                if let Some(incoming) = self.input.0.lock().unwrap().get(&sid) {
-                    incoming.recv_reset(reset_frame)?;
-                    self.input.remove(&sid);
+                if let Ok(set) = self.input.0.lock().unwrap().as_mut() {
+                    if let Some(incoming) = set.remove(&sid) {
+                        incoming.recv_reset(reset_frame)?;
+                    }
                 }
             }
             StreamCtlFrame::StopSending(stop) => {
@@ -168,7 +231,7 @@ impl ReceiveStream for DataStreams {
                 if sid.role() != self.role {
                     // 对方创建的单向流，接收端是我方，不可能收到对方的StopSendingFrame
                     if sid.dir() == Dir::Uni {
-                        return Err(Error::new(
+                        return Err(QuicError::new(
                             ErrorKind::StreamState,
                             stream_ctl_frame.frame_type(),
                             format!("remote {sid} must not send STOP_SENDING_FRAME"),
@@ -177,19 +240,27 @@ impl ReceiveStream for DataStreams {
                     self.try_accept_sid(sid)
                         .map_err(wrapper_error(stop.frame_type()))?;
                 }
-                if let Some(outgoing) = self.output.0.lock().unwrap().get(&sid) {
-                    if outgoing.stop() {
-                        self.sending_frames
-                            .lock()
-                            .unwrap()
-                            .push_back(ReliableFrame::Stream(StreamCtlFrame::ResetStream(
-                                ResetStreamFrame {
-                                    stream_id: sid,
-                                    app_error_code: VarInt::from_u32(0),
-                                    final_size: VarInt::from_u32(0),
-                                },
-                            )));
-                    }
+                if self
+                    .output
+                    .0
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .ok()
+                    .and_then(|set| set.get(&sid))
+                    .map(|outgoing| outgoing.stop())
+                    .unwrap_or(false)
+                {
+                    self.sending_frames
+                        .lock()
+                        .unwrap()
+                        .push_back(ReliableFrame::Stream(StreamCtlFrame::ResetStream(
+                            ResetStreamFrame {
+                                stream_id: sid,
+                                app_error_code: VarInt::from_u32(0),
+                                final_size: VarInt::from_u32(0),
+                            },
+                        )));
                 }
             }
             StreamCtlFrame::MaxStreamData(max_stream_data) => {
@@ -198,7 +269,7 @@ impl ReceiveStream for DataStreams {
                 if sid.role() != self.role {
                     // 对方创建的单向流，接收端是我方，不可能收到对方的MaxStreamData
                     if sid.dir() == Dir::Uni {
-                        return Err(Error::new(
+                        return Err(QuicError::new(
                             ErrorKind::StreamState,
                             stream_ctl_frame.frame_type(),
                             format!("remote {sid} must not send MAX_STREAM_DATA_FRAME"),
@@ -207,7 +278,15 @@ impl ReceiveStream for DataStreams {
                     self.try_accept_sid(sid)
                         .map_err(wrapper_error(max_stream_data.frame_type()))?;
                 }
-                if let Some(outgoing) = self.output.0.lock().unwrap().get(&sid) {
+                if let Some(outgoing) = self
+                    .output
+                    .0
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .ok()
+                    .and_then(|set| set.get(&sid))
+                {
                     outgoing.update_window(max_stream_data.max_stream_data.into_inner());
                 }
             }
@@ -220,7 +299,7 @@ impl ReceiveStream for DataStreams {
                 } else {
                     // 我方创建的，必须是双向流，对方才是发送端，才能发出StreamDataBlocked；否则就是错误
                     if sid.dir() == Dir::Uni {
-                        return Err(Error::new(
+                        return Err(QuicError::new(
                             ErrorKind::StreamState,
                             stream_ctl_frame.frame_type(),
                             format!("local {sid} cannot receive STREAM_DATA_BLOCKED_FRAME"),
@@ -250,6 +329,25 @@ impl ReceiveStream for DataStreams {
         }
         Ok(())
     }
+
+    fn conn_error(&self, err: &QuicError) {
+        let mut output = match self.output.guard() {
+            Ok(out) => out,
+            Err(_) => return,
+        };
+        let mut input = match self.input.guard() {
+            Ok(input) => input,
+            Err(_) => return,
+        };
+        let mut listener = match self.listener.guard() {
+            Ok(listener) => listener,
+            Err(_) => return,
+        };
+
+        output.conn_error(err);
+        input.conn_error(err);
+        listener.conn_error(err);
+    }
 }
 
 impl DataStreams {
@@ -269,21 +367,43 @@ impl DataStreams {
         }
     }
 
-    pub(super) fn poll_create_stream(
+    pub(super) fn poll_open_bi_stream(
         &self,
         cx: &mut Context<'_>,
-        dir: Dir,
-    ) -> Poll<Option<AppStream>> {
-        if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, dir)) {
-            let writer = self.create_sender(sid);
-            if dir == Dir::Bi {
-                let reader = self.create_recver(sid);
-                Poll::Ready(Some(AppStream::ReadWrite(reader, writer)))
-            } else {
-                Poll::Ready(Some(AppStream::WriteOnly(writer)))
-            }
+    ) -> Poll<Result<Option<(Reader, Writer)>, QuicError>> {
+        let mut output = match self.output.guard() {
+            Ok(out) => out,
+            Err(e) => return Poll::Ready(Err(e)),
+        };
+        let mut input = match self.input.guard() {
+            Ok(input) => input,
+            Err(e) => return Poll::Ready(Err(e)),
+        };
+        if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Bi)) {
+            let (outgoing, writer) = self.create_sender(sid);
+            let (incoming, reader) = self.create_recver(sid);
+            output.insert(sid, outgoing);
+            input.insert(sid, incoming);
+            Poll::Ready(Ok(Some((reader, writer))))
         } else {
-            Poll::Ready(None)
+            Poll::Ready(Ok(None))
+        }
+    }
+
+    pub(super) fn poll_open_uni_stream(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<Writer>, QuicError>> {
+        let mut output = match self.output.guard() {
+            Ok(out) => out,
+            Err(e) => return Poll::Ready(Err(e)),
+        };
+        if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Uni)) {
+            let (outgoing, writer) = self.create_sender(sid);
+            output.insert(sid, outgoing);
+            Poll::Ready(Ok(Some(writer)))
+        } else {
+            Poll::Ready(Ok(None))
         }
     }
 
@@ -292,26 +412,65 @@ impl DataStreams {
     }
 
     fn try_accept_sid(&self, sid: StreamId) -> Result<(), ExceedLimitError> {
+        match sid.dir() {
+            Dir::Bi => self.try_accept_bi_sid(sid),
+            Dir::Uni => self.try_accept_uni_sid(sid),
+        }
+    }
+
+    fn try_accept_bi_sid(&self, sid: StreamId) -> Result<(), ExceedLimitError> {
+        let mut output = match self.output.guard() {
+            Ok(out) => out,
+            Err(_) => return Ok(()),
+        };
+        let mut input = match self.input.guard() {
+            Ok(input) => input,
+            Err(_) => return Ok(()),
+        };
+        let mut listener = match self.listener.guard() {
+            Ok(listener) => listener,
+            Err(_) => return Ok(()),
+        };
         let result = self.stream_ids.remote.try_accept_sid(sid)?;
         match result {
             AcceptSid::Old => Ok(()),
             AcceptSid::New(need_create) => {
                 for sid in need_create {
-                    let reader = self.create_recver(sid);
-                    let stream = if sid.dir() == Dir::Bi {
-                        let writer = self.create_sender(sid);
-                        AppStream::ReadWrite(reader, writer)
-                    } else {
-                        AppStream::ReadOnly(reader)
-                    };
-                    self.listener.push(stream);
+                    let (incoming, reader) = self.create_recver(sid);
+                    let (outgoing, writer) = self.create_sender(sid);
+                    input.insert(sid, incoming);
+                    output.insert(sid, outgoing);
+                    listener.push_bi_stream((reader, writer));
                 }
                 Ok(())
             }
         }
     }
 
-    fn create_sender(&self, sid: StreamId) -> Writer {
+    fn try_accept_uni_sid(&self, sid: StreamId) -> Result<(), ExceedLimitError> {
+        let mut input = match self.input.guard() {
+            Ok(input) => input,
+            Err(_) => return Ok(()),
+        };
+        let mut listener = match self.listener.guard() {
+            Ok(listener) => listener,
+            Err(_) => return Ok(()),
+        };
+        let result = self.stream_ids.remote.try_accept_sid(sid)?;
+        match result {
+            AcceptSid::Old => Ok(()),
+            AcceptSid::New(need_create) => {
+                for sid in need_create {
+                    let (incoming, reader) = self.create_recver(sid);
+                    input.insert(sid, incoming);
+                    listener.push_uni_stream(reader);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn create_sender(&self, sid: StreamId) -> (Outgoing, Writer) {
         let (outgoing, writer) = send::new(1000_1000);
         // 创建异步轮询子，监听来自应用层的cancel
         // 一旦cancel，直接向对方发送reset_stream
@@ -331,11 +490,10 @@ impl DataStreams {
                 }
             }
         });
-        self.output.insert(sid, outgoing);
-        writer
+        (outgoing, writer)
     }
 
-    fn create_recver(&self, sid: StreamId) -> Reader {
+    fn create_recver(&self, sid: StreamId) -> (Incoming, Reader) {
         let (incoming, reader) = recv::new(1000_1000);
         // Continuously check whether the MaxStreamData window needs to be updated.
         tokio::spawn({
@@ -367,7 +525,14 @@ impl DataStreams {
                 }
             }
         });
-        self.input.insert(sid, incoming);
-        reader
+        (incoming, reader)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        println!("streams::tests::it_works");
     }
 }

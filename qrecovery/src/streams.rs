@@ -1,10 +1,6 @@
-use super::AppStream;
+use crate::{recv::Reader, send::Writer};
 use futures::Future;
-use qbase::{
-    error::Error,
-    frame::*,
-    streamid::{Dir, Role},
-};
+use qbase::{error::Error, frame::*, streamid::Role};
 use std::{
     collections::VecDeque,
     fmt::Debug,
@@ -35,6 +31,8 @@ pub trait ReceiveStream {
     fn recv_frame(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error>;
 
     fn recv_data(&self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error>;
+
+    fn conn_error(&self, err: &Error);
 }
 
 pub mod data;
@@ -60,6 +58,10 @@ impl ReceiveStream for ArcDataStreams {
     fn recv_data(&self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error> {
         self.0.recv_data(stream_frame, body)
     }
+
+    fn conn_error(&self, err: &Error) {
+        self.0.conn_error(err)
+    }
 }
 
 impl ArcDataStreams {
@@ -77,17 +79,15 @@ impl ArcDataStreams {
         )))
     }
 
-    pub fn new_bi(&self) -> ArcDataStreamCreator {
-        ArcDataStreamCreator {
+    pub fn open_bi(&self) -> BiDataStreamCreator {
+        BiDataStreamCreator {
             inner: self.0.clone(),
-            dir: Dir::Bi,
         }
     }
 
-    pub fn new_uni(&self) -> ArcDataStreamCreator {
-        ArcDataStreamCreator {
+    pub fn open_uni(&self) -> UniDataStreamCreator {
+        UniDataStreamCreator {
             inner: self.0.clone(),
-            dir: Dir::Uni,
         }
     }
 
@@ -98,16 +98,28 @@ impl ArcDataStreams {
 }
 
 #[derive(Debug, Clone)]
-pub struct ArcDataStreamCreator {
+pub struct BiDataStreamCreator {
     inner: Arc<data::DataStreams>,
-    dir: Dir,
 }
 
-impl Future for ArcDataStreamCreator {
-    type Output = Option<AppStream>;
+impl Future for BiDataStreamCreator {
+    type Output = Result<Option<(Reader, Writer)>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.inner.poll_create_stream(cx, self.dir)
+        self.inner.poll_open_bi_stream(cx)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UniDataStreamCreator {
+    inner: Arc<data::DataStreams>,
+}
+
+impl Future for UniDataStreamCreator {
+    type Output = Result<Option<Writer>, Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.inner.poll_open_uni_stream(cx)
     }
 }
 

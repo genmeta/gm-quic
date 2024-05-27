@@ -39,4 +39,6 @@ impl ReceiveStream for NoDataStreams {
     fn recv_data(&self, _stream_frame: StreamFrame, _body: bytes::Bytes) -> Result<(), Error> {
         unreachable!()
     }
+
+    fn conn_error(&self, _err: &Error) {}
 }
