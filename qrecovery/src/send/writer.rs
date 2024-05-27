@@ -21,45 +21,25 @@ impl AsyncWrite for Writer {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner {
-            Ok(sending_state) => match sending_state.take() {
-                Sender::Ready(mut s) => {
-                    let result = s.poll_write(cx, buf);
-                    sending_state.replace(Sender::Ready(s));
-                    result
-                }
-                Sender::Sending(mut s) => {
-                    let result = s.poll_write(cx, buf);
-                    sending_state.replace(Sender::Sending(s));
-                    result
-                }
-                Sender::DataSent(s) => {
-                    sending_state.replace(Sender::DataSent(s));
-                    Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "all data has been written",
-                    )))
-                }
-                Sender::DataRecvd => {
-                    sending_state.replace(Sender::DataRecvd);
-                    Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "all data has been received",
-                    )))
-                }
-                Sender::ResetSent(final_size) => {
-                    sending_state.replace(Sender::ResetSent(final_size));
-                    Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "reset by local",
-                    )))
-                }
-                Sender::ResetRecvd => {
-                    sending_state.replace(Sender::ResetRecvd);
-                    Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "reset msg has been received by peer",
-                    )))
-                }
+            Ok(sending_state) => match sending_state {
+                Sender::Ready(s) => s.poll_write(cx, buf),
+                Sender::Sending(s) => s.poll_write(cx, buf),
+                Sender::DataSent(_) => Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "all data has been written",
+                ))),
+                Sender::DataRecvd => Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "all data has been received",
+                ))),
+                Sender::ResetSent(_) => Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "reset by local",
+                ))),
+                Sender::ResetRecvd => Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "reset msg has been received by peer",
+                ))),
             },
             Err(e) => Poll::Ready(Err(io::Error::new(e.kind(), e.to_string()))),
         }

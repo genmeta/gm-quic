@@ -1,7 +1,7 @@
 use super::recver::{ArcRecver, Recver};
 use bytes::Bytes;
 use qbase::{
-    error::Error,
+    error::Error as QuicError,
     frame::{ResetStreamFrame, StreamFrame},
 };
 use std::{
@@ -20,7 +20,7 @@ impl Incoming {
         Self(recver)
     }
 
-    pub fn recv_data(&self, stream_frame: StreamFrame, body: Bytes) -> Result<(), Error> {
+    pub fn recv_data(&self, stream_frame: StreamFrame, body: Bytes) -> Result<(), QuicError> {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
         match inner {
@@ -64,7 +64,7 @@ impl Incoming {
         }
     }
 
-    pub fn recv_reset(&self, reset_frame: ResetStreamFrame) -> Result<(), Error> {
+    pub fn recv_reset(&self, reset_frame: ResetStreamFrame) -> Result<(), QuicError> {
         // TODO: ResetStream中还有错误信息，比如http3的错误码，看是否能用到
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
@@ -88,14 +88,16 @@ impl Incoming {
         Ok(())
     }
 
-    pub fn conn_error(&self, err: &Error) {
+    pub fn conn_error(&self, err: &QuicError) {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
         match inner {
-            Ok(_receiving_state) => {
-                // TODO: 唤醒所有的waker，起来处理了
-            }
-            Err(_) => (),
+            Ok(receiving_state) => match receiving_state {
+                Recver::Recv(r) => r.wake_all(),
+                Recver::SizeKnown(r) => r.wake_all(),
+                _ => return,
+            },
+            Err(_) => return,
         };
         *inner = Err(io::Error::new(io::ErrorKind::BrokenPipe, err.to_string()));
     }
@@ -122,11 +124,9 @@ impl Future for WindowUpdate {
         match inner {
             Ok(receiving_state) => match receiving_state {
                 Recver::Recv(r) => r.poll_window_update(cx),
-                _ => {
-                    // In other states, the window will no longer be updated, so return None
-                    // to inform the streams controller to stop polling for window updates.
-                    Poll::Ready(None)
-                }
+                // In other states, the window will no longer be updated, so return None
+                // to inform the streams controller to stop polling for window updates.
+                _ => Poll::Ready(None),
             },
             // No need to listen to window updates if the connection is broken.
             Err(_) => Poll::Ready(None),
@@ -148,13 +148,11 @@ impl Future for IsStopped {
             Ok(receiving_state) => match receiving_state {
                 Recver::Recv(r) => r.poll_stop(cx),
                 Recver::SizeKnown(r) => r.poll_stop(cx),
-                _ => {
-                    // Even in the Reset state, it is because the sender's reset was received,
-                    // not because the receiver actively stopped. The receiver's active stop
-                    // will not change the state, so it can only receive stop notifications in
-                    // the Recv/SizeKnown state.
-                    Poll::Ready(false)
-                }
+                // Even in the Reset state, it is because the sender's reset was received,
+                // not because the receiver actively stopped. The receiver's active stop
+                // will not change the state, so it can only receive stop notifications in
+                // the Recv/SizeKnown state.
+                _ => Poll::Ready(false),
             },
             Err(_) => Poll::Ready(false),
         }

@@ -144,6 +144,18 @@ impl Recv {
         }
     }
 
+    pub(super) fn wake_all(&mut self) {
+        if let Some(waker) = self.buf_exceeds_half_waker.take() {
+            waker.wake()
+        }
+        if let Some(waker) = self.stop_waker.take() {
+            waker.wake()
+        }
+        if let Some(waker) = self.read_waker.take() {
+            waker.wake()
+        }
+    }
+
     pub(super) fn recv_reset(mut self, reset_frame: ResetStreamFrame) -> Result<u64, Error> {
         let final_size = reset_frame.final_size.into_inner();
         if final_size < self.largest_data_size {
@@ -156,15 +168,7 @@ impl Recv {
                 ),
             ));
         }
-        if let Some(waker) = self.buf_exceeds_half_waker {
-            waker.wake();
-        }
-        if let Some(waker) = self.stop_waker {
-            waker.wake();
-        }
-        if let Some(waker) = self.read_waker.take() {
-            waker.wake()
-        }
+        self.wake_all();
         Ok(final_size)
     }
 }
@@ -277,6 +281,15 @@ impl SizeKnown {
         }
     }
 
+    pub(super) fn wake_all(&mut self) {
+        if let Some(waker) = self.stop_waker.take() {
+            waker.wake()
+        }
+        if let Some(waker) = self.read_waker.take() {
+            waker.wake()
+        }
+    }
+
     pub(super) fn recv_reset(mut self, reset_frame: ResetStreamFrame) -> Result<u64, Error> {
         let final_size = reset_frame.final_size.into_inner();
         if final_size != self.total_size {
@@ -289,12 +302,7 @@ impl SizeKnown {
                 ),
             ));
         }
-        if let Some(waker) = self.stop_waker {
-            waker.wake();
-        }
-        if let Some(waker) = self.read_waker.take() {
-            waker.wake()
-        }
+        self.wake_all();
         Ok(final_size)
     }
 }

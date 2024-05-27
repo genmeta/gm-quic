@@ -1,6 +1,7 @@
 use super::sender::{ArcSender, Sender};
 use bytes::BufMut;
 use qbase::{
+    error::Error as QuicError,
     frame::{
         io::{WritePaddingFrame, WriteStreamFrame},
         ShouldCarryLength, StreamFrame,
@@ -188,15 +189,19 @@ impl Outgoing {
         }
     }
 
-    pub fn conn_error(&self, err: &qbase::error::Error) {
+    /// When a connection-level error occurs, all data streams must be notified.
+    /// Their reading and writing should be terminated, accompanied the error of the connection.
+    pub fn conn_error(&self, err: &QuicError) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner {
-            Ok(_sending_state) => {
-                //  TODO: 激活里面的waker
-                // THINK: ResetSent/ResetRcvd/DataRecvd要不要也变成Err
-            }
-            Err(_) => (),
+            Ok(sending_state) => match sending_state {
+                Sender::Ready(s) => s.wake_all(),
+                Sender::Sending(s) => s.wake_all(),
+                Sender::DataSent(s) => s.wake_all(),
+                _ => return,
+            },
+            Err(_) => return,
         };
         *inner = Err(Error::new(std::io::ErrorKind::BrokenPipe, err.to_string()));
     }

@@ -40,7 +40,10 @@ impl ReadySender {
     #[allow(dead_code)]
     pub(self) fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.is_cancelled {
-            Err(io::ErrorKind::BrokenPipe.into())
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "cancelled by local",
+            ))
         } else {
             let range = self.sndbuf.range();
             if range.end < self.max_data_size {
@@ -59,7 +62,10 @@ impl ReadySender {
     ) -> Poll<io::Result<usize>> {
         assert!(self.writable_waker.is_none());
         if self.is_cancelled {
-            Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "cancelled by local",
+            )))
         } else {
             let range = self.sndbuf.range();
             if range.end < self.max_data_size {
@@ -75,7 +81,10 @@ impl ReadySender {
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         assert!(self.flush_waker.is_none());
         if self.is_cancelled {
-            Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "cancelled by local",
+            )))
         } else {
             self.flush_waker = Some(cx.waker().clone());
             Poll::Pending
@@ -85,7 +94,10 @@ impl ReadySender {
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         assert!(self.shutdown_waker.is_none());
         if self.is_cancelled {
-            Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "cancelled by local",
+            )))
         } else {
             self.shutdown_waker = Some(cx.waker().clone());
             Poll::Pending
@@ -137,6 +149,22 @@ impl ReadySender {
             }
         }
     }
+
+    pub(super) fn wake_all(&mut self) {
+        if let Some(waker) = self.writable_waker.take() {
+            waker.wake();
+        }
+        if let Some(waker) = self.flush_waker.take() {
+            waker.wake();
+        }
+        if let Some(waker) = self.shutdown_waker.take() {
+            waker.wake();
+        }
+        // 让space不再询问流是否被app层cancel
+        if let Some(waker) = self.cancel_waker.take() {
+            waker.wake();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -159,7 +187,10 @@ impl SendingSender {
         assert!(self.shutdown_waker.is_none());
         assert!(self.writable_waker.is_none());
         if self.is_cancelled {
-            Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "cancelled by local",
+            )))
         } else {
             let range = self.sndbuf.range();
             if range.end < self.max_data_size {
@@ -230,7 +261,10 @@ impl SendingSender {
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         assert!(self.shutdown_waker.is_none());
         if self.is_cancelled {
-            Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "cancelled by local",
+            )))
         } else if self.sndbuf.is_all_rcvd() {
             // 都已经关闭了，不再写数据数据了，如果所有数据都已发送完，那就是已关闭了
             Poll::Ready(Ok(()))
@@ -259,20 +293,24 @@ impl SendingSender {
         }
     }
 
-    pub(super) fn stop(self) -> u64 {
-        if let Some(waker) = self.writable_waker {
+    pub(super) fn wake_all(&mut self) {
+        if let Some(waker) = self.writable_waker.take() {
             waker.wake();
         }
-        if let Some(waker) = self.flush_waker {
+        if let Some(waker) = self.flush_waker.take() {
             waker.wake();
         }
-        if let Some(waker) = self.shutdown_waker {
+        if let Some(waker) = self.shutdown_waker.take() {
             waker.wake();
         }
-        // 让stream controller不再询问流是否被app层cancel
-        if let Some(waker) = self.cancel_waker {
+        // 让space不再询问流是否被app层cancel
+        if let Some(waker) = self.cancel_waker.take() {
             waker.wake();
         }
+    }
+
+    pub(super) fn stop(mut self) -> u64 {
+        self.wake_all();
         // Actually, these remaining data is not acked and will not be acked
         self.sndbuf.len()
     }
@@ -328,7 +366,10 @@ impl DataSentSender {
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         assert!(self.flush_waker.is_none());
         if self.is_cancelled {
-            Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "cancelled by local",
+            )))
         } else if self.sndbuf.is_all_rcvd() {
             Poll::Ready(Ok(()))
         } else {
@@ -340,7 +381,10 @@ impl DataSentSender {
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         assert!(self.shutdown_waker.is_none());
         if self.is_cancelled {
-            Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "cancelled by local",
+            )))
         } else if self.is_all_rcvd() {
             Poll::Ready(Ok(()))
         } else {
@@ -368,17 +412,21 @@ impl DataSentSender {
         }
     }
 
-    pub(super) fn stop(self) -> u64 {
-        if let Some(waker) = self.flush_waker {
+    pub(super) fn wake_all(&mut self) {
+        if let Some(waker) = self.flush_waker.take() {
             waker.wake();
         }
-        if let Some(waker) = self.shutdown_waker {
+        if let Some(waker) = self.shutdown_waker.take() {
             waker.wake();
         }
-        // 让stream controller不再询问流是否被app层cancel
-        if let Some(waker) = self.cancel_waker {
+        // 让space不再询问流是否被app层cancel
+        if let Some(waker) = self.cancel_waker.take() {
             waker.wake();
         }
+    }
+
+    pub(super) fn stop(mut self) -> u64 {
+        self.wake_all();
         // Actually, these remaining data is not acked and will not be acked
         self.sndbuf.len()
     }

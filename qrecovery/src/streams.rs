@@ -77,14 +77,14 @@ impl ArcDataStreams {
         )))
     }
 
-    pub fn bi(&self) -> ArcDataStreamCreator {
+    pub fn new_bi(&self) -> ArcDataStreamCreator {
         ArcDataStreamCreator {
             inner: self.0.clone(),
             dir: Dir::Bi,
         }
     }
 
-    pub fn uni(&self) -> ArcDataStreamCreator {
+    pub fn new_uni(&self) -> ArcDataStreamCreator {
         ArcDataStreamCreator {
             inner: self.0.clone(),
             dir: Dir::Uni,
