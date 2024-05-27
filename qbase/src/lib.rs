@@ -4,6 +4,7 @@ pub mod error;
 pub mod frame;
 pub mod packet;
 pub mod streamid;
+pub mod util;
 pub mod varint;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

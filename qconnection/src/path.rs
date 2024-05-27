@@ -1,5 +1,5 @@
-use qbase::{cid::ConnectionId, frame::PathFrame};
-use qrecovery::{frame_queue::ArcFrameQueue, rtt::Rtt};
+use qbase::{cid::ConnectionId, frame::PathFrame, util::ArcAsyncQueue};
+use qrecovery::rtt::Rtt;
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -30,7 +30,7 @@ pub struct Path {
     dcid: ConnectionId, // dcid.len == 0 表示没有使用连接id
 
     // 待发包队列
-    frames: ArcFrameQueue<PathFrame>,
+    frames: ArcAsyncQueue<PathFrame>,
     rtt: Arc<Mutex<Rtt>>,
     // TODO: 维护PTO、路径是否丢失等状态，还有BBR控制器
     // 可重传的帧队列，因为判定了该path的包，要重传。但也可反馈给SentPacketManager，让其决定是否重传
@@ -44,7 +44,7 @@ impl ArcPath {
             path_id,
             scid,
             dcid,
-            frames: ArcFrameQueue::new(),
+            frames: ArcAsyncQueue::new(),
             rtt: Arc::new(Mutex::new(Rtt::default())),
         }))
     }
@@ -53,7 +53,7 @@ impl ArcPath {
         self.0.as_ref().rtt.clone()
     }
 
-    pub fn frames(&self) -> &ArcFrameQueue<PathFrame> {
+    pub fn frames(&self) -> &ArcAsyncQueue<PathFrame> {
         &(self.0.as_ref().frames)
     }
 }

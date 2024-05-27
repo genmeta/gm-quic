@@ -1,6 +1,5 @@
 // pub mod data_space;
 pub mod crypto;
-pub mod frame_queue;
 pub mod index_deque;
 pub mod recv;
 pub mod rtt;

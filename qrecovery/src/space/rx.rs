@@ -1,6 +1,5 @@
 use crate::{
     crypto::{CryptoStream, TransmitCrypto},
-    frame_queue::ArcFrameQueue,
     index_deque::IndexDeque,
     space::SpaceFrame,
     streams::{ArcDataStreams, ReceiveStream},
@@ -10,6 +9,7 @@ use qbase::{
     error::Error,
     frame::{io::WriteAckFrame, AckFrame, AckRecord, BeFrame, DataFrame},
     packet::PacketNumber,
+    util::ArcAsyncQueue,
     varint::{VarInt, VARINT_MAX},
     SpaceId,
 };
@@ -247,7 +247,7 @@ impl<RX: ReceiveStream + Send + 'static> ArcReceiver<RX> {
         space_id: SpaceId,
         crypto_stream: CryptoStream,
         inner: RX,
-        recv_frame_queue: ArcFrameQueue<SpaceFrame>,
+        recv_frame_queue: ArcAsyncQueue<SpaceFrame>,
         ack_record_rx: UnboundedReceiver<u64>,
     ) -> Self {
         let receiver = Arc::new(Mutex::new(Receiver::new(space_id, crypto_stream, inner)));

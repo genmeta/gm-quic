@@ -5,12 +5,11 @@ use qbase::{
         HandshakePacket, InitialPacket, OneRttPacket, SpinBit, ZeroRttPacket,
     },
     streamid::Role,
+    util::ArcAsyncQueue,
     SpaceId,
 };
 use qrecovery::{
     crypto::CryptoStream,
-    frame_queue::ArcFrameQueue,
-    send,
     space::ArcSpace,
     streams::{none::NoDataStreams, ArcDataStreams},
 };
@@ -49,7 +48,7 @@ pub struct Connection {
 
 impl Connection {
     pub fn new(tls_session: TlsIO) -> Self {
-        let rcvd_conn_frames = ArcFrameQueue::new();
+        let rcvd_conn_frames = ArcAsyncQueue::new();
 
         let (initial_pkt_tx, initial_pkt_rx) =
             mpsc::unbounded_channel::<(InitialPacket, ArcPath)>();
@@ -58,7 +57,7 @@ impl Connection {
         let initial_crypto_stream = CryptoStream::new(1000_000, 1000_000);
         let initial_crypto_handler = initial_crypto_stream.split();
         let initial_keys = ArcKeys::new_pending();
-        let initial_space_frame_queue = ArcFrameQueue::new();
+        let initial_space_frame_queue = ArcAsyncQueue::new();
         let initial_space = ArcSpace::new_initial_space(
             initial_crypto_stream,
             initial_ack_rx,
@@ -84,7 +83,7 @@ impl Connection {
         let handshake_crypto_stream = CryptoStream::new(1000_000, 1000_000);
         let handshake_crypto_handler = handshake_crypto_stream.split();
         let handshake_keys = ArcKeys::new_pending();
-        let handshake_space_frame_queue = ArcFrameQueue::new();
+        let handshake_space_frame_queue = ArcAsyncQueue::new();
         let handshake_space = ArcSpace::new_initial_space(
             handshake_crypto_stream,
             handshake_ack_rx,
@@ -117,7 +116,7 @@ impl Connection {
         let one_rtt_keys = ArcOneRttKeys::new_pending();
         let one_rtt_crypto_stream = CryptoStream::new(1000_000, 1000_000);
         let _one_rtt_crypto_handler = one_rtt_crypto_stream.split();
-        let data_space_frame_queue = ArcFrameQueue::new();
+        let data_space_frame_queue = ArcAsyncQueue::new();
         let (data_ack_tx, data_ack_rx) = mpsc::unbounded_channel();
         let (data_loss_tx, data_loss_rx) = mpsc::unbounded_channel();
         let sending_frames = Arc::new(Mutex::new(VecDeque::new()));

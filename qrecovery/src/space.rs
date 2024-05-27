@@ -1,11 +1,10 @@
 use super::{
     crypto::CryptoStream,
-    frame_queue::ArcFrameQueue,
     rtt::Rtt,
     streams::{none::NoDataStreams, ArcDataStreams, Output, ReceiveStream, TransmitStream},
 };
 use bytes::Bytes;
-use qbase::{frame::*, packet::PacketNumber, SpaceId};
+use qbase::{frame::*, packet::PacketNumber, util::ArcAsyncQueue, SpaceId};
 use std::{
     collections::VecDeque,
     fmt::Debug,
@@ -57,7 +56,7 @@ where
         data_stream: S,
         ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
-        recv_frames_queue: ArcFrameQueue<SpaceFrame>,
+        recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
     ) -> Self {
         let (ack_record_tx, ack_record_rx) = mpsc::unbounded_channel();
         let transmitter = tx::ArcTransmitter::new(
@@ -91,7 +90,7 @@ impl ArcSpace<NoDataStreams> {
         crypto_stream: CryptoStream,
         ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
-        recv_frames_queue: ArcFrameQueue<SpaceFrame>,
+        recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
     ) -> Self {
         Self(Arc::new(Space::build(
             SpaceId::Initial,
@@ -108,7 +107,7 @@ impl ArcSpace<NoDataStreams> {
         crypto_stream: CryptoStream,
         ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
-        recv_frames_queue: ArcFrameQueue<SpaceFrame>,
+        recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
     ) -> Self {
         Self(Arc::new(Space::build(
             SpaceId::Handshake,
@@ -133,7 +132,7 @@ impl ArcSpace<ArcDataStreams> {
         sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
         ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
-        recv_frames_queue: ArcFrameQueue<SpaceFrame>,
+        recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
     ) -> Self {
         Self(Arc::new(Space::build(
             SpaceId::ZeroRtt,

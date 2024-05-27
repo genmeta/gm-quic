@@ -7,20 +7,18 @@ use qbase::{
         keys::{ArcKeys, ArcOneRttKeys},
         OneRttPacket, PacketNumber,
     },
+    util::ArcAsyncQueue,
     SpaceId,
 };
-use qrecovery::{
-    frame_queue::ArcFrameQueue,
-    space::{ReceivePacket, SpaceFrame},
-};
+use qrecovery::space::{ReceivePacket, SpaceFrame};
 use tokio::sync::mpsc;
 
 fn parse_packet_and_then_dispatch(
     payload: bytes::Bytes,
     space_id: SpaceId,
     path: &ArcPath,
-    conn_frames: &ArcFrameQueue<ConnFrame>,
-    space_frames: &ArcFrameQueue<SpaceFrame>,
+    conn_frames: &ArcAsyncQueue<ConnFrame>,
+    space_frames: &ArcAsyncQueue<SpaceFrame>,
 ) -> Result<bool, Error> {
     let mut space_frame_writer = space_frames.writer();
     let mut conn_frame_writer = conn_frames.writer();
@@ -96,8 +94,8 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
     space_id: SpaceId,
     keys: ArcKeys,
     space: S,
-    conn_frame_queue: ArcFrameQueue<ConnFrame>,
-    space_frame_queue: ArcFrameQueue<SpaceFrame>,
+    conn_frame_queue: ArcAsyncQueue<ConnFrame>,
+    space_frame_queue: ArcAsyncQueue<SpaceFrame>,
     need_close_space_frame_queue_at_end: bool,
 ) where
     S: ReceivePacket,
@@ -154,8 +152,8 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
     mut packet_rx: mpsc::UnboundedReceiver<(OneRttPacket, ArcPath)>,
     keys: ArcOneRttKeys,
     space: impl ReceivePacket,
-    conn_frame_queue: ArcFrameQueue<ConnFrame>,
-    space_frame_queue: ArcFrameQueue<SpaceFrame>,
+    conn_frame_queue: ArcAsyncQueue<ConnFrame>,
+    space_frame_queue: ArcAsyncQueue<SpaceFrame>,
 ) {
     while let Some((mut packet, path)) = packet_rx.recv().await {
         // 1rtt空间的header protection key是固定的，packet key则是根据包头中的key_phase_bit变化的
