@@ -1,5 +1,6 @@
 use bytes::BufMut;
 use qbase::{
+    frame::AckRecord,
     packet::{
         header::{
             Encode, GetType, HasLength, LongHeader, Write, WriteLongHeader, WriteOneRttHeader,
@@ -28,17 +29,18 @@ pub enum FillPolicy {
     // Padding,     // Instead of padding frames, it's better to redundantly encode the Length.
 }
 
-pub fn read_space_and_encrypt<T, S>(
+pub fn read_space_and_encrypt<T, S, F>(
     buffer: &mut [u8],
     header: LongHeader<T>,
     fill_policy: FillPolicy,
     keys: ArcKeys,
-    space: ArcSpace<S>,
+    space: ArcSpace<S, F>,
 ) -> (usize, usize)
 where
     for<'a> &'a mut [u8]: Write<T>,
     LongHeader<T>: HasLength + GetType + Encode,
     S: Debug + Output + ReceiveStream,
+    F: FnMut(AckRecord),
 {
     let keys = match keys.get_local_keys() {
         Some(keys) => keys,
@@ -129,11 +131,11 @@ where
     (offset, pkt_size)
 }
 
-pub fn read_1rtt_data_and_encrypt(
+pub fn read_1rtt_data_and_encrypt<F: FnMut(AckRecord)>(
     buffer: &mut [u8],
     header: OneRttHeader,
     keys: ArcOneRttKeys,
-    space: ArcSpace<ArcDataStreams>,
+    space: ArcSpace<ArcDataStreams, F>,
 ) -> usize {
     let (hpk, pk) = match keys.get_local_keys() {
         Some(keys) => keys,

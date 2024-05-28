@@ -19,7 +19,6 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone)]
 pub enum Record {
@@ -39,7 +38,7 @@ pub struct Packet {
 }
 
 #[derive(Debug)]
-struct Transmitter<TX> {
+struct Transmitter<TX, F> {
     space_id: SpaceId,
     // 以下三个字段，是为了重传需要，也为了发送数据需要
     sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
@@ -50,20 +49,21 @@ struct Transmitter<TX> {
 
     // 正在飞行中的数据包记录，如果某个包为None，说明已经确认到达了
     inflight_packets: IndexDeque<Option<Packet>, VARINT_MAX>,
-    ack_record_tx: UnboundedSender<u64>,
     // 上一次发送ack-eliciting包的时间
     time_of_last_sent_ack_eliciting_packet: Option<Instant>,
     // 对方确认的最大包id，可认为对方收到的最大包id，尽管可能有半rtt以上时间的信息过时
     largest_acked_pktid: Option<u64>,
+    // ack被ack的消息对接收很重要，需要通知接收端
+    on_ack_frame_rcvd: F,
 }
 
-impl<TX: TransmitStream> Transmitter<TX> {
+impl<TX: TransmitStream, F: FnMut(AckRecord)> Transmitter<TX, F> {
     fn new(
         space_id: SpaceId,
         crypto_stream: CryptoStream,
         inner: TX,
         sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
-        ack_record_tx: UnboundedSender<u64>,
+        on_ack_frame_rcvd: F,
     ) -> Self {
         Self {
             space_id,
@@ -71,9 +71,9 @@ impl<TX: TransmitStream> Transmitter<TX> {
             crypto_stream,
             inner,
             inflight_packets: IndexDeque::new(),
-            ack_record_tx,
             time_of_last_sent_ack_eliciting_packet: None,
             largest_acked_pktid: None,
+            on_ack_frame_rcvd,
         }
     }
 
@@ -222,7 +222,7 @@ impl<TX: TransmitStream> Transmitter<TX> {
             match record {
                 Record::Ack(ack) => {
                     // THINK: 这里需不需要减去3这个乱序容忍度
-                    let _ = self.ack_record_tx.send(ack.0.saturating_sub(3));
+                    (self.on_ack_frame_rcvd)(ack);
                 }
                 Record::Reliable(frame) => {
                     if let ReliableFrame::Stream(StreamCtlFrame::ResetStream(f)) = frame {
@@ -230,7 +230,7 @@ impl<TX: TransmitStream> Transmitter<TX> {
                     }
                 }
                 Record::Data(data) => match data {
-                    DataFrame::Crypto(f) => self.crypto_stream.confirm_data(f),
+                    DataFrame::Crypto(f) => self.crypto_stream.confirm_data_rcvd(f),
                     DataFrame::Stream(f) => self.inner.confirm_data_rcvd(f),
                 },
             }
@@ -261,7 +261,7 @@ impl<TX: TransmitStream> Transmitter<TX> {
     }
 }
 
-impl Transmitter<ArcOutput> {
+impl<F: FnMut(AckRecord)> Transmitter<ArcOutput, F> {
     fn upgrade(&mut self) {
         self.space_id = SpaceId::OneRtt;
     }
@@ -280,11 +280,15 @@ impl Transmitter<ArcOutput> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ArcTransmitter<TX> {
-    inner: Arc<Mutex<Transmitter<TX>>>,
+pub struct ArcTransmitter<TX, F> {
+    inner: Arc<Mutex<Transmitter<TX, F>>>,
 }
 
-impl<ST: TransmitStream + Send + 'static> ArcTransmitter<ST> {
+impl<ST, F> ArcTransmitter<ST, F>
+where
+    ST: TransmitStream + Send + 'static,
+    F: FnMut(AckRecord) + Send + 'static,
+{
     /// 一个Transmitter，不仅仅要发送数据，还要接收AckFrame，以及丢包序号去重传。
     /// 然后，接收端提供的AckFrame如果被确认了，也需要通知到接收端
     pub fn new(
@@ -292,20 +296,20 @@ impl<ST: TransmitStream + Send + 'static> ArcTransmitter<ST> {
         crypto_stream: CryptoStream,
         sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
         inner: ST,
-        ack_record_tx: UnboundedSender<u64>,
+        on_ack_frame_rcvd: F,
     ) -> Self {
         let transmitter = Arc::new(Mutex::new(Transmitter::new(
             space_id,
             crypto_stream,
             inner,
             sending_frames,
-            ack_record_tx,
+            on_ack_frame_rcvd,
         )));
         Self { inner: transmitter }
     }
 }
 
-impl<ST: TransmitStream> ArcTransmitter<ST> {
+impl<ST: TransmitStream, F: FnMut(AckRecord)> ArcTransmitter<ST, F> {
     pub fn next_pkt_no(&self) -> (u64, PacketNumber) {
         self.inner.lock().unwrap().next_pkt_no()
     }
@@ -329,7 +333,7 @@ impl<ST: TransmitStream> ArcTransmitter<ST> {
     }
 }
 
-impl ArcTransmitter<ArcOutput> {
+impl<F: FnMut(AckRecord)> ArcTransmitter<ArcOutput, F> {
     pub fn upgrade(&self) {
         self.inner.lock().unwrap().upgrade();
     }

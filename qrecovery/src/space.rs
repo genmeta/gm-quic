@@ -42,96 +42,104 @@ pub trait ReceivePacket {
 /// 可靠空间的抽象实现，需要实现上述所有trait
 /// 可靠空间中的重传、确认，由可靠空间内部实现，无需外露
 #[derive(Debug)]
-struct Space<S: Output + Debug> {
-    transmitter: tx::ArcTransmitter<<S as Output>::Outgoing>,
+struct Space<S: Output + Debug, F: FnMut(AckRecord)> {
+    transmitter: tx::ArcTransmitter<<S as Output>::Outgoing, F>,
     receiver: rx::ArcReceiver<S>,
 }
 
-impl<S> Space<S>
+fn build_space<S>(
+    space_id: SpaceId,
+    crypto_stream: CryptoStream,
+    data_stream: S,
+    sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
+    recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
+) -> Space<S, impl FnMut(AckRecord)>
 where
     S: Debug + Output + ReceiveStream + Clone + Send + 'static,
     <S as Output>::Outgoing: TransmitStream + Clone + Send + 'static,
 {
-    pub(crate) fn build(
-        space_id: SpaceId,
-        crypto_stream: CryptoStream,
-        data_stream: S,
-        sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
-        recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
-    ) -> Self {
-        let (ack_record_tx, ack_record_rx) = mpsc::unbounded_channel();
-        let transmitter = tx::ArcTransmitter::new(
-            space_id,
-            crypto_stream.clone(),
-            sending_frames,
-            data_stream.output(),
-            ack_record_tx,
-        );
-        let receiver = rx::ArcReceiver::new(
-            space_id,
-            crypto_stream,
-            data_stream,
-            recv_frames_queue,
-            ack_record_rx,
-        );
-        Self {
-            transmitter,
-            receiver,
-        }
+    let (ack_record_tx, ack_record_rx) = mpsc::unbounded_channel();
+    let transmitter = tx::ArcTransmitter::new(
+        space_id,
+        crypto_stream.clone(),
+        sending_frames,
+        data_stream.output(),
+        move |ack_record| {
+            let _ = ack_record_tx.send(ack_record.0.saturating_sub(3));
+        },
+    );
+    let receiver = rx::ArcReceiver::new(
+        space_id,
+        crypto_stream,
+        data_stream,
+        recv_frames_queue,
+        ack_record_rx,
+    );
+    Space {
+        transmitter,
+        receiver,
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ArcSpace<S: Debug + Output>(Arc<Space<S>>);
+#[derive(Debug)]
+pub struct ArcSpace<S: Debug + Output, F: FnMut(AckRecord)>(Arc<Space<S, F>>);
 
-impl ArcSpace<NoDataStreams> {
-    pub fn new_initial_space(
-        crypto_stream: CryptoStream,
-        recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
-    ) -> Self {
-        Self(Arc::new(Space::build(
-            SpaceId::Initial,
-            crypto_stream,
-            NoDataStreams,
-            Arc::new(Mutex::new(VecDeque::new())),
-            recv_frames_queue,
-        )))
+impl<S, F> Clone for ArcSpace<S, F>
+where
+    S: Debug + Output,
+    F: FnMut(AckRecord),
+{
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
     }
+}
 
-    pub fn new_handshake_space(
-        crypto_stream: CryptoStream,
-        recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
-    ) -> Self {
-        Self(Arc::new(Space::build(
-            SpaceId::Handshake,
-            crypto_stream,
-            NoDataStreams,
-            Arc::new(Mutex::new(VecDeque::new())),
-            recv_frames_queue,
-        )))
-    }
+pub fn new_initial_space(
+    crypto_stream: CryptoStream,
+    recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
+) -> ArcSpace<NoDataStreams, impl FnMut(AckRecord)> {
+    ArcSpace(Arc::new(build_space(
+        SpaceId::Initial,
+        crypto_stream,
+        NoDataStreams,
+        Arc::new(Mutex::new(VecDeque::new())),
+        recv_frames_queue,
+    )))
+}
+
+pub fn new_handshake_space(
+    crypto_stream: CryptoStream,
+    recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
+) -> ArcSpace<NoDataStreams, impl FnMut(AckRecord)> {
+    ArcSpace(Arc::new(build_space(
+        SpaceId::Handshake,
+        crypto_stream,
+        NoDataStreams,
+        Arc::new(Mutex::new(VecDeque::new())),
+        recv_frames_queue,
+    )))
 }
 
 /// Data space, initially it's a 0RTT space, and later it needs to be upgraded to a 1RTT space.
 /// The data in the 0RTT space is unreliable and cannot transmit CryptoFrame. It is constrained
 /// by the space_id when sending, and a judgment is also made in the task of receiving and unpacking.
 /// Therefore, when upgrading, just change the space_id to 1RTT, no other operations are needed.
-impl ArcSpace<ArcDataStreams> {
-    pub fn new_data_space(
-        crypto_stream: CryptoStream,
-        streams: ArcDataStreams,
-        sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
-        recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
-    ) -> Self {
-        Self(Arc::new(Space::build(
-            SpaceId::ZeroRtt,
-            crypto_stream,
-            streams,
-            sending_frames,
-            recv_frames_queue,
-        )))
-    }
+pub fn new_data_space(
+    crypto_stream: CryptoStream,
+    streams: ArcDataStreams,
+    sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
+    recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
+) -> ArcSpace<ArcDataStreams, impl FnMut(AckRecord)> {
+    ArcSpace(Arc::new(build_space(
+        SpaceId::ZeroRtt,
+        crypto_stream,
+        streams,
+        sending_frames,
+        recv_frames_queue,
+    )))
+}
 
+impl<F: FnMut(AckRecord)> ArcSpace<ArcDataStreams, F> {
     pub fn upgrade(&self) {
         self.0.transmitter.upgrade();
         self.0.receiver.upgrade();
@@ -148,9 +156,10 @@ impl ArcSpace<ArcDataStreams> {
     */
 }
 
-impl<S> ReceivePacket for ArcSpace<S>
+impl<S, F> ReceivePacket for ArcSpace<S, F>
 where
     S: Debug + ReceiveStream + Output,
+    F: FnMut(AckRecord),
 {
     fn recv_pkt_number(&self, pn: PacketNumber) -> (u64, bool) {
         self.0.receiver.recv_pkt_number(pn)
@@ -161,10 +170,11 @@ where
     }
 }
 
-impl<S> TransmitPacket for ArcSpace<S>
+impl<S, F> TransmitPacket for ArcSpace<S, F>
 where
     S: Debug + Output,
     <S as Output>::Outgoing: TransmitStream,
+    F: FnMut(AckRecord),
 {
     /// Get the next packet number. This number is not thread-safe.
     /// It does not lock the next packet number to be sent.

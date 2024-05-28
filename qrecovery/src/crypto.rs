@@ -283,7 +283,7 @@ impl CryptoStream {
 pub trait TransmitCrypto {
     fn try_read_data(&mut self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)>;
 
-    fn confirm_data(&mut self, data_frame: CryptoFrame);
+    fn confirm_data_rcvd(&mut self, data_frame: CryptoFrame);
 
     fn may_loss_data(&mut self, data_frame: CryptoFrame);
 
@@ -295,7 +295,7 @@ impl TransmitCrypto for CryptoStream {
         self.outgoing.try_pick(buf)
     }
 
-    fn confirm_data(&mut self, data_frame: CryptoFrame) {
+    fn confirm_data_rcvd(&mut self, data_frame: CryptoFrame) {
         self.outgoing.ack_rcvd(&data_frame.range());
     }
 
