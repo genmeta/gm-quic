@@ -10,7 +10,7 @@ use std::{
     fmt::Debug,
     sync::{Arc, Mutex},
 };
-use tokio::sync::mpsc::{self, UnboundedReceiver};
+use tokio::sync::mpsc;
 
 pub mod rx;
 pub mod tx;
@@ -27,6 +27,8 @@ pub trait TransmitPacket {
     fn read(&self, buf: &mut [u8]) -> usize;
 
     fn recv_ack_frame(&self, ack: AckFrame, rtt: Arc<Mutex<Rtt>>);
+
+    fn may_loss_packet(&self, pkt_id: u64);
 }
 
 /// When a network socket receives a data packet and determines that it belongs
@@ -55,7 +57,6 @@ where
         crypto_stream: CryptoStream,
         data_stream: S,
         sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
-        loss_pkt_rx: UnboundedReceiver<u64>,
         recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
     ) -> Self {
         let (ack_record_tx, ack_record_rx) = mpsc::unbounded_channel();
@@ -65,7 +66,6 @@ where
             sending_frames,
             data_stream.output(),
             ack_record_tx,
-            loss_pkt_rx,
         );
         let receiver = rx::ArcReceiver::new(
             space_id,
@@ -87,7 +87,6 @@ pub struct ArcSpace<S: Debug + Output>(Arc<Space<S>>);
 impl ArcSpace<NoDataStreams> {
     pub fn new_initial_space(
         crypto_stream: CryptoStream,
-        loss_pkt_rx: UnboundedReceiver<u64>,
         recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
     ) -> Self {
         Self(Arc::new(Space::build(
@@ -95,14 +94,12 @@ impl ArcSpace<NoDataStreams> {
             crypto_stream,
             NoDataStreams,
             Arc::new(Mutex::new(VecDeque::new())),
-            loss_pkt_rx,
             recv_frames_queue,
         )))
     }
 
     pub fn new_handshake_space(
         crypto_stream: CryptoStream,
-        loss_pkt_rx: UnboundedReceiver<u64>,
         recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
     ) -> Self {
         Self(Arc::new(Space::build(
@@ -110,7 +107,6 @@ impl ArcSpace<NoDataStreams> {
             crypto_stream,
             NoDataStreams,
             Arc::new(Mutex::new(VecDeque::new())),
-            loss_pkt_rx,
             recv_frames_queue,
         )))
     }
@@ -125,7 +121,6 @@ impl ArcSpace<ArcDataStreams> {
         crypto_stream: CryptoStream,
         streams: ArcDataStreams,
         sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
-        loss_pkt_rx: UnboundedReceiver<u64>,
         recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
     ) -> Self {
         Self(Arc::new(Space::build(
@@ -133,7 +128,6 @@ impl ArcSpace<ArcDataStreams> {
             crypto_stream,
             streams,
             sending_frames,
-            loss_pkt_rx,
             recv_frames_queue,
         )))
     }
@@ -191,6 +185,12 @@ where
     /// Receive an AckFrame and update the RTT when decoding the AckFrame from an valid packet.
     fn recv_ack_frame(&self, ack: AckFrame, rtt: Arc<Mutex<Rtt>>) {
         self.0.transmitter.recv_ack_frame(ack, rtt);
+    }
+
+    /// Notify the space that a packet may be lost. Every Path should judge whether the packet
+    /// is lost according to its own rules, and then notify the space.
+    fn may_loss_packet(&self, pkt_id: u64) {
+        self.0.transmitter.may_loss_packet(pkt_id);
     }
 }
 

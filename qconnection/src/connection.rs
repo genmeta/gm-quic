@@ -58,11 +58,8 @@ impl Connection {
         let initial_crypto_handler = initial_crypto_stream.split();
         let initial_keys = ArcKeys::new_pending();
         let initial_space_frame_queue = ArcAsyncQueue::new();
-        let initial_space = ArcSpace::new_initial_space(
-            initial_crypto_stream,
-            initial_loss_rx,
-            initial_space_frame_queue.clone(),
-        );
+        let initial_space =
+            ArcSpace::new_initial_space(initial_crypto_stream, initial_space_frame_queue.clone());
         tokio::spawn(
             auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
                 initial_pkt_rx,
@@ -85,6 +82,16 @@ impl Connection {
                 }
             }
         });
+        tokio::spawn({
+            let space = initial_space.clone();
+            let mut loss_pkt_rx = initial_loss_rx;
+            async move {
+                // 不停地接收丢包序号，这些丢包序号由path记录反馈，更新Transmiter的状态
+                while let Some(pkt_id) = loss_pkt_rx.recv().await {
+                    space.may_loss_packet(pkt_id);
+                }
+            }
+        });
 
         let (handshake_pkt_tx, handshake_pkt_rx) =
             mpsc::unbounded_channel::<(HandshakePacket, ArcPath)>();
@@ -96,7 +103,6 @@ impl Connection {
         let handshake_space_frame_queue = ArcAsyncQueue::new();
         let handshake_space = ArcSpace::new_initial_space(
             handshake_crypto_stream,
-            handshake_loss_rx,
             handshake_space_frame_queue.clone(),
         );
         tokio::spawn(
@@ -118,6 +124,16 @@ impl Connection {
                 // 通过rx接收并处理AckFrame，AckFrame是Path收包解包得到
                 while let Some((ack, rtt)) = ack_rx.recv().await {
                     space.recv_ack_frame(ack, rtt);
+                }
+            }
+        });
+        tokio::spawn({
+            let space = handshake_space.clone();
+            let mut loss_pkt_rx = handshake_loss_rx;
+            async move {
+                // 不停地接收丢包序号，这些丢包序号由path记录反馈，更新Transmiter的状态
+                while let Some(pkt_id) = loss_pkt_rx.recv().await {
+                    space.may_loss_packet(pkt_id);
                 }
             }
         });
@@ -146,7 +162,6 @@ impl Connection {
             one_rtt_crypto_stream,
             streams,
             sending_frames,
-            data_loss_rx,
             data_space_frame_queue.clone(),
         );
         tokio::spawn({
@@ -156,6 +171,16 @@ impl Connection {
                 // 通过rx接收并处理AckFrame，AckFrame是Path收包解包得到
                 while let Some((ack, rtt)) = ack_rx.recv().await {
                     space.recv_ack_frame(ack, rtt);
+                }
+            }
+        });
+        tokio::spawn({
+            let space = data_space.clone();
+            let mut loss_pkt_rx = data_loss_rx;
+            async move {
+                // 不停地接收丢包序号，这些丢包序号由path记录反馈，更新Transmiter的状态
+                while let Some(pkt_id) = loss_pkt_rx.recv().await {
+                    space.may_loss_packet(pkt_id);
                 }
             }
         });

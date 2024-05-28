@@ -19,7 +19,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone)]
 pub enum Record {
@@ -293,7 +293,6 @@ impl<ST: TransmitStream + Send + 'static> ArcTransmitter<ST> {
         sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
         inner: ST,
         ack_record_tx: UnboundedSender<u64>,
-        mut loss_pkt_rx: UnboundedReceiver<u64>,
     ) -> Self {
         let transmitter = Arc::new(Mutex::new(Transmitter::new(
             space_id,
@@ -302,18 +301,6 @@ impl<ST: TransmitStream + Send + 'static> ArcTransmitter<ST> {
             sending_frames,
             ack_record_tx,
         )));
-
-        tokio::spawn({
-            let transmitter = transmitter.clone();
-            async move {
-                // 不停地接收丢包序号，这些丢包序号由path记录反馈，更新Transmiter的状态
-                while let Some(pkt_id) = loss_pkt_rx.recv().await {
-                    let mut guard = transmitter.lock().unwrap();
-                    guard.may_loss_packet(pkt_id);
-                    guard.slide_inflight_pkt_window();
-                }
-            }
-        });
         Self { inner: transmitter }
     }
 }
@@ -333,6 +320,12 @@ impl<ST: TransmitStream> ArcTransmitter<ST> {
 
     pub fn recv_ack_frame(&self, ack: AckFrame, rtt: Arc<Mutex<Rtt>>) {
         self.inner.lock().unwrap().recv_ack_frame(ack, rtt);
+    }
+
+    pub fn may_loss_packet(&self, pkt_id: u64) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.may_loss_packet(pkt_id);
+        guard.slide_inflight_pkt_window();
     }
 }
 
