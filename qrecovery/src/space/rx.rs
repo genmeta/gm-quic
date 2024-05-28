@@ -288,7 +288,7 @@ impl<RX: ReceiveStream> ArcReceiver<RX> {
     /// After receiving a data packet and parsing the packet number, it is necessary
     /// to inquire whether the packet has been received before. Duplicate packets are
     /// not processed repeatedly.
-    pub fn receive_pkt_no(&self, pn: PacketNumber) -> (u64, bool) {
+    pub fn recv_pkt_number(&self, pn: PacketNumber) -> (u64, bool) {
         let guard = self.inner.lock().unwrap();
         let pkt_id = pn.decode(guard.expected_pn());
         (pkt_id, guard.has_rcvd(pkt_id))

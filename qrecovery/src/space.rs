@@ -31,7 +31,7 @@ pub trait TransmitPacket {
 /// When a network socket receives a data packet and determines that it belongs
 /// to a specific space, the content of the packet is passed on to that space.
 pub trait ReceivePacket {
-    fn receive_pkt_no(&self, pn: PacketNumber) -> (u64, bool);
+    fn recv_pkt_number(&self, pn: PacketNumber) -> (u64, bool);
 
     fn record(&self, pktid: u64, is_ack_eliciting: bool);
 }
@@ -52,8 +52,8 @@ where
     pub(crate) fn build(
         space_id: SpaceId,
         crypto_stream: CryptoStream,
-        sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
         data_stream: S,
+        sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
         ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
         recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
@@ -95,8 +95,8 @@ impl ArcSpace<NoDataStreams> {
         Self(Arc::new(Space::build(
             SpaceId::Initial,
             crypto_stream,
-            Arc::new(Mutex::new(VecDeque::new())),
             NoDataStreams,
+            Arc::new(Mutex::new(VecDeque::new())),
             ack_frame_rx,
             loss_pkt_rx,
             recv_frames_queue,
@@ -112,8 +112,8 @@ impl ArcSpace<NoDataStreams> {
         Self(Arc::new(Space::build(
             SpaceId::Handshake,
             crypto_stream,
-            Arc::new(Mutex::new(VecDeque::new())),
             NoDataStreams,
+            Arc::new(Mutex::new(VecDeque::new())),
             ack_frame_rx,
             loss_pkt_rx,
             recv_frames_queue,
@@ -137,8 +137,8 @@ impl ArcSpace<ArcDataStreams> {
         Self(Arc::new(Space::build(
             SpaceId::ZeroRtt,
             crypto_stream,
-            sending_frames,
             streams,
+            sending_frames,
             ack_frame_rx,
             loss_pkt_rx,
             recv_frames_queue,
@@ -165,8 +165,8 @@ impl<S> ReceivePacket for ArcSpace<S>
 where
     S: Debug + ReceiveStream + Output,
 {
-    fn receive_pkt_no(&self, pn: PacketNumber) -> (u64, bool) {
-        self.0.receiver.receive_pkt_no(pn)
+    fn recv_pkt_number(&self, pn: PacketNumber) -> (u64, bool) {
+        self.0.receiver.recv_pkt_number(pn)
     }
 
     fn record(&self, pkt_id: u64, is_ack_eliciting: bool) {

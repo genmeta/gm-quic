@@ -110,7 +110,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
             }
 
             let pn = packet.decode_header().unwrap();
-            let (pkt_id, has_rcvd) = space.receive_pkt_no(pn);
+            let (pkt_id, has_rcvd) = space.recv_pkt_number(pn);
             if has_rcvd {
                 // Duplicate packet, discard. QUIC does not allow duplicate packets.
                 // Is it an error to receive duplicate packets? Definitely not,
@@ -165,7 +165,7 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
             }
 
             let (pn, key_phase) = packet.decode_header().unwrap();
-            let (pkt_id, has_rcvd) = space.receive_pkt_no(pn);
+            let (pkt_id, has_rcvd) = space.recv_pkt_number(pn);
             if has_rcvd {
                 // Duplicate packet, discard. QUIC does not allow duplicate packets.
                 // Is it an error to receive duplicate packets? Definitely not,
