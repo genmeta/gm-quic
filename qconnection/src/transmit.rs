@@ -1,6 +1,5 @@
 use bytes::BufMut;
 use qbase::{
-    frame::AckRecord,
     packet::{
         header::{
             Encode, GetType, HasLength, LongHeader, Write, WriteLongHeader, WriteOneRttHeader,
@@ -11,7 +10,7 @@ use qbase::{
     varint::{VarInt, WriteVarInt},
 };
 use qrecovery::{
-    space::{ArcSpace, TransmitPacket},
+    space::{ArcSpace, ObserveAck, TransmitPacket},
     streams::{ArcDataStreams, Output, ReceiveStream},
 };
 use std::{fmt::Debug, ops::Deref};
@@ -29,18 +28,18 @@ pub enum FillPolicy {
     // Padding,     // Instead of padding frames, it's better to redundantly encode the Length.
 }
 
-pub fn read_space_and_encrypt<T, S, F>(
+pub fn read_space_and_encrypt<T, S, O>(
     buffer: &mut [u8],
     header: LongHeader<T>,
     fill_policy: FillPolicy,
     keys: ArcKeys,
-    space: ArcSpace<S, F>,
+    space: ArcSpace<S, O>,
 ) -> (usize, usize)
 where
     for<'a> &'a mut [u8]: Write<T>,
     LongHeader<T>: HasLength + GetType + Encode,
     S: Debug + Output + ReceiveStream,
-    F: FnMut(AckRecord),
+    O: ObserveAck,
 {
     let keys = match keys.get_local_keys() {
         Some(keys) => keys,
@@ -131,11 +130,11 @@ where
     (offset, pkt_size)
 }
 
-pub fn read_1rtt_data_and_encrypt<F: FnMut(AckRecord)>(
+pub fn read_1rtt_data_and_encrypt<O: ObserveAck>(
     buffer: &mut [u8],
     header: OneRttHeader,
     keys: ArcOneRttKeys,
-    space: ArcSpace<ArcDataStreams, F>,
+    space: ArcSpace<ArcDataStreams, O>,
 ) -> usize {
     let (hpk, pk) = match keys.get_local_keys() {
         Some(keys) => keys,

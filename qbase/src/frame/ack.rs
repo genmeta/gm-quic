@@ -63,7 +63,7 @@ impl super::BeFrame for AckFrame {
 }
 
 impl AckFrame {
-    pub fn set_enc(&mut self, ecn: EcnCounts) {
+    pub fn set_ecn(&mut self, ecn: EcnCounts) {
         self.ecn = Some(ecn);
     }
 

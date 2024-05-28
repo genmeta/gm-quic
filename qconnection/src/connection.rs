@@ -1,6 +1,5 @@
 use crate::{auto, crypto::TlsIO, handshake, path::ArcPath};
 use qbase::{
-    frame::AckRecord,
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
         HandshakePacket, InitialPacket, OneRttPacket, SpinBit, ZeroRttPacket,
@@ -11,7 +10,7 @@ use qbase::{
 };
 use qrecovery::{
     crypto::CryptoStream,
-    space::{self, ArcSpace, TransmitPacket},
+    space::{self, ArcSpace, ObserveAck, TransmitPacket},
     streams::{none::NoDataStreams, ArcDataStreams},
 };
 use std::{
@@ -24,32 +23,30 @@ use tokio::sync::mpsc;
 /// 一旦丢弃，后续再收到该空间的包，直接丢弃。
 type RxPacketsQueue<T> = Option<mpsc::UnboundedSender<(T, ArcPath)>>;
 
-pub struct Connection<F1: FnMut(AckRecord), F2: FnMut(AckRecord), F3: FnMut(AckRecord)> {
+pub struct Connection<O: ObserveAck> {
     // Thus, a client MUST discard Initial keys when it first sends a Handshake packet
     // and a server MUST discard Initial keys when it first successfully processes a
     // Handshake packet. Endpoints MUST NOT send Initial packets after this point.
     initial_keys: ArcKeys,
     initial_pkt_queue: RxPacketsQueue<InitialPacket>,
     // 发送数据，也可以随着升级到Handshake空间而丢弃
-    initial_space: ArcSpace<NoDataStreams, F1>,
+    initial_space: ArcSpace<NoDataStreams, O>,
 
     // An endpoint MUST discard its Handshake keys when the TLS handshake is confirmed.
     handshake_keys: ArcKeys,
     handshake_pkt_queue: RxPacketsQueue<HandshakePacket>,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
-    handshake_space: ArcSpace<NoDataStreams, F2>,
+    handshake_space: ArcSpace<NoDataStreams, O>,
 
     zero_rtt_keys: ArcKeys,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
     zero_rtt_pkt_queue: RxPacketsQueue<ZeroRttPacket>,
     one_rtt_pkt_queue: mpsc::UnboundedSender<(OneRttPacket, ArcPath)>,
-    data_space: ArcSpace<ArcDataStreams, F3>,
+    data_space: ArcSpace<ArcDataStreams, O>,
     spin: SpinBit,
 }
 
-pub fn new(
-    tls_session: TlsIO,
-) -> Connection<impl FnMut(AckRecord), impl FnMut(AckRecord), impl FnMut(AckRecord)> {
+pub fn new(tls_session: TlsIO) -> Connection<impl ObserveAck> {
     let rcvd_conn_frames = ArcAsyncQueue::new();
 
     let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded_channel::<(InitialPacket, ArcPath)>();
@@ -226,7 +223,7 @@ pub fn new(
     }
 }
 
-impl<F1: FnMut(AckRecord), F2: FnMut(AckRecord), F3: FnMut(AckRecord)> Connection<F1, F2, F3> {
+impl<O: ObserveAck> Connection<O> {
     pub fn recv_initial_packet(&mut self, pkt: InitialPacket, path: ArcPath) {
         self.initial_pkt_queue.as_mut().map(|q| {
             let _ = q.send((pkt, path));

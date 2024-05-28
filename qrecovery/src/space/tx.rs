@@ -20,6 +20,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use super::ObserveAck;
+
 #[derive(Debug, Clone)]
 pub enum Record {
     Reliable(ReliableFrame),
@@ -38,7 +40,7 @@ pub struct Packet {
 }
 
 #[derive(Debug)]
-struct Transmitter<TX, F> {
+struct Transmitter<TX, O> {
     space_id: SpaceId,
     // 以下三个字段，是为了重传需要，也为了发送数据需要
     sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
@@ -54,16 +56,16 @@ struct Transmitter<TX, F> {
     // 对方确认的最大包id，可认为对方收到的最大包id，尽管可能有半rtt以上时间的信息过时
     largest_acked_pktid: Option<u64>,
     // ack被ack的消息对接收很重要，需要通知接收端
-    on_ack_frame_rcvd: F,
+    ack_observer: O,
 }
 
-impl<TX: TransmitStream, F: FnMut(AckRecord)> Transmitter<TX, F> {
+impl<TX: TransmitStream, O: ObserveAck> Transmitter<TX, O> {
     fn new(
         space_id: SpaceId,
         crypto_stream: CryptoStream,
         inner: TX,
         sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
-        on_ack_frame_rcvd: F,
+        ack_observer: O,
     ) -> Self {
         Self {
             space_id,
@@ -73,7 +75,7 @@ impl<TX: TransmitStream, F: FnMut(AckRecord)> Transmitter<TX, F> {
             inflight_packets: IndexDeque::new(),
             time_of_last_sent_ack_eliciting_packet: None,
             largest_acked_pktid: None,
-            on_ack_frame_rcvd,
+            ack_observer,
         }
     }
 
@@ -221,8 +223,8 @@ impl<TX: TransmitStream, F: FnMut(AckRecord)> Transmitter<TX, F> {
         for record in packet.payload {
             match record {
                 Record::Ack(ack) => {
-                    // THINK: 这里需不需要减去3这个乱序容忍度
-                    (self.on_ack_frame_rcvd)(ack);
+                    // TODO:
+                    self.ack_observer.on_ack_rcvd(ack.0);
                 }
                 Record::Reliable(frame) => {
                     if let ReliableFrame::Stream(StreamCtlFrame::ResetStream(f)) = frame {
@@ -261,7 +263,7 @@ impl<TX: TransmitStream, F: FnMut(AckRecord)> Transmitter<TX, F> {
     }
 }
 
-impl<F: FnMut(AckRecord)> Transmitter<ArcOutput, F> {
+impl<O: ObserveAck> Transmitter<ArcOutput, O> {
     fn upgrade(&mut self) {
         self.space_id = SpaceId::OneRtt;
     }
@@ -280,14 +282,14 @@ impl<F: FnMut(AckRecord)> Transmitter<ArcOutput, F> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ArcTransmitter<TX, F> {
-    inner: Arc<Mutex<Transmitter<TX, F>>>,
+pub struct ArcTransmitter<TX, O> {
+    inner: Arc<Mutex<Transmitter<TX, O>>>,
 }
 
-impl<ST, F> ArcTransmitter<ST, F>
+impl<ST, O> ArcTransmitter<ST, O>
 where
     ST: TransmitStream + Send + 'static,
-    F: FnMut(AckRecord) + Send + 'static,
+    O: ObserveAck + Send + 'static,
 {
     /// 一个Transmitter，不仅仅要发送数据，还要接收AckFrame，以及丢包序号去重传。
     /// 然后，接收端提供的AckFrame如果被确认了，也需要通知到接收端
@@ -296,20 +298,20 @@ where
         crypto_stream: CryptoStream,
         sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
         inner: ST,
-        on_ack_frame_rcvd: F,
+        ack_observer: O,
     ) -> Self {
         let transmitter = Arc::new(Mutex::new(Transmitter::new(
             space_id,
             crypto_stream,
             inner,
             sending_frames,
-            on_ack_frame_rcvd,
+            ack_observer,
         )));
         Self { inner: transmitter }
     }
 }
 
-impl<ST: TransmitStream, F: FnMut(AckRecord)> ArcTransmitter<ST, F> {
+impl<ST: TransmitStream, O: ObserveAck> ArcTransmitter<ST, O> {
     pub fn next_pkt_no(&self) -> (u64, PacketNumber) {
         self.inner.lock().unwrap().next_pkt_no()
     }
@@ -333,7 +335,7 @@ impl<ST: TransmitStream, F: FnMut(AckRecord)> ArcTransmitter<ST, F> {
     }
 }
 
-impl<F: FnMut(AckRecord)> ArcTransmitter<ArcOutput, F> {
+impl<O: ObserveAck> ArcTransmitter<ArcOutput, O> {
     pub fn upgrade(&self) {
         self.inner.lock().unwrap().upgrade();
     }

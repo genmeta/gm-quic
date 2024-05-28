@@ -31,6 +31,12 @@ pub trait TransmitPacket {
     fn may_loss_packet(&self, pkt_id: u64);
 }
 
+/// 主要用于收包队列生成AckFrame后，假如该AckFrame的数据被确认，那么
+/// 就得传递给收包队列，让其收包记录就得向前滑动
+pub trait ObserveAck {
+    fn on_ack_rcvd(&mut self, pkt_id: u64);
+}
+
 /// When a network socket receives a data packet and determines that it belongs
 /// to a specific space, the content of the packet is passed on to that space.
 pub trait ReceivePacket {
@@ -42,52 +48,60 @@ pub trait ReceivePacket {
 /// 可靠空间的抽象实现，需要实现上述所有trait
 /// 可靠空间中的重传、确认，由可靠空间内部实现，无需外露
 #[derive(Debug)]
-struct Space<S: Output + Debug, F: FnMut(AckRecord)> {
-    transmitter: tx::ArcTransmitter<<S as Output>::Outgoing, F>,
+struct Space<S: Output + Debug, O: ObserveAck> {
+    transmitter: tx::ArcTransmitter<<S as Output>::Outgoing, O>,
     receiver: rx::ArcReceiver<S>,
 }
 
-fn build_space<S>(
-    space_id: SpaceId,
-    crypto_stream: CryptoStream,
-    data_stream: S,
-    sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
-    recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
-) -> Space<S, impl FnMut(AckRecord)>
+pub struct ChannelObserver(mpsc::UnboundedSender<u64>);
+
+impl ObserveAck for ChannelObserver {
+    fn on_ack_rcvd(&mut self, pkt_id: u64) {
+        let _ = self.0.send(pkt_id);
+    }
+}
+
+impl<S> Space<S, ChannelObserver>
 where
     S: Debug + Output + ReceiveStream + Clone + Send + 'static,
     <S as Output>::Outgoing: TransmitStream + Clone + Send + 'static,
 {
-    let (ack_record_tx, ack_record_rx) = mpsc::unbounded_channel();
-    let transmitter = tx::ArcTransmitter::new(
-        space_id,
-        crypto_stream.clone(),
-        sending_frames,
-        data_stream.output(),
-        move |ack_record| {
-            let _ = ack_record_tx.send(ack_record.0.saturating_sub(3));
-        },
-    );
-    let receiver = rx::ArcReceiver::new(
-        space_id,
-        crypto_stream,
-        data_stream,
-        recv_frames_queue,
-        ack_record_rx,
-    );
-    Space {
-        transmitter,
-        receiver,
+    fn build_space(
+        space_id: SpaceId,
+        crypto_stream: CryptoStream,
+        data_stream: S,
+        sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
+        recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
+    ) -> Space<S, ChannelObserver> {
+        let (ack_record_tx, ack_record_rx) = mpsc::unbounded_channel();
+        let transmitter = tx::ArcTransmitter::new(
+            space_id,
+            crypto_stream.clone(),
+            sending_frames,
+            data_stream.output(),
+            ChannelObserver(ack_record_tx),
+        );
+        let receiver = rx::ArcReceiver::new(
+            space_id,
+            crypto_stream,
+            data_stream,
+            recv_frames_queue,
+            ack_record_rx,
+        );
+        Space {
+            transmitter,
+            receiver,
+        }
     }
 }
 
 #[derive(Debug)]
-pub struct ArcSpace<S: Debug + Output, F: FnMut(AckRecord)>(Arc<Space<S, F>>);
+pub struct ArcSpace<S: Debug + Output, O: ObserveAck>(Arc<Space<S, O>>);
 
 impl<S, F> Clone for ArcSpace<S, F>
 where
     S: Debug + Output,
-    F: FnMut(AckRecord),
+    F: ObserveAck,
 {
     fn clone(&self) -> Self {
         Self(self.0.clone())
@@ -97,8 +111,8 @@ where
 pub fn new_initial_space(
     crypto_stream: CryptoStream,
     recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
-) -> ArcSpace<NoDataStreams, impl FnMut(AckRecord)> {
-    ArcSpace(Arc::new(build_space(
+) -> ArcSpace<NoDataStreams, ChannelObserver> {
+    ArcSpace(Arc::new(Space::build_space(
         SpaceId::Initial,
         crypto_stream,
         NoDataStreams,
@@ -110,8 +124,8 @@ pub fn new_initial_space(
 pub fn new_handshake_space(
     crypto_stream: CryptoStream,
     recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
-) -> ArcSpace<NoDataStreams, impl FnMut(AckRecord)> {
-    ArcSpace(Arc::new(build_space(
+) -> ArcSpace<NoDataStreams, ChannelObserver> {
+    ArcSpace(Arc::new(Space::build_space(
         SpaceId::Handshake,
         crypto_stream,
         NoDataStreams,
@@ -129,8 +143,8 @@ pub fn new_data_space(
     streams: ArcDataStreams,
     sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
     recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
-) -> ArcSpace<ArcDataStreams, impl FnMut(AckRecord)> {
-    ArcSpace(Arc::new(build_space(
+) -> ArcSpace<ArcDataStreams, ChannelObserver> {
+    ArcSpace(Arc::new(Space::build_space(
         SpaceId::ZeroRtt,
         crypto_stream,
         streams,
@@ -139,7 +153,7 @@ pub fn new_data_space(
     )))
 }
 
-impl<F: FnMut(AckRecord)> ArcSpace<ArcDataStreams, F> {
+impl<O: ObserveAck> ArcSpace<ArcDataStreams, O> {
     pub fn upgrade(&self) {
         self.0.transmitter.upgrade();
         self.0.receiver.upgrade();
@@ -156,10 +170,10 @@ impl<F: FnMut(AckRecord)> ArcSpace<ArcDataStreams, F> {
     */
 }
 
-impl<S, F> ReceivePacket for ArcSpace<S, F>
+impl<S, O> ReceivePacket for ArcSpace<S, O>
 where
     S: Debug + ReceiveStream + Output,
-    F: FnMut(AckRecord),
+    O: ObserveAck,
 {
     fn recv_pkt_number(&self, pn: PacketNumber) -> (u64, bool) {
         self.0.receiver.recv_pkt_number(pn)
@@ -170,11 +184,11 @@ where
     }
 }
 
-impl<S, F> TransmitPacket for ArcSpace<S, F>
+impl<S, O> TransmitPacket for ArcSpace<S, O>
 where
     S: Debug + Output,
     <S as Output>::Outgoing: TransmitStream,
-    F: FnMut(AckRecord),
+    O: ObserveAck,
 {
     /// Get the next packet number. This number is not thread-safe.
     /// It does not lock the next packet number to be sent.
