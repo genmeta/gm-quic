@@ -10,7 +10,7 @@ use qbase::{
 };
 use qrecovery::{
     crypto::CryptoStream,
-    space::ArcSpace,
+    space::{ArcSpace, TransmitPacket},
     streams::{none::NoDataStreams, ArcDataStreams},
 };
 use std::{
@@ -60,7 +60,6 @@ impl Connection {
         let initial_space_frame_queue = ArcAsyncQueue::new();
         let initial_space = ArcSpace::new_initial_space(
             initial_crypto_stream,
-            initial_ack_rx,
             initial_loss_rx,
             initial_space_frame_queue.clone(),
         );
@@ -72,9 +71,20 @@ impl Connection {
                 initial_space.clone(),
                 rcvd_conn_frames.clone(),
                 initial_space_frame_queue,
+                initial_ack_tx,
                 true,
             ),
         );
+        tokio::spawn({
+            let space = initial_space.clone();
+            let mut ack_rx = initial_ack_rx;
+            async move {
+                // 通过rx接收并处理AckFrame，AckFrame是Path收包解包得到
+                while let Some((ack, rtt)) = ack_rx.recv().await {
+                    space.recv_ack_frame(ack, rtt);
+                }
+            }
+        });
 
         let (handshake_pkt_tx, handshake_pkt_rx) =
             mpsc::unbounded_channel::<(HandshakePacket, ArcPath)>();
@@ -86,7 +96,6 @@ impl Connection {
         let handshake_space_frame_queue = ArcAsyncQueue::new();
         let handshake_space = ArcSpace::new_initial_space(
             handshake_crypto_stream,
-            handshake_ack_rx,
             handshake_loss_rx,
             handshake_space_frame_queue.clone(),
         );
@@ -98,9 +107,20 @@ impl Connection {
                 handshake_space.clone(),
                 rcvd_conn_frames.clone(),
                 handshake_space_frame_queue,
+                handshake_ack_tx,
                 true,
             ),
         );
+        tokio::spawn({
+            let space = handshake_space.clone();
+            let mut ack_rx = handshake_ack_rx;
+            async move {
+                // 通过rx接收并处理AckFrame，AckFrame是Path收包解包得到
+                while let Some((ack, rtt)) = ack_rx.recv().await {
+                    space.recv_ack_frame(ack, rtt);
+                }
+            }
+        });
         tokio::spawn(
             handshake::exchange_initial_crypto_msg_until_getting_handshake_key(
                 tls_session.clone(),
@@ -126,10 +146,19 @@ impl Connection {
             one_rtt_crypto_stream,
             streams,
             sending_frames,
-            data_ack_rx,
             data_loss_rx,
             data_space_frame_queue.clone(),
         );
+        tokio::spawn({
+            let space = data_space.clone();
+            let mut ack_rx = data_ack_rx;
+            async move {
+                // 通过rx接收并处理AckFrame，AckFrame是Path收包解包得到
+                while let Some((ack, rtt)) = ack_rx.recv().await {
+                    space.recv_ack_frame(ack, rtt);
+                }
+            }
+        });
         tokio::spawn(
             auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
                 zero_rtt_pkt_rx,
@@ -138,6 +167,7 @@ impl Connection {
                 data_space.clone(),
                 rcvd_conn_frames.clone(),
                 data_space_frame_queue.clone(),
+                data_ack_tx.clone(),
                 false,
             ),
         );
@@ -148,6 +178,7 @@ impl Connection {
                 data_space.clone(),
                 rcvd_conn_frames.clone(),
                 data_space_frame_queue,
+                data_ack_tx,
             ),
         );
         tokio::spawn(

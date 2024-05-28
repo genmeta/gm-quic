@@ -120,9 +120,6 @@ impl<RX: ReceiveStream> Receiver<RX> {
 
     fn recv_frame(&mut self, frame: SpaceFrame) -> Result<(), Error> {
         match frame {
-            SpaceFrame::Ack(_ack, _rtt) => {
-                // let _ = self.recv_ack_frame(ack, rtt);
-            }
             SpaceFrame::Stream(f) => self.inner.recv_frame(f)?,
             SpaceFrame::Data(f, data) => match f {
                 DataFrame::Crypto(f) => self.crypto_stream.recv_data(f, data)?,

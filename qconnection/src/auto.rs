@@ -1,7 +1,7 @@
 use crate::path::ArcPath;
 use qbase::{
     error::{Error, ErrorKind},
-    frame::{BeFrame, ConnFrame, Frame, FrameReader, PureFrame},
+    frame::{AckFrame, BeFrame, ConnFrame, Frame, FrameReader, PureFrame},
     packet::{
         decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
         keys::{ArcKeys, ArcOneRttKeys},
@@ -10,7 +10,11 @@ use qbase::{
     util::ArcAsyncQueue,
     SpaceId,
 };
-use qrecovery::space::{ReceivePacket, SpaceFrame};
+use qrecovery::{
+    rtt::Rtt,
+    space::{ReceivePacket, SpaceFrame},
+};
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 fn parse_packet_and_then_dispatch(
@@ -19,6 +23,8 @@ fn parse_packet_and_then_dispatch(
     path: &ArcPath,
     conn_frames: &ArcAsyncQueue<ConnFrame>,
     space_frames: &ArcAsyncQueue<SpaceFrame>,
+    ack_frames_tx: &mpsc::UnboundedSender<(AckFrame, Arc<Mutex<Rtt>>)>,
+    // on_ack_frame_rcvd: impl FnMut(AckFrame, Arc<Mutex<Rtt>>),
 ) -> Result<bool, Error> {
     let mut space_frame_writer = space_frames.writer();
     let mut conn_frame_writer = conn_frames.writer();
@@ -44,7 +50,7 @@ fn parse_packet_and_then_dispatch(
                         PureFrame::Padding(_) => continue,
                         PureFrame::Ping(_) => is_ack_eliciting = true,
                         PureFrame::Ack(ack) => {
-                            space_frame_writer.push(SpaceFrame::Ack(ack, path.rtt()))
+                            let _ = ack_frames_tx.send((ack.clone(), path.rtt()));
                         }
                         PureFrame::Conn(f) => {
                             is_ack_eliciting = true;
@@ -96,6 +102,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
     space: S,
     conn_frame_queue: ArcAsyncQueue<ConnFrame>,
     space_frame_queue: ArcAsyncQueue<SpaceFrame>,
+    ack_frames_tx: mpsc::UnboundedSender<(AckFrame, Arc<Mutex<Rtt>>)>,
     need_close_space_frame_queue_at_end: bool,
 ) where
     S: ReceivePacket,
@@ -126,6 +133,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
                         &path,
                         &conn_frame_queue,
                         &space_frame_queue,
+                        &ack_frames_tx,
                     ) {
                         Ok(is_ack_eliciting) => space.record(pkt_id, is_ack_eliciting),
                         Err(_e) => {
@@ -154,6 +162,7 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
     space: impl ReceivePacket,
     conn_frame_queue: ArcAsyncQueue<ConnFrame>,
     space_frame_queue: ArcAsyncQueue<SpaceFrame>,
+    ack_frames_tx: mpsc::UnboundedSender<(AckFrame, Arc<Mutex<Rtt>>)>,
 ) {
     while let Some((mut packet, path)) = packet_rx.recv().await {
         // 1rtt空间的header protection key是固定的，packet key则是根据包头中的key_phase_bit变化的
@@ -183,6 +192,7 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
                         &path,
                         &conn_frame_queue,
                         &space_frame_queue,
+                        &ack_frames_tx,
                     ) {
                         Ok(is_ack_eliciting) => space.record(pkt_id, is_ack_eliciting),
                         Err(_e) => {

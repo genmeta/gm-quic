@@ -293,7 +293,6 @@ impl<ST: TransmitStream + Send + 'static> ArcTransmitter<ST> {
         sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
         inner: ST,
         ack_record_tx: UnboundedSender<u64>,
-        mut ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         mut loss_pkt_rx: UnboundedReceiver<u64>,
     ) -> Self {
         let transmitter = Arc::new(Mutex::new(Transmitter::new(
@@ -303,16 +302,6 @@ impl<ST: TransmitStream + Send + 'static> ArcTransmitter<ST> {
             sending_frames,
             ack_record_tx,
         )));
-
-        tokio::spawn({
-            let transmitter = transmitter.clone();
-            async move {
-                // 通过rx接收并处理AckFrame，AckFrame是Path收包解包得到
-                while let Some((ack, rtt)) = ack_frame_rx.recv().await {
-                    transmitter.lock().unwrap().recv_ack_frame(ack, rtt);
-                }
-            }
-        });
 
         tokio::spawn({
             let transmitter = transmitter.clone();
@@ -340,6 +329,10 @@ impl<ST: TransmitStream> ArcTransmitter<ST> {
 
     pub fn record_sent_ack(&self, packet: Packet) {
         self.inner.lock().unwrap().record_sent_packet(packet);
+    }
+
+    pub fn recv_ack_frame(&self, ack: AckFrame, rtt: Arc<Mutex<Rtt>>) {
+        self.inner.lock().unwrap().recv_ack_frame(ack, rtt);
     }
 }
 

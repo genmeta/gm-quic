@@ -17,7 +17,6 @@ pub mod tx;
 
 #[derive(Debug, Clone)]
 pub enum SpaceFrame {
-    Ack(AckFrame, Arc<Mutex<Rtt>>),
     Stream(StreamCtlFrame),
     Data(DataFrame, Bytes),
 }
@@ -26,6 +25,8 @@ pub trait TransmitPacket {
     fn next_pkt_no(&self) -> (u64, PacketNumber);
 
     fn read(&self, buf: &mut [u8]) -> usize;
+
+    fn recv_ack_frame(&self, ack: AckFrame, rtt: Arc<Mutex<Rtt>>);
 }
 
 /// When a network socket receives a data packet and determines that it belongs
@@ -54,7 +55,6 @@ where
         crypto_stream: CryptoStream,
         data_stream: S,
         sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
-        ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
         recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
     ) -> Self {
@@ -65,7 +65,6 @@ where
             sending_frames,
             data_stream.output(),
             ack_record_tx,
-            ack_frame_rx,
             loss_pkt_rx,
         );
         let receiver = rx::ArcReceiver::new(
@@ -88,7 +87,6 @@ pub struct ArcSpace<S: Debug + Output>(Arc<Space<S>>);
 impl ArcSpace<NoDataStreams> {
     pub fn new_initial_space(
         crypto_stream: CryptoStream,
-        ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
         recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
     ) -> Self {
@@ -97,7 +95,6 @@ impl ArcSpace<NoDataStreams> {
             crypto_stream,
             NoDataStreams,
             Arc::new(Mutex::new(VecDeque::new())),
-            ack_frame_rx,
             loss_pkt_rx,
             recv_frames_queue,
         )))
@@ -105,7 +102,6 @@ impl ArcSpace<NoDataStreams> {
 
     pub fn new_handshake_space(
         crypto_stream: CryptoStream,
-        ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
         recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
     ) -> Self {
@@ -114,7 +110,6 @@ impl ArcSpace<NoDataStreams> {
             crypto_stream,
             NoDataStreams,
             Arc::new(Mutex::new(VecDeque::new())),
-            ack_frame_rx,
             loss_pkt_rx,
             recv_frames_queue,
         )))
@@ -130,7 +125,6 @@ impl ArcSpace<ArcDataStreams> {
         crypto_stream: CryptoStream,
         streams: ArcDataStreams,
         sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
-        ack_frame_rx: UnboundedReceiver<(AckFrame, Arc<Mutex<Rtt>>)>,
         loss_pkt_rx: UnboundedReceiver<u64>,
         recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
     ) -> Self {
@@ -139,7 +133,6 @@ impl ArcSpace<ArcDataStreams> {
             crypto_stream,
             streams,
             sending_frames,
-            ack_frame_rx,
             loss_pkt_rx,
             recv_frames_queue,
         )))
@@ -193,6 +186,11 @@ where
     /// it means there is no suitable data to send.
     fn read(&self, buf: &mut [u8]) -> usize {
         self.0.transmitter.read(buf)
+    }
+
+    /// Receive an AckFrame and update the RTT when decoding the AckFrame from an valid packet.
+    fn recv_ack_frame(&self, ack: AckFrame, rtt: Arc<Mutex<Rtt>>) {
+        self.0.transmitter.recv_ack_frame(ack, rtt);
     }
 }
 
