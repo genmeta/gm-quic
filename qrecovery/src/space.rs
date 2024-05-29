@@ -1,32 +1,31 @@
 use super::{
-    crypto::CryptoStream,
+    crypto::{CryptoStream, TransmitCrypto},
+    rcvdpkt::ArcRcvdPktRecords,
+    reliable::{ArcReliableFrameQueue, ArcSentPktRecords, SentRecord},
     rtt::Rtt,
-    streams::{none::NoDataStreams, ArcDataStreams, Output, ReceiveStream, TransmitStream},
+    streams::{none::NoDataStreams, ArcDataStreams, ReceiveStream, TransmitStream},
 };
-use bytes::Bytes;
-use qbase::{frame::*, packet::PacketNumber, util::ArcAsyncQueue, SpaceId};
+use bytes::{BufMut, Bytes};
+use qbase::{
+    error::Error,
+    frame::{
+        io::{WriteAckFrame, WriteFrame},
+        AckFrame, BeFrame, DataFrame, StreamCtlFrame,
+    },
+    packet::{PacketNumber, WritePacketNumber},
+    streamid::Role,
+};
 use std::{
-    collections::VecDeque,
     fmt::Debug,
     sync::{Arc, Mutex},
+    time::Instant,
 };
-use tokio::sync::mpsc;
-
-pub mod rx;
-pub mod tx;
 
 #[derive(Debug, Clone)]
 pub enum SpaceFrame {
     Stream(StreamCtlFrame),
     Data(DataFrame, Bytes),
 }
-
-/// Frames that need to be sent reliably, there are 3 operations:
-/// - write: write a frame to the sending queue, include Conn and StreamCtl frames
-/// - retran: retransmit the lost frames
-/// - read: read the frames to send
-#[derive(Debug, Default, Clone)]
-pub struct ReliableFrameQueue(Arc<Mutex<VecDeque<ReliableFrame>>>);
 
 pub trait TransmitPacket {
     fn next_pkt_no(&self) -> (u64, PacketNumber);
@@ -38,12 +37,6 @@ pub trait TransmitPacket {
     fn may_loss_packet(&self, pkt_id: u64);
 }
 
-/// 主要用于收包队列生成AckFrame后，假如该AckFrame的数据被确认，那么
-/// 就得传递给收包队列，让其收包记录就得向前滑动
-pub trait ObserveAck {
-    fn on_ack_rcvd(&mut self, pkt_id: u64);
-}
-
 /// When a network socket receives a data packet and determines that it belongs
 /// to a specific space, the content of the packet is passed on to that space.
 pub trait ReceivePacket {
@@ -52,176 +45,204 @@ pub trait ReceivePacket {
     fn record(&self, pktid: u64, is_ack_eliciting: bool);
 }
 
-/// 可靠空间的抽象实现，需要实现上述所有trait
-/// 可靠空间中的重传、确认，由可靠空间内部实现，无需外露
 #[derive(Debug)]
-struct Space<S: Output + Debug, O: ObserveAck> {
-    transmitter: tx::ArcTransmitter<<S as Output>::Outgoing, O>,
-    receiver: rx::ArcReceiver<S>,
+struct RawSpace<T> {
+    reliable_frame_queue: ArcReliableFrameQueue,
+    sent_pkt_records: ArcSentPktRecords,
+    rcvd_pkt_records: ArcRcvdPktRecords,
+    // maybe NoDataStreams
+    data_streams: T,
+    crypto_stream: CryptoStream,
 }
 
-pub struct ChannelObserver(mpsc::UnboundedSender<u64>);
-
-impl ObserveAck for ChannelObserver {
-    fn on_ack_rcvd(&mut self, pkt_id: u64) {
-        let _ = self.0.send(pkt_id);
-    }
-}
-
-impl<S> Space<S, ChannelObserver>
+impl<T> RawSpace<T>
 where
-    S: Debug + Output + ReceiveStream + Clone + Send + 'static,
-    <S as Output>::Outgoing: TransmitStream + Clone + Send + 'static,
+    T: TransmitStream + ReceiveStream,
 {
-    fn build_space(
-        space_id: SpaceId,
-        crypto_stream: CryptoStream,
-        data_stream: S,
-        sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
-        recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
-    ) -> Space<S, ChannelObserver> {
-        let (ack_record_tx, ack_record_rx) = mpsc::unbounded_channel();
-        let transmitter = tx::ArcTransmitter::new(
-            space_id,
-            crypto_stream.clone(),
-            sending_frames,
-            data_stream.output(),
-            ChannelObserver(ack_record_tx),
-        );
-        let receiver = rx::ArcReceiver::new(
-            space_id,
-            crypto_stream,
-            data_stream,
-            recv_frames_queue,
-            ack_record_rx,
-        );
-        Space {
-            transmitter,
-            receiver,
+    fn rcvd_pkt_records(&self) -> ArcRcvdPktRecords {
+        self.rcvd_pkt_records.clone()
+    }
+
+    fn read(&self, mut buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize) {
+        let origin = buf.remaining_mut();
+
+        let mut send_guard = self.sent_pkt_records.send();
+        let (pn, encoded_pn) = send_guard.next_pkt_no();
+        if buf.remaining_mut() > encoded_pn.size() {
+            buf.put_packet_number(encoded_pn);
+        } else {
+            return (pn, 0);
+        }
+
+        if let Some(largest) = ack_pkt {
+            let ack_frame = self
+                .rcvd_pkt_records
+                .gen_ack_frame_util(largest, buf.remaining_mut());
+            buf.put_ack_frame(&ack_frame);
+            send_guard.record_ack_frame(ack_frame);
+        }
+
+        {
+            let mut read_frame_guard = self.reliable_frame_queue.read();
+            while let Some(frame) = read_frame_guard.front() {
+                let remaining = buf.remaining_mut();
+                if remaining > frame.max_encoding_size() || remaining > frame.encoding_size() {
+                    buf.put_frame(frame);
+                    let frame = read_frame_guard.pop_front().unwrap();
+                    send_guard.record_reliable_frame(frame);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // 尝试写入流数据，优先写入加密流数据，然后再努力写入数据流数据
+        if let Some((crypto_frame, len)) = self.crypto_stream.try_read_data(buf) {
+            send_guard.record_data_frame(DataFrame::Crypto(crypto_frame));
+            unsafe {
+                buf.advance_mut(len);
+            }
+        }
+        if let Some((stream_frame, len)) = self.data_streams.try_read_data(buf) {
+            send_guard.record_data_frame(DataFrame::Stream(stream_frame));
+            unsafe {
+                buf.advance_mut(len);
+            }
+        }
+
+        (pn, origin - buf.remaining_mut())
+    }
+
+    fn receive(&self, frame: SpaceFrame) -> Result<(), Error> {
+        match frame {
+            SpaceFrame::Stream(frame) => {
+                self.data_streams.recv_frame(frame)?;
+            }
+            SpaceFrame::Data(DataFrame::Crypto(frame), data) => {
+                self.crypto_stream.recv_data(frame, data)?;
+            }
+            SpaceFrame::Data(DataFrame::Stream(frame), data) => {
+                self.data_streams.recv_data(frame, data)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn on_ack(&self, ack: AckFrame) {
+        let mut recv_guard = self.sent_pkt_records.receive();
+        recv_guard.update_largest(ack.largest.into_inner());
+
+        for pn in ack.iter().flat_map(|r| r.rev()) {
+            for record in recv_guard.confirm_pkt_rcvd(pn) {
+                match record {
+                    SentRecord::Ack(_) => {
+                        // do nothing
+                    }
+                    SentRecord::Reliable(_) => {
+                        // do nothing
+                    }
+                    SentRecord::Data(DataFrame::Crypto(frame)) => {
+                        self.crypto_stream.confirm_data_rcvd(frame);
+                    }
+                    SentRecord::Data(DataFrame::Stream(frame)) => {
+                        self.data_streams.confirm_data_rcvd(frame);
+                    }
+                }
+            }
+        }
+    }
+
+    fn may_loss_pkt(&self, pkt_no: u64) {
+        let mut recv_pkt_guard = self.sent_pkt_records.receive();
+        let mut write_frame_guard = self.reliable_frame_queue.write();
+        for record in recv_pkt_guard.may_loss_pkt(pkt_no) {
+            match record {
+                SentRecord::Ack(_) => {
+                    // do nothing
+                }
+                SentRecord::Reliable(frame) => {
+                    write_frame_guard.push_reliable_frame(frame);
+                }
+                SentRecord::Data(DataFrame::Crypto(frame)) => {
+                    self.crypto_stream.may_loss_data(frame);
+                }
+                SentRecord::Data(DataFrame::Stream(frame)) => {
+                    self.data_streams.may_loss_data(frame);
+                }
+            }
         }
     }
 }
 
-#[derive(Debug)]
-pub struct ArcSpace<S: Debug + Output, O: ObserveAck>(Arc<Space<S, O>>);
+#[derive(Debug, Clone)]
+pub struct ArcSpace<T>(Arc<RawSpace<T>>);
 
-impl<S, F> Clone for ArcSpace<S, F>
+impl<T> ArcSpace<T>
 where
-    S: Debug + Output,
-    F: ObserveAck,
+    T: TransmitStream + ReceiveStream,
 {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
+    /// 可用于收包解码包号，判定包号是否重复或者过期，记录收包状态，淘汰并滑动收包记录窗口
+    pub fn rcvd_pkt_records(&self) -> ArcRcvdPktRecords {
+        self.0.rcvd_pkt_records()
+    }
+
+    /// 要发送一个该空间的数据包，读出下一个包号，然后检车是否要发送AckFrame，
+    /// 然后发送帧，最后发送数据流中的数据帧。
+    /// 返回该数据包的包号，以及大小
+    pub fn read(&self, buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize) {
+        self.0.read(buf, ack_pkt)
+    }
+
+    /// 接收Space相关的帧，包括数据帧
+    pub fn receive(&self, frame: SpaceFrame) -> Result<(), Error> {
+        self.0.receive(frame)
+    }
+
+    /// 此处接收AckFrame，只负责内容，涉及RTT和传输速度控制的，path已经处理过
+    pub fn on_ack(&self, ack: AckFrame) {
+        self.0.on_ack(ack);
+    }
+
+    /// 当数据包在传输中丢失，通常由Path判断，通过某种通信方式告知Space，并调用该函数
+    pub fn may_loss_pkt(&self, pkt_no: u64) {
+        self.0.may_loss_pkt(pkt_no);
     }
 }
 
-pub fn new_initial_space(
-    crypto_stream: CryptoStream,
-    recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
-) -> ArcSpace<NoDataStreams, ChannelObserver> {
-    ArcSpace(Arc::new(Space::build_space(
-        SpaceId::Initial,
-        crypto_stream,
-        NoDataStreams,
-        Arc::new(Mutex::new(VecDeque::new())),
-        recv_frames_queue,
-    )))
-}
-
-pub fn new_handshake_space(
-    crypto_stream: CryptoStream,
-    recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
-) -> ArcSpace<NoDataStreams, ChannelObserver> {
-    ArcSpace(Arc::new(Space::build_space(
-        SpaceId::Handshake,
-        crypto_stream,
-        NoDataStreams,
-        Arc::new(Mutex::new(VecDeque::new())),
-        recv_frames_queue,
-    )))
-}
-
-/// Data space, initially it's a 0RTT space, and later it needs to be upgraded to a 1RTT space.
-/// The data in the 0RTT space is unreliable and cannot transmit CryptoFrame. It is constrained
-/// by the space_id when sending, and a judgment is also made in the task of receiving and unpacking.
-/// Therefore, when upgrading, just change the space_id to 1RTT, no other operations are needed.
-pub fn new_data_space(
-    crypto_stream: CryptoStream,
-    streams: ArcDataStreams,
-    sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
-    recv_frames_queue: ArcAsyncQueue<SpaceFrame>,
-) -> ArcSpace<ArcDataStreams, ChannelObserver> {
-    ArcSpace(Arc::new(Space::build_space(
-        SpaceId::ZeroRtt,
-        crypto_stream,
-        streams,
-        sending_frames,
-        recv_frames_queue,
-    )))
-}
-
-impl<O: ObserveAck> ArcSpace<ArcDataStreams, O> {
-    pub fn upgrade(&self) {
-        self.0.transmitter.upgrade();
-        self.0.receiver.upgrade();
-    }
-
-    /*
-    pub fn write_conn_frame(&self, frame: ConnFrame) {
-        self.0.transmitter.write_conn_frame(frame);
-    }
-
-    pub fn write_stream_frame(&self, frame: StreamCtlFrame) {
-        self.0.transmitter.write_stream_frame(frame);
-    }
-    */
-}
-
-impl<S, O> ReceivePacket for ArcSpace<S, O>
-where
-    S: Debug + ReceiveStream + Output,
-    O: ObserveAck,
-{
-    fn recv_pkt_number(&self, pn: PacketNumber) -> (u64, bool) {
-        self.0.receiver.recv_pkt_number(pn)
-    }
-
-    fn record(&self, pkt_id: u64, is_ack_eliciting: bool) {
-        self.0.receiver.record(pkt_id, is_ack_eliciting);
+impl ArcSpace<NoDataStreams> {
+    /// Initial空间和Handshake空间皆通过此函数创建
+    pub fn with_crypto_stream(crypto_stream: CryptoStream) -> Self {
+        ArcSpace(Arc::new(RawSpace {
+            reliable_frame_queue: Default::default(),
+            sent_pkt_records: Default::default(),
+            rcvd_pkt_records: Default::default(),
+            data_streams: NoDataStreams,
+            crypto_stream,
+        }))
     }
 }
 
-impl<S, O> TransmitPacket for ArcSpace<S, O>
-where
-    S: Debug + Output,
-    <S as Output>::Outgoing: TransmitStream,
-    O: ObserveAck,
-{
-    /// Get the next packet number. This number is not thread-safe.
-    /// It does not lock the next packet number to be sent.
-    /// Before it is actually sent, other transmiting threads/tasks may get the
-    /// same next packet number, causing conflicts. Therefore, it is required
-    /// that there should only be one sending thread/task for a connection.
-    fn next_pkt_no(&self) -> (u64, PacketNumber) {
-        self.0.transmitter.next_pkt_no()
-    }
-
-    /// Read the data to be sent and put it into the buffer.
-    /// Returns the actual number of bytes read. If it is 0,
-    /// it means there is no suitable data to send.
-    fn read(&self, buf: &mut [u8]) -> usize {
-        self.0.transmitter.read(buf)
-    }
-
-    /// Receive an AckFrame and update the RTT when decoding the AckFrame from an valid packet.
-    fn recv_ack_frame(&self, ack: AckFrame, rtt: Arc<Mutex<Rtt>>) {
-        self.0.transmitter.recv_ack_frame(ack, rtt);
-    }
-
-    /// Notify the space that a packet may be lost. Every Path should judge whether the packet
-    /// is lost according to its own rules, and then notify the space.
-    fn may_loss_packet(&self, pkt_id: u64) {
-        self.0.transmitter.may_loss_packet(pkt_id);
+impl ArcSpace<ArcDataStreams> {
+    /// 数据空间通过此函数创建
+    pub fn new(
+        role: Role,
+        max_bi_streams: u64,
+        max_uni_streams: u64,
+        crypto_stream: CryptoStream,
+    ) -> Self {
+        let reliable_frame_queue = ArcReliableFrameQueue::default();
+        ArcSpace(Arc::new(RawSpace {
+            reliable_frame_queue: reliable_frame_queue.clone(),
+            sent_pkt_records: Default::default(),
+            rcvd_pkt_records: Default::default(),
+            data_streams: ArcDataStreams::with_role_and_limit(
+                role,
+                max_bi_streams,
+                max_uni_streams,
+                reliable_frame_queue,
+            ),
+            crypto_stream,
+        }))
     }
 }
 

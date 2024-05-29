@@ -1,10 +1,6 @@
 use crate::index_deque::IndexDeque;
-use bytes::BufMut;
 use qbase::{
-    frame::{
-        io::WriteFrame, AckFrame, AckRecord, BeFrame, ConnFrame, DataFrame, ReliableFrame,
-        StreamCtlFrame,
-    },
+    frame::{AckFrame, AckRecord, ConnFrame, DataFrame, ReliableFrame, StreamCtlFrame},
     packet::PacketNumber,
     varint::VARINT_MAX,
 };
@@ -14,34 +10,29 @@ use std::{
 };
 
 #[derive(Debug, Default)]
-pub struct ReliableFrameQueue {
+pub struct RawReliableFrameQueue {
     queue: VecDeque<ReliableFrame>,
 }
 
-impl ReliableFrameQueue {
-    pub fn write_conn_frame(&mut self, frame: ConnFrame) {
+impl RawReliableFrameQueue {
+    fn push_conn_frame(&mut self, frame: ConnFrame) {
         self.queue.push_back(ReliableFrame::Conn(frame));
     }
 
-    pub fn write_stream_control_frame(&mut self, frame: StreamCtlFrame) {
+    fn push_stream_control_frame(&mut self, frame: StreamCtlFrame) {
         self.queue.push_back(ReliableFrame::Stream(frame));
     }
 
-    pub fn read(&mut self, mut buf: &mut [u8], sent_records: &mut Vec<SentRecord>) -> usize {
-        let origin_size = buf.remaining_mut();
-        while let Some(frame) = self.queue.front() {
-            if buf.remaining_mut() >= frame.max_encoding_size()
-                || buf.remaining_mut() >= frame.encoding_size()
-            {
-                buf.put_frame(frame);
+    fn push_reliable_frame(&mut self, frame: ReliableFrame) {
+        self.queue.push_back(frame);
+    }
 
-                let frame = self.queue.pop_front().unwrap();
-                sent_records.push(SentRecord::Reliable(frame));
-            } else {
-                break;
-            }
-        }
-        origin_size - buf.remaining_mut()
+    fn front(&self) -> Option<&ReliableFrame> {
+        self.queue.front()
+    }
+
+    fn pop_front(&mut self) -> Option<ReliableFrame> {
+        self.queue.pop_front()
     }
 }
 
@@ -50,9 +41,45 @@ impl ReliableFrameQueue {
 /// - retran: retransmit the lost frames, is equal to write operation
 /// - read: read the frames to send
 #[derive(Debug, Default, Clone)]
-pub struct ArcReliableFrameQueue(Arc<Mutex<VecDeque<ReliableFrame>>>);
+pub struct ArcReliableFrameQueue(Arc<Mutex<RawReliableFrameQueue>>);
 
-impl ArcReliableFrameQueue {}
+impl ArcReliableFrameQueue {
+    pub fn read(&self) -> ReliableFrameQueueReader<'_> {
+        ReliableFrameQueueReader(self.0.lock().unwrap())
+    }
+
+    pub fn write(&self) -> ReliableFrameQueueWriter<'_> {
+        ReliableFrameQueueWriter(self.0.lock().unwrap())
+    }
+}
+
+pub struct ReliableFrameQueueReader<'a>(MutexGuard<'a, RawReliableFrameQueue>);
+
+impl ReliableFrameQueueReader<'_> {
+    pub fn front(&self) -> Option<&ReliableFrame> {
+        self.0.front()
+    }
+
+    pub fn pop_front(&mut self) -> Option<ReliableFrame> {
+        self.0.pop_front()
+    }
+}
+
+pub struct ReliableFrameQueueWriter<'a>(MutexGuard<'a, RawReliableFrameQueue>);
+
+impl ReliableFrameQueueWriter<'_> {
+    pub fn push_conn_frame(&mut self, frame: ConnFrame) {
+        self.0.push_conn_frame(frame);
+    }
+
+    pub fn push_stream_control_frame(&mut self, frame: StreamCtlFrame) {
+        self.0.push_stream_control_frame(frame);
+    }
+
+    pub fn push_reliable_frame(&mut self, frame: ReliableFrame) {
+        self.0.push_reliable_frame(frame);
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum SentRecord {
@@ -112,14 +139,14 @@ impl SentPktState {
 /// 发送数据包的时候，往其中写入数据包的帧，
 /// 接收到确认的时候，更新数据包的状态，被确认就什么都不做；丢失的数据包，得重新发送
 #[derive(Debug, Default)]
-struct SentPktRecords {
+struct RawSentPktRecords {
     queue: VecDeque<SentRecord>,
     // 记录着每个包的内容，其实是一个数字，该数字对应着queue中的record数量
     records: IndexDeque<SentPktState, VARINT_MAX>,
     largest_acked_pktno: u64,
 }
 
-impl SentPktRecords {
+impl RawSentPktRecords {
     fn record_reliable_frame(&mut self, frame: ReliableFrame) {
         self.queue.push_back(SentRecord::Reliable(frame));
     }
@@ -176,7 +203,7 @@ impl SentPktRecords {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct ArcSentPktRecords(Arc<Mutex<SentPktRecords>>);
+pub struct ArcSentPktRecords(Arc<Mutex<RawSentPktRecords>>);
 
 impl ArcSentPktRecords {
     pub fn receive(&self) -> RecvGuard {
@@ -193,7 +220,7 @@ impl ArcSentPktRecords {
 }
 
 pub struct RecvGuard<'a> {
-    inner: MutexGuard<'a, SentPktRecords>,
+    inner: MutexGuard<'a, RawSentPktRecords>,
 }
 
 impl RecvGuard<'_> {
@@ -220,7 +247,7 @@ impl Drop for RecvGuard<'_> {
 
 pub struct SendGuard<'a> {
     origin_len: usize,
-    inner: MutexGuard<'a, SentPktRecords>,
+    inner: MutexGuard<'a, RawSentPktRecords>,
 }
 
 impl SendGuard<'_> {

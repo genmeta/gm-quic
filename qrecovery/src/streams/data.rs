@@ -1,6 +1,7 @@
-use super::{listener::ArcListener, Output, ReceiveStream, TransmitStream};
+use super::listener::ArcListener;
 use crate::{
     recv::{self, Incoming, Reader},
+    reliable::ArcReliableFrameQueue,
     send::{self, Outgoing, Writer},
 };
 use qbase::{
@@ -10,7 +11,7 @@ use qbase::{
     varint::VarInt,
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     sync::{Arc, Mutex, MutexGuard},
     task::{ready, Context, Poll},
 };
@@ -24,47 +25,6 @@ pub struct ArcOutput(Arc<Mutex<Result<HashMap<StreamId, Outgoing>, QuicError>>>)
 impl Default for ArcOutput {
     fn default() -> Self {
         Self(Arc::new(Mutex::new(Ok(HashMap::new()))))
-    }
-}
-
-impl TransmitStream for ArcOutput {
-    fn try_read_data(&mut self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
-        todo!()
-    }
-
-    fn confirm_data_rcvd(&self, stream_frame: StreamFrame) {
-        if let Ok(set) = self.0.lock().unwrap().as_mut() {
-            if let Some(all_data_rcvd) = set
-                .get(&stream_frame.id)
-                .map(|o| o.confirm_data_rcvd(&stream_frame.range()))
-            {
-                if all_data_rcvd {
-                    set.remove(&stream_frame.id);
-                }
-            }
-        }
-    }
-
-    fn may_loss_data(&self, stream_frame: StreamFrame) {
-        if let Some(o) = self
-            .0
-            .lock()
-            .unwrap()
-            .as_mut()
-            .ok()
-            .and_then(|set| set.get(&stream_frame.id))
-        {
-            o.may_loss_data(&stream_frame.range());
-        }
-    }
-
-    fn confirm_reset_rcvd(&self, reset_frame: ResetStreamFrame) {
-        if let Ok(set) = self.0.lock().unwrap().as_mut() {
-            if let Some(o) = set.remove(&reset_frame.stream_id) {
-                o.confirm_reset_rcvd();
-            }
-            // 如果流是双向的，接收部分的流独立地管理结束。其实是上层应用决定接收的部分是否同时结束
-        }
     }
 }
 
@@ -145,7 +105,7 @@ impl ArcInputGuard<'_> {
 
 /// 专门根据Stream相关帧处理streams相关逻辑
 #[derive(Debug, Clone)]
-pub(super) struct DataStreams {
+pub(super) struct RawDataStreams {
     role: Role,
     stream_ids: StreamIds,
     // 所有流的待写端，要发送数据，就得向这些流索取
@@ -156,22 +116,56 @@ pub(super) struct DataStreams {
     listener: ArcListener,
 
     // 该queue与space中的transmitter中的frame_queue共享，为了方便向transmitter中写入帧
-    sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
+    reliable_frame_queue: ArcReliableFrameQueue,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
     move |e| QuicError::new(ErrorKind::StreamLimit, fty, e.to_string())
 }
 
-impl Output for DataStreams {
-    type Outgoing = ArcOutput;
+impl super::TransmitStream for RawDataStreams {
+    fn try_read_data(&self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+        todo!()
+    }
 
-    fn output(&self) -> Self::Outgoing {
-        self.output.clone()
+    fn confirm_data_rcvd(&self, stream_frame: StreamFrame) {
+        if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
+            if let Some(all_data_rcvd) = set
+                .get(&stream_frame.id)
+                .map(|o| o.confirm_data_rcvd(&stream_frame.range()))
+            {
+                if all_data_rcvd {
+                    set.remove(&stream_frame.id);
+                }
+            }
+        }
+    }
+
+    fn may_loss_data(&self, stream_frame: StreamFrame) {
+        if let Some(o) = self
+            .output
+            .0
+            .lock()
+            .unwrap()
+            .as_mut()
+            .ok()
+            .and_then(|set| set.get(&stream_frame.id))
+        {
+            o.may_loss_data(&stream_frame.range());
+        }
+    }
+
+    fn confirm_reset_rcvd(&self, reset_frame: ResetStreamFrame) {
+        if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
+            if let Some(o) = set.remove(&reset_frame.stream_id) {
+                o.confirm_reset_rcvd();
+            }
+            // 如果流是双向的，接收部分的流独立地管理结束。其实是上层应用决定接收的部分是否同时结束
+        }
     }
 }
 
-impl ReceiveStream for DataStreams {
+impl super::ReceiveStream for RawDataStreams {
     fn recv_data(&self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), QuicError> {
         let sid = stream_frame.id;
         // 对方必须是发送端，才能发送此帧
@@ -251,16 +245,13 @@ impl ReceiveStream for DataStreams {
                     .map(|outgoing| outgoing.stop())
                     .unwrap_or(false)
                 {
-                    self.sending_frames
-                        .lock()
-                        .unwrap()
-                        .push_back(ReliableFrame::Stream(StreamCtlFrame::ResetStream(
-                            ResetStreamFrame {
-                                stream_id: sid,
-                                app_error_code: VarInt::from_u32(0),
-                                final_size: VarInt::from_u32(0),
-                            },
-                        )));
+                    self.reliable_frame_queue.write().push_stream_control_frame(
+                        StreamCtlFrame::ResetStream(ResetStreamFrame {
+                            stream_id: sid,
+                            app_error_code: VarInt::from_u32(0),
+                            final_size: VarInt::from_u32(0),
+                        }),
+                    );
                 }
             }
             StreamCtlFrame::MaxStreamData(max_stream_data) => {
@@ -350,12 +341,12 @@ impl ReceiveStream for DataStreams {
     }
 }
 
-impl DataStreams {
+impl RawDataStreams {
     pub(super) fn with_role_and_limit(
         role: Role,
         max_bi_streams: u64,
         max_uni_streams: u64,
-        sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
+        reliable_frame_queue: ArcReliableFrameQueue,
     ) -> Self {
         Self {
             role,
@@ -363,7 +354,7 @@ impl DataStreams {
             output: ArcOutput::default(),
             input: ArcInput::default(),
             listener: ArcListener::default(),
-            sending_frames,
+            reliable_frame_queue,
         }
     }
 
@@ -477,16 +468,16 @@ impl DataStreams {
         // 但要等ResetRecved才能真正释放该流
         tokio::spawn({
             let outgoing = outgoing.clone();
-            let frames = self.sending_frames.clone();
+            let frames = self.reliable_frame_queue.clone();
             async move {
                 if let Some(final_size) = outgoing.is_cancelled_by_app().await {
-                    frames.lock().unwrap().push_back(ReliableFrame::Stream(
-                        StreamCtlFrame::ResetStream(ResetStreamFrame {
+                    frames
+                        .write()
+                        .push_stream_control_frame(StreamCtlFrame::ResetStream(ResetStreamFrame {
                             stream_id: sid,
                             app_error_code: VarInt::from_u32(0),
                             final_size: unsafe { VarInt::from_u64_unchecked(final_size) },
-                        }),
-                    ));
+                        }));
                 }
             }
         });
@@ -498,30 +489,32 @@ impl DataStreams {
         // Continuously check whether the MaxStreamData window needs to be updated.
         tokio::spawn({
             let incoming = incoming.clone();
-            let frames = self.sending_frames.clone();
+            let frames = self.reliable_frame_queue.clone();
             async move {
                 while let Some(max_data) = incoming.need_window_update().await {
-                    frames.lock().unwrap().push_back(ReliableFrame::Stream(
-                        StreamCtlFrame::MaxStreamData(MaxStreamDataFrame {
-                            stream_id: sid,
-                            max_stream_data: unsafe { VarInt::from_u64_unchecked(max_data) },
-                        }),
-                    ));
+                    frames
+                        .write()
+                        .push_stream_control_frame(StreamCtlFrame::MaxStreamData(
+                            MaxStreamDataFrame {
+                                stream_id: sid,
+                                max_stream_data: unsafe { VarInt::from_u64_unchecked(max_data) },
+                            },
+                        ));
                 }
             }
         });
         // 监听是否被应用stop了。如果是，则要发送一个StopSendingFrame
         tokio::spawn({
             let incoming = incoming.clone();
-            let frames = self.sending_frames.clone();
+            let frames = self.reliable_frame_queue.clone();
             async move {
                 if incoming.is_stopped_by_app().await {
-                    frames.lock().unwrap().push_back(ReliableFrame::Stream(
-                        StreamCtlFrame::StopSending(StopSendingFrame {
+                    frames
+                        .write()
+                        .push_stream_control_frame(StreamCtlFrame::StopSending(StopSendingFrame {
                             stream_id: sid,
                             app_err_code: VarInt::from_u32(0),
-                        }),
-                    ));
+                        }));
                 }
             }
         });

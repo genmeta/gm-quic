@@ -1,24 +1,17 @@
-use crate::{recv::Reader, send::Writer};
+use crate::{recv::Reader, reliable::ArcReliableFrameQueue, send::Writer};
 use futures::Future;
 use qbase::{error::Error, frame::*, streamid::Role};
 use std::{
-    collections::VecDeque,
     fmt::Debug,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll},
 };
-
-pub trait Output {
-    type Outgoing: TransmitStream + Debug;
-
-    fn output(&self) -> Self::Outgoing;
-}
 
 /// For sending stream data
 pub trait TransmitStream {
     /// read data to transmit
-    fn try_read_data(&mut self, buf: &mut [u8]) -> Option<(StreamFrame, usize)>;
+    fn try_read_data(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)>;
 
     fn confirm_data_rcvd(&self, stream_frame: StreamFrame);
 
@@ -40,13 +33,23 @@ pub mod listener;
 pub mod none;
 
 #[derive(Debug, Clone)]
-pub struct ArcDataStreams(Arc<data::DataStreams>);
+pub struct ArcDataStreams(Arc<data::RawDataStreams>);
 
-impl Output for ArcDataStreams {
-    type Outgoing = data::ArcOutput;
+impl TransmitStream for ArcDataStreams {
+    fn try_read_data(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+        self.0.try_read_data(buf)
+    }
 
-    fn output(&self) -> Self::Outgoing {
-        self.0.output()
+    fn confirm_data_rcvd(&self, stream_frame: StreamFrame) {
+        self.0.confirm_data_rcvd(stream_frame)
+    }
+
+    fn may_loss_data(&self, stream_frame: StreamFrame) {
+        self.0.may_loss_data(stream_frame)
+    }
+
+    fn confirm_reset_rcvd(&self, reset_frame: ResetStreamFrame) {
+        self.0.confirm_reset_rcvd(reset_frame)
     }
 }
 
@@ -69,13 +72,13 @@ impl ArcDataStreams {
         role: Role,
         max_bi_streams: u64,
         max_uni_streams: u64,
-        sending_frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
+        reliable_frame_queue: ArcReliableFrameQueue,
     ) -> Self {
-        Self(Arc::new(data::DataStreams::with_role_and_limit(
+        Self(Arc::new(data::RawDataStreams::with_role_and_limit(
             role,
             max_bi_streams,
             max_uni_streams,
-            sending_frames,
+            reliable_frame_queue,
         )))
     }
 
@@ -99,7 +102,7 @@ impl ArcDataStreams {
 
 #[derive(Debug, Clone)]
 pub struct BiDataStreamCreator {
-    inner: Arc<data::DataStreams>,
+    inner: Arc<data::RawDataStreams>,
 }
 
 impl Future for BiDataStreamCreator {
@@ -112,7 +115,7 @@ impl Future for BiDataStreamCreator {
 
 #[derive(Debug, Clone)]
 pub struct UniDataStreamCreator {
-    inner: Arc<data::DataStreams>,
+    inner: Arc<data::RawDataStreams>,
 }
 
 impl Future for UniDataStreamCreator {

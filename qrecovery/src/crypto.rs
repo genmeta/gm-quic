@@ -113,15 +113,15 @@ mod send {
     }
 
     impl CryptoStreamOutgoing {
-        pub(crate) fn try_pick(&mut self, buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
+        pub(crate) fn try_read_data(&self, buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
             self.0.lock().unwrap().try_read(buffer)
         }
 
-        pub(super) fn ack_rcvd(&mut self, range: &Range<u64>) {
+        pub(super) fn ack_rcvd(&self, range: &Range<u64>) {
             self.0.lock().unwrap().ack_rcvd(range)
         }
 
-        pub(super) fn may_loss(&mut self, range: &Range<u64>) {
+        pub(super) fn may_loss(&self, range: &Range<u64>) {
             self.0.lock().unwrap().may_loss(range)
         }
     }
@@ -202,7 +202,7 @@ mod recv {
     }
 
     impl CryptoStreamIncoming {
-        pub(super) fn recv(&mut self, offset: u64, data: Bytes) {
+        pub(super) fn recv(&self, offset: u64, data: Bytes) {
             self.0.lock().unwrap().recv(offset, data)
         }
     }
@@ -281,29 +281,29 @@ impl CryptoStream {
 }
 
 pub trait TransmitCrypto {
-    fn try_read_data(&mut self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)>;
+    fn try_read_data(&self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)>;
 
-    fn confirm_data_rcvd(&mut self, data_frame: CryptoFrame);
+    fn confirm_data_rcvd(&self, data_frame: CryptoFrame);
 
-    fn may_loss_data(&mut self, data_frame: CryptoFrame);
+    fn may_loss_data(&self, data_frame: CryptoFrame);
 
-    fn recv_data(&mut self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error>;
+    fn recv_data(&self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error>;
 }
 
 impl TransmitCrypto for CryptoStream {
-    fn try_read_data(&mut self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)> {
-        self.outgoing.try_pick(buf)
+    fn try_read_data(&self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)> {
+        self.outgoing.try_read_data(buf)
     }
 
-    fn confirm_data_rcvd(&mut self, data_frame: CryptoFrame) {
+    fn confirm_data_rcvd(&self, data_frame: CryptoFrame) {
         self.outgoing.ack_rcvd(&data_frame.range());
     }
 
-    fn may_loss_data(&mut self, data_frame: CryptoFrame) {
+    fn may_loss_data(&self, data_frame: CryptoFrame) {
         self.outgoing.may_loss(&data_frame.range())
     }
 
-    fn recv_data(&mut self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error> {
+    fn recv_data(&self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error> {
         self.incoming.recv(crypto_frame.offset.into_inner(), body);
         Ok(())
     }
@@ -317,7 +317,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read() {
-        let mut crypto_stream = CryptoStream::new(1000_0000, 0);
+        let crypto_stream = CryptoStream::new(1000_0000, 0);
         crypto_stream.writer().write(b"hello world").await.unwrap();
 
         crypto_stream

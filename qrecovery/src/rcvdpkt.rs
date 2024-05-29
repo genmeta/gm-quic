@@ -63,7 +63,7 @@ pub struct RcvdPktRecords {
 }
 
 impl RcvdPktRecords {
-    fn try_recv_pkt(&mut self, pkt_number: PacketNumber) -> Result<u64, Error> {
+    fn decode_pn(&mut self, pkt_number: PacketNumber) -> Result<u64, Error> {
         let expected_pn = self.queue.largest();
         let pkt_no = pkt_number.decode(expected_pn);
         if pkt_no < self.queue.offset() {
@@ -75,13 +75,18 @@ impl RcvdPktRecords {
             if record.is_received {
                 return Err(Error::HasRcvd);
             }
+        }
+        Ok(pkt_no)
+    }
+
+    fn register_pn(&mut self, pkt_no: u64) {
+        if let Some(record) = self.queue.get_mut(pkt_no) {
             record.is_received = true;
         } else {
             self.queue
                 .insert(pkt_no, State::new_rcvd())
                 .expect("packet number never exceed limit");
         }
-        Ok(pkt_no)
     }
 
     fn gen_ack_frame_util(
@@ -156,9 +161,14 @@ pub struct ArcRcvdPktRecords {
 impl ArcRcvdPktRecords {
     /// 当新收到一个数据包，如果这个包很旧，那么大概率意味着是重复包，直接丢弃。
     /// 如果这个数据包号是最大的，那么它之后的空档都是尚未收到的，得记为未收到。
-    /// 最后，将该包标记为已收到。
-    pub fn try_recv_pkt(&self, pkt_number: PacketNumber) -> Result<u64, Error> {
-        self.inner.write().unwrap().try_recv_pkt(pkt_number)
+    /// 注意，包号合法，不代表的包内容合法，必须等到包被正确解密且其中帧被正确解出后，才能确认收到。
+    pub fn decode_pn(&self, pkt_number: PacketNumber) -> Result<u64, Error> {
+        self.inner.write().unwrap().decode_pn(pkt_number)
+    }
+
+    /// 当包号合法，且包被完全解密，且包中的帧都正确之后，记录该包已经收到。
+    pub fn register_pn(&self, pkt_no: u64) {
+        self.inner.write().unwrap().register_pn(pkt_no);
     }
 
     /// 生成一个AckFrame，largest是最大的包号，须知largest不一定是收到的最大包号，
@@ -174,7 +184,7 @@ impl ArcRcvdPktRecords {
             .gen_ack_frame_util((largest, recv_time), capacity)
     }
 
-    pub fn writer(&self) -> ArcRcvdPktRecordsWriter<'_> {
+    pub fn write(&self) -> ArcRcvdPktRecordsWriter<'_> {
         ArcRcvdPktRecordsWriter {
             guard: self.inner.write().unwrap(),
         }
@@ -208,7 +218,7 @@ mod tests {
     #[test]
     fn test_rcvd_pkt_records() {
         let records = ArcRcvdPktRecords::default();
-        assert_eq!(records.try_recv_pkt(PacketNumber::encode(1, 0)), Ok(1));
+        assert_eq!(records.decode_pn(PacketNumber::encode(1, 0)), Ok(1));
         assert_eq!(records.inner.read().unwrap().queue.len(), 2);
         assert_eq!(
             records.inner.read().unwrap().queue.get(0).unwrap(),
@@ -225,16 +235,16 @@ mod tests {
             }
         );
 
-        assert_eq!(records.try_recv_pkt(PacketNumber::encode(30, 0)), Ok(30));
+        assert_eq!(records.decode_pn(PacketNumber::encode(30, 0)), Ok(30));
         {
-            let mut writer = records.writer();
+            let mut writer = records.write();
             for i in 5..10 {
                 writer.inactivate(i);
             }
         }
         assert_eq!(records.inner.read().unwrap().queue.len(), 31);
         {
-            let mut writer = records.writer();
+            let mut writer = records.write();
             for i in 0..5 {
                 writer.inactivate(i);
             }
@@ -242,7 +252,7 @@ mod tests {
         assert_eq!(records.inner.read().unwrap().queue.len(), 21);
 
         assert_eq!(
-            records.try_recv_pkt(PacketNumber::encode(9, 0)),
+            records.decode_pn(PacketNumber::encode(9, 0)),
             Err(Error::TooOld)
         );
     }

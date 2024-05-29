@@ -1,20 +1,11 @@
-use super::{Output, ReceiveStream, TransmitStream};
 use qbase::{error::Error, frame::*};
 
 /// 在Initial和Handshake空间中，是不需要传输Streams的，此时可以使用NoDataStreams
 #[derive(Debug, Clone)]
 pub struct NoDataStreams;
 
-impl Output for NoDataStreams {
-    type Outgoing = NoDataStreams;
-
-    fn output(&self) -> Self::Outgoing {
-        NoDataStreams
-    }
-}
-
-impl TransmitStream for NoDataStreams {
-    fn try_read_data(&mut self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+impl super::TransmitStream for NoDataStreams {
+    fn try_read_data(&self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
         None
     }
 
@@ -31,7 +22,7 @@ impl TransmitStream for NoDataStreams {
     }
 }
 
-impl ReceiveStream for NoDataStreams {
+impl super::ReceiveStream for NoDataStreams {
     fn recv_frame(&self, _stream_ctl_frame: StreamCtlFrame) -> Result<(), Error> {
         unreachable!()
     }
