@@ -94,7 +94,7 @@ impl<RX: ReceiveStream> Receiver<RX> {
     fn new(space_id: SpaceId, crypto_stream: CryptoStream, inner: RX) -> Self {
         Self {
             space_id,
-            rcvd_packets: IndexDeque::new(),
+            rcvd_packets: IndexDeque::default(),
             largest_rcvd_ack_eliciting_pktid: 0,
             last_synced_ack_largest: 0,
             new_lost_event: false,

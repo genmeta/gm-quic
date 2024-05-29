@@ -1,6 +1,7 @@
 use crate::index_deque::IndexDeque;
 use qbase::{
     frame::AckFrame,
+    packet::PacketNumber,
     varint::{VarInt, VARINT_MAX},
 };
 use std::{
@@ -62,7 +63,9 @@ pub struct RcvdPktRecords {
 }
 
 impl RcvdPktRecords {
-    fn recv_pkt(&mut self, pkt_no: u64) -> Result<(), Error> {
+    fn try_recv_pkt(&mut self, pkt_number: PacketNumber) -> Result<u64, Error> {
+        let expected_pn = self.queue.largest();
+        let pkt_no = pkt_number.decode(expected_pn);
         if pkt_no < self.queue.offset() {
             return Err(Error::TooOld);
         }
@@ -78,7 +81,7 @@ impl RcvdPktRecords {
                 .insert(pkt_no, State::new_rcvd())
                 .expect("packet number never exceed limit");
         }
-        Ok(())
+        Ok(pkt_no)
     }
 
     fn gen_ack_frame_util(
@@ -154,8 +157,8 @@ impl ArcRcvdPktRecords {
     /// 当新收到一个数据包，如果这个包很旧，那么大概率意味着是重复包，直接丢弃。
     /// 如果这个数据包号是最大的，那么它之后的空档都是尚未收到的，得记为未收到。
     /// 最后，将该包标记为已收到。
-    pub fn recv_pkt(&self, pkt_no: u64) -> Result<(), Error> {
-        self.inner.write().unwrap().recv_pkt(pkt_no)
+    pub fn try_recv_pkt(&self, pkt_number: PacketNumber) -> Result<u64, Error> {
+        self.inner.write().unwrap().try_recv_pkt(pkt_number)
     }
 
     /// 生成一个AckFrame，largest是最大的包号，须知largest不一定是收到的最大包号，
@@ -205,7 +208,7 @@ mod tests {
     #[test]
     fn test_rcvd_pkt_records() {
         let records = ArcRcvdPktRecords::default();
-        assert_eq!(records.recv_pkt(1), Ok(()));
+        assert_eq!(records.try_recv_pkt(PacketNumber::encode(1, 0)), Ok(1));
         assert_eq!(records.inner.read().unwrap().queue.len(), 2);
         assert_eq!(
             records.inner.read().unwrap().queue.get(0).unwrap(),
@@ -222,7 +225,7 @@ mod tests {
             }
         );
 
-        assert_eq!(records.recv_pkt(30), Ok(()));
+        assert_eq!(records.try_recv_pkt(PacketNumber::encode(30, 0)), Ok(30));
         {
             let mut writer = records.writer();
             for i in 5..10 {
@@ -238,6 +241,9 @@ mod tests {
         }
         assert_eq!(records.inner.read().unwrap().queue.len(), 21);
 
-        assert_eq!(records.recv_pkt(9), Err(Error::TooOld));
+        assert_eq!(
+            records.try_recv_pkt(PacketNumber::encode(9, 0)),
+            Err(Error::TooOld)
+        );
     }
 }

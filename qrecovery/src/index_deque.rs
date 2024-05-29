@@ -10,10 +10,19 @@ pub struct ExceedLimit(u64);
 
 /// This structure will be used for the packets to be sent and
 /// the records of the packets that have been sent and are awaiting confirmation.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct IndexDeque<T, const LIMIT: u64> {
     deque: VecDeque<T>,
     offset: u64,
+}
+
+impl<T, const LIMIT: u64> Default for IndexDeque<T, LIMIT> {
+    fn default() -> Self {
+        Self {
+            deque: VecDeque::default(),
+            offset: 0,
+        }
+    }
 }
 
 impl From<ExceedLimit> for qbase::error::Error {
@@ -27,13 +36,6 @@ impl From<ExceedLimit> for qbase::error::Error {
 }
 
 impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
-    pub fn new() -> Self {
-        IndexDeque {
-            deque: VecDeque::new(),
-            offset: 0,
-        }
-    }
-
     pub fn is_empty(&self) -> bool {
         self.deque.is_empty()
     }
@@ -177,7 +179,7 @@ mod tests {
 
     #[test]
     fn test_index_queue() {
-        let mut deque = IndexDeque::<u64, 19>::new();
+        let mut deque = IndexDeque::<u64, 19>::default();
         for i in 0..10 {
             assert_eq!(deque.push(i + 1), Ok(i));
         }
@@ -222,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_insert() {
-        let mut deque = IndexDeque::<u64, 19>::new();
+        let mut deque = IndexDeque::<u64, 19>::default();
         deque.insert(10, 11).unwrap();
         assert_eq!(deque.offset, 0);
         assert_eq!(deque.len(), 11);
@@ -235,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_skip() {
-        let mut deque = IndexDeque::<u64, 19>::new();
+        let mut deque = IndexDeque::<u64, 19>::default();
         for i in 0..10 {
             assert_eq!(deque.push(i), Ok(i));
         }

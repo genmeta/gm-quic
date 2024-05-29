@@ -21,6 +21,13 @@ pub enum SpaceFrame {
     Data(DataFrame, Bytes),
 }
 
+/// Frames that need to be sent reliably, there are 3 operations:
+/// - write: write a frame to the sending queue, include Conn and StreamCtl frames
+/// - retran: retransmit the lost frames
+/// - read: read the frames to send
+#[derive(Debug, Default, Clone)]
+pub struct ReliableFrameQueue(Arc<Mutex<VecDeque<ReliableFrame>>>);
+
 pub trait TransmitPacket {
     fn next_pkt_no(&self) -> (u64, PacketNumber);
 

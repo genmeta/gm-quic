@@ -72,7 +72,7 @@ impl<TX: TransmitStream, O: ObserveAck> Transmitter<TX, O> {
             sending_frames,
             crypto_stream,
             inner,
-            inflight_packets: IndexDeque::new(),
+            inflight_packets: IndexDeque::default(),
             time_of_last_sent_ack_eliciting_packet: None,
             largest_acked_pktid: None,
             ack_observer,
@@ -168,7 +168,7 @@ impl<TX: TransmitStream, O: ObserveAck> Transmitter<TX, O> {
         let mut rtt_sample = None;
         let ecn_in_ack = ack.take_ecn();
         let ack_delay = Duration::from_micros(ack.delay.into_inner());
-        for range in ack.into_iter() {
+        for range in ack.iter() {
             for pktid in range {
                 if let Some(packet) = self
                     .inflight_packets

@@ -13,7 +13,7 @@ use crate::{
     SpaceId,
 };
 use nom::{combinator::map, sequence::tuple};
-use std::{ops::RangeInclusive, vec::IntoIter};
+use std::ops::RangeInclusive;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AckRecord(pub u64);
@@ -70,53 +70,27 @@ impl AckFrame {
     pub fn take_ecn(&mut self) -> Option<EcnCounts> {
         self.ecn.take()
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = RangeInclusive<u64>> + '_ {
+        let right = self.largest.into_inner();
+        let left = right - self.first_range.into_inner();
+        Some(left..=right).into_iter().chain(
+            self.ranges
+                .iter()
+                .map(|(gap, range)| (gap.into_inner(), range.into_inner()))
+                .scan(left, |largest, (gap, range)| {
+                    let right = *largest - gap - 2;
+                    let left = right - range;
+                    *largest = left;
+                    Some(left..=right)
+                }),
+        )
+    }
 }
 
 impl std::convert::From<AckFrame> for AckRecord {
     fn from(frame: AckFrame) -> Self {
         AckRecord(frame.largest.into_inner())
-    }
-}
-
-impl IntoIterator for AckFrame {
-    type Item = RangeInclusive<u64>;
-    type IntoIter = IntoAckIter;
-
-    /// Note: Calling `into_iter` will consume the ownership of the `AckFrame`.
-    /// Before doing so, it is important to handle the ECN information in the `AckFrame`.
-    fn into_iter(self) -> Self::IntoIter {
-        Self::IntoIter {
-            largest: self.largest.into_inner(),
-            first_range: Some(self.first_range.into_inner()),
-            iter: self.ranges.into_iter(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct IntoAckIter {
-    largest: u64,
-    first_range: Option<u64>,
-    iter: IntoIter<(VarInt, VarInt)>,
-}
-
-impl Iterator for IntoAckIter {
-    type Item = RangeInclusive<u64>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(first_range) = self.first_range.take() {
-            let largest = self.largest;
-            let smallest = largest - first_range;
-            self.largest = smallest;
-            Some(smallest..=largest)
-        } else {
-            self.iter.next().map(|(gap, range)| {
-                let largest = self.largest - gap.into_inner() - 2;
-                let smallest = largest - range.into_inner();
-                self.largest = smallest;
-                smallest..=largest
-            })
-        }
     }
 }
 
@@ -303,7 +277,7 @@ mod tests {
         // frame.alternating_gap_and_range(4, 30);
         // frame.alternating_gap_and_range(7, 40);
 
-        let mut iter = frame.into_iter();
+        let mut iter = frame.iter();
         assert_eq!(iter.next(), Some(1000..=1000));
         assert_eq!(iter.next(), Some(996..=998));
         assert_eq!(iter.next(), Some(960..=990));
