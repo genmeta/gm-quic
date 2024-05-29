@@ -53,7 +53,7 @@ impl BBRState {
         self.tx_in_flight = packet.tx_in_flight;
         self.lost = (self.bytes_lost - packet.lost) as usize;
 
-        self.delivery_rate_update_app_limited(packet.is_app_limited);
+        self.delivery_rate.update_app_limited(packet.is_app_limited);
 
         if self.is_inflight_too_high() {
             self.tx_in_flight = self.inflight_hi_from_lost_packet(packet);

@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::{delivery_rate::Rate, Acked};
+use crate::{delivery_rate, Acked, Sent};
 
 use self::min_max::Minmax;
 
@@ -370,8 +370,6 @@ pub struct BBRState {
 
     congestion_recovery_start_time: Option<Instant>,
 
-    delivery_rate: Rate,
-
     max_datagram_size: usize,
 
     smoothed_rtt: Option<Duration>,
@@ -384,6 +382,8 @@ pub struct BBRState {
     initial_congestion_window_packets: usize,
 
     pub bytes_lost: u64,
+
+    delivery_rate: delivery_rate::Rate,
 }
 
 impl Default for BBRState {
@@ -455,17 +455,13 @@ impl BBRState {
             congestion_window: 0,
             bytes_in_flight: 0,
             congestion_recovery_start_time: None,
-            delivery_rate: Rate::default(),
             max_datagram_size: 0,
             smoothed_rtt: None,
             send_quantum: 0,
             initial_congestion_window_packets: 0,
             bytes_lost: 0,
+            delivery_rate: delivery_rate::Rate::default(),
         }
-    }
-
-    fn app_limited(&self) -> bool {
-        self.delivery_rate.sample_is_app_limited()
     }
 
     fn in_congestion_recovery(&self, sent_time: Instant) -> bool {
@@ -483,12 +479,17 @@ impl BBRState {
         self.restore_cwnd();
     }
 
-    fn delivery_rate(&self) -> u64 {
-        self.delivery_rate.sample_delivery_rate()
-    }
+    fn enter_recovery(&mut self, now: Instant) {
+        self.prior_cwnd = self.save_cwnd();
 
-    fn delivery_rate_update_app_limited(&mut self, is_app_limited: bool) {
-        self.delivery_rate.update_app_limited(is_app_limited);
+        self.congestion_window =
+            self.bytes_in_flight + self.newly_acked_bytes.max(self.max_datagram_size);
+        self.congestion_recovery_start_time = Some(now);
+        self.in_recovery = true;
+        self.packet_conservation = true;
+
+        // start round
+        self.next_round_delivered = self.delivery_rate.delivered();
     }
 }
 
@@ -497,17 +498,24 @@ impl CongestionControl for BBRState {
         self.init();
     }
 
-    fn on_packet_sent(&mut self, sent_bytes: usize, now: Instant) {
+    fn on_packet_sent(&mut self, sent: &mut Sent, sent_bytes: usize, now: Instant) {
+        self.delivery_rate
+            .on_packet_sent(sent, self.bytes_in_flight, self.bytes_lost);
         self.bytes_in_flight += sent_bytes;
         self.on_transmit(now)
     }
 
-    fn on_congestion_event(&mut self) {
-        todo!()
+    fn on_congestion_event(&mut self, largest_lost_pkt: &Sent, now: Instant) {
+        self.newly_lost_bytes = largest_lost_pkt.size;
+        self.update_on_loss(largest_lost_pkt, now);
+
+        if self.in_congestion_recovery(largest_lost_pkt.time_sent) {
+            self.enter_recovery(now);
+        }
     }
 
     fn cwnd(&self) -> u64 {
-        todo!()
+        self.congestion_window as u64
     }
 
     fn on_packet_acked(&mut self, packet: &Acked, now: Instant) {
@@ -532,5 +540,15 @@ impl CongestionControl for BBRState {
 
         // update_control_parameters(self, now);
         self.newly_lost_bytes = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_bbr() {
+        let mut bbr = super::BBRState::new();
+        bbr.init();
+        assert_eq!(bbr.pacing_rate, 0);
     }
 }

@@ -322,7 +322,7 @@ impl BBRState {
 
     // Increase inflight_hi if appropriate.
     fn probe_inflight_hi_upward(&mut self) {
-        if self.app_limited() || self.congestion_window < self.inflight_hi {
+        if self.delivery_rate.app_limited() || self.congestion_window < self.inflight_hi {
             // Not fully using inflight_hi, so don't grow it.
             return;
         }
@@ -372,8 +372,8 @@ impl BBRState {
                 self.inflight_hi = self.tx_in_flight;
             }
 
-            if self.delivery_rate() > self.bw_hi {
-                self.bw_hi = self.delivery_rate();
+            if self.delivery_rate.sample_delivery_rate() > self.bw_hi {
+                self.bw_hi = self.delivery_rate.sample_delivery_rate();
             }
 
             if self.state == BBRStateMachine::ProbeBWUP {
@@ -484,7 +484,6 @@ impl BBRState {
     fn update_round(&mut self, packet: &Acked) {
         if packet.delivered >= self.next_round_delivered {
             self.start_round();
-
             self.round_count += 1;
             self.rounds_since_probe += 1;
             self.round_start = true;
@@ -501,7 +500,9 @@ impl BBRState {
     pub fn update_max_bw(&mut self, packet: &Acked) {
         self.update_round(packet);
 
-        if self.delivery_rate() >= self.max_bw || !self.delivery_rate.sample_is_app_limited() {
+        if self.delivery_rate.sample_delivery_rate() >= self.max_bw
+            || !self.delivery_rate.sample_is_app_limited()
+        {
             let max_bw_filter_len = self
                 .delivery_rate
                 .sample_rtt()
@@ -510,7 +511,7 @@ impl BBRState {
             self.max_bw = self.max_bw_filter.running_max(
                 max_bw_filter_len,
                 self.start_time + Duration::from_secs(self.cycle_count),
-                self.delivery_rate(),
+                self.delivery_rate.sample_delivery_rate(),
             );
         }
     }
@@ -700,5 +701,59 @@ impl BBRState {
         cap = cap.max(self.min_pipe_cwnd());
 
         self.congestion_window = self.congestion_window.min(cap);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_min_pipe_cwnd() {
+        let mut bbr = BBRState::default();
+        bbr.max_datagram_size = 1200;
+        assert_eq!(bbr.min_pipe_cwnd(), 1200 * MIN_PIPE_CWND_PKTS);
+    }
+
+    #[test]
+    fn test_target_inflight() {
+        let mut bbr = BBRState::default();
+        bbr.bdp = 1000;
+        bbr.congestion_window = 2000;
+        assert_eq!(bbr.target_inflight(), 1000);
+    }
+
+    #[test]
+    fn test_check_startup_full_bandwidth() {
+        let mut bbr = BBRState::default();
+        bbr.filled_pipe = false;
+        bbr.round_start = true;
+        bbr.delivery_rate.update_app_limited(false);
+        bbr.max_bw = 1000;
+        bbr.full_bw = 1000;
+        bbr.full_bw_count = 0;
+        bbr.check_startup_full_bandwidth();
+        assert_eq!(bbr.filled_pipe, false);
+        assert_eq!(bbr.full_bw, 1000);
+        assert_eq!(bbr.full_bw_count, 1);
+    }
+
+    #[test]
+    fn test_check_startup_high_loss() {
+        let mut bbr = BBRState::default();
+        bbr.loss_round_start = true;
+        bbr.in_recovery = true;
+        bbr.loss_events_in_round = 10;
+        bbr.check_startup_high_loss();
+        assert_eq!(bbr.filled_pipe, false);
+    }
+
+    #[test]
+    fn test_enter_drain() {
+        let mut bbr = BBRState::default();
+        bbr.enter_drain();
+        assert_eq!(bbr.state, BBRStateMachine::Drain);
+        assert_eq!(bbr.pacing_gain, PACING_GAIN / STARTUP_CWND_GAIN);
+        assert_eq!(bbr.cwnd_gain, STARTUP_CWND_GAIN);
     }
 }
