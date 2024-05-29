@@ -519,6 +519,10 @@ impl CongestionControl for BBRState {
     }
 
     fn on_packet_acked(&mut self, packet: &Acked, now: Instant) {
+        // update delivery rate
+        self.delivery_rate.update_rate_sample(packet, now);
+        self.delivery_rate.generate_rate_sample(self.min_rtt);
+
         self.newly_acked_bytes = 0;
 
         let time_sent = packet.time_sent;
@@ -545,10 +549,81 @@ impl CongestionControl for BBRState {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::VecDeque,
+        time::{Duration, Instant},
+    };
+
+    use crate::CongestionControl;
+
     #[test]
-    fn test_bbr() {
-        let mut bbr = super::BBRState::new();
+    fn test_bbr_sent() {
+        let mut bbr = super::BBRState::default();
+        let now = Instant::now();
+        // 发送 5 个包
+        for pn in 0..5 {
+            let mut sent = super::Sent::default();
+            sent.size = 100;
+            sent.time_sent = now;
+            sent.pkt_num = pn;
+            bbr.on_packet_sent(&mut sent, 100, now);
+            assert_eq!(bbr.bytes_in_flight as u64, 100 * (pn + 1));
+            assert_eq!(bbr.delivery_rate.delivered(), 0);
+            assert_eq!(sent.first_sent_time, now);
+            assert_eq!(sent.delivered_time, now);
+        }
+        let next = Instant::now() + Duration::from_secs(1);
+        // 再发送 5 个包
+        for pn in 5..10 {
+            let mut sent = super::Sent::default();
+            sent.size = 100;
+            sent.time_sent = next;
+            sent.pkt_num = pn;
+            bbr.on_packet_sent(&mut sent, 100, next);
+            assert_eq!(bbr.bytes_in_flight as u64, 100 * (pn + 1));
+            assert_eq!(bbr.delivery_rate.delivered(), 0);
+            // 记录的是第一次发包时间
+            assert_eq!(sent.first_sent_time, now);
+            assert_eq!(sent.delivered_time, now);
+        }
+    }
+
+    #[test]
+    fn test_bbr_acked() {
+        let mut bbr = super::BBRState::default();
         bbr.init();
-        assert_eq!(bbr.pacing_rate, 0);
+        let mut packets: VecDeque<super::Sent> = VecDeque::new();
+        let now = Instant::now();
+        for pn in 0..5 {
+            let mut sent = super::Sent::default();
+            sent.size = 100;
+            sent.time_sent = now;
+            sent.pkt_num = pn;
+            bbr.on_packet_sent(&mut sent, 100 as usize, now);
+            packets.push_back(sent);
+        }
+
+        let recvTime = now + Duration::from_millis(100);
+        // receive ack for 3 packets
+        for _ in 0..3 {
+            let packet = packets.pop_front().unwrap();
+            let mut acked = super::Acked {
+                pkt_num: packet.pkt_num,
+                time_sent: packet.time_sent,
+                size: packet.size,
+                rtt: recvTime.saturating_duration_since(packet.time_sent),
+                delivered: packet.delivered,
+                delivered_time: packet.delivered_time,
+                first_sent_time: packet.first_sent_time,
+                is_app_limited: packet.is_app_limited,
+                tx_in_flight: packet.tx_in_flight,
+                lost: packet.lost,
+            };
+            bbr.on_packet_acked(&acked, now);
+            println!("bbr.bytes_in_flight: {}", bbr.bytes_in_flight);
+            assert!(bbr.bytes_in_flight as u64 == 500 - (packet.pkt_num + 1) * 100);
+            assert!(bbr.delivery_rate.delivered() as u64 == 100 * (packet.pkt_num + 1));
+        }
+        assert_eq!(bbr.delivery_rate.sample_delivery_rate(), 0);
     }
 }

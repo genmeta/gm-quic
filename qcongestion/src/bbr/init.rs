@@ -50,3 +50,36 @@ impl BBRState {
         self.full_bw_count = 0;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_init() {
+        let mut bbr = BBRState::default();
+        bbr.init();
+        assert_eq!(bbr.state, BBRStateMachine::Startup);
+        assert_eq!(bbr.bytes_in_flight, 0);
+        assert_eq!(bbr.pacing_gain, STARTUP_PACING_GAIN);
+        assert_eq!(bbr.cwnd_gain, STARTUP_CWND_GAIN);
+    }
+
+    #[test]
+    fn test_init_round_counting() {
+        let mut bbr = BBRState::default();
+        bbr.init_round_counting();
+        assert_eq!(bbr.next_round_delivered, 0);
+        assert_eq!(bbr.round_start, false);
+        assert_eq!(bbr.round_count, 0);
+    }
+
+    #[test]
+    fn test_init_full_pipe() {
+        let mut bbr = BBRState::default();
+        bbr.init_full_pipe();
+        assert_eq!(bbr.filled_pipe, false);
+        assert_eq!(bbr.full_bw, 0);
+        assert_eq!(bbr.full_bw_count, 0);
+    }
+}

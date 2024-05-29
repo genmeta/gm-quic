@@ -1,7 +1,4 @@
-//! Delivery rate estimation.
-//!
-//! This implements the algorithm for estimating delivery rate as described in
-//! <https://tools.ietf.org/html/draft-cheng-iccrg-delivery-rate-estimation-01>
+// https://tools.ietf.org/html/draft-cheng-iccrg-delivery-rate-estimation-01
 
 use std::time::Duration;
 use std::time::Instant;
@@ -53,6 +50,7 @@ impl Default for Rate {
 }
 
 impl Rate {
+    // 3.2. Transmitting or retransmitting a data packet
     pub fn on_packet_sent(&mut self, pkt: &mut Sent, bytes_in_flight: usize, bytes_lost: u64) {
         // No packets in flight.
         if bytes_in_flight == 0 {
@@ -75,8 +73,6 @@ impl Rate {
         self.delivered += pkt.size;
         self.delivered_time = now;
 
-        // Update info using the newest packet. If rate_sample is not yet
-        // initialized, initialize with the first packet.
         if self.rate_sample.prior_time.is_none() || pkt.delivered > self.rate_sample.prior_delivered
         {
             self.rate_sample.prior_delivered = pkt.delivered;
@@ -177,4 +173,59 @@ struct RateSample {
     ack_elapsed: Duration,
 
     rtt: Duration,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rate() {
+        let mut rate = Rate::default();
+
+        let now = Instant::now();
+
+        let mut sents: Vec<Sent> = (0..5)
+            .map(|i| {
+                let mut sent = Sent::default();
+                sent.pkt_num = i;
+                sent.size = 100;
+                sent.time_sent = now;
+                sent
+            })
+            .collect();
+
+        for sent in &mut sents {
+            let pkt_num = sent.pkt_num;
+            rate.on_packet_sent(sent, (pkt_num * 100) as usize, 0);
+        }
+
+        let delay = Duration::from_millis(100);
+        let recv_ack_time = now + delay;
+
+        for _ in 0..3 {
+            let sent = sents.pop().unwrap();
+            let acked = Acked {
+                pkt_num: sent.pkt_num,
+                time_sent: sent.time_sent,
+                size: sent.size,
+                rtt: recv_ack_time.saturating_duration_since(sent.time_sent),
+                delivered: sent.delivered,
+                delivered_time: sent.delivered_time,
+                first_sent_time: sent.first_sent_time,
+                is_app_limited: sent.is_app_limited,
+                tx_in_flight: sent.tx_in_flight,
+                lost: sent.lost,
+            };
+
+            rate.update_rate_sample(&acked, recv_ack_time);
+            rate.generate_rate_sample(delay);
+        }
+        // 300 / 0.1
+        assert_eq!(rate.sample_delivery_rate(), 3000);
+        assert_eq!(rate.sample_rtt(), delay);
+        assert_eq!(rate.sample_is_app_limited(), false);
+        assert_eq!(rate.sample_delivered(), 300);
+        assert_eq!(rate.sample_prior_delivered(), 0);
+    }
 }
