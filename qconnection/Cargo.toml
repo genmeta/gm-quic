@@ -10,6 +10,7 @@ futures = "0.3"
 tokio = { version = "1.32.0", features = ["full"] }
 qbase = { path = "../qbase" }
 qrecovery = { path = "../qrecovery" }
+qcongestion = { path = "../qcongestion" }
 bytes = "1"
 thiserror = "1.0.21"
 async-lock = "3.0.0"

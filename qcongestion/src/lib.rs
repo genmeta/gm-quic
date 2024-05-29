@@ -10,7 +10,7 @@ use std::{
 
 pub mod bbr;
 
-mod rtt;
+pub mod rtt;
 pub use rtt::Rtt;
 
 pub mod delivery_rate;

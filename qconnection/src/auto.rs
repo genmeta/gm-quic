@@ -11,10 +11,9 @@ use qbase::{
     SpaceId,
 };
 use qrecovery::{
-    rtt::Rtt,
-    space::{ReceivePacket, SpaceFrame},
+    space::{ArcSpace, SpaceFrame},
+    streams::{ArcDataStreams, ReceiveStream, TransmitStream},
 };
-use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 fn parse_packet_and_then_dispatch(
@@ -23,7 +22,7 @@ fn parse_packet_and_then_dispatch(
     path: &ArcPath,
     conn_frames: &ArcAsyncQueue<ConnFrame>,
     space_frames: &ArcAsyncQueue<SpaceFrame>,
-    ack_frames_tx: &mpsc::UnboundedSender<(AckFrame, Arc<Mutex<Rtt>>)>,
+    ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
     // on_ack_frame_rcvd: impl FnMut(AckFrame, Arc<Mutex<Rtt>>),
 ) -> Result<bool, Error> {
     let mut space_frame_writer = space_frames.writer();
@@ -50,7 +49,8 @@ fn parse_packet_and_then_dispatch(
                         PureFrame::Padding(_) => continue,
                         PureFrame::Ping(_) => is_ack_eliciting = true,
                         PureFrame::Ack(ack) => {
-                            let _ = ack_frames_tx.send((ack.clone(), path.rtt()));
+                            // TODO: 在此收到AckFrame，ArcPath需先内部处理一番
+                            let _ = ack_frames_tx.send(ack);
                         }
                         PureFrame::Conn(f) => {
                             is_ack_eliciting = true;
@@ -99,13 +99,13 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
     mut packet_rx: mpsc::UnboundedReceiver<(P, ArcPath)>,
     space_id: SpaceId,
     keys: ArcKeys,
-    space: S,
+    space: ArcSpace<S>,
     conn_frame_queue: ArcAsyncQueue<ConnFrame>,
     space_frame_queue: ArcAsyncQueue<SpaceFrame>,
-    ack_frames_tx: mpsc::UnboundedSender<(AckFrame, Arc<Mutex<Rtt>>)>,
+    ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
     need_close_space_frame_queue_at_end: bool,
 ) where
-    S: ReceivePacket,
+    S: ReceiveStream + TransmitStream,
     P: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
 {
     while let Some((mut packet, path)) = packet_rx.recv().await {
@@ -116,16 +116,17 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
                 continue;
             }
 
-            let pn = packet.decode_header().unwrap();
-            let (pkt_id, has_rcvd) = space.recv_pkt_number(pn);
-            if has_rcvd {
+            let undecoded_pn = packet.decode_header().unwrap();
+            let result = space.rcvd_pkt_records().decode_pn(undecoded_pn);
+            let pkt_id = match result {
+                Ok(pn) => pn,
                 // Duplicate packet, discard. QUIC does not allow duplicate packets.
                 // Is it an error to receive duplicate packets? Definitely not,
                 // otherwise it would be too vulnerable to replay attacks.
-                continue;
-            }
+                Err(e) => continue,
+            };
 
-            match packet.decrypt_packet(pkt_id, pn.size(), &k.as_ref().remote.packet) {
+            match packet.decrypt_packet(pkt_id, undecoded_pn.size(), &k.as_ref().remote.packet) {
                 Ok(payload) => {
                     match parse_packet_and_then_dispatch(
                         payload,
@@ -135,7 +136,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
                         &space_frame_queue,
                         &ack_frames_tx,
                     ) {
-                        Ok(is_ack_eliciting) => space.record(pkt_id, is_ack_eliciting),
+                        Ok(is_ack_eliciting) => space.rcvd_pkt_records().register_pn(pkt_id),
                         Err(_e) => {
                             // 解析包失败，丢弃
                             // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
@@ -159,10 +160,10 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
 pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queue(
     mut packet_rx: mpsc::UnboundedReceiver<(OneRttPacket, ArcPath)>,
     keys: ArcOneRttKeys,
-    space: impl ReceivePacket,
+    space: ArcSpace<ArcDataStreams>,
     conn_frame_queue: ArcAsyncQueue<ConnFrame>,
     space_frame_queue: ArcAsyncQueue<SpaceFrame>,
-    ack_frames_tx: mpsc::UnboundedSender<(AckFrame, Arc<Mutex<Rtt>>)>,
+    ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
 ) {
     while let Some((mut packet, path)) = packet_rx.recv().await {
         // 1rtt空间的header protection key是固定的，packet key则是根据包头中的key_phase_bit变化的
@@ -174,13 +175,10 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
             }
 
             let (pn, key_phase) = packet.decode_header().unwrap();
-            let (pkt_id, has_rcvd) = space.recv_pkt_number(pn);
-            if has_rcvd {
-                // Duplicate packet, discard. QUIC does not allow duplicate packets.
-                // Is it an error to receive duplicate packets? Definitely not,
-                // otherwise it would be too vulnerable to replay attacks.
-                continue;
-            }
+            let pkt_id = match space.rcvd_pkt_records().decode_pn(pn) {
+                Ok(pn) => pn,
+                Err(e) => continue,
+            };
 
             // 要根据key_phase_bit来获取packet key
             let pkt_key = pk.lock().unwrap().get_remote(key_phase, pkt_id);
@@ -194,7 +192,7 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
                         &space_frame_queue,
                         &ack_frames_tx,
                     ) {
-                        Ok(is_ack_eliciting) => space.record(pkt_id, is_ack_eliciting),
+                        Ok(is_ack_eliciting) => space.rcvd_pkt_records().register_pn(pkt_id),
                         Err(_e) => {
                             // 解析包失败，丢弃
                             // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接

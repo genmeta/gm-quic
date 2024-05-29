@@ -219,7 +219,11 @@ mod tests {
     fn test_rcvd_pkt_records() {
         let records = ArcRcvdPktRecords::default();
         assert_eq!(records.decode_pn(PacketNumber::encode(1, 0)), Ok(1));
+        assert_eq!(records.inner.read().unwrap().queue.len(), 0);
+
+        records.register_pn(1);
         assert_eq!(records.inner.read().unwrap().queue.len(), 2);
+
         assert_eq!(
             records.inner.read().unwrap().queue.get(0).unwrap(),
             &State {
@@ -236,6 +240,7 @@ mod tests {
         );
 
         assert_eq!(records.decode_pn(PacketNumber::encode(30, 0)), Ok(30));
+        records.register_pn(30);
         {
             let mut writer = records.write();
             for i in 5..10 {
@@ -243,6 +248,7 @@ mod tests {
             }
         }
         assert_eq!(records.inner.read().unwrap().queue.len(), 31);
+
         {
             let mut writer = records.write();
             for i in 0..5 {

@@ -10,12 +10,8 @@ use qbase::{
 };
 use qrecovery::{
     crypto::CryptoStream,
-    space::{self, ArcSpace, ObserveAck, TransmitPacket},
+    space::ArcSpace,
     streams::{none::NoDataStreams, ArcDataStreams},
-};
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex},
 };
 use tokio::sync::mpsc;
 
@@ -23,30 +19,30 @@ use tokio::sync::mpsc;
 /// 一旦丢弃，后续再收到该空间的包，直接丢弃。
 type RxPacketsQueue<T> = Option<mpsc::UnboundedSender<(T, ArcPath)>>;
 
-pub struct Connection<O: ObserveAck> {
+pub struct Connection {
     // Thus, a client MUST discard Initial keys when it first sends a Handshake packet
     // and a server MUST discard Initial keys when it first successfully processes a
     // Handshake packet. Endpoints MUST NOT send Initial packets after this point.
     initial_keys: ArcKeys,
     initial_pkt_queue: RxPacketsQueue<InitialPacket>,
     // 发送数据，也可以随着升级到Handshake空间而丢弃
-    initial_space: ArcSpace<NoDataStreams, O>,
+    initial_space: ArcSpace<NoDataStreams>,
 
     // An endpoint MUST discard its Handshake keys when the TLS handshake is confirmed.
     handshake_keys: ArcKeys,
     handshake_pkt_queue: RxPacketsQueue<HandshakePacket>,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
-    handshake_space: ArcSpace<NoDataStreams, O>,
+    handshake_space: ArcSpace<NoDataStreams>,
 
     zero_rtt_keys: ArcKeys,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
     zero_rtt_pkt_queue: RxPacketsQueue<ZeroRttPacket>,
     one_rtt_pkt_queue: mpsc::UnboundedSender<(OneRttPacket, ArcPath)>,
-    data_space: ArcSpace<ArcDataStreams, O>,
+    data_space: ArcSpace<ArcDataStreams>,
     spin: SpinBit,
 }
 
-pub fn new(tls_session: TlsIO) -> Connection<impl ObserveAck> {
+pub fn new(tls_session: TlsIO) -> Connection {
     let rcvd_conn_frames = ArcAsyncQueue::new();
 
     let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded_channel::<(InitialPacket, ArcPath)>();
@@ -56,8 +52,7 @@ pub fn new(tls_session: TlsIO) -> Connection<impl ObserveAck> {
     let initial_crypto_handler = initial_crypto_stream.split();
     let initial_keys = ArcKeys::new_pending();
     let initial_space_frame_queue = ArcAsyncQueue::new();
-    let initial_space =
-        space::new_initial_space(initial_crypto_stream, initial_space_frame_queue.clone());
+    let initial_space = ArcSpace::<NoDataStreams>::with_crypto_stream(initial_crypto_stream);
     tokio::spawn(
         auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
             initial_pkt_rx,
@@ -75,8 +70,8 @@ pub fn new(tls_session: TlsIO) -> Connection<impl ObserveAck> {
         let mut ack_rx = initial_ack_rx;
         async move {
             // 通过rx接收并处理AckFrame，AckFrame是Path收包解包得到
-            while let Some((ack, rtt)) = ack_rx.recv().await {
-                space.recv_ack_frame(ack, rtt);
+            while let Some(ack) = ack_rx.recv().await {
+                space.on_ack(ack);
             }
         }
     });
@@ -85,8 +80,8 @@ pub fn new(tls_session: TlsIO) -> Connection<impl ObserveAck> {
         let mut loss_pkt_rx = initial_loss_rx;
         async move {
             // 不停地接收丢包序号，这些丢包序号由path记录反馈，更新Transmiter的状态
-            while let Some(pkt_id) = loss_pkt_rx.recv().await {
-                space.may_loss_packet(pkt_id);
+            while let Some(pn) = loss_pkt_rx.recv().await {
+                space.may_loss_pkt(pn);
             }
         }
     });
@@ -99,8 +94,7 @@ pub fn new(tls_session: TlsIO) -> Connection<impl ObserveAck> {
     let handshake_crypto_handler = handshake_crypto_stream.split();
     let handshake_keys = ArcKeys::new_pending();
     let handshake_space_frame_queue = ArcAsyncQueue::new();
-    let handshake_space =
-        space::new_handshake_space(handshake_crypto_stream, handshake_space_frame_queue.clone());
+    let handshake_space = ArcSpace::<NoDataStreams>::with_crypto_stream(handshake_crypto_stream);
     tokio::spawn(
         auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
             handshake_pkt_rx,
@@ -118,8 +112,8 @@ pub fn new(tls_session: TlsIO) -> Connection<impl ObserveAck> {
         let mut ack_rx = handshake_ack_rx;
         async move {
             // 通过rx接收并处理AckFrame，AckFrame是Path收包解包得到
-            while let Some((ack, rtt)) = ack_rx.recv().await {
-                space.recv_ack_frame(ack, rtt);
+            while let Some(ack) = ack_rx.recv().await {
+                space.on_ack(ack);
             }
         }
     });
@@ -128,8 +122,8 @@ pub fn new(tls_session: TlsIO) -> Connection<impl ObserveAck> {
         let mut loss_pkt_rx = handshake_loss_rx;
         async move {
             // 不停地接收丢包序号，这些丢包序号由path记录反馈，更新Transmiter的状态
-            while let Some(pkt_id) = loss_pkt_rx.recv().await {
-                space.may_loss_packet(pkt_id);
+            while let Some(pn) = loss_pkt_rx.recv().await {
+                space.may_loss_pkt(pn);
             }
         }
     });
@@ -150,21 +144,15 @@ pub fn new(tls_session: TlsIO) -> Connection<impl ObserveAck> {
     let data_space_frame_queue = ArcAsyncQueue::new();
     let (data_ack_tx, data_ack_rx) = mpsc::unbounded_channel();
     let (data_loss_tx, data_loss_rx) = mpsc::unbounded_channel();
-    let sending_frames = Arc::new(Mutex::new(VecDeque::new()));
-    let streams = ArcDataStreams::with_role_and_limit(Role::Client, 20, 10, sending_frames.clone());
-    let data_space = space::new_data_space(
-        one_rtt_crypto_stream,
-        streams,
-        sending_frames,
-        data_space_frame_queue.clone(),
-    );
+    let data_space = ArcSpace::<ArcDataStreams>::new(Role::Client, 20, 20, one_rtt_crypto_stream);
+    let streams = data_space.data_streams();
     tokio::spawn({
         let space = data_space.clone();
         let mut ack_rx = data_ack_rx;
         async move {
             // 通过rx接收并处理AckFrame，AckFrame是Path收包解包得到
-            while let Some((ack, rtt)) = ack_rx.recv().await {
-                space.recv_ack_frame(ack, rtt);
+            while let Some(ack) = ack_rx.recv().await {
+                space.on_ack(ack);
             }
         }
     });
@@ -173,8 +161,8 @@ pub fn new(tls_session: TlsIO) -> Connection<impl ObserveAck> {
         let mut loss_pkt_rx = data_loss_rx;
         async move {
             // 不停地接收丢包序号，这些丢包序号由path记录反馈，更新Transmiter的状态
-            while let Some(pkt_id) = loss_pkt_rx.recv().await {
-                space.may_loss_packet(pkt_id);
+            while let Some(pn) = loss_pkt_rx.recv().await {
+                space.may_loss_pkt(pn);
             }
         }
     });
@@ -223,7 +211,7 @@ pub fn new(tls_session: TlsIO) -> Connection<impl ObserveAck> {
     }
 }
 
-impl<O: ObserveAck> Connection<O> {
+impl Connection {
     pub fn recv_initial_packet(&mut self, pkt: InitialPacket, path: ArcPath) {
         self.initial_pkt_queue.as_mut().map(|q| {
             let _ = q.send((pkt, path));

@@ -40,7 +40,7 @@ where
         self.rcvd_pkt_records.clone()
     }
 
-    fn read(&self, mut buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize) {
+    fn read(&self, mut buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize, usize) {
         let origin = buf.remaining_mut();
 
         let mut send_guard = self.sent_pkt_records.send();
@@ -48,7 +48,7 @@ where
         if buf.remaining_mut() > encoded_pn.size() {
             buf.put_packet_number(encoded_pn);
         } else {
-            return (pn, 0);
+            return (pn, encoded_pn.size(), 0);
         }
 
         if let Some(largest) = ack_pkt {
@@ -87,7 +87,7 @@ where
             }
         }
 
-        (pn, origin - buf.remaining_mut())
+        (pn, encoded_pn.size(), origin - buf.remaining_mut())
     }
 
     fn receive(&self, frame: SpaceFrame) -> Result<(), Error> {
@@ -129,10 +129,10 @@ where
         }
     }
 
-    fn may_loss_pkt(&self, pkt_no: u64) {
+    fn may_loss_pkt(&self, pn: u64) {
         let mut recv_pkt_guard = self.sent_pkt_records.receive();
         let mut write_frame_guard = self.reliable_frame_queue.write();
-        for record in recv_pkt_guard.may_loss_pkt(pkt_no) {
+        for record in recv_pkt_guard.may_loss_pkt(pn) {
             match record {
                 SentRecord::Ack(_) => {
                     // do nothing
@@ -166,7 +166,7 @@ where
     /// 要发送一个该空间的数据包，读出下一个包号，然后检车是否要发送AckFrame，
     /// 然后发送帧，最后发送数据流中的数据帧。
     /// 返回该数据包的包号，以及大小
-    pub fn read(&self, buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize) {
+    pub fn read(&self, buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize, usize) {
         self.0.read(buf, ack_pkt)
     }
 
@@ -181,8 +181,8 @@ where
     }
 
     /// 当数据包在传输中丢失，通常由Path判断，通过某种通信方式告知Space，并调用该函数
-    pub fn may_loss_pkt(&self, pkt_no: u64) {
-        self.0.may_loss_pkt(pkt_no);
+    pub fn may_loss_pkt(&self, pn: u64) {
+        self.0.may_loss_pkt(pn);
     }
 }
 

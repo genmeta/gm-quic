@@ -1,5 +1,5 @@
 use qbase::{cid::ConnectionId, frame::PathFrame, util::ArcAsyncQueue};
-use qrecovery::rtt::Rtt;
+use qcongestion::rtt::Rtt;
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
