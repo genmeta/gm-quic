@@ -4,7 +4,6 @@ pub mod index_deque;
 pub mod rcvdpkt;
 pub mod recv;
 pub mod reliable;
-pub mod rtt;
 pub mod send;
 pub mod space;
 pub mod streams;

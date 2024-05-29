@@ -8,9 +8,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use qrecovery::rtt::Rtt;
-
 pub mod bbr;
+
+mod rtt;
+pub use rtt::Rtt;
 
 pub mod delivery_rate;
 

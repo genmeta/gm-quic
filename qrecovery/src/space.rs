@@ -2,7 +2,6 @@ use super::{
     crypto::{CryptoStream, TransmitCrypto},
     rcvdpkt::ArcRcvdPktRecords,
     reliable::{ArcReliableFrameQueue, ArcSentPktRecords, SentRecord},
-    rtt::Rtt,
     streams::{none::NoDataStreams, ArcDataStreams, ReceiveStream, TransmitStream},
 };
 use bytes::{BufMut, Bytes};
@@ -12,37 +11,15 @@ use qbase::{
         io::{WriteAckFrame, WriteFrame},
         AckFrame, BeFrame, DataFrame, StreamCtlFrame,
     },
-    packet::{PacketNumber, WritePacketNumber},
+    packet::WritePacketNumber,
     streamid::Role,
 };
-use std::{
-    fmt::Debug,
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::{fmt::Debug, sync::Arc, time::Instant};
 
 #[derive(Debug, Clone)]
 pub enum SpaceFrame {
     Stream(StreamCtlFrame),
     Data(DataFrame, Bytes),
-}
-
-pub trait TransmitPacket {
-    fn next_pkt_no(&self) -> (u64, PacketNumber);
-
-    fn read(&self, buf: &mut [u8]) -> usize;
-
-    fn recv_ack_frame(&self, ack: AckFrame, rtt: Arc<Mutex<Rtt>>);
-
-    fn may_loss_packet(&self, pkt_id: u64);
-}
-
-/// When a network socket receives a data packet and determines that it belongs
-/// to a specific space, the content of the packet is passed on to that space.
-pub trait ReceivePacket {
-    fn recv_pkt_number(&self, pn: PacketNumber) -> (u64, bool);
-
-    fn record(&self, pktid: u64, is_ack_eliciting: bool);
 }
 
 #[derive(Debug)]
@@ -243,6 +220,10 @@ impl ArcSpace<ArcDataStreams> {
             ),
             crypto_stream,
         }))
+    }
+
+    pub fn data_streams(&self) -> ArcDataStreams {
+        self.0.data_streams.clone()
     }
 }
 
