@@ -1,5 +1,5 @@
 use congestion::Epoch;
-use qbase::frame::AckFrame;
+use qbase::frame::{AckFrame, PathChallengeFrame, PathResponseFrame};
 use std::{
     task::{Context, Poll},
     time::Instant,
@@ -12,14 +12,20 @@ pub use rtt::Rtt;
 pub mod delivery_rate;
 
 pub trait CongestionControl {
-    /// 轮询是否可以发包，若可以，返回可以发包的数据量，以及是否在包中携带AckFrame，若需携带AckFrame，则需
-    /// 返回该Path接收到的最大数据包号及其收包时间，以供填充AckFrame中的largest和ack_delay字段。
-    /// THINK: 每次发包都会轮询，并非一次轮询返回很大数据量，发很多个包才下次轮询，这是为了能随时询问是否该生成AckFrame。
-    fn poll_send(
-        &self,
-        cx: &mut Context<'_>,
-        space: Epoch,
-    ) -> Poll<(usize, Option<(u64, Instant)>)>;
+    /// 轮询是否可以发包，若可以，返回可以发包的数据量；该数据量包含各个空间的包能发的数据量总和
+    fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize>;
+
+    /// 发某个空间的包时，询问是否需要发送AckFrame，若需要，返回该Path接收的最大包id及其接收时间
+    /// 不需要的话，则返回None。每次需要发包，每个Epoch都需要询问
+    fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)>;
+
+    /* 下面发送PathChallenge和PathResponse帧，像是Path的，单独抽象在另外一个trait比较合适
+    /// 发数据空间的包时，询问是否需要发送PathChallengeFrame，可在0RTT和1RTT数据包内发送
+    fn need_path_challenge(&self) -> Option<PathChallengeFrame>;
+
+    /// 发数据空间的包时，询问是否需要发送PathResponseFrame，只能在1RTT数据包内发送
+    fn need_path_response(&self) -> Option<PathResponseFrame>;
+    */
 
     /// 每当发送一个数据包后，由Path的cc记录发包信息，供未来确认时计算RTT和发送速率，并减少发送信用
     /// 最后一个参数，是这次发包是否携带了ack frame，若没携带，是None；若携带了，则是ack frame的最大包号
@@ -35,9 +41,8 @@ pub trait CongestionControl {
     );
 
     /// 当收到AckFrame，其中有该Path的部分包被确认，调用该函数，驱动拥塞控制算法演进
-    /// 注意AckFrame中的largest也会通过该函数确认
     /// 如果该包中有ack frame，那么ack.largest之前的收包记录未来就不需要在AckFrame中再同步了，需通知ack观察者
-    fn on_pkt_acked(&self, space: Epoch, ack_frame: &AckFrame);
+    fn on_ack(&self, space: Epoch, ack_frame: &AckFrame);
 
     /// 处理AckFrame中的largest及ack_delay字段，供Path的cc采样rtt，不可重复采样
     /// 调用该函数后，也意味着AckFrame都被确认完了，可以判断Path过往发过的包，哪些丢了，并反馈

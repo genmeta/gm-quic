@@ -1,7 +1,10 @@
+use crate::{bbr, ObserveAck, ObserveLoss, Rtt};
+use qbase::frame::AckFrame;
 use std::{
     cmp::Ordering,
     collections::VecDeque,
     sync::{Arc, Mutex},
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 use std::{
@@ -9,18 +12,14 @@ use std::{
     ops::{Index, IndexMut, RangeInclusive},
 };
 
-use qbase::frame::AckFrame;
-
-use crate::{bbr, ObserveAck, ObserveLoss, Rtt};
-
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Epoch {
     Initial = 0,
     Handshake = 1,
-    Application = 2,
+    Data = 2,
 }
 
-static EPOCHS: [Epoch; 3] = [Epoch::Initial, Epoch::Handshake, Epoch::Application];
+static EPOCHS: [Epoch; 3] = [Epoch::Initial, Epoch::Handshake, Epoch::Data];
 
 impl Epoch {
     pub fn epochs(range: RangeInclusive<Epoch>) -> &'static [Epoch] {
@@ -71,10 +70,10 @@ pub enum CongestionAlgorithm {
     Bbr,
 }
 
-pub struct Congestion<OA, OL> {
+pub struct CongestionController<OA, OL> {
     pub observe_ack: OA,
     pub observe_loss: OL,
-    cc: Box<dyn Algorithm>,
+    algorithm: Box<dyn Algorithm>,
     rtt: Arc<Mutex<Rtt>>,
     loss_detection_timer: Option<Instant>,
     pto_count: u32,
@@ -88,7 +87,7 @@ pub struct Congestion<OA, OL> {
     has_handshake_keys: bool,
 }
 
-impl<OA, OL> Congestion<OA, OL>
+impl<OA, OL> CongestionController<OA, OL>
 where
     OA: ObserveAck,
     OL: ObserveLoss,
@@ -98,8 +97,8 @@ where
             CongestionAlgorithm::Bbr => Box::new(bbr::BBRState::new()),
         };
 
-        Congestion {
-            cc,
+        CongestionController {
+            algorithm: cc,
             rtt: Arc::new(Mutex::new(Rtt::default())),
             loss_detection_timer: None,
             // todo : read from transport parameters
@@ -147,7 +146,7 @@ where
             if ack_eliciting {
                 self.time_of_last_ack_eliciting_packet[pn_space] = Some(now);
             }
-            self.cc.on_packet_sent(&mut sent, sent_bytes, now);
+            self.algorithm.on_packet_sent(&mut sent, sent_bytes, now);
             self.set_lost_detection_timer(now);
         }
 
@@ -229,7 +228,7 @@ where
             self.on_packets_lost(loss_packets, pn_space, now);
         }
 
-        self.cc.on_packet_acked(&acked, now);
+        self.algorithm.on_packet_acked(&acked, now);
         if self.peer_completed_address_validation() {
             self.pto_count = 0;
         }
@@ -240,12 +239,12 @@ where
     fn on_packets_lost(&mut self, packets: Vec<Sent>, _pn_space: Epoch, now: Instant) {
         // todo: 通知 space 丢包的 pkt_num， 使用回调函数
         for lost in packets {
-            self.cc.on_congestion_event(&lost, now);
+            self.algorithm.on_congestion_event(&lost, now);
         }
     }
 
     pub fn get_congestion_window(&self) -> u64 {
-        self.cc.cwnd()
+        self.algorithm.cwnd()
     }
 
     fn set_lost_detection_timer(&mut self, _now: Instant) {
@@ -300,7 +299,7 @@ where
     fn get_loss_time_and_space(&self) -> (Option<Instant>, Epoch) {
         let mut time = self.loss_time[Epoch::Initial];
         let mut space = Epoch::Initial;
-        for pn_space in [Epoch::Handshake, Epoch::Application].iter() {
+        for pn_space in [Epoch::Handshake, Epoch::Data].iter() {
             if let Some(loss) = self.loss_time[*pn_space] {
                 if time.is_none() || loss < time.unwrap() {
                     time = Some(loss);
@@ -327,12 +326,12 @@ where
 
         let mut pto_timeout = None;
         let mut pto_space = Epoch::Initial;
-        for pn_space in [Epoch::Initial, Epoch::Handshake, Epoch::Application].iter() {
+        for pn_space in [Epoch::Initial, Epoch::Handshake, Epoch::Data].iter() {
             // no ack-eliciting packets in flight in space
             if self.no_ack_eliciting_in_flight() {
                 continue;
             }
-            if *pn_space == Epoch::Application {
+            if *pn_space == Epoch::Data {
                 if !self.handshake_confirmed {
                     return (pto_timeout, pto_space as u8);
                 }
@@ -389,7 +388,7 @@ where
     }
 
     fn no_ack_eliciting_in_flight(&self) -> bool {
-        for pn_space in [Epoch::Initial, Epoch::Handshake, Epoch::Application].iter() {
+        for pn_space in [Epoch::Initial, Epoch::Handshake, Epoch::Data].iter() {
             if self.time_of_last_ack_eliciting_packet[*pn_space].is_some() {
                 return false;
             }
@@ -400,6 +399,40 @@ where
     fn peer_completed_address_validation(&mut self) -> bool {
         // is server return true
         self.has_handshake_keys || self.handshake_confirmed
+    }
+}
+
+impl<OA, OL> super::CongestionControl for CongestionController<OA, OL>
+where
+    OA: ObserveAck,
+    OL: ObserveLoss,
+{
+    fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize> {
+        todo!()
+    }
+
+    fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)> {
+        todo!()
+    }
+
+    fn on_pkt_sent(
+        &self,
+        space: Epoch,
+        pn: u64,
+        is_ack_elicition: bool,
+        sent_bytes: usize,
+        in_flight: bool,
+        ack: Option<u64>,
+    ) {
+        todo!()
+    }
+
+    fn on_ack(&self, space: Epoch, ack_frame: &AckFrame) {
+        todo!()
+    }
+
+    fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_elicition: bool) {
+        todo!()
     }
 }
 
@@ -512,7 +545,7 @@ pub trait Algorithm {
 mod tests {
     use super::*;
 
-    struct Mock {}
+    struct Mock;
 
     impl ObserveAck for Mock {
         fn inactivate_rcvd_record(&self, _: Epoch, _: u64) {}
@@ -524,9 +557,7 @@ mod tests {
 
     #[test]
     fn test_on_packet_sent_multiple_packets() {
-        let mock = Mock {};
-        let mock1 = Mock {};
-        let mut congestion = Congestion::new(CongestionAlgorithm::Bbr, mock, mock1);
+        let mut congestion = CongestionController::new(CongestionAlgorithm::Bbr, Mock, Mock);
         let now = Instant::now();
         for i in 1..=5 {
             congestion.on_packet_sent(i, Epoch::Initial, true, true, 1000, now);
@@ -545,17 +576,15 @@ mod tests {
 
     #[test]
     fn test_on_packet_sent_different_epochs() {
-        let mock = Mock {};
-        let mock1 = Mock {};
-        let mut congestion = Congestion::new(CongestionAlgorithm::Bbr, mock, mock1);
+        let mut congestion = CongestionController::new(CongestionAlgorithm::Bbr, Mock, Mock);
         let now = Instant::now();
         congestion.on_packet_sent(1, Epoch::Initial, true, true, 1000, now);
         congestion.on_packet_sent(2, Epoch::Handshake, true, true, 1000, now);
-        congestion.on_packet_sent(3, Epoch::Application, true, true, 1000, now);
+        congestion.on_packet_sent(3, Epoch::Data, true, true, 1000, now);
         assert_eq!(congestion.sent_packets[Epoch::Initial].len(), 1);
         assert_eq!(congestion.sent_packets[Epoch::Handshake].len(), 1);
-        assert_eq!(congestion.sent_packets[Epoch::Application].len(), 1);
-        for epoch in &[Epoch::Initial, Epoch::Handshake, Epoch::Application] {
+        assert_eq!(congestion.sent_packets[Epoch::Data].len(), 1);
+        for epoch in &[Epoch::Initial, Epoch::Handshake, Epoch::Data] {
             let sent = &congestion.sent_packets[*epoch][0];
             assert_eq!(sent.pkt_num, *epoch as u64 + 1);
             assert_eq!(sent.size, 1000);
@@ -569,9 +598,7 @@ mod tests {
 
     #[test]
     fn test_detect_and_remove_lost_packets() {
-        let mock = Mock {};
-        let mock1 = Mock {};
-        let mut congestion = Congestion::new(CongestionAlgorithm::Bbr, mock, mock1);
+        let mut congestion = CongestionController::new(CongestionAlgorithm::Bbr, Mock, Mock);
         let now = Instant::now();
         let pn_space = Epoch::Initial;
         for i in 1..=5 {
