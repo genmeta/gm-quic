@@ -9,7 +9,7 @@ use crate::{delivery_rate, Acked, Sent};
 
 use self::min_max::Minmax;
 
-use super::CongestionControl;
+use super::Algorithm;
 
 mod ack;
 mod init;
@@ -493,7 +493,7 @@ impl BBRState {
     }
 }
 
-impl CongestionControl for BBRState {
+impl Algorithm for BBRState {
     fn init(&mut self) {
         self.init();
     }
@@ -554,7 +554,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use crate::CongestionControl;
+    use crate::Algorithm;
 
     #[test]
     fn test_bbr_sent() {

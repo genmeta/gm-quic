@@ -27,7 +27,6 @@ struct RawSpace<T> {
     reliable_frame_queue: ArcReliableFrameQueue,
     sent_pkt_records: ArcSentPktRecords,
     rcvd_pkt_records: ArcRcvdPktRecords,
-    // maybe NoDataStreams
     data_streams: T,
     crypto_stream: CryptoStream,
 }

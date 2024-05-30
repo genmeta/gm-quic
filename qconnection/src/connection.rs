@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 /// 一旦丢弃，后续再收到该空间的包，直接丢弃。
 type RxPacketsQueue<T> = Option<mpsc::UnboundedSender<(T, ArcPath)>>;
 
-pub struct Connection {
+pub struct RawConnection {
     // Thus, a client MUST discard Initial keys when it first sends a Handshake packet
     // and a server MUST discard Initial keys when it first successfully processes a
     // Handshake packet. Endpoints MUST NOT send Initial packets after this point.
@@ -42,7 +42,7 @@ pub struct Connection {
     spin: SpinBit,
 }
 
-pub fn new(tls_session: TlsIO) -> Connection {
+pub fn new(tls_session: TlsIO) -> RawConnection {
     let rcvd_conn_frames = ArcAsyncQueue::new();
 
     let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded_channel::<(InitialPacket, ArcPath)>();
@@ -196,7 +196,7 @@ pub fn new(tls_session: TlsIO) -> Connection {
         ),
     );
 
-    Connection {
+    RawConnection {
         initial_keys,
         initial_pkt_queue: Some(initial_pkt_tx),
         initial_space,
@@ -211,7 +211,7 @@ pub fn new(tls_session: TlsIO) -> Connection {
     }
 }
 
-impl Connection {
+impl RawConnection {
     pub fn recv_initial_packet(&mut self, pkt: InitialPacket, path: ArcPath) {
         self.initial_pkt_queue.as_mut().map(|q| {
             let _ = q.send((pkt, path));

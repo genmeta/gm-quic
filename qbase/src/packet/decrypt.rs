@@ -21,8 +21,8 @@ pub trait DecodeHeader {
 pub trait DecryptPacket {
     fn decrypt_packet(
         self,
-        pkt_id: u64,
-        pn_size: usize,
+        pn: u64,
+        encoded_pn_size: usize,
         packet_key: &PacketKey,
     ) -> Result<Bytes, Error>;
 }

@@ -123,7 +123,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
                 // Duplicate packet, discard. QUIC does not allow duplicate packets.
                 // Is it an error to receive duplicate packets? Definitely not,
                 // otherwise it would be too vulnerable to replay attacks.
-                Err(e) => continue,
+                Err(_) => continue,
             };
 
             match packet.decrypt_packet(pn, encoded_pn.size(), &k.as_ref().remote.packet) {
@@ -137,7 +137,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
                         &ack_frames_tx,
                     ) {
                         // TODO: path也要记录收包时间、is_ack_eliciting
-                        Ok(is_ack_eliciting) => space.register_pn(pn),
+                        Ok(_is_ack_eliciting) => space.register_pn(pn),
                         Err(_e) => {
                             // 解析包失败，丢弃
                             // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
@@ -178,7 +178,7 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
             let (encoded_pn, key_phase) = packet.decode_header().unwrap();
             let pn = match space.decode_pn(encoded_pn) {
                 Ok(pn) => pn,
-                Err(e) => continue,
+                Err(_e) => continue,
             };
 
             // 要根据key_phase_bit来获取packet key

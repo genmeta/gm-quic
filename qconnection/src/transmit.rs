@@ -5,7 +5,7 @@ use qbase::{
             Encode, GetType, HasLength, LongHeader, Write, WriteLongHeader, WriteOneRttHeader,
         },
         keys::{ArcKeys, ArcOneRttKeys},
-        LongClearBits, OneRttHeader, ShortClearBits, WritePacketNumber,
+        LongClearBits, OneRttHeader, ShortClearBits,
     },
     varint::{VarInt, WriteVarInt},
 };
