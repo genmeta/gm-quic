@@ -223,8 +223,8 @@ impl SendingSender {
             .map(|(offset, data)| (offset, data, false))
     }
 
-    pub(super) fn confirm_rcvd(&mut self, range: &Range<u64>) {
-        self.sndbuf.confirm_rcvd(range);
+    pub(super) fn on_acked(&mut self, range: &Range<u64>) {
+        self.sndbuf.on_acked(range);
         if self.sndbuf.is_all_rcvd() {
             if let Some(waker) = self.flush_waker.take() {
                 waker.wake();
@@ -343,8 +343,8 @@ impl DataSentSender {
             })
     }
 
-    pub(super) fn confirm_rcvd(&mut self, range: &Range<u64>) {
-        self.sndbuf.confirm_rcvd(range);
+    pub(super) fn on_acked(&mut self, range: &Range<u64>) {
+        self.sndbuf.on_acked(range);
         if self.sndbuf.is_all_rcvd() {
             if let Some(waker) = self.flush_waker.take() {
                 waker.wake();

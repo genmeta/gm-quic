@@ -69,17 +69,17 @@ impl<S> DecodeHeader for PacketWrapper<LongHeader<S>> {
 impl<H: Protect> DecryptPacket for PacketWrapper<H> {
     fn decrypt_packet(
         self,
-        pktid: u64,
-        pn_size: usize,
+        pn: u64,
+        encoded_pn_size: usize,
         remote_keys: &PacketKey,
     ) -> Result<Bytes, Error> {
         // decrypt packet
         let mut raw_data = self.raw_data;
-        let header_offset = self.pn_offset + pn_size;
+        let header_offset = self.pn_offset + encoded_pn_size;
         let mut body = raw_data.split_off(header_offset);
         let header = raw_data;
         remote_keys
-            .decrypt_in_place(pktid, &header, &mut body)
+            .decrypt_in_place(pn, &header, &mut body)
             .map_err(|_| Error::DecryptPacketFailure)?;
         Ok(body.freeze())
     }

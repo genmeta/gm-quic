@@ -1,6 +1,6 @@
 use super::{
     crypto::{CryptoStream, TransmitCrypto},
-    rcvdpkt::ArcRcvdPktRecords,
+    rcvdpkt::{ArcRcvdPktRecords, Error as RcvPnError},
     reliable::{ArcReliableFrameQueue, ArcSentPktRecords, SentRecord},
     streams::{none::NoDataStreams, ArcDataStreams, ReceiveStream, TransmitStream},
 };
@@ -11,7 +11,7 @@ use qbase::{
         io::{WriteAckFrame, WriteFrame},
         AckFrame, BeFrame, DataFrame, StreamCtlFrame,
     },
-    packet::WritePacketNumber,
+    packet::{PacketNumber, WritePacketNumber},
     streamid::Role,
 };
 use std::{fmt::Debug, sync::Arc, time::Instant};
@@ -40,11 +40,19 @@ where
         self.rcvd_pkt_records.clone()
     }
 
+    fn decode_pn(&self, encoded_pn: PacketNumber) -> Result<u64, RcvPnError> {
+        self.rcvd_pkt_records.decode_pn(encoded_pn)
+    }
+
+    fn register_pn(&self, pn: u64) {
+        self.rcvd_pkt_records.register_pn(pn)
+    }
+
     fn read(&self, mut buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize, usize) {
         let origin = buf.remaining_mut();
 
         let mut send_guard = self.sent_pkt_records.send();
-        let (pn, encoded_pn) = send_guard.next_pkt_no();
+        let (pn, encoded_pn) = send_guard.next_pn();
         if buf.remaining_mut() > encoded_pn.size() {
             buf.put_packet_number(encoded_pn);
         } else {
@@ -110,7 +118,7 @@ where
         recv_guard.update_largest(ack.largest.into_inner());
 
         for pn in ack.iter().flat_map(|r| r.rev()) {
-            for record in recv_guard.confirm_pkt_rcvd(pn) {
+            for record in recv_guard.on_pkt_acked(pn) {
                 match record {
                     SentRecord::Ack(_) => {
                         // do nothing
@@ -119,10 +127,10 @@ where
                         // do nothing
                     }
                     SentRecord::Data(DataFrame::Crypto(frame)) => {
-                        self.crypto_stream.confirm_data_rcvd(frame);
+                        self.crypto_stream.on_data_acked(frame);
                     }
                     SentRecord::Data(DataFrame::Stream(frame)) => {
-                        self.data_streams.confirm_data_rcvd(frame);
+                        self.data_streams.on_data_acked(frame);
                     }
                 }
             }
@@ -161,6 +169,14 @@ where
     /// 可用于收包解码包号，判定包号是否重复或者过期，记录收包状态，淘汰并滑动收包记录窗口
     pub fn rcvd_pkt_records(&self) -> ArcRcvdPktRecords {
         self.0.rcvd_pkt_records()
+    }
+
+    pub fn decode_pn(&self, encoded_pn: PacketNumber) -> Result<u64, RcvPnError> {
+        self.0.decode_pn(encoded_pn)
+    }
+
+    pub fn register_pn(&self, pn: u64) {
+        self.0.register_pn(pn)
     }
 
     /// 要发送一个该空间的数据包，读出下一个包号，然后检车是否要发送AckFrame，

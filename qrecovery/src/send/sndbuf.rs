@@ -566,7 +566,7 @@ impl SendBuf {
 
     // 通过传输层接收到的对方的ack帧，确认某些包已经被接收到，这些包携带的数据即被确认。
     // ack只能确认Flighting/Lost状态的区间；如果确认的是Lost区间，意味着之前的判定丢包是错误的。
-    pub fn confirm_rcvd(&mut self, range: &Range<u64>) {
+    pub fn on_acked(&mut self, range: &Range<u64>) {
         self.state.ack_rcvd(range);
         // 对于头部连续确认接收到的，还要前进，以免浪费空间
         let min_unrecved_pos = self.state.shift();

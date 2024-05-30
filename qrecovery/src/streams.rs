@@ -13,11 +13,11 @@ pub trait TransmitStream {
     /// read data to transmit
     fn try_read_data(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)>;
 
-    fn confirm_data_rcvd(&self, stream_frame: StreamFrame);
+    fn on_data_acked(&self, stream_frame: StreamFrame);
 
     fn may_loss_data(&self, stream_frame: StreamFrame);
 
-    fn confirm_reset_rcvd(&self, reset_frame: ResetStreamFrame);
+    fn on_reset_acked(&self, reset_frame: ResetStreamFrame);
 }
 
 pub trait ReceiveStream {
@@ -40,16 +40,16 @@ impl TransmitStream for ArcDataStreams {
         self.0.try_read_data(buf)
     }
 
-    fn confirm_data_rcvd(&self, stream_frame: StreamFrame) {
-        self.0.confirm_data_rcvd(stream_frame)
+    fn on_data_acked(&self, stream_frame: StreamFrame) {
+        self.0.on_data_acked(stream_frame)
     }
 
     fn may_loss_data(&self, stream_frame: StreamFrame) {
         self.0.may_loss_data(stream_frame)
     }
 
-    fn confirm_reset_rcvd(&self, reset_frame: ResetStreamFrame) {
-        self.0.confirm_reset_rcvd(reset_frame)
+    fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
+        self.0.on_reset_acked(reset_frame)
     }
 }
 

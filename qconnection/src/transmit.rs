@@ -49,7 +49,7 @@ where
     let (mut hdr_buf, mut body_buf) = buffer.split_at_mut(max_header_size);
 
     // TODO: Path决定是否该发送AckFrame了，如果要发送最后一个参数不再为None
-    let (pkt_id, pn_size, mut body_len) = space.read(body_buf, None);
+    let (pn, pn_size, mut body_len) = space.read(body_buf, None);
     if body_len == 0 {
         // nothing to send
         return (0, 0);
@@ -95,7 +95,7 @@ where
     let header_size = max_header_size - offset;
     let header_and_pn_size = header_size + pn_size;
     let pkt_size = header_size + body_len;
-    let pkt_buffer = &mut buffer[offset..pkt_size];
+    let pkt_buffer = &mut buffer[offset..offset + pkt_size];
     // encode pn length in the first byte
     let clear_bits = LongClearBits::with_pn_size(pn_size);
     pkt_buffer[0] |= clear_bits.deref();
@@ -105,7 +105,7 @@ where
     keys.deref()
         .local
         .packet
-        .encrypt_in_place(pkt_id, header, body)
+        .encrypt_in_place(pn, header, body)
         .unwrap();
 
     // add header protection
@@ -135,7 +135,7 @@ pub fn read_1rtt_data_and_encrypt(
     let (mut hdr_buf, body_buf) = buffer.split_at_mut(header_size);
 
     // TODO: 这里path要决定是否反馈AckFrame
-    let (pkt_id, pn_size, body_len) = space.read(body_buf, None);
+    let (pn, pn_size, body_len) = space.read(body_buf, None);
     if body_len == 0 {
         return 0;
     }
@@ -154,7 +154,7 @@ pub fn read_1rtt_data_and_encrypt(
 
     // encrypt packet payload
     let (header, body) = pkt_buffer.split_at_mut(header_and_pn_size);
-    pk.deref().encrypt_in_place(pkt_id, header, body).unwrap();
+    pk.deref().encrypt_in_place(pn, header, body).unwrap();
 
     // add header protection
     let (header, pn_and_body) = pkt_buffer.split_at_mut(header_size);

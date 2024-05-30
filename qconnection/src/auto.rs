@@ -116,9 +116,9 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
                 continue;
             }
 
-            let undecoded_pn = packet.decode_header().unwrap();
-            let result = space.rcvd_pkt_records().decode_pn(undecoded_pn);
-            let pkt_id = match result {
+            let encoded_pn = packet.decode_header().unwrap();
+            let result = space.decode_pn(encoded_pn);
+            let pn = match result {
                 Ok(pn) => pn,
                 // Duplicate packet, discard. QUIC does not allow duplicate packets.
                 // Is it an error to receive duplicate packets? Definitely not,
@@ -126,7 +126,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
                 Err(e) => continue,
             };
 
-            match packet.decrypt_packet(pkt_id, undecoded_pn.size(), &k.as_ref().remote.packet) {
+            match packet.decrypt_packet(pn, encoded_pn.size(), &k.as_ref().remote.packet) {
                 Ok(payload) => {
                     match parse_packet_and_then_dispatch(
                         payload,
@@ -136,7 +136,8 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
                         &space_frame_queue,
                         &ack_frames_tx,
                     ) {
-                        Ok(is_ack_eliciting) => space.rcvd_pkt_records().register_pn(pkt_id),
+                        // TODO: path也要记录收包时间、is_ack_eliciting
+                        Ok(is_ack_eliciting) => space.register_pn(pn),
                         Err(_e) => {
                             // 解析包失败，丢弃
                             // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
@@ -174,15 +175,15 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
                 continue;
             }
 
-            let (pn, key_phase) = packet.decode_header().unwrap();
-            let pkt_id = match space.rcvd_pkt_records().decode_pn(pn) {
+            let (encoded_pn, key_phase) = packet.decode_header().unwrap();
+            let pn = match space.decode_pn(encoded_pn) {
                 Ok(pn) => pn,
                 Err(e) => continue,
             };
 
             // 要根据key_phase_bit来获取packet key
-            let pkt_key = pk.lock().unwrap().get_remote(key_phase, pkt_id);
-            match packet.decrypt_packet(pkt_id, pn.size(), &pkt_key.as_ref()) {
+            let pkt_key = pk.lock().unwrap().get_remote(key_phase, pn);
+            match packet.decrypt_packet(pn, encoded_pn.size(), &pkt_key.as_ref()) {
                 Ok(payload) => {
                     match parse_packet_and_then_dispatch(
                         payload,
@@ -192,7 +193,8 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
                         &space_frame_queue,
                         &ack_frames_tx,
                     ) {
-                        Ok(is_ack_eliciting) => space.rcvd_pkt_records().register_pn(pkt_id),
+                        // TODO: path也要登记其收到的包、收包时间、is_ack_eliciting，方便激发AckFrame
+                        Ok(_is_ack_eliciting) => space.register_pn(pn),
                         Err(_e) => {
                             // 解析包失败，丢弃
                             // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接

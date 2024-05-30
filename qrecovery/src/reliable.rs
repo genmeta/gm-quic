@@ -159,15 +159,15 @@ impl RawSentPktRecords {
         self.queue.push_back(SentRecord::Ack(frame.into()));
     }
 
-    fn confirm_pkt_rcvd(&mut self, pkt_no: u64) -> impl Iterator<Item = SentRecord> + '_ {
+    fn on_pkt_acked(&mut self, pn: u64) -> impl Iterator<Item = SentRecord> + '_ {
         let mut len = 0;
         let offset = self
             .records
             .iter_with_idx()
-            .take_while(|(pn, _)| *pn < pkt_no)
+            .take_while(|(pkt_idx, _)| *pkt_idx < pn)
             .map(|(_, s)| s.nframes())
             .sum::<usize>();
-        if let Some(s) = self.records.get_mut(pkt_no) {
+        if let Some(s) = self.records.get_mut(pn) {
             len = s.be_acked();
         }
         self.queue
@@ -175,15 +175,15 @@ impl RawSentPktRecords {
             .map(|f| f.clone())
     }
 
-    fn may_loss_pkt(&mut self, pkt_no: u64) -> impl Iterator<Item = SentRecord> + '_ {
+    fn may_loss_pkt(&mut self, pn: u64) -> impl Iterator<Item = SentRecord> + '_ {
         let mut len = 0;
         let offset = self
             .records
             .iter_with_idx()
-            .take_while(|(pn, _)| *pn < pkt_no)
+            .take_while(|(pkt_idx, _)| *pkt_idx < pn)
             .map(|(_, s)| s.nframes())
             .sum::<usize>();
-        if let Some(s) = self.records.get_mut(pkt_no) {
+        if let Some(s) = self.records.get_mut(pn) {
             len = s.maybe_loss();
         }
         self.queue
@@ -230,12 +230,12 @@ impl RecvGuard<'_> {
         }
     }
 
-    pub fn confirm_pkt_rcvd(&mut self, pkt_no: u64) -> impl Iterator<Item = SentRecord> + '_ {
-        self.inner.confirm_pkt_rcvd(pkt_no)
+    pub fn on_pkt_acked(&mut self, pn: u64) -> impl Iterator<Item = SentRecord> + '_ {
+        self.inner.on_pkt_acked(pn)
     }
 
-    pub fn may_loss_pkt(&mut self, pkt_no: u64) -> impl Iterator<Item = SentRecord> + '_ {
-        self.inner.may_loss_pkt(pkt_no)
+    pub fn may_loss_pkt(&mut self, pn: u64) -> impl Iterator<Item = SentRecord> + '_ {
+        self.inner.may_loss_pkt(pn)
     }
 }
 
@@ -251,7 +251,7 @@ pub struct SendGuard<'a> {
 }
 
 impl SendGuard<'_> {
-    pub fn next_pkt_no(&self) -> (u64, PacketNumber) {
+    pub fn next_pn(&self) -> (u64, PacketNumber) {
         let pn = self.inner.records.largest();
         let encoded_pn = PacketNumber::encode(pn, self.inner.largest_acked_pktno);
         (pn, encoded_pn)

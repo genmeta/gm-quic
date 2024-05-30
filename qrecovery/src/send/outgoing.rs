@@ -95,7 +95,7 @@ impl Outgoing {
         result
     }
 
-    pub fn confirm_data_rcvd(&self, range: &Range<u64>) -> bool {
+    pub fn on_data_acked(&self, range: &Range<u64>) -> bool {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner {
@@ -104,11 +104,11 @@ impl Outgoing {
                     unreachable!("never send data before recv data");
                 }
                 Sender::Sending(mut s) => {
-                    s.confirm_rcvd(range);
+                    s.on_acked(range);
                     sending_state.replace(Sender::Sending(s));
                 }
                 Sender::DataSent(mut s) => {
-                    s.confirm_rcvd(range);
+                    s.on_acked(range);
                     if s.is_all_rcvd() {
                         sending_state.replace(Sender::DataRecvd);
                         return true;
@@ -171,7 +171,7 @@ impl Outgoing {
         }
     }
 
-    pub fn confirm_reset_rcvd(&self) {
+    pub fn on_reset_acked(&self) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner {

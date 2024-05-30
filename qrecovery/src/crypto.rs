@@ -40,8 +40,8 @@ mod send {
             }
         }
 
-        fn ack_rcvd(&mut self, range: &Range<u64>) {
-            self.sndbuf.confirm_rcvd(range);
+        fn on_acked(&mut self, range: &Range<u64>) {
+            self.sndbuf.on_acked(range);
             if self.sndbuf.remaining_mut() > 0 {
                 if let Some(waker) = self.writable_waker.take() {
                     waker.wake();
@@ -117,11 +117,11 @@ mod send {
             self.0.lock().unwrap().try_read(buffer)
         }
 
-        pub(super) fn ack_rcvd(&self, range: &Range<u64>) {
-            self.0.lock().unwrap().ack_rcvd(range)
+        pub(super) fn on_data_acked(&self, range: &Range<u64>) {
+            self.0.lock().unwrap().on_acked(range)
         }
 
-        pub(super) fn may_loss(&self, range: &Range<u64>) {
+        pub(super) fn may_loss_data(&self, range: &Range<u64>) {
             self.0.lock().unwrap().may_loss(range)
         }
     }
@@ -283,7 +283,7 @@ impl CryptoStream {
 pub trait TransmitCrypto {
     fn try_read_data(&self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)>;
 
-    fn confirm_data_rcvd(&self, data_frame: CryptoFrame);
+    fn on_data_acked(&self, data_frame: CryptoFrame);
 
     fn may_loss_data(&self, data_frame: CryptoFrame);
 
@@ -295,12 +295,12 @@ impl TransmitCrypto for CryptoStream {
         self.outgoing.try_read_data(buf)
     }
 
-    fn confirm_data_rcvd(&self, data_frame: CryptoFrame) {
-        self.outgoing.ack_rcvd(&data_frame.range());
+    fn on_data_acked(&self, data_frame: CryptoFrame) {
+        self.outgoing.on_data_acked(&data_frame.range());
     }
 
     fn may_loss_data(&self, data_frame: CryptoFrame) {
-        self.outgoing.may_loss(&data_frame.range())
+        self.outgoing.may_loss_data(&data_frame.range())
     }
 
     fn recv_data(&self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error> {

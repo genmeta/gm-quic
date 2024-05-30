@@ -128,11 +128,11 @@ impl super::TransmitStream for RawDataStreams {
         todo!()
     }
 
-    fn confirm_data_rcvd(&self, stream_frame: StreamFrame) {
+    fn on_data_acked(&self, stream_frame: StreamFrame) {
         if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
             if let Some(all_data_rcvd) = set
                 .get(&stream_frame.id)
-                .map(|o| o.confirm_data_rcvd(&stream_frame.range()))
+                .map(|o| o.on_data_acked(&stream_frame.range()))
             {
                 if all_data_rcvd {
                     set.remove(&stream_frame.id);
@@ -155,10 +155,10 @@ impl super::TransmitStream for RawDataStreams {
         }
     }
 
-    fn confirm_reset_rcvd(&self, reset_frame: ResetStreamFrame) {
+    fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
         if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
             if let Some(o) = set.remove(&reset_frame.stream_id) {
-                o.confirm_reset_rcvd();
+                o.on_reset_acked();
             }
             // 如果流是双向的，接收部分的流独立地管理结束。其实是上层应用决定接收的部分是否同时结束
         }

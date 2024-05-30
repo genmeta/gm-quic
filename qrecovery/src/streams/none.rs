@@ -9,7 +9,7 @@ impl super::TransmitStream for NoDataStreams {
         None
     }
 
-    fn confirm_data_rcvd(&self, _stream_frame: StreamFrame) {
+    fn on_data_acked(&self, _stream_frame: StreamFrame) {
         unreachable!()
     }
 
@@ -17,7 +17,7 @@ impl super::TransmitStream for NoDataStreams {
         unreachable!()
     }
 
-    fn confirm_reset_rcvd(&self, _reset_frame: ResetStreamFrame) {
+    fn on_reset_acked(&self, _reset_frame: ResetStreamFrame) {
         unreachable!()
     }
 }

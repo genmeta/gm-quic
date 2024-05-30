@@ -132,7 +132,7 @@ impl OneRttPacketKeys {
     /// If the key phase is not the current key phase, update the key.
     /// Returning Arc<PacketKey> is to encrypt and decrypt packets at the same time.
     /// Compared to &'a PacketKey, Arc<PacketKey> does not occupy mutable borrowing &mut self.
-    pub fn get_remote(&mut self, key_phase: KeyPhaseBit, _pkt_id: u64) -> Arc<PacketKey> {
+    pub fn get_remote(&mut self, key_phase: KeyPhaseBit, _pn: u64) -> Arc<PacketKey> {
         if key_phase != self.cur_key_phase && self.remote[key_phase.as_index()].is_none() {
             self.update();
         }

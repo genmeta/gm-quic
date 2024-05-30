@@ -65,26 +65,26 @@ pub struct RcvdPktRecords {
 impl RcvdPktRecords {
     fn decode_pn(&mut self, pkt_number: PacketNumber) -> Result<u64, Error> {
         let expected_pn = self.queue.largest();
-        let pkt_no = pkt_number.decode(expected_pn);
-        if pkt_no < self.queue.offset() {
+        let pn = pkt_number.decode(expected_pn);
+        if pn < self.queue.offset() {
             return Err(Error::TooOld);
         }
-        // TODO: or pkt_no maybe much more larger than self.queue.largest()
+        // TODO: or pn maybe much more larger than self.queue.largest()
 
-        if let Some(record) = self.queue.get_mut(pkt_no) {
+        if let Some(record) = self.queue.get_mut(pn) {
             if record.is_received {
                 return Err(Error::HasRcvd);
             }
         }
-        Ok(pkt_no)
+        Ok(pn)
     }
 
-    fn register_pn(&mut self, pkt_no: u64) {
-        if let Some(record) = self.queue.get_mut(pkt_no) {
+    fn register_pn(&mut self, pn: u64) {
+        if let Some(record) = self.queue.get_mut(pn) {
             record.is_received = true;
         } else {
             self.queue
-                .insert(pkt_no, State::new_rcvd())
+                .insert(pn, State::new_rcvd())
                 .expect("packet number never exceed limit");
         }
     }
@@ -139,8 +139,8 @@ impl RcvdPktRecords {
         }
     }
 
-    fn inactivate(&mut self, pkt_no: u64) {
-        if let Some(record) = self.queue.get_mut(pkt_no) {
+    fn inactivate(&mut self, pn: u64) {
+        if let Some(record) = self.queue.get_mut(pn) {
             record.inactivate();
         }
     }
@@ -162,13 +162,13 @@ impl ArcRcvdPktRecords {
     /// 当新收到一个数据包，如果这个包很旧，那么大概率意味着是重复包，直接丢弃。
     /// 如果这个数据包号是最大的，那么它之后的空档都是尚未收到的，得记为未收到。
     /// 注意，包号合法，不代表的包内容合法，必须等到包被正确解密且其中帧被正确解出后，才能确认收到。
-    pub fn decode_pn(&self, pkt_number: PacketNumber) -> Result<u64, Error> {
-        self.inner.write().unwrap().decode_pn(pkt_number)
+    pub fn decode_pn(&self, encoded_pn: PacketNumber) -> Result<u64, Error> {
+        self.inner.write().unwrap().decode_pn(encoded_pn)
     }
 
     /// 当包号合法，且包被完全解密，且包中的帧都正确之后，记录该包已经收到。
-    pub fn register_pn(&self, pkt_no: u64) {
-        self.inner.write().unwrap().register_pn(pkt_no);
+    pub fn register_pn(&self, pn: u64) {
+        self.inner.write().unwrap().register_pn(pn);
     }
 
     /// 生成一个AckFrame，largest是最大的包号，须知largest不一定是收到的最大包号，
@@ -200,8 +200,8 @@ pub struct ArcRcvdPktRecordsWriter<'a> {
 impl ArcRcvdPktRecordsWriter<'_> {
     /// 各路径自行反馈哪些数据包过期了，不必再在AckFrame反馈。
     /// 队首连续的失活状态记录可以滑走，避免收包队列持续增长。
-    pub fn inactivate(&mut self, pkt_no: u64) {
-        self.guard.inactivate(pkt_no);
+    pub fn inactivate(&mut self, pn: u64) {
+        self.guard.inactivate(pn);
     }
 }
 
