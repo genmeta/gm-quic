@@ -1,6 +1,6 @@
 use rand::Rng;
 
-use crate::Acked;
+use crate::congestion::Acked;
 
 use super::*;
 

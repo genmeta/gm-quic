@@ -3,8 +3,8 @@
 use std::time::Duration;
 use std::time::Instant;
 
-use crate::Acked;
-use crate::Sent;
+use crate::congestion::Acked;
+use crate::congestion::Sent;
 
 #[derive(Debug)]
 pub struct Rate {

@@ -1,4 +1,4 @@
-use crate::{Acked, Sent};
+use crate::congestion::{Acked, Sent};
 
 use super::*;
 

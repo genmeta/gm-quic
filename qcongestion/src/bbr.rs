@@ -5,11 +5,12 @@
 
 use std::time::{Duration, Instant};
 
-use crate::{delivery_rate, Acked, Sent};
+use crate::{
+    congestion::{Acked, Algorithm, Sent},
+    delivery_rate,
+};
 
 use self::min_max::Minmax;
-
-use super::Algorithm;
 
 mod ack;
 mod init;
@@ -554,7 +555,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use crate::Algorithm;
+    use crate::congestion::{Acked, Algorithm, Sent};
 
     #[test]
     fn test_bbr_sent() {
@@ -562,7 +563,7 @@ mod tests {
         let now = Instant::now();
         // 发送 5 个包
         for pn in 0..5 {
-            let mut sent = super::Sent::default();
+            let mut sent = Sent::default();
             sent.size = 100;
             sent.time_sent = now;
             sent.pkt_num = pn;
@@ -575,7 +576,7 @@ mod tests {
         let next = Instant::now() + Duration::from_secs(1);
         // 再发送 5 个包
         for pn in 5..10 {
-            let mut sent = super::Sent::default();
+            let mut sent = Sent::default();
             sent.size = 100;
             sent.time_sent = next;
             sent.pkt_num = pn;
@@ -592,10 +593,10 @@ mod tests {
     fn test_bbr_acked() {
         let mut bbr = super::BBRState::default();
         bbr.init();
-        let mut packets: VecDeque<super::Sent> = VecDeque::new();
+        let mut packets: VecDeque<Sent> = VecDeque::new();
         let now = Instant::now();
         for pn in 0..5 {
-            let mut sent = super::Sent::default();
+            let mut sent = Sent::default();
             sent.size = 100;
             sent.time_sent = now;
             sent.pkt_num = pn;
@@ -603,15 +604,15 @@ mod tests {
             packets.push_back(sent);
         }
 
-        let recvTime = now + Duration::from_millis(100);
+        let recv_time = now + Duration::from_millis(100);
         // receive ack for 3 packets
         for _ in 0..3 {
             let packet = packets.pop_front().unwrap();
-            let mut acked = super::Acked {
+            let acked = Acked {
                 pkt_num: packet.pkt_num,
                 time_sent: packet.time_sent,
                 size: packet.size,
-                rtt: recvTime.saturating_duration_since(packet.time_sent),
+                rtt: recv_time.saturating_duration_since(packet.time_sent),
                 delivered: packet.delivered,
                 delivered_time: packet.delivered_time,
                 first_sent_time: packet.first_sent_time,
