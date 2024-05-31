@@ -10,12 +10,10 @@ use std::{
 };
 use thiserror::Error;
 
-/// 接收到的数据包有以下几种状态
+/// Packet有收到/没收到2种状态，状态也有有效/失活2种状态，失活的可以滑走
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct State {
-    // 当一个数据包的状态，未反馈给发送方，或者不确定发送方收到了该反馈
     is_active: bool,
-    // 当一个数据包的状态变得无用，比如已被重传或者已被确认了，该状态将变的无用
     is_received: bool,
 }
 
@@ -79,7 +77,7 @@ impl RcvdPktRecords {
         Ok(pn)
     }
 
-    fn register_pn(&mut self, pn: u64) {
+    fn on_rcvd_pn(&mut self, pn: u64) {
         if let Some(record) = self.queue.get_mut(pn) {
             record.is_received = true;
         } else {
@@ -167,8 +165,8 @@ impl ArcRcvdPktRecords {
     }
 
     /// 当包号合法，且包被完全解密，且包中的帧都正确之后，记录该包已经收到。
-    pub fn register_pn(&self, pn: u64) {
-        self.inner.write().unwrap().register_pn(pn);
+    pub fn on_rcvd_pn(&self, pn: u64) {
+        self.inner.write().unwrap().on_rcvd_pn(pn);
     }
 
     /// 生成一个AckFrame，largest是最大的包号，须知largest不一定是收到的最大包号，
@@ -221,7 +219,7 @@ mod tests {
         assert_eq!(records.decode_pn(PacketNumber::encode(1, 0)), Ok(1));
         assert_eq!(records.inner.read().unwrap().queue.len(), 0);
 
-        records.register_pn(1);
+        records.on_rcvd_pn(1);
         assert_eq!(records.inner.read().unwrap().queue.len(), 2);
 
         assert_eq!(
@@ -240,7 +238,7 @@ mod tests {
         );
 
         assert_eq!(records.decode_pn(PacketNumber::encode(30, 0)), Ok(30));
-        records.register_pn(30);
+        records.on_rcvd_pn(30);
         {
             let mut writer = records.write();
             for i in 5..10 {

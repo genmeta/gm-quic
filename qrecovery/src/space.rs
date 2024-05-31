@@ -43,8 +43,8 @@ where
         self.rcvd_pkt_records.decode_pn(encoded_pn)
     }
 
-    fn register_pn(&self, pn: u64) {
-        self.rcvd_pkt_records.register_pn(pn)
+    fn on_rcvd_pn(&self, pn: u64) {
+        self.rcvd_pkt_records.on_rcvd_pn(pn)
     }
 
     fn read(&self, mut buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize, usize) {
@@ -174,8 +174,8 @@ where
         self.0.decode_pn(encoded_pn)
     }
 
-    pub fn register_pn(&self, pn: u64) {
-        self.0.register_pn(pn)
+    pub fn on_rcvd_pn(&self, pn: u64) {
+        self.0.on_rcvd_pn(pn)
     }
 
     /// 要发送一个该空间的数据包，读出下一个包号，然后检车是否要发送AckFrame，
