@@ -4,8 +4,8 @@
 //   Token (..),
 // }
 
+use crate::packet::r#type::Type;
 use crate::varint::{be_varint, VarInt, WriteVarInt};
-use crate::SpaceId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewTokenFrame {
@@ -19,9 +19,10 @@ impl super::BeFrame for NewTokenFrame {
         super::FrameType::NewToken
     }
 
-    fn belongs_to(&self, space_id: SpaceId) -> bool {
+    fn belongs_to(&self, packet_type: Type) -> bool {
+        use crate::packet::r#type::short::OneRtt;
         // ___1
-        space_id == SpaceId::OneRtt
+        matches!(packet_type, Type::Short(OneRtt(_)))
     }
 
     fn max_encoding_size(&self) -> usize {

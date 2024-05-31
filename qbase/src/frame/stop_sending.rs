@@ -5,9 +5,9 @@
 // }
 
 use crate::{
+    packet::r#type::Type,
     streamid::{be_streamid, StreamId, WriteStreamId},
     varint::{be_varint, VarInt, WriteVarInt},
-    SpaceId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,9 +23,16 @@ impl super::BeFrame for StopSendingFrame {
         super::FrameType::StopSending
     }
 
-    fn belongs_to(&self, space_id: SpaceId) -> bool {
+    fn belongs_to(&self, packet_type: Type) -> bool {
+        use crate::packet::r#type::{
+            long::{v1::Type::ZeroRtt, Type::V1, Version},
+            short::OneRtt,
+        };
         // __01
-        space_id == SpaceId::ZeroRtt || space_id == SpaceId::OneRtt
+        matches!(
+            packet_type,
+            Type::Long(V1(Version::<1, _>(ZeroRtt))) | Type::Short(OneRtt(_))
+        )
     }
 
     fn max_encoding_size(&self) -> usize {

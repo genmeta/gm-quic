@@ -2,7 +2,7 @@
 //   Type (i) = 0x1e,
 // }
 
-use crate::SpaceId;
+use crate::packet::r#type::Type;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HandshakeDoneFrame;
@@ -14,9 +14,10 @@ impl super::BeFrame for HandshakeDoneFrame {
         super::FrameType::HandshakeDone
     }
 
-    fn belongs_to(&self, space_id: SpaceId) -> bool {
+    fn belongs_to(&self, packet_type: Type) -> bool {
+        use crate::packet::r#type::short::OneRtt;
         // ___1
-        space_id == SpaceId::OneRtt
+        matches!(packet_type, Type::Short(OneRtt(_)))
     }
 }
 

@@ -1,14 +1,12 @@
 // This folder defines all the frames, including their parsing and packaging processes.
-use crate::SpaceId;
+use crate::packet::r#type::Type;
 use enum_dispatch::enum_dispatch;
 
 #[enum_dispatch]
 pub trait BeFrame {
     fn frame_type(&self) -> FrameType;
 
-    fn belongs_to(&self, _space_id: SpaceId) -> bool {
-        true
-    }
+    fn belongs_to(&self, packet_type: Type) -> bool;
 
     fn max_encoding_size(&self) -> usize {
         1

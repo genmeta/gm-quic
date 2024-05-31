@@ -6,8 +6,8 @@
 // }
 
 use crate::{
+    packet::r#type::Type,
     varint::{be_varint, VarInt, WriteVarInt, VARINT_MAX},
-    SpaceId,
 };
 use std::ops::Range;
 
@@ -24,9 +24,18 @@ impl super::BeFrame for CryptoFrame {
         super::FrameType::Crypto
     }
 
-    fn belongs_to(&self, space_id: SpaceId) -> bool {
+    fn belongs_to(&self, packet_type: Type) -> bool {
+        use crate::packet::r#type::{
+            long::{v1::Type::*, Type::V1, Version},
+            short::OneRtt,
+        };
         // IH_1
-        space_id != SpaceId::ZeroRtt
+        matches!(
+            packet_type,
+            Type::Long(V1(Version::<1, _>(Initial)))
+                | Type::Long(V1(Version::<1, _>(Handshake)))
+                | Type::Short(OneRtt(_))
+        )
     }
 
     fn max_encoding_size(&self) -> usize {

@@ -4,11 +4,12 @@ use qbase::{
     frame::{AckFrame, BeFrame, ConnFrame, Frame, FrameReader, PureFrame},
     packet::{
         decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
+        header::GetType,
         keys::{ArcKeys, ArcOneRttKeys},
-        OneRttPacket, PacketNumber,
+        r#type::Type,
+        OneRttPacket, PacketNumber, PacketWrapper,
     },
     util::ArcAsyncQueue,
-    SpaceId,
 };
 use qrecovery::{
     space::{ArcSpace, SpaceFrame},
@@ -18,7 +19,7 @@ use tokio::sync::mpsc;
 
 fn parse_packet_and_then_dispatch(
     payload: bytes::Bytes,
-    space_id: SpaceId,
+    packet_type: Type,
     path: &ArcPath,
     conn_frames: &ArcAsyncQueue<ConnFrame>,
     space_frames: &ArcAsyncQueue<SpaceFrame>,
@@ -34,14 +35,14 @@ fn parse_packet_and_then_dispatch(
         match result {
             Ok(frame) => match frame {
                 Frame::Pure(f) => {
-                    if !f.belongs_to(space_id) {
+                    if !f.belongs_to(packet_type) {
                         space_frame_writer.rollback();
                         conn_frame_writer.rollback();
                         path_frame_writer.rollback();
                         return Err(Error::new(
                             ErrorKind::ProtocolViolation,
                             f.frame_type(),
-                            format!("cann't be received in {}", space_id),
+                            format!("cann't exist in {:?}", packet_type),
                         ));
                     }
 
@@ -67,14 +68,14 @@ fn parse_packet_and_then_dispatch(
                     }
                 }
                 Frame::Data(f, data) => {
-                    if !f.belongs_to(space_id) {
+                    if !f.belongs_to(packet_type) {
                         space_frame_writer.rollback();
                         conn_frame_writer.rollback();
                         path_frame_writer.rollback();
                         return Err(Error::new(
                             ErrorKind::ProtocolViolation,
                             f.frame_type(),
-                            format!("cann't be received in {}", space_id),
+                            format!("cann't exist in {:?}", packet_type),
                         ));
                     }
 
@@ -95,9 +96,8 @@ fn parse_packet_and_then_dispatch(
     Ok(is_ack_eliciting)
 }
 
-pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue<P, S>(
-    mut packet_rx: mpsc::UnboundedReceiver<(P, ArcPath)>,
-    space_id: SpaceId,
+pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue<H, S>(
+    mut packet_rx: mpsc::UnboundedReceiver<(PacketWrapper<H>, ArcPath)>,
     keys: ArcKeys,
     space: ArcSpace<S>,
     conn_frame_queue: ArcAsyncQueue<ConnFrame>,
@@ -106,7 +106,8 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
     need_close_space_frame_queue_at_end: bool,
 ) where
     S: ReceiveStream + TransmitStream,
-    P: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
+    H: GetType,
+    PacketWrapper<H>: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
 {
     while let Some((mut packet, path)) = packet_rx.recv().await {
         if let Some(k) = keys.get_remote_keys().await {
@@ -126,11 +127,12 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
                 Err(_) => continue,
             };
 
+            let packet_type = packet.header.get_type();
             match packet.decrypt_packet(pn, encoded_pn.size(), &k.as_ref().remote.packet) {
                 Ok(payload) => {
                     match parse_packet_and_then_dispatch(
                         payload,
-                        space_id,
+                        packet_type,
                         &path,
                         &conn_frame_queue,
                         &space_frame_queue,
@@ -182,12 +184,13 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
             };
 
             // 要根据key_phase_bit来获取packet key
-            let pkt_key = pk.lock().unwrap().get_remote(key_phase, pn);
-            match packet.decrypt_packet(pn, encoded_pn.size(), &pkt_key.as_ref()) {
+            let packet_type = packet.header.get_type();
+            let packet_key = pk.lock().unwrap().get_remote(key_phase, pn);
+            match packet.decrypt_packet(pn, encoded_pn.size(), &packet_key.as_ref()) {
                 Ok(payload) => {
                     match parse_packet_and_then_dispatch(
                         payload,
-                        SpaceId::OneRtt,
+                        packet_type,
                         &path,
                         &conn_frame_queue,
                         &space_frame_queue,

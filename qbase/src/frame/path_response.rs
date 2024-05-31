@@ -3,7 +3,7 @@
 //   Data (64),
 // }
 
-use crate::SpaceId;
+use crate::packet::r#type::Type;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PathResponseFrame {
@@ -25,9 +25,10 @@ impl super::BeFrame for PathResponseFrame {
         super::FrameType::PathResponse
     }
 
-    fn belongs_to(&self, space_id: SpaceId) -> bool {
+    fn belongs_to(&self, packet_type: Type) -> bool {
+        use crate::packet::r#type::short::OneRtt;
         // ___1
-        space_id == SpaceId::OneRtt
+        matches!(packet_type, Type::Short(OneRtt(_)))
     }
 
     fn max_encoding_size(&self) -> usize {

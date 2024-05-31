@@ -2,6 +2,8 @@
 //   Type (i) = 0x00,
 // }
 
+use crate::packet::r#type::Type;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PaddingFrame;
 
@@ -10,6 +12,21 @@ const PADDING_FRAME_TYPE: u8 = 0x00;
 impl super::BeFrame for PaddingFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Padding
+    }
+
+    fn belongs_to(&self, packet_type: Type) -> bool {
+        use crate::packet::r#type::{
+            long::{v1::Type::*, Type::V1, Version},
+            short::OneRtt,
+        };
+        // IH01
+        matches!(
+            packet_type,
+            Type::Long(V1(Version::<1, _>(Initial)))
+                | Type::Long(V1(Version::<1, _>(Handshake)))
+                | Type::Long(V1(Version::<1, _>(ZeroRtt)))
+                | Type::Short(OneRtt(_))
+        )
     }
 }
 

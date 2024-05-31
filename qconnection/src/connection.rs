@@ -6,7 +6,6 @@ use qbase::{
     },
     streamid::Role,
     util::ArcAsyncQueue,
-    SpaceId,
 };
 use qrecovery::{
     crypto::CryptoStream,
@@ -56,7 +55,6 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     tokio::spawn(
         auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
             initial_pkt_rx,
-            SpaceId::Initial,
             initial_keys.clone(),
             initial_space.clone(),
             rcvd_conn_frames.clone(),
@@ -98,7 +96,6 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     tokio::spawn(
         auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
             handshake_pkt_rx,
-            SpaceId::Handshake,
             handshake_keys.clone(),
             handshake_space.clone(),
             rcvd_conn_frames.clone(),
@@ -169,7 +166,6 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     tokio::spawn(
         auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
             zero_rtt_pkt_rx,
-            SpaceId::ZeroRtt,
             zero_rtt_keys.clone(),
             data_space.clone(),
             rcvd_conn_frames.clone(),
