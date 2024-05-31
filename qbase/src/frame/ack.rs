@@ -38,14 +38,14 @@ impl super::BeFrame for AckFrame {
 
     fn belongs_to(&self, packet_type: Type) -> bool {
         use crate::packet::r#type::{
-            long::{v1::Type::*, Type::*, Version},
+            long::{Type::V1, Ver1},
             short::OneRtt,
         };
         // IH_1, except for not belonging to 0-RTT.
         matches!(
             packet_type,
-            Type::Long(V1(Version::<1, _>(Initial)))
-                | Type::Long(V1(Version::<1, _>(Handshake)))
+            Type::Long(V1(Ver1::INITIAL))
+                | Type::Long(V1(Ver1::HANDSHAKE))
                 | Type::Short(OneRtt(_))
         )
     }

@@ -18,6 +18,15 @@ impl<const N: u32, Ty> GetVersion for Version<N, Ty> {
     }
 }
 
+impl Version<1, v1::Type> {
+    pub const RETRY: Self = Self(v1::Type::Retry);
+    pub const INITIAL: Self = Self(v1::Type::Initial);
+    pub const HANDSHAKE: Self = Self(v1::Type::Handshake);
+    pub const ZERO_RTT: Self = Self(v1::Type::ZeroRtt);
+}
+
+pub type Ver1 = Version<1, v1::Type>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     VersionNegotiation,

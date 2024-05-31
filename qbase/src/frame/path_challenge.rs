@@ -27,13 +27,13 @@ impl super::BeFrame for PathChallengeFrame {
 
     fn belongs_to(&self, packet_type: Type) -> bool {
         use crate::packet::r#type::{
-            long::{v1::Type::ZeroRtt, Type::V1, Version},
+            long::{Type::V1, Ver1},
             short::OneRtt,
         };
         // __01
         matches!(
             packet_type,
-            Type::Long(V1(Version::<1, _>(ZeroRtt))) | Type::Short(OneRtt(_))
+            Type::Long(V1(Ver1::ZERO_RTT)) | Type::Short(OneRtt(_))
         )
     }
 

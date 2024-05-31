@@ -33,14 +33,14 @@ impl super::BeFrame for ConnectionCloseFrame {
 
     fn belongs_to(&self, packet_type: Type) -> bool {
         use crate::packet::r#type::{
-            long::{v1::Type::*, Type::V1, Version},
+            long::{Type::V1, Ver1},
             short::OneRtt,
         };
         // ih01: Only a CONNECTION_CLOSE frame of type 0x1c can appear in Initial or Handshake packets.
         match packet_type {
-            Type::Long(V1(Version::<1, _>(Initial))) => self.frame_type.is_some(),
-            Type::Long(V1(Version::<1, _>(Handshake))) => self.frame_type.is_some(),
-            Type::Long(V1(Version::<1, _>(ZeroRtt))) => true,
+            Type::Long(V1(Ver1::INITIAL)) => self.frame_type.is_some(),
+            Type::Long(V1(Ver1::HANDSHAKE)) => self.frame_type.is_some(),
+            Type::Long(V1(Ver1::ZERO_RTT)) => true,
             Type::Short(OneRtt(_)) => true,
             _ => false,
         }
