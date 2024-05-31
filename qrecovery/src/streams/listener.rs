@@ -121,7 +121,7 @@ impl<'a> ListenerGuard<'a> {
         }
     }
 
-    pub(crate) fn conn_error(&mut self, e: &QuicError) {
+    pub(crate) fn on_conn_error(&mut self, e: &QuicError) {
         match self.inner.as_mut() {
             Ok(set) => {
                 if let Some(waker) = set.bi_waker.take() {

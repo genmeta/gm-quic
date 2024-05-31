@@ -31,5 +31,5 @@ impl super::ReceiveStream for NoDataStreams {
         unreachable!()
     }
 
-    fn conn_error(&self, _err: &Error) {}
+    fn on_conn_error(&self, _err: &Error) {}
 }

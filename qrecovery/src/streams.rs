@@ -25,7 +25,7 @@ pub trait ReceiveStream {
 
     fn recv_data(&self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error>;
 
-    fn conn_error(&self, err: &Error);
+    fn on_conn_error(&self, err: &Error);
 }
 
 pub mod data;
@@ -62,8 +62,8 @@ impl ReceiveStream for ArcDataStreams {
         self.0.recv_data(stream_frame, body)
     }
 
-    fn conn_error(&self, err: &Error) {
-        self.0.conn_error(err)
+    fn on_conn_error(&self, err: &Error) {
+        self.0.on_conn_error(err)
     }
 }
 

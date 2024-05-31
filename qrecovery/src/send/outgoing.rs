@@ -191,7 +191,7 @@ impl Outgoing {
 
     /// When a connection-level error occurs, all data streams must be notified.
     /// Their reading and writing should be terminated, accompanied the error of the connection.
-    pub fn conn_error(&self, err: &QuicError) {
+    pub fn on_conn_error(&self, err: &QuicError) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner {

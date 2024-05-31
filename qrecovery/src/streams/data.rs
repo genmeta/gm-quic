@@ -50,9 +50,9 @@ impl ArcOutputGuard<'_> {
         };
     }
 
-    fn conn_error(&mut self, err: &QuicError) {
+    fn on_conn_error(&mut self, err: &QuicError) {
         match self.inner.as_ref() {
-            Ok(set) => set.values().for_each(|o| o.conn_error(err)),
+            Ok(set) => set.values().for_each(|o| o.on_conn_error(err)),
             // 已经遇到过conn error了，不需要再次处理。然而guard()时就已经返回了Err，不会再走到这里来
             Err(e) => unreachable!("output is invalid: {e}"),
         };
@@ -94,9 +94,9 @@ impl ArcInputGuard<'_> {
         };
     }
 
-    fn conn_error(&mut self, err: &QuicError) {
+    fn on_conn_error(&mut self, err: &QuicError) {
         match self.inner.as_ref() {
-            Ok(set) => set.values().for_each(|o| o.conn_error(err)),
+            Ok(set) => set.values().for_each(|o| o.on_conn_error(err)),
             Err(e) => unreachable!("output is invalid: {e}"),
         };
         *self.inner = Err(err.clone());
@@ -321,7 +321,7 @@ impl super::ReceiveStream for RawDataStreams {
         Ok(())
     }
 
-    fn conn_error(&self, err: &QuicError) {
+    fn on_conn_error(&self, err: &QuicError) {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(_) => return,
@@ -335,9 +335,9 @@ impl super::ReceiveStream for RawDataStreams {
             Err(_) => return,
         };
 
-        output.conn_error(err);
-        input.conn_error(err);
-        listener.conn_error(err);
+        output.on_conn_error(err);
+        input.on_conn_error(err);
+        listener.on_conn_error(err);
     }
 }
 

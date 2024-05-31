@@ -78,9 +78,8 @@ impl Incoming {
                     let final_size = r.recv_reset(reset_frame)?;
                     receiving_state.replace(Recver::ResetRecvd(final_size));
                 }
-                other => {
-                    println!("there is sth wrong, ignored recv_reset");
-                    receiving_state.replace(other);
+                _ => {
+                    unreachable!("there is sth wrong, ignored recv_reset");
                 }
             },
             Err(_) => (),
@@ -88,7 +87,7 @@ impl Incoming {
         Ok(())
     }
 
-    pub fn conn_error(&self, err: &QuicError) {
+    pub fn on_conn_error(&self, err: &QuicError) {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
         match inner {
