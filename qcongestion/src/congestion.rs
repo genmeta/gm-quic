@@ -1,4 +1,4 @@
-use crate::{bbr, ObserveAck, ObserveLoss, Rtt};
+use crate::{bbr, ObserveAck, ObserveLoss, RawRtt};
 use qbase::frame::AckFrame;
 use std::{
     cmp::Ordering,
@@ -74,7 +74,7 @@ pub struct CongestionController<OA, OL> {
     pub observe_ack: OA,
     pub observe_loss: OL,
     algorithm: Box<dyn Algorithm>,
-    rtt: Arc<Mutex<Rtt>>,
+    rtt: Arc<Mutex<RawRtt>>,
     loss_detection_timer: Option<Instant>,
     pto_count: u32,
     max_ack_delay: Duration,
@@ -99,7 +99,7 @@ where
 
         CongestionController {
             algorithm: cc,
-            rtt: Arc::new(Mutex::new(Rtt::default())),
+            rtt: Arc::new(Mutex::new(RawRtt::default())),
             loss_detection_timer: None,
             // todo : read from transport parameters
             max_ack_delay: Duration::from_millis(0),
@@ -544,11 +544,20 @@ pub trait Algorithm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SlideWindow;
 
     struct Mock;
 
+    impl SlideWindow for Mock {
+        fn inactivate(&self, _idx: u64) {}
+    }
+
     impl ObserveAck for Mock {
-        fn inactivate_rcvd_record(&self, _: Epoch, _: u64) {}
+        type Guard = Mock;
+
+        fn guard(&self, _space: Epoch) -> Self::Guard {
+            Mock
+        }
     }
 
     impl ObserveLoss for Mock {

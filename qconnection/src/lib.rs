@@ -2,6 +2,7 @@ pub mod connection;
 pub mod crypto;
 pub mod endpoint;
 pub mod old_path;
+pub mod path;
 
 pub(crate) mod auto;
 pub(crate) mod handshake;

@@ -17,7 +17,7 @@ impl PathChallengeFrame {
         frame
     }
 
-    pub fn random_gen() -> Self {
+    pub fn random() -> Self {
         use rand::Rng;
         let mut rng = rand::thread_rng();
         let mut data = [0; 8];

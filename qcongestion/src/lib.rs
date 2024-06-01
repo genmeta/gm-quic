@@ -8,7 +8,7 @@ use std::{
 pub mod bbr;
 pub mod congestion;
 pub mod rtt;
-pub use rtt::Rtt;
+pub use rtt::RawRtt;
 pub mod delivery_rate;
 
 pub trait CongestionControl {
@@ -62,7 +62,14 @@ pub trait ObserveLoss {
     fn may_loss_pkt(&self, space: Epoch, pn: u64);
 }
 
+/// 如果一个类型实现了SlideWindow，其inactivate用于标记淘汰窗口左边的元素。
+/// 那Drop时，就会自动检查左边连续被淘汰的元素，将其滑过去。
+pub trait SlideWindow {
+    fn inactivate(&self, idx: u64);
+}
+
 pub trait ObserveAck {
+    type Guard: SlideWindow;
     /// 收包记录作为滑动窗口也要向前滑动；当一个Path的收包记录产生的AckFrame被对方收到时，那这个Path过往收到的包
     /// 都不必记录了，可以淘汰。
     /// 需知，一个Path收到的包不需要被记录，不代表其他Path的包也不需被记录。只有等各个path过去接收的包都不需要被记录，
@@ -73,5 +80,7 @@ pub trait ObserveAck {
     /// 其实用函数作用命名，可以如下命名，感觉更好一些
     /// 当发送的AckFrame被确认，那该AckFrame中的largest之前的，该path接收的包号，
     /// 都可以淘汰/失活了，不需再出现在后续的AckFrame中，即调用此函数通知外部观察者
-    fn inactivate_rcvd_record(&self, space: Epoch, pn: u64);
+    /// fn inactivate_rcvd_record(&self, space: Epoch, pn: u64);
+
+    fn guard(&self, space: Epoch) -> Self::Guard;
 }

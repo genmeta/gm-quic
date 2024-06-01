@@ -1,5 +1,5 @@
 use qbase::{cid::ConnectionId, frame::PathFrame, util::ArcAsyncQueue};
-use qcongestion::rtt::Rtt;
+use qcongestion::rtt::RawRtt;
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -31,7 +31,7 @@ pub struct Path {
 
     // 待发包队列
     frames: ArcAsyncQueue<PathFrame>,
-    rtt: Arc<Mutex<Rtt>>,
+    rtt: Arc<Mutex<RawRtt>>,
     // TODO: 维护PTO、路径是否丢失等状态，还有BBR控制器
     // 可重传的帧队列，因为判定了该path的包，要重传。但也可反馈给SentPacketManager，让其决定是否重传
 }
@@ -45,11 +45,11 @@ impl ArcPath {
             scid,
             dcid,
             frames: ArcAsyncQueue::new(),
-            rtt: Arc::new(Mutex::new(Rtt::default())),
+            rtt: Arc::new(Mutex::new(RawRtt::default())),
         }))
     }
 
-    pub fn rtt(&self) -> Arc<Mutex<Rtt>> {
+    pub fn rtt(&self) -> Arc<Mutex<RawRtt>> {
         self.0.as_ref().rtt.clone()
     }
 

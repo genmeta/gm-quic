@@ -1,11 +1,14 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 const INITIAL_RTT: Duration = Duration::from_millis(333);
 const GRANULARITY: Duration = Duration::from_millis(1);
 const TIME_THRESHOLD: f32 = 1.125;
 
 #[derive(Debug, Clone)]
-pub struct Rtt {
+pub struct RawRtt {
     max_ack_delay: Duration,
     first_rtt_sample: Option<Instant>,
     latest_rtt: Duration,
@@ -14,7 +17,7 @@ pub struct Rtt {
     pub min_rtt: Duration,
 }
 
-impl Default for Rtt {
+impl Default for RawRtt {
     fn default() -> Self {
         Self {
             max_ack_delay: Duration::from_millis(0),
@@ -27,7 +30,7 @@ impl Default for Rtt {
     }
 }
 
-impl Rtt {
+impl RawRtt {
     pub fn update(
         &mut self,
         latest_rtt: Duration,
@@ -66,6 +69,10 @@ impl Rtt {
         self.smoothed_rtt = self.smoothed_rtt.mul_f32(0.875) + adjusted_rtt.mul_f32(0.125);
     }
 
+    pub fn on_handshake_done(&mut self) {
+        // TODO: 让is_handshake_done变成内部成员
+    }
+
     pub fn loss_delay(&self) -> Duration {
         std::cmp::max(
             std::cmp::max(self.latest_rtt, self.smoothed_rtt).mul_f32(TIME_THRESHOLD),
@@ -75,6 +82,31 @@ impl Rtt {
 
     pub fn pto_base_duration(&self, pto_count: u32) -> Duration {
         (self.smoothed_rtt + std::cmp::max(self.rttvar * 4, GRANULARITY)) * (1 << pto_count)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ArcRtt(Arc<Mutex<RawRtt>>);
+
+/// 对外只需暴露ArcRtt，RawRtt成为内部实现
+impl ArcRtt {
+    pub fn update(&self, latest_rtt: Duration, ack_delay: Duration, is_handshake_confirmed: bool) {
+        self.0
+            .lock()
+            .unwrap()
+            .update(latest_rtt, ack_delay, is_handshake_confirmed);
+    }
+
+    pub fn loss_delay(&self) -> Duration {
+        self.0.lock().unwrap().loss_delay()
+    }
+
+    pub fn on_handshake_done(&self) {
+        self.0.lock().unwrap().on_handshake_done();
+    }
+
+    pub fn pto_base_duration(&self, times: u32) -> Duration {
+        self.0.lock().unwrap().pto_base_duration(times)
     }
 }
 
