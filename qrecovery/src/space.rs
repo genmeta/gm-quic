@@ -47,6 +47,8 @@ where
         self.rcvd_pkt_records.on_rcvd_pn(pn)
     }
 
+    /// 给出包缓冲区，读取该space下可以写入的数据，包括包号，AckFrame，可靠帧，数据帧
+    /// 返回包号、包号编码大小、写入的数据大小、是否写入了ack帧(是否必写入成功？)
     fn read(&self, mut buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize, usize) {
         let origin = buf.remaining_mut();
 

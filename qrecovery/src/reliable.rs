@@ -275,7 +275,7 @@ impl Drop for SendGuard<'_> {
         let nframes = self.inner.queue.len() - self.origin_len;
         self.inner
             .records
-            .push(SentPktState::Flighting(nframes as u16))
+            .push_back(SentPktState::Flighting(nframes as u16))
             .expect("packet number never overflow");
     }
 }

@@ -53,7 +53,7 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
     }
 
     pub fn contain(&self, idx: u64) -> bool {
-        idx >= self.offset && idx < self.offset + self.deque.len() as u64
+        idx >= self.offset && idx < self.largest()
     }
 
     pub fn get(&self, idx: u64) -> Option<&T> {
@@ -74,7 +74,7 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
 
     /// Append an element to the end of the queue and return the enqueue index of the element.
     /// If it exceeds the maximum limit of the enqueue index, return None
-    pub fn push(&mut self, value: T) -> Result<u64, ExceedLimit> {
+    pub fn push_back(&mut self, value: T) -> Result<u64, ExceedLimit> {
         let next_idx = self.offset.overflowing_add(self.deque.len() as u64);
         if next_idx.1 || next_idx.0 > LIMIT {
             Err(ExceedLimit(LIMIT))
@@ -87,7 +87,7 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
     /// When the queue is empty, it returns None; otherwise, it returns
     /// the first element in the queue along with its enqueue index.
     /// This API will be used by the queue for the packets to be sent.
-    pub fn pop(&mut self) -> Option<(u64, T)> {
+    pub fn pop_front(&mut self) -> Option<(u64, T)> {
         self.deque.pop_front().map(|v| {
             let offset = self.offset;
             self.offset += 1;
@@ -181,21 +181,21 @@ mod tests {
     fn test_index_queue() {
         let mut deque = IndexDeque::<u64, 19>::default();
         for i in 0..10 {
-            assert_eq!(deque.push(i + 1), Ok(i));
+            assert_eq!(deque.push_back(i + 1), Ok(i));
         }
         assert_eq!(deque.offset, 0);
 
         for i in 0..10 {
-            assert_eq!(deque.pop(), Some((i, i + 1)));
+            assert_eq!(deque.pop_front(), Some((i, i + 1)));
             assert_eq!(deque.offset, i + 1);
         }
-        assert_eq!(deque.pop(), None);
+        assert_eq!(deque.pop_front(), None);
         assert_eq!(deque.offset, 10);
 
         for i in 10..20 {
-            assert_eq!(deque.push(i + 1), Ok(i));
+            assert_eq!(deque.push_back(i + 1), Ok(i));
         }
-        assert_eq!(deque.push(21), Err(ExceedLimit(19)));
+        assert_eq!(deque.push_back(21), Err(ExceedLimit(19)));
         assert_eq!(deque.offset, 10);
 
         assert!(!deque.contain(0));
@@ -239,7 +239,7 @@ mod tests {
     fn test_skip() {
         let mut deque = IndexDeque::<u64, 19>::default();
         for i in 0..10 {
-            assert_eq!(deque.push(i), Ok(i));
+            assert_eq!(deque.push_back(i), Ok(i));
         }
         assert_eq!(deque.offset, 0);
 

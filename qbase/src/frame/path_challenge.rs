@@ -16,6 +16,18 @@ impl PathChallengeFrame {
         frame.data.copy_from_slice(data);
         frame
     }
+
+    pub fn random_gen() -> Self {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let mut data = [0; 8];
+        rng.fill(&mut data);
+        Self { data }
+    }
+
+    pub fn response(&self) -> super::PathResponseFrame {
+        super::PathResponseFrame::from_slice(&self.data[..])
+    }
 }
 
 const PATH_CHALLENGE_FRAME_TYPE: u8 = 0x1a;
