@@ -13,5 +13,5 @@ qrecovery = { path = "../qrecovery" }
 qcongestion = { path = "../qcongestion" }
 bytes = "1"
 thiserror = "1.0.21"
-async-lock = "3.0.0"
-rustls = { version = "0.21", features = ["quic"] }
+# async-lock = "3.0.0"
+rustls = "0.23"

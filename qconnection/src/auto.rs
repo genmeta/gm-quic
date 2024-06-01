@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use crate::path::ArcPath;
 use qbase::{
     error::{Error, ErrorKind},
@@ -111,7 +113,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
 {
     while let Some((mut packet, path)) = packet_rx.recv().await {
         if let Some(k) = keys.get_remote_keys().await {
-            let ok = packet.remove_protection(&k.as_ref().remote.header);
+            let ok = packet.remove_protection(k.remote.header.deref());
             if !ok {
                 // Failed to remove packet header protection, just discard it.
                 continue;
@@ -128,7 +130,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
             };
 
             let packet_type = packet.header.get_type();
-            match packet.decrypt_packet(pn, encoded_pn.size(), &k.as_ref().remote.packet) {
+            match packet.decrypt_packet(pn, encoded_pn.size(), k.remote.packet.deref()) {
                 Ok(payload) => {
                     match parse_packet_and_then_dispatch(
                         payload,
@@ -171,7 +173,7 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
     while let Some((mut packet, path)) = packet_rx.recv().await {
         // 1rtt空间的header protection key是固定的，packet key则是根据包头中的key_phase_bit变化的
         if let Some((hk, pk)) = keys.get_remote_keys().await {
-            let ok = packet.remove_protection(&hk.as_ref());
+            let ok = packet.remove_protection(hk.deref());
             if !ok {
                 // Failed to remove packet header protection, just discard it.
                 continue;
@@ -186,7 +188,7 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
             // 要根据key_phase_bit来获取packet key
             let packet_type = packet.header.get_type();
             let packet_key = pk.lock().unwrap().get_remote(key_phase, pn);
-            match packet.decrypt_packet(pn, encoded_pn.size(), &packet_key.as_ref()) {
+            match packet.decrypt_packet(pn, encoded_pn.size(), packet_key.deref()) {
                 Ok(payload) => {
                     match parse_packet_and_then_dispatch(
                         payload,

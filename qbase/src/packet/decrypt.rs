@@ -8,7 +8,7 @@ use bytes::Bytes;
 use rustls::quic::{HeaderProtectionKey, PacketKey};
 
 pub trait RemoteProtection {
-    fn remove_protection(&mut self, header_protection_key: &HeaderProtectionKey) -> bool;
+    fn remove_protection(&mut self, header_protection_key: &dyn HeaderProtectionKey) -> bool;
 }
 
 pub trait DecodeHeader {
@@ -23,12 +23,12 @@ pub trait DecryptPacket {
         self,
         pn: u64,
         encoded_pn_size: usize,
-        packet_key: &PacketKey,
+        packet_key: &dyn PacketKey,
     ) -> Result<Bytes, Error>;
 }
 
 impl<H: Protect> RemoteProtection for PacketWrapper<H> {
-    fn remove_protection(&mut self, header_protection_key: &HeaderProtectionKey) -> bool {
+    fn remove_protection(&mut self, header_protection_key: &dyn HeaderProtectionKey) -> bool {
         let (header, payload) = self.raw_data.split_at_mut(self.pn_offset);
         let first_byte = &mut header[0];
         let (pn_bytes, sample) = payload.split_at_mut(4);
@@ -71,7 +71,7 @@ impl<H: Protect> DecryptPacket for PacketWrapper<H> {
         self,
         pn: u64,
         encoded_pn_size: usize,
-        remote_keys: &PacketKey,
+        remote_keys: &dyn PacketKey,
     ) -> Result<Bytes, Error> {
         // decrypt packet
         let mut raw_data = self.raw_data;

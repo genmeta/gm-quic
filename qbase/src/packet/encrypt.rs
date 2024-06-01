@@ -18,11 +18,11 @@ pub trait EncodeHeader {
 }
 
 pub trait EncryptPacket {
-    fn encrypt_packet(&mut self, packet_number: u64, pn_len: usize, packet_key: &PacketKey);
+    fn encrypt_packet(&mut self, packet_number: u64, pn_len: usize, packet_key: &dyn PacketKey);
 }
 
 pub trait ProtectHeader {
-    fn protect_header(&mut self, pn_len: usize, header_protection_key: &HeaderProtectionKey);
+    fn protect_header(&mut self, pn_len: usize, header_protection_key: &dyn HeaderProtectionKey);
 }
 
 impl EncodeHeader for PacketWrapper<OneRttHeader> {
@@ -60,7 +60,7 @@ where
 }
 
 impl<H: Protect> EncryptPacket for PacketWrapper<H> {
-    fn encrypt_packet(&mut self, packet_number: u64, pn_len: usize, packet_key: &PacketKey) {
+    fn encrypt_packet(&mut self, packet_number: u64, pn_len: usize, packet_key: &dyn PacketKey) {
         let header_len = self.pn_offset + pn_len;
         let (header, body) = self.raw_data.split_at_mut(header_len);
         packet_key
@@ -70,7 +70,7 @@ impl<H: Protect> EncryptPacket for PacketWrapper<H> {
 }
 
 impl<H: Protect> ProtectHeader for PacketWrapper<H> {
-    fn protect_header(&mut self, pn_len: usize, header_protection_key: &HeaderProtectionKey) {
+    fn protect_header(&mut self, pn_len: usize, header_protection_key: &dyn HeaderProtectionKey) {
         let (header, payload) = self.raw_data.split_at_mut(self.pn_offset);
         let first_byte = &mut header[0];
         let (pn_bytes, sample) = payload.split_at_mut(4);

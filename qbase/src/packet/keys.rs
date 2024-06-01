@@ -89,7 +89,7 @@ impl Future for GetRemoteKeys {
 enum OneRttKeysState {
     Pending(Option<Waker>),
     Ready {
-        psk: (Arc<HeaderProtectionKey>, Arc<HeaderProtectionKey>),
+        psk: (Arc<dyn HeaderProtectionKey>, Arc<dyn HeaderProtectionKey>),
         pk: Arc<Mutex<OneRttPacketKeys>>,
     },
     Invalid,
@@ -98,17 +98,17 @@ enum OneRttKeysState {
 pub struct OneRttPacketKeys {
     cur_key_phase: KeyPhaseBit,
     secrets: Secrets,
-    remote: [Option<Arc<PacketKey>>; 2],
-    local: Arc<PacketKey>,
+    remote: [Option<Arc<dyn PacketKey>>; 2],
+    local: Arc<dyn PacketKey>,
 }
 
 impl OneRttPacketKeys {
-    fn new(remote: PacketKey, local: PacketKey, secrets: Secrets) -> Self {
+    fn new(remote: Box<dyn PacketKey>, local: Box<dyn PacketKey>, secrets: Secrets) -> Self {
         Self {
             cur_key_phase: KeyPhaseBit::default(),
             secrets,
-            remote: [Some(Arc::new(remote)), None],
-            local: Arc::new(local),
+            remote: [Some(Arc::from(remote)), None],
+            local: Arc::from(local),
         }
     }
 
@@ -116,8 +116,8 @@ impl OneRttPacketKeys {
     pub fn update(&mut self) {
         self.cur_key_phase.toggle();
         let key_set = self.secrets.next_packet_keys();
-        self.remote[self.cur_key_phase.as_index()] = Some(Arc::new(key_set.remote));
-        self.local = Arc::new(key_set.local);
+        self.remote[self.cur_key_phase.as_index()] = Some(Arc::from(key_set.remote));
+        self.local = Arc::from(key_set.local);
     }
 
     /// Old key must be phased out within a certain period of time. If the old one don't go,
@@ -132,7 +132,7 @@ impl OneRttPacketKeys {
     /// If the key phase is not the current key phase, update the key.
     /// Returning Arc<PacketKey> is to encrypt and decrypt packets at the same time.
     /// Compared to &'a PacketKey, Arc<PacketKey> does not occupy mutable borrowing &mut self.
-    pub fn get_remote(&mut self, key_phase: KeyPhaseBit, _pn: u64) -> Arc<PacketKey> {
+    pub fn get_remote(&mut self, key_phase: KeyPhaseBit, _pn: u64) -> Arc<dyn PacketKey> {
         if key_phase != self.cur_key_phase && self.remote[key_phase.as_index()].is_none() {
             self.update();
         }
@@ -142,7 +142,7 @@ impl OneRttPacketKeys {
     /// Get the local key with the current key phase to encrypt the outgoing packet.
     /// Returning Arc<PacketKey> is to encrypt and decrypt packets at the same time.
     /// Compared to &'a PacketKey, Arc<PacketKey> does not occupy mutable borrowing &mut self.
-    pub fn get_local(&self) -> (KeyPhaseBit, Arc<PacketKey>) {
+    pub fn get_local(&self) -> (KeyPhaseBit, Arc<dyn PacketKey>) {
         (self.cur_key_phase, self.local.clone())
     }
 }
@@ -162,7 +162,7 @@ impl ArcOneRttKeys {
                 if let Some(waker) = rx_waker.take() {
                     waker.wake();
                 }
-                let psk = (Arc::new(keys.remote.header), Arc::new(keys.local.header));
+                let psk = (Arc::from(keys.remote.header), Arc::from(keys.local.header));
                 let pk = Arc::new(Mutex::new(OneRttPacketKeys::new(
                     keys.remote.packet,
                     keys.local.packet,
@@ -189,9 +189,10 @@ impl ArcOneRttKeys {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn get_local_keys(
         &self,
-    ) -> Option<(Arc<HeaderProtectionKey>, Arc<Mutex<OneRttPacketKeys>>)> {
+    ) -> Option<(Arc<dyn HeaderProtectionKey>, Arc<Mutex<OneRttPacketKeys>>)> {
         let mut keys = self.0.lock().unwrap();
         match &mut *keys {
             OneRttKeysState::Ready { psk, pk } => Some((psk.1.clone(), pk.clone())),
@@ -207,7 +208,7 @@ impl ArcOneRttKeys {
 pub struct GetRemoteOneRttKeys(Arc<Mutex<OneRttKeysState>>);
 
 impl Future for GetRemoteOneRttKeys {
-    type Output = Option<(Arc<HeaderProtectionKey>, Arc<Mutex<OneRttPacketKeys>>)>;
+    type Output = Option<(Arc<dyn HeaderProtectionKey>, Arc<Mutex<OneRttPacketKeys>>)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut keys = self.0.lock().unwrap();
