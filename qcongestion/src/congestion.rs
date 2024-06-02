@@ -92,14 +92,14 @@ where
     // A.5. On Sending a Packet
     pub fn on_packet_sent(
         &mut self,
-        packet_number: u64,
+        pn: u64,
         space: Epoch,
         ack_eliciting: bool,
         in_flight: bool,
         sent_bytes: usize,
         now: Instant,
     ) {
-        let mut sent = Sent::new(packet_number, ack_eliciting, in_flight, sent_bytes, now);
+        let mut sent = Sent::new(pn, ack_eliciting, in_flight, sent_bytes, now);
         if in_flight {
             if ack_eliciting {
                 self.time_of_last_ack_eliciting_packet[space] = Some(now);
@@ -111,7 +111,7 @@ where
         // 为了使用二分查找 ack packet，sent_packets 的序号必须是严格升序
         let len = self.sent_packets[space].len();
         if len > 0 {
-            assert!(packet_number > self.sent_packets[space].get(len - 1).unwrap().pkt_num)
+            assert!(pn > self.sent_packets[space].get(len - 1).unwrap().pn)
         }
         self.sent_packets[space].push_back(sent);
         self.pacer.on_sent(sent_bytes as u64);
@@ -132,10 +132,9 @@ where
     }
 
     // A.7. On Receiving an Acknowledgment
-    pub fn on_ack_received(&mut self, space: Epoch, ack_frame: &AckFrame) {
+    pub fn on_ack_received(&mut self, space: Epoch, ack_frame: &AckFrame, now: Instant) {
         let largest_acked: u64 = ack_frame.largest.into();
-        let ack_delay = Duration::from_micros(ack_frame.delay.into());
-        let now = Instant::now();
+        let ack_delay = Duration::from_millis(ack_frame.delay.into());
 
         if let Some(pre_largest) = self.largest_acked_packet[space] {
             self.largest_acked_packet[space] = Some(pre_largest.max(largest_acked));
@@ -177,7 +176,7 @@ where
         for range in ack_frame.iter() {
             for pn in range {
                 let acked: Option<Acked> = self.sent_packets[space]
-                    .binary_search_by_key(&pn, |p| p.pkt_num)
+                    .binary_search_by_key(&pn, |p| p.pn)
                     .ok()
                     // 检测ack的包，标记为 is_acked,不能直接remove
                     .map(|idx| {
@@ -202,7 +201,7 @@ where
         let now = Instant::now();
         for lost in packets {
             self.algorithm.on_congestion_event(&lost, now);
-            self.observe_loss.may_loss_pkt(space, lost.pkt_num);
+            self.observe_loss.may_loss_pkt(space, lost.pn);
         }
     }
 
@@ -323,14 +322,13 @@ where
 
         let mut largest_ack_index = 0;
         while largest_ack_index != self.sent_packets[space].len()
-            && self.sent_packets[space][largest_ack_index].pkt_num < largest_acked
+            && self.sent_packets[space][largest_ack_index].pn < largest_acked
         {
             largest_ack_index += 1;
         }
 
         let mut i = 0;
-        while i != self.sent_packets[space].len()
-            && self.sent_packets[space][i].pkt_num < largest_acked
+        while i != self.sent_packets[space].len() && self.sent_packets[space][i].pn < largest_acked
         {
             if self.sent_packets[space][i].is_acked {
                 i += 1;
@@ -440,7 +438,8 @@ where
     fn on_ack(&self, space: Epoch, ack_frame: &AckFrame) {
         let binding = self.clone();
         let mut cc = binding.lock().unwrap();
-        cc.on_ack_received(space, ack_frame);
+        let now = Instant::now();
+        cc.on_ack_received(space, ack_frame, now);
     }
 
     fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_elicition: bool) {
@@ -469,7 +468,7 @@ pub struct Recved {
 
 #[derive(Clone)]
 pub struct Acked {
-    pub pkt_num: u64,
+    pub pn: u64,
     pub time_sent: Instant,
     pub size: usize,
     pub rtt: Duration,
@@ -485,7 +484,7 @@ impl From<Sent> for Acked {
     fn from(sent: Sent) -> Self {
         let now = Instant::now();
         Acked {
-            pkt_num: sent.pkt_num,
+            pn: sent.pn,
             time_sent: sent.time_sent,
             size: sent.size,
             rtt: now - sent.time_sent,
@@ -499,9 +498,9 @@ impl From<Sent> for Acked {
     }
 }
 
-#[derive(Eq, Clone)]
+#[derive(Eq, Clone, Debug)]
 pub struct Sent {
-    pub pkt_num: u64,
+    pub pn: u64,
     pub time_sent: Instant,
     pub time_acked: Option<Instant>,
     pub time_lost: Option<Instant>,
@@ -520,7 +519,7 @@ pub struct Sent {
 impl Default for Sent {
     fn default() -> Self {
         Sent {
-            pkt_num: 0,
+            pn: 0,
             time_sent: Instant::now(),
             time_acked: None,
             time_lost: None,
@@ -539,9 +538,9 @@ impl Default for Sent {
 }
 
 impl Sent {
-    fn new(pkt_num: u64, ack_eliciting: bool, in_flight: bool, size: usize, now: Instant) -> Self {
+    fn new(pn: u64, ack_eliciting: bool, in_flight: bool, size: usize, now: Instant) -> Self {
         Sent {
-            pkt_num,
+            pn,
             time_sent: now,
             time_acked: None,
             time_lost: None,
@@ -567,13 +566,13 @@ impl PartialOrd for Sent {
 
 impl PartialEq for Sent {
     fn eq(&self, other: &Self) -> bool {
-        self.pkt_num == other.pkt_num
+        self.pn == other.pn
     }
 }
 
 impl Ord for Sent {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.pkt_num.cmp(&other.pkt_num)
+        self.pn.cmp(&other.pn)
     }
 }
 
@@ -636,10 +635,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use qbase::varint::VarInt;
+
     use super::*;
     use crate::SlideWindow;
 
-    const MAX_ACK_DELAY: std::time::Duration = Duration::from_millis(100);
     struct Mock;
 
     impl SlideWindow for Mock {
@@ -660,15 +660,14 @@ mod tests {
 
     #[test]
     fn test_on_packet_sent_multiple_packets() {
-        let mut congestion =
-            CongestionController::new(CongestionAlgorithm::Bbr, MAX_ACK_DELAY, Mock, Mock);
+        let mut congestion = create_congestion_controller_for_test();
         let now = Instant::now();
         for i in 1..=5 {
             congestion.on_packet_sent(i, Epoch::Initial, true, true, 1000, now);
         }
         assert_eq!(congestion.sent_packets[Epoch::Initial].len(), 5);
         for (i, sent) in congestion.sent_packets[Epoch::Initial].iter().enumerate() {
-            assert_eq!(sent.pkt_num, i as u64 + 1);
+            assert_eq!(sent.pn, i as u64 + 1);
             assert_eq!(sent.size, 1000);
             assert_eq!(sent.ack_eliciting, true);
             assert_eq!(sent.in_flight, true);
@@ -680,8 +679,7 @@ mod tests {
 
     #[test]
     fn test_on_packet_sent_different_epochs() {
-        let mut congestion =
-            CongestionController::new(CongestionAlgorithm::Bbr, MAX_ACK_DELAY, Mock, Mock);
+        let mut congestion = create_congestion_controller_for_test();
         let now = Instant::now();
         congestion.on_packet_sent(1, Epoch::Initial, true, true, 1000, now);
         congestion.on_packet_sent(2, Epoch::Handshake, true, true, 1000, now);
@@ -691,7 +689,7 @@ mod tests {
         assert_eq!(congestion.sent_packets[Epoch::Data].len(), 1);
         for epoch in &[Epoch::Initial, Epoch::Handshake, Epoch::Data] {
             let sent = &congestion.sent_packets[*epoch][0];
-            assert_eq!(sent.pkt_num, *epoch as u64 + 1);
+            assert_eq!(sent.pn, *epoch as u64 + 1);
             assert_eq!(sent.size, 1000);
             assert_eq!(sent.ack_eliciting, true);
             assert_eq!(sent.in_flight, true);
@@ -703,8 +701,7 @@ mod tests {
 
     #[test]
     fn test_detect_and_remove_lost_packets() {
-        let mut congestion =
-            CongestionController::new(CongestionAlgorithm::Bbr, MAX_ACK_DELAY, Mock, Mock);
+        let mut congestion = create_congestion_controller_for_test();
         let now = Instant::now();
         let space = Epoch::Initial;
         for i in 1..=5 {
@@ -717,7 +714,7 @@ mod tests {
         let lost_packets = congestion.detect_and_remove_lost_packets(space, now);
         assert_eq!(lost_packets.len(), 2);
         for (i, lost) in lost_packets.iter().enumerate() {
-            assert_eq!(lost.pkt_num, i as u64 + 1);
+            assert_eq!(lost.pn, i as u64 + 1);
         }
         assert_eq!(congestion.sent_packets[space].len(), 2);
         // loss delay =  333*1.25
@@ -726,7 +723,92 @@ mod tests {
         // 3,4 因为超时丢包
         assert_eq!(loss_packets.len(), 2);
         for (i, lost) in loss_packets.iter().enumerate() {
-            assert_eq!(lost.pkt_num, i as u64 + 3);
+            assert_eq!(lost.pn, i as u64 + 3);
         }
+    }
+
+    #[test]
+    fn test_on_ack_received() {
+        let now = Instant::now();
+        let mut congestion_controller = create_congestion_controller_for_test();
+
+        // 发送 1 ~ 5
+        for i in 1..=5 {
+            congestion_controller.on_packet_sent(
+                i,
+                Epoch::Initial,
+                true, // ack_eliciting
+                true, // in_flight
+                1000, // sent_bytes
+                now,
+            );
+        }
+        // ack 1 ~ 3
+        let ack_frame = AckFrame {
+            largest: VarInt(3),
+            delay: VarInt(100),
+            first_range: VarInt(2),
+            ranges: vec![],
+            ecn: None,
+        };
+        congestion_controller.on_ack_received(Epoch::Initial, &ack_frame, now);
+        // 验证前三个数据包已被移除，剩下的数据包还在
+        assert_eq!(congestion_controller.sent_packets[Epoch::Initial].len(), 2);
+        for (i, sent) in congestion_controller.sent_packets[Epoch::Initial]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(sent.pn, i as u64 + 4);
+        }
+
+        // 发送 8 ~ 13
+        for i in 8..=13 {
+            congestion_controller.on_packet_sent(
+                i,
+                Epoch::Initial,
+                true, // ack_eliciting
+                true, // in_flight
+                1000, // sent_bytes
+                now,
+            );
+        }
+
+        // sent 为 4,5,8,9,10,11,12,13
+        // ack 9
+        // lost 4
+        // 剩余 5,8,9(ack),10,11,12,13
+        let ack_frame = AckFrame {
+            largest: VarInt(9),
+            delay: VarInt(100),
+            first_range: VarInt(0),
+            ranges: vec![],
+            ecn: None,
+        };
+
+        congestion_controller.on_ack_received(Epoch::Initial, &ack_frame, now);
+        assert_eq!(congestion_controller.sent_packets[Epoch::Initial].len(), 7);
+        for (i, sent) in congestion_controller.sent_packets[Epoch::Initial]
+            .iter()
+            .enumerate()
+        {
+            match i {
+                0 => assert_eq!(sent.pn, 5),
+                _ => assert_eq!(sent.pn, (i + 7) as u64),
+            }
+            if sent.pn == 9 {
+                assert_eq!(sent.is_acked, true);
+            } else {
+                assert_eq!(sent.is_acked, false);
+            }
+        }
+    }
+
+    fn create_congestion_controller_for_test() -> CongestionController<Mock, Mock> {
+        CongestionController::new(
+            CongestionAlgorithm::Bbr,
+            Duration::from_millis(100),
+            Mock,
+            Mock,
+        )
     }
 }

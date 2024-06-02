@@ -234,9 +234,7 @@ impl Algorithm for Bbr {
         self.update_control_parameters();
     }
 
-    fn on_congestion_event(&mut self, _: &Sent, _: Instant) {
-        todo!()
-    }
+    fn on_congestion_event(&mut self, _: &Sent, _: Instant) {}
 
     fn cwnd(&self) -> u64 {
         self.cwnd

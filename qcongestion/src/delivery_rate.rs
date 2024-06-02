@@ -53,7 +53,7 @@ impl Rate {
         pkt.tx_in_flight = bytes_in_flight;
         pkt.lost = bytes_lost;
 
-        self.last_sent_packet = pkt.pkt_num;
+        self.last_sent_packet = pkt.pn;
     }
 
     // Update the delivery rate sample when a packet is acked.
@@ -76,7 +76,7 @@ impl Rate {
             self.first_sent_time = pkt.time_sent;
         }
 
-        self.largest_acked = self.largest_acked.max(pkt.pkt_num);
+        self.largest_acked = self.largest_acked.max(pkt.pn);
     }
 
     pub fn generate_rate_sample(&mut self) {
@@ -163,7 +163,7 @@ mod tests {
         let mut sents: Vec<Sent> = (0..5)
             .map(|i| {
                 let mut sent = Sent::default();
-                sent.pkt_num = i;
+                sent.pn = i;
                 sent.size = 100;
                 sent.time_sent = now;
                 sent
@@ -171,7 +171,7 @@ mod tests {
             .collect();
 
         for sent in &mut sents {
-            let pkt_num = sent.pkt_num;
+            let pkt_num = sent.pn;
             rate.on_packet_sent(sent, (pkt_num * 100) as usize, 0);
         }
 
@@ -181,7 +181,7 @@ mod tests {
         for _ in 0..3 {
             let sent = sents.pop().unwrap();
             let acked = Acked {
-                pkt_num: sent.pkt_num,
+                pn: sent.pn,
                 time_sent: sent.time_sent,
                 size: sent.size,
                 rtt: recv_ack_time.saturating_duration_since(sent.time_sent),
