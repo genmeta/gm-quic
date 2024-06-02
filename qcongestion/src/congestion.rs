@@ -31,6 +31,7 @@ pub struct CongestionController<OA, OL> {
     // congestion controlle algorithm: bbr or cubic
     algorithm: Box<dyn Algorithm>,
     rtt: Arc<Mutex<RawRtt>>,
+    // todo: 内部需要一个循环任务检查
     loss_detection_timer: Option<Instant>,
     // The number of times a PTO has been sent without receiving an acknowledgment.
     pto_count: u32,
@@ -122,8 +123,10 @@ where
     }
 
     // A.6. On Receiving a Datagram
-    pub fn on_datagram_recv(&mut self, now: Instant) {
+    // todo: on_revd_datagram
+    pub fn on_datagram_rcvd(&mut self, now: Instant) {
         // If this datagram unblocks the server, arm the PTO timer to avoid deadlock.
+        //  todo: 外部通知变化
         if self.anti_amplification {
             self.set_lost_detection_timer();
             if let Some(loss_detection_timer) = self.loss_detection_timer {
@@ -136,7 +139,7 @@ where
     }
 
     // A.7. On Receiving an Acknowledgment
-    pub fn on_ack_received(&mut self, space: Epoch, ack_frame: &AckFrame, now: Instant) {
+    pub fn on_ack_rcvd(&mut self, space: Epoch, ack_frame: &AckFrame, now: Instant) {
         let largest_acked: u64 = ack_frame.largest.into();
         let ack_delay = Duration::from_millis(ack_frame.delay.into());
 
@@ -169,6 +172,7 @@ where
         self.set_lost_detection_timer();
     }
 
+    // todo: slid
     pub fn detect_and_remove_ack_packet(
         &mut self,
         space: Epoch,
@@ -325,6 +329,7 @@ where
         let loss_delay = self.rtt.lock().unwrap().loss_delay();
         let lost_send_time = now.checked_sub(loss_delay).unwrap();
 
+        // todo: 返回 iter
         let mut lost_packets = Vec::new();
 
         let mut largest_ack_index = 0;
@@ -460,7 +465,7 @@ where
         let binding = self.clone();
         let mut cc = binding.lock().unwrap();
         let now = Instant::now();
-        cc.on_ack_received(space, ack_frame, now);
+        cc.on_ack_rcvd(space, ack_frame, now);
     }
 
     fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_elicition: bool) {
@@ -468,7 +473,7 @@ where
         let recved = Recved { pn, recv_time: now };
         let binding = self.clone();
         let mut cc = binding.lock().unwrap();
-        cc.on_datagram_recv(now);
+        cc.on_datagram_rcvd(now);
         if !is_ack_elicition {
             return;
         }
@@ -501,6 +506,7 @@ pub struct Acked {
     pub lost: u64,
 }
 
+// todo: AckedPkt
 impl From<Sent> for Acked {
     fn from(sent: Sent) -> Self {
         let now = Instant::now();
@@ -519,6 +525,7 @@ impl From<Sent> for Acked {
     }
 }
 
+// todo: SentPkt
 #[derive(Eq, Clone, Debug)]
 pub struct Sent {
     pub pn: u64,
@@ -772,7 +779,7 @@ mod tests {
             ranges: vec![],
             ecn: None,
         };
-        congestion_controller.on_ack_received(Epoch::Initial, &ack_frame, now);
+        congestion_controller.on_ack_rcvd(Epoch::Initial, &ack_frame, now);
         // 验证前三个数据包已被移除，剩下的数据包还在
         assert_eq!(congestion_controller.sent_packets[Epoch::Initial].len(), 2);
         for (i, sent) in congestion_controller.sent_packets[Epoch::Initial]
@@ -806,7 +813,7 @@ mod tests {
             ecn: None,
         };
 
-        congestion_controller.on_ack_received(Epoch::Initial, &ack_frame, now);
+        congestion_controller.on_ack_rcvd(Epoch::Initial, &ack_frame, now);
         assert_eq!(congestion_controller.sent_packets[Epoch::Initial].len(), 7);
         for (i, sent) in congestion_controller.sent_packets[Epoch::Initial]
             .iter()

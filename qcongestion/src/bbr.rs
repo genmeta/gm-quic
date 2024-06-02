@@ -201,6 +201,7 @@ impl Algorithm for Bbr {
         self.on_transmit();
     }
 
+    //  todo: VecDeque 是否有必要
     fn on_ack(&mut self, packets: VecDeque<Acked>, now: Instant) {
         self.newly_acked_bytes = 0;
         self.newly_lost_bytes = 0;
