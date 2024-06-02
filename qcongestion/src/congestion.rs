@@ -1,6 +1,7 @@
 use crate::bbr::{INITIAL_CWND, MSS};
 use crate::pacing::Pacer;
 use crate::rtt::INITIAL_RTT;
+use crate::SlideWindow;
 use crate::{bbr, pacing, ObserveAck, ObserveLoss, RawRtt};
 use qbase::frame::AckFrame;
 use std::ops::{Index, IndexMut, RangeInclusive};
@@ -109,9 +110,8 @@ where
         }
 
         // 为了使用二分查找 ack packet，sent_packets 的序号必须是严格升序
-        let len = self.sent_packets[space].len();
-        if len > 0 {
-            assert!(pn > self.sent_packets[space].get(len - 1).unwrap().pn)
+        if let Some(last_pn) = self.sent_packets[space].back() {
+            assert!(pn > last_pn.pn);
         }
         self.sent_packets[space].push_back(sent);
         self.pacer.on_sent(sent_bytes as u64);
@@ -190,6 +190,9 @@ where
                     }
                     newly_acked_packets.push_back(ack);
                 }
+                // inactivate space
+                let mut guard = self.observe_ack.guard(space);
+                guard.inactivate(pn);
             }
         }
         self.remove_consecutive_ack_packets(space);
