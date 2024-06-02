@@ -138,10 +138,11 @@ where
         }
     }
 
+    /// 发现丢包，就要重传
     fn may_loss_pkt(&self, pn: u64) {
-        let mut recv_pkt_guard = self.sent_pkt_records.receive();
+        let mut sent_pkt_guard = self.sent_pkt_records.receive();
         let mut write_frame_guard = self.reliable_frame_queue.write();
-        for record in recv_pkt_guard.may_loss_pkt(pn) {
+        for record in sent_pkt_guard.may_loss_pkt(pn) {
             match record {
                 SentRecord::Ack(_) => {
                     // do nothing

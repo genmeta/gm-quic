@@ -56,7 +56,7 @@ pub enum Error {
 /// - 根据某个largest pktno，生成ack frame（ack frame不能超过buf大小）
 /// - 确定记录不再需要，可以被丢弃，滑走
 #[derive(Debug, Default)]
-pub struct RcvdPktRecords {
+struct RcvdPktRecords {
     queue: IndexDeque<State, VARINT_MAX>,
 }
 

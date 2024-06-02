@@ -643,13 +643,13 @@ mod tests {
     struct Mock;
 
     impl SlideWindow for Mock {
-        fn inactivate(&self, _idx: u64) {}
+        fn inactivate(&mut self, _idx: u64) {}
     }
 
     impl ObserveAck for Mock {
-        type Guard = Mock;
+        type Guard<'a> = Mock;
 
-        fn guard(&self, _space: Epoch) -> Self::Guard {
+        fn guard(&self, _space: Epoch) -> Self::Guard<'static> {
             Mock
         }
     }

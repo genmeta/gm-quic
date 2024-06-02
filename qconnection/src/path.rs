@@ -1,9 +1,16 @@
-use qbase::cid::ConnectionId;
+use qbase::{
+    cid::ConnectionId,
+    packet::{HandshakePacket, InitialPacket, OneRttPacket, ZeroRttPacket},
+};
 use qcongestion::congestion::CongestionController;
 use std::{net::SocketAddr, sync::Arc};
+use tokio::sync::mpsc::UnboundedSender;
 
 pub mod validate;
 pub use validate::{ResponseState, ValidateState};
+
+mod observer;
+use observer::{AckObserver, LossObserver};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct RelayAddr {
@@ -29,7 +36,7 @@ pub enum PathId {
 /// - 发包：发包受拥塞控制、流量控制，从异步角度看是一个无限循环，循环体：
 ///   - 异步地获取积攒的发送信用
 ///   - 扫描有效space，从中读取待发数据，以及是否发送Ack，Path帧，装包、记录
-pub struct RawPath<OA, OL> {
+pub struct RawPath {
     id: PathId,
     scid: ConnectionId, // scid.len == 0 表示没有使用连接id
     dcid: ConnectionId, // dcid.len == 0 表示没有使用连接id。发包时填充
@@ -41,10 +48,18 @@ pub struct RawPath<OA, OL> {
 
     // 拥塞控制器。另外还有连接级的流量控制、流级别的流量控制，以及抗放大攻击
     // 但这只是正常情况下。当连接处于Closing状态时，庞大的拥塞控制器便不再适用，而是简单的回应ConnectionCloseFrame。
-    cc: CongestionController<OA, OL>,
+    cc: CongestionController<AckObserver, LossObserver>,
 }
 
-pub struct ArcPath<OA, OL>(Arc<RawPath<OA, OL>>);
+pub struct ArcPath(Arc<RawPath>);
+
+pub struct PacketReceiver {
+    path: ArcPath,
+    initial_pkt_tx: UnboundedSender<(InitialPacket, ArcPath)>,
+    handshake_pkt_tx: UnboundedSender<(HandshakePacket, ArcPath)>,
+    zero_rtt_pkt_tx: UnboundedSender<(ZeroRttPacket, ArcPath)>,
+    one_rtt_pkt_tx: UnboundedSender<(OneRttPacket, ArcPath)>,
+}
 
 #[cfg(test)]
 mod tests {
