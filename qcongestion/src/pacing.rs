@@ -28,10 +28,10 @@ impl Pacer {
     }
 
     pub(super) fn on_sent(&mut self, packet_size: u64) {
-        self.tokens = self.tokens.saturating_mul(packet_size);
+        self.tokens = self.tokens.saturating_sub(packet_size);
     }
 
-    /// Schedule and return the the packet size to send
+    // Schedule and return the the packet size to send
     pub(super) fn schedule(
         &mut self,
         srtt: Duration,
@@ -64,7 +64,6 @@ impl Pacer {
         self.tokens = self.tokens.saturating_add(new_token).min(self.capacity);
         self.last_burst_time = now;
 
-        // todo: 如果是小包怎么处理？
         Some(self.tokens as usize)
     }
 
@@ -73,7 +72,7 @@ impl Pacer {
 
         let capacity = match rate {
             // Use the provided rate to calculate the capacity
-            Some(r) => r * BURST_INTERVAL.as_secs() as u64,
+            Some(r) => r * BURST_INTERVAL.as_secs(),
             // Use cwnd and smoothed_rtt to calculate the capacity
             None => ((cwnd as u128 * BURST_INTERVAL.as_nanos()) / rtt) as u64,
         };

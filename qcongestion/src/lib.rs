@@ -10,6 +10,8 @@ pub mod congestion;
 pub mod rtt;
 pub use rtt::RawRtt;
 pub mod delivery_rate;
+pub mod min_max;
+pub mod pacing;
 
 pub trait CongestionControl {
     /// 轮询是否可以发包，若可以，返回可以发包的数据量；该数据量包含各个空间的包能发的数据量总和

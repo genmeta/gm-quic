@@ -9,20 +9,14 @@ use crate::congestion::Sent;
 #[derive(Debug)]
 pub struct Rate {
     delivered: usize,
-
     delivered_time: Instant,
-
     first_sent_time: Instant,
-
     // Packet number of the last sent packet with app limited.
     end_of_app_limited: u64,
-
     // Packet number of the last sent packet.
     last_sent_packet: u64,
-
     // Packet number of the largest acked packet.
     largest_acked: u64,
-
     // Sample of rate estimation.
     rate_sample: RateSample,
 }
@@ -33,17 +27,11 @@ impl Default for Rate {
 
         Rate {
             delivered: 0,
-
             delivered_time: now,
-
             first_sent_time: now,
-
             end_of_app_limited: 0,
-
             last_sent_packet: 0,
-
             largest_acked: 0,
-
             rate_sample: RateSample::default(),
         }
     }
@@ -91,7 +79,7 @@ impl Rate {
         self.largest_acked = self.largest_acked.max(pkt.pkt_num);
     }
 
-    pub fn generate_rate_sample(&mut self, min_rtt: Duration) {
+    pub fn generate_rate_sample(&mut self) {
         // End app-limited phase if bubble is ACKed and gone.
         if self.app_limited() && self.largest_acked > self.end_of_app_limited {
             self.update_app_limited(false);
@@ -103,15 +91,10 @@ impl Rate {
                 .send_elapsed
                 .max(self.rate_sample.ack_elapsed);
 
-            self.rate_sample.delivered = self.delivered - self.rate_sample.prior_delivered;
+            self.rate_sample.delivered = self
+                .delivered
+                .saturating_sub(self.rate_sample.prior_delivered);
             self.rate_sample.interval = interval;
-
-            if interval < min_rtt {
-                self.rate_sample.interval = Duration::ZERO;
-
-                // No reliable sample.
-                return;
-            }
 
             if !interval.is_zero() {
                 // Fill in rate_sample with a rate sample.
@@ -157,21 +140,13 @@ impl Rate {
 #[derive(Default, Debug)]
 struct RateSample {
     delivery_rate: u64,
-
     is_app_limited: bool,
-
     interval: Duration,
-
     delivered: usize,
-
     prior_delivered: usize,
-
     prior_time: Option<Instant>,
-
     send_elapsed: Duration,
-
     ack_elapsed: Duration,
-
     rtt: Duration,
 }
 
@@ -219,7 +194,7 @@ mod tests {
             };
 
             rate.update_rate_sample(&acked, recv_ack_time);
-            rate.generate_rate_sample(delay);
+            rate.generate_rate_sample();
         }
         // 300 / 0.1
         assert_eq!(rate.sample_delivery_rate(), 3000);
