@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const INITIAL_RTT: Duration = Duration::from_millis(333);
+pub(crate) const INITIAL_RTT: Duration = Duration::from_millis(333);
 const GRANULARITY: Duration = Duration::from_millis(1);
 const TIME_THRESHOLD: f32 = 1.125;
 

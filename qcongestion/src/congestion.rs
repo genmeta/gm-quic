@@ -12,59 +12,11 @@ use std::{
     ops::{Index, IndexMut, RangeInclusive},
 };
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum Epoch {
-    Initial = 0,
-    Handshake = 1,
-    Data = 2,
-}
-
-static EPOCHS: [Epoch; 3] = [Epoch::Initial, Epoch::Handshake, Epoch::Data];
-
-impl Epoch {
-    pub fn epochs(range: RangeInclusive<Epoch>) -> &'static [Epoch] {
-        &EPOCHS[*range.start() as usize..=*range.end() as usize]
-    }
-
-    pub const fn count() -> usize {
-        3
-    }
-}
-
-impl Display for Epoch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", usize::from(*self))
-    }
-}
-
-impl From<Epoch> for usize {
-    fn from(e: Epoch) -> Self {
-        e as usize
-    }
-}
-
-impl<T> Index<Epoch> for [T]
-where
-    T: Sized,
-{
-    type Output = T;
-
-    fn index(&self, index: Epoch) -> &Self::Output {
-        self.index(usize::from(index))
-    }
-}
-
-impl<T> IndexMut<Epoch> for [T]
-where
-    T: Sized,
-{
-    fn index_mut(&mut self, index: Epoch) -> &mut Self::Output {
-        self.index_mut(usize::from(index))
-    }
-}
-
 const K_GRANULARITY: Duration = Duration::from_millis(1);
 const K_PACKET_THRESHOLD: u64 = 3;
+// todo: init cwnd
+const INITIAL_CWND: u64 = 10;
+const INITIAL_MTU: u16 = 1200;
 
 pub enum CongestionAlgorithm {
     Bbr,
@@ -85,6 +37,8 @@ pub struct CongestionController<OA, OL> {
     anti_amplification: bool,
     handshake_confirmed: bool,
     has_handshake_keys: bool,
+    delivery_rate: delivery_rate::Rate,
+    pacer: pacing::Pacer,
 }
 
 impl<OA, OL> CongestionController<OA, OL>
@@ -92,17 +46,22 @@ where
     OA: ObserveAck,
     OL: ObserveLoss,
 {
-    pub fn new(algorithm: CongestionAlgorithm, observe_ack: OA, observe_loss: OL) -> Self {
+    pub fn new(
+        algorithm: CongestionAlgorithm,
+        max_ack_delay: Duration,
+        observe_ack: OA,
+        observe_loss: OL,
+    ) -> Self {
         let cc = match algorithm {
-            CongestionAlgorithm::Bbr => Box::new(bbr::BBRState::new()),
+            CongestionAlgorithm::Bbr => Box::new(bbr::Bbr::new()),
         };
 
+        let now = Instant::now();
         CongestionController {
             algorithm: cc,
             rtt: Arc::new(Mutex::new(RawRtt::default())),
             loss_detection_timer: None,
-            // todo : read from transport parameters
-            max_ack_delay: Duration::from_millis(0),
+            max_ack_delay,
             pto_count: 0,
             time_of_last_ack_eliciting_packet: [None, None, None],
             largest_acked_packet: [None, None, None],
@@ -113,6 +72,8 @@ where
             has_handshake_keys: false,
             observe_ack,
             observe_loss,
+            delivery_rate: delivery_rate::Rate::default(),
+            pacer: Pacer::new(INITIAL_RTT, INITIAL_CWND, INITIAL_MTU, now, None),
         }
     }
 
@@ -541,11 +502,63 @@ pub trait Algorithm {
     fn cwnd(&self) -> u64;
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Epoch {
+    Initial = 0,
+    Handshake = 1,
+    Data = 2,
+}
+
+static EPOCHS: [Epoch; 3] = [Epoch::Initial, Epoch::Handshake, Epoch::Data];
+
+impl Epoch {
+    pub fn epochs(range: RangeInclusive<Epoch>) -> &'static [Epoch] {
+        &EPOCHS[*range.start() as usize..=*range.end() as usize]
+    }
+
+    pub const fn count() -> usize {
+        3
+    }
+}
+
+impl Display for Epoch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", usize::from(*self))
+    }
+}
+
+impl From<Epoch> for usize {
+    fn from(e: Epoch) -> Self {
+        e as usize
+    }
+}
+
+impl<T> Index<Epoch> for [T]
+where
+    T: Sized,
+{
+    type Output = T;
+
+    fn index(&self, index: Epoch) -> &Self::Output {
+        self.index(usize::from(index))
+    }
+}
+
+impl<T> IndexMut<Epoch> for [T]
+where
+    T: Sized,
+{
+    fn index_mut(&mut self, index: Epoch) -> &mut Self::Output {
+        self.index_mut(usize::from(index))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::SlideWindow;
 
+    const MAX_ACK_DELAY: std::time::Duration = Duration::from_millis(100);
     struct Mock;
 
     impl SlideWindow for Mock {
@@ -566,7 +579,8 @@ mod tests {
 
     #[test]
     fn test_on_packet_sent_multiple_packets() {
-        let mut congestion = CongestionController::new(CongestionAlgorithm::Bbr, Mock, Mock);
+        let mut congestion =
+            CongestionController::new(CongestionAlgorithm::Bbr, MAX_ACK_DELAY, Mock, Mock);
         let now = Instant::now();
         for i in 1..=5 {
             congestion.on_packet_sent(i, Epoch::Initial, true, true, 1000, now);
@@ -585,7 +599,8 @@ mod tests {
 
     #[test]
     fn test_on_packet_sent_different_epochs() {
-        let mut congestion = CongestionController::new(CongestionAlgorithm::Bbr, Mock, Mock);
+        let mut congestion =
+            CongestionController::new(CongestionAlgorithm::Bbr, MAX_ACK_DELAY, Mock, Mock);
         let now = Instant::now();
         congestion.on_packet_sent(1, Epoch::Initial, true, true, 1000, now);
         congestion.on_packet_sent(2, Epoch::Handshake, true, true, 1000, now);
@@ -607,7 +622,8 @@ mod tests {
 
     #[test]
     fn test_detect_and_remove_lost_packets() {
-        let mut congestion = CongestionController::new(CongestionAlgorithm::Bbr, Mock, Mock);
+        let mut congestion =
+            CongestionController::new(CongestionAlgorithm::Bbr, MAX_ACK_DELAY, Mock, Mock);
         let now = Instant::now();
         let pn_space = Epoch::Initial;
         for i in 1..=5 {
