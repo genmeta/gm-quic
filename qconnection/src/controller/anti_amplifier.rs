@@ -63,15 +63,7 @@ impl<const N: usize> ArcAntiAmplifier<N> {
 
     /// Wait until the data of 'amount' is really sent, then the remaining send credit should be
     /// updated in time. Do not call poll_apply before updating to avoid double amplification.
-    pub fn consume(&self, amount: usize) {
+    pub fn post_sent(&self, amount: usize) {
         self.0.lock().unwrap().consume(amount);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
     }
 }
