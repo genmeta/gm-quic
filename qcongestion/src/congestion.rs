@@ -4,6 +4,7 @@ use crate::rtt::INITIAL_RTT;
 use crate::SlideWindow;
 use crate::{bbr, pacing, ObserveAck, ObserveLoss, RawRtt};
 use qbase::frame::AckFrame;
+
 use std::ops::{Index, IndexMut, RangeInclusive};
 use std::{
     cmp::Ordering,
@@ -15,6 +16,7 @@ use std::{
 
 const K_GRANULARITY: Duration = Duration::from_millis(1);
 const K_PACKET_THRESHOLD: usize = 3;
+const MAX_SENT_DELAY: Duration = Duration::from_millis(30);
 
 pub enum CongestionAlgorithm {
     Bbr,
@@ -43,7 +45,7 @@ pub struct CongestionController<OA, OL> {
     // record sent packets, remove it when receive ack.
     sent_packets: [VecDeque<Sent>; Epoch::count()],
     // record recv packts, remove it when ack frame be ackd;
-    largest_recved_packet: [Option<Recved>; Epoch::count()],
+    largest_need_ack_packet: [Option<Recved>; Epoch::count()],
     // quic is in anti amplification
     anti_amplification: bool,
     // handshake state
@@ -51,6 +53,7 @@ pub struct CongestionController<OA, OL> {
     has_handshake_keys: bool,
     // pacer is used to control the burst rate
     pacer: pacing::Pacer,
+    last_sent_time: Instant,
 }
 
 impl<OA, OL> CongestionController<OA, OL>
@@ -80,13 +83,14 @@ where
             largest_acked_packet: [None, None, None],
             loss_time: [None, None, None],
             sent_packets: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
-            largest_recved_packet: [None, None, None],
+            largest_need_ack_packet: [None, None, None],
             anti_amplification: false,
             handshake_confirmed: false,
             has_handshake_keys: false,
             observe_ack,
             observe_loss,
-            pacer: Pacer::new(INITIAL_RTT, INITIAL_CWND, MSS as u16, now, None),
+            pacer: Pacer::new(INITIAL_RTT, INITIAL_CWND, MSS, now, None),
+            last_sent_time: now,
         }
     }
 
@@ -395,22 +399,35 @@ where
 
         let srtt = cc.rtt.clone().lock().unwrap().smoothed_rtt;
         let cwnd = cc.algorithm.cwnd();
-        let mtu = MSS as u16;
+        let mtu = MSS;
         let now = Instant::now();
         let rate = cc.algorithm.pacing_rate();
-        match cc.pacer.schedule(srtt, cwnd, mtu, now, rate) {
-            Some(size) => Poll::Ready(size),
-            None => {
-                cx.waker().wake_by_ref();
-                Poll::Pending
+        let tokens = cc.pacer.schedule(srtt, cwnd, mtu, now, rate);
+        if tokens >= mtu {
+            return Poll::Ready(tokens);
+        }
+
+        let mut need_ack = false;
+        for epoch in EPOCHS.iter() {
+            if cc.largest_need_ack_packet[*epoch].is_some() {
+                need_ack = true;
+                break;
             }
         }
+        // 1. 有 ack 要发送, 且距离上次发送时间大于 max ack dely
+        // 2. 距离上次发送时间大于 max sent delay
+        let elapsed = now.saturating_duration_since(cc.last_sent_time);
+        if (need_ack && elapsed >= cc.max_ack_delay) || elapsed >= MAX_SENT_DELAY {
+            return Poll::Ready(tokens);
+        }
+        cx.waker().wake_by_ref();
+        Poll::Pending
     }
 
     fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)> {
         let binding = self.clone();
         let cc = binding.lock().unwrap();
-        if let Some(recved) = &cc.largest_recved_packet[space] {
+        if let Some(recved) = &cc.largest_need_ack_packet[space] {
             return Some((recved.pn, recved.recv_time));
         }
         None
@@ -430,10 +447,11 @@ where
         let now = Instant::now();
         cc.on_packet_sent(pn, space, is_ack_elicition, in_flight, sent_bytes, now);
 
+        cc.last_sent_time = now;
         // 如果已经发送了 largest_recved_packet ack, 就不用记录再发送
-        if let (Some(ack_pn), Some(recved)) = (ack, &cc.largest_recved_packet[space]) {
+        if let (Some(ack_pn), Some(recved)) = (ack, &cc.largest_need_ack_packet[space]) {
             if ack_pn >= recved.pn {
-                cc.largest_recved_packet[space] = None;
+                cc.largest_need_ack_packet[space] = None;
             }
         }
     }
@@ -455,9 +473,9 @@ where
             return;
         }
 
-        if let Some(r) = &cc.largest_recved_packet[space] {
+        if let Some(r) = &cc.largest_need_ack_packet[space] {
             if pn > r.pn {
-                cc.largest_recved_packet[space] = Some(recved);
+                cc.largest_need_ack_packet[space] = Some(recved);
             }
         }
     }

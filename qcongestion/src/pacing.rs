@@ -20,7 +20,7 @@ impl Pacer {
     pub(super) fn new(
         smoothed_rtt: Duration,
         cwnd: u64,
-        mtu: u16,
+        mtu: usize,
         now: Instant,
         rate: Option<u64>,
     ) -> Self {
@@ -44,10 +44,10 @@ impl Pacer {
         &mut self,
         srtt: Duration,
         cwnd: u64,
-        mtu: u16,
+        mtu: usize,
         now: Instant,
         rate: Option<u64>,
-    ) -> Option<usize> {
+    ) -> usize {
         // Update capacity if cwnd or rate has changed
         if self.cwnd != cwnd || rate != self.rate {
             self.capacity = Pacer::calculate_capacity(srtt, cwnd, mtu, rate);
@@ -57,7 +57,7 @@ impl Pacer {
         self.cwnd = cwnd;
         self.rate = rate;
         if self.tokens > mtu as u64 {
-            return Some(mtu as usize);
+            return mtu;
         }
 
         let rate = match rate {
@@ -76,10 +76,10 @@ impl Pacer {
             .min(self.capacity);
         self.last_burst_time = now;
 
-        Some(self.tokens.min(mtu as u64) as usize)
+        self.tokens.min(mtu as u64) as usize
     }
 
-    fn calculate_capacity(smoothed_rtt: Duration, cwnd: u64, mtu: u16, rate: Option<u64>) -> u64 {
+    fn calculate_capacity(smoothed_rtt: Duration, cwnd: u64, mtu: usize, rate: Option<u64>) -> u64 {
         let rtt = smoothed_rtt.as_nanos().max(1);
 
         let capacity = match rate {
@@ -152,7 +152,7 @@ mod tests {
     fn test_schedule_no_rate() {
         let srtt = Duration::from_millis(100);
         let mut cwnd = 2_000_000; // 2MB
-        let mtu = 1500;
+        let mtu: usize = 1500;
         let mut update_time = Instant::now();
         let mut pacer = Pacer::new(srtt, cwnd, mtu, update_time, None);
         // token  = 20_000
@@ -162,7 +162,7 @@ mod tests {
         // rate  = 1.25 * cwnd / srtt
         // after 2 ms
         update_time += BURST_INTERVAL * 2;
-        let packet_size = pacer.schedule(srtt, cwnd, mtu, update_time, None).unwrap();
+        let packet_size = pacer.schedule(srtt, cwnd, mtu, update_time, None);
 
         assert_eq!(pacer.tokens, 20_000);
         assert_eq!(packet_size, 1500);
@@ -172,7 +172,7 @@ mod tests {
 
         // add token
         update_time += BURST_INTERVAL;
-        let packet_size = pacer.schedule(srtt, cwnd, mtu, update_time, None).unwrap();
+        let packet_size = pacer.schedule(srtt, cwnd, mtu, update_time, None);
 
         // burst interval add token 25000
         assert_eq!(pacer.capacity, 20_000);
@@ -181,7 +181,7 @@ mod tests {
 
         // change cwnd, change capacity
         cwnd = 1_500_000; // 1.5 MB
-        let packet_size = pacer.schedule(srtt, cwnd, mtu, update_time, None).unwrap();
+        let packet_size = pacer.schedule(srtt, cwnd, mtu, update_time, None);
         assert_eq!(pacer.capacity, 15_000);
         assert_eq!(pacer.tokens, 15_000);
         assert_eq!(packet_size, 1500);
@@ -191,7 +191,7 @@ mod tests {
     fn test_schedule_with_rate() {
         let srtt = Duration::from_millis(100);
         let cwnd = 2_000_000; // 2MB
-        let mtu = 1500;
+        let mtu: usize = 1500;
         let mut update_time = Instant::now();
         // 16MB/s
         let mut rate = Some(16_000_000);
@@ -199,20 +199,20 @@ mod tests {
         let mut pacer = Pacer::new(srtt, cwnd, mtu, update_time, rate);
         assert_eq!(pacer.capacity, 16_000);
 
-        let size = pacer.schedule(srtt, cwnd, mtu, update_time, rate).unwrap();
+        let size = pacer.schedule(srtt, cwnd, mtu, update_time, rate);
         assert_eq!(size, 1500);
         pacer.on_sent(15_000);
-        let size = pacer.schedule(srtt, cwnd, mtu, update_time, rate).unwrap();
+        let size = pacer.schedule(srtt, cwnd, mtu, update_time, rate);
         assert_eq!(size, 1_000);
 
         // udpate rate to update capacity
         // 1 MB
         rate = Some(1_000_000);
-        let size = pacer.schedule(srtt, cwnd, mtu, update_time, rate).unwrap();
+        let size = pacer.schedule(srtt, cwnd, mtu, update_time, rate);
         assert_eq!(size, 1_000);
         assert_eq!(pacer.capacity, 15_000);
         update_time += BURST_INTERVAL;
-        let size = pacer.schedule(srtt, cwnd, mtu, update_time, rate).unwrap();
+        let size = pacer.schedule(srtt, cwnd, mtu, update_time, rate);
         assert_eq!(pacer.tokens, 2000);
         assert_eq!(size, 1500);
     }

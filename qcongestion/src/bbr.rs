@@ -31,10 +31,10 @@ const PROBE_RTT_DURATION: Duration = Duration::from_millis(200);
 const SEND_QUANTUM_THRESHOLD_PACING_RATE: u64 = 1_200_000 / 8;
 
 //  default datagram size in bytes.
-pub(crate) const MSS: u64 = 1200;
+pub(crate) const MSS: usize = 1200;
 
 // Initial congestion window in bytes.
-pub(crate) const INITIAL_CWND: u64 = 80 * MSS;
+pub(crate) const INITIAL_CWND: u64 = 80 * MSS as u64;
 
 // The minimal cwnd value BBR tries to target using: 4 packets, or 4 * SMSS
 const MIN_PIPE_CWND_PKTS: usize = 4;

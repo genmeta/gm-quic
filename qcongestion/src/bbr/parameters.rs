@@ -38,7 +38,7 @@ impl Bbr {
         };
 
         // BBR.send_quantum  = min(BBR.pacing_rate * 1ms, 64KBytes)
-        self.send_quantum = (self.pacing_rate / 1000).clamp(floor, 64 * 1024);
+        self.send_quantum = (self.pacing_rate / 1000).clamp(floor as u64, 64 * 1024);
     }
 
     // 4.2.3.  Congestion Window
@@ -75,7 +75,7 @@ impl Bbr {
             self.cwnd = self
                 .cwnd
                 .saturating_sub(self.newly_lost_bytes)
-                .max(MSS * MINIMUM_WINDOW_PACKETS as u64);
+                .max((MSS * MINIMUM_WINDOW_PACKETS) as u64);
         }
 
         if self.packet_conservation {
@@ -113,6 +113,6 @@ impl Bbr {
 
     /// The minimal cwnd value BBR tries to target, in bytes
     pub(super) fn min_pipe_cwnd(&self) -> u64 {
-        MIN_PIPE_CWND_PKTS as u64 * MSS
+        (MIN_PIPE_CWND_PKTS * MSS) as u64
     }
 }
