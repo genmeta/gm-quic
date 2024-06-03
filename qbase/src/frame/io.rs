@@ -126,7 +126,6 @@ use super::{
     data_blocked::WriteDataBlockedFrame, handshake_done::WriteHandshakeDoneFrame,
     max_data::WriteMaxDataFrame, max_stream_data::WriteMaxStreamDataFrame,
     max_streams::WriteMaxStreamsFrame, new_connection_id::WriteNewConnectionIdFrame,
-    path_challenge::WritePathChallengeFrame, path_response::WritePathResponseFrame,
     reset_stream::WriteResetStreamFrame, retire_connection_id::WriteRetireConnectionIdFrame,
     stop_sending::WriteStopSendingFrame, stream_data_blocked::WriteStreamDataBlockedFrame,
     streams_blocked::WriteStreamsBlockedFrame,
@@ -134,7 +133,8 @@ use super::{
 
 pub use super::{
     ack::WriteAckFrame, connection_close::WriteConnectionCloseFrame, crypto::WriteCryptoFrame,
-    padding::WritePaddingFrame, ping::WritePingFrame, stream::WriteStreamFrame,
+    padding::WritePaddingFrame, path_challenge::WritePathChallengeFrame,
+    path_response::WritePathResponseFrame, ping::WritePingFrame, stream::WriteStreamFrame,
 };
 
 pub trait WriteFrame<F> {
