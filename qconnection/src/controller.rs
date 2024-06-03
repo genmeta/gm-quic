@@ -3,3 +3,5 @@ pub use anti_amplifier::ArcAntiAmplifier;
 
 pub mod flow;
 pub use flow::{ArcFlowController, FlowController};
+
+pub mod closing;
