@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use qbase::packet::SpacePacket;
 
 pub mod connection;
+pub mod controller;
 pub mod crypto;
 pub mod endpoint;
 pub mod old_path;

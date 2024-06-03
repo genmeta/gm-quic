@@ -41,7 +41,6 @@ impl Outgoing {
     where
         B: BufMut,
     {
-        let mut result = None;
         let capacity = buffer.remaining_mut();
         let estimate_capacity = |offset| StreamFrame::estimate_max_capacity(capacity, sid, offset);
         let write = |(offset, data, is_eos): (u64, &[u8], bool)| {
@@ -67,6 +66,7 @@ impl Outgoing {
 
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
+        let mut result = None;
         match inner {
             Ok(sending_state) => match sending_state.take() {
                 Sender::Ready(s) => {
