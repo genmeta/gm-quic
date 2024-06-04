@@ -45,6 +45,7 @@ where
     fn sendmsg_via_pathway(&mut self, msg: &[u8], pathway: Pathway) -> std::io::Result<usize> {
         // 1. (optional)验证local bind address == pathway.local.addr
         // 2. 直发就是sendmsg to pathway.remote；转发就是封一个包头，发给pathway.remote.agent
+
         todo!()
     }
 }
