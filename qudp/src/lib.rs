@@ -1,6 +1,5 @@
 use bytes::Bytes;
 use socket2::{Domain, Socket, Type};
-use std::net::IpAddr;
 use std::task::ready;
 use std::task::Poll;
 use std::{io, net::SocketAddr, task::Context};
@@ -23,20 +22,20 @@ pub struct SendMeta {
     // The segment size if this transmission contains multiple datagrams.
     // This is `None` if the transmit only contains a single datagram
     pub segment_size: Option<usize>,
-    /// Optional source IP address for the datagram
-    pub src_ip: Option<IpAddr>,
 }
 
 pub struct RecvMeta {
     pub src_addr: SocketAddr,
     pub ttl: u8,
+    pub len: usize,
 }
-pub struct Card {
+
+pub struct UdpSocketController {
     pub io: tokio::net::UdpSocket,
     pub ttl: u8,
 }
 
-impl Card {
+impl UdpSocketController {
     pub fn new(addr: SocketAddr) -> Self {
         let domain = if addr.is_ipv4() {
             Domain::IPV4
@@ -82,9 +81,15 @@ impl Card {
         Ok(())
     }
 
-    pub fn poll_send(&self, cx: &mut Context, packets: &[SendMeta]) -> Poll<io::Result<usize>> {
+    pub fn poll_send(
+        &mut self,
+        cx: &mut Context,
+        packets: &[SendMeta],
+        ttl: u8,
+    ) -> Poll<io::Result<usize>> {
         loop {
             ready!(self.io.poll_send_ready(cx))?;
+            self.set_ttl(ttl).expect("set ttl error");
             if let Ok(res) = self.io.try_io(Interest::WRITABLE, || {
                 send(socket2::SockRef::from(&self.io), packets)
             }) {
@@ -102,7 +107,7 @@ impl Card {
         loop {
             ready!(self.io.poll_recv_ready(cx))?;
             if let Ok(res) = self.io.try_io(Interest::READABLE, || {
-                recv(socket2::SockRef::from(&self.io), bufs, meta)
+                recv(socket2::SockRef::from(&self.io), &mut bufs[0], &mut meta[0])
             }) {
                 return Poll::Ready(Ok(res));
             }

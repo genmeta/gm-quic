@@ -1,11 +1,11 @@
 use std::{
     io::IoSliceMut,
     mem::{self, MaybeUninit},
-    net::IpAddr,
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 
 use crate::{
-    cmsg::{Aligned, Encoder},
+    cmsg::{self, Aligned, Encoder},
     unix::gso,
     RecvMeta, SendMeta,
 };
@@ -37,7 +37,7 @@ pub(crate) fn prepare_sent(
     hdr.msg_controllen = CMSG_LEN as _;
     let mut encoder = unsafe { Encoder::new(hdr) };
     let ecn = packet.ecn.map_or(0, |x| x as libc::c_int);
-    // todo: if return sendmsg EINVAL
+
     if packet.dest_addr.is_ipv4() {
         encoder.push(libc::IPPROTO_IP, libc::IP_TOS, ecn as IpTosTy);
     } else {
@@ -47,41 +47,6 @@ pub(crate) fn prepare_sent(
     if let Some(segment_size) = packet.segment_size {
         gso::set_segment_size(&mut encoder, segment_size as u16);
     }
-
-    if let Some(ip) = &packet.src_ip {
-        match ip {
-            IpAddr::V4(v4) => {
-                #[cfg(target_os = "linux")]
-                {
-                    let pktinfo = libc::in_pktinfo {
-                        ipi_ifindex: 0,
-                        ipi_spec_dst: libc::in_addr {
-                            s_addr: u32::from_ne_bytes(v4.octets()),
-                        },
-                        ipi_addr: libc::in_addr { s_addr: 0 },
-                    };
-                    encoder.push(libc::IPPROTO_IP, libc::IP_PKTINFO, pktinfo);
-                }
-                #[cfg(any(target_os = "freebsd", target_os = "macos"))]
-                {
-                    let addr = libc::in_addr {
-                        s_addr: u32::from_ne_bytes(v4.octets()),
-                    };
-                    encoder.push(libc::IPPROTO_IP, libc::IP_RECVDSTADDR, addr);
-                }
-            }
-            IpAddr::V6(v6) => {
-                let pktinfo = libc::in6_pktinfo {
-                    ipi6_ifindex: 0,
-                    ipi6_addr: libc::in6_addr {
-                        s6_addr: v6.octets(),
-                    },
-                };
-                encoder.push(libc::IPPROTO_IPV6, libc::IPV6_PKTINFO, pktinfo);
-            }
-        }
-    }
-
     encoder.finish();
 }
 
@@ -101,9 +66,52 @@ pub(crate) fn prepare_recv(
 }
 
 pub(crate) fn decode_recv(
-    _name: &MaybeUninit<libc::sockaddr_storage>,
-    _hdr: &libc::msghdr,
-    _len: usize,
-) -> RecvMeta {
-    todo!()
+    name: &MaybeUninit<libc::sockaddr_storage>,
+    hdr: &libc::msghdr,
+    len: usize,
+    meta: &mut RecvMeta,
+) {
+    let name = unsafe { name.assume_init() };
+    let cmsg_iter = unsafe { cmsg::Iter::new(hdr) };
+    meta.len = len;
+    for cmsg in cmsg_iter {
+        // todo: read ecn
+        match (cmsg.cmsg_level, cmsg.cmsg_type) {
+            (libc::IPPROTO_IP, libc::IP_TTL) => {
+                meta.ttl = unsafe { cmsg::decode::<u32>(cmsg) } as u8;
+            }
+            (libc::IPPROTO_IPV6, libc::IPV6_HOPLIMIT) => {
+                meta.ttl = unsafe { cmsg::decode::<u32>(cmsg) } as u8;
+            }
+            (libc::IPPROTO_IP, libc::IP_RECVTTL) => {
+                meta.ttl = unsafe { cmsg::decode::<u32>(cmsg) } as u8;
+            }
+            _ => {
+                println!("read unkown cmsg");
+                todo!("other cmsg");
+            }
+        }
+    }
+
+    meta.src_addr = match libc::c_int::from(name.ss_family) {
+        libc::AF_INET => {
+            let addr: &libc::sockaddr_in =
+                unsafe { &*(&name as *const _ as *const libc::sockaddr_in) };
+            SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::from(addr.sin_addr.s_addr.to_ne_bytes()),
+                u16::from_be(addr.sin_port),
+            ))
+        }
+        libc::AF_INET6 => {
+            let addr: &libc::sockaddr_in6 =
+                unsafe { &*(&name as *const _ as *const libc::sockaddr_in6) };
+            SocketAddr::V6(SocketAddrV6::new(
+                Ipv6Addr::from(addr.sin6_addr.s6_addr),
+                u16::from_be(addr.sin6_port),
+                addr.sin6_flowinfo,
+                addr.sin6_scope_id,
+            ))
+        }
+        _ => unreachable!(),
+    };
 }

@@ -27,11 +27,14 @@ pub(super) fn config(io: &socket2::Socket) -> io::Result<()> {
     }
 
     if is_ipv4 {
-        // IP_DONTFRAG  may	 be used to set	the Don't Fragment flag	on IP packets.
-        set_socket_option(io, libc::IPPROTO_IP, libc::IP_DONTFRAG, OPTION_ON)?;
-        // If the IP_RECVDSTADDR	option	is enabled on a	SOCK_DGRAM socket, the
-        // recvmsg(2) call will return the destination IP address for a UDP	 datagram.
-        set_socket_option(io, libc::IPPROTO_IP, libc::IP_RECVDSTADDR, OPTION_ON)?;
+        #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios"))]
+        {
+            // IP_DONTFRAG  may	 be used to set	the Don't Fragment flag	on IP packets.
+            set_socket_option(io, libc::IPPROTO_IP, libc::IP_DONTFRAG, OPTION_ON)?;
+            // If the IP_RECVDSTADDR	option	is enabled on a	SOCK_DGRAM socket, the
+            // recvmsg(2) call will return the destination IP address for a UDP	 datagram.
+            set_socket_option(io, libc::IPPROTO_IP, libc::IP_RECVDSTADDR, OPTION_ON)?;
+        }
         set_socket_option(io, libc::IPPROTO_IP, libc::IP_PKTINFO, OPTION_ON)?;
         set_socket_option(io, libc::IPPROTO_IP, libc::IP_TTL, DEFAULT_TTL)?;
         // todo: 测试兼容性
@@ -83,8 +86,7 @@ pub(super) fn set_socket_option(
     }
 }
 
-// todo: sendmmsg on linux
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios"))]
 pub(super) fn send(io: socket2::SockRef<'_>, packets: &[SendMeta]) -> io::Result<usize> {
     let mut hdr: libc::msghdr = unsafe { mem::zeroed() };
     let mut iov: libc::iovec = unsafe { mem::zeroed() };
@@ -117,8 +119,8 @@ pub(super) fn send(io: socket2::SockRef<'_>, packets: &[SendMeta]) -> io::Result
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(super) fn recv(
     io: socket2::SockRef<'_>,
-    bufs: &mut [IoSliceMut<'_>],
-    meta: &mut [RecvMeta],
+    buf: &mut IoSliceMut<'_>,
+    meta: &mut RecvMeta,
 ) -> io::Result<usize> {
     use crate::msg::{decode_recv, prepare_recv};
 
@@ -126,7 +128,7 @@ pub(super) fn recv(
     let mut ctrl = cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit());
     let mut hdr = unsafe { mem::zeroed::<libc::msghdr>() };
 
-    prepare_recv(&mut bufs[0], &mut name, &mut ctrl, &mut hdr);
+    prepare_recv(buf, &mut name, &mut ctrl, &mut hdr);
     let n = loop {
         let n = unsafe { libc::recvmsg(io.as_raw_fd(), &mut hdr, 0) };
         if n == -1 {
@@ -144,7 +146,7 @@ pub(super) fn recv(
         break n;
     };
 
-    meta[0] = decode_recv(&name, &hdr, n as usize);
+    decode_recv(&name, &hdr, n as usize, meta);
     Ok(1)
 }
 
@@ -154,5 +156,14 @@ pub(crate) mod gso {
 
     pub(crate) fn set_segment_size(_encoder: &mut cmsg::Encoder, _segment_size: u16) {
         panic!("Setting a segment size is not supported on current platform");
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) mod gso {
+    use crate::cmsg;
+
+    pub(crate) fn set_segment_size(_encoder: &mut cmsg::Encoder, _segment_size: u16) {
+        todo!("set gso on linux")
     }
 }
