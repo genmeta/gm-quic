@@ -1,3 +1,9 @@
+// todo:[WIP] allow unused
+#![cfg_attr(
+    debug_assertions,
+    allow(dead_code, unused_imports, unused_variables, unused_mut)
+)]
+
 use crate::RecvMeta;
 use crate::{
     cmsg::{self, CMSG_LEN},
@@ -163,7 +169,21 @@ pub(crate) mod gso {
 pub(crate) mod gso {
     use crate::cmsg;
 
-    pub(crate) fn set_segment_size(_encoder: &mut cmsg::Encoder, _segment_size: u16) {
+    pub(crate) fn set_segment_size(encoder: &mut cmsg::Encoder, segment_size: u16) {
         todo!("set gso on linux")
     }
+}
+
+#[cfg(not(any(target_os = "freebsd", target_os = "macos", target_os = "ios")))]
+pub(super) fn send(io: socket2::SockRef<'_>, packets: &[SendMeta]) -> io::Result<usize> {
+    todo!("send on linux");
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub(super) fn recv(
+    io: socket2::SockRef<'_>,
+    buf: &mut IoSliceMut<'_>,
+    meta: &mut RecvMeta,
+) -> io::Result<usize> {
+    todo!("recv on linux")
 }

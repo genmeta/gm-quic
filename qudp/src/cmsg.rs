@@ -1,7 +1,14 @@
+// todo:[WIP] allow unused
+#![cfg_attr(
+    debug_assertions,
+    allow(dead_code, unused_imports, unused_variables, unused_mut)
+)]
+
 use std::{mem, ptr};
 
 #[derive(Copy, Clone)]
 #[repr(align(8))] // Conservative bound for align_of<cmsghdr>
+
 pub(crate) struct Aligned<T>(pub(crate) T);
 pub(crate) const CMSG_LEN: usize = 88;
 
