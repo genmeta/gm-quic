@@ -45,7 +45,7 @@ pub struct CongestionController<OA, OL> {
     // record sent packets, remove it when receive ack.
     sent_packets: [VecDeque<Sent>; Epoch::count()],
     // record recv packts, remove it when ack frame be ackd;
-    largest_need_ack_packet: [Option<Recved>; Epoch::count()],
+    largest_ack_eliciting_packet: [Option<Recved>; Epoch::count()],
     // quic is in anti amplification
     anti_amplification: bool,
     // handshake state
@@ -83,7 +83,7 @@ where
             largest_acked_packet: [None, None, None],
             loss_time: [None, None, None],
             sent_packets: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
-            largest_need_ack_packet: [None, None, None],
+            largest_ack_eliciting_packet: [None, None, None],
             anti_amplification: false,
             handshake_confirmed: false,
             has_handshake_keys: false,
@@ -248,7 +248,7 @@ where
         if self.no_ack_eliciting_in_flight() {
             assert!(self.peer_completed_address_validation());
             if self.has_handshake_keys {
-                todo!("sen one ack eliciting handshake packet")
+                todo!("send one ack eliciting handshake packet")
             } else {
                 todo!("send one ack eliciting padded Inital packet")
             }
@@ -409,7 +409,7 @@ where
 
         let mut need_ack = false;
         for epoch in EPOCHS.iter() {
-            if cc.largest_need_ack_packet[*epoch].is_some() {
+            if cc.largest_ack_eliciting_packet[*epoch].is_some() {
                 need_ack = true;
                 break;
             }
@@ -427,7 +427,7 @@ where
     fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)> {
         let binding = self.clone();
         let cc = binding.lock().unwrap();
-        if let Some(recved) = &cc.largest_need_ack_packet[space] {
+        if let Some(recved) = &cc.largest_ack_eliciting_packet[space] {
             return Some((recved.pn, recved.recv_time));
         }
         None
@@ -448,10 +448,10 @@ where
         cc.on_packet_sent(pn, space, is_ack_elicition, in_flight, sent_bytes, now);
 
         cc.last_sent_time = now;
-        // 如果已经发送了 largest_recved_packet ack, 就不用记录再发送
-        if let (Some(ack_pn), Some(recved)) = (ack, &cc.largest_need_ack_packet[space]) {
+        // 如果已经发送了 largest_ack_eliciting_packet ack, 就不用记录再发送
+        if let (Some(ack_pn), Some(recved)) = (ack, &cc.largest_ack_eliciting_packet[space]) {
             if ack_pn >= recved.pn {
-                cc.largest_need_ack_packet[space] = None;
+                cc.largest_ack_eliciting_packet[space] = None;
             }
         }
     }
@@ -473,9 +473,9 @@ where
             return;
         }
 
-        if let Some(r) = &cc.largest_need_ack_packet[space] {
+        if let Some(r) = &cc.largest_ack_eliciting_packet[space] {
             if pn > r.pn {
-                cc.largest_need_ack_packet[space] = Some(recved);
+                cc.largest_ack_eliciting_packet[space] = Some(recved);
             }
         }
     }
