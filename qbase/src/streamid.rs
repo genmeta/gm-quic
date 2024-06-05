@@ -85,7 +85,7 @@ pub const MAX_STREAM_ID: u64 = (1 << 60) - 1;
 impl StreamId {
     /// It is prohibited to directly create a StreamId from external sources. StreamId can
     /// only be allocated incrementally by the StreamId manager or received from the peer.
-    pub(self) fn new(role: Role, dir: Dir, id: u64) -> Self {
+    fn new(role: Role, dir: Dir, id: u64) -> Self {
         assert!(id <= MAX_STREAM_ID);
         Self((((id << 1) | (dir as u64)) << 1) | (role as u64))
     }
@@ -110,12 +110,12 @@ impl StreamId {
         self.0 >> 2
     }
 
-    pub(self) unsafe fn next_unchecked(&self) -> Self {
+    unsafe fn next_unchecked(&self) -> Self {
         Self(self.0 + 4)
     }
 
     /// Safety: If adding self beyond the maximum range, it will stay within the maximum range.
-    pub(self) fn saturating_add(&mut self, n: u64) {
+    fn saturating_add(&mut self, n: u64) {
         let (mut id, overflow) = self.id().overflowing_add(n);
         if overflow || id > MAX_STREAM_ID {
             id = MAX_STREAM_ID;

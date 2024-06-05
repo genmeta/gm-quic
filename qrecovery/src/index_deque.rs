@@ -210,7 +210,7 @@ mod tests {
         assert_eq!(deque.drain_to(10).count(), 0);
         let mut i = 10;
         for item in deque.drain_to(15) {
-            i = i + 1;
+            i += 1;
             assert_eq!(item, i);
         }
         assert_eq!(i, 15);

@@ -161,12 +161,11 @@ mod tests {
         let now = Instant::now();
 
         let mut sents: Vec<Sent> = (0..5)
-            .map(|i| {
-                let mut sent = Sent::default();
-                sent.pn = i;
-                sent.size = 100;
-                sent.time_sent = now;
-                sent
+            .map(|i| Sent {
+                pn: i,
+                size: 100,
+                time_sent: now,
+                ..Default::default()
             })
             .collect();
 
@@ -199,7 +198,7 @@ mod tests {
         // 300 / 0.1
         assert_eq!(rate.sample_delivery_rate(), 3000);
         assert_eq!(rate.sample_rtt(), delay);
-        assert_eq!(rate.sample_is_app_limited(), false);
+        assert!(!rate.sample_is_app_limited());
         assert_eq!(rate.sample_delivered(), 300);
         assert_eq!(rate.sample_prior_delivered(), 0);
     }

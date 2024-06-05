@@ -317,8 +317,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_read() {
-        let crypto_stream = CryptoStream::new(1000_0000, 0);
-        crypto_stream.writer().write(b"hello world").await.unwrap();
+        let crypto_stream: CryptoStream = CryptoStream::new(1000_0000, 0);
+        crypto_stream
+            .writer()
+            .write_all(b"hello world")
+            .await
+            .unwrap();
 
         crypto_stream
             .recv_data(

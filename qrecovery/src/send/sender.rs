@@ -38,7 +38,7 @@ impl ReadySender {
     /// 但什么时候可写，是没通知的，只能不断去尝试写，直到写入成功。
     /// 仅供展示学习
     #[allow(dead_code)]
-    pub(self) fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.is_cancelled {
             Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,

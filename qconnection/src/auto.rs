@@ -30,9 +30,8 @@ fn parse_packet_and_then_dispatch(
     let mut space_frame_writer = space_frames.writer();
     let mut conn_frame_writer = conn_frames.writer();
     let mut path_frame_writer = path.frames().writer();
-    let mut frame_reader = FrameReader::new(payload);
     let mut is_ack_eliciting = false;
-    while let Some(result) = frame_reader.next() {
+    for result in FrameReader::new(payload) {
         match result {
             Ok(frame) => match frame {
                 Frame::Pure(f) => {

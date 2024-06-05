@@ -8,7 +8,7 @@ use std::{
 
 /// To indicate the state of a data segment, it is colored.
 #[derive(Default, PartialEq, Eq, Clone, Copy, Debug)]
-pub(self) enum Color {
+enum Color {
     #[default]
     Pending,
     Flighting,

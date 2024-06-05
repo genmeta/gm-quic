@@ -38,7 +38,7 @@ impl<'a> Encoder<'a> {
         let space = unsafe { libc::CMSG_SPACE(mem::size_of_val(&value) as _) as usize };
         //  检查空间是否足够
         assert!(
-            self.hdr.msg_controllen as usize >= self.len + space,
+            self.hdr.msg_controllen >= self.len + space,
             "control message buffer too small. Required: {}, Available: {}",
             self.len + space,
             self.hdr.msg_controllen

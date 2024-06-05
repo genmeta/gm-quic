@@ -690,8 +690,8 @@ mod tests {
         for (i, sent) in congestion.sent_packets[Epoch::Initial].iter().enumerate() {
             assert_eq!(sent.pn, i as u64 + 1);
             assert_eq!(sent.size, 1000);
-            assert_eq!(sent.ack_eliciting, true);
-            assert_eq!(sent.in_flight, true);
+            assert!(sent.ack_eliciting);
+            assert!(sent.in_flight);
             assert_eq!(sent.time_lost, None);
             assert_eq!(sent.time_acked, None);
             assert_eq!(sent.time_sent, now);
@@ -712,8 +712,8 @@ mod tests {
             let sent = &congestion.sent_packets[*epoch][0];
             assert_eq!(sent.pn, *epoch as u64 + 1);
             assert_eq!(sent.size, 1000);
-            assert_eq!(sent.ack_eliciting, true);
-            assert_eq!(sent.in_flight, true);
+            assert!(sent.ack_eliciting);
+            assert!(sent.in_flight);
             assert_eq!(sent.time_lost, None);
             assert_eq!(sent.time_acked, None);
             assert_eq!(sent.time_sent, now);
@@ -817,9 +817,9 @@ mod tests {
                 _ => assert_eq!(sent.pn, (i + 7) as u64),
             }
             if sent.pn == 9 {
-                assert_eq!(sent.is_acked, true);
+                assert!(sent.is_acked);
             } else {
-                assert_eq!(sent.is_acked, false);
+                assert!(!sent.is_acked);
             }
         }
     }

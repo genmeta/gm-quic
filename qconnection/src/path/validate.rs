@@ -29,9 +29,7 @@ impl Default for ValidateState {
 impl ValidateState {
     fn challenge(&mut self) {
         match self {
-            ValidateState::Challenging(_, _) | ValidateState::Rechallenging(_, _) => {
-                return;
-            }
+            ValidateState::Challenging(_, _) | ValidateState::Rechallenging(_, _) => {}
             ValidateState::Success => {
                 *self = ValidateState::Rechallenging(PathChallengeFrame::random(), None);
             }
@@ -166,24 +164,18 @@ impl ResponseState {
     }
 
     fn on_pkt_acked(&mut self, pn: u64) {
-        match self {
-            ResponseState::Challenged(_, pkt) => {
-                if *pkt == Some(pn) {
-                    *self = ResponseState::None;
-                }
+        if let ResponseState::Challenged(_, pkt) = self {
+            if *pkt == Some(pn) {
+                *self = ResponseState::None;
             }
-            _ => (),
         }
     }
 
     fn may_loss_pkt(&mut self, pn: u64) {
-        match self {
-            ResponseState::Challenged(_, pkt) => {
-                if *pkt == Some(pn) {
-                    *pkt = None;
-                }
+        if let ResponseState::Challenged(_, pkt) = self {
+            if *pkt == Some(pn) {
+                *pkt = None;
             }
-            _ => (),
         }
     }
 }

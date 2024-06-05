@@ -47,7 +47,7 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded_channel::<(InitialPacket, ArcPath)>();
     let (initial_ack_tx, initial_ack_rx) = mpsc::unbounded_channel();
     let (initial_loss_tx, initial_loss_rx) = mpsc::unbounded_channel();
-    let initial_crypto_stream = CryptoStream::new(1000_000, 1000_000);
+    let initial_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
     let initial_crypto_handler = initial_crypto_stream.split();
     let initial_keys = ArcKeys::new_pending();
     let initial_space_frame_queue = ArcAsyncQueue::new();
@@ -88,7 +88,7 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
         mpsc::unbounded_channel::<(HandshakePacket, ArcPath)>();
     let (handshake_ack_tx, handshake_ack_rx) = mpsc::unbounded_channel();
     let (handshake_loss_tx, handshake_loss_rx) = mpsc::unbounded_channel();
-    let handshake_crypto_stream = CryptoStream::new(1000_000, 1000_000);
+    let handshake_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
     let handshake_crypto_handler = handshake_crypto_stream.split();
     let handshake_keys = ArcKeys::new_pending();
     let handshake_space_frame_queue = ArcAsyncQueue::new();
@@ -136,7 +136,7 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     let (one_rtt_pkt_tx, one_rtt_pkt_rx) = mpsc::unbounded_channel::<(OneRttPacket, ArcPath)>();
     let zero_rtt_keys = ArcKeys::new_pending();
     let one_rtt_keys = ArcOneRttKeys::new_pending();
-    let one_rtt_crypto_stream = CryptoStream::new(1000_000, 1000_000);
+    let one_rtt_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
     let _one_rtt_crypto_handler = one_rtt_crypto_stream.split();
     let data_space_frame_queue = ArcAsyncQueue::new();
     let (data_ack_tx, data_ack_rx) = mpsc::unbounded_channel();
@@ -209,21 +209,21 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
 
 impl RawConnection {
     pub fn recv_initial_packet(&mut self, pkt: InitialPacket, path: ArcPath) {
-        self.initial_pkt_queue.as_mut().map(|q| {
+        if let Some(q) = &mut self.initial_pkt_queue {
             let _ = q.send((pkt, path));
-        });
+        }
     }
 
     pub fn recv_handshake_packet(&mut self, pkt: HandshakePacket, path: ArcPath) {
-        self.handshake_pkt_queue.as_mut().map(|q| {
+        if let Some(q) = &mut self.handshake_pkt_queue {
             let _ = q.send((pkt, path));
-        });
+        }
     }
 
     pub fn recv_0rtt_packet(&mut self, pkt: ZeroRttPacket, path: ArcPath) {
-        self.zero_rtt_pkt_queue.as_mut().map(|q| {
+        if let Some(q) = &mut self.zero_rtt_pkt_queue {
             let _ = q.send((pkt, path));
-        });
+        }
     }
 
     pub fn recv_1rtt_packet(&mut self, pkt: OneRttPacket, path: ArcPath) {

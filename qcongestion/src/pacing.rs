@@ -116,12 +116,12 @@ mod tests {
         assert_eq!(pacer.last_burst_time, now);
 
         // if rate is None capactity = cwnd * brust_interval / rtt
-        let pacer = Pacer::new(Duration::from_millis(100), 20_000_00, 1500, now, None);
+        let pacer = Pacer::new(Duration::from_millis(100), 2_000_000, 1500, now, None);
         assert_eq!(pacer.capacity, 20_000);
 
         let pacer = Pacer::new(
             Duration::from_millis(100),
-            20_000_00,
+            2_000_000,
             1500,
             now,
             Some(18_000_000), // 18_000 kB/s

@@ -117,7 +117,7 @@ impl Recver {
     }
 
     pub fn close(&self) {
-        if false == self.is_closed.swap(true, Ordering::Release) {
+        if !self.is_closed.swap(true, Ordering::Release) {
             // 精准地调用一次，可防范多次调用close导致的不必要的唤醒
             self.waker.wake();
         }

@@ -34,11 +34,15 @@ impl RawClosingState {
         if !self.is_finished {
             self.rcvd_packets += 1;
             if self.rcvd_packets >= 5 {
-                self.waker.take().map(|w| w.wake());
+                if let Some(w) = self.waker.take() {
+                    w.wake()
+                }
             }
 
             if self.last_sent_time.elapsed() >= Duration::from_millis(30) {
-                self.waker.take().map(|w| w.wake());
+                if let Some(w) = self.waker.take() {
+                    w.wake()
+                }
             }
         }
     }
@@ -46,23 +50,24 @@ impl RawClosingState {
     fn poll_send_ccf(&mut self, cx: &mut Context<'_>) -> Poll<Option<ConnectionCloseFrame>> {
         if self.is_finished {
             Poll::Ready(None)
+        } else if self.rcvd_packets >= 5
+            || self.last_sent_time.elapsed() >= Duration::from_millis(30)
+        {
+            self.rcvd_packets = 0;
+            self.last_sent_time = Instant::now();
+            Poll::Ready(Some(self.ccf.clone()))
         } else {
-            if self.rcvd_packets >= 5 || self.last_sent_time.elapsed() >= Duration::from_millis(30)
-            {
-                self.rcvd_packets = 0;
-                self.last_sent_time = Instant::now();
-                Poll::Ready(Some(self.ccf.clone()))
-            } else {
-                self.waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
+            self.waker = Some(cx.waker().clone());
+            Poll::Pending
         }
     }
 
     // 当超时了，或者在此状态下，收到了ConnectionCloseFrame，可调该函数结束
     fn finish(&mut self) {
         self.is_finished = true;
-        self.waker.take().map(Waker::wake);
+        if let Some(a) = self.waker.take() {
+            a.wake()
+        }
     }
 }
 
