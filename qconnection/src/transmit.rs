@@ -167,9 +167,4 @@ pub fn read_1rtt_data_and_encrypt(
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+mod tests {}

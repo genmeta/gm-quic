@@ -454,12 +454,3 @@ impl Sender {
 /// 直接丢弃不管；然而Outgoing还有DataRecvd、ResetRecvd两个状态，需要等待对端确认。
 /// 所以Writer/Outgoing内部共享同一个Sender。
 pub type ArcSender = Arc<Mutex<io::Result<Sender>>>;
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn it_works() {
-        println!("sender::tests::it_works");
-    }
-}

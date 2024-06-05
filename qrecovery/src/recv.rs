@@ -16,12 +16,3 @@ pub fn new(initial_max_stream_data: u64) -> (Incoming, Reader) {
     let incoming = Incoming::new(arc_recver);
     (incoming, reader)
 }
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn it_works() {
-        println!("recv::tests::it_works");
-    }
-}

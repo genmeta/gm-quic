@@ -521,11 +521,3 @@ impl RawDataStreams {
         (incoming, reader)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        println!("streams::tests::it_works");
-    }
-}

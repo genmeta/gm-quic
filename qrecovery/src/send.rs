@@ -18,12 +18,3 @@ pub fn new(initial_max_stream_data: u64) -> (Outgoing, Writer) {
     let outgoing = Outgoing(arc_sender);
     (outgoing, writer)
 }
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn it_works() {
-        println!("sender::tests::it_works");
-    }
-}
