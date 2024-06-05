@@ -1,17 +1,17 @@
 [package]
 name = "qbase"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-nom = "7"
-bytes = "1"
-rand = "0.8"
-futures = "0.3"
-getset = "0.1"
-thiserror = "1.0"
-enum_dispatch = "0.3"
-deref-derive = "0.1.0"
-rustls = "0.23"
+nom = { workspace = true }
+bytes = { workspace = true }
+rand = { workspace = true }
+futures = { workspace = true }
+getset = { workspace = true }
+thiserror = { workspace = true }
+enum_dispatch = { workspace = true }
+deref-derive = { workspace = true }
+rustls = { workspace = true }

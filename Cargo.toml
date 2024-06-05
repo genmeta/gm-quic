@@ -1,6 +1,44 @@
 [workspace]
+resolver = "2"
 members = ["qbase", "qrecovery", "qconnection", "qcongestion", "qudp"]
 default-members = ["qbase", "qrecovery", "qconnection", "qcongestion"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+async-lock = "3"
+futures = "0.3"
+rand = "0.8"
+bytes = "1"
+rustls = "0.23"
+thiserror = "1"
+getset = "0.1"
+enum_dispatch = "0.3"
+deref-derive = "0.1.0"
+slice-deque = "0.3"
+socket2 = "0.5"
+libc = "0.2"
+nom = "7"
+tokio = { version = "1", features = ["full"] }
+
+
+[workspace.dependencies.qbase]
+path = "./qbase"
+
+[workspace.dependencies.qrecovery]
+path = "./qrecovery"
+
+[workspace.dependencies.qconnection]
+path = "./qconnection"
+
+[workspace.dependencies.qcongestion]
+path = "./qcongestion"
+
+[workspace.dependencies.qudp]
+path = "./qudp"
+
 
 [profile.bench]
 debug = true

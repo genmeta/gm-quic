@@ -1,17 +1,16 @@
 [package]
 name = "qconnection"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-futures = "0.3"
-tokio = { version = "1.32.0", features = ["full"] }
-qbase = { path = "../qbase" }
-qrecovery = { path = "../qrecovery" }
-qcongestion = { path = "../qcongestion" }
-bytes = "1"
-thiserror = "1.0.21"
-# async-lock = "3.0.0"
-rustls = "0.23"
+futures = { workspace = true }
+tokio = { workspace = true }
+qbase = { workspace = true }
+qrecovery = { workspace = true }
+qcongestion = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+rustls = { workspace = true }
