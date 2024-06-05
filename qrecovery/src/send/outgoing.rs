@@ -1,5 +1,6 @@
 use super::sender::{ArcSender, Sender};
 use bytes::BufMut;
+use futures::ready;
 use qbase::{
     error::Error as QuicError,
     frame::{
@@ -26,13 +27,11 @@ impl Outgoing {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner {
-            Ok(sending_state) => match sending_state.take() {
-                Sender::Sending(mut s) => {
+            Ok(sending_state) => {
+                if let Sender::Sending(s) = sending_state {
                     s.update_window(max_data_size);
-                    sending_state.replace(Sender::Sending(s));
                 }
-                other => sending_state.replace(other),
-            },
+            }
             Err(_) => (),
         }
     }
@@ -66,58 +65,50 @@ impl Outgoing {
 
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        let mut result = None;
+
         match inner {
-            Ok(sending_state) => match sending_state.take() {
+            Ok(sending_state) => match sending_state {
                 Sender::Ready(s) => {
+                    let result;
                     if s.is_shutdown() {
-                        let mut s = s.end();
+                        let mut s = s.make_sent();
                         result = s.pick_up(estimate_capacity).map(write);
-                        sending_state.replace(Sender::DataSent(s));
+                        *sending_state = Sender::DataSent(s);
                     } else {
-                        let mut s = s.begin_sending();
+                        let mut s = s.make_sending();
                         result = s.pick_up(estimate_capacity).map(write);
-                        sending_state.replace(Sender::Sending(s));
+                        *sending_state = Sender::Sending(s);
                     }
+                    result
                 }
-                Sender::Sending(mut s) => {
-                    result = s.pick_up(estimate_capacity).map(write);
-                    sending_state.replace(Sender::Sending(s));
-                }
-                Sender::DataSent(mut s) => {
-                    result = s.pick_up(estimate_capacity).map(write);
-                    sending_state.replace(Sender::DataSent(s));
-                }
-                other => sending_state.replace(other),
+                Sender::Sending(s) => s.pick_up(estimate_capacity).map(write),
+                Sender::DataSent(s) => s.pick_up(estimate_capacity).map(write),
+                _ => None,
             },
-            Err(_) => (),
-        };
-        result
+            Err(_) => None,
+        }
     }
 
     pub fn on_data_acked(&self, range: &Range<u64>) -> bool {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner {
-            Ok(sending_state) => match sending_state.take() {
+            Ok(sending_state) => match sending_state {
                 Sender::Ready(_) => {
                     unreachable!("never send data before recv data");
                 }
-                Sender::Sending(mut s) => {
+                Sender::Sending(s) => {
                     s.on_acked(range);
-                    sending_state.replace(Sender::Sending(s));
                 }
-                Sender::DataSent(mut s) => {
+                Sender::DataSent(s) => {
                     s.on_acked(range);
                     if s.is_all_rcvd() {
-                        sending_state.replace(Sender::DataRecvd);
+                        *sending_state = Sender::DataRecvd;
                         return true;
-                    } else {
-                        sending_state.replace(Sender::DataSent(s));
                     }
                 }
                 // ignore recv
-                other => sending_state.replace(other),
+                _ => {}
             },
             Err(_) => (),
         };
@@ -150,22 +141,20 @@ impl Outgoing {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner {
-            Ok(sending_state) => match sending_state.take() {
+            Ok(sending_state) => match sending_state {
                 Sender::Ready(_) => {
                     unreachable!("never send data before recv data");
                 }
                 Sender::Sending(s) => {
-                    sending_state.replace(Sender::ResetSent(s.stop()));
+                    *sending_state = Sender::ResetSent(s.stop());
+
                     true
                 }
                 Sender::DataSent(s) => {
-                    sending_state.replace(Sender::ResetSent(s.stop()));
+                    *sending_state = Sender::ResetSent(s.stop());
                     true
                 }
-                other => {
-                    sending_state.replace(other);
-                    false
-                }
+                _ => false,
             },
             Err(_) => false,
         }
@@ -175,9 +164,9 @@ impl Outgoing {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner {
-            Ok(sending_state) => match sending_state.take() {
+            Ok(sending_state) => match sending_state {
                 Sender::ResetSent(_) | Sender::ResetRecvd => {
-                    sending_state.replace(Sender::ResetRecvd);
+                    *sending_state = Sender::ResetRecvd;
                 }
                 _ => {
                     unreachable!(
@@ -220,41 +209,23 @@ impl Future for IsCancelled {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         match inner {
-            Ok(sending_state) => match sending_state.take() {
-                Sender::Ready(mut s) => match s.poll_cancel(cx) {
-                    Poll::Ready(final_size) => {
-                        sending_state.replace(Sender::ResetSent(final_size));
-                        Poll::Ready(Some(final_size))
-                    }
-                    Poll::Pending => {
-                        sending_state.replace(Sender::Ready(s));
-                        Poll::Pending
-                    }
-                },
-                Sender::Sending(mut s) => match s.poll_cancel(cx) {
-                    Poll::Ready(final_size) => {
-                        sending_state.replace(Sender::ResetSent(final_size));
-                        Poll::Ready(Some(final_size))
-                    }
-                    Poll::Pending => {
-                        sending_state.replace(Sender::Sending(s));
-                        Poll::Pending
-                    }
-                },
-                Sender::DataSent(mut s) => match s.poll_cancel(cx) {
-                    Poll::Ready(final_size) => {
-                        sending_state.replace(Sender::ResetSent(final_size));
-                        Poll::Ready(Some(final_size))
-                    }
-                    Poll::Pending => {
-                        sending_state.replace(Sender::DataSent(s));
-                        Poll::Pending
-                    }
-                },
-                other => {
-                    sending_state.replace(other);
-                    Poll::Ready(None)
+            Ok(sending_state) => match sending_state {
+                Sender::Ready(s) => {
+                    let final_size = ready!(s.poll_cancel(cx));
+                    *sending_state = Sender::ResetSent(final_size);
+                    Poll::Ready(Some(final_size))
                 }
+                Sender::Sending(s) => {
+                    let final_size = ready!(s.poll_cancel(cx));
+                    *sending_state = Sender::ResetSent(final_size);
+                    Poll::Ready(Some(final_size))
+                }
+                Sender::DataSent(s) => {
+                    let final_size = ready!(s.poll_cancel(cx));
+                    *sending_state = Sender::ResetSent(final_size);
+                    Poll::Ready(Some(final_size))
+                }
+                _ => Poll::Ready(None),
             },
             // 既然发生连接错误了，那也没必要监听应用层的取消了
             Err(_) => Poll::Ready(None),

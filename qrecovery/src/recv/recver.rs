@@ -131,16 +131,16 @@ impl Recv {
         }
     }
 
-    pub(super) fn determin_size(self, total_size: u64) -> SizeKnown {
-        if let Some(waker) = self.buf_exceeds_half_waker {
+    pub(super) fn determin_size(&mut self, total_size: u64) -> SizeKnown {
+        if let Some(waker) = self.buf_exceeds_half_waker.take() {
             waker.wake();
         }
         SizeKnown {
-            rcvbuf: self.rcvbuf,
-            read_waker: self.read_waker,
-            is_stopped: self.is_stopped,
-            stop_waker: self.stop_waker,
             total_size,
+            rcvbuf: std::mem::take(&mut self.rcvbuf),
+            is_stopped: self.is_stopped,
+            read_waker: self.read_waker.take(),
+            stop_waker: self.stop_waker.take(),
         }
     }
 
@@ -156,7 +156,7 @@ impl Recv {
         }
     }
 
-    pub(super) fn recv_reset(mut self, reset_frame: ResetStreamFrame) -> Result<u64, Error> {
+    pub(super) fn recv_reset(&mut self, reset_frame: ResetStreamFrame) -> Result<u64, Error> {
         let final_size = reset_frame.final_size.into_inner();
         if final_size < self.largest_data_size {
             return Err(Error::new(
@@ -270,14 +270,14 @@ impl SizeKnown {
         self.total_size
     }
 
-    pub(super) fn data_recvd(self) -> DataRecvd {
+    pub(super) fn make_data_recvd(&mut self) -> DataRecvd {
         // Notify the stop function that it will not be stopped anymore,
         // this stream will not send STOP_SENDING frames in the future.
-        if let Some(waker) = self.stop_waker {
+        if let Some(waker) = self.stop_waker.take() {
             waker.wake();
         }
         DataRecvd {
-            rcvbuf: self.rcvbuf,
+            rcvbuf: std::mem::take(&mut self.rcvbuf),
         }
     }
 
@@ -290,7 +290,7 @@ impl SizeKnown {
         }
     }
 
-    pub(super) fn recv_reset(mut self, reset_frame: ResetStreamFrame) -> Result<u64, Error> {
+    pub(super) fn recv_reset(&mut self, reset_frame: ResetStreamFrame) -> Result<u64, Error> {
         let final_size = reset_frame.final_size.into_inner();
         if final_size != self.total_size {
             return Err(Error::new(
@@ -359,14 +359,6 @@ pub(super) type ArcRecver = Arc<Mutex<io::Result<Recver>>>;
 impl Recver {
     pub(super) fn new(max_data_size: u64) -> Self {
         Self::Recv(Recv::with(max_data_size))
-    }
-
-    pub(super) fn take(&mut self) -> Self {
-        std::mem::take(self)
-    }
-
-    pub(super) fn replace(&mut self, other: Self) {
-        let _ = std::mem::replace(self, other);
     }
 }
 

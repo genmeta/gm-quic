@@ -24,22 +24,18 @@ impl Incoming {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
         match inner {
-            Ok(receiving_state) => match receiving_state.take() {
-                Recver::Recv(mut r) => {
+            Ok(receiving_state) => match receiving_state {
+                Recver::Recv(r) => {
                     r.recv(stream_frame, body)?;
-                    receiving_state.replace(Recver::Recv(r));
                 }
-                Recver::SizeKnown(mut r) => {
+                Recver::SizeKnown(r) => {
                     r.recv(stream_frame, body)?;
                     if r.is_all_rcvd() {
-                        receiving_state.replace(Recver::DataRecvd(r.data_recvd()));
-                    } else {
-                        receiving_state.replace(Recver::SizeKnown(r));
+                        *receiving_state = Recver::DataRecvd(r.make_data_recvd());
                     }
                 }
-                other => {
+                _ => {
                     println!("ignored stream frame {:?}", stream_frame);
-                    receiving_state.replace(other);
                 }
             },
             Err(_) => (),
@@ -51,13 +47,12 @@ impl Incoming {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
         match inner {
-            Ok(receiving_state) => match receiving_state.take() {
+            Ok(receiving_state) => match receiving_state {
                 Recver::Recv(r) => {
-                    receiving_state.replace(Recver::SizeKnown(r.determin_size(final_size)));
+                    *receiving_state = Recver::SizeKnown(r.determin_size(final_size));
                 }
-                other => {
+                _ => {
                     println!("there is sth wrong, ignored finish");
-                    receiving_state.replace(other);
                 }
             },
             Err(_) => (),
@@ -69,14 +64,14 @@ impl Incoming {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
         match inner {
-            Ok(receiving_state) => match receiving_state.take() {
+            Ok(receiving_state) => match receiving_state {
                 Recver::Recv(r) => {
                     let final_size = r.recv_reset(reset_frame)?;
-                    receiving_state.replace(Recver::ResetRecvd(final_size));
+                    *receiving_state = Recver::ResetRecvd(final_size);
                 }
                 Recver::SizeKnown(r) => {
                     let final_size = r.recv_reset(reset_frame)?;
-                    receiving_state.replace(Recver::ResetRecvd(final_size));
+                    *receiving_state = Recver::ResetRecvd(final_size);
                 }
                 _ => {
                     unreachable!("there is sth wrong, ignored recv_reset");

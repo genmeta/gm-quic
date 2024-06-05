@@ -108,25 +108,25 @@ impl ReadySender {
         self.shutdown_waker.is_some()
     }
 
-    pub(super) fn begin_sending(self) -> SendingSender {
+    pub(super) fn make_sending(&mut self) -> SendingSender {
         SendingSender {
-            sndbuf: self.sndbuf,
+            sndbuf: std::mem::take(&mut self.sndbuf),
             max_data_size: self.max_data_size,
             is_cancelled: self.is_cancelled,
-            writable_waker: self.writable_waker,
-            flush_waker: self.flush_waker,
-            shutdown_waker: self.shutdown_waker,
-            cancel_waker: self.cancel_waker,
+            writable_waker: self.writable_waker.take(),
+            flush_waker: self.flush_waker.take(),
+            shutdown_waker: self.shutdown_waker.take(),
+            cancel_waker: self.cancel_waker.take(),
         }
     }
 
-    pub(super) fn end(self) -> DataSentSender {
+    pub(super) fn make_sent(&mut self) -> DataSentSender {
         DataSentSender {
-            sndbuf: self.sndbuf,
             is_cancelled: self.is_cancelled,
-            flush_waker: self.flush_waker,
-            shutdown_waker: self.shutdown_waker,
-            cancel_waker: self.cancel_waker,
+            sndbuf: std::mem::take(&mut self.sndbuf),
+            flush_waker: self.flush_waker.take(),
+            shutdown_waker: self.shutdown_waker.take(),
+            cancel_waker: self.cancel_waker.take(),
         }
     }
 
@@ -248,13 +248,13 @@ impl SendingSender {
         }
     }
 
-    pub(super) fn end(self) -> DataSentSender {
+    pub(super) fn make_sent(&mut self) -> DataSentSender {
         DataSentSender {
-            sndbuf: self.sndbuf,
             is_cancelled: self.is_cancelled,
-            flush_waker: self.flush_waker,
-            shutdown_waker: self.shutdown_waker,
-            cancel_waker: self.cancel_waker,
+            sndbuf: std::mem::take(&mut self.sndbuf),
+            flush_waker: self.flush_waker.take(),
+            shutdown_waker: self.shutdown_waker.take(),
+            cancel_waker: self.cancel_waker.take(),
         }
     }
 
@@ -309,7 +309,7 @@ impl SendingSender {
         }
     }
 
-    pub(super) fn stop(mut self) -> u64 {
+    pub(super) fn stop(&mut self) -> u64 {
         self.wake_all();
         // Actually, these remaining data is not acked and will not be acked
         self.sndbuf.len()
@@ -425,7 +425,7 @@ impl DataSentSender {
         }
     }
 
-    pub(super) fn stop(mut self) -> u64 {
+    pub(super) fn stop(&mut self) -> u64 {
         self.wake_all();
         // Actually, these remaining data is not acked and will not be acked
         self.sndbuf.len()
@@ -446,14 +446,6 @@ pub enum Sender {
 impl Sender {
     pub fn with_buf_size(initial_max_stream_data: u64) -> Self {
         Sender::Ready(ReadySender::with_buf_size(initial_max_stream_data))
-    }
-
-    pub(super) fn take(&mut self) -> Self {
-        std::mem::take(self)
-    }
-
-    pub(super) fn replace(&mut self, sender: Sender) {
-        let _ = std::mem::replace(self, sender);
     }
 }
 
