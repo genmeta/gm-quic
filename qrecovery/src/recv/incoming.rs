@@ -35,7 +35,7 @@ impl Incoming {
                     }
                 }
                 _ => {
-                    println!("ignored stream frame {:?}", stream_frame);
+                    log::debug!("ignored stream frame {:?}", stream_frame);
                 }
             },
             Err(_) => (),
@@ -52,7 +52,7 @@ impl Incoming {
                     *receiving_state = Recver::SizeKnown(r.determin_size(final_size));
                 }
                 _ => {
-                    println!("there is sth wrong, ignored finish");
+                    log::debug!("there is sth wrong, ignored finish");
                 }
             },
             Err(_) => (),
@@ -74,7 +74,8 @@ impl Incoming {
                     *receiving_state = Recver::ResetRecvd(final_size);
                 }
                 _ => {
-                    unreachable!("there is sth wrong, ignored recv_reset");
+                    log::error!("there is sth wrong, ignored recv_reset");
+                    unreachable!();
                 }
             },
             Err(_) => (),

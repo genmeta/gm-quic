@@ -300,7 +300,7 @@ impl RemoteStreamIds {
         } else {
             let start = *cur;
             *cur = unsafe { sid.next_unchecked() };
-            println!("unallocated: {:?}", self.unallocated[idx]);
+            log::debug!("unallocated: {:?}", self.unallocated[idx]);
             let step = self.concurrency[idx] >> 1;
             if sid.id() + step > max.id() {
                 if let Some(waker) = self.wakers[idx].take() {

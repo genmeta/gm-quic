@@ -93,7 +93,7 @@ pub(crate) fn decode_recv(
                 meta.ttl = unsafe { cmsg::decode::<u32>(cmsg) } as u8;
             }
             _ => {
-                println!("read unkown cmsg");
+                log::error!("read unkown cmsg");
                 todo!("other cmsg");
             }
         }

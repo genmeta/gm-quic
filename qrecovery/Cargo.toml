@@ -16,3 +16,4 @@ thiserror = { workspace = true }
 async-lock = { workspace = true }
 deref-derive = { workspace = true }
 rand = { workspace = true }
+log = { workspace = true }

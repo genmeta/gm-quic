@@ -28,7 +28,7 @@ pub(super) fn config(io: &socket2::Socket) -> io::Result<()> {
         //  incoming packets.  It contains a byte which specifies the
         //  Type of Service/Precedence field of the packet header.
         if let Err(err) = set_socket_option(io, libc::IPPROTO_IP, libc::IP_RECVTOS, OPTION_ON) {
-            println!("setsockopt IP_RECVTOS failed: {}", err);
+            log::error!("setsockopt IP_RECVTOS failed: {}", err);
         }
     }
 

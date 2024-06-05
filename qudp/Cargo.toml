@@ -10,3 +10,4 @@ bytes = { workspace = true }
 socket2 = { workspace = true }
 libc = { workspace = true }
 tokio = { workspace = true }
+log = { workspace = true }
