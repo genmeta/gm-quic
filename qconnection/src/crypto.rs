@@ -138,5 +138,4 @@ impl HandshakeWriter {
 }
 
 #[cfg(test)]
-mod tests {
-}
+mod tests {}
