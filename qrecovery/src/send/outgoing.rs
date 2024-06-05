@@ -1,4 +1,4 @@
-use super::sender::{ArcSender, Sender};
+use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
 use bytes::BufMut;
 use futures::ready;
 use qbase::{
@@ -71,11 +71,11 @@ impl Outgoing {
                 Sender::Ready(s) => {
                     let result;
                     if s.is_shutdown() {
-                        let mut s = s.make_sent();
+                        let mut s: DataSentSender = s.into();
                         result = s.pick_up(estimate_capacity).map(write);
                         *sending_state = Sender::DataSent(s);
                     } else {
-                        let mut s = s.make_sending();
+                        let mut s: SendingSender = s.into();
                         result = s.pick_up(estimate_capacity).map(write);
                         *sending_state = Sender::Sending(s);
                     }
@@ -98,10 +98,10 @@ impl Outgoing {
                     unreachable!("never send data before recv data");
                 }
                 Sender::Sending(s) => {
-                    s.on_acked(range);
+                    s.on_data_acked(range);
                 }
                 Sender::DataSent(s) => {
-                    s.on_acked(range);
+                    s.on_data_acked(range);
                     if s.is_all_rcvd() {
                         *sending_state = Sender::DataRcvd;
                         return true;
@@ -124,10 +124,10 @@ impl Outgoing {
                     unreachable!("never send data before recv data");
                 }
                 Sender::Sending(s) => {
-                    s.may_loss(range);
+                    s.may_loss_data(range);
                 }
                 Sender::DataSent(s) => {
-                    s.may_loss(range);
+                    s.may_loss_data(range);
                 }
                 // ignore loss
                 _ => (),
@@ -147,7 +147,6 @@ impl Outgoing {
                 }
                 Sender::Sending(s) => {
                     *sending_state = Sender::ResetSent(s.stop());
-
                     true
                 }
                 Sender::DataSent(s) => {

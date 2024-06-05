@@ -87,7 +87,7 @@ impl AsyncWrite for Writer {
                 Sender::Sending(s) => {
                     let result = s.poll_shutdown(cx);
                     match &result {
-                        Poll::Pending => *sending_state = Sender::DataSent(s.make_sent()),
+                        Poll::Pending => *sending_state = Sender::DataSent(s.into()),
                         Poll::Ready(_) => *sending_state = Sender::DataRcvd,
                     }
                     // 有可能是Poll::Pending，也有可能是已经发送完数据的Poll::Ready

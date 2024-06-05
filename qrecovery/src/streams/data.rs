@@ -491,7 +491,7 @@ impl RawDataStreams {
             let incoming = incoming.clone();
             let frames = self.reliable_frame_queue.clone();
             async move {
-                while let Some(max_data) = incoming.need_window_update().await {
+                while let Some(max_data) = incoming.need_update_window().await {
                     frames
                         .write()
                         .push_stream_control_frame(StreamCtlFrame::MaxStreamData(

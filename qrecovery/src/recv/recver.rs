@@ -36,6 +36,7 @@ impl Recv {
 
     pub(super) fn recv(&mut self, stream_frame: StreamFrame, body: Bytes) -> Result<(), Error> {
         let offset = stream_frame.offset.into_inner();
+        // TODO: size不太准确
         let data_size = offset + body.len() as u64;
         if data_size > self.max_data_size {
             return Err(Error::new(
@@ -100,7 +101,7 @@ impl Recv {
         }
     }
 
-    pub(super) fn poll_window_update(&mut self, cx: &mut Context<'_>) -> Poll<Option<u64>> {
+    pub(super) fn poll_update_window(&mut self, cx: &mut Context<'_>) -> Poll<Option<u64>> {
         assert!(self.buf_exceeds_half_waker.is_none());
         let threshold = 1_000_000;
         if self.rcvbuf.offset() + threshold > self.max_data_size {
@@ -122,7 +123,7 @@ impl Recv {
         }
     }
 
-    pub(super) fn abort(&mut self) {
+    pub(super) fn stop(&mut self) {
         if !self.is_stopped {
             self.is_stopped = true;
             if let Some(waker) = self.stop_waker.take() {
@@ -260,7 +261,7 @@ impl SizeKnown {
 
     /// Abort can be called multiple times at the application level,
     /// but only the first call is effective.
-    pub(super) fn abort(&mut self) -> u64 {
+    pub(super) fn stop(&mut self) -> u64 {
         if !self.is_stopped {
             self.is_stopped = true;
             if let Some(waker) = self.stop_waker.take() {
@@ -268,17 +269,6 @@ impl SizeKnown {
             }
         }
         self.total_size
-    }
-
-    pub(super) fn make_data_rcvd(&mut self) -> DataRcvd {
-        // Notify the stop function that it will not be stopped anymore,
-        // this stream will not send STOP_SENDING frames in the future.
-        if let Some(waker) = self.stop_waker.take() {
-            waker.wake();
-        }
-        DataRcvd {
-            rcvbuf: std::mem::take(&mut self.rcvbuf),
-        }
     }
 
     pub(super) fn wake_all(&mut self) {
@@ -304,6 +294,17 @@ impl SizeKnown {
         }
         self.wake_all();
         Ok(final_size)
+    }
+}
+
+impl From<&mut SizeKnown> for DataRcvd {
+    fn from(size_known: &mut SizeKnown) -> Self {
+        if let Some(waker) = size_known.stop_waker.take() {
+            waker.wake();
+        }
+        DataRcvd {
+            rcvbuf: std::mem::take(&mut size_known.rcvbuf),
+        }
     }
 }
 
@@ -343,13 +344,12 @@ impl DataRcvd {
 /// is_closed/is_reset are replaced by a state machine. This not only provides
 /// clearer semantics and aligns with the QUIC RFC specification but also
 /// allows the compiler to help us check if the state transitions are correct
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub(super) enum Recver {
     Recv(Recv),
     SizeKnown(SizeKnown),
     DataRcvd(DataRcvd),
     ResetRcvd(u64),
-    #[default]
     DataRead,
     ResetRead,
 }

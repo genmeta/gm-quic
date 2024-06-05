@@ -108,28 +108,7 @@ impl ReadySender {
         self.shutdown_waker.is_some()
     }
 
-    pub(super) fn make_sending(&mut self) -> SendingSender {
-        SendingSender {
-            sndbuf: std::mem::take(&mut self.sndbuf),
-            max_data_size: self.max_data_size,
-            is_cancelled: self.is_cancelled,
-            writable_waker: self.writable_waker.take(),
-            flush_waker: self.flush_waker.take(),
-            shutdown_waker: self.shutdown_waker.take(),
-            cancel_waker: self.cancel_waker.take(),
-        }
-    }
-
-    pub(super) fn make_sent(&mut self) -> DataSentSender {
-        DataSentSender {
-            is_cancelled: self.is_cancelled,
-            sndbuf: std::mem::take(&mut self.sndbuf),
-            flush_waker: self.flush_waker.take(),
-            shutdown_waker: self.shutdown_waker.take(),
-            cancel_waker: self.cancel_waker.take(),
-        }
-    }
-
+    /// 传输层使用，用于发送RST_STREAM帧后，将Sender置为ResetSent状态
     pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<u64> {
         assert!(self.cancel_waker.is_none());
         if self.is_cancelled {
@@ -140,6 +119,7 @@ impl ReadySender {
         }
     }
 
+    /// 应用层使用，取消发送流
     pub(super) fn cancel(&mut self) {
         // 应用层多次cancel会被忽略
         if !self.is_cancelled {
@@ -167,6 +147,34 @@ impl ReadySender {
     }
 }
 
+/// 状态转换，ReaderSender => SendingSender
+impl From<&mut ReadySender> for SendingSender {
+    fn from(value: &mut ReadySender) -> Self {
+        SendingSender {
+            sndbuf: std::mem::take(&mut value.sndbuf),
+            max_data_size: value.max_data_size,
+            is_cancelled: value.is_cancelled,
+            writable_waker: value.writable_waker.take(),
+            flush_waker: value.flush_waker.take(),
+            shutdown_waker: value.shutdown_waker.take(),
+            cancel_waker: value.cancel_waker.take(),
+        }
+    }
+}
+
+/// 状态转换，ReaderSender => DataSentSender
+impl From<&mut ReadySender> for DataSentSender {
+    fn from(value: &mut ReadySender) -> Self {
+        DataSentSender {
+            is_cancelled: value.is_cancelled,
+            sndbuf: std::mem::take(&mut value.sndbuf),
+            flush_waker: value.flush_waker.take(),
+            shutdown_waker: value.shutdown_waker.take(),
+            cancel_waker: value.cancel_waker.take(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct SendingSender {
     sndbuf: SendBuf,
@@ -184,6 +192,7 @@ impl SendingSender {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
+        // TODO: 应该使用一个错误, write after close
         assert!(self.shutdown_waker.is_none());
         assert!(self.writable_waker.is_none());
         if self.is_cancelled {
@@ -203,11 +212,13 @@ impl SendingSender {
         }
     }
 
+    /// 传输层使用
     pub(super) fn update_window(&mut self, max_data_size: u64) {
-        assert!(max_data_size > self.max_data_size);
-        self.max_data_size = max_data_size;
-        if let Some(waker) = self.writable_waker.take() {
-            waker.wake();
+        if max_data_size > self.max_data_size {
+            self.max_data_size = max_data_size;
+            if let Some(waker) = self.writable_waker.take() {
+                waker.wake();
+            }
         }
     }
 
@@ -223,8 +234,8 @@ impl SendingSender {
             .map(|(offset, data)| (offset, data, false))
     }
 
-    pub(super) fn on_acked(&mut self, range: &Range<u64>) {
-        self.sndbuf.on_acked(range);
+    pub(super) fn on_data_acked(&mut self, range: &Range<u64>) {
+        self.sndbuf.on_data_acked(range);
         if self.sndbuf.is_all_rcvd() {
             if let Some(waker) = self.flush_waker.take() {
                 waker.wake();
@@ -232,8 +243,8 @@ impl SendingSender {
         }
     }
 
-    pub(super) fn may_loss(&mut self, range: &Range<u64>) {
-        self.sndbuf.may_loss(range)
+    pub(super) fn may_loss_data(&mut self, range: &Range<u64>) {
+        self.sndbuf.may_loss_data(range)
     }
 
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -245,16 +256,6 @@ impl SendingSender {
         } else {
             self.flush_waker = Some(cx.waker().clone());
             Poll::Pending
-        }
-    }
-
-    pub(super) fn make_sent(&mut self) -> DataSentSender {
-        DataSentSender {
-            is_cancelled: self.is_cancelled,
-            sndbuf: std::mem::take(&mut self.sndbuf),
-            flush_waker: self.flush_waker.take(),
-            shutdown_waker: self.shutdown_waker.take(),
-            cancel_waker: self.cancel_waker.take(),
         }
     }
 
@@ -274,6 +275,7 @@ impl SendingSender {
         }
     }
 
+    /// 传输层使用
     pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<u64> {
         assert!(self.cancel_waker.is_none());
         if self.is_cancelled {
@@ -309,10 +311,24 @@ impl SendingSender {
         }
     }
 
+    /// 传输层使用
     pub(super) fn stop(&mut self) -> u64 {
         self.wake_all();
         // Actually, these remaining data is not acked and will not be acked
         self.sndbuf.len()
+    }
+}
+
+/// 状态转换，SendingSender => DataSentSender
+impl From<&mut SendingSender> for DataSentSender {
+    fn from(value: &mut SendingSender) -> Self {
+        DataSentSender {
+            is_cancelled: value.is_cancelled,
+            sndbuf: std::mem::take(&mut value.sndbuf),
+            flush_waker: value.flush_waker.take(),
+            shutdown_waker: value.shutdown_waker.take(),
+            cancel_waker: value.cancel_waker.take(),
+        }
     }
 }
 
@@ -343,8 +359,8 @@ impl DataSentSender {
             })
     }
 
-    pub(super) fn on_acked(&mut self, range: &Range<u64>) {
-        self.sndbuf.on_acked(range);
+    pub(super) fn on_data_acked(&mut self, range: &Range<u64>) {
+        self.sndbuf.on_data_acked(range);
         if self.sndbuf.is_all_rcvd() {
             if let Some(waker) = self.flush_waker.take() {
                 waker.wake();
@@ -359,8 +375,8 @@ impl DataSentSender {
         self.sndbuf.is_all_rcvd()
     }
 
-    pub(super) fn may_loss(&mut self, range: &Range<u64>) {
-        self.sndbuf.may_loss(range)
+    pub(super) fn may_loss_data(&mut self, range: &Range<u64>) {
+        self.sndbuf.may_loss_data(range)
     }
 
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -394,6 +410,7 @@ impl DataSentSender {
     }
 
     pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<u64> {
+        // TODO: 对于偷任务的异步运行时，要允许在cancel_waker不为None的情况下重置waker
         assert!(self.cancel_waker.is_none());
         if self.is_cancelled {
             Poll::Ready(self.sndbuf.len())
@@ -432,13 +449,12 @@ impl DataSentSender {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub enum Sender {
     Ready(ReadySender),
     Sending(SendingSender),
     DataSent(DataSentSender),
     ResetSent(u64),
-    #[default]
     DataRcvd,
     ResetRcvd,
 }

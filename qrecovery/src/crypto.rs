@@ -41,7 +41,7 @@ mod send {
         }
 
         fn on_acked(&mut self, range: &Range<u64>) {
-            self.sndbuf.on_acked(range);
+            self.sndbuf.on_data_acked(range);
             if self.sndbuf.remaining_mut() > 0 {
                 if let Some(waker) = self.writable_waker.take() {
                     waker.wake();
@@ -50,7 +50,7 @@ mod send {
         }
 
         fn may_loss(&mut self, range: &Range<u64>) {
-            self.sndbuf.may_loss(range)
+            self.sndbuf.may_loss_data(range)
         }
     }
 

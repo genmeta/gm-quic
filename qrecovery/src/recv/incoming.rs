@@ -31,7 +31,7 @@ impl Incoming {
                 Recver::SizeKnown(r) => {
                     r.recv(stream_frame, body)?;
                     if r.is_all_rcvd() {
-                        *receiving_state = Recver::DataRcvd(r.make_data_rcvd());
+                        *receiving_state = Recver::DataRcvd(r.into());
                     }
                 }
                 _ => {
@@ -103,14 +103,14 @@ impl Incoming {
     }
 
     /// 对流控来说，何时发送窗口更新？当连续确认接收数据一半以上时
-    pub fn need_window_update(&self) -> WindowUpdate {
-        WindowUpdate(self.0.clone())
+    pub fn need_update_window(&self) -> UpdateWindow {
+        UpdateWindow(self.0.clone())
     }
 }
 
-pub struct WindowUpdate(ArcRecver);
+pub struct UpdateWindow(ArcRecver);
 
-impl Future for WindowUpdate {
+impl Future for UpdateWindow {
     type Output = Option<u64>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -118,7 +118,7 @@ impl Future for WindowUpdate {
         let inner = recver.deref_mut();
         match inner {
             Ok(receiving_state) => match receiving_state {
-                Recver::Recv(r) => r.poll_window_update(cx),
+                Recver::Recv(r) => r.poll_update_window(cx),
                 // In other states, the window will no longer be updated, so return None
                 // to inform the streams controller to stop polling for window updates.
                 _ => Poll::Ready(None),

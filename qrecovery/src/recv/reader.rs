@@ -64,10 +64,10 @@ impl Drop for Reader {
         match inner {
             Ok(receiving_state) => match receiving_state {
                 Recver::Recv(r) => {
-                    r.abort();
+                    r.stop();
                 }
                 Recver::SizeKnown(r) => {
-                    r.abort();
+                    r.stop();
                 }
                 _ => (),
             },
