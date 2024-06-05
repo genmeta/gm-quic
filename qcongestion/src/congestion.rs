@@ -816,11 +816,7 @@ mod tests {
                 0 => assert_eq!(sent.pn, 5),
                 _ => assert_eq!(sent.pn, (i + 7) as u64),
             }
-            if sent.pn == 9 {
-                assert!(sent.is_acked);
-            } else {
-                assert!(!sent.is_acked);
-            }
+            assert_eq!(sent.is_acked, sent.pn == 9);
         }
     }
 
