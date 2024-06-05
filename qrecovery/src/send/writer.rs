@@ -28,7 +28,7 @@ impl AsyncWrite for Writer {
                     io::ErrorKind::Unsupported,
                     "all data has been written",
                 ))),
-                Sender::DataRecvd => Poll::Ready(Err(io::Error::new(
+                Sender::DataRcvd => Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "all data has been received",
                 ))),
@@ -36,7 +36,7 @@ impl AsyncWrite for Writer {
                     io::ErrorKind::BrokenPipe,
                     "reset by local",
                 ))),
-                Sender::ResetRecvd => Poll::Ready(Err(io::Error::new(
+                Sender::ResetRcvd => Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "reset msg has been received by peer",
                 ))),
@@ -55,16 +55,16 @@ impl AsyncWrite for Writer {
                 Sender::DataSent(s) => {
                     let result = s.poll_flush(cx);
                     if result.is_ready() {
-                        *sending_state = Sender::DataRecvd
+                        *sending_state = Sender::DataRcvd
                     }
                     result
                 }
-                Sender::DataRecvd => Poll::Ready(Ok(())),
+                Sender::DataRcvd => Poll::Ready(Ok(())),
                 Sender::ResetSent(_) => Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "reset by local",
                 ))),
-                Sender::ResetRecvd => Poll::Ready(Err(io::Error::new(
+                Sender::ResetRcvd => Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "reset msg has been received by peer",
                 ))),
@@ -88,7 +88,7 @@ impl AsyncWrite for Writer {
                     let result = s.poll_shutdown(cx);
                     match &result {
                         Poll::Pending => *sending_state = Sender::DataSent(s.make_sent()),
-                        Poll::Ready(_) => *sending_state = Sender::DataRecvd,
+                        Poll::Ready(_) => *sending_state = Sender::DataRcvd,
                     }
                     // 有可能是Poll::Pending，也有可能是已经发送完数据的Poll::Ready
                     result
@@ -97,18 +97,18 @@ impl AsyncWrite for Writer {
                     let result = s.poll_shutdown(cx);
                     // 有一种复杂的情况，就是在DataSent途中，对方发来了STOP_SENDING，我方需立即
                     // reset停止发送，此时状态也轮转到ResetSent中，相当于被动reset，再次唤醒该
-                    // poll任务，则会进到ResetSent或者ResetRecvd中poll，得到的将是BrokenPipe错误
+                    // poll任务，则会进到ResetSent或者ResetRcvd中poll，得到的将是BrokenPipe错误
                     if result.is_ready() {
-                        *sending_state = Sender::DataRecvd;
+                        *sending_state = Sender::DataRcvd;
                     }
                     result
                 }
-                Sender::DataRecvd => Poll::Ready(Ok(())),
+                Sender::DataRcvd => Poll::Ready(Ok(())),
                 Sender::ResetSent(_) => Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "reset by local",
                 ))),
-                Sender::ResetRecvd => Poll::Ready(Err(io::Error::new(
+                Sender::ResetRcvd => Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "reset msg has been received by peer",
                 ))),

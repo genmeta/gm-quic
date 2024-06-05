@@ -103,7 +103,7 @@ impl Outgoing {
                 Sender::DataSent(s) => {
                     s.on_acked(range);
                     if s.is_all_rcvd() {
-                        *sending_state = Sender::DataRecvd;
+                        *sending_state = Sender::DataRcvd;
                         return true;
                     }
                 }
@@ -165,8 +165,8 @@ impl Outgoing {
         let inner = sender.deref_mut();
         match inner {
             Ok(sending_state) => match sending_state {
-                Sender::ResetSent(_) | Sender::ResetRecvd => {
-                    *sending_state = Sender::ResetRecvd;
+                Sender::ResetSent(_) | Sender::ResetRcvd => {
+                    *sending_state = Sender::ResetRcvd;
                 }
                 _ => {
                     unreachable!(

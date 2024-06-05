@@ -439,8 +439,8 @@ pub enum Sender {
     DataSent(DataSentSender),
     ResetSent(u64),
     #[default]
-    DataRecvd,
-    ResetRecvd,
+    DataRcvd,
+    ResetRcvd,
 }
 
 impl Sender {
@@ -451,6 +451,6 @@ impl Sender {
 
 /// Sender是典型的一体两用，对应用层而言是Writer，对传输控制层而言是Outgoing。
 /// Writer/Outgoing分别有不同的接口，而且生命周期独立，应用层可以在close、reset后
-/// 直接丢弃不管；然而Outgoing还有DataRecvd、ResetRecvd两个状态，需要等待对端确认。
+/// 直接丢弃不管；然而Outgoing还有DataRcvd、ResetRcvd两个状态，需要等待对端确认。
 /// 所以Writer/Outgoing内部共享同一个Sender。
 pub type ArcSender = Arc<Mutex<io::Result<Sender>>>;

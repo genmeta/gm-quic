@@ -31,7 +31,7 @@ impl Incoming {
                 Recver::SizeKnown(r) => {
                     r.recv(stream_frame, body)?;
                     if r.is_all_rcvd() {
-                        *receiving_state = Recver::DataRecvd(r.make_data_recvd());
+                        *receiving_state = Recver::DataRcvd(r.make_data_rcvd());
                     }
                 }
                 _ => {
@@ -67,11 +67,11 @@ impl Incoming {
             Ok(receiving_state) => match receiving_state {
                 Recver::Recv(r) => {
                     let final_size = r.recv_reset(reset_frame)?;
-                    *receiving_state = Recver::ResetRecvd(final_size);
+                    *receiving_state = Recver::ResetRcvd(final_size);
                 }
                 Recver::SizeKnown(r) => {
                     let final_size = r.recv_reset(reset_frame)?;
-                    *receiving_state = Recver::ResetRecvd(final_size);
+                    *receiving_state = Recver::ResetRcvd(final_size);
                 }
                 _ => {
                     log::error!("there is sth wrong, ignored recv_reset");

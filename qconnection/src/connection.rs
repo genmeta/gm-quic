@@ -209,7 +209,7 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
 
 impl RawConnection {
     pub fn recv_initial_packet(&mut self, pkt: InitialPacket, path: ArcPath) {
-        if let Some(q) = &mut self.initial_pkt_queue {
+        if let Some(q) = self.initial_pkt_queue.as_mut() {
             let _ = q.send((pkt, path));
         }
     }

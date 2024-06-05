@@ -270,13 +270,13 @@ impl SizeKnown {
         self.total_size
     }
 
-    pub(super) fn make_data_recvd(&mut self) -> DataRecvd {
+    pub(super) fn make_data_rcvd(&mut self) -> DataRcvd {
         // Notify the stop function that it will not be stopped anymore,
         // this stream will not send STOP_SENDING frames in the future.
         if let Some(waker) = self.stop_waker.take() {
             waker.wake();
         }
-        DataRecvd {
+        DataRcvd {
             rcvbuf: std::mem::take(&mut self.rcvbuf),
         }
     }
@@ -313,11 +313,11 @@ impl SizeKnown {
 /// need for any further readable notifications to wake up. Subsequent reads will
 /// immediately return the available data until the end.
 #[derive(Debug)]
-pub struct DataRecvd {
+pub struct DataRcvd {
     rcvbuf: rcvbuf::RecvBuf,
 }
 
-impl DataRecvd {
+impl DataRcvd {
     /// Unlike the previous states, when there is no more data, it no longer returns
     /// "WouldBlock" but instead returns 0, which typically indicates the end.
     #[allow(dead_code)]
@@ -347,8 +347,8 @@ impl DataRecvd {
 pub(super) enum Recver {
     Recv(Recv),
     SizeKnown(SizeKnown),
-    DataRecvd(DataRecvd),
-    ResetRecvd(u64),
+    DataRcvd(DataRcvd),
+    ResetRcvd(u64),
     #[default]
     DataRead,
     ResetRead,

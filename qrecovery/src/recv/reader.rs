@@ -32,7 +32,7 @@ impl AsyncRead for Reader {
             Ok(receiving_state) => match receiving_state {
                 Recver::Recv(r) => r.poll_read(cx, buf),
                 Recver::SizeKnown(r) => r.poll_read(cx, buf),
-                Recver::DataRecvd(r) => {
+                Recver::DataRcvd(r) => {
                     r.poll_read(buf);
                     if r.is_all_read() {
                         *receiving_state = Recver::DataRead;
@@ -40,7 +40,7 @@ impl AsyncRead for Reader {
                     Poll::Ready(Ok(()))
                 }
                 Recver::DataRead => Poll::Ready(Ok(())),
-                Recver::ResetRecvd(_final_size) => {
+                Recver::ResetRcvd(_final_size) => {
                     *receiving_state = Recver::ResetRead;
                     Poll::Ready(Err(io::Error::new(
                         io::ErrorKind::BrokenPipe,
