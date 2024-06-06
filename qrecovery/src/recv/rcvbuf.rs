@@ -81,7 +81,10 @@ impl RecvBuf {
 
         match self.segments.binary_search_by(|s| s.offset.cmp(&offset)) {
             // 恰好落在一个片段上
-            Ok(seg_idx) => self.overlap_seg(seg_idx, data),
+            Ok(seg_idx) => {
+                self.overlap_seg(seg_idx, data);
+                self.try_merge(seg_idx);
+            }
             // 并没有落在一个片段上，offset比任何一个片段都小
             Err(0) => {
                 // 优先尝试添加到片段1
@@ -133,25 +136,23 @@ impl RecvBuf {
             return false;
         }
 
-        // 不会下溢
-
         let start = if offset < pre_seg_end {
             (pre_seg_end - offset) as usize
         } else {
             0
         };
 
-        // 不覆盖原有的offset更大的数据
+        // 可能这段暑假已经覆盖了下一段数据
         let next_offset = self.segments.get(seg_idx + 1).map(|seg| seg.offset);
         let end = match next_offset {
-            Some(next_offset) => (next_offset.min(data_end) - offset) as usize,
+            Some(next_offset) => (next_offset - offset) as usize,
             None => data.len(),
         };
 
         self.segments[seg_idx].append(data.slice(start..end));
 
         // 有可能片段和下一个段有连接
-        if next_offset.is_some_and(|next_offset| next_offset < data_end) {
+        if data.len() > end {
             self.overlap_seg(seg_idx + 1, data.slice(end..));
         }
         self.try_merge(seg_idx);
@@ -167,20 +168,21 @@ impl RecvBuf {
     // 不同于 append 和 prepend，这是对于和段从头开始重合的情况
     fn overlap_seg(&mut self, mut seg_idx: usize, mut data: Bytes) {
         loop {
-            let next_offset = self.segments.get(seg_idx + 1).map(|next| next.offset);
-            let cur_seg = &mut self.segments[seg_idx];
+            let cur_seg = &self.segments[seg_idx];
+            let offset = cur_seg.offset;
 
             if data.len() as u64 <= cur_seg.length {
                 break;
             }
 
             let start = cur_seg.length as usize;
-            let end = match next_offset {
-                Some(next_offset) => ((next_offset - cur_seg.offset) as usize).min(data.len()),
+
+            let end = match self.segments.get(seg_idx + 1).map(|next| next.offset) {
+                Some(next_offset) => (next_offset - offset) as usize,
                 None => data.len(),
             };
 
-            cur_seg.append(data.slice(start..end));
+            self.segments[seg_idx].append(data.slice(start..end));
 
             if data.len() > end {
                 data = data.slice(end..);
@@ -188,6 +190,8 @@ impl RecvBuf {
             } else {
                 break;
             }
+
+            // 不在这里merge，而是在外部，是因为append可能多创造一个连接段
         }
     }
 
@@ -324,8 +328,8 @@ mod tests {
     #[test]
     fn test_overlap() {
         let mut buf = RecvBuf::default();
-        buf.recv(2, Bytes::from_static(b"4514"));
-        buf.recv(0, Bytes::from_static(b"1199"));
+        buf.recv(2, Bytes::from("4514"));
+        buf.recv(0, Bytes::from("1199"));
 
         assert_eq!(buf.segments.len(), 1);
         assert_eq!(buf.segments[0].offset, 0);
