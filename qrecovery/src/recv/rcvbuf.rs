@@ -46,13 +46,13 @@ impl Segment {
 /// future reading by the application layer.
 #[derive(Default, Debug)]
 pub struct RecvBuf {
-    read: u64,
+    nread: u64,
     segments: VecDeque<Segment>,
 }
 
 impl fmt::Display for RecvBuf {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "RecvBuf(offset={}, segments=[", self.read)?;
+        write!(f, "RecvBuf(offset={}, segments=[", self.nread)?;
         for segment in &self.segments {
             write!(f, "{}", segment)?;
         }
@@ -66,7 +66,7 @@ impl RecvBuf {
     }
 
     pub fn offset(&self) -> u64 {
-        self.read
+        self.nread
     }
 
     pub fn recv(&mut self, mut offset: u64, mut data: Bytes) {
@@ -74,9 +74,9 @@ impl RecvBuf {
             return;
         }
 
-        if offset < self.read {
-            data = data.slice((self.read - offset) as usize..);
-            offset = self.read;
+        if offset < self.nread {
+            data = data.slice((self.nread - offset) as usize..);
+            offset = self.nread;
         }
 
         match self.segments.binary_search_by(|s| s.offset.cmp(&offset)) {
@@ -87,20 +87,20 @@ impl RecvBuf {
             }
             // 并没有落在一个片段上，offset比任何一个片段都小
             Err(0) => {
-                // 优先尝试添加到片段1
-                if self.prepend(0, offset, &data) {
+                // 优先尝试添加到后一个片段之前
+                if self.try_prepend(0, offset, &data) {
                     return;
                 }
                 self.inset(0, offset, data);
             }
             // segments[recommend].offset < offset
             Err(recommend) => {
-                // 如果和上一个片段有连接
-                if self.append(recommend - 1, offset, &data) {
+                // 优先尝试添加到前一个片段之后
+                if self.try_append(recommend - 1, offset, &data) {
                     return;
                 }
-                // 如果和下一个片段有连接
-                if self.prepend(recommend, offset, &data) {
+                // 再尝试添加到后一个片段之前
+                if self.try_prepend(recommend, offset, &data) {
                     return;
                 }
                 self.inset(recommend, offset, data);
@@ -108,7 +108,8 @@ impl RecvBuf {
         }
     }
 
-    fn prepend(&mut self, seg_idx: usize, offset: u64, data: &Bytes) -> bool {
+    // 返回片段之间是否有连接
+    fn try_prepend(&mut self, seg_idx: usize, offset: u64, data: &Bytes) -> bool {
         let data_end = offset + data.len() as u64;
         match self.segments.get(seg_idx) {
             Some(next_seg) if data_end >= next_seg.offset => {
@@ -119,7 +120,7 @@ impl RecvBuf {
                 // 有可能被追加在前的片段覆盖了整个段
                 if data_end > next_end {
                     let reamin = data.slice((next_end - offset) as usize..);
-                    self.append(seg_idx, next_end, &reamin);
+                    self.try_append(seg_idx, next_end, &reamin);
                 }
                 true
             }
@@ -127,12 +128,20 @@ impl RecvBuf {
         }
     }
 
-    fn append(&mut self, seg_idx: usize, offset: u64, data: &Bytes) -> bool {
+    // 需要 offset >= segs[seg_idx].offset
+    // 返回片段之间是否有连接
+    fn try_append(&mut self, seg_idx: usize, offset: u64, data: &Bytes) -> bool {
         let pre_seg = &self.segments[seg_idx];
         let data_end = offset + data.len() as u64;
         let pre_seg_end = pre_seg.offset + pre_seg.length;
 
-        if data_end <= pre_seg_end || offset > pre_seg_end {
+        // 已经完全被前一个片段包含，不需要处理
+        if data_end <= pre_seg_end {
+            return true;
+        }
+
+        // 完全和前一个片段没有连接
+        if offset > pre_seg_end {
             return false;
         }
 
@@ -166,6 +175,7 @@ impl RecvBuf {
     }
 
     // 不同于 append 和 prepend，这是对于和段从头开始重合的情况
+    // 是append的特化情况
     fn overlap_seg(&mut self, mut seg_idx: usize, mut data: Bytes) {
         loop {
             let cur_seg = &self.segments[seg_idx];
@@ -220,7 +230,7 @@ impl RecvBuf {
     /// of bytes read.
     pub fn read<T: BufMut>(&mut self, buf: &mut T) {
         if let Some(mut seg) = self.segments.pop_front() {
-            if seg.offset != self.read {
+            if seg.offset != self.nread {
                 self.segments.push_front(seg);
                 return;
             }
@@ -229,7 +239,7 @@ impl RecvBuf {
                 let n = buf.remaining_mut().min(frag.len());
                 buf.put_slice(&frag[..n]);
                 seg.offset += n as u64;
-                self.read = seg.offset;
+                self.nread = seg.offset;
                 if n < frag.len() {
                     seg.fragments.push_front(frag.slice(n..));
                     self.segments.push_front(seg);
@@ -245,11 +255,11 @@ impl RecvBuf {
         if self
             .segments
             .front()
-            .is_some_and(|seg| seg.offset == self.read)
+            .is_some_and(|seg| seg.offset == self.nread)
         {
-            self.read + self.segments[0].length
+            self.nread + self.segments[0].length
         } else {
-            self.read
+            self.nread
         }
     }
 
@@ -257,7 +267,7 @@ impl RecvBuf {
     /// layer is blocked on reading), it is necessary to notify the application layer to read.
     pub fn is_readable(&self) -> bool {
         !self.segments.is_empty()
-            && self.segments[0].offset == self.read
+            && self.segments[0].offset == self.nread
             && self.segments[0].length > 0
     }
 }
