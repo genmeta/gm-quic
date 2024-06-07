@@ -16,7 +16,6 @@ pub(crate) const BATCH_SIZE: usize = 32;
     target_os = "freebsd",
     target_os = "macos",
     target_os = "ios",
-    tar
 ))]
 impl Io for UdpSocketController {
     fn config(&self) -> io::Result<()> {

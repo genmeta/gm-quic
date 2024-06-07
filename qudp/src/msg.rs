@@ -45,6 +45,14 @@ impl<'a> Cmsg<'a> {
         assert!(mem::align_of::<T>() <= mem::align_of::<libc::cmsghdr>());
         let space = unsafe { libc::CMSG_SPACE(mem::size_of_val(&value) as _) as usize };
         //  检查空间是否足够
+        #[allow(clippy::unnecessary_cast)]
+        if (self.hdr.msg_controllen as usize) < (self).len + space {
+            panic!(
+                "control message buffer too small. Need {}, Availableve {}",
+                space + self.len,
+                self.hdr.msg_controllen
+            );
+        }
         assert!(
             self.hdr.msg_controllen as usize >= self.len + space,
             "control message buffer too small. Required: {}, Available: {}",
