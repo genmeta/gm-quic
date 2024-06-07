@@ -58,16 +58,25 @@ impl CryptoFrame {
     pub fn estimate_max_capacity(capacity: usize, offset: u64) -> Option<usize> {
         assert!(offset <= VARINT_MAX);
         capacity
+            // Must accommodate at least one byte, 'len' takes up 1 byte,
+            // content takes up 1 byte. If these are not satisfied, return None.
             .checked_sub(1 + VarInt(offset).encoding_size() + 2)
-            .map(|remaining| match remaining + 2 {
-                0..=1 => unreachable!("crypto frame should contain at least one byte"),
-                // lenth编码占1字节
-                value @ 2..=64 => value - 1,
-                // length编码占2字节，其中65时length占1字节或2字节，都只能容纳63字节内容了
-                value @ 65..=16385 => value - 2,
-                // 以下长度，length编码占4字节反而容量更少，不如length编码占2字节
-                16386..=16387 => 16383,
-                value @ 16388..=1073741827 => value - 4,
+            .map(|remaining| match remaining {
+                // Including the 1 byte already considered in check_sub,
+                // 'length' still takes up 1 byte.
+                value @ 0..=62 => value + 1,
+                // The encoding of 'length' directly takes up 2 bytes, the final 2 bytes
+                // subtracted in 'check_sub' are all occupied by the encoding of 'length'.
+                // Interestingly, if only 65 bytes are left after removing the encoding of
+                // Type and Offset, whether the encoding of 'length' takes up 1 byte or 2
+                // bytes, only 63 bytes of data can be carried.
+                value @ 0x3F..=0x3F_FF => value,
+                // For the following lengths, the encoding of 'length' needs to occupy 4 bytes.
+                // When the buffer capacity is 0x4000 or 0x40001, the encoding of 'length'
+                // changes to 4 bytes, but the capacity is not enough, so it needs to be rolled back.
+                0x40_00..=0x40_01 => 0x3FFF,
+                value @ 0x40_02..=0x40_00_00_01 => value - 2,
+                // Any longer, a packet exceeding 100 million bytes is already impossible.
                 _ => unreachable!("crypto frame length could not be too large"),
             })
     }

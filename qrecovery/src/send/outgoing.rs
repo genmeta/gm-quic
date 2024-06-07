@@ -203,7 +203,8 @@ impl Outgoing {
 pub struct IsCancelled(ArcSender);
 
 impl Future for IsCancelled {
-    type Output = Option<u64>;
+    // (u64, u64) -> (final_size, err_code)
+    type Output = Option<(u64, u64)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut sender = self.0.lock().unwrap();
@@ -211,19 +212,19 @@ impl Future for IsCancelled {
         match inner {
             Ok(sending_state) => match sending_state {
                 Sender::Ready(s) => {
-                    let final_size = ready!(s.poll_cancel(cx));
+                    let (final_size, err_code) = ready!(s.poll_cancel(cx));
                     *sending_state = Sender::ResetSent(final_size);
-                    Poll::Ready(Some(final_size))
+                    Poll::Ready(Some((final_size, err_code)))
                 }
                 Sender::Sending(s) => {
-                    let final_size = ready!(s.poll_cancel(cx));
+                    let (final_size, err_code) = ready!(s.poll_cancel(cx));
                     *sending_state = Sender::ResetSent(final_size);
-                    Poll::Ready(Some(final_size))
+                    Poll::Ready(Some((final_size, err_code)))
                 }
                 Sender::DataSent(s) => {
-                    let final_size = ready!(s.poll_cancel(cx));
+                    let (final_size, err_code) = ready!(s.poll_cancel(cx));
                     *sending_state = Sender::ResetSent(final_size);
-                    Poll::Ready(Some(final_size))
+                    Poll::Ready(Some((final_size, err_code)))
                 }
                 _ => Poll::Ready(None),
             },

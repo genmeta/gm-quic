@@ -26,7 +26,7 @@ mod send {
     }
 
     impl Sender {
-        fn try_read(&mut self, mut buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
+        fn try_read_data(&mut self, mut buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
             let remaining = buffer.remaining_mut();
             let estimater = |offset: u64| CryptoFrame::estimate_max_capacity(remaining, offset);
             if let Some((offset, data)) = self.sndbuf.pick_up(estimater) {
@@ -41,7 +41,7 @@ mod send {
             }
         }
 
-        fn on_acked(&mut self, range: &Range<u64>) {
+        fn on_data_acked(&mut self, range: &Range<u64>) {
             self.sndbuf.on_data_acked(range);
             if self.sndbuf.remaining_mut() > 0 {
                 if let Some(waker) = self.writable_waker.take() {
@@ -50,7 +50,7 @@ mod send {
             }
         }
 
-        fn may_loss(&mut self, range: &Range<u64>) {
+        fn may_loss_data(&mut self, range: &Range<u64>) {
             self.sndbuf.may_loss_data(range)
         }
     }
@@ -115,15 +115,15 @@ mod send {
 
     impl CryptoStreamOutgoing {
         pub(crate) fn try_read_data(&self, buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
-            self.0.lock().unwrap().try_read(buffer)
+            self.0.lock().unwrap().try_read_data(buffer)
         }
 
         pub(super) fn on_data_acked(&self, range: &Range<u64>) {
-            self.0.lock().unwrap().on_acked(range)
+            self.0.lock().unwrap().on_data_acked(range)
         }
 
         pub(super) fn may_loss_data(&self, range: &Range<u64>) {
-            self.0.lock().unwrap().may_loss(range)
+            self.0.lock().unwrap().may_loss_data(range)
         }
     }
 

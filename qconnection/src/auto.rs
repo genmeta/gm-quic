@@ -139,7 +139,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
                         &ack_frames_tx,
                     ) {
                         // TODO: path也要记录收包时间、is_ack_eliciting
-                        Ok(_is_ack_eliciting) => space.on_rcvd_pn(pn),
+                        Ok(_is_ack_eliciting) => space.rcvd_pkt_records().register_pn(pn),
                         Err(_e) => {
                             // 解析包失败，丢弃
                             // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
@@ -197,7 +197,7 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
                         &ack_frames_tx,
                     ) {
                         // TODO: path也要登记其收到的包、收包时间、is_ack_eliciting，方便激发AckFrame
-                        Ok(_is_ack_eliciting) => space.on_rcvd_pn(pn),
+                        Ok(_is_ack_eliciting) => space.rcvd_pkt_records().register_pn(pn),
                         Err(_e) => {
                             // 解析包失败，丢弃
                             // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接

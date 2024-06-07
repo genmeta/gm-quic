@@ -5,6 +5,7 @@ use super::{
     streams::{none::NoDataStreams, ArcDataStreams, ReceiveStream, TransmitStream},
 };
 use bytes::{BufMut, Bytes};
+use deref_derive::Deref;
 use qbase::{
     error::Error,
     frame::{
@@ -23,7 +24,7 @@ pub enum SpaceFrame {
 }
 
 #[derive(Debug)]
-struct RawSpace<T> {
+pub struct RawSpace<T> {
     reliable_frame_queue: ArcReliableFrameQueue,
     sent_pkt_records: ArcSentPktRecords,
     rcvd_pkt_records: ArcRcvdPktRecords,
@@ -35,21 +36,26 @@ impl<T> RawSpace<T>
 where
     T: TransmitStream + ReceiveStream,
 {
-    fn rcvd_pkt_records(&self) -> ArcRcvdPktRecords {
-        self.rcvd_pkt_records.clone()
+    /// 可用于收包解码包号，判定包号是否重复或者过期，记录收包状态，淘汰并滑动收包记录窗口
+    pub fn rcvd_pkt_records(&self) -> &ArcRcvdPktRecords {
+        &self.rcvd_pkt_records
     }
 
-    fn decode_pn(&self, encoded_pn: PacketNumber) -> Result<u64, RcvPnError> {
+    pub fn decode_pn(&self, encoded_pn: PacketNumber) -> Result<u64, RcvPnError> {
         self.rcvd_pkt_records.decode_pn(encoded_pn)
     }
 
-    fn on_rcvd_pn(&self, pn: u64) {
-        self.rcvd_pkt_records.on_rcvd_pn(pn)
+    /// 解码出pn还无法判定这个包的内容是否正常，只有等所有包内容都正确解析了，才可以登记该pn被正式接收
+    pub fn register_pn(&self, pn: u64) {
+        self.rcvd_pkt_records.register_pn(pn)
     }
 
+    /// 要发送一个该空间的数据包，读出下一个包号，然后检查是否要发送AckFrame，
+    /// 然后发送帧，最后发送数据流中的数据帧。
+    /// 返回该数据包的包号，以及大小
     /// 给出包缓冲区，读取该space下可以写入的数据，包括包号，AckFrame，可靠帧，数据帧
-    /// 返回包号、包号编码大小、写入的数据大小、是否写入了ack帧(是否必写入成功？)
-    fn read(&self, mut buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize, usize) {
+    /// 返回包号、包号编码大小、写入的数据大小
+    pub fn read(&self, mut buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize, usize) {
         let origin = buf.remaining_mut();
 
         let mut send_guard = self.sent_pkt_records.send();
@@ -89,7 +95,8 @@ where
                 buf.advance_mut(len);
             }
         }
-        if let Some((stream_frame, len)) = self.data_streams.try_read_data(buf) {
+        // while循环，可能发送stream1，stream2流
+        while let Some((stream_frame, len)) = self.data_streams.try_read_data(buf) {
             send_guard.record_data_frame(DataFrame::Stream(stream_frame));
             unsafe {
                 buf.advance_mut(len);
@@ -99,7 +106,8 @@ where
         (pn, encoded_pn.size(), origin - buf.remaining_mut())
     }
 
-    fn receive(&self, frame: SpaceFrame) -> Result<(), Error> {
+    /// 接收Space相关的帧，包括数据帧
+    pub fn receive(&self, frame: SpaceFrame) -> Result<(), Error> {
         match frame {
             SpaceFrame::Stream(frame) => {
                 self.data_streams.recv_frame(frame)?;
@@ -114,7 +122,8 @@ where
         Ok(())
     }
 
-    fn on_ack(&self, ack: AckFrame) {
+    /// 此处接收AckFrame，只负责内容，涉及RTT和传输速度控制的，path已经处理过
+    pub fn on_ack(&self, ack: AckFrame) {
         let mut recv_guard = self.sent_pkt_records.receive();
         recv_guard.update_largest(ack.largest.into_inner());
 
@@ -139,7 +148,7 @@ where
     }
 
     /// 发现丢包，就要重传
-    fn may_loss_pkt(&self, pn: u64) {
+    pub fn may_loss_pkt(&self, pn: u64) {
         let mut sent_pkt_guard = self.sent_pkt_records.receive();
         let mut write_frame_guard = self.reliable_frame_queue.write();
         for record in sent_pkt_guard.may_loss_pkt(pn) {
@@ -161,48 +170,8 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ArcSpace<T>(Arc<RawSpace<T>>);
-
-impl<T> ArcSpace<T>
-where
-    T: TransmitStream + ReceiveStream,
-{
-    /// 可用于收包解码包号，判定包号是否重复或者过期，记录收包状态，淘汰并滑动收包记录窗口
-    pub fn rcvd_pkt_records(&self) -> ArcRcvdPktRecords {
-        self.0.rcvd_pkt_records()
-    }
-
-    pub fn decode_pn(&self, encoded_pn: PacketNumber) -> Result<u64, RcvPnError> {
-        self.0.decode_pn(encoded_pn)
-    }
-
-    pub fn on_rcvd_pn(&self, pn: u64) {
-        self.0.on_rcvd_pn(pn)
-    }
-
-    /// 要发送一个该空间的数据包，读出下一个包号，然后检车是否要发送AckFrame，
-    /// 然后发送帧，最后发送数据流中的数据帧。
-    /// 返回该数据包的包号，以及大小
-    pub fn read(&self, buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize, usize) {
-        self.0.read(buf, ack_pkt)
-    }
-
-    /// 接收Space相关的帧，包括数据帧
-    pub fn receive(&self, frame: SpaceFrame) -> Result<(), Error> {
-        self.0.receive(frame)
-    }
-
-    /// 此处接收AckFrame，只负责内容，涉及RTT和传输速度控制的，path已经处理过
-    pub fn on_ack(&self, ack: AckFrame) {
-        self.0.on_ack(ack);
-    }
-
-    /// 当数据包在传输中丢失，通常由Path判断，通过某种通信方式告知Space，并调用该函数
-    pub fn may_loss_pkt(&self, pn: u64) {
-        self.0.may_loss_pkt(pn);
-    }
-}
+#[derive(Debug, Clone, Deref)]
+pub struct ArcSpace<T>(#[deref] Arc<RawSpace<T>>);
 
 impl ArcSpace<NoDataStreams> {
     /// Initial空间和Handshake空间皆通过此函数创建

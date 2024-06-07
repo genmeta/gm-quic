@@ -165,7 +165,7 @@ impl ArcRcvdPktRecords {
     }
 
     /// 当包号合法，且包被完全解密，且包中的帧都正确之后，记录该包已经收到。
-    pub fn on_rcvd_pn(&self, pn: u64) {
+    pub fn register_pn(&self, pn: u64) {
         self.inner.write().unwrap().on_rcvd_pn(pn);
     }
 
@@ -219,7 +219,7 @@ mod tests {
         assert_eq!(records.decode_pn(PacketNumber::encode(1, 0)), Ok(1));
         assert_eq!(records.inner.read().unwrap().queue.len(), 0);
 
-        records.on_rcvd_pn(1);
+        records.register_pn(1);
         assert_eq!(records.inner.read().unwrap().queue.len(), 2);
 
         assert_eq!(
@@ -238,7 +238,7 @@ mod tests {
         );
 
         assert_eq!(records.decode_pn(PacketNumber::encode(30, 0)), Ok(30));
-        records.on_rcvd_pn(30);
+        records.register_pn(30);
         {
             let mut writer = records.write();
             for i in 5..10 {

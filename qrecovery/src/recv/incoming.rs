@@ -132,9 +132,10 @@ impl Future for UpdateWindow {
 pub struct IsStopped(ArcRecver);
 
 impl Future for IsStopped {
-    // true means stopped by app.
-    // false means it was never stopped until the end.
-    type Output = bool;
+    // If stopped by the application layer, return the application layer's error code;
+    // If not stopped by the application layer, return Pending
+    // If it is not stopped by the application layer until the stream ends, return None
+    type Output = Option<u64>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut recver = self.0.lock().unwrap();
@@ -147,9 +148,9 @@ impl Future for IsStopped {
                 // not because the receiver actively stopped. The receiver's active stop
                 // will not change the state, so it can only receive stop notifications in
                 // the Recv/SizeKnown state.
-                _ => Poll::Ready(false),
+                _ => Poll::Ready(None),
             },
-            Err(_) => Poll::Ready(false),
+            Err(_) => Poll::Ready(None),
         }
     }
 }

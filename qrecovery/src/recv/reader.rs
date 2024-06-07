@@ -1,4 +1,5 @@
 use super::recver::{ArcRecver, Recver};
+use qbase::varint::VARINT_MAX;
 use std::{
     io,
     ops::DerefMut,
@@ -14,10 +15,27 @@ impl Reader {
     pub(super) fn new(recver: ArcRecver) -> Self {
         Self(recver)
     }
-}
 
-// TODO: 还要实现abort
-// TODO: Reader的drop，意味着自动abort
+    /// Tell peer to stop sending data with the given error code.
+    /// It meaning sending a STOP_SENDING frame to peer.
+    pub fn stop(self, error_code: u64) {
+        debug_assert!(error_code <= VARINT_MAX);
+        let mut recver = self.0.lock().unwrap();
+        let inner = recver.deref_mut();
+        match inner {
+            Ok(receiving_state) => match receiving_state {
+                Recver::Recv(r) => {
+                    r.stop(error_code);
+                }
+                Recver::SizeKnown(r) => {
+                    r.stop(error_code);
+                }
+                _ => (),
+            },
+            Err(_) => (),
+        }
+    }
+}
 
 impl AsyncRead for Reader {
     fn poll_read(
@@ -62,12 +80,22 @@ impl Drop for Reader {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
         match inner {
+            // strict mode: don't forget to call stop with the error code when an
+            // abnormal termination occurs, or it will panic.
             Ok(receiving_state) => match receiving_state {
                 Recver::Recv(r) => {
-                    r.stop();
+                    assert!(
+                        r.is_stopped(),
+                        r#"RecvStream in Recv State must be 
+                            stopped with error code before dropped!"#
+                    )
                 }
                 Recver::SizeKnown(r) => {
-                    r.stop();
+                    assert!(
+                        r.is_stopped(),
+                        r#"RecvStream in Recv State must be 
+                            stopped with error code before dropped!"#
+                    )
                 }
                 _ => (),
             },

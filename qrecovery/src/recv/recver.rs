@@ -14,7 +14,7 @@ use std::{
 pub(super) struct Recv {
     rcvbuf: rcvbuf::RecvBuf,
     read_waker: Option<Waker>,
-    is_stopped: bool,
+    stop_state: Option<u64>,
     stop_waker: Option<Waker>,
     largest_data_size: u64,
     max_data_size: u64,
@@ -26,7 +26,7 @@ impl Recv {
         Self {
             rcvbuf: rcvbuf::RecvBuf::default(),
             read_waker: None,
-            is_stopped: false,
+            stop_state: None,
             stop_waker: None,
             largest_data_size: 0,
             max_data_size,
@@ -83,7 +83,6 @@ impl Recv {
         cx: &mut Context<'_>,
         buf: &mut T,
     ) -> Poll<io::Result<()>> {
-        assert!(self.read_waker.is_none());
         if self.rcvbuf.is_readable() {
             self.rcvbuf.read(buf);
 
@@ -113,23 +112,25 @@ impl Recv {
         }
     }
 
-    pub(super) fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
-        assert!(self.stop_waker.is_none());
-        if self.is_stopped {
-            Poll::Ready(true)
+    pub(super) fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<Option<u64>> {
+        if let Some(err_code) = self.stop_state {
+            Poll::Ready(Some(err_code))
         } else {
             self.stop_waker = Some(cx.waker().clone());
             Poll::Pending
         }
     }
 
-    pub(super) fn stop(&mut self) {
-        if !self.is_stopped {
-            self.is_stopped = true;
-            if let Some(waker) = self.stop_waker.take() {
-                waker.wake()
-            }
+    pub(super) fn stop(&mut self, err_code: u64) {
+        assert!(self.stop_state.is_none());
+        self.stop_state = Some(err_code);
+        if let Some(waker) = self.stop_waker.take() {
+            waker.wake()
         }
+    }
+
+    pub(super) fn is_stopped(&self) -> bool {
+        self.stop_state.is_some()
     }
 
     pub(super) fn determin_size(&mut self, total_size: u64) -> SizeKnown {
@@ -139,7 +140,7 @@ impl Recv {
         SizeKnown {
             total_size,
             rcvbuf: std::mem::take(&mut self.rcvbuf),
-            is_stopped: self.is_stopped,
+            stop_state: self.stop_state.take(),
             read_waker: self.read_waker.take(),
             stop_waker: self.stop_waker.take(),
         }
@@ -181,7 +182,7 @@ impl Recv {
 pub struct SizeKnown {
     rcvbuf: rcvbuf::RecvBuf,
     read_waker: Option<Waker>,
-    is_stopped: bool,
+    stop_state: Option<u64>,
     stop_waker: Option<Waker>,
     total_size: u64,
 }
@@ -239,7 +240,6 @@ impl SizeKnown {
         cx: &mut Context<'_>,
         buf: &mut T,
     ) -> Poll<io::Result<()>> {
-        assert!(self.read_waker.is_none());
         if self.rcvbuf.is_readable() {
             self.rcvbuf.read(buf);
             Poll::Ready(Ok(()))
@@ -249,10 +249,9 @@ impl SizeKnown {
         }
     }
 
-    pub(super) fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
-        assert!(self.stop_waker.is_none());
-        if self.is_stopped {
-            Poll::Ready(true)
+    pub(super) fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<Option<u64>> {
+        if let Some(err_code) = self.stop_state {
+            Poll::Ready(Some(err_code))
         } else {
             self.stop_waker = Some(cx.waker().clone());
             Poll::Pending
@@ -261,14 +260,17 @@ impl SizeKnown {
 
     /// Abort can be called multiple times at the application level,
     /// but only the first call is effective.
-    pub(super) fn stop(&mut self) -> u64 {
-        if !self.is_stopped {
-            self.is_stopped = true;
-            if let Some(waker) = self.stop_waker.take() {
-                waker.wake()
-            }
+    pub(super) fn stop(&mut self, err_code: u64) -> u64 {
+        assert!(self.stop_state.is_none());
+        self.stop_state = Some(err_code);
+        if let Some(waker) = self.stop_waker.take() {
+            waker.wake()
         }
         self.total_size
+    }
+
+    pub(super) fn is_stopped(&self) -> bool {
+        self.stop_state.is_some()
     }
 
     pub(super) fn wake_all(&mut self) {

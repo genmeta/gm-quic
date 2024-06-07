@@ -16,7 +16,7 @@ use std::{
 pub struct ReadySender {
     sndbuf: SendBuf,
     max_data_size: u64,
-    is_cancelled: bool,
+    cancel_state: Option<u64>,
     writable_waker: Option<Waker>,
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
@@ -28,7 +28,7 @@ impl ReadySender {
         ReadySender {
             sndbuf: SendBuf::with_capacity(initial_max_stream_data as usize),
             max_data_size: initial_max_stream_data,
-            is_cancelled: false,
+            cancel_state: None,
             writable_waker: None,
             flush_waker: None,
             shutdown_waker: None,
@@ -41,10 +41,10 @@ impl ReadySender {
     /// 仅供展示学习
     #[allow(dead_code)]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.is_cancelled {
+        if let Some(err_code) = self.cancel_state {
             Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
-                "cancelled by local",
+                format!("cancelled by app with error code {err_code}"),
             ))
         } else {
             let range = self.sndbuf.range();
@@ -62,11 +62,10 @@ impl ReadySender {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        assert!(self.writable_waker.is_none());
-        if self.is_cancelled {
+        if let Some(err_code) = self.cancel_state {
             Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
-                "cancelled by local",
+                format!("cancelled by app with error code {err_code}"),
             )))
         } else {
             let range = self.sndbuf.range();
@@ -81,11 +80,10 @@ impl ReadySender {
     }
 
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        assert!(self.flush_waker.is_none());
-        if self.is_cancelled {
+        if let Some(err_code) = self.cancel_state {
             Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
-                "cancelled by local",
+                format!("cancelled by app with error code {err_code}"),
             )))
         } else {
             self.flush_waker = Some(cx.waker().clone());
@@ -94,11 +92,10 @@ impl ReadySender {
     }
 
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        assert!(self.shutdown_waker.is_none());
-        if self.is_cancelled {
+        if let Some(err_code) = self.cancel_state {
             Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
-                "cancelled by local",
+                format!("cancelled by app with error code {err_code}"),
             )))
         } else {
             self.shutdown_waker = Some(cx.waker().clone());
@@ -111,10 +108,9 @@ impl ReadySender {
     }
 
     /// 传输层使用，用于发送RST_STREAM帧后，将Sender置为ResetSent状态
-    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<u64> {
-        assert!(self.cancel_waker.is_none());
-        if self.is_cancelled {
-            Poll::Ready(self.sndbuf.len())
+    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<(u64, u64)> {
+        if let Some(err_code) = self.cancel_state {
+            Poll::Ready((self.sndbuf.len(), err_code))
         } else {
             self.cancel_waker = Some(cx.waker().clone());
             Poll::Pending
@@ -122,14 +118,16 @@ impl ReadySender {
     }
 
     /// 应用层使用，取消发送流
-    pub(super) fn cancel(&mut self) {
-        // 应用层多次cancel会被忽略
-        if !self.is_cancelled {
-            self.is_cancelled = true;
-            if let Some(waker) = self.cancel_waker.take() {
-                waker.wake();
-            }
+    pub(super) fn cancel(&mut self, err_code: u64) {
+        assert!(self.cancel_state.is_none());
+        self.cancel_state = Some(err_code);
+        if let Some(waker) = self.cancel_waker.take() {
+            waker.wake();
         }
+    }
+
+    pub(super) fn is_cancelled(&self) -> bool {
+        self.cancel_state.is_some()
     }
 
     pub(super) fn wake_all(&mut self) {
@@ -155,7 +153,7 @@ impl From<&mut ReadySender> for SendingSender {
         SendingSender {
             sndbuf: std::mem::take(&mut value.sndbuf),
             max_data_size: value.max_data_size,
-            is_cancelled: value.is_cancelled,
+            cancel_state: value.cancel_state.take(),
             writable_waker: value.writable_waker.take(),
             flush_waker: value.flush_waker.take(),
             shutdown_waker: value.shutdown_waker.take(),
@@ -168,7 +166,7 @@ impl From<&mut ReadySender> for SendingSender {
 impl From<&mut ReadySender> for DataSentSender {
     fn from(value: &mut ReadySender) -> Self {
         DataSentSender {
-            is_cancelled: value.is_cancelled,
+            cancel_state: value.cancel_state.take(),
             sndbuf: std::mem::take(&mut value.sndbuf),
             flush_waker: value.flush_waker.take(),
             shutdown_waker: value.shutdown_waker.take(),
@@ -181,7 +179,7 @@ impl From<&mut ReadySender> for DataSentSender {
 pub struct SendingSender {
     sndbuf: SendBuf,
     max_data_size: u64,
-    is_cancelled: bool,
+    cancel_state: Option<u64>,
     writable_waker: Option<Waker>,
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
@@ -199,10 +197,10 @@ impl SendingSender {
         // TODO: 应该使用一个错误, write after close
         assert!(self.shutdown_waker.is_none());
         assert!(self.writable_waker.is_none());
-        if self.is_cancelled {
+        if let Some(err_code) = self.cancel_state {
             Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
-                "cancelled by local",
+                format!("cancelled by app with error code {err_code}"),
             )))
         } else {
             let range = self.sndbuf.range();
@@ -230,7 +228,7 @@ impl SendingSender {
     where
         F: Fn(u64) -> Option<usize>,
     {
-        if self.is_cancelled {
+        if self.cancel_state.is_some() {
             return None;
         }
         self.sndbuf
@@ -252,9 +250,11 @@ impl SendingSender {
     }
 
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        assert!(self.flush_waker.is_none());
-        if self.is_cancelled {
-            Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+        if let Some(err_code) = self.cancel_state {
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("cancelled by app with error code {err_code}"),
+            )))
         } else if self.sndbuf.is_all_rcvd() {
             Poll::Ready(Ok(()))
         } else {
@@ -264,11 +264,10 @@ impl SendingSender {
     }
 
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        assert!(self.shutdown_waker.is_none());
-        if self.is_cancelled {
+        if let Some(err_code) = self.cancel_state {
             Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
-                "cancelled by local",
+                format!("cancelled by app with error code {err_code}"),
             )))
         } else if self.sndbuf.is_all_rcvd() {
             // 都已经关闭了，不再写数据数据了，如果所有数据都已发送完，那就是已关闭了
@@ -280,23 +279,25 @@ impl SendingSender {
     }
 
     /// 传输层使用
-    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<u64> {
-        assert!(self.cancel_waker.is_none());
-        if self.is_cancelled {
-            Poll::Ready(self.sndbuf.len())
+    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<(u64, u64)> {
+        if let Some(err_code) = self.cancel_state {
+            Poll::Ready((self.sndbuf.len(), err_code))
         } else {
             self.cancel_waker = Some(cx.waker().clone());
             Poll::Pending
         }
     }
 
-    pub(super) fn cancel(&mut self) {
-        if !self.is_cancelled {
-            self.is_cancelled = true;
-            if let Some(waker) = self.cancel_waker.take() {
-                waker.wake();
-            }
+    pub(super) fn cancel(&mut self, err_code: u64) {
+        assert!(self.cancel_state.is_none());
+        self.cancel_state = Some(err_code);
+        if let Some(waker) = self.cancel_waker.take() {
+            waker.wake();
         }
+    }
+
+    pub(super) fn is_cancelled(&self) -> bool {
+        self.cancel_state.is_some()
     }
 
     pub(super) fn wake_all(&mut self) {
@@ -327,7 +328,7 @@ impl SendingSender {
 impl From<&mut SendingSender> for DataSentSender {
     fn from(value: &mut SendingSender) -> Self {
         DataSentSender {
-            is_cancelled: value.is_cancelled,
+            cancel_state: value.cancel_state.take(),
             sndbuf: std::mem::take(&mut value.sndbuf),
             flush_waker: value.flush_waker.take(),
             shutdown_waker: value.shutdown_waker.take(),
@@ -339,7 +340,7 @@ impl From<&mut SendingSender> for DataSentSender {
 #[derive(Debug)]
 pub struct DataSentSender {
     sndbuf: SendBuf,
-    is_cancelled: bool,
+    cancel_state: Option<u64>,
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
     cancel_waker: Option<Waker>,
@@ -350,7 +351,7 @@ impl DataSentSender {
     where
         F: Fn(u64) -> Option<usize>,
     {
-        if self.is_cancelled {
+        if self.cancel_state.is_some() {
             return None;
         }
 
@@ -384,11 +385,10 @@ impl DataSentSender {
     }
 
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        assert!(self.flush_waker.is_none());
-        if self.is_cancelled {
+        if let Some(err_code) = self.cancel_state {
             Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
-                "cancelled by local",
+                format!("cancelled by app with error code {err_code}"),
             )))
         } else if self.sndbuf.is_all_rcvd() {
             Poll::Ready(Ok(()))
@@ -399,11 +399,10 @@ impl DataSentSender {
     }
 
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        assert!(self.shutdown_waker.is_none());
-        if self.is_cancelled {
+        if let Some(err_code) = self.cancel_state {
             Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
-                "cancelled by local",
+                format!("cancelled by app with error code {err_code}"),
             )))
         } else if self.is_all_rcvd() {
             Poll::Ready(Ok(()))
@@ -413,24 +412,25 @@ impl DataSentSender {
         }
     }
 
-    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<u64> {
-        // TODO: 对于偷任务的异步运行时，要允许在cancel_waker不为None的情况下重置waker
-        assert!(self.cancel_waker.is_none());
-        if self.is_cancelled {
-            Poll::Ready(self.sndbuf.len())
+    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<(u64, u64)> {
+        if let Some(err_code) = self.cancel_state {
+            Poll::Ready((self.sndbuf.len(), err_code))
         } else {
             self.cancel_waker = Some(cx.waker().clone());
             Poll::Pending
         }
     }
 
-    pub(super) fn cancel(&mut self) {
-        if !self.is_cancelled {
-            self.is_cancelled = true;
-            if let Some(waker) = self.cancel_waker.take() {
-                waker.wake();
-            }
+    pub(super) fn cancel(&mut self, err_code: u64) {
+        assert!(self.cancel_state.is_none());
+        self.cancel_state = Some(err_code);
+        if let Some(waker) = self.cancel_waker.take() {
+            waker.wake();
         }
+    }
+
+    pub(super) fn is_cancelled(&self) -> bool {
+        self.cancel_state.is_some()
     }
 
     pub(super) fn wake_all(&mut self) {

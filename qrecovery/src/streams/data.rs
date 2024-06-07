@@ -470,12 +470,13 @@ impl RawDataStreams {
             let outgoing = outgoing.clone();
             let frames = self.reliable_frame_queue.clone();
             async move {
-                if let Some(final_size) = outgoing.is_cancelled_by_app().await {
+                if let Some((final_size, err_code)) = outgoing.is_cancelled_by_app().await {
                     frames
                         .write()
                         .push_stream_control_frame(StreamCtlFrame::ResetStream(ResetStreamFrame {
                             stream_id: sid,
-                            app_error_code: VarInt::from_u32(0),
+                            app_error_code: VarInt::from_u64(err_code)
+                                .expect("app error code exceed VARINT_MAX"),
                             final_size: unsafe { VarInt::from_u64_unchecked(final_size) },
                         }));
                 }
@@ -508,12 +509,13 @@ impl RawDataStreams {
             let incoming = incoming.clone();
             let frames = self.reliable_frame_queue.clone();
             async move {
-                if incoming.is_stopped_by_app().await {
+                if let Some(err_code) = incoming.is_stopped_by_app().await {
                     frames
                         .write()
                         .push_stream_control_frame(StreamCtlFrame::StopSending(StopSendingFrame {
                             stream_id: sid,
-                            app_err_code: VarInt::from_u32(0),
+                            app_err_code: VarInt::from_u64(err_code)
+                                .expect("app error code exceed VARINT_MAX"),
                         }));
                 }
             }
