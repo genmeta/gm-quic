@@ -1,3 +1,4 @@
+use bytes::BufMut;
 use futures::Stream;
 use std::{
     collections::VecDeque,
@@ -115,5 +116,70 @@ impl<T> Drop for ArcAsyncQueueWriter<'_, T> {
             }
             None => {}
         }
+    }
+}
+
+pub trait WriteData<D: DescribeData> {
+    fn put_data(&mut self, data: &D);
+}
+
+pub trait DescribeData {
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool;
+}
+
+impl DescribeData for (&[u8], &[u8]) {
+    #[inline]
+    fn len(&self) -> usize {
+        self.0.len() + self.1.len()
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.0.is_empty() && self.1.is_empty()
+    }
+}
+
+impl<T: BufMut> WriteData<(&[u8], &[u8])> for T {
+    fn put_data(&mut self, data: &(&[u8], &[u8])) {
+        self.put_slice(data.0);
+        self.put_slice(data.1);
+    }
+}
+
+impl DescribeData for &[u8] {
+    #[inline]
+    fn len(&self) -> usize {
+        <[u8]>::len(self)
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        <[u8]>::is_empty(self)
+    }
+}
+
+impl<T: BufMut> WriteData<&[u8]> for T {
+    fn put_data(&mut self, data: &&[u8]) {
+        self.put_slice(data)
+    }
+}
+
+impl<const N: usize> DescribeData for [u8; N] {
+    #[inline]
+    fn len(&self) -> usize {
+        N
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        N == 0
+    }
+}
+
+impl<const N: usize, T: BufMut> WriteData<[u8; N]> for T {
+    fn put_data(&mut self, data: &[u8; N]) {
+        self.put_slice(data)
     }
 }

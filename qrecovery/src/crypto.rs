@@ -6,6 +6,7 @@ mod send {
     use bytes::BufMut;
     use qbase::{
         frame::{io::WriteCryptoFrame, CryptoFrame},
+        util::DescribeData,
         varint::{VarInt, VARINT_MAX},
     };
     use std::{
@@ -33,7 +34,7 @@ mod send {
                     offset: VarInt::from_u64(offset).unwrap(),
                     length: VarInt::from_u32(data.len() as u32),
                 };
-                buffer.put_crypto_frame(&frame, data);
+                buffer.put_crypto_frame(&frame, &data);
                 Some((frame, remaining - buffer.remaining_mut()))
             } else {
                 None

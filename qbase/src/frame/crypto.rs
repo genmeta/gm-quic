@@ -7,6 +7,7 @@
 
 use crate::{
     packet::r#type::Type,
+    util::{DescribeData, WriteData},
     varint::{be_varint, VarInt, WriteVarInt, VARINT_MAX},
 };
 use std::ops::Range;
@@ -92,17 +93,21 @@ pub fn be_crypto_frame(input: &[u8]) -> nom::IResult<&[u8], CryptoFrame> {
 }
 
 // BufMut extension trait for CRYPTO_FRAME
-pub trait WriteCryptoFrame {
-    fn put_crypto_frame(&mut self, frame: &CryptoFrame, data: &[u8]);
+pub trait WriteCryptoFrame<D: DescribeData>: WriteData<D> {
+    fn put_crypto_frame(&mut self, frame: &CryptoFrame, data: &D);
 }
 
-impl<T: bytes::BufMut> WriteCryptoFrame for T {
-    fn put_crypto_frame(&mut self, frame: &CryptoFrame, data: &[u8]) {
+impl<T, D> WriteCryptoFrame<D> for T
+where
+    T: bytes::BufMut + WriteData<D>,
+    D: DescribeData,
+{
+    fn put_crypto_frame(&mut self, frame: &CryptoFrame, data: &D) {
         assert_eq!(frame.length.into_inner(), data.len() as u64);
         self.put_u8(CRYPTO_FRAME_TYPE);
         self.put_varint(&frame.offset);
         self.put_varint(&frame.length);
-        self.put_slice(data);
+        self.put_data(data);
     }
 }
 

@@ -1,3 +1,5 @@
+use crate::util::{DescribeData, WriteData};
+
 use super::{
     ack::ack_frame_with_flag, connection_close::connection_close_frame_at_layer,
     crypto::be_crypto_frame, data_blocked::be_data_blocked_frame, max_data::be_max_data_frame,
@@ -141,8 +143,8 @@ pub trait WriteFrame<F> {
     fn put_frame(&mut self, frame: &F);
 }
 
-pub trait WriteDataFrame<D> {
-    fn put_frame_with_data(&mut self, frame: &D, data: &[u8]);
+pub trait WriteDataFrame<F, D: DescribeData>: WriteData<D> {
+    fn put_frame_with_data(&mut self, frame: &F, data: &D);
 }
 
 impl<T: bytes::BufMut> WriteFrame<ConnFrame> for T {
@@ -203,20 +205,32 @@ impl<T: bytes::BufMut> WriteFrame<ReliableFrame> for T {
     }
 }
 
-impl<T: bytes::BufMut> WriteDataFrame<CryptoFrame> for T {
-    fn put_frame_with_data(&mut self, frame: &CryptoFrame, data: &[u8]) {
+impl<T, D> WriteDataFrame<CryptoFrame, D> for T
+where
+    T: bytes::BufMut + WriteData<D>,
+    D: DescribeData,
+{
+    fn put_frame_with_data(&mut self, frame: &CryptoFrame, data: &D) {
         self.put_crypto_frame(frame, data);
     }
 }
 
-impl<T: bytes::BufMut> WriteDataFrame<StreamFrame> for T {
-    fn put_frame_with_data(&mut self, frame: &StreamFrame, data: &[u8]) {
+impl<T, D> WriteDataFrame<StreamFrame, D> for T
+where
+    T: bytes::BufMut + WriteData<D>,
+    D: DescribeData,
+{
+    fn put_frame_with_data(&mut self, frame: &StreamFrame, data: &D) {
         self.put_stream_frame(frame, data);
     }
 }
 
-impl<T: bytes::BufMut> WriteDataFrame<DataFrame> for T {
-    fn put_frame_with_data(&mut self, frame: &DataFrame, data: &[u8]) {
+impl<T, D> WriteDataFrame<DataFrame, D> for T
+where
+    T: bytes::BufMut + WriteData<D>,
+    D: DescribeData,
+{
+    fn put_frame_with_data(&mut self, frame: &DataFrame, data: &D) {
         match frame {
             DataFrame::Crypto(frame) => self.put_crypto_frame(frame, data),
             DataFrame::Stream(frame) => self.put_stream_frame(frame, data),

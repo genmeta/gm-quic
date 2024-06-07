@@ -10,7 +10,6 @@ futures = { workspace = true }
 tokio = { workspace = true }
 qbase = { workspace = true }
 rustls = { workspace = true }
-slice-deque = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 async-lock = { workspace = true }

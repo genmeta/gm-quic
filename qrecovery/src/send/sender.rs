@@ -1,3 +1,5 @@
+use qbase::util::DescribeData;
+
 use super::sndbuf::SendBuf;
 use std::{
     io,
@@ -186,6 +188,8 @@ pub struct SendingSender {
     cancel_waker: Option<Waker>,
 }
 
+type StreamData<'s> = (u64, (&'s [u8], &'s [u8]), bool);
+
 impl SendingSender {
     pub(super) fn poll_write(
         &mut self,
@@ -222,7 +226,7 @@ impl SendingSender {
         }
     }
 
-    pub(super) fn pick_up<F>(&mut self, estimate_capacity: F) -> Option<(u64, &[u8], bool)>
+    pub(super) fn pick_up<F>(&mut self, estimate_capacity: F) -> Option<StreamData>
     where
         F: Fn(u64) -> Option<usize>,
     {
@@ -342,7 +346,7 @@ pub struct DataSentSender {
 }
 
 impl DataSentSender {
-    pub(super) fn pick_up<F>(&mut self, estimate_capacity: F) -> Option<(u64, &[u8], bool)>
+    pub(super) fn pick_up<F>(&mut self, estimate_capacity: F) -> Option<StreamData>
     where
         F: Fn(u64) -> Option<usize>,
     {

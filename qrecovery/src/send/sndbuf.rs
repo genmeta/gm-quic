@@ -1,4 +1,3 @@
-use slice_deque::SliceDeque;
 use std::{
     cmp::Ordering,
     collections::VecDeque,
@@ -501,7 +500,7 @@ impl BufMap {
 pub struct SendBuf {
     offset: u64,
     // 写入数据的环形队列，与接收队列不同的是，它是连续的
-    data: SliceDeque<u8>,
+    data: VecDeque<u8>,
     state: BufMap,
 }
 
@@ -509,7 +508,7 @@ impl SendBuf {
     pub fn with_capacity(n: usize) -> Self {
         Self {
             offset: 0,
-            data: SliceDeque::with_capacity(n),
+            data: VecDeque::with_capacity(n),
             state: BufMap::default(),
         }
     }
@@ -523,7 +522,7 @@ impl SendBuf {
         // 写的数据量受流量控制限制，Crypto流则受Crypto流自身控制
         let n = data.len();
         if n > 0 {
-            self.data.extend_from_slice(data);
+            self.data.extend(data);
             self.state.extend_to(self.len() + n as u64);
         }
 
@@ -549,18 +548,24 @@ impl SendBuf {
     // 无需clean：Sender上下文直接释放即可，
 }
 
+type Data<'s> = (u64, (&'s [u8], &'s [u8]));
+
 impl SendBuf {
     // 挑选出可供发送的数据，限制长度不能超过len，以满足一个数据包能容的下一个完整的数据帧。
     // 返回的是一个切片，该切片的生命周期必须不长于SendBuf的生命周期，该切片可以被缓存至数据包
     // 被确认或者被判定丢失。
-    pub fn pick_up<F>(&mut self, estimate_capacity: F) -> Option<(u64, &[u8])>
+    pub fn pick_up<F>(&mut self, estimate_capacity: F) -> Option<Data>
     where
         F: Fn(u64) -> Option<usize>,
     {
         self.state.pick(estimate_capacity).map(|range| {
             let start = (range.start - self.offset) as usize;
             let end = (range.end - self.offset) as usize;
-            (range.start, &self.data[start..end])
+
+            let (l, r) = self.data.as_slices();
+            let s1 = &l[start.min(l.len())..l.len().min(end)];
+            let s2 = &r[start.saturating_sub(l.len())..end.saturating_sub(l.len())];
+            (range.start, (s1, s2))
         })
     }
 

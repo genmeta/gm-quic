@@ -8,6 +8,7 @@ use qbase::{
         ShouldCarryLength, StreamFrame,
     },
     streamid::StreamId,
+    util::DescribeData,
     varint::VARINT_MAX,
 };
 use std::{
@@ -42,22 +43,22 @@ impl Outgoing {
     {
         let capacity = buffer.remaining_mut();
         let estimate_capacity = |offset| StreamFrame::estimate_max_capacity(capacity, sid, offset);
-        let write = |(offset, data, is_eos): (u64, &[u8], bool)| {
+        let write = |(offset, data, is_eos): (u64, (&[u8], &[u8]), bool)| {
             let mut frame = StreamFrame::new(sid, offset, data.len());
             frame.set_eos_flag(is_eos);
             match frame.should_carry_length(buffer.remaining_mut()) {
                 ShouldCarryLength::NoProblem => {
-                    buffer.put_stream_frame(&frame, data);
+                    buffer.put_stream_frame(&frame, &data);
                 }
                 ShouldCarryLength::PaddingFirst(n) => {
                     for _ in 0..n {
                         buffer.put_padding_frame();
                     }
-                    buffer.put_stream_frame(&frame, data);
+                    buffer.put_stream_frame(&frame, &data);
                 }
                 ShouldCarryLength::ShouldAfter(_not_carry_len, _carry_len) => {
                     frame.carry_length();
-                    buffer.put_stream_frame(&frame, data);
+                    buffer.put_stream_frame(&frame, &data);
                 }
             }
             frame

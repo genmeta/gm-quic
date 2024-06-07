@@ -13,6 +13,7 @@ use super::BeFrame;
 use crate::{
     packet::r#type::Type,
     streamid::{be_streamid, StreamId, WriteStreamId},
+    util::{DescribeData, WriteData},
     varint::{be_varint, VarInt, WriteVarInt, VARINT_MAX},
 };
 use std::ops::Range;
@@ -178,12 +179,19 @@ pub fn stream_frame_with_flag(flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8],
     }
 }
 
-pub trait WriteStreamFrame {
-    fn put_stream_frame(&mut self, frame: &StreamFrame, data: &[u8]);
+pub trait WriteStreamFrame<D>: WriteData<D>
+where
+    D: DescribeData,
+{
+    fn put_stream_frame(&mut self, frame: &StreamFrame, data: &D);
 }
 
-impl<T: bytes::BufMut> WriteStreamFrame for T {
-    fn put_stream_frame(&mut self, frame: &StreamFrame, data: &[u8]) {
+impl<T, D> WriteStreamFrame<D> for T
+where
+    T: bytes::BufMut + WriteData<D>,
+    D: DescribeData,
+{
+    fn put_stream_frame(&mut self, frame: &StreamFrame, data: &D) {
         let mut stream_type = STREAM_FRAME_TYPE;
         if frame.offset.into_inner() != 0 {
             stream_type |= 0x04;
@@ -198,7 +206,7 @@ impl<T: bytes::BufMut> WriteStreamFrame for T {
             // Generally, a data frame will not exceed 4GB.
             self.put_varint(&VarInt::from_u32(frame.length as u32));
         }
-        self.put_slice(data);
+        self.put_data(data);
     }
 }
 
