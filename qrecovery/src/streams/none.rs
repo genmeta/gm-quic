@@ -5,31 +5,39 @@ use qbase::{error::Error, frame::*};
 pub struct NoDataStreams;
 
 impl super::TransmitStream for NoDataStreams {
-    fn try_read_data(&self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+    fn try_read_stream(&self, _: &mut [u8]) -> Option<(StreamFrame, usize)> {
         None
     }
 
-    fn on_data_acked(&self, _stream_frame: StreamFrame) {
+    fn try_read_datagram(&self, _: &mut [u8]) -> Option<(DatagramFrame, usize)> {
+        None
+    }
+
+    fn on_data_acked(&self, _: StreamFrame) {
         unreachable!()
     }
 
-    fn may_loss_data(&self, _stream_frame: StreamFrame) {
+    fn may_loss_data(&self, _: StreamFrame) {
         unreachable!()
     }
 
-    fn on_reset_acked(&self, _reset_frame: ResetStreamFrame) {
+    fn on_reset_acked(&self, _: ResetStreamFrame) {
         unreachable!()
     }
 }
 
 impl super::ReceiveStream for NoDataStreams {
-    fn recv_frame(&self, _stream_ctl_frame: StreamCtlFrame) -> Result<(), Error> {
+    fn recv_stream_control(&self, _: StreamCtlFrame) -> Result<(), Error> {
         unreachable!()
     }
 
-    fn recv_data(&self, _stream_frame: StreamFrame, _body: bytes::Bytes) -> Result<(), Error> {
+    fn recv_datagram(&self, _: DatagramFrame, _: bytes::Bytes) -> Result<(), Error> {
         unreachable!()
     }
 
-    fn on_conn_error(&self, _err: &Error) {}
+    fn recv_stream(&self, _: StreamFrame, _: bytes::Bytes) -> Result<(), Error> {
+        unreachable!()
+    }
+
+    fn on_conn_error(&self, _: &Error) {}
 }

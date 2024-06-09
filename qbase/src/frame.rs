@@ -21,6 +21,7 @@ mod ack;
 mod connection_close;
 mod crypto;
 mod data_blocked;
+mod datagram;
 mod handshake_done;
 mod max_data;
 mod max_stream_data;
@@ -46,6 +47,7 @@ pub use ack::{AckFrame, AckRecord};
 pub use connection_close::ConnectionCloseFrame;
 pub use crypto::CryptoFrame;
 pub use data_blocked::DataBlockedFrame;
+pub use datagram::DatagramFrame;
 pub use handshake_done::HandshakeDoneFrame;
 pub use max_data::MaxDataFrame;
 pub use max_stream_data::MaxStreamDataFrame;
@@ -88,6 +90,7 @@ pub enum FrameType {
     PathResponse,
     ConnectionClose(u8),
     HandshakeDone,
+    Datagram(u8),
 }
 
 impl TryFrom<VarInt> for FrameType {
@@ -120,35 +123,43 @@ impl TryFrom<VarInt> for FrameType {
             // The last bit is the layer flag bit, 0 indicates application layer, 1 indicates transport layer.
             ty @ (0x1c | 0x1d) => FrameType::ConnectionClose(ty as u8 & 0x1),
             0x1e => FrameType::HandshakeDone,
+            ty @ (0x30 | 0x31) => FrameType::Datagram(ty as u8 & 1),
             _ => return Err(Self::Error::InvalidType(frame_type)),
         })
     }
 }
 
-impl From<FrameType> for VarInt {
+impl From<FrameType> for u8 {
     fn from(frame_type: FrameType) -> Self {
         match frame_type {
-            FrameType::Padding => VarInt(0x00),
-            FrameType::Ping => VarInt(0x01),
-            FrameType::Ack(ecn) => VarInt(0x02 | ecn as u64),
-            FrameType::ResetStream => VarInt(0x04),
-            FrameType::StopSending => VarInt(0x05),
-            FrameType::Crypto => VarInt(0x06),
-            FrameType::NewToken => VarInt(0x07),
-            FrameType::Stream(flag) => VarInt(0x08 | flag as u64),
-            FrameType::MaxData => VarInt(0x10),
-            FrameType::MaxStreamData => VarInt(0x11),
-            FrameType::MaxStreams(dir) => VarInt(0x12 | dir as u64),
-            FrameType::DataBlocked => VarInt(0x14),
-            FrameType::StreamDataBlocked => VarInt(0x15),
-            FrameType::StreamsBlocked(dir) => VarInt(0x16 | dir as u64),
-            FrameType::NewConnectionId => VarInt(0x18),
-            FrameType::RetireConnectionId => VarInt(0x19),
-            FrameType::PathChallenge => VarInt(0x1a),
-            FrameType::PathResponse => VarInt(0x1b),
-            FrameType::ConnectionClose(layer) => VarInt(0x1c | layer as u64),
-            FrameType::HandshakeDone => VarInt(0x1e),
+            FrameType::Padding => 0x00,
+            FrameType::Ping => 0x01,
+            FrameType::Ack(ecn) => 0x02 | ecn,
+            FrameType::ResetStream => 0x04,
+            FrameType::StopSending => 0x05,
+            FrameType::Crypto => 0x06,
+            FrameType::NewToken => 0x07,
+            FrameType::Stream(flag) => 0x08 | flag,
+            FrameType::MaxData => 0x10,
+            FrameType::MaxStreamData => 0x11,
+            FrameType::MaxStreams(dir) => 0x12 | dir,
+            FrameType::DataBlocked => 0x14,
+            FrameType::StreamDataBlocked => 0x15,
+            FrameType::StreamsBlocked(dir) => 0x16 | dir,
+            FrameType::NewConnectionId => 0x18,
+            FrameType::RetireConnectionId => 0x19,
+            FrameType::PathChallenge => 0x1a,
+            FrameType::PathResponse => 0x1b,
+            FrameType::ConnectionClose(layer) => 0x1c | layer,
+            FrameType::HandshakeDone => 0x1e,
+            FrameType::Datagram(with_len) => 0x30 | with_len,
         }
+    }
+}
+
+impl From<FrameType> for VarInt {
+    fn from(frame_type: FrameType) -> Self {
+        u8::from(frame_type).into()
     }
 }
 
@@ -187,6 +198,7 @@ pub enum PathFrame {
 pub enum DataFrame {
     Crypto(CryptoFrame),
     Stream(StreamFrame),
+    Datagram(DatagramFrame),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

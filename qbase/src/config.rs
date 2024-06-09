@@ -275,7 +275,7 @@ impl Default for TransportParameters {
             initial_source_connection_id: None,
             retry_source_connection_id: None,
             version_information: None,
-            max_datagram_frame_size: VarInt(0),
+            max_datagram_frame_size: VarInt(65535),
             grease_quic_bit: false,
         }
     }
@@ -322,9 +322,9 @@ mod test {
             active_connection_id_limit: VarInt(0x1234),
             initial_source_connection_id: Some(init_cid),
             retry_source_connection_id: Some(init_cid),
-            // 下面三个字段 rfc 里没有？
+            max_datagram_frame_size: VarInt(65535),
+            // 下面两个字段 rfc 里没有？
             version_information: None,
-            max_datagram_frame_size: VarInt(0),
             grease_quic_bit: false,
         };
 

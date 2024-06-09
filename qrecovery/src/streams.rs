@@ -1,4 +1,9 @@
-use crate::{recv::Reader, reliable::ArcReliableFrameQueue, send::Writer};
+use crate::{
+    recv::Reader,
+    reliable::ArcReliableFrameQueue,
+    send::Writer,
+    unreliable::{reader::DatagramReader, stream::DatagramStream, writer::DatagramWriter},
+};
 use futures::Future;
 use qbase::{error::Error, frame::*, streamid::Role};
 use std::{
@@ -11,7 +16,9 @@ use std::{
 /// For sending stream data
 pub trait TransmitStream {
     /// read data to transmit
-    fn try_read_data(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)>;
+    fn try_read_stream(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)>;
+
+    fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)>;
 
     fn on_data_acked(&self, stream_frame: StreamFrame);
 
@@ -21,9 +28,11 @@ pub trait TransmitStream {
 }
 
 pub trait ReceiveStream {
-    fn recv_frame(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error>;
+    fn recv_stream_control(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error>;
 
-    fn recv_data(&self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error>;
+    fn recv_stream(&self, frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error>;
+
+    fn recv_datagram(&self, frame: DatagramFrame, body: bytes::Bytes) -> Result<(), Error>;
 
     fn on_conn_error(&self, err: &Error);
 }
@@ -36,8 +45,12 @@ pub mod none;
 pub struct ArcDataStreams(Arc<data::RawDataStreams>);
 
 impl TransmitStream for ArcDataStreams {
-    fn try_read_data(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
-        self.0.try_read_data(buf)
+    fn try_read_stream(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+        self.0.try_read_stream(buf)
+    }
+
+    fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
+        self.0.try_read_datagram(buf)
     }
 
     fn on_data_acked(&self, stream_frame: StreamFrame) {
@@ -54,12 +67,16 @@ impl TransmitStream for ArcDataStreams {
 }
 
 impl ReceiveStream for ArcDataStreams {
-    fn recv_frame(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error> {
-        self.0.recv_frame(stream_ctl_frame)
+    fn recv_stream_control(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error> {
+        self.0.recv_stream_control(stream_ctl_frame)
     }
 
-    fn recv_data(&self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error> {
-        self.0.recv_data(stream_frame, body)
+    fn recv_datagram(&self, frame: DatagramFrame, body: bytes::Bytes) -> Result<(), Error> {
+        self.0.recv_datagram(frame, body)
+    }
+
+    fn recv_stream(&self, frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error> {
+        self.0.recv_stream(frame, body)
     }
 
     fn on_conn_error(&self, err: &Error) {
@@ -73,35 +90,41 @@ impl ArcDataStreams {
         max_bi_streams: u64,
         max_uni_streams: u64,
         reliable_frame_queue: ArcReliableFrameQueue,
+        datagram_stream: DatagramStream,
     ) -> Self {
         Self(Arc::new(data::RawDataStreams::with_role_and_limit(
             role,
             max_bi_streams,
             max_uni_streams,
             reliable_frame_queue,
+            datagram_stream,
         )))
     }
 
-    pub fn open_bi(&self) -> BiDataStreamCreator {
+    pub async fn open_bi(&self) -> Result<Option<(Reader, Writer)>, Error> {
         BiDataStreamCreator {
             inner: self.0.clone(),
         }
+        .await
     }
 
-    pub fn open_uni(&self) -> UniDataStreamCreator {
+    pub async fn open_uni(&self) -> Result<Option<Writer>, Error> {
         UniDataStreamCreator {
             inner: self.0.clone(),
         }
+        .await
     }
 
-    #[inline]
+    pub fn datagram_stream(&self) -> Result<(DatagramReader, DatagramWriter), Error> {
+        self.0.datagram_stream()
+    }
+
     pub fn listener(&self) -> listener::ArcListener {
         self.0.listener()
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct BiDataStreamCreator {
+struct BiDataStreamCreator {
     inner: Arc<data::RawDataStreams>,
 }
 
@@ -113,8 +136,7 @@ impl Future for BiDataStreamCreator {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct UniDataStreamCreator {
+struct UniDataStreamCreator {
     inner: Arc<data::RawDataStreams>,
 }
 

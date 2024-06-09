@@ -3,6 +3,7 @@ use super::{
     rcvdpkt::{ArcRcvdPktRecords, Error as RcvPnError},
     reliable::{ArcReliableFrameQueue, ArcSentPktRecords, SentRecord},
     streams::{none::NoDataStreams, ArcDataStreams, ReceiveStream, TransmitStream},
+    unreliable::stream::DatagramStream,
 };
 use bytes::{BufMut, Bytes};
 use deref_derive::Deref;
@@ -95,9 +96,17 @@ where
                 buf.advance_mut(len);
             }
         }
+
         // while循环，可能发送stream1，stream2流
-        while let Some((stream_frame, len)) = self.data_streams.try_read_data(buf) {
+        while let Some((stream_frame, len)) = self.data_streams.try_read_stream(buf) {
             send_guard.record_data_frame(DataFrame::Stream(stream_frame));
+            unsafe {
+                buf.advance_mut(len);
+            }
+        }
+
+        if let Some((datagram_frame, len)) = self.data_streams.try_read_datagram(buf) {
+            send_guard.record_data_frame(DataFrame::Datagram(datagram_frame));
             unsafe {
                 buf.advance_mut(len);
             }
@@ -110,13 +119,16 @@ where
     pub fn receive(&self, frame: SpaceFrame) -> Result<(), Error> {
         match frame {
             SpaceFrame::Stream(frame) => {
-                self.data_streams.recv_frame(frame)?;
+                self.data_streams.recv_stream_control(frame)?;
             }
             SpaceFrame::Data(DataFrame::Crypto(frame), data) => {
                 self.crypto_stream.recv_data(frame, data)?;
             }
             SpaceFrame::Data(DataFrame::Stream(frame), data) => {
-                self.data_streams.recv_data(frame, data)?;
+                self.data_streams.recv_stream(frame, data)?;
+            }
+            SpaceFrame::Data(DataFrame::Datagram(frame), data) => {
+                self.data_streams.recv_datagram(frame, data)?;
             }
         }
         Ok(())
@@ -130,18 +142,15 @@ where
         for pn in ack.iter().flat_map(|r| r.rev()) {
             for record in recv_guard.on_pkt_acked(pn) {
                 match record {
-                    SentRecord::Ack(_) => {
-                        // do nothing
-                    }
-                    SentRecord::Reliable(_) => {
-                        // do nothing
-                    }
                     SentRecord::Data(DataFrame::Crypto(frame)) => {
                         self.crypto_stream.on_data_acked(frame);
                     }
                     SentRecord::Data(DataFrame::Stream(frame)) => {
                         self.data_streams.on_data_acked(frame);
                     }
+                    // Ack Reliable Datagram
+                    // do nothing
+                    _ => {}
                 }
             }
         }
@@ -153,9 +162,6 @@ where
         let mut write_frame_guard = self.reliable_frame_queue.write();
         for record in sent_pkt_guard.may_loss_pkt(pn) {
             match record {
-                SentRecord::Ack(_) => {
-                    // do nothing
-                }
                 SentRecord::Reliable(frame) => {
                     write_frame_guard.push_reliable_frame(frame);
                 }
@@ -165,6 +171,9 @@ where
                 SentRecord::Data(DataFrame::Stream(frame)) => {
                     self.data_streams.may_loss_data(frame);
                 }
+                // Ack Datagram
+                // do nothing
+                _ => {}
             }
         }
     }
@@ -192,9 +201,12 @@ impl ArcSpace<ArcDataStreams> {
         role: Role,
         max_bi_streams: u64,
         max_uni_streams: u64,
+        max_datagram_frame_size: u64,
         crypto_stream: CryptoStream,
     ) -> Self {
         let reliable_frame_queue = ArcReliableFrameQueue::default();
+        let datagram_stream = DatagramStream::new(max_datagram_frame_size);
+
         ArcSpace(Arc::new(RawSpace {
             reliable_frame_queue: reliable_frame_queue.clone(),
             sent_pkt_records: Default::default(),
@@ -204,6 +216,7 @@ impl ArcSpace<ArcDataStreams> {
                 max_bi_streams,
                 max_uni_streams,
                 reliable_frame_queue,
+                datagram_stream,
             ),
             crypto_stream,
         }))

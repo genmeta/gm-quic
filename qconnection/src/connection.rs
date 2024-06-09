@@ -141,7 +141,8 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     let data_space_frame_queue = ArcAsyncQueue::new();
     let (data_ack_tx, data_ack_rx) = mpsc::unbounded_channel();
     let (data_loss_tx, data_loss_rx) = mpsc::unbounded_channel();
-    let data_space = ArcSpace::<ArcDataStreams>::new(Role::Client, 20, 20, one_rtt_crypto_stream);
+    let data_space =
+        ArcSpace::<ArcDataStreams>::new(Role::Client, 20, 20, 0, one_rtt_crypto_stream);
     let streams = data_space.data_streams();
     tokio::spawn({
         let space = data_space.clone();

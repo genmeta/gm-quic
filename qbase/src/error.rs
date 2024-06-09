@@ -136,12 +136,6 @@ impl Error {
     }
 }
 
-impl From<std::convert::Infallible> for Error {
-    fn from(_: std::convert::Infallible) -> Self {
-        unreachable!("never happen.")
-    }
-}
-
 impl From<Error> for crate::frame::ConnectionCloseFrame {
     fn from(e: Error) -> Self {
         Self {

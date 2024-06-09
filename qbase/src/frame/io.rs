@@ -2,7 +2,8 @@ use crate::util::{DescribeData, WriteData};
 
 use super::{
     ack::ack_frame_with_flag, connection_close::connection_close_frame_at_layer,
-    crypto::be_crypto_frame, data_blocked::be_data_blocked_frame, max_data::be_max_data_frame,
+    crypto::be_crypto_frame, data_blocked::be_data_blocked_frame,
+    datagram::datagram_frame_with_flag, max_data::be_max_data_frame,
     max_stream_data::be_max_stream_data_frame, max_streams::max_streams_frame_with_dir,
     new_connection_id::be_new_connection_id_frame, new_token::be_new_token_frame,
     new_token::WriteNewTokenFrame, path_challenge::be_path_challenge_frame,
@@ -34,6 +35,7 @@ fn complete_frame(
         FrameType::DataBlocked => map(be_data_blocked_frame, |f| {
             Frame::Pure(PureFrame::Conn(ConnFrame::DataBlocked(f)))
         })(input),
+        // FrameType::Datagram(with_len) =>
         FrameType::MaxData => map(be_max_data_frame, |f| {
             Frame::Pure(PureFrame::Conn(ConnFrame::MaxData(f)))
         })(input),
@@ -95,6 +97,23 @@ fn complete_frame(
                 Ok((&input[len..], Frame::Data(DataFrame::Stream(frame), data)))
             }
         }
+        FrameType::Datagram(with_len) => {
+            let (input, frame) = datagram_frame_with_flag(with_len)(input)?;
+            let start = raw.len() - input.len();
+            match frame.length.map(|len| len.into_inner() as usize) {
+                Some(len) if len > input.len() => {
+                    Err(nom::Err::Incomplete(nom::Needed::new(len - input.len())))
+                }
+                Some(len) => {
+                    let data = raw.slice(start..start + len);
+                    Ok((&input[len..], Frame::Data(DataFrame::Datagram(frame), data)))
+                }
+                None => {
+                    let data = raw.slice(start..);
+                    Ok((&[], Frame::Data(DataFrame::Datagram(frame), data)))
+                }
+            }
+        }
     }
 }
 
@@ -135,8 +154,9 @@ use super::{
 
 pub use super::{
     ack::WriteAckFrame, connection_close::WriteConnectionCloseFrame, crypto::WriteCryptoFrame,
-    padding::WritePaddingFrame, path_challenge::WritePathChallengeFrame,
-    path_response::WritePathResponseFrame, ping::WritePingFrame, stream::WriteStreamFrame,
+    datagram::WriteDatagramFrame, padding::WritePaddingFrame,
+    path_challenge::WritePathChallengeFrame, path_response::WritePathResponseFrame,
+    ping::WritePingFrame, stream::WriteStreamFrame,
 };
 
 pub trait WriteFrame<F> {
@@ -225,6 +245,16 @@ where
     }
 }
 
+impl<T, D> WriteDataFrame<DatagramFrame, D> for T
+where
+    T: bytes::BufMut + WriteData<D>,
+    D: DescribeData,
+{
+    fn put_frame_with_data(&mut self, frame: &DatagramFrame, data: &D) {
+        self.put_datagram_frame(frame, data)
+    }
+}
+
 impl<T, D> WriteDataFrame<DataFrame, D> for T
 where
     T: bytes::BufMut + WriteData<D>,
@@ -234,6 +264,7 @@ where
         match frame {
             DataFrame::Crypto(frame) => self.put_crypto_frame(frame, data),
             DataFrame::Stream(frame) => self.put_stream_frame(frame, data),
+            DataFrame::Datagram(frame) => self.put_datagram_frame(frame, data),
         }
     }
 }
