@@ -106,20 +106,22 @@ impl Io for UdpSocketController {
             let mut ctrl = Aligned([0u8; CMSG_LEN]);
             prepare_sent(send_buf, send_info, &mut hdr, &mut iov, &mut ctrl);
             loop {
-                let n = unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) };
-                if n != -1 {
-                    return Ok(n as usize);
-                }
-                let e = io::Error::last_os_error();
-                match e.kind() {
-                    io::ErrorKind::Interrupted => {
-                        // Retry
-                    }
-                    io::ErrorKind::WouldBlock => return Err(e),
-                    _ => {
-                        log::warn!("sendmsg failed: {}", e);
-                        // ingnore other errors
-                        return Ok(0);
+                let ret = to_result(unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) });
+
+                match ret {
+                    Ok(_) => return ret,
+                    Err(e) => {
+                        match e.kind() {
+                            io::ErrorKind::Interrupted => {
+                                // Retry
+                            }
+                            io::ErrorKind::WouldBlock => return Err(e),
+                            _ => {
+                                log::warn!("sendmsg failed: {}", e);
+                                // ingnore other errors
+                                return Ok(0);
+                            }
+                        }
                     }
                 }
             }
@@ -171,22 +173,24 @@ impl Io for UdpSocketController {
             );
         }
         let msg_count = loop {
-            let n = unsafe {
+            let ret = unsafe {
                 recvmmsg(
                     self.io.as_raw_fd(),
                     hdrs.as_mut_ptr(),
                     bufs.len().min(BATCH_SIZE) as _,
                 )
             };
-            if n == -1 {
-                let e = io::Error::last_os_error();
-                if e.kind() == io::ErrorKind::Interrupted {
-                    continue;
+            match ret {
+                Ok(ret) => break ret,
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(e);
                 }
-                return Err(e);
             }
-            break n;
         };
+
         for i in 0..(msg_count as usize) {
             decode_recv(
                 &names[i],
@@ -210,18 +214,21 @@ impl Io for UdpSocketController {
         prepare_recv(&mut bufs[0], &mut name, &mut cmsg, &mut hdr);
 
         let n = loop {
-            let n = unsafe { libc::recvmsg(self.io.as_raw_fd(), &mut hdr, 0) };
-            if n == -1 {
-                let e = io::Error::last_os_error();
-                if e.kind() == io::ErrorKind::Interrupted {
-                    continue;
+            let ret = to_result(unsafe { libc::recvmsg(self.io.as_raw_fd(), &mut hdr, 0) });
+            match ret {
+                Ok(ret) => {
+                    if hdr.msg_flags & libc::MSG_CTRUNC != 0 {
+                        continue;
+                    }
+                    break ret;
                 }
-                return Err(e);
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(e);
+                }
             }
-            if hdr.msg_flags & libc::MSG_CTRUNC != 0 {
-                continue;
-            }
-            break n;
         };
         decode_recv(&name, &hdr, n as usize, recv_infos.get_mut(0).unwrap());
         Ok(1)
@@ -233,42 +240,48 @@ unsafe fn recvmmsg(
     sockfd: libc::c_int,
     msgvec: *mut libc::mmsghdr,
     vlen: libc::c_uint,
-) -> libc::c_int {
+) -> io::Result<usize> {
     use std::ptr;
 
     let flags = 0;
     let timeout = ptr::null_mut::<libc::timespec>();
 
+    let ret: io::Result<usize>;
+
     #[cfg(not(target_os = "freebsd"))]
     {
-        let ret =
-            libc::syscall(libc::SYS_recvmmsg, sockfd, msgvec, vlen, flags, timeout) as libc::c_int;
-        if ret != -1 {
-            return ret;
-        }
+        ret = to_result(
+            libc::syscall(libc::SYS_recvmmsg, sockfd, msgvec, vlen, flags, timeout) as isize,
+        );
     }
 
     // libc on FreeBSD implements `recvmmsg` as a high-level abstraction over `recvmsg`,
     // thus `SYS_recvmmsg` constant and direct system call do not exist
     #[cfg(target_os = "freebsd")]
     {
-        let ret = libc::recvmmsg(sockfd, msgvec, vlen as usize, flags, timeout) as libc::c_int;
-        if ret != -1 {
-            return ret;
-        }
+        ret = to_result(libc::recvmmsg(sockfd, msgvec, vlen as usize, flags, timeout) as isize);
     }
 
-    let e = io::Error::last_os_error();
-    match e.raw_os_error() {
-        // It is displayed if function is not implemented.
-        Some(libc::ENOSYS) => {
-            let flags = 0;
-            if vlen == 0 {
-                return 0;
+    match ret {
+        Ok(_) => return ret,
+        Err(e) => match e.raw_os_error() {
+            Some(libc::ENOSYS) => {
+                let flags = 0;
+                if vlen == 0 {
+                    return Ok(0);
+                }
+                to_result(libc::recvmsg(sockfd, &mut (*msgvec).msg_hdr, flags) as isize)
             }
-            libc::recvmsg(sockfd, &mut (*msgvec).msg_hdr, flags) as libc::c_int
-        }
-        _ => -1,
+            _ => Err(e),
+        },
+    }
+}
+
+fn to_result(code: isize) -> io::Result<usize> {
+    if code == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(code as usize)
     }
 }
 
