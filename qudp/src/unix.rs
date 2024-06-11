@@ -1,6 +1,6 @@
 use crate::msg::{decode_recv, prepare_recv, Aligned, Cmsg, CMSG_LEN};
-use crate::{io, msg::prepare_sent, SendInfo};
-use crate::{Gro, Gso, Io, RecvInfo, UdpSocketController};
+use crate::{io, msg::prepare_sent, SendHeader};
+use crate::{Gro, Gso, Io, OffloadStatus, RecvHeader, UdpSocketController};
 use std::mem::MaybeUninit;
 use std::{mem, os::fd::AsRawFd};
 
@@ -18,7 +18,7 @@ pub(crate) const BATCH_SIZE: usize = 32;
     target_os = "ios",
 ))]
 impl Io for UdpSocketController {
-    fn config(&self) -> io::Result<()> {
+    fn config(&mut self) -> io::Result<()> {
         let io = socket2::SockRef::from(&self.io);
         io.set_nonblocking(true)?;
 
@@ -68,6 +68,16 @@ impl Io for UdpSocketController {
             self.set_socket_option(libc::IPPROTO_IP, libc::IPV6_UNICAST_HOPS, DEFAULT_TTL)?;
         }
 
+        self.gso_size = match self.max_gso_segments() {
+            1 => OffloadStatus::Unsupported,
+            n => OffloadStatus::Supported(n as u16),
+        };
+
+        self.gro_size = match self.max_gro_segments() {
+            1 => OffloadStatus::Unsupported,
+            n => OffloadStatus::Supported(n as u16),
+        };
+
         Ok(())
     }
 
@@ -96,7 +106,7 @@ impl Io for UdpSocketController {
     fn sendmsg(
         &self,
         buf: &mut std::io::IoSliceMut<'_>,
-        send_info: &SendInfo,
+        send_hdr: &SendHeader,
     ) -> io::Result<usize> {
         let io = socket2::SockRef::from(&self.io);
 
@@ -104,7 +114,7 @@ impl Io for UdpSocketController {
             let mut hdr: libc::msghdr = unsafe { mem::zeroed() };
             let mut iov: libc::iovec = unsafe { mem::zeroed() };
             let mut ctrl = Aligned([0u8; CMSG_LEN]);
-            prepare_sent(send_buf, send_info, &mut hdr, &mut iov, &mut ctrl);
+            prepare_sent(send_buf, send_hdr, &mut hdr, &mut iov, &mut ctrl);
             loop {
                 let ret = to_result(unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) });
 
@@ -128,13 +138,13 @@ impl Io for UdpSocketController {
         };
 
         // send without gso, split by segment size
-        if send_info.segment_size.is_some() && self.max_gso_segments() == 1 {
+        if send_hdr.seg_size.is_some() && self.gso_size == OffloadStatus::Unsupported {
             let mut offset = 0;
             let mut left = buf.len();
             let mut written = 0;
 
             while left > 0 {
-                let pkt_len = std::cmp::min(left, send_info.segment_size.unwrap() as usize);
+                let pkt_len = std::cmp::min(left, send_hdr.seg_size.unwrap() as usize);
                 let send_buf: std::io::IoSliceMut<'_> =
                     std::io::IoSliceMut::new(&mut buf[offset..(offset + pkt_len)]);
                 match send(&send_buf) {
@@ -157,7 +167,7 @@ impl Io for UdpSocketController {
     fn recvmsg(
         &self,
         bufs: &mut [std::io::IoSliceMut<'_>],
-        recv_infos: &mut [RecvInfo],
+        recv_hdrs: &mut [RecvHeader],
     ) -> io::Result<usize> {
         let mut hdrs = unsafe { mem::zeroed::<[libc::mmsghdr; BATCH_SIZE]>() };
         let mut names = [MaybeUninit::<libc::sockaddr_storage>::uninit(); BATCH_SIZE];
@@ -196,7 +206,7 @@ impl Io for UdpSocketController {
                 &names[i],
                 &hdrs[i].msg_hdr,
                 hdrs[i].msg_len as usize,
-                recv_infos.get_mut(i).unwrap(),
+                recv_hdrs.get_mut(i).unwrap(),
             );
         }
         Ok(msg_count as usize)
@@ -206,7 +216,7 @@ impl Io for UdpSocketController {
     fn recvmsg(
         &self,
         bufs: &mut [std::io::IoSliceMut<'_>],
-        recv_infos: &mut [RecvInfo],
+        recv_hdrs: &mut [RecvHeader],
     ) -> io::Result<usize> {
         let mut hdr = unsafe { mem::zeroed::<libc::msghdr>() };
         let mut name = MaybeUninit::<libc::sockaddr_storage>::uninit();
@@ -230,7 +240,7 @@ impl Io for UdpSocketController {
                 }
             }
         };
-        decode_recv(&name, &hdr, n as usize, recv_infos.get_mut(0).unwrap());
+        decode_recv(&name, &hdr, n as usize, recv_hdrs.get_mut(0).unwrap());
         Ok(1)
     }
 }
@@ -263,7 +273,7 @@ unsafe fn recvmmsg(
     }
 
     match ret {
-        Ok(_) => return ret,
+        Ok(_) => ret,
         Err(e) => match e.raw_os_error() {
             Some(libc::ENOSYS) => {
                 let flags = 0;
@@ -288,12 +298,15 @@ fn to_result(code: isize) -> io::Result<usize> {
 #[cfg(target_os = "linux")]
 impl Gso for UdpSocketController {
     fn max_gso_segments(&self) -> usize {
-        if let Some(gso) = self.gro_segments {
-            return gso as usize;
-        }
-        match self.set_socket_option(libc::SOL_UDP, libc::UDP_SEGMENT, OPTION_ON) {
-            Ok(()) => 64,
-            Err(_) => 1,
+        match self.gso_size {
+            OffloadStatus::Unsupported => 1,
+            OffloadStatus::Supported(n) => n as usize,
+            OffloadStatus::Unknown => {
+                match self.set_socket_option(libc::SOL_UDP, libc::UDP_SEGMENT, OPTION_ON) {
+                    Ok(()) => 64,
+                    Err(_) => 1,
+                }
+            }
         }
     }
 
@@ -304,13 +317,16 @@ impl Gso for UdpSocketController {
 
 #[cfg(target_os = "linux")]
 impl Gro for UdpSocketController {
-    fn gro_segments(&self) -> usize {
-        if let Some(gro) = self.gro_segments {
-            return gro as usize;
-        }
-        match self.set_socket_option(libc::SOL_UDP, libc::UDP_GRO, OPTION_ON) {
-            Ok(()) => 64,
-            Err(_) => 1,
+    fn max_gro_segments(&self) -> usize {
+        match self.gro_size {
+            OffloadStatus::Unsupported => 1,
+            OffloadStatus::Supported(n) => n as usize,
+            OffloadStatus::Unknown => {
+                match self.set_socket_option(libc::SOL_UDP, libc::UDP_GRO, OPTION_ON) {
+                    Ok(()) => 64,
+                    Err(_) => 1,
+                }
+            }
         }
     }
 }
@@ -328,7 +344,7 @@ impl Gso for UdpSocketController {
 
 #[cfg(not(target_os = "linux"))]
 impl Gro for UdpSocketController {
-    fn gro_segments(&self) -> usize {
+    fn max_gro_segments(&self) -> usize {
         1
     }
 }

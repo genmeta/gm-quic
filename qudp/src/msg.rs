@@ -4,7 +4,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 
-use crate::{Gso, RecvInfo, SendInfo, UdpSocketController};
+use crate::{Gso, RecvHeader, SendHeader, UdpSocketController};
 
 pub(crate) const CMSG_LEN: usize = 88;
 
@@ -46,19 +46,13 @@ impl<'a> Cmsg<'a> {
         let space = unsafe { libc::CMSG_SPACE(mem::size_of_val(&value) as _) as usize };
         //  检查空间是否足够
         #[allow(clippy::unnecessary_cast)]
-        if (self.hdr.msg_controllen as usize) < (self).len + space {
+        if (self.hdr.msg_controllen as usize) < self.len + space {
             panic!(
                 "control message buffer too small. Need {}, Availableve {}",
                 space + self.len,
                 self.hdr.msg_controllen
             );
         }
-        assert!(
-            self.hdr.msg_controllen as usize >= self.len + space,
-            "control message buffer too small. Required: {}, Available: {}",
-            self.len + space,
-            self.hdr.msg_controllen
-        );
         let cmsg = self.cmsg.take().expect("no control buffer space remaining");
         cmsg.cmsg_level = level;
         cmsg.cmsg_type = ty;
@@ -121,7 +115,7 @@ impl<'a> Iterator for Iter<'a> {
 
 pub(crate) fn prepare_sent(
     buf: &std::io::IoSliceMut<'_>,
-    send_info: &SendInfo,
+    send_hdr: &SendHeader,
     hdr: &mut libc::msghdr,
     iov: &mut libc::iovec,
     ctrl: &mut Aligned<[u8; CMSG_LEN]>,
@@ -129,7 +123,7 @@ pub(crate) fn prepare_sent(
     iov.iov_base = buf.as_ptr() as *const _ as *mut _;
     iov.iov_len = buf.len();
 
-    let dst_addr = socket2::SockAddr::from(send_info.to);
+    let dst_addr = socket2::SockAddr::from(send_hdr.dest);
     let name = dst_addr.as_ptr() as *mut libc::c_void;
     let namelen = dst_addr.len();
     hdr.msg_name = name as *mut _;
@@ -140,11 +134,11 @@ pub(crate) fn prepare_sent(
     hdr.msg_control = ctrl.0.as_mut_ptr() as _;
     hdr.msg_controllen = CMSG_LEN as _;
     let mut encoder = unsafe { Cmsg::new(hdr) };
-    let ecn = send_info.ecn.map_or(0, |x| x as libc::c_int);
+    let ecn = send_hdr.ecn.map_or(0, |x| x as libc::c_int);
 
     // IPv4 or IPv4-Mapped IPv6
-    let is_ipv4: bool = send_info.to.is_ipv4()
-        || matches!(send_info.to.ip(),IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());
+    let is_ipv4: bool = send_hdr.dest.is_ipv4()
+        || matches!(send_hdr.dest.ip(),IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());
 
     if is_ipv4 {
         encoder.push(libc::IPPROTO_IP, libc::IP_TOS, ecn as IpTosTy);
@@ -152,11 +146,11 @@ pub(crate) fn prepare_sent(
         encoder.push(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, ecn);
     }
 
-    if let Some(segment_size) = send_info.segment_size {
+    if let Some(segment_size) = send_hdr.seg_size {
         UdpSocketController::set_segment_size(&mut encoder, segment_size as usize);
     }
 
-    match send_info.from.ip() {
+    match send_hdr.src.ip() {
         IpAddr::V4(v4) => {
             #[cfg(any(target_os = "linux", target_os = "android"))]
             {
@@ -209,15 +203,15 @@ pub(crate) fn decode_recv(
     name: &MaybeUninit<libc::sockaddr_storage>,
     hdr: &libc::msghdr,
     len: usize,
-    recv_info: &mut RecvInfo,
+    recv_hdr: &mut RecvHeader,
 ) {
     let name = unsafe { name.assume_init() };
     let cmsg_iter = unsafe { Iter::new(hdr) };
-    recv_info.len = len;
+    recv_hdr.seg_size = len;
     for cmsg in cmsg_iter {
         match (cmsg.cmsg_level, cmsg.cmsg_type) {
             (libc::IPPROTO_IP, libc::IP_TOS) | (libc::IPPROTO_IP, libc::IP_RECVTOS) => unsafe {
-                recv_info.ecn = Some(decode::<u8>(cmsg));
+                recv_hdr.ecn = Some(decode::<u8>(cmsg));
             },
             (libc::IPPROTO_IPV6, libc::IPV6_TCLASS) => unsafe {
                 // Temporary hack around broken macos ABI. Remove once upstream fixes it.
@@ -226,32 +220,32 @@ pub(crate) fn decode_recv(
                 if (cfg!(target_os = "macos") || cfg!(target_os = "ios"))
                     && cmsg.cmsg_len as usize == libc::CMSG_LEN(mem::size_of::<u8>() as _) as usize
                 {
-                    recv_info.ecn = Some(decode::<u8>(cmsg));
+                    recv_hdr.ecn = Some(decode::<u8>(cmsg));
                 } else {
-                    recv_info.ecn = Some(decode::<libc::c_int>(cmsg) as u8);
+                    recv_hdr.ecn = Some(decode::<libc::c_int>(cmsg) as u8);
                 }
             },
             #[cfg(any(target_os = "linux", target_os = "android"))]
             (libc::IPPROTO_IP, libc::IP_PKTINFO) => {
                 let pktinfo = unsafe { decode::<libc::in_pktinfo>(cmsg) };
                 let ip = IpAddr::V4(Ipv4Addr::from(pktinfo.ipi_addr.s_addr.to_ne_bytes()));
-                recv_info.to.set_ip(ip);
+                recv_hdr.dest.set_ip(ip);
             }
             #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios",))]
             (libc::IPPROTO_IP, libc::IP_RECVDSTADDR) => {
                 let in_addr = unsafe { decode::<libc::in_addr>(cmsg) };
-                recv_info
-                    .to
+                recv_hdr
+                    .dest
                     .set_ip(IpAddr::V4(Ipv4Addr::from(in_addr.s_addr.to_ne_bytes())));
             }
             (libc::IPPROTO_IP, libc::IP_TTL) => unsafe {
-                recv_info.ttl = decode::<u32>(cmsg) as u8;
+                recv_hdr.ttl = decode::<u32>(cmsg) as u8;
             },
             (libc::IPPROTO_IPV6, libc::IPV6_HOPLIMIT) => unsafe {
-                recv_info.ttl = decode::<u32>(cmsg) as u8;
+                recv_hdr.ttl = decode::<u32>(cmsg) as u8;
             },
             (libc::IPPROTO_IP, libc::IP_RECVTTL) => unsafe {
-                recv_info.ttl = decode::<u32>(cmsg) as u8;
+                recv_hdr.ttl = decode::<u32>(cmsg) as u8;
             },
             _ => {
                 log::error!("read unkown cmsg");
@@ -260,7 +254,7 @@ pub(crate) fn decode_recv(
         }
     }
 
-    recv_info.from = match libc::c_int::from(name.ss_family) {
+    recv_hdr.src = match libc::c_int::from(name.ss_family) {
         libc::AF_INET => {
             let addr: &libc::sockaddr_in =
                 unsafe { &*(&name as *const _ as *const libc::sockaddr_in) };

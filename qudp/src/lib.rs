@@ -10,80 +10,41 @@ use unix::DEFAULT_TTL;
 mod msg;
 mod unix;
 
-pub struct SendInfo {
-    pub to: SocketAddr,
-    pub from: SocketAddr,
+pub struct SendHeader {
+    pub src: SocketAddr,
+    pub dest: SocketAddr,
     pub ttl: u8,
     pub ecn: Option<u8>,
     // gso segment size
-    pub segment_size: Option<u16>,
+    pub seg_size: Option<u16>,
 }
 
-pub struct RecvInfo {
-    pub from: SocketAddr,
-    pub to: SocketAddr,
+pub struct RecvHeader {
+    pub src: SocketAddr,
+    pub dest: SocketAddr,
     pub ttl: u8,
-    pub len: usize,
+    pub seg_size: usize,
     pub ecn: Option<u8>,
 }
 
-pub struct Sender(Arc<Mutex<UdpSocketController>>);
-
-impl Sender {
-    pub fn poll_send(
-        &self,
-        bufs: &mut std::io::IoSliceMut<'_>,
-        send_info: &SendInfo,
-        cx: &mut Context,
-    ) -> Poll<io::Result<usize>> {
-        loop {
-            let contorler = self.0.lock().unwrap();
-            match contorler.io.poll_send_ready(cx) {
-                Poll::Ready(_) => {
-                    if let Ok(res) = contorler
-                        .io
-                        .try_io(Interest::WRITABLE, || contorler.sendmsg(bufs, send_info))
-                    {
-                        return Poll::Ready(Ok(res));
-                    }
-                }
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-    }
+#[derive(PartialEq, Eq, Debug, Default)]
+enum OffloadStatus {
+    #[default]
+    Unknown,
+    Unsupported,
+    Supported(u16),
 }
 
-pub struct Receiver(Arc<Mutex<UdpSocketController>>);
-
-impl Receiver {
-    pub fn poll_recv(
-        &self,
-        bufs: &mut [std::io::IoSliceMut<'_>],
-        recv_infos: &mut [RecvInfo],
-        cx: &mut Context,
-    ) -> Poll<io::Result<usize>> {
-        loop {
-            let contorler = self.0.lock().unwrap();
-            ready!(contorler.io.poll_recv_ready(cx))?;
-            if let Ok(res) = contorler
-                .io
-                .try_io(Interest::READABLE, || contorler.recvmsg(bufs, recv_infos))
-            {
-                return Poll::Ready(Ok(res));
-            }
-        }
-    }
-}
-
-pub struct UdpSocketController {
-    pub io: tokio::net::UdpSocket,
-    pub ttl: u8,
-    pub max_gso_size: Option<u16>,
-    pub gro_segments: Option<u16>,
+#[derive(Debug)]
+struct UdpSocketController {
+    io: tokio::net::UdpSocket,
+    ttl: u8,
+    gso_size: OffloadStatus,
+    gro_size: OffloadStatus,
 }
 
 impl UdpSocketController {
-    pub fn new(addr: SocketAddr) -> Self {
+    fn new(addr: SocketAddr) -> Self {
         let domain = if addr.is_ipv4() {
             Domain::IPV4
         } else {
@@ -96,25 +57,21 @@ impl UdpSocketController {
         let io =
             tokio::net::UdpSocket::from_std(socket.into()).expect("Failed to create tokio socket");
 
-        let socket = Self {
+        let mut socket = Self {
             ttl: DEFAULT_TTL as u8,
             io,
-            max_gso_size: None,
-            gro_segments: None,
+            gso_size: OffloadStatus::Unknown,
+            gro_size: OffloadStatus::Unknown,
         };
         socket.config().expect("Failed to config socket");
         socket
     }
 
-    pub fn loacl_address(&self) -> SocketAddr {
+    fn loacl_address(&self) -> SocketAddr {
         self.io.local_addr().expect("Failed to get local address")
     }
 
-    pub fn loacl_port(&self) -> u16 {
-        self.loacl_address().port()
-    }
-
-    pub fn set_ttl(&mut self, ttl: u8) -> io::Result<()> {
+    fn set_ttl(&mut self, ttl: u8) -> io::Result<()> {
         if self.ttl == ttl {
             return Ok(());
         }
@@ -127,24 +84,17 @@ impl UdpSocketController {
         self.ttl = ttl;
         Ok(())
     }
-
-    pub fn split(self) -> (Sender, Receiver) {
-        let arc = Arc::new(Mutex::new(self));
-        (Sender(arc.clone()), Receiver(arc))
-    }
 }
 
-// todo: 换个名字
 trait Io {
-    fn config(&self) -> io::Result<()>;
+    fn config(&mut self) -> io::Result<()>;
 
-    fn sendmsg(&self, buf: &mut std::io::IoSliceMut<'_>, send_info: &SendInfo)
-        -> io::Result<usize>;
+    fn sendmsg(&self, buf: &mut std::io::IoSliceMut<'_>, hdr: &SendHeader) -> io::Result<usize>;
 
     fn recvmsg(
         &self,
         bufs: &mut [std::io::IoSliceMut<'_>],
-        recv_infos: &mut [RecvInfo],
+        hdr: &mut [RecvHeader],
     ) -> io::Result<usize>;
 
     fn set_socket_option(
@@ -155,12 +105,73 @@ trait Io {
     ) -> Result<(), io::Error>;
 }
 
-trait Gso {
+trait Gso: Io {
     fn max_gso_segments(&self) -> usize;
 
     fn set_segment_size(encoder: &mut Cmsg, segment_size: usize);
 }
 
-pub trait Gro {
-    fn gro_segments(&self) -> usize;
+trait Gro: Io {
+    fn max_gro_segments(&self) -> usize;
+}
+
+#[derive(Debug, Clone)]
+pub struct ArcController(Arc<Mutex<UdpSocketController>>);
+
+impl ArcController {
+    pub fn new(addr: SocketAddr) -> Self {
+        Self(Arc::new(Mutex::new(UdpSocketController::new(addr))))
+    }
+
+    pub fn poll_send(
+        &self,
+        bufs: &mut std::io::IoSliceMut<'_>,
+        hdr: &SendHeader,
+        cx: &mut Context,
+    ) -> Poll<io::Result<usize>> {
+        loop {
+            let contorler = self.0.lock().unwrap();
+            match contorler.io.poll_send_ready(cx) {
+                Poll::Ready(_) => {
+                    if let Ok(res) = contorler
+                        .io
+                        .try_io(Interest::WRITABLE, || contorler.sendmsg(bufs, hdr))
+                    {
+                        return Poll::Ready(Ok(res));
+                    }
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+
+    pub fn poll_recv(
+        &self,
+        bufs: &mut [std::io::IoSliceMut<'_>],
+        hdrs: &mut [RecvHeader],
+        cx: &mut Context,
+    ) -> Poll<io::Result<usize>> {
+        loop {
+            let contorler = self.0.lock().unwrap();
+            ready!(contorler.io.poll_recv_ready(cx))?;
+            if let Ok(res) = contorler
+                .io
+                .try_io(Interest::READABLE, || contorler.recvmsg(bufs, hdrs))
+            {
+                return Poll::Ready(Ok(res));
+            }
+        }
+    }
+
+    pub fn ttl(&self) -> u8 {
+        self.0.lock().unwrap().ttl
+    }
+
+    pub fn set_ttl(&self, ttl: u8) -> io::Result<()> {
+        self.0.lock().unwrap().set_ttl(ttl)
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.0.lock().unwrap().loacl_address()
+    }
 }
