@@ -3,8 +3,9 @@ use crate::{
     recv::{self, Incoming, Reader},
     reliable::ArcReliableFrameQueue,
     send::{self, Outgoing, Writer},
-    unreliable::{reader::DatagramReader, stream::DatagramStream, writer::DatagramWriter},
+    unreliable::{DatagramReader, DatagramStream, DatagramWriter},
 };
+use bytes::BufMut;
 use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::*,
@@ -128,8 +129,18 @@ fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
 }
 
 impl super::TransmitStream for RawDataStreams {
-    fn try_read_stream(&self, _buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
-        todo!()
+    fn try_read_stream(&self, mut buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+        let guard = &mut self.output.0.lock().unwrap();
+        let output = &guard.as_mut().ok()?;
+        output
+            .iter()
+            .filter_map(|(&sid, outgoing)| {
+                let remain = buf.remaining_mut();
+                let frame = outgoing.try_read(sid, &mut buf)?;
+                let len = remain - buf.remaining_mut();
+                Some((frame, len))
+            })
+            .next()
     }
 
     fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {

@@ -19,6 +19,12 @@ pub struct DatagramFrame {
     pub length: Option<VarInt>,
 }
 
+impl DatagramFrame {
+    pub fn new(length: Option<VarInt>) -> Self {
+        Self { length }
+    }
+}
+
 impl BeFrame for DatagramFrame {
     fn frame_type(&self) -> FrameType {
         FrameType::Datagram(self.length.is_some() as _)

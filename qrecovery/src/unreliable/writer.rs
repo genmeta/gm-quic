@@ -1,11 +1,12 @@
-use std::{
-    io,
-    ops::DerefMut,
-    sync::{Arc, Mutex},
-};
+use std::{io, ops::DerefMut, sync::Arc};
+use tokio::sync::Mutex;
 
-use bytes::Bytes;
-use qbase::error::Error;
+use bytes::{BufMut, Bytes};
+use qbase::{
+    error::Error,
+    frame::{io::WriteDatagramFrame, BeFrame, DatagramFrame},
+    varint::VarInt,
+};
 
 use super::queue::DatagramQueue;
 
@@ -30,18 +31,37 @@ pub type ArcDatagramWriter = Arc<Mutex<io::Result<RawDatagramWriter>>>;
 pub struct DatagramWriter(pub(super) ArcDatagramWriter);
 
 impl DatagramWriter {
+    pub(super) fn try_read_datagram(&self, mut buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
+        let mut guard = self.0.blocking_lock();
+        let writer = guard.as_mut().ok()?;
+        let datagram = writer.queue.peek()?;
+
+        match buf.remaining_mut() {
+            len if len > datagram.len() => {
+                let len = VarInt::try_from(datagram.len()).unwrap();
+                let frame = DatagramFrame::new(Some(len));
+                buf.put_datagram_frame(&frame, datagram);
+                Some((frame, frame.encoding_size() + datagram.len()))
+            }
+            len if len == datagram.len() => {
+                let frame = DatagramFrame::new(None);
+                buf.put_datagram_frame(&frame, datagram);
+                Some((frame, frame.encoding_size() + datagram.len()))
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn on_conn_error(&self, error: &Error) {
-        let writer = &mut self.0.lock().unwrap();
+        let writer = &mut self.0.blocking_lock();
         let inner = writer.deref_mut();
         if inner.is_ok() {
             *inner = Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()));
         }
     }
 
-    // 看似异步，实际上完全是同步的...
-    // TODO: 这里或许需要修改
     pub async fn send_bytes(&self, data: Bytes) -> io::Result<()> {
-        match self.0.lock().unwrap().deref_mut() {
+        match self.0.lock().await.deref_mut() {
             Ok(writer) => {
                 if data.len() > writer.max_size {
                     return Err(io::Error::new(

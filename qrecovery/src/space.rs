@@ -3,7 +3,7 @@ use super::{
     rcvdpkt::{ArcRcvdPktRecords, Error as RcvPnError},
     reliable::{ArcReliableFrameQueue, ArcSentPktRecords, SentRecord},
     streams::{none::NoDataStreams, ArcDataStreams, ReceiveStream, TransmitStream},
-    unreliable::stream::DatagramStream,
+    unreliable::DatagramStream,
 };
 use bytes::{BufMut, Bytes};
 use deref_derive::Deref;
@@ -105,7 +105,7 @@ where
             }
         }
 
-        if let Some((datagram_frame, len)) = self.data_streams.try_read_datagram(buf) {
+        while let Some((datagram_frame, len)) = self.data_streams.try_read_datagram(buf) {
             send_guard.record_data_frame(DataFrame::Datagram(datagram_frame));
             unsafe {
                 buf.advance_mut(len);

@@ -6,7 +6,8 @@ use qbase::{
     error::{Error, ErrorKind},
     frame::{BeFrame, DatagramFrame},
 };
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub struct RawDatagramStream {
@@ -27,9 +28,8 @@ impl RawDatagramStream {
         }
     }
 
-    fn try_read_datagram(&self, _buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        // stream data也是todo!() ...
-        todo!()
+    fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
+        self.writer.try_read_datagram(buf)
     }
 
     fn recv_datagram(&self, frame: DatagramFrame, body: bytes::Bytes) -> Result<(), Error> {

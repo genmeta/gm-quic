@@ -15,4 +15,8 @@ impl DatagramQueue {
     pub fn read(&mut self) -> Option<Bytes> {
         self.queue.pop_front()
     }
+
+    pub fn peek(&mut self) -> Option<&Bytes> {
+        self.queue.front()
+    }
 }

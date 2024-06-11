@@ -1,4 +1,7 @@
 pub(crate) mod queue;
-pub mod reader;
-pub mod stream;
-pub mod writer;
+mod reader;
+pub use reader::*;
+mod writer;
+pub use writer::*;
+mod stream;
+pub use stream::*;

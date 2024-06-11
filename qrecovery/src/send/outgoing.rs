@@ -37,10 +37,7 @@ impl Outgoing {
         }
     }
 
-    pub fn try_read<B>(&self, sid: StreamId, mut buffer: B) -> Option<StreamFrame>
-    where
-        B: BufMut,
-    {
+    pub fn try_read(&self, sid: StreamId, buffer: &mut impl BufMut) -> Option<StreamFrame> {
         let capacity = buffer.remaining_mut();
         let estimate_capacity = |offset| StreamFrame::estimate_max_capacity(capacity, sid, offset);
         let write = |(offset, data, is_eos): (u64, (&[u8], &[u8]), bool)| {

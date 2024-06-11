@@ -1,4 +1,4 @@
-use bytes::BufMut;
+use bytes::{BufMut, Bytes};
 use futures::Stream;
 use std::{
     collections::VecDeque,
@@ -142,6 +142,7 @@ impl DescribeData for (&[u8], &[u8]) {
 }
 
 impl<T: BufMut> WriteData<(&[u8], &[u8])> for T {
+    #[inline]
     fn put_data(&mut self, data: &(&[u8], &[u8])) {
         self.put_slice(data.0);
         self.put_slice(data.1);
@@ -161,6 +162,7 @@ impl DescribeData for &[u8] {
 }
 
 impl<T: BufMut> WriteData<&[u8]> for T {
+    #[inline]
     fn put_data(&mut self, data: &&[u8]) {
         self.put_slice(data)
     }
@@ -179,7 +181,27 @@ impl<const N: usize> DescribeData for [u8; N] {
 }
 
 impl<const N: usize, T: BufMut> WriteData<[u8; N]> for T {
+    #[inline]
     fn put_data(&mut self, data: &[u8; N]) {
         self.put_slice(data)
+    }
+}
+
+impl DescribeData for Bytes {
+    #[inline]
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+}
+
+impl<T: BufMut> WriteData<Bytes> for T {
+    #[inline]
+    fn put_data(&mut self, data: &Bytes) {
+        self.put_slice(data);
     }
 }
