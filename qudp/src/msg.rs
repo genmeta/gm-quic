@@ -1,5 +1,5 @@
 use std::{
-    io::IoSliceMut,
+    io::{IoSlice, IoSliceMut},
     mem::{self, MaybeUninit},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
@@ -65,8 +65,8 @@ impl<'a> Cmsg<'a> {
     }
 
     /// Finishes appending control messages to the buffer
-    pub(crate) fn finish(self) {
-        // Delegates to the `Drop` impl
+    pub(crate) fn finish(&mut self) {
+        self.hdr.msg_controllen = self.len as _;
     }
 }
 
@@ -75,13 +75,6 @@ impl<'a> Cmsg<'a> {
 /// `cmsg` must refer to a cmsg containing a payload of type `T`
 pub(crate) unsafe fn decode<T: Copy>(cmsg: &libc::cmsghdr) -> T {
     assert!(mem::align_of::<T>() <= mem::align_of::<libc::cmsghdr>());
-    #[allow(clippy::unnecessary_cast)] // cmsg.cmsg_len defined as size_t
-    {
-        debug_assert_eq!(
-            cmsg.cmsg_len as usize,
-            libc::CMSG_LEN(mem::size_of::<T>() as _) as usize
-        );
-    }
     ptr::read(libc::CMSG_DATA(cmsg) as *const T)
 }
 
@@ -114,22 +107,17 @@ impl<'a> Iterator for Iter<'a> {
 }
 
 pub(crate) fn prepare_sent(
-    buf: &std::io::IoSliceMut<'_>,
+    bufs: &[IoSlice<'_>],
     send_hdr: &SendHeader,
     hdr: &mut libc::msghdr,
-    iov: &mut libc::iovec,
     ctrl: &mut Aligned<[u8; CMSG_LEN]>,
+    with_gso: bool,
 ) {
-    iov.iov_base = buf.as_ptr() as *const _ as *mut _;
-    iov.iov_len = buf.len();
-
-    let dst_addr = socket2::SockAddr::from(send_hdr.dest);
-    let name = dst_addr.as_ptr() as *mut libc::c_void;
-    let namelen = dst_addr.len();
-    hdr.msg_name = name as *mut _;
-    hdr.msg_namelen = namelen;
-    hdr.msg_iov = iov;
-    hdr.msg_iovlen = 1;
+    let dst_addr = socket2::SockAddr::from(send_hdr.dst);
+    hdr.msg_name = dst_addr.as_ptr() as *mut _;
+    hdr.msg_namelen = dst_addr.len();
+    hdr.msg_iov = bufs.as_ptr() as *mut _;
+    hdr.msg_iovlen = bufs.len() as _;
 
     hdr.msg_control = ctrl.0.as_mut_ptr() as _;
     hdr.msg_controllen = CMSG_LEN as _;
@@ -137,8 +125,8 @@ pub(crate) fn prepare_sent(
     let ecn = send_hdr.ecn.map_or(0, |x| x as libc::c_int);
 
     // IPv4 or IPv4-Mapped IPv6
-    let is_ipv4: bool = send_hdr.dest.is_ipv4()
-        || matches!(send_hdr.dest.ip(),IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());
+    let is_ipv4: bool = send_hdr.dst.is_ipv4()
+        || matches!(send_hdr.dst.ip(),IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());
 
     if is_ipv4 {
         encoder.push(libc::IPPROTO_IP, libc::IP_TOS, ecn as IpTosTy);
@@ -147,7 +135,9 @@ pub(crate) fn prepare_sent(
     }
 
     if let Some(segment_size) = send_hdr.seg_size {
-        UdpSocketController::set_segment_size(&mut encoder, segment_size as usize);
+        if with_gso {
+            UdpSocketController::set_segment_size(&mut encoder, segment_size);
+        }
     }
 
     match send_hdr.src.ip() {
@@ -229,13 +219,13 @@ pub(crate) fn decode_recv(
             (libc::IPPROTO_IP, libc::IP_PKTINFO) => {
                 let pktinfo = unsafe { decode::<libc::in_pktinfo>(cmsg) };
                 let ip = IpAddr::V4(Ipv4Addr::from(pktinfo.ipi_addr.s_addr.to_ne_bytes()));
-                recv_hdr.dest.set_ip(ip);
+                recv_hdr.dst.set_ip(ip);
             }
             #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios",))]
             (libc::IPPROTO_IP, libc::IP_RECVDSTADDR) => {
                 let in_addr = unsafe { decode::<libc::in_addr>(cmsg) };
                 recv_hdr
-                    .dest
+                    .dst
                     .set_ip(IpAddr::V4(Ipv4Addr::from(in_addr.s_addr.to_ne_bytes())));
             }
             (libc::IPPROTO_IP, libc::IP_TTL) => unsafe {
@@ -248,8 +238,7 @@ pub(crate) fn decode_recv(
                 recv_hdr.ttl = decode::<u32>(cmsg) as u8;
             },
             _ => {
-                log::error!("read unkown cmsg");
-                todo!("other cmsg");
+                log::error!("read unkown cmsg {}", cmsg.cmsg_type);
             }
         }
     }

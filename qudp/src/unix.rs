@@ -1,6 +1,8 @@
 use crate::msg::{decode_recv, prepare_recv, Aligned, Cmsg, CMSG_LEN};
 use crate::{io, msg::prepare_sent, SendHeader};
 use crate::{Gro, Gso, Io, OffloadStatus, RecvHeader, UdpSocketController};
+use std::cmp;
+use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use std::{mem, os::fd::AsRawFd};
 
@@ -9,7 +11,7 @@ const OPTION_OFF: libc::c_int = 0;
 pub(super) const DEFAULT_TTL: libc::c_int = 64;
 
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-pub(crate) const BATCH_SIZE: usize = 32;
+pub(crate) const BATCH_SIZE: usize = 64;
 
 #[cfg(any(
     target_os = "linux",
@@ -87,39 +89,39 @@ impl Io for UdpSocketController {
         name: libc::c_int,
         value: libc::c_int,
     ) -> Result<(), io::Error> {
-        let result = unsafe {
-            libc::setsockopt(
-                self.io.as_raw_fd(),
-                level,
-                name,
-                &value as *const _ as _,
-                mem::size_of_val(&value) as _,
-            )
-        };
-
-        match result == 0 {
-            true => Ok(()),
-            false => Err(io::Error::last_os_error()),
-        }
+        set_socket_option(&self.io.as_raw_fd(), level, name, value)
     }
 
-    fn sendmsg(
-        &self,
-        buf: &mut std::io::IoSliceMut<'_>,
-        send_hdr: &SendHeader,
-    ) -> io::Result<usize> {
+    fn sendmsg(&self, bufs: &mut [IoSlice<'_>], send_hdr: &SendHeader) -> io::Result<usize> {
         let io = socket2::SockRef::from(&self.io);
 
-        let send = |send_buf: &std::io::IoSliceMut<'_>| {
+        let gso_size = match send_hdr.seg_size {
+            Some(size) => {
+                let max_gso = self.max_gso_segments();
+                let max_payloads = (u16::MAX / size) as usize;
+                cmp::min(max_gso, max_payloads)
+            }
+            None => 1,
+        };
+
+        let with_gso = gso_size > 1;
+
+        let mut send_byte = 0;
+        for batch in bufs.chunks(gso_size) {
+            let mut iovec: Vec<IoSlice> = Vec::with_capacity(gso_size);
+            iovec.extend(batch.iter().map(|buf| IoSlice::new(buf)));
+
             let mut hdr: libc::msghdr = unsafe { mem::zeroed() };
-            let mut iov: libc::iovec = unsafe { mem::zeroed() };
             let mut ctrl = Aligned([0u8; CMSG_LEN]);
-            prepare_sent(send_buf, send_hdr, &mut hdr, &mut iov, &mut ctrl);
+            prepare_sent(&iovec, send_hdr, &mut hdr, &mut ctrl, with_gso);
+
             loop {
                 let ret = to_result(unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) });
-
                 match ret {
-                    Ok(_) => return ret,
+                    Ok(n) => {
+                        send_byte += n;
+                        break;
+                    }
                     Err(e) => {
                         match e.kind() {
                             io::ErrorKind::Interrupted => {
@@ -129,38 +131,15 @@ impl Io for UdpSocketController {
                             _ => {
                                 log::warn!("sendmsg failed: {}", e);
                                 // ingnore other errors
-                                return Ok(0);
+                                break;
                             }
                         }
                     }
                 }
             }
-        };
-
-        // send without gso, split by segment size
-        if send_hdr.seg_size.is_some() && self.gso_size == OffloadStatus::Unsupported {
-            let mut offset = 0;
-            let mut left = buf.len();
-            let mut written = 0;
-
-            while left > 0 {
-                let pkt_len = std::cmp::min(left, send_hdr.seg_size.unwrap() as usize);
-                let send_buf: std::io::IoSliceMut<'_> =
-                    std::io::IoSliceMut::new(&mut buf[offset..(offset + pkt_len)]);
-                match send(&send_buf) {
-                    Ok(n) => {
-                        written += n;
-                    }
-                    Err(e) => return Err(e),
-                }
-                offset += pkt_len;
-                left -= pkt_len;
-            }
-            return Ok(written);
         }
 
-        // send with gso
-        send(buf)
+        Ok(send_byte)
     }
 
     #[cfg(target_os = "linux")]
@@ -302,7 +281,14 @@ impl Gso for UdpSocketController {
             OffloadStatus::Unsupported => 1,
             OffloadStatus::Supported(n) => n as usize,
             OffloadStatus::Unknown => {
-                match self.set_socket_option(libc::SOL_UDP, libc::UDP_SEGMENT, OPTION_ON) {
+                const GSO_SIZE: libc::c_int = 1500;
+                let socket = match std::net::UdpSocket::bind("[::]:0")
+                    .or_else(|_| std::net::UdpSocket::bind("127.0.0.1:0"))
+                {
+                    Ok(socket) => socket,
+                    Err(_) => return 1,
+                };
+                match set_socket_option(&socket, libc::SOL_UDP, libc::UDP_SEGMENT, GSO_SIZE) {
                     Ok(()) => 64,
                     Err(_) => 1,
                 }
@@ -310,7 +296,7 @@ impl Gso for UdpSocketController {
         }
     }
 
-    fn set_segment_size(encoder: &mut Cmsg, segment_size: usize) {
+    fn set_segment_size(encoder: &mut Cmsg, segment_size: u16) {
         encoder.push(libc::SOL_UDP, libc::UDP_SEGMENT, segment_size);
     }
 }
@@ -322,7 +308,14 @@ impl Gro for UdpSocketController {
             OffloadStatus::Unsupported => 1,
             OffloadStatus::Supported(n) => n as usize,
             OffloadStatus::Unknown => {
-                match self.set_socket_option(libc::SOL_UDP, libc::UDP_GRO, OPTION_ON) {
+                let socket = match std::net::UdpSocket::bind("[::]:0")
+                    .or_else(|_| std::net::UdpSocket::bind("127.0.0.1:0"))
+                {
+                    Ok(socket) => socket,
+                    Err(_) => return 1,
+                };
+
+                match set_socket_option(&socket, libc::SOL_UDP, libc::UDP_GRO, OPTION_ON) {
                     Ok(()) => 64,
                     Err(_) => 1,
                 }
@@ -337,7 +330,7 @@ impl Gso for UdpSocketController {
         1
     }
 
-    fn set_segment_size(_: &mut Cmsg, _: usize) {
+    fn set_segment_size(_: &mut Cmsg, _: u16) {
         panic!("set_segment_size is not supported on this platform");
     }
 }
@@ -346,5 +339,27 @@ impl Gso for UdpSocketController {
 impl Gro for UdpSocketController {
     fn max_gro_segments(&self) -> usize {
         1
+    }
+}
+
+fn set_socket_option(
+    socket: &impl AsRawFd,
+    level: libc::c_int,
+    name: libc::c_int,
+    value: libc::c_int,
+) -> io::Result<()> {
+    let result = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            level,
+            name,
+            &value as *const _ as _,
+            mem::size_of_val(&value) as _,
+        )
+    };
+
+    match result == 0 {
+        true => Ok(()),
+        false => Err(io::Error::last_os_error()),
     }
 }

@@ -11,3 +11,11 @@ socket2 = { workspace = true }
 libc = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
+
+[[example]]
+name = "sender"
+path = "examples/sender.rs"
+
+[[example]]
+name = "receiver"
+path = "examples/receiver.rs"

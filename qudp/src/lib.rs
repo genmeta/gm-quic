@@ -1,5 +1,7 @@
 use msg::Cmsg;
 use socket2::{Domain, Socket, Type};
+use std::io::IoSlice;
+use std::io::IoSliceMut;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::task::ready;
@@ -10,21 +12,47 @@ use unix::DEFAULT_TTL;
 mod msg;
 mod unix;
 
+#[derive(Clone)]
 pub struct SendHeader {
     pub src: SocketAddr,
-    pub dest: SocketAddr,
+    pub dst: SocketAddr,
     pub ttl: u8,
     pub ecn: Option<u8>,
     // gso segment size
     pub seg_size: Option<u16>,
 }
 
+impl Default for SendHeader {
+    fn default() -> Self {
+        Self {
+            src: SocketAddr::from(([0, 0, 0, 0], 0)),
+            dst: SocketAddr::from(([0, 0, 0, 0], 0)),
+            ttl: DEFAULT_TTL as u8,
+            ecn: None,
+            seg_size: None,
+        }
+    }
+}
+#[derive(Clone, Debug)]
 pub struct RecvHeader {
     pub src: SocketAddr,
-    pub dest: SocketAddr,
+    pub dst: SocketAddr,
     pub ttl: u8,
     pub seg_size: usize,
     pub ecn: Option<u8>,
+}
+
+impl Default for RecvHeader {
+    fn default() -> Self {
+        Self {
+            // empty address
+            src: SocketAddr::from(([0, 0, 0, 0], 0)),
+            dst: SocketAddr::from(([0, 0, 0, 0], 0)),
+            ttl: DEFAULT_TTL as u8,
+            seg_size: 0,
+            ecn: None,
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Debug, Default)]
@@ -89,13 +117,9 @@ impl UdpSocketController {
 trait Io {
     fn config(&mut self) -> io::Result<()>;
 
-    fn sendmsg(&self, buf: &mut std::io::IoSliceMut<'_>, hdr: &SendHeader) -> io::Result<usize>;
+    fn sendmsg(&self, bufs: &mut [IoSlice<'_>], hdr: &SendHeader) -> io::Result<usize>;
 
-    fn recvmsg(
-        &self,
-        bufs: &mut [std::io::IoSliceMut<'_>],
-        hdr: &mut [RecvHeader],
-    ) -> io::Result<usize>;
+    fn recvmsg(&self, bufs: &mut [IoSliceMut<'_>], hdr: &mut [RecvHeader]) -> io::Result<usize>;
 
     fn set_socket_option(
         &self,
@@ -108,7 +132,7 @@ trait Io {
 trait Gso: Io {
     fn max_gso_segments(&self) -> usize;
 
-    fn set_segment_size(encoder: &mut Cmsg, segment_size: usize);
+    fn set_segment_size(encoder: &mut Cmsg, segment_size: u16);
 }
 
 trait Gro: Io {
@@ -125,29 +149,22 @@ impl ArcController {
 
     pub fn poll_send(
         &self,
-        bufs: &mut std::io::IoSliceMut<'_>,
+        bufs: &mut [IoSlice<'_>],
         hdr: &SendHeader,
         cx: &mut Context,
     ) -> Poll<io::Result<usize>> {
-        loop {
-            let contorler = self.0.lock().unwrap();
-            match contorler.io.poll_send_ready(cx) {
-                Poll::Ready(_) => {
-                    if let Ok(res) = contorler
-                        .io
-                        .try_io(Interest::WRITABLE, || contorler.sendmsg(bufs, hdr))
-                    {
-                        return Poll::Ready(Ok(res));
-                    }
-                }
-                Poll::Pending => return Poll::Pending,
-            }
-        }
+        let contorler = self.0.lock().unwrap();
+        ready!(contorler.io.poll_send_ready(cx))?;
+        let ret = contorler
+            .io
+            .try_io(Interest::WRITABLE, || contorler.sendmsg(bufs, hdr));
+
+        Poll::Ready(ret)
     }
 
     pub fn poll_recv(
         &self,
-        bufs: &mut [std::io::IoSliceMut<'_>],
+        bufs: &mut [IoSliceMut<'_>],
         hdrs: &mut [RecvHeader],
         cx: &mut Context,
     ) -> Poll<io::Result<usize>> {
