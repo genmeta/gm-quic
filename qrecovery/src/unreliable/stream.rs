@@ -33,7 +33,7 @@ impl RawDatagramStream {
     }
 
     fn recv_datagram(&self, frame: DatagramFrame, body: bytes::Bytes) -> Result<(), Error> {
-        if body.len() as u64 + 1 > self.max_datagram_frame_size {
+        if (body.len() + frame.encoding_size()) as u64 > self.max_datagram_frame_size {
             return Err(Error::new(
                 ErrorKind::ProtocolViolation,
                 frame.frame_type(),

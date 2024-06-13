@@ -5,6 +5,7 @@ use bytes::{BufMut, Bytes};
 use qbase::{
     error::Error,
     frame::{io::WriteDatagramFrame, BeFrame, DatagramFrame},
+    util::DescribeData,
     varint::VarInt,
 };
 
@@ -36,19 +37,18 @@ impl DatagramWriter {
         let writer = guard.as_mut().ok()?;
         let datagram = writer.queue.peek()?;
 
-        match buf.remaining_mut() {
-            len if len > datagram.len() => {
-                let len = VarInt::try_from(datagram.len()).unwrap();
-                let frame = DatagramFrame::new(Some(len));
-                buf.put_datagram_frame(&frame, datagram);
-                Some((frame, frame.encoding_size() + datagram.len()))
-            }
-            len if len == datagram.len() => {
-                let frame = DatagramFrame::new(None);
-                buf.put_datagram_frame(&frame, datagram);
-                Some((frame, frame.encoding_size() + datagram.len()))
-            }
-            _ => None,
+        let remain = buf.remaining_mut();
+        if remain == 1 + datagram.len() {
+            let frame = DatagramFrame::new(None);
+            buf.put_datagram_frame(&frame, datagram);
+            return Some((frame, frame.encoding_size() + datagram.len()));
+        }
+        let frame = DatagramFrame::new(Some(VarInt::try_from(datagram.len()).unwrap()));
+        if remain >= frame.encoding_size() + datagram.len() {
+            buf.put_datagram_frame(&frame, datagram);
+            Some((frame, frame.encoding_size() + datagram.len()))
+        } else {
+            None
         }
     }
 
