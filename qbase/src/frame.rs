@@ -66,7 +66,7 @@ pub use stream_data_blocked::StreamDataBlockedFrame;
 pub use streams_blocked::StreamsBlockedFrame;
 
 use super::varint::VarInt;
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum FrameType {
@@ -93,38 +93,38 @@ pub enum FrameType {
     Datagram(u8),
 }
 
-impl TryFrom<VarInt> for FrameType {
+impl TryFrom<u8> for FrameType {
     type Error = Error;
 
-    fn try_from(frame_type: VarInt) -> Result<Self, Self::Error> {
-        Ok(match frame_type.into_inner() {
+    fn try_from(frame_type: u8) -> Result<Self, Self::Error> {
+        Ok(match frame_type {
             0x00 => FrameType::Padding,
             0x01 => FrameType::Ping,
             // The last bit is the ECN flag.
-            ty @ (0x02 | 0x03) => FrameType::Ack(ty as u8 & 0b1),
+            ty @ (0x02 | 0x03) => FrameType::Ack(ty & 0b1),
             0x04 => FrameType::ResetStream,
             0x05 => FrameType::StopSending,
             0x06 => FrameType::Crypto,
             0x07 => FrameType::NewToken,
             // The last three bits are the offset, length, and fin flag bits respectively.
-            ty @ 0x08..=0x0f => FrameType::Stream(ty as u8 & 0b111),
+            ty @ 0x08..=0x0f => FrameType::Stream(ty & 0b111),
             0x10 => FrameType::MaxData,
             0x11 => FrameType::MaxStreamData,
             // The last bit is the direction flag bit, 0 indicates bidirectional, 1 indicates unidirectional.
-            ty @ (0x12 | 0x13) => FrameType::MaxStreams(ty as u8 & 0b1),
+            ty @ (0x12 | 0x13) => FrameType::MaxStreams(ty & 0b1),
             0x14 => FrameType::DataBlocked,
             0x15 => FrameType::StreamDataBlocked,
             // The last bit is the direction flag bit, 0 indicates bidirectional, 1 indicates unidirectional.
-            ty @ (0x16 | 0x17) => FrameType::StreamsBlocked(ty as u8 & 0b1),
+            ty @ (0x16 | 0x17) => FrameType::StreamsBlocked(ty & 0b1),
             0x18 => FrameType::NewConnectionId,
             0x19 => FrameType::RetireConnectionId,
             0x1a => FrameType::PathChallenge,
             0x1b => FrameType::PathResponse,
             // The last bit is the layer flag bit, 0 indicates application layer, 1 indicates transport layer.
-            ty @ (0x1c | 0x1d) => FrameType::ConnectionClose(ty as u8 & 0x1),
+            ty @ (0x1c | 0x1d) => FrameType::ConnectionClose(ty & 0x1),
             0x1e => FrameType::HandshakeDone,
-            ty @ (0x30 | 0x31) => FrameType::Datagram(ty as u8 & 1),
-            _ => return Err(Self::Error::InvalidType(frame_type)),
+            ty @ (0x30 | 0x31) => FrameType::Datagram(ty & 1),
+            _ => return Err(Self::Error::InvalidType(VarInt::from(frame_type))),
         })
     }
 }
@@ -157,10 +157,20 @@ impl From<FrameType> for u8 {
     }
 }
 
-impl From<FrameType> for VarInt {
-    fn from(frame_type: FrameType) -> Self {
-        u8::from(frame_type).into()
+pub trait WriteFrameType {
+    fn put_frame_type(&mut self, frame: FrameType);
+}
+
+impl<T: BufMut> WriteFrameType for T {
+    fn put_frame_type(&mut self, frame: FrameType) {
+        self.put_u8(frame.into())
     }
+}
+
+pub fn be_frame_type(input: &[u8]) -> nom::IResult<&[u8], FrameType, Error> {
+    let (remain, frame_type) = nom::number::complete::be_u8(input)?;
+    let frame_type = FrameType::try_from(frame_type).map_err(nom::Err::Error)?;
+    Ok((remain, frame_type))
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

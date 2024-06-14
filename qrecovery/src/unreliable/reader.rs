@@ -48,32 +48,31 @@ impl DatagramReader {
         }
     }
 
-    pub async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    pub async fn recv(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let reader = self.0.clone();
-        RecvBytes { reader, buf }.await
+        ReadIntoSlice { reader, buf }.await
     }
 
-    pub async fn read_buf(&mut self, buf: &mut impl BufMut) -> io::Result<usize> {
+    pub async fn recv_buf(&mut self, buf: &mut impl BufMut) -> io::Result<usize> {
         let reader = self.0.clone();
-        RecvBuf { reader, buf }.await
+        ReadInfoBuf { reader, buf }.await
     }
 }
 
-struct RecvBytes<'a> {
+struct ReadIntoSlice<'a> {
     reader: ArcDatagramReader,
     buf: &'a mut [u8],
 }
 
-impl Future for RecvBytes<'_> {
+impl Future for ReadIntoSlice<'_> {
     type Output = io::Result<usize>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let s = self.get_mut();
         let reader = s.reader.lock();
         let mut reader = ready!(Box::pin(reader).as_mut().poll(cx));
-
         match reader.deref_mut() {
-            Ok(reader) => match reader.queue.read() {
+            Ok(reader) => match reader.queue.try_read() {
                 Some(bytes) => {
                     let len = bytes.len().min(s.buf.len());
                     s.buf.copy_from_slice(&bytes[..len]);
@@ -89,12 +88,12 @@ impl Future for RecvBytes<'_> {
     }
 }
 
-struct RecvBuf<'a, B> {
+struct ReadInfoBuf<'a, B> {
     reader: ArcDatagramReader,
     buf: &'a mut B,
 }
 
-impl<B> Future for RecvBuf<'_, B>
+impl<B> Future for ReadInfoBuf<'_, B>
 where
     B: BufMut,
 {
@@ -104,9 +103,8 @@ where
         let s = self.get_mut();
         let reader = s.reader.lock();
         let mut reader = ready!(Box::pin(reader).as_mut().poll(cx));
-
         match reader.deref_mut() {
-            Ok(reader) => match reader.queue.read() {
+            Ok(reader) => match reader.queue.try_read() {
                 Some(bytes) => {
                     let len = bytes.len();
                     s.buf.put(bytes);

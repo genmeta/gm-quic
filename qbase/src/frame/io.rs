@@ -118,13 +118,8 @@ fn complete_frame(
 }
 
 pub fn be_frame(raw: &Bytes) -> Result<(usize, Frame), Error> {
-    use crate::varint::be_varint;
     let input = raw.as_ref();
-    let (remain, fty) = be_varint(input).map_err(|e| match e {
-        ne @ nom::Err::Incomplete(_) => nom::Err::Error(Error::IncompleteType(ne.to_string())),
-        _ => unreachable!("parsing frame type which is a varint never generates error or failure"),
-    })?;
-    let frame_type = FrameType::try_from(fty).map_err(nom::Err::Error)?;
+    let (remain, frame_type) = be_frame_type(input)?;
     let (remain, frame) = complete_frame(frame_type, raw.clone())(remain).map_err(|e| match e {
         ne @ nom::Err::Incomplete(_) => {
             nom::Err::Error(Error::IncompleteFrame(frame_type, ne.to_string()))

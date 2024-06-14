@@ -46,62 +46,55 @@ impl RawDatagramStream {
 }
 
 #[derive(Default, Debug, Clone)]
-pub enum DatagramStream {
-    // 数据报流可能并没有启用
-    #[default]
-    Disenabled,
-    Stream(RawDatagramStream),
+pub struct DatagramStream {
+    stream: Option<RawDatagramStream>,
 }
 
 impl DatagramStream {
     pub fn new(max_datagram_frame_size: u64) -> Self {
-        if max_datagram_frame_size == 0 {
-            Self::Disenabled
+        let stream = if max_datagram_frame_size == 0 {
+            None
         } else {
-            DatagramStream::Stream(RawDatagramStream::new(max_datagram_frame_size))
-        }
+            Some(RawDatagramStream::new(max_datagram_frame_size))
+        };
+        Self { stream }
     }
 
     pub fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        match self {
-            DatagramStream::Disenabled => None,
-            DatagramStream::Stream(s) => s.try_read_datagram(buf),
-        }
+        self.stream.as_ref()?.try_read_datagram(buf)
     }
 
     pub fn recv_datagram(&self, frame: DatagramFrame, body: bytes::Bytes) -> Result<(), Error> {
-        match self {
-            DatagramStream::Disenabled => disenabled(&frame),
-            DatagramStream::Stream(s) => s.recv_datagram(frame, body),
-        }
+        self.stream
+            .as_ref()
+            .ok_or_else(|| disenabled(&frame))?
+            .recv_datagram(frame, body)
     }
 
     pub fn rw(&self) -> Result<(DatagramReader, DatagramWriter), Error> {
-        match self {
-            DatagramStream::Disenabled => disenabled_datagram(),
-            DatagramStream::Stream(s) => Ok((
-                DatagramReader(s.reader.0.clone()),
-                DatagramWriter(s.writer.0.clone()),
-            )),
-        }
+        let s = self.stream.as_ref().ok_or_else(disenabled_datagram)?;
+        Ok((
+            DatagramReader(s.reader.0.clone()),
+            DatagramWriter(s.writer.0.clone()),
+        ))
     }
 
     pub(crate) fn on_conn_error(&self, error: &Error) {
-        if let Self::Stream(ds) = self {
-            ds.reader.on_conn_error(error);
-            ds.writer.on_conn_error(error);
+        if let Some(s) = &self.stream {
+            s.reader.on_conn_error(error);
+            s.writer.on_conn_error(error);
         }
     }
 }
 
-fn disenabled<T>(frame: &DatagramFrame) -> Result<T, Error> {
-    Err(Error::new(
+fn disenabled(frame: &DatagramFrame) -> Error {
+    Error::new(
         ErrorKind::ProtocolViolation,
         frame.frame_type(),
         "DatagramFrame was disenabled",
-    ))
+    )
 }
 
-fn disenabled_datagram<T>() -> Result<T, Error> {
+fn disenabled_datagram() -> Error {
     disenabled(&DatagramFrame { length: None })
 }

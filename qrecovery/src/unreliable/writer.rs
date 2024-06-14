@@ -5,7 +5,6 @@ use bytes::{BufMut, Bytes};
 use qbase::{
     error::Error,
     frame::{io::WriteDatagramFrame, BeFrame, DatagramFrame},
-    util::DescribeData,
     varint::VarInt,
 };
 

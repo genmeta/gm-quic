@@ -7,7 +7,7 @@
 // }
 
 use super::FrameType;
-use crate::{error::ErrorKind, packet::r#type::Type, varint::VarInt};
+use crate::{error::ErrorKind, frame::be_frame_type, packet::r#type::Type, varint::VarInt};
 use std::borrow::Cow;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,11 +53,7 @@ impl super::BeFrame for ConnectionCloseFrame {
 
     fn encoding_size(&self) -> usize {
         1 + VarInt::from(self.error_kind).encoding_size()
-            + if let Some(frame_type) = self.frame_type {
-                VarInt::from(frame_type).encoding_size()
-            } else {
-                0
-            }
+            + self.frame_type.is_some()  as usize
             // reason's length could not exceed 16KB
             + VarInt(self.reason.len() as u64).encoding_size()
             + self.reason.len()
@@ -90,13 +86,10 @@ pub fn connection_close_frame_at_layer(
             nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Alt))
         })?;
         let (remain, frame_type) = if layer == QUIC_LAYER {
-            let (remain, frame_type) = be_varint(remain)?;
-            (
-                remain,
-                Some(FrameType::try_from(frame_type).map_err(|_e| {
-                    nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Alt))
-                })?),
-            )
+            let (remain, frame_type) = be_frame_type(remain).map_err(|_e| {
+                nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Alt))
+            })?;
+            (remain, Some(frame_type))
         } else {
             (remain, None)
         };
@@ -119,7 +112,7 @@ pub trait WriteConnectionCloseFrame {
 
 impl<T: bytes::BufMut> WriteConnectionCloseFrame for T {
     fn put_connection_close_frame(&mut self, frame: &ConnectionCloseFrame) {
-        use crate::varint::WriteVarInt;
+        use crate::{frame::WriteFrameType, varint::WriteVarInt};
         let layer = if frame.frame_type.is_some() {
             QUIC_LAYER
         } else {
@@ -128,7 +121,7 @@ impl<T: bytes::BufMut> WriteConnectionCloseFrame for T {
         self.put_u8(CONNECTION_CLOSE_FRAME_TYPE | layer);
         self.put_varint(&frame.error_kind.into());
         if let Some(frame_type) = frame.frame_type {
-            self.put_varint(&frame_type.into());
+            self.put_frame_type(frame_type);
         }
         self.put_varint(&VarInt::from_u32(frame.reason.len() as u32));
         self.put_slice(frame.reason.as_bytes());

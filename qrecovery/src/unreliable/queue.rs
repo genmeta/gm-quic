@@ -12,7 +12,7 @@ impl DatagramQueue {
         self.queue.push_back(data);
     }
 
-    pub fn read(&mut self) -> Option<Bytes> {
+    pub fn try_read(&mut self) -> Option<Bytes> {
         self.queue.pop_front()
     }
 
