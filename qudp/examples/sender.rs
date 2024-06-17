@@ -6,31 +6,49 @@ use std::{
 };
 
 use bytes::Bytes;
+use clap::{command, Parser};
+
 use qudp::{ArcController, SendHeader};
 
 use std::task;
 
-const MSG_SIZE: usize = 1200;
-const MSG_COUNT: usize = 10_000;
-const SEG_SIZE: Option<u16> = None;
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(long, default_value_t = String::from("127.0.0.1:0"))]
+    src: String,
+
+    #[arg(long, default_value_t = String::from("127.0.0.1:12345"))]
+    dst: String,
+
+    #[arg(long, default_value_t = 1200)]
+    msg_size: usize,
+
+    #[arg(long, default_value_t = 10_000)]
+    msg_count: usize,
+
+    #[arg(long)]
+    seg_size: Option<u16>,
+}
 
 #[tokio::main]
 async fn main() {
-    let addr = "127.0.0.1:0".parse().unwrap();
+    let args = Args::parse();
+    let addr = args.src.parse().unwrap();
     let socket = ArcController::new(addr);
-    let dst = "127.0.0.1:12345".parse().unwrap();
+    let dst = args.dst.parse().unwrap();
 
     let send_hdr = SendHeader {
         src: socket.local_addr(),
         dst,
         ttl: 64,
         ecn: None,
-        seg_size: SEG_SIZE,
+        seg_size: args.seg_size,
     };
 
     let sender = Sender {
         controller: socket,
-        bufs: payloads(),
+        bufs: payloads(&args),
         hdr: send_hdr,
     };
     let ret = sender.await;
@@ -40,11 +58,11 @@ async fn main() {
     }
 }
 
-fn payloads() -> Vec<Bytes> {
-    let payload: Vec<u8> = iter::repeat(1u8).take(MSG_SIZE).collect();
+fn payloads(args: &Args) -> Vec<Bytes> {
+    let payload: Vec<u8> = iter::repeat(1u8).take(args.msg_size).collect();
     let payload = Bytes::from(payload);
     iter::repeat_with(|| payload.clone())
-        .take(MSG_COUNT)
+        .take(args.msg_count)
         .collect()
 }
 

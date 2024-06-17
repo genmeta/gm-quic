@@ -12,6 +12,9 @@ libc = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
 
+[dev-dependencies]
+clap.workspace = true
+
 [[example]]
 name = "sender"
 path = "examples/sender.rs"

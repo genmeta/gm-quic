@@ -1,3 +1,5 @@
+use clap::Parser;
+use qudp::{ArcController, RecvHeader};
 use std::{
     future::Future,
     io::{self, IoSliceMut},
@@ -10,14 +12,19 @@ const BATCH_SIZE: usize = 1;
 
 #[cfg(target_os = "linux")]
 const BATCH_SIZE: usize = 64;
-
 const BUFFER_SIZE: usize = 1200;
 
-use qudp::{ArcController, RecvHeader};
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short,long, default_value_t = String::from("127.0.0.1:12345"))]
+    bind: String,
+}
 
 #[tokio::main]
 async fn main() {
-    let addr = "127.0.0.1:12345".parse().unwrap();
+    let args = Args::parse();
+    let addr = args.bind.parse().unwrap();
     let socket = ArcController::new(addr);
     let mut count = 0;
     loop {
