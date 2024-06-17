@@ -6,11 +6,14 @@ use qcongestion::congestion::CongestionController;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::mpsc::UnboundedSender;
 
+pub mod anti_amplifier;
+pub use anti_amplifier::ArcAntiAmplifier;
+
 pub mod validate;
 pub use validate::{Transponder, Validator};
 
-mod observer;
-use observer::{AckObserver, LossObserver};
+pub mod observer;
+pub use observer::{AckObserver, LossObserver};
 
 use crate::Sendmsg;
 

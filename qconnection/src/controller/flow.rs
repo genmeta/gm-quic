@@ -1,4 +1,5 @@
 use futures::{task::AtomicWaker, Future};
+use qbase::varint::VARINT_MAX;
 use std::{
     ops::Deref,
     pin::Pin,
@@ -12,55 +13,93 @@ use thiserror::Error;
 
 /// All data sent in STREAM frames counts toward this limit.
 #[derive(Debug, Default)]
-pub struct Sender {
+pub struct SendControler {
     total_sent: AtomicU64,
     max_data: AtomicU64,
-    waker: AtomicWaker,
+    wakers: Vec<Waker>,
 }
 
-impl Sender {
-    /// snd_wnd是对方协商时设置的，客户端一开始不知道服务端参数的情况下，
-    /// 应该使用Default初始化为0，直至收到服务端的quic parameter或者MAX_DATA帧告知
-    pub fn with_initial(snd_wnd: u64) -> Self {
+impl SendControler {
+    /// Creates a new `SendControler` with the specified initial maximum data.
+    ///
+    /// `initial_max_data` should be known to each other after the handshake is
+    /// completed. If sending data in 0RTT space, `initial_max_data` should be
+    /// the value from the previous connection.
+    ///
+    /// `initial_max_data` is allowed to be 0, which is reasonable when creating a
+    /// connection without knowing the peer's setting.
+    pub fn with_initial(initial_max_data: u64) -> Self {
         Self {
             total_sent: AtomicU64::new(0),
-            max_data: AtomicU64::new(snd_wnd),
-            waker: AtomicWaker::new(),
+            max_data: AtomicU64::new(initial_max_data),
+            wakers: Vec::with_capacity(4),
         }
     }
 
-    /// Increasing Flow Control Limits
-    pub fn incr_wnd(&self, max_data: u64) {
+    /// Increasing Flow Control Limits by receiving a MAX_DATA frame from peer.
+    pub fn permit(&mut self, max_data: u64) {
+        debug_assert!(max_data <= VARINT_MAX);
         // the new max_data != previous self.max_data, meaning fetch_max update successfully
         if max_data != self.max_data.fetch_max(max_data, Ordering::Release) {
-            self.waker.wake();
+            for waker in self.wakers.drain(..) {
+                waker.wake();
+            }
         }
     }
 
-    pub fn avaliable(&self) -> u64 {
+    /// Apply for sending data.
+    ///
+    /// # Returns
+    ///
+    /// - If there is sufficient flow control, return `Credit` indicating the maximum
+    ///   amount of data the sender can send. When calling `apply` without calling
+    ///   `Credit::post_sent` or dropping `Credit`, `apply` cannot be called again.
+    /// - If there is insufficient flow control, return `Err`, and the sender needs to
+    ///   call `notify.notified().await` to wait.
+    pub fn poll_apply(&mut self, cx: &mut Context<'_>, amount: usize) -> Poll<Credit<'_>> {
         let total_sent = self.total_sent.load(Ordering::Acquire);
         let max_data = self.max_data.load(Ordering::Acquire);
-        total_sent - max_data
-    }
-
-    /// Update the amount of data sent after each time data of 'amount' bytes is sent
-    pub fn post_sent(&self, amount: usize) {
-        // THINK: Do we need check total_sent + amount <= max_data? No, it will not happen,
-        // because amount is calcucated less than max_data - total_sent
-        self.total_sent.fetch_add(amount as u64, Ordering::Release);
-    }
-
-    pub fn register(&self, waker: &Waker) {
-        self.waker.register(waker);
+        if total_sent < max_data {
+            Poll::Ready(Credit {
+                inner: self,
+                amount: amount.min((max_data - total_sent) as usize),
+            })
+        } else {
+            self.wakers.push(cx.waker().clone());
+            Poll::Pending
+        }
     }
 }
 
+/// Represents the credit for sending data.
+pub struct Credit<'a> {
+    inner: &'a mut SendControler,
+    amount: usize,
+}
+
+impl Credit<'_> {
+    /// Returns the available amount of data that can be sent.
+    pub fn available(&self) -> usize {
+        self.amount
+    }
+
+    /// Updates the amount of data sent.
+    pub fn post_sent(self, amount: usize) {
+        debug_assert!(amount <= self.amount);
+        self.inner
+            .total_sent
+            .fetch_add(amount as u64, Ordering::Release);
+    }
+}
+
+/// Represents an overflow error when the flow control limit is exceeded.
 #[derive(Debug, Clone, Copy, Error)]
 #[error("Flow Control exceed {0} bytes on receiving")]
 pub struct Overflow(usize);
 
+/// Receiver flow controller for managing the flow of incoming data packets.
 #[derive(Debug, Default)]
-pub struct Recver {
+pub struct RecvController {
     total_rcvd: AtomicU64,
     max_data: AtomicU64,
     step: u64,
@@ -68,22 +107,24 @@ pub struct Recver {
     waker: AtomicWaker,
 }
 
-impl Recver {
-    pub fn with_initial(rcv_wnd: u64) -> Self {
+impl RecvController {
+    /// Creates a new `RecvController` with the specified initial maximum data.
+    pub fn with_initial(initial_max_data: u64) -> Self {
         Self {
             total_rcvd: AtomicU64::new(0),
-            max_data: AtomicU64::new(rcv_wnd),
-            step: rcv_wnd / 2,
+            max_data: AtomicU64::new(initial_max_data),
+            step: initial_max_data / 2,
             is_closed: AtomicBool::new(false),
             waker: AtomicWaker::new(),
         }
     }
 
-    /// 必须是新数据，旧的重传的数据不算。至于是不是新数据，得等将数据包交付给各个流后，
-    /// 由各个流判定是否新数据，将新数据量作為amount参数反馈。如：
-    /// - 如接收新数据量仍没超过max_data则是ok
-    /// - 如超过了max_data，则返回错误，该错误将导致quic的FLOW_CONTROL_ERROR
-    pub fn on_rcvd_new(&self, amount: usize) -> Result<usize, Overflow> {
+    /// Handles the event when new data is received.
+    ///
+    /// The data must be new, old retransmitted data does not count. Whether the data is
+    /// new or not will be determined by each stream after delivering the data packet to them.
+    /// The amount of new data will be passed as the `amount` parameter.
+    pub fn on_new_rcvd(&self, amount: usize) -> Result<usize, Overflow> {
         debug_assert!(!self.is_closed.load(Ordering::Relaxed));
 
         self.total_rcvd.fetch_add(amount as u64, Ordering::Release);
@@ -99,7 +140,14 @@ impl Recver {
         }
     }
 
-    pub fn poll_incr_wnd(&self, cx: &mut Context<'_>) -> Poll<Option<u64>> {
+    /// Polls for an increase in the receive window limit.
+    ///
+    /// # Returns
+    ///
+    /// - `Poll::Ready(Some(limit))` if an increase in the receive window limit is available.
+    /// - `Poll::Ready(None)` if the receiver is closed and no further increase is possible.
+    /// - `Poll::Pending` if an increase in the receive window limit is not yet available.
+    pub fn poll_incr_limit(&self, cx: &mut Context<'_>) -> Poll<Option<u64>> {
         if self.is_closed.load(Ordering::Acquire) {
             Poll::Ready(None)
         } else {
@@ -116,25 +164,28 @@ impl Recver {
         }
     }
 
+    /// Closes the receiver.
     pub fn close(&self) {
         if !self.is_closed.swap(true, Ordering::Release) {
-            // 精准地调用一次，可防范多次调用close导致的不必要的唤醒
+            // Call wake() precisely once to prevent unnecessary wake-ups caused by multiple close calls.
             self.waker.wake();
         }
     }
 }
 
+/// Represents a flow controller for managing the flow of data.
 #[derive(Debug, Default)]
 pub struct FlowController {
-    pub sender: Sender,
-    pub recver: Recver,
+    pub sender: SendControler,
+    pub recver: RecvController,
 }
 
 impl FlowController {
-    pub fn with_initial(snd_wnd: u64, rcv_wnd: u64) -> Self {
+    /// Creates a new `FlowController` with the specified initial send and receive window sizes.
+    pub fn with_initial(peer_initial_max_data: u64, local_initial_max_data: u64) -> Self {
         Self {
-            sender: Sender::with_initial(snd_wnd),
-            recver: Recver::with_initial(rcv_wnd),
+            sender: SendControler::with_initial(peer_initial_max_data),
+            recver: RecvController::with_initial(local_initial_max_data),
         }
     }
 }
@@ -144,8 +195,12 @@ impl FlowController {
 pub struct ArcFlowController(Arc<FlowController>);
 
 impl ArcFlowController {
-    pub fn with_initial(snd_wnd: u64, rcv_wnd: u64) -> Self {
-        Self(Arc::new(FlowController::with_initial(snd_wnd, rcv_wnd)))
+    /// Creates a new `ArcFlowController` with the specified initial send and receive window sizes.
+    pub fn with_initial(peer_initial_max_data: u64, local_initial_max_data: u64) -> Self {
+        Self(Arc::new(FlowController::with_initial(
+            peer_initial_max_data,
+            local_initial_max_data,
+        )))
     }
 }
 
@@ -158,18 +213,18 @@ impl Deref for ArcFlowController {
 }
 
 impl ArcFlowController {
-    /// 一旦有返回，需向对方发送一个MaxData帧，告知对面扩大接收窗口，避免不必要流量阻塞
-    pub async fn need_incr_wnd(&self) -> NeedIncrWnd {
-        NeedIncrWnd(self.clone())
+    /// Asynchronously waits for an increase in the receive window limit.
+    pub async fn incr_limit(&self) -> Option<u64> {
+        IncrLimit(self.clone()).await
     }
 }
 
-pub struct NeedIncrWnd(ArcFlowController);
+struct IncrLimit(ArcFlowController);
 
-impl Future for NeedIncrWnd {
+impl Future for IncrLimit {
     type Output = Option<u64>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.recver.poll_incr_wnd(cx)
+        self.0.recver.poll_incr_limit(cx)
     }
 }

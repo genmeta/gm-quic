@@ -507,7 +507,7 @@ impl RawDataStreams {
                         .push_stream_control_frame(StreamCtlFrame::ResetStream(ResetStreamFrame {
                             stream_id: sid,
                             app_error_code: VarInt::from_u64(err_code)
-                                .expect("app error code exceed VARINT_MAX"),
+                                .expect("app error code must not exceed VARINT_MAX"),
                             final_size: unsafe { VarInt::from_u64_unchecked(final_size) },
                         }));
                 }
@@ -546,7 +546,7 @@ impl RawDataStreams {
                         .push_stream_control_frame(StreamCtlFrame::StopSending(StopSendingFrame {
                             stream_id: sid,
                             app_err_code: VarInt::from_u64(err_code)
-                                .expect("app error code exceed VARINT_MAX"),
+                                .expect("app error code must not exceed VARINT_MAX"),
                         }));
                 }
             }

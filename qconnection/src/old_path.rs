@@ -72,5 +72,8 @@ mod tests {
         // let path = super::Path::new(local_addr, peer_addr, peer_cid);
 
         // let _packet = path.read_1rtt_packet().await;
+        let udp_socket = tokio::net::UdpSocket::bind(local_addr).await.unwrap();
+        udp_socket.send_to("test".as_bytes(), peer_addr).await;
+        let mut notify = tokio::sync::Notify::new();
     }
 }
