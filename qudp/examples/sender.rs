@@ -8,14 +8,14 @@ use std::{
 use bytes::Bytes;
 use clap::{command, Parser};
 
-use qudp::{ArcController, SendHeader};
+use qudp::{ArcController, PacketHeader};
 
 use std::task;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(long, default_value_t = String::from("127.0.0.1:0"))]
+    #[arg(long, default_value_t = String::from("[::]:0"))]
     src: String,
 
     #[arg(long, default_value_t = String::from("127.0.0.1:12345"))]
@@ -24,7 +24,7 @@ struct Args {
     #[arg(long, default_value_t = 1200)]
     msg_size: usize,
 
-    #[arg(long, default_value_t = 10_000)]
+    #[arg(long, default_value_t = 10)]
     msg_count: usize,
 
     #[arg(long)]
@@ -33,16 +33,18 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
+
     let args = Args::parse();
-    let addr = args.src.parse().unwrap();
-    let socket = ArcController::new(addr);
+    let bind = args.src.parse().unwrap();
+    let socket = ArcController::new(bind);
     let dst = args.dst.parse().unwrap();
 
-    let send_hdr = SendHeader {
+    let send_hdr = PacketHeader {
         src: socket.local_addr(),
         dst,
         ttl: 64,
-        ecn: None,
+        ecn: Some(1),
         seg_size: args.seg_size,
     };
 
@@ -69,7 +71,7 @@ fn payloads(args: &Args) -> Vec<Bytes> {
 struct Sender {
     controller: ArcController,
     bufs: Vec<Bytes>,
-    hdr: SendHeader,
+    hdr: PacketHeader,
 }
 
 impl Future for Sender {
@@ -79,13 +81,13 @@ impl Future for Sender {
         let this = self.get_mut();
 
         let hdr = &this.hdr;
-        let mut bufs = this
+        let bufs = this
             .bufs
             .iter_mut()
             .map(|b| IoSlice::new(b))
             .collect::<Vec<_>>();
 
-        let n = ready!(this.controller.poll_send(&mut bufs, hdr, cx))?;
+        let n = ready!(this.controller.poll_send(&bufs, hdr, cx))?;
         Poll::Ready(Ok(n))
     }
 }

@@ -4,7 +4,9 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 
-use crate::{Gso, RecvHeader, SendHeader, UdpSocketController};
+use socket2::SockAddr;
+
+use crate::{Gso, PacketHeader, UdpSocketController};
 
 pub(crate) const CMSG_LEN: usize = 88;
 
@@ -15,9 +17,30 @@ type IpTosTy = libc::c_int;
 
 use std::ptr;
 
+pub(super) struct Message {
+    pub(super) hdr: libc::msghdr,
+    pub(super) ctrl: Aligned<[u8; CMSG_LEN]>,
+    pub(super) src: SockAddr,
+    pub(super) dst: SockAddr,
+    pub(super) gso_seg: Option<u16>,
+    pub(super) ecn: Option<u8>,
+}
+
+impl From<&PacketHeader> for Message {
+    fn from(value: &PacketHeader) -> Self {
+        Self {
+            hdr: unsafe { mem::zeroed() },
+            ctrl: Aligned([0u8; CMSG_LEN]),
+            src: value.src.into(),
+            dst: value.dst.into(),
+            gso_seg: value.seg_size,
+            ecn: value.ecn,
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 #[repr(align(8))] // Conservative bound for align_of<cmsghdr>
-
 pub(crate) struct Aligned<T>(pub(crate) T);
 
 pub(crate) struct Cmsg<'a> {
@@ -106,27 +129,21 @@ impl<'a> Iterator for Iter<'a> {
     }
 }
 
-pub(crate) fn prepare_sent(
-    bufs: &[IoSlice<'_>],
-    send_hdr: &SendHeader,
-    hdr: &mut libc::msghdr,
-    ctrl: &mut Aligned<[u8; CMSG_LEN]>,
-    with_gso: bool,
-) {
-    let dst_addr = socket2::SockAddr::from(send_hdr.dst);
-    hdr.msg_name = dst_addr.as_ptr() as *mut _;
-    hdr.msg_namelen = dst_addr.len();
-    hdr.msg_iov = bufs.as_ptr() as *mut _;
-    hdr.msg_iovlen = bufs.len() as _;
+pub(crate) fn prepare_sent(bufs: &[IoSlice<'_>], msg: &mut Message) {
+    msg.hdr.msg_name = msg.dst.as_ptr() as *mut _;
+    msg.hdr.msg_namelen = msg.dst.len();
+    msg.hdr.msg_iov = bufs.as_ptr() as *mut _;
+    msg.hdr.msg_iovlen = bufs.len() as _;
 
-    hdr.msg_control = ctrl.0.as_mut_ptr() as _;
-    hdr.msg_controllen = CMSG_LEN as _;
-    let mut encoder = unsafe { Cmsg::new(hdr) };
-    let ecn = send_hdr.ecn.map_or(0, |x| x as libc::c_int);
+    msg.hdr.msg_control = msg.ctrl.0.as_mut_ptr() as _;
+    msg.hdr.msg_controllen = CMSG_LEN as _;
+    let mut encoder = unsafe { Cmsg::new(&mut msg.hdr) };
+    let ecn = msg.ecn.map_or(0, |x| x as libc::c_int);
 
+    let dst = msg.dst.as_socket().unwrap();
     // IPv4 or IPv4-Mapped IPv6
-    let is_ipv4: bool = send_hdr.dst.is_ipv4()
-        || matches!(send_hdr.dst.ip(),IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());
+    let is_ipv4: bool = dst.ip().is_ipv4()
+        || matches!(dst.ip(),IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());
 
     if is_ipv4 {
         encoder.push(libc::IPPROTO_IP, libc::IP_TOS, ecn as IpTosTy);
@@ -134,13 +151,12 @@ pub(crate) fn prepare_sent(
         encoder.push(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, ecn);
     }
 
-    if let Some(segment_size) = send_hdr.seg_size {
-        if with_gso {
-            UdpSocketController::set_segment_size(&mut encoder, segment_size);
-        }
+    if let Some(gso_seg) = msg.gso_seg {
+        UdpSocketController::set_segment_size(&mut encoder, gso_seg);
     }
 
-    match send_hdr.src.ip() {
+    let src = msg.src.as_socket().unwrap();
+    match src.ip() {
         IpAddr::V4(v4) => {
             #[cfg(any(target_os = "linux", target_os = "android"))]
             {
@@ -193,11 +209,11 @@ pub(crate) fn decode_recv(
     name: &MaybeUninit<libc::sockaddr_storage>,
     hdr: &libc::msghdr,
     len: usize,
-    recv_hdr: &mut RecvHeader,
+    recv_hdr: &mut PacketHeader,
 ) {
     let name = unsafe { name.assume_init() };
     let cmsg_iter = unsafe { Iter::new(hdr) };
-    recv_hdr.seg_size = len;
+    recv_hdr.seg_size = Some(len as u16);
     for cmsg in cmsg_iter {
         match (cmsg.cmsg_level, cmsg.cmsg_type) {
             (libc::IPPROTO_IP, libc::IP_TOS) | (libc::IPPROTO_IP, libc::IP_RECVTOS) => unsafe {
@@ -228,17 +244,24 @@ pub(crate) fn decode_recv(
                     .dst
                     .set_ip(IpAddr::V4(Ipv4Addr::from(in_addr.s_addr.to_ne_bytes())));
             }
+
             (libc::IPPROTO_IP, libc::IP_TTL) => unsafe {
                 recv_hdr.ttl = decode::<u32>(cmsg) as u8;
             },
-            (libc::IPPROTO_IPV6, libc::IPV6_HOPLIMIT) => unsafe {
-                recv_hdr.ttl = decode::<u32>(cmsg) as u8;
-            },
+            (libc::IPPROTO_IPV6, libc::IPV6_PKTINFO) => {
+                let pktinfo = unsafe { decode::<libc::in6_pktinfo>(cmsg) };
+                let ip = IpAddr::V6(Ipv6Addr::from(pktinfo.ipi6_addr.s6_addr));
+                recv_hdr.dst.set_ip(ip);
+            }
             (libc::IPPROTO_IP, libc::IP_RECVTTL) => unsafe {
                 recv_hdr.ttl = decode::<u32>(cmsg) as u8;
             },
             _ => {
-                log::error!("read unkown cmsg {}", cmsg.cmsg_type);
+                log::warn!(
+                    "read unkown level {} cmsg {}",
+                    cmsg.cmsg_level,
+                    cmsg.cmsg_type
+                );
             }
         }
     }

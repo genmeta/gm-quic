@@ -1,9 +1,10 @@
-use crate::msg::{decode_recv, prepare_recv, Aligned, Cmsg, CMSG_LEN};
-use crate::{io, msg::prepare_sent, SendHeader};
-use crate::{Gro, Gso, Io, OffloadStatus, RecvHeader, UdpSocketController};
+use crate::msg::{decode_recv, prepare_recv, Aligned, Cmsg, Message, CMSG_LEN};
+use crate::{io, msg::prepare_sent, PacketHeader};
+use crate::{Gro, Gso, Io, OffloadStatus, UdpSocketController};
 use std::cmp;
 use std::io::IoSlice;
 use std::mem::MaybeUninit;
+use std::net::SocketAddr;
 use std::{mem, os::fd::AsRawFd};
 
 const OPTION_ON: libc::c_int = 1;
@@ -30,44 +31,41 @@ impl Io for UdpSocketController {
             //  If enabled, the IP_TOS ancillary message is passed with
             //  incoming packets.  It contains a byte which specifies the
             //  Type of Service/Precedence field of the packet header.
-            if let Err(err) = self.set_socket_option(libc::IPPROTO_IP, libc::IP_RECVTOS, OPTION_ON)
-            {
-                log::error!("setsockopt IP_RECVTOS failed: {}", err);
-            }
+            self.setsockopt(libc::IPPROTO_IP, libc::IP_RECVTOS, OPTION_ON);
         }
 
         if is_ipv4 {
             #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios"))]
             {
                 // IP_DONTFRAG  may	 be used to set	the Don't Fragment flag	on IP packets.
-                self.set_socket_option(libc::IPPROTO_IP, libc::IP_DONTFRAG, OPTION_ON)?;
+                self.setsockopt(libc::IPPROTO_IP, libc::IP_DONTFRAG, OPTION_ON);
                 // If the IP_RECVDSTADDR	option	is enabled on a	SOCK_DGRAM socket, the
                 // recvmsg(2) call will return the destination IP address for a UDP	 datagram.
-                self.set_socket_option(libc::IPPROTO_IP, libc::IP_RECVDSTADDR, OPTION_ON)?;
+                self.setsockopt(libc::IPPROTO_IP, libc::IP_RECVDSTADDR, OPTION_ON);
             }
-            self.set_socket_option(libc::IPPROTO_IP, libc::IP_PKTINFO, OPTION_ON)?;
-            self.set_socket_option(libc::IPPROTO_IP, libc::IP_TTL, DEFAULT_TTL)?;
+            self.setsockopt(libc::IPPROTO_IP, libc::IP_PKTINFO, OPTION_ON);
+            self.setsockopt(libc::IPPROTO_IP, libc::IP_TTL, DEFAULT_TTL);
             // When this flag is set, pass a IP_TTL control message with
             // the time-to-live field of the received packet as a 32 bit
             // integer.  Not supported for SOCK_STREAM sockets.
-            self.set_socket_option(libc::IPPROTO_IP, libc::IP_RECVTTL, OPTION_ON)?;
+            self.setsockopt(libc::IPPROTO_IP, libc::IP_RECVTTL, OPTION_ON);
         }
         // Options standardized in RFC 3542
         else {
             //  If this flag is set to false (zero), then the socket can
             //  be used to send and receive packets to and from an IPv6
             //  address or an IPv4-mapped IPv6 address.
-            self.set_socket_option(libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, OPTION_OFF)?;
+            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, OPTION_OFF);
             // Set delivery of the IPV6_PKTINFO control message on incoming datagrams.
-            self.set_socket_option(libc::IPPROTO_IPV6, libc::IPV6_RECVPKTINFO, OPTION_ON)?;
-            self.set_socket_option(libc::IPPROTO_IPV6, libc::IPV6_RECVTCLASS, OPTION_ON)?;
-            self.set_socket_option(libc::IPPROTO_IPV6, libc::IPV6_DONTFRAG, OPTION_ON)?;
-            self.set_socket_option(libc::IPPROTO_IP, libc::IPV6_PKTINFO, OPTION_ON)?;
+            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_RECVPKTINFO, OPTION_ON);
+            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_RECVTCLASS, OPTION_ON);
+            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_DONTFRAG, OPTION_ON);
+            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_PKTINFO, OPTION_ON);
             // The received hop limit is returned as ancillary data by recvmsg()
             // only if the application has enabled the IPV6_RECVHOPLIMIT socket option
-            self.set_socket_option(libc::IPPROTO_IP, libc::IPV6_RECVHOPLIMIT, OPTION_ON)?;
-            self.set_socket_option(libc::IPPROTO_IP, libc::IP_RECVTTL, OPTION_ON)?;
-            self.set_socket_option(libc::IPPROTO_IP, libc::IPV6_UNICAST_HOPS, DEFAULT_TTL)?;
+            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_RECVHOPLIMIT, OPTION_ON);
+            self.setsockopt(libc::IPPROTO_IP, libc::IP_RECVTTL, OPTION_ON);
+            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_UNICAST_HOPS, DEFAULT_TTL);
         }
 
         self.gso_size = match self.max_gso_segments() {
@@ -83,17 +81,14 @@ impl Io for UdpSocketController {
         Ok(())
     }
 
-    fn set_socket_option(
-        &self,
-        level: libc::c_int,
-        name: libc::c_int,
-        value: libc::c_int,
-    ) -> Result<(), io::Error> {
-        set_socket_option(&self.io.as_raw_fd(), level, name, value)
+    fn setsockopt(&self, level: libc::c_int, name: libc::c_int, value: libc::c_int) {
+        let _ = setsockopt(&self.io.as_raw_fd(), level, name, value);
     }
 
-    fn sendmsg(&self, bufs: &mut [IoSlice<'_>], send_hdr: &SendHeader) -> io::Result<usize> {
+    fn sendmsg(&self, bufs: &[IoSlice<'_>], send_hdr: &PacketHeader) -> io::Result<usize> {
         let io = socket2::SockRef::from(&self.io);
+
+        let mut msg = Message::from(send_hdr);
 
         let gso_size = match send_hdr.seg_size {
             Some(size) => {
@@ -104,19 +99,24 @@ impl Io for UdpSocketController {
             None => 1,
         };
 
-        let with_gso = gso_size > 1;
+        if gso_size == 1 {
+            msg.gso_seg = None;
+        }
+        if self.local_addr().is_ipv6() && msg.dst.is_ipv4() && !io.only_v6()? {
+            if let SocketAddr::V4(addr) = send_hdr.dst {
+                let ip = addr.ip().to_ipv6_mapped();
+                msg.dst = SocketAddr::new(std::net::IpAddr::V6(ip), addr.port()).into();
+            }
+        }
 
         let mut send_byte = 0;
         for batch in bufs.chunks(gso_size) {
             let mut iovec: Vec<IoSlice> = Vec::with_capacity(gso_size);
             iovec.extend(batch.iter().map(|buf| IoSlice::new(buf)));
 
-            let mut hdr: libc::msghdr = unsafe { mem::zeroed() };
-            let mut ctrl = Aligned([0u8; CMSG_LEN]);
-            prepare_sent(&iovec, send_hdr, &mut hdr, &mut ctrl, with_gso);
-
+            prepare_sent(&iovec, &mut msg);
             loop {
-                let ret = to_result(unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) });
+                let ret = to_result(unsafe { libc::sendmsg(io.as_raw_fd(), &msg.hdr, 0) });
                 match ret {
                     Ok(n) => {
                         send_byte += n;
@@ -146,7 +146,7 @@ impl Io for UdpSocketController {
     fn recvmsg(
         &self,
         bufs: &mut [std::io::IoSliceMut<'_>],
-        recv_hdrs: &mut [RecvHeader],
+        recv_hdrs: &mut [PacketHeader],
     ) -> io::Result<usize> {
         let mut hdrs = unsafe { mem::zeroed::<[libc::mmsghdr; BATCH_SIZE]>() };
         let mut names = [MaybeUninit::<libc::sockaddr_storage>::uninit(); BATCH_SIZE];
@@ -195,7 +195,7 @@ impl Io for UdpSocketController {
     fn recvmsg(
         &self,
         bufs: &mut [std::io::IoSliceMut<'_>],
-        recv_hdrs: &mut [RecvHeader],
+        recv_hdrs: &mut [PacketHeader],
     ) -> io::Result<usize> {
         let mut hdr = unsafe { mem::zeroed::<libc::msghdr>() };
         let mut name = MaybeUninit::<libc::sockaddr_storage>::uninit();
@@ -288,7 +288,7 @@ impl Gso for UdpSocketController {
                     Ok(socket) => socket,
                     Err(_) => return 1,
                 };
-                match set_socket_option(&socket, libc::SOL_UDP, libc::UDP_SEGMENT, GSO_SIZE) {
+                match setsockopt(&socket, libc::SOL_UDP, libc::UDP_SEGMENT, GSO_SIZE) {
                     Ok(()) => 64,
                     Err(_) => 1,
                 }
@@ -315,7 +315,7 @@ impl Gro for UdpSocketController {
                     Err(_) => return 1,
                 };
 
-                match set_socket_option(&socket, libc::SOL_UDP, libc::UDP_GRO, OPTION_ON) {
+                match setsockopt(&socket, libc::SOL_UDP, libc::UDP_GRO, OPTION_ON) {
                     Ok(()) => 64,
                     Err(_) => 1,
                 }
@@ -331,7 +331,7 @@ impl Gso for UdpSocketController {
     }
 
     fn set_segment_size(_: &mut Cmsg, _: u16) {
-        panic!("set_segment_size is not supported on this platform");
+        log::error!("set_segment_size is not supported on this platform");
     }
 }
 
@@ -342,7 +342,7 @@ impl Gro for UdpSocketController {
     }
 }
 
-fn set_socket_option(
+fn setsockopt(
     socket: &impl AsRawFd,
     level: libc::c_int,
     name: libc::c_int,
@@ -358,8 +358,18 @@ fn set_socket_option(
         )
     };
 
-    match result == 0 {
-        true => Ok(()),
-        false => Err(io::Error::last_os_error()),
+    match result {
+        0 => Ok(()),
+        _ => {
+            let err = io::Error::last_os_error();
+            log::error!(
+                "set socket option level: {} name: {} value {} error: {}",
+                level,
+                name,
+                value,
+                err
+            );
+            Err(err)
+        }
     }
 }

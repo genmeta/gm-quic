@@ -1,5 +1,5 @@
 use clap::Parser;
-use qudp::{ArcController, RecvHeader};
+use qudp::{ArcController, PacketHeader};
 use std::{
     future::Future,
     io::{self, IoSliceMut},
@@ -23,9 +23,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
+
     let args = Args::parse();
-    let addr = args.bind.parse().unwrap();
-    let socket = ArcController::new(addr);
+    let bind = args.bind.parse().unwrap();
+    let socket = ArcController::new(bind);
+
     let mut count = 0;
     loop {
         let receiver = Receiver {
@@ -34,7 +37,7 @@ async fn main() {
                 .map(|_| [0u8; BUFFER_SIZE].to_vec())
                 .collect::<Vec<_>>(),
             hdrs: (0..BATCH_SIZE)
-                .map(|_| RecvHeader::default())
+                .map(|_| PacketHeader::default())
                 .collect::<Vec<_>>(),
         };
 
@@ -54,7 +57,7 @@ async fn main() {
 struct Receiver {
     controller: ArcController,
     bufs: Vec<Vec<u8>>,
-    hdrs: Vec<RecvHeader>,
+    hdrs: Vec<PacketHeader>,
 }
 
 impl Future for Receiver {
@@ -73,7 +76,12 @@ impl Future for Receiver {
         let ret = ready!(this.controller.poll_recv(&mut bufs, hdrs, cx))?;
 
         let mut n = 0;
-        hdrs.iter().take(ret).for_each(|h| n += h.seg_size);
+
+        for (_, hdr) in hdrs.iter().enumerate().take(ret) {
+            n += hdr.seg_size.unwrap() as usize;
+            println!("received from {:?} ttl {}", hdr.src, hdr.ttl);
+        }
+
         Poll::Ready(Ok(n))
     }
 }

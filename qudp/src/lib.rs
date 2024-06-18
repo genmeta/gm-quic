@@ -13,16 +13,15 @@ mod msg;
 mod unix;
 
 #[derive(Clone)]
-pub struct SendHeader {
+pub struct PacketHeader {
     pub src: SocketAddr,
     pub dst: SocketAddr,
     pub ttl: u8,
     pub ecn: Option<u8>,
-    // gso segment size
     pub seg_size: Option<u16>,
 }
 
-impl Default for SendHeader {
+impl Default for PacketHeader {
     fn default() -> Self {
         Self {
             src: SocketAddr::from(([0, 0, 0, 0], 0)),
@@ -30,27 +29,6 @@ impl Default for SendHeader {
             ttl: DEFAULT_TTL as u8,
             ecn: None,
             seg_size: None,
-        }
-    }
-}
-#[derive(Clone, Debug)]
-pub struct RecvHeader {
-    pub src: SocketAddr,
-    pub dst: SocketAddr,
-    pub ttl: u8,
-    pub seg_size: usize,
-    pub ecn: Option<u8>,
-}
-
-impl Default for RecvHeader {
-    fn default() -> Self {
-        Self {
-            // empty address
-            src: SocketAddr::from(([0, 0, 0, 0], 0)),
-            dst: SocketAddr::from(([0, 0, 0, 0], 0)),
-            ttl: DEFAULT_TTL as u8,
-            seg_size: 0,
-            ecn: None,
         }
     }
 }
@@ -95,7 +73,7 @@ impl UdpSocketController {
         socket
     }
 
-    fn loacl_address(&self) -> SocketAddr {
+    fn local_addr(&self) -> SocketAddr {
         self.io.local_addr().expect("Failed to get local address")
     }
 
@@ -104,10 +82,10 @@ impl UdpSocketController {
             return Ok(());
         }
 
-        if self.loacl_address().is_ipv4() {
-            self.set_socket_option(libc::IPPROTO_IP, libc::IP_TTL, ttl as i32)?;
+        if self.local_addr().is_ipv4() {
+            self.setsockopt(libc::IPPROTO_IP, libc::IP_TTL, ttl as i32);
         } else {
-            self.set_socket_option(libc::IPPROTO_IPV6, libc::IPV6_UNICAST_HOPS, ttl as i32)?;
+            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_UNICAST_HOPS, ttl as i32);
         }
         self.ttl = ttl;
         Ok(())
@@ -117,16 +95,11 @@ impl UdpSocketController {
 trait Io {
     fn config(&mut self) -> io::Result<()>;
 
-    fn sendmsg(&self, bufs: &mut [IoSlice<'_>], hdr: &SendHeader) -> io::Result<usize>;
+    fn sendmsg(&self, bufs: &[IoSlice<'_>], hdr: &PacketHeader) -> io::Result<usize>;
 
-    fn recvmsg(&self, bufs: &mut [IoSliceMut<'_>], hdr: &mut [RecvHeader]) -> io::Result<usize>;
+    fn recvmsg(&self, bufs: &mut [IoSliceMut<'_>], hdr: &mut [PacketHeader]) -> io::Result<usize>;
 
-    fn set_socket_option(
-        &self,
-        level: libc::c_int,
-        name: libc::c_int,
-        value: libc::c_int,
-    ) -> Result<(), io::Error>;
+    fn setsockopt(&self, level: libc::c_int, name: libc::c_int, value: libc::c_int);
 }
 
 trait Gso: Io {
@@ -149,15 +122,15 @@ impl ArcController {
 
     pub fn poll_send(
         &self,
-        bufs: &mut [IoSlice<'_>],
-        hdr: &SendHeader,
+        bufs: &[IoSlice<'_>],
+        hdr: &PacketHeader,
         cx: &mut Context,
     ) -> Poll<io::Result<usize>> {
-        let contorler = self.0.lock().unwrap();
-        ready!(contorler.io.poll_send_ready(cx))?;
-        let ret = contorler
+        let controller = self.0.lock().unwrap();
+        ready!(controller.io.poll_send_ready(cx))?;
+        let ret = controller
             .io
-            .try_io(Interest::WRITABLE, || contorler.sendmsg(bufs, hdr));
+            .try_io(Interest::WRITABLE, || controller.sendmsg(bufs, hdr));
 
         Poll::Ready(ret)
     }
@@ -165,15 +138,15 @@ impl ArcController {
     pub fn poll_recv(
         &self,
         bufs: &mut [IoSliceMut<'_>],
-        hdrs: &mut [RecvHeader],
+        hdrs: &mut [PacketHeader],
         cx: &mut Context,
     ) -> Poll<io::Result<usize>> {
         loop {
-            let contorler = self.0.lock().unwrap();
-            ready!(contorler.io.poll_recv_ready(cx))?;
-            if let Ok(res) = contorler
+            let controller = self.0.lock().unwrap();
+            ready!(controller.io.poll_recv_ready(cx))?;
+            if let Ok(res) = controller
                 .io
-                .try_io(Interest::READABLE, || contorler.recvmsg(bufs, hdrs))
+                .try_io(Interest::READABLE, || controller.recvmsg(bufs, hdrs))
             {
                 return Poll::Ready(Ok(res));
             }
@@ -189,6 +162,6 @@ impl ArcController {
     }
 
     pub fn local_addr(&self) -> SocketAddr {
-        self.0.lock().unwrap().loacl_address()
+        self.0.lock().unwrap().local_addr()
     }
 }
