@@ -1,9 +1,11 @@
-use crate::msg::{decode_recv, prepare_recv, Aligned, Cmsg, Message, CMSG_LEN};
-use crate::{io, msg::prepare_sent, PacketHeader};
+use socket2::SockAddr;
+
+use crate::msg::{Encoder, Message};
+use crate::msg_hdr;
+use crate::{io, PacketHeader};
 use crate::{Gro, Gso, Io, OffloadStatus, UdpSocketController};
 use std::cmp;
 use std::io::IoSlice;
-use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::{mem, os::fd::AsRawFd};
 
@@ -13,6 +15,9 @@ pub(super) const DEFAULT_TTL: libc::c_int = 64;
 
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 pub(crate) const BATCH_SIZE: usize = 64;
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub(crate) const BATCH_SIZE: usize = 1;
 
 #[cfg(any(
     target_os = "linux",
@@ -88,35 +93,43 @@ impl Io for UdpSocketController {
     fn sendmsg(&self, bufs: &[IoSlice<'_>], send_hdr: &PacketHeader) -> io::Result<usize> {
         let io = socket2::SockRef::from(&self.io);
 
-        let mut msg = Message::from(send_hdr);
+        let mut msg = Message::new();
 
-        let gso_size = match send_hdr.seg_size {
-            Some(size) => {
-                let max_gso = self.max_gso_segments();
-                let max_payloads = (u16::MAX / size) as usize;
-                cmp::min(max_gso, max_payloads)
-            }
-            None => 1,
+        let gso_size = if send_hdr.gso {
+            let max_gso = self.max_gso_segments();
+            let max_payloads = (u16::MAX / send_hdr.seg_size) as usize;
+            cmp::min(max_gso, max_payloads)
+        } else {
+            1
         };
 
-        if gso_size == 1 {
-            msg.gso_seg = None;
-        }
-        if self.local_addr().is_ipv6() && msg.dst.is_ipv4() && !io.only_v6()? {
-            if let SocketAddr::V4(addr) = send_hdr.dst {
-                let ip = addr.ip().to_ipv6_mapped();
-                msg.dst = SocketAddr::new(std::net::IpAddr::V6(ip), addr.port()).into();
+        let dst: SockAddr = if self.local_addr().is_ipv6() && !io.only_v6()? {
+            match send_hdr.dst.ip() {
+                std::net::IpAddr::V4(ip) => SocketAddr::new(
+                    std::net::IpAddr::V6(ip.to_ipv6_mapped()),
+                    send_hdr.dst.port(),
+                )
+                .into(),
+                std::net::IpAddr::V6(_) => send_hdr.dst.into(),
             }
-        }
+        } else {
+            send_hdr.dst.into()
+        };
+
+        msg.prepare_sent(send_hdr, &dst, gso_size as u16, 1);
 
         let mut send_byte = 0;
         for batch in bufs.chunks(gso_size) {
             let mut iovec: Vec<IoSlice> = Vec::with_capacity(gso_size);
             iovec.extend(batch.iter().map(|buf| IoSlice::new(buf)));
 
-            prepare_sent(&iovec, &mut msg);
+            let hdr = msg_hdr!(&mut msg.hdrs[0]);
+            hdr.msg_iov = iovec.as_ptr() as *mut _;
+            hdr.msg_iovlen = iovec.len() as _;
+
             loop {
-                let ret = to_result(unsafe { libc::sendmsg(io.as_raw_fd(), &msg.hdr, 0) });
+                let ret = to_result(unsafe { libc::sendmsg(io.as_raw_fd(), hdr, 0) });
+                println!("sendmsg ret: {:?}", ret);
                 match ret {
                     Ok(n) => {
                         send_byte += n;
@@ -148,25 +161,16 @@ impl Io for UdpSocketController {
         bufs: &mut [std::io::IoSliceMut<'_>],
         recv_hdrs: &mut [PacketHeader],
     ) -> io::Result<usize> {
-        let mut hdrs = unsafe { mem::zeroed::<[libc::mmsghdr; BATCH_SIZE]>() };
-        let mut names = [MaybeUninit::<libc::sockaddr_storage>::uninit(); BATCH_SIZE];
-        let mut cmsgs = [Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit()); BATCH_SIZE];
+        let mut msg = Message::new();
         let max_msg_count = bufs.len().min(BATCH_SIZE);
 
-        for i in 0..max_msg_count {
-            prepare_recv(
-                &mut bufs[i],
-                &mut names[i],
-                &mut cmsgs[i],
-                &mut hdrs[i].msg_hdr,
-            );
-        }
+        msg.prepare_recv(bufs, max_msg_count);
         let msg_count = loop {
             let ret = unsafe {
                 recvmmsg(
                     self.io.as_raw_fd(),
-                    hdrs.as_mut_ptr(),
-                    bufs.len().min(BATCH_SIZE) as _,
+                    msg.hdrs.as_mut_ptr(),
+                    max_msg_count as _,
                 )
             };
             match ret {
@@ -180,14 +184,7 @@ impl Io for UdpSocketController {
             }
         };
 
-        for i in 0..(msg_count as usize) {
-            decode_recv(
-                &names[i],
-                &hdrs[i].msg_hdr,
-                hdrs[i].msg_len as usize,
-                recv_hdrs.get_mut(i).unwrap(),
-            );
-        }
+        msg.decode_recv(recv_hdrs, msg_count);
         Ok(msg_count as usize)
     }
 
@@ -197,13 +194,12 @@ impl Io for UdpSocketController {
         bufs: &mut [std::io::IoSliceMut<'_>],
         recv_hdrs: &mut [PacketHeader],
     ) -> io::Result<usize> {
-        let mut hdr = unsafe { mem::zeroed::<libc::msghdr>() };
-        let mut name = MaybeUninit::<libc::sockaddr_storage>::uninit();
-        let mut cmsg = Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit());
-        prepare_recv(&mut bufs[0], &mut name, &mut cmsg, &mut hdr);
+        let mut msg = Message::new();
+        msg.prepare_recv(bufs, 1);
 
+        let hdr = msg_hdr!(&mut msg.hdrs[0]);
         let n = loop {
-            let ret = to_result(unsafe { libc::recvmsg(self.io.as_raw_fd(), &mut hdr, 0) });
+            let ret = to_result(unsafe { libc::recvmsg(self.io.as_raw_fd(), hdr, 0) });
             match ret {
                 Ok(ret) => {
                     if hdr.msg_flags & libc::MSG_CTRUNC != 0 {
@@ -219,7 +215,8 @@ impl Io for UdpSocketController {
                 }
             }
         };
-        decode_recv(&name, &hdr, n as usize, recv_hdrs.get_mut(0).unwrap());
+        msg.decode_recv(recv_hdrs, 1);
+        recv_hdrs[0].seg_size = n as u16;
         Ok(1)
     }
 }
@@ -296,7 +293,7 @@ impl Gso for UdpSocketController {
         }
     }
 
-    fn set_segment_size(encoder: &mut Cmsg, segment_size: u16) {
+    fn set_segment_size(encoder: &mut Encoder, segment_size: u16) {
         encoder.push(libc::SOL_UDP, libc::UDP_SEGMENT, segment_size);
     }
 }
@@ -330,7 +327,7 @@ impl Gso for UdpSocketController {
         1
     }
 
-    fn set_segment_size(_: &mut Cmsg, _: u16) {
+    fn set_segment_size(_: &mut Encoder, _: u16) {
         log::error!("set_segment_size is not supported on this platform");
     }
 }

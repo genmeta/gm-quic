@@ -1,12 +1,12 @@
 use std::{
-    io::{IoSlice, IoSliceMut},
+    io::IoSliceMut,
     mem::{self, MaybeUninit},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 
 use socket2::SockAddr;
 
-use crate::{Gso, PacketHeader, UdpSocketController};
+use crate::{unix::BATCH_SIZE, Gso, PacketHeader, UdpSocketController};
 
 pub(crate) const CMSG_LEN: usize = 88;
 
@@ -14,27 +14,174 @@ pub(crate) const CMSG_LEN: usize = 88;
 type IpTosTy = libc::c_uchar;
 #[cfg(not(target_os = "freebsd"))]
 type IpTosTy = libc::c_int;
-
 use std::ptr;
 
-pub(super) struct Message {
-    pub(super) hdr: libc::msghdr,
-    pub(super) ctrl: Aligned<[u8; CMSG_LEN]>,
-    pub(super) src: SockAddr,
-    pub(super) dst: SockAddr,
-    pub(super) gso_seg: Option<u16>,
-    pub(super) ecn: Option<u8>,
+#[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios"))]
+type HdrTy = libc::msghdr;
+#[cfg(not(any(target_os = "freebsd", target_os = "macos", target_os = "ios")))]
+type HdrTy = libc::mmsghdr;
+
+#[macro_export]
+macro_rules! msg_hdr {
+    ($hdr:expr) => {{
+        #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios"))]
+        {
+            $hdr
+        }
+        #[cfg(not(any(target_os = "freebsd", target_os = "macos", target_os = "ios")))]
+        {
+            &mut $hdr.msg_hdr
+        }
+    }};
 }
 
-impl From<&PacketHeader> for Message {
-    fn from(value: &PacketHeader) -> Self {
+pub struct Message {
+    pub(super) hdrs: [HdrTy; BATCH_SIZE],
+    names: [MaybeUninit<libc::sockaddr_storage>; BATCH_SIZE],
+    ctrls: [Aligned<[u8; CMSG_LEN]>; BATCH_SIZE],
+}
+
+impl Message {
+    pub(super) fn new() -> Self {
         Self {
-            hdr: unsafe { mem::zeroed() },
-            ctrl: Aligned([0u8; CMSG_LEN]),
-            src: value.src.into(),
-            dst: value.dst.into(),
-            gso_seg: value.seg_size,
-            ecn: value.ecn,
+            hdrs: unsafe { mem::zeroed::<[HdrTy; BATCH_SIZE]>() },
+            names: [MaybeUninit::<libc::sockaddr_storage>::uninit(); BATCH_SIZE],
+            ctrls: [Aligned([0u8; CMSG_LEN]); BATCH_SIZE],
+        }
+    }
+
+    pub(super) fn prepare_sent(
+        &mut self,
+        pkt_hdr: &PacketHeader,
+        dst: &SockAddr,
+        gso_size: u16,
+        msg_count: usize,
+    ) {
+        for (i, hdr) in self.hdrs.iter_mut().enumerate().take(msg_count) {
+            let hdr = msg_hdr!(hdr);
+            hdr.msg_name = dst.as_ptr() as *mut _;
+            hdr.msg_namelen = dst.len();
+
+            let ctrl = &mut self.ctrls[i];
+            hdr.msg_control = ctrl.0.as_mut_ptr() as _;
+            hdr.msg_controllen = CMSG_LEN as _;
+
+            let mut encoder = unsafe { Encoder::new(hdr) };
+            let ecn = pkt_hdr.ecn.unwrap_or(0) as libc::c_int;
+
+            if pkt_hdr.dst.is_ipv4() {
+                encoder.push(libc::IPPROTO_IP, libc::IP_TOS, ecn as IpTosTy);
+            } else {
+                encoder.push(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, ecn);
+            }
+
+            if gso_size > 1 {
+                UdpSocketController::set_segment_size(&mut encoder, pkt_hdr.seg_size);
+            }
+            encoder.finish();
+        }
+    }
+
+    pub(super) fn prepare_recv(&mut self, bufs: &mut [IoSliceMut<'_>], msg_count: usize) {
+        assert!(msg_count <= BATCH_SIZE);
+        for (i, hdr) in self.hdrs.iter_mut().enumerate().take(msg_count) {
+            let hdr = msg_hdr!(hdr);
+            hdr.msg_name = self.names[i].as_mut_ptr() as _;
+            hdr.msg_namelen = mem::size_of::<libc::sockaddr_storage>() as _;
+
+            let buf = &mut bufs[i];
+            hdr.msg_iov = buf as *mut IoSliceMut as *mut libc::iovec;
+            hdr.msg_iovlen = 1;
+
+            let ctrl = &mut self.ctrls[i];
+            hdr.msg_control = ctrl.0.as_mut_ptr() as _;
+            hdr.msg_controllen = CMSG_LEN as _;
+            hdr.msg_flags = 0;
+        }
+    }
+
+    pub(super) fn decode_recv(&mut self, recv_hdrs: &mut [PacketHeader], msg_count: usize) {
+        assert!(msg_count <= BATCH_SIZE);
+        for (i, hdr) in self.hdrs.iter_mut().enumerate().take(msg_count) {
+            let hdr = msg_hdr!(hdr);
+            let name = unsafe { self.names[i].assume_init() };
+            let cmsg_iter = unsafe { Iter::new(hdr) };
+
+            let recv_hdr = &mut recv_hdrs[i];
+            for cmsg in cmsg_iter {
+                match (cmsg.cmsg_level, cmsg.cmsg_type) {
+                    (libc::IPPROTO_IP, libc::IP_TOS) | (libc::IPPROTO_IP, libc::IP_RECVTOS) => unsafe {
+                        recv_hdr.ecn = Some(decode::<u8>(cmsg));
+                    },
+                    (libc::IPPROTO_IPV6, libc::IPV6_TCLASS) => unsafe {
+                        // Temporary hack around broken macos ABI. Remove once upstream fixes it.
+                        // https://bugreport.apple.com/web/?problemID=48761855
+                        #[allow(clippy::unnecessary_cast)] // cmsg.cmsg_len defined as size_t
+                        if (cfg!(target_os = "macos") || cfg!(target_os = "ios"))
+                            && cmsg.cmsg_len as usize
+                                == libc::CMSG_LEN(mem::size_of::<u8>() as _) as usize
+                        {
+                            recv_hdr.ecn = Some(decode::<u8>(cmsg));
+                        } else {
+                            recv_hdr.ecn = Some(decode::<libc::c_int>(cmsg) as u8);
+                        }
+                    },
+                    #[cfg(any(target_os = "linux", target_os = "android"))]
+                    (libc::IPPROTO_IP, libc::IP_PKTINFO) => {
+                        let pktinfo = unsafe { decode::<libc::in_pktinfo>(cmsg) };
+                        let ip = IpAddr::V4(Ipv4Addr::from(pktinfo.ipi_addr.s_addr.to_ne_bytes()));
+                        recv_hdr.dst.set_ip(ip);
+                    }
+                    #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios",))]
+                    (libc::IPPROTO_IP, libc::IP_RECVDSTADDR) => {
+                        let in_addr = unsafe { decode::<libc::in_addr>(cmsg) };
+                        recv_hdr
+                            .dst
+                            .set_ip(IpAddr::V4(Ipv4Addr::from(in_addr.s_addr.to_ne_bytes())));
+                    }
+
+                    (libc::IPPROTO_IP, libc::IP_TTL) => unsafe {
+                        recv_hdr.ttl = decode::<u32>(cmsg) as u8;
+                    },
+                    (libc::IPPROTO_IPV6, libc::IPV6_PKTINFO) => {
+                        let pktinfo = unsafe { decode::<libc::in6_pktinfo>(cmsg) };
+                        let ip = IpAddr::V6(Ipv6Addr::from(pktinfo.ipi6_addr.s6_addr));
+                        recv_hdr.dst.set_ip(ip);
+                    }
+                    (libc::IPPROTO_IP, libc::IP_RECVTTL) => unsafe {
+                        recv_hdr.ttl = decode::<u32>(cmsg) as u8;
+                    },
+                    _ => {
+                        log::warn!(
+                            "read unkown level {} cmsg {}",
+                            cmsg.cmsg_level,
+                            cmsg.cmsg_type
+                        );
+                    }
+                }
+            }
+
+            recv_hdr.src = match libc::c_int::from(name.ss_family) {
+                libc::AF_INET => {
+                    let addr: &libc::sockaddr_in =
+                        unsafe { &*(&name as *const _ as *const libc::sockaddr_in) };
+                    SocketAddr::V4(SocketAddrV4::new(
+                        Ipv4Addr::from(addr.sin_addr.s_addr.to_ne_bytes()),
+                        u16::from_be(addr.sin_port),
+                    ))
+                }
+                libc::AF_INET6 => {
+                    let addr: &libc::sockaddr_in6 =
+                        unsafe { &*(&name as *const _ as *const libc::sockaddr_in6) };
+                    SocketAddr::V6(SocketAddrV6::new(
+                        Ipv6Addr::from(addr.sin6_addr.s6_addr),
+                        u16::from_be(addr.sin6_port),
+                        addr.sin6_flowinfo,
+                        addr.sin6_scope_id,
+                    ))
+                }
+                _ => unreachable!(),
+            };
         }
     }
 }
@@ -43,13 +190,13 @@ impl From<&PacketHeader> for Message {
 #[repr(align(8))] // Conservative bound for align_of<cmsghdr>
 pub(crate) struct Aligned<T>(pub(crate) T);
 
-pub(crate) struct Cmsg<'a> {
+pub(crate) struct Encoder<'a> {
     hdr: &'a mut libc::msghdr,
     cmsg: Option<&'a mut libc::cmsghdr>,
     len: usize,
 }
 
-impl<'a> Cmsg<'a> {
+impl<'a> Encoder<'a> {
     pub(crate) unsafe fn new(hdr: &'a mut libc::msghdr) -> Self {
         Self {
             cmsg: libc::CMSG_FIRSTHDR(hdr).as_mut(),
@@ -63,7 +210,7 @@ impl<'a> Cmsg<'a> {
     /// # Panics
     /// - If insufficient buffer space remains.
     /// - If `T` has stricter alignment requirements than `cmsghdr`
-    pub(crate) fn push<T: Copy + ?Sized>(&mut self, level: libc::c_int, ty: libc::c_int, value: T) {
+    pub(super) fn push<T: Copy + ?Sized>(&mut self, level: libc::c_int, ty: libc::c_int, value: T) {
         //  T 的对齐要求不比 libc::cmsghdr 的对齐要求更严格
         assert!(mem::align_of::<T>() <= mem::align_of::<libc::cmsghdr>());
         let space = unsafe { libc::CMSG_SPACE(mem::size_of_val(&value) as _) as usize };
@@ -87,8 +234,7 @@ impl<'a> Cmsg<'a> {
         self.cmsg = unsafe { libc::CMSG_NXTHDR(self.hdr, cmsg).as_mut() };
     }
 
-    /// Finishes appending control messages to the buffer
-    pub(crate) fn finish(&mut self) {
+    fn finish(&mut self) {
         self.hdr.msg_controllen = self.len as _;
     }
 }
@@ -96,12 +242,12 @@ impl<'a> Cmsg<'a> {
 /// # Safety
 ///
 /// `cmsg` must refer to a cmsg containing a payload of type `T`
-pub(crate) unsafe fn decode<T: Copy>(cmsg: &libc::cmsghdr) -> T {
+unsafe fn decode<T: Copy>(cmsg: &libc::cmsghdr) -> T {
     assert!(mem::align_of::<T>() <= mem::align_of::<libc::cmsghdr>());
     ptr::read(libc::CMSG_DATA(cmsg) as *const T)
 }
 
-pub(crate) struct Iter<'a> {
+struct Iter<'a> {
     hdr: &'a libc::msghdr,
     cmsg: Option<&'a libc::cmsghdr>,
 }
@@ -127,164 +273,4 @@ impl<'a> Iterator for Iter<'a> {
         self.cmsg = unsafe { libc::CMSG_NXTHDR(self.hdr, current).as_ref() };
         Some(current)
     }
-}
-
-pub(crate) fn prepare_sent(bufs: &[IoSlice<'_>], msg: &mut Message) {
-    msg.hdr.msg_name = msg.dst.as_ptr() as *mut _;
-    msg.hdr.msg_namelen = msg.dst.len();
-    msg.hdr.msg_iov = bufs.as_ptr() as *mut _;
-    msg.hdr.msg_iovlen = bufs.len() as _;
-
-    msg.hdr.msg_control = msg.ctrl.0.as_mut_ptr() as _;
-    msg.hdr.msg_controllen = CMSG_LEN as _;
-    let mut encoder = unsafe { Cmsg::new(&mut msg.hdr) };
-    let ecn = msg.ecn.map_or(0, |x| x as libc::c_int);
-
-    let dst = msg.dst.as_socket().unwrap();
-    // IPv4 or IPv4-Mapped IPv6
-    let is_ipv4: bool = dst.ip().is_ipv4()
-        || matches!(dst.ip(),IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());
-
-    if is_ipv4 {
-        encoder.push(libc::IPPROTO_IP, libc::IP_TOS, ecn as IpTosTy);
-    } else {
-        encoder.push(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, ecn);
-    }
-
-    if let Some(gso_seg) = msg.gso_seg {
-        UdpSocketController::set_segment_size(&mut encoder, gso_seg);
-    }
-
-    let src = msg.src.as_socket().unwrap();
-    match src.ip() {
-        IpAddr::V4(v4) => {
-            #[cfg(any(target_os = "linux", target_os = "android"))]
-            {
-                let pktinfo = libc::in_pktinfo {
-                    ipi_ifindex: 0,
-                    ipi_spec_dst: libc::in_addr {
-                        s_addr: u32::from_ne_bytes(v4.octets()),
-                    },
-                    ipi_addr: libc::in_addr { s_addr: 0 },
-                };
-                encoder.push(libc::IPPROTO_IP, libc::IP_PKTINFO, pktinfo);
-            }
-            #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios",))]
-            {
-                let addr = libc::in_addr {
-                    s_addr: u32::from_ne_bytes(v4.octets()),
-                };
-                encoder.push(libc::IPPROTO_IP, libc::IP_RECVDSTADDR, addr);
-            }
-        }
-        IpAddr::V6(v6) => {
-            let pktinfo = libc::in6_pktinfo {
-                ipi6_ifindex: 0,
-                ipi6_addr: libc::in6_addr {
-                    s6_addr: v6.octets(),
-                },
-            };
-            encoder.push(libc::IPPROTO_IPV6, libc::IPV6_PKTINFO, pktinfo);
-        }
-    }
-    encoder.finish();
-}
-
-pub(crate) fn prepare_recv(
-    buf: &mut IoSliceMut,
-    name: &mut MaybeUninit<libc::sockaddr_storage>,
-    ctrl: &mut Aligned<MaybeUninit<[u8; CMSG_LEN]>>,
-    hdr: &mut libc::msghdr,
-) {
-    hdr.msg_name = name.as_mut_ptr() as _;
-    hdr.msg_namelen = mem::size_of::<libc::sockaddr_storage>() as _;
-    hdr.msg_iov = buf as *mut IoSliceMut as *mut libc::iovec;
-    hdr.msg_iovlen = 1;
-    hdr.msg_control = ctrl.0.as_mut_ptr() as _;
-    hdr.msg_controllen = CMSG_LEN as _;
-    hdr.msg_flags = 0;
-}
-
-pub(crate) fn decode_recv(
-    name: &MaybeUninit<libc::sockaddr_storage>,
-    hdr: &libc::msghdr,
-    len: usize,
-    recv_hdr: &mut PacketHeader,
-) {
-    let name = unsafe { name.assume_init() };
-    let cmsg_iter = unsafe { Iter::new(hdr) };
-    recv_hdr.seg_size = Some(len as u16);
-    for cmsg in cmsg_iter {
-        match (cmsg.cmsg_level, cmsg.cmsg_type) {
-            (libc::IPPROTO_IP, libc::IP_TOS) | (libc::IPPROTO_IP, libc::IP_RECVTOS) => unsafe {
-                recv_hdr.ecn = Some(decode::<u8>(cmsg));
-            },
-            (libc::IPPROTO_IPV6, libc::IPV6_TCLASS) => unsafe {
-                // Temporary hack around broken macos ABI. Remove once upstream fixes it.
-                // https://bugreport.apple.com/web/?problemID=48761855
-                #[allow(clippy::unnecessary_cast)] // cmsg.cmsg_len defined as size_t
-                if (cfg!(target_os = "macos") || cfg!(target_os = "ios"))
-                    && cmsg.cmsg_len as usize == libc::CMSG_LEN(mem::size_of::<u8>() as _) as usize
-                {
-                    recv_hdr.ecn = Some(decode::<u8>(cmsg));
-                } else {
-                    recv_hdr.ecn = Some(decode::<libc::c_int>(cmsg) as u8);
-                }
-            },
-            #[cfg(any(target_os = "linux", target_os = "android"))]
-            (libc::IPPROTO_IP, libc::IP_PKTINFO) => {
-                let pktinfo = unsafe { decode::<libc::in_pktinfo>(cmsg) };
-                let ip = IpAddr::V4(Ipv4Addr::from(pktinfo.ipi_addr.s_addr.to_ne_bytes()));
-                recv_hdr.dst.set_ip(ip);
-            }
-            #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios",))]
-            (libc::IPPROTO_IP, libc::IP_RECVDSTADDR) => {
-                let in_addr = unsafe { decode::<libc::in_addr>(cmsg) };
-                recv_hdr
-                    .dst
-                    .set_ip(IpAddr::V4(Ipv4Addr::from(in_addr.s_addr.to_ne_bytes())));
-            }
-
-            (libc::IPPROTO_IP, libc::IP_TTL) => unsafe {
-                recv_hdr.ttl = decode::<u32>(cmsg) as u8;
-            },
-            (libc::IPPROTO_IPV6, libc::IPV6_PKTINFO) => {
-                let pktinfo = unsafe { decode::<libc::in6_pktinfo>(cmsg) };
-                let ip = IpAddr::V6(Ipv6Addr::from(pktinfo.ipi6_addr.s6_addr));
-                recv_hdr.dst.set_ip(ip);
-            }
-            (libc::IPPROTO_IP, libc::IP_RECVTTL) => unsafe {
-                recv_hdr.ttl = decode::<u32>(cmsg) as u8;
-            },
-            _ => {
-                log::warn!(
-                    "read unkown level {} cmsg {}",
-                    cmsg.cmsg_level,
-                    cmsg.cmsg_type
-                );
-            }
-        }
-    }
-
-    recv_hdr.src = match libc::c_int::from(name.ss_family) {
-        libc::AF_INET => {
-            let addr: &libc::sockaddr_in =
-                unsafe { &*(&name as *const _ as *const libc::sockaddr_in) };
-            SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::from(addr.sin_addr.s_addr.to_ne_bytes()),
-                u16::from_be(addr.sin_port),
-            ))
-        }
-        libc::AF_INET6 => {
-            let addr: &libc::sockaddr_in6 =
-                unsafe { &*(&name as *const _ as *const libc::sockaddr_in6) };
-            SocketAddr::V6(SocketAddrV6::new(
-                Ipv6Addr::from(addr.sin6_addr.s6_addr),
-                u16::from_be(addr.sin6_port),
-                addr.sin6_flowinfo,
-                addr.sin6_scope_id,
-            ))
-        }
-        _ => unreachable!(),
-    };
 }
