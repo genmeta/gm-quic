@@ -11,11 +11,12 @@ impl SlideWindow for AckObserverGuard<'_> {
 }
 
 /// Because ArcRcvdPktRecords is too simple, there's no need to use a queue.
+#[derive(Debug, Clone)]
 pub struct AckObserver([ArcRcvdPktRecords; 3]);
 
 impl AckObserver {
-    pub fn new() -> Self {
-        todo!("根据3大space的收包记录来创建")
+    pub fn new(records: [ArcRcvdPktRecords; 3]) -> Self {
+        Self(records)
     }
 }
 
@@ -27,6 +28,7 @@ impl ObserveAck for AckObserver {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct LossObserver([mpsc::UnboundedSender<u64>; 3]);
 
 impl LossObserver {

@@ -1,14 +1,11 @@
-use qbase::{
-    cid::ConnectionId,
-    packet::{HandshakePacket, InitialPacket, OneRttPacket, ZeroRttPacket},
-};
-use qcongestion::congestion::ArcCongestionController;
+use qbase::cid::ConnectionId;
+use qcongestion::congestion::ArcCC;
 use qudp::ArcUsc;
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
+    time::Duration,
 };
-use tokio::sync::mpsc::UnboundedSender;
 
 pub mod anti_amplifier;
 pub use anti_amplifier::ArcAntiAmplifier;
@@ -21,14 +18,14 @@ pub use observer::{AckObserver, LossObserver};
 
 use crate::Sendmsg;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct RelayAddr {
     agent: SocketAddr, // 代理人
     addr: SocketAddr,
 }
 
 /// 无论哪种Pathway，socket都必须绑定local地址
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub enum Pathway {
     Direct {
         local: SocketAddr,
@@ -64,38 +61,72 @@ where
 ///   - 异步地获取积攒的发送信用
 ///   - 扫描有效space，从中读取待发数据，以及是否发送Ack，Path帧，装包、记录
 pub struct RawPath {
-    way: Pathway,
-    scid: ConnectionId, // scid.len == 0 表示没有使用连接id
-    dcid: ConnectionId, // dcid.len == 0 表示没有使用连接id。发包时填充
+    // udp socket controller, impl Sendmsg + ViaPathway
+    usc: ArcUsc,
+
+    // 连接id信息，当长度为0时，表示不使用连接id
+    // 我方的连接id，发长包时需要，后期发短包不再需要。而收包的时候，只要是任何我方的连接id，都可以。
+    // 发长包的时候，获取当前连接我方有效的一个连接id即可，因此我方的连接id并不在此管理。
+    // TODO: 这里应该是个共享的我方连接id，随时获取最新的我方连接id即可
+    //       但这个信息，在发送任务里维护即可。
+
+    // 对方的连接id，发包时需要。它在创建的时候，代表着一个新路径，新路径需要使用新的连接id向对方发包。
+    // Ref RFC9000 9.3 If the recipient has no unused connection IDs from the peer, it
+    // will not be able to send anything on the new path until the peer provides one
+    // 所以，这里应是一个对方的连接id管理器，可以异步地获取一个连接id，旧的连接id也会被废弃重新分配，
+    // 是动态变化的。(暂时用Option<ConnectionId>来表示)
+    peer_cid: Option<ConnectionId>,
+
+    // 拥塞控制器。另外还有连接级的流量控制、流级别的流量控制，以及抗放大攻击
+    // 但这只是正常情况下。当连接处于Closing状态时，庞大的拥塞控制器便不再适用，而是简单的回应ConnectionCloseFrame。
+    cc: ArcCC<AckObserver, LossObserver>,
 
     // PathState，包括新建待验证（有抗放大攻击响应限制），已发挑战验证中，验证通过，再挑战，再挑战验证中，后三者无抗放大攻击响应限制
     validator: Validator,
     // 不包括被动收到PathRequest，响应Response，这是另外一个单独的控制，分为无挑战/有挑战未响应/响应中，响应被确认
     transponder: Transponder,
-
-    // 拥塞控制器。另外还有连接级的流量控制、流级别的流量控制，以及抗放大攻击
-    // 但这只是正常情况下。当连接处于Closing状态时，庞大的拥塞控制器便不再适用，而是简单的回应ConnectionCloseFrame。
-    cc: ArcCongestionController<AckObserver, LossObserver>,
-    // udp socket controller, impl Sendmsg + ViaPathway
-    usc: ArcUsc,
 }
 
+impl RawPath {
+    fn new(
+        usc: ArcUsc,
+        max_ack_delay: Duration,
+        ack_observer: AckObserver,
+        loss_observer: LossObserver,
+    ) -> Self {
+        use qcongestion::congestion::CongestionAlgorithm;
+        Self {
+            usc,
+            peer_cid: None,
+            validator: Validator::default(),
+            transponder: Transponder::default(),
+            cc: ArcCC::new(
+                CongestionAlgorithm::Bbr,
+                max_ack_delay,
+                ack_observer,
+                loss_observer,
+            ),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct ArcPath(Arc<Mutex<RawPath>>);
 
-/// 可能用不着。虽然想要QUIC连接的收发分离，在连接ID => Connection的hash表里，找到Connection，
-/// Connection只需要一个类似如下收包器即可。然而，新路径创建，下面的信息是不够的。
-/// 因此，只好将ArcConnection放在 Cid => Connection的hash表里，让连接先收到包，
-/// 连接在找到Path，没有则创建，然后塞进对应的收包队列里。所以，下面这个结构用不着
-pub struct PathPacketReceiver {
-    path: ArcPath,
-    // 以下几个队列，不应在这样一个结构里，而是在Pathway => {[queue...]}这样一个hash表里
-    // 根据连接id，找到Connection，再根据Pathway找到Path的收包队列，但是扔进收包队列时，需要标记那个path接收的
-    // 为什么呢？因为，Path收到数据了，还要反馈给Path的controller，包括验证器、响应器、发送控制器
-    // Path发送需要带上[scid, dcid]，
-    initial_pkt_tx: UnboundedSender<(InitialPacket, ArcPath)>,
-    handshake_pkt_tx: UnboundedSender<(HandshakePacket, ArcPath)>,
-    zero_rtt_pkt_tx: UnboundedSender<(ZeroRttPacket, ArcPath)>,
-    one_rtt_pkt_tx: UnboundedSender<(OneRttPacket, ArcPath)>,
+impl ArcPath {
+    pub fn new(
+        usc: ArcUsc,
+        max_ack_delay: Duration,
+        ack_observer: AckObserver,
+        loss_observer: LossObserver,
+    ) -> Self {
+        Self(Arc::new(Mutex::new(RawPath::new(
+            usc,
+            max_ack_delay,
+            ack_observer,
+            loss_observer,
+        ))))
+    }
 }
 
 #[cfg(test)]

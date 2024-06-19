@@ -194,7 +194,7 @@ pub struct FlowController {
 
 impl FlowController {
     /// Creates a new `FlowController` with the specified initial send and receive window sizes.
-    pub fn with_initial(peer_initial_max_data: u64, local_initial_max_data: u64) -> Self {
+    fn with_initial(peer_initial_max_data: u64, local_initial_max_data: u64) -> Self {
         Self {
             sender: ArcSendControler::with_initial(peer_initial_max_data),
             recver: RecvController::with_initial(local_initial_max_data),
