@@ -5,7 +5,7 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex, MutexGuard,
     },
     task::{Context, Poll, Waker},
 };
@@ -13,13 +13,36 @@ use thiserror::Error;
 
 /// All data sent in STREAM frames counts toward this limit.
 #[derive(Debug, Default)]
-pub struct SendControler {
-    total_sent: AtomicU64,
-    max_data: AtomicU64,
+struct RawSendControler {
+    total_sent: u64,
+    max_data: u64,
     wakers: Vec<Waker>,
 }
 
-impl SendControler {
+impl RawSendControler {
+    fn with_initial(initial_max_data: u64) -> Self {
+        Self {
+            total_sent: 0,
+            max_data: initial_max_data,
+            wakers: Vec::with_capacity(4),
+        }
+    }
+
+    fn permit(&mut self, max_data: u64) {
+        debug_assert!(max_data <= VARINT_MAX);
+        // the new max_data != previous self.max_data, meaning fetch_max update successfully
+        if max_data != self.max_data {
+            for waker in self.wakers.drain(..) {
+                waker.wake();
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ArcSendControler(Arc<Mutex<RawSendControler>>);
+
+impl ArcSendControler {
     /// Creates a new `SendControler` with the specified initial maximum data.
     ///
     /// `initial_max_data` should be known to each other after the handshake is
@@ -29,22 +52,14 @@ impl SendControler {
     /// `initial_max_data` is allowed to be 0, which is reasonable when creating a
     /// connection without knowing the peer's setting.
     pub fn with_initial(initial_max_data: u64) -> Self {
-        Self {
-            total_sent: AtomicU64::new(0),
-            max_data: AtomicU64::new(initial_max_data),
-            wakers: Vec::with_capacity(4),
-        }
+        Self(Arc::new(Mutex::new(RawSendControler::with_initial(
+            initial_max_data,
+        ))))
     }
 
     /// Increasing Flow Control Limits by receiving a MAX_DATA frame from peer.
-    pub fn permit(&mut self, max_data: u64) {
-        debug_assert!(max_data <= VARINT_MAX);
-        // the new max_data != previous self.max_data, meaning fetch_max update successfully
-        if max_data != self.max_data.fetch_max(max_data, Ordering::Release) {
-            for waker in self.wakers.drain(..) {
-                waker.wake();
-            }
-        }
+    pub fn permit(&self, max_data: u64) {
+        self.0.lock().unwrap().permit(max_data);
     }
 
     /// Apply for sending data.
@@ -56,16 +71,15 @@ impl SendControler {
     ///   `Credit::post_sent` or dropping `Credit`, `apply` cannot be called again.
     /// - If there is insufficient flow control, return `Err`, and the sender needs to
     ///   call `notify.notified().await` to wait.
-    pub fn poll_apply(&mut self, cx: &mut Context<'_>, amount: usize) -> Poll<Credit<'_>> {
-        let total_sent = self.total_sent.load(Ordering::Acquire);
-        let max_data = self.max_data.load(Ordering::Acquire);
-        if total_sent < max_data {
+    pub fn poll_apply(&self, cx: &mut Context<'_>, amount: usize) -> Poll<Credit<'_>> {
+        let mut guard = self.0.lock().unwrap();
+        if guard.max_data > guard.total_sent {
             Poll::Ready(Credit {
-                inner: self,
-                amount: amount.min((max_data - total_sent) as usize),
+                amount: amount.min((guard.max_data - guard.total_sent) as usize),
+                guard,
             })
         } else {
-            self.wakers.push(cx.waker().clone());
+            guard.wakers.push(cx.waker().clone());
             Poll::Pending
         }
     }
@@ -73,8 +87,8 @@ impl SendControler {
 
 /// Represents the credit for sending data.
 pub struct Credit<'a> {
-    inner: &'a mut SendControler,
     amount: usize,
+    guard: MutexGuard<'a, RawSendControler>,
 }
 
 impl Credit<'_> {
@@ -84,11 +98,9 @@ impl Credit<'_> {
     }
 
     /// Updates the amount of data sent.
-    pub fn post_sent(self, amount: usize) {
+    pub fn post_sent(mut self, amount: usize) {
         debug_assert!(amount <= self.amount);
-        self.inner
-            .total_sent
-            .fetch_add(amount as u64, Ordering::Release);
+        self.guard.total_sent += amount as u64;
     }
 }
 
@@ -176,7 +188,7 @@ impl RecvController {
 /// Represents a flow controller for managing the flow of data.
 #[derive(Debug, Default)]
 pub struct FlowController {
-    pub sender: SendControler,
+    pub sender: ArcSendControler,
     pub recver: RecvController,
 }
 
@@ -184,7 +196,7 @@ impl FlowController {
     /// Creates a new `FlowController` with the specified initial send and receive window sizes.
     pub fn with_initial(peer_initial_max_data: u64, local_initial_max_data: u64) -> Self {
         Self {
-            sender: SendControler::with_initial(peer_initial_max_data),
+            sender: ArcSendControler::with_initial(peer_initial_max_data),
             recver: RecvController::with_initial(local_initial_max_data),
         }
     }
