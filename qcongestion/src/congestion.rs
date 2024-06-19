@@ -63,7 +63,7 @@ where
     OL: ObserveLoss,
 {
     // A.4. Initialization
-    pub fn new(
+    fn new(
         algorithm: CongestionAlgorithm,
         max_ack_delay: Duration,
         observe_ack: OA,
@@ -392,37 +392,59 @@ where
     }
 }
 
-pub type ArcCongestionController<OA, OL> = Arc<Mutex<CongestionController<OA, OL>>>;
+/// Shared congestion controller
+#[derive(Clone)]
+pub struct ArcCC<OA, OL>(Arc<Mutex<CongestionController<OA, OL>>>);
 
-impl<OA, OL> super::CongestionControl for ArcCongestionController<OA, OL>
+impl<OA, OL> ArcCC<OA, OL>
+where
+    OA: ObserveAck,
+    OL: ObserveLoss,
+{
+    pub fn new(
+        algorithm: CongestionAlgorithm,
+        max_ack_delay: Duration,
+        observe_ack: OA,
+        observe_loss: OL,
+    ) -> Self {
+        ArcCC(Arc::new(Mutex::new(CongestionController::new(
+            algorithm,
+            max_ack_delay,
+            observe_ack,
+            observe_loss,
+        ))))
+    }
+}
+
+impl<OA, OL> super::CongestionControl for ArcCC<OA, OL>
 where
     OA: ObserveAck,
     OL: ObserveLoss,
 {
     fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize> {
-        let mut cc = self.lock().unwrap();
+        let mut guard = self.0.lock().unwrap();
 
-        let srtt = cc.rtt.clone().lock().unwrap().smoothed_rtt;
-        let cwnd = cc.algorithm.cwnd();
+        let srtt = guard.rtt.clone().lock().unwrap().smoothed_rtt;
+        let cwnd = guard.algorithm.cwnd();
         let mtu = MSS;
         let now = Instant::now();
-        let rate = cc.algorithm.pacing_rate();
-        let tokens = cc.pacer.schedule(srtt, cwnd, mtu, now, rate);
+        let rate = guard.algorithm.pacing_rate();
+        let tokens = guard.pacer.schedule(srtt, cwnd, mtu, now, rate);
         if tokens >= mtu {
             return Poll::Ready(tokens);
         }
 
         let mut need_ack = false;
         for epoch in EPOCHS.iter() {
-            if cc.largest_ack_eliciting_packet[*epoch].is_some() {
+            if guard.largest_ack_eliciting_packet[*epoch].is_some() {
                 need_ack = true;
                 break;
             }
         }
         // 1. 有 ack 要发送, 且距离上次发送时间大于 max ack dely
         // 2. 距离上次发送时间大于 max sent delay
-        let elapsed = now.saturating_duration_since(cc.last_sent_time);
-        if (need_ack && elapsed >= cc.max_ack_delay) || elapsed >= MAX_SENT_DELAY {
+        let elapsed = now.saturating_duration_since(guard.last_sent_time);
+        if (need_ack && elapsed >= guard.max_ack_delay) || elapsed >= MAX_SENT_DELAY {
             return Poll::Ready(tokens);
         }
         cx.waker().wake_by_ref();
@@ -430,9 +452,8 @@ where
     }
 
     fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)> {
-        let binding = self.clone();
-        let cc = binding.lock().unwrap();
-        if let Some(recved) = &cc.largest_ack_eliciting_packet[space] {
+        let guard = self.0.lock().unwrap();
+        if let Some(recved) = &guard.largest_ack_eliciting_packet[space] {
             return Some((recved.pn, recved.recv_time));
         }
         None
@@ -447,40 +468,37 @@ where
         in_flight: bool,
         ack: Option<u64>,
     ) {
-        let binding = self.clone();
-        let mut cc = binding.lock().unwrap();
+        let mut guard = self.0.lock().unwrap();
         let now = Instant::now();
-        cc.on_packet_sent(pn, space, is_ack_elicition, in_flight, sent_bytes, now);
+        guard.on_packet_sent(pn, space, is_ack_elicition, in_flight, sent_bytes, now);
 
-        cc.last_sent_time = now;
+        guard.last_sent_time = now;
         // 如果已经发送了 largest_ack_eliciting_packet ack, 就不用记录再发送
-        if let (Some(ack_pn), Some(recved)) = (ack, &cc.largest_ack_eliciting_packet[space]) {
+        if let (Some(ack_pn), Some(recved)) = (ack, &guard.largest_ack_eliciting_packet[space]) {
             if ack_pn >= recved.pn {
-                cc.largest_ack_eliciting_packet[space] = None;
+                guard.largest_ack_eliciting_packet[space] = None;
             }
         }
     }
 
     fn on_ack(&self, space: Epoch, ack_frame: &AckFrame) {
-        let binding = self.clone();
-        let mut cc = binding.lock().unwrap();
+        let mut guard = self.0.lock().unwrap();
         let now = Instant::now();
-        cc.on_ack_rcvd(space, ack_frame, now);
+        guard.on_ack_rcvd(space, ack_frame, now);
     }
 
     fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_elicition: bool) {
         let now = Instant::now();
         let recved = Recved { pn, recv_time: now };
-        let binding = self.clone();
-        let mut cc = binding.lock().unwrap();
-        cc.on_datagram_rcvd(now);
+        let mut guard = self.0.lock().unwrap();
+        guard.on_datagram_rcvd(now);
         if !is_ack_elicition {
             return;
         }
 
-        if let Some(r) = &cc.largest_ack_eliciting_packet[space] {
+        if let Some(r) = &guard.largest_ack_eliciting_packet[space] {
             if pn > r.pn {
-                cc.largest_ack_eliciting_packet[space] = Some(recved);
+                guard.largest_ack_eliciting_packet[space] = Some(recved);
             }
         }
     }
