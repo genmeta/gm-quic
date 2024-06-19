@@ -1,4 +1,9 @@
-use crate::{auto, crypto::TlsIO, handshake, old_path::ArcPath};
+use crate::{
+    auto,
+    crypto::TlsIO,
+    handshake,
+    path::{ArcPath, Pathway},
+};
 use qbase::{
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
@@ -12,6 +17,7 @@ use qrecovery::{
     space::ArcSpace,
     streams::{none::NoDataStreams, ArcDataStreams},
 };
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 /// Option是为了能丢弃前期空间，包括这些空间的收包队列，
@@ -19,24 +25,26 @@ use tokio::sync::mpsc;
 type RxPacketsQueue<T> = Option<mpsc::UnboundedSender<(T, ArcPath)>>;
 
 pub struct RawConnection {
+    // 所有Path的集合，Pathway作为key
+    pathes: HashMap<Pathway, ArcPath>,
+    initial_pkt_queue: RxPacketsQueue<InitialPacket>,
+    handshake_pkt_queue: RxPacketsQueue<HandshakePacket>,
+    zero_rtt_pkt_queue: RxPacketsQueue<ZeroRttPacket>,
+    one_rtt_pkt_queue: mpsc::UnboundedSender<(OneRttPacket, ArcPath)>,
+
     // Thus, a client MUST discard Initial keys when it first sends a Handshake packet
     // and a server MUST discard Initial keys when it first successfully processes a
     // Handshake packet. Endpoints MUST NOT send Initial packets after this point.
     initial_keys: ArcKeys,
-    initial_pkt_queue: RxPacketsQueue<InitialPacket>,
+    handshake_keys: ArcKeys,
+    zero_rtt_keys: ArcKeys,
+
     // 发送数据，也可以随着升级到Handshake空间而丢弃
     initial_space: ArcSpace<NoDataStreams>,
-
     // An endpoint MUST discard its Handshake keys when the TLS handshake is confirmed.
-    handshake_keys: ArcKeys,
-    handshake_pkt_queue: RxPacketsQueue<HandshakePacket>,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
     handshake_space: ArcSpace<NoDataStreams>,
-
-    zero_rtt_keys: ArcKeys,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
-    zero_rtt_pkt_queue: RxPacketsQueue<ZeroRttPacket>,
-    one_rtt_pkt_queue: mpsc::UnboundedSender<(OneRttPacket, ArcPath)>,
     data_space: ArcSpace<ArcDataStreams>,
     spin: SpinBit,
 }
@@ -194,15 +202,16 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     );
 
     RawConnection {
-        initial_keys,
+        pathes: HashMap::new(),
         initial_pkt_queue: Some(initial_pkt_tx),
-        initial_space,
-        handshake_keys,
         handshake_pkt_queue: Some(handshake_pkt_tx),
-        handshake_space,
-        zero_rtt_keys,
         zero_rtt_pkt_queue: Some(zero_rtt_pkt_tx),
         one_rtt_pkt_queue: one_rtt_pkt_tx,
+        handshake_keys,
+        initial_keys,
+        initial_space,
+        handshake_space,
+        zero_rtt_keys,
         data_space,
         spin: SpinBit::default(),
     }

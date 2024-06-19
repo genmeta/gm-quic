@@ -29,7 +29,7 @@ pub struct CongestionController<OA, OL> {
     // loss observer
     observe_loss: OL,
     // congestion controlle algorithm: bbr or cubic
-    algorithm: Box<dyn Algorithm>,
+    algorithm: Box<dyn Algorithm + Send>,
     rtt: Arc<Mutex<RawRtt>>,
     // todo: 内部需要一个循环任务检查
     loss_detection_timer: Option<Instant>,
@@ -392,15 +392,15 @@ where
     }
 }
 
-type ArcController<OA, OL> = Arc<Mutex<CongestionController<OA, OL>>>;
-impl<OA, OL> super::CongestionControl for ArcController<OA, OL>
+pub type ArcCongestionController<OA, OL> = Arc<Mutex<CongestionController<OA, OL>>>;
+
+impl<OA, OL> super::CongestionControl for ArcCongestionController<OA, OL>
 where
     OA: ObserveAck,
     OL: ObserveLoss,
 {
     fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize> {
-        let binding = self.clone();
-        let mut cc = binding.lock().unwrap();
+        let mut cc = self.lock().unwrap();
 
         let srtt = cc.rtt.clone().lock().unwrap().smoothed_rtt;
         let cwnd = cc.algorithm.cwnd();

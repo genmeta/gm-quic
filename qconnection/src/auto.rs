@@ -1,4 +1,4 @@
-use crate::old_path::ArcPath;
+use crate::path::ArcPath;
 use qbase::{
     error::{Error, ErrorKind},
     frame::{AckFrame, BeFrame, ConnFrame, Frame, FrameReader, PureFrame},
@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 fn parse_packet_and_then_dispatch(
     payload: bytes::Bytes,
     packet_type: Type,
-    path: &ArcPath,
+    _path: &ArcPath,
     conn_frames: &ArcAsyncQueue<ConnFrame>,
     space_frames: &ArcAsyncQueue<SpaceFrame>,
     ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
@@ -29,7 +29,7 @@ fn parse_packet_and_then_dispatch(
 ) -> Result<bool, Error> {
     let mut space_frame_writer = space_frames.writer();
     let mut conn_frame_writer = conn_frames.writer();
-    let mut path_frame_writer = path.frames().writer();
+    // let mut path_frame_writer = path.frames().writer();
     let mut is_ack_eliciting = false;
     for result in FrameReader::new(payload) {
         match result {
@@ -38,7 +38,7 @@ fn parse_packet_and_then_dispatch(
                     if !f.belongs_to(packet_type) {
                         space_frame_writer.rollback();
                         conn_frame_writer.rollback();
-                        path_frame_writer.rollback();
+                        // path_frame_writer.rollback();
                         return Err(Error::new(
                             ErrorKind::ProtocolViolation,
                             f.frame_type(),
@@ -61,9 +61,9 @@ fn parse_packet_and_then_dispatch(
                             is_ack_eliciting = true;
                             space_frame_writer.push(SpaceFrame::Stream(f));
                         }
-                        PureFrame::Path(f) => {
+                        PureFrame::Path(_f) => {
                             is_ack_eliciting = true;
-                            path_frame_writer.push(f);
+                            // path_frame_writer.push(f);
                         }
                     }
                 }
@@ -71,7 +71,7 @@ fn parse_packet_and_then_dispatch(
                     if !f.belongs_to(packet_type) {
                         space_frame_writer.rollback();
                         conn_frame_writer.rollback();
-                        path_frame_writer.rollback();
+                        // path_frame_writer.rollback();
                         return Err(Error::new(
                             ErrorKind::ProtocolViolation,
                             f.frame_type(),
@@ -88,7 +88,7 @@ fn parse_packet_and_then_dispatch(
                 // as if this packet has never been received.
                 space_frame_writer.rollback();
                 conn_frame_writer.rollback();
-                path_frame_writer.rollback();
+                // path_frame_writer.rollback();
                 return Err(e.into());
             }
         }

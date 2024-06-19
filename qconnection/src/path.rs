@@ -2,8 +2,12 @@ use qbase::{
     cid::ConnectionId,
     packet::{HandshakePacket, InitialPacket, OneRttPacket, ZeroRttPacket},
 };
-use qcongestion::congestion::CongestionController;
-use std::{net::SocketAddr, sync::Arc};
+use qcongestion::congestion::ArcCongestionController;
+use qudp::ArcUsc;
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 pub mod anti_amplifier;
@@ -45,7 +49,7 @@ impl<T> ViaPathway for T
 where
     T: Sendmsg,
 {
-    fn sendmsg_via_pathway(&mut self, msg: &[u8], pathway: Pathway) -> std::io::Result<usize> {
+    fn sendmsg_via_pathway(&mut self, _msg: &[u8], _pathway: Pathway) -> std::io::Result<usize> {
         // 1. (optional)验证local bind address == pathway.local.addr
         // 2. 直发就是sendmsg to pathway.remote；转发就是封一个包头，发给pathway.remote.agent
 
@@ -59,7 +63,7 @@ where
 /// - 发包：发包受拥塞控制、流量控制，从异步角度看是一个无限循环，循环体：
 ///   - 异步地获取积攒的发送信用
 ///   - 扫描有效space，从中读取待发数据，以及是否发送Ack，Path帧，装包、记录
-pub struct RawPath<NIC> {
+pub struct RawPath {
     way: Pathway,
     scid: ConnectionId, // scid.len == 0 表示没有使用连接id
     dcid: ConnectionId, // dcid.len == 0 表示没有使用连接id。发包时填充
@@ -71,23 +75,27 @@ pub struct RawPath<NIC> {
 
     // 拥塞控制器。另外还有连接级的流量控制、流级别的流量控制，以及抗放大攻击
     // 但这只是正常情况下。当连接处于Closing状态时，庞大的拥塞控制器便不再适用，而是简单的回应ConnectionCloseFrame。
-    cc: CongestionController<AckObserver, LossObserver>,
-    // network interface controller, impl Sendmsg + ViaPathway
-    nic: NIC,
+    cc: ArcCongestionController<AckObserver, LossObserver>,
+    // udp socket controller, impl Sendmsg + ViaPathway
+    usc: ArcUsc,
 }
 
-pub struct ArcPath<NIC>(Arc<RawPath<NIC>>);
+pub struct ArcPath(Arc<Mutex<RawPath>>);
 
-pub struct PacketReceiver<NIC> {
-    path: ArcPath<NIC>,
+/// 可能用不着。虽然想要QUIC连接的收发分离，在连接ID => Connection的hash表里，找到Connection，
+/// Connection只需要一个类似如下收包器即可。然而，新路径创建，下面的信息是不够的。
+/// 因此，只好将ArcConnection放在 Cid => Connection的hash表里，让连接先收到包，
+/// 连接在找到Path，没有则创建，然后塞进对应的收包队列里。所以，下面这个结构用不着
+pub struct PathPacketReceiver {
+    path: ArcPath,
     // 以下几个队列，不应在这样一个结构里，而是在Pathway => {[queue...]}这样一个hash表里
     // 根据连接id，找到Connection，再根据Pathway找到Path的收包队列，但是扔进收包队列时，需要标记那个path接收的
     // 为什么呢？因为，Path收到数据了，还要反馈给Path的controller，包括验证器、响应器、发送控制器
     // Path发送需要带上[scid, dcid]，
-    initial_pkt_tx: UnboundedSender<(InitialPacket, ArcPath<NIC>)>,
-    handshake_pkt_tx: UnboundedSender<(HandshakePacket, ArcPath<NIC>)>,
-    zero_rtt_pkt_tx: UnboundedSender<(ZeroRttPacket, ArcPath<NIC>)>,
-    one_rtt_pkt_tx: UnboundedSender<(OneRttPacket, ArcPath<NIC>)>,
+    initial_pkt_tx: UnboundedSender<(InitialPacket, ArcPath)>,
+    handshake_pkt_tx: UnboundedSender<(HandshakePacket, ArcPath)>,
+    zero_rtt_pkt_tx: UnboundedSender<(ZeroRttPacket, ArcPath)>,
+    one_rtt_pkt_tx: UnboundedSender<(OneRttPacket, ArcPath)>,
 }
 
 #[cfg(test)]
