@@ -1,4 +1,4 @@
-use msg::Cmsg;
+use msg::Encoder;
 use socket2::{Domain, Socket, Type};
 use std::io::IoSlice;
 use std::io::IoSliceMut;
@@ -18,7 +18,8 @@ pub struct PacketHeader {
     pub dst: SocketAddr,
     pub ttl: u8,
     pub ecn: Option<u8>,
-    pub seg_size: Option<u16>,
+    pub seg_size: u16,
+    pub gso: bool,
 }
 
 impl Default for PacketHeader {
@@ -28,7 +29,8 @@ impl Default for PacketHeader {
             dst: SocketAddr::from(([0, 0, 0, 0], 0)),
             ttl: DEFAULT_TTL as u8,
             ecn: None,
-            seg_size: None,
+            gso: false,
+            seg_size: 0,
         }
     }
 }
@@ -105,7 +107,7 @@ trait Io {
 trait Gso: Io {
     fn max_gso_segments(&self) -> usize;
 
-    fn set_segment_size(encoder: &mut Cmsg, segment_size: u16);
+    fn set_segment_size(encoder: &mut Encoder, segment_size: u16);
 }
 
 trait Gro: Io {

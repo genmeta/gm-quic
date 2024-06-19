@@ -18,7 +18,7 @@ struct Args {
     #[arg(long, default_value_t = String::from("[::]:0"))]
     src: String,
 
-    #[arg(long, default_value_t = String::from("127.0.0.1:12345"))]
+    #[arg(long, default_value_t = String::from("[::1]:12345"))]
     dst: String,
 
     #[arg(long, default_value_t = 1200)]
@@ -27,8 +27,8 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     msg_count: usize,
 
-    #[arg(long)]
-    seg_size: Option<u16>,
+    #[arg(long, default_value_t = false)]
+    gso: bool,
 }
 
 #[tokio::main]
@@ -45,7 +45,8 @@ async fn main() {
         dst,
         ttl: 64,
         ecn: Some(1),
-        seg_size: args.seg_size,
+        seg_size: args.msg_size as u16,
+        gso: args.gso,
     };
 
     let sender = Sender {

@@ -17,7 +17,7 @@ const BUFFER_SIZE: usize = 1200;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(short,long, default_value_t = String::from("127.0.0.1:12345"))]
+    #[arg(short,long, default_value_t = String::from("[::]:12345"))]
     bind: String,
 }
 
@@ -77,7 +77,7 @@ impl Future for Receiver {
         let mut n = 0;
 
         for (_, hdr) in hdrs.iter().enumerate().take(ret) {
-            n += hdr.seg_size.unwrap() as usize;
+            n += hdr.seg_size as usize;
             println!("received from {:?} ttl {}", hdr.src, hdr.ttl);
         }
 
