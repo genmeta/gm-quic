@@ -113,9 +113,9 @@ trait Gro: Io {
 }
 
 #[derive(Debug, Clone)]
-pub struct ArcController(Arc<Mutex<UdpSocketController>>);
+pub struct ArcUsc(Arc<Mutex<UdpSocketController>>);
 
-impl ArcController {
+impl ArcUsc {
     pub fn new(addr: SocketAddr) -> Self {
         Self(Arc::new(Mutex::new(UdpSocketController::new(addr))))
     }

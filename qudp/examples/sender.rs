@@ -8,7 +8,7 @@ use std::{
 use bytes::Bytes;
 use clap::{command, Parser};
 
-use qudp::{ArcController, PacketHeader};
+use qudp::{ArcUsc, PacketHeader};
 
 use std::task;
 
@@ -36,8 +36,8 @@ async fn main() {
     env_logger::init();
 
     let args = Args::parse();
-    let bind = args.src.parse().unwrap();
-    let socket = ArcController::new(bind);
+    let addr = args.src.parse().unwrap();
+    let socket = ArcUsc::new(addr);
     let dst = args.dst.parse().unwrap();
 
     let send_hdr = PacketHeader {
@@ -69,7 +69,7 @@ fn payloads(args: &Args) -> Vec<Bytes> {
 }
 
 struct Sender {
-    controller: ArcController,
+    controller: ArcUsc,
     bufs: Vec<Bytes>,
     hdr: PacketHeader,
 }

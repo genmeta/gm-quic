@@ -1,5 +1,5 @@
 use clap::Parser;
-use qudp::{ArcController, PacketHeader};
+use qudp::{ArcUsc, PacketHeader};
 use std::{
     future::Future,
     io::{self, IoSliceMut},
@@ -26,9 +26,8 @@ async fn main() {
     env_logger::init();
 
     let args = Args::parse();
-    let bind = args.bind.parse().unwrap();
-    let socket = ArcController::new(bind);
-
+    let addr = args.bind.parse().unwrap();
+    let socket = ArcUsc::new(addr);
     let mut count = 0;
     loop {
         let receiver = Receiver {
@@ -55,7 +54,7 @@ async fn main() {
 }
 
 struct Receiver {
-    controller: ArcController,
+    controller: ArcUsc,
     bufs: Vec<Vec<u8>>,
     hdrs: Vec<PacketHeader>,
 }

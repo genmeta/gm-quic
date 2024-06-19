@@ -136,12 +136,12 @@ pub mod ext {
         Ok((remain, tp))
     }
 
-    pub(crate) trait BufMutExt {
+    pub trait WriteParameters {
         fn put_transport_parameters(&mut self, params: &TransportParameters);
         fn put_preferred_address(&mut self, addr: &super::PreferredAddress);
     }
 
-    impl BufMutExt for bytes::BytesMut {
+    impl WriteParameters for bytes::BytesMut {
         fn put_transport_parameters(&mut self, params: &TransportParameters) {
             let put_varint = |buf: &mut Self, tag: u8, varint: VarInt| {
                 if varint.0 > 0 {
@@ -283,7 +283,7 @@ impl Default for TransportParameters {
 
 #[cfg(test)]
 mod test {
-    use super::{ext::BufMutExt as _, *};
+    use super::{ext::WriteParameters, *};
     use crate::cid::{be_connection_id, RESET_TOKEN_SIZE};
     use std::net::Ipv4Addr;
 
