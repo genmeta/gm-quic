@@ -68,6 +68,7 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     let initial_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
     let initial_crypto_handler = initial_crypto_stream.split();
     let initial_keys = ArcKeys::new_pending();
+    // 实际上从未被读取/写入
     let initial_space_frame_queue = ArcAsyncQueue::new();
     let initial_space = ArcSpace::<NoDataStreams>::with_crypto_stream(initial_crypto_stream);
     tokio::spawn(
@@ -109,6 +110,7 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     let handshake_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
     let handshake_crypto_handler = handshake_crypto_stream.split();
     let handshake_keys = ArcKeys::new_pending();
+    // 实际上从未被读取/写入
     let handshake_space_frame_queue = ArcAsyncQueue::new();
     let handshake_space = ArcSpace::<NoDataStreams>::with_crypto_stream(handshake_crypto_stream);
     tokio::spawn(
@@ -200,10 +202,14 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
             one_rtt_keys.clone(),
             data_space.clone(),
             rcvd_conn_frames.clone(),
-            data_space_frame_queue,
+            data_space_frame_queue.clone(),
             data_ack_tx,
         ),
     );
+    tokio::spawn(auto::loop_read_space_frame_and_dispatch_to_space(
+        data_space_frame_queue,
+        streams,
+    ));
     tokio::spawn(
         handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
             tls_session,

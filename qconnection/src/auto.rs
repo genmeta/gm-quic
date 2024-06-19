@@ -1,4 +1,5 @@
 use crate::path::ArcPath;
+use futures::StreamExt;
 use qbase::{
     error::{Error, ErrorKind},
     frame::{AckFrame, BeFrame, ConnFrame, Frame, FrameReader, PureFrame},
@@ -22,13 +23,13 @@ fn parse_packet_and_then_dispatch(
     payload: bytes::Bytes,
     packet_type: Type,
     _path: &ArcPath,
-    conn_frames: &ArcAsyncQueue<ConnFrame>,
-    space_frames: &ArcAsyncQueue<SpaceFrame>,
+    conn_frame_queue: &ArcAsyncQueue<ConnFrame>,
+    space_frame_queue: &ArcAsyncQueue<SpaceFrame>,
     ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
     // on_ack_frame_rcvd: impl FnMut(AckFrame, Arc<Mutex<Rtt>>),
 ) -> Result<bool, Error> {
-    let mut space_frame_writer = space_frames.writer();
-    let mut conn_frame_writer = conn_frames.writer();
+    let mut space_frame_writer = space_frame_queue.writer();
+    let mut conn_frame_writer = conn_frame_queue.writer();
     // let mut path_frame_writer = path.frames().writer();
     let mut is_ack_eliciting = false;
     for result in FrameReader::new(payload) {
@@ -119,12 +120,12 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
 
             let encoded_pn = packet.decode_header().unwrap();
             let result = space.decode_pn(encoded_pn);
-            let pn = match result {
-                Ok(pn) => pn,
+
+            let Ok(pn) = result else {
                 // Duplicate packet, discard. QUIC does not allow duplicate packets.
                 // Is it an error to receive duplicate packets? Definitely not,
                 // otherwise it would be too vulnerable to replay attacks.
-                Err(_) => continue,
+                continue;
             };
 
             let packet_type = packet.header.get_type();
@@ -215,17 +216,38 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
     space_frame_queue.close();
 }
 
-/*
 /// Continuously read from the frame queue and hand it over to the space for processing.
 /// This task will automatically end with the close of space frames, no extra maintenance is needed.
 pub(crate) async fn loop_read_space_frame_and_dispatch_to_space(
-    mut space_frames_queue: ArcFrameQueue<SpaceFrame>,
-    space: impl ReceivePacket,
+    mut space_frames_queue: ArcAsyncQueue<SpaceFrame>,
+    space: impl ReceiveStream,
 ) {
     while let Some(frame) = space_frames_queue.next().await {
-        // TODO: 处理连接错误
-        // TODO: 0RTT和1RTT公用一个Space
-        let _result = space.recv_frame(frame);
+        // 闭包模拟try_block feature，写起来方便
+        let result = (|| -> Result<(), Error> {
+            match frame {
+                SpaceFrame::Stream(sctl) => {
+                    space.recv_stream_control(sctl)?;
+                }
+                SpaceFrame::Data(frame, bytes) => match frame {
+                    qbase::frame::DataFrame::Stream(frame) => {
+                        space.recv_stream(frame, bytes)?;
+                    }
+                    // 这个方法应该单独拆一个特征出来，而不是绑定在ReceiveStream特征上
+                    // 或许应该再定义一个DataSpace类型，然后将可靠和不可靠流依托在上面
+                    qbase::frame::DataFrame::Datagram(frame) => {
+                        space.recv_datagram(frame, bytes)?;
+                    }
+                    // 按说在1rtt是收不到CryptoFrame的
+                    qbase::frame::DataFrame::Crypto(_) => unreachable!(),
+                },
+            }
+            Ok(())
+        })();
+
+        // 处理连接错误
+        if let Err(err) = result {
+            space.on_conn_error(&err);
+        }
     }
 }
-*/
