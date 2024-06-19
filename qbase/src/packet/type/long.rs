@@ -45,26 +45,15 @@ pub mod ext {
 
     pub fn parse_long_type(ty: u8) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Type, Error> {
         move |input| {
-            // The next bit (0x40) of byte 0 is set to 1, unless the packet is a Version Negotiation
-            // packet. Packets containing a zero value for this bit are not valid packets in this
-            // version and MUST be discarded. A value of 1 for this bit allows QUIC to coexist with
-            // other protocols; see [RFC7983].
-            if ty & super::FIXED_BIT == 0 {
-                return Err(nom::Err::Error(Error::InvalidFixedBit));
-            }
-
             let (remain, version) = be_u32(input)?;
-            /*
-            let (remain, version) = be_u32::<_, ()>(input).map_err(|e| match e {
-                ne @ nom::Err::Incomplete(_) => {
-                    nom::Err::Error(Error::IncompleteType(ne.to_string()))
-                }
-                _ => unreachable!("parsing packet type never generates error or failure"),
-            })?;
-            */
             match version {
                 0 => Ok((remain, Type::VersionNegotiation)),
-                1 => Ok((remain, Type::V1(Version::<1, v1::Type>(ty.into())))),
+                1 => Ok((
+                    remain,
+                    Type::V1(Version::<1, v1::Type>(
+                        ty.try_into().map_err(nom::Err::Error)?,
+                    )),
+                )),
                 v => Err(nom::Err::Error(Error::UnsupportedVersion(v))),
             }
         }
@@ -98,26 +87,24 @@ mod tests {
     #[test]
     fn test_read_long_type() {
         use super::{ext::parse_long_type, Type};
-        let buf = vec![0x00, 0x00, 0x00, 0x01];
 
+        let buf = vec![0x00, 0x00, 0x00, 0x01];
         let (remain, ty) = parse_long_type(0xc0)(&buf).unwrap();
         assert_eq!(remain.len(), 0);
         assert_eq!(ty, Type::V1(Ver1::INITIAL));
 
-        // TODO: 确认版本协商包 的 第二位是否为 1
-        // let buf = vec![0x00, 0x00, 0x00, 0x00];
-
-        // let (remain, ty) = parse_long_type(0x80)(&buf).unwrap();
-        // assert_eq!(remain.len(), 0);
-        // assert_eq!(ty, Type::VersionNegotiation);
+        let buf = vec![0x00, 0x00, 0x00, 0x00];
+        let (remain, ty) = parse_long_type(0x80)(&buf).unwrap();
+        assert_eq!(remain.len(), 0);
+        assert_eq!(ty, Type::VersionNegotiation);
     }
 
     #[test]
     #[should_panic]
     fn test_read_long_type_with_wrong_version() {
         use super::{ext::parse_long_type, Type};
-        let buf = vec![0x00, 0x00, 0x00, 0x03];
 
+        let buf = vec![0x00, 0x00, 0x00, 0x03];
         let (remain, ty) = parse_long_type(0xc0)(&buf).unwrap();
         assert_eq!(remain.len(), 0);
         assert_eq!(ty, Type::V1(Ver1::INITIAL));

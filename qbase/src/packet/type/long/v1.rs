@@ -1,3 +1,5 @@
+use crate::packet::{error::Error, r#type::FIXED_BIT};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     Retry,
@@ -24,17 +26,35 @@ impl From<Type> for u8 {
     }
 }
 
-impl From<u8> for Type {
-    fn from(value: u8) -> Self {
+impl TryFrom<u8> for Type {
+    type Error = Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        if value & FIXED_BIT == 0 {
+            return Err(Error::InvalidFixedBit);
+        }
         match value & LONG_PACKET_TYPE_MASK {
-            INITIAL_PACKET_TYPE => Type::Initial,
-            ZERO_RTT_PACKET_TYPE => Type::ZeroRtt,
-            HANDSHAKE_PACKET_TYPE => Type::Handshake,
-            RETRY_PACKET_TYPE => Type::Retry,
+            INITIAL_PACKET_TYPE => Ok(Type::Initial),
+            ZERO_RTT_PACKET_TYPE => Ok(Type::ZeroRtt),
+            HANDSHAKE_PACKET_TYPE => Ok(Type::Handshake),
+            RETRY_PACKET_TYPE => Ok(Type::Retry),
             _ => unreachable!(),
         }
     }
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+
+    #[test]
+    fn test_try_from() {
+        use super::Type;
+        use crate::packet::error::Error;
+
+        assert_eq!(Type::try_from(0xc0), Ok(Type::Initial));
+        assert_eq!(Type::try_from(0xd0), Ok(Type::ZeroRtt));
+        assert_eq!(Type::try_from(0xe0), Ok(Type::Handshake));
+        assert_eq!(Type::try_from(0xf0), Ok(Type::Retry));
+        assert_eq!(Type::try_from(0x00), Err(Error::InvalidFixedBit));
+    }
+}
