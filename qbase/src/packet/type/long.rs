@@ -92,4 +92,56 @@ pub mod ext {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use crate::packet::r#type::long::Ver1;
+
+    #[test]
+    fn test_read_long_type() {
+        use super::{ext::parse_long_type, Type};
+        let buf = vec![0x00, 0x00, 0x00, 0x01];
+
+        let (remain, ty) = parse_long_type(0xc0)(&buf).unwrap();
+        assert_eq!(remain.len(), 0);
+        assert_eq!(ty, Type::V1(Ver1::INITIAL));
+
+        // TODO: 确认版本协商包 的 第二位是否为 1
+        // let buf = vec![0x00, 0x00, 0x00, 0x00];
+
+        // let (remain, ty) = parse_long_type(0x80)(&buf).unwrap();
+        // assert_eq!(remain.len(), 0);
+        // assert_eq!(ty, Type::VersionNegotiation);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_read_long_type_with_wrong_version() {
+        use super::{ext::parse_long_type, Type};
+        let buf = vec![0x00, 0x00, 0x00, 0x03];
+
+        let (remain, ty) = parse_long_type(0xc0)(&buf).unwrap();
+        assert_eq!(remain.len(), 0);
+        assert_eq!(ty, Type::V1(Ver1::INITIAL));
+    }
+
+    #[test]
+    fn test_write_long_type() {
+        use super::Type;
+        use crate::packet::r#type::long::ext::WriteLongType;
+
+        let mut buf = vec![];
+        let ty = Type::V1(Ver1::INITIAL);
+        buf.put_long_type(&ty);
+        assert_eq!(buf, vec![0xc0, 0x00, 0x00, 0x00, 0x01]);
+    }
+
+    #[test]
+    fn test_write_version_negotiation_long_type() {
+        use super::Type;
+        use crate::packet::r#type::long::ext::WriteLongType;
+
+        let mut buf = vec![];
+        let ty = Type::VersionNegotiation;
+        buf.put_long_type(&ty);
+        assert_eq!(buf, vec![0x80, 0x00, 0x00, 0x00, 0x00]);
+    }
+}

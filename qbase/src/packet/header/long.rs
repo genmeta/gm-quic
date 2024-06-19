@@ -151,7 +151,7 @@ pub(super) mod ext {
         combinator::{eof, map},
         multi::{length_data, many_till},
         number::streaming::be_u32,
-        sequence::pair,
+        sequence::tuple,
         Err,
     };
     use std::ops::Deref;
@@ -163,7 +163,7 @@ pub(super) mod ext {
 
     pub fn be_initial(input: &[u8]) -> nom::IResult<&[u8], Initial> {
         map(
-            pair(length_data(be_varint), be_varint),
+            tuple((length_data(be_varint), be_varint)),
             |(token, length)| Initial {
                 token: Vec::from(token),
                 length,
@@ -266,8 +266,8 @@ pub(super) mod ext {
 
     impl<T: BufMut> Write<Retry> for T {
         fn put_specific(&mut self, specific: &Retry) {
-            self.put_slice(&specific.integrity);
             self.put_slice(&specific.token);
+            self.put_slice(&specific.integrity);
         }
     }
 
@@ -301,4 +301,106 @@ pub(super) mod ext {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use crate::packet::header::Write;
+
+    #[test]
+    fn test_be_version_negotiation() {
+        use super::ext::be_version_negotiation;
+
+        let buf = vec![0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02];
+        let (remain, versions) = be_version_negotiation(buf.as_ref()).unwrap();
+        assert_eq!(versions.versions, vec![0x01, 0x02]);
+        assert_eq!(remain.len(), 0);
+    }
+
+    #[test]
+    fn test_be_retry() {
+        use super::ext::be_retry;
+
+        let buf = vec![
+            0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+            0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        ];
+        let (remain, retry) = be_retry(buf.as_ref()).unwrap();
+        assert_eq!(
+            retry.integrity,
+            [
+                0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+                0x0e, 0x0f
+            ]
+        );
+        assert_eq!(retry.token, vec![0x00, 0x00, 0x00]);
+        assert_eq!(remain.len(), 0);
+    }
+
+    #[test]
+    fn test_be_initial() {
+        use crate::packet::header::long::ext::be_initial;
+        // Note: The length of the last bit is filled in when sending, here set as 0x01
+        // Consistent behavior with zero_rtt and handshake
+        let buf = vec![0x03, 0x00, 0x00, 0x00, 0x01];
+        let (remain, initial) = be_initial(buf.as_ref()).unwrap();
+        assert_eq!(initial.token, vec![0x00, 0x00, 0x00]);
+        assert_eq!(initial.length.into_inner(), 0x01);
+        assert_eq!(remain.len(), 0);
+    }
+
+    #[test]
+    fn test_write_version_negotiation_long_header() {
+        use super::{LongHeaderBuilder, VersionNegotiation};
+        use crate::cid::ConnectionId;
+
+        let mut buf = Vec::<u8>::new();
+        let initial_long_header =
+            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
+                VersionNegotiation {
+                    versions: vec![0x01, 0x02],
+                },
+            );
+        buf.put_specific(&initial_long_header.specific);
+        assert_eq!(buf, vec![0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02]);
+    }
+
+    #[test]
+    fn test_write_retry_long_header() {
+        use super::{LongHeaderBuilder, Retry};
+        use crate::cid::ConnectionId;
+
+        let mut buf = Vec::<u8>::new();
+        let initial_long_header =
+            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
+                Retry {
+                    token: vec![0x00, 0x00, 0x00],
+                    integrity: [
+                        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+                        0x0c, 0x0d, 0x0e, 0x0f,
+                    ],
+                },
+            );
+
+        buf.put_specific(&initial_long_header.specific);
+
+        assert_eq!(
+            buf,
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+                0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_write_initial_long_header() {
+        use super::LongHeaderBuilder;
+        use crate::cid::ConnectionId;
+
+        let mut buf = Vec::<u8>::new();
+        let initial_long_header =
+            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default())
+                .initial(vec![0x00, 0x00, 0x00]);
+
+        buf.put_specific(&initial_long_header.specific);
+        assert_eq!(buf, vec![0x03, 0x00, 0x00, 0x00,]);
+    }
+}

@@ -59,3 +59,37 @@ pub mod ext {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::packet::header::WriteOneRttHeader;
+
+    #[test]
+    fn test_read_one_rtt_header() {
+        use super::ext::be_one_rtt_header;
+        use crate::packet::header::ConnectionId;
+        use crate::packet::SpinBit;
+
+        let (remain, header) = be_one_rtt_header(SpinBit::On, 0, &[][..]).unwrap();
+
+        assert_eq!(remain.len(), 0);
+        assert_eq!(header.spin, SpinBit::On);
+        assert_eq!(header.dcid, ConnectionId::default());
+    }
+
+    #[test]
+    fn test_write_one_rtt_header() {
+        use super::OneRttHeader;
+        use crate::{cid::ConnectionId, packet::SpinBit};
+
+        let mut buf = vec![];
+        let header = OneRttHeader {
+            spin: SpinBit::On,
+            dcid: ConnectionId::default(),
+        };
+
+        buf.put_one_rtt_header(&header);
+        // Note: 0x60 == SHORT_HEADER_BIT | FIXED_BIT | Toggle<SPIN_BIT>.value()
+        assert_eq!(buf, [0x60]);
+    }
+}

@@ -10,6 +10,7 @@ use crate::{
     util::{DescribeData, WriteData},
     varint::{be_varint, VarInt, WriteVarInt, VARINT_MAX},
 };
+use nom::sequence::tuple;
 use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,8 +91,7 @@ impl CryptoFrame {
 
 // nom parser for CRYPTO_FRAME
 pub fn be_crypto_frame(input: &[u8]) -> nom::IResult<&[u8], CryptoFrame> {
-    let (remain, offset) = be_varint(input)?;
-    let (remain, length) = be_varint(remain)?;
+    let (remain, (offset, length)) = tuple((be_varint, be_varint))(input)?;
     if offset.into_inner() + offset.into_inner() > VARINT_MAX {
         return Err(nom::Err::Error(nom::error::make_error(
             input,
