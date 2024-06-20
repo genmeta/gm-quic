@@ -1,9 +1,7 @@
-use socket2::SockAddr;
-
 use crate::msg::{Encoder, Message};
-use crate::msg_hdr;
 use crate::{io, PacketHeader};
 use crate::{Gro, Gso, Io, OffloadStatus, UdpSocketController};
+use socket2::SockAddr;
 use std::cmp;
 use std::io::IoSlice;
 use std::net::SocketAddr;
@@ -93,8 +91,6 @@ impl Io for UdpSocketController {
     fn sendmsg(&self, bufs: &[IoSlice<'_>], send_hdr: &PacketHeader) -> io::Result<usize> {
         let io = socket2::SockRef::from(&self.io);
 
-        let mut msg = Message::new();
-
         let gso_size = if send_hdr.gso {
             let max_gso = self.max_gso_segments();
             let max_payloads = (u16::MAX / send_hdr.seg_size) as usize;
@@ -116,65 +112,47 @@ impl Io for UdpSocketController {
             send_hdr.dst.into()
         };
 
-        msg.prepare_sent(send_hdr, &dst, gso_size as u16, 1);
+        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
+        return sendmmsg(&self.io, bufs, send_hdr, &dst, gso_size);
 
-        let mut send_byte = 0;
-        for batch in bufs.chunks(gso_size) {
-            let mut iovec: Vec<IoSlice> = Vec::with_capacity(gso_size);
-            iovec.extend(batch.iter().map(|buf| IoSlice::new(buf)));
-
-            let hdr = msg_hdr!(&mut msg.hdrs[0]);
-            hdr.msg_iov = iovec.as_ptr() as *mut _;
-            hdr.msg_iovlen = iovec.len() as _;
-
-            loop {
-                let ret = to_result(unsafe { libc::sendmsg(io.as_raw_fd(), hdr, 0) });
-                println!("sendmsg ret: {:?}", ret);
-                match ret {
-                    Ok(n) => {
-                        send_byte += n;
-                        break;
-                    }
-                    Err(e) => {
-                        match e.kind() {
-                            io::ErrorKind::Interrupted => {
-                                // Retry
-                            }
-                            io::ErrorKind::WouldBlock => return Err(e),
-                            _ => {
-                                log::warn!("sendmsg failed: {}", e);
-                                // ingnore other errors
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(send_byte)
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "openbsd",))]
+        return sendmsg(&self.io, bufs, send_hdr, &dst, gso_size);
     }
 
-    #[cfg(target_os = "linux")]
     fn recvmsg(
         &self,
         bufs: &mut [std::io::IoSliceMut<'_>],
         recv_hdrs: &mut [PacketHeader],
     ) -> io::Result<usize> {
-        let mut msg = Message::new();
+        let mut msg = Message::default();
         let max_msg_count = bufs.len().min(BATCH_SIZE);
 
         msg.prepare_recv(bufs, max_msg_count);
+        let mut ret: io::Result<(usize, usize)>;
         let msg_count = loop {
-            let ret = unsafe {
-                recvmmsg(
-                    self.io.as_raw_fd(),
-                    msg.hdrs.as_mut_ptr(),
-                    max_msg_count as _,
-                )
-            };
+            #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
+            {
+                ret = unsafe {
+                    recvmmsg(
+                        self.io.as_raw_fd(),
+                        msg.hdrs.as_mut_ptr(),
+                        max_msg_count as _,
+                    )
+                };
+            }
+
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "openbsd",))]
+            {
+                ret = recvmsg(self.io.as_raw_fd(), &mut msg.hdrs[0]);
+            }
             match ret {
-                Ok(ret) => break ret,
+                Ok((msg_count, _msg_length)) => {
+                    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "openbsd",))]
+                    {
+                        recv_hdrs[0].seg_size = _msg_length as u16;
+                    }
+                    break msg_count;
+                }
                 Err(e) => {
                     if e.kind() == io::ErrorKind::Interrupted {
                         continue;
@@ -185,81 +163,147 @@ impl Io for UdpSocketController {
         };
 
         msg.decode_recv(recv_hdrs, msg_count);
-        Ok(msg_count as usize)
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn recvmsg(
-        &self,
-        bufs: &mut [std::io::IoSliceMut<'_>],
-        recv_hdrs: &mut [PacketHeader],
-    ) -> io::Result<usize> {
-        let mut msg = Message::new();
-        msg.prepare_recv(bufs, 1);
-
-        let hdr = msg_hdr!(&mut msg.hdrs[0]);
-        let n = loop {
-            let ret = to_result(unsafe { libc::recvmsg(self.io.as_raw_fd(), hdr, 0) });
-            match ret {
-                Ok(ret) => {
-                    if hdr.msg_flags & libc::MSG_CTRUNC != 0 {
-                        continue;
-                    }
-                    break ret;
-                }
-                Err(e) => {
-                    if e.kind() == io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    return Err(e);
-                }
-            }
-        };
-        msg.decode_recv(recv_hdrs, 1);
-        recv_hdrs[0].seg_size = n as u16;
-        Ok(1)
+        Ok(msg_count)
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
+pub(super) fn sendmmsg(
+    io: &impl AsRawFd,
+    bufs: &[IoSlice<'_>],
+    send_hdr: &PacketHeader,
+    dst: &SockAddr,
+    gso_size: usize,
+) -> io::Result<usize> {
+    use std::iter;
+    let mut iovecs: Vec<Vec<IoSlice>> = iter::repeat_with(|| Vec::with_capacity(gso_size))
+        .take(BATCH_SIZE)
+        .collect();
+
+    let mut message = Message::default();
+    message.prepare_sent(send_hdr, &dst, gso_size as u16, BATCH_SIZE);
+
+    let mut sent_bytes = 0;
+    for batch in bufs.chunks(gso_size * BATCH_SIZE) {
+        let mut mmsg_batch_size: usize = 0;
+        let mut sent: usize = 0;
+        for (i, gso_batch) in batch.chunks(gso_size).enumerate() {
+            mmsg_batch_size += 1;
+            let hdr = &mut message.hdrs[i].msg_hdr;
+            let iovec = &mut iovecs[i];
+            iovec.clear();
+            iovec.extend(gso_batch.iter().map(|payload| IoSlice::new(payload)));
+            sent += iovec.len() * send_hdr.seg_size as usize;
+            hdr.msg_iov = iovec.as_ptr() as *mut _;
+            hdr.msg_iovlen = iovec.len() as _;
+        }
+
+        loop {
+            let ret = to_result(unsafe {
+                libc::sendmmsg(
+                    io.as_raw_fd(),
+                    message.hdrs.as_mut_ptr(),
+                    mmsg_batch_size as u32,
+                    0,
+                )
+            } as isize);
+
+            match ret {
+                Ok(_) => {
+                    sent_bytes += sent;
+                    break;
+                }
+                Err(e) => match e.kind() {
+                    io::ErrorKind::Interrupted => {}
+                    io::ErrorKind::WouldBlock => return Err(e),
+                    _ => {
+                        log::warn!("sendmmsg failed: {}", e);
+                        break;
+                    }
+                },
+            }
+        }
+    }
+    Ok(sent_bytes)
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "openbsd",))]
+pub(super) fn sendmsg(
+    io: &impl AsRawFd,
+    bufs: &[IoSlice<'_>],
+    send_hdr: &PacketHeader,
+    dst: &SockAddr,
+    gso_size: usize,
+) -> io::Result<usize> {
+    use crate::msg_hdr;
+    let mut msg = Message::default();
+    msg.prepare_sent(send_hdr, dst, gso_size as u16, 1);
+
+    let mut sent_bytes = 0;
+    for batch in bufs.chunks(gso_size) {
+        let mut iovec: Vec<IoSlice> = Vec::with_capacity(gso_size);
+        iovec.extend(batch.iter().map(|buf| IoSlice::new(buf)));
+
+        let hdr = &mut msg_hdr!(msg.hdrs[0]);
+        hdr.msg_iov = iovec.as_ptr() as *mut _;
+        hdr.msg_iovlen = iovec.len() as _;
+
+        loop {
+            let ret = to_result(unsafe { libc::sendmsg(io.as_raw_fd(), hdr, 0) });
+            match ret {
+                Ok(n) => {
+                    sent_bytes += n;
+                    break;
+                }
+                Err(e) => match e.kind() {
+                    io::ErrorKind::Interrupted => {}
+                    io::ErrorKind::WouldBlock => return Err(e),
+                    _ => {
+                        log::warn!("sendmsg failed: {}", e);
+                        break;
+                    }
+                },
+            }
+        }
+    }
+
+    Ok(sent_bytes)
+}
+
+/// recvmmsg wrapper with ENOSYS handling
+/// return message count and message length
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
 unsafe fn recvmmsg(
     sockfd: libc::c_int,
     msgvec: *mut libc::mmsghdr,
     vlen: libc::c_uint,
-) -> io::Result<usize> {
-    use std::ptr;
-
+) -> io::Result<(usize, usize)> {
     let flags = 0;
+
+    use std::ptr;
     let timeout = ptr::null_mut::<libc::timespec>();
-
-    let ret: io::Result<usize>;
-
-    #[cfg(not(target_os = "freebsd"))]
-    {
-        ret = to_result(
-            libc::syscall(libc::SYS_recvmmsg, sockfd, msgvec, vlen, flags, timeout) as isize,
-        );
-    }
-
-    // libc on FreeBSD implements `recvmmsg` as a high-level abstraction over `recvmsg`,
-    // thus `SYS_recvmmsg` constant and direct system call do not exist
-    #[cfg(target_os = "freebsd")]
-    {
-        ret = to_result(libc::recvmmsg(sockfd, msgvec, vlen as usize, flags, timeout) as isize);
-    }
-
-    match ret {
-        Ok(_) => ret,
-        Err(e) => match e.raw_os_error() {
-            Some(libc::ENOSYS) => {
-                let flags = 0;
-                if vlen == 0 {
-                    return Ok(0);
-                }
-                to_result(libc::recvmsg(sockfd, &mut (*msgvec).msg_hdr, flags) as isize)
+    let ret = libc::syscall(libc::SYS_recvmmsg, sockfd, msgvec, vlen, flags, timeout);
+    match to_result(ret as isize) {
+        Ok(n) => {
+            return Ok((n, 0));
+        }
+        Err(e) => {
+            // ENOSYS indicates that recvmmsg is not supported
+            if let Some(libc::ENOSYS) = e.raw_os_error() {
+                return recvmsg(sockfd, &mut (*msgvec).msg_hdr);
             }
-            _ => Err(e),
-        },
+            return Err(e);
+        }
+    }
+}
+
+/// return message count and message length
+fn recvmsg(sockfd: libc::c_int, msghdr: *mut libc::msghdr) -> io::Result<(usize, usize)> {
+    let flags = 0;
+    let ret = to_result(unsafe { libc::recvmsg(sockfd, msghdr, flags) });
+    match ret {
+        Ok(n) => Ok((1, n)),
+        Err(e) => Err(e),
     }
 }
 
