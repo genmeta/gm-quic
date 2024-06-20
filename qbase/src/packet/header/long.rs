@@ -332,6 +332,14 @@ mod tests {
         );
         assert_eq!(retry.token, vec![0x00, 0x00, 0x00]);
         assert_eq!(remain.len(), 0);
+        let buf = vec![
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f,
+        ];
+        match be_retry(&buf) {
+            Err(e) => assert_eq!(e, nom::Err::Incomplete(nom::Needed::new(16))),
+            _ => panic!("unexpected result"),
+        }
     }
 
     #[test]
@@ -352,13 +360,13 @@ mod tests {
         use crate::cid::ConnectionId;
 
         let mut buf = Vec::<u8>::new();
-        let initial_long_header =
+        let vn_long_header =
             LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
                 VersionNegotiation {
                     versions: vec![0x01, 0x02],
                 },
             );
-        buf.put_specific(&initial_long_header.specific);
+        buf.put_specific(&vn_long_header.specific);
         assert_eq!(buf, vec![0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02]);
     }
 
@@ -368,7 +376,7 @@ mod tests {
         use crate::cid::ConnectionId;
 
         let mut buf = Vec::<u8>::new();
-        let initial_long_header =
+        let retry_long_header =
             LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
                 Retry {
                     token: vec![0x00, 0x00, 0x00],
@@ -378,9 +386,7 @@ mod tests {
                     ],
                 },
             );
-
-        buf.put_specific(&initial_long_header.specific);
-
+        buf.put_specific(&retry_long_header.specific);
         assert_eq!(
             buf,
             vec![
@@ -399,7 +405,6 @@ mod tests {
         let initial_long_header =
             LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default())
                 .initial(vec![0x00, 0x00, 0x00]);
-
         buf.put_specific(&initial_long_header.specific);
         assert_eq!(buf, vec![0x03, 0x00, 0x00, 0x00,]);
     }
