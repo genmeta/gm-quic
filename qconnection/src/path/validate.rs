@@ -74,12 +74,13 @@ impl ValidateState {
     fn on_response(&mut self, response: &PathResponseFrame) {
         match self {
             ValidateState::Challenging(challenge, _) => {
-                if challenge.data == response.data {
+                // *(challenge.deref()) == *(response.deref())
+                if **challenge == **response {
                     *self = ValidateState::Success;
                 }
             }
             ValidateState::Rechallenging(challenge, _) => {
-                if challenge.data == response.data {
+                if **challenge == **response {
                     *self = ValidateState::Success;
                 }
             }
@@ -138,7 +139,7 @@ impl ResponseState {
                 *self = ResponseState::Challenged(challenge, None);
             }
             ResponseState::Challenged(old_challenge, pkt) => {
-                if old_challenge.data != challenge.data {
+                if *old_challenge != challenge {
                     *old_challenge = challenge;
                     *pkt = None;
                 }
@@ -148,7 +149,7 @@ impl ResponseState {
 
     fn need_response(&self) -> Option<PathResponseFrame> {
         match self {
-            ResponseState::Challenged(challenge, None) => Some(challenge.response()),
+            ResponseState::Challenged(challenge, None) => Some(challenge.into()),
             _ => None,
         }
     }

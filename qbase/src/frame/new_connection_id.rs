@@ -8,8 +8,9 @@
 // }
 
 use crate::{
-    cid::{ConnectionId, ResetToken, WriteConnectionId, RESET_TOKEN_SIZE},
+    cid::{ConnectionId, WriteConnectionId},
     packet::r#type::Type,
+    token::{ResetToken, RESET_TOKEN_SIZE},
     varint::{be_varint, VarInt, WriteVarInt},
 };
 
@@ -40,12 +41,16 @@ impl super::BeFrame for NewConnectionIdFrame {
         )
     }
 
-    fn encoding_size(&self) -> usize {
-        todo!()
+    fn max_encoding_size(&self) -> usize {
+        1 + 8 + 8 + 21 + RESET_TOKEN_SIZE
     }
 
-    fn max_encoding_size(&self) -> usize {
-        todo!()
+    fn encoding_size(&self) -> usize {
+        1 + self.sequence.encoding_size()
+            + self.retire_prior_to.encoding_size()
+            + 1
+            + self.id.len as usize
+            + RESET_TOKEN_SIZE
     }
 }
 
@@ -79,7 +84,7 @@ pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnec
             sequence,
             retire_prior_to,
             id,
-            reset_token: ResetToken::new_with(reset_token),
+            reset_token: ResetToken::new(reset_token),
         },
     ))
 }

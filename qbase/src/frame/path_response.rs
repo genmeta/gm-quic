@@ -3,18 +3,29 @@
 //   Data (64),
 // }
 
-use crate::packet::r#type::Type;
+use std::ops::Deref;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+use crate::packet::r#type::Type;
+use deref_derive::Deref;
+
+#[derive(Debug, Clone, Copy, Default, Deref, PartialEq, Eq)]
 pub struct PathResponseFrame {
-    pub data: [u8; 8],
+    #[deref]
+    data: [u8; 8],
 }
 
 impl PathResponseFrame {
-    pub fn from_slice(data: &[u8]) -> Self {
+    fn from_slice(data: &[u8]) -> Self {
         let mut frame = Self { data: [0; 8] };
         frame.data.copy_from_slice(data);
         frame
+    }
+}
+
+/// The only public way to create a PathResponseFrame is from a PathChallengeFrame
+impl From<&super::PathChallengeFrame> for PathResponseFrame {
+    fn from(challenge: &super::PathChallengeFrame) -> Self {
+        Self::from_slice(challenge.deref())
     }
 }
 

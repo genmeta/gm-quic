@@ -208,7 +208,7 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     );
     tokio::spawn(auto::loop_read_space_frame_and_dispatch_to_space(
         data_space_frame_queue,
-        streams,
+        _streams,
     ));
     tokio::spawn(
         handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(

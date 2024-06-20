@@ -4,10 +4,12 @@
 // }
 
 use crate::packet::r#type::Type;
+use deref_derive::Deref;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deref)]
 pub struct PathChallengeFrame {
-    pub data: [u8; 8],
+    #[deref]
+    data: [u8; 8],
 }
 
 impl PathChallengeFrame {
@@ -23,10 +25,6 @@ impl PathChallengeFrame {
         let mut data = [0; 8];
         rng.fill(&mut data);
         Self { data }
-    }
-
-    pub fn response(&self) -> super::PathResponseFrame {
-        super::PathResponseFrame::from_slice(&self.data[..])
     }
 }
 

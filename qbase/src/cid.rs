@@ -51,33 +51,26 @@ impl ConnectionId {
     }
 }
 
-impl ::std::ops::Deref for ConnectionId {
+impl std::ops::Deref for ConnectionId {
     type Target = [u8];
-    fn deref(&self) -> &[u8] {
+
+    fn deref(&self) -> &Self::Target {
         &self.bytes[0..self.len as usize]
     }
 }
 
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
 pub struct ResetToken([u8; RESET_TOKEN_SIZE]);
 
 impl ResetToken {
-    pub fn new_with(bytes: &[u8]) -> Self {
+    pub fn new(bytes: &[u8]) -> Self {
         Self(bytes.try_into().unwrap())
     }
 }
 
-impl PartialEq for ResetToken {
-    fn eq(&self, other: &Self) -> bool {
-        self.0[..] == other.0[..]
-    }
-}
-
-impl Eq for ResetToken {}
-
 pub fn be_reset_token(input: &[u8]) -> IResult<&[u8], ResetToken> {
     let (input, bytes) = nom::bytes::complete::take(RESET_TOKEN_SIZE)(input)?;
-    Ok((input, ResetToken::new_with(bytes)))
+    Ok((input, ResetToken::new(bytes)))
 }
 
 pub trait WriteResetToken {
@@ -92,7 +85,8 @@ impl<T: BufMut> WriteResetToken for T {
 
 impl std::ops::Deref for ResetToken {
     type Target = [u8];
-    fn deref(&self) -> &[u8] {
+
+    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }

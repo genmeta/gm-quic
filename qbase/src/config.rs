@@ -294,7 +294,7 @@ mod test {
         let params = TransportParameters {
             original_destination_connection_id: Some(orgin_cid),
             max_idle_timeout: Duration::from_secs(0x12345678),
-            statelss_reset_token: Some(ResetToken::new_with(&[0x01; RESET_TOKEN_SIZE])),
+            statelss_reset_token: Some(ResetToken::new(&[0x01; RESET_TOKEN_SIZE])),
             max_udp_payload_size: VarInt(0x1234),
             initial_max_data: VarInt(0x1234),
             initial_max_stream_data_bidi_local: VarInt(0),
@@ -317,7 +317,7 @@ mod test {
                     0,
                 )),
                 connection_id: init_cid,
-                stateless_reset_token: ResetToken::new_with(&[0x02; RESET_TOKEN_SIZE]),
+                stateless_reset_token: ResetToken::new(&[0x02; RESET_TOKEN_SIZE]),
             }),
             active_connection_id_limit: VarInt(0x1234),
             initial_source_connection_id: Some(init_cid),
