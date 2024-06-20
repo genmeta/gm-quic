@@ -2,6 +2,7 @@ pub mod cid;
 pub mod config;
 pub mod error;
 pub mod frame;
+pub mod index_deque;
 pub mod packet;
 pub mod streamid;
 pub mod token;

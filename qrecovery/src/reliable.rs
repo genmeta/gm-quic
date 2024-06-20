@@ -1,6 +1,6 @@
-use crate::index_deque::IndexDeque;
 use qbase::{
     frame::{AckFrame, AckRecord, ConnFrame, DataFrame, ReliableFrame, StreamCtlFrame},
+    index_deque::IndexDeque,
     packet::PacketNumber,
     varint::VARINT_MAX,
 };

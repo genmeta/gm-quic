@@ -1,3 +1,4 @@
+use crate::error::{Error, ErrorKind};
 use std::{
     collections::VecDeque,
     ops::{Index, IndexMut},
@@ -25,11 +26,11 @@ impl<T, const LIMIT: u64> Default for IndexDeque<T, LIMIT> {
     }
 }
 
-impl From<ExceedLimit> for qbase::error::Error {
+impl From<ExceedLimit> for Error {
     fn from(err: ExceedLimit) -> Self {
-        qbase::error::Error::new(
-            qbase::error::ErrorKind::None,
-            qbase::frame::FrameType::Padding,
+        Error::new(
+            ErrorKind::None,
+            crate::frame::FrameType::Padding,
             err.to_string(),
         )
     }

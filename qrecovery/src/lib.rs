@@ -1,6 +1,5 @@
 // pub mod data_space;
 pub mod crypto;
-pub mod index_deque;
 pub mod rcvdpkt;
 pub mod recv;
 pub mod reliable;
