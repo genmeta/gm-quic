@@ -1,16 +1,13 @@
+use bytes::Bytes;
+use clap::{command, Parser};
+use qudp::{ArcUsc, PacketHeader};
+use std::task;
 use std::{
     future::Future,
     io::{self, IoSlice},
     iter,
     task::{ready, Poll},
 };
-
-use bytes::Bytes;
-use clap::{command, Parser};
-
-use qudp::{ArcUsc, PacketHeader};
-
-use std::task;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -24,7 +21,7 @@ struct Args {
     #[arg(long, default_value_t = 1200)]
     msg_size: usize,
 
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 1_000)]
     msg_count: usize,
 
     #[arg(long, default_value_t = false)]

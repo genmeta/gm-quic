@@ -1,12 +1,10 @@
+use crate::{unix::BATCH_SIZE, Gso, PacketHeader, UdpSocketController};
+use socket2::SockAddr;
 use std::{
     io::IoSliceMut,
     mem::{self, MaybeUninit},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
-
-use socket2::SockAddr;
-
-use crate::{unix::BATCH_SIZE, Gso, PacketHeader, UdpSocketController};
 
 pub(crate) const CMSG_LEN: usize = 88;
 
@@ -41,15 +39,17 @@ pub struct Message {
     ctrls: [Aligned<[u8; CMSG_LEN]>; BATCH_SIZE],
 }
 
-impl Message {
-    pub(super) fn new() -> Self {
+impl Default for Message {
+    fn default() -> Self {
         Self {
             hdrs: unsafe { mem::zeroed::<[HdrTy; BATCH_SIZE]>() },
             names: [MaybeUninit::<libc::sockaddr_storage>::uninit(); BATCH_SIZE],
             ctrls: [Aligned([0u8; CMSG_LEN]); BATCH_SIZE],
         }
     }
+}
 
+impl Message {
     pub(super) fn prepare_sent(
         &mut self,
         pkt_hdr: &PacketHeader,
@@ -103,6 +103,10 @@ impl Message {
     pub(super) fn decode_recv(&mut self, recv_hdrs: &mut [PacketHeader], msg_count: usize) {
         assert!(msg_count <= BATCH_SIZE);
         for (i, hdr) in self.hdrs.iter_mut().enumerate().take(msg_count) {
+            #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
+            {
+                recv_hdrs[i].seg_size = hdr.msg_len as u16;
+            }
             let hdr = msg_hdr!(hdr);
             let name = unsafe { self.names[i].assume_init() };
             let cmsg_iter = unsafe { Iter::new(hdr) };
