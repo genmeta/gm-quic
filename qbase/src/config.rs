@@ -1,4 +1,4 @@
-use crate::cid::{ConnectionId, ResetToken};
+use crate::{cid::ConnectionId, token::ResetToken};
 
 use super::varint::VarInt;
 use getset::{Getters, MutGetters, Setters};
@@ -75,10 +75,8 @@ pub mod ext {
     use nom::{combinator::map, number::complete::be_u8};
 
     use crate::{
-        cid::{
-            self, be_connection_id, be_reset_token, ConnectionId, ResetToken, WriteConnectionId,
-            WriteResetToken as _,
-        },
+        cid::{self, be_connection_id, ConnectionId, WriteConnectionId},
+        token::{be_reset_token, ResetToken, WriteResetToken},
         varint::{be_varint, VarInt, WriteVarInt},
     };
 
