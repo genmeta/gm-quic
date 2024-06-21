@@ -17,7 +17,6 @@ use crate::{
     recv::{self, Incoming, Reader},
     reliable::ArcReliableFrameQueue,
     send::{self, Outgoing, Writer},
-    unreliable::{DatagramReader, DatagramStream, DatagramWriter},
 };
 
 /// ArcOutput里面包含一个Result类型，一旦发生quic error，就会被替换为Err
@@ -109,7 +108,7 @@ impl ArcInputGuard<'_> {
 
 /// 专门根据Stream相关帧处理streams相关逻辑
 #[derive(Debug, Clone)]
-pub(super) struct RawDataStreams {
+pub struct RawDataStreams {
     role: Role,
     stream_ids: StreamIds,
     // 所有流的待写端，要发送数据，就得向这些流索取
@@ -121,35 +120,28 @@ pub(super) struct RawDataStreams {
 
     // 该queue与space中的transmitter中的frame_queue共享，为了方便向transmitter中写入帧
     reliable_frame_queue: ArcReliableFrameQueue,
-
-    // 数据报流
-    datagram_stream: DatagramStream,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
     move |e| QuicError::new(ErrorKind::StreamLimit, fty, e.to_string())
 }
 
-impl super::TransmitStream for RawDataStreams {
-    fn try_read_stream(&self, mut buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+impl RawDataStreams {
+    #[inline]
+    pub fn try_read_stream(&self, mut buf: &mut impl BufMut) -> Option<StreamFrame> {
         let guard = &mut self.output.0.lock().unwrap();
         let output = &guard.as_mut().ok()?;
         output
             .iter()
             .filter_map(|(&sid, outgoing)| {
-                let remain = buf.remaining_mut();
                 let frame = outgoing.try_read(sid, &mut buf)?;
-                let len = remain - buf.remaining_mut();
-                Some((frame, len))
+                Some(frame)
             })
             .next()
     }
 
-    fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        self.datagram_stream.try_read_datagram(buf)
-    }
-
-    fn on_data_acked(&self, stream_frame: StreamFrame) {
+    #[inline]
+    pub fn on_data_acked(&self, stream_frame: StreamFrame) {
         if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
             if let Some(all_data_rcvd) = set
                 .get(&stream_frame.id)
@@ -162,7 +154,8 @@ impl super::TransmitStream for RawDataStreams {
         }
     }
 
-    fn may_loss_data(&self, stream_frame: StreamFrame) {
+    #[inline]
+    pub fn may_loss_data(&self, stream_frame: StreamFrame) {
         if let Some(o) = self
             .output
             .0
@@ -176,7 +169,8 @@ impl super::TransmitStream for RawDataStreams {
         }
     }
 
-    fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
+    #[inline]
+    pub fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
         if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
             if let Some(o) = set.remove(&reset_frame.stream_id) {
                 o.on_reset_acked();
@@ -184,10 +178,13 @@ impl super::TransmitStream for RawDataStreams {
             // 如果流是双向的，接收部分的流独立地管理结束。其实是上层应用决定接收的部分是否同时结束
         }
     }
-}
 
-impl super::ReceiveStream for RawDataStreams {
-    fn recv_stream(&self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), QuicError> {
+    #[inline]
+    pub fn recv_stream(
+        &self,
+        stream_frame: StreamFrame,
+        body: bytes::Bytes,
+    ) -> Result<(), QuicError> {
         let sid = stream_frame.id;
         // 对方必须是发送端，才能发送此帧
         if sid.role() != self.role {
@@ -216,11 +213,8 @@ impl super::ReceiveStream for RawDataStreams {
         Ok(())
     }
 
-    fn recv_datagram(&self, frame: DatagramFrame, body: bytes::Bytes) -> Result<(), QuicError> {
-        self.datagram_stream.recv_datagram(frame, body)
-    }
-
-    fn recv_stream_control(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), QuicError> {
+    #[inline]
+    pub fn recv_stream_control(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), QuicError> {
         match stream_ctl_frame {
             StreamCtlFrame::ResetStream(reset_frame) => {
                 let sid = reset_frame.stream_id;
@@ -346,7 +340,8 @@ impl super::ReceiveStream for RawDataStreams {
         Ok(())
     }
 
-    fn on_conn_error(&self, err: &QuicError) {
+    #[inline]
+    pub fn on_conn_error(&self, err: &QuicError) {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(_) => return,
@@ -363,8 +358,6 @@ impl super::ReceiveStream for RawDataStreams {
         output.on_conn_error(err);
         input.on_conn_error(err);
         listener.on_conn_error(err);
-
-        self.datagram_stream.on_conn_error(err);
     }
 }
 
@@ -374,7 +367,6 @@ impl RawDataStreams {
         max_bi_streams: u64,
         max_uni_streams: u64,
         reliable_frame_queue: ArcReliableFrameQueue,
-        datagram_stream: DatagramStream,
     ) -> Self {
         Self {
             role,
@@ -383,7 +375,6 @@ impl RawDataStreams {
             input: ArcInput::default(),
             listener: ArcListener::default(),
             reliable_frame_queue,
-            datagram_stream,
         }
     }
 
@@ -429,10 +420,6 @@ impl RawDataStreams {
 
     pub(super) fn listener(&self) -> ArcListener {
         self.listener.clone()
-    }
-
-    pub(crate) fn datagram_stream(&self) -> Result<(DatagramReader, DatagramWriter), QuicError> {
-        self.datagram_stream.rw()
     }
 
     fn try_accept_sid(&self, sid: StreamId) -> Result<(), ExceedLimitError> {

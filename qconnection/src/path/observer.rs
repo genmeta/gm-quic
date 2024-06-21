@@ -1,5 +1,5 @@
 use qcongestion::{congestion::Epoch, ObserveAck, ObserveLoss, SlideWindow};
-use qrecovery::rcvdpkt::{ArcRcvdPktRecords, ArcRcvdPktRecordsWriter};
+use qrecovery::reliable::{ArcRcvdPktRecords, ArcRcvdPktRecordsWriter};
 use tokio::sync::mpsc;
 
 pub struct AckObserverGuard<'a>(ArcRcvdPktRecordsWriter<'a>);

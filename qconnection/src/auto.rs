@@ -1,6 +1,5 @@
 use std::ops::Deref;
 
-use futures::StreamExt;
 use qbase::{
     error::{Error, ErrorKind},
     frame::{AckFrame, BeFrame, ConnFrame, Frame, FrameReader, PureFrame},
@@ -13,13 +12,12 @@ use qbase::{
     },
     util::ArcAsyncQueue,
 };
-use qrecovery::{
-    space::{ArcSpace, SpaceFrame},
-    streams::{ArcDataStreams, ReceiveStream, TransmitStream},
-};
 use tokio::sync::mpsc;
 
-use crate::path::ArcPath;
+use crate::{
+    path::ArcPath,
+    space::{ArcSpace, DataSpace, Space, SpaceFrame},
+};
 
 fn parse_packet_and_then_dispatch(
     payload: bytes::Bytes,
@@ -108,7 +106,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
     ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
     need_close_space_frame_queue_at_end: bool,
 ) where
-    S: ReceiveStream + TransmitStream,
+    S: Space,
     H: GetType,
     PacketWrapper<H>: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
 {
@@ -166,24 +164,23 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
 pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queue(
     mut packet_rx: mpsc::UnboundedReceiver<(OneRttPacket, ArcPath)>,
     keys: ArcOneRttKeys,
-    space: ArcSpace<ArcDataStreams>,
+    space: ArcSpace<DataSpace>,
     conn_frame_queue: ArcAsyncQueue<ConnFrame>,
     space_frame_queue: ArcAsyncQueue<SpaceFrame>,
     ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
 ) {
     while let Some((mut packet, path)) = packet_rx.recv().await {
         // 1rtt空间的header protection key是固定的，packet key则是根据包头中的key_phase_bit变化的
-        if let Some((hk, pk)) = keys.get_remote_keys().await {
-            let ok = packet.remove_protection(hk.deref());
+        if let Some((hpk, pk)) = keys.get_remote_keys().await {
+            let ok = packet.remove_protection(hpk.deref());
             if !ok {
                 // Failed to remove packet header protection, just discard it.
                 continue;
             }
 
             let (encoded_pn, key_phase) = packet.decode_header().unwrap();
-            let pn = match space.decode_pn(encoded_pn) {
-                Ok(pn) => pn,
-                Err(_e) => continue,
+            let Ok(pn) = space.decode_pn(encoded_pn) else {
+                continue;
             };
 
             // 要根据key_phase_bit来获取packet key
@@ -216,40 +213,4 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
         }
     }
     space_frame_queue.close();
-}
-
-/// Continuously read from the frame queue and hand it over to the space for processing.
-/// This task will automatically end with the close of space frames, no extra maintenance is needed.
-pub(crate) async fn loop_read_space_frame_and_dispatch_to_space(
-    mut space_frames_queue: ArcAsyncQueue<SpaceFrame>,
-    space: impl ReceiveStream,
-) {
-    while let Some(frame) = space_frames_queue.next().await {
-        // 闭包模拟try_block feature，写起来方便
-        let result = (|| -> Result<(), Error> {
-            match frame {
-                SpaceFrame::Stream(sctl) => {
-                    space.recv_stream_control(sctl)?;
-                }
-                SpaceFrame::Data(frame, bytes) => match frame {
-                    qbase::frame::DataFrame::Stream(frame) => {
-                        space.recv_stream(frame, bytes)?;
-                    }
-                    // 这个方法应该单独拆一个特征出来，而不是绑定在ReceiveStream特征上
-                    // 或许应该再定义一个DataSpace类型，然后将可靠和不可靠流依托在上面
-                    qbase::frame::DataFrame::Datagram(frame) => {
-                        space.recv_datagram(frame, bytes)?;
-                    }
-                    // 按说在1rtt是收不到CryptoFrame的
-                    qbase::frame::DataFrame::Crypto(_) => unreachable!(),
-                },
-            }
-            Ok(())
-        })();
-
-        // 处理连接错误
-        if let Err(err) = result {
-            space.on_conn_error(&err);
-        }
-    }
 }

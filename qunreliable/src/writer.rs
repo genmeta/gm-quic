@@ -31,7 +31,10 @@ pub type ArcDatagramWriter = Arc<Mutex<io::Result<RawDatagramWriter>>>;
 pub struct DatagramWriter(pub(super) ArcDatagramWriter);
 
 impl DatagramWriter {
-    pub(super) fn try_read_datagram(&self, mut buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
+    pub(super) fn try_read_datagram<B>(&self, buf: &mut B) -> Option<DatagramFrame>
+    where
+        B: BufMut,
+    {
         let mut guard = self.0.blocking_lock();
         let writer = guard.as_mut().ok()?;
         let datagram = writer.queue.peek()?;
@@ -40,12 +43,12 @@ impl DatagramWriter {
         if remain == 1 + datagram.len() {
             let frame = DatagramFrame::new(None);
             buf.put_datagram_frame(&frame, datagram);
-            return Some((frame, frame.encoding_size() + datagram.len()));
+            return Some(frame);
         }
         let frame = DatagramFrame::new(Some(VarInt::try_from(datagram.len()).unwrap()));
         if remain >= frame.encoding_size() + datagram.len() {
             buf.put_datagram_frame(&frame, datagram);
-            Some((frame, frame.encoding_size() + datagram.len()))
+            Some(frame)
         } else {
             None
         }

@@ -1,3 +1,4 @@
+use bytes::BufMut;
 /// Crypto data stream
 use qbase::{error::Error, frame::CryptoFrame};
 
@@ -28,16 +29,16 @@ mod send {
     }
 
     impl Sender {
-        fn try_read_data(&mut self, mut buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
-            let remaining = buffer.remaining_mut();
+        fn try_read_data(&mut self, buf: &mut impl BufMut) -> Option<CryptoFrame> {
+            let remaining = buf.remaining_mut();
             let estimater = |offset: u64| CryptoFrame::estimate_max_capacity(remaining, offset);
             if let Some((offset, data)) = self.sndbuf.pick_up(estimater) {
                 let frame = CryptoFrame {
                     offset: VarInt::from_u64(offset).unwrap(),
                     length: VarInt::from_u32(data.len() as u32),
                 };
-                buffer.put_crypto_frame(&frame, &data);
-                Some((frame, remaining - buffer.remaining_mut()))
+                buf.put_crypto_frame(&frame, &data);
+                Some(frame)
             } else {
                 None
             }
@@ -116,7 +117,10 @@ mod send {
     }
 
     impl CryptoStreamOutgoing {
-        pub(crate) fn try_read_data(&self, buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
+        pub(crate) fn try_read_data<B>(&self, buffer: &mut B) -> Option<CryptoFrame>
+        where
+            B: BufMut,
+        {
             self.0.lock().unwrap().try_read_data(buffer)
         }
 
@@ -285,30 +289,24 @@ impl CryptoStream {
     }
 }
 
-pub trait TransmitCrypto {
-    fn try_read_data(&self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)>;
-
-    fn on_data_acked(&self, data_frame: CryptoFrame);
-
-    fn may_loss_data(&self, data_frame: CryptoFrame);
-
-    fn recv_data(&self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error>;
-}
-
-impl TransmitCrypto for CryptoStream {
-    fn try_read_data(&self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)> {
+impl CryptoStream {
+    #[inline]
+    pub fn try_read_data(&self, buf: &mut impl BufMut) -> Option<CryptoFrame> {
         self.outgoing.try_read_data(buf)
     }
 
-    fn on_data_acked(&self, data_frame: CryptoFrame) {
+    #[inline]
+    pub fn on_data_acked(&self, data_frame: CryptoFrame) {
         self.outgoing.on_data_acked(&data_frame.range());
     }
 
-    fn may_loss_data(&self, data_frame: CryptoFrame) {
+    #[inline]
+    pub fn may_loss_data(&self, data_frame: CryptoFrame) {
         self.outgoing.may_loss_data(&data_frame.range())
     }
 
-    fn recv_data(&self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error> {
+    #[inline]
+    pub fn recv_data(&self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error> {
         self.incoming.recv(crypto_frame.offset.into_inner(), body);
         Ok(())
     }
@@ -319,7 +317,7 @@ mod tests {
     use qbase::{frame::CryptoFrame, varint::VarInt};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    use super::{CryptoStream, TransmitCrypto};
+    use super::CryptoStream;
 
     #[tokio::test]
     async fn test_read() {

@@ -16,7 +16,17 @@ enum KeysState {
     Invalid,
 }
 
-#[derive(Clone)]
+impl std::fmt::Debug for KeysState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending(arg0) => f.debug_tuple("Pending").field(arg0).finish(),
+            Self::Ready(_arg0) => f.debug_tuple("Ready").field(&"...").finish(),
+            Self::Invalid => write!(f, "Invalid"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ArcKeys(Arc<Mutex<KeysState>>);
 
 impl ArcKeys {
@@ -88,6 +98,7 @@ impl Future for GetRemoteKeys {
     }
 }
 
+#[derive(Clone)]
 enum OneRttKeysState {
     Pending(Option<Waker>),
     Ready {
@@ -95,6 +106,20 @@ enum OneRttKeysState {
         pk: Arc<Mutex<OneRttPacketKeys>>,
     },
     Invalid,
+}
+
+impl std::fmt::Debug for OneRttKeysState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending(arg0) => f.debug_tuple("Pending").field(arg0).finish(),
+            Self::Ready { .. } => f
+                .debug_struct("Ready")
+                .field("psk", &"..")
+                .field("pk", &"..")
+                .finish(),
+            Self::Invalid => write!(f, "Invalid"),
+        }
+    }
 }
 
 pub struct OneRttPacketKeys {
@@ -149,7 +174,7 @@ impl OneRttPacketKeys {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ArcOneRttKeys(Arc<Mutex<OneRttKeysState>>);
 
 impl ArcOneRttKeys {
