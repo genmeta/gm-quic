@@ -89,7 +89,7 @@ pub mod ext {
 
         let be_max_idle_timeout = |input| {
             let (remain, timeout) = be_varint(input)?;
-            Ok((remain, Duration::from_secs(timeout.0)))
+            Ok((remain, Duration::from_secs(timeout.into_inner())))
         };
 
         let be_preferred_address = |input| {
@@ -142,7 +142,7 @@ pub mod ext {
     impl WriteParameters for bytes::BytesMut {
         fn put_transport_parameters(&mut self, params: &TransportParameters) {
             let put_varint = |buf: &mut Self, tag: u8, varint: VarInt| {
-                if varint.0 > 0 {
+                if varint.into_inner() > 0 {
                     buf.put_u8(tag);
                     buf.put_varint(&varint);
                 }
@@ -171,7 +171,12 @@ pub mod ext {
                 };
 
             put_connection_id(self, 0x00, &params.original_destination_connection_id);
-            put_varint(self, 0x01, VarInt(params.max_idle_timeout.as_secs()));
+            put_varint(
+                self,
+                0x01,
+                VarInt::from_u64(params.max_idle_timeout.as_secs())
+                    .expect("max_idle timeout can not exceed 2^62 seconds"),
+            );
             put_reset_token(self, 0x02, &params.statelss_reset_token);
             put_varint(self, 0x03, params.max_udp_payload_size);
             put_varint(self, 0x04, params.initial_max_data);
@@ -258,22 +263,22 @@ impl Default for TransportParameters {
             original_destination_connection_id: None,
             max_idle_timeout: Duration::from_secs(0),
             statelss_reset_token: None,
-            max_udp_payload_size: VarInt(65527), // 65535 - 8
-            initial_max_data: VarInt(0),
-            initial_max_stream_data_bidi_local: VarInt(0),
-            initial_max_stream_data_bidi_remote: VarInt(0),
-            initial_max_stream_data_uni: VarInt(0),
-            initial_max_streams_bidi: VarInt(0),
-            initial_max_streams_uni: VarInt(0),
-            ack_delay_exponent: VarInt(3),
-            max_ack_delay: VarInt(25),
+            max_udp_payload_size: VarInt::from_u32(65527), // 65535 - 8
+            initial_max_data: VarInt::default(),
+            initial_max_stream_data_bidi_local: VarInt::default(),
+            initial_max_stream_data_bidi_remote: VarInt::default(),
+            initial_max_stream_data_uni: VarInt::default(),
+            initial_max_streams_bidi: VarInt::default(),
+            initial_max_streams_uni: VarInt::default(),
+            ack_delay_exponent: VarInt::from_u32(3),
+            max_ack_delay: VarInt::from_u32(25),
             disable_active_migration: false,
             preferred_address: None,
-            active_connection_id_limit: VarInt(2),
+            active_connection_id_limit: VarInt::from_u32(2),
             initial_source_connection_id: None,
             retry_source_connection_id: None,
             version_information: None,
-            max_datagram_frame_size: VarInt(65535),
+            max_datagram_frame_size: VarInt::from_u32(65535),
             grease_quic_bit: false,
         }
     }
@@ -293,15 +298,15 @@ mod test {
             original_destination_connection_id: Some(orgin_cid),
             max_idle_timeout: Duration::from_secs(0x12345678),
             statelss_reset_token: Some(ResetToken::new(&[0x01; RESET_TOKEN_SIZE])),
-            max_udp_payload_size: VarInt(0x1234),
-            initial_max_data: VarInt(0x1234),
-            initial_max_stream_data_bidi_local: VarInt(0),
-            initial_max_stream_data_bidi_remote: VarInt(0),
-            initial_max_stream_data_uni: VarInt(0),
-            initial_max_streams_bidi: VarInt(0x1234),
-            initial_max_streams_uni: VarInt(0x1234),
-            ack_delay_exponent: VarInt(0x12),
-            max_ack_delay: VarInt(0x1234),
+            max_udp_payload_size: VarInt::from_u32(0x1234),
+            initial_max_data: VarInt::from_u32(0x1234),
+            initial_max_stream_data_bidi_local: VarInt::from_u32(0),
+            initial_max_stream_data_bidi_remote: VarInt::from_u32(0),
+            initial_max_stream_data_uni: VarInt::from_u32(0),
+            initial_max_streams_bidi: VarInt::from_u32(0x1234),
+            initial_max_streams_uni: VarInt::from_u32(0x1234),
+            ack_delay_exponent: VarInt::from_u32(0x12),
+            max_ack_delay: VarInt::from_u32(0x1234),
             disable_active_migration: true,
             preferred_address: Some(PreferredAddress {
                 address_v4: Some(SocketAddrV4::new(
@@ -317,10 +322,10 @@ mod test {
                 connection_id: init_cid,
                 stateless_reset_token: ResetToken::new(&[0x02; RESET_TOKEN_SIZE]),
             }),
-            active_connection_id_limit: VarInt(0x1234),
+            active_connection_id_limit: VarInt::from_u32(0x1234),
             initial_source_connection_id: Some(init_cid),
             retry_source_connection_id: Some(init_cid),
-            max_datagram_frame_size: VarInt(65535),
+            max_datagram_frame_size: VarInt::from_u32(65535),
             // 下面两个字段 rfc 里没有？
             version_information: None,
             grease_quic_bit: false,

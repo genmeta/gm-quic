@@ -21,8 +21,8 @@ use std::ops::Range;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamFrame {
     pub id: StreamId,
-    pub offset: VarInt,
-    pub length: usize,
+    offset: VarInt,
+    length: usize,
     flag: u8,
 }
 
@@ -61,7 +61,9 @@ impl BeFrame for StreamFrame {
                 0
             }
             + if self.flag & LEN_BIT != 0 {
-                VarInt(self.length as u64).encoding_size()
+                VarInt::from_u64(self.length as u64)
+                    .expect("msg length must be less than 2^62")
+                    .encoding_size()
             } else {
                 0
             }
@@ -80,7 +82,8 @@ impl StreamFrame {
         assert!(offset <= VARINT_MAX);
         Self {
             id,
-            offset: VarInt(offset),
+            offset: VarInt::from_u64(offset)
+                .expect("offset of stream frame must be less than 2^62"),
             length,
             flag: 0,
         }
@@ -88,6 +91,14 @@ impl StreamFrame {
 
     pub fn is_fin(&self) -> bool {
         self.flag & FIN_BIT != 0
+    }
+
+    pub fn offset(&self) -> u64 {
+        self.offset.into_inner()
+    }
+
+    pub fn len(&self) -> usize {
+        self.length
     }
 
     pub fn range(&self) -> Range<u64> {
@@ -113,7 +124,9 @@ impl StreamFrame {
         if frame_encoding_size == capacity {
             ShouldCarryLength::NoProblem
         } else {
-            let len_encoding_size = VarInt(self.length as u64).encoding_size();
+            let len_encoding_size = VarInt::try_from(self.length)
+                .expect("length of stream frame must be less than 2^62")
+                .encoding_size();
             let remaining = capacity - frame_encoding_size;
             if remaining <= len_encoding_size {
                 ShouldCarryLength::PaddingFirst(remaining)
@@ -137,7 +150,9 @@ impl StreamFrame {
         assert!(offset <= VARINT_MAX);
         let mut least = 1 + sid.encoding_size();
         if offset != 0 {
-            least += VarInt(offset).encoding_size();
+            least += VarInt::from_u64(offset)
+                .expect("offset of stream frame must be less than 2^62")
+                .encoding_size();
         }
         if capacity <= least {
             None
@@ -240,8 +255,8 @@ mod tests {
         assert_eq!(
             frame,
             StreamFrame {
-                id: VarInt(0x1234).into(),
-                offset: VarInt(0x1234),
+                id: VarInt::from_u32(0x1234).into(),
+                offset: VarInt::from_u32(0x1234),
                 length: 11,
                 flag: 0b110,
             }
@@ -271,8 +286,8 @@ mod tests {
         assert_eq!(
             frame,
             StreamFrame {
-                id: VarInt(0x1234).into(),
-                offset: VarInt(0x1234),
+                id: VarInt::from_u32(0x1234).into(),
+                offset: VarInt::from_u32(0x1234),
                 length: 11,
                 flag: 0b100,
             }
@@ -283,8 +298,8 @@ mod tests {
     fn test_write_initial_stream_frame() {
         let mut buf = Vec::new();
         let frame = StreamFrame {
-            id: VarInt(0x1234).into(),
-            offset: VarInt(0),
+            id: VarInt::from_u32(0x1234).into(),
+            offset: VarInt::from_u32(0),
             length: 11,
             flag: 0b011,
         };
@@ -302,8 +317,8 @@ mod tests {
     fn test_write_last_stream_frame() {
         let mut buf = Vec::new();
         let frame = StreamFrame {
-            id: VarInt(0x1234).into(),
-            offset: VarInt(0),
+            id: VarInt::from_u32(0x1234).into(),
+            offset: VarInt::from_u32(0),
             length: 11,
             flag: 0b001,
         };
@@ -318,8 +333,8 @@ mod tests {
     fn test_write_eos_frame() {
         let mut buf = Vec::new();
         let frame = StreamFrame {
-            id: VarInt(0x1234).into(),
-            offset: VarInt(0x1234),
+            id: VarInt::from_u32(0x1234).into(),
+            offset: VarInt::from_u32(0x1234),
             length: 11,
             flag: 0b111,
         };
@@ -337,8 +352,8 @@ mod tests {
     fn test_write_unfinished_stream_frame() {
         let mut buf = Vec::new();
         let frame = StreamFrame {
-            id: VarInt(0x1234).into(),
-            offset: VarInt(0x1234),
+            id: VarInt::from_u32(0x1234).into(),
+            offset: VarInt::from_u32(0x1234),
             length: 11,
             flag: 0b110,
         };

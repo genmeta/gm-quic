@@ -61,7 +61,7 @@ impl CryptoFrame {
         capacity
             // Must accommodate at least one byte, 'len' takes up 1 byte,
             // content takes up 1 byte. If these are not satisfied, return None.
-            .checked_sub(1 + VarInt(offset).encoding_size() + 2)
+            .checked_sub(1 + VarInt::from_u64(offset).unwrap().encoding_size() + 2)
             .map(|remaining| match remaining {
                 // Including the 1 byte already considered in check_sub,
                 // 'length' still takes up 1 byte.
@@ -134,8 +134,8 @@ mod tests {
         assert_eq!(
             frame,
             CryptoFrame {
-                offset: VarInt(0x1234),
-                length: VarInt(0x5678),
+                offset: VarInt::from_u32(0x1234),
+                length: VarInt::from_u32(0x5678),
             }
         );
     }
@@ -145,8 +145,8 @@ mod tests {
         use super::WriteCryptoFrame;
         let mut buf = bytes::BytesMut::new();
         let frame = CryptoFrame {
-            offset: VarInt(0x1234),
-            length: VarInt(0x5),
+            offset: VarInt::from_u32(0x1234),
+            length: VarInt::from_u32(0x5),
         };
         buf.put_crypto_frame(&frame, b"hello");
         assert_eq!(

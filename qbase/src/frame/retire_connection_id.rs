@@ -72,7 +72,7 @@ mod tests {
         assert_eq!(
             frame,
             RetireConnectionIdFrame {
-                sequence: VarInt(0x1234),
+                sequence: VarInt::from_u32(0x1234),
             }
         );
     }
@@ -82,7 +82,7 @@ mod tests {
         use super::WriteRetireConnectionIdFrame;
         let mut buf = Vec::new();
         let frame = RetireConnectionIdFrame {
-            sequence: VarInt(0x1234),
+            sequence: VarInt::from_u32(0x1234),
         };
         buf.put_retire_connection_id_frame(&frame);
         assert_eq!(buf, vec![0x19, 0x52, 0x34]);

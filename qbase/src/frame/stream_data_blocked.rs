@@ -83,8 +83,8 @@ mod tests {
         assert_eq!(
             frame,
             StreamDataBlockedFrame {
-                stream_id: VarInt(0x1234).into(),
-                maximum_stream_data: VarInt(0x5678),
+                stream_id: VarInt::from_u32(0x1234).into(),
+                maximum_stream_data: VarInt::from_u32(0x5678),
             }
         );
     }
@@ -94,8 +94,8 @@ mod tests {
         use super::WriteStreamDataBlockedFrame;
         let mut buf = Vec::new();
         buf.put_stream_data_blocked_frame(&StreamDataBlockedFrame {
-            stream_id: VarInt(0x1234).into(),
-            maximum_stream_data: VarInt(0x5678),
+            stream_id: VarInt::from_u32(0x1234).into(),
+            maximum_stream_data: VarInt::from_u32(0x5678),
         });
         assert_eq!(
             buf,

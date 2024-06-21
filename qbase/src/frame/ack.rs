@@ -207,9 +207,9 @@ mod tests {
         assert_eq!(
             ecn,
             EcnCounts {
-                ect0: VarInt(0x1234),
-                ect1: VarInt(0x1234),
-                ce: VarInt(0x1234),
+                ect0: VarInt::from_u32(0x1234),
+                ect1: VarInt::from_u32(0x1234),
+                ce: VarInt::from_u32(0x1234),
             }
         );
     }
@@ -229,10 +229,10 @@ mod tests {
         assert_eq!(
             ack_frame,
             AckFrame {
-                largest: VarInt(0x1234),
-                delay: VarInt(0x1234),
-                first_range: VarInt(0x1234),
-                ranges: vec![(VarInt(3), VarInt(20))],
+                largest: VarInt::from_u32(0x1234),
+                delay: VarInt::from_u32(0x1234),
+                first_range: VarInt::from_u32(0x1234),
+                ranges: vec![(VarInt::from_u32(3), VarInt::from_u32(20))],
                 ecn: None,
             }
         );
@@ -242,9 +242,9 @@ mod tests {
     fn test_write_ecn_count() {
         let mut buf = Vec::new();
         let ecn = EcnCounts {
-            ect0: VarInt(0x1234),
-            ect1: VarInt(0x1234),
-            ce: VarInt(0x1234),
+            ect0: VarInt::from_u32(0x1234),
+            ect1: VarInt::from_u32(0x1234),
+            ce: VarInt::from_u32(0x1234),
         };
         buf.put_ecn_counts(&ecn);
         assert_eq!(buf, vec![0x52, 0x34, 0x52, 0x34, 0x52, 0x34]);
@@ -254,10 +254,10 @@ mod tests {
     fn test_write_ack_frame() {
         let mut buf = Vec::new();
         let frame = AckFrame {
-            largest: VarInt(0x1234),
-            delay: VarInt(0x1234),
-            first_range: VarInt(0x1234),
-            ranges: vec![(VarInt(3), VarInt(20))],
+            largest: VarInt::from_u32(0x1234),
+            delay: VarInt::from_u32(0x1234),
+            first_range: VarInt::from_u32(0x1234),
+            ranges: vec![(VarInt::from_u32(3), VarInt::from_u32(20))],
             ecn: None,
         };
 
@@ -272,13 +272,13 @@ mod tests {
     fn test_ack_frame_into_iter() {
         // let mut frame = AckFrame::new(1000, 0, 0x1234, None).unwrap();
         let frame = AckFrame {
-            largest: VarInt(1000),
-            delay: VarInt(0x1234),
-            first_range: VarInt(0),
+            largest: VarInt::from_u32(1000),
+            delay: VarInt::from_u32(0x1234),
+            first_range: VarInt::from_u32(0),
             ranges: vec![
-                (VarInt(0), VarInt(2)),
-                (VarInt(4), VarInt(30)),
-                (VarInt(7), VarInt(40)),
+                (VarInt::from_u32(0), VarInt::from_u32(2)),
+                (VarInt::from_u32(4), VarInt::from_u32(30)),
+                (VarInt::from_u32(7), VarInt::from_u32(40)),
             ],
             ecn: None,
         };
