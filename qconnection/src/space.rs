@@ -5,10 +5,12 @@ use deref_derive::Deref;
 use futures::StreamExt;
 use qbase::{
     error::Error,
-    frame::{AckFrame, CryptoFrame, DataFrame, DatagramFrame, StreamCtlFrame, StreamFrame},
+    frame::{
+        AckFrame, ConnFrame, CryptoFrame, DataFrame, DatagramFrame, StreamCtlFrame, StreamFrame,
+    },
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
-        PacketNumber,
+        HandshakePacket, InitialPacket, OneRttPacket, PacketNumber, ZeroRttPacket,
     },
     streamid::Role,
     util::ArcAsyncQueue,
@@ -20,6 +22,8 @@ use qrecovery::{
 };
 use qunreliable::DatagramFlow;
 use tokio::sync::mpsc::{self, UnboundedSender};
+
+use crate::path::ArcPath;
 
 trait Transmit<F: 'static> {
     fn read_frame(&self, buf: &mut impl BufMut) -> Option<F>;
@@ -347,7 +351,7 @@ impl<T: Space> ArcSpace<T> {
         ArcSpace(Arc::new(RawSpace::new(space)))
     }
 
-    /// 创建一个队列，然后循环从队列读取和处理空间帧
+    /// 创建一个队列，和从循环从队列读取和处理空间帧的任务
     pub fn space_frame_queue(&self) -> ArcAsyncQueue<SpaceFrame> {
         let space_frmae_queue = ArcAsyncQueue::new();
         tokio::spawn({
@@ -365,7 +369,7 @@ impl<T: Space> ArcSpace<T> {
         space_frmae_queue
     }
 
-    pub fn listen_may_loss_pkts(&self) -> UnboundedSender<u64> {
+    pub fn receive_may_loss_pkts(&self) -> UnboundedSender<u64> {
         let (loss_pkt_tx, mut loss_pkt_rx) = mpsc::unbounded_channel();
         let space = self.clone();
 
@@ -377,7 +381,7 @@ impl<T: Space> ArcSpace<T> {
         loss_pkt_tx
     }
 
-    pub fn listen_acks(&self) -> UnboundedSender<AckFrame> {
+    pub fn receive_acks(&self) -> UnboundedSender<AckFrame> {
         let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();
         let space = self.clone();
         tokio::spawn(async move {
@@ -389,12 +393,50 @@ impl<T: Space> ArcSpace<T> {
     }
 }
 
+pub type PacketQueue<T> = mpsc::UnboundedSender<(T, ArcPath)>;
+
 impl ArcSpace<NoDataSpace> {
     pub fn new_nodata_space(crypto_stream: CryptoStream) -> Self {
         Self::from_space(NoDataSpace {
             keys: ArcKeys::new_pending(),
             crypto: crypto_stream,
         })
+    }
+
+    pub fn receive_initial_packet(
+        &self,
+        conn_frame_queue: ArcAsyncQueue<ConnFrame>,
+    ) -> PacketQueue<InitialPacket> {
+        let (pkt_tx, pkt_rx) = mpsc::unbounded_channel();
+        let ark_tx = self.receive_acks();
+        tokio::spawn(
+            crate::auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
+                pkt_rx,
+                self.keys.clone(),
+                self.clone(),
+                conn_frame_queue,
+                ark_tx,
+            ),
+        );
+        pkt_tx
+    }
+
+    pub fn receive_handshake_packet(
+        &self,
+        conn_frame_queue: ArcAsyncQueue<ConnFrame>,
+    ) -> PacketQueue<HandshakePacket> {
+        let (pkt_tx, pkt_rx) = mpsc::unbounded_channel();
+        let ark_tx = self.receive_acks();
+        tokio::spawn(
+            crate::auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
+                pkt_rx,
+                self.keys.clone(),
+                self.clone(),
+                conn_frame_queue,
+                ark_tx,
+            ),
+        );
+        pkt_tx
     }
 }
 
@@ -423,6 +465,42 @@ impl ArcSpace<DataSpace> {
             zero_rtt_keys: ArcKeys::new_pending(),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
         })
+    }
+
+    pub fn receive_0rtt_packet(
+        &self,
+        conn_frame_queue: ArcAsyncQueue<ConnFrame>,
+    ) -> PacketQueue<ZeroRttPacket> {
+        let (pkt_tx, pkt_rx) = mpsc::unbounded_channel();
+        let ark_tx = self.receive_acks();
+        tokio::spawn(
+            crate::auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
+                pkt_rx,
+                self.zero_rtt_keys.clone(),
+                self.clone(),
+                conn_frame_queue,
+                ark_tx,
+            ),
+        );
+        pkt_tx
+    }
+
+    pub fn receive_1rtt_packet(
+        &self,
+        conn_frame_queue: ArcAsyncQueue<ConnFrame>,
+    ) -> PacketQueue<OneRttPacket> {
+        let (pkt_tx, pkt_rx) = mpsc::unbounded_channel();
+        let ark_tx = self.receive_acks();
+        tokio::spawn(
+            crate::auto::loop_read_short_packet_and_then_dispatch_to_space_frame_queue(
+                pkt_rx,
+                self.one_rtt_keys.clone(),
+                self.clone(),
+                conn_frame_queue,
+                ark_tx,
+            ),
+        );
+        pkt_tx
     }
 }
 

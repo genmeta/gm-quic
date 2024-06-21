@@ -7,20 +7,18 @@ use qbase::{
 };
 use qrecovery::crypto::CryptoStream;
 use qudp::ArcUsc;
-use tokio::sync::mpsc;
 
 use crate::{
-    auto,
     controller::ArcFlowController,
     crypto::TlsIO,
     handshake,
     path::{AckObserver, ArcPath, LossObserver, Pathway},
-    space::{ArcSpace, DataSpace, NoDataSpace},
+    space::{ArcSpace, DataSpace, NoDataSpace, PacketQueue},
 };
 
 /// Option是为了能丢弃前期空间，包括这些空间的收包队列，
 /// 一旦丢弃，后续再收到该空间的包，直接丢弃。
-type RxPacketQueue<T> = Option<mpsc::UnboundedSender<(T, ArcPath)>>;
+type RxPacketQueue<T> = Option<PacketQueue<T>>;
 
 pub struct RawConnection {
     // 所有Path的集合，Pathway作为key
@@ -28,7 +26,7 @@ pub struct RawConnection {
     init_pkt_queue: RxPacketQueue<InitialPacket>,
     hs_pkt_queue: RxPacketQueue<HandshakePacket>,
     zero_rtt_pkt_queue: RxPacketQueue<ZeroRttPacket>,
-    one_rtt_pkt_queue: mpsc::UnboundedSender<(OneRttPacket, ArcPath)>,
+    one_rtt_pkt_queue: PacketQueue<OneRttPacket>,
 
     // 发送数据，也可以随着升级到Handshake空间而丢弃
     initial_space: ArcSpace<NoDataSpace>,
@@ -51,49 +49,18 @@ pub struct RawConnection {
 pub fn new(tls_session: TlsIO) -> RawConnection {
     let rcvd_conn_frames = ArcAsyncQueue::new();
 
-    let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded_channel::<(InitialPacket, ArcPath)>();
-
     let initial_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
     let initial_crypto_handler = initial_crypto_stream.split();
-    // 实际上从未被读取/写入
     let initial_space = ArcSpace::new_nodata_space(initial_crypto_stream);
-    let initial_space_frame_queue = initial_space.space_frame_queue();
-    let initial_ack_tx = initial_space.listen_acks();
-    let initial_loss_tx = initial_space.listen_may_loss_pkts();
-    tokio::spawn(
-        auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
-            initial_pkt_rx,
-            initial_space.keys.clone(),
-            initial_space.clone(),
-            rcvd_conn_frames.clone(),
-            initial_space_frame_queue,
-            initial_ack_tx,
-            true,
-        ),
-    );
-
-    let (handshake_pkt_tx, handshake_pkt_rx) =
-        mpsc::unbounded_channel::<(HandshakePacket, ArcPath)>();
+    let initial_loss_tx = initial_space.receive_may_loss_pkts();
+    let initial_pkt_tx = initial_space.receive_initial_packet(rcvd_conn_frames.clone());
 
     let handshake_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
     let handshake_crypto_handler = handshake_crypto_stream.split();
     let handshake_space = ArcSpace::new_nodata_space(handshake_crypto_stream);
-    let handshake_space_frame_queue = handshake_space.space_frame_queue();
+    let handshake_loss_tx = handshake_space.receive_may_loss_pkts();
+    let handshake_pkt_tx = handshake_space.receive_handshake_packet(rcvd_conn_frames.clone());
 
-    // 实际上从未被读取/写入
-    let handshake_ack_tx = handshake_space.listen_acks();
-    let handshake_loss_tx = handshake_space.listen_may_loss_pkts();
-    tokio::spawn(
-        auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
-            handshake_pkt_rx,
-            handshake_space.keys.clone(),
-            handshake_space.clone(),
-            rcvd_conn_frames.clone(),
-            handshake_space_frame_queue,
-            handshake_ack_tx,
-            true,
-        ),
-    );
     tokio::spawn(
         handshake::exchange_initial_crypto_msg_until_getting_handshake_key(
             tls_session.clone(),
@@ -102,42 +69,17 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
         ),
     );
 
-    let (zero_rtt_pkt_tx, zero_rtt_pkt_rx) = mpsc::unbounded_channel::<(ZeroRttPacket, ArcPath)>();
-    let (one_rtt_pkt_tx, one_rtt_pkt_rx) = mpsc::unbounded_channel::<(OneRttPacket, ArcPath)>();
-
     let one_rtt_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
-    let _one_rtt_crypto_handler = one_rtt_crypto_stream.split();
     let data_space =
         ArcSpace::<DataSpace>::new_data_space(Role::Client, 20, 20, 0, one_rtt_crypto_stream);
-
-    let data_space_frame_queue = data_space.space_frame_queue();
 
     // 应用的操作接口，后续有必要在连接里直接调用
     // let _streams = data_space.data_streams();
 
-    let data_ack_tx = data_space.listen_acks();
-    let data_loss_tx = data_space.listen_may_loss_pkts();
-    tokio::spawn(
-        auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
-            zero_rtt_pkt_rx,
-            data_space.zero_rtt_keys.clone(),
-            data_space.clone(),
-            rcvd_conn_frames.clone(),
-            data_space_frame_queue.clone(),
-            data_ack_tx.clone(),
-            false,
-        ),
-    );
-    tokio::spawn(
-        auto::loop_read_short_packet_and_then_dispatch_to_space_frame_queue(
-            one_rtt_pkt_rx,
-            data_space.one_rtt_keys.clone(),
-            data_space.clone(),
-            rcvd_conn_frames.clone(),
-            data_space_frame_queue.clone(),
-            data_ack_tx,
-        ),
-    );
+    let zero_rtt_pkt_tx = data_space.receive_0rtt_packet(rcvd_conn_frames.clone());
+    let one_rtt_pkt_tx = data_space.receive_1rtt_packet(rcvd_conn_frames.clone());
+
+    let data_loss_tx = data_space.receive_may_loss_pkts();
     tokio::spawn(
         handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
             tls_session,
