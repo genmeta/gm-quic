@@ -46,7 +46,7 @@ where
     };
 
     let max_header_size = header.size() + 2; // 2 bytes reserved for packet length, max 16KB
-    let (mut hdr_buf, mut body_buf) = buffer.split_at_mut(max_header_size);
+    let (mut hdr_buf, body_buf) = buffer.split_at_mut(max_header_size);
 
     // TODO: Path决定是否该发送AckFrame了，如果要发送最后一个参数不再为None
     let (pn, pn_size, mut body_len) = space.read(body_buf, None);
@@ -55,9 +55,7 @@ where
         return (0, 0);
     }
 
-    unsafe {
-        body_buf.advance_mut(body_len);
-    }
+    let mut body_buf = &mut body_buf[body_len..];
     if body_len < 20 {
         // The sample requires at least 16 bytes, so the length must be at least 20 bytes.
         // If it is not enough, Padding(0x0) needs to be added.
@@ -72,9 +70,7 @@ where
                 // Misalignment padding: If it is less than 64 bytes, ignore the first byte and start
                 // padding the header from the second byte. Do the same when sending packets.
                 offset = 1;
-                unsafe {
-                    hdr_buf.advance_mut(1);
-                }
+                hdr_buf = &mut hdr_buf[1..];
                 hdr_buf.put_long_header(&header);
                 hdr_buf.put_varint(&VarInt::from_u64(body_len as u64).unwrap());
             }

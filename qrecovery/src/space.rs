@@ -89,30 +89,25 @@ where
             }
         }
 
+        let mut len = 0;
         // 尝试写入流数据，优先写入加密流数据，然后再努力写入数据流数据
-        if let Some((crypto_frame, len)) = self.crypto_stream.try_read_data(buf) {
+        if let Some((crypto_frame, n)) = self.crypto_stream.try_read_data(&mut buf[len..]) {
             send_guard.record_data_frame(DataFrame::Crypto(crypto_frame));
-            unsafe {
-                buf.advance_mut(len);
-            }
+            len += n;
         }
 
         // while循环，可能发送stream1，stream2流
-        while let Some((stream_frame, len)) = self.data_streams.try_read_stream(buf) {
+        while let Some((stream_frame, n)) = self.data_streams.try_read_stream(&mut buf[len..]) {
             send_guard.record_data_frame(DataFrame::Stream(stream_frame));
-            unsafe {
-                buf.advance_mut(len);
-            }
+            len += n;
         }
 
-        while let Some((datagram_frame, len)) = self.data_streams.try_read_datagram(buf) {
+        while let Some((datagram_frame, n)) = self.data_streams.try_read_datagram(&mut buf[len..]) {
             send_guard.record_data_frame(DataFrame::Datagram(datagram_frame));
-            unsafe {
-                buf.advance_mut(len);
-            }
+            len += n;
         }
 
-        (pn, encoded_pn.size(), origin - buf.remaining_mut())
+        (pn, encoded_pn.size(), origin - buf.remaining_mut() + len)
     }
 
     /// 接收Space相关的帧，包括数据帧
