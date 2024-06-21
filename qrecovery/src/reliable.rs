@@ -58,20 +58,18 @@ impl ReliableTransmit {
         (pn, encoded_pb.size())
     }
 
-    pub fn on_rcvd_ack(&self, ack: &AckFrame, mut data_frame_resolver: impl FnMut(DataFrame)) {
+    pub fn on_rcvd_ack(&self, ack: &AckFrame, mut on_frame_acked: impl FnMut(SentRecord)) {
         let mut recv_guard = self.sent_pkt_records.receive();
         recv_guard.update_largest(ack.largest.into_inner());
 
         for pn in ack.iter().flat_map(|r| r.rev()) {
             for record in recv_guard.on_pkt_acked(pn) {
-                if let SentRecord::Data(data_frame) = record {
-                    data_frame_resolver(data_frame)
-                }
+                on_frame_acked(record);
             }
         }
     }
 
-    pub fn may_loss_pkt(&self, pn: u64, mut data_frame_resolver: impl FnMut(DataFrame)) {
+    pub fn may_loss_pkt(&self, pn: u64, mut may_loss_data: impl FnMut(DataFrame)) {
         let mut sent_pkt_guard = self.sent_pkt_records.receive();
         let mut write_frame_guard = self.reliable_frame_queue.write();
         for record in sent_pkt_guard.may_loss_pkt(pn) {
@@ -79,7 +77,7 @@ impl ReliableTransmit {
                 SentRecord::Reliable(frame) => {
                     write_frame_guard.push_reliable_frame(frame);
                 }
-                SentRecord::Data(data_frame) => data_frame_resolver(data_frame),
+                SentRecord::Data(data_frame) => may_loss_data(data_frame),
                 SentRecord::Ack(_) => {}
             }
         }

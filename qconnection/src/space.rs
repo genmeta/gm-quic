@@ -6,7 +6,8 @@ use futures::StreamExt;
 use qbase::{
     error::Error,
     frame::{
-        AckFrame, ConnFrame, CryptoFrame, DataFrame, DatagramFrame, StreamCtlFrame, StreamFrame,
+        AckFrame, ConnFrame, CryptoFrame, DataFrame, DatagramFrame, ReliableFrame, StreamCtlFrame,
+        StreamFrame,
     },
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
@@ -17,7 +18,7 @@ use qbase::{
 };
 use qrecovery::{
     crypto::CryptoStream,
-    reliable::{ArcRcvdPktRecords, Error as RecvPnError, ReliableTransmit},
+    reliable::{ArcRcvdPktRecords, Error as RecvPnError, ReliableTransmit, SentRecord},
     streams::{data::RawDataStreams, ArcDataStreams},
 };
 use qunreliable::DatagramFlow;
@@ -55,7 +56,7 @@ impl Transmit<CryptoFrame> for CryptoStream {
 
 impl Transmit<StreamFrame> for RawDataStreams {
     fn read_frame(&self, buf: &mut impl BufMut) -> Option<StreamFrame> {
-        self.try_read_stream(buf)
+        self.try_read_data(buf)
     }
 
     fn recv_frame(&self, frame: StreamFrame, data: Bytes) -> Result<(), Error> {
@@ -107,7 +108,7 @@ pub trait Space: Send + Sync + 'static {
 
     fn recv_space_frame(&self, frame: SpaceFrame) -> Result<(), Error>;
 
-    fn on_data_acked(&self, frame: DataFrame);
+    fn on_acked(&self, record: SentRecord);
 
     fn may_loss_data(&self, frame: DataFrame);
 
@@ -119,6 +120,7 @@ pub trait Space: Send + Sync + 'static {
 mod indirect_impl {
     use bytes::{BufMut, Bytes};
     use qbase::{error::Error, frame::DataFrame};
+    use qrecovery::reliable::SentRecord;
 
     use super::SpaceFrame;
 
@@ -161,8 +163,8 @@ mod indirect_impl {
             self.implementer().recv_space_frame(frame)
         }
 
-        fn on_data_acked(&self, frame: DataFrame) {
-            self.implementer().on_data_acked(frame)
+        fn on_acked(&self, record: SentRecord) {
+            self.implementer().on_acked(record)
         }
 
         fn may_loss_data(&self, frame: DataFrame) {
@@ -199,10 +201,12 @@ impl Space for NoDataSpace {
         }
     }
 
-    fn on_data_acked(&self, frame: DataFrame) {
-        match frame {
-            DataFrame::Crypto(frame) => self.on_frame_acked(frame),
-            _ => unreachable!(),
+    fn on_acked(&self, record: SentRecord) {
+        if let SentRecord::Data(frame) = record {
+            match frame {
+                DataFrame::Crypto(frame) => self.on_frame_acked(frame),
+                _ => unreachable!(),
+            }
         }
     }
 
@@ -261,11 +265,17 @@ impl Space for DataSpace {
         }
     }
 
-    fn on_data_acked(&self, frame: DataFrame) {
-        match frame {
-            DataFrame::Crypto(frame) => self.on_frame_acked(frame),
-            DataFrame::Stream(frame) => self.on_frame_acked(frame),
-            DataFrame::Datagram(frame) => self.on_frame_acked(frame),
+    fn on_acked(&self, record: SentRecord) {
+        match record {
+            SentRecord::Reliable(ReliableFrame::Stream(StreamCtlFrame::ResetStream(reset))) => {
+                self.stream.on_reset_acked(reset)
+            }
+            SentRecord::Data(frame) => match frame {
+                DataFrame::Crypto(frame) => self.on_frame_acked(frame),
+                DataFrame::Stream(frame) => self.on_frame_acked(frame),
+                DataFrame::Datagram(frame) => self.on_frame_acked(frame),
+            },
+            _ => {}
         }
     }
 
@@ -308,18 +318,6 @@ impl<T: Space> RawSpace<T> {
         (pn, pn_encode_size, remain - buf.remaining_mut())
     }
 
-    fn on_ack(&self, ack: &AckFrame) {
-        // 数据报帧也是ack触发帧，也就是说它们也许要被记录
-        // 虽然它们不会被重传
-        self.reliable
-            .on_rcvd_ack(ack, |data_frame| self.inner.on_data_acked(data_frame))
-    }
-
-    fn may_loss_pkt(&self, pn: u64) {
-        self.reliable
-            .may_loss_pkt(pn, |data_frame| self.inner.on_data_acked(data_frame))
-    }
-
     pub fn decode_pn(&self, encoded_pn: PacketNumber) -> Result<u64, RecvPnError> {
         self.reliable.rcvd_pkt_records.decode_pn(encoded_pn)
     }
@@ -343,6 +341,12 @@ pub struct ArcSpace<T: Space>(Arc<RawSpace<T>>);
 impl<T: Space> Clone for ArcSpace<T> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
+    }
+}
+
+impl<T: Space> indirect_impl::Space for ArcSpace<T> {
+    fn implementer(&self) -> &impl Space {
+        self.0.implementer()
     }
 }
 
@@ -375,7 +379,9 @@ impl<T: Space> ArcSpace<T> {
 
         tokio::spawn(async move {
             while let Some(pn) = loss_pkt_rx.recv().await {
-                space.may_loss_pkt(pn)
+                space
+                    .reliable
+                    .may_loss_pkt(pn, |data_frame| space.may_loss_data(data_frame))
             }
         });
         loss_pkt_tx
@@ -386,7 +392,11 @@ impl<T: Space> ArcSpace<T> {
         let space = self.clone();
         tokio::spawn(async move {
             while let Some(ack) = ack_rx.recv().await {
-                space.on_ack(&ack)
+                // 数据报帧也是ack触发帧，也就是说它们也许要被记录
+                // 虽然它们不会被重传
+                space
+                    .reliable
+                    .on_rcvd_ack(&ack, |record| space.on_acked(record));
             }
         });
         ack_tx
@@ -410,7 +420,7 @@ impl ArcSpace<NoDataSpace> {
         let (pkt_tx, pkt_rx) = mpsc::unbounded_channel();
         let ark_tx = self.receive_acks();
         tokio::spawn(
-            crate::auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
+            crate::auto::loop_read_long_packet_and_then_dispatch_to_conn_and_space(
                 pkt_rx,
                 self.keys.clone(),
                 self.clone(),
@@ -428,7 +438,7 @@ impl ArcSpace<NoDataSpace> {
         let (pkt_tx, pkt_rx) = mpsc::unbounded_channel();
         let ark_tx = self.receive_acks();
         tokio::spawn(
-            crate::auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
+            crate::auto::loop_read_long_packet_and_then_dispatch_to_conn_and_space(
                 pkt_rx,
                 self.keys.clone(),
                 self.clone(),
@@ -474,7 +484,7 @@ impl ArcSpace<DataSpace> {
         let (pkt_tx, pkt_rx) = mpsc::unbounded_channel();
         let ark_tx = self.receive_acks();
         tokio::spawn(
-            crate::auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
+            crate::auto::loop_read_long_packet_and_then_dispatch_to_conn_and_space(
                 pkt_rx,
                 self.zero_rtt_keys.clone(),
                 self.clone(),
@@ -492,7 +502,7 @@ impl ArcSpace<DataSpace> {
         let (pkt_tx, pkt_rx) = mpsc::unbounded_channel();
         let ark_tx = self.receive_acks();
         tokio::spawn(
-            crate::auto::loop_read_short_packet_and_then_dispatch_to_space_frame_queue(
+            crate::auto::loop_read_short_packet_and_then_dispatch_to_conn_and_space(
                 pkt_rx,
                 self.one_rtt_keys.clone(),
                 self.clone(),
@@ -501,11 +511,5 @@ impl ArcSpace<DataSpace> {
             ),
         );
         pkt_tx
-    }
-}
-
-impl<T: Space> indirect_impl::Space for ArcSpace<T> {
-    fn implementer(&self) -> &impl Space {
-        self.0.implementer()
     }
 }

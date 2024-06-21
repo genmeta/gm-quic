@@ -88,7 +88,7 @@ fn parse_packet_and_then_dispatch(
     })
 }
 
-pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue<H, S>(
+pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_conn_and_space<H, S>(
     mut pkt_rx: mpsc::UnboundedReceiver<(PacketWrapper<H>, ArcPath)>,
     keys: ArcKeys,
     space: ArcSpace<S>,
@@ -147,7 +147,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
     space_frame_queue.close();
 }
 
-pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queue(
+pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_conn_and_space(
     mut packet_rx: mpsc::UnboundedReceiver<(OneRttPacket, ArcPath)>,
     keys: ArcOneRttKeys,
     space: ArcSpace<DataSpace>,

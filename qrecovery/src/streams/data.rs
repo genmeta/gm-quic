@@ -128,7 +128,7 @@ fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
 
 impl RawDataStreams {
     #[inline]
-    pub fn try_read_stream(&self, mut buf: &mut impl BufMut) -> Option<StreamFrame> {
+    pub fn try_read_data(&self, mut buf: &mut impl BufMut) -> Option<StreamFrame> {
         let guard = &mut self.output.0.lock().unwrap();
         let output = &guard.as_mut().ok()?;
         output

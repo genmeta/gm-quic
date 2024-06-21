@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     sync::{Arc, Mutex},
     time::Duration,
@@ -127,6 +128,16 @@ impl ArcPath {
             ack_observer,
             loss_observer,
         ))))
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct ArcPathes(Arc<Mutex<HashMap<Pathway, ArcPath>>>);
+
+impl ArcPathes {
+    pub fn get_path(&self, pathway: Pathway, or: impl FnOnce() -> ArcPath) -> ArcPath {
+        let mut pathes = self.0.lock().unwrap();
+        pathes.entry(pathway).or_insert_with(or).clone()
     }
 }
 

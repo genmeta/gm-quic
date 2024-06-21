@@ -5,11 +5,11 @@ use qbase::{
     packet::{header::GetDcid, SpacePacket},
 };
 
-use crate::{connection::RawConnection, ReceiveProtectedPacket};
+use crate::{connection::ArcConnection, ReceiveProtectedPacket};
 
 pub struct Endpiont {
-    // 尚未实现连接迁移，多个连接id对应一个连接的功能尚未实现
-    connections: HashMap<ConnectionId, RawConnection>,
+    // 尚未实现连接迁移
+    connections: HashMap<ConnectionId, ArcConnection>,
     // 新连接的监听器
     // listener: Listener,
 }
