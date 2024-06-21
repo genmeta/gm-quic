@@ -108,7 +108,10 @@ mod tests {
         })(buf.as_ref())
         .unwrap();
         assert_eq!(input, &[][..]);
-        assert_eq!(frame, StreamsBlockedFrame::Bi(VarInt(0x1234).into()));
+        assert_eq!(
+            frame,
+            StreamsBlockedFrame::Bi(VarInt::from_u32(0x1234).into())
+        );
 
         let buf = vec![STREAMS_BLOCKED_FRAME_TYPE | 0x1, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
@@ -120,7 +123,10 @@ mod tests {
         })(buf.as_ref())
         .unwrap();
         assert_eq!(input, &[][..]);
-        assert_eq!(frame, StreamsBlockedFrame::Uni(VarInt(0x1234).into()));
+        assert_eq!(
+            frame,
+            StreamsBlockedFrame::Uni(VarInt::from_u32(0x1234).into())
+        );
     }
 
     #[test]
@@ -128,11 +134,11 @@ mod tests {
         use super::WriteStreamsBlockedFrame;
 
         let mut buf = Vec::new();
-        buf.put_streams_blocked_frame(&StreamsBlockedFrame::Bi(VarInt(0x1234).into()));
+        buf.put_streams_blocked_frame(&StreamsBlockedFrame::Bi(VarInt::from_u32(0x1234).into()));
         assert_eq!(buf, vec![STREAMS_BLOCKED_FRAME_TYPE, 0x52, 0x34]);
 
         let mut buf = Vec::new();
-        buf.put_streams_blocked_frame(&StreamsBlockedFrame::Uni(VarInt(0x1234).into()));
+        buf.put_streams_blocked_frame(&StreamsBlockedFrame::Uni(VarInt::from_u32(0x1234).into()));
         assert_eq!(buf, vec![STREAMS_BLOCKED_FRAME_TYPE + 1, 0x52, 0x34]);
     }
 }

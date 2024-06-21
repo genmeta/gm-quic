@@ -55,7 +55,7 @@ impl super::BeFrame for ConnectionCloseFrame {
         1 + VarInt::from(self.error_kind).encoding_size()
             + self.frame_type.is_some()  as usize
             // reason's length could not exceed 16KB
-            + VarInt(self.reason.len() as u64).encoding_size()
+            + VarInt::try_from(self.reason.len()).unwrap().encoding_size()
             + self.reason.len()
     }
 }

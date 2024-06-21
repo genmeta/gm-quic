@@ -89,7 +89,7 @@ fn complete_frame(
         FrameType::Stream(flag) => {
             let (input, frame) = stream_frame_with_flag(flag)(input)?;
             let start = raw.len() - input.len();
-            let len = frame.length;
+            let len = frame.len();
             if input.len() < len {
                 Err(nom::Err::Incomplete(nom::Needed::new(len - input.len())))
             } else {

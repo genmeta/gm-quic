@@ -71,7 +71,7 @@ mod tests {
         assert_eq!(
             frame,
             DataBlockedFrame {
-                limit: crate::varint::VarInt(0x1234)
+                limit: crate::varint::VarInt::from_u32(0x1234)
             }
         );
     }
@@ -81,7 +81,7 @@ mod tests {
         use super::WriteDataBlockedFrame;
         let mut buf = Vec::new();
         buf.put_data_blocked_frame(&DataBlockedFrame {
-            limit: crate::varint::VarInt(0x1234),
+            limit: crate::varint::VarInt::from_u32(0x1234),
         });
         assert_eq!(buf, vec![DATA_BLOCKED_FRAME_TYPE, 0x52, 0x34]);
     }

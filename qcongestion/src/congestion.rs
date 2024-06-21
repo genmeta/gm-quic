@@ -791,9 +791,9 @@ mod tests {
         }
         // ack 1 ~ 3
         let ack_frame = AckFrame {
-            largest: VarInt(3),
-            delay: VarInt(100),
-            first_range: VarInt(2),
+            largest: VarInt::from_u32(3),
+            delay: VarInt::from_u32(100),
+            first_range: VarInt::from_u32(2),
             ranges: vec![],
             ecn: None,
         };
@@ -824,9 +824,9 @@ mod tests {
         // lost 4
         // 剩余 5,8,9(ack),10,11,12,13
         let ack_frame = AckFrame {
-            largest: VarInt(9),
-            delay: VarInt(100),
-            first_range: VarInt(0),
+            largest: VarInt::from_u32(9),
+            delay: VarInt::from_u32(100),
+            first_range: VarInt::from_u32(0),
             ranges: vec![],
             ecn: None,
         };

@@ -294,7 +294,7 @@ mod tests {
         let initial_long_header = Header::Initial(
             LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
                 Initial {
-                    length: VarInt(0),
+                    length: VarInt::from_u32(0),
                     token: vec![0x01, 0x02, 0x03],
                 },
             ),
@@ -308,8 +308,11 @@ mod tests {
         // ZeroRtt Header
         let mut buf = vec![];
         let zero_rtt_long_header = Header::ZeroRtt(
-            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default())
-                .wrap(ZeroRtt { length: VarInt(0) }),
+            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
+                ZeroRtt {
+                    length: VarInt::from_u32(0),
+                },
+            ),
         );
         buf.put_header(&zero_rtt_long_header);
         assert_eq!(buf, [0xd0, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00]);
@@ -317,8 +320,11 @@ mod tests {
         // Handshake Header
         let mut buf = vec![];
         let handshake_long_header = Header::Handshake(
-            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default())
-                .wrap(Handshake { length: VarInt(0) }),
+            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
+                Handshake {
+                    length: VarInt::from_u32(0),
+                },
+            ),
         );
         buf.put_header(&handshake_long_header);
         assert_eq!(buf, [0xe0, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00]);

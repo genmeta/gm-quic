@@ -60,7 +60,10 @@ protect!(Initial, ZeroRtt, Handshake);
 
 impl Encode for Initial {
     fn size(&self) -> usize {
-        VarInt(self.token.len() as u64).encoding_size() + self.token.len()
+        VarInt::try_from(self.token.len())
+            .expect("token length can not be more than 2^62")
+            .encoding_size()
+            + self.token.len()
     }
 }
 
@@ -198,19 +201,24 @@ pub(super) mod ext {
             Self { dcid, scid }
         }
 
+        /// TODO: Initail/Handshake/ZeroRtt Header should not include length field
         pub fn initial(self, token: Vec<u8>) -> LongHeader<Initial> {
             self.wrap(Initial {
                 token,
-                length: VarInt(0),
+                length: VarInt::default(),
             })
         }
 
         pub fn zero_rtt(self) -> LongHeader<ZeroRtt> {
-            self.wrap(ZeroRtt { length: VarInt(0) })
+            self.wrap(ZeroRtt {
+                length: VarInt::default(),
+            })
         }
 
         pub fn handshake(self) -> LongHeader<Handshake> {
-            self.wrap(Handshake { length: VarInt(0) })
+            self.wrap(Handshake {
+                length: VarInt::default(),
+            })
         }
 
         pub fn wrap<T>(self, specific: T) -> LongHeader<T> {
@@ -273,7 +281,10 @@ pub(super) mod ext {
 
     impl<T: BufMut> Write<Initial> for T {
         fn put_specific(&mut self, specific: &Initial) {
-            self.put_varint(&VarInt(specific.token.len() as u64));
+            self.put_varint(
+                &VarInt::try_from(specific.token.len())
+                    .expect("token length can not be more than 2^62"),
+            );
             self.put_slice(&specific.token);
         }
     }

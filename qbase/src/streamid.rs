@@ -124,7 +124,7 @@ impl StreamId {
     }
 
     pub fn encoding_size(&self) -> usize {
-        VarInt(self.0).encoding_size()
+        VarInt::from(*self).encoding_size()
     }
 }
 
@@ -148,7 +148,7 @@ impl From<VarInt> for StreamId {
 
 impl From<StreamId> for VarInt {
     fn from(s: StreamId) -> Self {
-        unsafe { Self::from_u64_unchecked(s.0) }
+        VarInt::from_u64(s.0).expect("stream id must be less than VARINT_MAX")
     }
 }
 
