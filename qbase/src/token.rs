@@ -23,7 +23,7 @@ pub trait WriteResetToken {
 
 impl<T: BufMut> WriteResetToken for T {
     fn put_reset_token(&mut self, token: &ResetToken) {
-        self.put_slice(&token.0);
+        self.put_slice(token);
     }
 }
 
@@ -32,5 +32,50 @@ impl std::ops::Deref for ResetToken {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_create_token() {
+        super::ResetToken::new(&[0; 16]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_creat_token_with_less_size() {
+        super::ResetToken::new(&[0; 15]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_creat_token_with_more_size() {
+        super::ResetToken::new(&[0; 17]);
+    }
+
+    #[test]
+    fn test_read_reset_token() {
+        use nom::error::{Error, ErrorKind};
+
+        let buf = vec![0; 16];
+        let (remain, token) = super::be_reset_token(&buf).unwrap();
+        assert_eq!(remain.len(), 0);
+        assert_eq!(token, super::ResetToken::new(&[0; 16]));
+        let buf = vec![0; 15];
+        assert_eq!(
+            super::be_reset_token(&buf),
+            Err(nom::Err::Error(Error::new(&buf[..], ErrorKind::Eof)))
+        );
+    }
+
+    #[test]
+    fn test_write_reset_token() {
+        use super::WriteResetToken;
+
+        let mut buf = vec![];
+        let token = super::ResetToken::new(&[0; 16]);
+        buf.put_reset_token(&token);
+        assert_eq!(buf, &[0; 16]);
     }
 }
