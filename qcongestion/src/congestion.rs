@@ -25,9 +25,9 @@ pub enum CongestionAlgorithm {
 // imple RFC 9002 Appendix A. Loss Recovery
 pub struct CongestionController<OA, OL> {
     // ack observer
-    observe_ack: OA,
+    ack_observer: OA,
     // loss observer
-    observe_loss: OL,
+    loss_observer: OL,
     // congestion controlle algorithm: bbr or cubic
     algorithm: Box<dyn Algorithm + Send>,
     rtt: Arc<Mutex<RawRtt>>,
@@ -66,8 +66,8 @@ where
     fn new(
         algorithm: CongestionAlgorithm,
         max_ack_delay: Duration,
-        observe_ack: OA,
-        observe_loss: OL,
+        ack_observer: OA,
+        loss_observer: OL,
     ) -> Self {
         let cc = match algorithm {
             CongestionAlgorithm::Bbr => Box::new(bbr::Bbr::new()),
@@ -88,8 +88,8 @@ where
             anti_amplification: false,
             handshake_confirmed: false,
             has_handshake_keys: false,
-            observe_ack,
-            observe_loss,
+            ack_observer,
+            loss_observer,
             pacer: Pacer::new(INITIAL_RTT, INITIAL_CWND, MSS, now, None),
             last_sent_time: now,
         }
@@ -199,7 +199,7 @@ where
                     newly_acked_packets.push_back(ack);
                 }
                 // inactivate space
-                let mut guard = self.observe_ack.guard(space);
+                let mut guard = self.ack_observer.guard(space);
                 guard.inactivate(pn);
             }
         }
@@ -212,7 +212,7 @@ where
         let now = Instant::now();
         for lost in packets {
             self.algorithm.on_congestion_event(&lost, now);
-            self.observe_loss.may_loss_pkt(space, lost.pn);
+            self.loss_observer.may_loss_pkt(space, lost.pn);
         }
     }
 
@@ -404,14 +404,14 @@ where
     pub fn new(
         algorithm: CongestionAlgorithm,
         max_ack_delay: Duration,
-        observe_ack: OA,
-        observe_loss: OL,
+        ack_observer: OA,
+        loss_observer: OL,
     ) -> Self {
         ArcCC(Arc::new(Mutex::new(CongestionController::new(
             algorithm,
             max_ack_delay,
-            observe_ack,
-            observe_loss,
+            ack_observer,
+            loss_observer,
         ))))
     }
 }
