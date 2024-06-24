@@ -19,7 +19,6 @@ struct State {
 
 impl Default for State {
     fn default() -> Self {
-        // 默认一个包没被收到
         Self {
             is_active: true,
             is_received: false,
@@ -67,12 +66,12 @@ impl RcvdPktRecords {
         if pn < self.queue.offset() {
             return Err(Error::TooOld);
         }
-        // TODO: or pn maybe much more larger than self.queue.largest()
 
-        if let Some(record) = self.queue.get_mut(pn) {
-            if record.is_received {
-                return Err(Error::HasRcvd);
-            }
+        if let Some(&State {
+            is_received: true, ..
+        }) = self.queue.get(pn)
+        {
+            return Err(Error::HasRcvd);
         }
         Ok(pn)
     }
@@ -158,7 +157,7 @@ pub struct ArcRcvdPktRecords {
 
 impl ArcRcvdPktRecords {
     /// 当新收到一个数据包，如果这个包很旧，那么大概率意味着是重复包，直接丢弃。
-    /// 如果这个数据包号是最大的，那么它之后的空档都是尚未收到的，得记为未收到。
+    /// 如果这个数据包号是最大的，那么它之前的空档都是尚未收到的，得记为未收到。
     /// 注意，包号合法，不代表的包内容合法，必须等到包被正确解密且其中帧被正确解出后，才能确认收到。
     pub fn decode_pn(&self, encoded_pn: PacketNumber) -> Result<u64, Error> {
         self.inner.write().unwrap().decode_pn(encoded_pn)
