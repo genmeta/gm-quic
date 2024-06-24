@@ -68,9 +68,14 @@ impl PacketNumber {
         }
     }
 
+    /// From Appendix A.3.
+    ///
+    /// for decoding packet numbers after header protection has been removed.
+    ///
+    /// [rfc](https://www.rfc-editor.org/rfc/rfc9000.html#name-sample-packet-number-decodi)
     pub fn decode(self, expected: u64) -> u64 {
-        // From Appendix A
         use self::PacketNumber::*;
+
         let (truncated, nbits) = match self {
             U8(x) => (u64::from(x), 8),
             U16(x) => (u64::from(x), 16),
