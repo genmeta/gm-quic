@@ -1,9 +1,11 @@
-use crate::error::{Error, ErrorKind};
 use std::{
     collections::VecDeque,
     ops::{Index, IndexMut},
 };
+
 use thiserror::Error;
+
+use crate::error::{Error, ErrorKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[error("the packet number exceed the limit {0}")]

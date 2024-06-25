@@ -1,4 +1,3 @@
-use futures::task::AtomicWaker;
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -6,6 +5,8 @@ use std::{
     },
     task::{Context, Poll},
 };
+
+use futures::task::AtomicWaker;
 
 /// Therefore, after receiving packets from an address that is not yet validated,
 /// an endpoint MUST limit the amount of data it sends to the unvalidated address

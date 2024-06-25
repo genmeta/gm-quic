@@ -1,10 +1,9 @@
 use std::time::Instant;
 
-use crate::congestion::Acked;
-
 // 4.1.  Maintaining the Network Path Model
 // This model includes two estimated parameters: self.BtlBw, and self.RTprop.
 use super::{Bbr, RTPROP_FILTER_LEN};
+use crate::congestion::Acked;
 
 impl Bbr {
     // 4.1.1.3.  Tracking Time for the self.BtlBw Max Filter

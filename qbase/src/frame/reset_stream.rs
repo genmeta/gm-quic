@@ -77,9 +77,10 @@ impl<T: bytes::BufMut> WriteResetStreamFrame for T {
 
 #[cfg(test)]
 mod tests {
+    use nom::combinator::flat_map;
+
     use super::{ResetStreamFrame, WriteResetStreamFrame, RESET_STREAM_FRAME_TYPE};
     use crate::varint::{be_varint, VarInt};
-    use nom::combinator::flat_map;
 
     #[test]
     fn test_read_reset_stream_frame() {

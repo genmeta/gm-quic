@@ -1,11 +1,13 @@
+use std::ops::Deref;
+
+use rustls::quic::{HeaderProtectionKey, PacketKey};
+
 use super::{
     header::{long::LongHeader, GetType, Protect},
     r#type::ext::WritePacketType,
     KeyPhaseBit, LongClearBits, OneRttHeader, PacketNumber, PacketWrapper, ShortClearBits,
     WritePacketNumber,
 };
-use rustls::quic::{HeaderProtectionKey, PacketKey};
-use std::ops::Deref;
 
 /// 有一个Packet了
 /// 1. 先填写完整 complete PacketNumber ClearBits

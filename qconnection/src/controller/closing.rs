@@ -1,10 +1,11 @@
-use qbase::frame::ConnectionCloseFrame;
 use std::{
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
+
+use qbase::frame::ConnectionCloseFrame;
 
 /// When a connection enters the Closing state, only the
 /// ConnectionCloseFrame needs to be retained.

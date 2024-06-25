@@ -1,7 +1,8 @@
-use super::*;
-use crate::{cid::ConnectionId, varint::VarInt};
 use deref_derive::{Deref, DerefMut};
 use nom::ToUsize;
+
+use super::*;
+use crate::{cid::ConnectionId, varint::VarInt};
 
 // The following is the unencrypted header content, which may exist in all future versions
 // of QUIC, so it is placed in this file without distinguishing versions.
@@ -139,15 +140,8 @@ bind_type!(
 );
 
 pub(super) mod ext {
-    use super::*;
-    use crate::{
-        cid::WriteConnectionId,
-        packet::r#type::{
-            ext::WritePacketType,
-            long::{v1::Type as LongV1Type, Type as LongType},
-        },
-        varint::{be_varint, WriteVarInt},
-    };
+    use std::ops::Deref;
+
     use bytes::BufMut;
     use nom::{
         bytes::streaming::take,
@@ -157,7 +151,16 @@ pub(super) mod ext {
         sequence::tuple,
         Err,
     };
-    use std::ops::Deref;
+
+    use super::*;
+    use crate::{
+        cid::WriteConnectionId,
+        packet::r#type::{
+            ext::WritePacketType,
+            long::{v1::Type as LongV1Type, Type as LongType},
+        },
+        varint::{be_varint, WriteVarInt},
+    };
 
     pub fn be_version_negotiation(input: &[u8]) -> nom::IResult<&[u8], VersionNegotiation> {
         let (remain, (versions, _)) = many_till(be_u32, eof)(input)?;

@@ -1,11 +1,12 @@
-use crate::{cid::ConnectionId, token::ResetToken};
-
-use super::varint::VarInt;
-use getset::{Getters, MutGetters, Setters};
 use std::{
     net::{SocketAddrV4, SocketAddrV6},
     time::Duration,
 };
+
+use getset::{Getters, MutGetters, Setters};
+
+use super::varint::VarInt;
+use crate::{cid::ConnectionId, token::ResetToken};
 
 /// Ref. `<https://www.iana.org/assignments/quic/quic.xhtml>`
 
@@ -74,13 +75,12 @@ pub mod ext {
     use bytes::BufMut;
     use nom::{combinator::map, number::complete::be_u8};
 
+    use super::{PreferredAddress, TransportParameters};
     use crate::{
         cid::{self, be_connection_id, ConnectionId, WriteConnectionId},
         token::{be_reset_token, ResetToken, WriteResetToken},
         varint::{be_varint, VarInt, WriteVarInt},
     };
-
-    use super::{PreferredAddress, TransportParameters};
     pub fn be_transport_parameters(input: &[u8]) -> nom::IResult<&[u8], TransportParameters> {
         let be_connection_id = |input| {
             let (remain, cid) = cid::be_connection_id(input)?;
@@ -286,9 +286,10 @@ impl Default for TransportParameters {
 
 #[cfg(test)]
 mod test {
+    use std::net::Ipv4Addr;
+
     use super::{ext::WriteParameters, *};
     use crate::cid::{be_connection_id, RESET_TOKEN_SIZE};
-    use std::net::Ipv4Addr;
 
     #[test]
     fn coding() {

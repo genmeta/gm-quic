@@ -1,10 +1,12 @@
-use crate::{unix::BATCH_SIZE, Gso, PacketHeader, UdpSocketController};
-use socket2::SockAddr;
 use std::{
     io::IoSliceMut,
     mem::{self, MaybeUninit},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
+
+use socket2::SockAddr;
+
+use crate::{unix::BATCH_SIZE, Gso, PacketHeader, UdpSocketController};
 
 pub(crate) const CMSG_LEN: usize = 88;
 

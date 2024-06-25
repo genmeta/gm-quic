@@ -101,13 +101,14 @@ impl Iterator for PacketReader {
 }
 
 pub mod ext {
+    use bytes::BytesMut;
+
     use super::{
         error::Error,
         header::{ext::be_header, HasLength},
         r#type::{ext::be_packet_type, Type},
         *,
     };
-    use bytes::BytesMut;
 
     fn complete(
         packet_type: Type,

@@ -9,6 +9,8 @@
 // - LEN bit: 0x02
 // - FIN bit: 0x01
 
+use std::ops::Range;
+
 use super::BeFrame;
 use crate::{
     packet::r#type::Type,
@@ -16,7 +18,6 @@ use crate::{
     util::{DescribeData, WriteData},
     varint::{be_varint, VarInt, WriteVarInt, VARINT_MAX},
 };
-use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamFrame {
@@ -227,10 +228,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{stream_frame_with_flag, StreamFrame, WriteStreamFrame, STREAM_FRAME_TYPE};
-    use crate::varint::{be_varint, VarInt};
     use bytes::Bytes;
     use nom::combinator::flat_map;
+
+    use super::{stream_frame_with_flag, StreamFrame, WriteStreamFrame, STREAM_FRAME_TYPE};
+    use crate::varint::{be_varint, VarInt};
 
     #[test]
     fn test_read_stream_frame() {

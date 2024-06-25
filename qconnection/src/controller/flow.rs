@@ -1,5 +1,3 @@
-use futures::{task::AtomicWaker, Future};
-use qbase::varint::VARINT_MAX;
 use std::{
     ops::Deref,
     pin::Pin,
@@ -9,6 +7,9 @@ use std::{
     },
     task::{Context, Poll, Waker},
 };
+
+use futures::{task::AtomicWaker, Future};
+use qbase::varint::VARINT_MAX;
 use thiserror::Error;
 
 /// All data sent in STREAM frames counts toward this limit.

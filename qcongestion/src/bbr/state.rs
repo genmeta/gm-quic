@@ -2,9 +2,8 @@ use std::time::Instant;
 
 use rand::Rng;
 
-use crate::rtt::INITIAL_RTT;
-
 use super::{Bbr, BbrStateMachine, HIGH_GAIN, PROBE_RTT_DURATION};
+use crate::rtt::INITIAL_RTT;
 
 // BBRGainCycleLen: the number of phases in the BBR ProbeBW gain cycle: 8.
 const GAIN_CYCLE_LEN: usize = 8;

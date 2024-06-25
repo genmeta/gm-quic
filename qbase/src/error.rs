@@ -1,6 +1,8 @@
-use crate::{frame::FrameType, varint::VarInt};
 use std::{borrow::Cow, fmt::Display};
+
 use thiserror::Error;
+
+use crate::{frame::FrameType, varint::VarInt};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ErrorKind {

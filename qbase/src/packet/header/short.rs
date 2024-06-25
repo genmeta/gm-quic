@@ -31,9 +31,10 @@ impl super::GetDcid for OneRttHeader {
 }
 
 pub mod ext {
+    use bytes::BufMut;
+
     use super::{GetType, OneRttHeader};
     use crate::packet::{r#type::ext::WritePacketType, signal::SpinBit};
-    use bytes::BufMut;
 
     pub fn be_one_rtt_header(
         spin: SpinBit,
@@ -67,8 +68,7 @@ mod tests {
     #[test]
     fn test_read_one_rtt_header() {
         use super::ext::be_one_rtt_header;
-        use crate::packet::header::ConnectionId;
-        use crate::packet::SpinBit;
+        use crate::packet::{header::ConnectionId, SpinBit};
 
         let (remain, header) = be_one_rtt_header(SpinBit::On, 0, &[][..]).unwrap();
 

@@ -1,11 +1,12 @@
-use bytes::{BufMut, Bytes};
-use futures::Stream;
 use std::{
     collections::VecDeque,
     pin::Pin,
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
+
+use bytes::{BufMut, Bytes};
+use futures::Stream;
 
 #[derive(Debug)]
 struct AsyncQueue<T> {

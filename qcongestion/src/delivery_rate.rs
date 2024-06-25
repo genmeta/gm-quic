@@ -1,10 +1,8 @@
 // https://tools.ietf.org/html/draft-cheng-iccrg-delivery-rate-estimation-01
 
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use crate::congestion::Acked;
-use crate::congestion::Sent;
+use crate::congestion::{Acked, Sent};
 
 #[derive(Debug)]
 pub struct Rate {

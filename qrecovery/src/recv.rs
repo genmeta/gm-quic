@@ -4,11 +4,11 @@ mod recver;
 
 pub mod rcvbuf;
 
-use recver::Recver;
 use std::sync::{Arc, Mutex};
 
 pub use incoming::{Incoming, IsStopped, UpdateWindow};
 pub use reader::Reader;
+use recver::Recver;
 
 pub fn new(initial_max_stream_data: u64) -> (Incoming, Reader) {
     let arc_recver = Arc::new(Mutex::new(Ok(Recver::new(initial_max_stream_data))));

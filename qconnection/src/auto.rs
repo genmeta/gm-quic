@@ -1,4 +1,5 @@
-use crate::path::ArcPath;
+use std::ops::Deref;
+
 use futures::StreamExt;
 use qbase::{
     error::{Error, ErrorKind},
@@ -16,8 +17,9 @@ use qrecovery::{
     space::{ArcSpace, SpaceFrame},
     streams::{ArcDataStreams, ReceiveStream, TransmitStream},
 };
-use std::ops::Deref;
 use tokio::sync::mpsc;
+
+use crate::path::ArcPath;
 
 fn parse_packet_and_then_dispatch(
     payload: bytes::Bytes,

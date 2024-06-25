@@ -1,6 +1,6 @@
-use super::error::Error;
-use super::{KeyPhaseBit, PacketNumber};
 use deref_derive::Deref;
+
+use super::{error::Error, KeyPhaseBit, PacketNumber};
 
 pub mod long;
 pub mod short;
@@ -98,8 +98,9 @@ impl Type {
 }
 
 pub mod ext {
-    use super::{long::ext::WriteLongType, short::WriteShortType, *};
     use bytes::BufMut;
+
+    use super::{long::ext::WriteLongType, short::WriteShortType, *};
 
     pub fn be_packet_type(input: &[u8]) -> nom::IResult<&[u8], Type, Error> {
         let (remain, ty) = nom::number::streaming::be_u8(input)?;

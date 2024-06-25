@@ -1,6 +1,7 @@
 // This folder defines all the frames, including their parsing and packaging processes.
-use crate::packet::r#type::Type;
 use enum_dispatch::enum_dispatch;
+
+use crate::packet::r#type::Type;
 
 #[enum_dispatch]
 pub trait BeFrame {
@@ -40,14 +41,14 @@ mod stream_data_blocked;
 mod streams_blocked;
 
 pub mod error;
-pub use error::Error;
-
 // re-export for convenience
 pub use ack::{AckFrame, AckRecord};
+use bytes::{Buf, BufMut, Bytes};
 pub use connection_close::ConnectionCloseFrame;
 pub use crypto::CryptoFrame;
 pub use data_blocked::DataBlockedFrame;
 pub use datagram::DatagramFrame;
+pub use error::Error;
 pub use handshake_done::HandshakeDoneFrame;
 pub use max_data::MaxDataFrame;
 pub use max_stream_data::MaxStreamDataFrame;
@@ -66,7 +67,6 @@ pub use stream_data_blocked::StreamDataBlockedFrame;
 pub use streams_blocked::StreamsBlockedFrame;
 
 use super::varint::VarInt;
-use bytes::{Buf, BufMut, Bytes};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum FrameType {

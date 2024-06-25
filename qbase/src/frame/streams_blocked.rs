@@ -94,9 +94,10 @@ mod tests {
 
     #[test]
     fn test_read_streams_blocked_frame() {
+        use nom::combinator::flat_map;
+
         use super::streams_blocked_frame_with_dir;
         use crate::varint::be_varint;
-        use nom::combinator::flat_map;
 
         let buf = vec![STREAMS_BLOCKED_FRAME_TYPE, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {

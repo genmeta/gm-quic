@@ -1,6 +1,7 @@
-use crate::packet::SpinBit;
 use bytes::BufMut;
 use deref_derive::Deref;
+
+use crate::packet::SpinBit;
 
 const SHORT_HEADER_BIT: u8 = 0x00;
 

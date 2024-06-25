@@ -129,6 +129,7 @@ impl fmt::Display for VarInt {
 
 pub mod err {
     use std::fmt::Debug;
+
     use thiserror::Error;
 
     #[derive(Debug, Copy, Clone, Eq, PartialEq, Error)]
@@ -198,8 +199,9 @@ impl<T: BufMut> WriteVarInt for T {
 
 #[cfg(test)]
 mod tests {
-    use super::{VarInt, WriteVarInt};
     use bytes::BufMut;
+
+    use super::{VarInt, WriteVarInt};
 
     #[test]
     fn test_be_varint() {

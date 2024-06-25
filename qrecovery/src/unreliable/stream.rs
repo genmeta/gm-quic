@@ -1,13 +1,15 @@
-use super::{
-    reader::{DatagramReader, RawDatagramReader},
-    writer::{DatagramWriter, RawDatagramWriter},
-};
+use std::sync::Arc;
+
 use qbase::{
     error::{Error, ErrorKind},
     frame::{BeFrame, DatagramFrame},
 };
-use std::sync::Arc;
 use tokio::sync::Mutex;
+
+use super::{
+    reader::{DatagramReader, RawDatagramReader},
+    writer::{DatagramWriter, RawDatagramWriter},
+};
 
 #[derive(Debug, Clone)]
 pub struct RawDatagramStream {

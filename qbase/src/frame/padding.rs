@@ -52,9 +52,10 @@ mod tests {
 
     #[test]
     fn test_read_padding_frame() {
+        use nom::combinator::flat_map;
+
         use super::be_padding_frame;
         use crate::varint::be_varint;
-        use nom::combinator::flat_map;
         let buf = vec![PADDING_FRAME_TYPE];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() == PADDING_FRAME_TYPE as u64 {

@@ -1,12 +1,13 @@
-use qbase::util::DescribeData;
-
-use super::sndbuf::SendBuf;
 use std::{
     io,
     ops::Range,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
+
+use qbase::util::DescribeData;
+
+use super::sndbuf::SendBuf;
 
 /// The "Ready" state represents a newly created stream that is able to accept data from the application.
 /// Stream data might be buffered in this state in preparation for sending.

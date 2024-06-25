@@ -1,5 +1,3 @@
-use crate::{recv::Reader, send::Writer};
-use qbase::error::Error as QuicError;
 use std::{
     collections::VecDeque,
     future::Future,
@@ -7,6 +5,10 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
+
+use qbase::error::Error as QuicError;
+
+use crate::{recv::Reader, send::Writer};
 
 #[derive(Debug, Default)]
 struct RawListener {

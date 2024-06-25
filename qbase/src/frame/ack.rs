@@ -8,12 +8,14 @@
 //   [ECN Counts (..)],
 // }
 
+use std::ops::RangeInclusive;
+
+use nom::{combinator::map, sequence::tuple};
+
 use crate::{
     packet::r#type::Type,
     varint::{be_varint, VarInt, WriteVarInt},
 };
-use nom::{combinator::map, sequence::tuple};
-use std::ops::RangeInclusive;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AckRecord(pub u64);
@@ -193,11 +195,12 @@ impl<T: bytes::BufMut> WriteAckFrame for T {
 
 #[cfg(test)]
 mod tests {
+    use nom::combinator::flat_map;
+
     use super::{
         ack_frame_with_flag, be_ecn_counts, AckFrame, EcnCounts, WriteAckFrame, ACK_FRAME_TYPE,
     };
     use crate::varint::{be_varint, VarInt};
-    use nom::combinator::flat_map;
 
     #[test]
     fn test_read_ecn_count() {
