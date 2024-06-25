@@ -1,12 +1,13 @@
+use std::{
+    sync::{Arc, RwLock, RwLockWriteGuard},
+    time::Instant,
+};
+
 use qbase::{
     frame::AckFrame,
     index_deque::IndexDeque,
     packet::PacketNumber,
     varint::{VarInt, VARINT_MAX},
-};
-use std::{
-    sync::{Arc, RwLock, RwLockWriteGuard},
-    time::Instant,
 };
 use thiserror::Error;
 

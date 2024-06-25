@@ -6,9 +6,10 @@
 //   Reason Phrase (..),
 // }
 
+use std::borrow::Cow;
+
 use super::FrameType;
 use crate::{error::ErrorKind, frame::be_frame_type, packet::r#type::Type, varint::VarInt};
-use std::borrow::Cow;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionCloseFrame {
@@ -78,8 +79,9 @@ impl ConnectionCloseFrame {
 pub fn connection_close_frame_at_layer(
     layer: u8,
 ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], ConnectionCloseFrame> {
-    use crate::varint::be_varint;
     use nom::bytes::streaming::take;
+
+    use crate::varint::be_varint;
     move |input: &[u8]| {
         let (remain, error_code) = be_varint(input)?;
         let kind = ErrorKind::try_from(error_code).map_err(|_e| {
@@ -134,9 +136,10 @@ mod tests {
 
     #[test]
     fn test_read_connection_close_frame() {
+        use nom::combinator::flat_map;
+
         use super::connection_close_frame_at_layer;
         use crate::varint::be_varint;
-        use nom::combinator::flat_map;
         let buf = vec![
             super::CONNECTION_CLOSE_FRAME_TYPE,
             0x0c,

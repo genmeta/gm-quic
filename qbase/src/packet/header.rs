@@ -1,5 +1,6 @@
-use crate::cid::ConnectionId;
 use enum_dispatch::enum_dispatch;
+
+use crate::cid::ConnectionId;
 
 pub mod long;
 pub mod short;
@@ -129,8 +130,10 @@ mod tests {
         use super::{ext::be_header, Header};
         use crate::{
             cid::ConnectionId,
-            packet::r#type::{long, long::Ver1, short::OneRtt, Type},
-            packet::SpinBit,
+            packet::{
+                r#type::{long, long::Ver1, short::OneRtt, Type},
+                SpinBit,
+            },
         };
 
         // VersionNegotiation Header
@@ -244,10 +247,11 @@ mod tests {
             long::{Handshake, Initial, Retry, VersionNegotiation, ZeroRtt},
             LongHeaderBuilder,
         };
-        use crate::cid::ConnectionId;
-        use crate::packet::{header::ext::WriteHeader, Header};
-        use crate::packet::{OneRttHeader, SpinBit};
-        use crate::varint::VarInt;
+        use crate::{
+            cid::ConnectionId,
+            packet::{header::ext::WriteHeader, Header, OneRttHeader, SpinBit},
+            varint::VarInt,
+        };
 
         // VersionNegotiation Header
         let mut buf = vec![];

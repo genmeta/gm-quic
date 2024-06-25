@@ -1,11 +1,12 @@
-use qbase::cid::ConnectionId;
-use qcongestion::congestion::ArcCC;
-use qudp::ArcUsc;
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
     time::Duration,
 };
+
+use qbase::cid::ConnectionId;
+use qcongestion::congestion::ArcCC;
+use qudp::ArcUsc;
 
 pub mod anti_amplifier;
 pub use anti_amplifier::ArcAntiAmplifier;

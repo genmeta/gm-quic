@@ -66,9 +66,10 @@ mod tests {
 
     #[test]
     fn test_read_max_data_frame() {
+        use nom::combinator::flat_map;
+
         use super::be_max_data_frame;
         use crate::varint::be_varint;
-        use nom::combinator::flat_map;
         let buf = vec![MAX_DATA_FRAME_TYPE, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() == MAX_DATA_FRAME_TYPE as u64 {

@@ -1,11 +1,12 @@
-use clap::Parser;
-use qudp::{ArcUsc, PacketHeader};
 use std::{
     future::Future,
     io::{self, IoSliceMut},
     pin::Pin,
     task::{self, ready, Poll},
 };
+
+use clap::Parser;
+use qudp::{ArcUsc, PacketHeader};
 
 #[cfg(not(target_os = "linux"))]
 const BATCH_SIZE: usize = 1;

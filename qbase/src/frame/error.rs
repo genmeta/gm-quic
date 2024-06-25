@@ -1,7 +1,8 @@
-use super::FrameType;
-use crate::varint::VarInt;
 use nom::error::ErrorKind as NomErrorKind;
 use thiserror::Error;
+
+use super::FrameType;
+use crate::varint::VarInt;
 
 #[derive(Debug, Clone, Eq, PartialEq, Error)]
 pub enum Error {
@@ -17,8 +18,7 @@ pub enum Error {
     ParseError(FrameType, String),
 }
 
-use crate::error::Error as TransportError;
-use crate::error::ErrorKind as TransportErrorKind;
+use crate::error::{Error as TransportError, ErrorKind as TransportErrorKind};
 
 impl From<std::convert::Infallible> for Error {
     fn from(_: std::convert::Infallible) -> Self {

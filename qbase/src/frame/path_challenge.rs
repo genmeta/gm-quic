@@ -3,8 +3,9 @@
 //   Data (64),
 // }
 
-use crate::packet::r#type::Type;
 use deref_derive::Deref;
+
+use crate::packet::r#type::Type;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deref)]
 pub struct PathChallengeFrame {
@@ -58,8 +59,7 @@ impl super::BeFrame for PathChallengeFrame {
 
 // nom parser for PATH_CHALLENGE_FRAME
 pub fn be_path_challenge_frame(input: &[u8]) -> nom::IResult<&[u8], PathChallengeFrame> {
-    use nom::bytes::streaming::take;
-    use nom::combinator::map;
+    use nom::{bytes::streaming::take, combinator::map};
     map(take(8usize), PathChallengeFrame::from_slice)(input)
 }
 
@@ -79,9 +79,10 @@ impl<T: bytes::BufMut> WritePathChallengeFrame for T {
 mod tests {
     #[test]
     fn test_read_path_challenge_frame() {
+        use nom::combinator::flat_map;
+
         use super::be_path_challenge_frame;
         use crate::varint::be_varint;
-        use nom::combinator::flat_map;
         let buf = vec![
             super::PATH_CHALLENGE_FRAME_TYPE,
             0x01,

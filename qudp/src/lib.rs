@@ -1,12 +1,13 @@
+use std::{
+    io,
+    io::{IoSlice, IoSliceMut},
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    task::{ready, Context, Poll},
+};
+
 use msg::Encoder;
 use socket2::{Domain, Socket, Type};
-use std::io::IoSlice;
-use std::io::IoSliceMut;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::task::ready;
-use std::task::Poll;
-use std::{io, net::SocketAddr, task::Context};
 use tokio::io::Interest;
 use unix::DEFAULT_TTL;
 mod msg;

@@ -1,6 +1,3 @@
-use super::queue::DatagramQueue;
-use bytes::BufMut;
-use qbase::error::Error;
 use std::{
     future::Future,
     io,
@@ -9,7 +6,12 @@ use std::{
     sync::Arc,
     task::{ready, Context, Poll, Waker},
 };
+
+use bytes::BufMut;
+use qbase::error::Error;
 use tokio::sync::Mutex;
+
+use super::queue::DatagramQueue;
 
 #[derive(Default, Debug)]
 pub struct RawDatagramReader {

@@ -2,13 +2,6 @@
 use qbase::{error::Error, frame::CryptoFrame};
 
 mod send {
-    use crate::send::sndbuf::SendBuf;
-    use bytes::BufMut;
-    use qbase::{
-        frame::{io::WriteCryptoFrame, CryptoFrame},
-        util::DescribeData,
-        varint::{VarInt, VARINT_MAX},
-    };
     use std::{
         io,
         ops::Range,
@@ -16,7 +9,16 @@ mod send {
         sync::{Arc, Mutex},
         task::{Context, Poll, Waker},
     };
+
+    use bytes::BufMut;
+    use qbase::{
+        frame::{io::WriteCryptoFrame, CryptoFrame},
+        util::DescribeData,
+        varint::{VarInt, VARINT_MAX},
+    };
     use tokio::io::AsyncWrite;
+
+    use crate::send::sndbuf::SendBuf;
 
     #[derive(Debug)]
     pub(super) struct Sender {
@@ -141,16 +143,18 @@ mod send {
 }
 
 mod recv {
-    use crate::recv::rcvbuf::RecvBuf;
-    use bytes::{BufMut, Bytes};
-    use qbase::varint::VARINT_MAX;
     use std::{
         io,
         pin::Pin,
         sync::{Arc, Mutex},
         task::{Context, Poll, Waker},
     };
+
+    use bytes::{BufMut, Bytes};
+    use qbase::varint::VARINT_MAX;
     use tokio::io::{AsyncRead, ReadBuf};
+
+    use crate::recv::rcvbuf::RecvBuf;
 
     #[derive(Debug)]
     struct Recver {
@@ -312,9 +316,10 @@ impl TransmitCrypto for CryptoStream {
 
 #[cfg(test)]
 mod tests {
-    use super::{CryptoStream, TransmitCrypto};
     use qbase::{frame::CryptoFrame, varint::VarInt};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::{CryptoStream, TransmitCrypto};
 
     #[tokio::test]
     async fn test_read() {

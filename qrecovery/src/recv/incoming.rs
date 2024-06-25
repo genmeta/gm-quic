@@ -1,9 +1,3 @@
-use super::recver::{ArcRecver, Recver};
-use bytes::Bytes;
-use qbase::{
-    error::Error as QuicError,
-    frame::{ResetStreamFrame, StreamFrame},
-};
 use std::{
     future::Future,
     io,
@@ -11,6 +5,14 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
+
+use bytes::Bytes;
+use qbase::{
+    error::Error as QuicError,
+    frame::{ResetStreamFrame, StreamFrame},
+};
+
+use super::recver::{ArcRecver, Recver};
 
 #[derive(Debug, Clone)]
 pub struct Incoming(ArcRecver);

@@ -4,13 +4,14 @@
 //   Datagram Data (..),
 // {
 
+use nom::IResult;
+
 use super::{BeFrame, FrameType};
 use crate::{
     packet::r#type::Type,
     util::{DescribeData, WriteData},
     varint::{be_varint, VarInt, WriteVarInt},
 };
-use nom::IResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DatagramFrame {

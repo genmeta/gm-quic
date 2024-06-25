@@ -1,5 +1,6 @@
-use bytes::{BufMut, Bytes};
 use std::{collections::VecDeque, fmt};
+
+use bytes::{BufMut, Bytes};
 
 /// 一段连续的数据片段，每个片段都是Bytes
 #[derive(Debug, Default)]

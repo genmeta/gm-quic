@@ -1,11 +1,12 @@
-use super::error::Error;
+use bytes::Bytes;
+use rustls::quic::{HeaderProtectionKey, PacketKey};
+
 use super::{
+    error::Error,
     header::{long::LongHeader, Protect},
     take_pn_len, GetPacketNumberLength, KeyPhaseBit, LongClearBits, OneRttHeader, PacketNumber,
     PacketWrapper, ShortClearBits,
 };
-use bytes::Bytes;
-use rustls::quic::{HeaderProtectionKey, PacketKey};
 
 pub trait RemoteProtection {
     fn remove_protection(&mut self, header_protection_key: &dyn HeaderProtectionKey) -> bool;

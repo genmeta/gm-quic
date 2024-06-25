@@ -1,5 +1,3 @@
-use qrecovery::crypto::{CryptoStreamReader, CryptoStreamWriter};
-use rustls::quic::{Connection as TlsConnection, KeyChange};
 use std::{
     future::Future,
     io,
@@ -7,6 +5,9 @@ use std::{
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
+
+use qrecovery::crypto::{CryptoStreamReader, CryptoStreamWriter};
+use rustls::quic::{Connection as TlsConnection, KeyChange};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     select,

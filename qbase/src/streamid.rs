@@ -1,10 +1,12 @@
-use super::varint::{be_varint, VarInt, WriteVarInt};
 use std::{
     fmt, ops,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
+
 use thiserror::Error;
+
+use super::varint::{be_varint, VarInt, WriteVarInt};
 
 /**
  * QUIC有4种流类型，对应着4个流ID空间，分别是：
@@ -406,8 +408,9 @@ impl StreamIds {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::task::{RawWaker, RawWakerVTable, Waker};
+
+    use super::*;
 
     #[test]
     fn test_stream_id_new() {

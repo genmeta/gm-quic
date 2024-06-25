@@ -1,17 +1,21 @@
-use crate::bbr::{INITIAL_CWND, MSS};
-use crate::pacing::Pacer;
-use crate::rtt::INITIAL_RTT;
-use crate::SlideWindow;
-use crate::{bbr, pacing, ObserveAck, ObserveLoss, RawRtt};
-use qbase::frame::AckFrame;
-
-use std::ops::{Index, IndexMut, RangeInclusive};
 use std::{
     cmp::Ordering,
     collections::VecDeque,
+    ops::{Index, IndexMut, RangeInclusive},
     sync::{Arc, Mutex},
     task::{Context, Poll},
     time::{Duration, Instant},
+};
+
+use qbase::frame::AckFrame;
+
+use crate::{
+    bbr,
+    bbr::{INITIAL_CWND, MSS},
+    pacing,
+    pacing::Pacer,
+    rtt::INITIAL_RTT,
+    ObserveAck, ObserveLoss, RawRtt, SlideWindow,
 };
 
 const K_GRANULARITY: Duration = Duration::from_millis(1);

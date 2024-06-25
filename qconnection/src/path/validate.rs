@@ -1,10 +1,11 @@
+use std::sync::{Arc, Mutex};
+
 use bytes::BufMut;
 use qbase::frame::{
     io::{WritePathChallengeFrame, WritePathResponseFrame},
     BeFrame, PathChallengeFrame, PathResponseFrame,
 };
 use qcongestion::congestion::Epoch;
-use std::sync::{Arc, Mutex};
 
 /// 路径验证器，用于验证路径的有效性。
 #[derive(Debug)]

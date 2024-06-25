@@ -5,8 +5,9 @@
 
 use std::ops::Deref;
 
-use crate::packet::r#type::Type;
 use deref_derive::Deref;
+
+use crate::packet::r#type::Type;
 
 #[derive(Debug, Clone, Copy, Default, Deref, PartialEq, Eq)]
 pub struct PathResponseFrame {
@@ -53,8 +54,7 @@ impl super::BeFrame for PathResponseFrame {
 
 // nom parser for PATH_RESPONSE_FRAME
 pub fn be_path_response_frame(input: &[u8]) -> nom::IResult<&[u8], PathResponseFrame> {
-    use nom::bytes::complete::take;
-    use nom::combinator::map;
+    use nom::{bytes::complete::take, combinator::map};
     map(take(8usize), PathResponseFrame::from_slice)(input)
 }
 
@@ -74,9 +74,10 @@ impl<T: bytes::BufMut> WritePathResponseFrame for T {
 mod tests {
     #[test]
     fn test_read_path_response_frame() {
+        use nom::combinator::flat_map;
+
         use super::be_path_response_frame;
         use crate::varint::be_varint;
-        use nom::combinator::flat_map;
         let buf = vec![
             super::PATH_RESPONSE_FRAME_TYPE,
             0x01,

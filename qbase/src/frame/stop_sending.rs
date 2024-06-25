@@ -76,9 +76,10 @@ mod tests {
 
     #[test]
     fn test_parse_stop_sending_frame() {
+        use nom::combinator::flat_map;
+
         use super::be_stop_sending_frame;
         use crate::varint::be_varint;
-        use nom::combinator::flat_map;
         let frame = StopSendingFrame {
             stream_id: VarInt::from_u32(0x1234).into(),
             app_err_code: VarInt::from_u32(0x5678),

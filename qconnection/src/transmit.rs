@@ -1,3 +1,5 @@
+use std::{fmt::Debug, ops::Deref};
+
 use bytes::BufMut;
 use qbase::{
     packet::{
@@ -13,7 +15,6 @@ use qrecovery::{
     space::ArcSpace,
     streams::{ArcDataStreams, ReceiveStream, TransmitStream},
 };
-use std::{fmt::Debug, ops::Deref};
 
 /// In order to fill the packet efficiently and reduce unnecessary copying, the data of each
 /// space is directly written on the Buffer. However, the length of the packet header is

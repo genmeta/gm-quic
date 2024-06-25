@@ -1,4 +1,11 @@
-use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
+use std::{
+    future::Future,
+    io::Error,
+    ops::{DerefMut, Range},
+    pin::Pin,
+    task::{Context, Poll},
+};
+
 use bytes::BufMut;
 use futures::ready;
 use qbase::{
@@ -11,13 +18,8 @@ use qbase::{
     util::DescribeData,
     varint::VARINT_MAX,
 };
-use std::{
-    future::Future,
-    io::Error,
-    ops::{DerefMut, Range},
-    pin::Pin,
-    task::{Context, Poll},
-};
+
+use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
 
 #[derive(Debug, Clone)]
 pub struct Outgoing(pub(super) ArcSender);

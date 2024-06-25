@@ -102,8 +102,9 @@ mod tests {
 
     #[test]
     fn test_read_max_streams_frame() {
-        use super::max_streams_frame_with_dir;
         use nom::combinator::flat_map;
+
+        use super::max_streams_frame_with_dir;
         let buf = vec![MAX_STREAMS_FRAME_TYPE, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() == MAX_STREAMS_FRAME_TYPE as u64 {
@@ -131,8 +132,9 @@ mod tests {
 
     #[test]
     fn test_read_too_large_max_streams_frame() {
-        use super::max_streams_frame_with_dir;
         use nom::combinator::flat_map;
+
+        use super::max_streams_frame_with_dir;
         let buf = vec![
             MAX_STREAMS_FRAME_TYPE,
             0xd0,

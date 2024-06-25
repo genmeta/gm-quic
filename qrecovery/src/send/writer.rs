@@ -1,11 +1,13 @@
-use super::sender::{ArcSender, Sender};
 use std::{
     io,
     ops::DerefMut,
     pin::Pin,
     task::{Context, Poll},
 };
+
 use tokio::io::AsyncWrite;
+
+use super::sender::{ArcSender, Sender};
 
 /// TODO: Drop视为自动cancel
 #[derive(Debug)]

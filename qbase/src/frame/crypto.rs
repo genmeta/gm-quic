@@ -5,13 +5,15 @@
 //   Crypto Data (..),
 // }
 
+use std::ops::Range;
+
+use nom::sequence::tuple;
+
 use crate::{
     packet::r#type::Type,
     util::{DescribeData, WriteData},
     varint::{be_varint, VarInt, WriteVarInt, VARINT_MAX},
 };
-use nom::sequence::tuple;
-use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CryptoFrame {

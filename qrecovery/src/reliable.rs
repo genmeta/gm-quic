@@ -1,12 +1,13 @@
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex, MutexGuard},
+};
+
 use qbase::{
     frame::{AckFrame, AckRecord, ConnFrame, DataFrame, ReliableFrame, StreamCtlFrame},
     index_deque::IndexDeque,
     packet::PacketNumber,
     varint::VARINT_MAX,
-};
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex, MutexGuard},
 };
 
 #[derive(Debug, Default)]

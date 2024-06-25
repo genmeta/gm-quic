@@ -1,11 +1,13 @@
-use super::KeyPhaseBit;
-use rustls::quic::{HeaderProtectionKey, Keys, PacketKey, Secrets};
 use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
+
+use rustls::quic::{HeaderProtectionKey, Keys, PacketKey, Secrets};
+
+use super::KeyPhaseBit;
 
 #[derive(Clone)]
 enum KeysState {

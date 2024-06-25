@@ -1,12 +1,14 @@
-use super::recver::{ArcRecver, Recver};
-use qbase::varint::VARINT_MAX;
 use std::{
     io,
     ops::DerefMut,
     pin::Pin,
     task::{Context, Poll},
 };
+
+use qbase::varint::VARINT_MAX;
 use tokio::io::{AsyncRead, ReadBuf};
+
+use super::recver::{ArcRecver, Recver};
 
 #[derive(Debug)]
 pub struct Reader(ArcRecver);

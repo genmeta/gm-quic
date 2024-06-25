@@ -1,11 +1,12 @@
-use crate::msg::{Encoder, Message};
-use crate::{io, PacketHeader};
-use crate::{Gro, Gso, Io, OffloadStatus, UdpSocketController};
+use std::{cmp, io::IoSlice, mem, net::SocketAddr, os::fd::AsRawFd};
+
 use socket2::SockAddr;
-use std::cmp;
-use std::io::IoSlice;
-use std::net::SocketAddr;
-use std::{mem, os::fd::AsRawFd};
+
+use crate::{
+    io,
+    msg::{Encoder, Message},
+    Gro, Gso, Io, OffloadStatus, PacketHeader, UdpSocketController,
+};
 
 const OPTION_ON: libc::c_int = 1;
 const OPTION_OFF: libc::c_int = 0;

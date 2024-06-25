@@ -38,10 +38,11 @@ const LONG_HEADER_BIT: u8 = 0x80;
 use super::FIXED_BIT;
 
 pub mod ext {
-    use super::*;
-    use crate::packet::error::Error;
     use bytes::BufMut;
     use nom::number::streaming::be_u32;
+
+    use super::*;
+    use crate::packet::error::Error;
 
     pub fn parse_long_type(ty: u8) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Type, Error> {
         move |input| {

@@ -1,13 +1,13 @@
-use bytes::Bytes;
-use clap::{command, Parser};
-use qudp::{ArcUsc, PacketHeader};
-use std::task;
 use std::{
     future::Future,
     io::{self, IoSlice},
-    iter,
+    iter, task,
     task::{ready, Poll},
 };
+
+use bytes::Bytes;
+use clap::{command, Parser};
+use qudp::{ArcUsc, PacketHeader};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

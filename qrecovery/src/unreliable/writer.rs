@@ -1,5 +1,4 @@
 use std::{io, ops::DerefMut, sync::Arc};
-use tokio::sync::Mutex;
 
 use bytes::{BufMut, Bytes};
 use qbase::{
@@ -7,6 +6,7 @@ use qbase::{
     frame::{io::WriteDatagramFrame, BeFrame, DatagramFrame},
     varint::VarInt,
 };
+use tokio::sync::Mutex;
 
 use super::queue::DatagramQueue;
 

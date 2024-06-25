@@ -42,9 +42,10 @@ impl<T: bytes::BufMut> WriteHandshakeDoneFrame for T {
 mod tests {
     #[test]
     fn test_read_handshake_done_frame() {
+        use nom::combinator::flat_map;
+
         use super::be_handshake_done_frame;
         use crate::varint::be_varint;
-        use nom::combinator::flat_map;
         let buf = vec![super::HANDSHAKE_DONE_FRAME_TYPE];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() == super::HANDSHAKE_DONE_FRAME_TYPE as u64 {

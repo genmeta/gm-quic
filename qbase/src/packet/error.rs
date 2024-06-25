@@ -1,6 +1,7 @@
-use super::r#type::Type;
 use nom::error::ErrorKind as NomErrorKind;
 use thiserror::Error;
+
+use super::r#type::Type;
 
 #[derive(Debug, PartialEq, Eq, Error)]
 pub enum Error {

@@ -96,9 +96,9 @@ impl Pacer {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use super::*;
-    use std::time::Duration;
-    use std::time::Instant;
 
     #[test]
     fn test_pacer_initialization() {

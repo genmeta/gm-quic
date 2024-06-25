@@ -1,5 +1,6 @@
-use bytes::Bytes;
 use std::collections::VecDeque;
+
+use bytes::Bytes;
 
 /// 是否应该对其大小有所限制？还是不断发，无限存。。。
 #[derive(Default, Debug)]
