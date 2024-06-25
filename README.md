@@ -1,5 +1,9 @@
 # gm-quic
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/genmeta/gm-quic/rust.yml)](https://github.com/genmeta/gm-quic/actions/workflows/rust.yml)
+[![codecov](https://codecov.io/gh/genmeta/gm-quic/graph/badge.svg)](https://codecov.io/gh/genmeta/gm-quic)
+
 `gm-quic`一个用原生异步Rust实现的quic传输协议，一个高效的、可扩展的RFC9000实现，同时工程质量优良，极具学习价值。
 
 
