@@ -101,6 +101,10 @@ impl StreamFrame {
         self.length
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
     pub fn range(&self) -> Range<u64> {
         self.offset.into_inner()..self.offset.into_inner() + self.length as u64
     }
