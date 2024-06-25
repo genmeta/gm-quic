@@ -1,0 +1,5 @@
+coverage:
+  status:
+    patch: off
+    project: off
+  range: "70..100"
