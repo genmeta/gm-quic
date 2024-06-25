@@ -1,6 +1,11 @@
 use bytes::BufMut;
 
-// An encoded packet number
+/// An encoded packet number
+///
+/// The packet number is an integer in the range 0 to 2^62  - 1 and encoded in 1 to 4 bytes.
+///
+/// See [Section 12.3](https://www.rfc-editor.org/rfc/rfc9000.html#section-12.3) and
+/// [Section 17.1](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.1)
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum PacketNumber {
     U8(u8),
@@ -43,6 +48,11 @@ pub fn take_pn_len(pn_len: u8) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Packe
 }
 
 impl PacketNumber {
+    /// The size of the packet number encoding is at least one bit more than the
+    /// base-2 logarithm of the number of contiguous unacknowledged packet numbers
+    ///
+    /// See [Section 17.1-5](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.1-5) and
+    /// [Section A.2](https://www.rfc-editor.org/rfc/rfc9000.html#section-a.2)
     pub fn encode(pn: u64, largest_acked: u64) -> Self {
         let range = (pn - largest_acked) * 2;
         if range < 1 << 8 {
@@ -68,11 +78,13 @@ impl PacketNumber {
         }
     }
 
-    /// From Appendix A.3.
+    /// For decoding packet numbers after header protection has been removed.
+    /// the packet number is decoded by finding the packet number value that
+    /// is closest to the next expected packet. The next expected packet is
+    /// the highest received packet number plus one.
     ///
-    /// for decoding packet numbers after header protection has been removed.
-    ///
-    /// [rfc](https://www.rfc-editor.org/rfc/rfc9000.html#name-sample-packet-number-decodi)
+    /// See [Section 17.1-7](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.1-7) and
+    /// [Section A.3](https://www.rfc-editor.org/rfc/rfc9000.html#section-a.3)
     pub fn decode(self, expected: u64) -> u64 {
         use self::PacketNumber::*;
 
@@ -105,4 +117,76 @@ impl PacketNumber {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+
+    #[test]
+    fn test_read_packet_number() {
+        let buf = [0x00];
+        assert_eq!(
+            (&[][..], super::PacketNumber::U8(0)),
+            super::take_pn_len(1)(&buf).unwrap()
+        );
+
+        let buf = [0x01, 0x00];
+        assert_eq!(
+            (&[][..], super::PacketNumber::U16(1 << 8)),
+            super::take_pn_len(2)(&buf).unwrap()
+        );
+
+        let buf = [0x01, 0x00, 0x00];
+        assert_eq!(
+            (&[][..], super::PacketNumber::U24(1 << 16)),
+            super::take_pn_len(3)(&buf).unwrap()
+        );
+
+        let buf = [0x01, 0x00, 0x00, 0x00];
+        assert_eq!(
+            (&[][..], super::PacketNumber::U32(1 << 24)),
+            super::take_pn_len(4)(&buf).unwrap()
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_read_packet_number_too_large() {
+        let buf = [0x01, 0x00, 0x00, 0x00, 0x00];
+        super::take_pn_len(5)(&buf).unwrap();
+    }
+
+    #[test]
+    fn test_write_packet_number() {
+        use super::WritePacketNumber;
+        use crate::packet::PacketNumber;
+
+        let mut buf = vec![];
+        buf.put_packet_number(PacketNumber::encode(0, 0));
+        assert_eq!(buf, [0x00]);
+
+        buf.clear();
+        buf.put_packet_number(PacketNumber::encode(1 << 8, 0));
+        assert_eq!(buf, [0x01, 0x00]);
+
+        buf.clear();
+        buf.put_packet_number(PacketNumber::encode(1 << 16, 0));
+        assert_eq!(buf, [0x01, 0x00, 0x00]);
+
+        buf.clear();
+        buf.put_packet_number(PacketNumber::encode(1 << 24, 0));
+        assert_eq!(buf, [0x01, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_encode_packet_number() {
+        let pn = super::PacketNumber::encode((1 << 31) - 1, 0);
+        assert_eq!(pn.decode(0), (1 << 31) - 1);
+
+        let pn = super::PacketNumber::encode(0, 0);
+        assert_eq!(pn.decode(0), 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_encode_packet_number_overflow() {
+        super::PacketNumber::encode(1 << 31, 0);
+    }
+}
