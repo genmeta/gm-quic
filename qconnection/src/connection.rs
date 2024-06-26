@@ -7,13 +7,11 @@ use qbase::{
     streamid::Role,
     util::ArcAsyncQueue,
 };
-use qrecovery::crypto::CryptoStream;
 use qudp::ArcUsc;
 
 use crate::{
     controller::ArcFlowController,
     crypto::TlsIO,
-    handshake,
     path::{AckObserver, ArcPath, ArcPathes, LossObserver, Pathway},
     space::{ArcSpace, DataSpace, NoDataSpace, PacketQueue},
 };
@@ -24,17 +22,17 @@ type RxPacketQueue<T> = Option<PacketQueue<T>>;
 
 pub struct RawConnection {
     // 所有Path的集合，Pathway作为key
-    pathes: ArcPathes,
+    paths: ArcPathes,
     init_pkt_queue: RxPacketQueue<InitialPacket>,
     hs_pkt_queue: RxPacketQueue<HandshakePacket>,
     zero_rtt_pkt_queue: RxPacketQueue<ZeroRttPacket>,
     one_rtt_pkt_queue: PacketQueue<OneRttPacket>,
 
     // 发送数据，也可以随着升级到Handshake空间而丢弃
-    initial_space: ArcSpace<NoDataSpace>,
+    initial_space: ArcSpace<NoDataSpace<InitialPacket>>,
     // An endpoint MUST discard its Handshake keys when the TLS handshake is confirmed.
     // 发送数据，也可以随着升级到1RTT空间而丢弃
-    handshake_space: ArcSpace<NoDataSpace>,
+    handshake_space: ArcSpace<NoDataSpace<HandshakePacket>>,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
     data_space: ArcSpace<DataSpace>,
 
@@ -54,53 +52,40 @@ impl RawConnection {
     fn new(tls_session: TlsIO) -> RawConnection {
         let conn_frame_queue = ArcAsyncQueue::new();
 
-        let initial_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
-        let initial_crypto_handler = initial_crypto_stream.split();
-        let initial_space = ArcSpace::new_nodata_space(initial_crypto_stream);
-        let initial_loss_tx = initial_space.receive_may_loss_pkts();
-        let initial_pkt_tx = initial_space.receive_initial_packet(conn_frame_queue.clone());
+        let initial_space: ArcSpace<NoDataSpace<InitialPacket>> = ArcSpace::new_nodata_space();
+        let initial_pkt_tx = initial_space.receive_long_header_packet(conn_frame_queue.clone());
 
-        let handshake_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
-        let handshake_crypto_handler = handshake_crypto_stream.split();
-        let handshake_space = ArcSpace::new_nodata_space(handshake_crypto_stream);
-        let handshake_loss_tx = handshake_space.receive_may_loss_pkts();
-        let handshake_pkt_tx = handshake_space.receive_handshake_packet(conn_frame_queue.clone());
+        let handshake_space: ArcSpace<NoDataSpace<HandshakePacket>> = ArcSpace::new_nodata_space();
+        let handshake_pkt_tx = handshake_space.receive_long_header_packet(conn_frame_queue.clone());
 
-        tokio::spawn(
-            handshake::exchange_initial_crypto_msg_until_getting_handshake_key(
-                tls_session.clone(),
-                handshake_space.keys.clone(),
-                initial_crypto_handler,
-            ),
+        initial_space.exchange_initial_crypto_msg_until_getting_handshake_key(
+            &handshake_space,
+            tls_session.clone(),
         );
 
-        let one_rtt_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
-        let data_space =
-            ArcSpace::<DataSpace>::new_data_space(Role::Client, 20, 20, 0, one_rtt_crypto_stream);
+        let data_space = ArcSpace::<DataSpace>::new_data_space(Role::Client, 20, 20, 0);
 
         // 应用的操作接口，后续有必要在连接里直接调用
         // let _streams = data_space.data_streams();
 
-        let zero_rtt_pkt_tx = data_space.receive_0rtt_packet(conn_frame_queue.clone());
-        let one_rtt_pkt_tx = data_space.receive_1rtt_packet(conn_frame_queue.clone());
+        let zero_rtt_pkt_tx = data_space.receive_long_header_packet(conn_frame_queue.clone());
+        let one_rtt_pkt_tx = data_space.receive_short_header_packet(conn_frame_queue.clone());
 
-        let data_loss_tx = data_space.receive_may_loss_pkts();
-        tokio::spawn(
-            handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
-                tls_session,
-                data_space.one_rtt_keys.clone(),
-                handshake_crypto_handler,
-            ),
-        );
+        handshake_space
+            .exchange_handshake_crypto_msg_until_getting_1rtt_key(&data_space, tls_session.clone());
 
         let ack_observer = AckObserver::new([
             initial_space.rcvd_pkt_records().clone(),
             handshake_space.rcvd_pkt_records().clone(),
             data_space.rcvd_pkt_records().clone(),
         ]);
-        let loss_observer = LossObserver::new([initial_loss_tx, handshake_loss_tx, data_loss_tx]);
+        let loss_observer = LossObserver::new([
+            initial_space.receive_may_loss_pkts(),
+            handshake_space.receive_may_loss_pkts(),
+            data_space.receive_may_loss_pkts(),
+        ]);
         RawConnection {
-            pathes: ArcPathes::default(),
+            paths: ArcPathes::default(),
             init_pkt_queue: Some(initial_pkt_tx),
             hs_pkt_queue: Some(handshake_pkt_tx),
             zero_rtt_pkt_queue: Some(zero_rtt_pkt_tx),
@@ -145,7 +130,7 @@ impl RawConnection {
     }
 
     pub fn get_path(&self, pathway: Pathway, usc: &ArcUsc) -> ArcPath {
-        self.pathes.get_path(pathway, || {
+        self.paths.get_path(pathway, || {
             let usc = usc.clone();
             let ack_observer = self.ack_observer.clone();
             let loss_observer = self.loss_observer.clone();

@@ -1,21 +1,13 @@
-use std::{ops::Deref, sync::Arc, time::Instant};
+mod data;
+mod nodata;
+use std::{marker::PhantomData, ops::Deref, sync::Arc, time::Instant};
 
 use bytes::{BufMut, Bytes};
+pub use data::DataSpace;
 use deref_derive::Deref;
 use futures::StreamExt;
-use qbase::{
-    error::Error,
-    frame::{
-        AckFrame, ConnFrame, CryptoFrame, DataFrame, DatagramFrame, ReliableFrame, StreamCtlFrame,
-        StreamFrame,
-    },
-    packet::{
-        keys::{ArcKeys, ArcOneRttKeys},
-        HandshakePacket, InitialPacket, OneRttPacket, PacketNumber, ZeroRttPacket,
-    },
-    streamid::Role,
-    util::ArcAsyncQueue,
-};
+pub use nodata::NoDataSpace;
+use qbase::{error::Error, frame::*, packet::PacketNumber, util::ArcAsyncQueue};
 use qrecovery::{
     crypto::CryptoStream,
     reliable::{ArcRcvdPktRecords, Error as RecvPnError, ReliableTransmit, SentRecord},
@@ -25,6 +17,8 @@ use qunreliable::DatagramFlow;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::path::ArcPath;
+
+pub type PacketQueue<T> = mpsc::UnboundedSender<(T, ArcPath)>;
 
 trait Transmit<F: 'static> {
     fn read_frame(&self, buf: &mut impl BufMut) -> Option<F>;
@@ -177,122 +171,6 @@ mod indirect_impl {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct NoDataSpace {
-    pub(crate) keys: ArcKeys,
-    pub(crate) crypto: CryptoStream,
-}
-
-impl indirect_impl::Transmit<CryptoFrame> for NoDataSpace {
-    fn implementer(&self) -> &impl Transmit<CryptoFrame> {
-        &self.crypto
-    }
-}
-
-impl Space for NoDataSpace {
-    fn try_read_data(&self, buf: &mut impl BufMut) -> Option<DataFrame> {
-        Transmit::<CryptoFrame>::read_frame(self, buf).map(Into::into)
-    }
-
-    fn recv_space_frame(&self, frame: SpaceFrame) -> Result<(), Error> {
-        match frame {
-            SpaceFrame::Data(DataFrame::Crypto(frame), data) => self.recv_frame(frame, data),
-            _ => unreachable!(),
-        }
-    }
-
-    fn on_acked(&self, record: SentRecord) {
-        if let SentRecord::Data(frame) = record {
-            match frame {
-                DataFrame::Crypto(frame) => self.on_frame_acked(frame),
-                _ => unreachable!(),
-            }
-        }
-    }
-
-    fn may_loss_data(&self, frame: DataFrame) {
-        match frame {
-            DataFrame::Crypto(frame) => self.may_loss_frame(frame),
-            _ => unreachable!(),
-        }
-    }
-
-    fn on_conn_error(&self, _error: &Error) {}
-}
-
-#[derive(Debug, Clone)]
-pub struct DataSpace {
-    pub(crate) zero_rtt_keys: ArcKeys,
-    pub(crate) one_rtt_keys: ArcOneRttKeys,
-    pub(crate) crypto: CryptoStream,
-    pub(crate) stream: ArcDataStreams,
-    pub(crate) datagram: DatagramFlow,
-}
-
-impl indirect_impl::Transmit<CryptoFrame> for DataSpace {
-    fn implementer(&self) -> &impl Transmit<CryptoFrame> {
-        &self.crypto
-    }
-}
-
-impl indirect_impl::Transmit<StreamFrame> for DataSpace {
-    fn implementer(&self) -> &impl Transmit<StreamFrame> {
-        &self.stream
-    }
-}
-
-impl indirect_impl::Transmit<DatagramFrame> for DataSpace {
-    fn implementer(&self) -> &impl self::Transmit<DatagramFrame> {
-        &self.datagram
-    }
-}
-
-impl Space for DataSpace {
-    fn try_read_data(&self, buf: &mut impl BufMut) -> Option<DataFrame> {
-        // todo: 不应该一直这样按照次序发送，应该有一个策略
-        Transmit::<CryptoFrame>::read_frame(self, buf)
-            .map(Into::into)
-            .or_else(|| Transmit::<StreamFrame>::read_frame(self, buf).map(Into::into))
-            .or_else(|| Transmit::<DatagramFrame>::read_frame(self, buf).map(Into::into))
-    }
-
-    fn recv_space_frame(&self, frame: SpaceFrame) -> Result<(), Error> {
-        match frame {
-            SpaceFrame::Stream(frame) => self.stream.recv_stream_control(frame),
-            SpaceFrame::Data(DataFrame::Crypto(frame), data) => self.recv_frame(frame, data),
-            SpaceFrame::Data(DataFrame::Stream(frame), data) => self.recv_frame(frame, data),
-            SpaceFrame::Data(DataFrame::Datagram(frame), data) => self.recv_frame(frame, data),
-        }
-    }
-
-    fn on_acked(&self, record: SentRecord) {
-        match record {
-            SentRecord::Reliable(ReliableFrame::Stream(StreamCtlFrame::ResetStream(reset))) => {
-                self.stream.on_reset_acked(reset)
-            }
-            SentRecord::Data(frame) => match frame {
-                DataFrame::Crypto(frame) => self.on_frame_acked(frame),
-                DataFrame::Stream(frame) => self.on_frame_acked(frame),
-                DataFrame::Datagram(frame) => self.on_frame_acked(frame),
-            },
-            _ => {}
-        }
-    }
-
-    fn may_loss_data(&self, frame: DataFrame) {
-        match frame {
-            DataFrame::Crypto(frame) => self.may_loss_frame(frame),
-            DataFrame::Stream(frame) => self.may_loss_frame(frame),
-            DataFrame::Datagram(frame) => self.may_loss_frame(frame),
-        }
-    }
-
-    fn on_conn_error(&self, error: &Error) {
-        self.stream.on_conn_error(error);
-        self.datagram.on_conn_error(error);
-    }
-}
-
 #[derive(Debug, Clone, Deref)]
 pub struct RawSpace<T: Space> {
     pub(crate) reliable: ReliableTransmit,
@@ -400,116 +278,5 @@ impl<T: Space> ArcSpace<T> {
             }
         });
         ack_tx
-    }
-}
-
-pub type PacketQueue<T> = mpsc::UnboundedSender<(T, ArcPath)>;
-
-impl ArcSpace<NoDataSpace> {
-    pub fn new_nodata_space(crypto_stream: CryptoStream) -> Self {
-        Self::from_space(NoDataSpace {
-            keys: ArcKeys::new_pending(),
-            crypto: crypto_stream,
-        })
-    }
-
-    pub fn receive_initial_packet(
-        &self,
-        conn_frame_queue: ArcAsyncQueue<ConnFrame>,
-    ) -> PacketQueue<InitialPacket> {
-        let (pkt_tx, pkt_rx) = mpsc::unbounded_channel();
-        let ark_tx = self.receive_acks();
-        tokio::spawn(
-            crate::auto::loop_read_long_packet_and_then_dispatch_to_conn_and_space(
-                pkt_rx,
-                self.keys.clone(),
-                self.clone(),
-                conn_frame_queue,
-                ark_tx,
-            ),
-        );
-        pkt_tx
-    }
-
-    pub fn receive_handshake_packet(
-        &self,
-        conn_frame_queue: ArcAsyncQueue<ConnFrame>,
-    ) -> PacketQueue<HandshakePacket> {
-        let (pkt_tx, pkt_rx) = mpsc::unbounded_channel();
-        let ark_tx = self.receive_acks();
-        tokio::spawn(
-            crate::auto::loop_read_long_packet_and_then_dispatch_to_conn_and_space(
-                pkt_rx,
-                self.keys.clone(),
-                self.clone(),
-                conn_frame_queue,
-                ark_tx,
-            ),
-        );
-        pkt_tx
-    }
-}
-
-impl ArcSpace<DataSpace> {
-    /// 数据空间通过此函数创建
-    pub fn new_data_space(
-        role: Role,
-        max_bi_streams: u64,
-        max_uni_streams: u64,
-        max_datagram_frame_size: u64,
-        crypto_stream: CryptoStream,
-    ) -> Self {
-        use qrecovery::reliable::ArcReliableFrameQueue;
-        let reliable_frame_queue = ArcReliableFrameQueue::default();
-        let data_streams = ArcDataStreams::with_role_and_limit(
-            role,
-            max_bi_streams,
-            max_uni_streams,
-            reliable_frame_queue.clone(),
-        );
-        let datagram_flow = DatagramFlow::new(max_datagram_frame_size);
-        Self::from_space(DataSpace {
-            crypto: crypto_stream,
-            stream: data_streams,
-            datagram: datagram_flow,
-            zero_rtt_keys: ArcKeys::new_pending(),
-            one_rtt_keys: ArcOneRttKeys::new_pending(),
-        })
-    }
-
-    pub fn receive_0rtt_packet(
-        &self,
-        conn_frame_queue: ArcAsyncQueue<ConnFrame>,
-    ) -> PacketQueue<ZeroRttPacket> {
-        let (pkt_tx, pkt_rx) = mpsc::unbounded_channel();
-        let ark_tx = self.receive_acks();
-        tokio::spawn(
-            crate::auto::loop_read_long_packet_and_then_dispatch_to_conn_and_space(
-                pkt_rx,
-                self.zero_rtt_keys.clone(),
-                self.clone(),
-                conn_frame_queue,
-                ark_tx,
-            ),
-        );
-        pkt_tx
-    }
-
-    pub fn receive_1rtt_packet(
-        &self,
-        conn_frame_queue: ArcAsyncQueue<ConnFrame>,
-    ) -> PacketQueue<OneRttPacket> {
-        let (pkt_tx, pkt_rx) = mpsc::unbounded_channel();
-        let ark_tx = self.receive_acks();
-        tokio::spawn(
-            crate::auto::loop_read_short_packet_and_then_dispatch_to_conn_and_space(
-                pkt_rx,
-                self.one_rtt_keys.clone(),
-                self.clone(),
-                conn_frame_queue,
-                ark_tx,
-            ),
-        );
-        pkt_tx
     }
 }

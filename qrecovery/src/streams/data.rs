@@ -4,7 +4,7 @@ use std::{
     task::{ready, Context, Poll},
 };
 
-use bytes::BufMut;
+use bytes::{BufMut, Bytes};
 use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::*,
@@ -180,11 +180,7 @@ impl RawDataStreams {
     }
 
     #[inline]
-    pub fn recv_stream(
-        &self,
-        stream_frame: StreamFrame,
-        body: bytes::Bytes,
-    ) -> Result<(), QuicError> {
+    pub fn recv_stream(&self, stream_frame: StreamFrame, body: Bytes) -> Result<(), QuicError> {
         let sid = stream_frame.id;
         // 对方必须是发送端，才能发送此帧
         if sid.role() != self.role {
