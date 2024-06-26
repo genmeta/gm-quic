@@ -236,7 +236,7 @@ pub use send::CryptoStreamWriter;
 /// ```rust
 /// use bytes::Bytes;
 /// use qbase::{frame::CryptoFrame, varint::VarInt};
-/// use qrecovery::crypto::{CryptoStream, TransmitCrypto};
+/// use qrecovery::crypto::{CryptoStream};
 /// use tokio::io::{AsyncWriteExt, AsyncReadExt};
 ///
 /// #[tokio::main]
