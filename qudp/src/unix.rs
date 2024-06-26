@@ -129,7 +129,7 @@ impl Io for UdpSocketController {
         let max_msg_count = bufs.len().min(BATCH_SIZE);
 
         msg.prepare_recv(bufs, max_msg_count);
-        let mut ret: io::Result<(usize, usize)>;
+        let mut ret: io::Result<Rcvd>;
         let msg_count = loop {
             #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
             {
@@ -147,13 +147,13 @@ impl Io for UdpSocketController {
                 ret = recvmsg(self.io.as_raw_fd(), &mut msg.hdrs[0]);
             }
             match ret {
-                Ok((msg_count, _msg_length)) => {
-                    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "openbsd",))]
-                    {
-                        recv_hdrs[0].seg_size = _msg_length as u16;
+                Ok(rcvd) => match rcvd {
+                    Rcvd::MsgCount(n) => break n,
+                    Rcvd::MsgSize(n) => {
+                        recv_hdrs[0].seg_size = n as u16;
+                        break 1;
                     }
-                    break msg_count;
-                }
+                },
                 Err(e) => {
                     if e.kind() == io::ErrorKind::Interrupted {
                         continue;
@@ -271,14 +271,19 @@ pub(super) fn sendmsg(
     Ok(sent_bytes)
 }
 
+#[allow(dead_code)]
+enum Rcvd {
+    MsgCount(usize),
+    MsgSize(usize),
+}
+
 /// recvmmsg wrapper with ENOSYS handling
-/// return message count and message length
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
 unsafe fn recvmmsg(
     sockfd: libc::c_int,
     msgvec: *mut libc::mmsghdr,
     vlen: libc::c_uint,
-) -> io::Result<(usize, usize)> {
+) -> io::Result<Rcvd> {
     let flags = 0;
 
     use std::ptr;
@@ -286,7 +291,7 @@ unsafe fn recvmmsg(
     let ret = libc::syscall(libc::SYS_recvmmsg, sockfd, msgvec, vlen, flags, timeout);
     match to_result(ret as isize) {
         Ok(n) => {
-            return Ok((n, 0));
+            return Ok(Rcvd::MsgCount(n));
         }
         Err(e) => {
             // ENOSYS indicates that recvmmsg is not supported
@@ -298,12 +303,11 @@ unsafe fn recvmmsg(
     }
 }
 
-/// return message count and message length
-fn recvmsg(sockfd: libc::c_int, msghdr: *mut libc::msghdr) -> io::Result<(usize, usize)> {
+fn recvmsg(sockfd: libc::c_int, msghdr: *mut libc::msghdr) -> io::Result<Rcvd> {
     let flags = 0;
     let ret = to_result(unsafe { libc::recvmsg(sockfd, msghdr, flags) });
     match ret {
-        Ok(n) => Ok((1, n)),
+        Ok(n) => Ok(Rcvd::MsgSize(n)),
         Err(e) => Err(e),
     }
 }
