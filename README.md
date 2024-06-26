@@ -73,4 +73,4 @@ sent 1200000000 bytes
 ## 社区交流
 
 - [用户论坛](https://github.com/genmeta/gm-quic/discussions)
-- 飞书聊天群：[发送邮件](mailto:quic@genmeta.net)介绍一下您的贡献，我们将邮件回复您加群链接及群二维码。
+- 飞书聊天群：[发送邮件](mailto:quic_team@genmeta.net)介绍一下您的贡献，我们将邮件回复您加群链接及群二维码。
