@@ -18,10 +18,10 @@ use qbase::{
     },
     util::ArcAsyncDeque,
 };
-use qrecovery::{reliable::rcvdpkt::ArcRcvdPktRecords, space::SpaceFrame};
+use qrecovery::reliable::rcvdpkt::ArcRcvdPktRecords;
 use tokio::sync::mpsc;
 
-use crate::path::ArcPath;
+use crate::{path::ArcPath, space::SpaceFrame};
 
 pub(crate) struct PacketPayload {
     pub pn: u64,
