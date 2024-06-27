@@ -235,6 +235,24 @@ pub enum Frame {
     Datagram(DatagramFrame, Bytes),
 }
 
+impl BeFrame for Frame {
+    fn frame_type(&self) -> FrameType {
+        match self {
+            Frame::Pure(frame) => frame.frame_type(),
+            Frame::Data(frame, _) => frame.frame_type(),
+            Frame::Datagram(frame, _) => frame.frame_type(),
+        }
+    }
+
+    fn belongs_to(&self, packet_type: Type) -> bool {
+        match self {
+            Frame::Pure(frame) => frame.belongs_to(packet_type),
+            Frame::Data(frame, _) => frame.belongs_to(packet_type),
+            Frame::Datagram(frame, _) => frame.belongs_to(packet_type),
+        }
+    }
+}
+
 pub struct FrameReader {
     raw: Bytes,
 }

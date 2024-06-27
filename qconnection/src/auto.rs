@@ -1,253 +1,312 @@
-use std::ops::Deref;
+use std::{
+    ops::Deref,
+    pin::{pin, Pin},
+    task::{Context, Poll},
+};
 
-use futures::StreamExt;
+use bytes::Bytes;
+use futures::{Future, Stream, StreamExt};
 use qbase::{
     error::{Error, ErrorKind},
-    frame::{AckFrame, BeFrame, ConnFrame, Frame, FrameReader, PureFrame},
+    frame::*,
     packet::{
         decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
         header::GetType,
         keys::{ArcKeys, ArcOneRttKeys},
         r#type::Type,
-        OneRttPacket, PacketNumber, PacketWrapper,
+        HandshakeHeader, InitialHeader, OneRttPacket, PacketNumber, PacketWrapper, ZeroRttHeader,
     },
     util::ArcAsyncDeque,
 };
-use qrecovery::{
-    space::{ArcSpace, SpaceFrame},
-    streams::DataStreams,
-};
+use qrecovery::{reliable::rcvdpkt::ArcRcvdPktRecords, space::SpaceFrame};
 use tokio::sync::mpsc;
 
 use crate::path::ArcPath;
 
-fn parse_packet_and_then_dispatch(
-    payload: bytes::Bytes,
-    packet_type: Type,
-    _path: &ArcPath,
-    conn_frame_queue: &ArcAsyncDeque<ConnFrame>,
-    space_frame_queue: &ArcAsyncDeque<SpaceFrame>,
-    ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
-    // on_ack_frame_rcvd: impl FnMut(AckFrame, Arc<Mutex<Rtt>>),
-) -> Result<bool, Error> {
-    let mut space_frame_writer = space_frame_queue.writer();
-    let mut conn_frame_writer = conn_frame_queue.writer();
-    // let mut path_frame_writer = path.frames().writer();
-    let mut is_ack_eliciting = false;
-    for result in FrameReader::new(payload) {
-        match result {
-            Ok(frame) => match frame {
-                Frame::Pure(f) => {
-                    if !f.belongs_to(packet_type) {
-                        space_frame_writer.rollback();
-                        conn_frame_writer.rollback();
-                        // path_frame_writer.rollback();
-                        return Err(Error::new(
-                            ErrorKind::ProtocolViolation,
-                            f.frame_type(),
-                            format!("cann't exist in {:?}", packet_type),
-                        ));
-                    }
-
-                    match f {
-                        PureFrame::Padding(_) => continue,
-                        PureFrame::Ping(_) => is_ack_eliciting = true,
-                        PureFrame::Ack(ack) => {
-                            // TODO: 在此收到AckFrame，ArcPath需先内部处理一番
-                            let _ = ack_frames_tx.send(ack);
-                        }
-                        PureFrame::Conn(f) => {
-                            is_ack_eliciting = true;
-                            conn_frame_writer.push(f);
-                        }
-                        PureFrame::Stream(f) => {
-                            is_ack_eliciting = true;
-                            space_frame_writer.push(SpaceFrame::Stream(f));
-                        }
-                        PureFrame::Path(_f) => {
-                            is_ack_eliciting = true;
-                            // path_frame_writer.push(f);
-                        }
-                    }
-                }
-                Frame::Data(f, data) => {
-                    if !f.belongs_to(packet_type) {
-                        space_frame_writer.rollback();
-                        conn_frame_writer.rollback();
-                        // path_frame_writer.rollback();
-                        return Err(Error::new(
-                            ErrorKind::ProtocolViolation,
-                            f.frame_type(),
-                            format!("cann't exist in {:?}", packet_type),
-                        ));
-                    }
-
-                    is_ack_eliciting = true;
-                    space_frame_writer.push(SpaceFrame::Data(f, data));
-                }
-                Frame::Datagram(_, _) => todo!(),
-            },
-            Err(e) => {
-                // If frame parsing fails, discard it and roll back,
-                // as if this packet has never been received.
-                space_frame_writer.rollback();
-                conn_frame_writer.rollback();
-                // path_frame_writer.rollback();
-                return Err(e.into());
-            }
-        }
-    }
-    Ok(is_ack_eliciting)
+pub(crate) struct PacketPayload {
+    pub pn: u64,
+    pub payload: Bytes,
+    pub r#type: Type,
+    pub path: ArcPath,
 }
 
-pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue<H, S>(
-    mut packet_rx: mpsc::UnboundedReceiver<(PacketWrapper<H>, ArcPath)>,
+impl PacketPayload {
+    pub fn dispatch(
+        self,
+        conn_frame_queue: Option<&ArcAsyncDeque<ConnFrame>>,
+        space_frame_queue: Option<&ArcAsyncDeque<SpaceFrame>>,
+        datagram_frame_queue: Option<&ArcAsyncDeque<(DatagramFrame, Bytes)>>,
+        ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
+    ) -> Result<bool, Error> {
+        let packet = self;
+        let mut space_frame_writer = space_frame_queue.map(ArcAsyncDeque::writer);
+        let mut conn_frame_writer = conn_frame_queue.map(ArcAsyncDeque::writer);
+        let mut datagram_frame_writer = datagram_frame_queue.map(ArcAsyncDeque::writer);
+        // let mut path_frame_writer = path.frames().writer();
+
+        FrameReader::new(packet.payload)
+            .try_fold(false, |is_ack_eliciting, frame| {
+                let frame = frame.map_err(Error::from)?;
+                if !frame.belongs_to(packet.r#type) {
+                    return Err(Error::new(
+                        ErrorKind::ProtocolViolation,
+                        frame.frame_type(),
+                        format!("cann't exist in {:?}", packet.r#type),
+                    ));
+                }
+                match frame {
+                    Frame::Pure(PureFrame::Padding(_)) => Ok(is_ack_eliciting),
+                    Frame::Pure(PureFrame::Ping(_)) => Ok(true),
+                    Frame::Pure(PureFrame::Ack(ack)) => {
+                        _ = ack_frames_tx.send(ack);
+                        Ok(is_ack_eliciting)
+                    }
+                    Frame::Pure(PureFrame::Conn(conn)) => {
+                        let Some(conn_frame_writer) = conn_frame_writer.as_mut() else {
+                            unreachable!()
+                        };
+                        conn_frame_writer.push(conn);
+                        Ok(true)
+                    }
+                    Frame::Pure(PureFrame::Stream(stream)) => {
+                        let Some(space_frame_writer) = space_frame_writer.as_mut() else {
+                            unreachable!()
+                        };
+                        space_frame_writer.push(SpaceFrame::Stream(stream));
+                        Ok(true)
+                    }
+                    Frame::Pure(PureFrame::Path(_path)) => {
+                        // path_frame_writer.push(path);
+                        Ok(true)
+                    }
+                    Frame::Data(data_frame, data) => {
+                        let Some(space_frame_writer) = space_frame_writer.as_mut() else {
+                            unreachable!()
+                        };
+                        space_frame_writer.push(SpaceFrame::Data(data_frame, data));
+                        Ok(true)
+                    }
+                    Frame::Datagram(datagram, data) => {
+                        let Some(datagram_frame_writer) = datagram_frame_writer.as_mut() else {
+                            unreachable!()
+                        };
+                        datagram_frame_writer.push((datagram, data));
+                        Ok(true)
+                    }
+                }
+            })
+            .map_err(|e| {
+                if let Some(mut conn_frame_writer) = conn_frame_writer {
+                    conn_frame_writer.rollback();
+                };
+
+                if let Some(mut space_frame_writer) = space_frame_writer {
+                    space_frame_writer.rollback();
+                };
+                if let Some(mut datagram_frame_writer) = datagram_frame_writer {
+                    datagram_frame_writer.rollback();
+                }
+                e
+            })
+    }
+}
+
+pub(crate) struct LongHeaderPacketStream<H> {
+    packet_rx: mpsc::UnboundedReceiver<(PacketWrapper<H>, ArcPath)>,
     keys: ArcKeys,
-    space: ArcSpace<S>,
-    conn_frame_queue: ArcAsyncDeque<ConnFrame>,
-    space_frame_queue: ArcAsyncDeque<SpaceFrame>,
-    ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
-    need_close_space_frame_queue_at_end: bool,
-) where
-    S: AsRef<DataStreams>,
+    rcvd_records: ArcRcvdPktRecords,
+}
+
+pub(crate) type InitialPacketStream = LongHeaderPacketStream<InitialHeader>;
+pub(crate) type HandshakePacketStream = LongHeaderPacketStream<HandshakeHeader>;
+pub(crate) type ZeroRttPacketStream = LongHeaderPacketStream<ZeroRttHeader>;
+
+impl<H> Stream for LongHeaderPacketStream<H>
+where
     H: GetType,
     PacketWrapper<H>: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
 {
-    while let Some((mut packet, path)) = packet_rx.recv().await {
-        if let Some(k) = keys.get_remote_keys().await {
-            let ok = packet.remove_protection(k.remote.header.deref());
-            if !ok {
-                // Failed to remove packet header protection, just discard it.
-                continue;
-            }
+    type Item = PacketPayload;
 
-            let encoded_pn = packet.decode_header().unwrap();
-            let result = space.decode_pn(encoded_pn);
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let f = async {
+            let s = self.get_mut();
+            let k = s.keys.get_remote_keys().await?;
+            loop {
+                let (mut packet, path) = s.packet_rx.recv().await?;
+                let ok = packet.remove_protection(k.remote.header.deref());
 
-            let Ok(pn) = result else {
-                // Duplicate packet, discard. QUIC does not allow duplicate packets.
-                // Is it an error to receive duplicate packets? Definitely not,
-                // otherwise it would be too vulnerable to replay attacks.
-                continue;
-            };
-
-            let packet_type = packet.header.get_type();
-            match packet.decrypt_packet(pn, encoded_pn.size(), k.remote.packet.deref()) {
-                Ok(payload) => {
-                    match parse_packet_and_then_dispatch(
-                        payload,
-                        packet_type,
-                        &path,
-                        &conn_frame_queue,
-                        &space_frame_queue,
-                        &ack_frames_tx,
-                    ) {
-                        // TODO: path也要记录收包时间、is_ack_eliciting
-                        Ok(_is_ack_eliciting) => space.rcvd_pkt_records().register_pn(pn),
-                        Err(_e) => {
-                            // 解析包失败，丢弃
-                            // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
-                            continue;
-                        }
-                    }
+                if !ok {
+                    // Failed to remove packet header protection, just discard it.
+                    continue;
                 }
-                // Decryption failed, just ignore/discard it.
-                Err(_) => continue,
+
+                let encoded_pn = packet.decode_header().unwrap();
+
+                let Ok(pn) = s.rcvd_records.decode_pn(encoded_pn) else {
+                    // Duplicate packet, discard. QUIC does not allow duplicate packets.
+                    // Is it an error to receive duplicate packets? Definitely not,
+                    // otherwise it would be too vulnerable to replay attacks.
+                    continue;
+                };
+                let packet_type = packet.header.get_type();
+                if let Ok(payload) =
+                    packet.decrypt_packet(pn, encoded_pn.size(), k.remote.packet.deref())
+                {
+                    return Some(PacketPayload {
+                        pn,
+                        payload,
+                        r#type: packet_type,
+                        path,
+                    });
+                }
             }
-        } else {
-            break;
-        }
+        };
+        pin!(f).poll(cx)
     }
 
-    if need_close_space_frame_queue_at_end {
-        space_frame_queue.close();
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, None)
     }
 }
 
-pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queue(
-    mut packet_rx: mpsc::UnboundedReceiver<(OneRttPacket, ArcPath)>,
+impl<H> LongHeaderPacketStream<H> {
+    pub fn new(
+        keys: ArcKeys,
+        rcvd_records: ArcRcvdPktRecords,
+    ) -> (mpsc::UnboundedSender<(PacketWrapper<H>, ArcPath)>, Self) {
+        let (packet_tx, packet_rx) = mpsc::unbounded_channel();
+        (
+            packet_tx,
+            Self {
+                packet_rx,
+                keys,
+                rcvd_records,
+            },
+        )
+    }
+
+    pub fn parse_packet_and_then_dispatch(
+        mut self,
+        conn_frame_queue: Option<ArcAsyncDeque<ConnFrame>>,
+        space_frame_queue: Option<ArcAsyncDeque<SpaceFrame>>,
+        datagram_frame_queue: Option<ArcAsyncDeque<(DatagramFrame, Bytes)>>,
+        ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
+    ) where
+        H: GetType + Send + Sync + 'static,
+        PacketWrapper<H>: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
+    {
+        tokio::spawn(async move {
+            while let Some(payload) = self.next().await {
+                let pn = payload.pn;
+                match payload.dispatch(
+                    conn_frame_queue.as_ref(),
+                    space_frame_queue.as_ref(),
+                    datagram_frame_queue.as_ref(),
+                    &ack_frames_tx,
+                ) {
+                    // TODO: path也要登记其收到的包、收包时间、is_ack_eliciting，方便激发AckFrame
+                    Ok(_is_ack_eliciting) => self.rcvd_records.register_pn(pn),
+                    // 解析包失败，丢弃
+                    // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
+                    Err(_) => todo!(),
+                }
+            }
+        });
+    }
+}
+
+pub(crate) struct ShortHeaderPacketStream {
+    packet_rx: mpsc::UnboundedReceiver<(OneRttPacket, ArcPath)>,
     keys: ArcOneRttKeys,
-    space: ArcSpace<DataStreams>,
-    conn_frame_queue: ArcAsyncDeque<ConnFrame>,
-    space_frame_queue: ArcAsyncDeque<SpaceFrame>,
-    ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
-) {
-    while let Some((mut packet, path)) = packet_rx.recv().await {
-        // 1rtt空间的header protection key是固定的，packet key则是根据包头中的key_phase_bit变化的
-        if let Some((hk, pk)) = keys.get_remote_keys().await {
-            let ok = packet.remove_protection(hk.deref());
-            if !ok {
-                // Failed to remove packet header protection, just discard it.
-                continue;
-            }
-
-            let (encoded_pn, key_phase) = packet.decode_header().unwrap();
-            let pn = match space.decode_pn(encoded_pn) {
-                Ok(pn) => pn,
-                Err(_e) => continue,
-            };
-
-            // 要根据key_phase_bit来获取packet key
-            let packet_type = packet.header.get_type();
-            let packet_key = pk.lock().unwrap().get_remote(key_phase, pn);
-            match packet.decrypt_packet(pn, encoded_pn.size(), packet_key.deref()) {
-                Ok(payload) => {
-                    match parse_packet_and_then_dispatch(
-                        payload,
-                        packet_type,
-                        &path,
-                        &conn_frame_queue,
-                        &space_frame_queue,
-                        &ack_frames_tx,
-                    ) {
-                        // TODO: path也要登记其收到的包、收包时间、is_ack_eliciting，方便激发AckFrame
-                        Ok(_is_ack_eliciting) => space.rcvd_pkt_records().register_pn(pn),
-                        Err(_e) => {
-                            // 解析包失败，丢弃
-                            // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
-                            continue;
-                        }
-                    }
-                }
-                // Decryption failed, just ignore/discard it.
-                Err(_) => continue,
-            }
-        } else {
-            break;
-        }
-    }
-    space_frame_queue.close();
+    rcvd_records: ArcRcvdPktRecords,
 }
 
-/// Continuously read from the frame queue and hand it over to the space for processing.
-/// This task will automatically end with the close of space frames, no extra maintenance is needed.
-pub(crate) async fn loop_read_space_frame_and_dispatch_to_space(
-    mut space_frames_queue: ArcAsyncDeque<SpaceFrame>,
-    space: impl AsRef<DataStreams>,
-) {
-    let streams = space.as_ref();
-    while let Some(frame) = space_frames_queue.next().await {
-        // 闭包模拟try_block feature，写起来方便
-        let result = (|| -> Result<(), Error> {
-            match frame {
-                SpaceFrame::Stream(sctl) => {
-                    streams.recv_stream_control(sctl)?;
+pub(crate) type OneRttPacketStream = ShortHeaderPacketStream;
+
+impl Stream for ShortHeaderPacketStream {
+    type Item = PacketPayload;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let f = async {
+            let s = self.get_mut();
+            let (hk, pk) = s.keys.get_remote_keys().await?;
+            loop {
+                let (mut packet, path) = s.packet_rx.recv().await?;
+                let ok = packet.remove_protection(hk.deref());
+
+                if !ok {
+                    // Failed to remove packet header protection, just discard it.
+                    continue;
                 }
-                SpaceFrame::Data(frame, bytes) => match frame {
-                    qbase::frame::DataFrame::Stream(frame) => {
-                        streams.recv_data(frame, bytes)?;
-                    }
 
-                    // 按说在1rtt是收不到CryptoFrame的
-                    qbase::frame::DataFrame::Crypto(_) => unreachable!(),
-                },
+                let (encoded_pn, key_phase) = packet.decode_header().unwrap();
+                let pn = match s.rcvd_records.decode_pn(encoded_pn) {
+                    Ok(pn) => pn,
+                    Err(_) => continue,
+                };
+
+                let packet_type = packet.header.get_type();
+                let packet_key = pk.lock().unwrap().get_remote(key_phase, pn);
+                if let Ok(payload) =
+                    packet.decrypt_packet(pn, encoded_pn.size(), packet_key.deref())
+                {
+                    return Some(PacketPayload {
+                        pn,
+                        payload,
+                        r#type: packet_type,
+                        path,
+                    });
+                }
             }
-            Ok(())
-        })();
+        };
+        pin!(f).poll(cx)
+    }
 
-        // 处理连接错误
-        if let Err(err) = result {
-            streams.on_conn_error(&err);
-        }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, None)
+    }
+}
+
+impl ShortHeaderPacketStream {
+    pub fn new(
+        keys: ArcOneRttKeys,
+        rcvd_records: ArcRcvdPktRecords,
+    ) -> (mpsc::UnboundedSender<(OneRttPacket, ArcPath)>, Self) {
+        let (packet_tx, packet_rx) = mpsc::unbounded_channel();
+        (
+            packet_tx,
+            Self {
+                packet_rx,
+                keys,
+                rcvd_records,
+            },
+        )
+    }
+
+    pub fn parse_packet_and_then_dispatch(
+        mut self,
+        conn_frame_queue: Option<ArcAsyncDeque<ConnFrame>>,
+        space_frame_queue: Option<ArcAsyncDeque<SpaceFrame>>,
+        datagram_frame_queue: Option<ArcAsyncDeque<(DatagramFrame, Bytes)>>,
+        ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
+    ) {
+        tokio::spawn(async move {
+            while let Some(payload) = self.next().await {
+                let pn = payload.pn;
+                match payload.dispatch(
+                    conn_frame_queue.as_ref(),
+                    space_frame_queue.as_ref(),
+                    datagram_frame_queue.as_ref(),
+                    &ack_frames_tx,
+                ) {
+                    // TODO: path也要登记其收到的包、收包时间、is_ack_eliciting，方便激发AckFrame
+                    Ok(_is_ack_eliciting) => self.rcvd_records.register_pn(pn),
+                    // 解析包失败，丢弃
+                    // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
+                    Err(_) => todo!(),
+                }
+            }
+        });
     }
 }

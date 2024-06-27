@@ -32,20 +32,15 @@ pub enum SpaceFrame {
 pub struct RawSpace<T> {
     reliable_frame_queue: ArcReliableFrameQueue,
     sent_pkt_records: ArcSentPktRecords,
-    rcvd_pkt_records: ArcRcvdPktRecords,
+    pub rcvd_pkt_records: ArcRcvdPktRecords,
     data_streams: T,
-    crypto_stream: CryptoStream,
+    pub crypto_stream: CryptoStream,
 }
 
 impl<T> RawSpace<T>
 where
     T: AsRef<DataStreams>,
 {
-    /// 可用于收包解码包号，判定包号是否重复或者过期，记录收包状态，淘汰并滑动收包记录窗口
-    pub fn rcvd_pkt_records(&self) -> &ArcRcvdPktRecords {
-        &self.rcvd_pkt_records
-    }
-
     pub fn decode_pn(&self, encoded_pn: PacketNumber) -> Result<u64, RcvPnError> {
         self.rcvd_pkt_records.decode_pn(encoded_pn)
     }
