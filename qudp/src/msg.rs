@@ -216,7 +216,7 @@ impl<'a> Encoder<'a> {
     /// # Panics
     /// - If insufficient buffer space remains.
     /// - If `T` has stricter alignment requirements than `cmsghdr`
-    pub(super) fn push<T: Copy + ?Sized>(&mut self, level: libc::c_int, ty: libc::c_int, value: T) {
+    pub(super) fn push<T: Copy>(&mut self, level: libc::c_int, ty: libc::c_int, value: T) {
         //  T 的对齐要求不比 libc::cmsghdr 的对齐要求更严格
         assert!(mem::align_of::<T>() <= mem::align_of::<libc::cmsghdr>());
         let space = unsafe { libc::CMSG_SPACE(mem::size_of_val(&value) as _) as usize };
