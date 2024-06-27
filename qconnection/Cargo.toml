@@ -16,3 +16,4 @@ bytes = { workspace = true }
 thiserror = { workspace = true }
 rustls = { workspace = true }
 log = { workspace = true }
+deref-derive = { workspace = true }

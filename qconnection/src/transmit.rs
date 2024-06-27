@@ -11,8 +11,8 @@ use qbase::{
     },
     varint::{VarInt, WriteVarInt},
 };
-use qrecovery::{space::ArcSpace, streams::DataStreams};
 
+use crate::space::Space;
 /// In order to fill the packet efficiently and reduce unnecessary copying, the data of each
 /// space is directly written on the Buffer. However, the length of the packet header is
 /// variable-length encoding, so space needs to be reserved.
@@ -26,17 +26,16 @@ pub enum FillPolicy {
     // Padding,     // Instead of padding frames, it's better to redundantly encode the Length.
 }
 
-pub fn read_space_and_encrypt<T, S>(
+pub fn read_space_and_encrypt<T>(
     buffer: &mut [u8],
     header: LongHeader<T>,
     fill_policy: FillPolicy,
     keys: ArcKeys,
-    space: ArcSpace<S>,
+    space: impl Space,
 ) -> (usize, usize)
 where
     for<'a> &'a mut [u8]: Write<T>,
     LongHeader<T>: HasLength + GetType + Encode,
-    S: Debug + AsRef<DataStreams>,
 {
     let keys = match keys.get_local_keys() {
         Some(keys) => keys,
@@ -118,7 +117,7 @@ pub fn read_1rtt_data_and_encrypt(
     buffer: &mut [u8],
     header: OneRttHeader,
     keys: ArcOneRttKeys,
-    space: ArcSpace<DataStreams>,
+    space: impl Space,
 ) -> usize {
     let (hpk, pk) = match keys.get_local_keys() {
         Some(keys) => keys,
