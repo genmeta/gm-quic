@@ -30,10 +30,6 @@ impl RawDatagramFlow {
         }
     }
 
-    fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        self.writer.try_read_datagram(buf)
-    }
-
     fn recv_datagram(&self, frame: DatagramFrame, body: bytes::Bytes) -> Result<(), Error> {
         if (body.len() + frame.encoding_size()) as u64 > self.max_datagram_frame_size {
             return Err(Error::new(
@@ -65,7 +61,7 @@ impl DatagramFlow {
 
     #[inline]
     pub fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        self.flow.as_ref()?.try_read_datagram(buf)
+        self.flow.as_ref()?.writer.try_read_datagram(buf)
     }
 
     #[inline]

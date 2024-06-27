@@ -36,16 +36,17 @@ impl DatagramWriter {
         let writer = guard.as_mut().ok()?;
         let datagram = writer.queue.peek()?;
 
-        let unwritten = buf.remaining_mut();
-        if unwritten == 1 + datagram.len() {
+        let remain = buf.remaining_mut();
+        if remain == 1 + datagram.len() {
             let frame = DatagramFrame::new(None);
             buf.put_datagram_frame(&frame, datagram);
-            return Some((frame, unwritten - buf.remaining_mut()));
+            return Some((frame, remain));
         }
         let frame = DatagramFrame::new(Some(VarInt::try_from(datagram.len()).unwrap()));
-        if unwritten >= frame.encoding_size() + datagram.len() {
+        let length = frame.encoding_size() + datagram.len();
+        if remain >= length {
             buf.put_datagram_frame(&frame, datagram);
-            Some((frame, unwritten - buf.remaining_mut()))
+            Some((frame, length))
         } else {
             None
         }
