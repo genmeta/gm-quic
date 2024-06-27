@@ -13,11 +13,14 @@ use qbase::{
 };
 
 use super::{
-    crypto::CryptoStream,
-    rcvdpkt::{ArcRcvdPktRecords, Error as RcvPnError},
-    reliable::{ArcReliableFrameQueue, ArcSentPktRecords, SentRecord},
+    reliable::{
+        rcvdpkt::{ArcRcvdPktRecords, Error as RcvPnError},
+        sentpkt::{ArcSentPktRecords, SentRecord},
+        ArcReliableFrameQueue,
+    },
     streams::{none::NoDataStreams, DataStreams},
 };
+use crate::crypto::CryptoStream;
 
 #[derive(Debug, Clone)]
 pub enum SpaceFrame {
