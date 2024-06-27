@@ -6,7 +6,7 @@ use qbase::{
         HandshakePacket, InitialPacket, OneRttPacket, SpinBit, ZeroRttPacket,
     },
     streamid::Role,
-    util::ArcAsyncQueue,
+    util::ArcAsyncDeque,
 };
 use qrecovery::{
     crypto::CryptoStream,
@@ -62,7 +62,7 @@ pub struct RawConnection {
 }
 
 pub fn new(tls_session: TlsIO) -> RawConnection {
-    let rcvd_conn_frames = ArcAsyncQueue::new();
+    let rcvd_conn_frames = ArcAsyncDeque::new();
 
     let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded_channel::<(InitialPacket, ArcPath)>();
     let (initial_ack_tx, initial_ack_rx) = mpsc::unbounded_channel();
@@ -71,7 +71,7 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     let initial_crypto_handler = initial_crypto_stream.split();
     let initial_keys = ArcKeys::new_pending();
     // 实际上从未被读取/写入
-    let initial_space_frame_queue = ArcAsyncQueue::new();
+    let initial_space_frame_queue = ArcAsyncDeque::new();
     let initial_space = ArcSpace::<NoDataStreams>::with_crypto_stream(initial_crypto_stream);
     tokio::spawn(
         auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
@@ -113,7 +113,7 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     let handshake_crypto_handler = handshake_crypto_stream.split();
     let handshake_keys = ArcKeys::new_pending();
     // 实际上从未被读取/写入
-    let handshake_space_frame_queue = ArcAsyncQueue::new();
+    let handshake_space_frame_queue = ArcAsyncDeque::new();
     let handshake_space = ArcSpace::<NoDataStreams>::with_crypto_stream(handshake_crypto_stream);
     tokio::spawn(
         auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
@@ -160,7 +160,7 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     let one_rtt_keys = ArcOneRttKeys::new_pending();
     let one_rtt_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
     let _one_rtt_crypto_handler = one_rtt_crypto_stream.split();
-    let data_space_frame_queue = ArcAsyncQueue::new();
+    let data_space_frame_queue = ArcAsyncDeque::new();
     let (data_ack_tx, data_ack_rx) = mpsc::unbounded_channel();
     let (data_loss_tx, data_loss_rx) = mpsc::unbounded_channel();
     let data_space = ArcSpace::<DataStreams>::new(Role::Client, 20, 20, one_rtt_crypto_stream);

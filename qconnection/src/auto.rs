@@ -11,7 +11,7 @@ use qbase::{
         r#type::Type,
         OneRttPacket, PacketNumber, PacketWrapper,
     },
-    util::ArcAsyncQueue,
+    util::ArcAsyncDeque,
 };
 use qrecovery::{
     space::{ArcSpace, SpaceFrame},
@@ -25,8 +25,8 @@ fn parse_packet_and_then_dispatch(
     payload: bytes::Bytes,
     packet_type: Type,
     _path: &ArcPath,
-    conn_frame_queue: &ArcAsyncQueue<ConnFrame>,
-    space_frame_queue: &ArcAsyncQueue<SpaceFrame>,
+    conn_frame_queue: &ArcAsyncDeque<ConnFrame>,
+    space_frame_queue: &ArcAsyncDeque<SpaceFrame>,
     ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
     // on_ack_frame_rcvd: impl FnMut(AckFrame, Arc<Mutex<Rtt>>),
 ) -> Result<bool, Error> {
@@ -104,8 +104,8 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
     mut packet_rx: mpsc::UnboundedReceiver<(PacketWrapper<H>, ArcPath)>,
     keys: ArcKeys,
     space: ArcSpace<S>,
-    conn_frame_queue: ArcAsyncQueue<ConnFrame>,
-    space_frame_queue: ArcAsyncQueue<SpaceFrame>,
+    conn_frame_queue: ArcAsyncDeque<ConnFrame>,
+    space_frame_queue: ArcAsyncDeque<SpaceFrame>,
     ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
     need_close_space_frame_queue_at_end: bool,
 ) where
@@ -168,8 +168,8 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
     mut packet_rx: mpsc::UnboundedReceiver<(OneRttPacket, ArcPath)>,
     keys: ArcOneRttKeys,
     space: ArcSpace<DataStreams>,
-    conn_frame_queue: ArcAsyncQueue<ConnFrame>,
-    space_frame_queue: ArcAsyncQueue<SpaceFrame>,
+    conn_frame_queue: ArcAsyncDeque<ConnFrame>,
+    space_frame_queue: ArcAsyncDeque<SpaceFrame>,
     ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
 ) {
     while let Some((mut packet, path)) = packet_rx.recv().await {
@@ -222,7 +222,7 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
 /// Continuously read from the frame queue and hand it over to the space for processing.
 /// This task will automatically end with the close of space frames, no extra maintenance is needed.
 pub(crate) async fn loop_read_space_frame_and_dispatch_to_space(
-    mut space_frames_queue: ArcAsyncQueue<SpaceFrame>,
+    mut space_frames_queue: ArcAsyncDeque<SpaceFrame>,
     space: impl AsRef<DataStreams>,
 ) {
     let streams = space.as_ref();
