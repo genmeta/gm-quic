@@ -15,7 +15,7 @@ use qbase::{
 };
 use qrecovery::{
     space::{ArcSpace, SpaceFrame},
-    streams::{ArcDataStreams, ReceiveStream, TransmitStream},
+    streams::DataStreams,
 };
 use tokio::sync::mpsc;
 
@@ -109,7 +109,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
     ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
     need_close_space_frame_queue_at_end: bool,
 ) where
-    S: ReceiveStream + TransmitStream,
+    S: AsRef<DataStreams>,
     H: GetType,
     PacketWrapper<H>: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
 {
@@ -167,7 +167,7 @@ pub(crate) async fn loop_read_long_packet_and_then_dispatch_to_space_frame_queue
 pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queue(
     mut packet_rx: mpsc::UnboundedReceiver<(OneRttPacket, ArcPath)>,
     keys: ArcOneRttKeys,
-    space: ArcSpace<ArcDataStreams>,
+    space: ArcSpace<DataStreams>,
     conn_frame_queue: ArcAsyncQueue<ConnFrame>,
     space_frame_queue: ArcAsyncQueue<SpaceFrame>,
     ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
@@ -223,18 +223,19 @@ pub(crate) async fn loop_read_short_packet_and_then_dispatch_to_space_frame_queu
 /// This task will automatically end with the close of space frames, no extra maintenance is needed.
 pub(crate) async fn loop_read_space_frame_and_dispatch_to_space(
     mut space_frames_queue: ArcAsyncQueue<SpaceFrame>,
-    space: impl ReceiveStream,
+    space: impl AsRef<DataStreams>,
 ) {
+    let streams = space.as_ref();
     while let Some(frame) = space_frames_queue.next().await {
         // 闭包模拟try_block feature，写起来方便
         let result = (|| -> Result<(), Error> {
             match frame {
                 SpaceFrame::Stream(sctl) => {
-                    space.recv_stream_control(sctl)?;
+                    streams.recv_stream_control(sctl)?;
                 }
                 SpaceFrame::Data(frame, bytes) => match frame {
                     qbase::frame::DataFrame::Stream(frame) => {
-                        space.recv_stream(frame, bytes)?;
+                        streams.recv_data(frame, bytes)?;
                     }
 
                     // 按说在1rtt是收不到CryptoFrame的
@@ -246,7 +247,7 @@ pub(crate) async fn loop_read_space_frame_and_dispatch_to_space(
 
         // 处理连接错误
         if let Err(err) = result {
-            space.on_conn_error(&err);
+            streams.on_conn_error(&err);
         }
     }
 }

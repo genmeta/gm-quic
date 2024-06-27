@@ -10,66 +10,50 @@ use qbase::{error::Error, frame::*, streamid::Role};
 
 use crate::{recv::Reader, reliable::ArcReliableFrameQueue, send::Writer};
 
-/// For sending stream data
-pub trait TransmitStream {
-    /// read data to transmit
-    fn try_read_stream(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)>;
-
-    fn on_data_acked(&self, stream_frame: StreamFrame);
-
-    fn may_loss_data(&self, stream_frame: StreamFrame);
-
-    fn on_reset_acked(&self, reset_frame: ResetStreamFrame);
-}
-
-pub trait ReceiveStream {
-    fn recv_stream_control(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error>;
-
-    fn recv_stream(&self, frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error>;
-
-    fn on_conn_error(&self, err: &Error);
-}
-
 pub mod data;
 pub mod listener;
 pub mod none;
 
 #[derive(Debug, Clone)]
-pub struct ArcDataStreams(Arc<data::RawDataStreams>);
+pub struct DataStreams(Arc<data::RawDataStreams>);
 
-impl TransmitStream for ArcDataStreams {
-    fn try_read_stream(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
-        self.0.try_read_stream(buf)
-    }
-
-    fn on_data_acked(&self, stream_frame: StreamFrame) {
-        self.0.on_data_acked(stream_frame)
-    }
-
-    fn may_loss_data(&self, stream_frame: StreamFrame) {
-        self.0.may_loss_data(stream_frame)
-    }
-
-    fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
-        self.0.on_reset_acked(reset_frame)
+impl AsRef<DataStreams> for DataStreams {
+    fn as_ref(&self) -> &DataStreams {
+        self
     }
 }
 
-impl ReceiveStream for ArcDataStreams {
-    fn recv_stream_control(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error> {
+impl DataStreams {
+    pub fn try_read_data(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+        self.0.try_read_data(buf)
+    }
+
+    pub fn on_data_acked(&self, stream_frame: StreamFrame) {
+        self.0.on_data_acked(stream_frame)
+    }
+
+    pub fn may_loss_data(&self, stream_frame: StreamFrame) {
+        self.0.may_loss_data(stream_frame)
+    }
+
+    pub fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
+        self.0.on_reset_acked(reset_frame)
+    }
+
+    pub fn recv_stream_control(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error> {
         self.0.recv_stream_control(stream_ctl_frame)
     }
 
-    fn recv_stream(&self, frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error> {
-        self.0.recv_stream(frame, body)
+    pub fn recv_data(&self, frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error> {
+        self.0.recv_data(frame, body)
     }
 
-    fn on_conn_error(&self, err: &Error) {
+    pub fn on_conn_error(&self, err: &Error) {
         self.0.on_conn_error(err)
     }
 }
 
-impl ArcDataStreams {
+impl DataStreams {
     pub fn with_role_and_limit(
         role: Role,
         max_bi_streams: u64,

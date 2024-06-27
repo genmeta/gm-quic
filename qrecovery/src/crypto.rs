@@ -232,7 +232,7 @@ pub use send::CryptoStreamWriter;
 /// ```rust
 /// use bytes::Bytes;
 /// use qbase::{frame::CryptoFrame, varint::VarInt};
-/// use qrecovery::crypto::{CryptoStream, TransmitCrypto};
+/// use qrecovery::crypto::CryptoStream;
 /// use tokio::io::{AsyncWriteExt, AsyncReadExt};
 ///
 /// #[tokio::main]
@@ -285,30 +285,24 @@ impl CryptoStream {
     }
 }
 
-pub trait TransmitCrypto {
-    fn try_read_data(&self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)>;
-
-    fn on_data_acked(&self, data_frame: CryptoFrame);
-
-    fn may_loss_data(&self, data_frame: CryptoFrame);
-
-    fn recv_data(&self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error>;
-}
-
-impl TransmitCrypto for CryptoStream {
-    fn try_read_data(&self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)> {
+impl CryptoStream {
+    #[inline]
+    pub fn try_read_data(&self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)> {
         self.outgoing.try_read_data(buf)
     }
 
-    fn on_data_acked(&self, data_frame: CryptoFrame) {
+    #[inline]
+    pub fn on_data_acked(&self, data_frame: CryptoFrame) {
         self.outgoing.on_data_acked(&data_frame.range());
     }
 
-    fn may_loss_data(&self, data_frame: CryptoFrame) {
+    #[inline]
+    pub fn may_loss_data(&self, data_frame: CryptoFrame) {
         self.outgoing.may_loss_data(&data_frame.range())
     }
 
-    fn recv_data(&self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error> {
+    #[inline]
+    pub fn recv_data(&self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error> {
         self.incoming.recv(crypto_frame.offset.into_inner(), body);
         Ok(())
     }
@@ -319,7 +313,7 @@ mod tests {
     use qbase::{frame::CryptoFrame, varint::VarInt};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    use super::{CryptoStream, TransmitCrypto};
+    use super::CryptoStream;
 
     #[tokio::test]
     async fn test_read() {

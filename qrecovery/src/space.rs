@@ -13,10 +13,10 @@ use qbase::{
 };
 
 use super::{
-    crypto::{CryptoStream, TransmitCrypto},
+    crypto::CryptoStream,
     rcvdpkt::{ArcRcvdPktRecords, Error as RcvPnError},
     reliable::{ArcReliableFrameQueue, ArcSentPktRecords, SentRecord},
-    streams::{none::NoDataStreams, ArcDataStreams, ReceiveStream, TransmitStream},
+    streams::{none::NoDataStreams, DataStreams},
 };
 
 #[derive(Debug, Clone)]
@@ -36,7 +36,7 @@ pub struct RawSpace<T> {
 
 impl<T> RawSpace<T>
 where
-    T: TransmitStream + ReceiveStream,
+    T: AsRef<DataStreams>,
 {
     /// 可用于收包解码包号，判定包号是否重复或者过期，记录收包状态，淘汰并滑动收包记录窗口
     pub fn rcvd_pkt_records(&self) -> &ArcRcvdPktRecords {
@@ -98,7 +98,9 @@ where
         }
 
         // while循环，可能发送stream1，stream2流
-        while let Some((stream_frame, n)) = self.data_streams.try_read_stream(&mut buf[len..]) {
+        while let Some((stream_frame, n)) =
+            self.data_streams.as_ref().try_read_data(&mut buf[len..])
+        {
             send_guard.record_data_frame(DataFrame::Stream(stream_frame));
             len += n;
         }
@@ -110,13 +112,13 @@ where
     pub fn receive(&self, frame: SpaceFrame) -> Result<(), Error> {
         match frame {
             SpaceFrame::Stream(frame) => {
-                self.data_streams.recv_stream_control(frame)?;
+                self.data_streams.as_ref().recv_stream_control(frame)?;
             }
             SpaceFrame::Data(DataFrame::Crypto(frame), data) => {
                 self.crypto_stream.recv_data(frame, data)?;
             }
             SpaceFrame::Data(DataFrame::Stream(frame), data) => {
-                self.data_streams.recv_stream(frame, data)?;
+                self.data_streams.as_ref().recv_data(frame, data)?;
             }
         }
         Ok(())
@@ -134,7 +136,7 @@ where
                         self.crypto_stream.on_data_acked(frame);
                     }
                     SentRecord::Data(DataFrame::Stream(frame)) => {
-                        self.data_streams.on_data_acked(frame);
+                        self.data_streams.as_ref().on_data_acked(frame);
                     }
                     // Ack Reliable Datagram
                     // do nothing
@@ -157,7 +159,7 @@ where
                     self.crypto_stream.may_loss_data(frame);
                 }
                 SentRecord::Data(DataFrame::Stream(frame)) => {
-                    self.data_streams.may_loss_data(frame);
+                    self.data_streams.as_ref().may_loss_data(frame);
                 }
                 // Ack Datagram
                 // do nothing
@@ -183,7 +185,7 @@ impl ArcSpace<NoDataStreams> {
     }
 }
 
-impl ArcSpace<ArcDataStreams> {
+impl ArcSpace<DataStreams> {
     /// 数据空间通过此函数创建
     pub fn new(
         role: Role,
@@ -198,7 +200,7 @@ impl ArcSpace<ArcDataStreams> {
             reliable_frame_queue: reliable_frame_queue.clone(),
             sent_pkt_records: Default::default(),
             rcvd_pkt_records: Default::default(),
-            data_streams: ArcDataStreams::with_role_and_limit(
+            data_streams: DataStreams::with_role_and_limit(
                 role,
                 max_bi_streams,
                 max_uni_streams,
@@ -208,7 +210,7 @@ impl ArcSpace<ArcDataStreams> {
         }))
     }
 
-    pub fn data_streams(&self) -> ArcDataStreams {
+    pub fn data_streams(&self) -> DataStreams {
         self.0.data_streams.clone()
     }
 }
