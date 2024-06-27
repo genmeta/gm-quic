@@ -212,3 +212,196 @@ impl Transponder {
         self.0.lock().unwrap().may_loss_pkt(pn);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validator_challenge() {
+        let validator = Validator::default();
+        {
+            validator.challenge();
+            let state = validator.0.lock().unwrap();
+            assert!(state.need_send_challenge().is_some());
+        }
+
+        {
+            validator.challenge();
+            {
+                let state = validator.0.lock().unwrap();
+                assert!(state.need_send_challenge().is_some());
+            }
+            validator.on_challenge_sent(Epoch::Initial, 0);
+            let response = match *validator.0.lock().unwrap() {
+                ValidateState::Challenging(challenge, _) => challenge,
+                _ => panic!("unexpected state"),
+            };
+            validator.on_response(&PathResponseFrame::from(&response));
+            let state = validator.0.lock().unwrap();
+            match *state {
+                ValidateState::Success => {}
+                _ => panic!("unexpected state"),
+            }
+        }
+
+        {
+            validator.challenge();
+            {
+                let state = validator.0.lock().unwrap();
+                assert!(state.need_send_challenge().is_some());
+            }
+            validator.on_challenge_sent(Epoch::Initial, 1);
+            let response = match *validator.0.lock().unwrap() {
+                ValidateState::Rechallenging(challenge, _) => challenge,
+                _ => panic!("unexpected state"),
+            };
+            validator.on_response(&PathResponseFrame::from(&response));
+            {
+                let state = validator.0.lock().unwrap();
+                state.need_send_challenge();
+            }
+            validator.on_response(&PathResponseFrame::default());
+        }
+    }
+
+    #[test]
+    fn test_validator_write_challenge() {
+        let validator = Validator::default();
+        let mut buf = [0; 1024];
+        let bytes_written = validator.write_challenge(&mut buf);
+        assert!(bytes_written > 0);
+    }
+
+    #[test]
+    fn test_validator_on_challenge_sent() {
+        let validator = Validator::default();
+        validator.on_challenge_sent(Epoch::Initial, 1);
+        let state = validator.0.lock().unwrap();
+        match *state {
+            ValidateState::Challenging(_, Some((Epoch::Initial, 1))) => {}
+            _ => panic!("unexpected state"),
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validator_on_challenge_sent_with_success() {
+        let validator = Validator::default();
+        let response = match *validator.0.lock().unwrap() {
+            ValidateState::Challenging(challenge, _) => challenge,
+            _ => panic!("unexpected state"),
+        };
+        validator.on_response(&PathResponseFrame::from(&response));
+        validator.on_challenge_sent(Epoch::Initial, 1);
+    }
+
+    #[test]
+    fn test_validator_may_loss() {
+        let validator = Validator::default();
+        validator.may_loss();
+        {
+            let state = validator.0.lock().unwrap();
+            assert!(state.need_send_challenge().is_some());
+        }
+        let response = match *validator.0.lock().unwrap() {
+            ValidateState::Challenging(challenge, _) => challenge,
+            _ => panic!("unexpected state"),
+        };
+        validator.on_response(&PathResponseFrame::from(&response));
+        validator.may_loss();
+        validator.challenge();
+        validator.may_loss();
+        {
+            let state = validator.0.lock().unwrap();
+            assert!(state.need_send_challenge().is_some());
+        }
+    }
+
+    #[test]
+    fn test_validator_on_response() {
+        let validator = Validator::default();
+        validator.challenge();
+        let response = match *validator.0.lock().unwrap() {
+            ValidateState::Challenging(challenge, _) => challenge,
+            _ => panic!("unexpected state"),
+        };
+        validator.on_response(&PathResponseFrame::from(&response));
+        let state = validator.0.lock().unwrap();
+        match *state {
+            ValidateState::Success => {}
+            _ => panic!("unexpected state"),
+        }
+    }
+
+    #[test]
+    fn test_transponder_on_challenge() {
+        let transponder = Transponder::default();
+        let challenge = PathChallengeFrame::random();
+        {
+            transponder.on_challenge(challenge);
+            let state = transponder.0.lock().unwrap();
+            assert!(state.need_response().is_some());
+        }
+        {
+            transponder.on_challenge(PathChallengeFrame::random());
+            transponder.on_response_sent(0);
+            let state = transponder.0.lock().unwrap();
+            assert!(state.need_response().is_none());
+        }
+    }
+
+    #[test]
+    fn test_transponder_write_response() {
+        let transponder = Transponder::default();
+        let mut buf = [0; 1024];
+        let bytes_written = transponder.write_response(&mut buf);
+        assert!(bytes_written == 0);
+        transponder.on_challenge(PathChallengeFrame::random());
+        let bytes_written = transponder.write_response(&mut buf);
+        assert!(bytes_written > 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_transponder_on_response_sent() {
+        let transponder = Transponder::default();
+        transponder.on_response_sent(1);
+        let state = transponder.0.lock().unwrap();
+        assert!(state.need_response().is_none());
+    }
+
+    #[test]
+    fn test_transponder_on_pkt_acked() {
+        let transponder = Transponder::default();
+        transponder.on_pkt_acked(1);
+        {
+            let state = transponder.0.lock().unwrap();
+            match *state {
+                ResponseState::None => {}
+                _ => panic!("unexpected state"),
+            }
+        }
+        transponder.on_challenge(PathChallengeFrame::random());
+        transponder.on_response_sent(1);
+        transponder.on_pkt_acked(1);
+        let state = transponder.0.lock().unwrap();
+        match *state {
+            ResponseState::None => {}
+            _ => panic!("unexpected state"),
+        }
+    }
+
+    #[test]
+    fn test_transponder_may_loss_pkt() {
+        let transponder = Transponder::default();
+        transponder.on_challenge(PathChallengeFrame::random());
+        transponder.on_response_sent(1);
+        transponder.may_loss_pkt(1);
+        let state = transponder.0.lock().unwrap();
+        match *state {
+            ResponseState::Challenged(_, None) => {}
+            _ => panic!("unexpected state"),
+        }
+    }
+}

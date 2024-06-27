@@ -75,15 +75,14 @@ impl<const N: usize> ArcAntiAmplifier<N> {
 mod tests {
     use std::task::Context;
 
-    use futures::task::noop_waker;
+    use futures::task::noop_waker_ref;
 
     use super::*;
 
     #[test]
     fn test_deposit_and_poll_apply() {
         let anti_amplifier = ArcAntiAmplifier::<3>::default();
-        let waker = noop_waker();
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(noop_waker_ref());
 
         // Initially, no credit
         assert_eq!(anti_amplifier.poll_apply(&mut cx, 1), Poll::Pending);
@@ -115,8 +114,7 @@ mod tests {
     #[test]
     fn test_multiple_deposits() {
         let anti_amplifier = ArcAntiAmplifier::<3>::default();
-        let waker = noop_waker();
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(noop_waker_ref());
 
         // Deposit 1 unit of data, should add 3 units of credit
         anti_amplifier.deposit(1);
@@ -139,8 +137,7 @@ mod tests {
     #[should_panic]
     fn test_zero_amount_poll_apply() {
         let anti_amplifier = ArcAntiAmplifier::<3>::default();
-        let waker = noop_waker();
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(noop_waker_ref());
 
         // Trying to apply for 0 units of data should panic
         let _ = anti_amplifier.poll_apply(&mut cx, 0);
