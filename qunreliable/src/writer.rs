@@ -40,12 +40,13 @@ impl DatagramWriter {
         if remain == 1 + datagram.len() {
             let frame = DatagramFrame::new(None);
             buf.put_datagram_frame(&frame, datagram);
-            return Some((frame, frame.encoding_size() + datagram.len()));
+            return Some((frame, remain));
         }
         let frame = DatagramFrame::new(Some(VarInt::try_from(datagram.len()).unwrap()));
-        if remain >= frame.encoding_size() + datagram.len() {
+        let length = frame.encoding_size() + datagram.len();
+        if remain >= length {
             buf.put_datagram_frame(&frame, datagram);
-            Some((frame, frame.encoding_size() + datagram.len()))
+            Some((frame, length))
         } else {
             None
         }

@@ -1,0 +1,9 @@
+[package]
+name = "qunreliable"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+bytes = { workspace = true }
+qbase = { workspace = true }

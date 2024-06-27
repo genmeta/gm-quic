@@ -1,7 +1,21 @@
 [workspace]
 resolver = "2"
-members = ["qbase", "qrecovery", "qconnection", "qcongestion", "qudp"]
-default-members = ["qbase", "qrecovery", "qconnection", "qcongestion", "qudp"]
+members = [
+    "qbase",
+    "qrecovery",
+    "qconnection",
+    "qcongestion",
+    "qudp",
+    "qunreliable",
+]
+default-members = [
+    "qbase",
+    "qrecovery",
+    "qconnection",
+    "qcongestion",
+    "qudp",
+    "qunreliable",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -43,6 +57,10 @@ version = "0.1.0"
 
 [workspace.dependencies.qudp]
 path = "./qudp"
+version = "0.1.0"
+
+[workspace.dependencies.qunreliable]
+path = "./qunreliable"
 version = "0.1.0"
 
 

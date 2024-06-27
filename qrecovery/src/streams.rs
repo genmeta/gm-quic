@@ -8,19 +8,12 @@ use std::{
 use futures::Future;
 use qbase::{error::Error, frame::*, streamid::Role};
 
-use crate::{
-    recv::Reader,
-    reliable::ArcReliableFrameQueue,
-    send::Writer,
-    unreliable::{DatagramReader, DatagramStream, DatagramWriter},
-};
+use crate::{recv::Reader, reliable::ArcReliableFrameQueue, send::Writer};
 
 /// For sending stream data
 pub trait TransmitStream {
     /// read data to transmit
     fn try_read_stream(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)>;
-
-    fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)>;
 
     fn on_data_acked(&self, stream_frame: StreamFrame);
 
@@ -33,8 +26,6 @@ pub trait ReceiveStream {
     fn recv_stream_control(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error>;
 
     fn recv_stream(&self, frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error>;
-
-    fn recv_datagram(&self, frame: DatagramFrame, body: bytes::Bytes) -> Result<(), Error>;
 
     fn on_conn_error(&self, err: &Error);
 }
@@ -49,10 +40,6 @@ pub struct ArcDataStreams(Arc<data::RawDataStreams>);
 impl TransmitStream for ArcDataStreams {
     fn try_read_stream(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
         self.0.try_read_stream(buf)
-    }
-
-    fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        self.0.try_read_datagram(buf)
     }
 
     fn on_data_acked(&self, stream_frame: StreamFrame) {
@@ -73,10 +60,6 @@ impl ReceiveStream for ArcDataStreams {
         self.0.recv_stream_control(stream_ctl_frame)
     }
 
-    fn recv_datagram(&self, frame: DatagramFrame, body: bytes::Bytes) -> Result<(), Error> {
-        self.0.recv_datagram(frame, body)
-    }
-
     fn recv_stream(&self, frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error> {
         self.0.recv_stream(frame, body)
     }
@@ -92,14 +75,12 @@ impl ArcDataStreams {
         max_bi_streams: u64,
         max_uni_streams: u64,
         reliable_frame_queue: ArcReliableFrameQueue,
-        datagram_stream: DatagramStream,
     ) -> Self {
         Self(Arc::new(data::RawDataStreams::with_role_and_limit(
             role,
             max_bi_streams,
             max_uni_streams,
             reliable_frame_queue,
-            datagram_stream,
         )))
     }
 
@@ -115,10 +96,6 @@ impl ArcDataStreams {
             inner: self.0.clone(),
         }
         .await
-    }
-
-    pub fn datagram_stream(&self) -> Result<(DatagramReader, DatagramWriter), Error> {
-        self.0.datagram_stream()
     }
 
     pub fn listener(&self) -> listener::ArcListener {

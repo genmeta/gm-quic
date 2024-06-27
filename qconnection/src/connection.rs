@@ -163,8 +163,7 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     let data_space_frame_queue = ArcAsyncQueue::new();
     let (data_ack_tx, data_ack_rx) = mpsc::unbounded_channel();
     let (data_loss_tx, data_loss_rx) = mpsc::unbounded_channel();
-    let data_space =
-        ArcSpace::<ArcDataStreams>::new(Role::Client, 20, 20, 0, one_rtt_crypto_stream);
+    let data_space = ArcSpace::<ArcDataStreams>::new(Role::Client, 20, 20, one_rtt_crypto_stream);
     // 应用的操作接口，后续有必要在连接里直接调用
     let _streams = data_space.data_streams();
     tokio::spawn({

@@ -9,10 +9,6 @@ impl super::TransmitStream for NoDataStreams {
         None
     }
 
-    fn try_read_datagram(&self, _: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        None
-    }
-
     fn on_data_acked(&self, _: StreamFrame) {
         unreachable!()
     }
@@ -28,10 +24,6 @@ impl super::TransmitStream for NoDataStreams {
 
 impl super::ReceiveStream for NoDataStreams {
     fn recv_stream_control(&self, _: StreamCtlFrame) -> Result<(), Error> {
-        unreachable!()
-    }
-
-    fn recv_datagram(&self, _: DatagramFrame, _: bytes::Bytes) -> Result<(), Error> {
         unreachable!()
     }
 

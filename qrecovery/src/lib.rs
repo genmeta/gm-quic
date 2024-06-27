@@ -6,7 +6,6 @@ pub mod reliable;
 pub mod send;
 pub mod space;
 pub mod streams;
-pub mod unreliable;
 
 #[derive(Debug)]
 pub enum QuicStream {
