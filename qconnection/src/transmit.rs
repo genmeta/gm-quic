@@ -11,10 +11,7 @@ use qbase::{
     },
     varint::{VarInt, WriteVarInt},
 };
-use qrecovery::{
-    space::ArcSpace,
-    streams::{ArcDataStreams, ReceiveStream, TransmitStream},
-};
+use qrecovery::{space::ArcSpace, streams::DataStreams};
 
 /// In order to fill the packet efficiently and reduce unnecessary copying, the data of each
 /// space is directly written on the Buffer. However, the length of the packet header is
@@ -39,7 +36,7 @@ pub fn read_space_and_encrypt<T, S>(
 where
     for<'a> &'a mut [u8]: Write<T>,
     LongHeader<T>: HasLength + GetType + Encode,
-    S: Debug + ReceiveStream + TransmitStream,
+    S: Debug + AsRef<DataStreams>,
 {
     let keys = match keys.get_local_keys() {
         Some(keys) => keys,
@@ -121,7 +118,7 @@ pub fn read_1rtt_data_and_encrypt(
     buffer: &mut [u8],
     header: OneRttHeader,
     keys: ArcOneRttKeys,
-    space: ArcSpace<ArcDataStreams>,
+    space: ArcSpace<DataStreams>,
 ) -> usize {
     let (hpk, pk) = match keys.get_local_keys() {
         Some(keys) => keys,

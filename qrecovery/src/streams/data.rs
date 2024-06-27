@@ -126,8 +126,8 @@ fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
     move |e| QuicError::new(ErrorKind::StreamLimit, fty, e.to_string())
 }
 
-impl super::TransmitStream for RawDataStreams {
-    fn try_read_stream(&self, mut buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+impl RawDataStreams {
+    pub fn try_read_data(&self, mut buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
         let guard = &mut self.output.0.lock().unwrap();
         let output = &guard.as_mut().ok()?;
         output
@@ -141,7 +141,7 @@ impl super::TransmitStream for RawDataStreams {
             .next()
     }
 
-    fn on_data_acked(&self, stream_frame: StreamFrame) {
+    pub fn on_data_acked(&self, stream_frame: StreamFrame) {
         if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
             if let Some(all_data_rcvd) = set
                 .get(&stream_frame.id)
@@ -154,7 +154,7 @@ impl super::TransmitStream for RawDataStreams {
         }
     }
 
-    fn may_loss_data(&self, stream_frame: StreamFrame) {
+    pub fn may_loss_data(&self, stream_frame: StreamFrame) {
         if let Some(o) = self
             .output
             .0
@@ -168,7 +168,7 @@ impl super::TransmitStream for RawDataStreams {
         }
     }
 
-    fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
+    pub fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
         if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
             if let Some(o) = set.remove(&reset_frame.stream_id) {
                 o.on_reset_acked();
@@ -176,10 +176,12 @@ impl super::TransmitStream for RawDataStreams {
             // 如果流是双向的，接收部分的流独立地管理结束。其实是上层应用决定接收的部分是否同时结束
         }
     }
-}
 
-impl super::ReceiveStream for RawDataStreams {
-    fn recv_stream(&self, stream_frame: StreamFrame, body: bytes::Bytes) -> Result<(), QuicError> {
+    pub fn recv_data(
+        &self,
+        stream_frame: StreamFrame,
+        body: bytes::Bytes,
+    ) -> Result<(), QuicError> {
         let sid = stream_frame.id;
         // 对方必须是发送端，才能发送此帧
         if sid.role() != self.role {
@@ -208,7 +210,7 @@ impl super::ReceiveStream for RawDataStreams {
         Ok(())
     }
 
-    fn recv_stream_control(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), QuicError> {
+    pub fn recv_stream_control(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), QuicError> {
         match stream_ctl_frame {
             StreamCtlFrame::ResetStream(reset_frame) => {
                 let sid = reset_frame.stream_id;
@@ -334,7 +336,7 @@ impl super::ReceiveStream for RawDataStreams {
         Ok(())
     }
 
-    fn on_conn_error(&self, err: &QuicError) {
+    pub fn on_conn_error(&self, err: &QuicError) {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(_) => return,

@@ -11,7 +11,7 @@ use qbase::{
 use qrecovery::{
     crypto::CryptoStream,
     space::ArcSpace,
-    streams::{none::NoDataStreams, ArcDataStreams},
+    streams::{none::NoDataStreams, DataStreams},
 };
 use qudp::ArcUsc;
 use tokio::sync::mpsc;
@@ -49,7 +49,7 @@ pub struct RawConnection {
     // 发送数据，也可以随着升级到1RTT空间而丢弃
     handshake_space: ArcSpace<NoDataStreams>,
     // 发送数据，也可以随着升级到1RTT空间而丢弃
-    data_space: ArcSpace<ArcDataStreams>,
+    data_space: ArcSpace<DataStreams>,
 
     // 创建新的path用的到，path中的拥塞控制器需要
     ack_observer: AckObserver,
@@ -163,7 +163,7 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     let data_space_frame_queue = ArcAsyncQueue::new();
     let (data_ack_tx, data_ack_rx) = mpsc::unbounded_channel();
     let (data_loss_tx, data_loss_rx) = mpsc::unbounded_channel();
-    let data_space = ArcSpace::<ArcDataStreams>::new(Role::Client, 20, 20, one_rtt_crypto_stream);
+    let data_space = ArcSpace::<DataStreams>::new(Role::Client, 20, 20, one_rtt_crypto_stream);
     // 应用的操作接口，后续有必要在连接里直接调用
     let _streams = data_space.data_streams();
     tokio::spawn({
