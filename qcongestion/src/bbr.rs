@@ -235,7 +235,10 @@ impl Algorithm for Bbr {
         self.update_control_parameters();
     }
 
-    fn on_congestion_event(&mut self, _: &Sent, _: Instant) {}
+    fn on_congestion_event(&mut self, _: &Sent, _: Instant) {
+        // todo: enter_recovery
+        // update newly lost bytes, set BBR.packet_conservation = true
+    }
 
     fn cwnd(&self) -> u64 {
         self.cwnd
@@ -271,5 +274,118 @@ impl Bbr {
     // 3.5.3.  Per-Transmit Steps
     fn on_transmit(&mut self) {
         self.handle_restart_from_idle();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::VecDeque,
+        time::{Duration, Instant},
+    };
+
+    use crate::{
+        bbr::{BbrStateMachine, HIGH_GAIN, INITIAL_CWND, MSS},
+        congestion::{Acked, Algorithm, Sent},
+        rtt::INITIAL_RTT,
+    };
+
+    #[test]
+    fn test_bbr_init() {
+        let mut bbr = super::Bbr::new();
+        bbr.init();
+        assert_eq!(bbr.state, BbrStateMachine::Startup);
+        assert_eq!(bbr.pacing_gain, HIGH_GAIN);
+        assert_eq!(bbr.cwnd_gain, HIGH_GAIN);
+        assert_eq!(bbr.cycle_index, 0);
+        assert_eq!(bbr.cwnd, INITIAL_CWND);
+        assert_eq!(bbr.bytes_in_flight, 0);
+        assert_eq!(
+            bbr.pacing_rate,
+            (bbr.pacing_gain * INITIAL_CWND as f64 / INITIAL_RTT.as_secs_f64()) as u64
+        );
+    }
+
+    #[test]
+    fn test_bbr_sent() {
+        let mut bbr = super::Bbr::new();
+        let now = Instant::now();
+        for _ in 0..10 {
+            let mut sent = Sent {
+                size: MSS,
+                ..Default::default()
+            };
+            bbr.on_sent(&mut sent, MSS, now);
+        }
+        assert_eq!(bbr.bytes_in_flight, 10 * MSS as u64);
+    }
+
+    #[test]
+    fn test_bbr_ack() {
+        let mut bbr = super::Bbr::new();
+        let mut now = Instant::now();
+        let rtt = Duration::from_millis(100);
+
+        simulate_round_trip(&mut bbr, now, rtt, 0, 10, MSS);
+        assert_eq!(bbr.bytes_in_flight, 0);
+        assert_eq!(bbr.delivery_rate.delivered(), 10 * MSS);
+        assert_eq!(bbr.delivery_rate.sample_delivered(), 10 * MSS);
+        assert_eq!(
+            bbr.delivery_rate.sample_delivery_rate(),
+            (10 * 10 * MSS) as u64
+        );
+
+        now += Duration::from_secs(1);
+        // next roud
+        // generate btlbw
+        simulate_round_trip(&mut bbr, now, rtt, 10, 40, MSS);
+        assert_eq!(bbr.delivery_rate.delivered(), 40 * MSS);
+        assert_eq!(bbr.delivery_rate.sample_delivered(), 30 * MSS);
+        assert_eq!(
+            bbr.delivery_rate.sample_delivery_rate(),
+            (30 * 10 * MSS) as u64
+        );
+        assert_eq!(bbr.btlbw, (10 * 10 * MSS) as u64);
+        assert_eq!(
+            bbr.pacing_rate,
+            (bbr.pacing_gain * INITIAL_CWND as f64 / INITIAL_RTT.as_secs_f64()) as u64
+        );
+
+        now += Duration::from_secs(1);
+        // update btlbw
+        simulate_round_trip(&mut bbr, now, rtt, 40, 60, MSS);
+        assert_eq!(
+            bbr.delivery_rate.sample_delivery_rate(),
+            (20 * 10 * MSS) as u64
+        );
+        assert_eq!(bbr.btlbw, (3 * 10 * 10 * MSS) as u64);
+        assert_eq!(bbr.pacing_rate, (bbr.btlbw as f64 * bbr.pacing_gain) as u64);
+    }
+
+    pub(super) fn simulate_round_trip(
+        bbr: &mut super::Bbr,
+        start_time: Instant,
+        rtt: Duration,
+        start: usize,
+        end: usize,
+        packet_size: usize,
+    ) {
+        let mut acks = VecDeque::with_capacity(end - start);
+        for i in start..end {
+            let mut sent: Sent = Sent {
+                pn: i as u64,
+                size: packet_size,
+                time_sent: start_time,
+                ..Default::default()
+            };
+            bbr.on_sent(&mut sent, 0, start_time);
+
+            let mut ack: Acked = sent.into();
+            ack.rtt = rtt;
+            acks.push_back(ack);
+        }
+
+        let ack_time = start_time + rtt;
+        bbr.on_ack(acks, ack_time);
     }
 }

@@ -177,19 +177,8 @@ mod tests {
 
         for _ in 0..3 {
             let sent = sents.pop().unwrap();
-            let acked = Acked {
-                pn: sent.pn,
-                time_sent: sent.time_sent,
-                size: sent.size,
-                rtt: recv_ack_time.saturating_duration_since(sent.time_sent),
-                delivered: sent.delivered,
-                delivered_time: sent.delivered_time,
-                first_sent_time: sent.first_sent_time,
-                is_app_limited: sent.is_app_limited,
-                tx_in_flight: sent.tx_in_flight,
-                lost: sent.lost,
-            };
-
+            let mut acked: Acked = sent.into();
+            acked.rtt = delay;
             rate.update_rate_sample(&acked, recv_ack_time);
             rate.generate_rate_sample();
         }

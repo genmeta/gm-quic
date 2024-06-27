@@ -190,3 +190,128 @@ impl Bbr {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use std::time::{Duration, Instant};
+
+    use crate::bbr::{tests::simulate_round_trip, BbrStateMachine, HIGH_GAIN, INITIAL_CWND, MSS};
+
+    #[test]
+    fn test_bbr_init() {
+        let mut bbr = super::Bbr::new();
+        bbr.init();
+        assert_eq!(bbr.state, BbrStateMachine::Startup);
+        assert_eq!(bbr.pacing_gain, HIGH_GAIN);
+        assert_eq!(bbr.cwnd_gain, HIGH_GAIN);
+        assert_eq!(bbr.cwnd, INITIAL_CWND);
+    }
+
+    #[test]
+    fn test_bbr_enter_startup() {
+        let mut bbr = super::Bbr::new();
+        bbr.enter_startup();
+        assert_eq!(bbr.state, BbrStateMachine::Startup);
+        assert_eq!(bbr.pacing_gain, HIGH_GAIN);
+        assert_eq!(bbr.cwnd_gain, HIGH_GAIN);
+    }
+
+    #[test]
+    fn test_bbr_check_full_pipe() {
+        let mut bbr = super::Bbr::new();
+
+        let mut now = Instant::now();
+        let rtt = Duration::from_millis(100);
+        simulate_round_trip(&mut bbr, now, rtt, 0, 10, MSS);
+        now += Duration::from_secs(1);
+        simulate_round_trip(&mut bbr, now, rtt, 0, 10, MSS);
+
+        assert_eq!(bbr.btlbw, (10 * 10 * MSS) as u64);
+        bbr.check_full_pipe();
+        assert!(!bbr.is_filled_pipe);
+
+        now += Duration::from_secs(1);
+        simulate_round_trip(&mut bbr, now, rtt, 0, 10, MSS);
+        assert_eq!(bbr.btlbw, (10 * 10 * MSS) as u64);
+
+        bbr.check_full_pipe();
+        assert!(!bbr.is_filled_pipe);
+
+        now += Duration::from_secs(1);
+        simulate_round_trip(&mut bbr, now, rtt, 0, 10, MSS);
+
+        bbr.check_full_pipe();
+        assert!(bbr.is_filled_pipe);
+    }
+
+    #[test]
+    fn test_bbr_check_drain() {
+        let mut bbr = super::Bbr::new();
+        bbr.init();
+        bbr.is_filled_pipe = true;
+        bbr.bytes_in_flight = 100;
+        bbr.check_drain();
+        assert_eq!(bbr.state, BbrStateMachine::Drain);
+
+        let mut bbr = super::Bbr::new();
+        bbr.init();
+        bbr.is_filled_pipe = true;
+        bbr.check_drain();
+        assert_eq!(bbr.state, BbrStateMachine::ProbeBW);
+    }
+
+    #[test]
+    fn test_bbr_enter_probe_bw() {
+        let mut bbr = super::Bbr::new();
+        bbr.init();
+        bbr.enter_probe_bw();
+        assert_eq!(bbr.state, BbrStateMachine::ProbeBW);
+        assert_eq!(bbr.cwnd_gain, 2.0);
+    }
+
+    #[test]
+    fn test_bbr_advance_cycle_phase() {
+        let mut bbr = super::Bbr::new();
+        bbr.init();
+        bbr.cycle_index = 0;
+        bbr.advance_cycle_phase();
+        assert_eq!(bbr.pacing_gain, 0.75);
+
+        bbr.cycle_index = 7;
+        bbr.advance_cycle_phase();
+        assert_eq!(bbr.pacing_gain, 1.25)
+    }
+
+    #[test]
+    fn test_bbr_is_next_cycle_phase() {
+        let mut bbr = super::Bbr::new();
+        bbr.init();
+        bbr.enter_probe_bw();
+        let now = Instant::now();
+
+        bbr.pacing_gain = 1.0;
+        bbr.cycle_stamp = now - Duration::from_secs(1);
+        assert!(bbr.is_next_cycle_phase());
+
+        bbr.pacing_gain = 0.75;
+        bbr.cycle_stamp = now - Duration::from_secs(1);
+        bbr.prior_bytes_in_flight = 100;
+        assert!(bbr.is_next_cycle_phase());
+
+        bbr.pacing_gain = 1.25;
+        bbr.cycle_stamp = now - Duration::from_secs(1);
+        assert!(bbr.is_next_cycle_phase());
+    }
+
+    #[test]
+    fn test_restart_from_idle() {
+        let mut bbr = super::Bbr::new();
+        bbr.init();
+
+        bbr.bytes_in_flight = 0;
+        bbr.handle_restart_from_idle();
+
+        assert!(!bbr.is_idle_restart);
+    }
+}
