@@ -70,3 +70,79 @@ impl<const N: usize> ArcAntiAmplifier<N> {
         self.0.post_sent(amount);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::task::Context;
+
+    use futures::task::noop_waker;
+
+    use super::*;
+
+    #[test]
+    fn test_deposit_and_poll_apply() {
+        let anti_amplifier = ArcAntiAmplifier::<3>::default();
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        // Initially, no credit
+        assert_eq!(anti_amplifier.poll_apply(&mut cx, 1), Poll::Pending);
+
+        // Deposit 1 unit of data, should add 3 units of credit
+        anti_amplifier.deposit(1);
+        assert_eq!(anti_amplifier.0.credit.load(Ordering::Acquire), 3);
+
+        // Apply for 2 units of data, should return 2 units
+        assert_eq!(anti_amplifier.poll_apply(&mut cx, 2), Poll::Ready(2));
+        assert_eq!(anti_amplifier.0.credit.load(Ordering::Acquire), 3);
+
+        // Post sent 2 units, should reduce credit by 2
+        anti_amplifier.post_sent(2);
+        assert_eq!(anti_amplifier.0.credit.load(Ordering::Acquire), 1);
+
+        // Apply for 2 units of data, should return 1 unit
+        assert_eq!(anti_amplifier.poll_apply(&mut cx, 2), Poll::Ready(1));
+        assert_eq!(anti_amplifier.0.credit.load(Ordering::Acquire), 1);
+
+        // Post sent 1 unit, should reduce credit to 0
+        anti_amplifier.post_sent(1);
+        assert_eq!(anti_amplifier.0.credit.load(Ordering::Acquire), 0);
+
+        // No credit left, should return Pending
+        assert_eq!(anti_amplifier.poll_apply(&mut cx, 1), Poll::Pending);
+    }
+
+    #[test]
+    fn test_multiple_deposits() {
+        let anti_amplifier = ArcAntiAmplifier::<3>::default();
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        // Deposit 1 unit of data, should add 3 units of credit
+        anti_amplifier.deposit(1);
+        assert_eq!(anti_amplifier.0.credit.load(Ordering::Acquire), 3);
+
+        // Deposit another 1 unit of data, should add another 3 units of credit
+        anti_amplifier.deposit(1);
+        assert_eq!(anti_amplifier.0.credit.load(Ordering::Acquire), 6);
+
+        // Apply for 5 units of data, should return 5 units
+        assert_eq!(anti_amplifier.poll_apply(&mut cx, 5), Poll::Ready(5));
+        assert_eq!(anti_amplifier.0.credit.load(Ordering::Acquire), 6);
+
+        // Post sent 5 units, should reduce credit by 5
+        anti_amplifier.post_sent(5);
+        assert_eq!(anti_amplifier.0.credit.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_zero_amount_poll_apply() {
+        let anti_amplifier = ArcAntiAmplifier::<3>::default();
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        // Trying to apply for 0 units of data should panic
+        let _ = anti_amplifier.poll_apply(&mut cx, 0);
+    }
+}
