@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use qbase::{frame::*, index_deque::IndexDeque, packet::PacketNumber, varint::VARINT_MAX};
+use qbase::{frame::*, packet::PacketNumber, util::IndexDeque, varint::VARINT_MAX};
 
 #[derive(Debug, Clone)]
 pub enum SentRecord {

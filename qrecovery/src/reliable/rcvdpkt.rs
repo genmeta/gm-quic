@@ -5,8 +5,8 @@ use std::{
 
 use qbase::{
     frame::AckFrame,
-    index_deque::IndexDeque,
     packet::PacketNumber,
+    util::IndexDeque,
     varint::{VarInt, VARINT_MAX},
 };
 use thiserror::Error;
