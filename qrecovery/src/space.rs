@@ -17,7 +17,6 @@ use super::{
     rcvdpkt::{ArcRcvdPktRecords, Error as RcvPnError},
     reliable::{ArcReliableFrameQueue, ArcSentPktRecords, SentRecord},
     streams::{none::NoDataStreams, ArcDataStreams, ReceiveStream, TransmitStream},
-    unreliable::DatagramStream,
 };
 
 #[derive(Debug, Clone)]
@@ -104,11 +103,6 @@ where
             len += n;
         }
 
-        while let Some((datagram_frame, n)) = self.data_streams.try_read_datagram(&mut buf[len..]) {
-            send_guard.record_data_frame(DataFrame::Datagram(datagram_frame));
-            len += n;
-        }
-
         (pn, encoded_pn.size(), origin - buf.remaining_mut() + len)
     }
 
@@ -123,9 +117,6 @@ where
             }
             SpaceFrame::Data(DataFrame::Stream(frame), data) => {
                 self.data_streams.recv_stream(frame, data)?;
-            }
-            SpaceFrame::Data(DataFrame::Datagram(frame), data) => {
-                self.data_streams.recv_datagram(frame, data)?;
             }
         }
         Ok(())
@@ -198,11 +189,10 @@ impl ArcSpace<ArcDataStreams> {
         role: Role,
         max_bi_streams: u64,
         max_uni_streams: u64,
-        max_datagram_frame_size: u64,
+
         crypto_stream: CryptoStream,
     ) -> Self {
         let reliable_frame_queue = ArcReliableFrameQueue::default();
-        let datagram_stream = DatagramStream::new(max_datagram_frame_size);
 
         ArcSpace(Arc::new(RawSpace {
             reliable_frame_queue: reliable_frame_queue.clone(),
@@ -213,7 +203,6 @@ impl ArcSpace<ArcDataStreams> {
                 max_bi_streams,
                 max_uni_streams,
                 reliable_frame_queue,
-                datagram_stream,
             ),
             crypto_stream,
         }))

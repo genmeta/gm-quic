@@ -12,13 +12,13 @@ use super::{
 };
 
 #[derive(Debug, Clone)]
-pub struct RawDatagramStream {
+pub struct RawDatagramFlow {
     max_datagram_frame_size: u64,
     reader: DatagramReader,
     writer: DatagramWriter,
 }
 
-impl RawDatagramStream {
+impl RawDatagramFlow {
     fn new(max_datagram_frame_size: u64) -> Self {
         let reader = RawDatagramReader::default();
         let writer = RawDatagramWriter::new(max_datagram_frame_size as _);
@@ -48,43 +48,48 @@ impl RawDatagramStream {
 }
 
 #[derive(Default, Debug, Clone)]
-pub struct DatagramStream {
-    stream: Option<RawDatagramStream>,
+pub struct DatagramFlow {
+    flow: Option<RawDatagramFlow>,
 }
 
-impl DatagramStream {
+impl DatagramFlow {
+    #[inline]
     pub fn new(max_datagram_frame_size: u64) -> Self {
-        let stream = if max_datagram_frame_size == 0 {
+        let flow = if max_datagram_frame_size == 0 {
             None
         } else {
-            Some(RawDatagramStream::new(max_datagram_frame_size))
+            Some(RawDatagramFlow::new(max_datagram_frame_size))
         };
-        Self { stream }
+        Self { flow }
     }
 
+    #[inline]
     pub fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        self.stream.as_ref()?.try_read_datagram(buf)
+        self.flow.as_ref()?.try_read_datagram(buf)
     }
 
+    #[inline]
     pub fn recv_datagram(&self, frame: DatagramFrame, body: bytes::Bytes) -> Result<(), Error> {
-        self.stream
+        self.flow
             .as_ref()
             .ok_or_else(|| disenabled(&frame))?
             .recv_datagram(frame, body)
     }
 
+    #[inline]
     pub fn rw(&self) -> Result<(DatagramReader, DatagramWriter), Error> {
-        let s = self.stream.as_ref().ok_or_else(disenabled_datagram)?;
+        let flow = self.flow.as_ref().ok_or_else(disenabled_datagram)?;
         Ok((
-            DatagramReader(s.reader.0.clone()),
-            DatagramWriter(s.writer.0.clone()),
+            DatagramReader(flow.reader.0.clone()),
+            DatagramWriter(flow.writer.0.clone()),
         ))
     }
 
-    pub(crate) fn on_conn_error(&self, error: &Error) {
-        if let Some(s) = &self.stream {
-            s.reader.on_conn_error(error);
-            s.writer.on_conn_error(error);
+    #[inline]
+    pub fn on_conn_error(&self, error: &Error) {
+        if let Some(flow) = &self.flow {
+            flow.reader.on_conn_error(error);
+            flow.writer.on_conn_error(error);
         }
     }
 }

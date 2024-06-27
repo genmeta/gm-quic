@@ -85,6 +85,7 @@ fn parse_packet_and_then_dispatch(
                     is_ack_eliciting = true;
                     space_frame_writer.push(SpaceFrame::Data(f, data));
                 }
+                Frame::Datagram(_, _) => todo!(),
             },
             Err(e) => {
                 // If frame parsing fails, discard it and roll back,
@@ -235,11 +236,7 @@ pub(crate) async fn loop_read_space_frame_and_dispatch_to_space(
                     qbase::frame::DataFrame::Stream(frame) => {
                         space.recv_stream(frame, bytes)?;
                     }
-                    // 这个方法应该单独拆一个特征出来，而不是绑定在ReceiveStream特征上
-                    // 或许应该再定义一个DataSpace类型，然后将可靠和不可靠流依托在上面
-                    qbase::frame::DataFrame::Datagram(frame) => {
-                        space.recv_datagram(frame, bytes)?;
-                    }
+
                     // 按说在1rtt是收不到CryptoFrame的
                     qbase::frame::DataFrame::Crypto(_) => unreachable!(),
                 },

@@ -208,7 +208,6 @@ pub enum PathFrame {
 pub enum DataFrame {
     Crypto(CryptoFrame),
     Stream(StreamFrame),
-    Datagram(DatagramFrame),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -233,6 +232,7 @@ pub enum ReliableFrame {
 pub enum Frame {
     Pure(PureFrame),
     Data(DataFrame, Bytes),
+    Datagram(DatagramFrame, Bytes),
 }
 
 pub struct FrameReader {

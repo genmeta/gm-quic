@@ -17,7 +17,6 @@ use crate::{
     recv::{self, Incoming, Reader},
     reliable::ArcReliableFrameQueue,
     send::{self, Outgoing, Writer},
-    unreliable::{DatagramReader, DatagramStream, DatagramWriter},
 };
 
 /// ArcOutput里面包含一个Result类型，一旦发生quic error，就会被替换为Err
@@ -121,9 +120,6 @@ pub(super) struct RawDataStreams {
 
     // 该queue与space中的transmitter中的frame_queue共享，为了方便向transmitter中写入帧
     reliable_frame_queue: ArcReliableFrameQueue,
-
-    // 数据报流
-    datagram_stream: DatagramStream,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
@@ -143,10 +139,6 @@ impl super::TransmitStream for RawDataStreams {
                 Some((frame, len))
             })
             .next()
-    }
-
-    fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        self.datagram_stream.try_read_datagram(buf)
     }
 
     fn on_data_acked(&self, stream_frame: StreamFrame) {
@@ -214,10 +206,6 @@ impl super::ReceiveStream for RawDataStreams {
             .map(|incoming| incoming.recv_data(stream_frame, body));
         // 否则，该流已经结束，再收到任何该流的frame，都将被忽略
         Ok(())
-    }
-
-    fn recv_datagram(&self, frame: DatagramFrame, body: bytes::Bytes) -> Result<(), QuicError> {
-        self.datagram_stream.recv_datagram(frame, body)
     }
 
     fn recv_stream_control(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), QuicError> {
@@ -363,8 +351,6 @@ impl super::ReceiveStream for RawDataStreams {
         output.on_conn_error(err);
         input.on_conn_error(err);
         listener.on_conn_error(err);
-
-        self.datagram_stream.on_conn_error(err);
     }
 }
 
@@ -374,7 +360,6 @@ impl RawDataStreams {
         max_bi_streams: u64,
         max_uni_streams: u64,
         reliable_frame_queue: ArcReliableFrameQueue,
-        datagram_stream: DatagramStream,
     ) -> Self {
         Self {
             role,
@@ -383,7 +368,6 @@ impl RawDataStreams {
             input: ArcInput::default(),
             listener: ArcListener::default(),
             reliable_frame_queue,
-            datagram_stream,
         }
     }
 
@@ -429,10 +413,6 @@ impl RawDataStreams {
 
     pub(super) fn listener(&self) -> ArcListener {
         self.listener.clone()
-    }
-
-    pub(crate) fn datagram_stream(&self) -> Result<(DatagramReader, DatagramWriter), QuicError> {
-        self.datagram_stream.rw()
     }
 
     fn try_accept_sid(&self, sid: StreamId) -> Result<(), ExceedLimitError> {

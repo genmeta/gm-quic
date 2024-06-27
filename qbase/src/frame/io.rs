@@ -21,7 +21,6 @@ use super::{
     streams_blocked::streams_blocked_frame_with_dir,
     *,
 };
-use crate::util::{DescribeData, WriteData};
 
 /// Some frames like `STREAM` and `CRYPTO` have a data body, which use `bytes::Bytes` to store.
 fn complete_frame(
@@ -115,11 +114,11 @@ fn complete_frame(
                 }
                 Some(len) => {
                     let data = raw.slice(start..start + len);
-                    Ok((&input[len..], Frame::Data(DataFrame::Datagram(frame), data)))
+                    Ok((&input[len..], Frame::Datagram(frame, data)))
                 }
                 None => {
                     let data = raw.slice(start..);
-                    Ok((&[], Frame::Data(DataFrame::Datagram(frame), data)))
+                    Ok((&[], Frame::Datagram(frame, data)))
                 }
             }
         }
@@ -164,10 +163,6 @@ use super::{
 
 pub trait WriteFrame<F> {
     fn put_frame(&mut self, frame: &F);
-}
-
-pub trait WriteDataFrame<F, D: DescribeData>: WriteData<D> {
-    fn put_frame_with_data(&mut self, frame: &F, data: &D);
 }
 
 impl<T: bytes::BufMut> WriteFrame<ConnFrame> for T {
@@ -224,50 +219,6 @@ impl<T: bytes::BufMut> WriteFrame<ReliableFrame> for T {
         match frame {
             ReliableFrame::Conn(frame) => self.put_frame(frame),
             ReliableFrame::Stream(frame) => self.put_frame(frame),
-        }
-    }
-}
-
-impl<T, D> WriteDataFrame<CryptoFrame, D> for T
-where
-    T: bytes::BufMut + WriteData<D>,
-    D: DescribeData,
-{
-    fn put_frame_with_data(&mut self, frame: &CryptoFrame, data: &D) {
-        self.put_crypto_frame(frame, data);
-    }
-}
-
-impl<T, D> WriteDataFrame<StreamFrame, D> for T
-where
-    T: bytes::BufMut + WriteData<D>,
-    D: DescribeData,
-{
-    fn put_frame_with_data(&mut self, frame: &StreamFrame, data: &D) {
-        self.put_stream_frame(frame, data);
-    }
-}
-
-impl<T, D> WriteDataFrame<DatagramFrame, D> for T
-where
-    T: bytes::BufMut + WriteData<D>,
-    D: DescribeData,
-{
-    fn put_frame_with_data(&mut self, frame: &DatagramFrame, data: &D) {
-        self.put_datagram_frame(frame, data)
-    }
-}
-
-impl<T, D> WriteDataFrame<DataFrame, D> for T
-where
-    T: bytes::BufMut + WriteData<D>,
-    D: DescribeData,
-{
-    fn put_frame_with_data(&mut self, frame: &DataFrame, data: &D) {
-        match frame {
-            DataFrame::Crypto(frame) => self.put_crypto_frame(frame, data),
-            DataFrame::Stream(frame) => self.put_stream_frame(frame, data),
-            DataFrame::Datagram(frame) => self.put_datagram_frame(frame, data),
         }
     }
 }
