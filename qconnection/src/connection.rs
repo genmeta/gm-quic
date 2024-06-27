@@ -64,26 +64,26 @@ pub struct RawConnection {
 pub fn new(tls_session: TlsIO) -> RawConnection {
     let rcvd_conn_frames = ArcAsyncDeque::new();
 
-    let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded_channel::<(InitialPacket, ArcPath)>();
     let (initial_ack_tx, initial_ack_rx) = mpsc::unbounded_channel();
     let (initial_loss_tx, initial_loss_rx) = mpsc::unbounded_channel();
-    let initial_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
-    let initial_crypto_handler = initial_crypto_stream.split();
     let initial_keys = ArcKeys::new_pending();
     // 实际上从未被读取/写入
     let initial_space_frame_queue = ArcAsyncDeque::new();
-    let initial_space = ArcSpace::<NoDataStreams>::with_crypto_stream(initial_crypto_stream);
-    tokio::spawn(
-        auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
-            initial_pkt_rx,
-            initial_keys.clone(),
-            initial_space.clone(),
-            rcvd_conn_frames.clone(),
-            initial_space_frame_queue,
-            initial_ack_tx,
-            true,
-        ),
+    let initial_space =
+        ArcSpace::<NoDataStreams>::with_crypto_stream(CryptoStream::new(1_000_000, 1_000_000));
+
+    let (initial_pkt_tx, initial_packets) = auto::InitialPacketStream::new(
+        initial_keys.clone(),
+        initial_space.rcvd_pkt_records.clone(),
     );
+
+    initial_packets.parse_packet_and_then_dispatch(
+        Some(rcvd_conn_frames.clone()),
+        Some(initial_space_frame_queue.clone()),
+        None,
+        initial_ack_tx.clone(),
+    );
+
     tokio::spawn({
         let space = initial_space.clone();
         let mut ack_rx = initial_ack_rx;
@@ -105,27 +105,27 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
         }
     });
 
-    let (handshake_pkt_tx, handshake_pkt_rx) =
-        mpsc::unbounded_channel::<(HandshakePacket, ArcPath)>();
     let (handshake_ack_tx, handshake_ack_rx) = mpsc::unbounded_channel();
     let (handshake_loss_tx, handshake_loss_rx) = mpsc::unbounded_channel();
     let handshake_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
-    let handshake_crypto_handler = handshake_crypto_stream.split();
     let handshake_keys = ArcKeys::new_pending();
-    // 实际上从未被读取/写入
+
     let handshake_space_frame_queue = ArcAsyncDeque::new();
-    let handshake_space = ArcSpace::<NoDataStreams>::with_crypto_stream(handshake_crypto_stream);
-    tokio::spawn(
-        auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
-            handshake_pkt_rx,
-            handshake_keys.clone(),
-            handshake_space.clone(),
-            rcvd_conn_frames.clone(),
-            handshake_space_frame_queue,
-            handshake_ack_tx,
-            true,
-        ),
+    let handshake_space =
+        ArcSpace::<NoDataStreams>::with_crypto_stream(handshake_crypto_stream.clone());
+
+    let (handshake_pkt_tx, handshake_packets) = auto::HandshakePacketStream::new(
+        handshake_keys.clone(),
+        handshake_space.rcvd_pkt_records.clone(),
     );
+
+    handshake_packets.parse_packet_and_then_dispatch(
+        Some(rcvd_conn_frames.clone()),
+        Some(handshake_space_frame_queue.clone()),
+        None,
+        handshake_ack_tx.clone(),
+    );
+
     tokio::spawn({
         let space = handshake_space.clone();
         let mut ack_rx = handshake_ack_rx;
@@ -150,12 +150,12 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
         handshake::exchange_initial_crypto_msg_until_getting_handshake_key(
             tls_session.clone(),
             handshake_keys.clone(),
-            initial_crypto_handler,
+            initial_space.crypto_stream.split(),
         ),
     );
 
-    let (zero_rtt_pkt_tx, zero_rtt_pkt_rx) = mpsc::unbounded_channel::<(ZeroRttPacket, ArcPath)>();
-    let (one_rtt_pkt_tx, one_rtt_pkt_rx) = mpsc::unbounded_channel::<(OneRttPacket, ArcPath)>();
+    let datagram_queue = ArcAsyncDeque::new();
+
     let zero_rtt_keys = ArcKeys::new_pending();
     let one_rtt_keys = ArcOneRttKeys::new_pending();
     let one_rtt_crypto_stream = CryptoStream::new(1_000_000, 1_000_000);
@@ -186,43 +186,39 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
             }
         }
     });
-    tokio::spawn(
-        auto::loop_read_long_packet_and_then_dispatch_to_space_frame_queue(
-            zero_rtt_pkt_rx,
-            zero_rtt_keys.clone(),
-            data_space.clone(),
-            rcvd_conn_frames.clone(),
-            data_space_frame_queue.clone(),
-            data_ack_tx.clone(),
-            false,
-        ),
+
+    let (zero_rtt_pkt_tx, zero_rtt_packets) =
+        auto::ZeroRttPacketStream::new(zero_rtt_keys.clone(), data_space.rcvd_pkt_records.clone());
+
+    zero_rtt_packets.parse_packet_and_then_dispatch(
+        Some(rcvd_conn_frames.clone()),
+        Some(data_space_frame_queue.clone()),
+        Some(datagram_queue.clone()),
+        data_ack_tx.clone(),
     );
-    tokio::spawn(
-        auto::loop_read_short_packet_and_then_dispatch_to_space_frame_queue(
-            one_rtt_pkt_rx,
-            one_rtt_keys.clone(),
-            data_space.clone(),
-            rcvd_conn_frames.clone(),
-            data_space_frame_queue.clone(),
-            data_ack_tx,
-        ),
+
+    let (one_rtt_pkt_tx, dataspace_packets) =
+        auto::OneRttPacketStream::new(one_rtt_keys.clone(), data_space.rcvd_pkt_records.clone());
+
+    dataspace_packets.parse_packet_and_then_dispatch(
+        Some(rcvd_conn_frames.clone()),
+        Some(data_space_frame_queue.clone()),
+        Some(datagram_queue.clone()),
+        data_ack_tx.clone(),
     );
-    tokio::spawn(auto::loop_read_space_frame_and_dispatch_to_space(
-        data_space_frame_queue,
-        _streams,
-    ));
+
     tokio::spawn(
         handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
             tls_session,
             one_rtt_keys,
-            handshake_crypto_handler,
+            handshake_crypto_stream.split(),
         ),
     );
 
     let ack_observer = AckObserver::new([
-        initial_space.rcvd_pkt_records().clone(),
-        handshake_space.rcvd_pkt_records().clone(),
-        data_space.rcvd_pkt_records().clone(),
+        initial_space.rcvd_pkt_records.clone(),
+        handshake_space.rcvd_pkt_records.clone(),
+        data_space.rcvd_pkt_records.clone(),
     ]);
     let loss_observer = LossObserver::new([initial_loss_tx, handshake_loss_tx, data_loss_tx]);
     RawConnection {
