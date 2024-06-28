@@ -17,7 +17,7 @@ use crate::{
     crypto::TlsIO,
     handshake,
     path::{AckObserver, ArcPath, LossObserver, Pathway},
-    space::{ArcSpace, DataSpace, HandshakeSpace, InitalSpace, Space},
+    space::ArcSpace,
 };
 
 /// Option是为了能丢弃前期空间，包括这些空间的收包队列，
@@ -39,14 +39,6 @@ pub struct RawConnection {
     handshake_keys: ArcKeys,
     zero_rtt_keys: ArcKeys,
 
-    // 发送数据，也可以随着升级到Handshake空间而丢弃
-    initial_space: ArcSpace<InitalSpace>,
-    // An endpoint MUST discard its Handshake keys when the TLS handshake is confirmed.
-    // 发送数据，也可以随着升级到1RTT空间而丢弃
-    handshake_space: ArcSpace<HandshakeSpace>,
-    // 发送数据，也可以随着升级到1RTT空间而丢弃
-    data_space: ArcSpace<DataSpace>,
-
     // 创建新的path用的到，path中的拥塞控制器需要
     ack_observer: AckObserver,
     loss_observer: LossObserver,
@@ -60,17 +52,18 @@ pub struct RawConnection {
 pub fn new(tls_session: TlsIO) -> RawConnection {
     let rcvd_conn_frames = ArcAsyncDeque::new();
 
-    let (initial_ack_tx, initial_ack_rx) = mpsc::unbounded_channel();
-    let (initial_loss_tx, initial_loss_rx) = mpsc::unbounded_channel();
     let initial_keys = ArcKeys::new_pending();
     // 实际上从未被读取/写入
-    let initial_space_frame_queue = ArcAsyncDeque::new();
+
     let initial_space = ArcSpace::new_initial_space();
 
+    let initial_ack_tx = initial_space.spawn_recv_ack();
     let (initial_pkt_tx, initial_packet_stream) = auto::InitialPacketStream::new(
         initial_keys.clone(),
         initial_space.rcvd_pkt_records.clone(),
     );
+
+    let initial_space_frame_queue = initial_space.spawn_recv_space_frames();
 
     initial_packet_stream.parse_packet_and_then_dispatch(
         Some(rcvd_conn_frames.clone()),
@@ -79,111 +72,44 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
         initial_ack_tx.clone(),
     );
 
-    tokio::spawn({
-        let space = initial_space.clone();
-        let mut ack_rx = initial_ack_rx;
-        async move {
-            // 通过rx接收并处理AckFrame，AckFrame是Path收包解包得到
-            while let Some(ack) = ack_rx.recv().await {
-                space.on_ack(ack);
-            }
-        }
-    });
-    tokio::spawn({
-        let space = initial_space.clone();
-        let mut loss_pkt_rx = initial_loss_rx;
-        async move {
-            // 不停地接收丢包序号，这些丢包序号由path记录反馈，更新Transmiter的状态
-            while let Some(pn) = loss_pkt_rx.recv().await {
-                space.may_loss_pkt(pn);
-            }
-        }
-    });
-
-    let (handshake_ack_tx, handshake_ack_rx) = mpsc::unbounded_channel();
-    let (handshake_loss_tx, handshake_loss_rx) = mpsc::unbounded_channel();
-
     let handshake_keys = ArcKeys::new_pending();
 
-    let handshake_space_frame_queue = ArcAsyncDeque::new();
     let handshake_space = ArcSpace::new_handshake_space();
-
+    let handshake_ack_tx = handshake_space.spawn_recv_ack();
     let (handshake_pkt_tx, handshake_packet_stream) = auto::HandshakePacketStream::new(
         handshake_keys.clone(),
         handshake_space.rcvd_pkt_records.clone(),
     );
 
+    let handshake_space_frame_queue = handshake_space.spawn_recv_space_frames();
+
     handshake_packet_stream.parse_packet_and_then_dispatch(
         Some(rcvd_conn_frames.clone()),
-        Some(handshake_space_frame_queue.clone()),
+        Some(handshake_space_frame_queue),
         None,
         handshake_ack_tx.clone(),
     );
 
-    tokio::spawn({
-        let space = handshake_space.clone();
-        let mut ack_rx = handshake_ack_rx;
-        async move {
-            // 通过rx接收并处理AckFrame，AckFrame是Path收包解包得到
-            while let Some(ack) = ack_rx.recv().await {
-                space.on_ack(ack);
-            }
-        }
-    });
-    tokio::spawn({
-        let space = handshake_space.clone();
-        let mut loss_pkt_rx = handshake_loss_rx;
-        async move {
-            // 不停地接收丢包序号，这些丢包序号由path记录反馈，更新Transmiter的状态
-            while let Some(pn) = loss_pkt_rx.recv().await {
-                space.may_loss_pkt(pn);
-            }
-        }
-    });
-    tokio::spawn(
-        handshake::exchange_initial_crypto_msg_until_getting_handshake_key(
-            tls_session.clone(),
-            handshake_keys.clone(),
-            initial_space.crypto_stream.split(),
-        ),
+    initial_space.exchange_initial_crypto_msg_until_getting_handshake_key(
+        handshake_keys.clone(),
+        tls_session.clone(),
     );
 
     let datagram_queue = ArcAsyncDeque::new();
 
     let zero_rtt_keys = ArcKeys::new_pending();
     let one_rtt_keys = ArcOneRttKeys::new_pending();
-    let data_space_frame_queue = ArcAsyncDeque::new();
-    let (data_ack_tx, data_ack_rx) = mpsc::unbounded_channel();
-    let (data_loss_tx, data_loss_rx) = mpsc::unbounded_channel();
+
     let data_space = ArcSpace::new_data_space(Role::Client, 20, 20);
-
-    tokio::spawn({
-        let space = data_space.clone();
-        let mut ack_rx = data_ack_rx;
-        async move {
-            // 通过rx接收并处理AckFrame，AckFrame是Path收包解包得到
-            while let Some(ack) = ack_rx.recv().await {
-                space.on_ack(ack);
-            }
-        }
-    });
-    tokio::spawn({
-        let space = data_space.clone();
-        let mut loss_pkt_rx = data_loss_rx;
-        async move {
-            // 不停地接收丢包序号，这些丢包序号由path记录反馈，更新Transmiter的状态
-            while let Some(pn) = loss_pkt_rx.recv().await {
-                space.may_loss_pkt(pn);
-            }
-        }
-    });
-
+    let data_ack_tx = data_space.spawn_recv_ack();
     let (zero_rtt_pkt_tx, zero_rtt_packet_stream) =
         auto::ZeroRttPacketStream::new(zero_rtt_keys.clone(), data_space.rcvd_pkt_records.clone());
 
+    let data_space_frame_queue = data_space.spawn_recv_space_frames();
+
     zero_rtt_packet_stream.parse_packet_and_then_dispatch(
         Some(rcvd_conn_frames.clone()),
-        Some(data_space_frame_queue.clone()),
+        Some(data_space_frame_queue),
         Some(datagram_queue.clone()),
         data_ack_tx.clone(),
     );
@@ -191,19 +117,18 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
     let (one_rtt_pkt_tx, dataspace_packets) =
         auto::OneRttPacketStream::new(one_rtt_keys.clone(), data_space.rcvd_pkt_records.clone());
 
+    let data_space_frame_queue = data_space.spawn_recv_space_frames();
+
     dataspace_packets.parse_packet_and_then_dispatch(
         Some(rcvd_conn_frames.clone()),
-        Some(data_space_frame_queue.clone()),
+        Some(data_space_frame_queue),
         Some(datagram_queue.clone()),
         data_ack_tx.clone(),
     );
 
-    tokio::spawn(
-        handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
-            tls_session,
-            one_rtt_keys,
-            handshake_space.crypto_stream.split(),
-        ),
+    handshake_space.exchange_handshake_crypto_msg_until_getting_1rtt_key(
+        one_rtt_keys.clone(),
+        tls_session.clone(),
     );
 
     let ack_observer = AckObserver::new([
@@ -211,7 +136,12 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
         handshake_space.rcvd_pkt_records.clone(),
         data_space.rcvd_pkt_records.clone(),
     ]);
-    let loss_observer = LossObserver::new([initial_loss_tx, handshake_loss_tx, data_loss_tx]);
+    let loss_observer = LossObserver::new([
+        initial_space.spawn_handle_may_loss(),
+        handshake_space.spawn_handle_may_loss(),
+        data_space.spawn_handle_may_loss(),
+    ]);
+
     RawConnection {
         pathes: HashMap::new(),
         init_pkt_queue: Some(initial_pkt_tx),
@@ -221,9 +151,6 @@ pub fn new(tls_session: TlsIO) -> RawConnection {
         handshake_keys,
         initial_keys,
         zero_rtt_keys,
-        initial_space,
-        handshake_space,
-        data_space,
         ack_observer,
         loss_observer,
         spin: SpinBit::default(),

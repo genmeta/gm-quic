@@ -6,10 +6,15 @@ use std::{sync::Arc, time::Instant};
 use bytes::{BufMut, Bytes};
 pub use data::DataSpace;
 use deref_derive::Deref;
+use futures::StreamExt;
 pub use nodata::{HandshakeSpace, InitalSpace};
-use qbase::frame::{
-    io::{WriteAckFrame, WriteFrame},
-    AckFrame, BeFrame, DataFrame, StreamCtlFrame,
+use qbase::{
+    error::Error,
+    frame::{
+        io::{WriteAckFrame, WriteFrame},
+        *,
+    },
+    util::ArcAsyncDeque,
 };
 use qrecovery::{
     crypto::CryptoStream,
@@ -20,6 +25,7 @@ use qrecovery::{
     },
     streams::DataStreams,
 };
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
 pub enum SpaceFrame {
@@ -72,11 +78,11 @@ impl<T> RawSpace<T> {
     }
 }
 
-pub trait Space {
+pub trait Space: Send + Sync + 'static {
     fn read(&self, buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize, usize);
     fn on_ack(&self, ack_frmae: AckFrame);
     fn may_loss_pkt(&self, pn: u64);
-    // fn receive(&self, queue: ...);
+    fn receive(&self, frame: SpaceFrame) -> Result<(), Error>;
 }
 
 #[derive(Debug, Deref)]
@@ -85,6 +91,47 @@ pub struct ArcSpace<T>(Arc<RawSpace<T>>);
 impl<T> Clone for ArcSpace<T> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
+    }
+}
+
+impl<T> ArcSpace<T>
+where
+    Self: Space,
+{
+    pub fn spawn_recv_ack(&self) -> mpsc::UnboundedSender<AckFrame> {
+        let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();
+        let space = self.clone();
+        tokio::spawn(async move {
+            while let Some(ack_frame) = ack_rx.recv().await {
+                space.on_ack(ack_frame);
+            }
+        });
+        ack_tx
+    }
+
+    pub fn spawn_handle_may_loss(&self) -> mpsc::UnboundedSender<u64> {
+        let (loss_tx, mut loss_rx) = mpsc::unbounded_channel();
+        let space = self.clone();
+        tokio::spawn(async move {
+            while let Some(pn) = loss_rx.recv().await {
+                space.may_loss_pkt(pn);
+            }
+        });
+        loss_tx
+    }
+
+    pub fn spawn_recv_space_frames(&self) -> ArcAsyncDeque<SpaceFrame> {
+        let space = self.clone();
+        let deque = ArcAsyncDeque::new();
+        let mut inner_deque = deque.clone();
+        tokio::spawn(async move {
+            while let Some(frame) = inner_deque.next().await {
+                if let Err(_e) = space.receive(frame) {
+                    // todo: 向外扩散连接错误
+                }
+            }
+        });
+        deque
     }
 }
 

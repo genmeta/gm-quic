@@ -2,6 +2,7 @@ use std::{sync::Arc, time::Instant};
 
 use bytes::BufMut;
 use qbase::{
+    error::Error,
     frame::{AckFrame, DataFrame},
     packet::WritePacketNumber,
     streamid::Role,
@@ -16,7 +17,7 @@ use qrecovery::{
     streams::DataStreams,
 };
 
-use super::{ArcSpace, RawSpace, Space};
+use super::{ArcSpace, RawSpace, Space, SpaceFrame};
 
 #[derive(Debug, Clone)]
 pub struct DataSpace {
@@ -124,6 +125,18 @@ impl Space for ArcSpace<DataSpace> {
                     write_frame_guard.push_reliable_frame(frame);
                 }
                 SentRecord::Ack(..) => {}
+            }
+        }
+    }
+
+    fn receive(&self, frame: SpaceFrame) -> Result<(), Error> {
+        match frame {
+            SpaceFrame::Stream(frame) => self.data_stream.recv_stream_control(frame),
+            SpaceFrame::Data(DataFrame::Stream(frame), data) => {
+                self.data_stream.recv_data(frame, data)
+            }
+            SpaceFrame::Data(DataFrame::Crypto(frame), data) => {
+                self.crypto_stream.recv_data(frame, data)
             }
         }
     }
