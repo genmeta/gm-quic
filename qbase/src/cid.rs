@@ -1,5 +1,4 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
@@ -160,67 +159,25 @@ impl ArcLocalCids {
     }
 }
 
-#[derive(Default, Debug)]
-struct CidGetters {
-    needed: VecDeque<u64>,
-    avaliable: BTreeMap<u64, ArcCidGetter>,
-}
-
-impl CidGetters {
-    fn new_getter(&mut self, cid: ConnectionId, seq: u64) -> ArcCidGetter {
-        let getter = ArcCidGetter::new(CidGetter::Ready(cid));
-        self.avaliable.insert(seq, getter.clone());
-        getter
-    }
-
-    fn retire_prior_to(&mut self, end: u64) {
-        let remain_avaliable = self.avaliable.split_off(&end);
-        for (idx, getter) in std::mem::replace(&mut self.avaliable, remain_avaliable) {
-            let mut cid_getter = getter.0.lock().unwrap();
-            match &*cid_getter {
-                CidGetter::Pending(_) | CidGetter::Ready(_) => {
-                    *cid_getter = CidGetter::Pending(None);
-                    self.needed.push_back(idx);
-                }
-                CidGetter::Closed => unreachable!("CidGetter is closed"),
-            }
-        }
-    }
-
-    fn avaliable_new(&mut self, cid: ConnectionId) -> Result<(), ConnectionId> {
-        while let Some(front) = self.needed.front() {
-            if let Some(getter) = self.avaliable.get(front) {
-                match &mut *getter.0.lock().unwrap() {
-                    CidGetter::Pending(_) => {
-                        *getter.0.lock().unwrap() = CidGetter::Ready(cid);
-                        return Ok(());
-                    }
-                    CidGetter::Ready(_) => unreachable!("CidGetter is closed"),
-                    CidGetter::Closed => {}
-                }
-            }
-        }
-        Err(cid)
-    }
-}
-
 #[derive(Debug)]
 pub struct RemoteCids {
     // 可能收到的NewConnectionIdFrame，其sequence并不连续
     cid_deque: IndexDeque<Option<(u64, ConnectionId, ResetToken)>, VARINT_MAX>,
-    used: u64,
+
     // 一开始可能为None，意味着并不知道对方的active_cid_limit；后续可以补设置
     active_cid_limit: Option<u64>,
-    path_ids: CidGetters,
+
+    cid_cells: IndexDeque<ArcCidCell, VARINT_MAX>,
+    unused: u64,
 }
 
 impl Default for RemoteCids {
     fn default() -> Self {
         RemoteCids {
             cid_deque: IndexDeque::with_capacity(8),
-            path_ids: CidGetters::default(),
             active_cid_limit: None,
-            used: 0,
+            cid_cells: Default::default(),
+            unused: 0,
         }
     }
 }
@@ -233,9 +190,9 @@ impl RemoteCids {
     pub fn with_limit(limit: usize) -> Self {
         Self {
             cid_deque: IndexDeque::with_capacity(limit),
-            path_ids: CidGetters::default(),
             active_cid_limit: Some(limit as u64),
-            used: 0,
+            cid_cells: Default::default(),
+            unused: 0,
         }
     }
 
@@ -260,62 +217,84 @@ impl RemoteCids {
         let id = new_cid_frame.id;
         let token = new_cid_frame.reset_token;
 
-        _ = self.cid_deque.drain_to(retire_prior_to);
-        self.path_ids.retire_prior_to(retire_prior_to);
-        self.used = self.used.max(retire_prior_to.saturating_sub(1));
-
-        match self.path_ids.avaliable_new(id) {
-            Ok(()) => {}
-            Err(id) => {
-                self.cid_deque
-                    .insert(seq, Some((seq, id, token)))
-                    .expect("Sequence of new connection ID should never exceed the limit");
+        for _ in self.cid_cells.offset()..retire_prior_to {
+            let (.., cell) = self.cid_cells.pop_front().unwrap();
+            if let Some(Some((_, cid, _))) = self.cid_deque.get(self.unused) {
+                cell.to_ready(*cid);
+                self.unused += 1;
             }
+            self.cid_cells
+                .push_back(cell)
+                .expect("Sequence of new connection ID should never exceed the limit");
         }
+
+        _ = self.cid_deque.drain_to(retire_prior_to);
+        _ = self.cid_cells.drain_to(retire_prior_to);
+
+        self.cid_deque
+            .insert(seq, Some((seq, id, token)))
+            .expect("Sequence of new connection ID should never exceed the limit");
 
         Ok(())
     }
 
-    /// return [`None`] when the connection ID is not enough
-    pub fn new_path(&mut self) -> Option<ArcCidGetter> {
-        if self.used >= self.cid_deque.largest() {
-            return None;
-        }
+    pub fn alloc_cid_cell(&mut self) -> ArcCidCell {
+        let cell = if self.unused >= self.cid_deque.largest() {
+            ArcCidCell::new(CidCell::Pending)
+        } else {
+            let (_, cid, _) = self.cid_deque.get(self.unused).unwrap().unwrap();
+            self.unused += 1;
+            ArcCidCell::new(CidCell::Ready(cid))
+        };
 
-        let (seq, cid, _) = self.cid_deque.get(self.used).unwrap().unwrap();
-        self.used += 1;
-
-        Some(self.path_ids.new_getter(cid, seq))
+        self.cid_cells
+            .push_back(cell.clone())
+            .expect("Sequence of new connection ID should never exceed the limit");
+        cell
     }
 }
 
 /// 路径关闭时，将其对应的cid_getter关闭
-#[derive(Debug, Clone)]
-enum CidGetter {
-    Pending(Option<Waker>),
+#[derive(Default, Debug, Clone)]
+enum CidCell {
+    #[default]
+    Pending,
+    Demand(Waker),
     Ready(ConnectionId),
     Closed,
 }
 
-impl CidGetter {
-    pub fn poll_get_conn_id(&mut self, ctx: &mut Context) -> Poll<ConnectionId> {
+impl CidCell {
+    pub fn poll_get_conn_id(&mut self, cx: &mut Context) -> Poll<ConnectionId> {
         match self {
-            CidGetter::Pending(waker) => {
-                waker.replace(ctx.waker().clone());
+            CidCell::Pending => {
+                *self = CidCell::Demand(cx.waker().clone());
                 Poll::Pending
             }
-            CidGetter::Ready(cid) => Poll::Ready(*cid),
-            CidGetter::Closed => unreachable!("CidGetter is closed"),
+            CidCell::Demand(waker) => {
+                *waker = cx.waker().clone();
+                Poll::Pending
+            }
+            CidCell::Ready(cid) => Poll::Ready(*cid),
+            CidCell::Closed => unreachable!("CidGetter is closed"),
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ArcCidGetter(Arc<Mutex<CidGetter>>);
+#[derive(Default, Debug, Clone)]
+pub struct ArcCidCell(Arc<Mutex<CidCell>>);
 
-impl ArcCidGetter {
-    fn new(getter: CidGetter) -> Self {
+impl ArcCidCell {
+    fn new(getter: CidCell) -> Self {
         Self(Arc::new(Mutex::new(getter)))
+    }
+
+    fn to_ready(&self, cid: ConnectionId) {
+        let mut lock = self.0.lock().unwrap();
+        if let CidCell::Demand(waker) = &*lock {
+            waker.wake_by_ref();
+        }
+        *lock = CidCell::Ready(cid);
     }
 
     #[inline]
@@ -325,6 +304,10 @@ impl ArcCidGetter {
 
     #[inline]
     pub fn close(&self) {
-        *self.0.lock().unwrap() = CidGetter::Closed;
+        *self.0.lock().unwrap() = CidCell::Closed;
+    }
+
+    pub fn is_closed(&self) -> bool {
+        matches!(*self.0.lock().unwrap(), CidCell::Closed)
     }
 }

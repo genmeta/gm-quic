@@ -150,6 +150,12 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
     }
 }
 
+impl<T, const LIMIT: u64> Extend<T> for IndexDeque<T, LIMIT> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        self.deque.extend(iter)
+    }
+}
+
 impl<T: Default + Clone, const LIMIT: u64> IndexDeque<T, LIMIT> {
     pub fn insert(&mut self, idx: u64, value: T) -> Result<Option<T>, ExceedLimit> {
         if idx > LIMIT || idx < self.offset {
