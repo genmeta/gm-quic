@@ -2,8 +2,12 @@ use std::{marker::PhantomData, sync::Arc, time::Instant};
 
 use bytes::BufMut;
 use qbase::{
+    error::Error,
     frame::{AckFrame, DataFrame},
-    packet::WritePacketNumber,
+    packet::{
+        keys::{ArcKeys, ArcOneRttKeys},
+        WritePacketNumber,
+    },
 };
 use qrecovery::{
     crypto::CryptoStream,
@@ -14,7 +18,8 @@ use qrecovery::{
     },
 };
 
-use super::{ArcSpace, RawSpace, Space};
+use super::{ArcSpace, RawSpace, Space, SpaceFrame};
+use crate::{crypto::TlsIO, handshake};
 
 #[derive(Debug, Clone)]
 pub struct NoDataSpace<K: NoDataSpaceKind> {
@@ -22,7 +27,10 @@ pub struct NoDataSpace<K: NoDataSpaceKind> {
     _kind: PhantomData<K>,
 }
 
-pub trait NoDataSpaceKind {}
+unsafe impl<K: NoDataSpaceKind> Send for NoDataSpace<K> {}
+unsafe impl<K: NoDataSpaceKind> Sync for NoDataSpace<K> {}
+
+pub trait NoDataSpaceKind: 'static {}
 
 pub struct Inital;
 impl NoDataSpaceKind for Inital {}
@@ -125,16 +133,53 @@ impl<K: NoDataSpaceKind> Space for ArcSpace<NoDataSpace<K>> {
             }
         }
     }
+
+    fn receive(&self, frame: SpaceFrame) -> Result<(), Error> {
+        match frame {
+            SpaceFrame::Data(DataFrame::Crypto(frame), data) => {
+                self.crypto_stream.recv_data(frame, data)
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 impl ArcSpace<InitalSpace> {
     pub fn new_initial_space() -> Self {
         ArcSpace::new_nodata_space()
     }
+
+    pub fn exchange_initial_crypto_msg_until_getting_handshake_key(
+        &self,
+        handshake_keys: ArcKeys,
+        tls_session: TlsIO,
+    ) {
+        tokio::spawn(
+            handshake::exchange_initial_crypto_msg_until_getting_handshake_key(
+                tls_session,
+                handshake_keys,
+                self.crypto_stream.split(),
+            ),
+        );
+    }
 }
 
 impl ArcSpace<HandshakeSpace> {
     pub fn new_handshake_space() -> Self {
         ArcSpace::new_nodata_space()
+    }
+
+    pub fn exchange_handshake_crypto_msg_until_getting_1rtt_key(
+        &self,
+        one_rtt_keys: ArcOneRttKeys,
+        tls_session: TlsIO,
+    ) {
+        tokio::spawn(
+            handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
+                tls_session,
+                one_rtt_keys,
+                self.crypto_stream.split(),
+            ),
+        );
     }
 }
