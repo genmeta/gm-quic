@@ -10,6 +10,12 @@ pub struct ConnectionId {
     pub(crate) bytes: [u8; MAX_CID_SIZE],
 }
 
+impl ConnectionId {
+    pub fn encoding_size(&self) -> usize {
+        1 + self.len as usize
+    }
+}
+
 pub fn be_connection_id(input: &[u8]) -> nom::IResult<&[u8], ConnectionId> {
     let (remain, len) = be_u8(input)?;
     if len as usize > MAX_CID_SIZE {

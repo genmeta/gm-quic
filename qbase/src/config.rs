@@ -153,13 +153,19 @@ impl TransportParameters {
 #[derive(Getters, Setters, MutGetters, Debug, PartialEq)]
 pub struct PreferredAddress {
     #[getset(get_copy = "pub", set = "pub")]
-    address_v4: Option<SocketAddrV4>,
+    address_v4: SocketAddrV4,
     #[getset(get_copy = "pub", set = "pub")]
-    address_v6: Option<SocketAddrV6>,
+    address_v6: SocketAddrV6,
     #[getset(get_copy = "pub", set = "pub")]
     connection_id: ConnectionId,
     #[getset(get_copy = "pub", set = "pub")]
     stateless_reset_token: ResetToken,
+}
+
+impl PreferredAddress {
+    pub fn encoding_size(&self) -> usize {
+        6 + 18 + self.connection_id.encoding_size() + self.stateless_reset_token.encoding_size()
+    }
 }
 
 pub mod ext {
@@ -244,6 +250,9 @@ pub mod ext {
             let put_varint = |buf: &mut Self, tag: u8, varint: VarInt| {
                 if varint.into_inner() > 0 {
                     buf.put_u8(tag);
+                    buf.put_varint(&unsafe {
+                        VarInt::from_u64_unchecked(varint.encoding_size() as u64)
+                    });
                     buf.put_varint(&varint);
                 }
             };
@@ -251,6 +260,9 @@ pub mod ext {
             let put_connection_id = |buf: &mut Self, tag: u8, cid: &Option<ConnectionId>| {
                 if let Some(cid) = cid {
                     buf.put_u8(tag);
+                    buf.put_varint(&unsafe {
+                        VarInt::from_u64_unchecked(cid.encoding_size() as u64)
+                    });
                     buf.put_connection_id(cid);
                 }
             };
@@ -258,6 +270,9 @@ pub mod ext {
             let put_reset_token = |buf: &mut Self, tag: u8, token: &Option<ResetToken>| {
                 if let Some(token) = token {
                     buf.put_u8(tag);
+                    buf.put_varint(&unsafe {
+                        VarInt::from_u64_unchecked(token.encoding_size() as u64)
+                    });
                     buf.put_reset_token(token);
                 }
             };
@@ -266,6 +281,9 @@ pub mod ext {
                 |buf: &mut Self, tag: u8, addr: &Option<PreferredAddress>| {
                     if let Some(addr) = addr {
                         buf.put_u8(tag);
+                        buf.put_varint(&unsafe {
+                            VarInt::from_u64_unchecked(addr.encoding_size() as u64)
+                        });
                         buf.put_preferred_address(addr);
                     }
                 };
@@ -289,6 +307,7 @@ pub mod ext {
             put_varint(self, 0x0b, params.max_ack_delay);
             if params.disable_active_migration {
                 self.put_u8(0x0c);
+                self.put_u8(0);
             }
             put_preferred_address(self, 0x0d, &params.preferred_address);
             put_varint(self, 0x0e, params.active_connection_id_limit);
@@ -297,19 +316,12 @@ pub mod ext {
         }
 
         fn put_preferred_address(&mut self, addr: &super::PreferredAddress) {
-            if let Some(addr) = &addr.address_v4 {
-                self.put_slice(&addr.ip().octets());
-                self.put_u16(addr.port());
-            } else {
-                self.put_slice(&[0u8; 6]);
-            }
+            self.put_slice(&addr.address_v4.ip().octets());
+            self.put_u16(addr.address_v4.port());
 
-            if let Some(addr) = &addr.address_v6 {
-                self.put_slice(&addr.ip().octets());
-                self.put_u16(addr.port());
-            } else {
-                self.put_slice(&[0u8; 18]);
-            }
+            self.put_slice(&addr.address_v6.ip().octets());
+            self.put_u16(addr.address_v6.port());
+
             self.put_connection_id(&addr.connection_id);
             self.put_reset_token(&addr.stateless_reset_token);
         }
@@ -318,29 +330,19 @@ pub mod ext {
     pub fn be_preferred_address(input: &[u8]) -> nom::IResult<&[u8], super::PreferredAddress> {
         use nom::bytes::streaming::take;
 
-        let (input, v4) = map(take(6usize), |buf: &[u8]| {
+        let (input, address_v4) = map(take(6usize), |buf: &[u8]| {
             let mut addr = [0u8; 4];
             addr.copy_from_slice(&buf[..4]);
             let port = u16::from_be_bytes([buf[4], buf[5]]);
             std::net::SocketAddrV4::new(addr.into(), port)
         })(input)?;
 
-        let mut address_v4 = Some(v4);
-        if v4.ip().is_unspecified() {
-            address_v4 = None;
-        }
-
-        let (input, v6) = map(take(18usize), |buf: &[u8]| {
+        let (input, address_v6) = map(take(18usize), |buf: &[u8]| {
             let mut addr = [0u8; 16];
             addr.copy_from_slice(&buf[..16]);
             let port = u16::from_be_bytes([buf[16], buf[17]]);
             std::net::SocketAddrV6::new(addr.into(), port, 0, 0)
         })(input)?;
-
-        let mut address_v6 = Some(v6);
-        if v6.ip().is_unspecified() {
-            address_v6 = None;
-        }
 
         let (input, connection_id) = be_connection_id(input)?;
         let (input, stateless_reset_token) = be_reset_token(input)?;
@@ -410,16 +412,13 @@ mod test {
             max_ack_delay: VarInt::from_u32(0x1234),
             disable_active_migration: true,
             preferred_address: Some(PreferredAddress {
-                address_v4: Some(SocketAddrV4::new(
-                    Ipv4Addr::new(0x01, 0x02, 0x03, 0x04),
-                    0x1234,
-                )),
-                address_v6: Some(SocketAddrV6::new(
+                address_v4: SocketAddrV4::new(Ipv4Addr::new(0x01, 0x02, 0x03, 0x04), 0x1234),
+                address_v6: SocketAddrV6::new(
                     std::net::Ipv6Addr::new(0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08),
                     0x1234,
                     0,
                     0,
-                )),
+                ),
                 connection_id: init_cid,
                 stateless_reset_token: ResetToken::new(&[0x02; RESET_TOKEN_SIZE]),
             }),
