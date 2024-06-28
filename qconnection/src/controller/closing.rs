@@ -137,3 +137,143 @@ impl futures::Future for SendCcf {
         self.0 .0.lock().unwrap().poll_send_ccf(cx)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        task::{Context, Poll},
+        time::Duration,
+    };
+
+    use futures::Future;
+    use qbase::{error::ErrorKind, frame::FrameType};
+    use tokio::time::sleep;
+
+    use super::*;
+
+    fn default_ccf() -> ConnectionCloseFrame {
+        ConnectionCloseFrame {
+            error_kind: ErrorKind::FlowControl,
+            frame_type: Some(FrameType::Stream(0b110)),
+            reason: "wrong".into(),
+        }
+    }
+
+    #[test]
+    fn test_raw_closing_state_new() {
+        let state = RawClosingState::new(default_ccf());
+        assert_eq!(state.ccf, default_ccf());
+        assert_eq!(state.rcvd_packets, 0);
+        assert!(!state.is_finished);
+        assert!(state.waker.is_none());
+    }
+
+    #[test]
+    fn test_raw_closing_state_on_rcvd() {
+        let mut state = RawClosingState::new(default_ccf());
+        state.on_rcvd();
+        assert_eq!(state.rcvd_packets, 1);
+    }
+
+    #[test]
+    fn test_raw_closing_state_poll_send_ccf() {
+        let mut state = RawClosingState::new(default_ccf());
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+
+        // Test Poll::Pending
+        assert_eq!(state.poll_send_ccf(&mut cx), Poll::Pending);
+
+        // Test Poll::Ready(Some(ccf))
+        state.rcvd_packets = 5;
+        assert_eq!(
+            state.poll_send_ccf(&mut cx),
+            Poll::Ready(Some(default_ccf()))
+        );
+        assert_eq!(state.rcvd_packets, 0);
+
+        // Test Poll::Ready(None)
+        state.is_finished = true;
+        assert_eq!(state.poll_send_ccf(&mut cx), Poll::Ready(None));
+    }
+
+    #[test]
+    fn test_raw_closing_state_finish() {
+        let mut state = RawClosingState::new(default_ccf());
+        state.finish();
+        assert!(state.is_finished);
+    }
+
+    #[tokio::test]
+    async fn test_arc_closing_state_new() {
+        let state = ArcClosingState::new(default_ccf(), Duration::from_millis(100));
+        assert_eq!(state.0.lock().unwrap().ccf, default_ccf());
+    }
+
+    #[tokio::test]
+    async fn test_arc_closing_state_on_rcvd() {
+        let state = ArcClosingState::new(default_ccf(), Duration::from_millis(100));
+        state.on_rcvd();
+        assert_eq!(state.0.lock().unwrap().rcvd_packets, 1);
+    }
+
+    #[tokio::test]
+    async fn test_arc_closing_state_send_ccf() {
+        let state = ArcClosingState::new(default_ccf(), Duration::from_millis(100));
+        let mut send_ccf = state.send_ccf();
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+
+        // Test Poll::Pending
+        assert_eq!(Pin::new(&mut send_ccf).poll(&mut cx), Poll::Pending);
+
+        // Test Poll::Ready(Some(ccf))
+        state.0.lock().unwrap().rcvd_packets = 5;
+        assert_eq!(
+            Pin::new(&mut send_ccf).poll(&mut cx),
+            Poll::Ready(Some(default_ccf()))
+        );
+        assert_eq!(state.0.lock().unwrap().rcvd_packets, 0);
+
+        // Test Poll::Ready(None)
+        state.0.lock().unwrap().is_finished = true;
+        assert_eq!(Pin::new(&mut send_ccf).poll(&mut cx), Poll::Ready(None));
+    }
+
+    #[tokio::test]
+    async fn test_arc_closing_state_finish() {
+        let state = ArcClosingState::new(default_ccf(), Duration::from_millis(100));
+        state.finish();
+        assert!(state.0.lock().unwrap().is_finished);
+    }
+
+    #[tokio::test]
+    async fn test_arc_closing_state_timeout() {
+        let state = ArcClosingState::new(default_ccf(), Duration::from_millis(100));
+        sleep(Duration::from_millis(150)).await;
+        assert!(state.0.lock().unwrap().is_finished);
+        let send_ccf = state.send_ccf().await;
+        assert!(send_ccf.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_waker_on_rcvd() {
+        let state = ArcClosingState::new(default_ccf(), Duration::from_millis(100));
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        let mut send_ccf = state.send_ccf();
+        assert_eq!(Pin::new(&mut send_ccf).poll(&mut cx), Poll::Pending);
+        state.0.lock().unwrap().rcvd_packets = 5;
+        state.on_rcvd();
+        assert!(!state.0.lock().unwrap().is_finished);
+        assert!(state.0.lock().unwrap().waker.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_waker_finish() {
+        let state = ArcClosingState::new(default_ccf(), Duration::from_millis(100));
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        let mut send_ccf = state.send_ccf();
+        assert_eq!(Pin::new(&mut send_ccf).poll(&mut cx), Poll::Pending);
+        state.finish();
+        assert!(state.0.lock().unwrap().is_finished);
+        assert!(state.0.lock().unwrap().waker.is_none());
+    }
+}
