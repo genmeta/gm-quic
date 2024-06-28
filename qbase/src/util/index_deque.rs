@@ -151,20 +151,20 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
 }
 
 impl<T: Default + Clone, const LIMIT: u64> IndexDeque<T, LIMIT> {
-    pub fn insert(&mut self, idx: u64, value: T) -> Result<u64, ExceedLimit> {
+    pub fn insert(&mut self, idx: u64, value: T) -> Result<Option<T>, ExceedLimit> {
         if idx > LIMIT || idx < self.offset {
             Err(ExceedLimit(LIMIT))
         } else {
             let pos = (idx - self.offset) as usize;
-            if pos >= self.deque.len() {
-                if pos > self.deque.len() {
-                    self.deque.resize(pos, T::default());
-                }
-                self.deque.push_back(value);
-            } else {
-                self.deque[pos] = value;
+            if pos < self.deque.len() {
+                return Ok(Some(std::mem::replace(&mut self.deque[pos], value)));
             }
-            Ok(idx)
+
+            if pos > self.deque.len() {
+                self.deque.resize(pos, T::default());
+            }
+            self.deque.push_back(value);
+            Ok(None)
         }
     }
 }
