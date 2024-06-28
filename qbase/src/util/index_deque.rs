@@ -39,6 +39,13 @@ impl From<ExceedLimit> for Error {
 }
 
 impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            deque: VecDeque::with_capacity(capacity),
+            offset: 0,
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.deque.is_empty()
     }

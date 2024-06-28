@@ -5,4 +5,4 @@ mod data;
 pub use data::{DescribeData, WriteData};
 
 mod index_deque;
-pub use index_deque::IndexDeque;
+pub use index_deque::{ExceedLimit, IndexDeque};

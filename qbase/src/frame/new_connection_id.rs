@@ -8,9 +8,9 @@
 // }
 
 use crate::{
-    cid::{ConnectionId, WriteConnectionId},
+    cid::{be_connection_id, ConnectionId, WriteConnectionId},
     packet::r#type::Type,
-    token::{ResetToken, RESET_TOKEN_SIZE},
+    token::{be_reset_token, ResetToken, RESET_TOKEN_SIZE},
     varint::{be_varint, VarInt, WriteVarInt},
 };
 
@@ -55,7 +55,6 @@ impl super::BeFrame for NewConnectionIdFrame {
 }
 
 pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnectionIdFrame> {
-    use nom::{bytes::streaming::take, number::streaming::be_u8};
     let (remain, sequence) = be_varint(input)?;
     let (remain, retire_prior_to) = be_varint(remain)?;
     // The value in the Retire Prior To field MUST be less than or equal to the value in the
@@ -68,22 +67,22 @@ pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnec
             nom::error::ErrorKind::Verify,
         )));
     }
-    let (reamin, length) = be_u8(remain)?;
-    if length > crate::cid::MAX_CID_SIZE as u8 || length == 0 {
+    let (remain, cid) = be_connection_id(remain)?;
+    if cid.len() == 0 {
         return Err(nom::Err::Error(nom::error::make_error(
             input,
             nom::error::ErrorKind::Verify,
         )));
     }
-    let (remain, id) = ConnectionId::from_buf(reamin, length as usize)?;
-    let (remain, reset_token) = take(RESET_TOKEN_SIZE)(remain)?;
+
+    let (remain, reset_token) = be_reset_token(remain)?;
     Ok((
         remain,
         NewConnectionIdFrame {
             sequence,
             retire_prior_to,
-            id,
-            reset_token: ResetToken::new(reset_token),
+            id: cid,
+            reset_token,
         },
     ))
 }
