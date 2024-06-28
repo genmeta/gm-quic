@@ -1,5 +1,6 @@
 use bytes::BufMut;
 use nom::{bytes::complete::take, IResult};
+use rand::Rng;
 
 pub const RESET_TOKEN_SIZE: usize = 16;
 
@@ -9,6 +10,12 @@ pub struct ResetToken([u8; RESET_TOKEN_SIZE]);
 impl ResetToken {
     pub fn new(bytes: &[u8]) -> Self {
         Self(bytes.try_into().unwrap())
+    }
+
+    pub fn random_gen() -> Self {
+        let mut bytes = [0; RESET_TOKEN_SIZE];
+        rand::thread_rng().fill(&mut bytes);
+        Self(bytes)
     }
 
     pub fn encoding_size(&self) -> usize {
