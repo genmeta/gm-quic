@@ -6,8 +6,16 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+use qbase::config::{
+    ext::{be_transport_parameters, WriteParameters},
+    TransportParameters,
+};
 use qrecovery::crypto::{CryptoStreamReader, CryptoStreamWriter};
-use rustls::quic::{Connection as TlsConnection, KeyChange};
+use rustls::{
+    pki_types::ServerName,
+    quic::{ClientConnection, Connection as TlsConnection, KeyChange},
+    ClientConfig, RootCertStore,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     select,
@@ -25,15 +33,39 @@ pub(crate) type ArcTlsSession = Arc<Mutex<TlsSession>>;
 pub struct TlsIO(ArcTlsSession);
 
 impl TlsIO {
-    pub fn new_client() -> Self {
-        /*
+    pub fn new_client(
+        server_name: ServerName<'static>,
+        client_params: TransportParameters,
+    ) -> Self {
+        let config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+            .with_root_certificates(RootCertStore::empty())
+            .with_no_client_auth();
+
+        let mut params = Vec::new();
+        params.put_transport_parameters(&client_params);
+
+        let connection = TlsConnection::Client(
+            ClientConnection::new(
+                Arc::new(config),
+                rustls::quic::Version::V1,
+                server_name,
+                params,
+            )
+            .unwrap(),
+        );
         Self(Arc::new(Mutex::new(TlsSession {
-            connection: todo!(),
+            connection,
             wants_write: None,
         })))
-        */
-        todo!()
     }
+
+    pub fn get_transport_parameters(&self) -> Option<TransportParameters> {
+        let tls_session = self.0.lock().unwrap();
+        let raw_param = tls_session.connection.quic_transport_parameters()?;
+        be_transport_parameters(raw_param).ok().map(|(_, p)| p)
+    }
+
+    // pub fn new_server()
 
     pub fn split_io(&self) -> (TlsReader, TlsWriter) {
         (TlsReader(self.0.clone()), TlsWriter(self.0.clone()))

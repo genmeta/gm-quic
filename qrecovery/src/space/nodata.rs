@@ -4,12 +4,11 @@ use bytes::BufMut;
 use qbase::{
     error::Error,
     frame::{AckFrame, DataFrame},
-    packet::{
-        keys::{ArcKeys, ArcOneRttKeys},
-        WritePacketNumber,
-    },
+    packet::WritePacketNumber,
 };
-use qrecovery::{
+
+use super::{ArcSpace, BeSpace, RawSpace, SpaceFrame};
+use crate::{
     crypto::CryptoStream,
     reliable::{
         rcvdpkt::ArcRcvdPktRecords,
@@ -17,9 +16,6 @@ use qrecovery::{
         ArcReliableFrameQueue,
     },
 };
-
-use super::{ArcSpace, RawSpace, Space, SpaceFrame};
-use crate::{crypto::TlsIO, handshake};
 
 #[derive(Debug, Clone)]
 pub struct NoDataSpace<K: NoDataSpaceKind> {
@@ -74,7 +70,7 @@ impl<K: NoDataSpaceKind> ArcSpace<NoDataSpace<K>> {
         }))
     }
 }
-impl<K: NoDataSpaceKind> Space for ArcSpace<NoDataSpace<K>> {
+impl<K: NoDataSpaceKind> BeSpace for ArcSpace<NoDataSpace<K>> {
     fn read(&self, mut buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize, usize) {
         let orign = buf.remaining_mut();
 
@@ -148,38 +144,10 @@ impl ArcSpace<InitalSpace> {
     pub fn new_initial_space() -> Self {
         ArcSpace::new_nodata_space()
     }
-
-    pub fn exchange_initial_crypto_msg_until_getting_handshake_key(
-        &self,
-        handshake_keys: ArcKeys,
-        tls_session: TlsIO,
-    ) {
-        tokio::spawn(
-            handshake::exchange_initial_crypto_msg_until_getting_handshake_key(
-                tls_session,
-                handshake_keys,
-                self.crypto_stream.split(),
-            ),
-        );
-    }
 }
 
 impl ArcSpace<HandshakeSpace> {
     pub fn new_handshake_space() -> Self {
         ArcSpace::new_nodata_space()
-    }
-
-    pub fn exchange_handshake_crypto_msg_until_getting_1rtt_key(
-        &self,
-        one_rtt_keys: ArcOneRttKeys,
-        tls_session: TlsIO,
-    ) {
-        tokio::spawn(
-            handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
-                tls_session,
-                one_rtt_keys,
-                self.crypto_stream.split(),
-            ),
-        );
     }
 }

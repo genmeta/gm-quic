@@ -16,7 +16,9 @@ use qbase::{
     },
     util::ArcAsyncDeque,
 };
-use qrecovery::{
+use tokio::sync::mpsc;
+
+use crate::{
     crypto::CryptoStream,
     reliable::{
         rcvdpkt::ArcRcvdPktRecords,
@@ -25,7 +27,6 @@ use qrecovery::{
     },
     streams::DataStreams,
 };
-use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
 pub enum SpaceFrame {
@@ -78,7 +79,7 @@ impl<T> RawSpace<T> {
     }
 }
 
-pub trait Space: Send + Sync + 'static {
+pub trait BeSpace: Send + Sync + 'static {
     fn read(&self, buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize, usize);
     fn on_ack(&self, ack_frmae: AckFrame);
     fn may_loss_pkt(&self, pn: u64);
@@ -96,7 +97,7 @@ impl<T> Clone for ArcSpace<T> {
 
 impl<T> ArcSpace<T>
 where
-    Self: Space,
+    Self: BeSpace,
 {
     pub fn spawn_recv_ack(&self) -> mpsc::UnboundedSender<AckFrame> {
         let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();
