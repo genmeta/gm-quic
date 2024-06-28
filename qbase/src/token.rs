@@ -10,6 +10,10 @@ impl ResetToken {
     pub fn new(bytes: &[u8]) -> Self {
         Self(bytes.try_into().unwrap())
     }
+
+    pub fn encoding_size(&self) -> usize {
+        RESET_TOKEN_SIZE
+    }
 }
 
 pub fn be_reset_token(input: &[u8]) -> IResult<&[u8], ResetToken> {
