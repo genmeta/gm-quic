@@ -251,6 +251,14 @@ impl BeFrame for Frame {
             Frame::Datagram(frame, _) => frame.belongs_to(packet_type),
         }
     }
+
+    fn encoding_size(&self) -> usize {
+        unreachable!()
+    }
+
+    fn max_encoding_size(&self) -> usize {
+        unreachable!()
+    }
 }
 
 pub struct FrameReader {

@@ -11,8 +11,8 @@ use qbase::{
     },
     varint::{VarInt, WriteVarInt},
 };
+use qrecovery::space::BeSpace;
 
-use crate::space::Space;
 /// In order to fill the packet efficiently and reduce unnecessary copying, the data of each
 /// space is directly written on the Buffer. However, the length of the packet header is
 /// variable-length encoding, so space needs to be reserved.
@@ -31,7 +31,7 @@ pub fn read_space_and_encrypt<T>(
     header: LongHeader<T>,
     fill_policy: FillPolicy,
     keys: ArcKeys,
-    space: impl Space,
+    space: impl BeSpace,
 ) -> (usize, usize)
 where
     for<'a> &'a mut [u8]: Write<T>,
@@ -117,7 +117,7 @@ pub fn read_1rtt_data_and_encrypt(
     buffer: &mut [u8],
     header: OneRttHeader,
     keys: ArcOneRttKeys,
-    space: impl Space,
+    space: impl BeSpace,
 ) -> usize {
     let (hpk, pk) = match keys.get_local_keys() {
         Some(keys) => keys,

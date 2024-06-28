@@ -6,7 +6,11 @@ use std::{
 use getset::{Getters, MutGetters, Setters};
 
 use super::varint::VarInt;
-use crate::{cid::ConnectionId, token::ResetToken};
+use crate::{
+    cid::ConnectionId,
+    error::{Error, ErrorKind},
+    token::ResetToken,
+};
 
 /// Ref. `<https://www.iana.org/assignments/quic/quic.xhtml>`
 
@@ -57,6 +61,95 @@ pub struct TransportParameters {
     grease_quic_bit: bool,
 }
 
+impl TransportParameters {
+    pub fn contain_server_parameters(&self) -> bool {
+        self.original_destination_connection_id().is_some()
+            || self.preferred_address.is_some()
+            || self.retry_source_connection_id.is_some()
+            || self.statelss_reset_token().is_some()
+    }
+
+    fn merge(&mut self, endpoint: &Self) -> Result<(), Error> {
+        self.max_idle_timeout = self.max_idle_timeout.min(endpoint.max_idle_timeout);
+
+        if endpoint.max_udp_payload_size.into_inner() < 1200 {
+            return Err(Error::new(
+                ErrorKind::TransportParameter,
+                crate::frame::FrameType::Padding,
+                "max_udp_payload_size too small",
+            ));
+        }
+        self.max_udp_payload_size = self.max_udp_payload_size.min(endpoint.max_udp_payload_size);
+
+        if endpoint.ack_delay_exponent.into_inner() > 20 {
+            return Err(Error::new(
+                ErrorKind::TransportParameter,
+                crate::frame::FrameType::Padding,
+                "ack_delay_exponent too large",
+            ));
+        }
+
+        if endpoint.max_ack_delay > 214 {
+            return Err(Error::new(
+                ErrorKind::TransportParameter,
+                crate::frame::FrameType::Padding,
+                "max_ack_delay too large",
+            ));
+        }
+
+        let conn_id_len = self
+            .initial_source_connection_id
+            .as_ref()
+            .expect("initial_source_connection_id must been set")
+            .len;
+
+        if conn_id_len == 0 && self.preferred_address.is_some() {
+            return Err(Error::new(
+                ErrorKind::TransportParameter,
+                crate::frame::FrameType::Padding,
+                "preferred_address is not allowed with zero-length connection_id",
+            ));
+        }
+
+        if let Some(ref preferred_address) = self.preferred_address {
+            if preferred_address.connection_id.len == 0 {
+                return Err(Error::new(
+                    ErrorKind::TransportParameter,
+                    crate::frame::FrameType::Padding,
+                    "preferred_address connection_id must not be zero-length",
+                ));
+            }
+        }
+
+        if endpoint.active_connection_id_limit.into_inner() < 2 {
+            return Err(Error::new(
+                ErrorKind::TransportParameter,
+                crate::frame::FrameType::Padding,
+                "active_connection_id_limit too small",
+            ));
+        }
+
+        Ok(())
+    }
+
+    #[inline]
+    pub fn receive_client_parametrs(&mut self, endpoint: &Self) -> Result<(), Error> {
+        if endpoint.contain_server_parameters() {
+            return Err(Error::new(
+                ErrorKind::TransportParameter,
+                crate::frame::FrameType::Padding,
+                "server parameters is not allowed in client parameters",
+            ));
+        }
+        self.merge(endpoint)
+    }
+
+    #[inline]
+    pub fn receive_server_paramters(&mut self, endpoint: &Self) -> Result<(), Error> {
+        self.merge(endpoint)
+    }
+}
+
 #[derive(Getters, Setters, MutGetters, Debug, PartialEq)]
 pub struct PreferredAddress {
     #[getset(get_copy = "pub", set = "pub")]
@@ -73,7 +166,7 @@ pub mod ext {
     use std::time::Duration;
 
     use bytes::BufMut;
-    use nom::{combinator::map, number::complete::be_u8};
+    use nom::{bytes::complete::take, combinator::map};
 
     use super::{PreferredAddress, TransportParameters};
     use crate::{
@@ -81,6 +174,7 @@ pub mod ext {
         token::{be_reset_token, ResetToken, WriteResetToken},
         varint::{be_varint, VarInt, WriteVarInt},
     };
+
     pub fn be_transport_parameters(input: &[u8]) -> nom::IResult<&[u8], TransportParameters> {
         let be_connection_id = |input| {
             let (remain, cid) = cid::be_connection_id(input)?;
@@ -105,9 +199,11 @@ pub mod ext {
         let mut remain = input;
         let mut tp = TransportParameters::default();
         while !remain.is_empty() {
-            let tag: u8;
-            (remain, tag) = be_u8(remain)?;
-            match tag {
+            let tag: VarInt;
+            let len: VarInt;
+            (remain, tag) = be_varint(remain)?;
+            (remain, len) = be_varint(remain)?;
+            match tag.into_inner() {
                 0x00 => (remain, tp.original_destination_connection_id) = be_connection_id(remain)?,
                 0x01 => (remain, tp.max_idle_timeout) = be_max_idle_timeout(remain)?,
                 0x02 => (remain, tp.statelss_reset_token) = be_reset_token(remain)?,
@@ -126,7 +222,11 @@ pub mod ext {
                 0x0f => (remain, tp.initial_source_connection_id) = be_connection_id(remain)?,
                 0x10 => (remain, tp.retry_source_connection_id) = be_connection_id(remain)?,
                 _ => {
-                    unreachable!("unknown transport parameter tag: {}", tag)
+                    // Ref. `<https://www.rfc-editor.org/rfc/rfc9000.html#name-new-transport-parameters>
+                    // An endpoint MUST ignore transport parameters that it does not support.
+
+                    // take it, and ignore it
+                    (remain, ..) = take(len)(remain)?;
                 }
             }
         }
@@ -139,7 +239,7 @@ pub mod ext {
         fn put_preferred_address(&mut self, addr: &super::PreferredAddress);
     }
 
-    impl WriteParameters for bytes::BytesMut {
+    impl<T: BufMut> WriteParameters for T {
         fn put_transport_parameters(&mut self, params: &TransportParameters) {
             let put_varint = |buf: &mut Self, tag: u8, varint: VarInt| {
                 if varint.into_inner() > 0 {

@@ -7,7 +7,9 @@ use qbase::{
     packet::WritePacketNumber,
     streamid::Role,
 };
-use qrecovery::{
+
+use super::{ArcSpace, BeSpace, RawSpace, SpaceFrame};
+use crate::{
     crypto::CryptoStream,
     reliable::{
         rcvdpkt::ArcRcvdPktRecords,
@@ -16,8 +18,6 @@ use qrecovery::{
     },
     streams::DataStreams,
 };
-
-use super::{ArcSpace, RawSpace, Space, SpaceFrame};
 
 #[derive(Debug, Clone)]
 pub struct DataSpace {
@@ -60,7 +60,7 @@ impl ArcSpace<DataSpace> {
     }
 }
 
-impl Space for ArcSpace<DataSpace> {
+impl BeSpace for ArcSpace<DataSpace> {
     fn read(&self, mut buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize, usize) {
         let orign = buf.remaining_mut();
 

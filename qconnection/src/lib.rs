@@ -10,7 +10,6 @@ pub mod path;
 
 pub(crate) mod auto;
 pub(crate) mod handshake;
-pub mod space;
 pub mod transmit;
 
 pub trait ReceiveProtectedPacket {
