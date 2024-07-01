@@ -6,7 +6,7 @@
 
 English | [中文](README_CN.md)
 
-The QUIC protocol is an important infrastructure for the next generation Internet, and `gm-quic` is a native asynchronous Rust implementation of the QUIC protocol, an efficient and scalable [RFC 9000][1] implementation with excellent engineering quality. The implementation of `qm-quic` tries its best to maintain the original concepts of [RFC 9000][1], including variable and structure naming, and strives to be consistent with [RFC 9000][1], so `gm-quic` is also of great learning value , [RFC 9000][1] and its related RFCs are excellent introductory documents for understanding `gm-quic`.
+The QUIC protocol is an important infrastructure for the next generation Internet, and `gm-quic` is a native asynchronous Rust implementation of the QUIC protocol, an efficient and scalable [RFC 9000][1] implementation with excellent engineering quality. The implementation of `gm-quic` tries its best to maintain the original concepts of [RFC 9000][1], including variable and structure naming, and strives to be consistent with [RFC 9000][1], so `gm-quic` is also of great learning value , [RFC 9000][1] and its related RFCs are excellent introductory documents for understanding `gm-quic`.
 
 
 ## Design Principles
