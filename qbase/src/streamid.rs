@@ -43,6 +43,24 @@ pub enum Role {
     Server = 1,
 }
 
+impl Role {
+    /// Returns `true` if the role is [`Client`].
+    ///
+    /// [`Client`]: Role::Client
+    #[must_use]
+    pub fn is_client(&self) -> bool {
+        matches!(self, Self::Client)
+    }
+
+    /// Returns `true` if the role is [`Server`].
+    ///
+    /// [`Server`]: Role::Server
+    #[must_use]
+    pub fn is_server(&self) -> bool {
+        matches!(self, Self::Server)
+    }
+}
+
 impl fmt::Display for Role {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad(match *self {
@@ -68,6 +86,24 @@ pub enum Dir {
     Bi = 0,
     /// Data flows only from the stream's initiator
     Uni = 1,
+}
+
+impl Dir {
+    /// Returns `true` if the dir is [`Bi`].
+    ///
+    /// [`Bi`]: Dir::Bi
+    #[must_use]
+    pub fn is_bi(&self) -> bool {
+        matches!(self, Self::Bi)
+    }
+
+    /// Returns `true` if the dir is [`Uni`].
+    ///
+    /// [`Uni`]: Dir::Uni
+    #[must_use]
+    pub fn is_uni(&self) -> bool {
+        matches!(self, Self::Uni)
+    }
 }
 
 impl fmt::Display for Dir {
