@@ -123,7 +123,7 @@ impl RawConnection {
 #[derive(Deref)]
 pub struct ArcConnection(Arc<RawConnection>);
 
-pub async fn new(tls_session: TlsIO) -> ArcConnection {
+pub fn new(tls_session: TlsIO) -> ArcConnection {
     let conn_frame_deque = ArcAsyncDeque::new();
     let conn_state = ArcConnectionState::new();
 
@@ -202,14 +202,20 @@ pub async fn new(tls_session: TlsIO) -> ArcConnection {
         data_ack_tx.clone(),
     );
 
-    let transport_parameters = handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
-        tls_session.clone(),
-        one_rtt_keys.clone(),
-        handshake_space.as_ref().split(),
-    )
-    .await;
-
-    data_space.accept_transmute_parameters(&transport_parameters);
+    tokio::spawn({
+        let data_space = data_space.clone();
+        let handshake_crypto_handler = handshake_space.as_ref().split();
+        async move {
+            let transport_parameters =
+                handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
+                    tls_session.clone(),
+                    one_rtt_keys.clone(),
+                    handshake_crypto_handler,
+                )
+                .await;
+            data_space.accept_transmute_parameters(&transport_parameters);
+        }
+    });
 
     let ack_observer = AckObserver::new([
         initial_space.rcvd_pkt_records.clone(),
