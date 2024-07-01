@@ -10,7 +10,8 @@ use std::{
 use qbase::frame::AckFrame;
 
 use crate::{
-    bbr::{self, INITIAL_CWND, MSS},
+    bbr::{self, INITIAL_CWND},
+    new_reno::NewReno,
     pacing::{self, Pacer},
     rtt::{ArcRtt, INITIAL_RTT},
     ObserveAck, ObserveLoss, SlideWindow,
@@ -20,8 +21,12 @@ const K_GRANULARITY: Duration = Duration::from_millis(1);
 const K_PACKET_THRESHOLD: usize = 3;
 const MAX_SENT_DELAY: Duration = Duration::from_millis(30);
 
+//  default datagram size in bytes.
+pub(crate) const MSS: usize = 1200;
+
 pub enum CongestionAlgorithm {
     Bbr,
+    NewReno,
 }
 
 // imple RFC 9002 Appendix A. Loss Recovery
@@ -33,7 +38,7 @@ pub struct CongestionController<OA, OL> {
     // congestion controlle algorithm: bbr or cubic
     algorithm: Box<dyn Algorithm + Send>,
     rtt: ArcRtt,
-    // todo: 内部需要一个循环任务检查
+    // todo: 内部需要一个循环任务检查s
     loss_detection_timer: Option<Instant>,
     // The number of times a PTO has been sent without receiving an acknowledgment.
     pto_count: u32,
@@ -71,13 +76,14 @@ where
         ack_observer: OA,
         loss_observer: OL,
     ) -> Self {
-        let cc = match algorithm {
+        let algorithm: Box<dyn Algorithm> = match algorithm {
             CongestionAlgorithm::Bbr => Box::new(bbr::Bbr::new()),
+            CongestionAlgorithm::NewReno => Box::new(NewReno::new()),
         };
 
         let now = Instant::now();
         CongestionController {
-            algorithm: cc,
+            algorithm,
             rtt: ArcRtt::new(),
             loss_detection_timer: None,
             max_ack_delay,
@@ -623,7 +629,7 @@ impl Ord for Sent {
     }
 }
 
-pub trait Algorithm {
+pub trait Algorithm: Send {
     fn on_sent(&mut self, sent: &mut Sent, sent_bytes: usize, now: Instant);
 
     fn on_ack(&mut self, packet: VecDeque<Acked>, now: Instant);
