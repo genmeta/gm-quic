@@ -1,11 +1,12 @@
-mod conn_id;
+pub mod state;
+
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use conn_id::*;
 use deref_derive::Deref;
 use futures::StreamExt;
 use qbase::{
-    frame::ConnFrame,
+    error::Error,
+    frame::{ConnFrame, MaxDataFrame},
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
         HandshakePacket, InitialPacket, OneRttPacket, SpinBit, ZeroRttPacket,
@@ -15,6 +16,7 @@ use qbase::{
 };
 use qrecovery::space::ArcSpace;
 use qudp::ArcUsc;
+use state::{ArcConnectionState, ConnectionState};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -32,7 +34,8 @@ type PacketQueue<T> = mpsc::UnboundedSender<(T, ArcPath)>;
 type RxPacketQueue<T> = Option<PacketQueue<T>>;
 
 pub struct RawConnection {
-    conn_ids: ArcConnIDs,
+    // local_cids: ArcLocalCids,
+    // remote_cids: RemoteCids,
 
     // 所有Path的集合，Pathway作为key
     pathes: HashMap<Pathway, ArcPath>,
@@ -54,6 +57,7 @@ pub struct RawConnection {
     loss_observer: LossObserver,
 
     spin: SpinBit,
+    state: ArcConnectionState,
 
     // 连接级流控制器
     flow_ctrl: ArcFlowController,
@@ -121,7 +125,7 @@ pub struct ArcConnection(Arc<RawConnection>);
 
 pub async fn new(tls_session: TlsIO) -> ArcConnection {
     let conn_frame_deque = ArcAsyncDeque::new();
-    let conn_ids = ArcConnIDs::new();
+    let conn_state = ArcConnectionState::new();
 
     let initial_keys = ArcKeys::new_pending();
 
@@ -172,16 +176,7 @@ pub async fn new(tls_session: TlsIO) -> ArcConnection {
     let zero_rtt_keys = ArcKeys::new_pending();
     let one_rtt_keys = ArcOneRttKeys::new_pending();
 
-    // let transport_parameters =
-
-    let transport_parameters = handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
-        tls_session.clone(),
-        one_rtt_keys.clone(),
-        handshake_space.as_ref().split(),
-    )
-    .await;
-
-    let data_space = ArcSpace::new_data_space(Role::Client, 20, 20);
+    let data_space = ArcSpace::new_data_space(Role::Client, 0, 0);
     let data_ack_tx = data_space.spawn_recv_ack();
     let (zero_rtt_pkt_tx, zero_rtt_packet_stream) =
         auto::ZeroRttPacketStream::new(zero_rtt_keys.clone(), data_space.rcvd_pkt_records.clone());
@@ -207,6 +202,15 @@ pub async fn new(tls_session: TlsIO) -> ArcConnection {
         data_ack_tx.clone(),
     );
 
+    let transport_parameters = handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
+        tls_session.clone(),
+        one_rtt_keys.clone(),
+        handshake_space.as_ref().split(),
+    )
+    .await;
+
+    data_space.accept_transmute_parameters(&transport_parameters);
+
     let ack_observer = AckObserver::new([
         initial_space.rcvd_pkt_records.clone(),
         handshake_space.rcvd_pkt_records.clone(),
@@ -218,8 +222,8 @@ pub async fn new(tls_session: TlsIO) -> ArcConnection {
         data_space.spawn_handle_may_loss(),
     ]);
 
+    let flow_controller = ArcFlowController::with_initial(0, 0);
     let connection = Arc::new(RawConnection {
-        conn_ids,
         pathes: HashMap::new(),
         init_pkt_queue: Some(initial_pkt_tx),
         hs_pkt_queue: Some(handshake_pkt_tx),
@@ -231,23 +235,38 @@ pub async fn new(tls_session: TlsIO) -> ArcConnection {
         ack_observer,
         loss_observer,
         spin: SpinBit::default(),
-        flow_ctrl: ArcFlowController::with_initial(0, 0),
+        state: conn_state.clone(),
+        flow_ctrl: flow_controller.clone(),
     });
 
     tokio::spawn({
         let mut conn_frame_deque = conn_frame_deque;
-
+        let connection = connection.clone();
         async move {
             while let Some(conn_frame) = conn_frame_deque.next().await {
-                match conn_frame {
-                    ConnFrame::Close(_) => todo!(),
+                let result: Result<(), Error> = match conn_frame {
+                    ConnFrame::Close(err) => {
+                        conn_state.set_state(ConnectionState::Draining);
+                        // TODO: 可以发送一个CCF
+                        Ok(())
+                    }
                     ConnFrame::NewToken(_) => todo!(),
-                    ConnFrame::MaxData(_) => todo!(),
-                    ConnFrame::DataBlocked(_) => todo!(),
-                    ConnFrame::NewConnectionId(_) => todo!(),
-                    ConnFrame::RetireConnectionId(_) => todo!(),
-                    ConnFrame::HandshakeDone(_) => todo!(),
-                }
+                    ConnFrame::MaxData(MaxDataFrame { max_data }) => {
+                        flow_controller.sender.permit(max_data.into_inner());
+                        Ok(())
+                    }
+                    ConnFrame::NewConnectionId(frame) => todo!(),
+                    ConnFrame::RetireConnectionId(frame) => {
+                        todo!()
+                    }
+                    ConnFrame::HandshakeDone(_) => {
+                        connection.invalid_init_keys();
+                        connection.invalid_hs_keys();
+                        connection.invalid_0rtt_keys();
+                        Ok(())
+                    }
+                    ConnFrame::DataBlocked(_) => Ok(()),
+                };
             }
         }
     });
