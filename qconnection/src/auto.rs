@@ -95,18 +95,16 @@ impl PacketPayload {
                     }
                 }
             })
-            .map_err(|e| {
+            .inspect_err(|_error| {
                 if let Some(mut conn_frame_writer) = conn_frame_writer {
                     conn_frame_writer.rollback();
                 };
-
                 if let Some(mut space_frame_writer) = space_frame_writer {
                     space_frame_writer.rollback();
                 };
                 if let Some(mut datagram_frame_writer) = datagram_frame_writer {
                     datagram_frame_writer.rollback();
                 }
-                e
             })
     }
 }

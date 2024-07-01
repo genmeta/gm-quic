@@ -2,22 +2,25 @@ use std::sync::{atomic::AtomicU8, Arc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
-    Normal,
-    Closing,
-    Draining,
+    Handshaking = 0,
+    HandshakeDone = 1,
+    Closing = 2,
+    Draining = 3,
 }
 
 #[derive(Default, Debug)]
 struct RawConnectionState {
+    // Encoding the state into a single byte
     state: AtomicU8,
 }
 
 impl RawConnectionState {
     fn get_state(&self) -> ConnectionState {
         match self.state.load(std::sync::atomic::Ordering::Acquire) {
-            0 => ConnectionState::Normal,
-            1 => ConnectionState::Closing,
-            2 => ConnectionState::Draining,
+            0 => ConnectionState::Handshaking,
+            1 => ConnectionState::HandshakeDone,
+            2 => ConnectionState::Closing,
+            3 => ConnectionState::Draining,
             _ => unreachable!(),
         }
     }
