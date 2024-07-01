@@ -10,12 +10,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  build-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Format lint
-        run: cargo fmt --all -- --check
       - name: Build
         run: cargo build --verbose
       - name: Run tests
@@ -25,8 +23,6 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Format lint
-        run: cargo fmt --all -- --check
       - name: Build
         run: cargo build --verbose
       - name: Run tests
@@ -38,7 +34,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: wagoid/commitlint-github-action@v5
 
-  rustfmt:
+  foramtlint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
