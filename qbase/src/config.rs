@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use getset::{Getters, MutGetters, Setters};
+use getset::{CopyGetters, Getters, MutGetters, Setters};
 
 use super::varint::VarInt;
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
 /// Ref. `<https://www.iana.org/assignments/quic/quic.xhtml>`
 
 // QUIC的config配置
-#[derive(Getters, Setters, MutGetters, Debug, PartialEq)]
+#[derive(Getters, CopyGetters, Setters, MutGetters, Debug, PartialEq)]
 pub struct TransportParameters {
     #[getset(get = "pub", set = "pub")]
     original_destination_connection_id: Option<ConnectionId>,
@@ -150,7 +150,7 @@ impl TransportParameters {
     }
 }
 
-#[derive(Getters, Setters, MutGetters, Debug, PartialEq)]
+#[derive(Getters, Setters, MutGetters, Debug, PartialEq, Clone, Copy)]
 pub struct PreferredAddress {
     #[getset(get_copy = "pub", set = "pub")]
     address_v4: SocketAddrV4,

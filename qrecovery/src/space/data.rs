@@ -2,6 +2,7 @@ use std::{sync::Arc, time::Instant};
 
 use bytes::BufMut;
 use qbase::{
+    config::TransportParameters,
     error::Error,
     frame::{AckFrame, DataFrame},
     packet::WritePacketNumber,
@@ -57,6 +58,13 @@ impl ArcSpace<DataSpace> {
                 data_stream,
             },
         }))
+    }
+
+    pub fn accept_transmute_parameters(&self, param: &TransportParameters) {
+        self.0.space.data_stream.update_limit(
+            param.initial_max_streams_bidi().into(),
+            param.initial_max_streams_uni().into(),
+        );
     }
 }
 

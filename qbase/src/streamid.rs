@@ -404,6 +404,10 @@ impl StreamIds {
         let remote = ArcRemoteStreamIds::new(!role, max_bi_streams, max_uni_streams);
         Self { local, remote }
     }
+
+    pub fn update_limit(&self, dir: Dir, val: u64) {
+        self.local.permit_max_sid(dir, val);
+    }
 }
 
 #[cfg(test)]
