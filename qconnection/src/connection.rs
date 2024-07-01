@@ -6,7 +6,7 @@ use deref_derive::Deref;
 use futures::StreamExt;
 use qbase::{
     error::{Error, ErrorKind},
-    frame::{ConnFrame, HandshakeDoneFrame, MaxDataFrame},
+    frame::{ConnFrame, ConnectionCloseFrame, HandshakeDoneFrame, MaxDataFrame},
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
         HandshakePacket, InitialPacket, OneRttPacket, SpinBit, ZeroRttPacket,
@@ -14,7 +14,7 @@ use qbase::{
     streamid::Role,
     util::ArcAsyncDeque,
 };
-use qrecovery::space::{ArcSpace, DataSpace, HandshakeSpace, InitialSpace};
+use qrecovery::space::ArcSpace;
 use qudp::ArcUsc;
 use state::{ArcConnectionState, ConnectionState};
 use tokio::sync::mpsc;
@@ -51,10 +51,6 @@ pub struct RawConnection {
     initial_keys: ArcKeys,
     handshake_keys: ArcKeys,
     zero_rtt_keys: ArcKeys,
-
-    initial_space: Option<InitialSpace>,
-    handshake_space: Option<HandshakeSpace>,
-    data_space: DataSpace,
 
     // 创建新的path用的到，path中的拥塞控制器需要
     ack_observer: AckObserver,
@@ -109,6 +105,7 @@ impl RawConnection {
     }
 
     fn handshake_done(&self) {
+        self.state.set_state(ConnectionState::HandshakeDone);
         self.invalid_init_keys();
         self.invalid_hs_keys();
         self.invalid_0rtt_keys();
@@ -231,9 +228,6 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
         hs_pkt_queue: Some(handshake_pkt_tx),
         zero_rtt_pkt_queue: Some(zero_rtt_pkt_tx),
         one_rtt_pkt_queue: one_rtt_pkt_tx,
-        initial_space: Some(initial_space),
-        handshake_space: Some(handshake_space),
-        data_space,
         initial_keys,
         handshake_keys,
         zero_rtt_keys,
@@ -248,8 +242,6 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
         let connection = connection.clone();
 
         async move {
-            let data_space = &connection.data_space;
-            let handshake_space = connection.handshake_space.as_ref().unwrap();
             let transport_parameters =
                 handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
                     tls_session.clone(),
@@ -258,7 +250,7 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
                 )
                 .await;
             data_space.accept_transmute_parameters(&transport_parameters);
-            if role.is_server() {
+            if role == Role::Server {
                 data_space
                     .reliable_frame_queue
                     .write()
@@ -273,10 +265,11 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
         let connection = connection.clone();
         async move {
             while let Some(conn_frame) = conn_frame_deque.next().await {
-                let result: Result<(), Error> = match conn_frame {
-                    ConnFrame::Close(err) => {
+                let error: Option<Error> = match conn_frame {
+                    ConnFrame::Close(_err) => {
                         conn_state.set_state(ConnectionState::Draining);
                         // TODO: 可以发送一个CCF
+                        // TODO: 向应用层告知错误？
                         Ok(())
                     }
                     ConnFrame::NewToken(_) => todo!(),
@@ -289,7 +282,7 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
                         todo!()
                     }
                     ConnFrame::HandshakeDone(_) => {
-                        if role.is_client() {
+                        if role == Role::Client {
                             connection.handshake_done();
                             Ok(())
                         } else {
@@ -300,7 +293,18 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
                         }
                     }
                     ConnFrame::DataBlocked(_) => Ok(()),
-                };
+                }
+                .err();
+
+                // 发送CCF到对端
+                if let Some(frame) = error.map(ConnectionCloseFrame::from) {
+                    match connection.state.get_state() {
+                        ConnectionState::Handshaking => todo!(),
+                        ConnectionState::HandshakeDone => todo!(),
+                        ConnectionState::Closing => todo!(),
+                        ConnectionState::Draining => todo!(),
+                    }
+                }
             }
         }
     });
