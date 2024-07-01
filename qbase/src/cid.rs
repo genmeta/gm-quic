@@ -90,18 +90,22 @@ impl std::ops::Deref for ConnectionId {
 /// poll_retire_cid -> seq
 /// on_retire_acked(RetireConnectionIdFrame) -> seq
 /// index_deque.drain_to(seq) -> Iter
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct RawLocalCids {
     cid_deque: IndexDeque<(ConnectionId, ResetToken), VARINT_MAX>,
-    active_cid_limit: u64,
+    active_cid_limit: Option<u64>,
 }
 
 impl RawLocalCids {
-    pub fn with_limit(active_cid_limit: u64) -> Self {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_active_cid_limit(active_cid_limit: u64) -> Self {
         Self {
             // Maybe we need keep the old CIDs for a while after issuing new CIDs
             cid_deque: IndexDeque::with_capacity(active_cid_limit as usize + 2),
-            active_cid_limit,
+            active_cid_limit: Some(active_cid_limit),
         }
     }
 
@@ -120,7 +124,7 @@ impl RawLocalCids {
             .unwrap();
         let reset_token = ResetToken::random_gen();
         let sequence = self.cid_deque.push_back((id, reset_token))?;
-        let retire_prior_to = sequence.saturating_sub(self.active_cid_limit);
+        let retire_prior_to: u64 = sequence.saturating_sub(self.active_cid_limit.unwrap_or(2));
         Ok(NewConnectionIdFrame {
             sequence: VarInt::from_u64(sequence).unwrap(),
             retire_prior_to: VarInt::from_u64(retire_prior_to).unwrap(),
@@ -149,7 +153,7 @@ pub struct ArcLocalCids(Arc<Mutex<RawLocalCids>>);
 
 impl ArcLocalCids {
     pub fn new(active_cid_limit: u64) -> Self {
-        Self(Arc::new(Mutex::new(RawLocalCids::with_limit(
+        Self(Arc::new(Mutex::new(RawLocalCids::set_active_cid_limit(
             active_cid_limit,
         ))))
     }
@@ -165,52 +169,34 @@ pub struct RemoteCids {
     cid_deque: IndexDeque<Option<(u64, ConnectionId, ResetToken)>, VARINT_MAX>,
 
     // 一开始可能为None，意味着并不知道对方的active_cid_limit；后续可以补设置
-    active_cid_limit: Option<u64>,
+    active_cid_limit: u64,
 
     cid_cells: IndexDeque<ArcCidCell, VARINT_MAX>,
     used: u64,
 }
 
-impl Default for RemoteCids {
-    fn default() -> Self {
-        RemoteCids {
-            cid_deque: IndexDeque::with_capacity(8),
-            active_cid_limit: None,
-            cid_cells: Default::default(),
-            used: 0,
-        }
-    }
-}
-
 impl RemoteCids {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_limit(limit: usize) -> Self {
+    pub fn new(active_cid_limit: u64) -> Self {
         Self {
-            cid_deque: IndexDeque::with_capacity(limit),
-            active_cid_limit: Some(limit as u64),
+            active_cid_limit,
+            cid_deque: Default::default(),
             cid_cells: Default::default(),
-            used: 0,
+            used: Default::default(),
         }
-    }
-
-    pub fn set_limit(&mut self, limit: u64) {
-        self.active_cid_limit = Some(limit);
-        // TODO: 最好，让cid_queue也能扩容到limit大小，省的多余的扩容
     }
 
     pub fn on_recv_new_cid(&mut self, new_cid_frame: &NewConnectionIdFrame) -> Result<(), Error> {
         let seq = new_cid_frame.sequence.into_inner();
         let retire_prior_to = new_cid_frame.retire_prior_to.into_inner();
         let active_len = seq.saturating_sub(retire_prior_to);
-        let active_cid_limit = self.active_cid_limit.unwrap_or(1);
-        if active_len <= active_cid_limit {
+        if active_len > self.active_cid_limit {
             return Err(Error::new(
                 crate::error::ErrorKind::ConnectionIdLimit,
                 new_cid_frame.frame_type(),
-                format!("{active_len} exceed active_cid_limit {active_cid_limit}"),
+                format!(
+                    "{active_len} exceed active_cid_limit {}",
+                    self.active_cid_limit
+                ),
             ));
         }
 
