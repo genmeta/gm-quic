@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use bytes::BufMut;
 use qbase::frame::{
@@ -109,8 +112,23 @@ impl Validator {
         origin_size - buf.remaining_mut()
     }
 
-    pub fn on_challenge_sent(&self, space: Epoch, pn: u64) {
+    pub fn on_challenge_sent(&self, space: Epoch, pn: u64, timeout: Duration) {
         self.0.lock().unwrap().on_challenge_sent(space, pn);
+
+        // Spawns a new Tokio task to fail status after the specified timeout.
+        // Even if it is retransmitted, as long as the verification is successful once
+        // within the specified timeout, the final verification is guaranteed
+        // to be successful.
+        tokio::spawn({
+            let state = self.0.clone();
+            async move {
+                tokio::time::sleep(timeout).await;
+                let mut state = state.lock().unwrap();
+                if !matches!(*state, ValidateState::Success) {
+                    *state = ValidateState::Failure;
+                }
+            }
+        });
     }
 
     pub fn may_loss(&self) {
@@ -217,8 +235,8 @@ impl Transponder {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_validator_challenge() {
+    #[tokio::test]
+    async fn test_validator_challenge() {
         let validator = Validator::default();
         {
             validator.challenge();
@@ -232,17 +250,14 @@ mod tests {
                 let state = validator.0.lock().unwrap();
                 assert!(state.need_send_challenge().is_some());
             }
-            validator.on_challenge_sent(Epoch::Initial, 0);
+            validator.on_challenge_sent(Epoch::Initial, 0, Duration::from_millis(100));
             let response = match *validator.0.lock().unwrap() {
                 ValidateState::Challenging(challenge, _) => challenge,
                 _ => panic!("unexpected state"),
             };
             validator.on_response(&PathResponseFrame::from(&response));
             let state = validator.0.lock().unwrap();
-            match *state {
-                ValidateState::Success => {}
-                _ => panic!("unexpected state"),
-            }
+            assert!(matches!(*state, ValidateState::Success))
         }
 
         {
@@ -251,7 +266,7 @@ mod tests {
                 let state = validator.0.lock().unwrap();
                 assert!(state.need_send_challenge().is_some());
             }
-            validator.on_challenge_sent(Epoch::Initial, 1);
+            validator.on_challenge_sent(Epoch::Initial, 1, Duration::from_millis(100));
             let response = match *validator.0.lock().unwrap() {
                 ValidateState::Rechallenging(challenge, _) => challenge,
                 _ => panic!("unexpected state"),
@@ -273,15 +288,62 @@ mod tests {
         assert!(bytes_written > 0);
     }
 
-    #[test]
-    fn test_validator_on_challenge_sent() {
+    #[tokio::test]
+    async fn test_validator_on_challenge_sent() {
         let validator = Validator::default();
-        validator.on_challenge_sent(Epoch::Initial, 1);
+        validator.on_challenge_sent(Epoch::Initial, 1, Duration::from_millis(100));
         let state = validator.0.lock().unwrap();
-        match *state {
-            ValidateState::Challenging(_, Some((Epoch::Initial, 1))) => {}
-            _ => panic!("unexpected state"),
+        assert!(matches!(
+            *state,
+            ValidateState::Challenging(_, Some((Epoch::Initial, 1)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_validator_timeout() {
+        let validator = Validator::default();
+        validator.on_challenge_sent(Epoch::Initial, 0, Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let state = validator.0.lock().unwrap();
+        assert!(matches!(*state, ValidateState::Failure));
+    }
+
+    #[tokio::test]
+    #[should_panic]
+    async fn test_validator_challenge_with_failure() {
+        let validator = Validator::default();
+        validator.on_challenge_sent(Epoch::Initial, 0, Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        {
+            let state = validator.0.lock().unwrap();
+            assert!(matches!(*state, ValidateState::Failure));
         }
+        validator.challenge();
+    }
+
+    #[tokio::test]
+    async fn test_validator_timeout_with_success() {
+        let validator = Validator::default();
+        tokio::spawn({
+            let validator = validator.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let response = match *validator.0.lock().unwrap() {
+                    ValidateState::Challenging(challenge, _) => challenge,
+                    _ => panic!("unexpected state"),
+                };
+                validator.on_response(&PathResponseFrame::from(&response));
+            }
+        });
+        for i in 0..5 {
+            validator.on_challenge_sent(Epoch::Initial, i, Duration::from_millis(100));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let state = validator.0.lock().unwrap();
+        assert!(matches!(*state, ValidateState::Success));
     }
 
     #[test]
@@ -293,7 +355,7 @@ mod tests {
             _ => panic!("unexpected state"),
         };
         validator.on_response(&PathResponseFrame::from(&response));
-        validator.on_challenge_sent(Epoch::Initial, 1);
+        validator.on_challenge_sent(Epoch::Initial, 1, Duration::from_millis(100));
     }
 
     #[test]
@@ -312,10 +374,9 @@ mod tests {
         validator.may_loss();
         validator.challenge();
         validator.may_loss();
-        {
-            let state = validator.0.lock().unwrap();
-            assert!(state.need_send_challenge().is_some());
-        }
+
+        let state = validator.0.lock().unwrap();
+        assert!(state.need_send_challenge().is_some());
     }
 
     #[test]
@@ -328,10 +389,7 @@ mod tests {
         };
         validator.on_response(&PathResponseFrame::from(&response));
         let state = validator.0.lock().unwrap();
-        match *state {
-            ValidateState::Success => {}
-            _ => panic!("unexpected state"),
-        }
+        assert!(matches!(*state, ValidateState::Success));
     }
 
     #[test]
@@ -377,19 +435,13 @@ mod tests {
         transponder.on_pkt_acked(1);
         {
             let state = transponder.0.lock().unwrap();
-            match *state {
-                ResponseState::None => {}
-                _ => panic!("unexpected state"),
-            }
+            assert!(matches!(*state, ResponseState::None));
         }
         transponder.on_challenge(PathChallengeFrame::random());
         transponder.on_response_sent(1);
         transponder.on_pkt_acked(1);
         let state = transponder.0.lock().unwrap();
-        match *state {
-            ResponseState::None => {}
-            _ => panic!("unexpected state"),
-        }
+        assert!(matches!(*state, ResponseState::None));
     }
 
     #[test]
@@ -399,9 +451,6 @@ mod tests {
         transponder.on_response_sent(1);
         transponder.may_loss_pkt(1);
         let state = transponder.0.lock().unwrap();
-        match *state {
-            ResponseState::Challenged(_, None) => {}
-            _ => panic!("unexpected state"),
-        }
+        assert!(matches!(*state, ResponseState::Challenged(_, None,)));
     }
 }
