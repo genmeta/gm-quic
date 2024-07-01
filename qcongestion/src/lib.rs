@@ -8,6 +8,7 @@ use qbase::frame::AckFrame;
 
 pub mod bbr;
 pub mod congestion;
+pub mod new_reno;
 pub mod rtt;
 pub use rtt::RawRtt;
 pub mod delivery_rate;
