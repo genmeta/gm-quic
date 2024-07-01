@@ -5,8 +5,8 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use deref_derive::Deref;
 use futures::StreamExt;
 use qbase::{
-    error::Error,
-    frame::{ConnFrame, MaxDataFrame},
+    error::{Error, ErrorKind},
+    frame::{ConnFrame, HandshakeDoneFrame, MaxDataFrame},
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
         HandshakePacket, InitialPacket, OneRttPacket, SpinBit, ZeroRttPacket,
@@ -14,7 +14,7 @@ use qbase::{
     streamid::Role,
     util::ArcAsyncDeque,
 };
-use qrecovery::space::ArcSpace;
+use qrecovery::space::{ArcSpace, DataSpace, HandshakeSpace, InitialSpace};
 use qudp::ArcUsc;
 use state::{ArcConnectionState, ConnectionState};
 use tokio::sync::mpsc;
@@ -51,6 +51,10 @@ pub struct RawConnection {
     initial_keys: ArcKeys,
     handshake_keys: ArcKeys,
     zero_rtt_keys: ArcKeys,
+
+    initial_space: Option<InitialSpace>,
+    handshake_space: Option<HandshakeSpace>,
+    data_space: DataSpace,
 
     // 创建新的path用的到，path中的拥塞控制器需要
     ack_observer: AckObserver,
@@ -92,16 +96,23 @@ impl RawConnection {
             .expect("must success");
     }
 
-    pub fn invalid_init_keys(&self) {
+    fn invalid_init_keys(&self) {
         self.initial_keys.invalid();
     }
 
-    pub fn invalid_hs_keys(&self) {
+    fn invalid_hs_keys(&self) {
         self.handshake_keys.invalid();
     }
 
-    pub fn invalid_0rtt_keys(&self) {
+    fn invalid_0rtt_keys(&self) {
         self.zero_rtt_keys.invalid();
+    }
+
+    fn handshake_done(&self) {
+        self.invalid_init_keys();
+        self.invalid_hs_keys();
+        self.invalid_0rtt_keys();
+        // TODO: Drop RxPacketQueue
     }
 
     pub fn get_path(&mut self, pathway: Pathway, usc: &ArcUsc) -> ArcPath {
@@ -123,7 +134,7 @@ impl RawConnection {
 #[derive(Deref)]
 pub struct ArcConnection(Arc<RawConnection>);
 
-pub fn new(tls_session: TlsIO) -> ArcConnection {
+pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
     let conn_frame_deque = ArcAsyncDeque::new();
     let conn_state = ArcConnectionState::new();
 
@@ -176,7 +187,7 @@ pub fn new(tls_session: TlsIO) -> ArcConnection {
     let zero_rtt_keys = ArcKeys::new_pending();
     let one_rtt_keys = ArcOneRttKeys::new_pending();
 
-    let data_space = ArcSpace::new_data_space(Role::Client, 0, 0);
+    let data_space = ArcSpace::new_data_space(role, 0, 0);
     let data_ack_tx = data_space.spawn_recv_ack();
     let (zero_rtt_pkt_tx, zero_rtt_packet_stream) =
         auto::ZeroRttPacketStream::new(zero_rtt_keys.clone(), data_space.rcvd_pkt_records.clone());
@@ -202,21 +213,6 @@ pub fn new(tls_session: TlsIO) -> ArcConnection {
         data_ack_tx.clone(),
     );
 
-    tokio::spawn({
-        let data_space = data_space.clone();
-        let handshake_crypto_handler = handshake_space.as_ref().split();
-        async move {
-            let transport_parameters =
-                handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
-                    tls_session.clone(),
-                    one_rtt_keys.clone(),
-                    handshake_crypto_handler,
-                )
-                .await;
-            data_space.accept_transmute_parameters(&transport_parameters);
-        }
-    });
-
     let ack_observer = AckObserver::new([
         initial_space.rcvd_pkt_records.clone(),
         handshake_space.rcvd_pkt_records.clone(),
@@ -235,14 +231,41 @@ pub fn new(tls_session: TlsIO) -> ArcConnection {
         hs_pkt_queue: Some(handshake_pkt_tx),
         zero_rtt_pkt_queue: Some(zero_rtt_pkt_tx),
         one_rtt_pkt_queue: one_rtt_pkt_tx,
-        handshake_keys,
+        initial_space: Some(initial_space),
+        handshake_space: Some(handshake_space),
+        data_space,
         initial_keys,
+        handshake_keys,
         zero_rtt_keys,
         ack_observer,
         loss_observer,
         spin: SpinBit::default(),
         state: conn_state.clone(),
         flow_ctrl: flow_controller.clone(),
+    });
+
+    tokio::spawn({
+        let connection = connection.clone();
+
+        async move {
+            let data_space = &connection.data_space;
+            let handshake_space = connection.handshake_space.as_ref().unwrap();
+            let transport_parameters =
+                handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
+                    tls_session.clone(),
+                    one_rtt_keys.clone(),
+                    handshake_space.as_ref().split(),
+                )
+                .await;
+            data_space.accept_transmute_parameters(&transport_parameters);
+            if role.is_server() {
+                data_space
+                    .reliable_frame_queue
+                    .write()
+                    .push_conn_frame(ConnFrame::HandshakeDone(HandshakeDoneFrame));
+                connection.handshake_done();
+            }
+        }
     });
 
     tokio::spawn({
@@ -266,10 +289,15 @@ pub fn new(tls_session: TlsIO) -> ArcConnection {
                         todo!()
                     }
                     ConnFrame::HandshakeDone(_) => {
-                        connection.invalid_init_keys();
-                        connection.invalid_hs_keys();
-                        connection.invalid_0rtt_keys();
-                        Ok(())
+                        if role.is_client() {
+                            connection.handshake_done();
+                            Ok(())
+                        } else {
+                            Err(Error::new_with_default_fty(
+                                ErrorKind::ProtocolViolation,
+                                "client should not send HandshakeDoneFrame",
+                            ))
+                        }
                     }
                     ConnFrame::DataBlocked(_) => Ok(()),
                 };
