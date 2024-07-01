@@ -28,9 +28,9 @@ unsafe impl<K: NoDataSpaceKind> Sync for NoDataSpace<K> {}
 
 pub trait NoDataSpaceKind: 'static {}
 
-pub struct Inital;
-impl NoDataSpaceKind for Inital {}
-pub type InitalSpace = NoDataSpace<Inital>;
+pub struct Initial;
+impl NoDataSpaceKind for Initial {}
+pub type InitalSpace = NoDataSpace<Initial>;
 
 pub struct Handshake;
 impl NoDataSpaceKind for Handshake {}

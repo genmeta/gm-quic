@@ -4,10 +4,13 @@ pub mod nodata;
 use std::{sync::Arc, time::Instant};
 
 use bytes::{BufMut, Bytes};
-pub use data::DataSpace;
 use deref_derive::Deref;
 use futures::StreamExt;
-pub use nodata::{HandshakeSpace, InitalSpace};
+
+pub type InitialSpace = ArcSpace<nodata::NoDataSpace<nodata::Initial>>;
+pub type HandshakeSpace = ArcSpace<nodata::NoDataSpace<nodata::Handshake>>;
+pub type DataSpace = ArcSpace<data::DataSpace>;
+
 use qbase::{
     error::Error,
     frame::{
@@ -36,7 +39,7 @@ pub enum SpaceFrame {
 
 #[derive(Debug, Clone, Deref)]
 pub struct RawSpace<T> {
-    reliable_frame_queue: ArcReliableFrameQueue,
+    pub reliable_frame_queue: ArcReliableFrameQueue,
     pub sent_pkt_records: ArcSentPktRecords,
     pub rcvd_pkt_records: ArcRcvdPktRecords,
     #[deref]
