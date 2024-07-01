@@ -12,7 +12,6 @@ use crate::{recv::Reader, reliable::ArcReliableFrameQueue, send::Writer};
 
 pub mod data;
 pub mod listener;
-pub mod none;
 
 #[derive(Debug, Clone)]
 pub struct DataStreams(Arc<data::RawDataStreams>);
@@ -50,6 +49,10 @@ impl DataStreams {
 
     pub fn on_conn_error(&self, err: &Error) {
         self.0.on_conn_error(err)
+    }
+
+    pub fn update_limit(&self, max_bi_streams: u64, max_uni_streams: u64) {
+        self.0.update_limit(max_bi_streams, max_uni_streams)
     }
 }
 

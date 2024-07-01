@@ -148,5 +148,15 @@ impl From<Error> for crate::frame::ConnectionCloseFrame {
     }
 }
 
+impl From<crate::frame::ConnectionCloseFrame> for Error {
+    fn from(value: crate::frame::ConnectionCloseFrame) -> Self {
+        Self {
+            kind: value.error_kind,
+            frame_type: value.frame_type.unwrap_or(FrameType::Padding),
+            reason: value.reason,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {}

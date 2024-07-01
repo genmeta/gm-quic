@@ -2,7 +2,10 @@ use qbase::{
     config::TransportParameters,
     packet::keys::{ArcKeys, ArcOneRttKeys},
 };
-use qrecovery::crypto::{CryptoStreamReader, CryptoStreamWriter};
+use qrecovery::{
+    crypto::{CryptoStreamReader, CryptoStreamWriter},
+    space::{ArcSpace, DataSpace},
+};
 use rustls::quic::KeyChange;
 
 use crate::crypto::TlsIO;
