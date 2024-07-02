@@ -6,6 +6,7 @@ use std::{
 };
 
 use bytes::BufMut;
+use futures::Future;
 use qbase::frame::{
     io::{WritePathChallengeFrame, WritePathResponseFrame},
     BeFrame, PathChallengeFrame, PathResponseFrame,
@@ -126,22 +127,42 @@ impl Validator {
         // to be successful.
         tokio::spawn({
             let state = self.state.clone();
-            let validator = self.clone();
+            let mut validator = self.clone();
+
             async move {
-                if tokio::time::timeout(timeout, validator).await.is_err() {
+                let success = tokio::time::timeout(timeout, validator.poll_state())
+                    .await
+                    .unwrap_or(false);
+                if !success {
                     let mut state = state.lock().unwrap();
                     *state = ValidateState::Failure;
+                    if let Some(waker) = validator.waker.take() {
+                        waker.wake();
+                    }
                 };
             }
         });
     }
 
-    pub fn poll_state(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        if matches!(*self.state.lock().unwrap(), ValidateState::Success) {
-            return Poll::Ready(());
+    pub fn poll_state(&self) -> impl Future<Output = bool> {
+        struct State(Validator);
+
+        impl Future for State {
+            type Output = bool;
+
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let s = self.get_mut();
+                match *s.0.state.lock().unwrap() {
+                    ValidateState::Success => Poll::Ready(true),
+                    ValidateState::Failure => Poll::Ready(false),
+                    _ => {
+                        s.0.waker = Some(cx.waker().clone());
+                        Poll::Pending
+                    }
+                }
+            }
         }
-        self.waker = Some(cx.waker().clone());
-        Poll::Pending
+        State(self.clone())
     }
 
     pub fn may_loss(&self) {
@@ -153,14 +174,6 @@ impl Validator {
         if let Some(waker) = self.waker.take() {
             waker.wake();
         }
-    }
-}
-
-impl futures::Future for Validator {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.poll_state(cx)
     }
 }
 
