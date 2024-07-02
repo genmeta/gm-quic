@@ -10,12 +10,10 @@ use std::{
 use qbase::frame::AckFrame;
 
 use crate::{
-    bbr,
-    bbr::{INITIAL_CWND, MSS},
-    pacing,
-    pacing::Pacer,
-    rtt::INITIAL_RTT,
-    ObserveAck, ObserveLoss, RawRtt, SlideWindow,
+    bbr::{self, INITIAL_CWND, MSS},
+    pacing::{self, Pacer},
+    rtt::{ArcRtt, INITIAL_RTT},
+    ObserveAck, ObserveLoss, SlideWindow,
 };
 
 const K_GRANULARITY: Duration = Duration::from_millis(1);
@@ -34,7 +32,7 @@ pub struct CongestionController<OA, OL> {
     loss_observer: OL,
     // congestion controlle algorithm: bbr or cubic
     algorithm: Box<dyn Algorithm + Send>,
-    rtt: Arc<Mutex<RawRtt>>,
+    rtt: ArcRtt,
     // todo: 内部需要一个循环任务检查
     loss_detection_timer: Option<Instant>,
     // The number of times a PTO has been sent without receiving an acknowledgment.
@@ -80,7 +78,7 @@ where
         let now = Instant::now();
         CongestionController {
             algorithm: cc,
-            rtt: Arc::new(Mutex::new(RawRtt::default())),
+            rtt: ArcRtt::new(),
             loss_detection_timer: None,
             max_ack_delay,
             pto_count: 0,
@@ -159,8 +157,6 @@ where
         }
         if let Some(latest_rtt) = latest_rtt {
             self.rtt
-                .lock()
-                .unwrap()
                 .update(latest_rtt, ack_delay, self.handshake_confirmed);
         }
         // todo: Process ECN information if present.
@@ -285,8 +281,9 @@ where
     }
 
     fn get_pto_time_and_space(&self) -> (Option<Instant>, u8) {
-        let smoothed_rtt = self.rtt.lock().unwrap().smoothed_rtt;
-        let rttvar = self.rtt.lock().unwrap().rttvar;
+        let smoothed_rtt = self.rtt.smoothed_rtt();
+        let rttvar = self.rtt.rttvar();
+
         let mut duration = smoothed_rtt + std::cmp::max(K_GRANULARITY, rttvar * 4);
 
         if self.no_ack_eliciting_in_flight() {
@@ -330,7 +327,7 @@ where
         let largest_acked = self.largest_acked_packet[space].unwrap();
         self.loss_time[space] = None;
 
-        let loss_delay = self.rtt.lock().unwrap().loss_delay();
+        let loss_delay = self.rtt.loss_delay();
         let lost_send_time = now.checked_sub(loss_delay).unwrap();
 
         // todo: 返回 iter
@@ -428,7 +425,7 @@ where
     fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize> {
         let mut guard = self.0.lock().unwrap();
 
-        let srtt = guard.rtt.clone().lock().unwrap().smoothed_rtt;
+        let srtt = guard.rtt.smoothed_rtt();
         let cwnd = guard.algorithm.cwnd();
         let mtu = MSS;
         let now = Instant::now();

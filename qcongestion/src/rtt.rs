@@ -12,9 +12,9 @@ pub struct RawRtt {
     max_ack_delay: Duration,
     first_rtt_sample: Option<Instant>,
     latest_rtt: Duration,
-    pub smoothed_rtt: Duration,
-    pub rttvar: Duration,
-    pub min_rtt: Duration,
+    smoothed_rtt: Duration,
+    rttvar: Duration,
+    min_rtt: Duration,
 }
 
 impl Default for RawRtt {
@@ -31,7 +31,7 @@ impl Default for RawRtt {
 }
 
 impl RawRtt {
-    pub fn update(
+    fn update(
         &mut self,
         latest_rtt: Duration,
         mut ack_delay: Duration,
@@ -69,18 +69,18 @@ impl RawRtt {
         self.smoothed_rtt = self.smoothed_rtt.mul_f32(0.875) + adjusted_rtt.mul_f32(0.125);
     }
 
-    pub fn on_handshake_done(&mut self) {
+    fn on_handshake_done(&mut self) {
         // TODO: 让is_handshake_done变成内部成员
     }
 
-    pub fn loss_delay(&self) -> Duration {
+    fn loss_delay(&self) -> Duration {
         std::cmp::max(
             std::cmp::max(self.latest_rtt, self.smoothed_rtt).mul_f32(TIME_THRESHOLD),
             GRANULARITY,
         )
     }
 
-    pub fn pto_base_duration(&self, pto_count: u32) -> Duration {
+    fn pto_base_duration(&self, pto_count: u32) -> Duration {
         (self.smoothed_rtt + std::cmp::max(self.rttvar * 4, GRANULARITY)) * (1 << pto_count)
     }
 }
@@ -90,6 +90,10 @@ pub struct ArcRtt(Arc<Mutex<RawRtt>>);
 
 /// 对外只需暴露ArcRtt，RawRtt成为内部实现
 impl ArcRtt {
+    pub fn new() -> Self {
+        Self(Arc::new(Mutex::new(RawRtt::default())))
+    }
+
     pub fn update(&self, latest_rtt: Duration, ack_delay: Duration, is_handshake_confirmed: bool) {
         self.0
             .lock()
@@ -107,6 +111,14 @@ impl ArcRtt {
 
     pub fn pto_base_duration(&self, times: u32) -> Duration {
         self.0.lock().unwrap().pto_base_duration(times)
+    }
+
+    pub fn smoothed_rtt(&self) -> Duration {
+        self.0.lock().unwrap().smoothed_rtt
+    }
+
+    pub fn rttvar(&self) -> Duration {
+        self.0.lock().unwrap().rttvar
     }
 }
 
