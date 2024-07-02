@@ -19,7 +19,7 @@ use tokio::sync::Mutex;
 pub struct RawDatagramReader {
     local_max_size: usize,
     queue: VecDeque<Bytes>,
-    waker: Option<Waker>,
+    wakers: VecDeque<Waker>,
 }
 
 impl RawDatagramReader {
@@ -27,7 +27,7 @@ impl RawDatagramReader {
         Self {
             local_max_size,
             queue: Default::default(),
-            waker: Default::default(),
+            wakers: Default::default(),
         }
     }
 }
@@ -57,10 +57,12 @@ impl DatagramReader {
                 ),
             ));
         }
+
         reader.queue.push_back(data);
-        if let Some(waker) = reader.waker.take() {
+        if let Some(waker) = reader.wakers.pop_front() {
             waker.wake();
         }
+
         Ok(())
     }
 
@@ -68,19 +70,17 @@ impl DatagramReader {
         let reader = &mut self.0.blocking_lock();
         let inner = reader.deref_mut();
         if let Ok(reader) = inner {
-            if let Some(waker) = reader.waker.take() {
-                waker.wake();
-            }
+            reader.wakers.drain(..).for_each(|waker| waker.wake());
             *inner = Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()));
         }
     }
 
-    pub async fn recv(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         let reader = self.0.clone();
         ReadIntoSlice { reader, buf }.await
     }
 
-    pub async fn recv_buf(&mut self, buf: &mut impl BufMut) -> io::Result<usize> {
+    pub async fn recv_buf(&self, buf: &mut impl BufMut) -> io::Result<usize> {
         let reader = self.0.clone();
         ReadInfoBuf { reader, buf }.await
     }
@@ -102,11 +102,11 @@ impl Future for ReadIntoSlice<'_> {
             Ok(reader) => match reader.queue.pop_front() {
                 Some(bytes) => {
                     let len = bytes.len().min(s.buf.len());
-                    s.buf.copy_from_slice(&bytes[..len]);
+                    s.buf[..len].copy_from_slice(&bytes[..len]);
                     Poll::Ready(Ok(len))
                 }
                 None => {
-                    reader.waker = Some(cx.waker().clone());
+                    reader.wakers.push_front(cx.waker().clone());
                     Poll::Pending
                 }
             },
@@ -138,11 +138,56 @@ where
                     Poll::Ready(Ok(len))
                 }
                 None => {
-                    reader.waker = Some(cx.waker().clone());
+                    reader.wakers.push_front(cx.waker().clone());
                     Poll::Pending
                 }
             },
             Err(e) => Poll::Ready(Err(io::Error::new(e.kind(), e.to_string()))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use qbase::frame::FrameType;
+
+    use super::*;
+
+    #[test]
+    fn test_datagram_reader_recv_buf() {
+        let reader = Arc::new(Mutex::new(Ok(RawDatagramReader::new(1024))));
+        let reader = DatagramReader(reader);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let handle = rt.spawn({
+            let reader = reader.clone();
+            async move {
+                let n = reader.recv(&mut [0u8; 1024]).await.unwrap();
+                assert_eq!(n, 11);
+            }
+        });
+
+        reader
+            .recv_datagram(DatagramFrame::new(None), Bytes::from_static(b"hello world"))
+            .unwrap();
+        rt.block_on(handle).unwrap();
+    }
+
+    #[test]
+    fn test_datagram_reader_on_conn_error() {
+        let reader = Arc::new(Mutex::new(Ok(RawDatagramReader::new(1024))));
+        let reader = DatagramReader(reader);
+        let error = Error::new(
+            ErrorKind::ProtocolViolation,
+            FrameType::Datagram(0),
+            "protocol violation",
+        );
+        reader.on_conn_error(&error);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut buf = [0u8; 1024];
+            let n = reader.recv(&mut buf).await.unwrap_err();
+            assert_eq!(n.kind(), io::ErrorKind::BrokenPipe);
+        });
     }
 }
