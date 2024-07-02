@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
+use bytes::Bytes;
+use futures::StreamExt;
 use qbase::{
     error::{Error, ErrorKind},
     frame::{BeFrame, DatagramFrame},
+    util::ArcAsyncDeque,
 };
 use tokio::sync::Mutex;
 
@@ -87,6 +90,21 @@ impl DatagramFlow {
             flow.reader.on_conn_error(error);
             flow.writer.on_conn_error(error);
         }
+    }
+
+    pub fn spawn_recv_datagram_frames(&self) -> Option<ArcAsyncDeque<(DatagramFrame, Bytes)>> {
+        let flow = self.clone();
+        let queue = ArcAsyncDeque::new();
+        tokio::spawn({
+            let mut queue = queue.clone();
+            async move {
+                while let Some((frame, data)) = queue.next().await {
+                    // TODO: 错误处理
+                    _ = flow.recv_datagram(frame, data);
+                }
+            }
+        });
+        Some(queue)
     }
 }
 
