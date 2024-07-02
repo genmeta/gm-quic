@@ -354,6 +354,15 @@ impl RawDataStreams {
         input.on_conn_error(err);
         listener.on_conn_error(err);
     }
+
+    pub fn update_limit(&self, max_bidi_stream: u64, max_uni_stream: u64) {
+        self.stream_ids
+            .local
+            .permit_max_sid(Dir::Bi, max_bidi_stream);
+        self.stream_ids
+            .local
+            .permit_max_sid(Dir::Uni, max_uni_stream);
+    }
 }
 
 impl RawDataStreams {

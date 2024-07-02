@@ -7,14 +7,18 @@ use qbase::{
 
 use crate::{connection::ArcConnection, ReceiveProtectedPacket};
 
-pub struct Endpiont {
-    // 尚未实现连接迁移，多个连接id对应一个连接的功能尚未实现
+pub struct Endpoint {
+    // 尚未实现连接迁移
     connections: HashMap<ConnectionId, ArcConnection>,
     // 新连接的监听器
     // listener: Listener,
 }
 
-impl ReceiveProtectedPacket for Endpiont {
+impl Endpoint {
+    fn spawn_accpet_ccf(&self) {}
+}
+
+impl ReceiveProtectedPacket for Endpoint {
     fn receive_protected_packet(&mut self, protected_packet: SpacePacket) {
         let dcid = protected_packet.get_dcid();
         if let Some(_conn) = self.connections.get_mut(dcid) {
