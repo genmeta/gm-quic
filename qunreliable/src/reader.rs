@@ -9,13 +9,27 @@ use std::{
 };
 
 use bytes::{BufMut, Bytes};
-use qbase::error::Error;
+use qbase::{
+    error::{Error, ErrorKind},
+    frame::{BeFrame, DatagramFrame},
+};
 use tokio::sync::Mutex;
 
 #[derive(Default, Debug)]
 pub struct RawDatagramReader {
+    local_max_size: usize,
     queue: VecDeque<Bytes>,
     waker: Option<Waker>,
+}
+
+impl RawDatagramReader {
+    pub(crate) fn new(local_max_size: usize) -> Self {
+        Self {
+            local_max_size,
+            queue: Default::default(),
+            waker: Default::default(),
+        }
+    }
 }
 
 pub type ArcDatagramReader = Arc<Mutex<io::Result<RawDatagramReader>>>;
@@ -24,18 +38,30 @@ pub type ArcDatagramReader = Arc<Mutex<io::Result<RawDatagramReader>>>;
 pub struct DatagramReader(pub(super) ArcDatagramReader);
 
 impl DatagramReader {
-    pub(crate) fn recv_datagram(&self, data: bytes::Bytes) {
+    pub(crate) fn recv_datagram(
+        &self,
+        frame: DatagramFrame,
+        data: bytes::Bytes,
+    ) -> Result<(), Error> {
         let reader = &mut self.0.blocking_lock();
         let inner = reader.deref_mut();
-        match inner {
-            Ok(reader) => {
-                reader.queue.push_back(data);
-                if let Some(waker) = reader.waker.take() {
-                    waker.wake();
-                }
-            }
-            Err(_) => unreachable!(),
+        let Ok(reader) = inner else { unreachable!() };
+        if (frame.encoding_size() + data.len()) > reader.local_max_size {
+            return Err(Error::new(
+                ErrorKind::ProtocolViolation,
+                frame.frame_type(),
+                format!(
+                    "datagram size {} exceeds the maximum size {}",
+                    data.len(),
+                    reader.local_max_size
+                ),
+            ));
         }
+        reader.queue.push_back(data);
+        if let Some(waker) = reader.waker.take() {
+            waker.wake();
+        }
+        Ok(())
     }
 
     pub(super) fn on_conn_error(&self, error: &Error) {

@@ -2,22 +2,22 @@ use std::{collections::VecDeque, io, ops::DerefMut, sync::Arc};
 
 use bytes::{BufMut, Bytes};
 use qbase::{
-    error::Error,
-    frame::{io::WriteDatagramFrame, BeFrame, DatagramFrame},
+    error::{Error, ErrorKind},
+    frame::{io::WriteDatagramFrame, BeFrame, DatagramFrame, FrameType},
     varint::VarInt,
 };
 use tokio::sync::Mutex;
 
 #[derive(Debug)]
 pub struct RawDatagramWriter {
-    max_size: usize,
+    remote_max_size: usize,
     queue: VecDeque<Bytes>,
 }
 
 impl RawDatagramWriter {
-    pub fn new(max_size: usize) -> Self {
+    pub fn new(remote_max_size: usize) -> Self {
         Self {
-            max_size,
+            remote_max_size,
             queue: Default::default(),
         }
     }
@@ -61,7 +61,7 @@ impl DatagramWriter {
     pub async fn send_bytes(&self, data: Bytes) -> io::Result<()> {
         match self.0.lock().await.deref_mut() {
             Ok(writer) => {
-                if data.len() > writer.max_size {
+                if data.len() > writer.remote_max_size {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "datagram frame size exceeds the limit",
@@ -76,5 +76,22 @@ impl DatagramWriter {
 
     pub async fn send(&self, data: &[u8]) -> io::Result<()> {
         self.send_bytes(data.to_vec().into()).await
+    }
+
+    pub fn update_remote_max_datagram_frame_size(&self, size: usize) -> Result<(), Error> {
+        let mut writer = self.0.blocking_lock();
+        let inner = writer.deref_mut();
+
+        if let Ok(writer) = inner {
+            if size < writer.remote_max_size {
+                return Err(Error::new(
+                    ErrorKind::ProtocolViolation,
+                    FrameType::Datagram(0),
+                    "datagram frame size cannot be reduced",
+                ));
+            }
+            writer.remote_max_size = size;
+        }
+        Ok(())
     }
 }

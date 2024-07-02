@@ -1,12 +1,8 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use bytes::Bytes;
 use futures::StreamExt;
-use qbase::{
-    error::{Error, ErrorKind},
-    frame::{BeFrame, DatagramFrame},
-    util::ArcAsyncDeque,
-};
+use qbase::{error::Error, frame::DatagramFrame, util::ArcAsyncDeque};
 use tokio::sync::Mutex;
 
 use super::{
@@ -16,106 +12,89 @@ use super::{
 
 #[derive(Debug, Clone)]
 pub struct RawDatagramFlow {
-    max_datagram_frame_size: u64,
     reader: DatagramReader,
     writer: DatagramWriter,
 }
 
 impl RawDatagramFlow {
-    fn new(max_datagram_frame_size: u64) -> Self {
-        let reader = RawDatagramReader::default();
-        let writer = RawDatagramWriter::new(max_datagram_frame_size as _);
+    fn new(local_max_datagram_frame_size: u64, remote_max_datagram_frame_size: u64) -> Self {
+        let reader = RawDatagramReader::new(remote_max_datagram_frame_size as _);
+        let writer = RawDatagramWriter::new(local_max_datagram_frame_size as _);
 
         Self {
-            max_datagram_frame_size,
             reader: DatagramReader(Arc::new(Mutex::new(Ok(reader)))),
             writer: DatagramWriter(Arc::new(Mutex::new(Ok(writer)))),
         }
     }
-
-    fn recv_datagram(&self, frame: DatagramFrame, body: bytes::Bytes) -> Result<(), Error> {
-        if (body.len() + frame.encoding_size()) as u64 > self.max_datagram_frame_size {
-            return Err(Error::new(
-                ErrorKind::ProtocolViolation,
-                frame.frame_type(),
-                "datagram frame size exceeds the limit",
-            ));
-        }
-        self.reader.recv_datagram(body);
-        Ok(())
-    }
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct DatagramFlow {
-    flow: Option<RawDatagramFlow>,
+    raw_flow: Arc<RwLock<RawDatagramFlow>>,
 }
 
 impl DatagramFlow {
     #[inline]
-    pub fn new(max_datagram_frame_size: u64) -> Self {
-        let flow = if max_datagram_frame_size == 0 {
-            None
-        } else {
-            Some(RawDatagramFlow::new(max_datagram_frame_size))
-        };
-        Self { flow }
+    pub fn new(local_max_datagram_frame_size: u64, remote_max_datagram_frame_size: u64) -> Self {
+        let flow = RawDatagramFlow::new(
+            local_max_datagram_frame_size,
+            remote_max_datagram_frame_size,
+        );
+        Self {
+            raw_flow: Arc::new(RwLock::new(flow)),
+        }
+    }
+
+    /// 如果对方在新的连接中缩小了max_data_frame_size，必须返回协议错误
+    #[inline]
+    pub fn update_remote_max_datagram_frame_size(&self, new_size: usize) -> Result<(), Error> {
+        let flow = self.raw_flow.read().unwrap();
+        flow.writer.update_remote_max_datagram_frame_size(new_size)
     }
 
     #[inline]
     pub fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        self.flow.as_ref()?.writer.try_read_datagram(buf)
+        self.raw_flow.read().unwrap().writer.try_read_datagram(buf)
     }
 
     #[inline]
     pub fn recv_datagram(&self, frame: DatagramFrame, body: bytes::Bytes) -> Result<(), Error> {
-        self.flow
-            .as_ref()
-            .ok_or_else(|| disenabled(&frame))?
+        self.raw_flow
+            .read()
+            .unwrap()
+            .reader
             .recv_datagram(frame, body)
     }
 
     #[inline]
-    pub fn rw(&self) -> Result<(DatagramReader, DatagramWriter), Error> {
-        let flow = self.flow.as_ref().ok_or_else(disenabled_datagram)?;
-        Ok((
+    pub fn rw(&self) -> (DatagramReader, DatagramWriter) {
+        let flow = self.raw_flow.read().unwrap();
+        (
             DatagramReader(flow.reader.0.clone()),
             DatagramWriter(flow.writer.0.clone()),
-        ))
+        )
     }
 
     #[inline]
     pub fn on_conn_error(&self, error: &Error) {
-        if let Some(flow) = &self.flow {
-            flow.reader.on_conn_error(error);
-            flow.writer.on_conn_error(error);
-        }
+        let raw_flow = self.raw_flow.read().unwrap();
+        raw_flow.reader.on_conn_error(error);
+        raw_flow.writer.on_conn_error(error);
     }
 
-    pub fn spawn_recv_datagram_frames(&self) -> Option<ArcAsyncDeque<(DatagramFrame, Bytes)>> {
-        let flow = self.clone();
-        let queue = ArcAsyncDeque::new();
+    #[inline]
+    pub fn spawn_recv_datagram_frames(&self) -> ArcAsyncDeque<(DatagramFrame, Bytes)> {
+        let (reader, _) = self.rw();
+        let deque: ArcAsyncDeque<(DatagramFrame, Bytes)> = ArcAsyncDeque::new();
         tokio::spawn({
-            let mut queue = queue.clone();
+            let mut deque = deque.clone();
             async move {
-                while let Some((frame, data)) = queue.next().await {
-                    // TODO: 错误处理
-                    _ = flow.recv_datagram(frame, data);
+                while let Some((frame, data)) = deque.next().await {
+                    // TODO: handle errorS
+                    _ = reader.recv_datagram(frame, data);
                 }
             }
         });
-        Some(queue)
+        deque
     }
-}
-
-fn disenabled(frame: &DatagramFrame) -> Error {
-    Error::new(
-        ErrorKind::ProtocolViolation,
-        frame.frame_type(),
-        "DatagramFrame was disenabled",
-    )
-}
-
-fn disenabled_datagram() -> Error {
-    disenabled(&DatagramFrame { length: None })
 }
