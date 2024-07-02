@@ -1,4 +1,4 @@
-use std::{io, ops::DerefMut, sync::Arc};
+use std::{collections::VecDeque, io, ops::DerefMut, sync::Arc};
 
 use bytes::{BufMut, Bytes};
 use qbase::{
@@ -8,12 +8,10 @@ use qbase::{
 };
 use tokio::sync::Mutex;
 
-use super::queue::DatagramQueue;
-
 #[derive(Debug)]
 pub struct RawDatagramWriter {
     max_size: usize,
-    queue: DatagramQueue,
+    queue: VecDeque<Bytes>,
 }
 
 impl RawDatagramWriter {
@@ -34,18 +32,18 @@ impl DatagramWriter {
     pub(super) fn try_read_datagram(&self, mut buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
         let mut guard = self.0.blocking_lock();
         let writer = guard.as_mut().ok()?;
-        let datagram = writer.queue.peek()?;
+        let datagram = writer.queue.pop_front()?;
 
         let remain = buf.remaining_mut();
         if remain == 1 + datagram.len() {
             let frame = DatagramFrame::new(None);
-            buf.put_datagram_frame(&frame, datagram);
+            buf.put_datagram_frame(&frame, &datagram);
             return Some((frame, remain));
         }
         let frame = DatagramFrame::new(Some(VarInt::try_from(datagram.len()).unwrap()));
         let length = frame.encoding_size() + datagram.len();
         if remain >= length {
-            buf.put_datagram_frame(&frame, datagram);
+            buf.put_datagram_frame(&frame, &datagram);
             Some((frame, length))
         } else {
             None
@@ -69,7 +67,7 @@ impl DatagramWriter {
                         "datagram frame size exceeds the limit",
                     ));
                 }
-                writer.queue.write(data);
+                writer.queue.push_back(data);
                 Ok(())
             }
             Err(e) => Err(io::Error::new(e.kind(), e.to_string())),

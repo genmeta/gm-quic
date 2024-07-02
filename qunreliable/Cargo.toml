@@ -7,3 +7,4 @@ edition.workspace = true
 tokio = { workspace = true }
 bytes = { workspace = true }
 qbase = { workspace = true }
+futures = { workspace = true }
