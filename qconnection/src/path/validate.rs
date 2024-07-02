@@ -130,10 +130,10 @@ impl Validator {
             let mut validator = self.clone();
 
             async move {
-                let success = tokio::time::timeout(timeout, validator.poll_state())
+                if tokio::time::timeout(timeout, validator.poll_state())
                     .await
-                    .unwrap_or(false);
-                if !success {
+                    .is_err()
+                {
                     let mut state = state.lock().unwrap();
                     *state = ValidateState::Failure;
                     if let Some(waker) = validator.waker.take() {
@@ -144,6 +144,11 @@ impl Validator {
         });
     }
 
+    /// Returns a `Future` that can be used to poll the state of the validator.
+    ///
+    /// The `Future` resolves to `true` if the validator is successful, and `false` otherwise.
+    /// If the verification is not completed, the "Future" will wait for the state to
+    /// transition to the final state, according to the timeout specified in `on_challenge_sent`
     pub fn poll_state(&self) -> impl Future<Output = bool> {
         struct State(Validator);
 
@@ -381,6 +386,18 @@ mod tests {
 
         let state = validator.state.lock().unwrap();
         assert!(matches!(*state, ValidateState::Success));
+    }
+
+    #[tokio::test]
+    async fn test_validator_poll_state() {
+        let mut validator = Validator::default();
+        validator.challenge();
+        let response = match *validator.state.lock().unwrap() {
+            ValidateState::Challenging(challenge, _) => challenge,
+            _ => panic!("unexpected state"),
+        };
+        validator.on_response(&PathResponseFrame::from(&response));
+        assert!(validator.poll_state().await);
     }
 
     #[test]
