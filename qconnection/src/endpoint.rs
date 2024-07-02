@@ -14,10 +14,6 @@ pub struct Endpoint {
     // listener: Listener,
 }
 
-impl Endpoint {
-    fn spawn_accpet_ccf(&self) {}
-}
-
 impl ReceiveProtectedPacket for Endpoint {
     fn receive_protected_packet(&mut self, protected_packet: SpacePacket) {
         let dcid = protected_packet.get_dcid();

@@ -1,7 +1,11 @@
 pub mod state;
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
+use dashmap::DashMap;
 use deref_derive::Deref;
 use futures::StreamExt;
 use qbase::{
@@ -9,7 +13,7 @@ use qbase::{
     frame::{ConnFrame, ConnectionCloseFrame, HandshakeDoneFrame, MaxDataFrame},
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
-        HandshakePacket, InitialPacket, OneRttPacket, SpinBit, ZeroRttPacket,
+        HandshakePacket, InitialPacket, OneRttPacket, SpacePacket, SpinBit, ZeroRttPacket,
     },
     streamid::Role,
     util::ArcAsyncDeque,
@@ -28,7 +32,6 @@ use crate::{
 };
 
 type PacketQueue<T> = mpsc::UnboundedSender<(T, ArcPath)>;
-
 /// Option是为了能丢弃前期空间，包括这些空间的收包队列，
 /// 一旦丢弃，后续再收到该空间的包，直接丢弃。
 type RxPacketQueue<T> = Option<PacketQueue<T>>;
@@ -38,11 +41,11 @@ pub struct RawConnection {
     // remote_cids: RemoteCids,
 
     // 所有Path的集合，Pathway作为key
-    pathes: HashMap<Pathway, ArcPath>,
+    pathes: DashMap<Pathway, ArcPath>,
 
-    init_pkt_queue: RxPacketQueue<InitialPacket>,
-    hs_pkt_queue: RxPacketQueue<HandshakePacket>,
-    zero_rtt_pkt_queue: RxPacketQueue<ZeroRttPacket>,
+    init_pkt_queue: RwLock<RxPacketQueue<InitialPacket>>,
+    hs_pkt_queue: RwLock<RxPacketQueue<HandshakePacket>>,
+    zero_rtt_pkt_queue: RwLock<RxPacketQueue<ZeroRttPacket>>,
     one_rtt_pkt_queue: mpsc::UnboundedSender<(OneRttPacket, ArcPath)>,
 
     // Thus, a client MUST discard Initial keys when it first sends a Handshake packet
@@ -64,55 +67,57 @@ pub struct RawConnection {
 }
 
 impl RawConnection {
-    pub fn recv_init_pkt_via(&mut self, pkt: InitialPacket, usc: &ArcUsc, pathway: Pathway) {
-        if self.init_pkt_queue.is_some() {
+    pub fn recv_init_pkt_via(&self, pkt: InitialPacket, usc: &ArcUsc, pathway: Pathway) {
+        if let Some(queue) = self.init_pkt_queue.read().unwrap().as_ref() {
             let path = self.get_path(pathway, usc);
-            _ = self.init_pkt_queue.as_ref().unwrap().send((pkt, path));
+            _ = queue.send((pkt, path));
         }
     }
 
-    pub fn recv_hs_pkt_via(&mut self, pkt: HandshakePacket, usc: &ArcUsc, pathway: Pathway) {
-        if self.hs_pkt_queue.is_some() {
+    pub fn recv_hs_pkt_via(&self, pkt: HandshakePacket, usc: &ArcUsc, pathway: Pathway) {
+        if let Some(queue) = self.hs_pkt_queue.read().unwrap().as_ref() {
             let path = self.get_path(pathway, usc);
-            _ = self.hs_pkt_queue.as_ref().unwrap().send((pkt, path));
+            _ = queue.send((pkt, path));
         }
     }
 
-    pub fn recv_0rtt_pkt_via(&mut self, pkt: ZeroRttPacket, usc: &ArcUsc, pathway: Pathway) {
-        if self.zero_rtt_pkt_queue.is_some() {
+    pub fn recv_0rtt_pkt_via(&self, pkt: ZeroRttPacket, usc: &ArcUsc, pathway: Pathway) {
+        if let Some(queue) = self.zero_rtt_pkt_queue.read().unwrap().as_ref() {
             let path = self.get_path(pathway, usc);
-            _ = self.zero_rtt_pkt_queue.as_ref().unwrap().send((pkt, path));
+            _ = queue.send((pkt, path));
         }
     }
 
-    pub fn recv_1rtt_pkt_via(&mut self, pkt: OneRttPacket, usc: &ArcUsc, pathway: Pathway) {
+    pub fn recv_1rtt_pkt_via(&self, pkt: OneRttPacket, usc: &ArcUsc, pathway: Pathway) {
         let path = self.get_path(pathway, usc);
         self.one_rtt_pkt_queue
             .send((pkt, path))
             .expect("must success");
     }
 
-    fn invalid_init_keys(&self) {
-        self.initial_keys.invalid();
-    }
-
-    fn invalid_hs_keys(&self) {
-        self.handshake_keys.invalid();
-    }
-
-    fn invalid_0rtt_keys(&self) {
-        self.zero_rtt_keys.invalid();
+    pub fn recv_protected_pkt_via(&mut self, pkt: SpacePacket, usc: &ArcUsc, pathway: Pathway) {
+        match pkt {
+            SpacePacket::Initial(pkt) => self.recv_init_pkt_via(pkt, usc, pathway),
+            SpacePacket::Handshake(pkt) => self.recv_hs_pkt_via(pkt, usc, pathway),
+            SpacePacket::ZeroRtt(pkt) => self.recv_0rtt_pkt_via(pkt, usc, pathway),
+            SpacePacket::OneRtt(pkt) => self.recv_1rtt_pkt_via(pkt, usc, pathway),
+        }
     }
 
     fn handshake_done(&self) {
         self.state.set_state(ConnectionState::HandshakeDone);
-        self.invalid_init_keys();
-        self.invalid_hs_keys();
-        self.invalid_0rtt_keys();
-        // TODO: Drop RxPacketQueue
+
+        self.initial_keys.invalid();
+        self.init_pkt_queue.write().unwrap().take();
+
+        self.handshake_keys.invalid();
+        self.hs_pkt_queue.write().unwrap().take();
+
+        self.zero_rtt_keys.invalid();
+        self.zero_rtt_pkt_queue.write().unwrap().take();
     }
 
-    pub fn get_path(&mut self, pathway: Pathway, usc: &ArcUsc) -> ArcPath {
+    pub fn get_path(&self, pathway: Pathway, usc: &ArcUsc) -> ArcPath {
         self.pathes
             .entry(pathway)
             .or_insert_with({
@@ -223,10 +228,10 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
 
     let flow_controller = ArcFlowController::with_initial(0, 0);
     let connection = Arc::new(RawConnection {
-        pathes: HashMap::new(),
-        init_pkt_queue: Some(initial_pkt_tx),
-        hs_pkt_queue: Some(handshake_pkt_tx),
-        zero_rtt_pkt_queue: Some(zero_rtt_pkt_tx),
+        pathes: DashMap::new(),
+        init_pkt_queue: Some(initial_pkt_tx).into(),
+        hs_pkt_queue: Some(handshake_pkt_tx).into(),
+        zero_rtt_pkt_queue: Some(zero_rtt_pkt_tx).into(),
         one_rtt_pkt_queue: one_rtt_pkt_tx,
         initial_keys,
         handshake_keys,
