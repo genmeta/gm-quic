@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     future::Future,
     io,
     ops::DerefMut,
@@ -7,15 +8,13 @@ use std::{
     task::{ready, Context, Poll, Waker},
 };
 
-use bytes::BufMut;
+use bytes::{BufMut, Bytes};
 use qbase::error::Error;
 use tokio::sync::Mutex;
 
-use super::queue::DatagramQueue;
-
 #[derive(Default, Debug)]
 pub struct RawDatagramReader {
-    queue: DatagramQueue,
+    queue: VecDeque<Bytes>,
     waker: Option<Waker>,
 }
 
@@ -30,7 +29,7 @@ impl DatagramReader {
         let inner = reader.deref_mut();
         match inner {
             Ok(reader) => {
-                reader.queue.write(data);
+                reader.queue.push_back(data);
                 if let Some(waker) = reader.waker.take() {
                     waker.wake();
                 }
@@ -74,7 +73,7 @@ impl Future for ReadIntoSlice<'_> {
         let reader = s.reader.lock();
         let mut reader = ready!(Box::pin(reader).as_mut().poll(cx));
         match reader.deref_mut() {
-            Ok(reader) => match reader.queue.try_read() {
+            Ok(reader) => match reader.queue.pop_front() {
                 Some(bytes) => {
                     let len = bytes.len().min(s.buf.len());
                     s.buf.copy_from_slice(&bytes[..len]);
@@ -106,7 +105,7 @@ where
         let reader = s.reader.lock();
         let mut reader = ready!(Box::pin(reader).as_mut().poll(cx));
         match reader.deref_mut() {
-            Ok(reader) => match reader.queue.try_read() {
+            Ok(reader) => match reader.queue.pop_front() {
                 Some(bytes) => {
                     let len = bytes.len();
                     s.buf.put(bytes);

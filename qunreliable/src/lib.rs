@@ -1,4 +1,3 @@
-pub(crate) mod queue;
 mod reader;
 pub use reader::*;
 mod writer;
