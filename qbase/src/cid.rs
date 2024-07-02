@@ -1,10 +1,11 @@
 use std::{
+    future::Future,
     pin::Pin,
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
 
-use futures::Future;
+use deref_derive::{Deref, DerefMut};
 use nom::{bytes::streaming::take, number::streaming::be_u8, IResult};
 use rand::Rng;
 
@@ -12,7 +13,7 @@ use crate::{
     error::{Error, ErrorKind},
     frame::{BeFrame, FrameType, NewConnectionIdFrame, RetireConnectionIdFrame},
     token::ResetToken,
-    util::{ExceedLimit, IndexDeque},
+    util::{ArcAsyncDeque, IndexDeque, IndexError},
     varint::{VarInt, VARINT_MAX},
 };
 
@@ -90,7 +91,8 @@ impl std::ops::Deref for ConnectionId {
 /// 当cid不足时，就发放新的连接id，包括增大active_cid_limit，以及对方淘汰旧的cid。
 #[derive(Default, Debug)]
 pub struct RawLocalCids {
-    cid_deque: IndexDeque<(ConnectionId, ResetToken), VARINT_MAX>,
+    // If the item in cid_deque is None, it means the connection ID has been retired.
+    cid_deque: IndexDeque<Option<(ConnectionId, ResetToken)>, VARINT_MAX>,
     // This is an integer value specifying the maximum number of connection
     // IDs from the peer that an endpoint is willing to store.
     // While the client does not know the server's parameters, it can be set to None.
@@ -127,13 +129,14 @@ impl RawLocalCids {
         cx: &mut Context<'_>,
         len: usize,
         predicate: P,
-    ) -> Poll<Result<NewConnectionIdFrame, ExceedLimit>>
+    ) -> Poll<Result<NewConnectionIdFrame, IndexError>>
     where
         P: Fn(&ConnectionId) -> bool,
     {
         // If this transport parameter is absent, a default of 2 is assumed.
         let limit = self.active_cid_limit.unwrap_or(2);
-        if self.cid_deque.len() >= limit as usize {
+        let active_len = self.cid_deque.iter().filter(|v| v.is_some()).count();
+        if active_len >= limit as usize {
             self.issue_waker = Some(cx.waker().clone());
             return Poll::Pending;
         }
@@ -141,7 +144,7 @@ impl RawLocalCids {
             .find(predicate)
             .unwrap();
         let reset_token = ResetToken::random_gen();
-        let sequence = match self.cid_deque.push_back((id, reset_token)) {
+        let sequence = match self.cid_deque.push_back(Some((id, reset_token))) {
             Ok(seq) => seq,
             Err(e) => return Poll::Ready(Err(e)),
         };
@@ -154,19 +157,28 @@ impl RawLocalCids {
         }))
     }
 
-    /// When a RetireConnectionIdFrame is acknowledged by the peer,
-    /// call this method to retire the connection IDs prior to retire_prior_to.
-    pub fn on_cid_retired(
+    /// When a RetireConnectionIdFrame is acknowledged by the peer, call this method to
+    /// retire the connection IDs of the sequence in RetireConnectionIdFrame.
+    pub fn recv_retire_cid_frame(
         &mut self,
         frame: &RetireConnectionIdFrame,
-    ) -> impl DoubleEndedIterator<Item = (ConnectionId, ResetToken)> + '_ {
-        let end = frame.sequence.into_inner();
-        if self.cid_deque.largest() < end + self.active_cid_limit.unwrap_or(2) {
-            if let Some(waker) = self.issue_waker.take() {
-                waker.wake();
+    ) -> Option<ConnectionId> {
+        let seq = frame.sequence.into_inner();
+        if let Some(value) = self.cid_deque.get_mut(seq) {
+            if let Some((cid, _)) = value.take() {
+                let active_len = self.cid_deque.iter().filter(|v| v.is_some()).count();
+                if (active_len as u64) < self.active_cid_limit.unwrap_or(2) {
+                    if let Some(waker) = self.issue_waker.take() {
+                        waker.wake();
+                    }
+                }
+                Some(cid)
+            } else {
+                None
             }
+        } else {
+            None
         }
-        self.cid_deque.drain_to(end)
     }
 }
 
@@ -182,7 +194,7 @@ impl ArcLocalCids {
         &self,
         len: usize,
         predicate: impl Fn(&ConnectionId) -> bool,
-    ) -> Result<NewConnectionIdFrame, ExceedLimit> {
+    ) -> Result<NewConnectionIdFrame, IndexError> {
         IssueCid {
             local_cids: self.clone(),
             len,
@@ -202,7 +214,7 @@ impl<P> Future for IssueCid<P>
 where
     P: Fn(&ConnectionId) -> bool,
 {
-    type Output = Result<NewConnectionIdFrame, ExceedLimit>;
+    type Output = Result<NewConnectionIdFrame, IndexError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut guard = self.local_cids.lock_guard();
@@ -211,25 +223,54 @@ where
 }
 
 #[derive(Debug)]
-pub struct RemoteCids {
+pub struct RawRemoteCids {
     // 可能收到的NewConnectionIdFrame，其sequence并不连续
     cid_deque: IndexDeque<Option<(u64, ConnectionId, ResetToken)>, VARINT_MAX>,
-    // 当前有效路径正在使用的cid，伴随cid deque的过期而重新分配
+    // 当前有效路径正在使用的cid，伴随cid的退休而重新分配
     cid_cells: IndexDeque<ArcCidCell, VARINT_MAX>,
     // 我方允许对方拥有的活跃cid数量
     active_cid_limit: u64,
     // 待使用的cid的位置，以及待分配的cell的位置，它们共享同一个位置
     cursor: u64,
+    // 淘汰的cid，需要将RetireConnectionIdFrame发送给对方
+    retired_cids: ArcAsyncDeque<RetireConnectionIdFrame>,
 }
 
-impl RemoteCids {
+impl RawRemoteCids {
     pub fn with_limit(active_cid_limit: u64) -> Self {
         Self {
             active_cid_limit,
             cid_deque: Default::default(),
             cid_cells: Default::default(),
             cursor: Default::default(),
+            retired_cids: Default::default(),
         }
+    }
+
+    /// The retired cids, which might be a choice made by a certain Path, or due to
+    /// receiving a NewConnectionIdFrame because of its retire_prior_to retire a batch
+    /// of cids. For each retired cid, a RetireConnectionIdFrame will be sent to inform
+    /// the peer.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use qbase::cid::RawRemoteCids;
+    /// use futures::StreamExt;
+    ///
+    /// # async fn dox() {
+    /// let remote_cids = RawRemoteCids::with_limit(8);
+    ///
+    /// // There will be a task continuously get RetireConnectionIdFrame and
+    /// // then send it to peer
+    /// let mut retired_cids = remote_cids.retired_cids();
+    /// while let Some(_retire_cid_frame) = retired_cids.next().await {
+    ///     // send _retire_cid_frame to peer
+    /// }
+    /// # }
+    /// ```
+    pub fn retired_cids(&self) -> ArcAsyncDeque<RetireConnectionIdFrame> {
+        self.retired_cids.clone()
     }
 
     pub fn recv_new_cid_frame(&mut self, frame: &NewConnectionIdFrame) -> Result<(), Error> {
@@ -258,8 +299,14 @@ impl RemoteCids {
             .insert(seq, Some((seq, id, token)))
             .expect("Sequence of new connection ID should never exceed the limit");
         self.retire_prior_to(retire_prior_to);
+        self.arrange_idle_cid();
 
-        // 开始分配未分配的连接id，给需要分配的cid cell
+        Ok(())
+    }
+
+    /// Arrange the idle cids to the front of the cid applys
+    #[doc(hidden)]
+    fn arrange_idle_cid(&mut self) {
         loop {
             let next_unalloced_cell = self.cid_cells.get_mut(self.cursor);
             let next_unused_cid = self.cid_deque.get(self.cursor);
@@ -271,32 +318,54 @@ impl RemoteCids {
                 break;
             }
         }
-
-        Ok(())
     }
 
-    /// Actively decide to eliminate the old cid and inform the other party that
-    /// a RetireConnectionIdFrame needs to be generated to inform the other party
-    pub fn retire_prior_to(&mut self, pos: u64) {
-        _ = self.cid_deque.drain_to(pos);
-        // 有可能还没被使用的连接id，被直接淘汰，来不及再分配，此现象称“跳跃式过期cid”
-        self.cursor = self.cursor.max(pos);
+    /// Eliminate the old cids and inform the peer with a
+    /// RetireConnectionIdFrame for each retired cid.
+    #[doc(hidden)]
+    fn retire_prior_to(&mut self, seq: u64) {
+        _ = self.cid_deque.drain_to(seq);
+        // 有可能还没被使用的连接id，被直接淘汰，来不及再分配，此现象称“跳跃式退休cid”
+        self.cursor = self.cursor.max(seq);
+
+        if seq <= self.cid_cells.offset() {
+            return;
+        }
 
         // 将曾经分配给Path的，但面临淘汰的cid，重新分配（但会延后于新Path的申请）
-        let mut idx = self.cid_cells.largest().max(pos + 1);
-        for _ in self.cid_cells.offset()..pos {
-            let (_, cell) = self.cid_cells.pop_front().unwrap();
-            if cell.is_closed() {
-                continue;
-            } else {
-                cell.clear();
-                // 之所以不用push_back而用insert，是为了让待分配的cid和cell保持一致，
-                // "跳跃式过期cid"将导致“跳跃式分配”，虽然大概率不会发生。
-                self.cid_cells
-                    .insert(idx, cell)
-                    .expect("Sequence of new connection ID should never exceed the limit");
-                idx += 1;
+        if self.cid_cells.is_empty() {
+            // 用resize浪费了，因为最终都会drain_to清空所有的元素，所以直接用reset_offset值最佳
+            // self.cid_cells.resize(seq, ArcCidCell::default()).expect("");
+            self.cid_cells.reset_offset(seq);
+        } else {
+            let mut next_apply = self.cid_cells.largest().max(seq);
+            let end = self.cid_cells.largest().min(seq);
+            for _ in self.cid_cells.offset()..end {
+                let (_, cell) = self.cid_cells.pop_front().unwrap();
+                let mut guard = cell.lock_guard();
+                if guard.is_retired() {
+                    continue;
+                } else {
+                    // 内部重新分配新的cid
+                    let origin_seq = guard.seq;
+                    guard.seq = self.cid_cells.largest();
+                    guard.clear();
+                    drop(guard);
+
+                    // 将老的cid退休，并准备通知对方
+                    self.retired_cids.push(RetireConnectionIdFrame {
+                        sequence: VarInt::from_u64(origin_seq)
+                            .expect("Sequence of connection id is very hard to exceed VARINT_MAX"),
+                    });
+                    // 之所以不用push_back而用insert，是为了让待分配的cid和cell保持一致，
+                    // "跳跃式退休cid"将导致“跳跃式分配”，虽然大概率不会发生。
+                    self.cid_cells
+                        .insert(next_apply, cell)
+                        .expect("Sequence of new connection ID should never exceed the limit");
+                    next_apply += 1;
+                }
             }
+            _ = self.cid_cells.drain_to(seq);
         }
     }
 
@@ -305,14 +374,16 @@ impl RemoteCids {
     /// - have been allocated
     /// - have been allocated again after retirement of last cid
     /// - have been closed
-    pub fn alloc_cid_cell(&mut self) -> ArcCidCell {
-        let cell = if let Some(Some((_, cid, _))) = self.cid_deque.get(self.cursor) {
+    pub fn apply_cid(&mut self) -> ArcCidCell {
+        let state = if let Some(Some((_, cid, _))) = self.cid_deque.get(self.cursor) {
             self.cursor += 1;
-            ArcCidCell::new(CidCell::Ready(*cid))
+            CidState::Ready(*cid)
         } else {
-            ArcCidCell::new(CidCell::None)
+            CidState::None
         };
 
+        let seq = self.cid_cells.largest();
+        let cell = ArcCidCell::new(self.retired_cids.clone(), seq, state);
         self.cid_cells
             .push_back(cell.clone())
             .expect("Sequence of new connection ID should never exceed the limit");
@@ -321,100 +392,122 @@ impl RemoteCids {
 }
 
 #[derive(Debug, Clone)]
-pub struct ArcRemoteCids(Arc<Mutex<RemoteCids>>);
+pub struct ArcRemoteCids(Arc<Mutex<RawRemoteCids>>);
 
 impl ArcRemoteCids {
     pub fn with_limit(active_cid_limit: u64) -> Self {
-        Self(Arc::new(Mutex::new(RemoteCids::with_limit(
+        Self(Arc::new(Mutex::new(RawRemoteCids::with_limit(
             active_cid_limit,
         ))))
     }
 
-    pub fn lock_guard(&self) -> MutexGuard<'_, RemoteCids> {
+    pub fn lock_guard(&self) -> MutexGuard<'_, RawRemoteCids> {
         self.0.lock().unwrap()
     }
 }
 
 #[derive(Default, Debug, Clone)]
-enum CidCell {
+enum CidState {
     None,
     Demand(Waker),
     Ready(ConnectionId),
     #[default]
-    Closed,
+    Retired,
 }
 
-impl CidCell {
+impl CidState {
     fn poll_get_cid(&mut self, cx: &mut Context) -> Poll<ConnectionId> {
         match self {
-            CidCell::None => {
-                *self = CidCell::Demand(cx.waker().clone());
+            CidState::None => {
+                *self = CidState::Demand(cx.waker().clone());
                 Poll::Pending
             }
-            CidCell::Demand(waker) => {
+            CidState::Demand(waker) => {
                 waker.clone_from(cx.waker());
                 Poll::Pending
             }
-            CidCell::Ready(cid) => Poll::Ready(*cid),
-            CidCell::Closed => unreachable!("CidCell is closed"),
+            CidState::Ready(cid) => Poll::Ready(*cid),
+            CidState::Retired => unreachable!("CidCell is closed"),
         }
     }
 
     fn assign(&mut self, cid: ConnectionId) {
         // Only allow transition from None or Demand state to Ready state
         debug_assert!(matches!(self, Self::None | Self::Demand(_)));
-        if let CidCell::Demand(waker) = std::mem::take(self) {
+        if let CidState::Demand(waker) = std::mem::take(self) {
             waker.wake();
         }
-        *self = CidCell::Ready(cid);
+        *self = CidState::Ready(cid);
     }
 
     fn clear(&mut self) {
         // Allow transition from Ready state to None state, but not from Closed state
         // While meeting Demand state, it will not change && not wake the waker
         match self {
-            CidCell::Ready(_) => *self = CidCell::None,
-            CidCell::Closed => unreachable!("CidCell is closed"),
+            CidState::Ready(_) => *self = CidState::None,
+            CidState::Retired => unreachable!("CidCell is retired"),
             _ => {}
         }
     }
 
-    fn close(&mut self) {
-        *self = CidCell::Closed;
+    fn retire(&mut self) {
+        *self = CidState::Retired;
     }
 
-    fn is_closed(&self) -> bool {
-        matches!(self, Self::Closed)
+    fn is_retired(&self) -> bool {
+        matches!(self, Self::Retired)
     }
+}
+
+#[derive(Debug, Default, Deref, DerefMut)]
+struct CidCell {
+    retired_cids: ArcAsyncDeque<RetireConnectionIdFrame>,
+    // The sequence number of the connection ID had beed assigned or to be allocated
+    seq: u64,
+    #[deref]
+    state: CidState,
 }
 
 #[derive(Default, Debug, Clone)]
 pub struct ArcCidCell(Arc<Mutex<CidCell>>);
 
 impl ArcCidCell {
-    fn new(getter: CidCell) -> Self {
-        Self(Arc::new(Mutex::new(getter)))
+    fn new(
+        retired_cids: ArcAsyncDeque<RetireConnectionIdFrame>,
+        seq: u64,
+        state: CidState,
+    ) -> Self {
+        Self(Arc::new(Mutex::new(CidCell {
+            retired_cids,
+            seq,
+            state,
+        })))
+    }
+
+    fn lock_guard(&self) -> MutexGuard<'_, CidCell> {
+        self.0.lock().unwrap()
     }
 
     fn assign(&self, cid: ConnectionId) {
         self.0.lock().unwrap().assign(cid);
     }
 
-    fn clear(&self) {
-        self.0.lock().unwrap().clear();
-    }
-
+    /// Getting the connection ID, if it is not ready, return a future
     pub async fn get_cid(&self) -> ConnectionId {
         self.clone().await
     }
 
+    /// When the Path is invalid, the connection id needs to be retired, and the Cell
+    /// is marked as no longer in use, with a RetireConnectionIdFrame being sent to peer.
     #[inline]
-    pub fn close(&self) {
-        self.0.lock().unwrap().close();
-    }
-
-    fn is_closed(&self) -> bool {
-        self.0.lock().unwrap().is_closed()
+    pub fn retire(&self) {
+        let mut guard = self.lock_guard();
+        if !guard.is_retired() {
+            guard.state.retire();
+            guard.retired_cids.push(RetireConnectionIdFrame {
+                sequence: VarInt::from_u64(guard.seq).unwrap(),
+            });
+        }
     }
 }
 
