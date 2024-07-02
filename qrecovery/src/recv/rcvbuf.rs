@@ -120,8 +120,8 @@ impl RecvBuf {
 
                 // 有可能被追加在前的片段覆盖了整个段
                 if data_end > next_end {
-                    let reamin = data.slice((next_end - offset) as usize..);
-                    self.try_append(seg_idx, next_end, &reamin);
+                    let remain = data.slice((next_end - offset) as usize..);
+                    self.try_append(seg_idx, next_end, &remain);
                 }
                 true
             }
@@ -152,12 +152,13 @@ impl RecvBuf {
             0
         };
 
-        // 可能这段暑假已经覆盖了下一段数据
+        // 可能这段数据已经覆盖了下一段数据
         let next_offset = self.segments.get(seg_idx + 1).map(|seg| seg.offset);
         let end = match next_offset {
             Some(next_offset) => (next_offset - offset) as usize,
             None => data.len(),
-        };
+        }
+        .min(data.len());
 
         self.segments[seg_idx].append(data.slice(start..end));
 
@@ -191,7 +192,8 @@ impl RecvBuf {
             let end = match self.segments.get(seg_idx + 1).map(|next| next.offset) {
                 Some(next_offset) => (next_offset - offset) as usize,
                 None => data.len(),
-            };
+            }
+            .min(data.len());
 
             self.segments[seg_idx].append(data.slice(start..end));
 
@@ -419,5 +421,19 @@ mod tests {
 
         assert_eq!(buf.remaining_mut(), 9);
         assert_eq!(dst[..11], b"hello world"[..]);
+    }
+
+    #[test]
+    fn test_rcvbuf_recv_overlap_seg() {
+        let mut buf = RecvBuf::default();
+        buf.recv(0, Bytes::from("he"));
+        buf.recv(6, Bytes::from("world"));
+        buf.recv(0, Bytes::from("hello"));
+
+        let mut buf = RecvBuf::default();
+        buf.recv(0, Bytes::from("he"));
+        buf.recv(6, Bytes::from("wo"));
+        buf.recv(12, Bytes::from("00"));
+        buf.recv(0, Bytes::from("hello world"));
     }
 }
