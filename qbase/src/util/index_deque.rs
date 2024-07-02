@@ -5,11 +5,13 @@ use std::{
 
 use thiserror::Error;
 
-use crate::error::{Error, ErrorKind};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[error("the packet number exceed the limit {0}")]
-pub struct ExceedLimit(u64);
+pub enum Error {
+    #[error("the index {0} exceed the limit {1}")]
+    ExceedLimit(u64, u64),
+    #[error("the index {0} is less than the offset {1}")]
+    TooSmall(u64, u64),
+}
 
 /// This structure will be used for the packets to be sent and
 /// the records of the packets that have been sent and are awaiting confirmation.
@@ -25,16 +27,6 @@ impl<T, const LIMIT: u64> Default for IndexDeque<T, LIMIT> {
             deque: VecDeque::default(),
             offset: 0,
         }
-    }
-}
-
-impl From<ExceedLimit> for Error {
-    fn from(err: ExceedLimit) -> Self {
-        Error::new(
-            ErrorKind::None,
-            crate::frame::FrameType::Padding,
-            err.to_string(),
-        )
     }
 }
 
@@ -84,10 +76,10 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
 
     /// Append an element to the end of the queue and return the enqueue index of the element.
     /// If it exceeds the maximum limit of the enqueue index, return None
-    pub fn push_back(&mut self, value: T) -> Result<u64, ExceedLimit> {
+    pub fn push_back(&mut self, value: T) -> Result<u64, Error> {
         let next_idx = self.offset.overflowing_add(self.deque.len() as u64);
         if next_idx.1 || next_idx.0 > LIMIT {
-            Err(ExceedLimit(LIMIT))
+            Err(Error::ExceedLimit(next_idx.0, LIMIT))
         } else {
             self.deque.push_back(value);
             Ok(self.deque.len() as u64 - 1 + self.offset)
@@ -148,6 +140,12 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
         let end = (self.offset - offset) as usize;
         self.deque.drain(..end)
     }
+
+    /// Only empty deque and new_offset >= self.offset can reset offset, otherwise panic.
+    pub fn reset_offset(&mut self, new_offset: u64) {
+        assert!(self.is_empty() && new_offset >= self.offset);
+        self.offset = new_offset;
+    }
 }
 
 impl<T, const LIMIT: u64> Extend<T> for IndexDeque<T, LIMIT> {
@@ -157,9 +155,11 @@ impl<T, const LIMIT: u64> Extend<T> for IndexDeque<T, LIMIT> {
 }
 
 impl<T: Default + Clone, const LIMIT: u64> IndexDeque<T, LIMIT> {
-    pub fn insert(&mut self, idx: u64, value: T) -> Result<Option<T>, ExceedLimit> {
-        if idx > LIMIT || idx < self.offset {
-            Err(ExceedLimit(LIMIT))
+    pub fn insert(&mut self, idx: u64, value: T) -> Result<Option<T>, Error> {
+        if idx > LIMIT {
+            Err(Error::ExceedLimit(idx, LIMIT))
+        } else if idx < self.offset {
+            Err(Error::TooSmall(idx, self.offset))
         } else {
             let pos = (idx - self.offset) as usize;
             if pos < self.deque.len() {
@@ -171,6 +171,20 @@ impl<T: Default + Clone, const LIMIT: u64> IndexDeque<T, LIMIT> {
             }
             self.deque.push_back(value);
             Ok(None)
+        }
+    }
+
+    /// Modifies the deque in-place so that offset() is equal to new_offset, either by
+    /// removing excess elements from the back or by appending clones of value to the back.
+    pub fn resize(&mut self, new_end: u64, value: T) -> Result<(), Error> {
+        if new_end < self.offset {
+            Err(Error::TooSmall(new_end, self.offset))
+        } else if new_end > LIMIT {
+            Err(Error::ExceedLimit(new_end, LIMIT))
+        } else {
+            let len = new_end.saturating_sub(self.offset);
+            self.deque.resize(len as usize, value.clone());
+            Ok(())
         }
     }
 }
@@ -211,7 +225,7 @@ mod tests {
         for i in 10..20 {
             assert_eq!(deque.push_back(i + 1), Ok(i));
         }
-        assert_eq!(deque.push_back(21), Err(ExceedLimit(19)));
+        assert_eq!(deque.push_back(21), Err(Error::ExceedLimit(20, 19)));
         assert_eq!(deque.offset, 10);
 
         assert!(!deque.contain(0));
@@ -265,5 +279,72 @@ mod tests {
         deque.iter_with_idx().for_each(|(idx, item)| {
             assert_eq!(idx, *item);
         });
+    }
+
+    #[test]
+    fn test_reset_offset() {
+        let mut deque = IndexDeque::<u64, 19>::default();
+        deque.reset_offset(5);
+        assert_eq!(deque.offset, 5);
+        for i in 0..10 {
+            assert_eq!(deque.push_back(i), Ok(i + 5));
+        }
+        for i in 0..10 {
+            assert_eq!(deque.pop_front(), Some((i + 5, i)));
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_reset_offset_panic() {
+        let mut deque = IndexDeque::<u64, 19>::default();
+        for i in 0..5 {
+            assert_eq!(deque.push_back(i), Ok(i));
+        }
+        deque.reset_offset(10);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_reset_offset_panic2() {
+        let mut deque = IndexDeque::<u64, 19>::default();
+        for i in 0..10 {
+            assert_eq!(deque.push_back(i), Ok(i));
+        }
+        for i in 0..5 {
+            assert_eq!(deque.pop_front(), Some((i, i)));
+        }
+        assert_eq!(deque.offset, 5);
+        deque.reset_offset(3);
+    }
+
+    #[test]
+    fn test_resize() {
+        let mut deque = IndexDeque::<u64, 19>::default();
+        for i in 0..10 {
+            assert_eq!(deque.push_back(i), Ok(i));
+        }
+        assert_eq!(deque.offset, 0);
+
+        deque.resize(15, 10).unwrap();
+        assert_eq!(deque.offset, 0);
+        assert_eq!(deque.len(), 15);
+        for i in 10..15 {
+            assert_eq!(deque[i], 10);
+        }
+
+        deque.resize(5, 10).unwrap();
+        assert_eq!(deque.offset, 0);
+        assert_eq!(deque.len(), 5);
+        for i in 0..5 {
+            assert_eq!(deque[i], i);
+        }
+
+        assert_eq!(deque.resize(20, 10), Err(Error::ExceedLimit(20, 19)));
+
+        for i in 0..5 {
+            assert_eq!(deque.pop_front(), Some((i, i)));
+        }
+        assert_eq!(deque.resize(0, 10), Err(Error::TooSmall(0, 5)));
     }
 }
