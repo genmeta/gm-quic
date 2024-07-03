@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use bytes::Bytes;
 use futures::StreamExt;
 use qbase::{error::Error, frame::DatagramFrame, util::ArcAsyncDeque};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
 use super::{
     reader::{DatagramReader, RawDatagramReader},
@@ -83,7 +83,10 @@ impl DatagramFlow {
     }
 
     #[inline]
-    pub fn spawn_recv_datagram_frames(&self) -> ArcAsyncDeque<(DatagramFrame, Bytes)> {
+    pub fn spawn_recv_datagram_frames(
+        &self,
+        error_tx: mpsc::UnboundedSender<Error>,
+    ) -> ArcAsyncDeque<(DatagramFrame, Bytes)> {
         let (reader, _) = self.rw();
         let deque: ArcAsyncDeque<(DatagramFrame, Bytes)> = ArcAsyncDeque::new();
         tokio::spawn({
@@ -91,7 +94,9 @@ impl DatagramFlow {
             async move {
                 while let Some((frame, data)) = deque.next().await {
                     // TODO: handle errorS
-                    _ = reader.recv_datagram(frame, data);
+                    if let Err(error) = reader.recv_datagram(frame, data) {
+                        _ = error_tx.send(error);
+                    }
                 }
             }
         });

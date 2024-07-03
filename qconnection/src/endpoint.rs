@@ -7,11 +7,18 @@ use qbase::{
 
 use crate::{connection::ArcConnection, ReceiveProtectedPacket};
 
+#[derive(Default)]
 pub struct Endpoint {
     // 尚未实现连接迁移
     connections: HashMap<ConnectionId, ArcConnection>,
     // 新连接的监听器
     // listener: Listener,
+}
+
+impl Endpoint {
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 impl ReceiveProtectedPacket for Endpoint {
