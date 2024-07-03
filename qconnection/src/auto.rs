@@ -354,12 +354,13 @@ impl ShortHeaderPacketStream {
         )
     }
 
-    pub fn parse_packet_and_then_dispatch(
+    pub fn spawn_parse_packet_and_then_dispatch(
         mut self,
         conn_frame_queue: Option<ArcAsyncDeque<ConnFrame>>,
         space_frame_queue: Option<ArcAsyncDeque<SpaceFrame>>,
         datagram_frame_queue: Option<ArcAsyncDeque<(DatagramFrame, Bytes)>>,
         ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
+        error_tx: mpsc::UnboundedSender<Error>,
     ) {
         tokio::spawn(async move {
             while let Some(payload) = self.next().await {
@@ -374,7 +375,9 @@ impl ShortHeaderPacketStream {
                     Ok(_is_ack_eliciting) => self.rcvd_records.register_pn(pn),
                     // 解析包失败，丢弃
                     // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
-                    Err(_) => todo!(),
+                    Err(error) => {
+                        _ = error_tx.send(error);
+                    }
                 }
             }
         });
