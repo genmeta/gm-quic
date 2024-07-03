@@ -88,5 +88,21 @@ pub trait ObserveAck {
     /// 都可以淘汰/失活了，不需再出现在后续的AckFrame中，即调用此函数通知外部观察者
     /// fn inactivate_rcvd_record(&self, space: Epoch, pn: u64);
 
-    fn guard(&self, space: Epoch) -> Self::Guard<'_>;
+    fn ack_guard(&self, space: Epoch) -> Self::Guard<'_>;
+}
+
+pub trait ObserveSend {
+    /// PTO 超时，通外部观察着进行发包知观察者
+
+    fn send_packet(&self, space: Epoch);
+}
+
+pub trait ObserveHandshake {
+    fn is_handshake_done(&self) -> bool;
+
+    fn has_handshake_keys(&self) -> bool;
+}
+
+pub trait ObserveAntiAmplification {
+    fn is_anti_amplification(&self) -> bool;
 }

@@ -4,6 +4,8 @@ use std::{
     time::Duration,
 };
 
+use anti_amplifier::ANTI_FACTOR;
+use observer::{ConnectionObserver, PathObserver};
 use qbase::cid::ConnectionId;
 use qcongestion::congestion::ArcCC;
 use qudp::ArcUsc;
@@ -80,7 +82,9 @@ pub struct RawPath {
 
     // 拥塞控制器。另外还有连接级的流量控制、流级别的流量控制，以及抗放大攻击
     // 但这只是正常情况下。当连接处于Closing状态时，庞大的拥塞控制器便不再适用，而是简单的回应ConnectionCloseFrame。
-    cc: ArcCC<AckObserver, LossObserver>,
+    cc: ArcCC<ConnectionObserver, PathObserver>,
+
+    anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
 
     // PathState，包括新建待验证（有抗放大攻击响应限制），已发挑战验证中，验证通过，再挑战，再挑战验证中，后三者无抗放大攻击响应限制
     validator: Validator,
@@ -89,23 +93,22 @@ pub struct RawPath {
 }
 
 impl RawPath {
-    fn new(
-        usc: ArcUsc,
-        max_ack_delay: Duration,
-        ack_observer: AckObserver,
-        loss_observer: LossObserver,
-    ) -> Self {
+    fn new(usc: ArcUsc, max_ack_delay: Duration, connection_observer: ConnectionObserver) -> Self {
         use qcongestion::congestion::CongestionAlgorithm;
+
+        let anti_amplifier = ArcAntiAmplifier::default();
+        let path_observer = PathObserver::new(anti_amplifier.clone());
         Self {
             usc,
             peer_cid: None,
             validator: Validator::default(),
             transponder: Transponder::default(),
+            anti_amplifier,
             cc: ArcCC::new(
                 CongestionAlgorithm::Bbr,
                 max_ack_delay,
-                ack_observer,
-                loss_observer,
+                connection_observer,
+                path_observer,
             ),
         }
     }
@@ -118,14 +121,12 @@ impl ArcPath {
     pub fn new(
         usc: ArcUsc,
         max_ack_delay: Duration,
-        ack_observer: AckObserver,
-        loss_observer: LossObserver,
+        connection_observer: ConnectionObserver,
     ) -> Self {
         Self(Arc::new(Mutex::new(RawPath::new(
             usc,
             max_ack_delay,
-            ack_observer,
-            loss_observer,
+            connection_observer,
         ))))
     }
 }

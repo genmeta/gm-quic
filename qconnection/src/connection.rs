@@ -30,7 +30,10 @@ use crate::{
     controller::ArcFlowController,
     crypto::TlsIO,
     handshake,
-    path::{AckObserver, ArcPath, LossObserver, Pathway},
+    path::{
+        observer::{self, ConnectionObserver, HandShakeObserver, SendObserver},
+        AckObserver, ArcPath, LossObserver, Pathway,
+    },
 };
 
 // 通过无效化密钥来丢弃接收端，来废除发送队列
@@ -86,8 +89,7 @@ pub struct RawConnection {
     spaces: Arc<Spaces>,
 
     // 创建新的path用的到，path中的拥塞控制器需要
-    ack_observer: AckObserver,
-    loss_observer: LossObserver,
+    connection_observer: ConnectionObserver,
 
     spin: SpinBit,
     state: ArcConnectionState,
@@ -143,11 +145,10 @@ impl RawConnection {
             .entry(pathway)
             .or_insert_with({
                 let usc = usc.clone();
-                let ack_observer = self.ack_observer.clone();
-                let loss_observer = self.loss_observer.clone();
+                let observer = self.connection_observer.clone();
                 || {
                     // TODO: 要为该新路径创建发送任务，需要连接id...spawn出一个任务，直到{何时}终止?
-                    ArcPath::new(usc, Duration::from_millis(100), ack_observer, loss_observer)
+                    ArcPath::new(usc, Duration::from_millis(100), observer)
                 }
             })
             .clone()
@@ -260,6 +261,16 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
         handshake_space.spawn_handle_may_loss(),
         data_space.spawn_handle_may_loss(),
     ]);
+    let handshake_observer = HandShakeObserver::new(conn_state.clone());
+    // todo: send obersrver
+    let send_observer = SendObserver {};
+
+    let connection_observer = ConnectionObserver {
+        handshake_observer,
+        ack_observer,
+        loss_observer,
+        send_observer,
+    };
 
     let flow_controller = ArcFlowController::with_initial(0, 0);
     let connection = Arc::new(RawConnection {
@@ -274,8 +285,7 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
         zero_rtt_keys,
         one_rtt_keys,
         spaces: Arc::new(Spaces::new(initial_space, handshake_space, data_space)),
-        ack_observer,
-        loss_observer,
+        connection_observer,
         spin: SpinBit::default(),
         state: conn_state.clone(),
         flow_ctrl: flow_controller.clone(),

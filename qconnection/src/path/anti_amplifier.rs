@@ -8,6 +8,7 @@ use std::{
 
 use futures::task::AtomicWaker;
 
+pub(super) const ANTI_FACTOR: usize = 3;
 /// Therefore, after receiving packets from an address that is not yet validated,
 /// an endpoint MUST limit the amount of data it sends to the unvalidated address
 /// to N(three) times the amount of data received from that address.
@@ -45,6 +46,10 @@ impl<const N: usize> AntiAmplifier<N> {
     fn post_sent(&self, amount: usize) {
         self.credit.fetch_sub(amount, Ordering::AcqRel);
     }
+
+    fn is_ready(&self) -> bool {
+        self.credit.load(Ordering::Acquire) > 0
+    }
 }
 
 /// A sendable and receivable shared controller for anti-N-times amplification attack
@@ -68,6 +73,10 @@ impl<const N: usize> ArcAntiAmplifier<N> {
     /// updated in time. Do not call poll_apply before updating to avoid double amplification.
     pub fn post_sent(&self, amount: usize) {
         self.0.post_sent(amount);
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.0.is_ready()
     }
 }
 

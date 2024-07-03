@@ -1,6 +1,6 @@
 use std::sync::{atomic::AtomicU8, Arc};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
 pub enum ConnectionState {
     Initial = 0,
     Handshake = 1,

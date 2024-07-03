@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, time::Instant};
 
-use crate::congestion::{Acked, Algorithm, MSS};
+use crate::congestion::{AckedPkt, Algorithm, MSS};
 
 // The upper bound for the initial window will be
 // min (10*MSS, max (2*MSS, 14600))
@@ -38,7 +38,7 @@ impl NewReno {
             .unwrap_or(false)
     }
 
-    fn on_per_ack(&mut self, ack: &Acked) {
+    fn on_per_ack(&mut self, ack: &AckedPkt) {
         if self.in_congestion_recovery(&ack.time_sent) {
             return;
         }
@@ -65,15 +65,15 @@ impl NewReno {
 }
 
 impl Algorithm for NewReno {
-    fn on_sent(&mut self, _: &mut crate::congestion::Sent, _: usize, _: std::time::Instant) {}
+    fn on_sent(&mut self, _: &mut crate::congestion::SentPkt, _: usize, _: std::time::Instant) {}
 
-    fn on_ack(&mut self, packet: VecDeque<Acked>, _: std::time::Instant) {
+    fn on_ack(&mut self, packet: VecDeque<AckedPkt>, _: std::time::Instant) {
         for acked in packet {
             self.on_per_ack(&acked);
         }
     }
 
-    fn on_congestion_event(&mut self, lost: &crate::congestion::Sent, now: std::time::Instant) {
+    fn on_congestion_event(&mut self, lost: &crate::congestion::SentPkt, now: std::time::Instant) {
         if self.in_congestion_recovery(&lost.time_sent) {
             return;
         }
@@ -97,8 +97,9 @@ impl Algorithm for NewReno {
 #[cfg(test)]
 mod tests {
 
+    use crate::congestion::SentPkt;
+
     use super::*;
-    use crate::congestion::Sent;
 
     #[test]
     fn test_reno_init() {
@@ -157,11 +158,10 @@ mod tests {
         assert_eq!(reno.recovery_start_time, None);
 
         let time_lost = now + std::time::Duration::from_millis(100);
-        let lost = Sent {
+        let lost = SentPkt {
             pn: 11,
             size: MSS,
             time_sent: now,
-            time_lost: Some(time_lost),
             ..Default::default()
         };
 
@@ -172,16 +172,16 @@ mod tests {
         assert_eq!(reno.recovery_start_time, Some(time_lost));
     }
 
-    fn generate_acks(start: usize, end: usize) -> VecDeque<Acked> {
+    fn generate_acks(start: usize, end: usize) -> VecDeque<AckedPkt> {
         let mut acks = VecDeque::with_capacity(end - start);
         for i in start..end {
-            let sent = Sent {
+            let sent = SentPkt {
                 pn: i as u64,
                 size: MSS,
                 time_sent: Instant::now(),
                 ..Default::default()
             };
-            let ack: Acked = sent.into();
+            let ack: AckedPkt = sent.into();
             acks.push_back(ack);
         }
         acks

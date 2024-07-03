@@ -15,6 +15,7 @@ pub struct RawRtt {
     smoothed_rtt: Duration,
     rttvar: Duration,
     min_rtt: Duration,
+    is_handshake_confirmed: bool,
 }
 
 impl Default for RawRtt {
@@ -26,17 +27,13 @@ impl Default for RawRtt {
             smoothed_rtt: INITIAL_RTT,
             rttvar: INITIAL_RTT / 2,
             min_rtt: Duration::from_millis(0),
+            is_handshake_confirmed: false,
         }
     }
 }
 
 impl RawRtt {
-    fn update(
-        &mut self,
-        latest_rtt: Duration,
-        mut ack_delay: Duration,
-        is_handshake_confirmed: bool,
-    ) {
+    fn update(&mut self, latest_rtt: Duration, mut ack_delay: Duration) {
         self.latest_rtt = latest_rtt;
         if self.first_rtt_sample.is_none() {
             self.min_rtt = latest_rtt;
@@ -50,7 +47,7 @@ impl RawRtt {
         self.min_rtt = std::cmp::min(self.min_rtt, latest_rtt);
 
         // Limit ack_delay by max_ack_delay after handshake confirmation.
-        if is_handshake_confirmed {
+        if self.is_handshake_confirmed {
             ack_delay = std::cmp::min(ack_delay, self.max_ack_delay);
         }
 
@@ -70,7 +67,7 @@ impl RawRtt {
     }
 
     fn on_handshake_done(&mut self) {
-        // TODO: 让is_handshake_done变成内部成员
+        self.is_handshake_confirmed = true;
     }
 
     fn loss_delay(&self) -> Duration {
@@ -94,11 +91,8 @@ impl ArcRtt {
         Self(Arc::new(Mutex::new(RawRtt::default())))
     }
 
-    pub fn update(&self, latest_rtt: Duration, ack_delay: Duration, is_handshake_confirmed: bool) {
-        self.0
-            .lock()
-            .unwrap()
-            .update(latest_rtt, ack_delay, is_handshake_confirmed);
+    pub fn update(&self, latest_rtt: Duration, ack_delay: Duration) {
+        self.0.lock().unwrap().update(latest_rtt, ack_delay);
     }
 
     pub fn loss_delay(&self) -> Duration {

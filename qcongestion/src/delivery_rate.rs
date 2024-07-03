@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::congestion::{Acked, Sent};
+use crate::congestion::{AckedPkt, SentPkt};
 
 #[derive(Debug)]
 pub struct Rate {
@@ -37,7 +37,7 @@ impl Default for Rate {
 
 impl Rate {
     // 3.2. Transmitting or retransmitting a data packet
-    pub fn on_packet_sent(&mut self, pkt: &mut Sent, bytes_in_flight: usize, bytes_lost: u64) {
+    pub fn on_packet_sent(&mut self, pkt: &mut SentPkt, bytes_in_flight: usize, bytes_lost: u64) {
         // No packets in flight.
         if bytes_in_flight == 0 {
             self.first_sent_time = pkt.time_sent;
@@ -55,7 +55,7 @@ impl Rate {
     }
 
     // Update the delivery rate sample when a packet is acked.
-    pub fn update_rate_sample(&mut self, pkt: &Acked, now: Instant) {
+    pub fn update_rate_sample(&mut self, pkt: &AckedPkt, now: Instant) {
         self.delivered += pkt.size;
         self.delivered_time = now;
 
@@ -158,8 +158,8 @@ mod tests {
 
         let now = Instant::now();
 
-        let mut sents: Vec<Sent> = (0..5)
-            .map(|i| Sent {
+        let mut sents: Vec<SentPkt> = (0..5)
+            .map(|i| SentPkt {
                 pn: i,
                 size: 100,
                 time_sent: now,
@@ -177,7 +177,7 @@ mod tests {
 
         for _ in 0..3 {
             let sent = sents.pop().unwrap();
-            let mut acked: Acked = sent.into();
+            let mut acked: AckedPkt = sent.into();
             acked.rtt = delay;
             rate.update_rate_sample(&acked, recv_ack_time);
             rate.generate_rate_sample();

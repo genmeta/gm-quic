@@ -42,7 +42,7 @@ mod streams_blocked;
 
 pub mod error;
 // re-export for convenience
-pub use ack::{AckFrame, AckRecord};
+pub use ack::{AckFrame, AckRecord, EcnCounts};
 use bytes::{Buf, BufMut, Bytes};
 pub use connection_close::ConnectionCloseFrame;
 pub use crypto::CryptoFrame;
