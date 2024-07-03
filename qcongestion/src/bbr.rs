@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    congestion::{Acked, Algorithm, Sent, MSS},
+    congestion::{AckedPkt, Algorithm, SentPkt, MSS},
     delivery_rate::Rate,
     min_max::MinMax,
 };
@@ -187,7 +187,7 @@ impl Bbr {
 }
 
 impl Algorithm for Bbr {
-    fn on_sent(&mut self, sent: &mut Sent, _: usize, _: Instant) {
+    fn on_sent(&mut self, sent: &mut SentPkt, _: usize, _: Instant) {
         self.delivery_rate.on_packet_sent(
             sent,
             self.bytes_in_flight as usize,
@@ -199,7 +199,7 @@ impl Algorithm for Bbr {
     }
 
     //  todo: VecDeque 是否有必要
-    fn on_ack(&mut self, packets: VecDeque<Acked>, now: Instant) {
+    fn on_ack(&mut self, packets: VecDeque<AckedPkt>, now: Instant) {
         self.newly_acked_bytes = 0;
         self.newly_lost_bytes = 0;
         self.packet_delivered = 0;
@@ -232,7 +232,7 @@ impl Algorithm for Bbr {
         self.update_control_parameters();
     }
 
-    fn on_congestion_event(&mut self, _: &Sent, _: Instant) {
+    fn on_congestion_event(&mut self, _: &SentPkt, _: Instant) {
         // todo: enter_recovery
         // update newly lost bytes, set BBR.packet_conservation = true
     }
@@ -253,7 +253,7 @@ impl Bbr {
     }
 
     // 3.5.2.  Per-ACK Steps
-    fn update_model_and_state(&mut self, ack: &mut Acked) {
+    fn update_model_and_state(&mut self, ack: &mut AckedPkt) {
         self.update_btlbw(ack);
         self.check_cycle_phase();
         self.check_full_pipe();
@@ -283,7 +283,7 @@ mod tests {
 
     use crate::{
         bbr::{BbrStateMachine, HIGH_GAIN, INITIAL_CWND, MSS},
-        congestion::{Acked, Algorithm, Sent},
+        congestion::{AckedPkt, Algorithm, SentPkt},
         rtt::INITIAL_RTT,
     };
 
@@ -308,7 +308,7 @@ mod tests {
         let mut bbr = super::Bbr::new();
         let now = Instant::now();
         for _ in 0..10 {
-            let mut sent = Sent {
+            let mut sent = SentPkt {
                 size: MSS,
                 ..Default::default()
             };
@@ -369,7 +369,7 @@ mod tests {
     ) {
         let mut acks = VecDeque::with_capacity(end - start);
         for i in start..end {
-            let mut sent: Sent = Sent {
+            let mut sent: SentPkt = SentPkt {
                 pn: i as u64,
                 size: packet_size,
                 time_sent: start_time,
@@ -377,7 +377,7 @@ mod tests {
             };
             bbr.on_sent(&mut sent, 0, start_time);
 
-            let mut ack: Acked = sent.into();
+            let mut ack: AckedPkt = sent.into();
             ack.rtt = rtt;
             acks.push_back(ack);
         }
