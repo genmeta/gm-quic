@@ -205,11 +205,12 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
 
     let data_space_frame_queue = data_space.spawn_recv_space_frames();
 
-    dataspace_packets.parse_packet_and_then_dispatch(
+    dataspace_packets.spawn_parse_packet_and_then_dispatch(
         Some(conn_frame_deque.clone()),
         Some(data_space_frame_queue),
         Some(datagram_queue.clone()),
         data_ack_tx.clone(),
+        error_tx.clone(),
     );
 
     let ack_observer = AckObserver::new([
