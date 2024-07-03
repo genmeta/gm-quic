@@ -3,6 +3,7 @@ use std::sync::{atomic::AtomicU8, Arc};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
     Handshaking = 0,
+    // 这个状态有用吗？
     HandshakeDone = 1,
     Closing = 2,
     Draining = 3,
