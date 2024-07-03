@@ -183,17 +183,17 @@ impl<H> LongHeaderPacketStream<H> {
             },
         )
     }
+}
 
-    pub fn parse_packet_and_then_dispatch(
+impl LongHeaderPacketStream<InitialHeader> {
+    pub fn spawn_parse_packet_and_then_dispatch(
         mut self,
         conn_frame_queue: Option<ArcAsyncDeque<ConnFrame>>,
         space_frame_queue: Option<ArcAsyncDeque<SpaceFrame>>,
         datagram_frame_queue: Option<ArcAsyncDeque<(DatagramFrame, Bytes)>>,
         ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
-    ) where
-        H: GetType + Send + Sync + 'static,
-        PacketWrapper<H>: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
-    {
+        error_tx: mpsc::UnboundedSender<Error>,
+    ) {
         tokio::spawn(async move {
             while let Some(payload) = self.next().await {
                 let pn = payload.pn;
@@ -207,7 +207,79 @@ impl<H> LongHeaderPacketStream<H> {
                     Ok(_is_ack_eliciting) => self.rcvd_records.register_pn(pn),
                     // 解析包失败，丢弃
                     // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
-                    Err(_) => todo!(),
+                    Err(error) => {
+                        _ = error_tx.send(error);
+                    }
+                }
+            }
+        });
+    }
+}
+
+impl LongHeaderPacketStream<HandshakeHeader> {
+    pub fn spawn_parse_packet_and_then_dispatch(
+        mut self,
+        conn_frame_queue: Option<ArcAsyncDeque<ConnFrame>>,
+        space_frame_queue: Option<ArcAsyncDeque<SpaceFrame>>,
+        datagram_frame_queue: Option<ArcAsyncDeque<(DatagramFrame, Bytes)>>,
+        ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
+        error_tx: mpsc::UnboundedSender<Error>,
+        mut initial_keys: Option<ArcKeys>,
+    ) {
+        tokio::spawn(async move {
+            while let Some(payload) = self.next().await {
+                let pn = payload.pn;
+                match payload.dispatch(
+                    conn_frame_queue.as_ref(),
+                    space_frame_queue.as_ref(),
+                    datagram_frame_queue.as_ref(),
+                    &ack_frames_tx,
+                ) {
+                    // TODO: path也要登记其收到的包、收包时间、is_ack_eliciting，方便激发AckFrame
+                    Ok(_is_ack_eliciting) => {
+                        // a server MUST discard Initial keys when it first successfully processes a
+                        // Handshake packet.
+                        if let Some(initial_keys) = initial_keys.take() {
+                            initial_keys.invalid()
+                        }
+                        self.rcvd_records.register_pn(pn)
+                    }
+                    // 解析包失败，丢弃
+                    // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
+                    Err(error) => {
+                        _ = error_tx.send(error);
+                    }
+                }
+            }
+        });
+    }
+}
+
+impl LongHeaderPacketStream<ZeroRttHeader> {
+    pub fn spawn_parse_packet_and_then_dispatch(
+        mut self,
+        conn_frame_queue: Option<ArcAsyncDeque<ConnFrame>>,
+        space_frame_queue: Option<ArcAsyncDeque<SpaceFrame>>,
+        datagram_frame_queue: Option<ArcAsyncDeque<(DatagramFrame, Bytes)>>,
+        ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
+        error_tx: mpsc::UnboundedSender<Error>,
+    ) {
+        tokio::spawn(async move {
+            while let Some(payload) = self.next().await {
+                let pn = payload.pn;
+                match payload.dispatch(
+                    conn_frame_queue.as_ref(),
+                    space_frame_queue.as_ref(),
+                    datagram_frame_queue.as_ref(),
+                    &ack_frames_tx,
+                ) {
+                    // TODO: path也要登记其收到的包、收包时间、is_ack_eliciting，方便激发AckFrame
+                    Ok(_is_ack_eliciting) => self.rcvd_records.register_pn(pn),
+                    // 解析包失败，丢弃
+                    // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
+                    Err(error) => {
+                        _ = error_tx.send(error);
+                    }
                 }
             }
         });

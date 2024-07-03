@@ -6,9 +6,9 @@ use dashmap::DashMap;
 use deref_derive::Deref;
 use futures::StreamExt;
 use qbase::{
-    cid::{ArcLocalCids, ArcRemoteCids, Registry},
+    cid::Registry,
     error::{Error, ErrorKind},
-    frame::{ConnFrame, ConnectionCloseFrame, HandshakeDoneFrame, MaxDataFrame},
+    frame::{ConnFrame, HandshakeDoneFrame, MaxDataFrame},
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
         HandshakePacket, InitialPacket, OneRttPacket, SpacePacket, SpinBit, ZeroRttPacket,
@@ -18,6 +18,7 @@ use qbase::{
 };
 use qrecovery::space::ArcSpace;
 use qudp::ArcUsc;
+use qunreliable::DatagramFlow;
 use state::{ArcConnectionState, ConnectionState};
 use tokio::sync::mpsc;
 
@@ -94,9 +95,8 @@ impl RawConnection {
         }
     }
 
-    fn handshake_done(&self) {
+    fn enter_handshake_done(&self) {
         self.state.set_state(ConnectionState::HandshakeDone);
-        self.initial_keys.invalid();
         self.handshake_keys.invalid();
         self.zero_rtt_keys.invalid();
     }
@@ -123,7 +123,8 @@ pub struct ArcConnection(Arc<RawConnection>);
 pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
     let conn_frame_deque = ArcAsyncDeque::new();
     let conn_state = ArcConnectionState::new();
-    // let (error_tx, error_rx) = mpsc::unbounded_channel();
+    // todo：发送CCF
+    let (error_tx, mut error_rx) = mpsc::unbounded_channel();
 
     let initial_keys = ArcKeys::new_pending();
 
@@ -136,11 +137,12 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
 
     let initial_space_frame_queue = initial_space.spawn_recv_space_frames();
 
-    initial_packet_stream.parse_packet_and_then_dispatch(
+    initial_packet_stream.spawn_parse_packet_and_then_dispatch(
         Some(conn_frame_deque.clone()),
         Some(initial_space_frame_queue.clone()),
         None,
         initial_ack_tx.clone(),
+        error_tx.clone(),
     );
 
     let handshake_keys = ArcKeys::new_pending();
@@ -154,11 +156,19 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
 
     let handshake_space_frame_queue = handshake_space.spawn_recv_space_frames();
 
-    handshake_packet_stream.parse_packet_and_then_dispatch(
+    handshake_packet_stream.spawn_parse_packet_and_then_dispatch(
         Some(conn_frame_deque.clone()),
         Some(handshake_space_frame_queue),
         None,
         handshake_ack_tx.clone(),
+        error_tx.clone(),
+        // a server MUST discard Initial keys when it first successfully processes a
+        // Handshake packet.
+        if role == Role::Server {
+            Some(initial_keys.clone())
+        } else {
+            None
+        },
     );
 
     tokio::spawn(
@@ -169,7 +179,8 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
         ),
     );
 
-    let datagram_queue = ArcAsyncDeque::new();
+    let datagram_flow = DatagramFlow::new(65535, 0);
+    let datagram_queue = datagram_flow.spawn_recv_datagram_frames(error_tx.clone());
 
     let zero_rtt_keys = ArcKeys::new_pending();
     let one_rtt_keys = ArcOneRttKeys::new_pending();
@@ -181,11 +192,12 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
 
     let data_space_frame_queue = data_space.spawn_recv_space_frames();
 
-    zero_rtt_packet_stream.parse_packet_and_then_dispatch(
+    zero_rtt_packet_stream.spawn_parse_packet_and_then_dispatch(
         Some(conn_frame_deque.clone()),
         Some(data_space_frame_queue),
         Some(datagram_queue.clone()),
         data_ack_tx.clone(),
+        error_tx.clone(),
     );
 
     let (one_rtt_pkt_tx, dataspace_packets) =
@@ -231,28 +243,34 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
 
     tokio::spawn({
         let connection = connection.clone();
+        let error_tx = error_tx.clone();
+        let data_space = data_space.clone();
         async move {
-            let transport_parameters =
-                handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
-                    tls_session.clone(),
-                    one_rtt_keys.clone(),
-                    handshake_space.as_ref().split(),
-                )
-                .await;
+            handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
+                tls_session.clone(),
+                one_rtt_keys.clone(),
+                handshake_space.as_ref().split(),
+            )
+            .await;
+
+            let transport_parameters = tls_session.get_transport_parameters().unwrap();
             data_space.accept_transmute_parameters(&transport_parameters);
-            // TODO: 错误处理
-            _ = connection
+            // TODO: 对连接参数进行检查
+            let update_limit_result = connection
                 .cid_registry
                 .local
                 .lock_guard()
                 .set_limit(transport_parameters.active_connection_id_limit().into());
+            if let Err(error) = update_limit_result {
+                _ = error_tx.send(error);
+            }
             if role == Role::Server {
                 data_space
                     .reliable_frame_queue
                     .write()
                     .push_conn_frame(ConnFrame::HandshakeDone(HandshakeDoneFrame));
             }
-            connection.handshake_done();
+            connection.enter_handshake_done();
         }
     });
 
@@ -265,7 +283,7 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
                     ConnFrame::Close(_err) => {
                         conn_state.set_state(ConnectionState::Draining);
                         // TODO: 可以发送一个CCF
-                        // TODO: 向应用层告知错误？
+                        // _ = error_tx.send(error);
                         Ok(())
                     }
                     ConnFrame::NewToken(_) => todo!(),
@@ -288,7 +306,7 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
                     }
                     ConnFrame::HandshakeDone(_) => {
                         if role == Role::Client {
-                            connection.handshake_done();
+                            connection.enter_handshake_done();
                             Ok(())
                         } else {
                             Err(Error::new_with_default_fty(
@@ -302,15 +320,45 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
                 .err();
 
                 // 发送CCF到对端
-                if let Some(frame) = error.map(ConnectionCloseFrame::from) {
-                    match connection.state.get_state() {
-                        ConnectionState::Handshaking => todo!(),
-                        ConnectionState::HandshakeDone => todo!(),
-                        ConnectionState::Closing => todo!(),
-                        ConnectionState::Draining => todo!(),
-                    }
+                if let Some(error) = error {
+                    _ = error_tx.send(error);
                 }
             }
+        }
+    });
+
+    tokio::spawn({
+        let connection = connection.clone();
+        async move {
+            let Some(error) = error_rx.recv().await else {
+                return;
+            };
+
+            // TODO: 根据连接状态进行不同的处理，该用哪一个空间发送CCF？
+            match connection.state.get_state() {
+                ConnectionState::Handshaking => todo!(),
+                ConnectionState::HandshakeDone => todo!(),
+                ConnectionState::Closing => todo!(),
+                ConnectionState::Draining => {
+                    // 什么都不做
+                }
+            }
+
+            // 向应用层报告错误
+            data_space.data_stream.on_conn_error(&error);
+            datagram_flow.on_conn_error(&error);
+
+            // 准备发送连接关闭帧
+            data_space
+                .reliable_frame_queue
+                .write()
+                .push_conn_frame(ConnFrame::Close(error.into()));
+
+            // 等待连接关闭
+            // let duration = todo!("PTOx3");
+            // tokio::time::sleep(duration).await;
+
+            // 告知终端连接已经关闭，释放资源
         }
     });
 
