@@ -395,12 +395,14 @@ impl RawRemoteCids {
 pub struct ArcRemoteCids(Arc<Mutex<RawRemoteCids>>);
 
 impl ArcRemoteCids {
+    #[inline]
     pub fn with_limit(active_cid_limit: u64) -> Self {
         Self(Arc::new(Mutex::new(RawRemoteCids::with_limit(
             active_cid_limit,
         ))))
     }
 
+    #[inline]
     pub fn lock_guard(&self) -> MutexGuard<'_, RawRemoteCids> {
         self.0.lock().unwrap()
     }
@@ -493,6 +495,7 @@ impl ArcCidCell {
     }
 
     /// Getting the connection ID, if it is not ready, return a future
+    #[inline]
     pub async fn get_cid(&self) -> ConnectionId {
         self.clone().await
     }
@@ -526,6 +529,7 @@ pub struct Registry {
 }
 
 impl Registry {
+    #[inline]
     pub fn new(remote_active_cid_limit: u64) -> Self {
         Self {
             local: ArcLocalCids::default(),

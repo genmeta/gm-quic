@@ -1,14 +1,12 @@
 pub mod state;
 
-use std::{
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use deref_derive::Deref;
 use futures::StreamExt;
 use qbase::{
+    cid::{ArcLocalCids, ArcRemoteCids, Registry},
     error::{Error, ErrorKind},
     frame::{ConnFrame, ConnectionCloseFrame, HandshakeDoneFrame, MaxDataFrame},
     packet::{
@@ -31,22 +29,19 @@ use crate::{
     path::{AckObserver, ArcPath, LossObserver, Pathway},
 };
 
+// 通过无效化密钥来丢弃接收端，来废除发送队列
 type PacketQueue<T> = mpsc::UnboundedSender<(T, ArcPath)>;
-/// Option是为了能丢弃前期空间，包括这些空间的收包队列，
-/// 一旦丢弃，后续再收到该空间的包，直接丢弃。
-type RxPacketQueue<T> = Option<PacketQueue<T>>;
 
 pub struct RawConnection {
-    // local_cids: ArcLocalCids,
-    // remote_cids: RemoteCids,
+    cid_registry: Registry,
 
     // 所有Path的集合，Pathway作为key
     pathes: DashMap<Pathway, ArcPath>,
 
-    init_pkt_queue: RwLock<RxPacketQueue<InitialPacket>>,
-    hs_pkt_queue: RwLock<RxPacketQueue<HandshakePacket>>,
-    zero_rtt_pkt_queue: RwLock<RxPacketQueue<ZeroRttPacket>>,
-    one_rtt_pkt_queue: mpsc::UnboundedSender<(OneRttPacket, ArcPath)>,
+    init_pkt_queue: PacketQueue<InitialPacket>,
+    hs_pkt_queue: PacketQueue<HandshakePacket>,
+    zero_rtt_pkt_queue: PacketQueue<ZeroRttPacket>,
+    one_rtt_pkt_queue: PacketQueue<OneRttPacket>,
 
     // Thus, a client MUST discard Initial keys when it first sends a Handshake packet
     // and a server MUST discard Initial keys when it first successfully processes a
@@ -68,24 +63,18 @@ pub struct RawConnection {
 
 impl RawConnection {
     pub fn recv_init_pkt_via(&self, pkt: InitialPacket, usc: &ArcUsc, pathway: Pathway) {
-        if let Some(queue) = self.init_pkt_queue.read().unwrap().as_ref() {
-            let path = self.get_path(pathway, usc);
-            _ = queue.send((pkt, path));
-        }
+        let path = self.get_path(pathway, usc);
+        _ = self.init_pkt_queue.send((pkt, path));
     }
 
     pub fn recv_hs_pkt_via(&self, pkt: HandshakePacket, usc: &ArcUsc, pathway: Pathway) {
-        if let Some(queue) = self.hs_pkt_queue.read().unwrap().as_ref() {
-            let path = self.get_path(pathway, usc);
-            _ = queue.send((pkt, path));
-        }
+        let path = self.get_path(pathway, usc);
+        _ = self.hs_pkt_queue.send((pkt, path));
     }
 
     pub fn recv_0rtt_pkt_via(&self, pkt: ZeroRttPacket, usc: &ArcUsc, pathway: Pathway) {
-        if let Some(queue) = self.zero_rtt_pkt_queue.read().unwrap().as_ref() {
-            let path = self.get_path(pathway, usc);
-            _ = queue.send((pkt, path));
-        }
+        let path = self.get_path(pathway, usc);
+        _ = self.zero_rtt_pkt_queue.send((pkt, path));
     }
 
     pub fn recv_1rtt_pkt_via(&self, pkt: OneRttPacket, usc: &ArcUsc, pathway: Pathway) {
@@ -96,6 +85,7 @@ impl RawConnection {
     }
 
     pub fn recv_protected_pkt_via(&mut self, pkt: SpacePacket, usc: &ArcUsc, pathway: Pathway) {
+        // TODO: 在不同状态会有不同反应
         match pkt {
             SpacePacket::Initial(pkt) => self.recv_init_pkt_via(pkt, usc, pathway),
             SpacePacket::Handshake(pkt) => self.recv_hs_pkt_via(pkt, usc, pathway),
@@ -106,15 +96,9 @@ impl RawConnection {
 
     fn handshake_done(&self) {
         self.state.set_state(ConnectionState::HandshakeDone);
-
         self.initial_keys.invalid();
-        self.init_pkt_queue.write().unwrap().take();
-
         self.handshake_keys.invalid();
-        self.hs_pkt_queue.write().unwrap().take();
-
         self.zero_rtt_keys.invalid();
-        self.zero_rtt_pkt_queue.write().unwrap().take();
     }
 
     pub fn get_path(&self, pathway: Pathway, usc: &ArcUsc) -> ArcPath {
@@ -139,6 +123,7 @@ pub struct ArcConnection(Arc<RawConnection>);
 pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
     let conn_frame_deque = ArcAsyncDeque::new();
     let conn_state = ArcConnectionState::new();
+    // let (error_tx, error_rx) = mpsc::unbounded_channel();
 
     let initial_keys = ArcKeys::new_pending();
 
@@ -228,10 +213,11 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
 
     let flow_controller = ArcFlowController::with_initial(0, 0);
     let connection = Arc::new(RawConnection {
+        cid_registry: Registry::new(2),
         pathes: DashMap::new(),
-        init_pkt_queue: Some(initial_pkt_tx).into(),
-        hs_pkt_queue: Some(handshake_pkt_tx).into(),
-        zero_rtt_pkt_queue: Some(zero_rtt_pkt_tx).into(),
+        init_pkt_queue: initial_pkt_tx,
+        hs_pkt_queue: handshake_pkt_tx,
+        zero_rtt_pkt_queue: zero_rtt_pkt_tx,
         one_rtt_pkt_queue: one_rtt_pkt_tx,
         initial_keys,
         handshake_keys,
@@ -245,7 +231,6 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
 
     tokio::spawn({
         let connection = connection.clone();
-
         async move {
             let transport_parameters =
                 handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
@@ -255,13 +240,19 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
                 )
                 .await;
             data_space.accept_transmute_parameters(&transport_parameters);
+            // TODO: 错误处理
+            _ = connection
+                .cid_registry
+                .local
+                .lock_guard()
+                .set_limit(transport_parameters.active_connection_id_limit().into());
             if role == Role::Server {
                 data_space
                     .reliable_frame_queue
                     .write()
                     .push_conn_frame(ConnFrame::HandshakeDone(HandshakeDoneFrame));
-                connection.handshake_done();
             }
+            connection.handshake_done();
         }
     });
 
@@ -282,9 +273,18 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
                         flow_controller.sender.permit(max_data.into_inner());
                         Ok(())
                     }
-                    ConnFrame::NewConnectionId(frame) => todo!(),
+                    ConnFrame::NewConnectionId(frame) => connection
+                        .cid_registry
+                        .remote
+                        .lock_guard()
+                        .recv_new_cid_frame(&frame),
                     ConnFrame::RetireConnectionId(frame) => {
-                        todo!()
+                        connection
+                            .cid_registry
+                            .local
+                            .lock_guard()
+                            .recv_retire_cid_frame(&frame);
+                        Ok(())
                     }
                     ConnFrame::HandshakeDone(_) => {
                         if role == Role::Client {
