@@ -93,7 +93,6 @@ impl DatagramFlow {
             let mut deque = deque.clone();
             async move {
                 while let Some((frame, data)) = deque.next().await {
-                    // TODO: handle errorS
                     if let Err(error) = reader.recv_datagram(frame, data) {
                         _ = error_tx.send(error);
                     }

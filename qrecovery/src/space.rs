@@ -124,14 +124,17 @@ where
         loss_tx
     }
 
-    pub fn spawn_recv_space_frames(&self) -> ArcAsyncDeque<SpaceFrame> {
+    pub fn spawn_recv_space_frames(
+        &self,
+        error_tx: mpsc::UnboundedSender<Error>,
+    ) -> ArcAsyncDeque<SpaceFrame> {
         let space = self.clone();
         let deque = ArcAsyncDeque::new();
         let mut inner_deque = deque.clone();
         tokio::spawn(async move {
             while let Some(frame) = inner_deque.next().await {
-                if let Err(_e) = space.receive(frame) {
-                    // todo: 向外扩散连接错误
+                if let Err(error) = space.receive(frame) {
+                    _ = error_tx.send(error);
                 }
             }
         });

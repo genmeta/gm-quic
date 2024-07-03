@@ -1,6 +1,9 @@
 pub mod state;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use dashmap::DashMap;
 use deref_derive::Deref;
@@ -16,7 +19,7 @@ use qbase::{
     streamid::Role,
     util::ArcAsyncDeque,
 };
-use qrecovery::space::ArcSpace;
+use qrecovery::space::{ArcSpace, DataSpace, HandshakeSpace, InitialSpace};
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 use state::{ArcConnectionState, ConnectionState};
@@ -32,6 +35,34 @@ use crate::{
 
 // 通过无效化密钥来丢弃接收端，来废除发送队列
 type PacketQueue<T> = mpsc::UnboundedSender<(T, ArcPath)>;
+
+pub struct Spaces {
+    initial: RwLock<Option<InitialSpace>>,
+    handshake: RwLock<Option<HandshakeSpace>>,
+    data: DataSpace,
+}
+
+impl Spaces {
+    pub fn new(initial: InitialSpace, handshake: HandshakeSpace, data: DataSpace) -> Self {
+        Self {
+            initial: RwLock::new(Some(initial)),
+            handshake: RwLock::new(Some(handshake)),
+            data,
+        }
+    }
+
+    pub fn initial_space(&self) -> Option<InitialSpace> {
+        self.initial.read().unwrap().clone()
+    }
+
+    pub fn handshake_space(&self) -> Option<HandshakeSpace> {
+        self.handshake.read().unwrap().clone()
+    }
+
+    pub fn data_space(&self) -> DataSpace {
+        self.data.clone()
+    }
+}
 
 pub struct RawConnection {
     cid_registry: Registry,
@@ -50,6 +81,9 @@ pub struct RawConnection {
     initial_keys: ArcKeys,
     handshake_keys: ArcKeys,
     zero_rtt_keys: ArcKeys,
+    one_rtt_keys: ArcOneRttKeys,
+
+    spaces: Arc<Spaces>,
 
     // 创建新的path用的到，path中的拥塞控制器需要
     ack_observer: AckObserver,
@@ -80,9 +114,7 @@ impl RawConnection {
 
     pub fn recv_1rtt_pkt_via(&self, pkt: OneRttPacket, usc: &ArcUsc, pathway: Pathway) {
         let path = self.get_path(pathway, usc);
-        self.one_rtt_pkt_queue
-            .send((pkt, path))
-            .expect("must success");
+        _ = self.one_rtt_pkt_queue.send((pkt, path));
     }
 
     pub fn recv_protected_pkt_via(&mut self, pkt: SpacePacket, usc: &ArcUsc, pathway: Pathway) {
@@ -99,6 +131,11 @@ impl RawConnection {
         self.state.set_state(ConnectionState::HandshakeDone);
         self.handshake_keys.invalid();
         self.zero_rtt_keys.invalid();
+    }
+
+    fn enter_draining(&self) {
+        self.state.set_state(ConnectionState::Draining);
+        self.one_rtt_keys.invalid();
     }
 
     pub fn get_path(&self, pathway: Pathway, usc: &ArcUsc) -> ArcPath {
@@ -121,8 +158,8 @@ impl RawConnection {
 pub struct ArcConnection(Arc<RawConnection>);
 
 pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
-    let conn_frame_deque = ArcAsyncDeque::new();
     let conn_state = ArcConnectionState::new();
+    let mut conn_frame_deque = ArcAsyncDeque::new();
     // todo：发送CCF
     let (error_tx, mut error_rx) = mpsc::unbounded_channel();
 
@@ -135,7 +172,7 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
         initial_space.rcvd_pkt_records.clone(),
     );
 
-    let initial_space_frame_queue = initial_space.spawn_recv_space_frames();
+    let initial_space_frame_queue = initial_space.spawn_recv_space_frames(error_tx.clone());
 
     initial_packet_stream.spawn_parse_packet_and_then_dispatch(
         Some(conn_frame_deque.clone()),
@@ -154,7 +191,7 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
         handshake_space.rcvd_pkt_records.clone(),
     );
 
-    let handshake_space_frame_queue = handshake_space.spawn_recv_space_frames();
+    let handshake_space_frame_queue = handshake_space.spawn_recv_space_frames(error_tx.clone());
 
     handshake_packet_stream.spawn_parse_packet_and_then_dispatch(
         Some(conn_frame_deque.clone()),
@@ -190,7 +227,7 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
     let (zero_rtt_pkt_tx, zero_rtt_packet_stream) =
         auto::ZeroRttPacketStream::new(zero_rtt_keys.clone(), data_space.rcvd_pkt_records.clone());
 
-    let data_space_frame_queue = data_space.spawn_recv_space_frames();
+    let data_space_frame_queue = data_space.spawn_recv_space_frames(error_tx.clone());
 
     zero_rtt_packet_stream.spawn_parse_packet_and_then_dispatch(
         Some(conn_frame_deque.clone()),
@@ -203,7 +240,7 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
     let (one_rtt_pkt_tx, dataspace_packets) =
         auto::OneRttPacketStream::new(one_rtt_keys.clone(), data_space.rcvd_pkt_records.clone());
 
-    let data_space_frame_queue = data_space.spawn_recv_space_frames();
+    let data_space_frame_queue = data_space.spawn_recv_space_frames(error_tx.clone());
 
     dataspace_packets.spawn_parse_packet_and_then_dispatch(
         Some(conn_frame_deque.clone()),
@@ -235,6 +272,8 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
         initial_keys,
         handshake_keys,
         zero_rtt_keys,
+        one_rtt_keys,
+        spaces: Arc::new(Spaces::new(initial_space, handshake_space, data_space)),
         ack_observer,
         loss_observer,
         spin: SpinBit::default(),
@@ -245,12 +284,15 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
     tokio::spawn({
         let connection = connection.clone();
         let error_tx = error_tx.clone();
-        let data_space = data_space.clone();
+        let data_space = connection.spaces.data_space();
+        let handshake_space = connection.spaces.handshake_space().unwrap();
+        let handshake_crypto_handler = handshake_space.as_ref().split();
+        let one_rtt_keys = connection.one_rtt_keys.clone();
         async move {
             handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
                 tls_session.clone(),
-                one_rtt_keys.clone(),
-                handshake_space.as_ref().split(),
+                one_rtt_keys,
+                handshake_crypto_handler,
             )
             .await;
 
@@ -276,15 +318,14 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
     });
 
     tokio::spawn({
-        let mut conn_frame_deque = conn_frame_deque;
         let connection = connection.clone();
         async move {
             while let Some(conn_frame) = conn_frame_deque.next().await {
                 let error: Option<Error> = match conn_frame {
-                    ConnFrame::Close(_err) => {
-                        conn_state.set_state(ConnectionState::Draining);
-                        // TODO: 可以发送一个CCF
-                        // _ = error_tx.send(error);
+                    ConnFrame::Close(error) => {
+                        // 该不该等CCF发送再进入排空状态
+                        connection.enter_draining();
+                        _ = error_tx.send(error.into());
                         Ok(())
                     }
                     ConnFrame::NewToken(_) => todo!(),
@@ -320,7 +361,7 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
                 }
                 .err();
 
-                // 发送CCF到对端
+                // 处理连接错误
                 if let Some(error) = error {
                     _ = error_tx.send(error);
                 }
@@ -335,25 +376,47 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
                 return;
             };
 
-            // TODO: 根据连接状态进行不同的处理，该用哪一个空间发送CCF？
-            match connection.state.get_state() {
-                ConnectionState::Handshaking => todo!(),
-                ConnectionState::HandshakeDone => todo!(),
-                ConnectionState::Closing => todo!(),
-                ConnectionState::Draining => {
+            // 向应用层报告错误
+
+            let data_space = connection.spaces.data_space();
+            data_space.data_stream.on_conn_error(&error);
+            datagram_flow.on_conn_error(&error);
+
+            let state = connection.state.get_state();
+            match state {
+                ConnectionState::Initial => {
+                    connection
+                        .spaces
+                        .initial_space()
+                        .unwrap()
+                        .reliable_frame_queue
+                        .write()
+                        .push_conn_frame(ConnFrame::Close(error.into()));
+                }
+                ConnectionState::Handshake => {
+                    connection
+                        .spaces
+                        .handshake_space()
+                        .unwrap()
+                        .reliable_frame_queue
+                        .write()
+                        .push_conn_frame(ConnFrame::Close(error.into()));
+                }
+                ConnectionState::HandshakeDone => {
+                    data_space
+                        .reliable_frame_queue
+                        .write()
+                        .push_conn_frame(ConnFrame::Close(error.into()));
+                }
+                ConnectionState::Closing | ConnectionState::Draining => {
                     // 什么都不做
                 }
             }
 
-            // 向应用层报告错误
-            data_space.data_stream.on_conn_error(&error);
-            datagram_flow.on_conn_error(&error);
-
+            if state != ConnectionState::Draining {
+                connection.state.set_state(ConnectionState::Closing);
+            }
             // 准备发送连接关闭帧
-            data_space
-                .reliable_frame_queue
-                .write()
-                .push_conn_frame(ConnFrame::Close(error.into()));
 
             // 等待连接关闭
             // let duration = todo!("PTOx3");
