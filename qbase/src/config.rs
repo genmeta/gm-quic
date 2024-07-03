@@ -6,11 +6,7 @@ use std::{
 use getset::{CopyGetters, Getters, MutGetters, Setters};
 
 use super::varint::VarInt;
-use crate::{
-    cid::ConnectionId,
-    error::{Error, ErrorKind},
-    token::ResetToken,
-};
+use crate::{cid::ConnectionId, token::ResetToken};
 
 /// Ref. `<https://www.iana.org/assignments/quic/quic.xhtml>`
 

@@ -112,7 +112,7 @@ impl PacketPayload {
 pub(crate) struct LongHeaderPacketStream<H> {
     packet_rx: mpsc::UnboundedReceiver<(PacketWrapper<H>, ArcPath)>,
     keys: ArcKeys,
-    rcvd_records: ArcRcvdPktRecords,
+    rcvd_pkt_records: ArcRcvdPktRecords,
 }
 
 pub(crate) type InitialPacketStream = LongHeaderPacketStream<InitialHeader>;
@@ -141,7 +141,7 @@ where
 
                 let encoded_pn = packet.decode_header().unwrap();
 
-                let Ok(pn) = s.rcvd_records.decode_pn(encoded_pn) else {
+                let Ok(pn) = s.rcvd_pkt_records.decode_pn(encoded_pn) else {
                     // Duplicate packet, discard. QUIC does not allow duplicate packets.
                     // Is it an error to receive duplicate packets? Definitely not,
                     // otherwise it would be too vulnerable to replay attacks.
@@ -171,7 +171,7 @@ where
 impl<H> LongHeaderPacketStream<H> {
     pub fn new(
         keys: ArcKeys,
-        rcvd_records: ArcRcvdPktRecords,
+        rcvd_pkt_records: ArcRcvdPktRecords,
     ) -> (mpsc::UnboundedSender<(PacketWrapper<H>, ArcPath)>, Self) {
         let (packet_tx, packet_rx) = mpsc::unbounded_channel();
         (
@@ -179,7 +179,7 @@ impl<H> LongHeaderPacketStream<H> {
             Self {
                 packet_rx,
                 keys,
-                rcvd_records,
+                rcvd_pkt_records,
             },
         )
     }
@@ -204,7 +204,7 @@ impl LongHeaderPacketStream<InitialHeader> {
                     &ack_frames_tx,
                 ) {
                     // TODO: path也要登记其收到的包、收包时间、is_ack_eliciting，方便激发AckFrame
-                    Ok(_is_ack_eliciting) => self.rcvd_records.register_pn(pn),
+                    Ok(_is_ack_eliciting) => self.rcvd_pkt_records.register_pn(pn),
                     // 解析包失败，丢弃
                     // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
                     Err(error) => {
@@ -242,7 +242,7 @@ impl LongHeaderPacketStream<HandshakeHeader> {
                         if let Some(initial_keys) = initial_keys.take() {
                             initial_keys.invalid()
                         }
-                        self.rcvd_records.register_pn(pn)
+                        self.rcvd_pkt_records.register_pn(pn)
                     }
                     // 解析包失败，丢弃
                     // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
@@ -274,7 +274,7 @@ impl LongHeaderPacketStream<ZeroRttHeader> {
                     &ack_frames_tx,
                 ) {
                     // TODO: path也要登记其收到的包、收包时间、is_ack_eliciting，方便激发AckFrame
-                    Ok(_is_ack_eliciting) => self.rcvd_records.register_pn(pn),
+                    Ok(_is_ack_eliciting) => self.rcvd_pkt_records.register_pn(pn),
                     // 解析包失败，丢弃
                     // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
                     Err(error) => {

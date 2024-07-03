@@ -28,10 +28,12 @@ unsafe impl<K: NoDataSpaceKind> Sync for NoDataSpace<K> {}
 
 pub trait NoDataSpaceKind: 'static {}
 
+#[derive(Debug, Clone, Copy)]
 pub struct Initial;
 impl NoDataSpaceKind for Initial {}
 pub type InitalSpace = NoDataSpace<Initial>;
 
+#[derive(Debug, Clone, Copy)]
 pub struct Handshake;
 impl NoDataSpaceKind for Handshake {}
 pub type HandshakeSpace = NoDataSpace<Handshake>;
