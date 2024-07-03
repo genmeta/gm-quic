@@ -46,7 +46,7 @@ impl BeFrame for DatagramFrame {
     }
 
     fn encoding_size(&self) -> usize {
-        1 + self.length.map(|_| 8).unwrap_or_default()
+        1 + self.length.map(VarInt::encoding_size).unwrap_or_default()
     }
 }
 
