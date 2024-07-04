@@ -1,13 +1,12 @@
 use qcongestion::{
     congestion::Epoch, ObserveAck, ObserveAntiAmplification, ObserveHandshake, ObserveLoss,
-    ObserveSend, SlideWindow,
+    ObservePto, SlideWindow,
 };
 use qrecovery::reliable::rcvdpkt::{ArcRcvdPktRecords, ArcRcvdPktRecordsWriter};
 use tokio::sync::mpsc;
 
-use crate::connection::state::{ArcConnectionState, ConnectionState};
-
 use super::{anti_amplifier::ANTI_FACTOR, ArcAntiAmplifier};
+use crate::connection::state::{ArcConnectionState, ConnectionState};
 
 pub struct AckObserverGuard<'a>(ArcRcvdPktRecordsWriter<'a>);
 
@@ -70,11 +69,17 @@ impl ObserveHandshake for HandShakeObserver {
 }
 
 #[derive(Debug, Clone)]
-pub struct SendObserver {}
+pub struct PtoObserver([mpsc::UnboundedSender<()>; 3]);
 
-impl ObserveSend for SendObserver {
-    fn send_packet(&self, _: Epoch) {
-        todo!()
+impl PtoObserver {
+    pub fn new(channels: [mpsc::UnboundedSender<()>; 3]) -> Self {
+        Self(channels)
+    }
+}
+
+impl ObservePto for PtoObserver {
+    fn probe_timeout(&self, space: Epoch) {
+        let _ = self.0[space].send(());
     }
 }
 
@@ -83,7 +88,7 @@ pub struct ConnectionObserver {
     pub handshake_observer: HandShakeObserver,
     pub ack_observer: AckObserver,
     pub loss_observer: LossObserver,
-    pub send_observer: SendObserver,
+    pub pto_observer: PtoObserver,
 }
 
 impl ObserveAck for ConnectionObserver {
@@ -100,9 +105,9 @@ impl ObserveLoss for ConnectionObserver {
     }
 }
 
-impl ObserveSend for ConnectionObserver {
-    fn send_packet(&self, space: Epoch) {
-        self.send_observer.send_packet(space)
+impl ObservePto for ConnectionObserver {
+    fn probe_timeout(&self, space: Epoch) {
+        self.pto_observer.probe_timeout(space)
     }
 }
 

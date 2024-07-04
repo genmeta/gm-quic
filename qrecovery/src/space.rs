@@ -87,6 +87,7 @@ pub trait BeSpace: Send + Sync + 'static {
     fn on_ack(&self, ack_frmae: AckFrame);
     fn may_loss_pkt(&self, pn: u64);
     fn receive(&self, frame: SpaceFrame) -> Result<(), Error>;
+    fn probe_timeout(&self);
 }
 
 #[derive(Debug, Deref)]
@@ -139,6 +140,17 @@ where
             }
         });
         deque
+    }
+
+    pub fn spawn_probe_timeout(&self) -> mpsc::UnboundedSender<()> {
+        let (pto_tx, mut pto_rx) = mpsc::unbounded_channel();
+        let space = self.clone();
+        tokio::spawn(async move {
+            while (pto_rx.recv().await).is_some() {
+                space.probe_timeout();
+            }
+        });
+        pto_tx
     }
 }
 

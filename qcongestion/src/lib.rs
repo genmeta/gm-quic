@@ -91,10 +91,9 @@ pub trait ObserveAck {
     fn ack_guard(&self, space: Epoch) -> Self::Guard<'_>;
 }
 
-pub trait ObserveSend {
-    /// PTO 超时，通外部观察着进行发包知观察者
-
-    fn send_packet(&self, space: Epoch);
+pub trait ObservePto {
+    /// probe timeout，通外部观察着进行发包知观察者
+    fn probe_timeout(&self, space: Epoch);
 }
 
 pub trait ObserveHandshake {

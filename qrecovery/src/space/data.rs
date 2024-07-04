@@ -148,4 +148,10 @@ impl BeSpace for ArcSpace<DataSpace> {
             }
         }
     }
+
+    fn probe_timeout(&self) {
+        // TODO: pto 超时，
+        // 1. 有数据发送，发送新数据
+        // 2. 没有数据发送，发送 ping 帧
+    }
 }

@@ -140,6 +140,11 @@ impl<K: NoDataSpaceKind> BeSpace for ArcSpace<NoDataSpace<K>> {
             _ => unreachable!(),
         }
     }
+
+    fn probe_timeout(&self) {
+        // 握手期间 PTO 超时，重发 INITIAL 包或 HANDSHAKE 包
+        todo!()
+    }
 }
 
 impl ArcSpace<InitalSpace> {
