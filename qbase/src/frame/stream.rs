@@ -151,23 +151,16 @@ impl StreamFrame {
         self.flag |= LEN_BIT;
     }
 
-    pub fn estimate_max_capacity(
-        credit: usize,
-        capacity: usize,
-        sid: StreamId,
-        offset: u64,
-    ) -> Option<usize> {
+    pub fn estimate_max_capacity(capacity: usize, sid: StreamId, offset: u64) -> Option<usize> {
         assert!(offset <= VARINT_MAX);
         let mut least = 1 + sid.encoding_size();
         if offset != 0 {
-            least += VarInt::from_u64(offset)
-                .expect("offset of stream frame must be less than 2^62")
-                .encoding_size();
+            least += VarInt::from_u64(offset).unwrap().encoding_size();
         }
         if capacity <= least {
             None
         } else {
-            Some((capacity - least).min(credit))
+            Some(capacity - least)
         }
     }
 }
