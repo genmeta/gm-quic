@@ -19,7 +19,10 @@ use qbase::{
     varint::VARINT_MAX,
 };
 
-use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
+use super::{
+    sender::{ArcSender, DataSentSender, Sender, SendingSender},
+    sndbuf::Picker,
+};
 
 #[derive(Debug, Clone)]
 pub struct Outgoing(pub(super) ArcSender);
@@ -42,12 +45,14 @@ impl Outgoing {
     pub fn try_read(
         &self,
         sid: StreamId,
+        flow_limit: usize,
         credit: usize,
         mut buffer: &mut [u8],
     ) -> Option<(StreamFrame, usize)> {
         let capacity = buffer.remaining_mut();
         let estimate_capacity =
             |offset| StreamFrame::estimate_max_capacity(credit, capacity, sid, offset);
+        let picker = Picker::new(estimate_capacity, Some(flow_limit));
         let write = |(offset, data, is_eos): (u64, (&[u8], &[u8]), bool)| {
             let mut frame = StreamFrame::new(sid, offset, data.len());
             frame.set_eos_flag(is_eos);
@@ -78,17 +83,17 @@ impl Outgoing {
                     let result;
                     if s.is_shutdown() {
                         let mut s: DataSentSender = s.into();
-                        result = s.pick_up(estimate_capacity).map(write);
+                        result = s.pick_up(picker).map(write);
                         *sending_state = Sender::DataSent(s);
                     } else {
                         let mut s: SendingSender = s.into();
-                        result = s.pick_up(estimate_capacity).map(write);
+                        result = s.pick_up(picker).map(write);
                         *sending_state = Sender::Sending(s);
                     }
                     result
                 }
-                Sender::Sending(s) => s.pick_up(estimate_capacity).map(write),
-                Sender::DataSent(s) => s.pick_up(estimate_capacity).map(write),
+                Sender::Sending(s) => s.pick_up(picker).map(write),
+                Sender::DataSent(s) => s.pick_up(picker).map(write),
                 _ => None,
             },
             Err(_) => None,

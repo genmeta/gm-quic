@@ -74,18 +74,18 @@ impl DatagramReader {
         }
     }
 
-    pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
+    pub fn recv<'b>(&self, buf: &'b mut [u8]) -> ReadIntoSlice<'b> {
         let reader = self.0.clone();
-        ReadIntoSlice { reader, buf }.await
+        ReadIntoSlice { reader, buf }
     }
 
-    pub async fn recv_buf(&self, buf: &mut impl BufMut) -> io::Result<usize> {
+    pub fn recv_buf<'b, B: BufMut>(&self, buf: &'b mut B) -> ReadInfoBuf<'b, B> {
         let reader = self.0.clone();
-        ReadInfoBuf { reader, buf }.await
+        ReadInfoBuf { reader, buf }
     }
 }
 
-struct ReadIntoSlice<'a> {
+pub struct ReadIntoSlice<'a> {
     reader: ArcDatagramReader,
     buf: &'a mut [u8],
 }
@@ -114,7 +114,7 @@ impl Future for ReadIntoSlice<'_> {
     }
 }
 
-struct ReadInfoBuf<'a, B> {
+pub struct ReadInfoBuf<'a, B> {
     reader: ArcDatagramReader,
     buf: &'a mut B,
 }

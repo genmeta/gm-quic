@@ -18,7 +18,7 @@ mod send {
     };
     use tokio::io::AsyncWrite;
 
-    use crate::send::sndbuf::SendBuf;
+    use crate::send::sndbuf::{Picker, SendBuf};
 
     #[derive(Debug)]
     pub(super) struct Sender {
@@ -31,7 +31,8 @@ mod send {
         fn try_read_data(&mut self, mut buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
             let remaining = buffer.remaining_mut();
             let estimater = |offset: u64| CryptoFrame::estimate_max_capacity(remaining, offset);
-            if let Some((offset, data)) = self.sndbuf.pick_up(estimater) {
+            let picker = Picker::new(estimater, None);
+            if let Some((offset, data)) = self.sndbuf.pick_up(picker) {
                 let frame = CryptoFrame {
                     offset: VarInt::from_u64(offset).unwrap(),
                     length: VarInt::from_u32(data.len() as u32),

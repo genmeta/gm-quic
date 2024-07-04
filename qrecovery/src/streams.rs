@@ -5,54 +5,21 @@ use std::{
     task::{Context, Poll},
 };
 
+use deref_derive::Deref;
 use futures::Future;
-use qbase::{error::Error, frame::*, streamid::Role};
+use qbase::{error::Error, streamid::Role};
 
 use crate::{recv::Reader, reliable::ArcReliableFrameQueue, send::Writer};
 
 pub mod data;
 pub mod listener;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deref)]
 pub struct DataStreams(Arc<data::RawDataStreams>);
 
 impl AsRef<DataStreams> for DataStreams {
     fn as_ref(&self) -> &DataStreams {
         self
-    }
-}
-
-impl DataStreams {
-    pub fn try_read_data(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
-        self.0.try_read_data(buf)
-    }
-
-    pub fn on_data_acked(&self, stream_frame: StreamFrame) {
-        self.0.on_data_acked(stream_frame)
-    }
-
-    pub fn may_loss_data(&self, stream_frame: StreamFrame) {
-        self.0.may_loss_data(stream_frame)
-    }
-
-    pub fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
-        self.0.on_reset_acked(reset_frame)
-    }
-
-    pub fn recv_stream_control(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), Error> {
-        self.0.recv_stream_control(stream_ctl_frame)
-    }
-
-    pub fn recv_data(&self, frame: StreamFrame, body: bytes::Bytes) -> Result<(), Error> {
-        self.0.recv_data(frame, body)
-    }
-
-    pub fn on_conn_error(&self, err: &Error) {
-        self.0.on_conn_error(err)
-    }
-
-    pub fn update_limit(&self, max_bi_streams: u64, max_uni_streams: u64) {
-        self.0.update_limit(max_bi_streams, max_uni_streams)
     }
 }
 
@@ -71,18 +38,18 @@ impl DataStreams {
         )))
     }
 
-    pub async fn open_bi(&self) -> Result<Option<(Reader, Writer)>, Error> {
+    #[inline]
+    pub fn open_bi(&self) -> BiDataStreamCreator {
         BiDataStreamCreator {
             inner: self.0.clone(),
         }
-        .await
     }
 
-    pub async fn open_uni(&self) -> Result<Option<Writer>, Error> {
+    #[inline]
+    pub fn open_uni(&self) -> UniDataStreamCreator {
         UniDataStreamCreator {
             inner: self.0.clone(),
         }
-        .await
     }
 
     pub fn listener(&self) -> listener::ArcListener {
@@ -90,7 +57,7 @@ impl DataStreams {
     }
 }
 
-struct BiDataStreamCreator {
+pub struct BiDataStreamCreator {
     inner: Arc<data::RawDataStreams>,
 }
 
@@ -102,7 +69,7 @@ impl Future for BiDataStreamCreator {
     }
 }
 
-struct UniDataStreamCreator {
+pub struct UniDataStreamCreator {
     inner: Arc<data::RawDataStreams>,
 }
 
