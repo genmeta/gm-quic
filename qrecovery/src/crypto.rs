@@ -36,16 +36,16 @@ mod send {
             limit: &mut TransportLimit,
             mut buffer: &mut [u8],
         ) -> Option<(CryptoFrame, usize)> {
-            let remaining = limit.remaining();
-            let estimater = |offset: u64| CryptoFrame::estimate_max_capacity(remaining, offset);
+            let remain = limit.remaining();
+            let estimater = |offset: u64| CryptoFrame::estimate_max_capacity(remain, offset);
             let mut picker = Picker::new(estimater, None);
             if let Some((offset, data)) = self.sndbuf.pick_up(&mut picker) {
                 let frame = CryptoFrame {
                     offset: VarInt::from_u64(offset).unwrap(),
-                    length: VarInt::from_u32(data.len() as u32),
+                    length: VarInt::try_from(data.len()).unwrap(),
                 };
                 buffer.put_crypto_frame(&frame, &data);
-                let written = remaining - buffer.remaining_mut();
+                let written = remain - buffer.remaining_mut();
                 limit.record_write(written);
                 Some((frame, written))
             } else {

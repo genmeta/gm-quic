@@ -168,20 +168,20 @@ impl RawDataStreams {
                     .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_CREDIT))
             })?;
 
-        let (frame, len) = outgoing.try_read(sid, limit, credit, buf)?;
-        output.cur_credit = Some((sid, credit - len));
-        Some((frame, len))
+        let (frame, data_written, written) = outgoing.try_read(sid, credit, limit, buf)?;
+        output.cur_credit = Some((sid, credit - data_written));
+
+        Some((frame, written))
     }
 
     pub fn on_data_acked(&self, stream_frame: StreamFrame) {
         if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
-            if let Some(all_data_rcvd) = set
+            if set
                 .get(&stream_frame.id)
                 .map(|o| o.on_data_acked(&stream_frame.range()))
+                .is_some_and(|all_data_rcvd| all_data_rcvd)
             {
-                if all_data_rcvd {
-                    set.remove(&stream_frame.id);
-                }
+                set.remove(&stream_frame.id);
             }
         }
     }

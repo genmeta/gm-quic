@@ -75,7 +75,7 @@ impl BeSpace for ArcSpace<DataSpace> {
         mut buf: &mut [u8],
         ack_pkt: Option<(u64, Instant)>,
     ) -> (u64, usize, usize) {
-        let origin = limit.remaining();
+        let remain = limit.remaining();
 
         let mut send_guard = self.0.sent_pkt_records.send();
 
@@ -92,17 +92,17 @@ impl BeSpace for ArcSpace<DataSpace> {
         let n = self.read_reliable_frames(&mut send_guard, limit, buf);
         buf = &mut buf[n..];
 
-        if let Some((crypto_frame, n)) = self.crypto_stream.try_read_data(limit, buf) {
+        if let Some((crypto_frame, written)) = self.crypto_stream.try_read_data(limit, buf) {
             send_guard.record_data_frame(DataFrame::Crypto(crypto_frame));
-            buf = &mut buf[n..];
+            buf = &mut buf[written..];
         }
 
-        if let Some((stream_frame, n)) = self.data_stream.try_read_data(limit, buf) {
+        if let Some((stream_frame, written)) = self.data_stream.try_read_data(limit, buf) {
             send_guard.record_data_frame(DataFrame::Stream(stream_frame));
-            buf = &mut buf[n..];
+            buf = &mut buf[written..];
         }
 
-        (pn, encoded_pn.size(), origin - buf.remaining_mut())
+        (pn, encoded_pn.size(), remain - buf.remaining_mut())
     }
 
     fn on_ack(&self, ack_frmae: AckFrame) {

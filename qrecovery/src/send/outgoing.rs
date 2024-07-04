@@ -46,16 +46,14 @@ impl Outgoing {
     pub fn try_read(
         &self,
         sid: StreamId,
-        limit: &mut TransportLimit,
         credit: usize,
+        limit: &mut TransportLimit,
         mut buf: &mut [u8],
-    ) -> Option<(StreamFrame, usize)> {
+    ) -> Option<(StreamFrame, usize, usize)> {
         let capacity = limit.remaining();
-        let estimate_capacity =
-            |offset| StreamFrame::estimate_max_capacity(credit, capacity, sid, offset);
-        let mut picker = Picker::new(estimate_capacity, Some(limit.flow_control_limit()));
         let write = |(offset, data, is_eos): (u64, (&[u8], &[u8]), bool)| {
             let mut frame = StreamFrame::new(sid, offset, data.len());
+
             frame.set_eos_flag(is_eos);
             match frame.should_carry_length(capacity) {
                 ShouldCarryLength::NoProblem => {
@@ -72,13 +70,17 @@ impl Outgoing {
                     buf.put_stream_frame(&frame, &data);
                 }
             }
-            (frame, capacity - buf.remaining_mut())
+            (frame, data.len(), capacity - buf.remaining_mut())
         };
 
+        let estimate_capacity = |offset| {
+            StreamFrame::estimate_max_capacity(capacity, sid, offset).map(|cap| cap.min(credit))
+        };
+        let mut picker = Picker::new(estimate_capacity, Some(limit.flow_control_limit()));
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
 
-        let result = match inner {
+        let (frame, data_written, written) = match inner {
             Ok(sending_state) => match sending_state {
                 Sender::Ready(s) => {
                     let result;
@@ -98,16 +100,16 @@ impl Outgoing {
                 _ => None,
             },
             Err(_) => None,
-        };
+        }?;
 
-        limit.record_write_new_stream_data(
-            limit.flow_control_limit() - picker.remain_flow_control_limit(),
-        );
-        limit.record_write(credit - buf.remaining_mut());
+        let new_data_written = limit.flow_control_limit() - picker.flow_control_limit();
+        limit.record_write_new_stream_data(new_data_written);
+        limit.record_write(written);
 
-        result
+        Some((frame, data_written, written))
     }
 
+    /// return true if all data has been rcvd
     pub fn on_data_acked(&self, range: &Range<u64>) -> bool {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
