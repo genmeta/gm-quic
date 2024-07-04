@@ -151,7 +151,12 @@ impl StreamFrame {
         self.flag |= LEN_BIT;
     }
 
-    pub fn estimate_max_capacity(capacity: usize, sid: StreamId, offset: u64) -> Option<usize> {
+    pub fn estimate_max_capacity(
+        credit: usize,
+        capacity: usize,
+        sid: StreamId,
+        offset: u64,
+    ) -> Option<usize> {
         assert!(offset <= VARINT_MAX);
         let mut least = 1 + sid.encoding_size();
         if offset != 0 {
@@ -162,7 +167,7 @@ impl StreamFrame {
         if capacity <= least {
             None
         } else {
-            Some(capacity - least)
+            Some((capacity - least).min(credit))
         }
     }
 }

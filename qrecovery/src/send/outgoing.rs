@@ -39,9 +39,15 @@ impl Outgoing {
         }
     }
 
-    pub fn try_read(&self, sid: StreamId, buffer: &mut impl BufMut) -> Option<StreamFrame> {
+    pub fn try_read(
+        &self,
+        sid: StreamId,
+        credit: usize,
+        mut buffer: &mut [u8],
+    ) -> Option<(StreamFrame, usize)> {
         let capacity = buffer.remaining_mut();
-        let estimate_capacity = |offset| StreamFrame::estimate_max_capacity(capacity, sid, offset);
+        let estimate_capacity =
+            |offset| StreamFrame::estimate_max_capacity(credit, capacity, sid, offset);
         let write = |(offset, data, is_eos): (u64, (&[u8], &[u8]), bool)| {
             let mut frame = StreamFrame::new(sid, offset, data.len());
             frame.set_eos_flag(is_eos);
@@ -60,7 +66,7 @@ impl Outgoing {
                     buffer.put_stream_frame(&frame, &data);
                 }
             }
-            frame
+            (frame, capacity - buffer.remaining_mut())
         };
 
         let mut sender = self.0.lock().unwrap();
