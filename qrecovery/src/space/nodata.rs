@@ -7,7 +7,7 @@ use qbase::{
     packet::WritePacketNumber,
 };
 
-use super::{ArcSpace, BeSpace, RawSpace, SpaceFrame};
+use super::{ArcSpace, BeSpace, RawSpace, SpaceFrame, TransportLimit};
 use crate::{
     crypto::CryptoStream,
     reliable::{
@@ -73,29 +73,35 @@ impl<K: NoDataSpaceKind> ArcSpace<NoDataSpace<K>> {
     }
 }
 impl<K: NoDataSpaceKind> BeSpace for ArcSpace<NoDataSpace<K>> {
-    fn read(&self, mut buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize, usize) {
-        let orign = buf.remaining_mut();
+    fn read(
+        &self,
+        limit: &mut TransportLimit,
+        mut buf: &mut [u8],
+        ack_pkt: Option<(u64, Instant)>,
+    ) -> (u64, usize, usize) {
+        let origin = limit.remaining();
 
         let mut send_guard = self.0.sent_pkt_records.send();
 
         let (pn, encoded_pn) = send_guard.next_pn();
         if buf.remaining_mut() > encoded_pn.size() {
             buf.put_packet_number(encoded_pn);
+            limit.record_write(encoded_pn.size());
         } else {
             return (pn, encoded_pn.size(), 0);
         }
 
-        let n = self.read_ack_frame_until(&mut send_guard, buf, ack_pkt);
+        let n = self.read_ack_frame_until(&mut send_guard, limit, buf, ack_pkt);
         buf = &mut buf[n..];
-        let n = self.read_reliable_frames(&mut send_guard, buf);
+        let n = self.read_reliable_frames(&mut send_guard, limit, buf);
         buf = &mut buf[n..];
 
-        if let Some((crypto_frame, n)) = self.crypto_stream.try_read_data(buf) {
+        if let Some((crypto_frame, n)) = self.crypto_stream.try_read_data(limit, buf) {
             send_guard.record_data_frame(DataFrame::Crypto(crypto_frame));
             buf = &mut buf[n..];
         }
 
-        (pn, encoded_pn.size(), orign - buf.remaining_mut())
+        (pn, encoded_pn.size(), origin - buf.remaining_mut())
     }
 
     fn on_ack(&self, ack_frame: AckFrame) {

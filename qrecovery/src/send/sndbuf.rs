@@ -1,4 +1,5 @@
 use std::{
+    borrow::BorrowMut,
     cmp::Ordering,
     collections::VecDeque,
     fmt::{Debug, Display},
@@ -113,6 +114,10 @@ where
         }
     }
 
+    pub fn remain_flow_control_limit(&self) -> usize {
+        self.flow_control_limit.unwrap_or(0)
+    }
+
     fn estimate_capacity(&self, offset: u64, color: Color) -> Option<usize> {
         let capacity = (self.estimate_capacity)(offset)?;
         match (color, self.flow_control_limit) {
@@ -164,12 +169,13 @@ impl BufMap {
 
     // 挑选Lost/Pending的数据发送。越靠前的数据，越高优先级发送；
     // 丢包重传的数据，相比于Pending数据更靠前，因此具有更高的优先级。
-    fn pick<E>(&mut self, mut piuckup: Picker<E>) -> Option<Range<u64>>
+    fn pick<E>(&mut self, mut piuckup: impl BorrowMut<Picker<E>>) -> Option<Range<u64>>
     where
         E: Fn(u64) -> Option<usize>,
     {
+        let picker = piuckup.borrow_mut();
         let estimate_capacity =
-            |state: &mut State| piuckup.estimate_capacity(state.offset(), state.color());
+            |state: &mut State| picker.estimate_capacity(state.offset(), state.color());
 
         // 先找到第一个能发送的区间，并将该区间染成Flight，返回原State
         self.0
@@ -205,7 +211,7 @@ impl BufMap {
                 if i < index {
                     self.0.drain(i + 1..=index);
                 }
-                piuckup.record(end - start, color);
+                picker.record(end - start, color);
                 start..end
             })
     }
@@ -595,10 +601,11 @@ impl SendBuf {
     // 挑选出可供发送的数据，限制长度不能超过len，以满足一个数据包能容的下一个完整的数据帧。
     // 返回的是一个切片，该切片的生命周期必须不长于SendBuf的生命周期，该切片可以被缓存至数据包
     // 被确认或者被判定丢失。
-    pub fn pick_up<E>(&mut self, picker: Picker<E>) -> Option<Data>
+    pub fn pick_up<E>(&mut self, picker: &mut Picker<E>) -> Option<Data>
     where
         E: Fn(u64) -> Option<usize>,
     {
+        let picker = picker.borrow_mut();
         self.state.pick(picker).map(|range| {
             let start = (range.start - self.offset) as usize;
             let end = (range.end - self.offset) as usize;
