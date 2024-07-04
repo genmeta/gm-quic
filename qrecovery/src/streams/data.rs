@@ -1,10 +1,10 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex, MutexGuard},
     task::{ready, Context, Poll},
 };
 
-use bytes::BufMut;
+use deref_derive::{Deref, DerefMut};
 use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::*,
@@ -19,15 +19,22 @@ use crate::{
     send::{self, Outgoing, Writer},
 };
 
+#[derive(Default, Debug, Clone, Deref, DerefMut)]
+struct RawOutput {
+    #[deref]
+    outgoings: BTreeMap<StreamId, Outgoing>,
+    cur_credit: Option<(StreamId, usize)>,
+}
+
 /// ArcOutput里面包含一个Result类型，一旦发生quic error，就会被替换为Err
 /// 发生quic error后，其操作将被忽略，不会再抛出QuicError或者panic，因为
 /// 有些异步任务可能还未完成，在置为Err后才会完成。
 #[derive(Debug, Clone)]
-pub struct ArcOutput(Arc<Mutex<Result<HashMap<StreamId, Outgoing>, QuicError>>>);
+pub struct ArcOutput(Arc<Mutex<Result<RawOutput, QuicError>>>);
 
 impl Default for ArcOutput {
     fn default() -> Self {
-        Self(Arc::new(Mutex::new(Ok(HashMap::new()))))
+        Self(Arc::new(Mutex::new(Ok(Default::default()))))
     }
 }
 
@@ -42,7 +49,7 @@ impl ArcOutput {
 }
 
 struct ArcOutputGuard<'a> {
-    inner: MutexGuard<'a, Result<HashMap<StreamId, Outgoing>, QuicError>>,
+    inner: MutexGuard<'a, Result<RawOutput, QuicError>>,
 }
 
 impl ArcOutputGuard<'_> {
@@ -127,18 +134,38 @@ fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
 }
 
 impl RawDataStreams {
-    pub fn try_read_data(&self, mut buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+    pub fn try_read_data(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
         let guard = &mut self.output.0.lock().unwrap();
-        let output = &guard.as_mut().ok()?;
-        output
-            .iter()
-            .filter_map(|(&sid, outgoing)| {
-                let remain = buf.remaining_mut();
-                let frame = outgoing.try_read(sid, &mut buf)?;
-                let len = remain - buf.remaining_mut();
-                Some((frame, len))
+        let output = guard.as_mut().ok()?;
+
+        const DEFAULT_CREDIT: usize = 4096;
+
+        let (sid, outgoing, credit) = output
+            .cur_credit
+            .and_then(|(sid, credit): (StreamId, usize)| {
+                if credit == 0 {
+                    // 没有额度：下一个
+                    output
+                        .outgoings
+                        .range(sid..)
+                        .nth(1)
+                        .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_CREDIT))
+                } else {
+                    // 有额度：继续
+                    Some((sid, output.outgoings.get(&sid)?, credit))
+                }
             })
-            .next()
+            .or_else(|| {
+                // 还没开始/没有下一个/该sid已经被移除：从头开始
+                output
+                    .outgoings
+                    .first_key_value()
+                    .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_CREDIT))
+            })?;
+
+        let (frame, len) = outgoing.try_read(sid, credit, buf)?;
+        output.cur_credit = Some((sid, credit - len));
+        Some((frame, len))
     }
 
     pub fn on_data_acked(&self, stream_frame: StreamFrame) {
