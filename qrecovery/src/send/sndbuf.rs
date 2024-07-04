@@ -91,6 +91,43 @@ impl PartialOrd for State {
     }
 }
 
+pub struct Picker<E> {
+    estimate_capacity: E,
+    flow_control_limit: Option<usize>,
+}
+
+impl Picker<()> {
+    pub fn from_usize(size: usize) -> Picker<impl Fn(u64) -> Option<usize>> {
+        Picker::new(move |_| Some(size), None)
+    }
+}
+
+impl<E> Picker<E>
+where
+    E: Fn(u64) -> Option<usize>,
+{
+    pub fn new(estimate_capacity: E, flow_control_limit: Option<usize>) -> Self {
+        Self {
+            estimate_capacity,
+            flow_control_limit,
+        }
+    }
+
+    fn estimate_capacity(&self, offset: u64, color: Color) -> Option<usize> {
+        let capacity = (self.estimate_capacity)(offset)?;
+        match (color, self.flow_control_limit) {
+            (Color::Pending, Some(limit)) => Some(limit.min(capacity)),
+            _ => Some(capacity),
+        }
+    }
+
+    fn record(&mut self, taken: u64, color: Color) {
+        if let (Color::Pending, Some(limit)) = (color, self.flow_control_limit.as_mut()) {
+            *limit -= taken as usize;
+        }
+    }
+}
+
 /**
  * Self.0 意思是区间状态信息，它由一段VecDeque表示；
  * VecDeque中的每个元素是State，其中低62位是offset，代高2位是颜色，代表着到下一个State::offset的区间颜色。
@@ -127,16 +164,19 @@ impl BufMap {
 
     // 挑选Lost/Pending的数据发送。越靠前的数据，越高优先级发送；
     // 丢包重传的数据，相比于Pending数据更靠前，因此具有更高的优先级。
-    fn pick<F>(&mut self, estimate_capacity: F) -> Option<Range<u64>>
+    fn pick<E>(&mut self, mut piuckup: Picker<E>) -> Option<Range<u64>>
     where
-        F: Fn(u64) -> Option<usize>,
+        E: Fn(u64) -> Option<usize>,
     {
+        let estimate_capacity =
+            |state: &mut State| piuckup.estimate_capacity(state.offset(), state.color());
+
         // 先找到第一个能发送的区间，并将该区间染成Flight，返回原State
         self.0
             .iter_mut()
-            .map(|s| (estimate_capacity(s.offset()).unwrap_or(0), s))
+            .filter_map(|s| Some((estimate_capacity(s)?, s)))
             .enumerate()
-            .find(|(_, (max, s))| matches!(s.color(), Color::Pending | Color::Lost) && *max > 0)
+            .find(|(_, (_, s))| matches!(s.color(), Color::Pending | Color::Lost))
             .map(|(index, (max, s))| {
                 let state = *s; // 此处能归还self.0的可变借用
                 s.set_color(Color::Flighting);
@@ -165,6 +205,7 @@ impl BufMap {
                 if i < index {
                     self.0.drain(i + 1..=index);
                 }
+                piuckup.record(end - start, color);
                 start..end
             })
     }
@@ -554,11 +595,11 @@ impl SendBuf {
     // 挑选出可供发送的数据，限制长度不能超过len，以满足一个数据包能容的下一个完整的数据帧。
     // 返回的是一个切片，该切片的生命周期必须不长于SendBuf的生命周期，该切片可以被缓存至数据包
     // 被确认或者被判定丢失。
-    pub fn pick_up<F>(&mut self, estimate_capacity: F) -> Option<Data>
+    pub fn pick_up<E>(&mut self, picker: Picker<E>) -> Option<Data>
     where
-        F: Fn(u64) -> Option<usize>,
+        E: Fn(u64) -> Option<usize>,
     {
-        self.state.pick(estimate_capacity).map(|range| {
+        self.state.pick(picker).map(|range| {
             let start = (range.start - self.offset) as usize;
             let end = (range.end - self.offset) as usize;
 
@@ -595,6 +636,7 @@ impl SendBuf {
 #[cfg(test)]
 mod tests {
     use super::{BufMap, Color, State};
+    use crate::send::sndbuf::Picker;
 
     #[test]
     fn test_bufmap_empty() {
@@ -624,12 +666,12 @@ mod tests {
     #[test]
     fn test_bufmap_pick() {
         let mut buf_map = BufMap::default();
-        let range = buf_map.pick(|_offset| Some(20));
+        let range = buf_map.pick(Picker::from_usize(20));
         assert_eq!(range, None);
         assert!(buf_map.0.is_empty());
 
         buf_map.extend_to(200);
-        let range = buf_map.pick(|_offset| Some(20));
+        let range = buf_map.pick(Picker::from_usize(20));
         assert_eq!(range, Some(0..20));
         assert_eq!(
             buf_map.0,
@@ -639,7 +681,7 @@ mod tests {
             ]
         );
 
-        let range = buf_map.pick(|_offset| Some(20));
+        let range = buf_map.pick(Picker::from_usize(20));
         assert_eq!(range, Some(20..40));
         assert_eq!(
             buf_map.0,
@@ -651,7 +693,7 @@ mod tests {
 
         buf_map.0.insert(2, State::encode(50, Color::Lost));
         buf_map.0.insert(3, State::encode(120, Color::Pending));
-        let range = buf_map.pick(|_| Some(20));
+        let range = buf_map.pick(Picker::from_usize(20));
         assert_eq!(range, Some(40..50));
         assert_eq!(
             buf_map.0,
@@ -663,7 +705,7 @@ mod tests {
         );
 
         buf_map.0.get_mut(0).unwrap().set_color(Color::Recved);
-        let range = buf_map.pick(|_| Some(20));
+        let range = buf_map.pick(Picker::from_usize(20));
         assert_eq!(range, Some(50..70));
         assert_eq!(
             buf_map.0,
@@ -675,7 +717,7 @@ mod tests {
             ]
         );
 
-        let range = buf_map.pick(|_| Some(130));
+        let range = buf_map.pick(Picker::from_usize(130));
         assert_eq!(range, Some(70..120));
         assert_eq!(
             buf_map.0,
@@ -686,7 +728,7 @@ mod tests {
             ]
         );
 
-        let range = buf_map.pick(|_| Some(130));
+        let range = buf_map.pick(Picker::from_usize(130));
         assert_eq!(range, Some(120..200));
         assert_eq!(
             buf_map.0,
@@ -696,7 +738,7 @@ mod tests {
             ]
         );
 
-        let range = buf_map.pick(|_| Some(130));
+        let range = buf_map.pick(Picker::from_usize(130));
         assert_eq!(range, None);
         assert_eq!(
             buf_map.0,
@@ -711,7 +753,7 @@ mod tests {
     fn test_bufmap_recved() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(|_| Some(120));
+        buf_map.pick(Picker::from_usize(120));
         buf_map.ack_rcvd(&(0..20));
         assert_eq!(
             buf_map.0,
@@ -786,7 +828,7 @@ mod tests {
             ]
         );
 
-        buf_map.pick(|_| Some(200));
+        buf_map.pick(Picker::from_usize(200));
         assert_eq!(
             buf_map.0,
             vec![
@@ -820,7 +862,7 @@ mod tests {
     fn test_bufmap_invalid_recved() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(|_| Some(120));
+        buf_map.pick(Picker::from_usize(120));
         buf_map.ack_rcvd(&(20..40));
         buf_map.0.insert(2, State::encode(30, Color::Pending));
         assert_eq!(
@@ -842,7 +884,7 @@ mod tests {
     fn test_bufmap_recved_overflow() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(|_| Some(120));
+        buf_map.pick(Picker::from_usize(120));
         assert_eq!(
             buf_map.0,
             vec![
@@ -858,7 +900,7 @@ mod tests {
     fn test_bufmap_recved_over_end() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(|_| Some(200));
+        buf_map.pick(Picker::from_usize(200));
         assert_eq!(buf_map.0, vec![State::encode(0, Color::Pending),]);
         buf_map.ack_rcvd(&(0..201));
     }
@@ -867,7 +909,7 @@ mod tests {
     fn test_bufmap_lost() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(|_| Some(120));
+        buf_map.pick(Picker::from_usize(120));
         assert_eq!(
             buf_map.0,
             vec![

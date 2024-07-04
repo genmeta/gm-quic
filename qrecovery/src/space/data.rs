@@ -91,10 +91,11 @@ impl BeSpace for ArcSpace<DataSpace> {
             buf = &mut buf[n..];
         }
 
-        if let Some((stream_frame, n)) = self.data_stream.try_read_data(buf) {
-            send_guard.record_data_frame(DataFrame::Stream(stream_frame));
-            buf = &mut buf[n..];
-        }
+        // TODO
+        // if let Some((stream_frame, n)) = self.data_stream.try_read_data(buf) {
+        //     send_guard.record_data_frame(DataFrame::Stream(stream_frame));
+        //     buf = &mut buf[n..];
+        // }
 
         (pn, encoded_pn.size(), orign - buf.remaining_mut())
     }

@@ -7,7 +7,7 @@ use std::{
 
 use qbase::util::DescribeData;
 
-use super::sndbuf::SendBuf;
+use super::sndbuf::{Picker, SendBuf};
 
 /// The "Ready" state represents a newly created stream that is able to accept data from the application.
 /// Stream data might be buffered in this state in preparation for sending.
@@ -225,15 +225,15 @@ impl SendingSender {
         }
     }
 
-    pub(super) fn pick_up<F>(&mut self, estimate_capacity: F) -> Option<StreamData>
+    pub(super) fn pick_up<E>(&mut self, picker: Picker<E>) -> Option<StreamData>
     where
-        F: Fn(u64) -> Option<usize>,
+        E: Fn(u64) -> Option<usize>,
     {
         if self.cancel_state.is_some() {
             return None;
         }
         self.sndbuf
-            .pick_up(estimate_capacity)
+            .pick_up(picker)
             .map(|(offset, data)| (offset, data, false))
     }
 
@@ -348,21 +348,19 @@ pub struct DataSentSender {
 }
 
 impl DataSentSender {
-    pub(super) fn pick_up<F>(&mut self, estimate_capacity: F) -> Option<StreamData>
+    pub(super) fn pick_up<E>(&mut self, picker: Picker<E>) -> Option<StreamData>
     where
-        F: Fn(u64) -> Option<usize>,
+        E: Fn(u64) -> Option<usize>,
     {
         if self.cancel_state.is_some() {
             return None;
         }
 
         let final_size = self.sndbuf.len();
-        self.sndbuf
-            .pick_up(estimate_capacity)
-            .map(|(offset, data)| {
-                let is_eos = offset + data.len() as u64 == final_size;
-                (offset, data, is_eos)
-            })
+        self.sndbuf.pick_up(picker).map(|(offset, data)| {
+            let is_eos = offset + data.len() as u64 == final_size;
+            (offset, data, is_eos)
+        })
     }
 
     pub(super) fn on_data_acked(&mut self, range: &Range<u64>) {

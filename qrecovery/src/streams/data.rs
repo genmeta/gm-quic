@@ -115,7 +115,7 @@ impl ArcInputGuard<'_> {
 
 /// 专门根据Stream相关帧处理streams相关逻辑
 #[derive(Debug, Clone)]
-pub(super) struct RawDataStreams {
+pub struct RawDataStreams {
     role: Role,
     stream_ids: StreamIds,
     // 所有流的待写端，要发送数据，就得向这些流索取
@@ -134,7 +134,7 @@ fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
 }
 
 impl RawDataStreams {
-    pub fn try_read_data(&self, buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+    pub fn try_read_data(&self, flow_limit: usize, buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
         let guard = &mut self.output.0.lock().unwrap();
         let output = guard.as_mut().ok()?;
 
@@ -163,7 +163,7 @@ impl RawDataStreams {
                     .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_CREDIT))
             })?;
 
-        let (frame, len) = outgoing.try_read(sid, credit, buf)?;
+        let (frame, len) = outgoing.try_read(sid, flow_limit, credit, buf)?;
         output.cur_credit = Some((sid, credit - len));
         Some((frame, len))
     }
