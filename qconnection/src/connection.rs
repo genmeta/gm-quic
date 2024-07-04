@@ -1,9 +1,6 @@
 pub mod state;
 
-use std::{
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use deref_derive::Deref;
@@ -19,7 +16,7 @@ use qbase::{
     streamid::Role,
     util::ArcAsyncDeque,
 };
-use qrecovery::space::{ArcSpace, DataSpace, HandshakeSpace, InitialSpace};
+use qrecovery::space::{ArcSpace, ArcSpaces};
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 use state::{ArcConnectionState, ConnectionState};
@@ -38,34 +35,6 @@ use crate::{
 
 // 通过无效化密钥来丢弃接收端，来废除发送队列
 type PacketQueue<T> = mpsc::UnboundedSender<(T, ArcPath)>;
-
-pub struct Spaces {
-    initial: RwLock<Option<InitialSpace>>,
-    handshake: RwLock<Option<HandshakeSpace>>,
-    data: DataSpace,
-}
-
-impl Spaces {
-    pub fn new(initial: InitialSpace, handshake: HandshakeSpace, data: DataSpace) -> Self {
-        Self {
-            initial: RwLock::new(Some(initial)),
-            handshake: RwLock::new(Some(handshake)),
-            data,
-        }
-    }
-
-    pub fn initial_space(&self) -> Option<InitialSpace> {
-        self.initial.read().unwrap().clone()
-    }
-
-    pub fn handshake_space(&self) -> Option<HandshakeSpace> {
-        self.handshake.read().unwrap().clone()
-    }
-
-    pub fn data_space(&self) -> DataSpace {
-        self.data.clone()
-    }
-}
 
 pub struct RawConnection {
     cid_registry: Registry,
@@ -86,7 +55,7 @@ pub struct RawConnection {
     zero_rtt_keys: ArcKeys,
     one_rtt_keys: ArcOneRttKeys,
 
-    spaces: Arc<Spaces>,
+    spaces: ArcSpaces,
 
     // 创建新的path用的到，path中的拥塞控制器需要
     connection_observer: ConnectionObserver,
@@ -288,7 +257,7 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
         handshake_keys,
         zero_rtt_keys,
         one_rtt_keys,
-        spaces: Arc::new(Spaces::new(initial_space, handshake_space, data_space)),
+        spaces: ArcSpaces::new(initial_space, handshake_space, data_space),
         connection_observer,
         spin: SpinBit::default(),
         state: conn_state.clone(),

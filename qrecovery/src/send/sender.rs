@@ -225,7 +225,7 @@ impl SendingSender {
         }
     }
 
-    pub(super) fn pick_up<E>(&mut self, picker: Picker<E>) -> Option<StreamData>
+    pub(super) fn pick_up<E>(&mut self, picker: &mut Picker<E>) -> Option<StreamData>
     where
         E: Fn(u64) -> Option<usize>,
     {
@@ -348,7 +348,7 @@ pub struct DataSentSender {
 }
 
 impl DataSentSender {
-    pub(super) fn pick_up<E>(&mut self, picker: Picker<E>) -> Option<StreamData>
+    pub(super) fn pick_up<E>(&mut self, picker: &mut Picker<E>) -> Option<StreamData>
     where
         E: Fn(u64) -> Option<usize>,
     {

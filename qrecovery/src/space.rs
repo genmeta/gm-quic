@@ -1,7 +1,10 @@
 pub mod data;
 pub mod nodata;
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use bytes::{BufMut, Bytes};
 use deref_derive::Deref;
@@ -47,43 +50,93 @@ pub struct RawSpace<T> {
 }
 
 // tool methods
+
 impl<T> RawSpace<T> {
     fn read_ack_frame_until(
         &self,
         send_guard: &mut SendGuard,
+        limit: &mut TransportLimit,
         mut buf: &mut [u8],
         ack_pkt: Option<(u64, Instant)>,
     ) -> usize {
-        let remain = buf.remaining_mut();
+        let remain = limit.remaining();
         if let Some(largest) = ack_pkt {
-            let ack_frame = self
-                .rcvd_pkt_records
-                .gen_ack_frame_util(largest, buf.remaining_mut());
+            let ack_frame = self.rcvd_pkt_records.gen_ack_frame_util(largest, remain);
             buf.put_ack_frame(&ack_frame);
             send_guard.record_ack_frame(ack_frame);
         }
-        remain - buf.remaining_mut()
+        let written = remain - buf.remaining_mut();
+        limit.record_write(written);
+        written
     }
 
-    fn read_reliable_frames(&self, send_guard: &mut SendGuard, mut buf: &mut [u8]) -> usize {
-        let remain = buf.remaining_mut();
+    fn read_reliable_frames(
+        &self,
+        send_guard: &mut SendGuard,
+        limit: &mut TransportLimit,
+        mut buf: &mut [u8],
+    ) -> usize {
+        let remain = limit.remaining();
         let mut reliable_frame_reader = self.reliable_frame_queue.read();
         while let Some(frame) = reliable_frame_reader.front() {
-            let remain = buf.remaining_mut();
+            let remain = limit.remaining();
             if remain < frame.max_encoding_size() && remain < frame.encoding_size() {
                 break;
             }
-
             buf.put_frame(frame);
             let frame = reliable_frame_reader.pop_front().unwrap();
+            limit.record_write(frame.encoding_size());
             send_guard.record_reliable_frame(frame);
         }
         remain - buf.remaining_mut()
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct TransportLimit {
+    /// *`anti-amplification`*
+    anti_amplification: usize,
+    /// *`congestion control`*
+    congestion_control: usize,
+    /// flow control
+    /// [`InitialSpace`] and [`HandshakeSpace`] ignore this
+    flow_control: usize,
+}
+
+impl TransportLimit {
+    pub fn new(anti_amplification: usize, congestion_control: usize, flow_control: usize) -> Self {
+        Self {
+            anti_amplification,
+            congestion_control,
+            flow_control,
+        }
+    }
+
+    pub fn remaining(&self) -> usize {
+        self.anti_amplification.min(self.congestion_control)
+    }
+
+    pub fn flow_control_limit(&self) -> usize {
+        self.flow_control
+    }
+
+    pub fn record_write(&mut self, written: usize) {
+        self.anti_amplification -= written;
+        self.congestion_control -= written;
+    }
+
+    pub fn record_write_new_stream_data(&mut self, written: usize) {
+        self.flow_control -= written;
+    }
+}
+
 pub trait BeSpace: Send + Sync + 'static {
-    fn read(&self, buf: &mut [u8], ack_pkt: Option<(u64, Instant)>) -> (u64, usize, usize);
+    fn read(
+        &self,
+        limit: &mut TransportLimit,
+        buf: &mut [u8],
+        ack_pkt: Option<(u64, Instant)>,
+    ) -> (u64, usize, usize);
     fn on_ack(&self, ack_frmae: AckFrame);
     fn may_loss_pkt(&self, pn: u64);
     fn receive(&self, frame: SpaceFrame) -> Result<(), Error>;
@@ -169,5 +222,52 @@ where
 {
     fn as_ref(&self) -> &DataStreams {
         self.0.space.as_ref()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RawSpaces {
+    initial: Option<InitialSpace>,
+    handshake: Option<HandshakeSpace>,
+    data: DataSpace,
+}
+
+impl RawSpaces {
+    pub fn new(initial: InitialSpace, handshake: HandshakeSpace, data: DataSpace) -> Self {
+        Self {
+            initial: Some(initial),
+            handshake: Some(handshake),
+            data,
+        }
+    }
+}
+
+pub struct ArcSpaces(Arc<Mutex<RawSpaces>>);
+
+impl ArcSpaces {
+    pub fn new(initial: InitialSpace, handshake: HandshakeSpace, data: DataSpace) -> Self {
+        Self(Arc::new(Mutex::new(RawSpaces::new(
+            initial, handshake, data,
+        ))))
+    }
+
+    pub fn initial_space(&self) -> Option<InitialSpace> {
+        self.0.lock().unwrap().initial.clone()
+    }
+
+    pub fn handshake_space(&self) -> Option<HandshakeSpace> {
+        self.0.lock().unwrap().handshake.clone()
+    }
+
+    pub fn data_space(&self) -> DataSpace {
+        self.0.lock().unwrap().data.clone()
+    }
+
+    pub fn invalid_initial_space(&mut self) {
+        self.0.lock().unwrap().initial = None;
+    }
+
+    pub fn initial_handshake_space(&mut self) {
+        self.0.lock().unwrap().handshake = None;
     }
 }

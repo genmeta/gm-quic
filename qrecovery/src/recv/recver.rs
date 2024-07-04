@@ -60,26 +60,6 @@ impl Recv {
         Ok(())
     }
 
-    /// 仅供学习用
-    #[allow(dead_code)]
-    pub(super) fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
-        if self.rcvbuf.is_readable() {
-            let buflen = buf.remaining_mut();
-            self.rcvbuf.read(&mut buf);
-
-            let threshold = 1_000_000;
-            if self.rcvbuf.offset() + threshold > self.max_data_size {
-                if let Some(waker) = self.buf_exceeds_half_waker.take() {
-                    waker.wake()
-                }
-            }
-
-            Ok(buflen - buf.remaining_mut())
-        } else {
-            Err(io::ErrorKind::WouldBlock.into())
-        }
-    }
-
     pub(super) fn poll_read<T: BufMut>(
         &mut self,
         cx: &mut Context<'_>,

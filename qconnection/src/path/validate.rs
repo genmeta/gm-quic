@@ -12,6 +12,7 @@ use qbase::frame::{
     BeFrame, PathChallengeFrame, PathResponseFrame,
 };
 use qcongestion::congestion::Epoch;
+use qrecovery::space::TransportLimit;
 
 /// 路径验证器，用于验证路径的有效性。
 #[derive(Debug)]
@@ -108,8 +109,8 @@ impl Validator {
         self.state.lock().unwrap().challenge();
     }
 
-    pub fn write_challenge(&self, mut buf: &mut [u8]) -> usize {
-        let origin_size = buf.remaining_mut();
+    pub fn write_challenge(&self, limit: &mut TransportLimit, mut buf: &mut [u8]) -> usize {
+        let origin_size = limit.remaining();
         if let Some(challenge) = self.state.lock().unwrap().need_send_challenge() {
             if origin_size >= challenge.encoding_size() {
                 buf.put_path_challenge_frame(challenge);
@@ -250,8 +251,8 @@ impl Transponder {
         self.0.lock().unwrap().on_challenge(challenge);
     }
 
-    pub fn write_response(&self, mut buf: &mut [u8]) -> usize {
-        let origin_size = buf.remaining_mut();
+    pub fn write_response(&self, limit: &mut TransportLimit, mut buf: &mut [u8]) -> usize {
+        let origin_size = limit.remaining();
         if let Some(response) = self.0.lock().unwrap().need_response() {
             if origin_size >= response.encoding_size() {
                 buf.put_path_response_frame(&response);
@@ -326,7 +327,8 @@ mod tests {
     fn test_validator_write_challenge() {
         let validator = Validator::default();
         let mut buf = [0; 1024];
-        let bytes_written = validator.write_challenge(&mut buf);
+        let mut limit = TransportLimit::new(1024, 1024, 0);
+        let bytes_written = validator.write_challenge(&mut limit, &mut buf);
         assert!(bytes_written > 0);
     }
 
@@ -467,10 +469,12 @@ mod tests {
     fn test_transponder_write_response() {
         let transponder = Transponder::default();
         let mut buf = [0; 1024];
-        let bytes_written = transponder.write_response(&mut buf);
+        let mut limit = TransportLimit::new(1024, 1024, 0);
+        let bytes_written = transponder.write_response(&mut limit, &mut buf);
         assert!(bytes_written == 0);
         transponder.on_challenge(PathChallengeFrame::random());
-        let bytes_written = transponder.write_response(&mut buf);
+        let mut limit = TransportLimit::new(1024, 1024, 0);
+        let bytes_written = transponder.write_response(&mut limit, &mut buf);
         assert!(bytes_written > 0);
     }
 

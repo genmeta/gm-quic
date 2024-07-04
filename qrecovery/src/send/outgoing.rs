@@ -23,6 +23,7 @@ use super::{
     sender::{ArcSender, DataSentSender, Sender, SendingSender},
     sndbuf::Picker,
 };
+use crate::space::TransportLimit;
 
 #[derive(Debug, Clone)]
 pub struct Outgoing(pub(super) ArcSender);
@@ -45,59 +46,66 @@ impl Outgoing {
     pub fn try_read(
         &self,
         sid: StreamId,
-        flow_limit: usize,
+        limit: &mut TransportLimit,
         credit: usize,
-        mut buffer: &mut [u8],
+        mut buf: &mut [u8],
     ) -> Option<(StreamFrame, usize)> {
-        let capacity = buffer.remaining_mut();
+        let capacity = limit.remaining();
         let estimate_capacity =
             |offset| StreamFrame::estimate_max_capacity(credit, capacity, sid, offset);
-        let picker = Picker::new(estimate_capacity, Some(flow_limit));
+        let mut picker = Picker::new(estimate_capacity, Some(limit.flow_control_limit()));
         let write = |(offset, data, is_eos): (u64, (&[u8], &[u8]), bool)| {
             let mut frame = StreamFrame::new(sid, offset, data.len());
             frame.set_eos_flag(is_eos);
-            match frame.should_carry_length(buffer.remaining_mut()) {
+            match frame.should_carry_length(capacity) {
                 ShouldCarryLength::NoProblem => {
-                    buffer.put_stream_frame(&frame, &data);
+                    buf.put_stream_frame(&frame, &data);
                 }
                 ShouldCarryLength::PaddingFirst(n) => {
                     for _ in 0..n {
-                        buffer.put_padding_frame();
+                        buf.put_padding_frame();
                     }
-                    buffer.put_stream_frame(&frame, &data);
+                    buf.put_stream_frame(&frame, &data);
                 }
                 ShouldCarryLength::ShouldAfter(_not_carry_len, _carry_len) => {
                     frame.carry_length();
-                    buffer.put_stream_frame(&frame, &data);
+                    buf.put_stream_frame(&frame, &data);
                 }
             }
-            (frame, capacity - buffer.remaining_mut())
+            (frame, capacity - buf.remaining_mut())
         };
 
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
 
-        match inner {
+        let result = match inner {
             Ok(sending_state) => match sending_state {
                 Sender::Ready(s) => {
                     let result;
                     if s.is_shutdown() {
                         let mut s: DataSentSender = s.into();
-                        result = s.pick_up(picker).map(write);
+                        result = s.pick_up(&mut picker).map(write);
                         *sending_state = Sender::DataSent(s);
                     } else {
                         let mut s: SendingSender = s.into();
-                        result = s.pick_up(picker).map(write);
+                        result = s.pick_up(&mut picker).map(write);
                         *sending_state = Sender::Sending(s);
                     }
                     result
                 }
-                Sender::Sending(s) => s.pick_up(picker).map(write),
-                Sender::DataSent(s) => s.pick_up(picker).map(write),
+                Sender::Sending(s) => s.pick_up(&mut picker).map(write),
+                Sender::DataSent(s) => s.pick_up(&mut picker).map(write),
                 _ => None,
             },
             Err(_) => None,
-        }
+        };
+
+        limit.record_write_new_stream_data(
+            limit.flow_control_limit() - picker.remain_flow_control_limit(),
+        );
+        limit.record_write(credit - buf.remaining_mut());
+
+        result
     }
 
     pub fn on_data_acked(&self, range: &Range<u64>) -> bool {

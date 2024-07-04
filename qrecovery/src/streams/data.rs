@@ -17,6 +17,7 @@ use crate::{
     recv::{self, Incoming, Reader},
     reliable::ArcReliableFrameQueue,
     send::{self, Outgoing, Writer},
+    space::TransportLimit,
 };
 
 #[derive(Default, Debug, Clone, Deref, DerefMut)]
@@ -134,7 +135,11 @@ fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
 }
 
 impl RawDataStreams {
-    pub fn try_read_data(&self, flow_limit: usize, buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+    pub fn try_read_data(
+        &self,
+        limit: &mut TransportLimit,
+        buf: &mut [u8],
+    ) -> Option<(StreamFrame, usize)> {
         let guard = &mut self.output.0.lock().unwrap();
         let output = guard.as_mut().ok()?;
 
@@ -163,7 +168,7 @@ impl RawDataStreams {
                     .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_CREDIT))
             })?;
 
-        let (frame, len) = outgoing.try_read(sid, flow_limit, credit, buf)?;
+        let (frame, len) = outgoing.try_read(sid, limit, credit, buf)?;
         output.cur_credit = Some((sid, credit - len));
         Some((frame, len))
     }

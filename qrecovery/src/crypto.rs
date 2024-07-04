@@ -18,7 +18,10 @@ mod send {
     };
     use tokio::io::AsyncWrite;
 
-    use crate::send::sndbuf::{Picker, SendBuf};
+    use crate::{
+        send::sndbuf::{Picker, SendBuf},
+        space::TransportLimit,
+    };
 
     #[derive(Debug)]
     pub(super) struct Sender {
@@ -28,17 +31,23 @@ mod send {
     }
 
     impl Sender {
-        fn try_read_data(&mut self, mut buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
-            let remaining = buffer.remaining_mut();
+        fn try_read_data(
+            &mut self,
+            limit: &mut TransportLimit,
+            mut buffer: &mut [u8],
+        ) -> Option<(CryptoFrame, usize)> {
+            let remaining = limit.remaining();
             let estimater = |offset: u64| CryptoFrame::estimate_max_capacity(remaining, offset);
-            let picker = Picker::new(estimater, None);
-            if let Some((offset, data)) = self.sndbuf.pick_up(picker) {
+            let mut picker = Picker::new(estimater, None);
+            if let Some((offset, data)) = self.sndbuf.pick_up(&mut picker) {
                 let frame = CryptoFrame {
                     offset: VarInt::from_u64(offset).unwrap(),
                     length: VarInt::from_u32(data.len() as u32),
                 };
                 buffer.put_crypto_frame(&frame, &data);
-                Some((frame, remaining - buffer.remaining_mut()))
+                let written = remaining - buffer.remaining_mut();
+                limit.record_write(written);
+                Some((frame, written))
             } else {
                 None
             }
@@ -117,8 +126,12 @@ mod send {
     }
 
     impl CryptoStreamOutgoing {
-        pub(crate) fn try_read_data(&self, buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
-            self.0.lock().unwrap().try_read_data(buffer)
+        pub(crate) fn try_read_data(
+            &self,
+            limit: &mut TransportLimit,
+            buffer: &mut [u8],
+        ) -> Option<(CryptoFrame, usize)> {
+            self.0.lock().unwrap().try_read_data(limit, buffer)
         }
 
         pub(super) fn on_data_acked(&self, range: &Range<u64>) {
@@ -228,6 +241,8 @@ mod recv {
 pub use recv::CryptoStreamReader;
 pub use send::CryptoStreamWriter;
 
+use crate::space::TransportLimit;
+
 /// Crypto data stream
 /// ## Example
 /// ```rust
@@ -288,8 +303,12 @@ impl CryptoStream {
 
 impl CryptoStream {
     #[inline]
-    pub fn try_read_data(&self, buf: &mut [u8]) -> Option<(CryptoFrame, usize)> {
-        self.outgoing.try_read_data(buf)
+    pub fn try_read_data(
+        &self,
+        limit: &mut TransportLimit,
+        buf: &mut [u8],
+    ) -> Option<(CryptoFrame, usize)> {
+        self.outgoing.try_read_data(limit, buf)
     }
 
     #[inline]

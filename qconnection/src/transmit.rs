@@ -11,7 +11,7 @@ use qbase::{
     },
     varint::{VarInt, WriteVarInt},
 };
-use qrecovery::space::BeSpace;
+use qrecovery::space::{BeSpace, TransportLimit};
 
 /// In order to fill the packet efficiently and reduce unnecessary copying, the data of each
 /// space is directly written on the Buffer. However, the length of the packet header is
@@ -32,6 +32,7 @@ pub fn read_space_and_encrypt<T>(
     fill_policy: FillPolicy,
     keys: ArcKeys,
     space: impl BeSpace,
+    transport_limit: &mut TransportLimit,
 ) -> (usize, usize)
 where
     for<'a> &'a mut [u8]: Write<T>,
@@ -46,7 +47,7 @@ where
     let (mut hdr_buf, body_buf) = buffer.split_at_mut(max_header_size);
 
     // TODO: Path决定是否该发送AckFrame了，如果要发送最后一个参数不再为None
-    let (pn, pn_size, mut body_len) = space.read(body_buf, None);
+    let (pn, pn_size, mut body_len) = space.read(transport_limit, body_buf, None);
     if body_len == 0 {
         // nothing to send
         return (0, 0);
@@ -118,6 +119,7 @@ pub fn read_1rtt_data_and_encrypt(
     header: OneRttHeader,
     keys: ArcOneRttKeys,
     space: impl BeSpace,
+    transport_limit: &mut TransportLimit,
 ) -> usize {
     let (hpk, pk) = match keys.get_local_keys() {
         Some(keys) => keys,
@@ -128,7 +130,7 @@ pub fn read_1rtt_data_and_encrypt(
     let (mut hdr_buf, body_buf) = buffer.split_at_mut(header_size);
 
     // TODO: 这里path要决定是否反馈AckFrame
-    let (pn, pn_size, body_len) = space.read(body_buf, None);
+    let (pn, pn_size, body_len) = space.read(transport_limit, body_buf, None);
     if body_len == 0 {
         return 0;
     }

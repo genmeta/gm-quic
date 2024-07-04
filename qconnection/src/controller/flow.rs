@@ -72,11 +72,11 @@ impl ArcSendControler {
     ///   `Credit::post_sent` or dropping `Credit`, `apply` cannot be called again.
     /// - If there is insufficient flow control, return `Err`, and the sender needs to
     ///   call `notify.notified().await` to wait.
-    pub fn poll_apply(&self, cx: &mut Context<'_>, amount: usize) -> Poll<Credit<'_>> {
+    pub fn poll_apply(&self, cx: &mut Context<'_>) -> Poll<Credit<'_>> {
         let mut guard = self.0.lock().unwrap();
         if guard.max_data > guard.total_sent {
             Poll::Ready(Credit {
-                amount: amount.min((guard.max_data - guard.total_sent) as usize),
+                amount: (guard.max_data - guard.total_sent) as usize,
                 guard,
             })
         } else {
