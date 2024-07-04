@@ -1,9 +1,9 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use bytes::Bytes;
 use futures::StreamExt;
 use qbase::{error::Error, frame::DatagramFrame, util::ArcAsyncDeque};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 
 use super::{
     reader::{DatagramReader, RawDatagramReader},
