@@ -4,8 +4,8 @@ use std::{
     io,
     ops::DerefMut,
     pin::Pin,
-    sync::Arc,
-    task::{ready, Context, Poll, Waker},
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
 };
 
 use bytes::{BufMut, Bytes};
@@ -13,7 +13,6 @@ use qbase::{
     error::{Error, ErrorKind},
     frame::{BeFrame, DatagramFrame},
 };
-use tokio::sync::Mutex;
 
 #[derive(Default, Debug)]
 pub struct RawDatagramReader {
@@ -43,7 +42,7 @@ impl DatagramReader {
         frame: DatagramFrame,
         data: bytes::Bytes,
     ) -> Result<(), Error> {
-        let reader = &mut self.0.blocking_lock();
+        let reader = &mut self.0.lock().unwrap();
         let inner = reader.deref_mut();
         let Ok(reader) = inner else { unreachable!() };
         if (frame.encoding_size() + data.len()) > reader.local_max_size {
@@ -67,7 +66,7 @@ impl DatagramReader {
     }
 
     pub(super) fn on_conn_error(&self, error: &Error) {
-        let reader = &mut self.0.blocking_lock();
+        let reader = &mut self.0.lock().unwrap();
         let inner = reader.deref_mut();
         if let Ok(reader) = inner {
             reader.wakers.drain(..).for_each(|waker| waker.wake());
@@ -96,8 +95,8 @@ impl Future for ReadIntoSlice<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let s = self.get_mut();
-        let reader = s.reader.lock();
-        let mut reader = ready!(Box::pin(reader).as_mut().poll(cx));
+
+        let mut reader = s.reader.lock().unwrap();
         match reader.deref_mut() {
             Ok(reader) => match reader.queue.pop_front() {
                 Some(bytes) => {
@@ -106,7 +105,7 @@ impl Future for ReadIntoSlice<'_> {
                     Poll::Ready(Ok(len))
                 }
                 None => {
-                    reader.wakers.push_front(cx.waker().clone());
+                    reader.wakers.push_back(cx.waker().clone());
                     Poll::Pending
                 }
             },
@@ -128,8 +127,7 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let s = self.get_mut();
-        let reader = s.reader.lock();
-        let mut reader = ready!(Box::pin(reader).as_mut().poll(cx));
+        let mut reader = s.reader.lock().unwrap();
         match reader.deref_mut() {
             Ok(reader) => match reader.queue.pop_front() {
                 Some(bytes) => {
@@ -138,7 +136,7 @@ where
                     Poll::Ready(Ok(len))
                 }
                 None => {
-                    reader.wakers.push_front(cx.waker().clone());
+                    reader.wakers.push_back(cx.waker().clone());
                     Poll::Pending
                 }
             },
@@ -153,13 +151,13 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_datagram_reader_recv_buf() {
+    #[tokio::test]
+    async fn test_datagram_reader_recv_buf() {
         let reader = Arc::new(Mutex::new(Ok(RawDatagramReader::new(1024))));
-        let reader = DatagramReader(reader);
-        let rt = tokio::runtime::Runtime::new().unwrap();
 
-        let handle = rt.spawn({
+        let reader = DatagramReader(reader);
+
+        let recv = tokio::spawn({
             let reader = reader.clone();
             async move {
                 let n = reader.recv(&mut [0u8; 1024]).await.unwrap();
@@ -170,11 +168,12 @@ mod tests {
         reader
             .recv_datagram(DatagramFrame::new(None), Bytes::from_static(b"hello world"))
             .unwrap();
-        rt.block_on(handle).unwrap();
+
+        recv.await.unwrap();
     }
 
-    #[test]
-    fn test_datagram_reader_on_conn_error() {
+    #[tokio::test]
+    async fn test_datagram_reader_on_conn_error() {
         let reader = Arc::new(Mutex::new(Ok(RawDatagramReader::new(1024))));
         let reader = DatagramReader(reader);
         let error = Error::new(
@@ -183,11 +182,10 @@ mod tests {
             "protocol violation",
         );
         reader.on_conn_error(&error);
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let mut buf = [0u8; 1024];
-            let n = reader.recv(&mut buf).await.unwrap_err();
-            assert_eq!(n.kind(), io::ErrorKind::BrokenPipe);
-        });
+
+        let mut buf = [0u8; 1024];
+        // let n = tokio::join!(blocking, reader.recv(&mut buf)).1.unwrap_err();
+        let n = reader.recv(&mut buf).await.unwrap_err();
+        assert_eq!(n.kind(), io::ErrorKind::BrokenPipe);
     }
 }

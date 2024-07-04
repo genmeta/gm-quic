@@ -1,4 +1,9 @@
-use std::{collections::VecDeque, io, ops::DerefMut, sync::Arc};
+use std::{
+    collections::VecDeque,
+    io,
+    ops::DerefMut,
+    sync::{Arc, Mutex},
+};
 
 use bytes::{BufMut, Bytes};
 use qbase::{
@@ -6,7 +11,6 @@ use qbase::{
     frame::{io::WriteDatagramFrame, BeFrame, DatagramFrame, FrameType},
     varint::VarInt,
 };
-use tokio::sync::Mutex;
 
 #[derive(Debug)]
 pub struct RawDatagramWriter {
@@ -30,7 +34,7 @@ pub struct DatagramWriter(pub(super) ArcDatagramWriter);
 
 impl DatagramWriter {
     pub(super) fn try_read_datagram(&self, mut buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        let mut guard = self.0.blocking_lock();
+        let mut guard = self.0.lock().unwrap();
         let writer = guard.as_mut().ok()?;
         let datagram = writer.queue.front()?;
 
@@ -59,15 +63,14 @@ impl DatagramWriter {
     }
 
     pub(super) fn on_conn_error(&self, error: &Error) {
-        let writer = &mut self.0.blocking_lock();
-        let inner = writer.deref_mut();
-        if inner.is_ok() {
-            *inner = Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()));
+        let writer = &mut self.0.lock().unwrap();
+        if writer.is_ok() {
+            **writer = Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()));
         }
     }
 
-    pub fn send_bytes_blocking(&self, data: Bytes) -> io::Result<()> {
-        match self.0.blocking_lock().deref_mut() {
+    pub fn send_bytes(&self, data: Bytes) -> io::Result<()> {
+        match self.0.lock().unwrap().deref_mut() {
             Ok(writer) => {
                 // 这里只考虑最小的编码方式：也就是1字节
                 if (1 + data.len()) > writer.remote_max_size {
@@ -83,33 +86,12 @@ impl DatagramWriter {
         }
     }
 
-    pub async fn send_bytes(&self, data: Bytes) -> io::Result<()> {
-        match self.0.lock().await.deref_mut() {
-            Ok(writer) => {
-                // 这里只考虑最小的编码方式：也就是1字节
-                if (1 + data.len()) > writer.remote_max_size {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "datagram frame size exceeds the limit",
-                    ));
-                }
-                writer.queue.push_back(data);
-                Ok(())
-            }
-            Err(e) => Err(io::Error::new(e.kind(), e.to_string())),
-        }
-    }
-
-    pub fn send_blocking(&self, data: &[u8]) -> io::Result<()> {
-        self.send_bytes_blocking(data.to_vec().into())
-    }
-
-    pub async fn send(&self, data: &[u8]) -> io::Result<()> {
-        self.send_bytes(data.to_vec().into()).await
+    pub fn send(&self, data: &[u8]) -> io::Result<()> {
+        self.send_bytes(data.to_vec().into())
     }
 
     pub fn update_remote_max_datagram_frame_size(&self, size: usize) -> Result<(), Error> {
-        let mut writer = self.0.blocking_lock();
+        let mut writer = self.0.lock().unwrap();
         let inner = writer.deref_mut();
 
         if let Ok(writer) = inner {
@@ -136,7 +118,7 @@ mod tests {
         let writer = DatagramWriter(writer);
 
         let data = Bytes::from_static(b"hello world");
-        writer.send_bytes_blocking(data.clone()).unwrap();
+        writer.send_bytes(data.clone()).unwrap();
         let (frame, written) = writer.try_read_datagram(&mut [0; 1024]).unwrap();
         assert_eq!(frame.length, Some(VarInt::try_from(data.len()).unwrap()));
         assert_eq!(written, 1 + 1 + data.len());
@@ -148,7 +130,7 @@ mod tests {
         let writer = DatagramWriter(writer);
 
         let data = Bytes::from_static(b"hello world");
-        writer.send_bytes_blocking(data.clone()).unwrap();
+        writer.send_bytes(data.clone()).unwrap();
         assert_eq!(
             writer.try_read_datagram(&mut [0; 1 + 11]),
             Some((DatagramFrame::new(None), 12))
@@ -161,7 +143,7 @@ mod tests {
         let writer = DatagramWriter(writer);
 
         let data = Bytes::from_static(b"hello world");
-        writer.send_bytes_blocking(data.clone()).unwrap();
+        writer.send_bytes(data.clone()).unwrap();
         assert!(writer.try_read_datagram(&mut [0; 1]).is_none());
     }
 
@@ -171,7 +153,7 @@ mod tests {
         let writer = DatagramWriter(writer);
 
         let data = Bytes::from_static(b"hello world");
-        let result = writer.send_bytes_blocking(data);
+        let result = writer.send_bytes(data);
         assert!(result.is_err());
     }
 
@@ -181,7 +163,7 @@ mod tests {
         let writer = DatagramWriter(writer);
 
         writer.update_remote_max_datagram_frame_size(2048).unwrap();
-        let writer_guard = writer.0.blocking_lock();
+        let writer_guard = writer.0.lock().unwrap();
         let writer = writer_guard.as_ref().unwrap();
         assert_eq!(writer.remote_max_size, 2048);
     }
@@ -205,7 +187,7 @@ mod tests {
             FrameType::Datagram(0),
             "test",
         ));
-        let writer_guard = writer.0.blocking_lock();
+        let writer_guard = writer.0.lock().unwrap();
         assert!(writer_guard.as_ref().is_err());
     }
 }
