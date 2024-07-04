@@ -14,7 +14,7 @@ use crate::{
     new_reno::NewReno,
     pacing::{self, Pacer},
     rtt::{ArcRtt, INITIAL_RTT},
-    ObserveAck, ObserveAntiAmplification, ObserveHandshake, ObserveLoss, ObserveSend, SlideWindow,
+    ObserveAck, ObserveAntiAmplification, ObserveHandshake, ObserveLoss, ObservePto, SlideWindow,
 };
 
 const K_GRANULARITY: Duration = Duration::from_millis(1);
@@ -60,7 +60,7 @@ pub struct CongestionController<OC, OP> {
 
 impl<OC, OP> CongestionController<OC, OP>
 where
-    OC: ObserveHandshake + ObserveLoss + ObserveSend + ObserveAck,
+    OC: ObserveHandshake + ObserveLoss + ObservePto + ObserveAck,
     OP: ObserveAntiAmplification,
 {
     // A.4. Initialization
@@ -141,7 +141,7 @@ where
         self.largest_acked_packet[space] =
             Some(largest_acked.max(self.largest_acked_packet[space].unwrap_or(0)));
 
-        let (newly_acked_packets, latest_rtt) = self.slide_ack_packet(space, ack_frame);
+        let (newly_acked_packets, latest_rtt) = self.get_newly_acked_packets(space, ack_frame);
         if newly_acked_packets.is_empty() {
             return;
         }
@@ -156,7 +156,7 @@ where
             self.process_ecn(space, ecn)
         }
 
-        let lost_packets = self.slide_loss_packet(space, now);
+        let lost_packets = self.remove_loss_packets(space, now);
         if !lost_packets.is_empty() {
             self.on_packets_lost(lost_packets, space);
         }
@@ -168,7 +168,7 @@ where
         self.set_loss_timer();
     }
 
-    pub fn slide_ack_packet(
+    pub fn get_newly_acked_packets(
         &mut self,
         space: Epoch,
         ack_frame: &AckFrame,
@@ -198,7 +198,7 @@ where
                 guard.inactivate(pn);
             }
         }
-        self.slide_send_packets(space);
+        self.slide_sent_packets(space);
         (newly_acked_packets, latest_rtt)
     }
 
@@ -239,25 +239,25 @@ where
         let (earliest_loss_time, space) = self.get_loss_time_and_space();
         // lost timeout
         if earliest_loss_time.is_some() {
-            let loss_packet = self.slide_loss_packet(space, now);
+            let loss_packet = self.remove_loss_packets(space, now);
             assert!(!loss_packet.is_empty());
             self.on_packets_lost(loss_packet, space);
             self.set_loss_timer();
             return;
         }
 
-        // pto timeout
+        // probe timeout
         if self.no_ack_eliciting_in_flight() {
             assert!(self.server_completed_address_validation());
             if self.connection_observer.is_handshake_done() {
-                todo!("send one ack eliciting handshake packet")
+                self.connection_observer.probe_timeout(Epoch::Handshake);
             } else {
-                todo!("send one ack eliciting padded Inital packet")
+                self.connection_observer.probe_timeout(Epoch::Initial);
             }
         } else {
             let (timeout, _) = self.get_pto_time_and_space();
             if timeout.is_some() {
-                todo!("send one ack eliciting packet in space")
+                self.connection_observer.probe_timeout(Epoch::Data);
             }
         }
         self.pto_count += 1;
@@ -293,7 +293,7 @@ where
             return (Some(Instant::now() + duration), eoch);
         }
 
-        let mut pto_timeout = None;
+        let mut pto_time = None;
         let mut pto_space = Epoch::Initial;
         for space in Epoch::iter() {
             if self.time_of_last_ack_eliciting_packet[*space].is_none() {
@@ -303,22 +303,22 @@ where
                 // An endpoint MUST NOT set its PTO timer for the Application Data
                 // packet number space until the handshake is confirmed
                 if !self.connection_observer.is_handshake_done() {
-                    return (pto_timeout, pto_space);
+                    return (pto_time, pto_space);
                 }
 
                 duration += self.max_ack_delay * 2_u32.pow(self.pto_count);
             }
 
             let new_time = self.time_of_last_ack_eliciting_packet[*space].unwrap() + duration;
-            if pto_timeout.is_none() || new_time < pto_timeout.unwrap() {
-                pto_timeout = Some(new_time);
+            if pto_time.is_none() || new_time < pto_time.unwrap() {
+                pto_time = Some(new_time);
                 pto_space = *space;
             }
         }
-        (pto_timeout, pto_space)
+        (pto_time, pto_space)
     }
 
-    fn slide_loss_packet(&mut self, space: Epoch, now: Instant) -> Vec<SentPkt> {
+    fn remove_loss_packets(&mut self, space: Epoch, now: Instant) -> Vec<SentPkt> {
         assert!(self.largest_acked_packet[space].is_some());
         let largest_acked = self.largest_acked_packet[space].unwrap();
         self.loss_time[space] = None;
@@ -360,12 +360,11 @@ where
             }
         }
 
-        self.slide_send_packets(space);
+        self.slide_sent_packets(space);
         lost_packets
     }
 
-    // 移除头部连续被 acked 的包
-    fn slide_send_packets(&mut self, space: Epoch) {
+    fn slide_sent_packets(&mut self, space: Epoch) {
         while let Some(sent) = self.sent_packets[space].front() {
             if !sent.is_acked {
                 break;
@@ -400,7 +399,7 @@ pub struct ArcCC<OC, OP>(Arc<Mutex<CongestionController<OC, OP>>>);
 
 impl<OC, OP> ArcCC<OC, OP>
 where
-    OC: ObserveHandshake + ObserveLoss + ObserveSend + ObserveAck,
+    OC: ObserveHandshake + ObserveLoss + ObservePto + ObserveAck,
     OP: ObserveAntiAmplification,
 {
     pub fn new(
@@ -420,7 +419,7 @@ where
 
 impl<OC, OP> super::CongestionControl for ArcCC<OC, OP>
 where
-    OC: ObserveHandshake + ObserveLoss + ObserveSend + ObserveAck,
+    OC: ObserveHandshake + ObserveLoss + ObservePto + ObserveAck,
     OP: ObserveAntiAmplification,
 {
     fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize> {
@@ -747,14 +746,14 @@ mod tests {
         congestion.largest_acked_packet[space] = Some(5);
         congestion.sent_packets[space][4].is_acked = true;
         congestion.sent_packets[space].pop_back();
-        let lost_packets = congestion.slide_loss_packet(space, now);
+        let lost_packets = congestion.remove_loss_packets(space, now);
         assert_eq!(lost_packets.len(), 2);
         for (i, lost) in lost_packets.iter().enumerate() {
             assert_eq!(lost.pn, i as u64 + 1);
         }
         assert_eq!(congestion.sent_packets[space].len(), 2);
         // loss delay =  333*1.25
-        let loss_packets = congestion.slide_loss_packet(space, now + Duration::from_millis(417));
+        let loss_packets = congestion.remove_loss_packets(space, now + Duration::from_millis(417));
         // 3,4 因为超时丢包
         assert_eq!(loss_packets.len(), 2);
         for (i, lost) in loss_packets.iter().enumerate() {
@@ -852,8 +851,8 @@ mod tests {
         fn may_loss_pkt(&self, _: Epoch, _: u64) {}
     }
 
-    impl ObserveSend for Mock {
-        fn send_packet(&self, _: Epoch) {}
+    impl ObservePto for Mock {
+        fn probe_timeout(&self, _: Epoch) {}
     }
 
     impl ObserveHandshake for Mock {

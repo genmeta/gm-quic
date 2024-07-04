@@ -84,7 +84,12 @@ pub struct RawPath {
     // 但这只是正常情况下。当连接处于Closing状态时，庞大的拥塞控制器便不再适用，而是简单的回应ConnectionCloseFrame。
     cc: ArcCC<ConnectionObserver, PathObserver>,
 
-    anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
+    // 抗放大攻击控制器, 服务端地址验证之前有效
+    // 连接建立隐式提供了地址验证
+    // 1. 服务端收到对方的 handshake 包即代表验证了对方地址
+    // 2. 服务端发送 Retry 包, 收到对方的 Initial包后，其中携带了包含在Retry包中提供的令牌
+    // 3. 0-RTT 连接中，收到客户端携带服务端使用 NEW_TOKEN 颁发的令牌
+    anti_amplifier: Option<ArcAntiAmplifier<ANTI_FACTOR>>,
 
     // PathState，包括新建待验证（有抗放大攻击响应限制），已发挑战验证中，验证通过，再挑战，再挑战验证中，后三者无抗放大攻击响应限制
     validator: Validator,
@@ -103,7 +108,7 @@ impl RawPath {
             peer_cid: None,
             validator: Validator::default(),
             transponder: Transponder::default(),
-            anti_amplifier,
+            anti_amplifier: Some(anti_amplifier),
             cc: ArcCC::new(
                 CongestionAlgorithm::Bbr,
                 max_ack_delay,

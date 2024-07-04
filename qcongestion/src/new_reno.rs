@@ -97,9 +97,8 @@ impl Algorithm for NewReno {
 #[cfg(test)]
 mod tests {
 
-    use crate::congestion::SentPkt;
-
     use super::*;
+    use crate::congestion::SentPkt;
 
     #[test]
     fn test_reno_init() {

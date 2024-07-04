@@ -31,7 +31,7 @@ use crate::{
     crypto::TlsIO,
     handshake,
     path::{
-        observer::{self, ConnectionObserver, HandShakeObserver, SendObserver},
+        observer::{ConnectionObserver, HandShakeObserver, PtoObserver},
         AckObserver, ArcPath, LossObserver, Pathway,
     },
 };
@@ -262,14 +262,18 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
         data_space.spawn_handle_may_loss(),
     ]);
     let handshake_observer = HandShakeObserver::new(conn_state.clone());
-    // todo: send obersrver
-    let send_observer = SendObserver {};
+
+    let pto_observer = PtoObserver::new([
+        initial_space.spawn_probe_timeout(),
+        handshake_space.spawn_probe_timeout(),
+        data_space.spawn_probe_timeout(),
+    ]);
 
     let connection_observer = ConnectionObserver {
         handshake_observer,
         ack_observer,
         loss_observer,
-        send_observer,
+        pto_observer,
     };
 
     let flow_controller = ArcFlowController::with_initial(0, 0);
