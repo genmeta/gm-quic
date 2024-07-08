@@ -5,10 +5,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use bytes::{BufMut, Bytes};
+use bytes::Bytes;
 use qbase::{
     error::{Error, ErrorKind},
     frame::{io::WriteDatagramFrame, BeFrame, DatagramFrame, FrameType},
+    util::TransportLimit,
     varint::VarInt,
 };
 
@@ -33,13 +34,18 @@ pub type ArcDatagramWriter = Arc<Mutex<io::Result<RawDatagramWriter>>>;
 pub struct DatagramWriter(pub(super) ArcDatagramWriter);
 
 impl DatagramWriter {
-    pub(super) fn try_read_datagram(&self, mut buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
+    pub(super) fn try_read_datagram(
+        &self,
+        limit: &mut TransportLimit,
+        mut buf: &mut [u8],
+    ) -> Option<(DatagramFrame, usize)> {
         let mut guard = self.0.lock().unwrap();
         let writer = guard.as_mut().ok()?;
         let datagram = writer.queue.front()?;
 
-        let remain = buf.remaining_mut();
-        let max_encoding_size = remain.saturating_sub(datagram.len());
+        let available = limit.remaining();
+
+        let max_encoding_size = available.saturating_sub(datagram.len());
         if max_encoding_size == 0 {
             return None;
         }
@@ -119,7 +125,13 @@ mod tests {
 
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
-        let (frame, written) = writer.try_read_datagram(&mut [0; 1024]).unwrap();
+
+        let (frame, written) = writer
+            .try_read_datagram(
+                &mut TransportLimit::new(None, usize::MAX, 0),
+                &mut [0; 1024],
+            )
+            .unwrap();
         assert_eq!(frame.length, Some(VarInt::try_from(data.len()).unwrap()));
         assert_eq!(written, 1 + 1 + data.len());
     }
@@ -132,7 +144,10 @@ mod tests {
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
         assert_eq!(
-            writer.try_read_datagram(&mut [0; 1 + 11]),
+            writer.try_read_datagram(
+                &mut TransportLimit::new(None, usize::MAX, 0),
+                &mut [0; 1 + 11]
+            ),
             Some((DatagramFrame::new(None), 12))
         );
     }
@@ -144,7 +159,9 @@ mod tests {
 
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
-        assert!(writer.try_read_datagram(&mut [0; 1]).is_none());
+        assert!(writer
+            .try_read_datagram(&mut TransportLimit::new(None, usize::MAX, 0), &mut [0; 1])
+            .is_none());
     }
 
     #[test]
