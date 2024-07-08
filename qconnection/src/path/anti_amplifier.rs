@@ -30,9 +30,9 @@ impl<const N: usize> AntiAmplifier<N> {
         }
     }
 
-    /// poll_apply must only be called by one at a time, and the amount of data sent
+    /// This function must only be called by one at a time, and the amount of data sent
     /// must be feed back to the anti-amplifier before poll_apply can be called again.
-    fn poll_apply(&self, cx: &mut Context<'_>) -> Poll<Option<usize>> {
+    fn poll_get_credit(&self, cx: &mut Context<'_>) -> Poll<Option<usize>> {
         let credit = self.credit.load(Ordering::Acquire);
         if credit == 0 {
             self.waker.register(cx.waker());
@@ -65,15 +65,17 @@ impl<const N: usize> ArcAntiAmplifier<N> {
         self.0.deposit(amount);
     }
 
-    /// poll_apply cannot be abstracted into a Future, because there is no need to remember amount.
-    /// Once it is awakened from waiting, the amount of data to apply for after waiting will be
-    /// different, and needs to be recalculated.
-    pub fn poll_apply(&self, cx: &mut Context<'_>) -> Poll<Option<usize>> {
-        self.0.poll_apply(cx)
+    /// This function cannot be abstracted into a Future, because there is no
+    /// need to remember amount. Once it is awakened from waiting, the amount
+    /// of data to apply for after waiting will be different, and needs to be
+    /// recalculated.
+    pub fn poll_get_credit(&self, cx: &mut Context<'_>) -> Poll<Option<usize>> {
+        self.0.poll_get_credit(cx)
     }
 
-    /// Wait until the data of 'amount' is really sent, then the remaining send credit should be
-    /// updated in time. Do not call poll_apply before updating to avoid double amplification.
+    /// Wait until the data of 'amount' is really sent, then the remaining send
+    /// credit should be updated in time. Do not call poll_apply before updating
+    /// to avoid double amplification.
     pub fn post_sent(&self, amount: usize) {
         self.0.post_sent(amount);
     }
@@ -101,20 +103,23 @@ mod tests {
         let mut cx = Context::from_waker(noop_waker_ref());
 
         // Initially, no credit
-        assert_eq!(anti_amplifier.poll_apply(&mut cx), Poll::Pending);
+        assert_eq!(anti_amplifier.poll_get_credit(&mut cx), Poll::Pending);
 
         // Deposit 1 unit of data, should add 3 units of credit
         anti_amplifier.deposit(1);
         assert_eq!(anti_amplifier.0.credit.load(Ordering::Acquire), 3);
 
         // Apply for 2 units of data, should return 2 units
-        assert_eq!(anti_amplifier.poll_apply(&mut cx), Poll::Ready(Some(3)));
+        assert_eq!(
+            anti_amplifier.poll_get_credit(&mut cx),
+            Poll::Ready(Some(3))
+        );
         assert_eq!(anti_amplifier.0.credit.load(Ordering::Acquire), 3);
 
         anti_amplifier.post_sent(3);
 
         // No credit left, should return Pending
-        assert_eq!(anti_amplifier.poll_apply(&mut cx), Poll::Pending);
+        assert_eq!(anti_amplifier.poll_get_credit(&mut cx), Poll::Pending);
     }
 
     #[test]
@@ -131,7 +136,10 @@ mod tests {
         assert_eq!(anti_amplifier.0.credit.load(Ordering::Acquire), 6);
 
         // Apply for 5 units of data, should return 5 units
-        assert_eq!(anti_amplifier.poll_apply(&mut cx), Poll::Ready(Some(6)));
+        assert_eq!(
+            anti_amplifier.poll_get_credit(&mut cx),
+            Poll::Ready(Some(6))
+        );
         assert_eq!(anti_amplifier.0.credit.load(Ordering::Acquire), 6);
 
         // Post sent 5 units, should reduce credit by 5
