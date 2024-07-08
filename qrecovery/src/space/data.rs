@@ -94,11 +94,11 @@ impl ReliableTransmit for ArcSpace<DataSpace> {
 
         // 可靠帧数量大，一个个读可能太慢了
         {
-            let remain = limit.available();
+            // 不用算长度，否则会消耗双倍空间
             let mut reliable_frame_reader = self.reliable_frame_queue.read();
             while let Some(frame) = reliable_frame_reader.front() {
-                let remain = limit.available();
-                if remain < frame.max_encoding_size() && remain < frame.encoding_size() {
+                let available = limit.available();
+                if available < frame.max_encoding_size() && available < frame.encoding_size() {
                     break;
                 }
                 buf.put_frame(frame);
@@ -106,8 +106,6 @@ impl ReliableTransmit for ArcSpace<DataSpace> {
                 limit.record_write(frame.encoding_size());
                 send_guard.record_reliable_frame(frame);
             }
-            let n = remain - buf.remaining_mut();
-            buf = &mut buf[n..];
         };
 
         if let Some((crypto_frame, written)) = self.crypto_stream.try_read_data(limit, buf) {
