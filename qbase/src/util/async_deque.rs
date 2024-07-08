@@ -34,6 +34,20 @@ impl<T> ArcAsyncDeque<T> {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.0
+            .lock()
+            .unwrap()
+            .queue
+            .as_ref()
+            .map(|v| v.len())
+            .unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn close(&self) {
         let mut queue = self.0.lock().unwrap();
         queue.queue = None;
