@@ -144,10 +144,7 @@ mod tests {
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
         assert_eq!(
-            writer.try_read_datagram(
-                &mut TransportLimit::new(None, usize::MAX, 0),
-                &mut [0; 1 + 11]
-            ),
+            writer.try_read_datagram(&mut TransportLimit::new(None, 1 + 11, 0), &mut [0; 1024]),
             Some((DatagramFrame::new(None), 12))
         );
     }
@@ -160,7 +157,7 @@ mod tests {
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
         assert!(writer
-            .try_read_datagram(&mut TransportLimit::new(None, usize::MAX, 0), &mut [0; 1])
+            .try_read_datagram(&mut TransportLimit::new(None, 1, 0), &mut [0; 1024])
             .is_none());
     }
 
