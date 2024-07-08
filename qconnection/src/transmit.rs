@@ -11,7 +11,7 @@ use qbase::{
     },
     varint::{VarInt, WriteVarInt},
 };
-use qrecovery::space::{BeSpace, TransportLimit};
+use qrecovery::space::{ReliableTransmit, TransportLimit};
 
 /// In order to fill the packet efficiently and reduce unnecessary copying, the data of each
 /// space is directly written on the Buffer. However, the length of the packet header is
@@ -31,7 +31,7 @@ pub fn read_space_and_encrypt<T>(
     header: LongHeader<T>,
     fill_policy: FillPolicy,
     keys: ArcKeys,
-    space: impl BeSpace,
+    space: impl ReliableTransmit,
     transport_limit: &mut TransportLimit,
 ) -> (usize, usize)
 where
@@ -118,7 +118,7 @@ pub fn read_1rtt_data_and_encrypt(
     buffer: &mut [u8],
     header: OneRttHeader,
     keys: ArcOneRttKeys,
-    space: impl BeSpace,
+    space: impl ReliableTransmit,
     transport_limit: &mut TransportLimit,
 ) -> usize {
     let (hpk, pk) = match keys.get_local_keys() {

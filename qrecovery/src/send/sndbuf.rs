@@ -92,18 +92,18 @@ impl PartialOrd for State {
     }
 }
 
-pub struct Picker<E> {
+pub struct PickIndicator<E> {
     estimate_capacity: E,
     flow_control_limit: Option<usize>,
 }
 
-impl Picker<()> {
-    pub fn from_usize(size: usize) -> Picker<impl Fn(u64) -> Option<usize>> {
-        Picker::new(move |_| Some(size), None)
+impl PickIndicator<()> {
+    pub fn from_usize(size: usize) -> PickIndicator<impl Fn(u64) -> Option<usize>> {
+        PickIndicator::new(move |_| Some(size), None)
     }
 }
 
-impl<E> Picker<E>
+impl<E> PickIndicator<E>
 where
     E: Fn(u64) -> Option<usize>,
 {
@@ -165,7 +165,7 @@ impl BufMap {
 
     // 挑选Lost/Pending的数据发送。越靠前的数据，越高优先级发送；
     // 丢包重传的数据，相比于Pending数据更靠前，因此具有更高的优先级。
-    fn pick<E>(&mut self, picker: &mut Picker<E>) -> Option<Range<u64>>
+    fn pick<E>(&mut self, picker: &mut PickIndicator<E>) -> Option<Range<u64>>
     where
         E: Fn(u64) -> Option<usize>,
     {
@@ -598,7 +598,7 @@ impl SendBuf {
     // 挑选出可供发送的数据，限制长度不能超过len，以满足一个数据包能容的下一个完整的数据帧。
     // 返回的是一个切片，该切片的生命周期必须不长于SendBuf的生命周期，该切片可以被缓存至数据包
     // 被确认或者被判定丢失。
-    pub fn pick_up<E>(&mut self, picker: &mut Picker<E>) -> Option<Data>
+    pub fn pick_up<E>(&mut self, picker: &mut PickIndicator<E>) -> Option<Data>
     where
         E: Fn(u64) -> Option<usize>,
     {
@@ -640,7 +640,7 @@ impl SendBuf {
 #[cfg(test)]
 mod tests {
     use super::{BufMap, Color, State};
-    use crate::send::sndbuf::Picker;
+    use crate::send::sndbuf::PickIndicator;
 
     #[test]
     fn test_bufmap_empty() {
@@ -670,12 +670,12 @@ mod tests {
     #[test]
     fn test_bufmap_pick() {
         let mut buf_map = BufMap::default();
-        let range = buf_map.pick(&mut Picker::from_usize(20));
+        let range = buf_map.pick(&mut PickIndicator::from_usize(20));
         assert_eq!(range, None);
         assert!(buf_map.0.is_empty());
 
         buf_map.extend_to(200);
-        let range = buf_map.pick(&mut Picker::from_usize(20));
+        let range = buf_map.pick(&mut PickIndicator::from_usize(20));
         assert_eq!(range, Some(0..20));
         assert_eq!(
             buf_map.0,
@@ -685,7 +685,7 @@ mod tests {
             ]
         );
 
-        let range = buf_map.pick(&mut Picker::from_usize(20));
+        let range = buf_map.pick(&mut PickIndicator::from_usize(20));
         assert_eq!(range, Some(20..40));
         assert_eq!(
             buf_map.0,
@@ -697,7 +697,7 @@ mod tests {
 
         buf_map.0.insert(2, State::encode(50, Color::Lost));
         buf_map.0.insert(3, State::encode(120, Color::Pending));
-        let range = buf_map.pick(&mut Picker::from_usize(20));
+        let range = buf_map.pick(&mut PickIndicator::from_usize(20));
         assert_eq!(range, Some(40..50));
         assert_eq!(
             buf_map.0,
@@ -709,7 +709,7 @@ mod tests {
         );
 
         buf_map.0.get_mut(0).unwrap().set_color(Color::Recved);
-        let range = buf_map.pick(&mut Picker::from_usize(20));
+        let range = buf_map.pick(&mut PickIndicator::from_usize(20));
         assert_eq!(range, Some(50..70));
         assert_eq!(
             buf_map.0,
@@ -721,7 +721,7 @@ mod tests {
             ]
         );
 
-        let range = buf_map.pick(&mut Picker::from_usize(130));
+        let range = buf_map.pick(&mut PickIndicator::from_usize(130));
         assert_eq!(range, Some(70..120));
         assert_eq!(
             buf_map.0,
@@ -732,7 +732,7 @@ mod tests {
             ]
         );
 
-        let range = buf_map.pick(&mut Picker::from_usize(130));
+        let range = buf_map.pick(&mut PickIndicator::from_usize(130));
         assert_eq!(range, Some(120..200));
         assert_eq!(
             buf_map.0,
@@ -742,7 +742,7 @@ mod tests {
             ]
         );
 
-        let range = buf_map.pick(&mut Picker::from_usize(130));
+        let range = buf_map.pick(&mut PickIndicator::from_usize(130));
         assert_eq!(range, None);
         assert_eq!(
             buf_map.0,
@@ -757,7 +757,7 @@ mod tests {
     fn test_bufmap_recved() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(&mut Picker::from_usize(120));
+        buf_map.pick(&mut PickIndicator::from_usize(120));
         buf_map.ack_rcvd(&(0..20));
         assert_eq!(
             buf_map.0,
@@ -832,7 +832,7 @@ mod tests {
             ]
         );
 
-        buf_map.pick(&mut Picker::from_usize(200));
+        buf_map.pick(&mut PickIndicator::from_usize(200));
         assert_eq!(
             buf_map.0,
             vec![
@@ -866,7 +866,7 @@ mod tests {
     fn test_bufmap_invalid_recved() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(&mut Picker::from_usize(120));
+        buf_map.pick(&mut PickIndicator::from_usize(120));
         buf_map.ack_rcvd(&(20..40));
         buf_map.0.insert(2, State::encode(30, Color::Pending));
         assert_eq!(
@@ -888,7 +888,7 @@ mod tests {
     fn test_bufmap_recved_overflow() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(&mut Picker::from_usize(120));
+        buf_map.pick(&mut PickIndicator::from_usize(120));
         assert_eq!(
             buf_map.0,
             vec![
@@ -904,7 +904,7 @@ mod tests {
     fn test_bufmap_recved_over_end() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(&mut Picker::from_usize(200));
+        buf_map.pick(&mut PickIndicator::from_usize(200));
         assert_eq!(buf_map.0, vec![State::encode(0, Color::Pending),]);
         buf_map.ack_rcvd(&(0..201));
     }
@@ -913,7 +913,7 @@ mod tests {
     fn test_bufmap_lost() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(&mut Picker::from_usize(120));
+        buf_map.pick(&mut PickIndicator::from_usize(120));
         assert_eq!(
             buf_map.0,
             vec![

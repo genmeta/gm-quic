@@ -7,7 +7,7 @@ use std::{
 
 use qbase::util::DescribeData;
 
-use super::sndbuf::{Picker, SendBuf};
+use super::sndbuf::{PickIndicator, SendBuf};
 
 /// The "Ready" state represents a newly created stream that is able to accept data from the application.
 /// Stream data might be buffered in this state in preparation for sending.
@@ -225,7 +225,7 @@ impl SendingSender {
         }
     }
 
-    pub(super) fn pick_up<E>(&mut self, picker: &mut Picker<E>) -> Option<StreamData>
+    pub(super) fn pick_up<E>(&mut self, picker: &mut PickIndicator<E>) -> Option<StreamData>
     where
         E: Fn(u64) -> Option<usize>,
     {
@@ -348,7 +348,7 @@ pub struct DataSentSender {
 }
 
 impl DataSentSender {
-    pub(super) fn pick_up<E>(&mut self, picker: &mut Picker<E>) -> Option<StreamData>
+    pub(super) fn pick_up<E>(&mut self, picker: &mut PickIndicator<E>) -> Option<StreamData>
     where
         E: Fn(u64) -> Option<usize>,
     {

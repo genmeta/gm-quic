@@ -16,21 +16,14 @@ pub type DataSpace = ArcSpace<data::DataSpace>;
 
 use qbase::{
     error::Error,
-    frame::{
-        io::{WriteAckFrame, WriteFrame},
-        *,
-    },
+    frame::{io::WriteAckFrame, *},
     util::ArcAsyncDeque,
 };
 use tokio::sync::mpsc;
 
 use crate::{
     crypto::CryptoStream,
-    reliable::{
-        rcvdpkt::ArcRcvdPktRecords,
-        sentpkt::{ArcSentPktRecords, SendGuard},
-        ArcReliableFrameQueue,
-    },
+    reliable::{rcvdpkt::ArcRcvdPktRecords, sentpkt::ArcSentPktRecords, ArcReliableFrameQueue},
     streams::DataStreams,
 };
 
@@ -54,48 +47,25 @@ pub struct RawSpace<T> {
 impl<T> RawSpace<T> {
     fn read_ack_frame_until(
         &self,
-        send_guard: &mut SendGuard,
         limit: &mut TransportLimit,
         mut buf: &mut [u8],
         ack_pkt: Option<(u64, Instant)>,
-    ) -> usize {
+    ) -> Option<(AckFrame, usize)> {
         let remain = limit.remaining();
-        if let Some(largest) = ack_pkt {
-            let ack_frame = self.rcvd_pkt_records.gen_ack_frame_util(largest, remain);
-            buf.put_ack_frame(&ack_frame);
-            send_guard.record_ack_frame(ack_frame);
-        }
+
+        let ack_frame = self.rcvd_pkt_records.gen_ack_frame_util(ack_pkt?, remain);
+        buf.put_ack_frame(&ack_frame);
+
         let written = remain - buf.remaining_mut();
         limit.record_write(written);
-        written
-    }
-
-    fn read_reliable_frames(
-        &self,
-        send_guard: &mut SendGuard,
-        limit: &mut TransportLimit,
-        mut buf: &mut [u8],
-    ) -> usize {
-        let remain = limit.remaining();
-        let mut reliable_frame_reader = self.reliable_frame_queue.read();
-        while let Some(frame) = reliable_frame_reader.front() {
-            let remain = limit.remaining();
-            if remain < frame.max_encoding_size() && remain < frame.encoding_size() {
-                break;
-            }
-            buf.put_frame(frame);
-            let frame = reliable_frame_reader.pop_front().unwrap();
-            limit.record_write(frame.encoding_size());
-            send_guard.record_reliable_frame(frame);
-        }
-        remain - buf.remaining_mut()
+        Some((ack_frame, written))
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct TransportLimit {
     /// *`anti-amplification`*
-    anti_amplification: usize,
+    anti_amplification: Option<usize>,
     /// *`congestion control`*
     congestion_control: usize,
     /// flow control
@@ -104,7 +74,11 @@ pub struct TransportLimit {
 }
 
 impl TransportLimit {
-    pub fn new(anti_amplification: usize, congestion_control: usize, flow_control: usize) -> Self {
+    pub fn new(
+        anti_amplification: Option<usize>,
+        congestion_control: usize,
+        flow_control: usize,
+    ) -> Self {
         Self {
             anti_amplification,
             congestion_control,
@@ -113,7 +87,9 @@ impl TransportLimit {
     }
 
     pub fn remaining(&self) -> usize {
-        self.anti_amplification.min(self.congestion_control)
+        self.anti_amplification
+            .map(|aa| aa.min(self.congestion_control))
+            .unwrap_or(self.congestion_control)
     }
 
     pub fn flow_control_limit(&self) -> usize {
@@ -121,7 +97,9 @@ impl TransportLimit {
     }
 
     pub fn record_write(&mut self, written: usize) {
-        self.anti_amplification -= written;
+        if let Some(ref mut aa) = self.anti_amplification {
+            *aa -= written
+        };
         self.congestion_control -= written;
     }
 
@@ -130,7 +108,7 @@ impl TransportLimit {
     }
 }
 
-pub trait BeSpace: Send + Sync + 'static {
+pub trait ReliableTransmit: Send + Sync + 'static {
     fn read(
         &self,
         limit: &mut TransportLimit,
@@ -154,7 +132,7 @@ impl<T> Clone for ArcSpace<T> {
 
 impl<T> ArcSpace<T>
 where
-    Self: BeSpace,
+    Self: ReliableTransmit,
 {
     pub fn spawn_recv_ack(&self) -> mpsc::UnboundedSender<AckFrame> {
         let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();

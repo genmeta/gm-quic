@@ -344,7 +344,7 @@ mod tests {
         let validator = Validator::default();
         validator.set_timeout();
         let mut buf = [0; 1024];
-        let mut limit = TransportLimit::new(1024, 1024, 0);
+        let mut limit = TransportLimit::new(Some(1024), 1024, 0);
         let bytes_written = validator.write_challenge(&mut limit, &mut buf);
         assert!(bytes_written > 0);
     }
@@ -505,11 +505,11 @@ mod tests {
     fn test_transponder_write_response() {
         let transponder = Transponder::default();
         let mut buf = [0; 1024];
-        let mut limit = TransportLimit::new(1024, 1024, 0);
+        let mut limit = TransportLimit::new(Some(1024), 1024, 0);
         let bytes_written = transponder.write_response(&mut limit, &mut buf);
         assert!(bytes_written == 0);
         transponder.on_challenge(PathChallengeFrame::random());
-        let mut limit = TransportLimit::new(1024, 1024, 0);
+        let mut limit = TransportLimit::new(Some(1024), 1024, 0);
         let bytes_written = transponder.write_response(&mut limit, &mut buf);
         assert!(bytes_written > 0);
     }

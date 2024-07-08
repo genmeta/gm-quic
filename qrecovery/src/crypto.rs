@@ -19,7 +19,7 @@ mod send {
     use tokio::io::AsyncWrite;
 
     use crate::{
-        send::sndbuf::{Picker, SendBuf},
+        send::sndbuf::{PickIndicator, SendBuf},
         space::TransportLimit,
     };
 
@@ -38,7 +38,7 @@ mod send {
         ) -> Option<(CryptoFrame, usize)> {
             let remain = limit.remaining();
             let estimater = |offset: u64| CryptoFrame::estimate_max_capacity(remain, offset);
-            let mut picker = Picker::new(estimater, None);
+            let mut picker = PickIndicator::new(estimater, None);
             if let Some((offset, data)) = self.sndbuf.pick_up(&mut picker) {
                 let frame = CryptoFrame {
                     offset: VarInt::from_u64(offset).unwrap(),
