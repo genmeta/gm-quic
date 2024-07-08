@@ -4,12 +4,12 @@ use bytes::BufMut;
 use qbase::{
     config::TransportParameters,
     error::Error,
-    frame::{AckFrame, DataFrame},
+    frame::{io::WriteFrame, AckFrame, BeFrame, DataFrame},
     packet::WritePacketNumber,
     streamid::Role,
 };
 
-use super::{ArcSpace, BeSpace, RawSpace, SpaceFrame, TransportLimit};
+use super::{ArcSpace, RawSpace, ReliableTransmit, SpaceFrame, TransportLimit};
 use crate::{
     crypto::CryptoStream,
     reliable::{
@@ -68,7 +68,7 @@ impl ArcSpace<DataSpace> {
     }
 }
 
-impl BeSpace for ArcSpace<DataSpace> {
+impl ReliableTransmit for ArcSpace<DataSpace> {
     fn read(
         &self,
         limit: &mut TransportLimit,
@@ -87,10 +87,28 @@ impl BeSpace for ArcSpace<DataSpace> {
             return (pn, encoded_pn.size(), 0);
         }
 
-        let n = self.read_ack_frame_until(&mut send_guard, limit, buf, ack_pkt);
-        buf = &mut buf[n..];
-        let n = self.read_reliable_frames(&mut send_guard, limit, buf);
-        buf = &mut buf[n..];
+        if let Some((frame, n)) = self.read_ack_frame_until(limit, buf, ack_pkt) {
+            send_guard.record_ack_frame(frame);
+            buf = &mut buf[n..];
+        }
+
+        // 可靠帧数量大，一个个读可能太慢了
+        {
+            let remain = limit.remaining();
+            let mut reliable_frame_reader = self.reliable_frame_queue.read();
+            while let Some(frame) = reliable_frame_reader.front() {
+                let remain = limit.remaining();
+                if remain < frame.max_encoding_size() && remain < frame.encoding_size() {
+                    break;
+                }
+                buf.put_frame(frame);
+                let frame = reliable_frame_reader.pop_front().unwrap();
+                limit.record_write(frame.encoding_size());
+                send_guard.record_reliable_frame(frame);
+            }
+            let n = remain - buf.remaining_mut();
+            buf = &mut buf[n..];
+        };
 
         if let Some((crypto_frame, written)) = self.crypto_stream.try_read_data(limit, buf) {
             send_guard.record_data_frame(DataFrame::Crypto(crypto_frame));

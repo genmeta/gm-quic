@@ -21,7 +21,7 @@ use qbase::{
 
 use super::{
     sender::{ArcSender, DataSentSender, Sender, SendingSender},
-    sndbuf::Picker,
+    sndbuf::PickIndicator,
 };
 use crate::space::TransportLimit;
 
@@ -76,7 +76,7 @@ impl Outgoing {
         let estimate_capacity = |offset| {
             StreamFrame::estimate_max_capacity(capacity, sid, offset).map(|cap| cap.min(credit))
         };
-        let mut picker = Picker::new(estimate_capacity, Some(limit.flow_control_limit()));
+        let mut picker = PickIndicator::new(estimate_capacity, Some(limit.flow_control_limit()));
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
 
