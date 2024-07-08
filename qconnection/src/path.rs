@@ -244,10 +244,10 @@ impl ArcPath {
     // TODO: 在发送 packet 时, 需要调用此函数来确认抗放大攻击保护信用
     /// Anti-amplification attack protection, detects whether the current path can
     /// send data of the specified size, and detects it before each packet is sent.
-    pub fn poll_apply(&self, cx: &mut Context<'_>, amount: usize) -> Poll<usize> {
+    pub fn poll_apply(&self, cx: &mut Context<'_>) -> Poll<Option<usize>> {
         match self.0.lock().unwrap().anti_amplifier.as_ref() {
-            Some(anti_amplifier) => anti_amplifier.poll_apply(cx, amount),
-            None => Poll::Ready(amount),
+            Some(anti_amplifier) => anti_amplifier.poll_apply(cx),
+            None => Poll::Ready(None),
         }
     }
 
@@ -333,18 +333,14 @@ mod tests {
         let path = create_path(18001).await;
         let mut cx = Context::from_waker(noop_waker_ref());
 
-        assert_eq!(path.poll_apply(&mut cx, 1), Poll::Pending);
+        assert_eq!(path.poll_apply(&mut cx), Poll::Pending);
 
         // Mock receiving a certain amount of data
         path.deposit(10);
 
-        assert_eq!(path.poll_apply(&mut cx, 5), Poll::Ready(5));
-        path.post_sent(5);
-        assert_eq!(path.poll_apply(&mut cx, 10), Poll::Ready(10));
-        path.post_sent(10);
-        assert_eq!(path.poll_apply(&mut cx, 20), Poll::Ready(15));
-        path.post_sent(15);
-        assert_eq!(path.poll_apply(&mut cx, 1), Poll::Pending);
+        assert_eq!(path.poll_apply(&mut cx), Poll::Ready(Some(30)));
+        path.post_sent(30);
+        assert_eq!(path.poll_apply(&mut cx), Poll::Pending);
 
         let mut buf = [0; 1024];
         let mut limit = TransportLimit::new(usize::MAX, usize::MAX, usize::MAX);
@@ -356,7 +352,7 @@ mod tests {
         path.on_recv_path_challenge_response((&response).into());
 
         assert!(path.is_validated());
-        assert_eq!(path.poll_apply(&mut cx, 100), Poll::Ready(100));
+        assert_eq!(path.poll_apply(&mut cx), Poll::Ready(None));
     }
 
     #[tokio::test]
