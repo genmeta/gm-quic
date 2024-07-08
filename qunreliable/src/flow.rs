@@ -2,7 +2,11 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use bytes::Bytes;
 use futures::StreamExt;
-use qbase::{error::Error, frame::DatagramFrame, util::ArcAsyncDeque};
+use qbase::{
+    error::Error,
+    frame::DatagramFrame,
+    util::{ArcAsyncDeque, TransportLimit},
+};
 use tokio::sync::mpsc;
 
 use super::{
@@ -53,8 +57,16 @@ impl DatagramFlow {
     }
 
     #[inline]
-    pub fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        self.raw_flow.read().unwrap().writer.try_read_datagram(buf)
+    pub fn try_read_datagram(
+        &self,
+        limit: &mut TransportLimit,
+        buf: &mut [u8],
+    ) -> Option<(DatagramFrame, usize)> {
+        self.raw_flow
+            .read()
+            .unwrap()
+            .writer
+            .try_read_datagram(limit, buf)
     }
 
     #[inline]
