@@ -12,7 +12,7 @@ use qbase::{
     frame::{PathChallengeFrame, PathResponseFrame},
     util::TransportLimit,
 };
-use qcongestion::congestion::{ArcCC, Epoch};
+use qcongestion::congestion::ArcCC;
 use qudp::ArcUsc;
 
 pub mod anti_amplifier;
@@ -169,12 +169,8 @@ impl ArcPath {
 
     /// Path challenge, this function must be called after sending the challenge
     /// frame, record its space and pn to mark it as sent.
-    pub fn on_sent_path_challenge(&self, space: Epoch, pn: u64) {
-        self.0
-            .lock()
-            .unwrap()
-            .validator
-            .on_challenge_sent(space, pn)
+    pub fn on_sent_path_challenge(&self) {
+        self.0.lock().unwrap().validator.on_challenge_sent()
     }
 
     /// Path challenge, this function must called after sending the response frame

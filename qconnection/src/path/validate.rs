@@ -14,25 +14,26 @@ use qbase::{
     },
     util::TransportLimit,
 };
-use qcongestion::congestion::Epoch;
 
-/// 路径验证器，用于验证路径的有效性。
+/// Path validator, used to verify the validity of the path.
 #[derive(Debug)]
 enum ValidateState {
-    // 已发送挑战，等待响应，发送的挑战记录在哪个Epoch的哪个包号里，方便确认
-    // 此时，依然收抗放大攻击的流量限制
-    Challenging(PathChallengeFrame, Option<(Epoch, u64)>),
-    // 再次发起挑战，此时曾经已经挑战过，与Challenging不同，不受抗放大攻击影响
-    Rechallenging(PathChallengeFrame, Option<(Epoch, u64)>),
-    // 当收到PathResponse帧，且内容对的上，就认为验证通过
+    /// Challenging, `true` the challenge frame has been sent, otherwise it has
+    /// not been sent.
+    Challenging(PathChallengeFrame, bool),
+    /// Rechallenging, `true` the challenge frame has been sent, otherwise it has
+    /// not been sent.
+    Rechallenging(PathChallengeFrame, bool),
+    /// Verification successful
     Success,
-    // 当一段时间内，没有收到PathResponse帧，就认为验证失败
+    /// When no Challenge Response frame is received within a period of time, the
+    /// verification is considered failed.
     Failure,
 }
 
 impl Default for ValidateState {
     fn default() -> Self {
-        Self::Challenging(PathChallengeFrame::random(), None)
+        Self::Challenging(PathChallengeFrame::random(), false)
     }
 }
 
@@ -41,7 +42,7 @@ impl ValidateState {
         match self {
             ValidateState::Challenging(_, _) | ValidateState::Rechallenging(_, _) => {}
             ValidateState::Success => {
-                *self = ValidateState::Rechallenging(PathChallengeFrame::random(), None);
+                *self = ValidateState::Rechallenging(PathChallengeFrame::random(), false);
             }
             ValidateState::Failure => unreachable!("need not challenge again"),
         }
@@ -49,20 +50,17 @@ impl ValidateState {
 
     fn need_send_challenge(&self) -> Option<&PathChallengeFrame> {
         match self {
-            ValidateState::Challenging(challenge, None) => Some(challenge),
-            ValidateState::Rechallenging(challenge, None) => Some(challenge),
+            ValidateState::Challenging(challenge, false) => Some(challenge),
+            ValidateState::Rechallenging(challenge, false) => Some(challenge),
             _ => None,
         }
     }
 
     /// 必须在need_send_challenge之后调用，且确实发送了PathChallengeFrame，才可调用
-    fn on_challenge_sent(&mut self, space: Epoch, pn: u64) {
+    fn on_challenge_sent(&mut self) {
         match self {
-            ValidateState::Challenging(_, pkt) => {
-                *pkt = Some((space, pn));
-            }
-            ValidateState::Rechallenging(_, pkt) => {
-                *pkt = Some((space, pn));
+            ValidateState::Challenging(_, pkt) | ValidateState::Rechallenging(_, pkt) => {
+                *pkt = true;
             }
             _ => unreachable!("no reason to send challenge frame"),
         }
@@ -71,11 +69,8 @@ impl ValidateState {
     /// 曾经发送PathChallengeFrame的数据包可能丢了，需要改变状态，触发重传
     fn may_loss(&mut self) {
         match self {
-            ValidateState::Challenging(_, pkt) => {
-                *pkt = None;
-            }
-            ValidateState::Rechallenging(_, pkt) => {
-                *pkt = None;
+            ValidateState::Challenging(_, pkt) | ValidateState::Rechallenging(_, pkt) => {
+                *pkt = false;
             }
             _ => (),
         }
@@ -122,8 +117,8 @@ impl Validator {
     }
 
     /// Record space and pn to marks it is sent
-    pub fn on_challenge_sent(&self, space: Epoch, pn: u64) {
-        self.state.lock().unwrap().on_challenge_sent(space, pn);
+    pub fn on_challenge_sent(&self) {
+        self.state.lock().unwrap().on_challenge_sent();
     }
 
     /// Returns a `Future` that can be used to poll the state of the validator.
@@ -311,7 +306,7 @@ mod tests {
                 let state = validator.state.lock().unwrap();
                 assert!(state.need_send_challenge().is_some());
             }
-            validator.on_challenge_sent(Epoch::Initial, 0);
+            validator.on_challenge_sent();
             let response = match *validator.state.lock().unwrap() {
                 ValidateState::Challenging(challenge, _) => challenge,
                 _ => panic!("unexpected state"),
@@ -327,7 +322,7 @@ mod tests {
                 let state = validator.state.lock().unwrap();
                 assert!(state.need_send_challenge().is_some());
             }
-            validator.on_challenge_sent(Epoch::Initial, 1);
+            validator.on_challenge_sent();
             let response = match *validator.state.lock().unwrap() {
                 ValidateState::Rechallenging(challenge, _) => challenge,
                 _ => panic!("unexpected state"),
@@ -355,19 +350,16 @@ mod tests {
     async fn test_validator_on_challenge_sent() {
         let validator = Validator::default();
         validator.set_timeout();
-        validator.on_challenge_sent(Epoch::Initial, 1);
+        validator.on_challenge_sent();
         let state = validator.state.lock().unwrap();
-        assert!(matches!(
-            *state,
-            ValidateState::Challenging(_, Some((Epoch::Initial, 1)))
-        ));
+        assert!(matches!(*state, ValidateState::Challenging(_, true)));
     }
 
     #[tokio::test]
     async fn test_validator_timeout() {
         let validator = Validator::default();
         validator.set_timeout();
-        validator.on_challenge_sent(Epoch::Initial, 0);
+        validator.on_challenge_sent();
         tokio::time::sleep(Duration::from_millis(150)).await;
         let state = validator.state.lock().unwrap();
         println!("{:?}", state);
@@ -378,7 +370,7 @@ mod tests {
     #[should_panic]
     async fn test_validator_challenge_with_failure() {
         let validator = Validator::default();
-        validator.on_challenge_sent(Epoch::Initial, 0);
+        validator.on_challenge_sent();
         validator.set_timeout();
         tokio::time::sleep(Duration::from_millis(150)).await;
         {
@@ -403,8 +395,8 @@ mod tests {
                 validator.on_response(&PathResponseFrame::from(&response));
             }
         });
-        for i in 0..5 {
-            validator.on_challenge_sent(Epoch::Initial, i);
+        for _i in 0..5 {
+            validator.on_challenge_sent();
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
@@ -437,7 +429,7 @@ mod tests {
             _ => panic!("unexpected state"),
         };
         validator.on_response(&PathResponseFrame::from(&response));
-        validator.on_challenge_sent(Epoch::Initial, 1);
+        validator.on_challenge_sent();
     }
 
     #[tokio::test]
