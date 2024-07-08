@@ -3,7 +3,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 
 use futures::task::AtomicWaker;
@@ -50,6 +50,10 @@ impl<const N: usize> AntiAmplifier<N> {
     fn is_ready(&self) -> bool {
         self.credit.load(Ordering::Acquire) > 0
     }
+
+    fn waker(&self) -> Option<Waker> {
+        self.waker.take()
+    }
 }
 
 /// A sendable and receivable shared controller for anti-N-times amplification attack
@@ -77,6 +81,10 @@ impl<const N: usize> ArcAntiAmplifier<N> {
 
     pub fn is_ready(&self) -> bool {
         self.0.is_ready()
+    }
+
+    pub fn waker(&self) -> Option<Waker> {
+        self.0.waker()
     }
 }
 

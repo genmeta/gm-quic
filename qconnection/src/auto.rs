@@ -75,8 +75,20 @@ impl PacketPayload {
                         space_frame_writer.push(SpaceFrame::Stream(stream));
                         Ok(true)
                     }
-                    Frame::Pure(PureFrame::Path(_path)) => {
-                        // path_frame_writer.push(path);
+                    Frame::Pure(PureFrame::Path(frame)) => {
+                        match frame {
+                            PathFrame::Challenge(challenge) => {
+                                // Save the challenge frame in the path, you need
+                                // check whether a response frame needs to be sent
+                                // when sending the packet.
+                                packet.path.on_recv_path_challenge(challenge)
+                            }
+                            PathFrame::Response(response) => {
+                                // Check whether the path response frame is consistent
+                                // with the path challenge frame
+                                packet.path.on_recv_path_challenge_response(response);
+                            }
+                        }
                         Ok(true)
                     }
                     Frame::Data(data_frame, data) => {
@@ -267,6 +279,13 @@ impl LongHeaderPacketStream<ZeroRttHeader> {
         tokio::spawn(async move {
             while let Some(payload) = self.next().await {
                 let pn = payload.pn;
+
+                // Anti-amplification attack protection, when there is an anti-
+                // amplification attack protection, the received data volume
+                // will record in the anti-amplification attack protector, if
+                // not, no operation will performed
+                payload.path.deposit(payload.payload.len());
+
                 match payload.dispatch(
                     conn_frame_queue.as_ref(),
                     space_frame_queue.as_ref(),

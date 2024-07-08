@@ -1,13 +1,18 @@
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
+    task::{Context, Poll},
     time::Duration,
 };
 
 use anti_amplifier::ANTI_FACTOR;
 use observer::{ConnectionObserver, PathObserver};
-use qbase::cid::ConnectionId;
-use qcongestion::congestion::ArcCC;
+use qbase::{
+    cid::ConnectionId,
+    frame::{PathChallengeFrame, PathResponseFrame},
+};
+use qcongestion::congestion::{ArcCC, Epoch};
+use qrecovery::space::TransportLimit;
 use qudp::ArcUsc;
 
 pub mod anti_amplifier;
@@ -134,18 +139,239 @@ impl ArcPath {
             connection_observer,
         ))))
     }
+
+    /// Check whether the path is verified.
+    pub fn is_validated(&self) -> bool {
+        self.0.lock().unwrap().validator.is_validated()
+    }
+
+    /// Path challenge can be used by any terminal at any time.
+    pub fn challenge(&self) {
+        self.0.lock().unwrap().validator.challenge()
+    }
+
+    /// Path challenge, if the path is not validated, the path challenge frame in
+    /// the validator will be written, otherwise nothing is written
+    pub fn write_challenge(&self, limit: &mut TransportLimit, buf: &mut [u8]) -> usize {
+        self.0.lock().unwrap().validator.write_challenge(limit, buf)
+    }
+
+    /// Path challenge, if the path requires sending a challenge response frame,
+    /// the challenge response frame in the Transponder will be written, otherwise
+    /// nothing will be written.
+    pub fn write_challenge_response(&self, limit: &mut TransportLimit, buf: &mut [u8]) -> usize {
+        self.0
+            .lock()
+            .unwrap()
+            .transponder
+            .write_response(limit, buf)
+    }
+
+    /// Path challenge, this function must be called after sending the challenge
+    /// frame, record its space and pn to mark it as sent.
+    pub fn on_sent_path_challenge(&self, space: Epoch, pn: u64) {
+        self.0
+            .lock()
+            .unwrap()
+            .validator
+            .on_challenge_sent(space, pn)
+    }
+
+    /// Path challenge, this function must called after sending the response frame
+    pub fn on_sent_path_challenge_response(&self, pn: u64) {
+        self.0.lock().unwrap().transponder.on_response_sent(pn)
+    }
+
+    /// Path challenge, receive the challenge frame in the Transponder
+    pub fn on_recv_path_challenge(&self, challenge: PathChallengeFrame) {
+        self.0.lock().unwrap().transponder.on_challenge(challenge)
+    }
+
+    /// Path challenge, changes the state of the path to verified when receiving
+    /// the correct response frame, turns off protection against amplification
+    /// attacks
+    pub fn on_recv_path_challenge_response(&self, response: PathResponseFrame) {
+        let mut validator = self.0.lock().unwrap().validator.clone();
+        // Check whether the received response is consistent with the issued
+        // challenge
+        validator.on_response(&response);
+        // If the verification is not successful, exit directly without turning
+        // off anti-amplification attack protection.
+        if !validator.is_validated() {
+            return;
+        }
+
+        // Turn off anti amplification attacks protection
+        if let Some(anti_amplifier) = self.0.lock().unwrap().anti_amplifier.take() {
+            let waker = anti_amplifier.waker();
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        };
+    }
+
+    /// After the address validation passes, you can use this function to change
+    /// the verification status and remove the anti-amplification attack protection.
+    ///
+    /// See [Section 8](https://www.rfc-editor.org/rfc/rfc9000.html#section-8)
+    pub fn validated(&self) {
+        self.0.lock().unwrap().validator.validated();
+
+        // Turn off anti amplification attacks protection
+        if let Some(anti_amplifier) = self.0.lock().unwrap().anti_amplifier.take() {
+            let waker = anti_amplifier.waker();
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        };
+    }
+
+    // TODO: 在收到 challenge_response 的 ack 时, 需要调用此函数来更新状态
+    /// When the peer receives the ack of the returned challenge response, the
+    /// status is updated
+    pub fn on_challenge_response_pkt_acked(&self, pn: u64) {
+        self.0.lock().unwrap().transponder.on_pkt_acked(pn)
+    }
+
+    /// Anti-amplification attack protection, records the amount of data received
+    /// by the current path
+    pub fn deposit(&self, amount: usize) {
+        if let Some(anti_amplifier) = self.0.lock().unwrap().anti_amplifier.as_ref() {
+            anti_amplifier.deposit(amount);
+        }
+    }
+
+    // TODO: 在发送 packet 时, 需要调用此函数来确认抗放大攻击保护信用
+    /// Anti-amplification attack protection, detects whether the current path can
+    /// send data of the specified size, and detects it before each packet is sent.
+    pub fn poll_apply(&self, cx: &mut Context<'_>, amount: usize) -> Poll<usize> {
+        match self.0.lock().unwrap().anti_amplifier.as_ref() {
+            Some(anti_amplifier) => anti_amplifier.poll_apply(cx, amount),
+            None => Poll::Ready(amount),
+        }
+    }
+
+    // TODO: 发送 packet 后, 需要调用此函数, 以更新剩余的发送信用
+    /// Called after each transmission, if the current path has anti-amplification
+    /// attack protection, record the amount of data sent.
+    pub fn post_sent(&self, amount: usize) {
+        if let Some(anti_amplifier) = self.0.lock().unwrap().anti_amplifier.as_ref() {
+            anti_amplifier.post_sent(amount)
+        }
+    }
+
+    /// When the challenge frame may be lost, setting pn in the validator state
+    /// to None will trigger a retransmission, but the transmitted frame will be
+    /// the same. Even if the challenge is re-challenged, the frame will only
+    /// change when the state changed from `Success` to `Rechallenging`.
+    pub fn may_loss_challenge_pkt(&self) {
+        self.0.lock().unwrap().validator.may_loss()
+    }
+
+    /// When the response frame may be lost, setting pn in the transponder state
+    pub fn may_loss_challenge_response_pkt(&self, pn: u64) {
+        self.0.lock().unwrap().transponder.may_loss_pkt(pn)
+    }
+
+    /// When creating a new path, start the path challenge timer
+    pub fn set_path_challenge_timeout(&self) {
+        self.0.lock().unwrap().validator.set_timeout()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    #[tokio::test]
-    async fn read_initial_packet() {
-        // 构造一个Path结构
-        // let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
-        // let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8081);
-        // let peer_cid = ConnectionId::from_slice(b"peer cid");
-        // let path = super::Path::new(local_addr, peer_addr, peer_cid);
+    use std::{
+        array,
+        net::{IpAddr, Ipv4Addr},
+    };
 
-        // let _packet = path.read_1rtt_packet().await;
+    use futures::task::noop_waker_ref;
+    use observer::{HandShakeObserver, PtoObserver};
+    use qrecovery::reliable::rcvdpkt::ArcRcvdPktRecords;
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::connection::state::ArcConnectionState;
+
+    async fn create_path(port: u16) -> ArcPath {
+        // 构造一个Path结构
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
+        let usc = ArcUsc::new(addr);
+        let max_ack_delay = Duration::from_millis(100);
+        let ack_observer = AckObserver::new(array::from_fn(|_| ArcRcvdPktRecords::default()));
+        let (loss_tx1, _) = mpsc::unbounded_channel();
+        let (loss_tx2, _) = mpsc::unbounded_channel();
+        let (loss_tx3, _) = mpsc::unbounded_channel();
+        let loss_observer = LossObserver::new([loss_tx1, loss_tx2, loss_tx3]);
+        let handshake_observer = HandShakeObserver::new(ArcConnectionState::new());
+
+        let (pto_tx1, _) = mpsc::unbounded_channel();
+        let (pto_tx2, _) = mpsc::unbounded_channel();
+        let (pto_tx3, _) = mpsc::unbounded_channel();
+        let pto_observer = PtoObserver::new([pto_tx1, pto_tx2, pto_tx3]);
+        ArcPath::new(
+            usc,
+            max_ack_delay,
+            ConnectionObserver {
+                ack_observer,
+                loss_observer,
+                handshake_observer,
+                pto_observer,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn test_initial_packet() {
+        let path = create_path(18000).await;
+        assert!(!path.is_validated());
+    }
+
+    #[tokio::test]
+    async fn test_challenge() {
+        let path = create_path(18001).await;
+        let mut cx = Context::from_waker(noop_waker_ref());
+
+        assert_eq!(path.poll_apply(&mut cx, 1), Poll::Pending);
+
+        // Mock receiving a certain amount of data
+        path.deposit(10);
+
+        assert_eq!(path.poll_apply(&mut cx, 5), Poll::Ready(5));
+        path.post_sent(5);
+        assert_eq!(path.poll_apply(&mut cx, 10), Poll::Ready(10));
+        path.post_sent(10);
+        assert_eq!(path.poll_apply(&mut cx, 20), Poll::Ready(15));
+        path.post_sent(15);
+        assert_eq!(path.poll_apply(&mut cx, 1), Poll::Pending);
+
+        let mut buf = [0; 1024];
+        let mut limit = TransportLimit::new(usize::MAX, usize::MAX, usize::MAX);
+        let length = path.write_challenge(&mut limit, &mut buf);
+        let buf = &buf[1..length];
+        let response = PathChallengeFrame::from_slice(buf);
+
+        // Mock receiving response frames
+        path.on_recv_path_challenge_response((&response).into());
+
+        assert!(path.is_validated());
+        assert_eq!(path.poll_apply(&mut cx, 100), Poll::Ready(100));
+    }
+
+    #[tokio::test]
+    async fn test_challenge_response() {
+        let path = create_path(18003).await;
+        path.on_recv_path_challenge(PathChallengeFrame::random());
+        path.on_sent_path_challenge_response(0);
+        path.on_challenge_response_pkt_acked(0);
+    }
+
+    #[tokio::test]
+    async fn test_set_path_challenge_timeout() {
+        let path = create_path(18004).await;
+        path.set_path_challenge_timeout();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!path.is_validated());
     }
 }
