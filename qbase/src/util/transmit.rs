@@ -23,9 +23,11 @@ impl TransportLimit {
     }
 
     pub fn available(&self) -> usize {
-        self.anti_amplification
-            .map(|aa| aa.min(self.congestion_control))
-            .unwrap_or(self.congestion_control)
+        if let Some(aa) = self.anti_amplification {
+            aa.min(self.congestion_control)
+        } else {
+            self.congestion_control
+        }
     }
 
     pub fn flow_control_limit(&self) -> usize {
