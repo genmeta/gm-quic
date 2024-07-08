@@ -9,9 +9,10 @@ use qbase::{
         keys::{ArcKeys, ArcOneRttKeys},
         LongClearBits, OneRttHeader, ShortClearBits,
     },
+    util::TransportLimit,
     varint::{VarInt, WriteVarInt},
 };
-use qrecovery::space::{ReliableTransmit, TransportLimit};
+use qrecovery::space::ReliableTransmit;
 
 /// In order to fill the packet efficiently and reduce unnecessary copying, the data of each
 /// space is directly written on the Buffer. However, the length of the packet header is

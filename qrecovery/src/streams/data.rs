@@ -9,6 +9,7 @@ use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::*,
     streamid::{AcceptSid, Dir, ExceedLimitError, Role, StreamId, StreamIds},
+    util::TransportLimit,
     varint::VarInt,
 };
 
@@ -17,7 +18,6 @@ use crate::{
     recv::{self, Incoming, Reader},
     reliable::ArcReliableFrameQueue,
     send::{self, Outgoing, Writer},
-    space::TransportLimit,
 };
 
 #[derive(Default, Debug, Clone, Deref, DerefMut)]

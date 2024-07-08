@@ -1,5 +1,5 @@
 /// Crypto data stream
-use qbase::{error::Error, frame::CryptoFrame};
+use qbase::{error::Error, frame::CryptoFrame, util::TransportLimit};
 
 mod send {
     use std::{
@@ -13,15 +13,12 @@ mod send {
     use bytes::BufMut;
     use qbase::{
         frame::{io::WriteCryptoFrame, CryptoFrame},
-        util::DescribeData,
+        util::{DescribeData, TransportLimit},
         varint::{VarInt, VARINT_MAX},
     };
     use tokio::io::AsyncWrite;
 
-    use crate::{
-        send::sndbuf::{PickIndicator, SendBuf},
-        space::TransportLimit,
-    };
+    use crate::send::sndbuf::{PickIndicator, SendBuf};
 
     #[derive(Debug)]
     pub(super) struct Sender {
@@ -240,8 +237,6 @@ mod recv {
 
 pub use recv::CryptoStreamReader;
 pub use send::CryptoStreamWriter;
-
-use crate::space::TransportLimit;
 
 /// Crypto data stream
 /// ## Example

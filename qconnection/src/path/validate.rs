@@ -7,12 +7,14 @@ use std::{
 
 use bytes::BufMut;
 use futures::Future;
-use qbase::frame::{
-    io::{WritePathChallengeFrame, WritePathResponseFrame},
-    BeFrame, PathChallengeFrame, PathResponseFrame,
+use qbase::{
+    frame::{
+        io::{WritePathChallengeFrame, WritePathResponseFrame},
+        BeFrame, PathChallengeFrame, PathResponseFrame,
+    },
+    util::TransportLimit,
 };
 use qcongestion::congestion::Epoch;
-use qrecovery::space::TransportLimit;
 
 /// 路径验证器，用于验证路径的有效性。
 #[derive(Debug)]
