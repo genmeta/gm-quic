@@ -51,7 +51,7 @@ impl<T> RawSpace<T> {
         mut buf: &mut [u8],
         ack_pkt: Option<(u64, Instant)>,
     ) -> Option<(AckFrame, usize)> {
-        let remain = limit.remaining();
+        let remain = limit.available();
 
         let ack_frame = self.rcvd_pkt_records.gen_ack_frame_util(ack_pkt?, remain);
         buf.put_ack_frame(&ack_frame);

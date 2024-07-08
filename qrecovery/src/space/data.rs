@@ -75,7 +75,7 @@ impl ReliableTransmit for ArcSpace<DataSpace> {
         mut buf: &mut [u8],
         ack_pkt: Option<(u64, Instant)>,
     ) -> (u64, usize, usize) {
-        let remain = limit.remaining();
+        let remain = limit.available();
 
         let mut send_guard = self.0.sent_pkt_records.send();
 
@@ -94,10 +94,10 @@ impl ReliableTransmit for ArcSpace<DataSpace> {
 
         // 可靠帧数量大，一个个读可能太慢了
         {
-            let remain = limit.remaining();
+            let remain = limit.available();
             let mut reliable_frame_reader = self.reliable_frame_queue.read();
             while let Some(frame) = reliable_frame_reader.front() {
-                let remain = limit.remaining();
+                let remain = limit.available();
                 if remain < frame.max_encoding_size() && remain < frame.encoding_size() {
                     break;
                 }

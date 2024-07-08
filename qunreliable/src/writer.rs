@@ -43,7 +43,7 @@ impl DatagramWriter {
         let writer = guard.as_mut().ok()?;
         let datagram = writer.queue.front()?;
 
-        let available = limit.remaining();
+        let available = limit.available();
 
         let max_encoding_size = available.saturating_sub(datagram.len());
         if max_encoding_size == 0 {

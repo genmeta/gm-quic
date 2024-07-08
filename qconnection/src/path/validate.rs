@@ -111,7 +111,7 @@ impl Validator {
     }
 
     pub fn write_challenge(&self, limit: &mut TransportLimit, mut buf: &mut [u8]) -> usize {
-        let origin_size = limit.remaining();
+        let origin_size = limit.available();
         let remain = buf.remaining_mut();
         if let Some(challenge) = self.state.lock().unwrap().need_send_challenge() {
             if origin_size >= challenge.encoding_size() {
@@ -269,7 +269,7 @@ impl Transponder {
     }
 
     pub fn write_response(&self, limit: &mut TransportLimit, mut buf: &mut [u8]) -> usize {
-        let origin_size = limit.remaining();
+        let origin_size = limit.available();
         if let Some(response) = self.0.lock().unwrap().need_response() {
             if origin_size >= response.encoding_size() {
                 buf.put_path_response_frame(&response);
