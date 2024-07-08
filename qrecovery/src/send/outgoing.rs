@@ -15,7 +15,7 @@ use qbase::{
         ShouldCarryLength, StreamFrame,
     },
     streamid::StreamId,
-    util::DescribeData,
+    util::{DescribeData, TransportLimit},
     varint::VARINT_MAX,
 };
 
@@ -23,7 +23,6 @@ use super::{
     sender::{ArcSender, DataSentSender, Sender, SendingSender},
     sndbuf::PickIndicator,
 };
-use crate::space::TransportLimit;
 
 #[derive(Debug, Clone)]
 pub struct Outgoing(pub(super) ArcSender);

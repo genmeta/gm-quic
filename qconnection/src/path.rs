@@ -10,9 +10,9 @@ use observer::{ConnectionObserver, PathObserver};
 use qbase::{
     cid::ConnectionId,
     frame::{PathChallengeFrame, PathResponseFrame},
+    util::TransportLimit,
 };
 use qcongestion::congestion::{ArcCC, Epoch};
-use qrecovery::space::TransportLimit;
 use qudp::ArcUsc;
 
 pub mod anti_amplifier;
