@@ -49,7 +49,7 @@ impl Outgoing {
         limit: &mut TransportLimit,
         mut buf: &mut [u8],
     ) -> Option<(StreamFrame, usize, usize)> {
-        let capacity = limit.remaining();
+        let capacity = limit.available();
         let write = |(offset, data, is_eos): (u64, (&[u8], &[u8]), bool)| {
             let mut frame = StreamFrame::new(sid, offset, data.len());
 

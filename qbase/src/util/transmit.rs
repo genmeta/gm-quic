@@ -22,7 +22,7 @@ impl TransportLimit {
         }
     }
 
-    pub fn remaining(&self) -> usize {
+    pub fn available(&self) -> usize {
         self.anti_amplification
             .map(|aa| aa.min(self.congestion_control))
             .unwrap_or(self.congestion_control)

@@ -33,7 +33,7 @@ mod send {
             limit: &mut TransportLimit,
             mut buffer: &mut [u8],
         ) -> Option<(CryptoFrame, usize)> {
-            let remain = limit.remaining();
+            let remain = limit.available();
             let estimater = |offset: u64| CryptoFrame::estimate_max_capacity(remain, offset);
             let mut picker = PickIndicator::new(estimater, None);
             if let Some((offset, data)) = self.sndbuf.pick_up(&mut picker) {
