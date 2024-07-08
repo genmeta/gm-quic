@@ -343,7 +343,7 @@ mod tests {
         assert_eq!(path.poll_apply(&mut cx), Poll::Pending);
 
         let mut buf = [0; 1024];
-        let mut limit = TransportLimit::new(usize::MAX, usize::MAX, usize::MAX);
+        let mut limit = TransportLimit::new(Some(usize::MAX), usize::MAX, usize::MAX);
         let length = path.write_challenge(&mut limit, &mut buf);
         let buf = &buf[1..length];
         let response = PathChallengeFrame::from_slice(buf);
