@@ -277,14 +277,10 @@ impl ArcPath {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        array,
-        net::{IpAddr, Ipv4Addr},
-    };
+    use std::net::{IpAddr, Ipv4Addr};
 
     use futures::task::noop_waker_ref;
-    use observer::{HandShakeObserver, PtoObserver};
-    use qrecovery::reliable::rcvdpkt::ArcRcvdPktRecords;
+    use observer::HandShakeObserver;
 
     use super::*;
     use crate::connection::state::ArcConnectionState;
@@ -294,20 +290,12 @@ mod tests {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
         let usc = ArcUsc::new(addr);
         let max_ack_delay = Duration::from_millis(100);
-        let ack_observer = AckObserver::new(array::from_fn(|_| ArcRcvdPktRecords::default()));
 
-        let (loss_observer, _loss_rx) = LossObserver::new();
         let handshake_observer = HandShakeObserver::new(ArcConnectionState::new());
-        let (pto_observer, _timeout_rx) = PtoObserver::new();
         ArcPath::new(
             usc,
             max_ack_delay,
-            ConnectionObserver {
-                ack_observer,
-                loss_observer,
-                handshake_observer,
-                pto_observer,
-            },
+            ConnectionObserver { handshake_observer },
         )
     }
 

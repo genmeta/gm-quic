@@ -33,7 +33,7 @@ use crate::{
     crypto::TlsIO,
     handshake,
     path::{
-        observer::{ConnectionObserver, HandShakeObserver, PtoObserver},
+        observer::{ConnectionObserver, HandShakeObserver},
         AckObserver, ArcPath, LossObserver, Pathway,
     },
 };
@@ -244,12 +244,7 @@ pub fn new(
     let (pto_observer, [mut initial_timeout_rx, mut handshake_timeout_rx, mut data_timeout_rx]) =
         PtoObserver::new();
 
-    let connection_observer = ConnectionObserver {
-        handshake_observer,
-        ack_observer,
-        loss_observer,
-        pto_observer,
-    };
+    let connection_observer = ConnectionObserver { handshake_observer };
 
     let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded_channel();
     let (handshake_pkt_tx, handshake_pkt_rx) = mpsc::unbounded_channel();

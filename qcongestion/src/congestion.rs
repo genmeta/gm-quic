@@ -3,7 +3,7 @@ use std::{
     collections::VecDeque,
     ops::{Index, IndexMut},
     sync::{Arc, Mutex},
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
 
@@ -14,7 +14,7 @@ use crate::{
     new_reno::NewReno,
     pacing::{self, Pacer},
     rtt::{ArcRtt, INITIAL_RTT},
-    ObserveAck, ObserveAntiAmplification, ObserveHandshake, ObserveLoss, ObservePto, SlideWindow,
+    ObserveAntiAmplification, ObserveHandshake,
 };
 
 const K_GRANULARITY: Duration = Duration::from_millis(1);
@@ -56,11 +56,19 @@ pub struct CongestionController<OC, OP> {
     // pacer is used to control the burst rate
     pacer: pacing::Pacer,
     last_sent_time: Instant,
+
+    loss_pns: Option<(Epoch, Vec<u64>)>,
+    newly_ack_pns: Option<(Epoch, Vec<u64>)>,
+    pto_space: Option<Epoch>,
+    // waker
+    loss_waker: Option<Waker>,
+    ack_waker: Option<Waker>,
+    pto_waker: Option<Waker>,
 }
 
 impl<OC, OP> CongestionController<OC, OP>
 where
-    OC: ObserveHandshake + ObserveLoss + ObservePto + ObserveAck,
+    OC: ObserveHandshake,
     OP: ObserveAntiAmplification,
 {
     // A.4. Initialization
@@ -91,6 +99,12 @@ where
             path_observer,
             pacer: Pacer::new(INITIAL_RTT, INITIAL_CWND, MSS, now, None),
             last_sent_time: now,
+            loss_pns: None,
+            newly_ack_pns: None,
+            pto_space: None,
+            loss_waker: None,
+            ack_waker: None,
+            pto_waker: None,
         }
     }
 
@@ -146,6 +160,11 @@ where
             return;
         }
 
+        // notify space
+        if let Some(waker) = self.ack_waker.take() {
+            waker.wake();
+        }
+
         let ack_delay = Duration::from_millis(ack_frame.delay.into());
         if let Some(latest_rtt) = latest_rtt {
             self.rtt.update(latest_rtt, ack_delay);
@@ -174,6 +193,7 @@ where
         ack_frame: &AckFrame,
     ) -> (VecDeque<AckedPkt>, Option<Duration>) {
         let mut newly_acked_packets: VecDeque<AckedPkt> = VecDeque::new();
+        let mut newly_acked_pns = Vec::new();
         let largest_acked: u64 = ack_frame.largest.into();
         let mut latest_rtt = None;
         for range in ack_frame.iter() {
@@ -192,22 +212,28 @@ where
                         latest_rtt = Some(ack.rtt);
                     }
                     newly_acked_packets.push_back(ack);
+                    newly_acked_pns.push(pn);
                 }
-                // inactivate space
-                let mut guard = self.connection_observer.ack_guard(space);
-                guard.inactivate(pn);
             }
         }
         self.slide_sent_packets(space);
+        if !newly_acked_pns.is_empty() {
+            self.newly_ack_pns = Some((space, newly_acked_pns));
+        }
+
         (newly_acked_packets, latest_rtt)
     }
 
     // A.8. Setting the Loss Detection Timer
-    fn on_packets_lost(&mut self, packets: Vec<SentPkt>, space: Epoch) {
+    fn on_packets_lost(&mut self, packets: Vec<SentPkt>, _: Epoch) {
         let now = Instant::now();
+
+        if let Some(waker) = self.loss_waker.take() {
+            waker.wake();
+        }
+
         for lost in packets {
             self.algorithm.on_congestion_event(&lost, now);
-            self.connection_observer.may_loss_pkt(space, lost.pn);
         }
     }
 
@@ -250,17 +276,21 @@ where
         if self.no_ack_eliciting_in_flight() {
             assert!(self.server_completed_address_validation());
             if self.connection_observer.is_handshake_done() {
-                self.connection_observer.probe_timeout(Epoch::Handshake);
+                self.pto_space = Some(Epoch::Handshake);
             } else {
-                self.connection_observer.probe_timeout(Epoch::Initial);
+                self.pto_space = Some(Epoch::Initial);
             }
         } else {
             let (timeout, _) = self.get_pto_time_and_space();
             if timeout.is_some() {
-                self.connection_observer.probe_timeout(Epoch::Data);
+                self.pto_space = Some(Epoch::Data);
             }
         }
         self.pto_count += 1;
+
+        if let Some(waker) = self.pto_waker.take() {
+            waker.wake();
+        }
         self.set_loss_timer();
     }
 
@@ -326,8 +356,8 @@ where
         let loss_delay = self.rtt.loss_delay();
         let lost_send_time = now.checked_sub(loss_delay).unwrap();
 
-        // todo: 返回 iter
-        let mut lost_packets = Vec::new();
+        let mut loss_packets = Vec::new();
+        let mut loss_pn = Vec::new();
 
         let mut largest_ack_index = 0;
         while largest_ack_index != self.sent_packets[space].len()
@@ -347,9 +377,12 @@ where
             if self.sent_packets[space][i].time_sent <= lost_send_time
                 || largest_ack_index - i >= K_PACKET_THRESHOLD
             {
-                let lost_packet = self.sent_packets[space].remove(i);
-                largest_ack_index -= 1;
-                lost_packets.push(lost_packet.unwrap());
+                if let Some(loss) = self.sent_packets[space].remove(i) {
+                    let pn = loss.pn;
+                    loss_pn.push(pn);
+                    loss_packets.push(loss);
+                    largest_ack_index -= 1;
+                }
             } else {
                 let loss_time = self.sent_packets[space][i].time_sent + loss_delay;
                 self.loss_time[space] = match self.loss_time[space] {
@@ -361,7 +394,10 @@ where
         }
 
         self.slide_sent_packets(space);
-        lost_packets
+        if !loss_pn.is_empty() {
+            self.loss_pns = Some((space, loss_pn));
+        }
+        loss_packets
     }
 
     fn slide_sent_packets(&mut self, space: Epoch) {
@@ -399,7 +435,7 @@ pub struct ArcCC<OC, OP>(Arc<Mutex<CongestionController<OC, OP>>>);
 
 impl<OC, OP> ArcCC<OC, OP>
 where
-    OC: ObserveHandshake + ObserveLoss + ObservePto + ObserveAck,
+    OC: ObserveHandshake,
     OP: ObserveAntiAmplification,
 {
     pub fn new(
@@ -419,7 +455,7 @@ where
 
 impl<OC, OP> super::CongestionControl for ArcCC<OC, OP>
 where
-    OC: ObserveHandshake + ObserveLoss + ObservePto + ObserveAck,
+    OC: ObserveHandshake,
     OP: ObserveAntiAmplification,
 {
     fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize> {
@@ -502,6 +538,40 @@ where
                 guard.largest_ack_eliciting_packet[space] = Some(recved);
             }
         }
+    }
+
+    fn poll_lost(&self, cx: &mut Context<'_>) -> Poll<(Epoch, Vec<u64>)> {
+        let mut guard = self.0.lock().unwrap();
+
+        if let Some(loss) = guard.loss_pns.take() {
+            return Poll::Ready(loss);
+        }
+        guard.loss_waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+
+    fn poll_slide(&self, cx: &mut Context<'_>) -> Poll<(Epoch, Vec<u64>)> {
+        let mut guard = self.0.lock().unwrap();
+
+        if let Some(acked) = guard.newly_ack_pns.take() {
+            return Poll::Ready(acked);
+        }
+        guard.loss_waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+
+    fn poll_probe_timeout(&self, cx: &mut Context<'_>) -> Poll<Epoch> {
+        let mut guard = self.0.lock().unwrap();
+        if let Some(space) = guard.pto_space {
+            return Poll::Ready(space);
+        }
+        guard.pto_waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+
+    fn pto_time(&self) -> Option<Instant> {
+        let gurad = self.0.lock().unwrap();
+        gurad.get_pto_time_and_space().0
     }
 }
 
@@ -695,7 +765,6 @@ mod tests {
     use qbase::varint::VarInt;
 
     use super::*;
-    use crate::SlideWindow;
 
     #[test]
     fn test_on_packet_sent_multiple_packets() {
@@ -834,26 +903,6 @@ mod tests {
     }
 
     struct Mock;
-
-    impl SlideWindow for Mock {
-        fn inactivate(&mut self, _idx: u64) {}
-    }
-
-    impl ObserveAck for Mock {
-        type Guard<'a> = Mock;
-
-        fn ack_guard(&self, _space: Epoch) -> Self::Guard<'static> {
-            Mock
-        }
-    }
-
-    impl ObserveLoss for Mock {
-        fn may_loss_pkt(&self, _: Epoch, _: u64) {}
-    }
-
-    impl ObservePto for Mock {
-        fn probe_timeout(&self, _: Epoch) {}
-    }
 
     impl ObserveHandshake for Mock {
         fn is_handshake_done(&self) -> bool {
