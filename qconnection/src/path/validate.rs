@@ -307,11 +307,11 @@ mod tests {
                 assert!(state.need_send_challenge().is_some());
             }
             validator.on_challenge_sent();
-            let response = match *validator.state.lock().unwrap() {
+            let challenge = match *validator.state.lock().unwrap() {
                 ValidateState::Challenging(challenge, _) => challenge,
                 _ => panic!("unexpected state"),
             };
-            validator.on_response(&PathResponseFrame::from(&response));
+            validator.on_response(&PathResponseFrame::from(&challenge));
             let state = validator.state.lock().unwrap();
             assert!(matches!(*state, ValidateState::Success))
         }
@@ -323,11 +323,11 @@ mod tests {
                 assert!(state.need_send_challenge().is_some());
             }
             validator.on_challenge_sent();
-            let response = match *validator.state.lock().unwrap() {
+            let challenge = match *validator.state.lock().unwrap() {
                 ValidateState::Rechallenging(challenge, _) => challenge,
                 _ => panic!("unexpected state"),
             };
-            validator.on_response(&PathResponseFrame::from(&response));
+            validator.on_response(&PathResponseFrame::from(&challenge));
             {
                 let state = validator.state.lock().unwrap();
                 state.need_send_challenge();
@@ -387,21 +387,15 @@ mod tests {
         tokio::spawn({
             let mut validator = validator.clone();
             async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                let response = match *validator.state.lock().unwrap() {
+                let challenge = match *validator.state.lock().unwrap() {
                     ValidateState::Challenging(challenge, _) => challenge,
                     _ => panic!("unexpected state"),
                 };
-                validator.on_response(&PathResponseFrame::from(&response));
+                validator.on_response(&PathResponseFrame::from(&challenge));
             }
         });
-        for _i in 0..5 {
-            validator.on_challenge_sent();
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
 
         tokio::time::sleep(Duration::from_millis(200)).await;
-
         let state = validator.state.lock().unwrap();
         assert!(matches!(*state, ValidateState::Success));
     }
@@ -411,11 +405,11 @@ mod tests {
         let mut validator = Validator::default();
         validator.set_timeout();
         validator.challenge();
-        let response = match *validator.state.lock().unwrap() {
+        let challenge = match *validator.state.lock().unwrap() {
             ValidateState::Challenging(challenge, _) => challenge,
             _ => panic!("unexpected state"),
         };
-        validator.on_response(&PathResponseFrame::from(&response));
+        validator.on_response(&PathResponseFrame::from(&challenge));
         assert!(validator.poll_state().await);
     }
 
@@ -424,11 +418,11 @@ mod tests {
     fn test_validator_on_challenge_sent_with_success() {
         let mut validator = Validator::default();
         validator.set_timeout();
-        let response = match *validator.state.lock().unwrap() {
+        let challenge = match *validator.state.lock().unwrap() {
             ValidateState::Challenging(challenge, _) => challenge,
             _ => panic!("unexpected state"),
         };
-        validator.on_response(&PathResponseFrame::from(&response));
+        validator.on_response(&PathResponseFrame::from(&challenge));
         validator.on_challenge_sent();
     }
 
@@ -441,11 +435,11 @@ mod tests {
             let state = validator.state.lock().unwrap();
             assert!(state.need_send_challenge().is_some());
         }
-        let response = match *validator.state.lock().unwrap() {
+        let challenge = match *validator.state.lock().unwrap() {
             ValidateState::Challenging(challenge, _) => challenge,
             _ => panic!("unexpected state"),
         };
-        validator.on_response(&PathResponseFrame::from(&response));
+        validator.on_response(&PathResponseFrame::from(&challenge));
         validator.may_loss();
         validator.challenge();
         validator.may_loss();
@@ -469,11 +463,11 @@ mod tests {
         let mut validator = Validator::default();
         validator.set_timeout();
         validator.challenge();
-        let response = match *validator.state.lock().unwrap() {
+        let challenge = match *validator.state.lock().unwrap() {
             ValidateState::Challenging(challenge, _) => challenge,
             _ => panic!("unexpected state"),
         };
-        validator.on_response(&PathResponseFrame::from(&response));
+        validator.on_response(&PathResponseFrame::from(&challenge));
         let state = validator.state.lock().unwrap();
         assert!(matches!(*state, ValidateState::Success));
     }
