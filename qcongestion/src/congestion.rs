@@ -22,7 +22,7 @@ const K_PACKET_THRESHOLD: usize = 3;
 const MAX_SENT_DELAY: Duration = Duration::from_millis(30);
 
 //  default datagram size in bytes.
-pub(crate) const MSS: usize = 1200;
+pub const MSS: usize = 1200;
 
 pub enum CongestionAlgorithm {
     Bbr,
@@ -705,7 +705,7 @@ pub enum Epoch {
 }
 
 impl Epoch {
-    fn iter() -> std::slice::Iter<'static, Epoch> {
+    pub fn iter() -> std::slice::Iter<'static, Epoch> {
         static EPOCHS: [Epoch; 3] = [Epoch::Initial, Epoch::Handshake, Epoch::Data];
         EPOCHS.iter()
     }

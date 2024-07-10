@@ -3,7 +3,7 @@ use rustls::quic::{HeaderProtectionKey, PacketKey};
 
 use super::{
     error::Error,
-    header::{long::LongHeader, Protect},
+    header::{long::LongHeader, HasLength, Protect},
     take_pn_len, GetPacketNumberLength, KeyPhaseBit, LongClearBits, OneRttHeader, PacketNumber,
     PacketWrapper, ShortClearBits,
 };

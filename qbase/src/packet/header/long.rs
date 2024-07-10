@@ -111,7 +111,7 @@ impl Protect for InitialHeader {}
 impl Protect for ZeroRttHeader {}
 impl Protect for HandshakeHeader {}
 
-impl<S: Encode> Encode for LongHeader<S> {
+impl<S: Encode + HasLength> Encode for LongHeader<S> {
     fn size(&self) -> usize {
         1 + self.dcid.len()       // dcid长度最多20字节，长度编码只占1字节，加上cid本身的长度
             + 1 + self.scid.len() // scid一样

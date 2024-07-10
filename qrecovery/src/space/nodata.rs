@@ -71,6 +71,7 @@ impl<K: NoDataSpaceKind> ArcSpace<NoDataSpace<K>> {
         }))
     }
 }
+
 impl<K: NoDataSpaceKind> ReliableTransmit for ArcSpace<NoDataSpace<K>> {
     fn read(
         &self,

@@ -17,7 +17,7 @@ use qbase::{
 
 /// Path validator, used to verify the validity of the path.
 #[derive(Debug)]
-enum ValidateState {
+pub(crate) enum ValidateState {
     /// Challenging, `true` the challenge frame has been sent, otherwise it has
     /// not been sent.
     Challenging(PathChallengeFrame, bool),

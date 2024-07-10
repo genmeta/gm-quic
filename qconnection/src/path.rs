@@ -1,8 +1,9 @@
 use std::{
     net::SocketAddr,
+    ops::Deref,
     pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
     time::{Duration, Instant},
 };
 
@@ -10,25 +11,37 @@ use anti_amplifier::ANTI_FACTOR;
 use futures::Future;
 use observer::{ConnectionObserver, PathObserver};
 use qbase::{
-    cid::ConnectionId,
+    cid::{ArcLocalCids, ArcRemoteCids, ConnectionId, RESET_TOKEN_SIZE},
     frame::{PathChallengeFrame, PathResponseFrame},
+    packet::{
+        header::{long::Initial, LongHeader},
+        Header, InitialHeader,
+    },
+    token::ResetToken,
     util::TransportLimit,
+    varint::VarInt,
 };
 use qcongestion::{
     congestion::{ArcCC, Epoch},
     CongestionControl,
 };
+use qrecovery::space::{ArcSpaces, ReliableTransmit};
 use qudp::ArcUsc;
 
 pub mod anti_amplifier;
 pub use anti_amplifier::ArcAntiAmplifier;
 
 pub mod validate;
+use validate::ValidateState;
 pub use validate::{Transponder, Validator};
 
 pub mod observer;
 
-use crate::Sendmsg;
+use crate::{
+    controller::{ArcFlowController, FlowController},
+    transmit::{read_1rtt_data_and_encrypt, read_space_and_encrypt},
+    Sendmsg,
+};
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct RelayAddr {
@@ -89,6 +102,10 @@ pub struct RawPath {
     // 是动态变化的。(暂时用Option<ConnectionId>来表示)
     peer_cid: Option<ConnectionId>,
 
+    // todo: get loacl cid reset token
+    local_cid: Option<ConnectionId>,
+    token: Option<ResetToken>,
+
     // 拥塞控制器。另外还有连接级的流量控制、流级别的流量控制，以及抗放大攻击
     // 但这只是正常情况下。当连接处于Closing状态时，庞大的拥塞控制器便不再适用，而是简单的回应ConnectionCloseFrame。
     cc: ArcCC<ConnectionObserver, PathObserver>,
@@ -104,10 +121,17 @@ pub struct RawPath {
     validator: Validator,
     // 不包括被动收到PathRequest，响应Response，这是另外一个单独的控制，分为无挑战/有挑战未响应/响应中，响应被确认
     transponder: Transponder,
+
+    flow_ctrl: ArcFlowController,
 }
 
 impl RawPath {
-    fn new(usc: ArcUsc, max_ack_delay: Duration, connection_observer: ConnectionObserver) -> Self {
+    fn new(
+        usc: ArcUsc,
+        max_ack_delay: Duration,
+        connection_observer: ConnectionObserver,
+        flow_ctrl: ArcFlowController,
+    ) -> Self {
         use qcongestion::congestion::CongestionAlgorithm;
 
         let anti_amplifier = ArcAntiAmplifier::default();
@@ -115,6 +139,8 @@ impl RawPath {
         Self {
             usc,
             peer_cid: None,
+            local_cid: None,
+            token: None,
             validator: Validator::default(),
             transponder: Transponder::default(),
             anti_amplifier: Some(anti_amplifier),
@@ -124,6 +150,7 @@ impl RawPath {
                 connection_observer,
                 path_observer,
             ),
+            flow_ctrl,
         }
     }
 }
@@ -136,11 +163,13 @@ impl ArcPath {
         usc: ArcUsc,
         max_ack_delay: Duration,
         connection_observer: ConnectionObserver,
+        flow_ctrl: ArcFlowController,
     ) -> Self {
         Self(Arc::new(Mutex::new(RawPath::new(
             usc,
             max_ack_delay,
             connection_observer,
+            flow_ctrl,
         ))))
     }
 
@@ -323,6 +352,56 @@ impl ArcPath {
         }
         PtoState(self.clone())
     }
+
+    pub fn poll_send(&self) -> impl Future<Output = SendGuard> {
+        struct SendState(ArcPath);
+
+        impl Future for SendState {
+            type Output = SendGuard;
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let guard = &self.get_mut().0 .0.lock().unwrap();
+                let congestion_control = ready!(guard.cc.poll_send(cx));
+                let anti_amplification = if let Some(anti_amplifier) = guard.anti_amplifier.as_ref()
+                {
+                    ready!(anti_amplifier.poll_get_credit(cx))
+                } else {
+                    None
+                };
+
+                // TODO: 改成异步获取 cid
+                if guard.local_cid.is_none() || guard.peer_cid.is_none() {
+                    return Poll::Pending;
+                }
+                let flow_control = ready!(guard.flow_ctrl.sender.poll_apply(cx)).available();
+                let send_guard = SendGuard {
+                    transport_limit: TransportLimit::new(
+                        anti_amplification,
+                        congestion_control,
+                        flow_control,
+                    ),
+                    usc: guard.usc.clone(),
+                    dcid: guard.peer_cid.unwrap(),
+                    scid: guard.local_cid.unwrap(),
+                };
+                Poll::Ready(send_guard)
+            }
+        }
+
+        SendState(self.clone())
+    }
+
+    // return path validator state
+    pub fn poll_state(&self) -> impl Future<Output = bool> {
+        let guard = self.0.lock().unwrap();
+        guard.validator.poll_state()
+    }
+}
+
+pub struct SendGuard {
+    pub transport_limit: TransportLimit,
+    pub usc: ArcUsc,
+    pub dcid: ConnectionId,
+    pub scid: ConnectionId,
 }
 
 #[cfg(test)]
@@ -341,11 +420,13 @@ mod tests {
         let usc = ArcUsc::new(addr);
         let max_ack_delay = Duration::from_millis(100);
 
+        let flow_ctrl = ArcFlowController::default();
         let handshake_observer = HandShakeObserver::new(ArcConnectionState::new());
         ArcPath::new(
             usc,
             max_ack_delay,
             ConnectionObserver { handshake_observer },
+            flow_ctrl,
         )
     }
 
