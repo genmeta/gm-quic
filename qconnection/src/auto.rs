@@ -45,25 +45,24 @@ impl PacketPayload {
         token_frame_queue: Option<&ArcAsyncDeque<NewTokenFrame>>,
         datagram_frame_queue: Option<&ArcAsyncDeque<(DatagramFrame, Bytes)>>,
         max_data_frame_queue: Option<&ArcAsyncDeque<MaxDataFrame>>,
-        handshake_done_frame_queue: Option<&ArcAsyncDeque<HandshakeDoneFrame>>,
+        hs_done_frame_queue: Option<&ArcAsyncDeque<HandshakeDoneFrame>>,
         stream_frame_queue: Option<&ArcAsyncDeque<(StreamFrame, Bytes)>>,
         stream_ctl_frame_queue: Option<&ArcAsyncDeque<StreamCtlFrame>>,
         crypto_frame_queue: Option<&ArcAsyncDeque<(CryptoFrame, Bytes)>>,
         close_frame_queue: &ArcAsyncDeque<ConnectionCloseFrame>,
-        ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
+        ack_frames_tx: Option<&mpsc::UnboundedSender<AckFrame>>,
     ) -> Result<bool, Error> {
         let packet = self;
         let mut conn_id_frame_writer = conn_id_frame_queue.map(ArcAsyncDeque::writer);
         let mut token_frame_writer = token_frame_queue.map(ArcAsyncDeque::writer);
         let mut max_data_frame_writer = max_data_frame_queue.map(ArcAsyncDeque::writer);
         let mut datagram_frame_writer = datagram_frame_queue.map(ArcAsyncDeque::writer);
-        let mut handshake_done_frame_writer = handshake_done_frame_queue.map(ArcAsyncDeque::writer);
+        let mut hs_done_frame_writer = hs_done_frame_queue.map(ArcAsyncDeque::writer);
         let mut stream_frame_writer = stream_frame_queue.map(ArcAsyncDeque::writer);
         let mut stream_ctl_frame_writer = stream_ctl_frame_queue.map(ArcAsyncDeque::writer);
         let mut crypto_frame_writer = crypto_frame_queue.map(ArcAsyncDeque::writer);
         let mut close_frame_writer = close_frame_queue.writer();
         // let mut path_frame_writer = path.frames().writer();
-
         FrameReader::new(packet.payload)
             .try_fold(false, |is_ack_eliciting, frame| {
                 let frame = frame.map_err(Error::from)?;
@@ -78,6 +77,9 @@ impl PacketPayload {
                     Frame::Pure(PureFrame::Padding(_)) => Ok(is_ack_eliciting),
                     Frame::Pure(PureFrame::Ping(_)) => Ok(true),
                     Frame::Pure(PureFrame::Ack(ack)) => {
+                        let Some(ack_frames_tx) = ack_frames_tx.as_ref() else {
+                            unreachable!()
+                        };
                         _ = ack_frames_tx.send(ack);
                         Ok(is_ack_eliciting)
                     }
@@ -113,7 +115,7 @@ impl PacketPayload {
                             }
                             ConnFrame::HandshakeDone(done) => {
                                 let Some(handshake_done_frame_writer) =
-                                    handshake_done_frame_writer.as_mut()
+                                    hs_done_frame_writer.as_mut()
                                 else {
                                     unreachable!()
                                 };
@@ -184,7 +186,7 @@ impl PacketPayload {
                 if let Some(mut writer) = datagram_frame_writer {
                     writer.rollback()
                 }
-                if let Some(mut writer) = handshake_done_frame_writer {
+                if let Some(mut writer) = hs_done_frame_writer {
                     writer.rollback()
                 }
                 if let Some(mut writer) = stream_frame_writer {
@@ -215,7 +217,7 @@ impl PacketPayload {
             None,
             Some(crypto_frame_queue),
             close_frame_queue,
-            ack_frames_tx,
+            Some(ack_frames_tx),
         )
     }
 
@@ -235,7 +237,6 @@ impl PacketPayload {
         stream_frame_queue: &ArcAsyncDeque<(StreamFrame, Bytes)>,
         stream_ctl_frame_queue: &ArcAsyncDeque<StreamCtlFrame>,
         close_frame_queue: &ArcAsyncDeque<ConnectionCloseFrame>,
-        ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
     ) -> Result<bool, Error> {
         self.generic_dispatch(
             None,
@@ -247,7 +248,7 @@ impl PacketPayload {
             Some(stream_ctl_frame_queue),
             None,
             close_frame_queue,
-            ack_frames_tx,
+            None,
         )
     }
 
@@ -257,7 +258,7 @@ impl PacketPayload {
         token_frame_queue: &ArcAsyncDeque<NewTokenFrame>,
         datagram_frame_queue: &ArcAsyncDeque<(DatagramFrame, Bytes)>,
         max_data_frame_queue: &ArcAsyncDeque<MaxDataFrame>,
-        handshake_done_frame_queue: &ArcAsyncDeque<HandshakeDoneFrame>,
+        hs_done_frame_queue: &ArcAsyncDeque<HandshakeDoneFrame>,
         stream_frame_queue: &ArcAsyncDeque<(StreamFrame, Bytes)>,
         stream_ctl_frame_queue: &ArcAsyncDeque<StreamCtlFrame>,
         crypto_frame_queue: &ArcAsyncDeque<(CryptoFrame, Bytes)>,
@@ -269,12 +270,12 @@ impl PacketPayload {
             Some(token_frame_queue),
             Some(datagram_frame_queue),
             Some(max_data_frame_queue),
-            Some(handshake_done_frame_queue),
+            Some(hs_done_frame_queue),
             Some(stream_frame_queue),
             Some(stream_ctl_frame_queue),
             Some(crypto_frame_queue),
             close_frame_queue,
-            ack_frames_tx,
+            Some(ack_frames_tx),
         )
     }
 }

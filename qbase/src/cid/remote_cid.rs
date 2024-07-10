@@ -68,7 +68,10 @@ impl RawRemoteCids {
         self.retired_cids.clone()
     }
 
-    pub fn recv_new_cid_frame(&mut self, frame: &NewConnectionIdFrame) -> Result<(), Error> {
+    pub fn recv_new_cid_frame(
+        &mut self,
+        frame: &NewConnectionIdFrame,
+    ) -> Result<Option<ResetToken>, Error> {
         let seq = frame.sequence.into_inner();
         let retire_prior_to = frame.retire_prior_to.into_inner();
         let active_len = seq.saturating_sub(retire_prior_to);
@@ -85,7 +88,7 @@ impl RawRemoteCids {
 
         // Discard the frame if the sequence number is less than the current offset.
         if frame.sequence < self.cid_deque.offset() {
-            return Ok(());
+            return Ok(None);
         }
 
         let id = frame.id;
@@ -94,7 +97,7 @@ impl RawRemoteCids {
         self.retire_prior_to(retire_prior_to);
         self.arrange_idle_cid();
 
-        Ok(())
+        Ok(Some(token))
     }
 
     /// Arrange the idle cids to the front of the cid applys
