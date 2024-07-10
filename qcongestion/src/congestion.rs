@@ -550,7 +550,7 @@ where
         Poll::Pending
     }
 
-    fn poll_slide(&self, cx: &mut Context<'_>) -> Poll<(Epoch, Vec<u64>)> {
+    fn poll_indicate_ack(&self, cx: &mut Context<'_>) -> Poll<(Epoch, Vec<u64>)> {
         let mut guard = self.0.lock().unwrap();
 
         if let Some(acked) = guard.newly_ack_pns.take() {

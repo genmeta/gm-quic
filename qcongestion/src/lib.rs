@@ -66,7 +66,7 @@ pub trait CongestionControl {
     /// 都不必记录了，可以淘汰。
     /// 需知，一个Path收到的包不需要被记录，不代表其他Path的包也不需被记录。只有等各个path过去接收的包都不需要被记录，
     /// 那么Space级别的包号连续的不被记录的，才可以向前滑动
-    fn poll_slide(&self, cx: &mut Context<'_>) -> Poll<(Epoch, Vec<u64>)>;
+    fn poll_indicate_ack(&self, cx: &mut Context<'_>) -> Poll<(Epoch, Vec<u64>)>;
 
     /// probe timeout 需通知 space 进行发包
     fn poll_probe_timeout(&self, cx: &mut Context<'_>) -> Poll<Epoch>;

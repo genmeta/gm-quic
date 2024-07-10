@@ -1,18 +1,23 @@
 use std::{
     net::SocketAddr,
+    pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anti_amplifier::ANTI_FACTOR;
+use futures::Future;
 use observer::{ConnectionObserver, PathObserver};
 use qbase::{
     cid::ConnectionId,
     frame::{PathChallengeFrame, PathResponseFrame},
     util::TransportLimit,
 };
-use qcongestion::congestion::ArcCC;
+use qcongestion::{
+    congestion::{ArcCC, Epoch},
+    CongestionControl,
+};
 use qudp::ArcUsc;
 
 pub mod anti_amplifier;
@@ -22,7 +27,6 @@ pub mod validate;
 pub use validate::{Transponder, Validator};
 
 pub mod observer;
-pub use observer::{AckObserver, LossObserver};
 
 use crate::Sendmsg;
 
@@ -272,6 +276,52 @@ impl ArcPath {
     /// When creating a new path, start the path challenge timer
     pub fn set_path_challenge_timeout(&self) {
         self.0.lock().unwrap().validator.set_timeout()
+    }
+
+    /// get connection controller pto time
+    pub fn pto_time(&self) -> Option<Instant> {
+        self.0.lock().unwrap().cc.pto_time()
+    }
+
+    pub fn poll_may_loss(&self) -> impl Future<Output = (Epoch, Vec<u64>)> {
+        struct LossState(ArcPath);
+
+        impl Future for LossState {
+            type Output = (Epoch, Vec<u64>);
+
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let guard = &self.get_mut().0 .0.lock().unwrap();
+                guard.cc.poll_lost(cx)
+            }
+        }
+        LossState(self.clone())
+    }
+
+    pub fn poll_indicate_ack(&self) -> impl Future<Output = (Epoch, Vec<u64>)> {
+        struct SlideState(ArcPath);
+
+        impl Future for SlideState {
+            type Output = (Epoch, Vec<u64>);
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let guard = &self.get_mut().0 .0.lock().unwrap();
+                guard.cc.poll_indicate_ack(cx)
+            }
+        }
+        SlideState(self.clone())
+    }
+
+    pub fn poll_probe_timeout(&self) -> impl Future<Output = Epoch> {
+        struct PtoState(ArcPath);
+
+        impl Future for PtoState {
+            type Output = Epoch;
+
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let guard = &self.get_mut().0 .0.lock().unwrap();
+                guard.cc.poll_probe_timeout(cx)
+            }
+        }
+        PtoState(self.clone())
     }
 }
 

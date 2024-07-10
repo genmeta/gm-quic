@@ -1,34 +1,6 @@
-use qcongestion::{congestion::Epoch, ObserveAntiAmplification, ObserveHandshake};
-use qrecovery::reliable::rcvdpkt::{ArcRcvdPktRecords, ArcRcvdPktRecordsWriter};
-use tokio::sync::mpsc;
-
 use super::{anti_amplifier::ANTI_FACTOR, ArcAntiAmplifier};
 use crate::connection::state::{ArcConnectionState, ConnectionState};
-
-pub struct AckObserverGuard<'a>(ArcRcvdPktRecordsWriter<'a>);
-
-/// Because ArcRcvdPktRecords is too simple, there's no need to use a queue.
-#[derive(Debug, Clone)]
-pub struct AckObserver([ArcRcvdPktRecords; 3]);
-
-impl AckObserver {
-    pub fn new(records: [ArcRcvdPktRecords; 3]) -> Self {
-        Self(records)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct LossObserver([mpsc::UnboundedSender<u64>; 3]);
-
-impl LossObserver {
-    // 它是生产者，所以应该返回接收器
-    pub fn new() -> (Self, [mpsc::UnboundedReceiver<u64>; 3]) {
-        let (tx0, rx0) = mpsc::unbounded_channel();
-        let (tx1, rx1) = mpsc::unbounded_channel();
-        let (tx2, rx2) = mpsc::unbounded_channel();
-        (Self([tx0, tx1, tx2]), [rx0, rx1, rx2])
-    }
-}
+use qcongestion::{ObserveAntiAmplification, ObserveHandshake};
 
 #[derive(Debug, Clone)]
 pub struct HandShakeObserver(ArcConnectionState);

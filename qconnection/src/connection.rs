@@ -21,6 +21,7 @@ use qbase::{
     token::ResetToken,
     util::ArcAsyncDeque,
 };
+use qcongestion::congestion::Epoch;
 use qrecovery::space::{ArcSpace, ArcSpaces, ReliableTransmit};
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
@@ -34,7 +35,7 @@ use crate::{
     handshake,
     path::{
         observer::{ConnectionObserver, HandShakeObserver},
-        AckObserver, ArcPath, LossObserver, Pathway,
+        ArcPath, Pathway,
     },
 };
 
@@ -182,10 +183,102 @@ impl RawConnection {
                 let observer = self.connection_observer.clone();
                 || {
                     // TODO: 要为该新路径创建发送任务，需要连接id...spawn出一个任务，直到{何时}终止?
-                    ArcPath::new(usc, Duration::from_millis(100), observer)
+                    // path 的任务在连接迁移后或整个连接断开后终止
+                    // 考虑多路径并存，在连接迁移后，旧路径可以发起路径验证看旧路径是否还有效判断是否终止
+                    let path = ArcPath::new(usc, Duration::from_millis(100), observer);
+                    self.swapn_path_may_loss(path.clone());
+                    self.swapn_path_indicate_ack(path.clone());
+                    self.swapn_path_probe_timeout(path.clone());
+                    path
                 }
             })
             .clone()
+    }
+
+    fn swapn_path_may_loss(&self, path: ArcPath) {
+        let spaces = self.spaces.clone();
+        tokio::spawn(async move {
+            loop {
+                let loss = path.poll_may_loss().await;
+                match loss.0 {
+                    Epoch::Initial => {
+                        if let Some(space) = spaces.initial_space() {
+                            for pn in loss.1 {
+                                space.may_loss_pkt(pn);
+                            }
+                        }
+                    }
+                    Epoch::Handshake => {
+                        if let Some(space) = spaces.handshake_space() {
+                            for pn in loss.1 {
+                                space.may_loss_pkt(pn);
+                            }
+                        }
+                    }
+                    Epoch::Data => {
+                        let space = spaces.data_space();
+                        for pn in loss.1 {
+                            space.may_loss_pkt(pn);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn swapn_path_indicate_ack(&self, path: ArcPath) {
+        let spaces = self.spaces.clone();
+        tokio::spawn(async move {
+            loop {
+                let acked = path.poll_indicate_ack().await;
+                match acked.0 {
+                    Epoch::Initial => {
+                        if let Some(space) = spaces.initial_space() {
+                            for pn in acked.1 {
+                                space.rcvd_pkt_records.write().inactivate(pn);
+                            }
+                        }
+                    }
+                    Epoch::Handshake => {
+                        if let Some(space) = spaces.initial_space() {
+                            for pn in acked.1 {
+                                space.rcvd_pkt_records.write().inactivate(pn);
+                            }
+                        }
+                    }
+                    Epoch::Data => {
+                        let space = spaces.data_space();
+                        for pn in acked.1 {
+                            space.rcvd_pkt_records.write().inactivate(pn);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn swapn_path_probe_timeout(&self, path: ArcPath) {
+        let spaces = self.spaces.clone();
+        tokio::spawn(async move {
+            loop {
+                let epoch = path.poll_probe_timeout().await;
+                match epoch {
+                    Epoch::Initial => {
+                        if let Some(space) = spaces.initial_space() {
+                            space.probe_timeout();
+                        }
+                    }
+                    Epoch::Handshake => {
+                        if let Some(space) = spaces.handshake_space() {
+                            space.probe_timeout();
+                        }
+                    }
+                    Epoch::Data => {
+                        spaces.data_space().probe_timeout();
+                    }
+                };
+            }
+        });
     }
 }
 
@@ -231,19 +324,7 @@ pub fn new(
 
     let datagram_flow = DatagramFlow::new(65535, 0);
 
-    let ack_observer = AckObserver::new([
-        initial_space.rcvd_pkt_records.clone(),
-        handshake_space.rcvd_pkt_records.clone(),
-        data_space.rcvd_pkt_records.clone(),
-    ]);
-
-    let (loss_observer, [mut initial_loss_rx, mut handshake_loss_rx, mut data_loss_rx]) =
-        LossObserver::new();
-
     let handshake_observer = HandShakeObserver::new(conn_state.clone());
-    let (pto_observer, [mut initial_timeout_rx, mut handshake_timeout_rx, mut data_timeout_rx]) =
-        PtoObserver::new();
-
     let connection_observer = ConnectionObserver { handshake_observer };
 
     let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded_channel();
