@@ -4,7 +4,7 @@ use rand::Rng;
 
 pub const RESET_TOKEN_SIZE: usize = 16;
 
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash)]
 pub struct ResetToken([u8; RESET_TOKEN_SIZE]);
 
 impl ResetToken {

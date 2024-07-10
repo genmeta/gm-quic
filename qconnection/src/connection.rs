@@ -6,14 +6,15 @@ use dashmap::DashMap;
 use deref_derive::Deref;
 use futures::StreamExt;
 use qbase::{
-    cid::Registry,
+    cid::{ConnectionId, Registry},
     error::{Error, ErrorKind},
-    frame::{ConnFrame, HandshakeDoneFrame, MaxDataFrame},
+    frame::{ConnFrame, ConnectionCloseFrame, HandshakeDoneFrame, MaxDataFrame},
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
         HandshakePacket, InitialPacket, OneRttPacket, SpacePacket, SpinBit, ZeroRttPacket,
     },
     streamid::Role,
+    token::ResetToken,
     util::ArcAsyncDeque,
 };
 use qrecovery::space::{ArcSpace, ArcSpaces};
@@ -104,6 +105,12 @@ impl RawConnection {
         self.zero_rtt_keys.invalid();
     }
 
+    fn enter_closing(&self) {
+        self.state.set_state(ConnectionState::Closing);
+
+        // 启用计时器
+    }
+
     fn enter_draining(&self) {
         self.state.set_state(ConnectionState::Draining);
         self.one_rtt_keys.invalid();
@@ -124,10 +131,45 @@ impl RawConnection {
     }
 }
 
-#[derive(Deref)]
-pub struct ArcConnection(Arc<RawConnection>);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConnectionInternalId(usize);
 
-pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
+impl ConnectionInternalId {
+    pub fn new(id: usize) -> Self {
+        Self(id)
+    }
+}
+
+#[derive(Deref, Clone)]
+pub struct ArcConnectionHandle {
+    #[deref]
+    pub inner: Arc<RawConnection>,
+    pub internal_id: ConnectionInternalId,
+}
+
+pub struct ConnectionBuilder {
+    tls_session: TlsIO,
+    role: Role,
+    retire_conn_id_tx: mpsc::UnboundedSender<ConnectionId>,
+    issue_conn_id_tx: mpsc::UnboundedSender<(ConnectionId, ArcConnectionHandle)>,
+    new_reset_token_tx: mpsc::UnboundedSender<(ResetToken, ArcConnectionHandle)>,
+    retire_reset_token_tx: mpsc::UnboundedSender<ResetToken>,
+    close_conn_tx: mpsc::UnboundedSender<ConnectionInternalId>,
+    internal_id: ConnectionInternalId,
+}
+
+pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
+    let ConnectionBuilder {
+        tls_session,
+        role,
+        retire_conn_id_tx,
+        issue_conn_id_tx,
+        new_reset_token_tx,
+        retire_reset_token_tx,
+        close_conn_tx,
+        internal_id,
+    } = initializer;
+
     let conn_state = ArcConnectionState::new();
     let mut conn_frame_deque = ArcAsyncDeque::new();
     // todo：发送CCF
@@ -163,6 +205,17 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
 
     let handshake_space_frame_queue = handshake_space.spawn_recv_space_frames(error_tx.clone());
 
+    let server_start_handshake_hook = {
+        let initial_keys = initial_keys.clone();
+        let state = conn_state.clone();
+        move || {
+            // todo: 客户端发送第一个握手包时，进入Handshaking状态
+            if role == Role::Server {
+                initial_keys.invalid();
+                state.set_state(ConnectionState::Handshaking)
+            }
+        }
+    };
     handshake_packet_stream.spawn_parse_packet_and_then_dispatch(
         Some(conn_frame_deque.clone()),
         Some(handshake_space_frame_queue),
@@ -171,11 +224,7 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
         error_tx.clone(),
         // a server MUST discard Initial keys when it first successfully processes a
         // Handshake packet.
-        if role == Role::Server {
-            Some(initial_keys.clone())
-        } else {
-            None
-        },
+        server_start_handshake_hook,
     );
 
     tokio::spawn(
@@ -304,45 +353,50 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
         let connection = connection.clone();
         async move {
             while let Some(conn_frame) = conn_frame_deque.next().await {
-                let error: Option<Error> = match conn_frame {
-                    ConnFrame::Close(error) => {
-                        // 该不该等CCF发送再进入排空状态
-                        connection.enter_draining();
-                        _ = error_tx.send(error.into());
-                        Ok(())
-                    }
-                    ConnFrame::NewToken(_) => todo!(),
-                    ConnFrame::MaxData(MaxDataFrame { max_data }) => {
-                        flow_controller.sender.permit(max_data.into_inner());
-                        Ok(())
-                    }
-                    ConnFrame::NewConnectionId(frame) => connection
-                        .cid_registry
-                        .remote
-                        .lock_guard()
-                        .recv_new_cid_frame(&frame),
-                    ConnFrame::RetireConnectionId(frame) => {
-                        connection
-                            .cid_registry
-                            .local
-                            .lock_guard()
-                            .recv_retire_cid_frame(&frame);
-                        Ok(())
-                    }
-                    ConnFrame::HandshakeDone(_) => {
-                        if role == Role::Client {
-                            connection.enter_handshake_done();
+                let handle_conn_frmae = |conn_frame: ConnFrame| {
+                    match conn_frame {
+                        ConnFrame::Close(error) => {
+                            // 该不该等CCF发送再进入排空状态
+                            connection.enter_draining();
+                            _ = error_tx.send(error.into());
                             Ok(())
-                        } else {
-                            Err(Error::new_with_default_fty(
-                                ErrorKind::ProtocolViolation,
-                                "client should not send HandshakeDoneFrame",
-                            ))
                         }
+                        ConnFrame::NewToken(_) => todo!(),
+                        ConnFrame::MaxData(MaxDataFrame { max_data }) => {
+                            flow_controller.sender.permit(max_data.into_inner());
+                            Ok(())
+                        }
+                        ConnFrame::NewConnectionId(frame) => connection
+                            .cid_registry
+                            .remote
+                            .lock_guard()
+                            .recv_new_cid_frame(&frame),
+                        ConnFrame::RetireConnectionId(frame) => {
+                            let retired_cid = connection
+                                .cid_registry
+                                .local
+                                .lock_guard()
+                                .recv_retire_cid_frame(&frame)?;
+                            if let Some(cid) = retired_cid {
+                                retire_conn_id_tx.send(cid).unwrap();
+                            }
+                            Ok(())
+                        }
+                        ConnFrame::HandshakeDone(_) => {
+                            if role == Role::Client {
+                                connection.enter_handshake_done();
+                                Ok(())
+                            } else {
+                                Err(Error::new_with_default_fty(
+                                    ErrorKind::ProtocolViolation,
+                                    "client should not send HandshakeDoneFrame",
+                                ))
+                            }
+                        }
+                        ConnFrame::DataBlocked(_) => Ok(()),
                     }
-                    ConnFrame::DataBlocked(_) => Ok(()),
-                }
-                .err();
+                };
+                let error: Option<Error> = handle_conn_frmae(conn_frame).err();
 
                 // 处理连接错误
                 if let Some(error) = error {
@@ -366,39 +420,37 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
             datagram_flow.on_conn_error(&error);
 
             let state = connection.state.get_state();
-            match state {
-                ConnectionState::Initial => {
-                    connection
-                        .spaces
-                        .initial_space()
-                        .unwrap()
-                        .reliable_frame_queue
-                        .write()
-                        .push_conn_frame(ConnFrame::Close(error.into()));
-                }
-                ConnectionState::Handshake => {
-                    connection
-                        .spaces
-                        .handshake_space()
-                        .unwrap()
-                        .reliable_frame_queue
-                        .write()
-                        .push_conn_frame(ConnFrame::Close(error.into()));
-                }
-                ConnectionState::HandshakeDone => {
-                    data_space
-                        .reliable_frame_queue
-                        .write()
-                        .push_conn_frame(ConnFrame::Close(error.into()));
-                }
-                ConnectionState::Closing | ConnectionState::Draining => {
-                    // 什么都不做
-                }
-            }
 
-            if state != ConnectionState::Draining {
-                connection.state.set_state(ConnectionState::Closing);
-            }
+            let error = match state {
+                // Sending a CONNECTION_CLOSE of type 0x1d in an Initial or Handshake
+                // packet could expose application state or be used to alter application
+                // state. A CONNECTION_CLOSE of type 0x1d MUST be replaced by a CONNECTION_CLOSE
+                // of type 0x1c when sending the frame in Initial or Handshake packets. Otherwise,
+                // information about the application state might be revealed. Endpoints MUST clear
+                // the value of the Reason Phrase field and SHOULD use the APPLICATION_ERROR code
+                // when converting to a CONNECTION_CLOSE of type 0x1c.
+                ConnectionState::Initial | ConnectionState::Handshaking => {
+                    Error::new_with_default_fty(ErrorKind::Application, "")
+                }
+                ConnectionState::HandshakeDone => error,
+                ConnectionState::Closing | ConnectionState::Draining => unreachable!(),
+            };
+
+            let ccf = ConnectionCloseFrame::from(error.clone());
+
+            // TODO 组装一个数据包
+            let pkt = match state {
+                ConnectionState::Initial => {}
+                ConnectionState::Handshaking => todo!(),
+                ConnectionState::HandshakeDone => todo!(),
+                ConnectionState::Closing => todo!(),
+                ConnectionState::Draining => todo!(),
+            };
+
+            // TODO: 组装出数据包
+
+            // 发送CCF
+
             // 准备发送连接关闭帧
 
             // 等待连接关闭
@@ -409,7 +461,10 @@ pub fn new(tls_session: TlsIO, role: Role) -> ArcConnection {
         }
     });
 
-    ArcConnection(connection)
+    ArcConnectionHandle {
+        inner: connection,
+        internal_id,
+    }
 }
 
 #[cfg(test)]
