@@ -2,13 +2,13 @@ pub mod state;
 
 use std::{sync::Arc, time::Duration};
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use deref_derive::Deref;
 use futures::{FutureExt, StreamExt};
 use qbase::{
     cid::{ConnectionId, Registry},
     error::{Error, ErrorKind},
-    frame::{ConnFrame, ConnectionCloseFrame, HandshakeDoneFrame, MaxDataFrame},
+    frame::{ConnFrame, ConnectionCloseFrame, HandshakeDoneFrame},
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
         HandshakePacket, InitialPacket, OneRttPacket, SpacePacket, SpinBit, ZeroRttPacket,
@@ -131,49 +131,108 @@ impl RawConnection {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ConnectionInternalId(usize);
-
-impl ConnectionInternalId {
-    pub fn new(id: usize) -> Self {
-        Self(id)
-    }
+#[derive(Deref)]
+pub struct ConnectionHandle {
+    #[deref]
+    pub connection: RawConnection,
+    pub resources: ConnectionResources,
 }
 
 #[derive(Deref, Clone)]
-pub struct ArcConnectionHandle {
-    #[deref]
-    pub inner: Arc<RawConnection>,
-    pub internal_id: ConnectionInternalId,
+pub struct ArcConnectionHandle(Arc<ConnectionHandle>);
+
+#[derive(Default, Debug, Clone)]
+pub struct ConnectionResources {
+    pub connection_ids: DashSet<ConnectionId>,
+    pub reset_tokens: DashSet<ResetToken>,
 }
 
 pub struct ConnectionBuilder {
     tls_session: TlsIO,
     role: Role,
-    retire_conn_id_tx: mpsc::UnboundedSender<ConnectionId>,
-    issue_conn_id_tx: mpsc::UnboundedSender<(ConnectionId, ArcConnectionHandle)>,
-    new_reset_token_tx: mpsc::UnboundedSender<(ResetToken, ArcConnectionHandle)>,
-    retire_reset_token_tx: mpsc::UnboundedSender<ResetToken>,
-    close_conn_tx: mpsc::UnboundedSender<ConnectionInternalId>,
-    internal_id: ConnectionInternalId,
+    // 尚未实现连接迁移
+    connections: Arc<DashMap<ConnectionId, ArcConnectionHandle>>,
+    // 某条连接的对端的无状态重置令牌
+    reset_tokens: Arc<DashMap<ResetToken, ArcConnectionHandle>>,
 }
 
 pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
     let ConnectionBuilder {
         tls_session,
         role,
-        retire_conn_id_tx,
-        issue_conn_id_tx,
-        new_reset_token_tx,
-        retire_reset_token_tx,
-        close_conn_tx,
-        internal_id,
+        connections: endpoint_connection_ids,
+        reset_tokens: endpoint_reset_tokens,
     } = initializer;
 
+    let resources = ConnectionResources::default();
+
     let conn_state = ArcConnectionState::new();
+    let cid_registry = Registry::new(2);
 
     let initial_keys = ArcKeys::new_pending();
     let initial_space = ArcSpace::new_initial_space();
+
+    let handshake_keys = ArcKeys::new_pending();
+    let handshake_space = ArcSpace::new_handshake_space();
+
+    let zero_rtt_keys = ArcKeys::new_pending();
+    let one_rtt_keys = ArcOneRttKeys::new_pending();
+    let flow_controller = ArcFlowController::with_initial(0, 0);
+    let data_space = ArcSpace::new_data_space(role, 0, 0);
+
+    let datagram_flow = DatagramFlow::new(65535, 0);
+
+    let ack_observer = AckObserver::new([
+        initial_space.rcvd_pkt_records.clone(),
+        handshake_space.rcvd_pkt_records.clone(),
+        data_space.rcvd_pkt_records.clone(),
+    ]);
+
+    let (loss_observer, [mut initial_loss_rx, mut handshake_loss_rx, mut data_loss_rx]) =
+        LossObserver::new();
+
+    let handshake_observer = HandShakeObserver::new(conn_state.clone());
+    let (pto_observer, [mut initial_timeout_rx, mut handshake_timeout_rx, mut data_timeout_rx]) =
+        PtoObserver::new();
+
+    let connection_observer = ConnectionObserver {
+        handshake_observer,
+        ack_observer,
+        loss_observer,
+        pto_observer,
+    };
+
+    let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded_channel();
+    let (handshake_pkt_tx, handshake_pkt_rx) = mpsc::unbounded_channel();
+    let (zero_rtt_pkt_tx, zero_rtt_pkt_rx) = mpsc::unbounded_channel();
+    let (one_rtt_pkt_tx, one_rtt_pkt_rx) = mpsc::unbounded_channel();
+
+    let connection = RawConnection {
+        cid_registry: cid_registry.clone(),
+        pathes: DashMap::new(),
+        init_pkt_queue: initial_pkt_tx,
+        hs_pkt_queue: handshake_pkt_tx,
+        zero_rtt_pkt_queue: zero_rtt_pkt_tx,
+        one_rtt_pkt_queue: one_rtt_pkt_tx,
+        initial_keys: initial_keys.clone(),
+        handshake_keys: handshake_keys.clone(),
+        zero_rtt_keys: zero_rtt_keys.clone(),
+        one_rtt_keys: one_rtt_keys.clone(),
+        spaces: ArcSpaces::new(
+            initial_space.clone(),
+            handshake_space.clone(),
+            data_space.clone(),
+        ),
+        connection_observer,
+        spin: SpinBit::default(),
+        state: conn_state.clone(),
+        flow_ctrl: flow_controller.clone(),
+    };
+
+    let connection_handle = ArcConnectionHandle(Arc::new(ConnectionHandle {
+        connection,
+        resources,
+    }));
 
     // decode initial packet
     // producer -> producer
@@ -183,7 +242,6 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
     //         for SERVER: rcvd handshake pkt
     //         for CLIENT: sent handshake pkt
     //         or enter_closing
-    let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded_channel();
     let mut initial_packet_stream = auto::InitialPacketStream::new(
         initial_pkt_rx,
         initial_keys.clone(),
@@ -193,11 +251,11 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
     // dispatch initial packet
     // producer -> producer
     // return: initial_packet_stream closed
-    let initial_crypto_deque_writer = ArcAsyncDeque::new();
-    let initial_ccf_deque_writer = ArcAsyncDeque::new();
-    let (initial_ack_tx, mut initial_ack_rx) = mpsc::unbounded_channel();
-    let mut initial_crypto_deque_reader = initial_crypto_deque_writer.clone();
-    let mut initial_ccf_deque_reader = initial_ccf_deque_writer.clone();
+    let initial_crypto_queue_writer = ArcAsyncDeque::new();
+    let mut initial_crypto_queue_reader = initial_crypto_queue_writer.clone();
+    let initial_ccf_queue_writer = ArcAsyncDeque::new();
+    let mut initial_ccf_queue_reader = initial_ccf_queue_writer.clone();
+    let (initial_ack_frame_tx, mut initial_ack_frame_rx) = mpsc::unbounded_channel();
     // 通过select它来获取错误
     let initial_dispatch_handle = tokio::spawn({
         async move {
@@ -205,29 +263,17 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                 let pn = packet.pn;
                 // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
                 let _is_ack_eliciting = packet.dispatch_initial_space(
-                    &initial_crypto_deque_writer,
-                    &initial_ccf_deque_writer,
-                    &initial_ack_tx,
+                    &initial_crypto_queue_writer,
+                    &initial_ccf_queue_writer,
+                    &initial_ack_frame_tx,
                 )?;
                 initial_packet_stream.rcvd_pkt_records.register_pn(pn)
             }
 
-            initial_crypto_deque_writer.close();
-            initial_ccf_deque_writer.close();
+            initial_crypto_queue_writer.close();
+            initial_ccf_queue_writer.close();
 
             Ok::<_, Error>(())
-        }
-    });
-
-    // initial handle ack
-    // -> consumer
-    // return: initial_ack_tx dropped
-    tokio::spawn({
-        let initial_space = initial_space.clone();
-        async move {
-            while let Some(ack) = initial_ack_rx.recv().await {
-                initial_space.on_ack(ack);
-            }
         }
     });
 
@@ -239,15 +285,12 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
     let initial_crypto_stream_handle = tokio::spawn({
         let crypto_stream = initial_space.as_ref().clone();
         async move {
-            while let Some((frame, byte)) = initial_crypto_deque_reader.next().await {
+            while let Some((frame, byte)) = initial_crypto_queue_reader.next().await {
                 crypto_stream.recv_data(frame, byte)?;
             }
             Ok::<_, Error>(())
         }
     });
-
-    let handshake_keys = ArcKeys::new_pending();
-    let handshake_space = ArcSpace::new_handshake_space();
 
     // decode handshake packet
     // producer -> producer
@@ -255,22 +298,33 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
     //     handshake_pkt_tx dropped
     //     handshake_keys invalid
     //         handshake done
-    //         enter closing
-    let (handshake_pkt_tx, handshake_pkt_rx) = mpsc::unbounded_channel();
+    //         connection enter closing/draining
     let mut handshake_packet_stream = auto::HandshakePacketStream::new(
         handshake_pkt_rx,
         handshake_keys.clone(),
         handshake_space.rcvd_pkt_records.clone(),
     );
 
+    // initial handle ack
+    // -> consumer
+    // return: initial_ack_frame_tx dropped
+    tokio::spawn({
+        let initial_space = initial_space.clone();
+        async move {
+            while let Some(ack) = initial_ack_frame_rx.recv().await {
+                initial_space.on_ack(ack);
+            }
+        }
+    });
+
     // dispatch handshake packet
     // producer -> producer
     // return: handshake_packet_stream closed
-    let (handshake_ack_tx, mut handshake_ack_rx) = mpsc::unbounded_channel();
-    let handshake_crypto_deque_writer = ArcAsyncDeque::new();
-    let handshake_ccf_deque_writer = ArcAsyncDeque::new();
-    let mut handshake_crypto_deque_reader = handshake_crypto_deque_writer.clone();
-    let mut handshake_ccf_deque_reader = handshake_ccf_deque_writer.clone();
+    let handshake_crypto_queue_writer = ArcAsyncDeque::new();
+    let mut handshake_crypto_queue_reader = handshake_crypto_queue_writer.clone();
+    let handshake_ccf_queue_writer = ArcAsyncDeque::new();
+    let mut handshake_ccf_queue_reader = handshake_ccf_queue_writer.clone();
+    let (handshake_ack_frame_tx, mut handshake_ack_frame_rx) = mpsc::unbounded_channel();
     let handshake_dispatch_handle = tokio::spawn({
         let conn_state = conn_state.clone();
         let initial_keys = initial_keys.clone();
@@ -278,9 +332,9 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
             while let Some(packet) = handshake_packet_stream.next().await {
                 let pn = packet.pn;
                 let _is_ack_eliciting = packet.dispatch_handshake_space(
-                    &handshake_crypto_deque_writer,
-                    &handshake_ccf_deque_writer,
-                    &handshake_ack_tx,
+                    &handshake_crypto_queue_writer,
+                    &handshake_ccf_queue_writer,
+                    &handshake_ack_frame_tx,
                 )?;
                 if role == Role::Server {
                     initial_keys.invalid();
@@ -290,22 +344,10 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                 handshake_packet_stream.rcvd_pkt_records.register_pn(pn)
             }
 
-            handshake_crypto_deque_writer.close();
-            handshake_ccf_deque_writer.close();
+            handshake_crypto_queue_writer.close();
+            handshake_ccf_queue_writer.close();
 
             Ok::<_, Error>(())
-        }
-    });
-
-    // handle handshake ack
-    // -> consumer
-    // return: handshake_ack_tx dropped
-    tokio::spawn({
-        let handshake_space = handshake_space.clone();
-        async move {
-            while let Some(ack) = handshake_ack_rx.recv().await {
-                handshake_space.on_ack(ack);
-            }
         }
     });
 
@@ -317,7 +359,7 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
     let handshake_crypto_stream_handle = tokio::spawn({
         let crypto_stream = handshake_space.as_ref().clone();
         async move {
-            while let Some((frame, data)) = handshake_crypto_deque_reader.next().await {
+            while let Some((frame, data)) = handshake_crypto_queue_reader.next().await {
                 crypto_stream.recv_data(frame, data)?;
             }
             Ok::<_, Error>(())
@@ -327,143 +369,13 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
     tokio::spawn(
         handshake::exchange_initial_crypto_msg_until_getting_handshake_key(
             tls_session.clone(),
-            handshake_keys.clone(),
+            handshake_keys,
             initial_space.as_ref().split(),
         ),
     );
 
-    let zero_rtt_keys = ArcKeys::new_pending();
-    let one_rtt_keys = ArcOneRttKeys::new_pending();
-    let data_space = ArcSpace::new_data_space(role, 0, 0);
-
-    let datagram_flow = DatagramFlow::new(65535, 0);
-
-    // decode 0rtt packet
-    // producer -> producer
-    // return:
-    //     zero_rtt_pkt_tx dropped
-    //     zero_rtt_keys invalid
-    //         handshake done
-    //         enter closing
-    let (zero_rtt_pkt_tx, zero_rtt_pkt_rx) = mpsc::unbounded_channel();
-    let zero_rtt_packet_stream = auto::ZeroRttPacketStream::new(
-        zero_rtt_pkt_rx,
-        zero_rtt_keys.clone(),
-        data_space.rcvd_pkt_records.clone(),
-    );
-
-    // decode 1rtt packet
-    // producer -> producer
-    // return: enter closing
-    let (one_rtt_pkt_tx, one_rtt_pkt_rx) = mpsc::unbounded_channel();
-    // producer -> producer
-    let one_rtt_packet_stream = auto::OneRttPacketStream::new(
-        one_rtt_pkt_rx,
-        one_rtt_keys.clone(),
-        data_space.rcvd_pkt_records.clone(),
-    );
-
-    let ack_observer = AckObserver::new([
-        initial_space.rcvd_pkt_records.clone(),
-        handshake_space.rcvd_pkt_records.clone(),
-        data_space.rcvd_pkt_records.clone(),
-    ]);
-
-    let (loss_observer, [mut initial_loss_rx, mut handshake_loss_rx, mut data_loss_rx]) =
-        LossObserver::new();
-
-    // handle may loss tasks
-    {
-        tokio::spawn({
-            let initial_space = initial_space.clone();
-            async move {
-                while let Some(pn) = initial_loss_rx.recv().await {
-                    initial_space.may_loss_pkt(pn);
-                }
-            }
-        });
-
-        tokio::spawn({
-            let handshake_space = handshake_space.clone();
-            async move {
-                while let Some(pn) = handshake_loss_rx.recv().await {
-                    handshake_space.may_loss_pkt(pn);
-                }
-            }
-        });
-
-        tokio::spawn({
-            let data_space = data_space.clone();
-            async move {
-                while let Some(pn) = data_loss_rx.recv().await {
-                    data_space.may_loss_pkt(pn);
-                }
-            }
-        });
-    }
-
-    let handshake_observer = HandShakeObserver::new(conn_state.clone());
-    let (pto_observer, [mut initial_timeout_rx, mut handshake_timeout_rx, mut data_timeout_rx]) =
-        PtoObserver::new();
-
-    // handle pto probe tasks
-    {
-        tokio::spawn({
-            let initial_space = initial_space.clone();
-            async move {
-                while initial_timeout_rx.recv().await.is_some() {
-                    initial_space.probe_timeout();
-                }
-            }
-        });
-
-        tokio::spawn({
-            let handshake_space = handshake_space.clone();
-            async move {
-                while handshake_timeout_rx.recv().await.is_some() {
-                    handshake_space.probe_timeout();
-                }
-            }
-        });
-
-        tokio::spawn({
-            let data_space = data_space.clone();
-            async move {
-                while data_timeout_rx.recv().await.is_some() {
-                    data_space.probe_timeout();
-                }
-            }
-        });
-    }
-
-    let connection_observer = ConnectionObserver {
-        handshake_observer,
-        ack_observer,
-        loss_observer,
-        pto_observer,
-    };
-
-    let flow_controller = ArcFlowController::with_initial(0, 0);
-    let connection = Arc::new(RawConnection {
-        cid_registry: Registry::new(2),
-        pathes: DashMap::new(),
-        init_pkt_queue: initial_pkt_tx,
-        hs_pkt_queue: handshake_pkt_tx,
-        zero_rtt_pkt_queue: zero_rtt_pkt_tx,
-        one_rtt_pkt_queue: one_rtt_pkt_tx,
-        initial_keys,
-        handshake_keys,
-        zero_rtt_keys,
-        one_rtt_keys,
-        spaces: ArcSpaces::new(initial_space, handshake_space, data_space),
-        connection_observer,
-        spin: SpinBit::default(),
-        state: conn_state.clone(),
-        flow_ctrl: flow_controller.clone(),
-    });
-
     let handshake_done_handle = tokio::spawn({
-        let connection = connection.clone();
+        let connection = connection_handle.clone();
         let data_space = connection.spaces.data_space();
         let handshake_space = connection.spaces.handshake_space().unwrap();
         let handshake_crypto_handler = handshake_space.as_ref().split();
@@ -497,72 +409,434 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
         }
     });
 
-    // tokio::spawn({
-    //     let connection = connection.clone();
-    //     async move {
-    //         while let Some(conn_frame) = conn_frame_deque.next().await {
-    //             match conn_frame {
-    //                 ConnFrame::Close(error) => {
-    //                     connection.enter_draining();
-    //                     return;
-    //                 }
-    //                 ConnFrame::NewToken(_) => todo!(),
-    //                 ConnFrame::MaxData(MaxDataFrame { max_data }) => {
-    //                     flow_controller.sender.permit(max_data.into_inner());
-    //                     Ok(())
-    //                 }
-    //                 ConnFrame::NewConnectionId(frame) => connection
-    //                     .cid_registry
-    //                     .remote
-    //                     .lock_guard()
-    //                     .recv_new_cid_frame(&frame),
-    //                 ConnFrame::RetireConnectionId(frame) => {
-    //                     let retired_cid = connection
-    //                         .cid_registry
-    //                         .local
-    //                         .lock_guard()
-    //                         .recv_retire_cid_frame(&frame)?;
-    //                     if let Some(cid) = retired_cid {
-    //                         retire_conn_id_tx.send(cid).unwrap();
-    //                     }
-    //                     Ok(())
-    //                 }
-    //                 ConnFrame::HandshakeDone(_) => {
-    //                     if role == Role::Client {
-    //                         connection.enter_handshake_done();
-    //                         Ok(())
-    //                     } else {
-    //                         Err(Error::new_with_default_fty(
-    //                             ErrorKind::ProtocolViolation,
-    //                             "client should not send HandshakeDoneFrame",
-    //                         ))
-    //                     }
-    //                 }
-    //                 ConnFrame::DataBlocked(_) => Ok(()),
-    //             }?;
-    //         }
-    //     }
-    // });
+    // decode 0rtt packet
+    // producer -> producer
+    // return:
+    //     zero_rtt_pkt_tx dropped
+    //     zero_rtt_keys invalid
+    //         handshake done
+    //         connection enter closing/draining
+    let mut zero_rtt_packet_stream = auto::ZeroRttPacketStream::new(
+        zero_rtt_pkt_rx,
+        zero_rtt_keys,
+        data_space.rcvd_pkt_records.clone(),
+    );
 
+    // handle handshake ack
+    // -> consumer
+    // return: handshake_ack_frame_tx dropped
     tokio::spawn({
-        let connection = connection.clone();
+        let handshake_space = handshake_space.clone();
         async move {
-            // let Some(error) = error_rx.recv().await else {
-            //     return;
-            // };
+            while let Some(ack) = handshake_ack_frame_rx.recv().await {
+                handshake_space.on_ack(ack);
+            }
+        }
+    });
+    // dispatch zero rtt packet
+    // producer -> producer
+    // return: zero_rtt_packet_stream closed
+    let zero_rtt_datagram_frame_queue_writer = ArcAsyncDeque::new();
+    let mut zero_rtt_datagram_frame_queue_reader = zero_rtt_datagram_frame_queue_writer.clone();
+    let zero_rtt_max_data_frame_queue_writer = ArcAsyncDeque::new();
+    let mut zero_rtt_max_data_frame_queue_reader = zero_rtt_max_data_frame_queue_writer.clone();
+    let zero_rtt_stream_frame_queue_writer = ArcAsyncDeque::new();
+    let mut zero_rtt_stream_frame_queue_reader = zero_rtt_stream_frame_queue_writer.clone();
+    let zero_rtt_stream_ctl_frame_queue_writer = ArcAsyncDeque::new();
+    let mut zero_rtt_stream_ctl_frame_queue_reader = zero_rtt_stream_ctl_frame_queue_writer.clone();
+    let zero_rtt_close_frame_queue_writer = ArcAsyncDeque::new();
+    let mut zero_rtt_close_frame_queue_reader = zero_rtt_close_frame_queue_writer.clone();
+    let zero_rtt_dispatch_handle = tokio::spawn({
+        async move {
+            while let Some(payload) = zero_rtt_packet_stream.next().await {
+                payload.dispatch_zero_rtt(
+                    &zero_rtt_datagram_frame_queue_writer,
+                    &zero_rtt_max_data_frame_queue_writer,
+                    &zero_rtt_stream_frame_queue_writer,
+                    &zero_rtt_stream_ctl_frame_queue_writer,
+                    &zero_rtt_close_frame_queue_writer,
+                )?;
+            }
 
+            zero_rtt_datagram_frame_queue_writer.close();
+            zero_rtt_max_data_frame_queue_writer.close();
+            zero_rtt_stream_ctl_frame_queue_writer.close();
+            zero_rtt_stream_frame_queue_writer.close();
+            zero_rtt_close_frame_queue_writer.close();
+            Ok::<_, Error>(())
+        }
+    });
+
+    // zero rtt recv datagram frame
+    // -> consumer
+    // return:
+    //     zero_rtt_datagram_frame_queue_writer.close() called
+    //     error
+    let zero_rtt_datagram_flow_handle = tokio::spawn({
+        let zero_rtt_datagram_flow = datagram_flow.clone();
+        async move {
+            while let Some((frame, data)) = zero_rtt_datagram_frame_queue_reader.next().await {
+                zero_rtt_datagram_flow.recv_datagram(frame, data)?;
+            }
+
+            Ok::<_, Error>(())
+        }
+    });
+
+    // zero rtt recv datagram frame
+    // -> consumer
+    // return:
+    //     zero_rtt_max_data_frame_queue_reader.close() called
+    tokio::spawn({
+        let flow_controller = flow_controller.clone();
+        async move {
+            while let Some(frame) = zero_rtt_max_data_frame_queue_reader.next().await {
+                flow_controller.sender.permit(frame.max_data.into_inner());
+            }
+        }
+    });
+
+    // zero rtt recv stream frame
+    // -> consumer
+    // return:
+    //     zero_rtt_stream_frame_queue_writer.close() called
+    //     error
+    let zero_rtt_data_stream_handle = tokio::spawn({
+        let data_streams = data_space.data_stream.clone();
+        async move {
+            while let Some((frame, data)) = zero_rtt_stream_frame_queue_reader.next().await {
+                data_streams.recv_data(frame, data)?;
+            }
+            Ok::<_, Error>(())
+        }
+    });
+
+    // zero rtt recv stream control frame
+    // -> consumer
+    // return:
+    //     zero_rtt_stream_ctl_frame_queue_writer.close() called
+    //     error
+    let zero_rtt_stream_control_frame_handle = tokio::spawn({
+        let data_streams = data_space.data_stream.clone();
+        async move {
+            while let Some(frame) = zero_rtt_stream_ctl_frame_queue_reader.next().await {
+                data_streams.recv_stream_control(frame)?;
+            }
+            Ok::<_, Error>(())
+        }
+    });
+
+    // decode 1rtt packet
+    // producer -> producer
+    // return: connection enter closing/draining
+    let mut one_rtt_packet_stream = auto::OneRttPacketStream::new(
+        one_rtt_pkt_rx,
+        one_rtt_keys.clone(),
+        data_space.rcvd_pkt_records.clone(),
+    );
+
+    // dispatch 1rtt packet
+    // producer -> producer
+    // return: connection enter closing/draining
+    let one_rtt_conn_id_frame_queue_writer = ArcAsyncDeque::new();
+    let mut one_rtt_conn_id_frame_queue_reader = one_rtt_conn_id_frame_queue_writer.clone();
+    let one_rtt_token_frame_queue_writer = ArcAsyncDeque::new();
+    let mut one_rtt_token_frame_queue_reader = one_rtt_token_frame_queue_writer.clone();
+    let one_rtt_datagram_frame_queue_writer = ArcAsyncDeque::new();
+    let mut one_rtt_datagram_frame_queue_reader = one_rtt_datagram_frame_queue_writer.clone();
+    let one_rtt_max_data_frame_queue_writer = ArcAsyncDeque::new();
+    let mut one_rtt_max_data_frame_queue_reader = one_rtt_max_data_frame_queue_writer.clone();
+    let one_rtt_hs_done_frame_queue_writer = ArcAsyncDeque::new();
+    let mut one_rtt_hs_done_frame_queue_reader = one_rtt_hs_done_frame_queue_writer.clone();
+    let one_rtt_stream_frame_queue_writer = ArcAsyncDeque::new();
+    let mut one_rtt_stream_frame_queue_reader = one_rtt_stream_frame_queue_writer.clone();
+    let one_rtt_stream_ctl_frame_queue_writer = ArcAsyncDeque::new();
+    let mut one_rtt_stream_ctl_frame_queue_reader = one_rtt_stream_ctl_frame_queue_writer.clone();
+    let one_rtt_crypto_frame_queue_writer = ArcAsyncDeque::new();
+    let mut one_rtt_crypto_frame_queue_reader = one_rtt_crypto_frame_queue_writer.clone();
+    let one_rtt_close_frame_queue_writer = ArcAsyncDeque::new();
+    let mut one_rtt_close_frame_queue_reader = one_rtt_close_frame_queue_writer.clone();
+    let (one_rtt_ack_frame_tx, mut one_rtt_ack_frame_rx) = mpsc::unbounded_channel();
+    let one_rtt_dispatch_handle = tokio::spawn({
+        async move {
+            while let Some(payload) = one_rtt_packet_stream.next().await {
+                payload.dispatch_one_rtt(
+                    &one_rtt_conn_id_frame_queue_writer,
+                    &one_rtt_token_frame_queue_writer,
+                    &one_rtt_datagram_frame_queue_writer,
+                    &one_rtt_max_data_frame_queue_writer,
+                    &one_rtt_hs_done_frame_queue_writer,
+                    &one_rtt_stream_frame_queue_writer,
+                    &one_rtt_stream_ctl_frame_queue_writer,
+                    &one_rtt_crypto_frame_queue_writer,
+                    &one_rtt_close_frame_queue_writer,
+                    &one_rtt_ack_frame_tx,
+                )?;
+            }
+
+            one_rtt_conn_id_frame_queue_writer.close();
+            one_rtt_token_frame_queue_writer.close();
+            one_rtt_datagram_frame_queue_writer.close();
+            one_rtt_max_data_frame_queue_writer.close();
+            one_rtt_hs_done_frame_queue_writer.close();
+            one_rtt_stream_frame_queue_writer.close();
+            one_rtt_stream_ctl_frame_queue_writer.close();
+            one_rtt_crypto_frame_queue_writer.close();
+            one_rtt_close_frame_queue_writer.close();
+            Ok::<_, Error>(())
+        }
+    });
+
+    // one rtt recv connection id frame
+    // -> consumer
+    // return:
+    //     one_rtt_conn_id_frame_queue_reader.close() called
+    //     error
+    let one_rtt_handle_cid_frame_handle = tokio::spawn({
+        let cid_registry = cid_registry.clone();
+        let connection_ids = endpoint_connection_ids.clone();
+        let peer_reset_tokens = endpoint_reset_tokens.clone();
+        let connection_handle = connection_handle.clone();
+
+        // TODO：收到对方对retire_connection_id的确认后，从表中移除reset token
+        // TODO: 创建新链接ID时，插入表中
+        async move {
+            while let Some(frame) = one_rtt_conn_id_frame_queue_reader.next().await {
+                match frame {
+                    auto::ConnIdFrame::NewConnectionId(frame) => {
+                        let new_token = cid_registry
+                            .remote
+                            .lock_guard()
+                            .recv_new_cid_frame(&frame)?;
+                        if let Some(new_token) = new_token {
+                            peer_reset_tokens.insert(new_token, connection_handle.clone());
+                            connection_handle.resources.reset_tokens.insert(new_token);
+                        }
+                    }
+                    auto::ConnIdFrame::RetireConnectionId(frame) => {
+                        let retired = cid_registry
+                            .local
+                            .lock_guard()
+                            .recv_retire_cid_frame(&frame)?;
+                        if let Some(retired) = retired {
+                            connection_handle.resources.connection_ids.remove(&retired);
+                            connection_ids.remove(&retired);
+                        }
+                    }
+                }
+            }
+            Ok::<_, Error>(())
+        }
+    });
+
+    // one rtt recv new token frame
+    // -> consumer
+    // return:
+    //     one_rtt_token_frame_queue_reader.close() called
+    tokio::spawn({
+        async move {
+            if let Some(_frame) = one_rtt_token_frame_queue_reader.next().await {
+                // TODO: 备用
+            }
+        }
+    });
+
+    // one rtt recv datagram frame
+    // -> consumer
+    // return:
+    //     one_rtt_datagram_frame_queue_writer.close() called
+    //     error
+    let one_rtt_datagram_flow_handle = tokio::spawn({
+        let one_rtt_datagram_flow = datagram_flow.clone();
+        async move {
+            while let Some((frame, data)) = one_rtt_datagram_frame_queue_reader.next().await {
+                one_rtt_datagram_flow.recv_datagram(frame, data)?;
+            }
+
+            Ok::<_, Error>(())
+        }
+    });
+
+    // one rtt recv datagram frame
+    // -> consumer
+    // return:
+    //     one_rtt_max_data_frame_queue_reader.close() called
+    tokio::spawn({
+        let flow_controller = flow_controller.clone();
+        async move {
+            while let Some(frame) = one_rtt_max_data_frame_queue_reader.next().await {
+                flow_controller.sender.permit(frame.max_data.into_inner());
+            }
+        }
+    });
+
+    // one rtt recv handshake done frame
+    // -> consumer
+    // return:
+    //    one_rtt_hs_done_frame_queue_writer.close() called
+    let one_rtt_hs_done_frame_handle = tokio::spawn({
+        let connection_handle = connection_handle.clone();
+        async move {
+            if let Some(_frame) = one_rtt_hs_done_frame_queue_reader.next().await {
+                if role == Role::Server {
+                    return Err(Error::new_with_default_fty(
+                        ErrorKind::ProtocolViolation,
+                        "client should not send HandshakeDoneFrame",
+                    ));
+                }
+                connection_handle.enter_handshake_done();
+            }
+            Ok(())
+        }
+    });
+
+    // one rtt recv stream frame
+    // -> consumer
+    // return:
+    //     one_rtt_stream_frame_queue_writer.close() called
+    //     error
+    let one_rtt_data_stream_handle = tokio::spawn({
+        let data_streams = data_space.data_stream.clone();
+        async move {
+            while let Some((frame, data)) = one_rtt_stream_frame_queue_reader.next().await {
+                data_streams.recv_data(frame, data)?;
+            }
+            Ok::<_, Error>(())
+        }
+    });
+
+    // one rtt recv stream control frame
+    // -> consumer
+    // return:
+    //     one_rtt_stream_ctl_frame_queue_writer.close() called
+    //     error
+    let one_rtt_stream_control_frame_handle = tokio::spawn({
+        let data_streams = data_space.data_stream.clone();
+        async move {
+            while let Some(frame) = one_rtt_stream_ctl_frame_queue_reader.next().await {
+                data_streams.recv_stream_control(frame)?;
+            }
+            Ok::<_, Error>(())
+        }
+    });
+
+    // one rtt recv crypto frame
+    // -> consumer
+    // return:
+    //     handshake_crypto_stream_writer.close() called
+    //     error
+    let one_rtt_crypto_stream_handle = tokio::spawn({
+        let crypto_stream = handshake_space.as_ref().clone();
+        async move {
+            while let Some((frame, data)) = one_rtt_crypto_frame_queue_reader.next().await {
+                crypto_stream.recv_data(frame, data)?;
+            }
+            Ok::<_, Error>(())
+        }
+    });
+
+    // handle handshake ack
+    // -> consumer
+    // return: handshake_ack_frame_tx dropped
+    tokio::spawn({
+        let data_space = data_space.clone();
+        async move {
+            while let Some(ack) = one_rtt_ack_frame_rx.recv().await {
+                data_space.on_ack(ack);
+            }
+        }
+    });
+
+    // handle may loss tasks
+    // -> consumer
+    // return: loss_observer dropped
+    {
+        tokio::spawn({
+            let initial_space = initial_space.clone();
+            async move {
+                while let Some(pn) = initial_loss_rx.recv().await {
+                    initial_space.may_loss_pkt(pn);
+                }
+            }
+        });
+
+        tokio::spawn({
+            let handshake_space = handshake_space.clone();
+            async move {
+                while let Some(pn) = handshake_loss_rx.recv().await {
+                    handshake_space.may_loss_pkt(pn);
+                }
+            }
+        });
+
+        tokio::spawn({
+            let data_space = data_space.clone();
+            async move {
+                while let Some(pn) = data_loss_rx.recv().await {
+                    data_space.may_loss_pkt(pn);
+                }
+            }
+        });
+    }
+
+    // handle pto probe tasks
+    // -> consumer
+    // return: pto_observer dropped
+    {
+        tokio::spawn({
+            let initial_space = initial_space.clone();
+            async move {
+                while initial_timeout_rx.recv().await.is_some() {
+                    initial_space.probe_timeout();
+                }
+            }
+        });
+
+        tokio::spawn({
+            let handshake_space = handshake_space.clone();
+            async move {
+                while handshake_timeout_rx.recv().await.is_some() {
+                    handshake_space.probe_timeout();
+                }
+            }
+        });
+
+        tokio::spawn({
+            let data_space = data_space.clone();
+            async move {
+                while data_timeout_rx.recv().await.is_some() {
+                    data_space.probe_timeout();
+                }
+            }
+        });
+    }
+
+    // handle connection error
+    tokio::spawn({
+        let connection = connection_handle.clone();
+        let data_space = data_space.clone();
+        async move {
             let error = tokio::select! {
-                Err(e) = initial_dispatch_handle.map(|je| je.unwrap()) => e,
-                Err(e) = initial_crypto_stream_handle.map(|je| je.unwrap()) => e,
-                Err(e) = handshake_done_handle.map(|je| je.unwrap()) => e,
-                Err(e) = handshake_dispatch_handle.map(|je| je.unwrap()) => e,
-                Err(e) = handshake_crypto_stream_handle.map(|je| je.unwrap()) => e,
-
+                Err(e) = initial_dispatch_handle.map(Result::unwrap) => e,
+                Err(e) = initial_crypto_stream_handle.map(Result::unwrap) => e,
+                Err(e) = handshake_dispatch_handle.map(Result::unwrap) => e,
+                Err(e) = handshake_crypto_stream_handle.map(Result::unwrap) => e,
+                Err(e) = handshake_done_handle.map(Result::unwrap) => e,
+                Err(e) = zero_rtt_dispatch_handle.map(Result::unwrap) => e,
+                Err(e) = zero_rtt_datagram_flow_handle.map(Result::unwrap) => e,
+                Err(e) = zero_rtt_data_stream_handle.map(Result::unwrap) => e,
+                Err(e) = zero_rtt_stream_control_frame_handle.map(Result::unwrap) => e,
+                Err(e) = one_rtt_dispatch_handle.map(Result::unwrap) => e,
+                Err(e) = one_rtt_handle_cid_frame_handle.map(Result::unwrap) => e,
+                Err(e) = one_rtt_datagram_flow_handle.map(Result::unwrap) => e,
+                Err(e) = one_rtt_hs_done_frame_handle.map(Result::unwrap) => e,
+                Err(e) = one_rtt_data_stream_handle.map(Result::unwrap) => e,
+                Err(e) = one_rtt_stream_control_frame_handle.map(Result::unwrap) => e,
+                Err(e) = one_rtt_crypto_stream_handle.map(Result::unwrap) => e,
             };
 
             // 向应用层报告错误
 
-            let data_space = connection.spaces.data_space();
             data_space.data_stream.on_conn_error(&error);
             datagram_flow.on_conn_error(&error);
 
@@ -600,18 +874,11 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
 
             // 准备发送连接关闭帧
 
-            // 等待连接关闭
-            // let duration = todo!("PTOx3");
-            // tokio::time::sleep(duration).await;
-
             // 告知终端连接已经关闭，释放资源
         }
     });
 
-    ArcConnectionHandle {
-        inner: connection,
-        internal_id,
-    }
+    connection_handle
 }
 
 #[cfg(test)]
