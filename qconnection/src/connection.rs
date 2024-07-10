@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use deref_derive::Deref;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use qbase::{
     cid::{ConnectionId, Registry},
     error::{Error, ErrorKind},
@@ -17,7 +17,7 @@ use qbase::{
     token::ResetToken,
     util::ArcAsyncDeque,
 };
-use qrecovery::space::{ArcSpace, ArcSpaces};
+use qrecovery::space::{ArcSpace, ArcSpaces, ReliableTransmit};
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 use state::{ArcConnectionState, ConnectionState};
@@ -171,61 +171,158 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
     } = initializer;
 
     let conn_state = ArcConnectionState::new();
-    let mut conn_frame_deque = ArcAsyncDeque::new();
-    // todo：发送CCF
-    let (error_tx, mut error_rx) = mpsc::unbounded_channel();
 
     let initial_keys = ArcKeys::new_pending();
-
     let initial_space = ArcSpace::new_initial_space();
-    let initial_ack_tx = initial_space.spawn_recv_ack();
-    let (initial_pkt_tx, initial_packet_stream) = auto::InitialPacketStream::new(
+
+    // decode initial packet
+    // producer -> producer
+    // return:
+    //     initial_pkt_tx dropped
+    //     initial_key invalid(
+    //         for SERVER: rcvd handshake pkt
+    //         for CLIENT: sent handshake pkt
+    //         or enter_closing
+    let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded_channel();
+    let mut initial_packet_stream = auto::InitialPacketStream::new(
+        initial_pkt_rx,
         initial_keys.clone(),
         initial_space.rcvd_pkt_records.clone(),
     );
 
-    let initial_space_frame_queue = initial_space.spawn_recv_space_frames(error_tx.clone());
+    // dispatch initial packet
+    // producer -> producer
+    // return: initial_packet_stream closed
+    let initial_crypto_deque_writer = ArcAsyncDeque::new();
+    let initial_ccf_deque_writer = ArcAsyncDeque::new();
+    let (initial_ack_tx, mut initial_ack_rx) = mpsc::unbounded_channel();
+    let mut initial_crypto_deque_reader = initial_crypto_deque_writer.clone();
+    let mut initial_ccf_deque_reader = initial_ccf_deque_writer.clone();
+    // 通过select它来获取错误
+    let initial_dispatch_handle = tokio::spawn({
+        async move {
+            while let Some(packet) = initial_packet_stream.next().await {
+                let pn = packet.pn;
+                // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
+                let _is_ack_eliciting = packet.dispatch_initial_space(
+                    &initial_crypto_deque_writer,
+                    &initial_ccf_deque_writer,
+                    &initial_ack_tx,
+                )?;
+                initial_packet_stream.rcvd_pkt_records.register_pn(pn)
+            }
 
-    initial_packet_stream.spawn_parse_packet_and_then_dispatch(
-        Some(conn_frame_deque.clone()),
-        Some(initial_space_frame_queue.clone()),
-        None,
-        initial_ack_tx.clone(),
-        error_tx.clone(),
-    );
+            initial_crypto_deque_writer.close();
+            initial_ccf_deque_writer.close();
+
+            Ok::<_, Error>(())
+        }
+    });
+
+    // initial handle ack
+    // -> consumer
+    // return: initial_ack_tx dropped
+    tokio::spawn({
+        let initial_space = initial_space.clone();
+        async move {
+            while let Some(ack) = initial_ack_rx.recv().await {
+                initial_space.on_ack(ack);
+            }
+        }
+    });
+
+    // intiial recv crypto frame
+    // -> consumer
+    // return:
+    //     initial_crypto_stream_writer.close() called
+    //     error
+    let initial_crypto_stream_handle = tokio::spawn({
+        let crypto_stream = initial_space.as_ref().clone();
+        async move {
+            while let Some((frame, byte)) = initial_crypto_deque_reader.next().await {
+                crypto_stream.recv_data(frame, byte)?;
+            }
+            Ok::<_, Error>(())
+        }
+    });
 
     let handshake_keys = ArcKeys::new_pending();
-
     let handshake_space = ArcSpace::new_handshake_space();
-    let handshake_ack_tx = handshake_space.spawn_recv_ack();
-    let (handshake_pkt_tx, handshake_packet_stream) = auto::HandshakePacketStream::new(
+
+    // decode handshake packet
+    // producer -> producer
+    // return:
+    //     handshake_pkt_tx dropped
+    //     handshake_keys invalid
+    //         handshake done
+    //         enter closing
+    let (handshake_pkt_tx, handshake_pkt_rx) = mpsc::unbounded_channel();
+    let mut handshake_packet_stream = auto::HandshakePacketStream::new(
+        handshake_pkt_rx,
         handshake_keys.clone(),
         handshake_space.rcvd_pkt_records.clone(),
     );
 
-    let handshake_space_frame_queue = handshake_space.spawn_recv_space_frames(error_tx.clone());
-
-    let server_start_handshake_hook = {
+    // dispatch handshake packet
+    // producer -> producer
+    // return: handshake_packet_stream closed
+    let (handshake_ack_tx, mut handshake_ack_rx) = mpsc::unbounded_channel();
+    let handshake_crypto_deque_writer = ArcAsyncDeque::new();
+    let handshake_ccf_deque_writer = ArcAsyncDeque::new();
+    let mut handshake_crypto_deque_reader = handshake_crypto_deque_writer.clone();
+    let mut handshake_ccf_deque_reader = handshake_ccf_deque_writer.clone();
+    let handshake_dispatch_handle = tokio::spawn({
+        let conn_state = conn_state.clone();
         let initial_keys = initial_keys.clone();
-        let state = conn_state.clone();
-        move || {
-            // todo: 客户端发送第一个握手包时，进入Handshaking状态
-            if role == Role::Server {
-                initial_keys.invalid();
-                state.set_state(ConnectionState::Handshaking)
+        async move {
+            while let Some(packet) = handshake_packet_stream.next().await {
+                let pn = packet.pn;
+                let _is_ack_eliciting = packet.dispatch_handshake_space(
+                    &handshake_crypto_deque_writer,
+                    &handshake_ccf_deque_writer,
+                    &handshake_ack_tx,
+                )?;
+                if role == Role::Server {
+                    initial_keys.invalid();
+                    conn_state.set_state(ConnectionState::Handshaking)
+                }
+
+                handshake_packet_stream.rcvd_pkt_records.register_pn(pn)
+            }
+
+            handshake_crypto_deque_writer.close();
+            handshake_ccf_deque_writer.close();
+
+            Ok::<_, Error>(())
+        }
+    });
+
+    // handle handshake ack
+    // -> consumer
+    // return: handshake_ack_tx dropped
+    tokio::spawn({
+        let handshake_space = handshake_space.clone();
+        async move {
+            while let Some(ack) = handshake_ack_rx.recv().await {
+                handshake_space.on_ack(ack);
             }
         }
-    };
-    handshake_packet_stream.spawn_parse_packet_and_then_dispatch(
-        Some(conn_frame_deque.clone()),
-        Some(handshake_space_frame_queue),
-        None,
-        handshake_ack_tx.clone(),
-        error_tx.clone(),
-        // a server MUST discard Initial keys when it first successfully processes a
-        // Handshake packet.
-        server_start_handshake_hook,
-    );
+    });
+
+    // handshake recv crypto frame
+    // -> consumer
+    // return:
+    //     handshake_crypto_stream_writer.close() called
+    //     error
+    let handshake_crypto_stream_handle = tokio::spawn({
+        let crypto_stream = handshake_space.as_ref().clone();
+        async move {
+            while let Some((frame, data)) = handshake_crypto_deque_reader.next().await {
+                crypto_stream.recv_data(frame, data)?;
+            }
+            Ok::<_, Error>(())
+        }
+    });
 
     tokio::spawn(
         handshake::exchange_initial_crypto_msg_until_getting_handshake_key(
@@ -235,38 +332,35 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
         ),
     );
 
-    let datagram_flow = DatagramFlow::new(65535, 0);
-    let datagram_queue = datagram_flow.spawn_recv_datagram_frames(error_tx.clone());
-
     let zero_rtt_keys = ArcKeys::new_pending();
     let one_rtt_keys = ArcOneRttKeys::new_pending();
-
     let data_space = ArcSpace::new_data_space(role, 0, 0);
-    let data_ack_tx = data_space.spawn_recv_ack();
-    let (zero_rtt_pkt_tx, zero_rtt_packet_stream) =
-        auto::ZeroRttPacketStream::new(zero_rtt_keys.clone(), data_space.rcvd_pkt_records.clone());
 
-    let data_space_frame_queue = data_space.spawn_recv_space_frames(error_tx.clone());
+    let datagram_flow = DatagramFlow::new(65535, 0);
 
-    zero_rtt_packet_stream.spawn_parse_packet_and_then_dispatch(
-        Some(conn_frame_deque.clone()),
-        Some(data_space_frame_queue),
-        Some(datagram_queue.clone()),
-        data_ack_tx.clone(),
-        error_tx.clone(),
+    // decode 0rtt packet
+    // producer -> producer
+    // return:
+    //     zero_rtt_pkt_tx dropped
+    //     zero_rtt_keys invalid
+    //         handshake done
+    //         enter closing
+    let (zero_rtt_pkt_tx, zero_rtt_pkt_rx) = mpsc::unbounded_channel();
+    let zero_rtt_packet_stream = auto::ZeroRttPacketStream::new(
+        zero_rtt_pkt_rx,
+        zero_rtt_keys.clone(),
+        data_space.rcvd_pkt_records.clone(),
     );
 
-    let (one_rtt_pkt_tx, dataspace_packets) =
-        auto::OneRttPacketStream::new(one_rtt_keys.clone(), data_space.rcvd_pkt_records.clone());
-
-    let data_space_frame_queue = data_space.spawn_recv_space_frames(error_tx.clone());
-
-    dataspace_packets.spawn_parse_packet_and_then_dispatch(
-        Some(conn_frame_deque.clone()),
-        Some(data_space_frame_queue),
-        Some(datagram_queue.clone()),
-        data_ack_tx.clone(),
-        error_tx.clone(),
+    // decode 1rtt packet
+    // producer -> producer
+    // return: enter closing
+    let (one_rtt_pkt_tx, one_rtt_pkt_rx) = mpsc::unbounded_channel();
+    // producer -> producer
+    let one_rtt_packet_stream = auto::OneRttPacketStream::new(
+        one_rtt_pkt_rx,
+        one_rtt_keys.clone(),
+        data_space.rcvd_pkt_records.clone(),
     );
 
     let ack_observer = AckObserver::new([
@@ -274,18 +368,73 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
         handshake_space.rcvd_pkt_records.clone(),
         data_space.rcvd_pkt_records.clone(),
     ]);
-    let loss_observer = LossObserver::new([
-        initial_space.spawn_handle_may_loss(),
-        handshake_space.spawn_handle_may_loss(),
-        data_space.spawn_handle_may_loss(),
-    ]);
-    let handshake_observer = HandShakeObserver::new(conn_state.clone());
 
-    let pto_observer = PtoObserver::new([
-        initial_space.spawn_probe_timeout(),
-        handshake_space.spawn_probe_timeout(),
-        data_space.spawn_probe_timeout(),
-    ]);
+    let (loss_observer, [mut initial_loss_rx, mut handshake_loss_rx, mut data_loss_rx]) =
+        LossObserver::new();
+
+    // handle may loss tasks
+    {
+        tokio::spawn({
+            let initial_space = initial_space.clone();
+            async move {
+                while let Some(pn) = initial_loss_rx.recv().await {
+                    initial_space.may_loss_pkt(pn);
+                }
+            }
+        });
+
+        tokio::spawn({
+            let handshake_space = handshake_space.clone();
+            async move {
+                while let Some(pn) = handshake_loss_rx.recv().await {
+                    handshake_space.may_loss_pkt(pn);
+                }
+            }
+        });
+
+        tokio::spawn({
+            let data_space = data_space.clone();
+            async move {
+                while let Some(pn) = data_loss_rx.recv().await {
+                    data_space.may_loss_pkt(pn);
+                }
+            }
+        });
+    }
+
+    let handshake_observer = HandShakeObserver::new(conn_state.clone());
+    let (pto_observer, [mut initial_timeout_rx, mut handshake_timeout_rx, mut data_timeout_rx]) =
+        PtoObserver::new();
+
+    // handle pto probe tasks
+    {
+        tokio::spawn({
+            let initial_space = initial_space.clone();
+            async move {
+                while initial_timeout_rx.recv().await.is_some() {
+                    initial_space.probe_timeout();
+                }
+            }
+        });
+
+        tokio::spawn({
+            let handshake_space = handshake_space.clone();
+            async move {
+                while handshake_timeout_rx.recv().await.is_some() {
+                    handshake_space.probe_timeout();
+                }
+            }
+        });
+
+        tokio::spawn({
+            let data_space = data_space.clone();
+            async move {
+                while data_timeout_rx.recv().await.is_some() {
+                    data_space.probe_timeout();
+                }
+            }
+        });
+    }
 
     let connection_observer = ConnectionObserver {
         handshake_observer,
@@ -313,9 +462,8 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
         flow_ctrl: flow_controller.clone(),
     });
 
-    tokio::spawn({
+    let handshake_done_handle = tokio::spawn({
         let connection = connection.clone();
-        let error_tx = error_tx.clone();
         let data_space = connection.spaces.data_space();
         let handshake_space = connection.spaces.handshake_space().unwrap();
         let handshake_crypto_handler = handshake_space.as_ref().split();
@@ -331,14 +479,12 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
             let transport_parameters = tls_session.get_transport_parameters().unwrap();
             data_space.accept_transmute_parameters(&transport_parameters);
             // TODO: 对连接参数进行检查
-            let update_limit_result = connection
+            connection
                 .cid_registry
                 .local
                 .lock_guard()
-                .set_limit(transport_parameters.active_connection_id_limit().into());
-            if let Err(error) = update_limit_result {
-                _ = error_tx.send(error);
-            }
+                .set_limit(transport_parameters.active_connection_id_limit().into())?;
+
             if role == Role::Server {
                 data_space
                     .reliable_frame_queue
@@ -346,71 +492,72 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                     .push_conn_frame(ConnFrame::HandshakeDone(HandshakeDoneFrame));
             }
             connection.enter_handshake_done();
+
+            Ok::<_, Error>(())
         }
     });
+
+    // tokio::spawn({
+    //     let connection = connection.clone();
+    //     async move {
+    //         while let Some(conn_frame) = conn_frame_deque.next().await {
+    //             match conn_frame {
+    //                 ConnFrame::Close(error) => {
+    //                     connection.enter_draining();
+    //                     return;
+    //                 }
+    //                 ConnFrame::NewToken(_) => todo!(),
+    //                 ConnFrame::MaxData(MaxDataFrame { max_data }) => {
+    //                     flow_controller.sender.permit(max_data.into_inner());
+    //                     Ok(())
+    //                 }
+    //                 ConnFrame::NewConnectionId(frame) => connection
+    //                     .cid_registry
+    //                     .remote
+    //                     .lock_guard()
+    //                     .recv_new_cid_frame(&frame),
+    //                 ConnFrame::RetireConnectionId(frame) => {
+    //                     let retired_cid = connection
+    //                         .cid_registry
+    //                         .local
+    //                         .lock_guard()
+    //                         .recv_retire_cid_frame(&frame)?;
+    //                     if let Some(cid) = retired_cid {
+    //                         retire_conn_id_tx.send(cid).unwrap();
+    //                     }
+    //                     Ok(())
+    //                 }
+    //                 ConnFrame::HandshakeDone(_) => {
+    //                     if role == Role::Client {
+    //                         connection.enter_handshake_done();
+    //                         Ok(())
+    //                     } else {
+    //                         Err(Error::new_with_default_fty(
+    //                             ErrorKind::ProtocolViolation,
+    //                             "client should not send HandshakeDoneFrame",
+    //                         ))
+    //                     }
+    //                 }
+    //                 ConnFrame::DataBlocked(_) => Ok(()),
+    //             }?;
+    //         }
+    //     }
+    // });
 
     tokio::spawn({
         let connection = connection.clone();
         async move {
-            while let Some(conn_frame) = conn_frame_deque.next().await {
-                let handle_conn_frmae = |conn_frame: ConnFrame| {
-                    match conn_frame {
-                        ConnFrame::Close(error) => {
-                            // 该不该等CCF发送再进入排空状态
-                            connection.enter_draining();
-                            _ = error_tx.send(error.into());
-                            Ok(())
-                        }
-                        ConnFrame::NewToken(_) => todo!(),
-                        ConnFrame::MaxData(MaxDataFrame { max_data }) => {
-                            flow_controller.sender.permit(max_data.into_inner());
-                            Ok(())
-                        }
-                        ConnFrame::NewConnectionId(frame) => connection
-                            .cid_registry
-                            .remote
-                            .lock_guard()
-                            .recv_new_cid_frame(&frame),
-                        ConnFrame::RetireConnectionId(frame) => {
-                            let retired_cid = connection
-                                .cid_registry
-                                .local
-                                .lock_guard()
-                                .recv_retire_cid_frame(&frame)?;
-                            if let Some(cid) = retired_cid {
-                                retire_conn_id_tx.send(cid).unwrap();
-                            }
-                            Ok(())
-                        }
-                        ConnFrame::HandshakeDone(_) => {
-                            if role == Role::Client {
-                                connection.enter_handshake_done();
-                                Ok(())
-                            } else {
-                                Err(Error::new_with_default_fty(
-                                    ErrorKind::ProtocolViolation,
-                                    "client should not send HandshakeDoneFrame",
-                                ))
-                            }
-                        }
-                        ConnFrame::DataBlocked(_) => Ok(()),
-                    }
-                };
-                let error: Option<Error> = handle_conn_frmae(conn_frame).err();
+            // let Some(error) = error_rx.recv().await else {
+            //     return;
+            // };
 
-                // 处理连接错误
-                if let Some(error) = error {
-                    _ = error_tx.send(error);
-                }
-            }
-        }
-    });
+            let error = tokio::select! {
+                Err(e) = initial_dispatch_handle.map(|je| je.unwrap()) => e,
+                Err(e) = initial_crypto_stream_handle.map(|je| je.unwrap()) => e,
+                Err(e) = handshake_done_handle.map(|je| je.unwrap()) => e,
+                Err(e) = handshake_dispatch_handle.map(|je| je.unwrap()) => e,
+                Err(e) = handshake_crypto_stream_handle.map(|je| je.unwrap()) => e,
 
-    tokio::spawn({
-        let connection = connection.clone();
-        async move {
-            let Some(error) = error_rx.recv().await else {
-                return;
             };
 
             // 向应用层报告错误
@@ -439,13 +586,13 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
             let ccf = ConnectionCloseFrame::from(error.clone());
 
             // TODO 组装一个数据包
-            let pkt = match state {
-                ConnectionState::Initial => {}
-                ConnectionState::Handshaking => todo!(),
-                ConnectionState::HandshakeDone => todo!(),
-                ConnectionState::Closing => todo!(),
-                ConnectionState::Draining => todo!(),
-            };
+            // let pkt = match state {
+            //     ConnectionState::Initial => {}
+            //     ConnectionState::Handshaking => todo!(),
+            //     ConnectionState::HandshakeDone => todo!(),
+            //     ConnectionState::Closing => todo!(),
+            //     ConnectionState::Draining => todo!(),
+            // };
 
             // TODO: 组装出数据包
 

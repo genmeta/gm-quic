@@ -285,7 +285,6 @@ mod tests {
     use futures::task::noop_waker_ref;
     use observer::{HandShakeObserver, PtoObserver};
     use qrecovery::reliable::rcvdpkt::ArcRcvdPktRecords;
-    use tokio::sync::mpsc;
 
     use super::*;
     use crate::connection::state::ArcConnectionState;
@@ -296,16 +295,10 @@ mod tests {
         let usc = ArcUsc::new(addr);
         let max_ack_delay = Duration::from_millis(100);
         let ack_observer = AckObserver::new(array::from_fn(|_| ArcRcvdPktRecords::default()));
-        let (loss_tx1, _) = mpsc::unbounded_channel();
-        let (loss_tx2, _) = mpsc::unbounded_channel();
-        let (loss_tx3, _) = mpsc::unbounded_channel();
-        let loss_observer = LossObserver::new([loss_tx1, loss_tx2, loss_tx3]);
-        let handshake_observer = HandShakeObserver::new(ArcConnectionState::new());
 
-        let (pto_tx1, _) = mpsc::unbounded_channel();
-        let (pto_tx2, _) = mpsc::unbounded_channel();
-        let (pto_tx3, _) = mpsc::unbounded_channel();
-        let pto_observer = PtoObserver::new([pto_tx1, pto_tx2, pto_tx3]);
+        let (loss_observer, _loss_rx) = LossObserver::new();
+        let handshake_observer = HandShakeObserver::new(ArcConnectionState::new());
+        let (pto_observer, _timeout_rx) = PtoObserver::new();
         ArcPath::new(
             usc,
             max_ack_delay,

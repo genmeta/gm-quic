@@ -3,13 +3,12 @@ use std::{sync::Arc, time::Instant};
 use bytes::BufMut;
 use qbase::{
     config::TransportParameters,
-    error::Error,
     frame::{io::WriteFrame, AckFrame, BeFrame, DataFrame},
     packet::WritePacketNumber,
     streamid::Role,
 };
 
-use super::{ArcSpace, RawSpace, ReliableTransmit, SpaceFrame, TransportLimit};
+use super::{ArcSpace, RawSpace, ReliableTransmit, TransportLimit};
 use crate::{
     crypto::CryptoStream,
     reliable::{
@@ -155,18 +154,6 @@ impl ReliableTransmit for ArcSpace<DataSpace> {
                     write_frame_guard.push_reliable_frame(frame);
                 }
                 SentRecord::Ack(..) => {}
-            }
-        }
-    }
-
-    fn receive(&self, frame: SpaceFrame) -> Result<(), Error> {
-        match frame {
-            SpaceFrame::Stream(frame) => self.data_stream.recv_stream_control(frame),
-            SpaceFrame::Data(DataFrame::Stream(frame), data) => {
-                self.data_stream.recv_data(frame, data)
-            }
-            SpaceFrame::Data(DataFrame::Crypto(frame), data) => {
-                self.crypto_stream.recv_data(frame, data)
             }
         }
     }

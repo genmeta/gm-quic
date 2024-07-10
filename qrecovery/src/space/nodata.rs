@@ -2,12 +2,11 @@ use std::{marker::PhantomData, sync::Arc, time::Instant};
 
 use bytes::BufMut;
 use qbase::{
-    error::Error,
     frame::{io::WriteFrame, AckFrame, BeFrame, DataFrame},
     packet::WritePacketNumber,
 };
 
-use super::{ArcSpace, RawSpace, ReliableTransmit, SpaceFrame, TransportLimit};
+use super::{ArcSpace, RawSpace, ReliableTransmit, TransportLimit};
 use crate::{
     crypto::CryptoStream,
     reliable::{
@@ -149,15 +148,6 @@ impl<K: NoDataSpaceKind> ReliableTransmit for ArcSpace<NoDataSpace<K>> {
                 SentRecord::Ack(..) => {}
                 _ => unreachable!(),
             }
-        }
-    }
-
-    fn receive(&self, frame: SpaceFrame) -> Result<(), Error> {
-        match frame {
-            SpaceFrame::Data(DataFrame::Crypto(frame), data) => {
-                self.crypto_stream.recv_data(frame, data)
-            }
-            _ => unreachable!(),
         }
     }
 
