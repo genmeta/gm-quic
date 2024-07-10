@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use std::{
     ops::Deref,
     pin::{pin, Pin},
@@ -5,7 +7,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures::{Future, Stream, StreamExt};
+use futures::{Future, Stream};
 use qbase::{
     error::{Error, ErrorKind},
     frame::*,
@@ -18,7 +20,7 @@ use qbase::{
     },
     util::ArcAsyncDeque,
 };
-use qrecovery::{reliable::rcvdpkt::ArcRcvdPktRecords, space::SpaceFrame};
+use qrecovery::reliable::rcvdpkt::ArcRcvdPktRecords;
 use tokio::sync::mpsc;
 
 use crate::path::ArcPath;
@@ -30,18 +32,36 @@ pub(crate) struct PacketPayload {
     pub path: ArcPath,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum ConnIdFrame {
+    NewConnectionId(NewConnectionIdFrame),
+    RetireConnectionId(RetireConnectionIdFrame),
+}
+
 impl PacketPayload {
-    pub fn dispatch(
+    fn generic_dispatch(
         self,
-        conn_frame_queue: Option<&ArcAsyncDeque<ConnFrame>>,
-        space_frame_queue: Option<&ArcAsyncDeque<SpaceFrame>>,
+        conn_id_frame_queue: Option<&ArcAsyncDeque<ConnIdFrame>>,
+        token_frame_queue: Option<&ArcAsyncDeque<NewTokenFrame>>,
         datagram_frame_queue: Option<&ArcAsyncDeque<(DatagramFrame, Bytes)>>,
+        max_data_frame_queue: Option<&ArcAsyncDeque<MaxDataFrame>>,
+        handshake_done_frame_queue: Option<&ArcAsyncDeque<HandshakeDoneFrame>>,
+        stream_frame_queue: Option<&ArcAsyncDeque<(StreamFrame, Bytes)>>,
+        stream_ctl_frame_queue: Option<&ArcAsyncDeque<StreamCtlFrame>>,
+        crypto_frame_queue: Option<&ArcAsyncDeque<(CryptoFrame, Bytes)>>,
+        close_frame_queue: &ArcAsyncDeque<ConnectionCloseFrame>,
         ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
     ) -> Result<bool, Error> {
         let packet = self;
-        let mut space_frame_writer = space_frame_queue.map(ArcAsyncDeque::writer);
-        let mut conn_frame_writer = conn_frame_queue.map(ArcAsyncDeque::writer);
+        let mut conn_id_frame_writer = conn_id_frame_queue.map(ArcAsyncDeque::writer);
+        let mut token_frame_writer = token_frame_queue.map(ArcAsyncDeque::writer);
+        let mut max_data_frame_writer = max_data_frame_queue.map(ArcAsyncDeque::writer);
         let mut datagram_frame_writer = datagram_frame_queue.map(ArcAsyncDeque::writer);
+        let mut handshake_done_frame_writer = handshake_done_frame_queue.map(ArcAsyncDeque::writer);
+        let mut stream_frame_writer = stream_frame_queue.map(ArcAsyncDeque::writer);
+        let mut stream_ctl_frame_writer = stream_ctl_frame_queue.map(ArcAsyncDeque::writer);
+        let mut crypto_frame_writer = crypto_frame_queue.map(ArcAsyncDeque::writer);
+        let mut close_frame_writer = close_frame_queue.writer();
         // let mut path_frame_writer = path.frames().writer();
 
         FrameReader::new(packet.payload)
@@ -62,17 +82,52 @@ impl PacketPayload {
                         Ok(is_ack_eliciting)
                     }
                     Frame::Pure(PureFrame::Conn(conn)) => {
-                        let Some(conn_frame_writer) = conn_frame_writer.as_mut() else {
-                            unreachable!()
-                        };
-                        conn_frame_writer.push(conn);
+                        match conn {
+                            ConnFrame::Close(ccf) => close_frame_writer.push(ccf),
+                            ConnFrame::NewToken(token) => {
+                                let Some(token_frame_writer) = token_frame_writer.as_mut() else {
+                                    unreachable!()
+                                };
+                                token_frame_writer.push(token);
+                            }
+                            ConnFrame::MaxData(max_data) => {
+                                let Some(max_data_frame_queue) = max_data_frame_writer.as_mut()
+                                else {
+                                    unreachable!()
+                                };
+                                max_data_frame_queue.push(max_data);
+                            }
+                            ConnFrame::NewConnectionId(new) => {
+                                let Some(conn_id_frame_writer) = conn_id_frame_writer.as_mut()
+                                else {
+                                    unreachable!()
+                                };
+                                conn_id_frame_writer.push(ConnIdFrame::NewConnectionId(new));
+                            }
+                            ConnFrame::RetireConnectionId(retire) => {
+                                let Some(conn_id_frame_writer) = conn_id_frame_writer.as_mut()
+                                else {
+                                    unreachable!()
+                                };
+                                conn_id_frame_writer.push(ConnIdFrame::RetireConnectionId(retire));
+                            }
+                            ConnFrame::HandshakeDone(done) => {
+                                let Some(handshake_done_frame_writer) =
+                                    handshake_done_frame_writer.as_mut()
+                                else {
+                                    unreachable!()
+                                };
+                                handshake_done_frame_writer.push(done);
+                            }
+                            ConnFrame::DataBlocked(_) => { /* ignore */ }
+                        }
                         Ok(true)
                     }
                     Frame::Pure(PureFrame::Stream(stream)) => {
-                        let Some(space_frame_writer) = space_frame_writer.as_mut() else {
+                        let Some(stream_ctl_frame_writer) = stream_ctl_frame_writer.as_mut() else {
                             unreachable!()
                         };
-                        space_frame_writer.push(SpaceFrame::Stream(stream));
+                        stream_ctl_frame_writer.push(stream);
                         Ok(true)
                     }
                     Frame::Pure(PureFrame::Path(frame)) => {
@@ -91,11 +146,18 @@ impl PacketPayload {
                         }
                         Ok(true)
                     }
-                    Frame::Data(data_frame, data) => {
-                        let Some(space_frame_writer) = space_frame_writer.as_mut() else {
+                    Frame::Data(DataFrame::Stream(stream), data) => {
+                        let Some(stream_frame_writer) = stream_frame_writer.as_mut() else {
                             unreachable!()
                         };
-                        space_frame_writer.push(SpaceFrame::Data(data_frame, data));
+                        stream_frame_writer.push((stream, data));
+                        Ok(true)
+                    }
+                    Frame::Data(DataFrame::Crypto(crypto), data) => {
+                        let Some(crypto_frame_writer) = crypto_frame_writer.as_mut() else {
+                            unreachable!()
+                        };
+                        crypto_frame_writer.push((crypto, data));
                         Ok(true)
                     }
                     Frame::Datagram(datagram, data) => {
@@ -108,23 +170,119 @@ impl PacketPayload {
                 }
             })
             .inspect_err(|_error| {
-                if let Some(mut conn_frame_writer) = conn_frame_writer {
-                    conn_frame_writer.rollback();
-                };
-                if let Some(mut space_frame_writer) = space_frame_writer {
-                    space_frame_writer.rollback();
-                };
-                if let Some(mut datagram_frame_writer) = datagram_frame_writer {
-                    datagram_frame_writer.rollback();
+                close_frame_writer.rollback();
+
+                if let Some(mut writer) = conn_id_frame_writer {
+                    writer.rollback()
+                }
+                if let Some(mut writer) = token_frame_writer {
+                    writer.rollback()
+                }
+                if let Some(mut writer) = max_data_frame_writer {
+                    writer.rollback()
+                }
+                if let Some(mut writer) = datagram_frame_writer {
+                    writer.rollback()
+                }
+                if let Some(mut writer) = handshake_done_frame_writer {
+                    writer.rollback()
+                }
+                if let Some(mut writer) = stream_frame_writer {
+                    writer.rollback()
+                }
+                if let Some(mut writer) = stream_ctl_frame_writer {
+                    writer.rollback()
+                }
+                if let Some(mut writer) = crypto_frame_writer {
+                    writer.rollback()
                 }
             })
+    }
+
+    pub fn dispatch_initial_space(
+        self,
+        crypto_frame_queue: &ArcAsyncDeque<(CryptoFrame, Bytes)>,
+        close_frame_queue: &ArcAsyncDeque<ConnectionCloseFrame>,
+        ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
+    ) -> Result<bool, Error> {
+        self.generic_dispatch(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(crypto_frame_queue),
+            close_frame_queue,
+            ack_frames_tx,
+        )
+    }
+
+    pub fn dispatch_handshake_space(
+        self,
+        crypto_frame_queue: &ArcAsyncDeque<(CryptoFrame, Bytes)>,
+        close_frame_queue: &ArcAsyncDeque<ConnectionCloseFrame>,
+        ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
+    ) -> Result<bool, Error> {
+        self.dispatch_initial_space(crypto_frame_queue, close_frame_queue, ack_frames_tx)
+    }
+
+    pub fn dispatch_zero_rtt(
+        self,
+        datagram_frame_queue: &ArcAsyncDeque<(DatagramFrame, Bytes)>,
+        max_data_frame_queue: &ArcAsyncDeque<MaxDataFrame>,
+        stream_frame_queue: &ArcAsyncDeque<(StreamFrame, Bytes)>,
+        stream_ctl_frame_queue: &ArcAsyncDeque<StreamCtlFrame>,
+        close_frame_queue: &ArcAsyncDeque<ConnectionCloseFrame>,
+        ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
+    ) -> Result<bool, Error> {
+        self.generic_dispatch(
+            None,
+            None,
+            Some(datagram_frame_queue),
+            Some(max_data_frame_queue),
+            None,
+            Some(stream_frame_queue),
+            Some(stream_ctl_frame_queue),
+            None,
+            close_frame_queue,
+            ack_frames_tx,
+        )
+    }
+
+    pub fn dispatch_one_rtt(
+        self,
+        conn_id_frame_queue: &ArcAsyncDeque<ConnIdFrame>,
+        token_frame_queue: &ArcAsyncDeque<NewTokenFrame>,
+        datagram_frame_queue: &ArcAsyncDeque<(DatagramFrame, Bytes)>,
+        max_data_frame_queue: &ArcAsyncDeque<MaxDataFrame>,
+        handshake_done_frame_queue: &ArcAsyncDeque<HandshakeDoneFrame>,
+        stream_frame_queue: &ArcAsyncDeque<(StreamFrame, Bytes)>,
+        stream_ctl_frame_queue: &ArcAsyncDeque<StreamCtlFrame>,
+        crypto_frame_queue: &ArcAsyncDeque<(CryptoFrame, Bytes)>,
+        close_frame_queue: &ArcAsyncDeque<ConnectionCloseFrame>,
+        ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
+    ) -> Result<bool, Error> {
+        self.generic_dispatch(
+            Some(conn_id_frame_queue),
+            Some(token_frame_queue),
+            Some(datagram_frame_queue),
+            Some(max_data_frame_queue),
+            Some(handshake_done_frame_queue),
+            Some(stream_frame_queue),
+            Some(stream_ctl_frame_queue),
+            Some(crypto_frame_queue),
+            close_frame_queue,
+            ack_frames_tx,
+        )
     }
 }
 
 pub(crate) struct LongHeaderPacketStream<H> {
-    packet_rx: mpsc::UnboundedReceiver<(PacketWrapper<H>, ArcPath)>,
-    keys: ArcKeys,
-    rcvd_pkt_records: ArcRcvdPktRecords,
+    pub packet_rx: mpsc::UnboundedReceiver<(PacketWrapper<H>, ArcPath)>,
+    pub keys: ArcKeys,
+    pub rcvd_pkt_records: ArcRcvdPktRecords,
 }
 
 pub(crate) type InitialPacketStream = LongHeaderPacketStream<InitialHeader>;
@@ -182,136 +340,22 @@ where
 
 impl<H> LongHeaderPacketStream<H> {
     pub fn new(
+        packet_rx: mpsc::UnboundedReceiver<(PacketWrapper<H>, ArcPath)>,
         keys: ArcKeys,
         rcvd_pkt_records: ArcRcvdPktRecords,
-    ) -> (mpsc::UnboundedSender<(PacketWrapper<H>, ArcPath)>, Self) {
-        let (packet_tx, packet_rx) = mpsc::unbounded_channel();
-        (
-            packet_tx,
-            Self {
-                packet_rx,
-                keys,
-                rcvd_pkt_records,
-            },
-        )
-    }
-}
-
-impl LongHeaderPacketStream<InitialHeader> {
-    pub fn spawn_parse_packet_and_then_dispatch(
-        mut self,
-        conn_frame_queue: Option<ArcAsyncDeque<ConnFrame>>,
-        space_frame_queue: Option<ArcAsyncDeque<SpaceFrame>>,
-        datagram_frame_queue: Option<ArcAsyncDeque<(DatagramFrame, Bytes)>>,
-        ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
-        error_tx: mpsc::UnboundedSender<Error>,
-    ) {
-        tokio::spawn(async move {
-            while let Some(payload) = self.next().await {
-                let pn = payload.pn;
-                match payload.dispatch(
-                    conn_frame_queue.as_ref(),
-                    space_frame_queue.as_ref(),
-                    datagram_frame_queue.as_ref(),
-                    &ack_frames_tx,
-                ) {
-                    // TODO: path也要登记其收到的包、收包时间、is_ack_eliciting，方便激发AckFrame
-                    Ok(_is_ack_eliciting) => self.rcvd_pkt_records.register_pn(pn),
-                    // 解析包失败，丢弃
-                    // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
-                    Err(error) => {
-                        _ = error_tx.send(error);
-                    }
-                }
-            }
-        });
-    }
-}
-
-impl LongHeaderPacketStream<HandshakeHeader> {
-    pub fn spawn_parse_packet_and_then_dispatch<Hook>(
-        mut self,
-        conn_frame_queue: Option<ArcAsyncDeque<ConnFrame>>,
-        space_frame_queue: Option<ArcAsyncDeque<SpaceFrame>>,
-        datagram_frame_queue: Option<ArcAsyncDeque<(DatagramFrame, Bytes)>>,
-        ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
-        error_tx: mpsc::UnboundedSender<Error>,
-        hook: Hook,
-    ) where
-        Hook: FnOnce() + Send + 'static,
-    {
-        let mut hook = Some(hook);
-        tokio::spawn(async move {
-            while let Some(payload) = self.next().await {
-                let pn = payload.pn;
-                match payload.dispatch(
-                    conn_frame_queue.as_ref(),
-                    space_frame_queue.as_ref(),
-                    datagram_frame_queue.as_ref(),
-                    &ack_frames_tx,
-                ) {
-                    // TODO: path也要登记其收到的包、收包时间、is_ack_eliciting，方便激发AckFrame
-                    Ok(_is_ack_eliciting) => {
-                        // a server MUST discard Initial keys when it first successfully processes a
-                        // Handshake packet.
-                        if let Some(hook) = hook.take() {
-                            hook();
-                        }
-                        self.rcvd_pkt_records.register_pn(pn)
-                    }
-                    // 解析包失败，丢弃
-                    // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
-                    Err(error) => {
-                        _ = error_tx.send(error);
-                    }
-                }
-            }
-        });
-    }
-}
-
-impl LongHeaderPacketStream<ZeroRttHeader> {
-    pub fn spawn_parse_packet_and_then_dispatch(
-        mut self,
-        conn_frame_queue: Option<ArcAsyncDeque<ConnFrame>>,
-        space_frame_queue: Option<ArcAsyncDeque<SpaceFrame>>,
-        datagram_frame_queue: Option<ArcAsyncDeque<(DatagramFrame, Bytes)>>,
-        ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
-        error_tx: mpsc::UnboundedSender<Error>,
-    ) {
-        tokio::spawn(async move {
-            while let Some(payload) = self.next().await {
-                let pn = payload.pn;
-
-                // Anti-amplification attack protection, when there is an anti-
-                // amplification attack protection, the received data volume
-                // will record in the anti-amplification attack protector, if
-                // not, no operation will performed
-                payload.path.deposit(payload.payload.len());
-
-                match payload.dispatch(
-                    conn_frame_queue.as_ref(),
-                    space_frame_queue.as_ref(),
-                    datagram_frame_queue.as_ref(),
-                    &ack_frames_tx,
-                ) {
-                    // TODO: path也要登记其收到的包、收包时间、is_ack_eliciting，方便激发AckFrame
-                    Ok(_is_ack_eliciting) => self.rcvd_pkt_records.register_pn(pn),
-                    // 解析包失败，丢弃
-                    // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
-                    Err(error) => {
-                        _ = error_tx.send(error);
-                    }
-                }
-            }
-        });
+    ) -> Self {
+        Self {
+            packet_rx,
+            keys,
+            rcvd_pkt_records,
+        }
     }
 }
 
 pub(crate) struct ShortHeaderPacketStream {
     packet_rx: mpsc::UnboundedReceiver<(OneRttPacket, ArcPath)>,
     keys: ArcOneRttKeys,
-    rcvd_records: ArcRcvdPktRecords,
+    rcvd_pkt_records: ArcRcvdPktRecords,
 }
 
 pub(crate) type OneRttPacketStream = ShortHeaderPacketStream;
@@ -333,7 +377,7 @@ impl Stream for ShortHeaderPacketStream {
                 }
 
                 let (encoded_pn, key_phase) = packet.decode_header().unwrap();
-                let pn = match s.rcvd_records.decode_pn(encoded_pn) {
+                let pn = match s.rcvd_pkt_records.decode_pn(encoded_pn) {
                     Ok(pn) => pn,
                     Err(_) => continue,
                 };
@@ -362,46 +406,14 @@ impl Stream for ShortHeaderPacketStream {
 
 impl ShortHeaderPacketStream {
     pub fn new(
+        packet_rx: mpsc::UnboundedReceiver<(OneRttPacket, ArcPath)>,
         keys: ArcOneRttKeys,
-        rcvd_records: ArcRcvdPktRecords,
-    ) -> (mpsc::UnboundedSender<(OneRttPacket, ArcPath)>, Self) {
-        let (packet_tx, packet_rx) = mpsc::unbounded_channel();
-        (
-            packet_tx,
-            Self {
-                packet_rx,
-                keys,
-                rcvd_records,
-            },
-        )
-    }
-
-    pub fn spawn_parse_packet_and_then_dispatch(
-        mut self,
-        conn_frame_queue: Option<ArcAsyncDeque<ConnFrame>>,
-        space_frame_queue: Option<ArcAsyncDeque<SpaceFrame>>,
-        datagram_frame_queue: Option<ArcAsyncDeque<(DatagramFrame, Bytes)>>,
-        ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
-        error_tx: mpsc::UnboundedSender<Error>,
-    ) {
-        tokio::spawn(async move {
-            while let Some(payload) = self.next().await {
-                let pn = payload.pn;
-                match payload.dispatch(
-                    conn_frame_queue.as_ref(),
-                    space_frame_queue.as_ref(),
-                    datagram_frame_queue.as_ref(),
-                    &ack_frames_tx,
-                ) {
-                    // TODO: path也要登记其收到的包、收包时间、is_ack_eliciting，方便激发AckFrame
-                    Ok(_is_ack_eliciting) => self.rcvd_records.register_pn(pn),
-                    // 解析包失败，丢弃
-                    // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
-                    Err(error) => {
-                        _ = error_tx.send(error);
-                    }
-                }
-            }
-        });
+        rcvd_pkt_records: ArcRcvdPktRecords,
+    ) -> Self {
+        Self {
+            packet_rx,
+            keys,
+            rcvd_pkt_records,
+        }
     }
 }

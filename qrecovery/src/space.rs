@@ -8,18 +8,15 @@ use std::{
 
 use bytes::{BufMut, Bytes};
 use deref_derive::Deref;
-use futures::StreamExt;
 
 pub type InitialSpace = ArcSpace<nodata::NoDataSpace<nodata::Initial>>;
 pub type HandshakeSpace = ArcSpace<nodata::NoDataSpace<nodata::Handshake>>;
 pub type DataSpace = ArcSpace<data::DataSpace>;
 
 use qbase::{
-    error::Error,
     frame::{io::WriteAckFrame, *},
-    util::{ArcAsyncDeque, TransportLimit},
+    util::TransportLimit,
 };
-use tokio::sync::mpsc;
 
 use crate::{
     crypto::CryptoStream,
@@ -71,7 +68,8 @@ pub trait ReliableTransmit: Send + Sync + 'static {
     ) -> (u64, usize, usize);
     fn on_ack(&self, ack_frmae: AckFrame);
     fn may_loss_pkt(&self, pn: u64);
-    fn receive(&self, frame: SpaceFrame) -> Result<(), Error>;
+    // 交给Space里的各个组件自己receive
+    // fn receive(&self, frame: SpaceFrame) -> Result<(), Error>;
     fn probe_timeout(&self);
 }
 
@@ -81,61 +79,6 @@ pub struct ArcSpace<T>(Arc<RawSpace<T>>);
 impl<T> Clone for ArcSpace<T> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
-    }
-}
-
-impl<T> ArcSpace<T>
-where
-    Self: ReliableTransmit,
-{
-    pub fn spawn_recv_ack(&self) -> mpsc::UnboundedSender<AckFrame> {
-        let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();
-        let space = self.clone();
-        tokio::spawn(async move {
-            while let Some(ack_frame) = ack_rx.recv().await {
-                space.on_ack(ack_frame);
-            }
-        });
-        ack_tx
-    }
-
-    pub fn spawn_handle_may_loss(&self) -> mpsc::UnboundedSender<u64> {
-        let (loss_tx, mut loss_rx) = mpsc::unbounded_channel();
-        let space = self.clone();
-        tokio::spawn(async move {
-            while let Some(pn) = loss_rx.recv().await {
-                space.may_loss_pkt(pn);
-            }
-        });
-        loss_tx
-    }
-
-    pub fn spawn_recv_space_frames(
-        &self,
-        error_tx: mpsc::UnboundedSender<Error>,
-    ) -> ArcAsyncDeque<SpaceFrame> {
-        let space = self.clone();
-        let deque = ArcAsyncDeque::new();
-        let mut inner_deque = deque.clone();
-        tokio::spawn(async move {
-            while let Some(frame) = inner_deque.next().await {
-                if let Err(error) = space.receive(frame) {
-                    _ = error_tx.send(error);
-                }
-            }
-        });
-        deque
-    }
-
-    pub fn spawn_probe_timeout(&self) -> mpsc::UnboundedSender<()> {
-        let (pto_tx, mut pto_rx) = mpsc::unbounded_channel();
-        let space = self.clone();
-        tokio::spawn(async move {
-            while (pto_rx.recv().await).is_some() {
-                space.probe_timeout();
-            }
-        });
-        pto_tx
     }
 }
 

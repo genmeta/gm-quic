@@ -38,8 +38,12 @@ impl ObserveAck for AckObserver {
 pub struct LossObserver([mpsc::UnboundedSender<u64>; 3]);
 
 impl LossObserver {
-    pub fn new(channels: [mpsc::UnboundedSender<u64>; 3]) -> Self {
-        Self(channels)
+    // 它是生产者，所以应该返回接收器
+    pub fn new() -> (Self, [mpsc::UnboundedReceiver<u64>; 3]) {
+        let (tx0, rx0) = mpsc::unbounded_channel();
+        let (tx1, rx1) = mpsc::unbounded_channel();
+        let (tx2, rx2) = mpsc::unbounded_channel();
+        (Self([tx0, tx1, tx2]), [rx0, rx1, rx2])
     }
 }
 
@@ -72,8 +76,12 @@ impl ObserveHandshake for HandShakeObserver {
 pub struct PtoObserver([mpsc::UnboundedSender<()>; 3]);
 
 impl PtoObserver {
-    pub fn new(channels: [mpsc::UnboundedSender<()>; 3]) -> Self {
-        Self(channels)
+    // 它是生产者，所以应该返回接收器
+    pub fn new() -> (Self, [mpsc::UnboundedReceiver<()>; 3]) {
+        let (tx0, rx0) = mpsc::unbounded_channel();
+        let (tx1, rx1) = mpsc::unbounded_channel();
+        let (tx2, rx2) = mpsc::unbounded_channel();
+        (Self([tx0, tx1, tx2]), [rx0, rx1, rx2])
     }
 }
 

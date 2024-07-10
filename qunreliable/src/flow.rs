@@ -93,24 +93,4 @@ impl DatagramFlow {
         raw_flow.reader.on_conn_error(error);
         raw_flow.writer.on_conn_error(error);
     }
-
-    #[inline]
-    pub fn spawn_recv_datagram_frames(
-        &self,
-        error_tx: mpsc::UnboundedSender<Error>,
-    ) -> ArcAsyncDeque<(DatagramFrame, Bytes)> {
-        let (reader, _) = self.rw();
-        let deque: ArcAsyncDeque<(DatagramFrame, Bytes)> = ArcAsyncDeque::new();
-        tokio::spawn({
-            let mut deque = deque.clone();
-            async move {
-                while let Some((frame, data)) = deque.next().await {
-                    if let Err(error) = reader.recv_datagram(frame, data) {
-                        _ = error_tx.send(error);
-                    }
-                }
-            }
-        });
-        deque
-    }
 }
