@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    ops::Deref,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},

@@ -229,15 +229,18 @@ impl LongHeaderPacketStream<InitialHeader> {
 }
 
 impl LongHeaderPacketStream<HandshakeHeader> {
-    pub fn spawn_parse_packet_and_then_dispatch(
+    pub fn spawn_parse_packet_and_then_dispatch<Hook>(
         mut self,
         conn_frame_queue: Option<ArcAsyncDeque<ConnFrame>>,
         space_frame_queue: Option<ArcAsyncDeque<SpaceFrame>>,
         datagram_frame_queue: Option<ArcAsyncDeque<(DatagramFrame, Bytes)>>,
         ack_frames_tx: mpsc::UnboundedSender<AckFrame>,
         error_tx: mpsc::UnboundedSender<Error>,
-        mut initial_keys: Option<ArcKeys>,
-    ) {
+        hook: Hook,
+    ) where
+        Hook: FnOnce() + Send + 'static,
+    {
+        let mut hook = Some(hook);
         tokio::spawn(async move {
             while let Some(payload) = self.next().await {
                 let pn = payload.pn;
@@ -251,8 +254,8 @@ impl LongHeaderPacketStream<HandshakeHeader> {
                     Ok(_is_ack_eliciting) => {
                         // a server MUST discard Initial keys when it first successfully processes a
                         // Handshake packet.
-                        if let Some(initial_keys) = initial_keys.take() {
-                            initial_keys.invalid()
+                        if let Some(hook) = hook.take() {
+                            hook();
                         }
                         self.rcvd_pkt_records.register_pn(pn)
                     }

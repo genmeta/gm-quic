@@ -3,8 +3,7 @@ use std::sync::{atomic::AtomicU8, Arc};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
 pub enum ConnectionState {
     Initial = 0,
-    Handshake = 1,
-    // 这个状态有用吗？
+    Handshaking = 1,
     HandshakeDone = 2,
     Closing = 3,
     Draining = 4,
@@ -20,7 +19,7 @@ impl RawConnectionState {
     fn get_state(&self) -> ConnectionState {
         match self.state.load(std::sync::atomic::Ordering::Acquire) {
             0 => ConnectionState::Initial,
-            1 => ConnectionState::Handshake,
+            1 => ConnectionState::Handshaking,
             2 => ConnectionState::HandshakeDone,
             3 => ConnectionState::Closing,
             4 => ConnectionState::Draining,

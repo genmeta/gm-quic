@@ -64,7 +64,7 @@ impl ObserveHandshake for HandShakeObserver {
     }
 
     fn has_handshake_keys(&self) -> bool {
-        self.0.get_state() >= ConnectionState::Handshake
+        self.0.get_state() >= ConnectionState::Handshaking
     }
 }
 
