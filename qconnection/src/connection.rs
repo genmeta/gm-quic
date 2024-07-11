@@ -337,20 +337,31 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
         let connection_draining = connection_draining.clone();
         let initial_dispath_error_tx = dispath_error_tx.clone();
         async move {
-            let dispatch = |stream: &auto::InitialPacketStream, packet: Option<PacketPayload>| {
+            let mut state = DispatchTaskState::Continue;
+            let dispatch = |stream: &auto::InitialPacketStream,
+                            packet: Option<PacketPayload>,
+                            state: DispatchTaskState| {
                 let Some(packet) = packet else {
                     return DispatchTaskState::Exit;
                 };
                 let pn = packet.pn;
                 // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
-                let dispath_result = packet.dispatch_initial_space(
-                    &initial_crypto_queue_writer,
-                    &initial_close_frame_queue_writer,
-                    &initial_ack_frame_tx,
-                );
+
+                let dispath_result = match state {
+                    DispatchTaskState::Continue => packet.dispatch_initial_space(
+                        &initial_crypto_queue_writer,
+                        &initial_close_frame_queue_writer,
+                        &initial_ack_frame_tx,
+                    ),
+                    DispatchTaskState::Closing => {
+                        packet.dispatch_closing(&initial_close_frame_queue_writer)
+                    }
+                    DispatchTaskState::Exit => unreachable!(),
+                };
                 match dispath_result {
                     Ok(_is_ack_eliciting) => {
                         stream.rcvd_pkt_records.register_pn(pn);
+                        //
                         DispatchTaskState::Continue
                     }
                     Err(e) => {
@@ -359,10 +370,11 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                     }
                 }
             };
+
             loop {
-                let state = tokio::select! {
+                let new_state = tokio::select! {
                     packet = initial_packet_stream.next() => {
-                        dispatch(&initial_packet_stream,packet)
+                        dispatch(&initial_packet_stream,packet,state)
                     },
                     _ = connection_closing.notified() => {
                         DispatchTaskState::Closing
@@ -371,12 +383,17 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                         DispatchTaskState::Exit
                     }
                 };
-                if state == DispatchTaskState::Closing || state == DispatchTaskState::Exit {
-                    initial_crypto_queue_writer.close();
-                }
-                if state == DispatchTaskState::Exit {
-                    initial_close_frame_queue_writer.close();
-                    return;
+                if state != new_state {
+                    if new_state == DispatchTaskState::Closing
+                        || new_state == DispatchTaskState::Exit
+                    {
+                        initial_crypto_queue_writer.close();
+                    }
+                    if new_state == DispatchTaskState::Exit {
+                        initial_close_frame_queue_writer.close();
+                        return;
+                    }
+                    state = new_state;
                 }
             }
         }
@@ -437,17 +454,25 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
         let connection_draining = connection_draining.clone();
         let handshake_dispath_error_tx = dispath_error_tx.clone();
         async move {
-            let dispatch = |stream: &auto::HandshakePacketStream, packet: Option<PacketPayload>| {
+            let dispatch = |stream: &auto::HandshakePacketStream,
+                            packet: Option<PacketPayload>,
+                            state: DispatchTaskState| {
                 let Some(packet) = packet else {
                     return DispatchTaskState::Exit;
                 };
                 let pn = packet.pn;
                 // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
-                let dispatch_result = packet.dispatch_initial_space(
-                    &handshake_crypto_queue_writer,
-                    &handshake_close_frame_queue_writer,
-                    &handshake_ack_frame_tx,
-                );
+                let dispatch_result = match state {
+                    DispatchTaskState::Continue => packet.dispatch_handshake_space(
+                        &handshake_crypto_queue_writer,
+                        &handshake_close_frame_queue_writer,
+                        &handshake_ack_frame_tx,
+                    ),
+                    DispatchTaskState::Closing => {
+                        packet.dispatch_closing(&handshake_close_frame_queue_writer)
+                    }
+                    DispatchTaskState::Exit => unreachable!(),
+                };
                 match dispatch_result {
                     Ok(_is_ack_eliciting) => {
                         if role == Role::Server {
@@ -463,10 +488,12 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                     }
                 }
             };
+
+            let mut state = DispatchTaskState::Continue;
             loop {
-                let state = tokio::select! {
+                let next_state = tokio::select! {
                     packet = handshake_packet_stream.next() => {
-                        dispatch(&handshake_packet_stream, packet)
+                        dispatch(&handshake_packet_stream, packet,state)
                     }
                     _ = connection_closing.notified() => {
                         DispatchTaskState::Closing
@@ -476,12 +503,17 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                     }
                 };
 
-                if state == DispatchTaskState::Closing || state == DispatchTaskState::Exit {
-                    handshake_crypto_queue_writer.close();
-                }
-                if state == DispatchTaskState::Exit {
-                    handshake_close_frame_queue_writer.close();
-                    return;
+                if state != next_state {
+                    if next_state == DispatchTaskState::Closing
+                        || next_state == DispatchTaskState::Exit
+                    {
+                        handshake_crypto_queue_writer.close();
+                    }
+                    if next_state == DispatchTaskState::Exit {
+                        handshake_close_frame_queue_writer.close();
+                        return;
+                    }
+                    state = next_state;
                 }
             }
         }
@@ -587,18 +619,26 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
         let connection_draining = connection_draining.clone();
         let zero_rtt_dispath_error_tx = dispath_error_tx.clone();
         async move {
-            let dispatch = |stream: &auto::ZeroRttPacketStream, packet: Option<PacketPayload>| {
+            let dispatch = |stream: &auto::ZeroRttPacketStream,
+                            packet: Option<PacketPayload>,
+                            state: DispatchTaskState| {
                 let Some(packet) = packet else {
                     return DispatchTaskState::Exit;
                 };
                 let pn = packet.pn;
-                let dispatch_result = packet.dispatch_zero_rtt(
-                    &zero_rtt_datagram_frame_queue_writer,
-                    &zero_rtt_max_data_frame_queue_writer,
-                    &zero_rtt_stream_frame_queue_writer,
-                    &zero_rtt_stream_ctl_frame_queue_writer,
-                    &zero_rtt_close_frame_queue_writer,
-                );
+                let dispatch_result = match state {
+                    DispatchTaskState::Continue => packet.dispatch_zero_rtt(
+                        &zero_rtt_datagram_frame_queue_writer,
+                        &zero_rtt_max_data_frame_queue_writer,
+                        &zero_rtt_stream_frame_queue_writer,
+                        &zero_rtt_stream_ctl_frame_queue_writer,
+                        &zero_rtt_close_frame_queue_writer,
+                    ),
+                    DispatchTaskState::Closing => {
+                        packet.dispatch_closing(&zero_rtt_close_frame_queue_writer)
+                    }
+                    DispatchTaskState::Exit => unreachable!(),
+                };
                 match dispatch_result {
                     Ok(_is_ack_eliciting) => {
                         stream.rcvd_pkt_records.register_pn(pn);
@@ -610,10 +650,11 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                     }
                 }
             };
+            let mut state = DispatchTaskState::Continue;
             loop {
-                let state = tokio::select! {
+                let next_state = tokio::select! {
                     packet = zero_rtt_packet_stream.next() => {
-                        dispatch(&zero_rtt_packet_stream, packet)
+                        dispatch(&zero_rtt_packet_stream, packet,state)
                     }
                     _ = connection_closing.notified() => {
                         DispatchTaskState::Closing
@@ -622,15 +663,20 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                         DispatchTaskState::Exit
                     }
                 };
-                if state == DispatchTaskState::Closing || state == DispatchTaskState::Exit {
-                    zero_rtt_datagram_frame_queue_writer.close();
-                    zero_rtt_max_data_frame_queue_writer.close();
-                    zero_rtt_stream_frame_queue_writer.close();
-                    zero_rtt_stream_ctl_frame_queue_writer.close();
-                }
-                if state == DispatchTaskState::Exit {
-                    zero_rtt_close_frame_queue_writer.close();
-                    return;
+                if state != next_state {
+                    if next_state == DispatchTaskState::Closing
+                        || next_state == DispatchTaskState::Exit
+                    {
+                        zero_rtt_datagram_frame_queue_writer.close();
+                        zero_rtt_max_data_frame_queue_writer.close();
+                        zero_rtt_stream_frame_queue_writer.close();
+                        zero_rtt_stream_ctl_frame_queue_writer.close();
+                    }
+                    if next_state == DispatchTaskState::Exit {
+                        zero_rtt_close_frame_queue_writer.close();
+                        return;
+                    }
+                    state = next_state;
                 }
             }
         }
@@ -731,23 +777,31 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
         let connection_draining = connection_draining.clone();
         let one_rtt_dispath_error_tx = dispath_error_tx;
         async move {
-            let dispatch = |stream: &auto::OneRttPacketStream, packet: Option<PacketPayload>| {
+            let dispatch = |stream: &auto::OneRttPacketStream,
+                            packet: Option<PacketPayload>,
+                            state: DispatchTaskState| {
                 let Some(packet) = packet else {
                     return DispatchTaskState::Exit;
                 };
                 let pn = packet.pn;
-                let dispatch_result = packet.dispatch_one_rtt(
-                    &one_rtt_conn_id_frame_queue_writer,
-                    &one_rtt_token_frame_queue_writer,
-                    &one_rtt_datagram_frame_queue_writer,
-                    &one_rtt_max_data_frame_queue_writer,
-                    &one_rtt_hs_done_frame_queue_writer,
-                    &one_rtt_stream_frame_queue_writer,
-                    &one_rtt_stream_ctl_frame_queue_writer,
-                    &one_rtt_crypto_frame_queue_writer,
-                    &one_rtt_close_frame_queue_writer,
-                    &one_rtt_ack_frame_tx,
-                );
+                let dispatch_result = match state {
+                    DispatchTaskState::Continue => packet.dispatch_one_rtt(
+                        &one_rtt_conn_id_frame_queue_writer,
+                        &one_rtt_token_frame_queue_writer,
+                        &one_rtt_datagram_frame_queue_writer,
+                        &one_rtt_max_data_frame_queue_writer,
+                        &one_rtt_hs_done_frame_queue_writer,
+                        &one_rtt_stream_frame_queue_writer,
+                        &one_rtt_stream_ctl_frame_queue_writer,
+                        &one_rtt_crypto_frame_queue_writer,
+                        &one_rtt_close_frame_queue_writer,
+                        &one_rtt_ack_frame_tx,
+                    ),
+                    DispatchTaskState::Closing => {
+                        packet.dispatch_closing(&one_rtt_close_frame_queue_writer)
+                    }
+                    DispatchTaskState::Exit => unreachable!(),
+                };
                 match dispatch_result {
                     Ok(_is_ack_eliciting) => {
                         stream.rcvd_pkt_records.register_pn(pn);
@@ -759,10 +813,11 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                     }
                 }
             };
+            let mut state = DispatchTaskState::Continue;
             loop {
-                let state = tokio::select! {
+                let new_state = tokio::select! {
                     packet = one_rtt_packet_stream.next() => {
-                        dispatch(&one_rtt_packet_stream, packet)
+                        dispatch(&one_rtt_packet_stream, packet,state)
                     }
                     _ = connection_closing.notified() => {
                         DispatchTaskState::Closing
@@ -771,21 +826,23 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                         DispatchTaskState::Exit
                     }
                 };
+                if state != new_state {
+                    if state == DispatchTaskState::Closing || state == DispatchTaskState::Exit {
+                        one_rtt_conn_id_frame_queue_writer.close();
+                        one_rtt_token_frame_queue_writer.close();
+                        one_rtt_datagram_frame_queue_writer.close();
+                        one_rtt_max_data_frame_queue_writer.close();
+                        one_rtt_hs_done_frame_queue_writer.close();
+                        one_rtt_stream_frame_queue_writer.close();
+                        one_rtt_stream_ctl_frame_queue_writer.close();
+                        one_rtt_crypto_frame_queue_writer.close();
+                    }
 
-                if state == DispatchTaskState::Closing || state == DispatchTaskState::Exit {
-                    one_rtt_conn_id_frame_queue_writer.close();
-                    one_rtt_token_frame_queue_writer.close();
-                    one_rtt_datagram_frame_queue_writer.close();
-                    one_rtt_max_data_frame_queue_writer.close();
-                    one_rtt_hs_done_frame_queue_writer.close();
-                    one_rtt_stream_frame_queue_writer.close();
-                    one_rtt_stream_ctl_frame_queue_writer.close();
-                    one_rtt_crypto_frame_queue_writer.close();
-                }
-
-                if state == DispatchTaskState::Exit {
-                    one_rtt_close_frame_queue_writer.close();
-                    return;
+                    if state == DispatchTaskState::Exit {
+                        one_rtt_close_frame_queue_writer.close();
+                        return;
+                    }
+                    state = new_state;
                 }
             }
         }
