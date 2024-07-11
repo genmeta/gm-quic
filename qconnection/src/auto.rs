@@ -49,19 +49,20 @@ impl PacketPayload {
         stream_frame_queue: Option<&ArcAsyncDeque<(StreamFrame, Bytes)>>,
         stream_ctl_frame_queue: Option<&ArcAsyncDeque<StreamCtlFrame>>,
         crypto_frame_queue: Option<&ArcAsyncDeque<(CryptoFrame, Bytes)>>,
-        close_frame_queue: &ArcAsyncDeque<ConnectionCloseFrame>,
-        ack_frames_tx: Option<&mpsc::UnboundedSender<AckFrame>>,
+        close_frame_queue: Option<&ArcAsyncDeque<ConnectionCloseFrame>>,
+        ack_frame_queue: Option<&ArcAsyncDeque<AckFrame>>,
     ) -> Result<bool, Error> {
         let packet = self;
         let mut conn_id_frame_writer = conn_id_frame_queue.map(ArcAsyncDeque::writer);
         let mut token_frame_writer = token_frame_queue.map(ArcAsyncDeque::writer);
-        let mut max_data_frame_writer = max_data_frame_queue.map(ArcAsyncDeque::writer);
         let mut datagram_frame_writer = datagram_frame_queue.map(ArcAsyncDeque::writer);
+        let mut max_data_frame_writer = max_data_frame_queue.map(ArcAsyncDeque::writer);
         let mut hs_done_frame_writer = hs_done_frame_queue.map(ArcAsyncDeque::writer);
         let mut stream_frame_writer = stream_frame_queue.map(ArcAsyncDeque::writer);
         let mut stream_ctl_frame_writer = stream_ctl_frame_queue.map(ArcAsyncDeque::writer);
         let mut crypto_frame_writer = crypto_frame_queue.map(ArcAsyncDeque::writer);
-        let mut close_frame_writer = close_frame_queue.writer();
+        let mut close_frame_writer = close_frame_queue.map(ArcAsyncDeque::writer);
+        let mut ack_frame_writer = ack_frame_queue.map(ArcAsyncDeque::writer);
         // let mut path_frame_writer = path.frames().writer();
         FrameReader::new(packet.payload)
             .try_fold(false, |is_ack_eliciting, frame| {
@@ -77,39 +78,44 @@ impl PacketPayload {
                     Frame::Pure(PureFrame::Padding(_)) => Ok(is_ack_eliciting),
                     Frame::Pure(PureFrame::Ping(_)) => Ok(true),
                     Frame::Pure(PureFrame::Ack(ack)) => {
-                        let Some(ack_frames_tx) = ack_frames_tx.as_ref() else {
+                        let Some(ack_frame_writer) = ack_frame_writer.as_mut() else {
                             return Ok(is_ack_eliciting);
                         };
-                        _ = ack_frames_tx.send(ack);
+                        ack_frame_writer.push(ack);
                         Ok(is_ack_eliciting)
                     }
                     Frame::Pure(PureFrame::Conn(conn)) => {
                         match conn {
-                            ConnFrame::Close(ccf) => close_frame_writer.push(ccf),
+                            ConnFrame::Close(ccf) => {
+                                let Some(close_frame_writer) = close_frame_writer.as_mut() else {
+                                    return Ok(true);
+                                };
+                                close_frame_writer.push(ccf)
+                            }
                             ConnFrame::NewToken(token) => {
                                 let Some(token_frame_writer) = token_frame_writer.as_mut() else {
-                                    return Ok(is_ack_eliciting);
+                                    return Ok(true);
                                 };
                                 token_frame_writer.push(token);
                             }
                             ConnFrame::MaxData(max_data) => {
                                 let Some(max_data_frame_queue) = max_data_frame_writer.as_mut()
                                 else {
-                                    return Ok(is_ack_eliciting);
+                                    return Ok(true);
                                 };
                                 max_data_frame_queue.push(max_data);
                             }
                             ConnFrame::NewConnectionId(new) => {
                                 let Some(conn_id_frame_writer) = conn_id_frame_writer.as_mut()
                                 else {
-                                    return Ok(is_ack_eliciting);
+                                    return Ok(true);
                                 };
                                 conn_id_frame_writer.push(ConnIdFrame::NewConnectionId(new));
                             }
                             ConnFrame::RetireConnectionId(retire) => {
                                 let Some(conn_id_frame_writer) = conn_id_frame_writer.as_mut()
                                 else {
-                                    return Ok(is_ack_eliciting);
+                                    return Ok(true);
                                 };
                                 conn_id_frame_writer.push(ConnIdFrame::RetireConnectionId(retire));
                             }
@@ -117,7 +123,7 @@ impl PacketPayload {
                                 let Some(handshake_done_frame_writer) =
                                     hs_done_frame_writer.as_mut()
                                 else {
-                                    return Ok(is_ack_eliciting);
+                                    return Ok(true);
                                 };
                                 handshake_done_frame_writer.push(done);
                             }
@@ -127,7 +133,7 @@ impl PacketPayload {
                     }
                     Frame::Pure(PureFrame::Stream(stream)) => {
                         let Some(stream_ctl_frame_writer) = stream_ctl_frame_writer.as_mut() else {
-                            return Ok(is_ack_eliciting);
+                            return Ok(true);
                         };
                         stream_ctl_frame_writer.push(stream);
                         Ok(true)
@@ -150,21 +156,21 @@ impl PacketPayload {
                     }
                     Frame::Data(DataFrame::Stream(stream), data) => {
                         let Some(stream_frame_writer) = stream_frame_writer.as_mut() else {
-                            return Ok(is_ack_eliciting);
+                            return Ok(true);
                         };
                         stream_frame_writer.push((stream, data));
                         Ok(true)
                     }
                     Frame::Data(DataFrame::Crypto(crypto), data) => {
                         let Some(crypto_frame_writer) = crypto_frame_writer.as_mut() else {
-                            return Ok(is_ack_eliciting);
+                            return Ok(true);
                         };
                         crypto_frame_writer.push((crypto, data));
                         Ok(true)
                     }
                     Frame::Datagram(datagram, data) => {
                         let Some(datagram_frame_writer) = datagram_frame_writer.as_mut() else {
-                            return Ok(is_ack_eliciting);
+                            return Ok(true);
                         };
                         datagram_frame_writer.push((datagram, data));
                         Ok(true)
@@ -172,31 +178,35 @@ impl PacketPayload {
                 }
             })
             .inspect_err(|_error| {
-                close_frame_writer.rollback();
-
                 if let Some(mut writer) = conn_id_frame_writer {
-                    writer.rollback()
+                    writer.rollback();
                 }
                 if let Some(mut writer) = token_frame_writer {
-                    writer.rollback()
-                }
-                if let Some(mut writer) = max_data_frame_writer {
-                    writer.rollback()
+                    writer.rollback();
                 }
                 if let Some(mut writer) = datagram_frame_writer {
-                    writer.rollback()
+                    writer.rollback();
+                }
+                if let Some(mut writer) = max_data_frame_writer {
+                    writer.rollback();
                 }
                 if let Some(mut writer) = hs_done_frame_writer {
-                    writer.rollback()
+                    writer.rollback();
                 }
                 if let Some(mut writer) = stream_frame_writer {
-                    writer.rollback()
+                    writer.rollback();
                 }
                 if let Some(mut writer) = stream_ctl_frame_writer {
-                    writer.rollback()
+                    writer.rollback();
                 }
                 if let Some(mut writer) = crypto_frame_writer {
-                    writer.rollback()
+                    writer.rollback();
+                }
+                if let Some(mut writer) = close_frame_writer {
+                    writer.rollback();
+                }
+                if let Some(mut writer) = ack_frame_writer {
+                    writer.rollback();
                 }
             })
     }
@@ -205,7 +215,7 @@ impl PacketPayload {
         self,
         crypto_frame_queue: &ArcAsyncDeque<(CryptoFrame, Bytes)>,
         close_frame_queue: &ArcAsyncDeque<ConnectionCloseFrame>,
-        ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
+        ack_frame_queue: &ArcAsyncDeque<AckFrame>,
     ) -> Result<bool, Error> {
         self.generic_dispatch(
             None,
@@ -216,8 +226,8 @@ impl PacketPayload {
             None,
             None,
             Some(crypto_frame_queue),
-            close_frame_queue,
-            Some(ack_frames_tx),
+            Some(close_frame_queue),
+            Some(ack_frame_queue),
         )
     }
 
@@ -225,9 +235,9 @@ impl PacketPayload {
         self,
         crypto_frame_queue: &ArcAsyncDeque<(CryptoFrame, Bytes)>,
         close_frame_queue: &ArcAsyncDeque<ConnectionCloseFrame>,
-        ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
+        ack_frame_queue: &ArcAsyncDeque<AckFrame>,
     ) -> Result<bool, Error> {
-        self.dispatch_initial_space(crypto_frame_queue, close_frame_queue, ack_frames_tx)
+        self.dispatch_initial_space(crypto_frame_queue, close_frame_queue, ack_frame_queue)
     }
 
     pub fn dispatch_zero_rtt(
@@ -247,7 +257,7 @@ impl PacketPayload {
             Some(stream_frame_queue),
             Some(stream_ctl_frame_queue),
             None,
-            close_frame_queue,
+            Some(close_frame_queue),
             None,
         )
     }
@@ -263,7 +273,7 @@ impl PacketPayload {
         stream_ctl_frame_queue: &ArcAsyncDeque<StreamCtlFrame>,
         crypto_frame_queue: &ArcAsyncDeque<(CryptoFrame, Bytes)>,
         close_frame_queue: &ArcAsyncDeque<ConnectionCloseFrame>,
-        ack_frames_tx: &mpsc::UnboundedSender<AckFrame>,
+        ack_frame_queue: &ArcAsyncDeque<AckFrame>,
     ) -> Result<bool, Error> {
         self.generic_dispatch(
             Some(conn_id_frame_queue),
@@ -274,8 +284,8 @@ impl PacketPayload {
             Some(stream_frame_queue),
             Some(stream_ctl_frame_queue),
             Some(crypto_frame_queue),
-            close_frame_queue,
-            Some(ack_frames_tx),
+            Some(close_frame_queue),
+            Some(ack_frame_queue),
         )
     }
 
@@ -292,7 +302,7 @@ impl PacketPayload {
             None,
             None,
             None,
-            close_frame_queue,
+            Some(close_frame_queue),
             None,
         )
     }
