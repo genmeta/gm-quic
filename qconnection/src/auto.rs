@@ -78,7 +78,7 @@ impl PacketPayload {
                     Frame::Pure(PureFrame::Ping(_)) => Ok(true),
                     Frame::Pure(PureFrame::Ack(ack)) => {
                         let Some(ack_frames_tx) = ack_frames_tx.as_ref() else {
-                            unreachable!()
+                            return Ok(is_ack_eliciting);
                         };
                         _ = ack_frames_tx.send(ack);
                         Ok(is_ack_eliciting)
@@ -88,28 +88,28 @@ impl PacketPayload {
                             ConnFrame::Close(ccf) => close_frame_writer.push(ccf),
                             ConnFrame::NewToken(token) => {
                                 let Some(token_frame_writer) = token_frame_writer.as_mut() else {
-                                    unreachable!()
+                                    return Ok(is_ack_eliciting);
                                 };
                                 token_frame_writer.push(token);
                             }
                             ConnFrame::MaxData(max_data) => {
                                 let Some(max_data_frame_queue) = max_data_frame_writer.as_mut()
                                 else {
-                                    unreachable!()
+                                    return Ok(is_ack_eliciting);
                                 };
                                 max_data_frame_queue.push(max_data);
                             }
                             ConnFrame::NewConnectionId(new) => {
                                 let Some(conn_id_frame_writer) = conn_id_frame_writer.as_mut()
                                 else {
-                                    unreachable!()
+                                    return Ok(is_ack_eliciting);
                                 };
                                 conn_id_frame_writer.push(ConnIdFrame::NewConnectionId(new));
                             }
                             ConnFrame::RetireConnectionId(retire) => {
                                 let Some(conn_id_frame_writer) = conn_id_frame_writer.as_mut()
                                 else {
-                                    unreachable!()
+                                    return Ok(is_ack_eliciting);
                                 };
                                 conn_id_frame_writer.push(ConnIdFrame::RetireConnectionId(retire));
                             }
@@ -117,7 +117,7 @@ impl PacketPayload {
                                 let Some(handshake_done_frame_writer) =
                                     hs_done_frame_writer.as_mut()
                                 else {
-                                    unreachable!()
+                                    return Ok(is_ack_eliciting);
                                 };
                                 handshake_done_frame_writer.push(done);
                             }
@@ -127,7 +127,7 @@ impl PacketPayload {
                     }
                     Frame::Pure(PureFrame::Stream(stream)) => {
                         let Some(stream_ctl_frame_writer) = stream_ctl_frame_writer.as_mut() else {
-                            unreachable!()
+                            return Ok(is_ack_eliciting);
                         };
                         stream_ctl_frame_writer.push(stream);
                         Ok(true)
@@ -150,21 +150,21 @@ impl PacketPayload {
                     }
                     Frame::Data(DataFrame::Stream(stream), data) => {
                         let Some(stream_frame_writer) = stream_frame_writer.as_mut() else {
-                            unreachable!()
+                            return Ok(is_ack_eliciting);
                         };
                         stream_frame_writer.push((stream, data));
                         Ok(true)
                     }
                     Frame::Data(DataFrame::Crypto(crypto), data) => {
                         let Some(crypto_frame_writer) = crypto_frame_writer.as_mut() else {
-                            unreachable!()
+                            return Ok(is_ack_eliciting);
                         };
                         crypto_frame_writer.push((crypto, data));
                         Ok(true)
                     }
                     Frame::Datagram(datagram, data) => {
                         let Some(datagram_frame_writer) = datagram_frame_writer.as_mut() else {
-                            unreachable!()
+                            return Ok(is_ack_eliciting);
                         };
                         datagram_frame_writer.push((datagram, data));
                         Ok(true)
@@ -276,6 +276,24 @@ impl PacketPayload {
             Some(crypto_frame_queue),
             close_frame_queue,
             Some(ack_frames_tx),
+        )
+    }
+
+    pub fn dispatch_closing(
+        self,
+        close_frame_queue: &ArcAsyncDeque<ConnectionCloseFrame>,
+    ) -> Result<bool, Error> {
+        self.generic_dispatch(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            close_frame_queue,
+            None,
         )
     }
 }
