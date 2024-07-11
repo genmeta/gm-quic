@@ -330,13 +330,15 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
     let mut initial_crypto_queue_reader = initial_crypto_queue_writer.clone();
     let initial_close_frame_queue_writer = ArcAsyncDeque::new();
     let mut initial_close_frame_queue_reader = initial_close_frame_queue_writer.clone();
-    let (initial_ack_frame_tx, mut initial_ack_frame_rx) = mpsc::unbounded_channel();
+    let initial_ack_frame_queue_writer = ArcAsyncDeque::new();
+    let mut initial_ack_frame_queue_reader = initial_ack_frame_queue_writer.clone();
     // 通过select它来获取错误
     tokio::spawn({
         let connection_closing = connection_closing.clone();
         let connection_draining = connection_draining.clone();
-        let initial_dispath_error_tx = dispath_error_tx.clone();
+        let initial_dispatch_error_tx = dispath_error_tx.clone();
         let conn_state = conn_state.clone();
+
         async move {
             let dispatch = |stream: &auto::InitialPacketStream, packet: PacketPayload| {
                 let pn = packet.pn;
@@ -344,10 +346,10 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                 let dispath_result = match conn_state.get_state() {
                     ConnectionState::Initial
                     | ConnectionState::Handshaking
-                    | ConnectionState::HandshakeDone => packet.dispatch_handshake_space(
+                    | ConnectionState::HandshakeDone => packet.dispatch_initial_space(
                         &initial_crypto_queue_writer,
                         &initial_close_frame_queue_writer,
-                        &initial_ack_frame_tx,
+                        &initial_ack_frame_queue_writer,
                     ),
                     ConnectionState::Closing => {
                         packet.dispatch_closing(&initial_close_frame_queue_writer)
@@ -359,7 +361,7 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                         stream.rcvd_pkt_records.register_pn(pn);
                     }
                     Err(e) => {
-                        _ = initial_dispath_error_tx.send(e);
+                        _ = initial_dispatch_error_tx.send(e);
                     }
                 }
             };
@@ -367,7 +369,7 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                 let flow = tokio::select! {
                     packet = initial_packet_stream.next() => {
                         if let Some(packet) = packet {
-                            dispatch(&initial_packet_stream,packet);
+                            dispatch(&initial_packet_stream, packet);
                             DispatchControlFlow::Continue
                         } else {
                             DispatchControlFlow::Exit
@@ -382,6 +384,7 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                 };
                 if flow == DispatchControlFlow::Closing || flow == DispatchControlFlow::Exit {
                     initial_crypto_queue_writer.close();
+                    initial_ack_frame_queue_writer.close();
                 }
                 if flow == DispatchControlFlow::Exit {
                     initial_close_frame_queue_writer.close();
@@ -421,11 +424,11 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
 
     // initial handle ack
     // -> consumer
-    // return: initial_ack_frame_tx dropped
+    // return: initial_ack_frame_queue_writer dropped
     tokio::spawn({
         let initial_space = initial_space.clone();
         async move {
-            while let Some(ack) = initial_ack_frame_rx.recv().await {
+            while let Some(ack) = initial_ack_frame_queue_reader.next().await {
                 initial_space.on_ack(ack);
             }
         }
@@ -438,13 +441,14 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
     let mut handshake_crypto_queue_reader = handshake_crypto_queue_writer.clone();
     let handshake_close_frame_queue_writer = ArcAsyncDeque::new();
     let mut handshake_close_frame_queue_reader = handshake_close_frame_queue_writer.clone();
-    let (handshake_ack_frame_tx, mut handshake_ack_frame_rx) = mpsc::unbounded_channel();
+    let handshake_ack_frame_writer = ArcAsyncDeque::new();
+    let mut handshake_ack_frame_reader = handshake_ack_frame_writer.clone();
     tokio::spawn({
         let conn_state = conn_state.clone();
         let initial_keys = initial_keys.clone();
         let connection_closing = connection_closing.clone();
         let connection_draining = connection_draining.clone();
-        let handshake_dispath_error_tx = dispath_error_tx.clone();
+        let handshake_dispatch_error_tx = dispath_error_tx.clone();
         let conn_state = conn_state.clone();
         async move {
             let dispatch = |stream: &auto::HandshakePacketStream, packet: PacketPayload| {
@@ -453,10 +457,10 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                 let dispatch_result = match conn_state.get_state() {
                     ConnectionState::Initial
                     | ConnectionState::Handshaking
-                    | ConnectionState::HandshakeDone => packet.dispatch_initial_space(
+                    | ConnectionState::HandshakeDone => packet.dispatch_handshake_space(
                         &handshake_crypto_queue_writer,
                         &handshake_close_frame_queue_writer,
-                        &handshake_ack_frame_tx,
+                        &handshake_ack_frame_writer,
                     ),
                     ConnectionState::Closing => {
                         packet.dispatch_closing(&handshake_close_frame_queue_writer)
@@ -472,7 +476,7 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                         stream.rcvd_pkt_records.register_pn(pn);
                     }
                     Err(e) => {
-                        _ = handshake_dispath_error_tx.send(e);
+                        _ = handshake_dispatch_error_tx.send(e);
                     }
                 }
             };
@@ -496,6 +500,7 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
 
                 if flow == DispatchControlFlow::Closing || flow == DispatchControlFlow::Exit {
                     handshake_crypto_queue_writer.close();
+                    handshake_ack_frame_writer.close();
                 }
                 if flow == DispatchControlFlow::Exit {
                     handshake_close_frame_queue_writer.close();
@@ -517,6 +522,18 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                 crypto_stream.recv_data(frame, data)?;
             }
             Ok::<_, Error>(())
+        }
+    });
+
+    // handle handshake ack
+    // -> consumer
+    // return: handshake_ack_frame_writer dropped
+    tokio::spawn({
+        let handshake_space = handshake_space.clone();
+        async move {
+            while let Some(ack) = handshake_ack_frame_reader.next().await {
+                handshake_space.on_ack(ack);
+            }
         }
     });
 
@@ -576,17 +593,6 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
         data_space.rcvd_pkt_records.clone(),
     );
 
-    // handle handshake ack
-    // -> consumer
-    // return: handshake_ack_frame_tx dropped
-    tokio::spawn({
-        let handshake_space = handshake_space.clone();
-        async move {
-            while let Some(ack) = handshake_ack_frame_rx.recv().await {
-                handshake_space.on_ack(ack);
-            }
-        }
-    });
     // dispatch zero rtt packet
     // producer -> producer
     // return: zero_rtt_packet_stream closed
@@ -603,7 +609,7 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
     tokio::spawn({
         let connection_closing = connection_closing.clone();
         let connection_draining = connection_draining.clone();
-        let zero_rtt_dispath_error_tx = dispath_error_tx.clone();
+        let zero_rtt_dispatch_error_tx = dispath_error_tx.clone();
         let conn_state = conn_state.clone();
         async move {
             let dispatch = |stream: &auto::ZeroRttPacketStream, packet: PacketPayload| {
@@ -628,7 +634,7 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                         stream.rcvd_pkt_records.register_pn(pn);
                     }
                     Err(e) => {
-                        _ = zero_rtt_dispath_error_tx.send(e);
+                        _ = zero_rtt_dispatch_error_tx.send(e);
                     }
                 }
             };
@@ -752,11 +758,12 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
     let mut one_rtt_crypto_frame_queue_reader = one_rtt_crypto_frame_queue_writer.clone();
     let one_rtt_close_frame_queue_writer = ArcAsyncDeque::new();
     let mut one_rtt_close_frame_queue_reader = one_rtt_close_frame_queue_writer.clone();
-    let (one_rtt_ack_frame_tx, mut one_rtt_ack_frame_rx) = mpsc::unbounded_channel();
+    let one_rtt_ack_frame_queue_writer = ArcAsyncDeque::new();
+    let mut one_rtt_ack_frame_queue_reader = one_rtt_ack_frame_queue_writer.clone();
     tokio::spawn({
         let connection_closing = connection_closing.clone();
         let connection_draining = connection_draining.clone();
-        let one_rtt_dispath_error_tx = dispath_error_tx;
+        let one_rtt_dispatch_error_tx = dispath_error_tx;
         let conn_state = conn_state.clone();
         async move {
             let dispatch = |stream: &auto::OneRttPacketStream, packet: PacketPayload| {
@@ -774,7 +781,7 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                         &one_rtt_stream_ctl_frame_queue_writer,
                         &one_rtt_crypto_frame_queue_writer,
                         &one_rtt_close_frame_queue_writer,
-                        &one_rtt_ack_frame_tx,
+                        &one_rtt_ack_frame_queue_writer,
                     ),
                     ConnectionState::Closing => {
                         packet.dispatch_closing(&one_rtt_close_frame_queue_writer)
@@ -786,7 +793,7 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                         stream.rcvd_pkt_records.register_pn(pn);
                     }
                     Err(error) => {
-                        _ = one_rtt_dispath_error_tx.send(error);
+                        _ = one_rtt_dispatch_error_tx.send(error);
                     }
                 }
             };
@@ -817,6 +824,7 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
                     one_rtt_stream_frame_queue_writer.close();
                     one_rtt_stream_ctl_frame_queue_writer.close();
                     one_rtt_crypto_frame_queue_writer.close();
+                    one_rtt_ack_frame_queue_writer.close();
                 }
 
                 if flow == DispatchControlFlow::Exit {
@@ -977,11 +985,11 @@ pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
 
     // handle handshake ack
     // -> consumer
-    // return: handshake_ack_frame_tx dropped
+    // return: one_rtt_ack_frame_queue_writer dropped
     tokio::spawn({
         let data_space = data_space.clone();
         async move {
-            while let Some(ack) = one_rtt_ack_frame_rx.recv().await {
+            while let Some(ack) = one_rtt_ack_frame_queue_reader.next().await {
                 data_space.on_ack(ack);
             }
         }
