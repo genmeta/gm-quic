@@ -356,7 +356,7 @@ impl<H> LongHeaderPacketStream<H> {
 pub(crate) struct ShortHeaderPacketStream {
     packet_rx: mpsc::UnboundedReceiver<(OneRttPacket, ArcPath)>,
     keys: ArcOneRttKeys,
-    rcvd_pkt_records: ArcRcvdPktRecords,
+    pub rcvd_pkt_records: ArcRcvdPktRecords,
 }
 
 pub(crate) type OneRttPacketStream = ShortHeaderPacketStream;
