@@ -1,6 +1,8 @@
 pub mod state;
 
 use std::{
+    future::poll_fn,
+    io::IoSlice,
     ops::Deref,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -9,6 +11,7 @@ use std::{
 use dashmap::{DashMap, DashSet};
 use deref_derive::Deref;
 use futures::{FutureExt, StreamExt};
+use log::{error, trace};
 use qbase::{
     cid::{ConnectionId, Registry},
     error::{Error, ErrorKind},
@@ -26,9 +29,9 @@ use qbase::{
     token::ResetToken,
     util::{ArcAsyncDeque, TransportLimit},
 };
-use qcongestion::congestion::{Epoch, MSS};
-use qrecovery::space::{self, data, ArcSpace, ArcSpaces, ReliableTransmit};
-use qudp::ArcUsc;
+use qcongestion::congestion::MSS;
+use qrecovery::space::{ArcSpace, ArcSpaces, Epoch, ReliableTransmit};
+use qudp::{ArcUsc, PacketHeader};
 use qunreliable::DatagramFlow;
 use state::{ArcConnectionState, ConnectionState};
 use tokio::sync::{mpsc, Notify};
@@ -39,7 +42,6 @@ use crate::{
     crypto::TlsIO,
     handshake,
     path::{
-        self,
         observer::{ConnectionObserver, HandShakeObserver},
         ArcPath, Pathway,
     },
@@ -183,7 +185,7 @@ impl RawConnection {
 
     pub fn get_path(&self, pathway: Pathway, usc: &ArcUsc) -> ArcPath {
         self.pathes
-            .entry(pathway)
+            .entry(pathway.clone())
             .or_insert_with({
                 let usc = usc.clone();
                 let observer = self.connection_observer.clone();
@@ -201,7 +203,7 @@ impl RawConnection {
                     self.swapn_path_may_loss(path.clone());
                     self.swapn_path_indicate_ack(path.clone());
                     self.swapn_path_probe_timeout(path.clone());
-                    self.spawn_path_send(path.clone());
+                    self.spawn_path_send(path.clone(), pathway);
                     path
                 }
             })
@@ -213,26 +215,10 @@ impl RawConnection {
         tokio::spawn(async move {
             loop {
                 let loss = path.poll_may_loss().await;
-                match loss.0 {
-                    Epoch::Initial => {
-                        if let Some(space) = spaces.initial_space() {
-                            for pn in loss.1 {
-                                space.may_loss_pkt(pn);
-                            }
-                        }
-                    }
-                    Epoch::Handshake => {
-                        if let Some(space) = spaces.handshake_space() {
-                            for pn in loss.1 {
-                                space.may_loss_pkt(pn);
-                            }
-                        }
-                    }
-                    Epoch::Data => {
-                        let space = spaces.data_space();
-                        for pn in loss.1 {
-                            space.may_loss_pkt(pn);
-                        }
+                let space = spaces.reliable_space(loss.0);
+                if let Some(space) = space {
+                    for pn in loss.1 {
+                        space.may_loss_pkt(pn);
                     }
                 }
             }
@@ -244,26 +230,10 @@ impl RawConnection {
         tokio::spawn(async move {
             loop {
                 let acked = path.poll_indicate_ack().await;
-                match acked.0 {
-                    Epoch::Initial => {
-                        if let Some(space) = spaces.initial_space() {
-                            for pn in acked.1 {
-                                space.rcvd_pkt_records.write().inactivate(pn);
-                            }
-                        }
-                    }
-                    Epoch::Handshake => {
-                        if let Some(space) = spaces.initial_space() {
-                            for pn in acked.1 {
-                                space.rcvd_pkt_records.write().inactivate(pn);
-                            }
-                        }
-                    }
-                    Epoch::Data => {
-                        let space = spaces.data_space();
-                        for pn in acked.1 {
-                            space.rcvd_pkt_records.write().inactivate(pn);
-                        }
+                let space = spaces.reliable_space(acked.0);
+                if let Some(space) = space {
+                    for pn in acked.1 {
+                        space.indicate_ack(pn);
                     }
                 }
             }
@@ -274,131 +244,196 @@ impl RawConnection {
         let spaces = self.spaces.clone();
         tokio::spawn(async move {
             loop {
-                let epoch = path.poll_probe_timeout().await;
-                match epoch {
-                    Epoch::Initial => {
-                        if let Some(space) = spaces.initial_space() {
-                            space.probe_timeout();
-                        }
-                    }
-                    Epoch::Handshake => {
-                        if let Some(space) = spaces.handshake_space() {
-                            space.probe_timeout();
-                        }
-                    }
-                    Epoch::Data => {
-                        spaces.data_space().probe_timeout();
-                    }
-                };
+                let space = path.poll_probe_timeout().await;
+                let space = spaces.reliable_space(space);
+                if let Some(space) = space {
+                    space.probe_timeout();
+                }
             }
         });
     }
 
-    pub fn read_space_data<T>(
+    pub fn spawn_path_send(&self, path: ArcPath, path_way: Pathway) {
+        let spaces = self.spaces.clone();
+        let initai_key = self.initial_keys.clone();
+        let handshake_key = self.handshake_keys.clone();
+        let one_rtt_keys = self.one_rtt_keys.clone();
+        let spin = self.spin;
+
+        tokio::spawn(async move {
+            loop {
+                let mut guard = path.poll_send().await;
+                let mut buffers = Vec::new();
+
+                for epoch in Epoch::iter() {
+                    let space = spaces.reliable_space(*epoch);
+                    if space.is_none() {
+                        continue;
+                    }
+                    let space = space.unwrap();
+                    let ack_pkt = guard.ack_pkts[*epoch as usize];
+                    match epoch {
+                        Epoch::Initial => {
+                            let header = InitialHeader {
+                                dcid: guard.dcid,
+                                scid: guard.scid,
+                                specific: Initial {
+                                    token: todo!(),
+                                    length: todo!(),
+                                },
+                            };
+
+                            RawConnection::read_long_header_space(
+                                &mut buffers,
+                                &header,
+                                FillPolicy::Redundancy,
+                                initai_key,
+                                &space,
+                                &mut guard.transport_limit,
+                                ack_pkt,
+                            )
+                        }
+                        Epoch::Handshake => {
+                            let header = HandshakeHeader {
+                                dcid: guard.dcid,
+                                scid: guard.scid,
+                                specific: Handshake { length: todo!() },
+                            };
+                            RawConnection::read_long_header_space(
+                                &mut buffers,
+                                &header,
+                                FillPolicy::Redundancy,
+                                handshake_key.clone(),
+                                &space,
+                                &mut guard.transport_limit,
+                                ack_pkt,
+                            );
+                        }
+                        Epoch::Data => {
+                            let header = OneRttHeader {
+                                spin,
+                                dcid: guard.dcid,
+                            };
+                            RawConnection::read_short_header_space(
+                                &mut buffers,
+                                header,
+                                one_rtt_keys.clone(),
+                                &space,
+                                &mut guard.transport_limit,
+                                ack_pkt,
+                            )
+                        }
+                    };
+                }
+
+                let (src, dst) = match &path_way {
+                    Pathway::Direct { local, remote } => (local, remote),
+                    Pathway::Relay { local, remote } => {
+                        // todo: append relay hdr
+                        (&local.addr, &remote.agent)
+                    }
+                };
+
+                let hdr = PacketHeader {
+                    src: *src,
+                    dst: *dst,
+                    ttl: 64,
+                    ecn: None,
+                    seg_size: MSS as u16,
+                    gso: true,
+                };
+
+                let io_slices = buffers
+                    .iter_mut()
+                    .map(|b| IoSlice::new(b))
+                    .collect::<Vec<_>>();
+
+                let ret = poll_fn(|cx| guard.usc.poll_send(&io_slices, &hdr, cx)).await;
+                match ret {
+                    Ok(n) => {
+                        trace!("sent {} bytes", n);
+                    }
+                    Err(e) => {
+                        error!("send failed: {}", e);
+                    }
+                }
+            }
+        });
+    }
+
+    fn read_long_header_space<T>(
         buffers: &mut Vec<Vec<u8>>,
-        header: LongHeader<T>,
+        header: &LongHeader<T>,
         fill_policy: FillPolicy,
         keys: ArcKeys,
-        space: impl ReliableTransmit,
+        space: &impl ReliableTransmit,
         transport_limit: &mut TransportLimit,
         ack_pkt: Option<(u64, Instant)>,
     ) where
         for<'a> &'a mut [u8]: Write<T>,
         LongHeader<T>: GetType + Encode,
     {
+        let mut buffer = vec![0u8; MSS];
         let mut offset = 0;
-        let mut buf = vec![0u8; MSS];
+
         while transport_limit.available() > 0 {
             let (_, pkt_size) = read_space_and_encrypt(
-                &mut buf[offset..],
-                &header,
+                &mut buffer[offset..],
+                header,
                 fill_policy,
                 keys.clone(),
-                &space,
+                space,
                 transport_limit,
                 ack_pkt,
             );
-            if offset == MSS {
-                buffers.push(buf);
-                buf = vec![0u8; MSS];
-                offset = 0;
-            } else {
+
+            if offset < MSS && pkt_size != 0 {
                 offset += pkt_size;
+            } else {
+                buffers.push(buffer);
+                buffer = vec![0u8; MSS];
+                offset = 0;
+            }
+
+            if pkt_size == 0 && offset == 0 {
+                break;
             }
         }
     }
-    pub fn spawn_path_send(&self, path: ArcPath) {
-        let spaces = self.spaces.clone();
-        let initai_key = self.initial_keys.clone();
-        let handshake_key = self.handshake_keys.clone();
-        let one_rtt_keys = self.one_rtt_keys.clone();
-        let spin = self.spin;
-        tokio::spawn(async move {
-            loop {
-                let mut guard = path.poll_send().await;
-                let mut buffers = Vec::new();
 
-                if let Some(initial_space) = spaces.initial_space() {
-                    let header = InitialHeader {
-                        dcid: guard.dcid,
-                        scid: guard.scid,
-                        specific: Initial {
-                            token: todo!(),
-                            length: todo!(),
-                        },
-                    };
-                    RawConnection::read_space_data(
-                        &mut buffers,
-                        header,
-                        FillPolicy::Redundancy,
-                        initai_key.clone(),
-                        initial_space,
-                        &mut guard.transport_limit,
-                        None,
-                    );
-                }
-                if let Some(_handshake_space) = spaces.handshake_space() {
-                    let header = HandshakeHeader {
-                        dcid: guard.dcid,
-                        scid: guard.scid,
-                        specific: Handshake { length: todo!() },
-                    };
-                    RawConnection::read_space_data(
-                        &mut buffers,
-                        header,
-                        FillPolicy::Redundancy,
-                        handshake_key.clone(),
-                        _handshake_space,
-                        &mut guard.transport_limit,
-                        None,
-                    );
-                }
+    fn read_short_header_space(
+        buffers: &mut Vec<Vec<u8>>,
+        header: OneRttHeader,
+        keys: ArcOneRttKeys,
+        space: &impl ReliableTransmit,
+        transport_limit: &mut TransportLimit,
+        ack_pkt: Option<(u64, Instant)>,
+    ) {
+        let mut buffer = vec![0u8; MSS];
+        let mut offset = 0;
 
-                let mut buffer = vec![0u8; MSS];
-                let mut slice = &mut buffer[..];
-                while guard.transport_limit.available() > 0 {
-                    let header = OneRttHeader {
-                        spin,
-                        dcid: guard.dcid,
-                    };
-                    let data_space = spaces.data_space();
-                    let pkt_size = read_1rtt_data_and_encrypt(
-                        slice,
-                        header,
-                        one_rtt_keys.clone(),
-                        data_space,
-                        &mut guard.transport_limit,
-                        None,
-                    );
-                    if pkt_size == MSS {
-                        buffers.push(buffer);
-                        buffer = vec![0u8; MSS];
-                    } else {
-                        slice = &mut buffer[pkt_size..];
-                    }
-                }
+        while transport_limit.available() > 0 {
+            let pkt_size = read_1rtt_data_and_encrypt(
+                &mut buffer[offset..],
+                &header,
+                keys.clone(),
+                space,
+                transport_limit,
+                ack_pkt,
+            );
+
+            if offset < MSS && pkt_size != 0 {
+                offset += pkt_size;
+            } else {
+                buffers.push(buffer);
+                buffer = vec![0u8; MSS];
+                offset = 0;
             }
-        });
+
+            if pkt_size == 0 && offset == 0 {
+                break;
+            }
+        }
     }
 }
 

@@ -163,4 +163,8 @@ impl ReliableTransmit for ArcSpace<DataSpace> {
         // 1. 有数据发送，发送新数据
         // 2. 没有数据发送，发送 ping 帧
     }
+
+    fn indicate_ack(&self, pn: u64) {
+        self.rcvd_pkt_records.write().inactivate(pn);
+    }
 }

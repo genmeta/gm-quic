@@ -3,9 +3,7 @@ use std::{fmt::Debug, ops::Deref, time::Instant};
 use bytes::BufMut;
 use qbase::{
     packet::{
-        header::{
-            Encode, GetType, HasLength, LongHeader, Write, WriteLongHeader, WriteOneRttHeader,
-        },
+        header::{Encode, GetType, LongHeader, Write, WriteLongHeader, WriteOneRttHeader},
         keys::{ArcKeys, ArcOneRttKeys},
         LongClearBits, OneRttHeader, ShortClearBits,
     },
@@ -117,9 +115,9 @@ where
 
 pub fn read_1rtt_data_and_encrypt(
     buffer: &mut [u8],
-    header: OneRttHeader,
+    header: &OneRttHeader,
     keys: ArcOneRttKeys,
-    space: impl ReliableTransmit,
+    space: &impl ReliableTransmit,
     transport_limit: &mut TransportLimit,
     ack_pkt: Option<(u64, Instant)>,
 ) -> usize {
@@ -136,7 +134,7 @@ pub fn read_1rtt_data_and_encrypt(
         return 0;
     }
 
-    hdr_buf.put_one_rtt_header(&header);
+    hdr_buf.put_one_rtt_header(header);
     debug_assert!(hdr_buf.is_empty());
 
     let header_and_pn_size = header_size + pn_size;

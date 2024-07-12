@@ -3,7 +3,7 @@ use std::ops::Deref;
 use rustls::quic::{HeaderProtectionKey, PacketKey};
 
 use super::{
-    header::{long::LongHeader, GetType, HasLength, Protect},
+    header::{long::LongHeader, GetType, Protect},
     r#type::ext::WritePacketType,
     KeyPhaseBit, LongClearBits, OneRttHeader, PacketNumber, PacketWrapper, ShortClearBits,
     WritePacketNumber,

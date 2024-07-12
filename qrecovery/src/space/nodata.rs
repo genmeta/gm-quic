@@ -156,6 +156,10 @@ impl<K: NoDataSpaceKind> ReliableTransmit for ArcSpace<NoDataSpace<K>> {
         // 握手期间 PTO 超时，重发 INITIAL 包或 HANDSHAKE 包
         todo!()
     }
+
+    fn indicate_ack(&self, pn: u64) {
+        self.0.rcvd_pkt_records.write().inactivate(pn);
+    }
 }
 
 impl ArcSpace<InitalSpace> {

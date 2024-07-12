@@ -3,8 +3,8 @@ use std::{
     time::Instant,
 };
 
-use congestion::Epoch;
 use qbase::frame::AckFrame;
+use qrecovery::space::Epoch;
 
 pub mod bbr;
 pub mod congestion;

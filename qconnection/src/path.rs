@@ -1,6 +1,5 @@
 use std::{
     net::SocketAddr,
-    ops::Deref,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{ready, Context, Poll},
@@ -11,46 +10,35 @@ use anti_amplifier::ANTI_FACTOR;
 use futures::Future;
 use observer::{ConnectionObserver, PathObserver};
 use qbase::{
-    cid::{ArcLocalCids, ArcRemoteCids, ConnectionId, RESET_TOKEN_SIZE},
+    cid::{ConnectionId},
     frame::{PathChallengeFrame, PathResponseFrame},
-    packet::{
-        header::{long::Initial, LongHeader},
-        Header, InitialHeader,
-    },
     token::ResetToken,
-    util::TransportLimit,
-    varint::VarInt,
+    util::{TransportLimit},
 };
-use qcongestion::{
-    congestion::{ArcCC, Epoch},
-    CongestionControl,
+use qcongestion::{congestion::ArcCC, CongestionControl};
+use qrecovery::{
+    space::{Epoch, ReliableTransmit},
 };
-use qrecovery::space::{ArcSpaces, ReliableTransmit};
 use qudp::ArcUsc;
 
 pub mod anti_amplifier;
 pub use anti_amplifier::ArcAntiAmplifier;
 
 pub mod validate;
-use validate::ValidateState;
 pub use validate::{Transponder, Validator};
 
 pub mod observer;
 
-use crate::{
-    controller::{ArcFlowController, FlowController},
-    transmit::{read_1rtt_data_and_encrypt, read_space_and_encrypt},
-    Sendmsg,
-};
+use crate::{controller::ArcFlowController, Sendmsg};
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct RelayAddr {
-    agent: SocketAddr, // 代理人
-    addr: SocketAddr,
+    pub agent: SocketAddr, // 代理人
+    pub addr: SocketAddr,
 }
 
 /// 无论哪种Pathway，socket都必须绑定local地址
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Pathway {
     Direct {
         local: SocketAddr,
@@ -373,6 +361,12 @@ impl ArcPath {
                     return Poll::Pending;
                 }
                 let flow_control = ready!(guard.flow_ctrl.sender.poll_apply(cx)).available();
+
+                let mut ack_pkts = [None; 3];
+                for epoch in Epoch::iter() {
+                    let ack_pkt = guard.cc.need_ack(*epoch);
+                    ack_pkts[*epoch as usize] = ack_pkt;
+                }
                 let send_guard = SendGuard {
                     transport_limit: TransportLimit::new(
                         anti_amplification,
@@ -382,6 +376,7 @@ impl ArcPath {
                     usc: guard.usc.clone(),
                     dcid: guard.peer_cid.unwrap(),
                     scid: guard.local_cid.unwrap(),
+                    ack_pkts,
                 };
                 Poll::Ready(send_guard)
             }
@@ -390,7 +385,6 @@ impl ArcPath {
         SendState(self.clone())
     }
 
-    // return path validator state
     pub fn poll_state(&self) -> impl Future<Output = bool> {
         let guard = self.0.lock().unwrap();
         guard.validator.poll_state()
@@ -402,6 +396,7 @@ pub struct SendGuard {
     pub usc: ArcUsc,
     pub dcid: ConnectionId,
     pub scid: ConnectionId,
+    pub ack_pkts: [Option<(u64, Instant)>; 3],
 }
 
 #[cfg(test)]

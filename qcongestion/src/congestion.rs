@@ -1,13 +1,13 @@
 use std::{
     cmp::Ordering,
     collections::VecDeque,
-    ops::{Index, IndexMut},
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
 
 use qbase::frame::{AckFrame, EcnCounts};
+use qrecovery::space::Epoch;
 
 use crate::{
     bbr::{self, INITIAL_CWND},
@@ -695,50 +695,6 @@ pub trait Algorithm: Send {
     fn cwnd(&self) -> u64;
 
     fn pacing_rate(&self) -> Option<u64>;
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum Epoch {
-    Initial = 0,
-    Handshake = 1,
-    Data = 2,
-}
-
-impl Epoch {
-    pub fn iter() -> std::slice::Iter<'static, Epoch> {
-        static EPOCHS: [Epoch; 3] = [Epoch::Initial, Epoch::Handshake, Epoch::Data];
-        EPOCHS.iter()
-    }
-
-    pub const fn count() -> usize {
-        3
-    }
-}
-
-impl From<Epoch> for usize {
-    fn from(e: Epoch) -> Self {
-        e as usize
-    }
-}
-
-impl<T> Index<Epoch> for [T]
-where
-    T: Sized,
-{
-    type Output = T;
-
-    fn index(&self, index: Epoch) -> &Self::Output {
-        self.index(usize::from(index))
-    }
-}
-
-impl<T> IndexMut<Epoch> for [T]
-where
-    T: Sized,
-{
-    fn index_mut(&mut self, index: Epoch) -> &mut Self::Output {
-        self.index_mut(usize::from(index))
-    }
 }
 
 #[derive(Default)]
