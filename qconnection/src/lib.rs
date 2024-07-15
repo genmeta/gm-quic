@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use path::Pathway;
 use qbase::packet::SpacePacket;
 
 pub mod connection;
@@ -13,7 +14,7 @@ pub(crate) mod handshake;
 pub mod transmit;
 
 pub trait ReceiveProtectedPacket {
-    fn receive_protected_packet(&mut self, protected_packet: SpacePacket);
+    fn receive_protected_packet(&self, protected_packet: SpacePacket, pathway: Pathway);
 }
 
 /// 发送报文的trait，但其实发送还有其他需要的形式，比如：

@@ -124,33 +124,14 @@ pub struct RawConnection {
 }
 
 impl RawConnection {
-    pub fn recv_init_pkt_via(&self, pkt: InitialPacket, usc: &ArcUsc, pathway: Pathway) {
+    pub fn recv_protected_pkt_via(&self, pkt: SpacePacket, usc: &ArcUsc, pathway: Pathway) {
         let path = self.get_path(pathway, usc);
-        self.packet_queues.send_initial_packet(pkt, path)
-    }
-
-    pub fn recv_hs_pkt_via(&self, pkt: HandshakePacket, usc: &ArcUsc, pathway: Pathway) {
-        let path = self.get_path(pathway, usc);
-        self.packet_queues.send_handshake_packet(pkt, path)
-    }
-
-    pub fn recv_0rtt_pkt_via(&self, pkt: ZeroRttPacket, usc: &ArcUsc, pathway: Pathway) {
-        let path = self.get_path(pathway, usc);
-        self.packet_queues.send_zero_rtt_packet(pkt, path)
-    }
-
-    pub fn recv_1rtt_pkt_via(&self, pkt: OneRttPacket, usc: &ArcUsc, pathway: Pathway) {
-        let path = self.get_path(pathway, usc);
-        self.packet_queues.send_one_rtt_packet(pkt, path)
-    }
-
-    pub fn recv_protected_pkt_via(&mut self, pkt: SpacePacket, usc: &ArcUsc, pathway: Pathway) {
         // TODO: 在不同状态会有不同反应
         match pkt {
-            SpacePacket::Initial(pkt) => self.recv_init_pkt_via(pkt, usc, pathway),
-            SpacePacket::Handshake(pkt) => self.recv_hs_pkt_via(pkt, usc, pathway),
-            SpacePacket::ZeroRtt(pkt) => self.recv_0rtt_pkt_via(pkt, usc, pathway),
-            SpacePacket::OneRtt(pkt) => self.recv_1rtt_pkt_via(pkt, usc, pathway),
+            SpacePacket::Initial(pkt) => self.packet_queues.send_initial_packet(pkt, path),
+            SpacePacket::Handshake(pkt) => self.packet_queues.send_handshake_packet(pkt, path),
+            SpacePacket::ZeroRtt(pkt) => self.packet_queues.send_zero_rtt_packet(pkt, path),
+            SpacePacket::OneRtt(pkt) => self.packet_queues.send_one_rtt_packet(pkt, path),
         }
     }
 
