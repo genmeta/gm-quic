@@ -91,7 +91,7 @@ impl<K: NoDataSpaceKind> ReliableTransmit for ArcSpace<NoDataSpace<K>> {
             return (pn, encoded_pn.size(), 0);
         }
 
-        if let Some((frame, n)) = self.read_ack_frame_until(limit, buf, ack_pkt) {
+        if let Some((frame, n)) = self.read_ack_frame_until(buf, ack_pkt) {
             send_guard.record_ack_frame(frame);
             buf = &mut buf[n..];
         }

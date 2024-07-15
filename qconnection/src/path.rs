@@ -298,88 +298,19 @@ impl ArcPath {
         self.0.lock().unwrap().cc.pto_time()
     }
 
-    pub fn poll_may_loss(&self) -> impl Future<Output = (Epoch, Vec<u64>)> {
-        struct LossState(ArcPath);
-
-        impl Future for LossState {
-            type Output = (Epoch, Vec<u64>);
-
-            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                let guard = &self.get_mut().0 .0.lock().unwrap();
-                guard.cc.poll_lost(cx)
-            }
-        }
+    pub fn poll_may_loss(&self) -> LossState {
         LossState(self.clone())
     }
 
-    pub fn poll_indicate_ack(&self) -> impl Future<Output = (Epoch, Vec<u64>)> {
-        struct SlideState(ArcPath);
-
-        impl Future for SlideState {
-            type Output = (Epoch, Vec<u64>);
-            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                let guard = &self.get_mut().0 .0.lock().unwrap();
-                guard.cc.poll_indicate_ack(cx)
-            }
-        }
+    pub fn poll_indicate_ack(&self) -> SlideState {
         SlideState(self.clone())
     }
 
-    pub fn poll_probe_timeout(&self) -> impl Future<Output = Epoch> {
-        struct PtoState(ArcPath);
-
-        impl Future for PtoState {
-            type Output = Epoch;
-
-            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                let guard = &self.get_mut().0 .0.lock().unwrap();
-                guard.cc.poll_probe_timeout(cx)
-            }
-        }
+    pub fn poll_probe_timeout(&self) -> PtoState {
         PtoState(self.clone())
     }
 
-    pub fn poll_send(&self) -> impl Future<Output = SendGuard> {
-        struct SendState(ArcPath);
-
-        impl Future for SendState {
-            type Output = SendGuard;
-            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                let guard = &self.get_mut().0 .0.lock().unwrap();
-                let congestion_control = ready!(guard.cc.poll_send(cx));
-                let anti_amplification = if let Some(anti_amplifier) = guard.anti_amplifier.as_ref()
-                {
-                    ready!(anti_amplifier.poll_get_credit(cx))
-                } else {
-                    None
-                };
-
-                // TODO: 改成异步获取 cid
-                if guard.local_cid.is_none() || guard.peer_cid.is_none() {
-                    return Poll::Pending;
-                }
-                let flow_control = ready!(guard.flow_ctrl.sender.poll_apply(cx)).available();
-
-                let mut ack_pkts = [None; 3];
-                for epoch in Epoch::iter() {
-                    let ack_pkt = guard.cc.need_ack(*epoch);
-                    ack_pkts[*epoch as usize] = ack_pkt;
-                }
-                let send_guard = SendGuard {
-                    transport_limit: TransportLimit::new(
-                        anti_amplification,
-                        congestion_control,
-                        flow_control,
-                    ),
-                    usc: guard.usc.clone(),
-                    dcid: guard.peer_cid.unwrap(),
-                    scid: guard.local_cid.unwrap(),
-                    ack_pkts,
-                };
-                Poll::Ready(send_guard)
-            }
-        }
-
+    pub fn poll_send(&self) -> SendState {
         SendState(self.clone())
     }
 
@@ -397,6 +328,77 @@ pub struct SendGuard {
     pub ack_pkts: [Option<(u64, Instant)>; 3],
 }
 
+pub struct LossState(ArcPath);
+
+impl Future for LossState {
+    type Output = (Epoch, Vec<u64>);
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let guard = &self.get_mut().0 .0.lock().unwrap();
+        guard.cc.poll_lost(cx)
+    }
+}
+
+pub struct SlideState(ArcPath);
+
+impl Future for SlideState {
+    type Output = (Epoch, Vec<u64>);
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let guard = &self.get_mut().0 .0.lock().unwrap();
+        guard.cc.poll_indicate_ack(cx)
+    }
+}
+
+pub struct PtoState(ArcPath);
+
+impl Future for PtoState {
+    type Output = Epoch;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let guard = &self.get_mut().0 .0.lock().unwrap();
+        guard.cc.poll_probe_timeout(cx)
+    }
+}
+
+pub struct SendState(ArcPath);
+
+impl Future for SendState {
+    type Output = SendGuard;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let guard = &self.get_mut().0 .0.lock().unwrap();
+        let congestion_control = ready!(guard.cc.poll_send(cx));
+        let anti_amplification = if let Some(anti_amplifier) = guard.anti_amplifier.as_ref() {
+            ready!(anti_amplifier.poll_get_credit(cx))
+        } else {
+            None
+        };
+
+        // TODO: 改成异步获取 cid
+        if guard.local_cid.is_none() || guard.peer_cid.is_none() {
+            return Poll::Pending;
+        }
+        let flow_control = ready!(guard.flow_ctrl.sender.poll_apply(cx)).available();
+
+        let mut ack_pkts = [None; 3];
+        for epoch in Epoch::iter() {
+            let ack_pkt = guard.cc.need_ack(*epoch);
+            ack_pkts[*epoch as usize] = ack_pkt;
+        }
+        let send_guard = SendGuard {
+            transport_limit: TransportLimit::new(
+                anti_amplification,
+                congestion_control,
+                flow_control,
+            ),
+            usc: guard.usc.clone(),
+            dcid: guard.peer_cid.unwrap(),
+            scid: guard.local_cid.unwrap(),
+            ack_pkts,
+        };
+        Poll::Ready(send_guard)
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};

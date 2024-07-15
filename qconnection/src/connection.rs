@@ -204,12 +204,14 @@ impl RawConnection {
                     self.swapn_path_indicate_ack(path.clone());
                     self.swapn_path_probe_timeout(path.clone());
                     self.spawn_path_send(path.clone(), pathway);
+
                     path
                 }
             })
             .clone()
     }
 
+    #[inline]
     fn swapn_path_may_loss(&self, path: ArcPath) {
         let spaces = self.spaces.clone();
         tokio::spawn(async move {
@@ -225,6 +227,7 @@ impl RawConnection {
         });
     }
 
+    #[inline]
     fn swapn_path_indicate_ack(&self, path: ArcPath) {
         let spaces = self.spaces.clone();
         tokio::spawn(async move {
@@ -240,6 +243,7 @@ impl RawConnection {
         });
     }
 
+    #[inline]
     fn swapn_path_probe_timeout(&self, path: ArcPath) {
         let spaces = self.spaces.clone();
         tokio::spawn(async move {

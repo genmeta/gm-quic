@@ -9,6 +9,7 @@ use std::{
 
 use bytes::{BufMut, Bytes};
 use deref_derive::Deref;
+use enum_dispatch::enum_dispatch;
 
 pub type InitialSpace = ArcSpace<nodata::NoDataSpace<nodata::Initial>>;
 pub type HandshakeSpace = ArcSpace<nodata::NoDataSpace<nodata::Handshake>>;
@@ -34,18 +35,12 @@ pub enum Epoch {
 
 impl Epoch {
     pub fn iter() -> std::slice::Iter<'static, Epoch> {
-        static EPOCHS: [Epoch; 3] = [Epoch::Initial, Epoch::Handshake, Epoch::Data];
+        const EPOCHS: [Epoch; 3] = [Epoch::Initial, Epoch::Handshake, Epoch::Data];
         EPOCHS.iter()
     }
 
     pub const fn count() -> usize {
         3
-    }
-}
-
-impl From<Epoch> for usize {
-    fn from(e: Epoch) -> Self {
-        e as usize
     }
 }
 
@@ -56,7 +51,7 @@ where
     type Output = T;
 
     fn index(&self, index: Epoch) -> &Self::Output {
-        self.index(usize::from(index))
+        self.index(index as usize)
     }
 }
 
@@ -65,7 +60,7 @@ where
     T: Sized,
 {
     fn index_mut(&mut self, index: Epoch) -> &mut Self::Output {
-        self.index_mut(usize::from(index))
+        self.index_mut(index as usize)
     }
 }
 
@@ -89,22 +84,20 @@ pub struct RawSpace<T> {
 impl<T> RawSpace<T> {
     fn read_ack_frame_until(
         &self,
-        limit: &mut TransportLimit,
         mut buf: &mut [u8],
         ack_pkt: Option<(u64, Instant)>,
     ) -> Option<(AckFrame, usize)> {
-        let remain = limit.available();
+        let remain = buf.remaining_mut();
 
         let ack_frame = self.rcvd_pkt_records.gen_ack_frame_util(ack_pkt?, remain);
         buf.put_ack_frame(&ack_frame);
 
         let written = remain - buf.remaining_mut();
-        // ack frame do not need record write
-        // limit.record_write(written);
         Some((ack_frame, written))
     }
 }
 
+#[enum_dispatch]
 pub trait ReliableTransmit: Send + Sync + 'static {
     fn read(
         &self,
@@ -146,57 +139,11 @@ where
 }
 
 #[derive(Debug, Clone)]
+#[enum_dispatch(ReliableTransmit)]
 pub enum Space {
     Initial(InitialSpace),
     Handshake(HandshakeSpace),
     Data(DataSpace),
-}
-
-impl ReliableTransmit for Space {
-    fn read(
-        &self,
-        limit: &mut TransportLimit,
-        buf: &mut [u8],
-        ack_pkt: Option<(u64, Instant)>,
-    ) -> (u64, usize, usize) {
-        match self {
-            Space::Initial(initial) => initial.read(limit, buf, ack_pkt),
-            Space::Handshake(handshake) => handshake.read(limit, buf, ack_pkt),
-            Space::Data(data) => data.read(limit, buf, ack_pkt),
-        }
-    }
-
-    fn on_ack(&self, ack_frmae: AckFrame) {
-        match self {
-            Space::Initial(initial) => initial.on_ack(ack_frmae),
-            Space::Handshake(handshake) => handshake.on_ack(ack_frmae),
-            Space::Data(data) => data.on_ack(ack_frmae),
-        }
-    }
-
-    fn may_loss_pkt(&self, pn: u64) {
-        match self {
-            Space::Initial(initial) => initial.may_loss_pkt(pn),
-            Space::Handshake(handshake) => handshake.may_loss_pkt(pn),
-            Space::Data(data) => data.may_loss_pkt(pn),
-        }
-    }
-
-    fn probe_timeout(&self) {
-        match self {
-            Space::Initial(initial) => initial.probe_timeout(),
-            Space::Handshake(handshake) => handshake.probe_timeout(),
-            Space::Data(data) => data.probe_timeout(),
-        }
-    }
-
-    fn indicate_ack(&self, pn: u64) {
-        match self {
-            Space::Initial(initial) => initial.indicate_ack(pn),
-            Space::Handshake(handshake) => handshake.indicate_ack(pn),
-            Space::Data(data) => data.indicate_ack(pn),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
