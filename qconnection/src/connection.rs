@@ -13,17 +13,14 @@ use deref_derive::Deref;
 use futures::{FutureExt, StreamExt};
 use log::{error, trace};
 use qbase::{
-    cid::{ConnectionId, Registry},
+    cid::{ConnectionId, Registry, MAX_CID_SIZE},
     error::{Error, ErrorKind},
     frame::{ConnFrame, ConnectionCloseFrame, HandshakeDoneFrame},
     packet::{
-        header::{
-            long::{Handshake, Initial},
-            Encode, GetType, LongHeader, Write,
-        },
+        header::{Encode, GetType, LongHeader, Write},
         keys::{ArcKeys, ArcOneRttKeys},
-        HandshakeHeader, HandshakePacket, InitialHeader, InitialPacket, OneRttHeader, OneRttPacket,
-        SpacePacket, SpinBit, ZeroRttPacket,
+        HandshakePacket, InitialPacket, LongHeaderBuilder, OneRttHeader, OneRttPacket, SpacePacket,
+        SpinBit, ZeroRttPacket,
     },
     streamid::Role,
     token::ResetToken,
@@ -198,6 +195,7 @@ impl RawConnection {
                         usc,
                         Duration::from_millis(100),
                         observer,
+                        self.cid_registry.remote.lock_guard().apply_cid(),
                         self.flow_ctrl.clone(),
                     );
                     self.swapn_path_may_loss(path.clone());
@@ -257,14 +255,34 @@ impl RawConnection {
         });
     }
 
+    #[inline]
     pub fn spawn_path_send(&self, path: ArcPath, path_way: Pathway) {
         let spaces = self.spaces.clone();
         let initai_key = self.initial_keys.clone();
         let handshake_key = self.handshake_keys.clone();
         let one_rtt_keys = self.one_rtt_keys.clone();
+        let cid_registry = self.cid_registry.clone();
         let spin = self.spin;
 
         tokio::spawn(async move {
+            let predicate = |_: &ConnectionId| true;
+
+            let (scid, token) = match cid_registry.local.issue_cid(MAX_CID_SIZE, predicate).await {
+                Ok(frame) => {
+                    let token = (*frame.reset_token).to_vec();
+                    let scid = frame.id;
+                    spaces
+                        .data_space()
+                        .reliable_frame_queue
+                        .write()
+                        .push_conn_frame(ConnFrame::NewConnectionId(frame.clone()));
+                    (scid, token)
+                }
+                Err(_) => {
+                    return;
+                }
+            };
+
             loop {
                 let mut guard = path.poll_send().await;
                 let mut buffers = Vec::new();
@@ -278,34 +296,23 @@ impl RawConnection {
                     let ack_pkt = guard.ack_pkts[*epoch as usize];
                     match epoch {
                         Epoch::Initial => {
-                            let header = InitialHeader {
-                                dcid: guard.dcid,
-                                scid: guard.scid,
-                                specific: Initial {
-                                    token: todo!(),
-                                    length: todo!(),
-                                },
-                            };
-
+                            let hdr = LongHeaderBuilder::with_cid(guard.dcid, scid)
+                                .initial(token.clone());
                             RawConnection::read_long_header_space(
                                 &mut buffers,
-                                &header,
+                                &hdr,
                                 FillPolicy::Redundancy,
-                                initai_key,
+                                initai_key.clone(),
                                 &space,
                                 &mut guard.transport_limit,
                                 ack_pkt,
                             )
                         }
                         Epoch::Handshake => {
-                            let header = HandshakeHeader {
-                                dcid: guard.dcid,
-                                scid: guard.scid,
-                                specific: Handshake { length: todo!() },
-                            };
+                            let hdr = LongHeaderBuilder::with_cid(guard.dcid, scid).handshake();
                             RawConnection::read_long_header_space(
                                 &mut buffers,
-                                &header,
+                                &hdr,
                                 FillPolicy::Redundancy,
                                 handshake_key.clone(),
                                 &space,

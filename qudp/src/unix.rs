@@ -182,7 +182,7 @@ pub(super) fn sendmmsg(
         .collect();
 
     let mut message = Message::default();
-    message.prepare_sent(send_hdr, &dst, gso_size as u16, BATCH_SIZE);
+    message.prepare_sent(send_hdr, dst, gso_size as u16, BATCH_SIZE);
 
     let mut sent_bytes = 0;
     for batch in bufs.chunks(gso_size * BATCH_SIZE) {
@@ -290,15 +290,13 @@ unsafe fn recvmmsg(
     let timeout = ptr::null_mut::<libc::timespec>();
     let ret = libc::syscall(libc::SYS_recvmmsg, sockfd, msgvec, vlen, flags, timeout);
     match to_result(ret as isize) {
-        Ok(n) => {
-            return Ok(Rcvd::MsgCount(n));
-        }
+        Ok(n) => Ok(Rcvd::MsgCount(n)),
         Err(e) => {
             // ENOSYS indicates that recvmmsg is not supported
             if let Some(libc::ENOSYS) = e.raw_os_error() {
                 return recvmsg(sockfd, &mut (*msgvec).msg_hdr);
             }
-            return Err(e);
+            Err(e)
         }
     }
 }
