@@ -205,23 +205,14 @@ pub struct ConnectionResources {
     pub reset_tokens: DashSet<ResetToken>,
 }
 
-pub struct ConnectionBuilder {
+pub fn new(
     tls_session: TlsIO,
     role: Role,
     // 尚未实现连接迁移
-    connections: Arc<DashMap<ConnectionId, ArcConnectionHandle>>,
+    endpoint_connection_ids: Arc<DashMap<ConnectionId, ArcConnectionHandle>>,
     // 某条连接的对端的无状态重置令牌
-    reset_tokens: Arc<DashMap<ResetToken, ArcConnectionHandle>>,
-}
-
-pub fn new(initializer: ConnectionBuilder) -> ArcConnectionHandle {
-    let ConnectionBuilder {
-        tls_session,
-        role,
-        connections: endpoint_connection_ids,
-        reset_tokens: endpoint_reset_tokens,
-    } = initializer;
-
+    endpoint_reset_tokens: Arc<DashMap<ResetToken, ArcConnectionHandle>>,
+) -> ArcConnectionHandle {
     let resources = ConnectionResources::default();
 
     let conn_state = ArcConnectionState::new();
