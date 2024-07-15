@@ -34,6 +34,19 @@ pub type ArcDatagramWriter = Arc<Mutex<io::Result<RawDatagramWriter>>>;
 pub struct DatagramWriter(pub(super) ArcDatagramWriter);
 
 impl DatagramWriter {
+    /// Attempts to read a datagram from the Application layer for transport layer to send.
+    ///
+    /// # Parameters
+    /// - `limit`: A mutable reference used to limit the read operations of the transport layer.
+    ///
+    /// - `buf`: A mutable byte buffer used to store the data read.
+    ///
+    /// # Returns
+    /// Return the [`DatagramFrame`] read and how many bytes have been written to the buffer.
+    ///
+    /// Returns [`None`] if there is no pending data written by Application layer, or the buffer is not big enough to
+    /// contain the datagram.
+    ///
     pub(super) fn try_read_datagram(
         &self,
         limit: &mut TransportLimit,
@@ -68,6 +81,17 @@ impl DatagramWriter {
         }
     }
 
+    /// Handles a connection error.
+    ///
+    /// # Arguments
+    ///
+    /// * `error` - The error that occurred.
+    ///
+    /// # Note
+    ///
+    /// This method will wake up all the wakers that are waiting for the data to be read.
+    ///
+    /// if the connection is already closed, the new error will be ignored.
     pub(super) fn on_conn_error(&self, error: &Error) {
         let writer = &mut self.0.lock().unwrap();
         if writer.is_ok() {
@@ -75,6 +99,19 @@ impl DatagramWriter {
         }
     }
 
+    /// Send bytes to peer
+    ///
+    /// This method will push data into the internal queue for transport layer to send
+    ///
+    /// # Arguments
+    ///
+    /// `data`: The bytes to send
+    ///
+    /// # Returns
+    ///
+    /// Return [`Ok`] when the data successfully pushed into the internal queue
+    ///
+    /// Return [`Err`] when the connection is closing or already closed
     pub fn send_bytes(&self, data: Bytes) -> io::Result<()> {
         match self.0.lock().unwrap().deref_mut() {
             Ok(writer) => {
@@ -92,11 +129,36 @@ impl DatagramWriter {
         }
     }
 
+    /// Send bytes to peer
+    ///
+    /// This method will push data into the internal queue for transport layer to send
+    ///
+    /// # Arguments
+    ///
+    /// `data`: The bytes to send
+    ///
+    /// # Returns
+    ///
+    /// Return [`Ok`] when the data successfully pushed into the internal queue
+    ///
+    /// Return [`Err`] when the connection is closing or already closed
     pub fn send(&self, data: &[u8]) -> io::Result<()> {
         self.send_bytes(data.to_vec().into())
     }
 
-    pub fn update_remote_max_datagram_frame_size(&self, size: usize) -> Result<(), Error> {
+    /// Update the transport parameter `max_datagram_frame_size` set by remote
+    ///
+    /// # Arguments
+    ///
+    /// `size`: The new `max_datagram_frame_size` transport parameter
+    ///
+    /// # Returns
+    ///
+    /// Returns [`Ok`] when the new size is successfully set.
+    ///
+    /// The value may have been set by a previous connection. This method will return [`Err`] when the new size
+    /// is less than the previous size, or the current connection is closing or already closed.
+    pub(crate) fn update_remote_max_datagram_frame_size(&self, size: usize) -> Result<(), Error> {
         let mut writer = self.0.lock().unwrap();
         let inner = writer.deref_mut();
 
@@ -111,6 +173,19 @@ impl DatagramWriter {
             writer.remote_max_size = size;
         }
         Ok(())
+    }
+
+    /// return the transport parameters `max_datagram_frame_size` set by peer.
+    ///
+    /// # Returns
+    ///
+    /// Returns [`Err`] when the connection is closing or already closed
+    pub fn get_remote_max_datagram_frame_size(&self) -> io::Result<usize> {
+        let reader = self.0.lock().unwrap();
+        match &*reader {
+            Ok(reader) => Ok(reader.remote_max_size),
+            Err(error) => Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string())),
+        }
     }
 }
 
