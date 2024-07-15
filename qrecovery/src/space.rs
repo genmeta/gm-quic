@@ -98,9 +98,9 @@ impl<T> RawSpace<T> {
         let ack_frame = self.rcvd_pkt_records.gen_ack_frame_util(ack_pkt?, remain);
         buf.put_ack_frame(&ack_frame);
 
-        // TODO: bug fix, ack frame do not need record write
         let written = remain - buf.remaining_mut();
-        limit.record_write(written);
+        // ack frame do not need record write
+        // limit.record_write(written);
         Some((ack_frame, written))
     }
 }

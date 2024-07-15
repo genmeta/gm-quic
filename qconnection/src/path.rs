@@ -10,15 +10,13 @@ use anti_amplifier::ANTI_FACTOR;
 use futures::Future;
 use observer::{ConnectionObserver, PathObserver};
 use qbase::{
-    cid::{ConnectionId},
+    cid::ConnectionId,
     frame::{PathChallengeFrame, PathResponseFrame},
     token::ResetToken,
-    util::{TransportLimit},
+    util::TransportLimit,
 };
 use qcongestion::{congestion::ArcCC, CongestionControl};
-use qrecovery::{
-    space::{Epoch, ReliableTransmit},
-};
+use qrecovery::space::{Epoch, ReliableTransmit};
 use qudp::ArcUsc;
 
 pub mod anti_amplifier;

@@ -387,16 +387,16 @@ impl RawConnection {
                 ack_pkt,
             );
 
+            if pkt_size == 0 && offset == 0 {
+                break;
+            }
+
             if offset < MSS && pkt_size != 0 {
                 offset += pkt_size;
             } else {
                 buffers.push(buffer);
                 buffer = vec![0u8; MSS];
                 offset = 0;
-            }
-
-            if pkt_size == 0 && offset == 0 {
-                break;
             }
         }
     }
@@ -422,16 +422,16 @@ impl RawConnection {
                 ack_pkt,
             );
 
+            if pkt_size == 0 && offset == 0 {
+                break;
+            }
+
             if offset < MSS && pkt_size != 0 {
                 offset += pkt_size;
             } else {
                 buffers.push(buffer);
                 buffer = vec![0u8; MSS];
                 offset = 0;
-            }
-
-            if pkt_size == 0 && offset == 0 {
-                break;
             }
         }
     }
