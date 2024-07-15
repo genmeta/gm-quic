@@ -227,12 +227,12 @@ impl Deref for ArcFlowController {
 
 impl ArcFlowController {
     /// Asynchronously waits for an increase in the receive window limit.
-    pub async fn incr_limit(&self) -> Option<u64> {
-        IncrLimit(self.clone()).await
+    pub fn incr_limit(&self) -> IncrLimit {
+        IncrLimit(self.clone())
     }
 }
 
-struct IncrLimit(ArcFlowController);
+pub struct IncrLimit(ArcFlowController);
 
 impl Future for IncrLimit {
     type Output = Option<u64>;
