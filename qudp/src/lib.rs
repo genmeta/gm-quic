@@ -10,9 +10,15 @@ use socket2::{Domain, Socket, Type};
 use tokio::io::Interest;
 use unix::DEFAULT_TTL;
 mod msg;
-mod unix;
+pub mod unix;
 
-#[derive(Clone)]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub const BATCH_SIZE: usize = 64;
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub const BATCH_SIZE: usize = 1;
+
+#[derive(Clone, Copy)]
 pub struct PacketHeader {
     pub src: SocketAddr,
     pub dst: SocketAddr,
@@ -143,16 +149,12 @@ impl ArcUsc {
         hdrs: &mut [PacketHeader],
         cx: &mut Context,
     ) -> Poll<io::Result<usize>> {
-        loop {
-            let controller = self.0.lock().unwrap();
-            ready!(controller.io.poll_recv_ready(cx))?;
-            if let Ok(res) = controller
-                .io
-                .try_io(Interest::READABLE, || controller.recvmsg(bufs, hdrs))
-            {
-                return Poll::Ready(Ok(res));
-            }
-        }
+        let controller = self.0.lock().unwrap();
+        ready!(controller.io.poll_recv_ready(cx))?;
+        let ret = controller
+            .io
+            .try_io(Interest::READABLE, || controller.recvmsg(bufs, hdrs));
+        Poll::Ready(ret)
     }
 
     pub fn ttl(&self) -> u8 {

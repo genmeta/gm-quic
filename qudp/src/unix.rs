@@ -5,18 +5,12 @@ use socket2::SockAddr;
 use crate::{
     io,
     msg::{Encoder, Message},
-    Gro, Gso, Io, OffloadStatus, PacketHeader, UdpSocketController,
+    Gro, Gso, Io, OffloadStatus, PacketHeader, UdpSocketController, BATCH_SIZE,
 };
 
 const OPTION_ON: libc::c_int = 1;
 const OPTION_OFF: libc::c_int = 0;
 pub(super) const DEFAULT_TTL: libc::c_int = 64;
-
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-pub(crate) const BATCH_SIZE: usize = 64;
-
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-pub(crate) const BATCH_SIZE: usize = 1;
 
 #[cfg(any(
     target_os = "linux",
