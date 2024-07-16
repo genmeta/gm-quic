@@ -28,7 +28,7 @@ use qbase::{
 };
 use qcongestion::congestion::MSS;
 use qrecovery::space::{ArcSpace, ArcSpaces, Epoch, ReliableTransmit};
-use qudp::{ArcUsc, PacketHeader};
+use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 use state::{ArcConnectionState, ConnectionState};
 use tokio::sync::{mpsc, Notify};
@@ -237,13 +237,14 @@ impl RawConnection {
     }
 
     #[inline]
-    pub fn spawn_path_send(&self, path: ArcPath, path_way: Pathway) {
+    pub fn spawn_path_send(&self, path: ArcPath, pathway: Pathway) {
         let spaces = self.spaces.clone();
         let initai_key = self.initial_keys.clone();
         let handshake_key = self.handshake_keys.clone();
         let one_rtt_keys = self.one_rtt_keys.clone();
         let cid_registry = self.cid_registry.clone();
         let spin = self.spin;
+        let conn_state = self.state.clone();
 
         tokio::spawn(async move {
             let predicate = |_: &ConnectionId| true;
@@ -264,17 +265,15 @@ impl RawConnection {
                 }
             };
 
-            loop {
+            let send_once = || async {
                 let mut guard = path.poll_send().await;
                 let mut buffers = Vec::new();
 
-                for epoch in Epoch::iter() {
-                    let space = spaces.reliable_space(*epoch);
-                    if space.is_none() {
+                for &epoch in Epoch::iter() {
+                    let Some(space) = spaces.reliable_space(epoch) else {
                         continue;
-                    }
-                    let space = space.unwrap();
-                    let ack_pkt = guard.ack_pkts[*epoch as usize];
+                    };
+                    let ack_pkt = guard.ack_pkts[epoch as usize];
                     match epoch {
                         Epoch::Initial => {
                             let hdr = LongHeaderBuilder::with_cid(guard.dcid, scid)
@@ -302,13 +301,13 @@ impl RawConnection {
                             );
                         }
                         Epoch::Data => {
-                            let header = OneRttHeader {
+                            let hdr = OneRttHeader {
                                 spin,
                                 dcid: guard.dcid,
                             };
                             RawConnection::read_short_header_space(
                                 &mut buffers,
-                                header,
+                                hdr,
                                 one_rtt_keys.clone(),
                                 &space,
                                 &mut guard.transport_limit,
@@ -318,7 +317,7 @@ impl RawConnection {
                     };
                 }
 
-                let (src, dst) = match &path_way {
+                let (src, dst) = match &pathway {
                     Pathway::Direct { local, remote } => (local, remote),
                     Pathway::Relay { local, remote } => {
                         // todo: append relay hdr
@@ -326,7 +325,7 @@ impl RawConnection {
                     }
                 };
 
-                let hdr = PacketHeader {
+                let hdr = qudp::PacketHeader {
                     src: *src,
                     dst: *dst,
                     ttl: 64,
@@ -349,6 +348,10 @@ impl RawConnection {
                         error!("send failed: {}", e);
                     }
                 }
+            };
+
+            while conn_state.get_state() <= ConnectionState::Closing {
+                send_once().await;
             }
         });
     }
@@ -1252,7 +1255,9 @@ pub fn new(
                     Error::new_with_default_fty(ErrorKind::Application, "")
                 }
                 ConnectionState::HandshakeDone => error,
-                ConnectionState::Closing | ConnectionState::Draining => unreachable!(),
+                ConnectionState::Closing | ConnectionState::Draining => {
+                    unreachable!()
+                }
             };
 
             let ccf = ConnectionCloseFrame::from(error.clone());
