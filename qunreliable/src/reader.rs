@@ -44,7 +44,9 @@ impl DatagramReader {
     ) -> Result<(), Error> {
         let reader = &mut self.0.lock().unwrap();
         let inner = reader.deref_mut();
-        let Ok(reader) = inner else { unreachable!() };
+        let Ok(reader) = inner else {
+            return Ok(());
+        };
         if (frame.encoding_size() + data.len()) > reader.local_max_size {
             return Err(Error::new(
                 ErrorKind::ProtocolViolation,
