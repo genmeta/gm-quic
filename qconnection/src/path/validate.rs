@@ -173,14 +173,13 @@ impl Validator {
     /// Even if it is retransmitted, as long as the verification is successful once
     /// within the specified timeout, the final verification is guaranteed
     /// to be successful.
-    pub fn set_timeout(&self) {
+    pub fn set_timeout(&self, timeout: Duration) {
         tokio::spawn({
             let state = self.state.clone();
             let mut validator = self.clone();
 
-            // TODO: 超时时间应该设置为 推荐使用的值是当前PTO和新路径PTO（使用《QUIC恢复》中定义的kInitialRtt）中的较大值的三倍。
             async move {
-                if tokio::time::timeout(Duration::from_millis(100), validator.poll_state())
+                if tokio::time::timeout(timeout, validator.poll_state())
                     .await
                     .is_err()
                 {
@@ -293,7 +292,7 @@ mod tests {
     #[tokio::test]
     async fn test_validator_challenge() {
         let mut validator = Validator::default();
-        validator.set_timeout();
+        validator.set_timeout(Duration::from_millis(100));
         {
             validator.challenge();
             let state = validator.state.lock().unwrap();
@@ -339,7 +338,7 @@ mod tests {
     #[tokio::test]
     async fn test_validator_write_challenge() {
         let validator = Validator::default();
-        validator.set_timeout();
+        validator.set_timeout(Duration::from_millis(100));
         let mut buf = [0; 1024];
         let mut limit = TransportLimit::new(Some(1024), 1024, 0);
         let bytes_written = validator.write_challenge(&mut limit, &mut buf);
@@ -349,7 +348,7 @@ mod tests {
     #[tokio::test]
     async fn test_validator_on_challenge_sent() {
         let validator = Validator::default();
-        validator.set_timeout();
+        validator.set_timeout(Duration::from_millis(100));
         validator.on_challenge_sent();
         let state = validator.state.lock().unwrap();
         assert!(matches!(*state, ValidateState::Challenging(_, true)));
@@ -358,7 +357,7 @@ mod tests {
     #[tokio::test]
     async fn test_validator_timeout() {
         let validator = Validator::default();
-        validator.set_timeout();
+        validator.set_timeout(Duration::from_millis(100));
         validator.on_challenge_sent();
         tokio::time::sleep(Duration::from_millis(150)).await;
         let state = validator.state.lock().unwrap();
@@ -371,7 +370,7 @@ mod tests {
     async fn test_validator_challenge_with_failure() {
         let validator = Validator::default();
         validator.on_challenge_sent();
-        validator.set_timeout();
+        validator.set_timeout(Duration::from_millis(100));
         tokio::time::sleep(Duration::from_millis(150)).await;
         {
             let state = validator.state.lock().unwrap();
@@ -383,7 +382,7 @@ mod tests {
     #[tokio::test]
     async fn test_validator_timeout_with_success() {
         let validator = Validator::default();
-        validator.set_timeout();
+        validator.set_timeout(Duration::from_millis(100));
         tokio::spawn({
             let mut validator = validator.clone();
             async move {
@@ -403,7 +402,7 @@ mod tests {
     #[tokio::test]
     async fn test_validator_poll_state() {
         let mut validator = Validator::default();
-        validator.set_timeout();
+        validator.set_timeout(Duration::from_millis(100));
         validator.challenge();
         let challenge = match *validator.state.lock().unwrap() {
             ValidateState::Challenging(challenge, _) => challenge,
@@ -417,7 +416,7 @@ mod tests {
     #[should_panic]
     fn test_validator_on_challenge_sent_with_success() {
         let mut validator = Validator::default();
-        validator.set_timeout();
+        validator.set_timeout(Duration::from_millis(100));
         let challenge = match *validator.state.lock().unwrap() {
             ValidateState::Challenging(challenge, _) => challenge,
             _ => panic!("unexpected state"),
@@ -429,7 +428,7 @@ mod tests {
     #[tokio::test]
     async fn test_validator_may_loss() {
         let mut validator = Validator::default();
-        validator.set_timeout();
+        validator.set_timeout(Duration::from_millis(100));
         validator.may_loss();
         {
             let state = validator.state.lock().unwrap();
@@ -451,7 +450,7 @@ mod tests {
     #[tokio::test]
     async fn test_validator_validated() {
         let mut validator = Validator::default();
-        validator.set_timeout();
+        validator.set_timeout(Duration::from_millis(100));
         validator.validated();
         tokio::time::sleep(Duration::from_millis(150)).await;
         let state = validator.state.lock().unwrap();
@@ -461,7 +460,7 @@ mod tests {
     #[tokio::test]
     async fn test_validator_on_response() {
         let mut validator = Validator::default();
-        validator.set_timeout();
+        validator.set_timeout(Duration::from_millis(100));
         validator.challenge();
         let challenge = match *validator.state.lock().unwrap() {
             ValidateState::Challenging(challenge, _) => challenge,

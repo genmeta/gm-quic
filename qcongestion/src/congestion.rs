@@ -255,7 +255,7 @@ where
             return;
         }
 
-        if let Some(t) = self.get_pto_time_and_space().0 {
+        if let Some(t) = self.get_pto_timeout() {
             self.loss_timer.update(t);
         }
     }
@@ -281,7 +281,7 @@ where
                 self.pto_space = Some(Epoch::Initial);
             }
         } else {
-            let (timeout, _) = self.get_pto_time_and_space();
+            let timeout = self.get_pto_timeout();
             if timeout.is_some() {
                 self.pto_space = Some(Epoch::Data);
             }
@@ -308,23 +308,24 @@ where
         (time, space)
     }
 
-    fn get_pto_time_and_space(&self) -> (Option<Instant>, Epoch) {
+    fn get_pto_time(&self, epoch: Epoch) -> Duration {
         let smoothed_rtt = self.rtt.smoothed_rtt();
         let rttvar = self.rtt.rttvar();
-
         let mut duration = smoothed_rtt + std::cmp::max(K_GRANULARITY, rttvar * 4);
+        // 握手已完成, 则应该考虑 max_ack_delay
+        if epoch == Epoch::Data && self.connection_observer.is_handshake_done() {
+            duration += self.max_ack_delay
+        }
+        duration * 2_u32.pow(self.pto_count)
+    }
 
+    fn get_pto_timeout(&self) -> Option<Instant> {
+        let mut duration = self.get_pto_time(Epoch::Initial);
         if self.no_ack_eliciting_in_flight() {
-            let eoch = if self.connection_observer.has_handshake_keys() {
-                Epoch::Handshake
-            } else {
-                Epoch::Initial
-            };
-            return (Some(Instant::now() + duration), eoch);
+            return Some(Instant::now() + duration);
         }
 
         let mut pto_time = None;
-        let mut pto_space = Epoch::Initial;
         for space in Epoch::iter() {
             if self.time_of_last_ack_eliciting_packet[*space].is_none() {
                 continue;
@@ -333,21 +334,17 @@ where
                 // An endpoint MUST NOT set its PTO timer for the Application Data
                 // packet number space until the handshake is confirmed
                 if !self.connection_observer.is_handshake_done() {
-                    return (pto_time, pto_space);
+                    return pto_time;
                 }
-
                 duration += self.max_ack_delay * 2_u32.pow(self.pto_count);
             }
-
             let new_time = self.time_of_last_ack_eliciting_packet[*space].unwrap() + duration;
             if pto_time.is_none() || new_time < pto_time.unwrap() {
                 pto_time = Some(new_time);
-                pto_space = *space;
             }
         }
-        (pto_time, pto_space)
+        pto_time
     }
-
     fn remove_loss_packets(&mut self, space: Epoch, now: Instant) -> Vec<SentPkt> {
         assert!(self.largest_acked_packet[space].is_some());
         let largest_acked = self.largest_acked_packet[space].unwrap();
@@ -569,9 +566,8 @@ where
         Poll::Pending
     }
 
-    fn pto_time(&self) -> Option<Instant> {
-        let gurad = self.0.lock().unwrap();
-        gurad.get_pto_time_and_space().0
+    fn get_pto_time(&self, epoch: Epoch) -> Duration {
+        self.0.lock().unwrap().get_pto_time(epoch)
     }
 }
 
