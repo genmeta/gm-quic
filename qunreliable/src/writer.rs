@@ -44,7 +44,7 @@ impl DatagramWriter {
     /// # Returns
     /// Return the [`DatagramFrame`] read and how many bytes have been written to the buffer.
     ///
-    /// Returns [`None`] if there is no pending data written by Application layer, or the buffer is not big enough to
+    /// Return [`None`] if there is no pending data written by Application layer, or the buffer is not big enough to
     /// contain the datagram.
     ///
     pub(super) fn try_read_datagram(
@@ -154,7 +154,7 @@ impl DatagramWriter {
     ///
     /// # Returns
     ///
-    /// Returns [`Ok`] when the new size is successfully set.
+    /// Return [`Ok`] when the new size is successfully set.
     ///
     /// The value may have been set by a previous connection. This method will return [`Err`] when the new size
     /// is less than the previous size, or the current connection is closing or already closed.
@@ -179,7 +179,7 @@ impl DatagramWriter {
     ///
     /// # Returns
     ///
-    /// Returns [`Err`] when the connection is closing or already closed
+    /// Return [`Err`] when the connection is closing or already closed
     pub fn get_remote_max_datagram_frame_size(&self) -> io::Result<usize> {
         let reader = self.0.lock().unwrap();
         match &*reader {

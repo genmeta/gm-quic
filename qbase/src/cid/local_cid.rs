@@ -50,7 +50,7 @@ impl RawLocalCids {
     }
 
     /// Issue a new unique connection ID with the given length.
-    /// Returns a new connection ID frame, which must be sent to the peer.
+    /// Return a new connection ID frame, which must be sent to the peer.
     pub fn poll_issue_cid<P>(
         &mut self,
         cx: &mut Context<'_>,

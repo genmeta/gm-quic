@@ -93,7 +93,7 @@ pub struct Credit<'a> {
 }
 
 impl Credit<'_> {
-    /// Returns the available amount of data that can be sent.
+    /// Return the available amount of data that can be sent.
     pub fn available(&self) -> usize {
         self.amount
     }
