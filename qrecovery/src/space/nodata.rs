@@ -71,6 +71,7 @@ impl<K: NoDataSpaceKind> ArcSpace<NoDataSpace<K>> {
         }))
     }
 }
+
 impl<K: NoDataSpaceKind> ReliableTransmit for ArcSpace<NoDataSpace<K>> {
     fn read(
         &self,
@@ -90,7 +91,7 @@ impl<K: NoDataSpaceKind> ReliableTransmit for ArcSpace<NoDataSpace<K>> {
             return (pn, encoded_pn.size(), 0);
         }
 
-        if let Some((frame, n)) = self.read_ack_frame_until(limit, buf, ack_pkt) {
+        if let Some((frame, n)) = self.read_ack_frame_until(buf, ack_pkt) {
             send_guard.record_ack_frame(frame);
             buf = &mut buf[n..];
         }
@@ -154,6 +155,10 @@ impl<K: NoDataSpaceKind> ReliableTransmit for ArcSpace<NoDataSpace<K>> {
     fn probe_timeout(&self) {
         // 握手期间 PTO 超时，重发 INITIAL 包或 HANDSHAKE 包
         todo!()
+    }
+
+    fn indicate_ack(&self, pn: u64) {
+        self.0.rcvd_pkt_records.write().inactivate(pn);
     }
 }
 

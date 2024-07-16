@@ -1,18 +1,21 @@
 use std::{
     net::SocketAddr,
+    pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll},
-    time::Duration,
+    task::{ready, Context, Poll},
+    time::{Duration, Instant},
 };
 
 use anti_amplifier::ANTI_FACTOR;
+use futures::{Future, FutureExt};
 use observer::{ConnectionObserver, PathObserver};
 use qbase::{
-    cid::ConnectionId,
+    cid::{ArcCidCell, ConnectionId},
     frame::{PathChallengeFrame, PathResponseFrame},
     util::TransportLimit,
 };
-use qcongestion::congestion::ArcCC;
+use qcongestion::{congestion::ArcCC, CongestionControl};
+use qrecovery::space::Epoch;
 use qudp::ArcUsc;
 
 pub mod anti_amplifier;
@@ -22,18 +25,17 @@ pub mod validate;
 pub use validate::{Transponder, Validator};
 
 pub mod observer;
-pub use observer::{AckObserver, LossObserver};
 
-use crate::Sendmsg;
+use crate::{controller::ArcFlowController, Sendmsg};
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct RelayAddr {
-    agent: SocketAddr, // 代理人
-    addr: SocketAddr,
+    pub agent: SocketAddr, // 代理人
+    pub addr: SocketAddr,
 }
 
 /// 无论哪种Pathway，socket都必须绑定local地址
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Pathway {
     Direct {
         local: SocketAddr,
@@ -83,7 +85,7 @@ pub struct RawPath {
     // will not be able to send anything on the new path until the peer provides one
     // 所以，这里应是一个对方的连接id管理器，可以异步地获取一个连接id，旧的连接id也会被废弃重新分配，
     // 是动态变化的。(暂时用Option<ConnectionId>来表示)
-    peer_cid: Option<ConnectionId>,
+    peer_cid: ArcCidCell,
 
     // 拥塞控制器。另外还有连接级的流量控制、流级别的流量控制，以及抗放大攻击
     // 但这只是正常情况下。当连接处于Closing状态时，庞大的拥塞控制器便不再适用，而是简单的回应ConnectionCloseFrame。
@@ -100,17 +102,25 @@ pub struct RawPath {
     validator: Validator,
     // 不包括被动收到PathRequest，响应Response，这是另外一个单独的控制，分为无挑战/有挑战未响应/响应中，响应被确认
     transponder: Transponder,
+
+    flow_ctrl: ArcFlowController,
 }
 
 impl RawPath {
-    fn new(usc: ArcUsc, max_ack_delay: Duration, connection_observer: ConnectionObserver) -> Self {
+    fn new(
+        usc: ArcUsc,
+        max_ack_delay: Duration,
+        connection_observer: ConnectionObserver,
+        peer_cid: ArcCidCell,
+        flow_ctrl: ArcFlowController,
+    ) -> Self {
         use qcongestion::congestion::CongestionAlgorithm;
 
         let anti_amplifier = ArcAntiAmplifier::default();
         let path_observer = PathObserver::new(anti_amplifier.clone());
         Self {
             usc,
-            peer_cid: None,
+            peer_cid,
             validator: Validator::default(),
             transponder: Transponder::default(),
             anti_amplifier: Some(anti_amplifier),
@@ -120,6 +130,7 @@ impl RawPath {
                 connection_observer,
                 path_observer,
             ),
+            flow_ctrl,
         }
     }
 }
@@ -132,11 +143,15 @@ impl ArcPath {
         usc: ArcUsc,
         max_ack_delay: Duration,
         connection_observer: ConnectionObserver,
+        peer_cid: ArcCidCell,
+        flow_ctrl: ArcFlowController,
     ) -> Self {
         Self(Arc::new(Mutex::new(RawPath::new(
             usc,
             max_ack_delay,
             connection_observer,
+            peer_cid,
+            flow_ctrl,
         ))))
     }
 
@@ -273,18 +288,115 @@ impl ArcPath {
     pub fn set_path_challenge_timeout(&self) {
         self.0.lock().unwrap().validator.set_timeout()
     }
+
+    /// get connection controller pto time
+    pub fn pto_time(&self) -> Option<Instant> {
+        self.0.lock().unwrap().cc.pto_time()
+    }
+
+    pub fn poll_may_loss(&self) -> LossState {
+        LossState(self.clone())
+    }
+
+    pub fn poll_indicate_ack(&self) -> SlideState {
+        SlideState(self.clone())
+    }
+
+    pub fn poll_probe_timeout(&self) -> PtoState {
+        PtoState(self.clone())
+    }
+
+    pub fn poll_send(&self) -> SendState {
+        SendState(self.clone())
+    }
+
+    pub fn poll_state(&self) -> impl Future<Output = bool> {
+        let guard = self.0.lock().unwrap();
+        guard.validator.poll_state()
+    }
+}
+
+pub struct SendGuard {
+    pub transport_limit: TransportLimit,
+    pub usc: ArcUsc,
+    pub dcid: ConnectionId,
+    pub ack_pkts: [Option<(u64, Instant)>; 3],
+}
+
+pub struct LossState(ArcPath);
+
+impl Future for LossState {
+    type Output = (Epoch, Vec<u64>);
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let guard = &self.get_mut().0 .0.lock().unwrap();
+        guard.cc.poll_lost(cx)
+    }
+}
+
+pub struct SlideState(ArcPath);
+
+impl Future for SlideState {
+    type Output = (Epoch, Vec<u64>);
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let guard = &self.get_mut().0 .0.lock().unwrap();
+        guard.cc.poll_indicate_ack(cx)
+    }
+}
+
+pub struct PtoState(ArcPath);
+
+impl Future for PtoState {
+    type Output = Epoch;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let guard = &self.get_mut().0 .0.lock().unwrap();
+        guard.cc.poll_probe_timeout(cx)
+    }
+}
+
+pub struct SendState(ArcPath);
+
+impl Future for SendState {
+    type Output = SendGuard;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let guard = &mut self.get_mut().0 .0.lock().unwrap();
+        let congestion_control = ready!(guard.cc.poll_send(cx));
+        let anti_amplification = if let Some(anti_amplifier) = guard.anti_amplifier.as_ref() {
+            ready!(anti_amplifier.poll_get_credit(cx))
+        } else {
+            None
+        };
+
+        let peer_cid = ready!(guard.peer_cid.poll_unpin(cx));
+        let flow_control = ready!(guard.flow_ctrl.sender.poll_apply(cx)).available();
+
+        let mut ack_pkts = [None; 3];
+        for epoch in Epoch::iter() {
+            let ack_pkt = guard.cc.need_ack(*epoch);
+            ack_pkts[*epoch as usize] = ack_pkt;
+        }
+        let send_guard = SendGuard {
+            transport_limit: TransportLimit::new(
+                anti_amplification,
+                congestion_control,
+                flow_control,
+            ),
+            usc: guard.usc.clone(),
+            dcid: peer_cid,
+            ack_pkts,
+        };
+        Poll::Ready(send_guard)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        array,
-        net::{IpAddr, Ipv4Addr},
-    };
+    use std::net::{IpAddr, Ipv4Addr};
 
     use futures::task::noop_waker_ref;
-    use observer::{HandShakeObserver, PtoObserver};
-    use qrecovery::reliable::rcvdpkt::ArcRcvdPktRecords;
+    use observer::HandShakeObserver;
 
     use super::*;
     use crate::connection::state::ArcConnectionState;
@@ -294,20 +406,16 @@ mod tests {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
         let usc = ArcUsc::new(addr);
         let max_ack_delay = Duration::from_millis(100);
-        let ack_observer = AckObserver::new(array::from_fn(|_| ArcRcvdPktRecords::default()));
 
-        let (loss_observer, _loss_rx) = LossObserver::new();
+        let flow_ctrl = ArcFlowController::default();
+        let peer_cid = ArcCidCell::default();
         let handshake_observer = HandShakeObserver::new(ArcConnectionState::new());
-        let (pto_observer, _timeout_rx) = PtoObserver::new();
         ArcPath::new(
             usc,
             max_ack_delay,
-            ConnectionObserver {
-                ack_observer,
-                loss_observer,
-                handshake_observer,
-                pto_observer,
-            },
+            ConnectionObserver { handshake_observer },
+            peer_cid,
+            flow_ctrl,
         )
     }
 

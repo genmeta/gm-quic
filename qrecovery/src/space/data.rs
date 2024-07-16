@@ -86,7 +86,7 @@ impl ReliableTransmit for ArcSpace<DataSpace> {
             return (pn, encoded_pn.size(), 0);
         }
 
-        if let Some((frame, n)) = self.read_ack_frame_until(limit, buf, ack_pkt) {
+        if let Some((frame, n)) = self.read_ack_frame_until(buf, ack_pkt) {
             send_guard.record_ack_frame(frame);
             buf = &mut buf[n..];
         }
@@ -162,5 +162,9 @@ impl ReliableTransmit for ArcSpace<DataSpace> {
         // TODO: pto 超时，
         // 1. 有数据发送，发送新数据
         // 2. 没有数据发送，发送 ping 帧
+    }
+
+    fn indicate_ack(&self, pn: u64) {
+        self.rcvd_pkt_records.write().inactivate(pn);
     }
 }

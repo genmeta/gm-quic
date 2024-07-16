@@ -3,8 +3,8 @@ use std::{
     time::Instant,
 };
 
-use congestion::Epoch;
 use qbase::frame::AckFrame;
+use qrecovery::space::Epoch;
 
 pub mod bbr;
 pub mod congestion;
@@ -57,43 +57,22 @@ pub trait CongestionControl {
     /// 每当收到一个数据包，记录下，根据这些记录，决定下次发包时，是否需要带上AckFrame，作用于poll_send的返回值中
     /// 另外，这个记录不是持续增长的，得向前滑动，靠on_acked(pn)及该pn中有AckFrame记录驱动滑动
     fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_elicition: bool);
-}
 
-pub trait ObserveLoss {
     /// 当收到AckFrame，largest_acked_pn都被确认了，那往前数3个没被ack的包，可判定为丢失
-    /// 前3个数据包，如果超时时间过长，超过了PTO，也应判定为丢包，调用该函数，通知丢包观察者
-    ///（丢包观察者可能是可靠空间的发送端，用于ARQ丢包重传机制，也可能是一个channel的sender）
-    fn may_loss_pkt(&self, space: Epoch, pn: u64);
-}
+    /// 前3个数据包，如果超时时间过长，超过了PTO，也应判定为丢包, 返回 Ready 以及对应丢包的 space 和 pn
+    fn poll_lost(&self, cx: &mut Context<'_>) -> Poll<(Epoch, Vec<u64>)>;
 
-/// 如果一个类型实现了SlideWindow，其inactivate用于标记淘汰窗口左边的元素。
-/// 那Drop时，就会自动检查左边连续被淘汰的元素，将其滑过去。
-pub trait SlideWindow {
-    fn inactivate(&mut self, idx: u64);
-}
-
-pub trait ObserveAck {
-    type Guard<'a>: SlideWindow
-    where
-        Self: 'a;
     /// 收包记录作为滑动窗口也要向前滑动；当一个Path的收包记录产生的AckFrame被对方收到时，那这个Path过往收到的包
     /// 都不必记录了，可以淘汰。
     /// 需知，一个Path收到的包不需要被记录，不代表其他Path的包也不需被记录。只有等各个path过去接收的包都不需要被记录，
     /// 那么Space级别的包号连续的不被记录的，才可以向前滑动
-    /// #[deprecated]
-    /// fn on_ack_be_acked(&self, space: Epoch, pn: u64);
+    fn poll_indicate_ack(&self, cx: &mut Context<'_>) -> Poll<(Epoch, Vec<u64>)>;
 
-    /// 其实用函数作用命名，可以如下命名，感觉更好一些
-    /// 当发送的AckFrame被确认，那该AckFrame中的largest之前的，该path接收的包号，
-    /// 都可以淘汰/失活了，不需再出现在后续的AckFrame中，即调用此函数通知外部观察者
-    /// fn inactivate_rcvd_record(&self, space: Epoch, pn: u64);
+    /// probe timeout 需通知 space 进行发包
+    fn poll_probe_timeout(&self, cx: &mut Context<'_>) -> Poll<Epoch>;
 
-    fn ack_guard(&self, space: Epoch) -> Self::Guard<'_>;
-}
-
-pub trait ObservePto {
-    /// probe timeout，通外部观察着进行发包知观察者
-    fn probe_timeout(&self, space: Epoch);
+    /// 获取当前 path 的 pto time
+    fn pto_time(&self) -> Option<Instant>;
 }
 
 pub trait ObserveHandshake {

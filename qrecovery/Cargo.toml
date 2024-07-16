@@ -16,3 +16,4 @@ async-lock = { workspace = true }
 deref-derive = { workspace = true }
 rand = { workspace = true }
 log = { workspace = true }
+enum_dispatch = { workspace = true }

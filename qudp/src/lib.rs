@@ -1,6 +1,5 @@
 use std::{
-    io,
-    io::{IoSlice, IoSliceMut},
+    io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
     sync::{Arc, Mutex},
     task::{ready, Context, Poll},

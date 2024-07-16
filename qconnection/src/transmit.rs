@@ -1,11 +1,9 @@
-use std::{fmt::Debug, ops::Deref};
+use std::{fmt::Debug, ops::Deref, time::Instant};
 
 use bytes::BufMut;
 use qbase::{
     packet::{
-        header::{
-            Encode, GetType, HasLength, LongHeader, Write, WriteLongHeader, WriteOneRttHeader,
-        },
+        header::{Encode, GetType, LongHeader, Write, WriteLongHeader, WriteOneRttHeader},
         keys::{ArcKeys, ArcOneRttKeys},
         LongClearBits, OneRttHeader, ShortClearBits,
     },
@@ -29,15 +27,16 @@ pub enum FillPolicy {
 
 pub fn read_space_and_encrypt<T>(
     buffer: &mut [u8],
-    header: LongHeader<T>,
+    header: &LongHeader<T>,
     fill_policy: FillPolicy,
     keys: ArcKeys,
-    space: impl ReliableTransmit,
+    space: &impl ReliableTransmit,
     transport_limit: &mut TransportLimit,
+    ack_pkt: Option<(u64, Instant)>,
 ) -> (usize, usize)
 where
     for<'a> &'a mut [u8]: Write<T>,
-    LongHeader<T>: HasLength + GetType + Encode,
+    LongHeader<T>: GetType + Encode,
 {
     let keys = match keys.get_local_keys() {
         Some(keys) => keys,
@@ -47,8 +46,7 @@ where
     let max_header_size = header.size() + 2; // 2 bytes reserved for packet length, max 16KB
     let (mut hdr_buf, body_buf) = buffer.split_at_mut(max_header_size);
 
-    // TODO: Path决定是否该发送AckFrame了，如果要发送最后一个参数不再为None
-    let (pn, pn_size, mut body_len) = space.read(transport_limit, body_buf, None);
+    let (pn, pn_size, mut body_len) = space.read(transport_limit, body_buf, ack_pkt);
     if body_len == 0 {
         // nothing to send
         return (0, 0);
@@ -70,19 +68,19 @@ where
                 // padding the header from the second byte. Do the same when sending packets.
                 offset = 1;
                 hdr_buf = &mut hdr_buf[1..];
-                hdr_buf.put_long_header(&header);
+                hdr_buf.put_long_header(header);
                 hdr_buf.put_varint(&VarInt::from_u64(body_len as u64).unwrap());
             }
             FillPolicy::Redundancy => {
                 // Redundant encoding VarInt: If it is less than 64 bytes, use 2 bytes to encode the
                 // length. The first byte is 0x40, meaning VarInt is 2 bytes long, and the second byte is the actual length.
-                hdr_buf.put_long_header(&header);
+                hdr_buf.put_long_header(header);
                 hdr_buf.put_u8(0x40);
                 hdr_buf.put_u8(body_len as u8);
             }
         }
     } else {
-        hdr_buf.put_long_header(&header);
+        hdr_buf.put_long_header(header);
         hdr_buf.put_varint(&VarInt::from_u64(body_len as u64).unwrap());
     }
     debug_assert!(hdr_buf.is_empty());
@@ -117,10 +115,11 @@ where
 
 pub fn read_1rtt_data_and_encrypt(
     buffer: &mut [u8],
-    header: OneRttHeader,
+    header: &OneRttHeader,
     keys: ArcOneRttKeys,
-    space: impl ReliableTransmit,
+    space: &impl ReliableTransmit,
     transport_limit: &mut TransportLimit,
+    ack_pkt: Option<(u64, Instant)>,
 ) -> usize {
     let (hpk, pk) = match keys.get_local_keys() {
         Some(keys) => keys,
@@ -130,13 +129,12 @@ pub fn read_1rtt_data_and_encrypt(
     let header_size = header.size();
     let (mut hdr_buf, body_buf) = buffer.split_at_mut(header_size);
 
-    // TODO: 这里path要决定是否反馈AckFrame
-    let (pn, pn_size, body_len) = space.read(transport_limit, body_buf, None);
+    let (pn, pn_size, body_len) = space.read(transport_limit, body_buf, ack_pkt);
     if body_len == 0 {
         return 0;
     }
 
-    hdr_buf.put_one_rtt_header(&header);
+    hdr_buf.put_one_rtt_header(header);
     debug_assert!(hdr_buf.is_empty());
 
     let header_and_pn_size = header_size + pn_size;
