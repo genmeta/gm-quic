@@ -1,3 +1,5 @@
+pub mod receive;
+
 use std::{fmt::Debug, ops::Deref, time::Instant};
 
 use bytes::BufMut;
@@ -10,6 +12,7 @@ use qbase::{
     util::TransportLimit,
     varint::{VarInt, WriteVarInt},
 };
+use qcongestion::congestion::MSS;
 use qrecovery::space::ReliableTransmit;
 
 /// In order to fill the packet efficiently and reduce unnecessary copying, the data of each
@@ -158,6 +161,74 @@ pub fn read_1rtt_data_and_encrypt(
         .unwrap();
 
     pkt_size
+}
+pub fn read_long_header_space<T>(
+    buffers: &mut Vec<Vec<u8>>,
+    header: &LongHeader<T>,
+    fill_policy: FillPolicy,
+    keys: ArcKeys,
+    space: &impl ReliableTransmit,
+    limit: &mut TransportLimit,
+    ack_pkt: Option<(u64, Instant)>,
+) where
+    for<'a> &'a mut [u8]: Write<T>,
+    LongHeader<T>: GetType + Encode,
+{
+    let mut buffer = vec![0u8; MSS];
+    let mut offset = 0;
+    while limit.available() > 0 {
+        let (_, pkt_size) = read_space_and_encrypt(
+            &mut buffer[offset..],
+            header,
+            fill_policy,
+            keys.clone(),
+            space,
+            limit,
+            ack_pkt,
+        );
+        if pkt_size == 0 && offset == 0 {
+            break;
+        }
+        if offset < MSS && pkt_size != 0 {
+            offset += pkt_size;
+        } else {
+            buffers.push(buffer);
+            buffer = vec![0u8; MSS];
+            offset = 0;
+        }
+    }
+}
+
+pub fn read_short_header_space(
+    buffers: &mut Vec<Vec<u8>>,
+    header: OneRttHeader,
+    keys: ArcOneRttKeys,
+    space: &impl ReliableTransmit,
+    limit: &mut TransportLimit,
+    ack_pkt: Option<(u64, Instant)>,
+) {
+    let mut buffer = vec![0u8; MSS];
+    let mut offset = 0;
+    while limit.available() > 0 {
+        let pkt_size = read_1rtt_data_and_encrypt(
+            &mut buffer[offset..],
+            &header,
+            keys.clone(),
+            space,
+            limit,
+            ack_pkt,
+        );
+        if pkt_size == 0 && offset == 0 {
+            break;
+        }
+        if offset < MSS && pkt_size != 0 {
+            offset += pkt_size;
+        } else {
+            buffers.push(buffer);
+            buffer = vec![0u8; MSS];
+            offset = 0;
+        }
+    }
 }
 
 #[cfg(test)]
