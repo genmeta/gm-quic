@@ -148,17 +148,17 @@ pub enum Space {
 
 #[derive(Debug, Clone)]
 pub struct RawSpaces {
-    initial: Option<Space>,
-    handshake: Option<Space>,
-    data: Space,
+    init: Option<InitialSpace>,
+    hs: Option<HandshakeSpace>,
+    data: DataSpace,
 }
 
 impl RawSpaces {
     pub fn new(initial: InitialSpace, handshake: HandshakeSpace, data: DataSpace) -> Self {
         Self {
-            initial: Some(Space::Initial(initial)),
-            handshake: Some(Space::Handshake(handshake)),
-            data: Space::Data(data),
+            init: Some(initial),
+            hs: Some(handshake),
+            data,
         }
     }
 }
@@ -174,49 +174,30 @@ impl ArcSpaces {
     }
 
     pub fn initial_space(&self) -> Option<InitialSpace> {
-        self.0
-            .lock()
-            .unwrap()
-            .initial
-            .clone()
-            .map(|space| match space {
-                Space::Initial(space) => space,
-                _ => unreachable!(),
-            })
+        self.0.lock().unwrap().init.clone()
     }
 
     pub fn handshake_space(&self) -> Option<HandshakeSpace> {
-        self.0
-            .lock()
-            .unwrap()
-            .handshake
-            .clone()
-            .map(|space| match space {
-                Space::Handshake(space) => space,
-                _ => unreachable!(),
-            })
+        self.0.lock().unwrap().hs.clone()
     }
 
     pub fn data_space(&self) -> DataSpace {
-        match self.0.lock().unwrap().data.clone() {
-            Space::Data(space) => space,
-            _ => unreachable!(),
-        }
+        self.0.lock().unwrap().data.clone()
     }
 
     pub fn invalid_initial_space(&mut self) {
-        self.0.lock().unwrap().initial = None;
+        self.0.lock().unwrap().init = None;
     }
 
     pub fn invalid_handshake_space(&mut self) {
-        self.0.lock().unwrap().handshake = None;
+        self.0.lock().unwrap().hs = None;
     }
 
-    pub fn reliable_space(&self, epoch: Epoch) -> Option<impl ReliableTransmit> {
+    pub fn reliable_space(&self, epoch: Epoch) -> Option<Space> {
         match epoch {
-            Epoch::Initial => self.0.lock().unwrap().initial.clone(),
-            Epoch::Handshake => self.0.lock().unwrap().handshake.clone(),
-            Epoch::Data => Some(self.0.lock().unwrap().data.clone()),
+            Epoch::Initial => self.0.lock().unwrap().init.clone().map(Space::Initial),
+            Epoch::Handshake => self.0.lock().unwrap().hs.clone().map(Space::Handshake),
+            Epoch::Data => Some(Space::Data(self.0.lock().unwrap().data.clone())),
         }
     }
 }
