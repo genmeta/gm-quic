@@ -121,7 +121,7 @@ impl Validator {
         self.state.lock().unwrap().on_challenge_sent();
     }
 
-    /// Returns a `Future` that can be used to poll the state of the validator.
+    /// Return a `Future` that can be used to poll the state of the validator.
     ///
     /// The `Future` resolves to `true` if the validator is successful, and `false` otherwise.
     /// If the verification is not completed, the "Future" will wait for the state to

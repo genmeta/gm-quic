@@ -187,7 +187,7 @@ impl RawRemoteCids {
         }
     }
 
-    /// Returns a ArcCidCell, which holds the state of the connection ID, included:
+    /// Return a ArcCidCell, which holds the state of the connection ID, included:
     /// - not be allocated yet
     /// - have been allocated
     /// - have been allocated again after retirement of last cid

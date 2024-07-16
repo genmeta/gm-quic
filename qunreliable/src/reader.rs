@@ -52,8 +52,8 @@ impl DatagramReader {
     ///
     /// # Returns
     ///
-    /// Returns [`Ok`] if the datagram is successfully received and processed.
-    /// Returns an [`Err`] if there is a protocol violation(the datagram size exceeds the maximum size).
+    /// Return [`Ok`] if the datagram is successfully received and processed.
+    /// Return an [`Err`] if there is a protocol violation(the datagram size exceeds the maximum size).
     pub(crate) fn recv_datagram(
         &self,
         frame: DatagramFrame,
@@ -116,9 +116,9 @@ impl DatagramReader {
     ///
     /// # Returns
     ///
-    /// Returns a future that resolves to the number of bytes read.
+    /// Return a future that resolves to the number of bytes read.
     ///
-    /// Returns [`Err`] when the connection is closing or already closed
+    /// Return [`Err`] when the connection is closing or already closed
     ///
     /// # Note
     ///
@@ -140,9 +140,9 @@ impl DatagramReader {
     ///
     /// # Returns
     ///
-    /// Returns a future that resolves to the number of bytes read.
+    /// Return a future that resolves to the number of bytes read.
     ///
-    /// Returns [`Err`] when the connection is closing or already closed
+    /// Return [`Err`] when the connection is closing or already closed
     ///
     /// # Note
     ///
@@ -156,7 +156,7 @@ impl DatagramReader {
     ///
     /// # Returns
     ///
-    /// Returns [`Err`] when the connection is closing or already closed
+    /// Return [`Err`] when the connection is closing or already closed
     pub fn get_local_max_datagram_frame_size(&self) -> io::Result<usize> {
         let reader = self.0.lock().unwrap();
         match &*reader {

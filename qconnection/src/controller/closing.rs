@@ -117,7 +117,7 @@ impl ArcClosingState {
         self.0.lock().unwrap().on_rcvd();
     }
 
-    /// Returns a `SendCcf` struct that can be used to send a connection close frame.
+    /// Return a `SendCcf` struct that can be used to send a connection close frame.
     pub fn send_ccf(&self) -> SendCcf {
         SendCcf(self.clone())
     }

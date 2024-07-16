@@ -136,7 +136,7 @@ impl StreamFrame {
             if remaining <= len_encoding_size {
                 ShouldCarryLength::PaddingFirst(remaining)
             } else {
-                // Returns this result, perhaps by invoking the carry_length function to
+                // Return this result, perhaps by invoking the carry_length function to
                 // set the LEN_BIT. This option is left to the packet assembly logic for handling.
                 ShouldCarryLength::ShouldAfter(remaining - len_encoding_size, remaining)
 
