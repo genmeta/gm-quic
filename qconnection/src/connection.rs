@@ -1,33 +1,26 @@
 pub mod state;
 
 use std::{
-    future::poll_fn,
-    io::IoSlice,
     ops::Deref,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
 };
 
 use dashmap::{DashMap, DashSet};
 use deref_derive::Deref;
 use futures::{FutureExt, StreamExt};
-use log::{error, trace};
 use qbase::{
-    cid::{ConnectionId, Registry, MAX_CID_SIZE},
+    cid::{ConnectionId, Registry},
     error::{Error, ErrorKind},
     frame::{ConnFrame, ConnectionCloseFrame, HandshakeDoneFrame},
     packet::{
-        header::{Encode, GetType, LongHeader, Write},
         keys::{ArcKeys, ArcOneRttKeys},
-        HandshakePacket, InitialPacket, LongHeaderBuilder, OneRttHeader, OneRttPacket, SpacePacket,
-        SpinBit, ZeroRttPacket,
+        HandshakePacket, InitialPacket, OneRttPacket, SpacePacket, SpinBit, ZeroRttPacket,
     },
     streamid::Role,
     token::ResetToken,
-    util::{ArcAsyncDeque, TransportLimit},
+    util::ArcAsyncDeque,
 };
-use qcongestion::congestion::MSS;
-use qrecovery::space::{ArcSpace, ArcSpaces, Epoch, ReliableTransmit};
+use qrecovery::space::{ArcSpace, ArcSpaces, ReliableTransmit};
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 use state::{ArcConnectionState, ConnectionState};
@@ -39,10 +32,10 @@ use crate::{
     crypto::TlsIO,
     handshake,
     path::{
+        self,
         observer::{ConnectionObserver, HandShakeObserver},
         ArcPath, Pathway,
     },
-    transmit::{read_1rtt_data_and_encrypt, read_space_and_encrypt, FillPolicy},
 };
 
 type PacketQueue<T> = mpsc::UnboundedSender<(T, ArcPath)>;
@@ -103,30 +96,33 @@ impl PacketQueues {
 }
 
 pub struct RawConnection {
-    cid_registry: Registry,
+    pub cid_registry: Registry,
 
     // 所有Path的集合，Pathway作为key
-    pathes: DashMap<Pathway, ArcPath>,
-    packet_queues: PacketQueues,
+    pub pathes: DashMap<Pathway, ArcPath>,
+    pub packet_queues: PacketQueues,
 
     // Thus, a client MUST discard Initial keys when it first sends a Handshake packet
     // and a server MUST discard Initial keys when it first successfully processes a
     // Handshake packet. Endpoints MUST NOT send Initial packets after this point.
-    initial_keys: ArcKeys,
-    handshake_keys: ArcKeys,
-    zero_rtt_keys: ArcKeys,
-    one_rtt_keys: ArcOneRttKeys,
+    pub initial_keys: ArcKeys,
+    pub handshake_keys: ArcKeys,
+    pub zero_rtt_keys: ArcKeys,
+    pub one_rtt_keys: ArcOneRttKeys,
 
-    spaces: ArcSpaces,
+    pub spaces: ArcSpaces,
 
     // 创建新的path用的到，path中的拥塞控制器需要
-    connection_observer: ConnectionObserver,
+    pub connection_observer: ConnectionObserver,
 
-    spin: SpinBit,
-    state: ArcConnectionState,
+    pub spin: SpinBit,
+    pub state: ArcConnectionState,
 
     // 连接级流控制器
-    flow_ctrl: ArcFlowController,
+    pub flow_ctrl: ArcFlowController,
+
+    // 数据报流
+    pub datagram_flow: DatagramFlow,
 }
 
 impl RawConnection {
@@ -163,272 +159,9 @@ impl RawConnection {
 
     pub fn get_path(&self, pathway: Pathway, usc: &ArcUsc) -> ArcPath {
         self.pathes
-            .entry(pathway.clone())
-            .or_insert_with({
-                let usc = usc.clone();
-                let observer = self.connection_observer.clone();
-                || {
-                    // TODO: 要为该新路径创建发送任务，需要连接id...spawn出一个任务，直到{何时}终止?
-                    // path 的任务在连接迁移后或整个连接断开后终止
-                    // 考虑多路径并存，在连接迁移后，旧路径可以发起路径验证看旧路径是否还有效判断是否终止
-
-                    let path = ArcPath::new(
-                        usc,
-                        Duration::from_millis(100),
-                        observer,
-                        self.cid_registry.remote.lock_guard().apply_cid(),
-                        self.flow_ctrl.clone(),
-                    );
-                    self.spawn_path_may_loss(path.clone());
-                    self.spawn_path_indicate_ack(path.clone());
-                    self.spawn_path_probe_timeout(path.clone());
-                    self.spawn_path_send(path.clone(), pathway);
-
-                    path
-                }
-            })
+            .entry(pathway)
+            .or_insert_with(|| path::create_path(self, pathway, usc))
             .clone()
-    }
-
-    #[inline]
-    fn spawn_path_may_loss(&self, path: ArcPath) {
-        let spaces = self.spaces.clone();
-        tokio::spawn(async move {
-            loop {
-                let loss = path.poll_may_loss().await;
-                let space = spaces.reliable_space(loss.0);
-                if let Some(space) = space {
-                    for pn in loss.1 {
-                        space.may_loss_pkt(pn);
-                    }
-                }
-            }
-        });
-    }
-
-    #[inline]
-    fn spawn_path_indicate_ack(&self, path: ArcPath) {
-        let spaces = self.spaces.clone();
-        tokio::spawn(async move {
-            loop {
-                let acked = path.poll_indicate_ack().await;
-                let space = spaces.reliable_space(acked.0);
-                if let Some(space) = space {
-                    for pn in acked.1 {
-                        space.indicate_ack(pn);
-                    }
-                }
-            }
-        });
-    }
-
-    #[inline]
-    fn spawn_path_probe_timeout(&self, path: ArcPath) {
-        let spaces = self.spaces.clone();
-        tokio::spawn(async move {
-            loop {
-                let space = path.poll_probe_timeout().await;
-                let space = spaces.reliable_space(space);
-                if let Some(space) = space {
-                    space.probe_timeout();
-                }
-            }
-        });
-    }
-
-    #[inline]
-    pub fn spawn_path_send(&self, path: ArcPath, pathway: Pathway) {
-        let spaces = self.spaces.clone();
-        let initai_key = self.initial_keys.clone();
-        let handshake_key = self.handshake_keys.clone();
-        let one_rtt_keys = self.one_rtt_keys.clone();
-        let cid_registry = self.cid_registry.clone();
-        let spin = self.spin;
-        let conn_state = self.state.clone();
-
-        tokio::spawn(async move {
-            let predicate = |_: &ConnectionId| true;
-
-            let (scid, token) = match cid_registry.local.issue_cid(MAX_CID_SIZE, predicate).await {
-                Ok(frame) => {
-                    let token = (*frame.reset_token).to_vec();
-                    let scid = frame.id;
-                    spaces
-                        .data_space()
-                        .reliable_frame_queue
-                        .write()
-                        .push_conn_frame(ConnFrame::NewConnectionId(frame));
-                    (scid, token)
-                }
-                Err(_) => {
-                    return;
-                }
-            };
-
-            let send_once = || async {
-                let mut guard = path.poll_send().await;
-                let mut buffers = Vec::new();
-
-                for &epoch in Epoch::iter() {
-                    let Some(space) = spaces.reliable_space(epoch) else {
-                        continue;
-                    };
-                    let ack_pkt = guard.ack_pkts[epoch as usize];
-                    match epoch {
-                        Epoch::Initial => {
-                            let hdr = LongHeaderBuilder::with_cid(guard.dcid, scid)
-                                .initial(token.clone());
-                            RawConnection::read_long_header_space(
-                                &mut buffers,
-                                &hdr,
-                                FillPolicy::Redundancy,
-                                initai_key.clone(),
-                                &space,
-                                &mut guard.transport_limit,
-                                ack_pkt,
-                            )
-                        }
-                        Epoch::Handshake => {
-                            let hdr = LongHeaderBuilder::with_cid(guard.dcid, scid).handshake();
-                            RawConnection::read_long_header_space(
-                                &mut buffers,
-                                &hdr,
-                                FillPolicy::Redundancy,
-                                handshake_key.clone(),
-                                &space,
-                                &mut guard.transport_limit,
-                                ack_pkt,
-                            );
-                        }
-                        Epoch::Data => {
-                            let hdr = OneRttHeader {
-                                spin,
-                                dcid: guard.dcid,
-                            };
-                            RawConnection::read_short_header_space(
-                                &mut buffers,
-                                hdr,
-                                one_rtt_keys.clone(),
-                                &space,
-                                &mut guard.transport_limit,
-                                ack_pkt,
-                            )
-                        }
-                    };
-                }
-
-                let (src, dst) = match &pathway {
-                    Pathway::Direct { local, remote } => (local, remote),
-                    Pathway::Relay { local, remote } => {
-                        // todo: append relay hdr
-                        (&local.addr, &remote.agent)
-                    }
-                };
-
-                let hdr = qudp::PacketHeader {
-                    src: *src,
-                    dst: *dst,
-                    ttl: 64,
-                    ecn: None,
-                    seg_size: MSS as u16,
-                    gso: true,
-                };
-
-                let io_slices = buffers
-                    .iter_mut()
-                    .map(|b| IoSlice::new(b))
-                    .collect::<Vec<_>>();
-
-                let ret = poll_fn(|cx| guard.usc.poll_send(&io_slices, &hdr, cx)).await;
-                match ret {
-                    Ok(n) => {
-                        trace!("sent {} bytes", n);
-                    }
-                    Err(e) => {
-                        error!("send failed: {}", e);
-                    }
-                }
-            };
-
-            while conn_state.get_state() <= ConnectionState::Closing {
-                send_once().await;
-            }
-        });
-    }
-
-    fn read_long_header_space<T>(
-        buffers: &mut Vec<Vec<u8>>,
-        header: &LongHeader<T>,
-        fill_policy: FillPolicy,
-        keys: ArcKeys,
-        space: &impl ReliableTransmit,
-        transport_limit: &mut TransportLimit,
-        ack_pkt: Option<(u64, Instant)>,
-    ) where
-        for<'a> &'a mut [u8]: Write<T>,
-        LongHeader<T>: GetType + Encode,
-    {
-        let mut buffer = vec![0u8; MSS];
-        let mut offset = 0;
-
-        while transport_limit.available() > 0 {
-            let (_, pkt_size) = read_space_and_encrypt(
-                &mut buffer[offset..],
-                header,
-                fill_policy,
-                keys.clone(),
-                space,
-                transport_limit,
-                ack_pkt,
-            );
-
-            if pkt_size == 0 && offset == 0 {
-                break;
-            }
-
-            if offset < MSS && pkt_size != 0 {
-                offset += pkt_size;
-            } else {
-                buffers.push(buffer);
-                buffer = vec![0u8; MSS];
-                offset = 0;
-            }
-        }
-    }
-
-    fn read_short_header_space(
-        buffers: &mut Vec<Vec<u8>>,
-        header: OneRttHeader,
-        keys: ArcOneRttKeys,
-        space: &impl ReliableTransmit,
-        transport_limit: &mut TransportLimit,
-        ack_pkt: Option<(u64, Instant)>,
-    ) {
-        let mut buffer = vec![0u8; MSS];
-        let mut offset = 0;
-
-        while transport_limit.available() > 0 {
-            let pkt_size = read_1rtt_data_and_encrypt(
-                &mut buffer[offset..],
-                &header,
-                keys.clone(),
-                space,
-                transport_limit,
-                ack_pkt,
-            );
-
-            if pkt_size == 0 && offset == 0 {
-                break;
-            }
-
-            if offset < MSS && pkt_size != 0 {
-                offset += pkt_size;
-            } else {
-                buffers.push(buffer);
-                buffer = vec![0u8; MSS];
-                offset = 0;
-            }
-        }
     }
 }
 
@@ -448,7 +181,7 @@ pub struct ConnectionResources {
     pub reset_tokens: DashSet<ResetToken>,
 }
 
-pub fn new(
+pub fn create_connection(
     tls_session: TlsIO,
     role: Role,
     // 尚未实现连接迁移
@@ -506,6 +239,7 @@ pub fn new(
         spin: SpinBit::default(),
         state: conn_state.clone(),
         flow_ctrl: flow_controller.clone(),
+        datagram_flow,
     };
 
     let connection_handle = ArcConnectionHandle(Arc::new(ConnectionHandle {
@@ -892,7 +626,7 @@ pub fn new(
     //     zero_rtt_datagram_frame_queue_writer.close() called
     //     error
     let zero_rtt_datagram_flow_handle = tokio::spawn({
-        let zero_rtt_datagram_flow = datagram_flow.clone();
+        let zero_rtt_datagram_flow = connection_handle.datagram_flow.clone();
         async move {
             while let Some((frame, data)) = zero_rtt_datagram_frame_queue_reader.next().await {
                 zero_rtt_datagram_flow.recv_datagram(frame, data)?;
@@ -1112,7 +846,7 @@ pub fn new(
     //     one_rtt_datagram_frame_queue_writer.close() called
     //     error
     let one_rtt_datagram_flow_handle = tokio::spawn({
-        let one_rtt_datagram_flow = datagram_flow.clone();
+        let one_rtt_datagram_flow = connection_handle.datagram_flow.clone();
         async move {
             while let Some((frame, data)) = one_rtt_datagram_frame_queue_reader.next().await {
                 one_rtt_datagram_flow.recv_datagram(frame, data)?;
@@ -1216,7 +950,7 @@ pub fn new(
     tokio::spawn({
         let connection_handle = connection_handle.clone();
         let data_space = data_space.clone();
-        let datagram_flow = datagram_flow.clone();
+        let datagram_flow = connection_handle.datagram_flow.clone();
         let connection_closing = connection_closing.clone();
         let countdown = countdown.clone();
         async move {
@@ -1292,6 +1026,7 @@ pub fn new(
         let connection_draining = connection_draining.clone();
         let connection_closing = connection_closing.clone();
         let countdown = countdown.clone();
+        let datagram_flow = connection_handle.datagram_flow.clone();
         async move {
             let ccf = tokio::select! {
                 Some(ccf) = initial_close_frame_queue_reader.next() => ccf,

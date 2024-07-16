@@ -1,4 +1,6 @@
 use std::{
+    future::poll_fn,
+    io::IoSlice,
     net::SocketAddr,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -8,14 +10,20 @@ use std::{
 
 use anti_amplifier::ANTI_FACTOR;
 use futures::{Future, FutureExt};
+use log::*;
 use observer::{ConnectionObserver, PathObserver};
 use qbase::{
-    cid::{ArcCidCell, ConnectionId},
-    frame::{PathChallengeFrame, PathResponseFrame},
+    cid::{ArcCidCell, ConnectionId, MAX_CID_SIZE},
+    frame::{ConnFrame, PathChallengeFrame, PathResponseFrame},
+    packet::{LongHeaderBuilder, OneRttHeader},
     util::TransportLimit,
 };
-use qcongestion::{congestion::ArcCC, rtt::INITIAL_RTT, CongestionControl};
-use qrecovery::space::Epoch;
+use qcongestion::{
+    congestion::{ArcCC, MSS},
+    rtt::INITIAL_RTT,
+    CongestionControl,
+};
+use qrecovery::space::{Epoch, ReliableTransmit};
 use qudp::ArcUsc;
 
 pub mod anti_amplifier;
@@ -26,16 +34,21 @@ pub use validate::{Transponder, Validator};
 
 pub mod observer;
 
-use crate::{controller::ArcFlowController, Sendmsg};
+use crate::{
+    connection::{state::ConnectionState, RawConnection},
+    controller::ArcFlowController,
+    transmit::{self, FillPolicy},
+    Sendmsg,
+};
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct RelayAddr {
     pub agent: SocketAddr, // 代理人
     pub addr: SocketAddr,
 }
 
 /// 无论哪种Pathway，socket都必须绑定local地址
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum Pathway {
     Direct {
         local: SocketAddr,
@@ -323,6 +336,198 @@ impl ArcPath {
         let guard = self.0.lock().unwrap();
         guard.validator.poll_state()
     }
+}
+
+pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -> ArcPath {
+    // TODO: 要为该新路径创建发送任务，需要连接id...spawn出一个任务，直到{何时}终止?
+    // path 的任务在连接迁移后或整个连接断开后终止
+    // 考虑多路径并存，在连接迁移后，旧路径可以发起路径验证看旧路径是否还有效判断是否终止
+
+    let path = ArcPath::new(
+        usc.clone(),
+        Duration::from_millis(100),
+        connection.connection_observer.clone(),
+        connection.cid_registry.remote.lock_guard().apply_cid(),
+        connection.flow_ctrl.clone(),
+    );
+
+    // swapn_path_may_loss
+    tokio::spawn({
+        let path = path.clone();
+        let spaces = connection.spaces.clone();
+        async move {
+            loop {
+                let loss = path.poll_may_loss().await;
+                let space = spaces.reliable_space(loss.0);
+                if let Some(space) = space {
+                    for pn in loss.1 {
+                        space.may_loss_pkt(pn);
+                    }
+                }
+            }
+        }
+    });
+
+    // swapn_path_indicate_ack
+    tokio::spawn({
+        let path = path.clone();
+        let spaces = connection.spaces.clone();
+        async move {
+            loop {
+                let acked = path.poll_indicate_ack().await;
+                let space = spaces.reliable_space(acked.0);
+                if let Some(space) = space {
+                    for pn in acked.1 {
+                        space.indicate_ack(pn);
+                    }
+                }
+            }
+        }
+    });
+
+    // swapn_path_probe_timeout
+    tokio::spawn({
+        let path = path.clone();
+        let spaces = connection.spaces.clone();
+        async move {
+            loop {
+                let space = path.poll_probe_timeout().await;
+                let space = spaces.reliable_space(space);
+                if let Some(space) = space {
+                    space.probe_timeout();
+                }
+            }
+        }
+    });
+
+    // spawn_path_send
+    tokio::spawn({
+        let path = path.clone();
+        let spaces = connection.spaces.clone();
+        let initai_keys = connection.initial_keys.clone();
+        let handshake_keys = connection.handshake_keys.clone();
+        let one_rtt_keys = connection.one_rtt_keys.clone();
+        let cid_registry = connection.cid_registry.clone();
+        let spin = connection.spin;
+        let conn_state = connection.state.clone();
+        async move {
+            let predicate = |_: &ConnectionId| true;
+
+            let (scid, token) = match cid_registry.local.issue_cid(MAX_CID_SIZE, predicate).await {
+                Ok(frame) => {
+                    let token = (*frame.reset_token).to_vec();
+                    let scid = frame.id;
+                    spaces
+                        .data_space()
+                        .reliable_frame_queue
+                        .write()
+                        .push_conn_frame(ConnFrame::NewConnectionId(frame.clone()));
+                    (scid, token)
+                }
+                Err(_) => {
+                    return;
+                }
+            };
+
+            let send_once = || async {
+                let mut guard = path.poll_send().await;
+                let mut buffers = Vec::new();
+
+                for &epoch in Epoch::iter() {
+                    let Some(space) = spaces.reliable_space(epoch) else {
+                        continue;
+                    };
+
+                    let ack_pkt = guard.ack_pkts[epoch as usize];
+                    match epoch {
+                        Epoch::Initial => {
+                            let builder = LongHeaderBuilder::with_cid(guard.dcid, scid);
+                            let header = builder.initial(token.clone());
+                            let fill_policy = FillPolicy::Redundancy;
+                            let keys = initai_keys.clone();
+                            let limit = &mut guard.transport_limit;
+                            transmit::read_long_header_space(
+                                &mut buffers,
+                                &header,
+                                fill_policy,
+                                keys,
+                                &space,
+                                limit,
+                                ack_pkt,
+                            )
+                        }
+                        Epoch::Handshake => {
+                            let builder = LongHeaderBuilder::with_cid(guard.dcid, scid);
+                            let header = builder.handshake();
+                            let fill_policy = FillPolicy::Redundancy;
+                            let keys = handshake_keys.clone();
+                            let limit = &mut guard.transport_limit;
+                            transmit::read_long_header_space(
+                                &mut buffers,
+                                &header,
+                                fill_policy,
+                                keys,
+                                &space,
+                                limit,
+                                ack_pkt,
+                            );
+                        }
+                        Epoch::Data => {
+                            let dcid = guard.dcid;
+                            let header = OneRttHeader { spin, dcid };
+                            let limit = &mut guard.transport_limit;
+                            transmit::read_short_header_space(
+                                &mut buffers,
+                                header,
+                                one_rtt_keys.clone(),
+                                &space,
+                                limit,
+                                ack_pkt,
+                            )
+                        }
+                    };
+                }
+
+                let (src, dst) = match &pathway {
+                    Pathway::Direct { local, remote } => (local, remote),
+                    Pathway::Relay { local, remote } => {
+                        // todo: append relay hdr
+                        (&local.addr, &remote.agent)
+                    }
+                };
+
+                let hdr = qudp::PacketHeader {
+                    src: *src,
+                    dst: *dst,
+                    ttl: 64,
+                    ecn: None,
+                    seg_size: MSS as u16,
+                    gso: true,
+                };
+
+                let io_slices = buffers
+                    .iter_mut()
+                    .map(|b| IoSlice::new(b))
+                    .collect::<Vec<_>>();
+
+                let ret = poll_fn(|cx| guard.usc.poll_send(&io_slices, &hdr, cx)).await;
+                match ret {
+                    Ok(n) => {
+                        trace!("sent {} bytes", n);
+                    }
+                    Err(e) => {
+                        error!("send failed: {}", e);
+                    }
+                }
+            };
+
+            while conn_state.get_state() <= ConnectionState::Closing {
+                send_once().await;
+            }
+        }
+    });
+
+    path
 }
 
 pub struct SendGuard {
