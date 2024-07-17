@@ -6,7 +6,7 @@ use std::{
 
 use socket2::SockAddr;
 
-use crate::{unix::BATCH_SIZE, Gso, PacketHeader, UdpSocketController};
+use crate::{Gso, PacketHeader, UdpSocketController, BATCH_SIZE};
 
 pub(crate) const CMSG_LEN: usize = 88;
 

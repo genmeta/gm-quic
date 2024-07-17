@@ -179,9 +179,9 @@ impl RawConnection {
                         self.cid_registry.remote.lock_guard().apply_cid(),
                         self.flow_ctrl.clone(),
                     );
-                    self.swapn_path_may_loss(path.clone());
-                    self.swapn_path_indicate_ack(path.clone());
-                    self.swapn_path_probe_timeout(path.clone());
+                    self.spawn_path_may_loss(path.clone());
+                    self.spawn_path_indicate_ack(path.clone());
+                    self.spawn_path_probe_timeout(path.clone());
                     self.spawn_path_send(path.clone(), pathway);
 
                     path
@@ -191,7 +191,7 @@ impl RawConnection {
     }
 
     #[inline]
-    fn swapn_path_may_loss(&self, path: ArcPath) {
+    fn spawn_path_may_loss(&self, path: ArcPath) {
         let spaces = self.spaces.clone();
         tokio::spawn(async move {
             loop {
@@ -207,7 +207,7 @@ impl RawConnection {
     }
 
     #[inline]
-    fn swapn_path_indicate_ack(&self, path: ArcPath) {
+    fn spawn_path_indicate_ack(&self, path: ArcPath) {
         let spaces = self.spaces.clone();
         tokio::spawn(async move {
             loop {
@@ -223,7 +223,7 @@ impl RawConnection {
     }
 
     #[inline]
-    fn swapn_path_probe_timeout(&self, path: ArcPath) {
+    fn spawn_path_probe_timeout(&self, path: ArcPath) {
         let spaces = self.spaces.clone();
         tokio::spawn(async move {
             loop {
@@ -256,7 +256,7 @@ impl RawConnection {
                         .data_space()
                         .reliable_frame_queue
                         .write()
-                        .push_conn_frame(ConnFrame::NewConnectionId(frame.clone()));
+                        .push_conn_frame(ConnFrame::NewConnectionId(frame));
                     (scid, token)
                 }
                 Err(_) => {
