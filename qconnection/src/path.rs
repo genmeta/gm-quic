@@ -30,6 +30,7 @@ pub mod anti_amplifier;
 pub use anti_amplifier::ArcAntiAmplifier;
 
 pub mod validate;
+use validate::ValidatorState;
 pub use validate::{Transponder, Validator};
 
 pub mod observer;
@@ -332,9 +333,8 @@ impl ArcPath {
         SendState(self.clone())
     }
 
-    pub fn poll_state(&self) -> impl Future<Output = bool> {
-        let guard = self.0.lock().unwrap();
-        guard.validator.poll_state()
+    pub fn get_validate_state(&self) -> ValidatorState {
+        self.0.lock().unwrap().validator.get_validate_state()
     }
 }
 
@@ -351,8 +351,8 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
         connection.flow_ctrl.clone(),
     );
 
-    // swapn_path_may_loss
-    tokio::spawn({
+    // spawn_may_loss
+    let may_loss_handle = tokio::spawn({
         let path = path.clone();
         let spaces = connection.spaces.clone();
         async move {
@@ -368,8 +368,8 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
         }
     });
 
-    // swapn_path_indicate_ack
-    tokio::spawn({
+    // spawn_indicate_ack
+    let indicate_ack_handle = tokio::spawn({
         let path = path.clone();
         let spaces = connection.spaces.clone();
         async move {
@@ -385,8 +385,8 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
         }
     });
 
-    // swapn_path_probe_timeout
-    tokio::spawn({
+    // spawn_probe_timeout
+    let probe_timeout_handle = tokio::spawn({
         let path = path.clone();
         let spaces = connection.spaces.clone();
         async move {
@@ -400,7 +400,7 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
         }
     });
 
-    // spawn_path_send
+    // spawn_send
     tokio::spawn({
         let path = path.clone();
         let spaces = connection.spaces.clone();
@@ -521,9 +521,14 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                 }
             };
 
-            while conn_state.get_state() <= ConnectionState::Closing {
+            while conn_state.get_state() < ConnectionState::Closing {
                 send_once().await;
             }
+
+            // 释放资源
+            indicate_ack_handle.abort();
+            may_loss_handle.abort();
+            probe_timeout_handle.abort();
         }
     });
 
