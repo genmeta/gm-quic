@@ -119,9 +119,7 @@ impl Future for RcvdState {
                             }
                             Packet::Retry(_) => todo!(),
                             Packet::Space(space_pkt) => {
-                                state
-                                    .ep
-                                    .receive_protected_packet(space_pkt, pathway.clone());
+                                state.ep.receive_protected_packet(space_pkt, pathway);
                             }
                         }
                     }

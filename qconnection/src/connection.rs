@@ -3,6 +3,7 @@ pub mod state;
 use std::{
     ops::Deref,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use dashmap::{DashMap, DashSet};
@@ -20,7 +21,7 @@ use qbase::{
     token::ResetToken,
     util::ArcAsyncDeque,
 };
-use qrecovery::space::{ArcSpace, ArcSpaces, ReliableTransmit};
+use qrecovery::space::{ArcSpace, ArcSpaces, Epoch, ReliableTransmit};
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 use state::{ArcConnectionState, ConnectionState};
@@ -249,7 +250,7 @@ pub fn create_connection(
 
     let connection_closing = Arc::new(Notify::new());
     let connection_draining = Arc::new(Notify::new());
-    let countdown = Arc::new(Notify::new());
+    let (countdown_tx, mut countdown_rx) = mpsc::channel(1);
 
     let (dispath_error_tx, mut dispatch_error_rx) = mpsc::unbounded_channel();
 
@@ -952,7 +953,7 @@ pub fn create_connection(
         let data_space = data_space.clone();
         let datagram_flow = connection_handle.datagram_flow.clone();
         let connection_closing = connection_closing.clone();
-        let countdown = countdown.clone();
+        let countdown_tx = countdown_tx.clone();
         async move {
             let error = tokio::select! {
                 // Err(e) = initial_dispatch_handle.map(Result::unwrap) => e,
@@ -1007,9 +1008,25 @@ pub fn create_connection(
             data_space.data_stream.on_conn_error(&error);
             datagram_flow.on_conn_error(&error);
 
+            let cur_epoch = match conn_state.get_state() {
+                ConnectionState::Initial => Epoch::Initial,
+                ConnectionState::Handshaking => Epoch::Handshake,
+                ConnectionState::HandshakeDone => Epoch::Data,
+                // 已经被处理
+                ConnectionState::Draining => return,
+                ConnectionState::Closing => unreachable!(),
+            };
+
+            let pto_time = connection_handle
+                .pathes
+                .iter()
+                .map(|path| path.get_pto_time(cur_epoch))
+                .max()
+                .unwrap_or(Duration::from_secs(0));
+
             connection_handle.enter_closing();
             connection_closing.notify_waiters();
-            countdown.notify_waiters();
+            _ = countdown_tx.send(pto_time).await;
         }
     });
 
@@ -1025,7 +1042,7 @@ pub fn create_connection(
         let connection_handle = connection_handle.clone();
         let connection_draining = connection_draining.clone();
         let connection_closing = connection_closing.clone();
-        let countdown = countdown.clone();
+        let countdown_tx = countdown_tx.clone();
         let datagram_flow = connection_handle.datagram_flow.clone();
         async move {
             let ccf = tokio::select! {
@@ -1041,9 +1058,26 @@ pub fn create_connection(
             data_space.data_stream.on_conn_error(&error);
             datagram_flow.on_conn_error(&error);
 
+            let cur_epoch = match connection_handle.state.get_state() {
+                ConnectionState::Initial => Epoch::Initial,
+                ConnectionState::Handshaking => Epoch::Handshake,
+                ConnectionState::HandshakeDone => Epoch::Data,
+                // 已经被处理
+                ConnectionState::Closing => return,
+                ConnectionState::Draining => unreachable!(),
+            };
+
+            let pto_time = connection_handle
+                .pathes
+                .iter()
+                .map(|path| path.get_pto_time(cur_epoch))
+                .max()
+                .unwrap_or(Duration::from_secs(0));
+
+            // 后enter，防止closing 和 draining 都拿不到pto时间
             connection_handle.enter_draining();
             connection_closing.notify_waiters();
-            countdown.notify_waiters();
+            _ = countdown_tx.send(pto_time).await;
         }
     });
 
@@ -1054,8 +1088,8 @@ pub fn create_connection(
         let connection_handle = connection_handle.clone();
 
         async move {
-            countdown.notified().await;
-
+            let pto_time = countdown_rx.recv().await.unwrap();
+            tokio::time::sleep(pto_time * 3).await;
             // TOOD: wait 3xPTO
 
             for local_cid in connection_handle.resources.connection_ids.iter() {
