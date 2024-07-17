@@ -93,10 +93,10 @@ impl ArcConnectionController {
     }
 
     pub fn enter_handshake_done(&self) {
-        if self.get_state() >= ConnectionState::Normal {
+        if self.get_state() >= ConnectionState::HandshakeDone {
             return;
         }
-        self.set_state(ConnectionState::Normal);
+        self.set_state(ConnectionState::HandshakeDone);
         let mut guard = self.data.lock().unwrap();
         let state_data = guard.deref_mut();
         let cur_state_data = std::mem::replace(state_data, ConnectionStateData::Invalid);
@@ -116,7 +116,7 @@ impl ArcConnectionController {
             } => {
                 hs_keys.invalid();
                 zero_rtt_keys.invalid();
-                ConnectionStateData::Normal {
+                ConnectionStateData::HandshakeDone {
                     one_rtt_pkt_queue,
                     one_rtt_keys,
                     data_space,
@@ -137,7 +137,7 @@ impl ArcConnectionController {
         match state_data {
             ConnectionStateData::Initial { conn_err_tx, .. }
             | ConnectionStateData::Handshaking { conn_err_tx, .. }
-            | ConnectionStateData::Normal { conn_err_tx, .. } => {
+            | ConnectionStateData::HandshakeDone { conn_err_tx, .. } => {
                 if let Some(tx) = conn_err_tx.take() {
                     let _ = tx.send(error);
                 }
@@ -180,7 +180,7 @@ impl ArcConnectionController {
                 one_rtt_keys.invalid();
                 rcvd_ccf_tx
             }
-            ConnectionStateData::Normal {
+            ConnectionStateData::HandshakeDone {
                 one_rtt_keys,
                 rcvd_ccf_tx,
                 ..
@@ -202,7 +202,7 @@ impl ArcConnectionController {
         let tx = match state_data {
             ConnectionStateData::Initial { rcvd_ccf_tx, .. }
             | ConnectionStateData::Handshaking { rcvd_ccf_tx, .. }
-            | ConnectionStateData::Normal { rcvd_ccf_tx, .. } => rcvd_ccf_tx.take(),
+            | ConnectionStateData::HandshakeDone { rcvd_ccf_tx, .. } => rcvd_ccf_tx.take(),
             _ => None,
         };
         if let Some(tx) = tx {
@@ -240,7 +240,7 @@ impl ArcConnectionController {
                 zero_rtt_keys.invalid();
                 one_rtt_keys.invalid();
             }
-            ConnectionStateData::Normal { one_rtt_keys, .. } => {
+            ConnectionStateData::HandshakeDone { one_rtt_keys, .. } => {
                 one_rtt_keys.invalid();
             }
             _ => {}
@@ -276,7 +276,7 @@ impl ArcConnectionController {
                 hs_keys.invalid();
                 zero_rtt_keys.invalid();
             }
-            ConnectionStateData::Normal { one_rtt_keys, .. } => {
+            ConnectionStateData::HandshakeDone { one_rtt_keys, .. } => {
                 one_rtt_keys.invalid();
             }
             _ => {}

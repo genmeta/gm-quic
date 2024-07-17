@@ -63,7 +63,7 @@ pub enum ConnectionStateData {
         conn_err_tx: Option<oneshot::Sender<Error>>,
         rcvd_ccf_tx: Option<oneshot::Sender<ConnectionCloseFrame>>,
     },
-    Normal {
+    HandshakeDone {
         one_rtt_pkt_queue: PacketQueue<OneRttPacket>,
         one_rtt_keys: ArcOneRttKeys,
         data_space: DataSpace,
@@ -89,7 +89,7 @@ impl ConnectionStateData {
         match self {
             ConnectionStateData::Initial { .. } => ConnectionState::Initial,
             ConnectionStateData::Handshaking { .. } => ConnectionState::Handshaking,
-            ConnectionStateData::Normal { .. } => ConnectionState::Normal,
+            ConnectionStateData::HandshakeDone { .. } => ConnectionState::HandshakeDone,
             ConnectionStateData::Closing { .. } => ConnectionState::Closing,
             ConnectionStateData::Draining {} => ConnectionState::Draining,
             ConnectionStateData::Invalid => ConnectionState::Closed,
@@ -128,7 +128,7 @@ impl ConnectionStateData {
                 | ConnectionStateData::Handshaking {
                     one_rtt_pkt_queue, ..
                 }
-                | ConnectionStateData::Normal {
+                | ConnectionStateData::HandshakeDone {
                     one_rtt_pkt_queue, ..
                 } = self
                 {
@@ -180,14 +180,14 @@ impl ConnectionStateData {
                 spin: *spin,
                 datagram_flow: datagram_flow.clone(),
             }),
-            ConnectionStateData::Normal {
+            ConnectionStateData::HandshakeDone {
                 one_rtt_keys,
                 data_space,
                 flow_ctrl,
                 spin,
                 datagram_flow,
                 ..
-            } => Some(PathState::Normal {
+            } => Some(PathState::HandshakeDone {
                 one_rtt_keys: one_rtt_keys.clone(),
                 data_space: data_space.clone(),
                 flow_ctrl: flow_ctrl.clone(),

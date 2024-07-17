@@ -109,7 +109,7 @@ pub enum PathState {
 
         datagram_flow: DatagramFlow,
     },
-    Normal {
+    HandshakeDone {
         one_rtt_keys: ArcOneRttKeys,
         data_space: DataSpace,
         flow_ctrl: ArcFlowController,
@@ -161,7 +161,7 @@ impl PathState {
             ..
         } = state
         {
-            *self = PathState::Normal {
+            *self = PathState::HandshakeDone {
                 one_rtt_keys,
                 data_space,
                 flow_ctrl,
@@ -199,7 +199,7 @@ impl PathState {
         match self {
             Self::Initial { data_space, .. }
             | Self::Handshaking { data_space, .. }
-            | Self::Normal { data_space, .. } => Some(data_space.clone()),
+            | Self::HandshakeDone { data_space, .. } => Some(data_space.clone()),
             _ => None,
         }
     }
@@ -208,7 +208,7 @@ impl PathState {
         match self {
             Self::Initial { flow_ctrl, .. }
             | Self::Handshaking { flow_ctrl, .. }
-            | Self::Normal { flow_ctrl, .. } => flow_ctrl,
+            | Self::HandshakeDone { flow_ctrl, .. } => flow_ctrl,
             _ => unreachable!(),
         }
     }
@@ -254,7 +254,7 @@ impl PathState {
             spin,
             ..
         }
-        | Self::Normal {
+        | Self::HandshakeDone {
             data_space,
             one_rtt_keys,
             flow_ctrl,
@@ -281,7 +281,9 @@ impl PathState {
         let pn = match &self {
             PathState::Initial { init_space, .. } => init_space.sent_pkt_records.send().next_pn(),
             PathState::Handshaking { hs_space, .. } => hs_space.sent_pkt_records.send().next_pn(),
-            PathState::Normal { data_space, .. } => data_space.sent_pkt_records.send().next_pn(),
+            PathState::HandshakeDone { data_space, .. } => {
+                data_space.sent_pkt_records.send().next_pn()
+            }
             PathState::Closing { .. } | PathState::Invalid => return,
         };
 
@@ -334,18 +336,20 @@ impl PathState {
                     send_guard,
                 );
             }),
-            PathState::Normal { .. } => self.for_data_space(|_, one_rtt_keys, _flow_ctrl, spin| {
-                let dcid = send_guard.dcid;
-                let header = OneRttHeader { spin: *spin, dcid };
-                transmit::read_short_header_space(
-                    &mut buffers,
-                    header,
-                    one_rtt_keys,
-                    &filler,
-                    Epoch::Data,
-                    send_guard,
-                );
-            }),
+            PathState::HandshakeDone { .. } => {
+                self.for_data_space(|_, one_rtt_keys, _flow_ctrl, spin| {
+                    let dcid = send_guard.dcid;
+                    let header = OneRttHeader { spin: *spin, dcid };
+                    transmit::read_short_header_space(
+                        &mut buffers,
+                        header,
+                        one_rtt_keys,
+                        &filler,
+                        Epoch::Data,
+                        send_guard,
+                    );
+                })
+            }
             _ => return,
         }
         *self = PathState::Closing {
@@ -670,7 +674,7 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
     debug_assert!(!matches!(path_state, PathState::Invalid));
 
     let path_stata_is_initial = matches!(path_state, PathState::Initial { .. });
-    let path_stata_handshaking = !matches!(path_state, PathState::Normal { .. });
+    let path_stata_handshaking = !matches!(path_state, PathState::HandshakeDone { .. });
 
     let path = ArcPath::new(
         usc.clone(),
@@ -700,7 +704,7 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
             let path = path.clone();
             let on_enter_normal = connection
                 .controller
-                .on_enter_state(ConnectionState::Normal);
+                .on_enter_state(ConnectionState::HandshakeDone);
             async move {
                 on_enter_normal.await;
                 path.0.lock().unwrap().state.enter_handshake_done();
@@ -887,12 +891,12 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
 
     tokio::spawn({
         let path = path.clone();
-        let on_enter_closing = connection
+        let on_enter_drainng = connection
             .controller
-            .on_enter_state(ConnectionState::Closing);
+            .on_enter_state(ConnectionState::Draining);
         async move {
             // TODO: Path出错时也终止任务，连接迁移时也终止任务
-            on_enter_closing.await;
+            on_enter_drainng.await;
             path.0.lock().unwrap().state = PathState::Invalid;
             indicate_ack_handle.abort();
             may_loss_handle.abort();

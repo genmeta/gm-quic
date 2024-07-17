@@ -203,7 +203,7 @@ pub fn create_connection(
                 let dispath_result = match conn_controller.get_state() {
                     ConnectionState::Initial
                     | ConnectionState::Handshaking
-                    | ConnectionState::Normal => packet.dispatch_initial_space(
+                    | ConnectionState::HandshakeDone => packet.dispatch_initial_space(
                         &initial_crypto_queue_writer,
                         &initial_close_frame_queue_writer,
                         &initial_ack_frame_queue_writer,
@@ -313,7 +313,7 @@ pub fn create_connection(
                 let dispatch_result = match conn_controller.get_state() {
                     ConnectionState::Initial
                     | ConnectionState::Handshaking
-                    | ConnectionState::Normal => packet.dispatch_handshake_space(
+                    | ConnectionState::HandshakeDone => packet.dispatch_handshake_space(
                         &handshake_crypto_queue_writer,
                         &handshake_close_frame_queue_writer,
                         &handshake_ack_frame_writer,
@@ -473,7 +473,7 @@ pub fn create_connection(
                 let dispatch_result = match conn_controller.get_state() {
                     ConnectionState::Initial
                     | ConnectionState::Handshaking
-                    | ConnectionState::Normal => packet.dispatch_zero_rtt(
+                    | ConnectionState::HandshakeDone => packet.dispatch_zero_rtt(
                         &zero_rtt_datagram_frame_queue_writer,
                         &zero_rtt_max_data_frame_queue_writer,
                         &zero_rtt_stream_frame_queue_writer,
@@ -627,7 +627,7 @@ pub fn create_connection(
                 let dispatch_result = match conn_controller.get_state() {
                     ConnectionState::Initial
                     | ConnectionState::Handshaking
-                    | ConnectionState::Normal => packet.dispatch_one_rtt(
+                    | ConnectionState::HandshakeDone => packet.dispatch_one_rtt(
                         &one_rtt_conn_id_frame_queue_writer,
                         &one_rtt_token_frame_queue_writer,
                         &one_rtt_datagram_frame_queue_writer,
@@ -896,7 +896,7 @@ pub fn create_connection(
                 ConnectionState::Initial | ConnectionState::Handshaking => {
                     Error::new_with_default_fty(ErrorKind::Application, "")
                 }
-                ConnectionState::Normal => error,
+                ConnectionState::HandshakeDone => error,
                 ConnectionState::Closing | ConnectionState::Draining | ConnectionState::Closed => {
                     unreachable!()
                 }
@@ -916,7 +916,7 @@ pub fn create_connection(
             let cur_epoch = match conn_controller.get_state() {
                 ConnectionState::Initial => Epoch::Initial,
                 ConnectionState::Handshaking => Epoch::Handshake,
-                ConnectionState::Normal => Epoch::Data,
+                ConnectionState::HandshakeDone => Epoch::Data,
                 // 已经被处理
                 ConnectionState::Draining => return,
                 ConnectionState::Closing | ConnectionState::Closed => unreachable!(),
@@ -967,7 +967,7 @@ pub fn create_connection(
             let cur_epoch = match connection_handle.controller.get_state() {
                 ConnectionState::Initial => Epoch::Initial,
                 ConnectionState::Handshaking => Epoch::Handshake,
-                ConnectionState::Normal => Epoch::Data,
+                ConnectionState::HandshakeDone => Epoch::Data,
                 // 已经被处理
                 ConnectionState::Closing => return,
                 ConnectionState::Draining | ConnectionState::Closed => unreachable!(),
