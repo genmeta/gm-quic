@@ -37,6 +37,7 @@ impl ObserveHandshake for ConnectionObserver {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct PathObserver(ArcAntiAmplifier<ANTI_FACTOR>);
 
 impl PathObserver {

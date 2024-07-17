@@ -540,6 +540,7 @@ pub struct SendGuard {
     pub usc: ArcUsc,
     pub dcid: ConnectionId,
     pub ack_pkts: [Option<(u64, Instant)>; 3],
+    pub cc: ArcCC<ConnectionObserver, PathObserver>,
 }
 
 pub struct LossState(ArcPath);
@@ -592,9 +593,9 @@ impl Future for SendState {
         let flow_control = ready!(guard.flow_ctrl.sender.poll_apply(cx)).available();
 
         let mut ack_pkts = [None; 3];
-        for epoch in Epoch::iter() {
-            let ack_pkt = guard.cc.need_ack(*epoch);
-            ack_pkts[*epoch as usize] = ack_pkt;
+        for &epoch in Epoch::iter() {
+            let ack_pkt = guard.cc.need_ack(epoch);
+            ack_pkts[epoch as usize] = ack_pkt;
         }
         let send_guard = SendGuard {
             transport_limit: TransportLimit::new(
@@ -604,6 +605,7 @@ impl Future for SendState {
             ),
             usc: guard.usc.clone(),
             dcid: peer_cid,
+            cc: guard.cc.clone(),
             ack_pkts,
         };
         Poll::Ready(send_guard)

@@ -36,23 +36,24 @@ pub fn read_space_and_encrypt<T>(
     space: &impl ReliableTransmit,
     transport_limit: &mut TransportLimit,
     ack_pkt: Option<(u64, Instant)>,
-) -> (usize, usize)
+) -> (u64, usize, usize, bool)
 where
     for<'a> &'a mut [u8]: Write<T>,
     LongHeader<T>: GetType + Encode,
 {
     let keys = match keys.get_local_keys() {
         Some(keys) => keys,
-        None => return (0, 0),
+        None => return (0, 0, 0, false),
     };
 
     let max_header_size = header.size() + 2; // 2 bytes reserved for packet length, max 16KB
     let (mut hdr_buf, body_buf) = buffer.split_at_mut(max_header_size);
 
-    let (pn, pn_size, mut body_len) = space.read(transport_limit, body_buf, ack_pkt);
+    let (pn, pn_size, mut body_len, is_ack_eliciting) =
+        space.read(transport_limit, body_buf, ack_pkt);
     if body_len == 0 {
         // nothing to send
-        return (0, 0);
+        return (0, 0, 0, false);
     }
 
     let mut body_buf = &mut body_buf[body_len..];
@@ -113,7 +114,7 @@ where
         .encrypt_in_place(sample, &mut header[0], &mut pn_max[..pn_size])
         .unwrap();
 
-    (offset, pkt_size)
+    (pn, offset, pkt_size, is_ack_eliciting)
 }
 
 pub fn read_1rtt_data_and_encrypt(
@@ -123,18 +124,18 @@ pub fn read_1rtt_data_and_encrypt(
     space: &impl ReliableTransmit,
     transport_limit: &mut TransportLimit,
     ack_pkt: Option<(u64, Instant)>,
-) -> usize {
+) -> (u64, usize, bool) {
     let (hpk, pk) = match keys.get_local_keys() {
         Some(keys) => keys,
-        None => return 0,
+        None => return (0, 0, false),
     };
 
     let header_size = header.size();
     let (mut hdr_buf, body_buf) = buffer.split_at_mut(header_size);
 
-    let (pn, pn_size, body_len) = space.read(transport_limit, body_buf, ack_pkt);
+    let (pn, pn_size, body_len, is_ack_eliciting) = space.read(transport_limit, body_buf, ack_pkt);
     if body_len == 0 {
-        return 0;
+        return (0, 0, false);
     }
 
     hdr_buf.put_one_rtt_header(header);
@@ -160,7 +161,7 @@ pub fn read_1rtt_data_and_encrypt(
         .encrypt_in_place(sample, &mut header[0], &mut pn_max[..pn_size])
         .unwrap();
 
-    pkt_size
+    (pn, pkt_size, is_ack_eliciting)
 }
 pub fn read_long_header_space<T>(
     buffers: &mut Vec<Vec<u8>>,
