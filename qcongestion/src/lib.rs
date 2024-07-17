@@ -1,6 +1,6 @@
 use std::{
     task::{Context, Poll},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use qbase::frame::AckFrame;
@@ -72,7 +72,7 @@ pub trait CongestionControl {
     fn poll_probe_timeout(&self, cx: &mut Context<'_>) -> Poll<Epoch>;
 
     /// 获取当前 path 的 pto time
-    fn pto_time(&self) -> Option<Instant>;
+    fn get_pto_time(&self, epoch: Epoch) -> Duration;
 }
 
 pub trait ObserveHandshake {

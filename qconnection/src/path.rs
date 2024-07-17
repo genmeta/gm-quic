@@ -14,7 +14,7 @@ use qbase::{
     frame::{PathChallengeFrame, PathResponseFrame},
     util::TransportLimit,
 };
-use qcongestion::{congestion::ArcCC, CongestionControl};
+use qcongestion::{congestion::ArcCC, rtt::INITIAL_RTT, CongestionControl};
 use qrecovery::space::Epoch;
 use qudp::ArcUsc;
 
@@ -285,13 +285,22 @@ impl ArcPath {
     }
 
     /// When creating a new path, start the path challenge timer
-    pub fn set_path_challenge_timeout(&self) {
-        self.0.lock().unwrap().validator.set_timeout()
+    ///
+    /// Endpoints SHOULD abandon path validation based on a timer. When setting
+    /// this timer, implementations are cautioned that the new path could have
+    /// a longer round-trip time than the original. A value of three times the
+    /// larger of the current PTO or the PTO for the new path (using kInitialRtt,
+    /// as defined in [QUIC-RECOVERY]) is RECOMMENDED.
+    ///
+    /// See [Section 8.2.4-2](https://www.rfc-editor.org/rfc/rfc9000.html#section-8.2.4-2)
+    pub fn set_path_challenge_timeout(&self, epoch: Epoch) {
+        let timeout = self.get_pto_time(epoch).max(INITIAL_RTT);
+        self.0.lock().unwrap().validator.set_timeout(timeout * 3);
     }
 
     /// get connection controller pto time
-    pub fn pto_time(&self) -> Option<Instant> {
-        self.0.lock().unwrap().cc.pto_time()
+    pub fn get_pto_time(&self, epoch: Epoch) -> Duration {
+        self.0.lock().unwrap().cc.get_pto_time(epoch)
     }
 
     pub fn poll_may_loss(&self) -> LossState {
@@ -469,7 +478,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_path_challenge_timeout() {
         let path = create_path(18004).await;
-        path.set_path_challenge_timeout();
+        path.set_path_challenge_timeout(Epoch::Initial);
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert!(!path.is_validated());
     }

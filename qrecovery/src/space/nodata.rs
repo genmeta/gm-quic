@@ -30,7 +30,7 @@ pub trait NoDataSpaceKind: 'static {}
 #[derive(Debug, Clone, Copy)]
 pub struct Initial;
 impl NoDataSpaceKind for Initial {}
-pub type InitalSpace = NoDataSpace<Initial>;
+pub type InitialSpace = NoDataSpace<Initial>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Handshake;
@@ -162,7 +162,7 @@ impl<K: NoDataSpaceKind> ReliableTransmit for ArcSpace<NoDataSpace<K>> {
     }
 }
 
-impl ArcSpace<InitalSpace> {
+impl ArcSpace<InitialSpace> {
     pub fn new_initial_space() -> Self {
         ArcSpace::new_nodata_space()
     }
