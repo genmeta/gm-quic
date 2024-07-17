@@ -521,12 +521,12 @@ where
         guard.on_ack_rcvd(space, ack_frame, now);
     }
 
-    fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_elicition: bool) {
+    fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_eliciting: bool) {
         let now = Instant::now();
         let recved = Recved { pn, recv_time: now };
         let mut guard = self.0.lock().unwrap();
         guard.on_datagram_rcvd(now);
-        if !is_ack_elicition {
+        if !is_ack_eliciting {
             return;
         }
 

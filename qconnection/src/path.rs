@@ -14,7 +14,7 @@ use log::*;
 use observer::{ConnectionObserver, PathObserver};
 use qbase::{
     cid::{ArcCidCell, ConnectionId, MAX_CID_SIZE},
-    frame::{ConnFrame, PathChallengeFrame, PathResponseFrame},
+    frame::{AckFrame, ConnFrame, PathChallengeFrame, PathResponseFrame},
     packet::{LongHeaderBuilder, OneRttHeader},
     util::TransportLimit,
 };
@@ -266,7 +266,6 @@ impl ArcPath {
         }
     }
 
-    // TODO: 在发送 packet 时, 需要调用此函数来确认抗放大攻击保护信用
     /// The credit of the current path protection against amplification attacks
     /// needs to be detected before each packet is sent.
     pub fn poll_get_anti_amplifier_credit(&self, cx: &mut Context<'_>) -> Poll<Option<usize>> {
@@ -276,7 +275,6 @@ impl ArcPath {
         }
     }
 
-    // TODO: 发送 packet 后, 需要调用此函数, 以更新剩余的发送信用
     /// Called after each transmission, if the current path has anti-amplification
     /// attack protection, record the amount of data sent.
     pub fn post_sent(&self, amount: usize) {
@@ -335,6 +333,16 @@ impl ArcPath {
 
     pub fn get_validate_state(&self) -> ValidatorState {
         self.0.lock().unwrap().validator.get_validate_state()
+    }
+
+    pub fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_eliciting: bool) {
+        let guard = self.0.lock().unwrap();
+        guard.cc.on_recv_pkt(space, pn, is_ack_eliciting)
+    }
+
+    pub fn on_ack(&self, space: Epoch, frame: &AckFrame) {
+        let guard = self.0.lock().unwrap();
+        guard.cc.on_ack(space, frame);
     }
 }
 
@@ -438,22 +446,20 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                         continue;
                     };
 
-                    let ack_pkt = guard.ack_pkts[epoch as usize];
                     match epoch {
                         Epoch::Initial => {
                             let builder = LongHeaderBuilder::with_cid(guard.dcid, scid);
                             let header = builder.initial(token.clone());
                             let fill_policy = FillPolicy::Redundancy;
                             let keys = initai_keys.clone();
-                            let limit = &mut guard.transport_limit;
                             transmit::read_long_header_space(
                                 &mut buffers,
                                 &header,
                                 fill_policy,
                                 keys,
                                 &space,
-                                limit,
-                                ack_pkt,
+                                epoch,
+                                &mut guard,
                             )
                         }
                         Epoch::Handshake => {
@@ -461,28 +467,26 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                             let header = builder.handshake();
                             let fill_policy = FillPolicy::Redundancy;
                             let keys = handshake_keys.clone();
-                            let limit = &mut guard.transport_limit;
                             transmit::read_long_header_space(
                                 &mut buffers,
                                 &header,
                                 fill_policy,
                                 keys,
                                 &space,
-                                limit,
-                                ack_pkt,
+                                epoch,
+                                &mut guard,
                             );
                         }
                         Epoch::Data => {
                             let dcid = guard.dcid;
                             let header = OneRttHeader { spin, dcid };
-                            let limit = &mut guard.transport_limit;
                             transmit::read_short_header_space(
                                 &mut buffers,
                                 header,
                                 one_rtt_keys.clone(),
                                 &space,
-                                limit,
-                                ack_pkt,
+                                epoch,
+                                &mut guard,
                             )
                         }
                     };

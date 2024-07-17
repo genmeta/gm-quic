@@ -294,6 +294,7 @@ pub fn create_connection(
         async move {
             let dispatch = |stream: &auto::InitialPacketStream, packet: PacketPayload| {
                 let pn = packet.pn;
+                let path = packet.path.clone();
                 // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
                 let dispath_result = match conn_state.get_state() {
                     ConnectionState::Initial
@@ -309,8 +310,9 @@ pub fn create_connection(
                     ConnectionState::Draining => return,
                 };
                 match dispath_result {
-                    Ok(_is_ack_eliciting) => {
+                    Ok(is_ack_eliciting) => {
                         stream.rcvd_pkt_records.register_pn(pn);
+                        path.on_recv_pkt(Epoch::Initial, pn, is_ack_eliciting);
                     }
                     Err(e) => {
                         _ = initial_dispatch_error_tx.send(e);
@@ -405,6 +407,7 @@ pub fn create_connection(
         async move {
             let dispatch = |stream: &auto::HandshakePacketStream, packet: PacketPayload| {
                 let pn = packet.pn;
+                let path = packet.path.clone();
                 // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
                 let dispatch_result = match conn_state.get_state() {
                     ConnectionState::Initial
@@ -420,12 +423,13 @@ pub fn create_connection(
                     ConnectionState::Draining => return,
                 };
                 match dispatch_result {
-                    Ok(_is_ack_eliciting) => {
+                    Ok(is_ack_eliciting) => {
                         if role == Role::Server {
                             initial_keys.invalid();
                             conn_state.set_state(ConnectionState::Handshaking)
                         }
                         stream.rcvd_pkt_records.register_pn(pn);
+                        path.on_recv_pkt(Epoch::Handshake, pn, is_ack_eliciting);
                     }
                     Err(e) => {
                         _ = handshake_dispatch_error_tx.send(e);
@@ -566,6 +570,7 @@ pub fn create_connection(
         async move {
             let dispatch = |stream: &auto::ZeroRttPacketStream, packet: PacketPayload| {
                 let pn = packet.pn;
+                let path = packet.path.clone();
                 let dispatch_result = match conn_state.get_state() {
                     ConnectionState::Initial
                     | ConnectionState::Handshaking
@@ -582,8 +587,9 @@ pub fn create_connection(
                     ConnectionState::Draining => return,
                 };
                 match dispatch_result {
-                    Ok(_is_ack_eliciting) => {
+                    Ok(is_ack_eliciting) => {
                         stream.rcvd_pkt_records.register_pn(pn);
+                        path.on_recv_pkt(Epoch::Data, pn, is_ack_eliciting);
                     }
                     Err(e) => {
                         _ = zero_rtt_dispatch_error_tx.send(e);
@@ -720,6 +726,7 @@ pub fn create_connection(
         async move {
             let dispatch = |stream: &auto::OneRttPacketStream, packet: PacketPayload| {
                 let pn = packet.pn;
+                let path = packet.path.clone();
                 let dispatch_result = match conn_state.get_state() {
                     ConnectionState::Initial
                     | ConnectionState::Handshaking
@@ -741,8 +748,9 @@ pub fn create_connection(
                     ConnectionState::Draining => return,
                 };
                 match dispatch_result {
-                    Ok(_is_ack_eliciting) => {
+                    Ok(is_ack_eliciting) => {
                         stream.rcvd_pkt_records.register_pn(pn);
+                        path.on_recv_pkt(Epoch::Data, pn, is_ack_eliciting);
                     }
                     Err(error) => {
                         _ = one_rtt_dispatch_error_tx.send(error);
