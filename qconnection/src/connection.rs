@@ -1,10 +1,9 @@
-pub mod state;
-
-use std::{
-    ops::Deref,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+mod controller;
+pub use controller::*;
+mod data;
+pub use data::*;
+mod state;
+use std::{ops::Deref, sync::Arc, time::Duration};
 
 use dashmap::{DashMap, DashSet};
 use deref_derive::Deref;
@@ -16,17 +15,17 @@ use qbase::{
     packet::{
         header::Encode,
         keys::{ArcKeys, ArcOneRttKeys},
-        HandshakePacket, InitialPacket, OneRttPacket, SpacePacket, SpinBit, ZeroRttPacket,
+        SpacePacket,
     },
     streamid::Role,
     token::ResetToken,
     util::ArcAsyncDeque,
 };
-use qrecovery::space::{ArcSpace, ArcSpaces, Epoch, ReliableTransmit};
+use qrecovery::space::{ArcSpace, Epoch, ReliableTransmit};
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
-use state::{ArcConnectionState, ConnectionState};
-use tokio::sync::{mpsc, Notify};
+pub use state::*;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     auto::{self, PacketPayload},
@@ -40,132 +39,37 @@ use crate::{
     },
 };
 
-type PacketQueue<T> = mpsc::UnboundedSender<(T, ArcPath)>;
-type RxPacketQueue<T> = Mutex<Option<PacketQueue<T>>>;
-
-pub struct PacketQueues {
-    init_pkt_queue: RxPacketQueue<InitialPacket>,
-    hs_pkt_queue: RxPacketQueue<HandshakePacket>,
-    zero_rtt_pkt_queue: RxPacketQueue<ZeroRttPacket>,
-    one_rtt_pkt_queue: RxPacketQueue<OneRttPacket>,
-}
-
-impl PacketQueues {
-    pub fn new(
-        init_pkt_queue: PacketQueue<InitialPacket>,
-        hs_pkt_queue: PacketQueue<HandshakePacket>,
-        zero_rtt_pkt_queue: PacketQueue<ZeroRttPacket>,
-        one_rtt_pkt_queue: PacketQueue<OneRttPacket>,
-    ) -> Self {
-        Self {
-            init_pkt_queue: Mutex::new(Some(init_pkt_queue)),
-            hs_pkt_queue: Mutex::new(Some(hs_pkt_queue)),
-            zero_rtt_pkt_queue: Mutex::new(Some(zero_rtt_pkt_queue)),
-            one_rtt_pkt_queue: Mutex::new(Some(one_rtt_pkt_queue)),
-        }
-    }
-
-    pub fn send_initial_packet(&self, packet: InitialPacket, path: ArcPath) {
-        if let Some(tx) = self.init_pkt_queue.lock().unwrap().deref() {
-            _ = tx.send((packet, path));
-        }
-    }
-
-    pub fn send_handshake_packet(&self, packet: HandshakePacket, path: ArcPath) {
-        if let Some(tx) = self.hs_pkt_queue.lock().unwrap().deref() {
-            _ = tx.send((packet, path));
-        }
-    }
-
-    pub fn send_zero_rtt_packet(&self, packet: ZeroRttPacket, path: ArcPath) {
-        if let Some(tx) = self.zero_rtt_pkt_queue.lock().unwrap().deref() {
-            _ = tx.send((packet, path));
-        }
-    }
-
-    pub fn send_one_rtt_packet(&self, packet: OneRttPacket, path: ArcPath) {
-        if let Some(tx) = self.one_rtt_pkt_queue.lock().unwrap().deref() {
-            _ = tx.send((packet, path));
-        }
-    }
-
-    pub fn close_all(&self) {
-        self.init_pkt_queue.lock().unwrap().take();
-        self.hs_pkt_queue.lock().unwrap().take();
-        self.zero_rtt_pkt_queue.lock().unwrap().take();
-        self.one_rtt_pkt_queue.lock().unwrap().take();
-    }
-}
-
 pub struct RawConnection {
-    pub cid_registry: Registry,
-
-    // 所有Path的集合，Pathway作为key
     pub pathes: DashMap<Pathway, ArcPath>,
-    pub packet_queues: PacketQueues,
-
-    // Thus, a client MUST discard Initial keys when it first sends a Handshake packet
-    // and a server MUST discard Initial keys when it first successfully processes a
-    // Handshake packet. Endpoints MUST NOT send Initial packets after this point.
-    pub initial_keys: ArcKeys,
-    pub handshake_keys: ArcKeys,
-    pub zero_rtt_keys: ArcKeys,
-    pub one_rtt_keys: ArcOneRttKeys,
-
-    pub spaces: ArcSpaces,
-
+    pub cid_registry: Registry,
     // 创建新的path用的到，path中的拥塞控制器需要
     pub connection_observer: ConnectionObserver,
 
-    pub spin: SpinBit,
-    pub state: ArcConnectionState,
-
-    // 连接级流控制器
-    pub flow_ctrl: ArcFlowController,
-
-    // 数据报流
-    pub datagram_flow: DatagramFlow,
+    pub controller: ArcConnectionController,
 }
 
 impl RawConnection {
     pub fn recv_protected_pkt_via(&self, pkt: SpacePacket, usc: &ArcUsc, pathway: Pathway) {
-        let path = self.get_path(pathway, usc);
+        let Some(path) = self.get_path(pathway, usc) else {
+            return;
+        };
         // Increase anti-amplification attack protection credit limit
         path.deposit(pkt.size());
         // TODO: 在不同状态会有不同反应
-        match pkt {
-            SpacePacket::Initial(pkt) => self.packet_queues.send_initial_packet(pkt, path),
-            SpacePacket::Handshake(pkt) => self.packet_queues.send_handshake_packet(pkt, path),
-            SpacePacket::ZeroRtt(pkt) => self.packet_queues.send_zero_rtt_packet(pkt, path),
-            SpacePacket::OneRtt(pkt) => self.packet_queues.send_one_rtt_packet(pkt, path),
-        }
+        self.controller
+            .state_data_guard()
+            .receive_packet_via(pkt, path);
     }
 
-    fn enter_handshake_done(&self) {
-        self.state.set_state(ConnectionState::HandshakeDone);
-        self.initial_keys.invalid();
-        self.handshake_keys.invalid();
-        self.zero_rtt_keys.invalid();
-    }
-
-    fn enter_closing(&self) {
-        self.state.set_state(ConnectionState::Closing);
-    }
-
-    fn enter_draining(&self) {
-        self.state.set_state(ConnectionState::Draining);
-        self.packet_queues.close_all();
-        self.initial_keys.invalid();
-        self.handshake_keys.invalid();
-        self.zero_rtt_keys.invalid();
-        self.one_rtt_keys.invalid();
-    }
-
-    pub fn get_path(&self, pathway: Pathway, usc: &ArcUsc) -> ArcPath {
+    pub fn get_path(&self, pathway: Pathway, usc: &ArcUsc) -> Option<ArcPath> {
         self.pathes
-            .entry(pathway)
-            .or_insert_with(|| path::create_path(self, pathway, usc))
-            .clone()
+            .get(&pathway)
+            .map(|path| path.clone())
+            .or_else(|| {
+                let path = path::create_path(self, pathway, usc)?;
+                self.pathes.insert(pathway, path.clone());
+                Some(path)
+            })
     }
 }
 
@@ -195,7 +99,6 @@ pub fn create_connection(
 ) -> ArcConnectionHandle {
     let resources = ConnectionResources::default();
 
-    let conn_state = ArcConnectionState::new();
     let cid_registry = Registry::new(2);
 
     let initial_keys = ArcKeys::new_pending();
@@ -206,44 +109,46 @@ pub fn create_connection(
 
     let zero_rtt_keys = ArcKeys::new_pending();
     let one_rtt_keys = ArcOneRttKeys::new_pending();
-    let flow_controller = ArcFlowController::with_initial(0, 0);
+    let flow_ctrl = ArcFlowController::with_initial(0, 0);
     let data_space = ArcSpace::new_data_space(role, 0, 0);
 
     let datagram_flow = DatagramFlow::new(65535, 0);
-
-    let handshake_observer = HandShakeObserver::new(conn_state.clone());
-    let connection_observer = ConnectionObserver { handshake_observer };
 
     let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded_channel();
     let (handshake_pkt_tx, handshake_pkt_rx) = mpsc::unbounded_channel();
     let (zero_rtt_pkt_tx, zero_rtt_pkt_rx) = mpsc::unbounded_channel();
     let (one_rtt_pkt_tx, one_rtt_pkt_rx) = mpsc::unbounded_channel();
 
-    let packet_queues = PacketQueues::new(
-        initial_pkt_tx,
-        handshake_pkt_tx,
-        zero_rtt_pkt_tx,
-        one_rtt_pkt_tx,
-    );
+    let (conn_err_tx, conn_err_rx) = oneshot::channel();
+    let (rcvd_ccf_tx, rcvd_ccf_rx) = oneshot::channel();
+
+    let controller = ArcConnectionController::new(ConnectionStateData::Initial {
+        init_pkt_queue: initial_pkt_tx,
+        init_keys: initial_keys.clone(),
+        init_space: initial_space.clone(),
+        hs_pkt_queue: handshake_pkt_tx,
+        hs_keys: handshake_keys.clone(),
+        hs_space: handshake_space.clone(),
+        zero_rtt_pkt_queue: zero_rtt_pkt_tx,
+        zero_rtt_keys: zero_rtt_keys.clone(),
+        one_rtt_pkt_queue: one_rtt_pkt_tx,
+        one_rtt_keys: one_rtt_keys.clone(),
+        data_space: data_space.clone(),
+        flow_ctrl: flow_ctrl.clone(),
+        spin: Default::default(),
+        datagram_flow: datagram_flow.clone(),
+        conn_err_tx: Some(conn_err_tx),
+        rcvd_ccf_tx: Some(rcvd_ccf_tx),
+    });
+
+    let handshake_observer = HandShakeObserver::new(controller.state.clone());
+    let connection_observer = ConnectionObserver { handshake_observer };
 
     let connection = RawConnection {
         cid_registry: cid_registry.clone(),
         pathes: DashMap::new(),
-        packet_queues,
-        initial_keys: initial_keys.clone(),
-        handshake_keys: handshake_keys.clone(),
-        zero_rtt_keys: zero_rtt_keys.clone(),
-        one_rtt_keys: one_rtt_keys.clone(),
-        spaces: ArcSpaces::new(
-            initial_space.clone(),
-            handshake_space.clone(),
-            data_space.clone(),
-        ),
+        controller: controller.clone(),
         connection_observer,
-        spin: SpinBit::default(),
-        state: conn_state.clone(),
-        flow_ctrl: flow_controller.clone(),
-        datagram_flow,
     };
 
     let connection_handle = ArcConnectionHandle(Arc::new(ConnectionHandle {
@@ -251,8 +156,6 @@ pub fn create_connection(
         resources,
     }));
 
-    let connection_closing = Arc::new(Notify::new());
-    let connection_draining = Arc::new(Notify::new());
     let (countdown_tx, mut countdown_rx) = mpsc::channel(1);
 
     let (dispath_error_tx, mut dispatch_error_rx) = mpsc::unbounded_channel();
@@ -289,20 +192,18 @@ pub fn create_connection(
     let mut initial_ack_frame_queue_reader = initial_ack_frame_queue_writer.clone();
     // 通过select它来获取错误
     tokio::spawn({
-        let connection_closing = connection_closing.clone();
-        let connection_draining = connection_draining.clone();
         let initial_dispatch_error_tx = dispath_error_tx.clone();
-        let conn_state = conn_state.clone();
+        let conn_controller = controller.clone();
 
         async move {
             let dispatch = |stream: &auto::InitialPacketStream, packet: PacketPayload| {
                 let pn = packet.pn;
                 let path = packet.path.clone();
                 // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
-                let dispath_result = match conn_state.get_state() {
+                let dispath_result = match conn_controller.get_state() {
                     ConnectionState::Initial
                     | ConnectionState::Handshaking
-                    | ConnectionState::HandshakeDone => packet.dispatch_initial_space(
+                    | ConnectionState::Normal => packet.dispatch_initial_space(
                         &initial_crypto_queue_writer,
                         &initial_close_frame_queue_writer,
                         &initial_ack_frame_queue_writer,
@@ -310,7 +211,7 @@ pub fn create_connection(
                     ConnectionState::Closing => {
                         packet.dispatch_closing(&initial_close_frame_queue_writer)
                     }
-                    ConnectionState::Draining => return,
+                    ConnectionState::Draining | ConnectionState::Closed => return,
                 };
                 match dispath_result {
                     Ok(is_ack_eliciting) => {
@@ -332,10 +233,10 @@ pub fn create_connection(
                             DispatchControlFlow::Exit
                         }
                     },
-                    _ = connection_closing.notified() => {
+                    _ = conn_controller.on_enter_state(ConnectionState::Closing) => {
                         DispatchControlFlow::Closing
                     }
-                    _ = connection_draining.notified() => {
+                    _ = conn_controller.on_enter_state(ConnectionState::Draining) => {
                         DispatchControlFlow::Exit
                     }
                 };
@@ -401,21 +302,18 @@ pub fn create_connection(
     let handshake_ack_frame_writer = ArcAsyncDeque::new();
     let mut handshake_ack_frame_reader = handshake_ack_frame_writer.clone();
     tokio::spawn({
-        let conn_state = conn_state.clone();
+        let conn_controller = controller.clone();
         let initial_keys = initial_keys.clone();
-        let connection_closing = connection_closing.clone();
-        let connection_draining = connection_draining.clone();
         let handshake_dispatch_error_tx = dispath_error_tx.clone();
-        let conn_state = conn_state.clone();
         async move {
             let dispatch = |stream: &auto::HandshakePacketStream, packet: PacketPayload| {
                 let pn = packet.pn;
                 let path = packet.path.clone();
                 // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
-                let dispatch_result = match conn_state.get_state() {
+                let dispatch_result = match conn_controller.get_state() {
                     ConnectionState::Initial
                     | ConnectionState::Handshaking
-                    | ConnectionState::HandshakeDone => packet.dispatch_handshake_space(
+                    | ConnectionState::Normal => packet.dispatch_handshake_space(
                         &handshake_crypto_queue_writer,
                         &handshake_close_frame_queue_writer,
                         &handshake_ack_frame_writer,
@@ -423,13 +321,13 @@ pub fn create_connection(
                     ConnectionState::Closing => {
                         packet.dispatch_closing(&handshake_close_frame_queue_writer)
                     }
-                    ConnectionState::Draining => return,
+                    ConnectionState::Draining | ConnectionState::Closed => return,
                 };
                 match dispatch_result {
                     Ok(is_ack_eliciting) => {
                         if role == Role::Server {
                             initial_keys.invalid();
-                            conn_state.set_state(ConnectionState::Handshaking)
+                            conn_controller.enter_handshake();
                         }
                         stream.rcvd_pkt_records.register_pn(pn);
                         path.on_recv_pkt(Epoch::Handshake, pn, is_ack_eliciting);
@@ -449,10 +347,10 @@ pub fn create_connection(
                             DispatchControlFlow::Exit
                         }
                     }
-                    _ = connection_closing.notified() => {
+                    _ = conn_controller.on_enter_state(ConnectionState::Closing) => {
                         DispatchControlFlow::Closing
                     }
-                    _ = connection_draining.notified() => {
+                    _ = conn_controller.on_enter_state(ConnectionState::Draining) => {
                         DispatchControlFlow::Exit
                     }
                 };
@@ -506,10 +404,10 @@ pub fn create_connection(
 
     let handshake_done_handle = tokio::spawn({
         let connection = connection_handle.clone();
-        let data_space = connection.spaces.data_space();
-        let handshake_space = connection.spaces.handshake_space().unwrap();
+        let data_space = data_space.clone();
+        let handshake_space = handshake_space.clone();
         let handshake_crypto_handler = handshake_space.as_ref().split();
-        let one_rtt_keys = connection.one_rtt_keys.clone();
+        let one_rtt_keys = one_rtt_keys.clone();
         async move {
             handshake::exchange_handshake_crypto_msg_until_getting_1rtt_key(
                 tls_session.clone(),
@@ -533,7 +431,7 @@ pub fn create_connection(
                     .write()
                     .push_conn_frame(ConnFrame::HandshakeDone(HandshakeDoneFrame));
             }
-            connection.enter_handshake_done();
+            connection.controller.enter_handshake_done();
 
             Ok::<_, Error>(())
         }
@@ -566,18 +464,16 @@ pub fn create_connection(
     let zero_rtt_close_frame_queue_writer = ArcAsyncDeque::new();
     let mut zero_rtt_close_frame_queue_reader = zero_rtt_close_frame_queue_writer.clone();
     tokio::spawn({
-        let connection_closing = connection_closing.clone();
-        let connection_draining = connection_draining.clone();
         let zero_rtt_dispatch_error_tx = dispath_error_tx.clone();
-        let conn_state = conn_state.clone();
+        let conn_controller = controller.clone();
         async move {
             let dispatch = |stream: &auto::ZeroRttPacketStream, packet: PacketPayload| {
                 let pn = packet.pn;
                 let path = packet.path.clone();
-                let dispatch_result = match conn_state.get_state() {
+                let dispatch_result = match conn_controller.get_state() {
                     ConnectionState::Initial
                     | ConnectionState::Handshaking
-                    | ConnectionState::HandshakeDone => packet.dispatch_zero_rtt(
+                    | ConnectionState::Normal => packet.dispatch_zero_rtt(
                         &zero_rtt_datagram_frame_queue_writer,
                         &zero_rtt_max_data_frame_queue_writer,
                         &zero_rtt_stream_frame_queue_writer,
@@ -587,7 +483,7 @@ pub fn create_connection(
                     ConnectionState::Closing => {
                         packet.dispatch_closing(&zero_rtt_close_frame_queue_writer)
                     }
-                    ConnectionState::Draining => return,
+                    ConnectionState::Draining | ConnectionState::Closed => return,
                 };
                 match dispatch_result {
                     Ok(is_ack_eliciting) => {
@@ -609,10 +505,10 @@ pub fn create_connection(
                             DispatchControlFlow::Exit
                         }
                     }
-                    _ = connection_closing.notified() => {
+                   _ = conn_controller.on_enter_state(ConnectionState::Closing) => {
                         DispatchControlFlow::Closing
                     }
-                    _ = connection_draining.notified() => {
+                    _ = conn_controller.on_enter_state(ConnectionState::Draining) => {
                         DispatchControlFlow::Exit
                     }
                 };
@@ -636,7 +532,7 @@ pub fn create_connection(
     //     zero_rtt_datagram_frame_queue_writer.close() called
     //     error
     let zero_rtt_datagram_flow_handle = tokio::spawn({
-        let zero_rtt_datagram_flow = connection_handle.datagram_flow.clone();
+        let zero_rtt_datagram_flow = datagram_flow.clone();
         async move {
             while let Some((frame, data)) = zero_rtt_datagram_frame_queue_reader.next().await {
                 zero_rtt_datagram_flow.recv_datagram(frame, data)?;
@@ -651,7 +547,7 @@ pub fn create_connection(
     // return:
     //     zero_rtt_max_data_frame_queue_reader.close() called
     tokio::spawn({
-        let flow_controller = flow_controller.clone();
+        let flow_controller = flow_ctrl.clone();
         async move {
             while let Some(frame) = zero_rtt_max_data_frame_queue_reader.next().await {
                 flow_controller.sender.permit(frame.max_data.into_inner());
@@ -722,18 +618,16 @@ pub fn create_connection(
     let one_rtt_ack_frame_queue_writer = ArcAsyncDeque::new();
     let mut one_rtt_ack_frame_queue_reader = one_rtt_ack_frame_queue_writer.clone();
     tokio::spawn({
-        let connection_closing = connection_closing.clone();
-        let connection_draining = connection_draining.clone();
         let one_rtt_dispatch_error_tx = dispath_error_tx;
-        let conn_state = conn_state.clone();
+        let conn_controller = controller.clone();
         async move {
             let dispatch = |stream: &auto::OneRttPacketStream, packet: PacketPayload| {
                 let pn = packet.pn;
                 let path = packet.path.clone();
-                let dispatch_result = match conn_state.get_state() {
+                let dispatch_result = match conn_controller.get_state() {
                     ConnectionState::Initial
                     | ConnectionState::Handshaking
-                    | ConnectionState::HandshakeDone => packet.dispatch_one_rtt(
+                    | ConnectionState::Normal => packet.dispatch_one_rtt(
                         &one_rtt_conn_id_frame_queue_writer,
                         &one_rtt_token_frame_queue_writer,
                         &one_rtt_datagram_frame_queue_writer,
@@ -748,7 +642,7 @@ pub fn create_connection(
                     ConnectionState::Closing => {
                         packet.dispatch_closing(&one_rtt_close_frame_queue_writer)
                     }
-                    ConnectionState::Draining => return,
+                    ConnectionState::Draining | ConnectionState::Closed => return,
                 };
                 match dispatch_result {
                     Ok(is_ack_eliciting) => {
@@ -770,10 +664,10 @@ pub fn create_connection(
                             DispatchControlFlow::Exit
                         }
                     }
-                    _ = connection_closing.notified() => {
+                   _ = conn_controller.on_enter_state(ConnectionState::Closing) => {
                         DispatchControlFlow::Closing
                     }
-                    _ = connection_draining.notified() => {
+                    _ = conn_controller.on_enter_state(ConnectionState::Draining) => {
                         DispatchControlFlow::Exit
                     }
                 };
@@ -858,7 +752,7 @@ pub fn create_connection(
     //     one_rtt_datagram_frame_queue_writer.close() called
     //     error
     let one_rtt_datagram_flow_handle = tokio::spawn({
-        let one_rtt_datagram_flow = connection_handle.datagram_flow.clone();
+        let one_rtt_datagram_flow = datagram_flow.clone();
         async move {
             while let Some((frame, data)) = one_rtt_datagram_frame_queue_reader.next().await {
                 one_rtt_datagram_flow.recv_datagram(frame, data)?;
@@ -873,7 +767,7 @@ pub fn create_connection(
     // return:
     //     one_rtt_max_data_frame_queue_reader.close() called
     tokio::spawn({
-        let flow_controller = flow_controller.clone();
+        let flow_controller = flow_ctrl.clone();
         async move {
             while let Some(frame) = one_rtt_max_data_frame_queue_reader.next().await {
                 flow_controller.sender.permit(frame.max_data.into_inner());
@@ -895,7 +789,7 @@ pub fn create_connection(
                         "client should not send HandshakeDoneFrame",
                     ));
                 }
-                connection_handle.enter_handshake_done();
+                connection_handle.controller.enter_handshake_done();
             }
             Ok(())
         }
@@ -962,9 +856,10 @@ pub fn create_connection(
     tokio::spawn({
         let connection_handle = connection_handle.clone();
         let data_space = data_space.clone();
-        let datagram_flow = connection_handle.datagram_flow.clone();
-        let connection_closing = connection_closing.clone();
+        let datagram_flow = datagram_flow.clone();
+        let connection_closing = controller.on_enter_state(ConnectionState::Closing);
         let countdown_tx = countdown_tx.clone();
+        let conn_controller = controller.clone();
         async move {
             let error = tokio::select! {
                 // Err(e) = initial_dispatch_handle.map(Result::unwrap) => e,
@@ -980,14 +875,15 @@ pub fn create_connection(
                 Err(e) = one_rtt_data_stream_handle.map(Result::unwrap) => e,
                 Err(e) = one_rtt_stream_control_frame_handle.map(Result::unwrap) => e,
                 Err(e) = one_rtt_crypto_stream_handle.map(Result::unwrap) => e,
+                Ok(e) = conn_err_rx => e,
                 // connection closed is handled by another task
                 Some(e) = dispatch_error_rx.recv() => e,
-                _ = connection_closing.notified() => return,
+                _ = connection_closing => return,
             };
 
             // 向应用层报告错误
 
-            let state = connection_handle.state.get_state();
+            let state = connection_handle.controller.get_state();
 
             let error = match state {
                 // Sending a CONNECTION_CLOSE of type 0x1d in an Initial or Handshake
@@ -1000,8 +896,8 @@ pub fn create_connection(
                 ConnectionState::Initial | ConnectionState::Handshaking => {
                     Error::new_with_default_fty(ErrorKind::Application, "")
                 }
-                ConnectionState::HandshakeDone => error,
-                ConnectionState::Closing | ConnectionState::Draining => {
+                ConnectionState::Normal => error,
+                ConnectionState::Closing | ConnectionState::Draining | ConnectionState::Closed => {
                     unreachable!()
                 }
             };
@@ -1019,13 +915,13 @@ pub fn create_connection(
             data_space.data_stream.on_conn_error(&error);
             datagram_flow.on_conn_error(&error);
 
-            let cur_epoch = match conn_state.get_state() {
+            let cur_epoch = match conn_controller.get_state() {
                 ConnectionState::Initial => Epoch::Initial,
                 ConnectionState::Handshaking => Epoch::Handshake,
-                ConnectionState::HandshakeDone => Epoch::Data,
+                ConnectionState::Normal => Epoch::Data,
                 // 已经被处理
                 ConnectionState::Draining => return,
-                ConnectionState::Closing => unreachable!(),
+                ConnectionState::Closing | ConnectionState::Closed => unreachable!(),
             };
 
             let pto_time = connection_handle
@@ -1035,8 +931,8 @@ pub fn create_connection(
                 .max()
                 .unwrap_or(Duration::from_secs(0));
 
-            connection_handle.enter_closing();
-            connection_closing.notify_waiters();
+            // TODO: 生成包
+            conn_controller.enter_closing(());
             _ = countdown_tx.send(pto_time).await;
         }
     });
@@ -1051,31 +947,31 @@ pub fn create_connection(
     //     connection closed
     tokio::spawn({
         let connection_handle = connection_handle.clone();
-        let connection_draining = connection_draining.clone();
-        let connection_closing = connection_closing.clone();
+        let connection_draining = controller.on_enter_state(ConnectionState::Draining);
         let countdown_tx = countdown_tx.clone();
-        let datagram_flow = connection_handle.datagram_flow.clone();
+        let conn_controller = controller.clone();
         async move {
             let ccf = tokio::select! {
                 Some(ccf) = initial_close_frame_queue_reader.next() => ccf,
                 Some(ccf) = handshake_close_frame_queue_reader.next() => ccf,
                 Some(ccf) = zero_rtt_close_frame_queue_reader.next() => ccf,
                 Some(ccf) = one_rtt_close_frame_queue_reader.next() => ccf,
+                Ok(ccf) = rcvd_ccf_rx => ccf,
                 // connection closed is handled by another task
-                _ = connection_draining.notified() => return,
+                _ = connection_draining => return,
             };
 
             let error = Error::from(ccf);
             data_space.data_stream.on_conn_error(&error);
             datagram_flow.on_conn_error(&error);
 
-            let cur_epoch = match connection_handle.state.get_state() {
+            let cur_epoch = match connection_handle.controller.get_state() {
                 ConnectionState::Initial => Epoch::Initial,
                 ConnectionState::Handshaking => Epoch::Handshake,
-                ConnectionState::HandshakeDone => Epoch::Data,
+                ConnectionState::Normal => Epoch::Data,
                 // 已经被处理
                 ConnectionState::Closing => return,
-                ConnectionState::Draining => unreachable!(),
+                ConnectionState::Draining | ConnectionState::Closed => unreachable!(),
             };
 
             let pto_time = connection_handle
@@ -1086,8 +982,7 @@ pub fn create_connection(
                 .unwrap_or(Duration::from_secs(0));
 
             // 后enter，防止closing 和 draining 都拿不到pto时间
-            connection_handle.enter_draining();
-            connection_closing.notify_waiters();
+            conn_controller.enter_draining();
             _ = countdown_tx.send(pto_time).await;
         }
     });
@@ -1110,8 +1005,7 @@ pub fn create_connection(
                 peer_reset_tokens.remove(remote_token.deref());
             }
 
-            connection_closing.notified();
-            connection_draining.notified();
+            controller.enter_closed();
         }
     });
 

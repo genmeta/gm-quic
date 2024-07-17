@@ -67,6 +67,10 @@ impl ArcKeys {
             KeysState::Invalid => {}
         }
     }
+
+    pub fn is_invalid(&self) -> bool {
+        matches!(&*self.0.lock().unwrap(), KeysState::Invalid)
+    }
 }
 
 pub struct GetRemoteKeys(Arc<Mutex<KeysState>>);
@@ -204,6 +208,10 @@ impl ArcOneRttKeys {
 
     pub fn get_remote_keys(&self) -> GetRemoteOneRttKeys {
         GetRemoteOneRttKeys(self.0.clone())
+    }
+
+    pub fn is_invalid(&self) -> bool {
+        !matches!(&*self.0.lock().unwrap(), OneRttKeysState::Invalid)
     }
 }
 

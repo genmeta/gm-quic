@@ -3,18 +3,18 @@ pub mod nodata;
 
 use std::{
     ops::{Index, IndexMut},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Instant,
 };
 
 use bytes::{BufMut, Bytes};
 use deref_derive::Deref;
-use enum_dispatch::enum_dispatch;
 
 pub type InitialSpace = ArcSpace<nodata::NoDataSpace<nodata::Initial>>;
 pub type HandshakeSpace = ArcSpace<nodata::NoDataSpace<nodata::Handshake>>;
 pub type DataSpace = ArcSpace<data::DataSpace>;
 
+use enum_dispatch::enum_dispatch;
 use qbase::{
     frame::{io::WriteAckFrame, *},
     util::TransportLimit,
@@ -144,60 +144,4 @@ pub enum Space {
     Initial(InitialSpace),
     Handshake(HandshakeSpace),
     Data(DataSpace),
-}
-
-#[derive(Debug, Clone)]
-pub struct RawSpaces {
-    init: Option<InitialSpace>,
-    hs: Option<HandshakeSpace>,
-    data: DataSpace,
-}
-
-impl RawSpaces {
-    pub fn new(initial: InitialSpace, handshake: HandshakeSpace, data: DataSpace) -> Self {
-        Self {
-            init: Some(initial),
-            hs: Some(handshake),
-            data,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct ArcSpaces(Arc<Mutex<RawSpaces>>);
-
-impl ArcSpaces {
-    pub fn new(initial: InitialSpace, handshake: HandshakeSpace, data: DataSpace) -> Self {
-        Self(Arc::new(Mutex::new(RawSpaces::new(
-            initial, handshake, data,
-        ))))
-    }
-
-    pub fn initial_space(&self) -> Option<InitialSpace> {
-        self.0.lock().unwrap().init.clone()
-    }
-
-    pub fn handshake_space(&self) -> Option<HandshakeSpace> {
-        self.0.lock().unwrap().hs.clone()
-    }
-
-    pub fn data_space(&self) -> DataSpace {
-        self.0.lock().unwrap().data.clone()
-    }
-
-    pub fn invalid_initial_space(&mut self) {
-        self.0.lock().unwrap().init = None;
-    }
-
-    pub fn invalid_handshake_space(&mut self) {
-        self.0.lock().unwrap().hs = None;
-    }
-
-    pub fn reliable_space(&self, epoch: Epoch) -> Option<Space> {
-        match epoch {
-            Epoch::Initial => self.0.lock().unwrap().init.clone().map(Space::Initial),
-            Epoch::Handshake => self.0.lock().unwrap().hs.clone().map(Space::Handshake),
-            Epoch::Data => Some(Space::Data(self.0.lock().unwrap().data.clone())),
-        }
-    }
 }

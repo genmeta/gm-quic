@@ -1,9 +1,9 @@
 use qcongestion::{ObserveAntiAmplification, ObserveHandshake};
 
 use super::{anti_amplifier::ANTI_FACTOR, ArcAntiAmplifier};
-use crate::connection::state::{ArcConnectionState, ConnectionState};
+use crate::connection::{ArcConnectionState, ConnectionState};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HandShakeObserver(ArcConnectionState);
 
 impl HandShakeObserver {
@@ -14,7 +14,7 @@ impl HandShakeObserver {
 
 impl ObserveHandshake for HandShakeObserver {
     fn is_handshake_done(&self) -> bool {
-        self.0.get_state() >= ConnectionState::HandshakeDone
+        self.0.get_state() >= ConnectionState::Normal
     }
 
     fn has_handshake_keys(&self) -> bool {
@@ -22,7 +22,7 @@ impl ObserveHandshake for HandShakeObserver {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ConnectionObserver {
     pub handshake_observer: HandShakeObserver,
 }
