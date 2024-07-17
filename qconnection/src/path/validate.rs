@@ -126,25 +126,8 @@ impl Validator {
     /// The `Future` resolves to `true` if the validator is successful, and `false` otherwise.
     /// If the verification is not completed, the "Future" will wait for the state to
     /// transition to the final state, according to the timeout specified in `on_challenge_sent`
-    pub fn poll_state(&self) -> impl Future<Output = bool> {
-        struct State(Validator);
-
-        impl Future for State {
-            type Output = bool;
-
-            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                let s = self.get_mut();
-                match *s.0.state.lock().unwrap() {
-                    ValidateState::Success => Poll::Ready(true),
-                    ValidateState::Failure => Poll::Ready(false),
-                    _ => {
-                        s.0.waker = Some(cx.waker().clone());
-                        Poll::Pending
-                    }
-                }
-            }
-        }
-        State(self.clone())
+    pub fn get_validate_state(&self) -> ValidatorState {
+        ValidatorState(self.clone())
     }
 
     pub fn may_loss(&self) {
@@ -179,7 +162,7 @@ impl Validator {
             let mut validator = self.clone();
 
             async move {
-                if tokio::time::timeout(timeout, validator.poll_state())
+                if tokio::time::timeout(timeout, validator.get_validate_state())
                     .await
                     .is_err()
                 {
@@ -191,6 +174,24 @@ impl Validator {
                 };
             }
         });
+    }
+}
+
+pub struct ValidatorState(Validator);
+
+impl Future for ValidatorState {
+    type Output = bool;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let s = self.get_mut();
+        match *s.0.state.lock().unwrap() {
+            ValidateState::Success => Poll::Ready(true),
+            ValidateState::Failure => Poll::Ready(false),
+            _ => {
+                s.0.waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
     }
 }
 
@@ -409,7 +410,7 @@ mod tests {
             _ => panic!("unexpected state"),
         };
         validator.on_response(&PathResponseFrame::from(&challenge));
-        assert!(validator.poll_state().await);
+        assert!(validator.get_validate_state().await);
     }
 
     #[test]
