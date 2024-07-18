@@ -104,7 +104,7 @@ pub trait ReliableTransmit: Send + Sync + 'static {
         limit: &mut TransportLimit,
         buf: &mut [u8],
         ack_pkt: Option<(u64, Instant)>,
-    ) -> (u64, usize, usize);
+    ) -> (u64, usize, usize, bool);
     fn on_ack(&self, ack_frmae: AckFrame);
     fn may_loss_pkt(&self, pn: u64);
     fn probe_timeout(&self);

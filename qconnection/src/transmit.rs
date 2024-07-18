@@ -12,8 +12,10 @@ use qbase::{
     util::TransportLimit,
     varint::{VarInt, WriteVarInt},
 };
-use qcongestion::congestion::MSS;
-use qrecovery::space::ReliableTransmit;
+use qcongestion::{congestion::MSS, CongestionControl};
+use qrecovery::space::{Epoch, ReliableTransmit};
+
+use crate::path;
 
 /// In order to fill the packet efficiently and reduce unnecessary copying, the data of each
 /// space is directly written on the Buffer. However, the length of the packet header is
@@ -36,23 +38,24 @@ pub fn read_space_and_encrypt<T>(
     space: &impl ReliableTransmit,
     transport_limit: &mut TransportLimit,
     ack_pkt: Option<(u64, Instant)>,
-) -> (usize, usize)
+) -> (u64, usize, usize, bool)
 where
     for<'a> &'a mut [u8]: Write<T>,
     LongHeader<T>: GetType + Encode,
 {
     let keys = match keys.get_local_keys() {
         Some(keys) => keys,
-        None => return (0, 0),
+        None => return (0, 0, 0, false),
     };
 
     let max_header_size = header.size() + 2; // 2 bytes reserved for packet length, max 16KB
     let (mut hdr_buf, body_buf) = buffer.split_at_mut(max_header_size);
 
-    let (pn, pn_size, mut body_len) = space.read(transport_limit, body_buf, ack_pkt);
+    let (pn, pn_size, mut body_len, is_ack_eliciting) =
+        space.read(transport_limit, body_buf, ack_pkt);
     if body_len == 0 {
         // nothing to send
-        return (0, 0);
+        return (0, 0, 0, false);
     }
 
     let mut body_buf = &mut body_buf[body_len..];
@@ -113,7 +116,7 @@ where
         .encrypt_in_place(sample, &mut header[0], &mut pn_max[..pn_size])
         .unwrap();
 
-    (offset, pkt_size)
+    (pn, offset, pkt_size, is_ack_eliciting)
 }
 
 pub fn read_1rtt_data_and_encrypt(
@@ -123,18 +126,18 @@ pub fn read_1rtt_data_and_encrypt(
     space: &impl ReliableTransmit,
     transport_limit: &mut TransportLimit,
     ack_pkt: Option<(u64, Instant)>,
-) -> usize {
+) -> (u64, usize, bool) {
     let (hpk, pk) = match keys.get_local_keys() {
         Some(keys) => keys,
-        None => return 0,
+        None => return (0, 0, false),
     };
 
     let header_size = header.size();
     let (mut hdr_buf, body_buf) = buffer.split_at_mut(header_size);
 
-    let (pn, pn_size, body_len) = space.read(transport_limit, body_buf, ack_pkt);
+    let (pn, pn_size, body_len, is_ack_eliciting) = space.read(transport_limit, body_buf, ack_pkt);
     if body_len == 0 {
-        return 0;
+        return (0, 0, false);
     }
 
     hdr_buf.put_one_rtt_header(header);
@@ -160,35 +163,50 @@ pub fn read_1rtt_data_and_encrypt(
         .encrypt_in_place(sample, &mut header[0], &mut pn_max[..pn_size])
         .unwrap();
 
-    pkt_size
+    (pn, pkt_size, is_ack_eliciting)
 }
-pub fn read_long_header_space<T>(
+
+pub(crate) fn read_long_header_space<T>(
     buffers: &mut Vec<Vec<u8>>,
     header: &LongHeader<T>,
     fill_policy: FillPolicy,
     keys: ArcKeys,
     space: &impl ReliableTransmit,
-    limit: &mut TransportLimit,
-    ack_pkt: Option<(u64, Instant)>,
+    epoch: Epoch,
+    guard: &mut path::SendGuard,
 ) where
     for<'a> &'a mut [u8]: Write<T>,
     LongHeader<T>: GetType + Encode,
 {
     let mut buffer = vec![0u8; MSS];
     let mut offset = 0;
-    while limit.available() > 0 {
-        let (_, pkt_size) = read_space_and_encrypt(
+
+    let mut ack_pkt = guard.ack_pkts[epoch];
+
+    while guard.transport_limit.available() > 0 {
+        let (pn, _, pkt_size, is_ack_eliciting) = read_space_and_encrypt(
             &mut buffer[offset..],
             header,
             fill_policy,
             keys.clone(),
             space,
-            limit,
+            &mut guard.transport_limit,
             ack_pkt,
         );
+
+        if pkt_size != 0 {
+            let ack = ack_pkt.map(|ack| ack.0);
+            guard
+                .cc
+                .on_pkt_sent(epoch, pn, is_ack_eliciting, pkt_size, is_ack_eliciting, ack);
+            // Send the ack frame only once
+            ack_pkt = None;
+        }
+
         if pkt_size == 0 && offset == 0 {
             break;
         }
+
         if offset < MSS && pkt_size != 0 {
             offset += pkt_size;
         } else {
@@ -199,28 +217,41 @@ pub fn read_long_header_space<T>(
     }
 }
 
-pub fn read_short_header_space(
+pub(crate) fn read_short_header_space(
     buffers: &mut Vec<Vec<u8>>,
     header: OneRttHeader,
     keys: ArcOneRttKeys,
     space: &impl ReliableTransmit,
-    limit: &mut TransportLimit,
-    ack_pkt: Option<(u64, Instant)>,
+    epoch: Epoch,
+    guard: &mut path::SendGuard,
 ) {
     let mut buffer = vec![0u8; MSS];
     let mut offset = 0;
-    while limit.available() > 0 {
-        let pkt_size = read_1rtt_data_and_encrypt(
+
+    let mut ack_pkt = guard.ack_pkts[epoch];
+
+    while guard.transport_limit.available() > 0 {
+        let (pn, pkt_size, is_ack_eliciting) = read_1rtt_data_and_encrypt(
             &mut buffer[offset..],
             &header,
             keys.clone(),
             space,
-            limit,
+            &mut guard.transport_limit,
             ack_pkt,
         );
+
+        if pkt_size != 0 {
+            let ack = ack_pkt.map(|ack| ack.0);
+            guard
+                .cc
+                .on_pkt_sent(epoch, pn, is_ack_eliciting, pkt_size, is_ack_eliciting, ack);
+            // Send the ack frame only once
+            ack_pkt = None;
+        }
         if pkt_size == 0 && offset == 0 {
             break;
         }
+
         if offset < MSS && pkt_size != 0 {
             offset += pkt_size;
         } else {
@@ -230,6 +261,5 @@ pub fn read_short_header_space(
         }
     }
 }
-
 #[cfg(test)]
 mod tests {}

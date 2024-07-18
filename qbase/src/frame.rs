@@ -228,6 +228,12 @@ pub enum ReliableFrame {
     Stream(StreamCtlFrame),
 }
 
+impl ReliableFrame {
+    pub fn is_ack_eliciting(&self) -> bool {
+        !matches!(self, ReliableFrame::Conn(ConnFrame::Close(_)))
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Frame {
     Pure(PureFrame),

@@ -78,7 +78,7 @@ impl<K: NoDataSpaceKind> ReliableTransmit for ArcSpace<NoDataSpace<K>> {
         limit: &mut TransportLimit,
         mut buf: &mut [u8],
         ack_pkt: Option<(u64, Instant)>,
-    ) -> (u64, usize, usize) {
+    ) -> (u64, usize, usize, bool) {
         let remain = limit.available();
 
         let mut send_guard = self.0.sent_pkt_records.send();
@@ -88,7 +88,7 @@ impl<K: NoDataSpaceKind> ReliableTransmit for ArcSpace<NoDataSpace<K>> {
             buf.put_packet_number(encoded_pn);
             limit.record_write(encoded_pn.size());
         } else {
-            return (pn, encoded_pn.size(), 0);
+            return (pn, encoded_pn.size(), 0, false);
         }
 
         if let Some((frame, n)) = self.read_ack_frame_until(buf, ack_pkt) {
@@ -96,12 +96,16 @@ impl<K: NoDataSpaceKind> ReliableTransmit for ArcSpace<NoDataSpace<K>> {
             buf = &mut buf[n..];
         }
 
+        let mut is_ack_eliciting = false;
         {
             let mut reliable_frame_reader = self.reliable_frame_queue.read();
             while let Some(frame) = reliable_frame_reader.front() {
                 let available = limit.available();
                 if available < frame.max_encoding_size() && available < frame.encoding_size() {
                     break;
+                }
+                if frame.is_ack_eliciting() {
+                    is_ack_eliciting = true;
                 }
                 buf.put_frame(frame);
                 let frame = reliable_frame_reader.pop_front().unwrap();
@@ -113,9 +117,15 @@ impl<K: NoDataSpaceKind> ReliableTransmit for ArcSpace<NoDataSpace<K>> {
         if let Some((crypto_frame, n)) = self.crypto_stream.try_read_data(limit, buf) {
             send_guard.record_data_frame(DataFrame::Crypto(crypto_frame));
             buf = &mut buf[n..];
+            is_ack_eliciting = true;
         }
 
-        (pn, encoded_pn.size(), remain - buf.remaining_mut())
+        (
+            pn,
+            encoded_pn.size(),
+            remain - buf.remaining_mut(),
+            is_ack_eliciting,
+        )
     }
 
     fn on_ack(&self, ack_frame: AckFrame) {

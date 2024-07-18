@@ -20,7 +20,7 @@ use qbase::{
     },
     util::ArcAsyncDeque,
 };
-use qrecovery::reliable::rcvdpkt::ArcRcvdPktRecords;
+use qrecovery::{reliable::rcvdpkt::ArcRcvdPktRecords, space::Epoch};
 use tokio::sync::mpsc;
 
 use crate::path::ArcPath;
@@ -51,6 +51,7 @@ impl PacketPayload {
         crypto_frame_queue: Option<&ArcAsyncDeque<(CryptoFrame, Bytes)>>,
         close_frame_queue: Option<&ArcAsyncDeque<ConnectionCloseFrame>>,
         ack_frame_queue: Option<&ArcAsyncDeque<AckFrame>>,
+        epoch: Epoch,
     ) -> Result<bool, Error> {
         let packet = self;
         let mut conn_id_frame_writer = conn_id_frame_queue.map(ArcAsyncDeque::writer);
@@ -64,6 +65,8 @@ impl PacketPayload {
         let mut close_frame_writer = close_frame_queue.map(ArcAsyncDeque::writer);
         let mut ack_frame_writer = ack_frame_queue.map(ArcAsyncDeque::writer);
         // let mut path_frame_writer = path.frames().writer();
+
+        let mut ack_frames = Vec::new();
         FrameReader::new(packet.payload)
             .try_fold(false, |is_ack_eliciting, frame| {
                 let frame = frame.map_err(Error::from)?;
@@ -81,6 +84,8 @@ impl PacketPayload {
                         let Some(ack_frame_writer) = ack_frame_writer.as_mut() else {
                             return Ok(is_ack_eliciting);
                         };
+                        // rollback may occur if an error occurs
+                        ack_frames.push(ack.clone());
                         ack_frame_writer.push(ack);
                         Ok(is_ack_eliciting)
                     }
@@ -209,6 +214,11 @@ impl PacketPayload {
                     writer.rollback();
                 }
             })
+            .inspect(|_| {
+                for ack in ack_frames {
+                    packet.path.on_ack(epoch, &ack);
+                }
+            })
     }
 
     pub fn dispatch_initial_space(
@@ -228,6 +238,7 @@ impl PacketPayload {
             Some(crypto_frame_queue),
             Some(close_frame_queue),
             Some(ack_frame_queue),
+            Epoch::Initial,
         )
     }
 
@@ -259,6 +270,7 @@ impl PacketPayload {
             None,
             Some(close_frame_queue),
             None,
+            Epoch::Data,
         )
     }
 
@@ -286,6 +298,7 @@ impl PacketPayload {
             Some(crypto_frame_queue),
             Some(close_frame_queue),
             Some(ack_frame_queue),
+            Epoch::Data,
         )
     }
 
@@ -304,6 +317,7 @@ impl PacketPayload {
             None,
             Some(close_frame_queue),
             None,
+            Epoch::Data,
         )
     }
 }

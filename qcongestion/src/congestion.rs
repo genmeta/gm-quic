@@ -497,14 +497,14 @@ where
         &self,
         space: Epoch,
         pn: u64,
-        is_ack_elicition: bool,
+        is_ack_eliciting: bool,
         sent_bytes: usize,
         in_flight: bool,
         ack: Option<u64>,
     ) {
         let mut guard = self.0.lock().unwrap();
         let now = Instant::now();
-        guard.on_packet_sent(pn, space, is_ack_elicition, in_flight, sent_bytes, now);
+        guard.on_packet_sent(pn, space, is_ack_eliciting, in_flight, sent_bytes, now);
 
         guard.last_sent_time = now;
         // 如果已经发送了 largest_ack_eliciting_packet ack, 就不用记录再发送
@@ -521,12 +521,12 @@ where
         guard.on_ack_rcvd(space, ack_frame, now);
     }
 
-    fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_elicition: bool) {
+    fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_eliciting: bool) {
         let now = Instant::now();
         let recved = Recved { pn, recv_time: now };
         let mut guard = self.0.lock().unwrap();
         guard.on_datagram_rcvd(now);
-        if !is_ack_elicition {
+        if !is_ack_eliciting {
             return;
         }
 
