@@ -14,6 +14,7 @@ use qbase::{
     error::{Error, ErrorKind},
     frame::{ConnFrame, ConnectionCloseFrame, HandshakeDoneFrame},
     packet::{
+        header::Encode,
         keys::{ArcKeys, ArcOneRttKeys},
         HandshakePacket, InitialPacket, OneRttPacket, SpacePacket, SpinBit, ZeroRttPacket,
     },
@@ -129,6 +130,8 @@ pub struct RawConnection {
 impl RawConnection {
     pub fn recv_protected_pkt_via(&self, pkt: SpacePacket, usc: &ArcUsc, pathway: Pathway) {
         let path = self.get_path(pathway, usc);
+        // Increase anti-amplification attack protection credit limit
+        path.deposit(pkt.size());
         // TODO: 在不同状态会有不同反应
         match pkt {
             SpacePacket::Initial(pkt) => self.packet_queues.send_initial_packet(pkt, path),

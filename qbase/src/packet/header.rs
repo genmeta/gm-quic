@@ -37,6 +37,7 @@ pub trait HasLength {
 /// so this trait needs to be implemented.
 /// However, the length field of the packet header is variable-length encoded and
 /// requires special handling, which is not considered within the scope of Encode::size.
+#[enum_dispatch]
 pub trait Encode {
     fn size(&self) -> usize {
         0
