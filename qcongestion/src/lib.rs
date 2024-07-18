@@ -73,14 +73,15 @@ pub trait CongestionControl {
 
     /// 获取当前 path 的 pto time
     fn get_pto_time(&self, epoch: Epoch) -> Duration;
-}
 
-pub trait ObserveHandshake {
-    fn is_handshake_done(&self) -> bool;
+    /// 更新抗放大攻击状态
+    fn anti_amplification_limit_on(&self);
 
-    fn has_handshake_keys(&self) -> bool;
-}
+    fn anti_amplification_limit_off(&self);
 
-pub trait ObserveAntiAmplification {
-    fn is_anti_amplification(&self) -> bool;
+    /// 更新握手密钥状态
+    fn on_get_handshake_keys(&self);
+
+    /// 握手完成
+    fn on_handshake_done(&self);
 }
