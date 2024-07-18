@@ -271,7 +271,6 @@ impl ArcConnectionController {
             ConnectionStateData::Handshaking {
                 hs_keys,
                 zero_rtt_keys,
-                one_rtt_keys,
                 ..
             } => {
                 hs_keys.invalid();
