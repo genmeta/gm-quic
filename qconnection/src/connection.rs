@@ -32,18 +32,12 @@ use crate::{
     controller::ArcFlowController,
     crypto::TlsIO,
     handshake,
-    path::{
-        self,
-        observer::{ConnectionObserver, HandShakeObserver},
-        ArcPath, Pathway,
-    },
+    path::{self, ArcPath, Pathway},
 };
 
 pub struct RawConnection {
     pub pathes: DashMap<Pathway, ArcPath>,
     pub cid_registry: Registry,
-    // 创建新的path用的到，path中的拥塞控制器需要
-    pub connection_observer: ConnectionObserver,
 
     pub controller: ArcConnectionController,
 }
@@ -141,14 +135,10 @@ pub fn create_connection(
         rcvd_ccf_tx: Some(rcvd_ccf_tx),
     });
 
-    let handshake_observer = HandShakeObserver::new(controller.state.clone());
-    let connection_observer = ConnectionObserver { handshake_observer };
-
     let connection = RawConnection {
         cid_registry: cid_registry.clone(),
         pathes: DashMap::new(),
         controller: controller.clone(),
-        connection_observer,
     };
 
     let connection_handle = ArcConnectionHandle(Arc::new(ConnectionHandle {

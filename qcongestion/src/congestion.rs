@@ -14,7 +14,6 @@ use crate::{
     new_reno::NewReno,
     pacing::{self, Pacer},
     rtt::{ArcRtt, INITIAL_RTT},
-    ObserveAntiAmplification, ObserveHandshake,
 };
 
 const K_GRANULARITY: Duration = Duration::from_millis(1);
@@ -30,13 +29,10 @@ pub enum CongestionAlgorithm {
 }
 
 // imple RFC 9002 Appendix A. Loss Recovery
-pub struct CongestionController<OC, OP> {
-    connection_observer: OC,
-    path_observer: OP,
+pub struct CongestionController {
     // congestion controlle algorithm: bbr or cubic
     algorithm: Box<dyn Algorithm + Send>,
     rtt: ArcRtt,
-    // todo: 内部需要一个循环任务检查
     loss_timer: LossDetectionTimer,
     // The number of times a PTO has been sent without receiving an acknowledgment.
     // Use to pto backoff
@@ -64,20 +60,15 @@ pub struct CongestionController<OC, OP> {
     loss_waker: Option<Waker>,
     ack_waker: Option<Waker>,
     pto_waker: Option<Waker>,
+
+    is_anti_amplification_limit: bool,
+    has_handshake_keys: bool,
+    is_handshake_done: bool,
 }
 
-impl<OC, OP> CongestionController<OC, OP>
-where
-    OC: ObserveHandshake,
-    OP: ObserveAntiAmplification,
-{
+impl CongestionController {
     // A.4. Initialization
-    fn new(
-        algorithm: CongestionAlgorithm,
-        max_ack_delay: Duration,
-        connection_observer: OC,
-        path_observer: OP,
-    ) -> Self {
+    fn new(algorithm: CongestionAlgorithm, max_ack_delay: Duration) -> Self {
         let algorithm: Box<dyn Algorithm> = match algorithm {
             CongestionAlgorithm::Bbr => Box::new(bbr::Bbr::new()),
             CongestionAlgorithm::NewReno => Box::new(NewReno::new()),
@@ -95,8 +86,6 @@ where
             loss_time: [None, None, None],
             sent_packets: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
             largest_ack_eliciting_packet: [None, None, None],
-            connection_observer,
-            path_observer,
             pacer: Pacer::new(INITIAL_RTT, INITIAL_CWND, MSS, now, None),
             last_sent_time: now,
             loss_pns: None,
@@ -105,6 +94,9 @@ where
             loss_waker: None,
             ack_waker: None,
             pto_waker: None,
+            is_anti_amplification_limit: false,
+            has_handshake_keys: false,
+            is_handshake_done: false,
         }
     }
 
@@ -139,7 +131,7 @@ where
     // todo: on_revd_datagram
     pub fn on_datagram_rcvd(&mut self, now: Instant) {
         // If this datagram unblocks the server, arm the PTO timer to avoid deadlock.
-        if self.path_observer.is_anti_amplification() {
+        if self.is_anti_amplification_limit {
             self.set_loss_timer();
             if self.loss_timer.is_timeout(now) {
                 // Execute PTO if it would have expired while the amplification limit applied.
@@ -244,7 +236,7 @@ where
             return;
         }
 
-        if self.path_observer.is_anti_amplification() {
+        if self.is_anti_amplification_limit {
             // server's timer is not set if nothing can be sent
             self.loss_timer.cancel();
             return;
@@ -275,7 +267,7 @@ where
         // probe timeout
         if self.no_ack_eliciting_in_flight() {
             assert!(self.server_completed_address_validation());
-            if self.connection_observer.is_handshake_done() {
+            if self.is_handshake_done {
                 self.pto_space = Some(Epoch::Handshake);
             } else {
                 self.pto_space = Some(Epoch::Initial);
@@ -313,7 +305,7 @@ where
         let rttvar = self.rtt.rttvar();
         let mut duration = smoothed_rtt + std::cmp::max(K_GRANULARITY, rttvar * 4);
         // 握手已完成, 则应该考虑 max_ack_delay
-        if epoch == Epoch::Data && self.connection_observer.is_handshake_done() {
+        if epoch == Epoch::Data && self.is_handshake_done {
             duration += self.max_ack_delay
         }
         duration * 2_u32.pow(self.pto_count)
@@ -333,7 +325,7 @@ where
             if *space == Epoch::Data {
                 // An endpoint MUST NOT set its PTO timer for the Application Data
                 // packet number space until the handshake is confirmed
-                if !self.connection_observer.is_handshake_done() {
+                if !self.is_handshake_done {
                     return pto_time;
                 }
                 duration += self.max_ack_delay * 2_u32.pow(self.pto_count);
@@ -417,8 +409,7 @@ where
 
     fn server_completed_address_validation(&mut self) -> bool {
         // is server return true
-        let observer = &self.connection_observer;
-        observer.has_handshake_keys() || observer.is_handshake_done()
+        self.has_handshake_keys || self.is_handshake_done
     }
 
     fn process_ecn(&mut self, _: Epoch, _: EcnCounts) {
@@ -428,40 +419,29 @@ where
 
 /// Shared congestion controller
 #[derive(Clone)]
-pub struct ArcCC<OC, OP>(Arc<Mutex<CongestionController<OC, OP>>>);
+pub struct ArcCC(Arc<Mutex<CongestionController>>);
 
-impl<OC, OP> ArcCC<OC, OP>
-where
-    OC: ObserveHandshake,
-    OP: ObserveAntiAmplification,
-{
-    pub fn new(
-        algorithm: CongestionAlgorithm,
-        max_ack_delay: Duration,
-        connection_observer: OC,
-        path_observer: OP,
-    ) -> Self {
+impl ArcCC {
+    pub fn new(algorithm: CongestionAlgorithm, max_ack_delay: Duration) -> Self {
         ArcCC(Arc::new(Mutex::new(CongestionController::new(
             algorithm,
             max_ack_delay,
-            connection_observer,
-            path_observer,
         ))))
     }
 }
 
-impl<OC, OP> super::CongestionControl for ArcCC<OC, OP>
-where
-    OC: ObserveHandshake,
-    OP: ObserveAntiAmplification,
-{
+impl super::CongestionControl for ArcCC {
     fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize> {
         let mut guard = self.0.lock().unwrap();
+
+        let now = Instant::now();
+        if guard.loss_timer.is_timeout(now) {
+            guard.on_loss_timeout(now);
+        }
 
         let srtt = guard.rtt.smoothed_rtt();
         let cwnd = guard.algorithm.cwnd();
         let mtu = MSS;
-        let now = Instant::now();
         let rate = guard.algorithm.pacing_rate();
         let tokens = guard.pacer.schedule(srtt, cwnd, mtu, now, rate);
         if tokens >= mtu {
@@ -568,6 +548,27 @@ where
 
     fn get_pto_time(&self, epoch: Epoch) -> Duration {
         self.0.lock().unwrap().get_pto_time(epoch)
+    }
+
+    fn on_get_handshake_keys(&self) {
+        let mut gurad = self.0.lock().unwrap();
+        gurad.has_handshake_keys = true;
+    }
+
+    fn on_handshake_done(&self) {
+        let mut guard = self.0.lock().unwrap();
+        guard.is_handshake_done = true;
+        guard.rtt.on_handshake_done();
+    }
+
+    fn anti_amplification_limit_off(&self) {
+        let mut guard = self.0.lock().unwrap();
+        guard.is_anti_amplification_limit = false;
+    }
+
+    fn anti_amplification_limit_on(&self) {
+        let mut guard = self.0.lock().unwrap();
+        guard.is_anti_amplification_limit = true;
     }
 }
 
@@ -854,30 +855,7 @@ mod tests {
         }
     }
 
-    struct Mock;
-
-    impl ObserveHandshake for Mock {
-        fn is_handshake_done(&self) -> bool {
-            false
-        }
-
-        fn has_handshake_keys(&self) -> bool {
-            false
-        }
-    }
-
-    impl ObserveAntiAmplification for Mock {
-        fn is_anti_amplification(&self) -> bool {
-            false
-        }
-    }
-
-    fn create_congestion_controller_for_test() -> CongestionController<Mock, Mock> {
-        CongestionController::new(
-            CongestionAlgorithm::Bbr,
-            Duration::from_millis(100),
-            Mock,
-            Mock,
-        )
+    fn create_congestion_controller_for_test() -> CongestionController {
+        CongestionController::new(CongestionAlgorithm::Bbr, Duration::from_millis(100))
     }
 }

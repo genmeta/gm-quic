@@ -12,7 +12,6 @@ use anti_amplifier::ANTI_FACTOR;
 use bytes::BufMut;
 use futures::{Future, FutureExt};
 use log::*;
-use observer::{ConnectionObserver, PathObserver};
 use qbase::{
     cid::{ArcCidCell, ConnectionId, MAX_CID_SIZE},
     frame::{AckFrame, ConnFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame},
@@ -37,8 +36,6 @@ pub mod validate;
 use qunreliable::DatagramFlow;
 use validate::ValidatorState;
 pub use validate::{Transponder, Validator};
-
-pub mod observer;
 
 use crate::{
     connection::{ConnectionState, ConnectionStateData, RawConnection},
@@ -379,7 +376,7 @@ pub struct RawPath {
 
     // 拥塞控制器。另外还有连接级的流量控制、流级别的流量控制，以及抗放大攻击
     // 但这只是正常情况下。当连接处于Closing状态时，庞大的拥塞控制器便不再适用，而是简单的回应ConnectionCloseFrame。
-    cc: ArcCC<ConnectionObserver, PathObserver>,
+    cc: ArcCC,
 
     // 抗放大攻击控制器, 服务端地址验证之前有效
     // 连接建立隐式提供了地址验证
@@ -398,29 +395,17 @@ pub struct RawPath {
 }
 
 impl RawPath {
-    fn new(
-        usc: ArcUsc,
-        max_ack_delay: Duration,
-        connection_observer: ConnectionObserver,
-        peer_cid: ArcCidCell,
-        state: PathState,
-    ) -> Self {
+    fn new(usc: ArcUsc, max_ack_delay: Duration, peer_cid: ArcCidCell, state: PathState) -> Self {
         use qcongestion::congestion::CongestionAlgorithm;
-
         let anti_amplifier = ArcAntiAmplifier::default();
-        let path_observer = PathObserver::new(anti_amplifier.clone());
+
         Self {
             usc,
             peer_cid,
             validator: Validator::default(),
             transponder: Transponder::default(),
             anti_amplifier: Some(anti_amplifier),
-            cc: ArcCC::new(
-                CongestionAlgorithm::Bbr,
-                max_ack_delay,
-                connection_observer,
-                path_observer,
-            ),
+            cc: ArcCC::new(CongestionAlgorithm::Bbr, max_ack_delay),
             state,
         }
     }
@@ -428,8 +413,18 @@ impl RawPath {
     fn poll_send(&mut self, cx: &mut Context<'_>) -> Poll<SendGuard> {
         let congestion_control = ready!(self.cc.poll_send(cx));
         let anti_amplification = if let Some(anti_amplifier) = self.anti_amplifier.as_ref() {
-            ready!(anti_amplifier.poll_get_credit(cx))
+            match anti_amplifier.poll_get_credit(cx) {
+                Poll::Ready(credit) => {
+                    self.cc.anti_amplification_limit_off();
+                    credit
+                }
+                Poll::Pending => {
+                    self.cc.anti_amplification_limit_on();
+                    return Poll::Pending;
+                }
+            }
         } else {
+            self.cc.anti_amplification_limit_off();
             None
         };
 
@@ -464,14 +459,12 @@ impl ArcPath {
     pub fn new(
         usc: ArcUsc,
         max_ack_delay: Duration,
-        connection_observer: ConnectionObserver,
         peer_cid: ArcCidCell,
         state: PathState,
     ) -> Self {
         Self(Arc::new(Mutex::new(RawPath::new(
             usc,
             max_ack_delay,
-            connection_observer,
             peer_cid,
             state,
         ))))
@@ -675,7 +668,6 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
     let path = ArcPath::new(
         usc.clone(),
         Duration::from_millis(100),
-        connection.connection_observer.clone(),
         connection.cid_registry.remote.lock_guard().apply_cid(),
         path_state,
     );
@@ -689,6 +681,7 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                 .on_enter_state(ConnectionState::Handshaking);
             async move {
                 on_enter_handshake.await;
+                path.0.lock().unwrap().cc.on_get_handshake_keys();
                 path.0.lock().unwrap().state.enter_handshake();
             }
         });
@@ -703,6 +696,7 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                 .on_enter_state(ConnectionState::Normal);
             async move {
                 on_enter_normal.await;
+                path.0.lock().unwrap().cc.on_handshake_done();
                 path.0.lock().unwrap().state.enter_handshake_done();
             }
         });
@@ -908,7 +902,7 @@ pub struct SendGuard {
     pub usc: ArcUsc,
     pub dcid: ConnectionId,
     pub ack_pkts: [Option<(u64, Instant)>; 3],
-    pub cc: ArcCC<ConnectionObserver, PathObserver>,
+    pub cc: ArcCC,
 }
 
 pub struct LossState(ArcPath);
