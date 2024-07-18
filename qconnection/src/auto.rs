@@ -51,7 +51,6 @@ impl PacketPayload {
         crypto_frame_queue: Option<&ArcAsyncDeque<(CryptoFrame, Bytes)>>,
         close_frame_queue: Option<&ArcAsyncDeque<ConnectionCloseFrame>>,
         ack_frame_queue: Option<&ArcAsyncDeque<AckFrame>>,
-        epoch: Epoch,
     ) -> Result<bool, Error> {
         let packet = self;
         let mut conn_id_frame_writer = conn_id_frame_queue.map(ArcAsyncDeque::writer);
@@ -215,6 +214,15 @@ impl PacketPayload {
                 }
             })
             .inspect(|_| {
+                use qbase::packet::r#type::long;
+                let epoch = match packet.r#type {
+                    Type::Long(long::Type::V1(long::Version::INITIAL)) => Epoch::Initial,
+                    Type::Long(long::Type::V1(long::Version::HANDSHAKE)) => Epoch::Handshake,
+                    Type::Long(long::Type::V1(long::Version::ZERO_RTT)) | Type::Short(_) => {
+                        Epoch::Data
+                    }
+                    _ => unreachable!(),
+                };
                 for ack in ack_frames {
                     packet.path.on_ack(epoch, &ack);
                 }
@@ -238,7 +246,6 @@ impl PacketPayload {
             Some(crypto_frame_queue),
             Some(close_frame_queue),
             Some(ack_frame_queue),
-            Epoch::Initial,
         )
     }
 
@@ -270,7 +277,6 @@ impl PacketPayload {
             None,
             Some(close_frame_queue),
             None,
-            Epoch::Data,
         )
     }
 
@@ -298,7 +304,6 @@ impl PacketPayload {
             Some(crypto_frame_queue),
             Some(close_frame_queue),
             Some(ack_frame_queue),
-            Epoch::Data,
         )
     }
 
@@ -317,7 +322,6 @@ impl PacketPayload {
             None,
             Some(close_frame_queue),
             None,
-            Epoch::Data,
         )
     }
 }
