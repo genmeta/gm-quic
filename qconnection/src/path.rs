@@ -123,8 +123,18 @@ pub enum PathState {
 impl PathState {
     pub fn enter_handshake(&mut self) {
         let state = std::mem::replace(self, PathState::Invalid);
-        *self = match state {
-            PathState::Initial {
+        if let PathState::Initial {
+            hs_keys,
+            hs_space,
+            one_rtt_keys,
+            data_space,
+            flow_ctrl,
+            spin,
+            datagram_flow,
+            ..
+        } = state
+        {
+            *self = PathState::Handshaking {
                 hs_keys,
                 hs_space,
                 one_rtt_keys,
@@ -132,63 +142,61 @@ impl PathState {
                 flow_ctrl,
                 spin,
                 datagram_flow,
-                ..
-            } => PathState::Handshaking {
-                hs_keys,
-                hs_space,
-                one_rtt_keys,
-                data_space,
-                flow_ctrl,
-                spin,
-                datagram_flow,
-            },
-            _ => unreachable!(),
+            }
         }
     }
 
     pub fn enter_handshake_done(&mut self) {
         let state = std::mem::replace(self, PathState::Invalid);
-        *self = match state {
-            PathState::Handshaking {
+        if let PathState::Handshaking {
+            one_rtt_keys,
+            data_space,
+            flow_ctrl,
+            spin,
+            datagram_flow,
+            ..
+        } = state
+        {
+            *self = PathState::Normal {
                 one_rtt_keys,
                 data_space,
                 flow_ctrl,
                 spin,
                 datagram_flow,
-                ..
-            } => PathState::Normal {
-                one_rtt_keys,
-                data_space,
-                flow_ctrl,
-                spin,
-                datagram_flow,
-            },
-            _ => unreachable!(),
+            }
         }
     }
 
     pub fn reliable_space(&self, epoch: Epoch) -> Option<Space> {
         match epoch {
-            Epoch::Initial => match self {
-                Self::Initial { init_space, .. } => Some(init_space.clone().into()),
-                _ => None,
-            },
-            Epoch::Handshake => match self {
-                Self::Initial { hs_space, .. } | Self::Handshaking { hs_space, .. } => {
-                    Some(hs_space.clone().into())
-                }
-                _ => None,
-            },
-            Epoch::Data => Some(self.get_data_space().clone().into()),
+            Epoch::Initial => self.try_get_initial_space().map(Into::into),
+            Epoch::Handshake => self.try_get_handshake_space().map(Into::into),
+            Epoch::Data => self.try_get_data_space().map(Into::into),
         }
     }
 
-    pub fn get_data_space(&self) -> &DataSpace {
+    fn try_get_initial_space(&self) -> Option<InitialSpace> {
+        match self {
+            Self::Initial { init_space, .. } => Some(init_space.clone()),
+            _ => None,
+        }
+    }
+
+    fn try_get_handshake_space(&self) -> Option<HandshakeSpace> {
+        match self {
+            Self::Initial { hs_space, .. } | Self::Handshaking { hs_space, .. } => {
+                Some(hs_space.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn try_get_data_space(&self) -> Option<DataSpace> {
         match self {
             Self::Initial { data_space, .. }
             | Self::Handshaking { data_space, .. }
-            | Self::Normal { data_space, .. } => data_space,
-            _ => unreachable!(),
+            | Self::Normal { data_space, .. } => Some(data_space.clone()),
+            _ => None,
         }
     }
 
@@ -532,16 +540,51 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
     // path 的任务在连接迁移后或整个连接断开后终止
     // 考虑多路径并存，在连接迁移后，旧路径可以发起路径验证看旧路径是否还有效判断是否终止
 
+    let path_state = connection
+        .controller
+        .state_data_guard()
+        .create_path_state()?;
+
+    debug_assert!(!matches!(path_state, PathState::Invalid));
+
+    let path_stata_is_initial = matches!(path_state, PathState::Initial { .. });
+    let path_stata_handshaking = !matches!(path_state, PathState::Normal { .. });
+
     let path = ArcPath::new(
         usc.clone(),
         Duration::from_millis(100),
         connection.connection_observer.clone(),
         connection.cid_registry.remote.lock_guard().apply_cid(),
-        connection
-            .controller
-            .state_data_guard()
-            .create_path_state()?,
+        path_state,
     );
+
+    if path_stata_is_initial {
+        // spawn_on_enter_handshake
+        tokio::spawn({
+            let path = path.clone();
+            let on_enter_handshake = connection
+                .controller
+                .on_enter_state(ConnectionState::Handshaking);
+            async move {
+                on_enter_handshake.await;
+                path.0.lock().unwrap().state.enter_handshake();
+            }
+        });
+    }
+
+    if path_stata_handshaking {
+        // spawn_on_enter_normal
+        tokio::spawn({
+            let path = path.clone();
+            let on_enter_normal = connection
+                .controller
+                .on_enter_state(ConnectionState::Normal);
+            async move {
+                on_enter_normal.await;
+                path.0.lock().unwrap().state.enter_handshake_done();
+            }
+        });
+    }
 
     // spawn_may_loss
     let may_loss_handle = tokio::spawn({
@@ -589,11 +632,25 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
         }
     });
 
-    // spawn_send
+    tokio::spawn({
+        let path = path.clone();
+        let on_enter_closing = connection
+            .controller
+            .on_enter_state(ConnectionState::Closing);
+        async move {
+            on_enter_closing.await;
+            path.0.lock().unwrap().state = PathState::Invalid;
+            indicate_ack_handle.abort();
+            may_loss_handle.abort();
+            probe_timeout_handle.abort();
+        }
+    });
+
+    // spawn_send (auto-clean)
     tokio::spawn({
         let path = path.clone();
         let cid_registry = connection.cid_registry.clone();
-        let conn_state = connection.controller.clone();
+        let conn_controller = connection.controller.clone();
         async move {
             let predicate = |_: &ConnectionId| true;
 
@@ -601,14 +658,14 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                 Ok(frame) => {
                     let token = (*frame.reset_token).to_vec();
                     let scid = frame.id;
-                    path.0
-                        .lock()
-                        .unwrap()
-                        .state
-                        .get_data_space()
+                    let Some(dataspace) = path.0.lock().unwrap().state.try_get_data_space() else {
+                        return;
+                    };
+
+                    dataspace
                         .reliable_frame_queue
                         .write()
-                        .push_conn_frame(ConnFrame::NewConnectionId(frame.clone()));
+                        .push_conn_frame(ConnFrame::NewConnectionId(frame));
                     (scid, token)
                 }
                 Err(_) => {
@@ -703,14 +760,9 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                 }
             };
 
-            while conn_state.get_state() < ConnectionState::Closing {
+            while conn_controller.get_state() < ConnectionState::Closing {
                 send_once().await;
             }
-
-            // 释放资源
-            indicate_ack_handle.abort();
-            may_loss_handle.abort();
-            probe_timeout_handle.abort();
         }
     });
 
