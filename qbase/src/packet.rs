@@ -1,5 +1,6 @@
 use bytes::BytesMut;
 use deref_derive::{Deref, DerefMut};
+use enum_dispatch::enum_dispatch;
 
 pub mod error;
 
@@ -10,6 +11,7 @@ pub mod r#type;
 pub use r#type::{GetPacketNumberLength, LongClearBits, ShortClearBits};
 
 pub mod header;
+use header::Encode;
 pub use header::{
     HandshakeHeader, Header, InitialHeader, LongHeaderBuilder, OneRttHeader, RetryHeader,
     VersionNegotiationHeader, ZeroRttHeader,
@@ -19,6 +21,7 @@ pub mod number;
 pub use number::{take_pn_len, PacketNumber, WritePacketNumber};
 
 use self::header::GetDcid;
+use crate::cid::ConnectionId;
 
 pub mod decrypt;
 pub mod encrypt;
@@ -32,28 +35,30 @@ pub struct PacketWrapper<H> {
     pub raw_data: BytesMut,
 }
 
+impl<H> Encode for PacketWrapper<H> {
+    fn size(&self) -> usize {
+        self.raw_data.len()
+    }
+}
+
+impl<H: GetDcid> GetDcid for PacketWrapper<H> {
+    fn get_dcid(&self) -> &ConnectionId {
+        self.header.get_dcid()
+    }
+}
+
 pub type InitialPacket = PacketWrapper<InitialHeader>;
 pub type HandshakePacket = PacketWrapper<HandshakeHeader>;
 pub type ZeroRttPacket = PacketWrapper<ZeroRttHeader>;
 pub type OneRttPacket = PacketWrapper<OneRttHeader>;
 
 #[derive(Debug, Clone)]
+#[enum_dispatch(Encode, GetDcid)]
 pub enum SpacePacket {
     Initial(InitialPacket),
     Handshake(HandshakePacket),
     ZeroRtt(ZeroRttPacket),
     OneRtt(OneRttPacket),
-}
-
-impl GetDcid for SpacePacket {
-    fn get_dcid(&self) -> &crate::cid::ConnectionId {
-        match self {
-            Self::Initial(packet) => packet.header.get_dcid(),
-            Self::Handshake(packet) => packet.header.get_dcid(),
-            Self::ZeroRtt(packet) => packet.header.get_dcid(),
-            Self::OneRtt(packet) => packet.header.get_dcid(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

@@ -228,6 +228,14 @@ impl ResponseState {
         }
     }
 
+    fn waiting_ack(&self) -> Option<u64> {
+        if let ResponseState::Challenged(_, Some(pkt)) = self {
+            Some(*pkt)
+        } else {
+            None
+        }
+    }
+
     fn on_response_sent(&mut self, pn: u64) {
         match self {
             ResponseState::Challenged(_, pkt) => {
@@ -238,12 +246,8 @@ impl ResponseState {
         }
     }
 
-    fn on_pkt_acked(&mut self, pn: u64) {
-        if let ResponseState::Challenged(_, pkt) = self {
-            if *pkt == Some(pn) {
-                *self = ResponseState::None;
-            }
-        }
+    fn acked(&mut self) {
+        *self = ResponseState::None;
     }
 
     fn may_loss_pkt(&mut self, pn: u64) {
@@ -277,12 +281,17 @@ impl Transponder {
         self.0.lock().unwrap().on_response_sent(pn);
     }
 
-    pub fn on_pkt_acked(&self, pn: u64) {
-        self.0.lock().unwrap().on_pkt_acked(pn);
+    pub fn to_acked(&self) {
+        self.0.lock().unwrap().acked();
     }
 
     pub fn may_loss_pkt(&self, pn: u64) {
         self.0.lock().unwrap().may_loss_pkt(pn);
+    }
+
+    /// Already sent path challenge response frame waiting for ack
+    pub fn waiting_ack(&self) -> Option<u64> {
+        self.0.lock().unwrap().waiting_ack()
     }
 }
 
@@ -514,14 +523,14 @@ mod tests {
     #[test]
     fn test_transponder_on_pkt_acked() {
         let transponder = Transponder::default();
-        transponder.on_pkt_acked(1);
+        transponder.to_acked();
         {
             let state = transponder.0.lock().unwrap();
             assert!(matches!(*state, ResponseState::None));
         }
         transponder.on_challenge(PathChallengeFrame::random());
         transponder.on_response_sent(1);
-        transponder.on_pkt_acked(1);
+        transponder.to_acked();
         let state = transponder.0.lock().unwrap();
         assert!(matches!(*state, ResponseState::None));
     }

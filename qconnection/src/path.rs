@@ -251,11 +251,15 @@ impl ArcPath {
         };
     }
 
-    // TODO: 在收到 challenge_response 的 ack 时, 需要调用此函数来更新状态
+    /// Path is waiting for the path challenge response frame ack
+    pub fn waiting_response_ack(&self) -> Option<u64> {
+        self.0.lock().unwrap().transponder.waiting_ack()
+    }
+
     /// When the peer receives the ack of the returned challenge response, the
     /// status is updated
-    pub fn on_challenge_response_pkt_acked(&self, pn: u64) {
-        self.0.lock().unwrap().transponder.on_pkt_acked(pn)
+    pub fn on_challenge_response_pkt_acked(&self) {
+        self.0.lock().unwrap().transponder.to_acked()
     }
 
     /// Anti-amplification attack protection, records the amount of data received
@@ -263,15 +267,6 @@ impl ArcPath {
     pub fn deposit(&self, amount: usize) {
         if let Some(anti_amplifier) = self.0.lock().unwrap().anti_amplifier.as_ref() {
             anti_amplifier.deposit(amount);
-        }
-    }
-
-    /// The credit of the current path protection against amplification attacks
-    /// needs to be detected before each packet is sent.
-    pub fn poll_get_anti_amplifier_credit(&self, cx: &mut Context<'_>) -> Poll<Option<usize>> {
-        match self.0.lock().unwrap().anti_amplifier.as_ref() {
-            Some(anti_amplifier) => anti_amplifier.poll_get_credit(cx),
-            None => Poll::Ready(None),
         }
     }
 
@@ -341,6 +336,14 @@ impl ArcPath {
     }
 
     pub fn on_ack(&self, space: Epoch, frame: &AckFrame) {
+        // Whether the pn of path challenge response need to be confirmed is in
+        // the current ack frame
+        if let Some(pn) = self.waiting_response_ack() {
+            if frame.iter().flat_map(|r| r.rev()).any(|rpn| rpn == pn) {
+                self.on_challenge_response_pkt_acked();
+            }
+        }
+
         let guard = self.0.lock().unwrap();
         guard.cc.on_ack(space, frame);
     }
@@ -518,6 +521,8 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                 match ret {
                     Ok(n) => {
                         trace!("sent {} bytes", n);
+                        // Reduce credit limit against amplification attack protection
+                        path.post_sent(n);
                     }
                     Err(e) => {
                         error!("send failed: {}", e);
@@ -620,7 +625,6 @@ impl Future for SendState {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
-    use futures::task::noop_waker_ref;
     use observer::HandShakeObserver;
 
     use super::*;
@@ -653,19 +657,6 @@ mod tests {
     #[tokio::test]
     async fn test_challenge() {
         let path = create_path(18001).await;
-        let mut cx = Context::from_waker(noop_waker_ref());
-
-        assert_eq!(path.poll_get_anti_amplifier_credit(&mut cx), Poll::Pending);
-
-        // Mock receiving a certain amount of data
-        path.deposit(10);
-
-        assert_eq!(
-            path.poll_get_anti_amplifier_credit(&mut cx),
-            Poll::Ready(Some(30))
-        );
-        path.post_sent(30);
-        assert_eq!(path.poll_get_anti_amplifier_credit(&mut cx), Poll::Pending);
 
         let mut buf = [0; 1024];
         let mut limit = TransportLimit::new(Some(usize::MAX), usize::MAX, usize::MAX);
@@ -677,10 +668,6 @@ mod tests {
         path.on_recv_path_challenge_response((&response).into());
 
         assert!(path.is_validated());
-        assert_eq!(
-            path.poll_get_anti_amplifier_credit(&mut cx),
-            Poll::Ready(None)
-        );
     }
 
     #[tokio::test]
@@ -688,7 +675,7 @@ mod tests {
         let path = create_path(18003).await;
         path.on_recv_path_challenge(PathChallengeFrame::random());
         path.on_sent_path_challenge_response(0);
-        path.on_challenge_response_pkt_acked(0);
+        path.on_challenge_response_pkt_acked();
     }
 
     #[tokio::test]
