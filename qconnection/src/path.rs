@@ -2,7 +2,6 @@ use std::{
     future::poll_fn,
     io::IoSlice,
     net::SocketAddr,
-    ops::DerefMut,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{ready, Context, Poll},
@@ -10,16 +9,18 @@ use std::{
 };
 
 use anti_amplifier::ANTI_FACTOR;
+use bytes::BufMut;
 use futures::{Future, FutureExt};
 use log::*;
 use observer::{ConnectionObserver, PathObserver};
 use qbase::{
     cid::{ArcCidCell, ConnectionId, MAX_CID_SIZE},
-    frame::{AckFrame, ConnFrame, PathChallengeFrame, PathResponseFrame},
+    frame::{AckFrame, ConnFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame},
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
         LongHeaderBuilder, OneRttHeader, SpinBit,
     },
+    token::ResetToken,
     util::TransportLimit,
 };
 use qcongestion::{
@@ -41,7 +42,7 @@ pub use validate::{Transponder, Validator};
 pub mod observer;
 
 use crate::{
-    connection::{ConnectionState, RawConnection},
+    connection::{ConnectionState, ConnectionStateData, RawConnection},
     controller::ArcFlowController,
     transmit::{self, FillPolicy},
     Sendmsg,
@@ -116,6 +117,10 @@ pub enum PathState {
         spin: SpinBit,
 
         datagram_flow: DatagramFlow,
+    },
+    Closing {
+        /// udp datagram
+        datagram: Arc<Vec<Vec<u8>>>,
     },
     Invalid,
 }
@@ -331,6 +336,127 @@ impl RawPath {
                 path_observer,
             ),
             state,
+        }
+    }
+
+    fn poll_send(&mut self, cx: &mut Context<'_>) -> Poll<SendGuard> {
+        let congestion_control = ready!(self.cc.poll_send(cx));
+        let anti_amplification = if let Some(anti_amplifier) = self.anti_amplifier.as_ref() {
+            ready!(anti_amplifier.poll_get_credit(cx))
+        } else {
+            None
+        };
+
+        let peer_cid = ready!(self.peer_cid.poll_unpin(cx));
+        let flow_control =
+            ready!(self.state.get_flow_controller().sender.poll_apply(cx)).available();
+
+        let mut ack_pkts = [None; 3];
+        for &epoch in Epoch::iter() {
+            let ack_pkt = self.cc.need_ack(epoch);
+            ack_pkts[epoch as usize] = ack_pkt;
+        }
+        let send_guard = SendGuard {
+            transport_limit: TransportLimit::new(
+                anti_amplification,
+                congestion_control,
+                flow_control,
+            ),
+            usc: self.usc.clone(),
+            dcid: peer_cid,
+            cc: self.cc.clone(),
+            ack_pkts,
+        };
+        Poll::Ready(send_guard)
+    }
+
+    fn enter_closing(
+        &mut self,
+        send_guard: &mut SendGuard,
+        ccf: Arc<ConnectionCloseFrame>,
+        scid: ConnectionId,
+        token: &[u8],
+    ) {
+        use qbase::{
+            frame::io::WriteConnectionCloseFrame,
+            packet::{PacketNumber, WritePacketNumber},
+        };
+        use qrecovery::space::{FillPacket, FillPacketResult};
+        let pn = match &self.state {
+            PathState::Initial { init_space, .. } => init_space.sent_pkt_records.send().next_pn(),
+            PathState::Handshaking { hs_space, .. } => hs_space.sent_pkt_records.send().next_pn(),
+            PathState::Normal { data_space, .. } => data_space.sent_pkt_records.send().next_pn(),
+            PathState::Closing { .. } | PathState::Invalid => return,
+        };
+
+        struct Filler(Arc<ConnectionCloseFrame>, u64, PacketNumber);
+        let filler = Filler(ccf, pn.0, pn.1);
+
+        impl FillPacket for Filler {
+            fn fill_packet(
+                &self,
+                _: &mut TransportLimit,
+                mut buf: &mut [u8],
+                _: Option<(u64, Instant)>,
+            ) -> FillPacketResult {
+                let origin = buf.remaining_mut();
+
+                buf.put_packet_number(self.2);
+                buf.put_connection_close_frame(&self.0);
+
+                FillPacketResult::new(self.1, self.2.size(), origin - buf.remaining_mut(), false)
+            }
+        }
+
+        let mut buffers = vec![];
+        match self.state {
+            PathState::Initial { .. } => self.state.for_initial_space(|_, init_keys| {
+                let builder = LongHeaderBuilder::with_cid(send_guard.dcid, scid);
+                let header = builder.initial(token.to_vec());
+                let fill_policy = FillPolicy::Redundancy;
+                transmit::read_long_header_space(
+                    &mut buffers,
+                    &header,
+                    fill_policy,
+                    init_keys,
+                    &filler,
+                    Epoch::Initial,
+                    send_guard,
+                );
+            }),
+            PathState::Handshaking { .. } => self.state.for_handshake_space(|_, hs_keys| {
+                let builder = LongHeaderBuilder::with_cid(send_guard.dcid, scid);
+                let header = builder.handshake();
+                let fill_policy = FillPolicy::Redundancy;
+                transmit::read_long_header_space(
+                    &mut buffers,
+                    &header,
+                    fill_policy,
+                    hs_keys,
+                    &filler,
+                    Epoch::Handshake,
+                    send_guard,
+                );
+            }),
+            PathState::Normal { .. } => {
+                self.state
+                    .for_data_space(|_, one_rtt_keys, _flow_ctrl, spin| {
+                        let dcid = send_guard.dcid;
+                        let header = OneRttHeader { spin: *spin, dcid };
+                        transmit::read_short_header_space(
+                            &mut buffers,
+                            header,
+                            one_rtt_keys,
+                            &filler,
+                            Epoch::Data,
+                            send_guard,
+                        );
+                    })
+            }
+            _ => return,
+        }
+        self.state = PathState::Closing {
+            datagram: Arc::new(buffers),
         }
     }
 }
@@ -632,21 +758,7 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
         }
     });
 
-    tokio::spawn({
-        let path = path.clone();
-        let on_enter_closing = connection
-            .controller
-            .on_enter_state(ConnectionState::Closing);
-        async move {
-            on_enter_closing.await;
-            path.0.lock().unwrap().state = PathState::Invalid;
-            indicate_ack_handle.abort();
-            may_loss_handle.abort();
-            probe_timeout_handle.abort();
-        }
-    });
-
-    // spawn_send (auto-clean)
+    // spawn_send (auto close when path state is invalid)
     tokio::spawn({
         let path = path.clone();
         let cid_registry = connection.cid_registry.clone();
@@ -673,15 +785,40 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                 }
             };
 
-            let send_once = || async {
+            while conn_controller.get_state() < ConnectionState::Draining {
                 let mut guard = path.poll_send().await;
+
+                // Vec::new() will not allocate memory
                 let mut buffers = Vec::new();
+                let ccf_packet;
 
-                {
+                // 准备待发送的数据
+                let data: &[Vec<u8>] = 'data: {
                     let mut raw_path = path.0.lock().unwrap();
-                    let state = &mut raw_path.deref_mut().state;
 
-                    state.for_initial_space(|space, init_keys| {
+                    // 如果路径失效，结束任务
+                    if matches!(&raw_path.state, PathState::Invalid) {
+                        return;
+                    }
+
+                    // 如果连接的状态发生了改变且路径的状态没有跟进，进行状态切换
+                    if conn_controller.get_state() == ConnectionState::Closing
+                        && !matches!(&raw_path.state, PathState::Closing { .. })
+                    {
+                        let ccf = match &*conn_controller.state_data_guard() {
+                            ConnectionStateData::Closing { ccf, .. } => ccf.clone(),
+                            _ => return,
+                        };
+                        raw_path.enter_closing(&mut guard, ccf, scid, &token);
+                    }
+
+                    // 如果连接正在关闭，直接使用已经准备好的数据
+                    if let PathState::Closing { datagram } = &raw_path.state {
+                        ccf_packet = datagram.clone();
+                        break 'data &ccf_packet;
+                    }
+
+                    raw_path.state.for_initial_space(|space, init_keys| {
                         let builder = LongHeaderBuilder::with_cid(guard.dcid, scid);
                         let header = builder.initial(token.clone());
                         let fill_policy = FillPolicy::Redundancy;
@@ -689,14 +826,14 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                             &mut buffers,
                             &header,
                             fill_policy,
-                            init_keys.clone(),
+                            init_keys,
                             space,
                             Epoch::Initial,
                             &mut guard,
                         );
                     });
 
-                    state.for_handshake_space(|space, hs_keys| {
+                    raw_path.state.for_handshake_space(|space, hs_keys| {
                         let builder = LongHeaderBuilder::with_cid(guard.dcid, scid);
                         let header = builder.handshake();
                         let fill_policy = FillPolicy::Redundancy;
@@ -704,48 +841,47 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                             &mut buffers,
                             &header,
                             fill_policy,
-                            hs_keys.clone(),
+                            hs_keys,
                             space,
                             Epoch::Handshake,
                             &mut guard,
                         );
                     });
 
-                    state.for_data_space(|space, one_rtt_keys, _flow_ctrl, spin| {
-                        let dcid = guard.dcid;
-                        let header = OneRttHeader { spin: *spin, dcid };
-                        transmit::read_short_header_space(
-                            &mut buffers,
-                            header,
-                            one_rtt_keys.clone(),
-                            space,
-                            Epoch::Data,
-                            &mut guard,
-                        );
-                    });
-                }
+                    raw_path
+                        .state
+                        .for_data_space(|space, one_rtt_keys, _flow_ctrl, spin| {
+                            let dcid = guard.dcid;
+                            let header = OneRttHeader { spin: *spin, dcid };
+                            transmit::read_short_header_space(
+                                &mut buffers,
+                                header,
+                                one_rtt_keys,
+                                space,
+                                Epoch::Data,
+                                &mut guard,
+                            );
+                        });
+
+                    &buffers
+                };
 
                 let (src, dst) = match &pathway {
-                    Pathway::Direct { local, remote } => (local, remote),
-                    Pathway::Relay { local, remote } => {
-                        // todo: append relay hdr
-                        (&local.addr, &remote.agent)
-                    }
+                    Pathway::Direct { local, remote } => (*local, *remote),
+                    // todo: append relay hdr
+                    Pathway::Relay { local, remote } => (local.addr, remote.agent),
                 };
 
                 let hdr = qudp::PacketHeader {
-                    src: *src,
-                    dst: *dst,
+                    src,
+                    dst,
                     ttl: 64,
                     ecn: None,
                     seg_size: MSS as u16,
                     gso: true,
                 };
 
-                let io_slices = buffers
-                    .iter_mut()
-                    .map(|b| IoSlice::new(b))
-                    .collect::<Vec<_>>();
+                let io_slices = data.iter().map(|b| IoSlice::new(b)).collect::<Vec<_>>();
 
                 let ret = poll_fn(|cx| guard.usc.poll_send(&io_slices, &hdr, cx)).await;
                 match ret {
@@ -755,14 +891,26 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                         path.post_sent(n);
                     }
                     Err(e) => {
+                        // TODO: handle udp send error
                         error!("send failed: {}", e);
                     }
                 }
-            };
-
-            while conn_controller.get_state() < ConnectionState::Closing {
-                send_once().await;
             }
+        }
+    });
+
+    tokio::spawn({
+        let path = path.clone();
+        let on_enter_closing = connection
+            .controller
+            .on_enter_state(ConnectionState::Closing);
+        async move {
+            // TODO: Path出错时也终止任务，连接迁移时也终止任务
+            on_enter_closing.await;
+            path.0.lock().unwrap().state = PathState::Invalid;
+            indicate_ack_handle.abort();
+            may_loss_handle.abort();
+            probe_timeout_handle.abort();
         }
     });
 
@@ -815,35 +963,7 @@ impl Future for SendState {
     type Output = SendGuard;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let guard = &mut self.get_mut().0 .0.lock().unwrap();
-        let congestion_control = ready!(guard.cc.poll_send(cx));
-        let anti_amplification = if let Some(anti_amplifier) = guard.anti_amplifier.as_ref() {
-            ready!(anti_amplifier.poll_get_credit(cx))
-        } else {
-            None
-        };
-
-        let peer_cid = ready!(guard.peer_cid.poll_unpin(cx));
-        let flow_control =
-            ready!(guard.state.get_flow_controller().sender.poll_apply(cx)).available();
-
-        let mut ack_pkts = [None; 3];
-        for &epoch in Epoch::iter() {
-            let ack_pkt = guard.cc.need_ack(epoch);
-            ack_pkts[epoch as usize] = ack_pkt;
-        }
-        let send_guard = SendGuard {
-            transport_limit: TransportLimit::new(
-                anti_amplification,
-                congestion_control,
-                flow_control,
-            ),
-            usc: guard.usc.clone(),
-            dcid: peer_cid,
-            cc: guard.cc.clone(),
-            ack_pkts,
-        };
-        Poll::Ready(send_guard)
+        self.0 .0.lock().unwrap().poll_send(cx)
     }
 }
 

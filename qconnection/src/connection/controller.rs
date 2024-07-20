@@ -146,7 +146,7 @@ impl ArcConnectionController {
         }
     }
 
-    pub(super) fn enter_closing(&self, packet: ()) {
+    pub(super) fn enter_closing(&self, ccf: ConnectionCloseFrame) {
         if self.get_state() >= ConnectionState::Closing {
             return;
         }
@@ -191,7 +191,7 @@ impl ArcConnectionController {
             _ => None,
         };
         *state_data = ConnectionStateData::Closing {
-            packet,
+            ccf: ccf.into(),
             rcvd_ccf_tx,
         };
     }

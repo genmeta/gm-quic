@@ -98,13 +98,45 @@ impl<T> RawSpace<T> {
 }
 
 #[enum_dispatch]
-pub trait ReliableTransmit: Send + Sync + 'static {
-    fn read(
+pub trait FillPacket: Send + Sync + 'static {
+    fn fill_packet(
         &self,
         limit: &mut TransportLimit,
         buf: &mut [u8],
         ack_pkt: Option<(u64, Instant)>,
-    ) -> (u64, usize, usize, bool);
+    ) -> FillPacketResult;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FillPacketResult {
+    pub pn: u64,
+    pub pn_size: usize,
+    pub body_len: usize,
+    pub is_ack_eliciting: bool,
+}
+
+impl FillPacketResult {
+    pub fn new(pn: u64, pn_size: usize, body_len: usize, is_ack_eliciting: bool) -> Self {
+        Self {
+            pn,
+            pn_size,
+            body_len,
+            is_ack_eliciting,
+        }
+    }
+
+    pub fn no_bytes_written(pn: u64, pn_size: usize) -> Self {
+        Self {
+            pn,
+            pn_size,
+            body_len: 0,
+            is_ack_eliciting: false,
+        }
+    }
+}
+
+#[enum_dispatch]
+pub trait ReliableTransmit: FillPacket {
     fn on_ack(&self, ack_frmae: AckFrame);
     fn may_loss_pkt(&self, pn: u64);
     fn probe_timeout(&self);
@@ -139,7 +171,7 @@ where
 }
 
 #[derive(Debug, Clone)]
-#[enum_dispatch(ReliableTransmit)]
+#[enum_dispatch(ReliableTransmit, FillPacket)]
 pub enum Space {
     Initial(InitialSpace),
     Handshake(HandshakeSpace),

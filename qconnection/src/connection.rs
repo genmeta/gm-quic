@@ -902,8 +902,6 @@ pub fn create_connection(
                 }
             };
 
-            let ccf = ConnectionCloseFrame::from(error.clone());
-
             // TODO 组装一个数据包
             // let pkt = match state {
             //     ConnectionState::Initial => {}
@@ -931,8 +929,9 @@ pub fn create_connection(
                 .max()
                 .unwrap_or(Duration::from_secs(0));
 
-            // TODO: 生成包
-            conn_controller.enter_closing(());
+            let ccf = ConnectionCloseFrame::from(error.clone());
+            conn_controller.enter_closing(ccf);
+
             _ = countdown_tx.send(pto_time).await;
         }
     });

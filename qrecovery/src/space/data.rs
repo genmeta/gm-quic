@@ -8,7 +8,7 @@ use qbase::{
     streamid::Role,
 };
 
-use super::{ArcSpace, RawSpace, ReliableTransmit, TransportLimit};
+use super::{ArcSpace, FillPacket, FillPacketResult, RawSpace, ReliableTransmit, TransportLimit};
 use crate::{
     crypto::CryptoStream,
     reliable::{
@@ -67,14 +67,14 @@ impl ArcSpace<DataSpace> {
     }
 }
 
-impl ReliableTransmit for ArcSpace<DataSpace> {
-    fn read(
+impl FillPacket for ArcSpace<DataSpace> {
+    fn fill_packet(
         &self,
         limit: &mut TransportLimit,
         mut buf: &mut [u8],
         ack_pkt: Option<(u64, Instant)>,
-    ) -> (u64, usize, usize, bool) {
-        let remain = limit.available();
+    ) -> FillPacketResult {
+        let origin = limit.available();
 
         let mut send_guard = self.0.sent_pkt_records.send();
 
@@ -83,7 +83,7 @@ impl ReliableTransmit for ArcSpace<DataSpace> {
             buf.put_packet_number(encoded_pn);
             limit.record_write(encoded_pn.size());
         } else {
-            return (pn, encoded_pn.size(), 0, false);
+            return FillPacketResult::no_bytes_written(pn, encoded_pn.size());
         }
 
         if let Some((frame, n)) = self.read_ack_frame_until(buf, ack_pkt) {
@@ -123,14 +123,16 @@ impl ReliableTransmit for ArcSpace<DataSpace> {
             is_ack_eliciting = true
         }
 
-        (
+        FillPacketResult::new(
             pn,
             encoded_pn.size(),
-            remain - buf.remaining_mut(),
+            origin - buf.remaining_mut(),
             is_ack_eliciting,
         )
     }
+}
 
+impl ReliableTransmit for ArcSpace<DataSpace> {
     fn on_ack(&self, ack_frmae: AckFrame) {
         let mut recv_guard = self.0.sent_pkt_records.receive();
         recv_guard.update_largest(ack_frmae.largest.into_inner());

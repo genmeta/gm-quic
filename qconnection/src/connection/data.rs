@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use qbase::{
     error::Error,
     frame::ConnectionCloseFrame,
@@ -74,7 +76,8 @@ pub enum ConnectionStateData {
         rcvd_ccf_tx: Option<oneshot::Sender<ConnectionCloseFrame>>,
     },
     Closing {
-        packet: (),
+        // 减少锁持有时间
+        ccf: Arc<ConnectionCloseFrame>,
         rcvd_ccf_tx: Option<oneshot::Sender<ConnectionCloseFrame>>,
     },
     Draining {},

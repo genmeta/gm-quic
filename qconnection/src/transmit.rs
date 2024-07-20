@@ -13,7 +13,7 @@ use qbase::{
     varint::{VarInt, WriteVarInt},
 };
 use qcongestion::{congestion::MSS, CongestionControl};
-use qrecovery::space::{Epoch, ReliableTransmit};
+use qrecovery::space::{Epoch, FillPacket, FillPacketResult};
 
 use crate::path;
 
@@ -34,8 +34,8 @@ pub fn read_space_and_encrypt<T>(
     buffer: &mut [u8],
     header: &LongHeader<T>,
     fill_policy: FillPolicy,
-    keys: ArcKeys,
-    space: &impl ReliableTransmit,
+    keys: &ArcKeys,
+    space: &impl FillPacket,
     transport_limit: &mut TransportLimit,
     ack_pkt: Option<(u64, Instant)>,
 ) -> (u64, usize, usize, bool)
@@ -51,8 +51,12 @@ where
     let max_header_size = header.size() + 2; // 2 bytes reserved for packet length, max 16KB
     let (mut hdr_buf, body_buf) = buffer.split_at_mut(max_header_size);
 
-    let (pn, pn_size, mut body_len, is_ack_eliciting) =
-        space.read(transport_limit, body_buf, ack_pkt);
+    let FillPacketResult {
+        pn,
+        pn_size,
+        mut body_len,
+        is_ack_eliciting,
+    } = space.fill_packet(transport_limit, body_buf, ack_pkt);
     if body_len == 0 {
         // nothing to send
         return (0, 0, 0, false);
@@ -123,7 +127,7 @@ pub fn read_1rtt_data_and_encrypt(
     buffer: &mut [u8],
     header: &OneRttHeader,
     keys: ArcOneRttKeys,
-    space: &impl ReliableTransmit,
+    space: &impl FillPacket,
     transport_limit: &mut TransportLimit,
     ack_pkt: Option<(u64, Instant)>,
 ) -> (u64, usize, bool) {
@@ -135,7 +139,13 @@ pub fn read_1rtt_data_and_encrypt(
     let header_size = header.size();
     let (mut hdr_buf, body_buf) = buffer.split_at_mut(header_size);
 
-    let (pn, pn_size, body_len, is_ack_eliciting) = space.read(transport_limit, body_buf, ack_pkt);
+    let FillPacketResult {
+        pn,
+        pn_size,
+        body_len,
+        is_ack_eliciting,
+    } = space.fill_packet(transport_limit, body_buf, ack_pkt);
+    // let (pn, pn_size, body_len, is_ack_eliciting) =;
     if body_len == 0 {
         return (0, 0, false);
     }
@@ -170,8 +180,8 @@ pub(crate) fn read_long_header_space<T>(
     buffers: &mut Vec<Vec<u8>>,
     header: &LongHeader<T>,
     fill_policy: FillPolicy,
-    keys: ArcKeys,
-    space: &impl ReliableTransmit,
+    keys: &ArcKeys,
+    space: &impl FillPacket,
     epoch: Epoch,
     guard: &mut path::SendGuard,
 ) where
@@ -188,7 +198,7 @@ pub(crate) fn read_long_header_space<T>(
             &mut buffer[offset..],
             header,
             fill_policy,
-            keys.clone(),
+            keys,
             space,
             &mut guard.transport_limit,
             ack_pkt,
@@ -220,8 +230,8 @@ pub(crate) fn read_long_header_space<T>(
 pub(crate) fn read_short_header_space(
     buffers: &mut Vec<Vec<u8>>,
     header: OneRttHeader,
-    keys: ArcOneRttKeys,
-    space: &impl ReliableTransmit,
+    keys: &ArcOneRttKeys,
+    space: &impl FillPacket,
     epoch: Epoch,
     guard: &mut path::SendGuard,
 ) {
