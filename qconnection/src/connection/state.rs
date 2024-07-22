@@ -4,50 +4,33 @@ use std::sync::{atomic::AtomicU8, Arc};
 pub enum ConnectionState {
     Initial = 0,
     Handshaking = 1,
-    HandshakeDone = 2,
+    Normal = 2,
     Closing = 3,
     Draining = 4,
+    Closed = 5,
 }
 
-#[derive(Default, Debug)]
-struct RawConnectionState {
-    // Encoding the state into a single byte
-    state: AtomicU8,
-}
+#[derive(Default, Clone)]
+pub struct ArcConnectionState(Arc<AtomicU8>);
 
-impl RawConnectionState {
-    fn get_state(&self) -> ConnectionState {
-        match self.state.load(std::sync::atomic::Ordering::Acquire) {
+impl ArcConnectionState {
+    pub fn new(state: ConnectionState) -> Self {
+        Self(AtomicU8::new(state as _).into())
+    }
+
+    pub fn get_state(&self) -> ConnectionState {
+        match self.0.load(std::sync::atomic::Ordering::Acquire) {
             0 => ConnectionState::Initial,
             1 => ConnectionState::Handshaking,
-            2 => ConnectionState::HandshakeDone,
+            2 => ConnectionState::Normal,
             3 => ConnectionState::Closing,
             4 => ConnectionState::Draining,
             _ => unreachable!(),
         }
     }
 
-    fn set_state(&self, state: ConnectionState) {
-        self.state
+    pub(super) fn set_state(&self, state: ConnectionState) {
+        self.0
             .store(state as u8, std::sync::atomic::Ordering::Release);
-    }
-}
-
-impl RawConnectionState {}
-
-#[derive(Default, Debug, Clone)]
-pub struct ArcConnectionState(Arc<RawConnectionState>);
-
-impl ArcConnectionState {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn get_state(&self) -> ConnectionState {
-        self.0.get_state()
-    }
-
-    pub fn set_state(&self, state: ConnectionState) {
-        self.0.set_state(state)
     }
 }
