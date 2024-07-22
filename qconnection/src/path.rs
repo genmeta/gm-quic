@@ -20,7 +20,6 @@ use qbase::{
         keys::{ArcKeys, ArcOneRttKeys},
         LongHeaderBuilder, OneRttHeader, SpinBit,
     },
-    token::ResetToken,
     util::TransportLimit,
 };
 use qcongestion::{
@@ -788,10 +787,7 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
 
             while conn_controller.get_state() < ConnectionState::Draining {
                 let mut guard = path.poll_send().await;
-
-                // Vec::new() will not allocate memory
                 let mut buffers = Vec::new();
-                let ccf_packet;
 
                 // 准备待发送的数据
                 let data: &[Vec<u8>] = match &mut path.0.lock().unwrap().state {
