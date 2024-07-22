@@ -403,6 +403,8 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
         async move {
             loop {
                 let space = path.poll_probe_timeout().await;
+                // When pto timeout, perform path verification
+                path.challenge();
                 let space = spaces.reliable_space(space);
                 if let Some(space) = space {
                     space.probe_timeout();
