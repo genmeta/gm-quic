@@ -611,18 +611,6 @@ impl ArcPath {
         self.0.lock().unwrap().cc.get_pto_time(epoch)
     }
 
-    pub fn poll_may_loss(&self) -> LossState {
-        LossState(self.clone())
-    }
-
-    pub fn poll_indicate_ack(&self) -> SlideState {
-        SlideState(self.clone())
-    }
-
-    pub fn poll_probe_timeout(&self) -> PtoState {
-        PtoState(self.clone())
-    }
-
     pub fn poll_send(&self) -> SendState {
         SendState(self.clone())
     }
@@ -702,47 +690,34 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
         });
     }
 
-    // spawn_may_loss
-    let may_loss_handle = tokio::spawn({
+    let cc_handle = tokio::spawn({
         let path = path.clone();
+        let cc = path.0.lock().unwrap().cc.clone();
         async move {
             loop {
-                let loss = path.poll_may_loss().await;
-                let space = path.0.lock().unwrap().state.reliable_space(loss.0);
-                if let Some(space) = space {
-                    for pn in loss.1 {
-                        space.may_loss_pkt(pn);
+                tokio::select! {
+                    (epoch, loss) = cc.may_loss() => {
+                        let space = path.0.lock().unwrap().state.reliable_space(epoch);
+                        if let Some(space) = space {
+                            for pn in loss {
+                                space.may_loss_pkt(pn);
+                            }
                     }
-                }
-            }
-        }
-    });
-
-    // spawn_indicate_ack
-    let indicate_ack_handle = tokio::spawn({
-        let path = path.clone();
-        async move {
-            loop {
-                let acked = path.poll_indicate_ack().await;
-                let space = path.0.lock().unwrap().state.reliable_space(acked.0);
-                if let Some(space) = space {
-                    for pn in acked.1 {
-                        space.indicate_ack(pn);
-                    }
-                }
-            }
-        }
-    });
-
-    // spawn_probe_timeout
-    let probe_timeout_handle = tokio::spawn({
-        let path = path.clone();
-        async move {
-            loop {
-                let epoch = path.poll_probe_timeout().await;
-                let space = path.0.lock().unwrap().state.reliable_space(epoch);
-                if let Some(space) = space {
-                    space.probe_timeout();
+                    },
+                    epoch = cc.probe_timeout() => {
+                        let space = path.0.lock().unwrap().state.reliable_space(epoch);
+                        if let Some(space) = space {
+                            space.probe_timeout();
+                        }
+                    },
+                    (epoch, acked) = cc.indicate_ack() => {
+                        let space = path.0.lock().unwrap().state.reliable_space(epoch);
+                        if let Some(space) = space {
+                            for pn in acked {
+                                space.may_loss_pkt(pn);
+                            }
+                        }
+                    },
                 }
             }
         }
@@ -888,9 +863,7 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
             // TODO: Path出错时也终止任务，连接迁移时也终止任务
             on_enter_closing.await;
             path.0.lock().unwrap().state = PathState::Invalid;
-            indicate_ack_handle.abort();
-            may_loss_handle.abort();
-            probe_timeout_handle.abort();
+            cc_handle.abort();
         }
     });
 
@@ -903,38 +876,6 @@ pub struct SendGuard {
     pub dcid: ConnectionId,
     pub ack_pkts: [Option<(u64, Instant)>; 3],
     pub cc: ArcCC,
-}
-
-pub struct LossState(ArcPath);
-
-impl Future for LossState {
-    type Output = (Epoch, Vec<u64>);
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let guard = &self.get_mut().0 .0.lock().unwrap();
-        guard.cc.poll_lost(cx)
-    }
-}
-
-pub struct SlideState(ArcPath);
-
-impl Future for SlideState {
-    type Output = (Epoch, Vec<u64>);
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let guard = &self.get_mut().0 .0.lock().unwrap();
-        guard.cc.poll_indicate_ack(cx)
-    }
-}
-
-pub struct PtoState(ArcPath);
-
-impl Future for PtoState {
-    type Output = Epoch;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let guard = &self.get_mut().0 .0.lock().unwrap();
-        guard.cc.poll_probe_timeout(cx)
-    }
 }
 
 pub struct SendState(ArcPath);
