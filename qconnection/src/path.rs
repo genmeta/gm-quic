@@ -213,7 +213,7 @@ impl PathState {
         }
     }
 
-    pub fn for_initial_space(&self, f: impl FnOnce(&InitialSpace, &ArcKeys)) {
+    pub fn inspect_initial_space(&self, f: impl FnOnce(&InitialSpace, &ArcKeys)) {
         if let Self::Initial {
             init_space,
             init_keys,
@@ -224,7 +224,7 @@ impl PathState {
         }
     }
 
-    pub fn for_handshake_space(&self, f: impl FnOnce(&HandshakeSpace, &ArcKeys)) {
+    pub fn inspect_handshake_space(&self, f: impl FnOnce(&HandshakeSpace, &ArcKeys)) {
         if let Self::Initial {
             hs_space, hs_keys, ..
         }
@@ -236,7 +236,7 @@ impl PathState {
         }
     }
 
-    pub fn for_data_space(
+    pub fn inspect_data_space(
         &mut self,
         f: impl FnOnce(&DataSpace, &ArcOneRttKeys, &ArcFlowController, &mut SpinBit),
     ) {
@@ -308,7 +308,7 @@ impl PathState {
 
         let mut buffers = vec![];
         match self {
-            PathState::Initial { .. } => self.for_initial_space(|_, init_keys| {
+            PathState::Initial { .. } => self.inspect_initial_space(|_, init_keys| {
                 let builder = LongHeaderBuilder::with_cid(send_guard.dcid, scid);
                 let header = builder.initial(token.to_vec());
                 let fill_policy = FillPolicy::Redundancy;
@@ -322,7 +322,7 @@ impl PathState {
                     send_guard,
                 );
             }),
-            PathState::Handshaking { .. } => self.for_handshake_space(|_, hs_keys| {
+            PathState::Handshaking { .. } => self.inspect_handshake_space(|_, hs_keys| {
                 let builder = LongHeaderBuilder::with_cid(send_guard.dcid, scid);
                 let header = builder.handshake();
                 let fill_policy = FillPolicy::Redundancy;
@@ -337,7 +337,7 @@ impl PathState {
                 );
             }),
             PathState::HandshakeDone { .. } => {
-                self.for_data_space(|_, one_rtt_keys, _flow_ctrl, spin| {
+                self.inspect_data_space(|_, one_rtt_keys, _flow_ctrl, spin| {
                     let dcid = send_guard.dcid;
                     let header = OneRttHeader { spin: *spin, dcid };
                     transmit::read_short_header_space(
@@ -809,7 +809,7 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                         }
                     }
                     state => {
-                        state.for_initial_space(|space, init_keys| {
+                        state.inspect_initial_space(|space, init_keys| {
                             let builder = LongHeaderBuilder::with_cid(guard.dcid, scid);
                             let header = builder.initial(token.clone());
                             let fill_policy = FillPolicy::Redundancy;
@@ -824,7 +824,7 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                             );
                         });
 
-                        state.for_handshake_space(|space, hs_keys| {
+                        state.inspect_handshake_space(|space, hs_keys| {
                             let builder = LongHeaderBuilder::with_cid(guard.dcid, scid);
                             let header = builder.handshake();
                             let fill_policy = FillPolicy::Redundancy;
@@ -839,7 +839,7 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                             );
                         });
 
-                        state.for_data_space(|space, one_rtt_keys, _flow_ctrl, spin| {
+                        state.inspect_data_space(|space, one_rtt_keys, _flow_ctrl, spin| {
                             let dcid = guard.dcid;
                             let header = OneRttHeader { spin: *spin, dcid };
                             transmit::read_short_header_space(
@@ -891,12 +891,12 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
 
     tokio::spawn({
         let path = path.clone();
-        let on_enter_drainng = connection
+        let on_enter_draining = connection
             .controller
             .on_enter_state(ConnectionState::Draining);
         async move {
             // TODO: Path出错时也终止任务，连接迁移时也终止任务
-            on_enter_drainng.await;
+            on_enter_draining.await;
             path.0.lock().unwrap().state = PathState::Invalid;
             indicate_ack_handle.abort();
             may_loss_handle.abort();

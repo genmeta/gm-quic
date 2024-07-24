@@ -68,6 +68,7 @@ pub use streams_blocked::StreamsBlockedFrame;
 
 use super::varint::VarInt;
 
+#[repr(u8)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum FrameType {
     Padding,

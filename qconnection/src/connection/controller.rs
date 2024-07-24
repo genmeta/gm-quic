@@ -53,8 +53,26 @@ impl ArcConnectionController {
         let mut guard = self.data.lock().unwrap();
         let state_data = guard.deref_mut();
         let cur_state_data = std::mem::replace(state_data, ConnectionStateData::Invalid);
-        *state_data = match cur_state_data {
-            ConnectionStateData::Initial {
+        if let ConnectionStateData::Initial {
+            hs_pkt_queue,
+            hs_keys,
+            hs_space,
+            zero_rtt_pkt_queue,
+            zero_rtt_keys,
+            one_rtt_pkt_queue,
+            one_rtt_keys,
+            data_space,
+            flow_ctrl,
+            spin,
+            datagram_flow,
+            conn_err_tx,
+            rcvd_ccf_tx,
+            init_keys,
+            ..
+        } = cur_state_data
+        {
+            init_keys.invalid();
+            *state_data = ConnectionStateData::Handshaking {
                 hs_pkt_queue,
                 hs_keys,
                 hs_space,
@@ -68,27 +86,7 @@ impl ArcConnectionController {
                 datagram_flow,
                 conn_err_tx,
                 rcvd_ccf_tx,
-                init_keys,
-                ..
-            } => {
-                init_keys.invalid();
-                ConnectionStateData::Handshaking {
-                    hs_pkt_queue,
-                    hs_keys,
-                    hs_space,
-                    zero_rtt_pkt_queue,
-                    zero_rtt_keys,
-                    one_rtt_pkt_queue,
-                    one_rtt_keys,
-                    data_space,
-                    flow_ctrl,
-                    spin,
-                    datagram_flow,
-                    conn_err_tx,
-                    rcvd_ccf_tx,
-                }
-            }
-            _ => unreachable!(),
+            };
         };
     }
 
@@ -97,11 +95,27 @@ impl ArcConnectionController {
             return;
         }
         self.set_state(ConnectionState::HandshakeDone);
+        self.set_state(ConnectionState::HandshakeDone);
         let mut guard = self.data.lock().unwrap();
         let state_data = guard.deref_mut();
         let cur_state_data = std::mem::replace(state_data, ConnectionStateData::Invalid);
-        *state_data = match cur_state_data {
-            ConnectionStateData::Handshaking {
+        if let ConnectionStateData::Handshaking {
+            one_rtt_pkt_queue,
+            one_rtt_keys,
+            data_space,
+            flow_ctrl,
+            spin,
+            datagram_flow,
+            conn_err_tx,
+            rcvd_ccf_tx,
+            hs_keys,
+            zero_rtt_keys,
+            ..
+        } = cur_state_data
+        {
+            hs_keys.invalid();
+            zero_rtt_keys.invalid();
+            *state_data = ConnectionStateData::HandshakeDone {
                 one_rtt_pkt_queue,
                 one_rtt_keys,
                 data_space,
@@ -110,24 +124,7 @@ impl ArcConnectionController {
                 datagram_flow,
                 conn_err_tx,
                 rcvd_ccf_tx,
-                hs_keys,
-                zero_rtt_keys,
-                ..
-            } => {
-                hs_keys.invalid();
-                zero_rtt_keys.invalid();
-                ConnectionStateData::HandshakeDone {
-                    one_rtt_pkt_queue,
-                    one_rtt_keys,
-                    data_space,
-                    flow_ctrl,
-                    spin,
-                    datagram_flow,
-                    conn_err_tx,
-                    rcvd_ccf_tx,
-                }
-            }
-            _ => unreachable!(),
+            };
         };
     }
 
