@@ -1,6 +1,7 @@
 use std::{
     cmp::Ordering,
     collections::VecDeque,
+    future::Future,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
@@ -517,33 +518,16 @@ impl super::CongestionControl for ArcCC {
         }
     }
 
-    fn poll_lost(&self, cx: &mut Context<'_>) -> Poll<(Epoch, Vec<u64>)> {
-        let mut guard = self.0.lock().unwrap();
-
-        if let Some(loss) = guard.loss_pns.take() {
-            return Poll::Ready(loss);
-        }
-        guard.loss_waker = Some(cx.waker().clone());
-        Poll::Pending
+    fn may_loss(&self) -> impl Future<Output = (Epoch, Vec<u64>)> {
+        MayLoss(self.clone())
     }
 
-    fn poll_indicate_ack(&self, cx: &mut Context<'_>) -> Poll<(Epoch, Vec<u64>)> {
-        let mut guard = self.0.lock().unwrap();
-
-        if let Some(acked) = guard.newly_ack_pns.take() {
-            return Poll::Ready(acked);
-        }
-        guard.loss_waker = Some(cx.waker().clone());
-        Poll::Pending
+    fn indicate_ack(&self) -> impl Future<Output = (Epoch, Vec<u64>)> {
+        IndicateAck(self.clone())
     }
 
-    fn poll_probe_timeout(&self, cx: &mut Context<'_>) -> Poll<Epoch> {
-        let mut guard = self.0.lock().unwrap();
-        if let Some(space) = guard.pto_space {
-            return Poll::Ready(space);
-        }
-        guard.pto_waker = Some(cx.waker().clone());
-        Poll::Pending
+    fn probe_timeout(&self) -> impl Future<Output = Epoch> {
+        Prober(self.clone())
     }
 
     fn get_pto_time(&self, epoch: Epoch) -> Duration {
@@ -569,6 +553,52 @@ impl super::CongestionControl for ArcCC {
     fn anti_amplification_limit_on(&self) {
         let mut guard = self.0.lock().unwrap();
         guard.is_anti_amplification_limit = true;
+    }
+}
+
+struct MayLoss(ArcCC);
+
+impl Future for MayLoss {
+    type Output = (Epoch, Vec<u64>);
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut guard = self.0 .0.lock().unwrap();
+
+        if let Some(loss) = guard.loss_pns.take() {
+            return Poll::Ready(loss);
+        }
+        guard.loss_waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+struct IndicateAck(ArcCC);
+
+impl Future for IndicateAck {
+    type Output = (Epoch, Vec<u64>);
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut guard = self.0 .0.lock().unwrap();
+        if let Some(acked) = guard.newly_ack_pns.take() {
+            return Poll::Ready(acked);
+        }
+        guard.ack_waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+struct Prober(ArcCC);
+
+impl Future for Prober {
+    type Output = Epoch;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut guard = self.0 .0.lock().unwrap();
+        if let Some(space) = guard.pto_space {
+            return Poll::Ready(space);
+        }
+        guard.pto_waker = Some(cx.waker().clone());
+        Poll::Pending
     }
 }
 
