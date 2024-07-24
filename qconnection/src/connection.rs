@@ -505,7 +505,7 @@ pub fn create_connection(
                             DispatchControlFlow::Exit
                         }
                     }
-                   _ = conn_controller.on_enter_state(ConnectionState::Closing) => {
+                    _ = conn_controller.on_enter_state(ConnectionState::Closing) => {
                         DispatchControlFlow::Closing
                     }
                     _ = conn_controller.on_enter_state(ConnectionState::Draining) => {
@@ -664,7 +664,7 @@ pub fn create_connection(
                             DispatchControlFlow::Exit
                         }
                     }
-                   _ = conn_controller.on_enter_state(ConnectionState::Closing) => {
+                    _ = conn_controller.on_enter_state(ConnectionState::Closing) => {
                         DispatchControlFlow::Closing
                     }
                     _ = conn_controller.on_enter_state(ConnectionState::Draining) => {

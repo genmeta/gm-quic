@@ -148,12 +148,12 @@ impl PacketPayload {
                                 // Save the challenge frame in the path, you need
                                 // check whether a response frame needs to be sent
                                 // when sending the packet.
-                                packet.path.on_recv_path_challenge(challenge)
+                                packet.path.transponder().on_challenge(challenge)
                             }
                             PathFrame::Response(response) => {
                                 // Check whether the path response frame is consistent
                                 // with the path challenge frame
-                                packet.path.on_recv_path_challenge_response(response);
+                                packet.path.on_challenge_response(response);
                             }
                         }
                         Ok(true)

@@ -15,7 +15,7 @@ use log::*;
 use observer::{ConnectionObserver, PathObserver};
 use qbase::{
     cid::{ArcCidCell, ConnectionId, MAX_CID_SIZE},
-    frame::{AckFrame, ConnFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame},
+    frame::{AckFrame, ConnFrame, ConnectionCloseFrame, PathResponseFrame},
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
         LongHeaderBuilder, OneRttHeader, SpinBit,
@@ -35,7 +35,6 @@ pub use anti_amplifier::ArcAntiAmplifier;
 
 pub mod validate;
 use qunreliable::DatagramFlow;
-use validate::ValidatorState;
 pub use validate::{Transponder, Validator};
 
 pub mod observer;
@@ -476,54 +475,18 @@ impl ArcPath {
             state,
         ))))
     }
-
-    /// Check whether the path is verified.
-    pub fn is_validated(&self) -> bool {
-        self.0.lock().unwrap().validator.is_validated()
+    pub fn validator(&self) -> Validator {
+        self.0.lock().unwrap().validator.clone()
     }
 
-    /// Path challenge can be used by any terminal at any time.
-    pub fn challenge(&self) {
-        self.0.lock().unwrap().validator.challenge()
-    }
-
-    /// Path challenge, if the path is not validated, the path challenge frame in
-    /// the validator will be written, otherwise nothing is written
-    pub fn write_challenge(&self, limit: &mut TransportLimit, buf: &mut [u8]) -> usize {
-        self.0.lock().unwrap().validator.write_challenge(limit, buf)
-    }
-
-    /// Path challenge, if the path requires sending a challenge response frame,
-    /// the challenge response frame in the Transponder will be written, otherwise
-    /// nothing will be written.
-    pub fn write_challenge_response(&self, limit: &mut TransportLimit, buf: &mut [u8]) -> usize {
-        self.0
-            .lock()
-            .unwrap()
-            .transponder
-            .write_response(limit, buf)
-    }
-
-    /// Path challenge, this function must be called after sending the challenge
-    /// frame, record its space and pn to mark it as sent.
-    pub fn on_sent_path_challenge(&self) {
-        self.0.lock().unwrap().validator.on_challenge_sent()
-    }
-
-    /// Path challenge, this function must called after sending the response frame
-    pub fn on_sent_path_challenge_response(&self, pn: u64) {
-        self.0.lock().unwrap().transponder.on_response_sent(pn)
-    }
-
-    /// Path challenge, receive the challenge frame in the Transponder
-    pub fn on_recv_path_challenge(&self, challenge: PathChallengeFrame) {
-        self.0.lock().unwrap().transponder.on_challenge(challenge)
+    pub fn transponder(&self) -> Transponder {
+        self.0.lock().unwrap().transponder.clone()
     }
 
     /// Path challenge, changes the state of the path to verified when receiving
     /// the correct response frame, turns off protection against amplification
     /// attacks
-    pub fn on_recv_path_challenge_response(&self, response: PathResponseFrame) {
+    pub fn on_challenge_response(&self, response: PathResponseFrame) {
         let mut validator = self.0.lock().unwrap().validator.clone();
         // Check whether the received response is consistent with the issued
         // challenge
@@ -559,17 +522,6 @@ impl ArcPath {
         };
     }
 
-    /// Path is waiting for the path challenge response frame ack
-    pub fn waiting_response_ack(&self) -> Option<u64> {
-        self.0.lock().unwrap().transponder.waiting_ack()
-    }
-
-    /// When the peer receives the ack of the returned challenge response, the
-    /// status is updated
-    pub fn on_challenge_response_pkt_acked(&self) {
-        self.0.lock().unwrap().transponder.to_acked()
-    }
-
     /// Anti-amplification attack protection, records the amount of data received
     /// by the current path
     pub fn deposit(&self, amount: usize) {
@@ -586,20 +538,7 @@ impl ArcPath {
         }
     }
 
-    /// When the challenge frame may be lost, setting pn in the validator state
-    /// to None will trigger a retransmission, but the transmitted frame will be
-    /// the same. Even if the challenge is re-challenged, the frame will only
-    /// change when the state changed from `Success` to `Rechallenging`.
-    pub fn may_loss_challenge_pkt(&self) {
-        self.0.lock().unwrap().validator.may_loss()
-    }
-
-    /// When the response frame may be lost, setting pn in the transponder state
-    pub fn may_loss_challenge_response_pkt(&self, pn: u64) {
-        self.0.lock().unwrap().transponder.may_loss_pkt(pn)
-    }
-
-    /// When creating a new path, start the path challenge timer
+    /// When sent the path challenge frame, set the path challenge timeout
     ///
     /// Endpoints SHOULD abandon path validation based on a timer. When setting
     /// this timer, implementations are cautioned that the new path could have
@@ -608,9 +547,23 @@ impl ArcPath {
     /// as defined in [QUIC-RECOVERY]) is RECOMMENDED.
     ///
     /// See [Section 8.2.4-2](https://www.rfc-editor.org/rfc/rfc9000.html#section-8.2.4-2)
-    pub fn set_path_challenge_timeout(&self, epoch: Epoch) {
+    pub fn set_challenge_timeout(&mut self, epoch: Epoch) {
         let timeout = self.get_pto_time(epoch).max(INITIAL_RTT);
-        self.0.lock().unwrap().validator.set_timeout(timeout * 3);
+        tokio::spawn({
+            let mut validator = self.validator();
+            let path = self.clone();
+
+            async move {
+                if tokio::time::timeout(timeout * 3, validator.poll_state())
+                    .await
+                    .is_err()
+                {
+                    validator.failed();
+                    // path 变为不可用
+                    path.0.lock().unwrap().state = PathState::Invalid;
+                };
+            }
+        });
     }
 
     /// get connection controller pto time
@@ -634,10 +587,6 @@ impl ArcPath {
         SendState(self.clone())
     }
 
-    pub fn get_validate_state(&self) -> ValidatorState {
-        self.0.lock().unwrap().validator.get_validate_state()
-    }
-
     pub fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_eliciting: bool) {
         let guard = self.0.lock().unwrap();
         guard.cc.on_recv_pkt(space, pn, is_ack_eliciting)
@@ -646,11 +595,7 @@ impl ArcPath {
     pub fn on_ack(&self, space: Epoch, frame: &AckFrame) {
         // Whether the pn of path challenge response need to be confirmed is in
         // the current ack frame
-        if let Some(pn) = self.waiting_response_ack() {
-            if frame.iter().flat_map(|r| r.rev()).any(|rpn| rpn == pn) {
-                self.on_challenge_response_pkt_acked();
-            }
-        }
+        self.transponder().check_ack(frame);
 
         let guard = self.0.lock().unwrap();
         guard.cc.on_ack(space, frame);
@@ -746,6 +691,8 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
         async move {
             loop {
                 let epoch = path.poll_probe_timeout().await;
+                // When pto timeout, perform path verification
+                path.validator().challenge();
                 let space = path.0.lock().unwrap().state.reliable_space(epoch);
                 if let Some(space) = space {
                     space.probe_timeout();

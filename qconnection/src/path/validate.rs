@@ -2,7 +2,6 @@ use std::{
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
-    time::Duration,
 };
 
 use bytes::BufMut;
@@ -10,7 +9,7 @@ use futures::Future;
 use qbase::{
     frame::{
         io::{WritePathChallengeFrame, WritePathResponseFrame},
-        BeFrame, PathChallengeFrame, PathResponseFrame,
+        AckFrame, BeFrame, PathChallengeFrame, PathResponseFrame,
     },
     util::TransportLimit,
 };
@@ -21,9 +20,6 @@ pub(crate) enum ValidateState {
     /// Challenging, `true` the challenge frame has been sent, otherwise it has
     /// not been sent.
     Challenging(PathChallengeFrame, bool),
-    /// Rechallenging, `true` the challenge frame has been sent, otherwise it has
-    /// not been sent.
-    Rechallenging(PathChallengeFrame, bool),
     /// Verification successful
     Success,
     /// When no Challenge Response frame is received within a period of time, the
@@ -38,11 +34,12 @@ impl Default for ValidateState {
 }
 
 impl ValidateState {
+    /// When creating a new Path, or when the probe time out, perform path verification
     fn challenge(&mut self) {
         match self {
-            ValidateState::Challenging(_, _) | ValidateState::Rechallenging(_, _) => {}
+            ValidateState::Challenging(_, _) => {}
             ValidateState::Success => {
-                *self = ValidateState::Rechallenging(PathChallengeFrame::random(), false);
+                *self = ValidateState::Challenging(PathChallengeFrame::random(), false);
             }
             ValidateState::Failure => unreachable!("need not challenge again"),
         }
@@ -51,15 +48,14 @@ impl ValidateState {
     fn need_send_challenge(&self) -> Option<&PathChallengeFrame> {
         match self {
             ValidateState::Challenging(challenge, false) => Some(challenge),
-            ValidateState::Rechallenging(challenge, false) => Some(challenge),
             _ => None,
         }
     }
 
-    /// 必须在need_send_challenge之后调用，且确实发送了PathChallengeFrame，才可调用
+    /// It must be called after need_send_challenge, and the PathChallengeFrame must be sent before it can be called
     fn on_challenge_sent(&mut self) {
         match self {
-            ValidateState::Challenging(_, pkt) | ValidateState::Rechallenging(_, pkt) => {
+            ValidateState::Challenging(_, pkt) => {
                 *pkt = true;
             }
             _ => unreachable!("no reason to send challenge frame"),
@@ -67,28 +63,17 @@ impl ValidateState {
     }
 
     /// 曾经发送PathChallengeFrame的数据包可能丢了，需要改变状态，触发重传
-    fn may_loss(&mut self) {
-        match self {
-            ValidateState::Challenging(_, pkt) | ValidateState::Rechallenging(_, pkt) => {
-                *pkt = false;
-            }
-            _ => (),
+    fn may_loss_pkt(&mut self) {
+        if let ValidateState::Challenging(_, pkt) = self {
+            *pkt = false;
         }
     }
 
     fn on_response(&mut self, response: &PathResponseFrame) {
-        match self {
-            ValidateState::Challenging(challenge, _) => {
-                if **challenge == **response {
-                    *self = ValidateState::Success;
-                }
+        if let ValidateState::Challenging(challenge, _) = self {
+            if **challenge == **response {
+                *self = ValidateState::Success;
             }
-            ValidateState::Rechallenging(challenge, _) => {
-                if **challenge == **response {
-                    *self = ValidateState::Success;
-                }
-            }
-            _ => (),
         }
     }
 }
@@ -105,6 +90,9 @@ impl Validator {
         self.state.lock().unwrap().challenge();
     }
 
+    // TODO: use when send packet
+    /// Path challenge, if the path is not validated, the path challenge frame in
+    /// the validator will be written, otherwise nothing is written
     pub fn write_challenge(&self, limit: &mut TransportLimit, mut buf: &mut [u8]) -> usize {
         let origin_size = limit.available();
         let remain = buf.remaining_mut();
@@ -116,7 +104,7 @@ impl Validator {
         remain - buf.remaining_mut()
     }
 
-    /// Record space and pn to marks it is sent
+    /// Marks it is sent
     pub fn on_challenge_sent(&self) {
         self.state.lock().unwrap().on_challenge_sent();
     }
@@ -126,12 +114,13 @@ impl Validator {
     /// The `Future` resolves to `true` if the validator is successful, and `false` otherwise.
     /// If the verification is not completed, the "Future" will wait for the state to
     /// transition to the final state, according to the timeout specified in `on_challenge_sent`
-    pub fn get_validate_state(&self) -> ValidatorState {
+    pub fn poll_state(&self) -> ValidatorState {
         ValidatorState(self.clone())
     }
 
-    pub fn may_loss(&self) {
-        self.state.lock().unwrap().may_loss();
+    // TODO: need to retransmit
+    pub fn may_loss_pkt(&self) {
+        self.state.lock().unwrap().may_loss_pkt();
     }
 
     pub fn on_response(&mut self, response: &PathResponseFrame) {
@@ -141,6 +130,10 @@ impl Validator {
         }
     }
 
+    /// After the address validation passes, you can use this function to change
+    /// the verification status and remove the anti-amplification attack protection.
+    ///
+    /// See [Section 8](https://www.rfc-editor.org/rfc/rfc9000.html#section-8)
     pub fn validated(&mut self) {
         *self.state.lock().unwrap() = ValidateState::Success;
         if let Some(waker) = self.waker.take() {
@@ -152,28 +145,12 @@ impl Validator {
         matches!(*self.state.lock().unwrap(), ValidateState::Success)
     }
 
-    /// Spawns a new Tokio task to fail status after the specified timeout.
-    /// Even if it is retransmitted, as long as the verification is successful once
-    /// within the specified timeout, the final verification is guaranteed
-    /// to be successful.
-    pub fn set_timeout(&self, timeout: Duration) {
-        tokio::spawn({
-            let state = self.state.clone();
-            let mut validator = self.clone();
+    pub fn failed(&mut self) {
+        *self.state.lock().unwrap() = ValidateState::Failure;
 
-            async move {
-                if tokio::time::timeout(timeout, validator.get_validate_state())
-                    .await
-                    .is_err()
-                {
-                    let mut state = state.lock().unwrap();
-                    *state = ValidateState::Failure;
-                    if let Some(waker) = validator.waker.take() {
-                        waker.wake();
-                    }
-                };
-            }
-        });
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
     }
 }
 
@@ -228,7 +205,7 @@ impl ResponseState {
         }
     }
 
-    fn waiting_ack(&self) -> Option<u64> {
+    fn check_ack(&self) -> Option<u64> {
         if let ResponseState::Challenged(_, Some(pkt)) = self {
             Some(*pkt)
         } else {
@@ -267,6 +244,10 @@ impl Transponder {
         self.0.lock().unwrap().on_challenge(challenge);
     }
 
+    // TODO: need to use when send packet
+    /// Path challenge, if the path requires sending a challenge response frame,
+    /// the challenge response frame in the Transponder will be written, otherwise
+    /// nothing will be written.
     pub fn write_response(&self, limit: &mut TransportLimit, mut buf: &mut [u8]) -> usize {
         let origin_size = limit.available();
         if let Some(response) = self.0.lock().unwrap().need_response() {
@@ -277,21 +258,25 @@ impl Transponder {
         origin_size - buf.remaining_mut()
     }
 
+    /// Path challenge, this function must called after sending the response frame
     pub fn on_response_sent(&self, pn: u64) {
         self.0.lock().unwrap().on_response_sent(pn);
     }
 
-    pub fn to_acked(&self) {
-        self.0.lock().unwrap().acked();
-    }
-
+    // TODO: need to retransmit
     pub fn may_loss_pkt(&self, pn: u64) {
         self.0.lock().unwrap().may_loss_pkt(pn);
     }
 
-    /// Already sent path challenge response frame waiting for ack
-    pub fn waiting_ack(&self) -> Option<u64> {
-        self.0.lock().unwrap().waiting_ack()
+    /// Check the ack of the packet which take its path challenge response
+    pub fn check_ack(&self, frame: &AckFrame) {
+        let mut guard = self.0.lock().unwrap();
+        if let Some(pn) = guard.check_ack() {
+            if frame.iter().flat_map(|r| r.rev()).any(|rpn| rpn == pn) {
+                guard.acked();
+            }
+        }
+        guard.acked();
     }
 }
 
@@ -302,7 +287,6 @@ mod tests {
     #[tokio::test]
     async fn test_validator_challenge() {
         let mut validator = Validator::default();
-        validator.set_timeout(Duration::from_millis(100));
         {
             validator.challenge();
             let state = validator.state.lock().unwrap();
@@ -333,7 +317,7 @@ mod tests {
             }
             validator.on_challenge_sent();
             let challenge = match *validator.state.lock().unwrap() {
-                ValidateState::Rechallenging(challenge, _) => challenge,
+                ValidateState::Challenging(challenge, _) => challenge,
                 _ => panic!("unexpected state"),
             };
             validator.on_response(&PathResponseFrame::from(&challenge));
@@ -348,7 +332,6 @@ mod tests {
     #[tokio::test]
     async fn test_validator_write_challenge() {
         let validator = Validator::default();
-        validator.set_timeout(Duration::from_millis(100));
         let mut buf = [0; 1024];
         let mut limit = TransportLimit::new(Some(1024), 1024, 0);
         let bytes_written = validator.write_challenge(&mut limit, &mut buf);
@@ -358,29 +341,18 @@ mod tests {
     #[tokio::test]
     async fn test_validator_on_challenge_sent() {
         let validator = Validator::default();
-        validator.set_timeout(Duration::from_millis(100));
         validator.on_challenge_sent();
         let state = validator.state.lock().unwrap();
         assert!(matches!(*state, ValidateState::Challenging(_, true)));
     }
 
     #[tokio::test]
-    async fn test_validator_timeout() {
-        let validator = Validator::default();
-        validator.set_timeout(Duration::from_millis(100));
-        validator.on_challenge_sent();
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        let state = validator.state.lock().unwrap();
-        println!("{:?}", state);
-        assert!(matches!(*state, ValidateState::Failure));
-    }
-
-    #[tokio::test]
     #[should_panic]
     async fn test_validator_challenge_with_failure() {
+        use std::time::Duration;
+
         let validator = Validator::default();
         validator.on_challenge_sent();
-        validator.set_timeout(Duration::from_millis(100));
         tokio::time::sleep(Duration::from_millis(150)).await;
         {
             let state = validator.state.lock().unwrap();
@@ -390,43 +362,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validator_timeout_with_success() {
-        let validator = Validator::default();
-        validator.set_timeout(Duration::from_millis(100));
-        tokio::spawn({
-            let mut validator = validator.clone();
-            async move {
-                let challenge = match *validator.state.lock().unwrap() {
-                    ValidateState::Challenging(challenge, _) => challenge,
-                    _ => panic!("unexpected state"),
-                };
-                validator.on_response(&PathResponseFrame::from(&challenge));
-            }
-        });
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let state = validator.state.lock().unwrap();
-        assert!(matches!(*state, ValidateState::Success));
-    }
-
-    #[tokio::test]
     async fn test_validator_poll_state() {
         let mut validator = Validator::default();
-        validator.set_timeout(Duration::from_millis(100));
         validator.challenge();
         let challenge = match *validator.state.lock().unwrap() {
             ValidateState::Challenging(challenge, _) => challenge,
             _ => panic!("unexpected state"),
         };
         validator.on_response(&PathResponseFrame::from(&challenge));
-        assert!(validator.get_validate_state().await);
+        assert!(validator.poll_state().await);
     }
 
     #[test]
     #[should_panic]
     fn test_validator_on_challenge_sent_with_success() {
         let mut validator = Validator::default();
-        validator.set_timeout(Duration::from_millis(100));
         let challenge = match *validator.state.lock().unwrap() {
             ValidateState::Challenging(challenge, _) => challenge,
             _ => panic!("unexpected state"),
@@ -436,10 +386,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validator_may_loss() {
+    async fn test_validator_may_loss_pkt() {
         let mut validator = Validator::default();
-        validator.set_timeout(Duration::from_millis(100));
-        validator.may_loss();
+        validator.may_loss_pkt();
         {
             let state = validator.state.lock().unwrap();
             assert!(state.need_send_challenge().is_some());
@@ -449,9 +398,9 @@ mod tests {
             _ => panic!("unexpected state"),
         };
         validator.on_response(&PathResponseFrame::from(&challenge));
-        validator.may_loss();
+        validator.may_loss_pkt();
         validator.challenge();
-        validator.may_loss();
+        validator.may_loss_pkt();
 
         let state = validator.state.lock().unwrap();
         assert!(state.need_send_challenge().is_some());
@@ -459,8 +408,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_validator_validated() {
+        use std::time::Duration;
+
         let mut validator = Validator::default();
-        validator.set_timeout(Duration::from_millis(100));
         validator.validated();
         tokio::time::sleep(Duration::from_millis(150)).await;
         let state = validator.state.lock().unwrap();
@@ -470,7 +420,6 @@ mod tests {
     #[tokio::test]
     async fn test_validator_on_response() {
         let mut validator = Validator::default();
-        validator.set_timeout(Duration::from_millis(100));
         validator.challenge();
         let challenge = match *validator.state.lock().unwrap() {
             ValidateState::Challenging(challenge, _) => challenge,
@@ -523,14 +472,14 @@ mod tests {
     #[test]
     fn test_transponder_on_pkt_acked() {
         let transponder = Transponder::default();
-        transponder.to_acked();
+        transponder.0.lock().unwrap().acked();
         {
             let state = transponder.0.lock().unwrap();
             assert!(matches!(*state, ResponseState::None));
         }
         transponder.on_challenge(PathChallengeFrame::random());
         transponder.on_response_sent(1);
-        transponder.to_acked();
+        transponder.0.lock().unwrap().acked();
         let state = transponder.0.lock().unwrap();
         assert!(matches!(*state, ResponseState::None));
     }
