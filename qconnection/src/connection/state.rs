@@ -4,7 +4,7 @@ use std::sync::{atomic::AtomicU8, Arc};
 pub enum ConnectionState {
     Initial = 0,
     Handshaking = 1,
-    Normal = 2,
+    HandshakeDone = 2,
     Closing = 3,
     Draining = 4,
     Closed = 5,
@@ -22,7 +22,7 @@ impl ArcConnectionState {
         match self.0.load(std::sync::atomic::Ordering::Acquire) {
             0 => ConnectionState::Initial,
             1 => ConnectionState::Handshaking,
-            2 => ConnectionState::Normal,
+            2 => ConnectionState::HandshakeDone,
             3 => ConnectionState::Closing,
             4 => ConnectionState::Draining,
             _ => unreachable!(),

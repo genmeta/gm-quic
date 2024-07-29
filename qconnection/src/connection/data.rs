@@ -89,7 +89,7 @@ impl ConnectionStateData {
         match self {
             ConnectionStateData::Initial { .. } => ConnectionState::Initial,
             ConnectionStateData::Handshaking { .. } => ConnectionState::Handshaking,
-            ConnectionStateData::Normal { .. } => ConnectionState::Normal,
+            ConnectionStateData::Normal { .. } => ConnectionState::HandshakeDone,
             ConnectionStateData::Closing { .. } => ConnectionState::Closing,
             ConnectionStateData::Draining {} => ConnectionState::Draining,
             ConnectionStateData::Invalid => ConnectionState::Closed,

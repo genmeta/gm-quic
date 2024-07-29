@@ -681,7 +681,7 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
             let path = path.clone();
             let on_enter_normal = connection
                 .controller
-                .on_enter_state(ConnectionState::Normal);
+                .on_enter_state(ConnectionState::HandshakeDone);
             async move {
                 on_enter_normal.await;
                 path.0.lock().unwrap().cc.on_handshake_done();

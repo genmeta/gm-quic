@@ -93,10 +93,10 @@ impl ArcConnectionController {
     }
 
     pub fn enter_handshake_done(&self) {
-        if self.get_state() >= ConnectionState::Normal {
+        if self.get_state() >= ConnectionState::HandshakeDone {
             return;
         }
-        self.set_state(ConnectionState::Normal);
+        self.set_state(ConnectionState::HandshakeDone);
         let mut guard = self.data.lock().unwrap();
         let state_data = guard.deref_mut();
         let cur_state_data = std::mem::replace(state_data, ConnectionStateData::Invalid);
