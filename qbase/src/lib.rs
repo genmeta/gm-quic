@@ -3,6 +3,7 @@ pub mod config;
 pub mod error;
 pub mod flow;
 pub mod frame;
+pub mod handshake;
 pub mod packet;
 pub mod streamid;
 pub mod token;

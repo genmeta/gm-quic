@@ -131,7 +131,7 @@ impl ArcSendControler {
     /// Flow control can only be terminated if the connection encounters an error
     pub fn on_error(&self, error: &QuicError) {
         let mut guard = self.0.lock().unwrap();
-        if let Err(_) = guard.deref() {
+        if guard.deref().is_err() {
             return;
         }
         if let Ok(inner) = guard.deref_mut() {

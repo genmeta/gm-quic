@@ -763,7 +763,7 @@ pub fn create_connection(
         async move {
             if let Some(_frame) = one_rtt_hs_done_frame_queue_reader.next().await {
                 if role == Role::Server {
-                    return Err(Error::new_with_default_fty(
+                    return Err(Error::with_default_fty(
                         ErrorKind::ProtocolViolation,
                         "client should not send HandshakeDoneFrame",
                     ));
@@ -873,7 +873,7 @@ pub fn create_connection(
                 // the value of the Reason Phrase field and SHOULD use the APPLICATION_ERROR code
                 // when converting to a CONNECTION_CLOSE of type 0x1c.
                 ConnectionState::Initial | ConnectionState::Handshaking => {
-                    Error::new_with_default_fty(ErrorKind::Application, "")
+                    Error::with_default_fty(ErrorKind::Application, "")
                 }
                 ConnectionState::Normal => error,
                 ConnectionState::Closing | ConnectionState::Draining | ConnectionState::Closed => {
