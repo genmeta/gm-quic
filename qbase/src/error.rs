@@ -111,9 +111,9 @@ impl From<ErrorKind> for VarInt {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("{kind} in {frame_type:?}, reason: {reason}")]
 pub struct Error {
-    pub kind: ErrorKind,
-    pub frame_type: FrameType,
-    pub reason: Cow<'static, str>,
+    kind: ErrorKind,
+    frame_type: FrameType,
+    reason: Cow<'static, str>,
 }
 
 impl Error {
@@ -129,12 +129,20 @@ impl Error {
         }
     }
 
-    pub fn new_with_default_fty<T: Into<Cow<'static, str>>>(kind: ErrorKind, reason: T) -> Self {
+    pub fn with_default_fty<T: Into<Cow<'static, str>>>(kind: ErrorKind, reason: T) -> Self {
         Self {
             kind,
             frame_type: FrameType::Padding,
             reason: reason.into(),
         }
+    }
+
+    pub fn kind(&self) -> ErrorKind {
+        self.kind
+    }
+
+    pub fn frame_type(&self) -> FrameType {
+        self.frame_type
     }
 }
 
