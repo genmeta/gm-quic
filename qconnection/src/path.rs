@@ -656,7 +656,7 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
     let path = ArcPath::new(
         usc.clone(),
         Duration::from_millis(100),
-        connection.cid_registry.remote.lock_guard().apply_cid(),
+        connection.cid_registry.remote.apply_cid(),
         path_state,
     );
 
