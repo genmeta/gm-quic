@@ -9,8 +9,9 @@ use std::{
 };
 
 use futures::{task::AtomicWaker, Future};
-use qbase::varint::VARINT_MAX;
 use thiserror::Error;
+
+use crate::varint::VARINT_MAX;
 
 /// All data sent in STREAM frames counts toward this limit.
 #[derive(Debug, Default)]
