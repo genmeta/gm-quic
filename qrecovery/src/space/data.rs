@@ -8,7 +8,7 @@ use qbase::{
     streamid::Role,
 };
 
-use super::{ArcSpace, RawSpace, ReadSpace, ReliableTransmit, TransportLimit};
+use super::{ArcSpace, RawSpace, ReliableTransmit, SpaceRead, TransportLimit};
 use crate::{
     crypto::CryptoStream,
     reliable::{
@@ -67,14 +67,14 @@ impl ArcSpace<DataSpace> {
     }
 }
 
-impl ReadSpace for ArcSpace<DataSpace> {
+impl SpaceRead for ArcSpace<DataSpace> {
     fn read_frame(
         &self,
         limit: &mut TransportLimit,
         mut buf: &mut [u8],
         ack_pkt: Option<(u64, Instant)>,
     ) -> (usize, bool) {
-        let origin = buf.remaining_mut();
+        let origin = limit.available();
 
         let mut send_guard = self.0.sent_pkt_records.send();
 
@@ -120,7 +120,7 @@ impl ReadSpace for ArcSpace<DataSpace> {
     fn read_pn(&self, mut buf: &mut [u8], limit: &mut TransportLimit) -> (u64, usize) {
         let send_guard = self.0.sent_pkt_records.send();
         let (pn, encoded_pn) = send_guard.next_pn();
-        if buf.remaining_mut() > encoded_pn.size() {
+        if buf.remaining_mut() > encoded_pn.size() && limit.available() > encoded_pn.size() {
             buf.put_packet_number(encoded_pn);
             limit.record_write(encoded_pn.size());
             (pn, encoded_pn.size())
@@ -129,7 +129,7 @@ impl ReadSpace for ArcSpace<DataSpace> {
         }
     }
 
-    fn finish(&self) {
+    fn read_finish(&self) {
         let mut gaurd = self.0.sent_pkt_records.send();
         gaurd.finish();
     }

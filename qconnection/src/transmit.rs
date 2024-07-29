@@ -12,7 +12,6 @@ use qbase::{
     varint::{VarInt, WriteVarInt},
 };
 
-
 /// In order to fill the packet efficiently and reduce unnecessary copying, the data of each
 /// space is directly written on the Buffer. However, the length of the packet header is
 /// variable-length encoding, so space needs to be reserved.
@@ -26,7 +25,7 @@ pub enum FillPolicy {
     // Padding,     // Instead of padding frames, it's better to redundantly encode the Length.
 }
 
-pub fn read_space_and_encrypt<T>(
+pub fn encrypt_long_header_space<T>(
     buffer: &mut [u8],
     header: &LongHeader<T>,
     pn: u64,
@@ -109,7 +108,7 @@ where
     (offset, pkt_size)
 }
 
-pub fn read_1rtt_data_and_encrypt(
+pub fn encrypt_1rtt_space(
     buffer: &mut [u8],
     header: &OneRttHeader,
     keys: ArcOneRttKeys,

@@ -7,8 +7,8 @@ pub mod connection;
 pub mod controller;
 pub mod crypto;
 pub mod endpoint;
-pub mod path;
 pub mod new_path;
+pub mod path;
 
 pub(crate) mod auto;
 pub(crate) mod handshake;

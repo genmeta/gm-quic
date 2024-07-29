@@ -6,7 +6,7 @@ use qbase::{
     packet::WritePacketNumber,
 };
 
-use super::{ArcSpace, RawSpace, ReadSpace, ReliableTransmit, TransportLimit};
+use super::{ArcSpace, RawSpace, SpaceRead, ReliableTransmit, TransportLimit};
 use crate::{
     crypto::CryptoStream,
     reliable::{
@@ -72,7 +72,7 @@ impl<K: NoDataSpaceKind> ArcSpace<NoDataSpace<K>> {
     }
 }
 
-impl<K: NoDataSpaceKind> ReadSpace for ArcSpace<NoDataSpace<K>> {
+impl<K: NoDataSpaceKind> SpaceRead for ArcSpace<NoDataSpace<K>> {
     fn read_frame(
         &self,
         limit: &mut TransportLimit,
@@ -128,7 +128,7 @@ impl<K: NoDataSpaceKind> ReadSpace for ArcSpace<NoDataSpace<K>> {
         }
     }
 
-    fn finish(&self) {
+    fn read_finish(&self) {
         let mut gaurd = self.0.sent_pkt_records.send();
         gaurd.finish();
     }

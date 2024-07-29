@@ -98,7 +98,7 @@ impl<T> RawSpace<T> {
 }
 
 #[enum_dispatch]
-pub trait ReadSpace: Send + Sync + 'static {
+pub trait SpaceRead: Send + Sync + 'static {
     fn read_frame(
         &self,
         limit: &mut TransportLimit,
@@ -108,11 +108,11 @@ pub trait ReadSpace: Send + Sync + 'static {
 
     fn read_pn(&self, buf: &mut [u8], limit: &mut TransportLimit) -> (u64, usize);
 
-    fn finish(&self);
+    fn read_finish(&self);
 }
 
 #[enum_dispatch]
-pub trait ReliableTransmit: ReadSpace {
+pub trait ReliableTransmit: SpaceRead {
     fn on_ack(&self, ack_frmae: AckFrame);
     fn may_loss_pkt(&self, pn: u64);
     fn probe_timeout(&self);
@@ -147,7 +147,7 @@ where
 }
 
 #[derive(Debug, Clone)]
-#[enum_dispatch(ReliableTransmit, ReadSpace)]
+#[enum_dispatch(ReliableTransmit, SpaceRead)]
 pub enum Space {
     Initial(InitialSpace),
     Handshake(HandshakeSpace),
