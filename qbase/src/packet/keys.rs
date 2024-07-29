@@ -9,6 +9,15 @@ use rustls::quic::{HeaderProtectionKey, Keys, PacketKey, Secrets};
 
 use super::KeyPhaseBit;
 
+// TODO: imprvoe the design of AllKeys
+#[derive(Clone)]
+pub struct AllKeys {
+    pub initial_keys: Option<ArcKeys>,
+    pub handshake_keys: Option<ArcKeys>,
+    pub zero_rtt_keys: Option<ArcKeys>,
+    pub one_rtt_keys: Option<ArcOneRttKeys>,
+}
+
 #[derive(Clone)]
 enum KeysState {
     Pending(Option<Waker>),

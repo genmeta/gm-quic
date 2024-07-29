@@ -1,6 +1,6 @@
 pub mod receive;
 
-use std::{fmt::Debug, ops::Deref, time::Instant};
+use std::{fmt::Debug, ops::Deref};
 
 use bytes::BufMut;
 use qbase::{
@@ -9,13 +9,9 @@ use qbase::{
         keys::{ArcKeys, ArcOneRttKeys},
         LongClearBits, OneRttHeader, ShortClearBits,
     },
-    util::TransportLimit,
     varint::{VarInt, WriteVarInt},
 };
-use qcongestion::{congestion::MSS, CongestionControl};
-use qrecovery::space::{Epoch, FillPacket, FillPacketResult};
 
-use crate::path;
 
 /// In order to fill the packet efficiently and reduce unnecessary copying, the data of each
 /// space is directly written on the Buffer. However, the length of the packet header is
@@ -33,34 +29,24 @@ pub enum FillPolicy {
 pub fn read_space_and_encrypt<T>(
     buffer: &mut [u8],
     header: &LongHeader<T>,
+    pn: u64,
+    pn_size: usize,
+    mut body_len: usize,
     fill_policy: FillPolicy,
     keys: &ArcKeys,
-    space: &impl FillPacket,
-    transport_limit: &mut TransportLimit,
-    ack_pkt: Option<(u64, Instant)>,
-) -> (u64, usize, usize, bool)
+) -> (usize, usize)
 where
     for<'a> &'a mut [u8]: Write<T>,
     LongHeader<T>: GetType + Encode,
 {
     let keys = match keys.get_local_keys() {
         Some(keys) => keys,
-        None => return (0, 0, 0, false),
+        None => return (0, 0),
     };
 
+    // 放到 path 装填时
     let max_header_size = header.size() + 2; // 2 bytes reserved for packet length, max 16KB
     let (mut hdr_buf, body_buf) = buffer.split_at_mut(max_header_size);
-
-    let FillPacketResult {
-        pn,
-        pn_size,
-        mut body_len,
-        is_ack_eliciting,
-    } = space.fill_packet(transport_limit, body_buf, ack_pkt);
-    if body_len == 0 {
-        // nothing to send
-        return (0, 0, 0, false);
-    }
 
     let mut body_buf = &mut body_buf[body_len..];
     if body_len < 20 {
@@ -120,35 +106,25 @@ where
         .encrypt_in_place(sample, &mut header[0], &mut pn_max[..pn_size])
         .unwrap();
 
-    (pn, offset, pkt_size, is_ack_eliciting)
+    (offset, pkt_size)
 }
 
 pub fn read_1rtt_data_and_encrypt(
     buffer: &mut [u8],
     header: &OneRttHeader,
     keys: ArcOneRttKeys,
-    space: &impl FillPacket,
-    transport_limit: &mut TransportLimit,
-    ack_pkt: Option<(u64, Instant)>,
-) -> (u64, usize, bool) {
+    pn: u64,
+    pn_size: usize,
+    body_len: usize,
+) -> usize {
     let (hpk, pk) = match keys.get_local_keys() {
         Some(keys) => keys,
-        None => return (0, 0, false),
+        None => return 0,
     };
 
     let header_size = header.size();
-    let (mut hdr_buf, body_buf) = buffer.split_at_mut(header_size);
 
-    let FillPacketResult {
-        pn,
-        pn_size,
-        body_len,
-        is_ack_eliciting,
-    } = space.fill_packet(transport_limit, body_buf, ack_pkt);
-    // let (pn, pn_size, body_len, is_ack_eliciting) =;
-    if body_len == 0 {
-        return (0, 0, false);
-    }
+    let (mut hdr_buf, _) = buffer.split_at_mut(header_size);
 
     hdr_buf.put_one_rtt_header(header);
     debug_assert!(hdr_buf.is_empty());
@@ -173,103 +149,8 @@ pub fn read_1rtt_data_and_encrypt(
         .encrypt_in_place(sample, &mut header[0], &mut pn_max[..pn_size])
         .unwrap();
 
-    (pn, pkt_size, is_ack_eliciting)
+    pkt_size
 }
 
-pub(crate) fn read_long_header_space<T>(
-    buffers: &mut Vec<Vec<u8>>,
-    header: &LongHeader<T>,
-    fill_policy: FillPolicy,
-    keys: &ArcKeys,
-    space: &impl FillPacket,
-    epoch: Epoch,
-    guard: &mut path::SendGuard,
-) where
-    for<'a> &'a mut [u8]: Write<T>,
-    LongHeader<T>: GetType + Encode,
-{
-    let mut buffer = vec![0u8; MSS];
-    let mut offset = 0;
-
-    let mut ack_pkt = guard.ack_pkts[epoch];
-
-    while guard.transport_limit.available() > 0 {
-        let (pn, _, pkt_size, is_ack_eliciting) = read_space_and_encrypt(
-            &mut buffer[offset..],
-            header,
-            fill_policy,
-            keys,
-            space,
-            &mut guard.transport_limit,
-            ack_pkt,
-        );
-
-        if pkt_size != 0 {
-            let ack = ack_pkt.map(|ack| ack.0);
-            guard
-                .cc
-                .on_pkt_sent(epoch, pn, is_ack_eliciting, pkt_size, is_ack_eliciting, ack);
-            // Send the ack frame only once
-            ack_pkt = None;
-        }
-
-        if pkt_size == 0 && offset == 0 {
-            break;
-        }
-
-        if offset < MSS && pkt_size != 0 {
-            offset += pkt_size;
-        } else {
-            buffers.push(buffer);
-            buffer = vec![0u8; MSS];
-            offset = 0;
-        }
-    }
-}
-
-pub(crate) fn read_short_header_space(
-    buffers: &mut Vec<Vec<u8>>,
-    header: OneRttHeader,
-    keys: &ArcOneRttKeys,
-    space: &impl FillPacket,
-    epoch: Epoch,
-    guard: &mut path::SendGuard,
-) {
-    let mut buffer = vec![0u8; MSS];
-    let mut offset = 0;
-
-    let mut ack_pkt = guard.ack_pkts[epoch];
-
-    while guard.transport_limit.available() > 0 {
-        let (pn, pkt_size, is_ack_eliciting) = read_1rtt_data_and_encrypt(
-            &mut buffer[offset..],
-            &header,
-            keys.clone(),
-            space,
-            &mut guard.transport_limit,
-            ack_pkt,
-        );
-
-        if pkt_size != 0 {
-            let ack = ack_pkt.map(|ack| ack.0);
-            guard
-                .cc
-                .on_pkt_sent(epoch, pn, is_ack_eliciting, pkt_size, is_ack_eliciting, ack);
-            // Send the ack frame only once
-            ack_pkt = None;
-        }
-        if pkt_size == 0 && offset == 0 {
-            break;
-        }
-
-        if offset < MSS && pkt_size != 0 {
-            offset += pkt_size;
-        } else {
-            buffers.push(buffer);
-            buffer = vec![0u8; MSS];
-            offset = 0;
-        }
-    }
-}
 #[cfg(test)]
 mod tests {}

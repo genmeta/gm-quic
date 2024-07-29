@@ -192,10 +192,9 @@ impl SendGuard<'_> {
     pub fn record_ack_frame(&mut self, frame: AckFrame) {
         self.inner.record_ack_frame(frame);
     }
-}
 
-impl Drop for SendGuard<'_> {
-    fn drop(&mut self) {
+    pub fn finish(&mut self) {
+        // advance pn
         let nframes = self.inner.queue.len() - self.origin_len;
         self.inner
             .records

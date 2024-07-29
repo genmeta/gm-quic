@@ -6,7 +6,7 @@ use qbase::{
     packet::WritePacketNumber,
 };
 
-use super::{ArcSpace, FillPacket, FillPacketResult, RawSpace, ReliableTransmit, TransportLimit};
+use super::{ArcSpace, RawSpace, ReadSpace, ReliableTransmit, TransportLimit};
 use crate::{
     crypto::CryptoStream,
     reliable::{
@@ -72,24 +72,16 @@ impl<K: NoDataSpaceKind> ArcSpace<NoDataSpace<K>> {
     }
 }
 
-impl<K: NoDataSpaceKind> FillPacket for ArcSpace<NoDataSpace<K>> {
-    fn fill_packet(
+impl<K: NoDataSpaceKind> ReadSpace for ArcSpace<NoDataSpace<K>> {
+    fn read_frame(
         &self,
         limit: &mut TransportLimit,
         mut buf: &mut [u8],
         ack_pkt: Option<(u64, Instant)>,
-    ) -> FillPacketResult {
+    ) -> (usize, bool) {
         let origin = limit.available();
 
         let mut send_guard = self.0.sent_pkt_records.send();
-
-        let (pn, encoded_pn) = send_guard.next_pn();
-        if buf.remaining_mut() > encoded_pn.size() {
-            buf.put_packet_number(encoded_pn);
-            limit.record_write(encoded_pn.size());
-        } else {
-            return FillPacketResult::no_bytes_written(pn, encoded_pn.size());
-        }
 
         if let Some((frame, n)) = self.read_ack_frame_until(buf, ack_pkt) {
             send_guard.record_ack_frame(frame);
@@ -120,12 +112,25 @@ impl<K: NoDataSpaceKind> FillPacket for ArcSpace<NoDataSpace<K>> {
             is_ack_eliciting = true;
         }
 
-        FillPacketResult::new(
-            pn,
-            encoded_pn.size(),
-            origin - buf.remaining_mut(),
-            is_ack_eliciting,
-        )
+        (origin - buf.remaining_mut(), is_ack_eliciting)
+    }
+
+    // todo: data 和 no data 实现是一样的
+    fn read_pn(&self, mut buf: &mut [u8], limit: &mut TransportLimit) -> (u64, usize) {
+        let send_guard = self.0.sent_pkt_records.send();
+        let (pn, encoded_pn) = send_guard.next_pn();
+        if buf.remaining_mut() > encoded_pn.size() {
+            buf.put_packet_number(encoded_pn);
+            limit.record_write(encoded_pn.size());
+            (pn, encoded_pn.size())
+        } else {
+            (0, 0)
+        }
+    }
+
+    fn finish(&self) {
+        let mut gaurd = self.0.sent_pkt_records.send();
+        gaurd.finish();
     }
 }
 

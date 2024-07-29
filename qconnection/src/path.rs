@@ -9,7 +9,6 @@ use std::{
 };
 
 use anti_amplifier::ANTI_FACTOR;
-use bytes::BufMut;
 use futures::{Future, FutureExt};
 use log::*;
 use qbase::{
@@ -270,84 +269,89 @@ impl PathState {
         scid: ConnectionId,
         token: &[u8],
     ) {
-        use qbase::{
-            frame::io::WriteConnectionCloseFrame,
-            packet::{PacketNumber, WritePacketNumber},
-        };
-        use qrecovery::space::{FillPacket, FillPacketResult};
-        let pn = match &self {
-            PathState::Initial { init_space, .. } => init_space.sent_pkt_records.send().next_pn(),
-            PathState::Handshaking { hs_space, .. } => hs_space.sent_pkt_records.send().next_pn(),
-            PathState::Normal { data_space, .. } => data_space.sent_pkt_records.send().next_pn(),
-            PathState::Closing { .. } | PathState::Invalid => return,
-        };
+        todo!()
+        // use qbase::{
+        //     frame::io::WriteConnectionCloseFrame,
+        //     packet::{PacketNumber, WritePacketNumber},
+        // };
+        // use qrecovery::space::{FillPacketResult, ReadFrame};
+        // let pn = match &self {
+        //     PathState::Initial { init_space, .. } => init_space.sent_pkt_records.send().next_pn(),
+        //     PathState::Handshaking { hs_space, .. } => hs_space.sent_pkt_records.send().next_pn(),
+        //     PathState::Normal { data_space, .. } => data_space.sent_pkt_records.send().next_pn(),
+        //     PathState::Closing { .. } | PathState::Invalid => return,
+        // };
 
-        struct Filler(Arc<ConnectionCloseFrame>, u64, PacketNumber);
-        let filler = Filler(ccf, pn.0, pn.1);
+        // struct Filler(Arc<ConnectionCloseFrame>, u64, PacketNumber);
+        // let filler = Filler(ccf, pn.0, pn.1);
 
-        impl FillPacket for Filler {
-            fn fill_packet(
-                &self,
-                _: &mut TransportLimit,
-                mut buf: &mut [u8],
-                _: Option<(u64, Instant)>,
-            ) -> FillPacketResult {
-                let origin = buf.remaining_mut();
+        // impl ReadFrame for Filler {
+        //     fn read_frame(
+        //         &self,
+        //         _: &mut TransportLimit,
+        //         mut buf: &mut [u8],
+        //         _: Option<(u64, Instant)>,
+        //     ) -> FillPacketResult {
+        //         let origin = buf.remaining_mut();
 
-                buf.put_packet_number(self.2);
-                buf.put_connection_close_frame(&self.0);
+        //         buf.put_packet_number(self.2);
+        //         buf.put_connection_close_frame(&self.0);
 
-                FillPacketResult::new(self.1, self.2.size(), origin - buf.remaining_mut(), false)
-            }
-        }
+        //         FillPacketResult::new(self.1, self.2.size(), origin - buf.remaining_mut(), false)
+        //     }
 
-        let mut buffers = vec![];
-        match self {
-            PathState::Initial { .. } => self.for_initial_space(|_, init_keys| {
-                let builder = LongHeaderBuilder::with_cid(send_guard.dcid, scid);
-                let header = builder.initial(token.to_vec());
-                let fill_policy = FillPolicy::Redundancy;
-                transmit::read_long_header_space(
-                    &mut buffers,
-                    &header,
-                    fill_policy,
-                    init_keys,
-                    &filler,
-                    Epoch::Initial,
-                    send_guard,
-                );
-            }),
-            PathState::Handshaking { .. } => self.for_handshake_space(|_, hs_keys| {
-                let builder = LongHeaderBuilder::with_cid(send_guard.dcid, scid);
-                let header = builder.handshake();
-                let fill_policy = FillPolicy::Redundancy;
-                transmit::read_long_header_space(
-                    &mut buffers,
-                    &header,
-                    fill_policy,
-                    hs_keys,
-                    &filler,
-                    Epoch::Handshake,
-                    send_guard,
-                );
-            }),
-            PathState::Normal { .. } => self.for_data_space(|_, one_rtt_keys, _flow_ctrl, spin| {
-                let dcid = send_guard.dcid;
-                let header = OneRttHeader { spin: *spin, dcid };
-                transmit::read_short_header_space(
-                    &mut buffers,
-                    header,
-                    one_rtt_keys,
-                    &filler,
-                    Epoch::Data,
-                    send_guard,
-                );
-            }),
-            _ => return,
-        }
-        *self = PathState::Closing {
-            datagram: Arc::new(buffers),
-        }
+        //     fn read_pn(&self, buf: &mut [u8], limit: &mut TransportLimit) -> (u64, usize) {
+        //         todo!()
+        //     }
+        // }
+
+        // let mut buffers = vec![];
+        // match self {
+        //     PathState::Initial { .. } => self.for_initial_space(|_, init_keys| {
+        //         let builder = LongHeaderBuilder::with_cid(send_guard.dcid, scid);
+        //         let header = builder.initial(token.to_vec());
+        //         let fill_policy = FillPolicy::Redundancy;
+        //         transmit::read_long_header_space(
+        //             &mut buffers,
+        //             &header,
+        //             fill_policy,
+        //             init_keys,
+        //             &filler,
+        //             Epoch::Initial,
+        //             send_guard,
+        //         );
+        //     }),
+        //     PathState::Handshaking { .. } => self.for_handshake_space(|_, hs_keys| {
+        //         let builder = LongHeaderBuilder::with_cid(send_guard.dcid, scid);
+        //         let header = builder.handshake();
+        //         let fill_policy = FillPolicy::Redundancy;
+        //         transmit::read_long_header_space(
+        //             &mut buffers,
+        //             &header,
+        //             fill_policy,
+        //             hs_keys,
+        //             &filler,
+        //             Epoch::Handshake,
+        //             send_guard,
+        //         );
+        //     }),
+        //     PathState::Normal { .. } => self.for_data_space(|_, one_rtt_keys, _flow_ctrl, spin| {
+        //         let dcid = send_guard.dcid;
+        //         let header = OneRttHeader { spin: *spin, dcid };
+        //         transmit::read_short_header_space(
+        //             &mut buffers,
+        //             header,
+        //             one_rtt_keys,
+        //             &filler,
+        //             Epoch::Data,
+        //             send_guard,
+        //         );
+        //     }),
+        //     _ => return,
+        // }
+        // *self = PathState::Closing {
+        //     datagram: Arc::new(buffers),
+        // }
     }
 }
 
@@ -752,7 +756,7 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
 
             while conn_controller.get_state() < ConnectionState::Draining {
                 let mut guard = path.poll_send().await;
-                let mut buffers = Vec::new();
+                let buffers = Vec::new();
 
                 // 准备待发送的数据
                 let data: &[Vec<u8>] = match &mut path.0.lock().unwrap().state {
@@ -778,43 +782,43 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                             let builder = LongHeaderBuilder::with_cid(guard.dcid, scid);
                             let header = builder.initial(token.clone());
                             let fill_policy = FillPolicy::Redundancy;
-                            transmit::read_long_header_space(
-                                &mut buffers,
-                                &header,
-                                fill_policy,
-                                init_keys,
-                                space,
-                                Epoch::Initial,
-                                &mut guard,
-                            );
+                            // transmit::read_long_header_space(
+                            //     &mut buffers,
+                            //     &header,
+                            //     fill_policy,
+                            //     init_keys,
+                            //     space,
+                            //     Epoch::Initial,
+                            //     &mut guard,
+                            // );
                         });
 
                         state.for_handshake_space(|space, hs_keys| {
                             let builder = LongHeaderBuilder::with_cid(guard.dcid, scid);
                             let header = builder.handshake();
                             let fill_policy = FillPolicy::Redundancy;
-                            transmit::read_long_header_space(
-                                &mut buffers,
-                                &header,
-                                fill_policy,
-                                hs_keys,
-                                space,
-                                Epoch::Handshake,
-                                &mut guard,
-                            );
+                            // transmit::read_long_header_space(
+                            //     &mut buffers,
+                            //     &header,
+                            //     fill_policy,
+                            //     hs_keys,
+                            //     space,
+                            //     Epoch::Handshake,
+                            //     &mut guard,
+                            // );
                         });
 
                         state.for_data_space(|space, one_rtt_keys, _flow_ctrl, spin| {
                             let dcid = guard.dcid;
                             let header = OneRttHeader { spin: *spin, dcid };
-                            transmit::read_short_header_space(
-                                &mut buffers,
-                                header,
-                                one_rtt_keys,
-                                space,
-                                Epoch::Data,
-                                &mut guard,
-                            );
+                            // transmit::read_short_header_space(
+                            //     &mut buffers,
+                            //     header,
+                            //     one_rtt_keys,
+                            //     space,
+                            //     Epoch::Data,
+                            //     &mut guard,
+                            // );
                         });
 
                         &buffers

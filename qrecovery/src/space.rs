@@ -98,45 +98,21 @@ impl<T> RawSpace<T> {
 }
 
 #[enum_dispatch]
-pub trait FillPacket: Send + Sync + 'static {
-    fn fill_packet(
+pub trait ReadSpace: Send + Sync + 'static {
+    fn read_frame(
         &self,
         limit: &mut TransportLimit,
         buf: &mut [u8],
         ack_pkt: Option<(u64, Instant)>,
-    ) -> FillPacketResult;
-}
+    ) -> (usize, bool);
 
-#[derive(Debug, Clone, Copy)]
-pub struct FillPacketResult {
-    pub pn: u64,
-    pub pn_size: usize,
-    pub body_len: usize,
-    pub is_ack_eliciting: bool,
-}
+    fn read_pn(&self, buf: &mut [u8], limit: &mut TransportLimit) -> (u64, usize);
 
-impl FillPacketResult {
-    pub fn new(pn: u64, pn_size: usize, body_len: usize, is_ack_eliciting: bool) -> Self {
-        Self {
-            pn,
-            pn_size,
-            body_len,
-            is_ack_eliciting,
-        }
-    }
-
-    pub fn no_bytes_written(pn: u64, pn_size: usize) -> Self {
-        Self {
-            pn,
-            pn_size,
-            body_len: 0,
-            is_ack_eliciting: false,
-        }
-    }
+    fn finish(&self);
 }
 
 #[enum_dispatch]
-pub trait ReliableTransmit: FillPacket {
+pub trait ReliableTransmit: ReadSpace {
     fn on_ack(&self, ack_frmae: AckFrame);
     fn may_loss_pkt(&self, pn: u64);
     fn probe_timeout(&self);
@@ -171,9 +147,20 @@ where
 }
 
 #[derive(Debug, Clone)]
-#[enum_dispatch(ReliableTransmit, FillPacket)]
+#[enum_dispatch(ReliableTransmit, ReadSpace)]
 pub enum Space {
     Initial(InitialSpace),
     Handshake(HandshakeSpace),
     Data(DataSpace),
+}
+
+#[derive(Clone)]
+pub struct Spaces(pub [Option<Space>; 3]);
+
+impl Index<Epoch> for Spaces {
+    type Output = Option<Space>;
+
+    fn index(&self, index: Epoch) -> &Self::Output {
+        &self.0[index as usize]
+    }
 }
