@@ -34,6 +34,11 @@ impl<T> ArcAsyncDeque<T> {
         }
     }
 
+    pub fn pop(&self) -> Option<T> {
+        let mut guard = self.0.lock().unwrap();
+        guard.queue.as_mut().and_then(|q| q.pop_front())
+    }
+
     pub fn len(&self) -> usize {
         self.0
             .lock()
@@ -49,9 +54,9 @@ impl<T> ArcAsyncDeque<T> {
     }
 
     pub fn close(&self) {
-        let mut queue = self.0.lock().unwrap();
-        queue.queue = None;
-        if let Some(waker) = queue.waker.take() {
+        let mut guard = self.0.lock().unwrap();
+        guard.queue = None;
+        if let Some(waker) = guard.waker.take() {
             waker.wake();
         }
     }

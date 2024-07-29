@@ -412,7 +412,6 @@ pub fn create_connection(
             connection
                 .cid_registry
                 .local
-                .lock_guard()
                 .set_limit(transport_parameters.active_connection_id_limit().into())?;
 
             if role == Role::Server {
@@ -689,7 +688,7 @@ pub fn create_connection(
     //     error
     let one_rtt_handle_cid_frame_handle = tokio::spawn({
         let cid_registry = cid_registry.clone();
-        let connection_ids = endpoint_connection_ids.clone();
+        let _connection_ids = endpoint_connection_ids.clone();
         let peer_reset_tokens = endpoint_reset_tokens.clone();
         let connection_handle = connection_handle.clone();
 
@@ -699,24 +698,14 @@ pub fn create_connection(
             while let Some(frame) = one_rtt_conn_id_frame_queue_reader.next().await {
                 match frame {
                     auto::ConnIdFrame::NewConnectionId(frame) => {
-                        let new_token = cid_registry
-                            .remote
-                            .lock_guard()
-                            .recv_new_cid_frame(&frame)?;
+                        let new_token = cid_registry.remote.recv_new_cid_frame(&frame)?;
                         if let Some(new_token) = new_token {
                             peer_reset_tokens.insert(new_token, connection_handle.clone());
                             connection_handle.resources.reset_tokens.insert(new_token);
                         }
                     }
                     auto::ConnIdFrame::RetireConnectionId(frame) => {
-                        let retired = cid_registry
-                            .local
-                            .lock_guard()
-                            .recv_retire_cid_frame(&frame)?;
-                        if let Some(retired) = retired {
-                            connection_handle.resources.connection_ids.remove(&retired);
-                            connection_ids.remove(&retired);
-                        }
+                        cid_registry.local.recv_retire_cid_frame(&frame)?;
                     }
                 }
             }

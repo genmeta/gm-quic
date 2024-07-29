@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
 
@@ -10,16 +10,17 @@ use crate::{
     error::{Error, ErrorKind},
     frame::{BeFrame, FrameType, NewConnectionIdFrame, RetireConnectionIdFrame},
     token::ResetToken,
-    util::{IndexDeque, IndexError},
+    util::{ArcAsyncDeque, IndexDeque, IndexError},
     varint::{VarInt, VARINT_MAX},
 };
 
 /// 我方负责发放足够的cid，poll_issue_cid，将当前有效的cid注册到连接id路由。
 /// 当cid不足时，就发放新的连接id，包括增大active_cid_limit，以及对方淘汰旧的cid。
-#[derive(Default, Debug)]
+#[derive(Debug, Default)]
 pub struct RawLocalCids {
     // If the item in cid_deque is None, it means the connection ID has been retired.
     cid_deque: IndexDeque<Option<(ConnectionId, ResetToken)>, VARINT_MAX>,
+    retired_cids: ArcAsyncDeque<ConnectionId>,
     // This is an integer value specifying the maximum number of connection
     // IDs from the peer that an endpoint is willing to store.
     // While the client does not know the server's parameters, it can be set to None.
@@ -33,7 +34,7 @@ impl RawLocalCids {
     // The value of the active_connection_id_limit parameter MUST be at least 2.
     // An endpoint that receives a value less than 2 MUST close the connection
     // with an error of type TRANSPORT_PARAMETER_ERROR.
-    pub fn set_limit(&mut self, active_cid_limit: u64) -> Result<(), Error> {
+    fn set_limit(&mut self, active_cid_limit: u64) -> Result<(), Error> {
         debug_assert!(self.active_cid_limit.is_none());
         if active_cid_limit < 2 {
             return Err(Error::new(
@@ -51,7 +52,7 @@ impl RawLocalCids {
 
     /// Issue a new unique connection ID with the given length.
     /// Return a new connection ID frame, which must be sent to the peer.
-    pub fn poll_issue_cid<P>(
+    fn poll_issue_cid<P>(
         &mut self,
         cx: &mut Context<'_>,
         len: usize,
@@ -75,6 +76,7 @@ impl RawLocalCids {
             Ok(seq) => seq,
             Err(e) => return Poll::Ready(Err(e)),
         };
+        // THINK: 这里可能不对，retire_prior_to..seq中间还有些已经被淘汰的cid，没计算在内
         let retire_prior_to: u64 = sequence.saturating_sub(limit);
         Poll::Ready(Ok(NewConnectionIdFrame {
             sequence: VarInt::from_u64(sequence).unwrap(),
@@ -86,10 +88,7 @@ impl RawLocalCids {
 
     /// When a RetireConnectionIdFrame is acknowledged by the peer, call this method to
     /// retire the connection IDs of the sequence in RetireConnectionIdFrame.
-    pub fn recv_retire_cid_frame(
-        &mut self,
-        frame: &RetireConnectionIdFrame,
-    ) -> Result<Option<ConnectionId>, Error> {
+    fn recv_retire_cid_frame(&mut self, frame: &RetireConnectionIdFrame) -> Result<(), Error> {
         let seq = frame.sequence.into_inner();
         if seq >= self.cid_deque.largest() {
             return Err(Error::new(
@@ -112,13 +111,23 @@ impl RawLocalCids {
                 }
                 let n = self.cid_deque.iter().take_while(|v| v.is_none()).count();
                 self.cid_deque.advance(n);
-                Ok(Some(cid))
-            } else {
-                Ok(None)
+                self.retired_cids.push(cid);
             }
-        } else {
-            Ok(None)
         }
+        Ok(())
+    }
+
+    pub fn retired_cids(&self) -> ArcAsyncDeque<ConnectionId> {
+        self.retired_cids.clone()
+    }
+}
+
+impl Drop for RawLocalCids {
+    fn drop(&mut self) {
+        self.cid_deque
+            .iter()
+            .filter_map(|item| item.map(|(cid, _)| cid))
+            .for_each(|cid| self.retired_cids.push(cid));
     }
 }
 
@@ -126,8 +135,8 @@ impl RawLocalCids {
 pub struct ArcLocalCids(Arc<Mutex<RawLocalCids>>);
 
 impl ArcLocalCids {
-    pub fn lock_guard(&self) -> MutexGuard<'_, RawLocalCids> {
-        self.0.lock().unwrap()
+    pub fn set_limit(&self, active_cid_limit: u64) -> Result<(), Error> {
+        self.0.lock().unwrap().set_limit(active_cid_limit)
     }
 
     pub fn issue_cid<P>(&self, len: usize, predicate: P) -> IssueCid<P>
@@ -139,6 +148,14 @@ impl ArcLocalCids {
             len,
             predicate,
         }
+    }
+
+    pub fn retired_cids(&self) -> ArcAsyncDeque<ConnectionId> {
+        self.0.lock().unwrap().retired_cids()
+    }
+
+    pub fn recv_retire_cid_frame(&self, frame: &RetireConnectionIdFrame) -> Result<(), Error> {
+        self.0.lock().unwrap().recv_retire_cid_frame(frame)
     }
 }
 
@@ -155,7 +172,7 @@ where
     type Output = Result<NewConnectionIdFrame, IndexError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.local_cids.lock_guard();
+        let mut guard = self.local_cids.0.lock().unwrap();
         guard.poll_issue_cid(cx, self.len, &self.predicate)
     }
 }
@@ -171,7 +188,8 @@ mod tests {
     #[test]
     fn test_issue_cid() {
         let local_cids = ArcLocalCids::default();
-        let mut guard = local_cids.lock_guard();
+        let retired_cids = local_cids.retired_cids();
+        let mut guard = local_cids.0.lock().unwrap();
         let predicate = |_: &ConnectionId| true;
         let mut cx = Context::from_waker(noop_waker_ref());
 
@@ -192,11 +210,13 @@ mod tests {
         guard.set_limit(3).unwrap();
         let issue_cid = guard.poll_issue_cid(&mut cx, 4, predicate);
         assert!(issue_cid.is_ready());
+        assert!(retired_cids.is_empty());
     }
 
     #[test]
     fn test_recv_retire_cid_frame() {
         let mut local_cids = RawLocalCids::default();
+        let retired_cids = local_cids.retired_cids();
         let predicate = |_: &ConnectionId| true;
         let mut cx = Context::from_waker(noop_waker_ref());
 
@@ -217,14 +237,16 @@ mod tests {
             sequence: VarInt::from_u32(1),
         };
         let cid2 = local_cids.recv_retire_cid_frame(&retire_frame);
-        assert_eq!(cid2, Ok(Some(issued_cid2)));
+        assert_eq!(cid2, Ok(()));
+        assert_eq!(retired_cids.pop(), Some(issued_cid2));
         assert_eq!(local_cids.cid_deque.get(1), Some(&None));
 
         let retire_frame = RetireConnectionIdFrame {
             sequence: VarInt::from_u32(0),
         };
         let cid1 = local_cids.recv_retire_cid_frame(&retire_frame);
-        assert_eq!(cid1, Ok(Some(issued_cid1)));
+        assert_eq!(cid1, Ok(()));
+        assert_eq!(retired_cids.pop(), Some(issued_cid1));
         assert_eq!(local_cids.cid_deque.get(0), None); // have been slided out
 
         let retire_frame = RetireConnectionIdFrame {
@@ -258,6 +280,6 @@ mod tests {
                 }
             }
         });
-        _ = local_cids.lock_guard().set_limit(10);
+        _ = local_cids.0.lock().unwrap().set_limit(10);
     }
 }
