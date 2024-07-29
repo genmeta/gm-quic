@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use qbase::{
     error::Error,
+    flow::ArcFlowController,
     frame::ConnectionCloseFrame,
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
@@ -13,10 +14,7 @@ use qunreliable::DatagramFlow;
 use tokio::sync::{mpsc, oneshot};
 
 use super::state::ConnectionState;
-use crate::{
-    controller::ArcFlowController,
-    path::{ArcPath, PathState},
-};
+use crate::path::{ArcPath, PathState};
 
 type PacketQueue<T> = mpsc::UnboundedSender<(T, ArcPath)>;
 

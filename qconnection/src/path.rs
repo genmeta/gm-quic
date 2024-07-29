@@ -14,6 +14,7 @@ use futures::{Future, FutureExt};
 use log::*;
 use qbase::{
     cid::{ArcCidCell, ConnectionId, MAX_CID_SIZE},
+    flow::ArcFlowController,
     frame::{AckFrame, ConnFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame},
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
@@ -39,7 +40,6 @@ pub use validate::{Transponder, Validator};
 
 use crate::{
     connection::{ConnectionState, ConnectionStateData, RawConnection},
-    controller::ArcFlowController,
     transmit::{self, FillPolicy},
     Sendmsg,
 };

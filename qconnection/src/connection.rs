@@ -11,6 +11,7 @@ use futures::{FutureExt, StreamExt};
 use qbase::{
     cid::{ConnectionId, Registry},
     error::{Error, ErrorKind},
+    flow::ArcFlowController,
     frame::{ConnFrame, ConnectionCloseFrame, HandshakeDoneFrame},
     packet::{
         header::Encode,
@@ -29,7 +30,6 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     auto::{self, PacketPayload},
-    controller::ArcFlowController,
     crypto::TlsIO,
     handshake,
     path::{self, ArcPath, Pathway},
