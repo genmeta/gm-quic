@@ -14,7 +14,7 @@ use futures::{Future, FutureExt};
 use log::*;
 use qbase::{
     cid::{ArcCidCell, ConnectionId, MAX_CID_SIZE},
-    flow::ArcFlowController,
+    flow::FlowController,
     frame::{AckFrame, ConnFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame},
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
@@ -90,7 +90,7 @@ pub enum PathState {
 
         one_rtt_keys: ArcOneRttKeys,
         data_space: DataSpace,
-        flow_ctrl: ArcFlowController,
+        flow_ctrl: FlowController,
         spin: SpinBit,
 
         datagram_flow: DatagramFlow,
@@ -101,7 +101,7 @@ pub enum PathState {
 
         one_rtt_keys: ArcOneRttKeys,
         data_space: DataSpace,
-        flow_ctrl: ArcFlowController,
+        flow_ctrl: FlowController,
         spin: SpinBit,
 
         datagram_flow: DatagramFlow,
@@ -109,7 +109,7 @@ pub enum PathState {
     Normal {
         one_rtt_keys: ArcOneRttKeys,
         data_space: DataSpace,
-        flow_ctrl: ArcFlowController,
+        flow_ctrl: FlowController,
         spin: SpinBit,
 
         datagram_flow: DatagramFlow,
@@ -201,7 +201,7 @@ impl PathState {
         }
     }
 
-    pub fn get_flow_controller(&self) -> &ArcFlowController {
+    pub fn get_flow_controller(&self) -> &FlowController {
         match self {
             Self::Initial { flow_ctrl, .. }
             | Self::Handshaking { flow_ctrl, .. }
@@ -235,7 +235,7 @@ impl PathState {
 
     pub fn for_data_space(
         &mut self,
-        f: impl FnOnce(&DataSpace, &ArcOneRttKeys, &ArcFlowController, &mut SpinBit),
+        f: impl FnOnce(&DataSpace, &ArcOneRttKeys, &FlowController, &mut SpinBit),
     ) {
         if let Self::Initial {
             data_space,
@@ -429,8 +429,8 @@ impl RawPath {
         };
 
         let peer_cid = ready!(self.peer_cid.poll_unpin(cx));
-        let flow_control =
-            ready!(self.state.get_flow_controller().sender.poll_apply(cx)).available();
+        let flow_control = 0;
+        // ready!(self.state.get_flow_controller().sender.poll_apply(cx)).available();
 
         let mut ack_pkts = [None; 3];
         for &epoch in Epoch::iter() {

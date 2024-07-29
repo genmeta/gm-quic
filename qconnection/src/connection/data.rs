@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use qbase::{
     error::Error,
-    flow::ArcFlowController,
+    flow::FlowController,
     frame::ConnectionCloseFrame,
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
@@ -34,7 +34,7 @@ pub enum ConnectionStateData {
         one_rtt_pkt_queue: PacketQueue<OneRttPacket>,
         one_rtt_keys: ArcOneRttKeys,
         data_space: DataSpace,
-        flow_ctrl: ArcFlowController,
+        flow_ctrl: FlowController,
         spin: SpinBit,
 
         datagram_flow: DatagramFlow,
@@ -53,7 +53,7 @@ pub enum ConnectionStateData {
         one_rtt_pkt_queue: PacketQueue<OneRttPacket>,
         one_rtt_keys: ArcOneRttKeys,
         data_space: DataSpace,
-        flow_ctrl: ArcFlowController,
+        flow_ctrl: FlowController,
         spin: SpinBit,
 
         datagram_flow: DatagramFlow,
@@ -65,7 +65,7 @@ pub enum ConnectionStateData {
         one_rtt_pkt_queue: PacketQueue<OneRttPacket>,
         one_rtt_keys: ArcOneRttKeys,
         data_space: DataSpace,
-        flow_ctrl: ArcFlowController,
+        flow_ctrl: FlowController,
         spin: SpinBit,
 
         datagram_flow: DatagramFlow,

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use closing::ArcClosingState;
-use qbase::flow::ArcFlowController;
+use qbase::flow::FlowController;
 
 use crate::path::ArcPath;
 
@@ -12,7 +12,7 @@ pub enum Controller {
         // 一个连接的所有路径，其中每个路径都包含一个与其自身相关的拥塞控制器以及抗放大攻击器
         pathes: VecDeque<ArcPath>,
         // 连接级的流量控制器
-        flow: ArcFlowController,
+        flow: FlowController,
     },
     // Closing状态，在3倍的PTO时间内，仅仅响应ConnectionCloseFrame
     Closing(ArcClosingState),

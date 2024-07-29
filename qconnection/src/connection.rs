@@ -11,7 +11,7 @@ use futures::{FutureExt, StreamExt};
 use qbase::{
     cid::{ConnectionId, Registry},
     error::{Error, ErrorKind},
-    flow::ArcFlowController,
+    flow::FlowController,
     frame::{ConnFrame, ConnectionCloseFrame, HandshakeDoneFrame},
     packet::{
         header::Encode,
@@ -103,7 +103,7 @@ pub fn create_connection(
 
     let zero_rtt_keys = ArcKeys::new_pending();
     let one_rtt_keys = ArcOneRttKeys::new_pending();
-    let flow_ctrl = ArcFlowController::with_initial(0, 0);
+    let flow_ctrl = FlowController::with_initial(0, 0);
     let data_space = ArcSpace::new_data_space(role, 0, 0);
 
     let datagram_flow = DatagramFlow::new(65535, 0);
@@ -539,7 +539,7 @@ pub fn create_connection(
         let flow_controller = flow_ctrl.clone();
         async move {
             while let Some(frame) = zero_rtt_max_data_frame_queue_reader.next().await {
-                flow_controller.sender.permit(frame.max_data.into_inner());
+                flow_controller.sender().recv_max_data_frame(&frame);
             }
         }
     });
@@ -749,7 +749,7 @@ pub fn create_connection(
         let flow_controller = flow_ctrl.clone();
         async move {
             while let Some(frame) = one_rtt_max_data_frame_queue_reader.next().await {
-                flow_controller.sender.permit(frame.max_data.into_inner());
+                flow_controller.sender().recv_max_data_frame(&frame);
             }
         }
     });
