@@ -130,7 +130,7 @@ pub struct RawDataStreams {
     listener: ArcListener,
 
     // 该queue与space中的transmitter中的frame_queue共享，为了方便向transmitter中写入帧
-    reliable_frame_queue: ArcReliableFrameDeque<ReliableFrame>,
+    reliable_frame_deque: ArcReliableFrameDeque,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
@@ -295,7 +295,7 @@ impl RawDataStreams {
                     .map(|outgoing| outgoing.stop())
                     .unwrap_or(false)
                 {
-                    self.reliable_frame_queue
+                    self.reliable_frame_deque
                         .lock_guard()
                         .push_back(ReliableFrame::Stream(StreamCtlFrame::ResetStream(
                             ResetStreamFrame {
@@ -407,7 +407,7 @@ impl RawDataStreams {
         role: Role,
         max_bi_streams: u64,
         max_uni_streams: u64,
-        reliable_frame_queue: ArcReliableFrameDeque<ReliableFrame>,
+        reliable_frame_deque: ArcReliableFrameDeque,
     ) -> Self {
         Self {
             role,
@@ -415,7 +415,7 @@ impl RawDataStreams {
             output: ArcOutput::default(),
             input: ArcInput::default(),
             listener: ArcListener::default(),
-            reliable_frame_queue,
+            reliable_frame_deque,
         }
     }
 
@@ -529,7 +529,7 @@ impl RawDataStreams {
         // 但要等ResetRecved才能真正释放该流
         tokio::spawn({
             let outgoing = outgoing.clone();
-            let frames = self.reliable_frame_queue.clone();
+            let frames = self.reliable_frame_deque.clone();
             async move {
                 if let Some((final_size, err_code)) = outgoing.is_cancelled_by_app().await {
                     frames.lock_guard().push_back(ReliableFrame::Stream(
@@ -551,7 +551,7 @@ impl RawDataStreams {
         // Continuously check whether the MaxStreamData window needs to be updated.
         tokio::spawn({
             let incoming = incoming.clone();
-            let frames = self.reliable_frame_queue.clone();
+            let frames = self.reliable_frame_deque.clone();
             async move {
                 while let Some(max_data) = incoming.need_update_window().await {
                     frames.lock_guard().push_back(ReliableFrame::Stream(
@@ -566,7 +566,7 @@ impl RawDataStreams {
         // 监听是否被应用stop了。如果是，则要发送一个StopSendingFrame
         tokio::spawn({
             let incoming = incoming.clone();
-            let frames = self.reliable_frame_queue.clone();
+            let frames = self.reliable_frame_deque.clone();
             async move {
                 if let Some(err_code) = incoming.is_stopped_by_app().await {
                     frames.lock_guard().push_back(ReliableFrame::Stream(

@@ -9,11 +9,7 @@ use deref_derive::Deref;
 use futures::Future;
 use qbase::{error::Error, streamid::Role};
 
-use crate::{
-    recv::Reader,
-    reliable::{ArcReliableFrameDeque, ReliableFrame},
-    send::Writer,
-};
+use crate::{recv::Reader, reliable::ArcReliableFrameDeque, send::Writer};
 
 pub mod data;
 pub mod listener;
@@ -26,7 +22,7 @@ impl DataStreams {
         role: Role,
         max_bi_streams: u64,
         max_uni_streams: u64,
-        reliable_frame_queue: ArcReliableFrameDeque<ReliableFrame>,
+        reliable_frame_queue: ArcReliableFrameDeque,
     ) -> Self {
         Self(Arc::new(data::RawDataStreams::with_role_and_limit(
             role,

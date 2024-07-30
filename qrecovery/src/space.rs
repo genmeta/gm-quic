@@ -1,11 +1,8 @@
 use std::ops::{Index, IndexMut};
 
-use deref_derive::Deref;
 use qbase::frame::CryptoFrame;
 
-use crate::reliable::{
-    rcvdpkt::ArcRcvdPktRecords, sentpkt::ArcSentPktRecords, ArcReliableFrameDeque, ReliableFrame,
-};
+use crate::reliable::{rcvdpkt::ArcRcvdPktRecords, sentpkt::ArcSentPktRecords, ReliableFrame};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Epoch {
@@ -45,10 +42,8 @@ where
     }
 }
 
-#[derive(Debug, Default, Deref, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct RawSpace<T> {
-    #[deref]
-    reliable_frame_queue: ArcReliableFrameDeque<T>,
     sent_pkt_records: ArcSentPktRecords<T>,
     rcvd_pkt_records: ArcRcvdPktRecords,
 }
@@ -56,7 +51,6 @@ pub struct RawSpace<T> {
 impl<T> RawSpace<T> {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            reliable_frame_queue: ArcReliableFrameDeque::with_capacity(capacity),
             sent_pkt_records: ArcSentPktRecords::with_capacity(capacity),
             rcvd_pkt_records: ArcRcvdPktRecords::with_capacity(capacity),
         }
@@ -96,15 +90,12 @@ pub enum Space {
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Deref;
-
     use qbase::packet::PacketNumber;
 
     #[test]
     fn test_initial_space() {
         use super::*;
         let space = InitialSpace::with_capacity(10);
-        assert_eq!(space.deref().lock_guard().len(), 0);
         // assert_eq!(AsRef::<ArcSentPktRecords<_>>::as_ref(&space).lock_guard().len(), 0);
         assert_eq!(
             AsRef::<ArcRcvdPktRecords>::as_ref(&space).decode_pn(PacketNumber::encode(0, 0)),
