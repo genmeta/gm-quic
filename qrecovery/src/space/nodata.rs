@@ -6,7 +6,7 @@ use qbase::{
     packet::WritePacketNumber,
 };
 
-use super::{ArcSpace, RawSpace, SpaceRead, ReliableTransmit, TransportLimit};
+use super::{ArcSpace, RawSpace, ReliableTransmit, SpaceRead, TransportLimit};
 use crate::{
     crypto::CryptoStream,
     reliable::{

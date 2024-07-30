@@ -4,13 +4,15 @@ use std::{fmt::Debug, ops::Deref};
 
 use bytes::BufMut;
 use qbase::{
+    cid::ConnectionId,
     packet::{
         header::{Encode, GetType, LongHeader, Write, WriteLongHeader, WriteOneRttHeader},
-        keys::{ArcKeys, ArcOneRttKeys},
-        LongClearBits, OneRttHeader, ShortClearBits,
+        keys::{AllKeys, ArcKeys, ArcOneRttKeys},
+        Header, LongClearBits, LongHeaderBuilder, OneRttHeader, ShortClearBits, SpinBit,
     },
     varint::{VarInt, WriteVarInt},
 };
+use qrecovery::space::Epoch;
 
 /// In order to fill the packet efficiently and reduce unnecessary copying, the data of each
 /// space is directly written on the Buffer. However, the length of the packet header is
@@ -151,5 +153,81 @@ pub fn encrypt_1rtt_space(
     pkt_size
 }
 
+pub fn build_header(
+    epoch: Epoch,
+    scid: ConnectionId,
+    dcid: ConnectionId,
+    spin: SpinBit,
+    token: Vec<u8>,
+) -> (Header, usize) {
+    match epoch {
+        Epoch::Initial => {
+            let inital_hdr = LongHeaderBuilder::with_cid(dcid, scid).initial(token.clone());
+            let size = inital_hdr.size() + 2; // 2 bytes reserved for packet length, max 16KB
+            (Header::Initial(inital_hdr), size)
+        }
+        Epoch::Handshake => {
+            let handshake_hdr = LongHeaderBuilder::with_cid(dcid, scid).handshake();
+            let size = handshake_hdr.size() + 2;
+            (Header::Handshake(handshake_hdr), size)
+        }
+        Epoch::Data => {
+            // todo: 可能有 0 RTT 数据要发送
+            // 如果 data space 有数据，但是没有 1 rtt 密钥, 有 0 rtt 密钥
+            let data_hdr = OneRttHeader { spin, dcid };
+            let size = data_hdr.size() + 2;
+            (Header::OneRtt(data_hdr), size)
+        }
+    }
+}
+
+pub fn encrypt_packet(
+    buf: &mut [u8],
+    header: &Header,
+    pn: u64,
+    pn_size: usize,
+    body_len: usize,
+    keys: &AllKeys,
+) -> usize {
+    match header {
+        Header::Initial(header) => {
+            let fill_policy = FillPolicy::Redundancy;
+            let (_, sent_bytes) = encrypt_long_header_space(
+                buf,
+                header,
+                pn,
+                pn_size,
+                body_len,
+                fill_policy,
+                &keys.initial_keys.clone().unwrap(),
+            );
+            sent_bytes
+        }
+        Header::Handshake(header) => {
+            let fill_policy = FillPolicy::Redundancy;
+            let (_, sent_bytes) = encrypt_long_header_space(
+                buf,
+                header,
+                pn,
+                pn_size,
+                body_len,
+                fill_policy,
+                &keys.handshake_keys.clone().unwrap(),
+            );
+            sent_bytes
+        }
+        Header::OneRtt(header) => encrypt_1rtt_space(
+            buf,
+            header,
+            keys.one_rtt_keys.clone().unwrap(),
+            pn,
+            pn_size,
+            body_len,
+        ),
+        _ => {
+            todo!("send 0rtt retry VN packet");
+        }
+    }
+}
 #[cfg(test)]
 mod tests {}

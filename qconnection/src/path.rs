@@ -39,7 +39,7 @@ pub use validate::{Transponder, Validator};
 
 use crate::{
     connection::{ConnectionState, ConnectionStateData, RawConnection},
-    transmit::{FillPolicy},
+    transmit::FillPolicy,
     Sendmsg,
 };
 

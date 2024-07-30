@@ -1,23 +1,21 @@
 use std::{
-    array,
-    io::{self, IoSlice, IoSliceMut},
-    mem,
+    io::IoSlice,
     pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll, Wake, Waker},
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
 use dashmap::DashMap;
 use futures::{future::poll_fn, ready, Future};
 use qbase::{
-    cid::{ArcCidCell, ConnectionId, Registry, MAX_CID_SIZE},
+    cid::{ArcCidCell, ConnectionId, Registry},
     flow::FlowController,
     frame::{
         io::{WriteConnectionCloseFrame, WritePathChallengeFrame, WritePathResponseFrame},
         BeFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame,
     },
-    packet::{header::Encode, keys::AllKeys, Header, LongHeaderBuilder, OneRttHeader, SpinBit},
+    packet::{keys::AllKeys, SpinBit},
     util::TransportLimit,
 };
 use qcongestion::{
@@ -47,8 +45,11 @@ struct RawPath {
     anti_amplifier: ArcAntiAmplifier<3>,
     flow_controller: FlowController,
     pathway: Pathway,
-    // todo: 整改 id_registry
     dcid: ArcCidCell,
+    // 创建 path 时直接传进来
+    scid: ConnectionId,
+    token: Vec<u8>,
+    spin: SpinBit,
     challenge_buffer: Arc<Mutex<Option<PathChallengeFrame>>>,
     response_buffer: Arc<Mutex<Option<PathResponseFrame>>>,
     response_listner: ArcResponseListener,
@@ -62,6 +63,9 @@ impl RawPath {
         keys: AllKeys,
         flow_controller: FlowController,
         dcid: ArcCidCell,
+        scid: ConnectionId,
+        token: Vec<u8>,
+        spin: SpinBit,
     ) -> Self {
         let cc = ArcCC::new(CongestionAlgorithm::Bbr, Duration::from_micros(100));
         let anti_amplifier = ArcAntiAmplifier::<3>::default();
@@ -74,6 +78,9 @@ impl RawPath {
             pathway,
             flow_controller,
             dcid,
+            scid,
+            token,
+            spin,
             challenge_buffer: Arc::new(Mutex::new(None)),
             response_buffer: Arc::new(Mutex::new(None)),
             response_listner: ArcResponseListener(Arc::new(Mutex::new(ResponseListener::Init))),
@@ -107,16 +114,15 @@ impl RawPath {
 
     pub fn recv_response(&mut self, frame: PathResponseFrame) {
         let mut guard = self.response_listner.0.lock().unwrap();
-        let current_state = &*guard; // 不可变借用
-        match current_state {
+        match &*guard {
             ResponseListener::Init => unreachable!("recv esponse before send challenge"),
             ResponseListener::Pending(waker) => {
                 waker.wake_by_ref();
-                *guard = ResponseListener::Response(frame); // 可变借用
+                *guard = ResponseListener::Response(frame);
             }
             ResponseListener::Response(resp) => {
                 if resp != &frame {
-                    *guard = ResponseListener::Response(frame); // 可变借用
+                    *guard = ResponseListener::Response(frame);
                 }
             }
             ResponseListener::Inactive => {}
@@ -129,7 +135,7 @@ impl RawPath {
 }
 
 #[derive(Clone)]
-enum ResponseListener {
+pub enum ResponseListener {
     Init,
     Pending(Waker),
     Response(PathResponseFrame),
@@ -151,7 +157,7 @@ impl Future for ArcResponseListener {
             }
             ResponseListener::Pending(_) => Poll::Pending,
             ResponseListener::Response(resp) => Poll::Ready(resp),
-            ResponseListener::Inactive => unreachable!(),
+            ResponseListener::Inactive => unreachable!("inactive response listener"),
         }
     }
 }
@@ -208,41 +214,26 @@ impl<'a> Future for ArcReader<'a> {
                     continue;
                 };
 
-                let (hdr, max_header_size) = match epoch {
-                    Epoch::Initial => {
-                        let inital_hdr = LongHeaderBuilder::with_cid(guard.dcid, guard.scid)
-                            .initial(guard.rest_token.clone());
-                        let size = inital_hdr.size() + 2; // 2 bytes reserved for packet length, max 16KB
-                        (Header::Initial(inital_hdr), size)
-                    }
-                    Epoch::Handshake => {
-                        let handshake_hdr =
-                            LongHeaderBuilder::with_cid(guard.dcid, guard.scid).handshake();
-                        let size = handshake_hdr.size() + 2;
-                        (Header::Handshake(handshake_hdr), size)
-                    }
-                    Epoch::Data => {
-                        // todo: 可能有 0 RTT 数据要发送
-                        // 如果 data space 有数据，但是没有 1 rtt 密钥, 有 0 rtt 密钥
-                        let data_hdr = OneRttHeader {
-                            spin: guard.spin,
-                            dcid: guard.dcid,
-                        };
-                        let size = data_hdr.size() + 2;
-                        (Header::OneRtt(data_hdr), size)
-                    }
-                };
+                let (hdr, max_header_size) = transmit::build_header(
+                    epoch,
+                    guard.scid,
+                    guard.dcid,
+                    guard.spin,
+                    guard.rest_token.clone(),
+                );
 
                 let (_, body_buf) = buf.split_at_mut(max_header_size);
                 let (pn, pn_size) = space.read_pn(body_buf, &mut limit);
                 let mut body_buf = &mut body_buf[pn_size..];
 
                 let mut challenge_size = 0;
+
+                // todo: 有 path challenge 时需要保证包至少有 1200 字节
+                let len = guard.send_challenge(body_buf, &mut limit);
+                challenge_size += len;
+                body_buf = &mut body_buf[len..];
+
                 if epoch == Epoch::Data {
-                    // todo: 有 path challenge 时需要保证包至少有 1200 字节
-                    let len = guard.send_challenge(body_buf, &mut limit);
-                    challenge_size += len;
-                    body_buf = &mut body_buf[len..];
                     let len = guard.send_response(body_buf, &mut limit);
                     body_buf = &mut body_buf[len..];
                     challenge_size += len;
@@ -255,45 +246,8 @@ impl<'a> Future for ArcReader<'a> {
                 let body_len = pn_size + frame_size + challenge_size;
                 space.read_finish();
 
-                let sent_bytes = match hdr {
-                    Header::Initial(header) => {
-                        let fill_policy = transmit::FillPolicy::Redundancy;
-                        let (_, sent_bytes) = transmit::encrypt_long_header_space(
-                            buf,
-                            &header,
-                            pn,
-                            pn_size,
-                            body_len,
-                            fill_policy,
-                            &guard.keys.initial_keys.clone().unwrap(),
-                        );
-                        sent_bytes
-                    }
-                    Header::Handshake(header) => {
-                        let fill_policy = transmit::FillPolicy::Redundancy;
-                        let (_, sent_bytes) = transmit::encrypt_long_header_space(
-                            buf,
-                            &header,
-                            pn,
-                            pn_size,
-                            body_len,
-                            fill_policy,
-                            &guard.keys.handshake_keys.clone().unwrap(),
-                        );
-                        sent_bytes
-                    }
-                    Header::OneRtt(header) => transmit::encrypt_1rtt_space(
-                        buf,
-                        &header,
-                        guard.keys.one_rtt_keys.clone().unwrap(),
-                        pn,
-                        pn_size,
-                        body_len,
-                    ),
-                    _ => {
-                        todo!("send 0rtt retry VN packet");
-                    }
-                };
+                let sent_bytes =
+                    transmit::encrypt_packet(buf, &hdr, pn, pn_size, body_len, &guard.keys);
 
                 let ack = ack_pkt.map(|ack| ack.0);
                 guard.cc.on_pkt_sent(
@@ -352,13 +306,109 @@ impl<'a> ReadIntoPacket<'a> {
 }
 struct DyingPath {
     usc: ArcUsc,
-    ccf_buffer: Arc<Mutex<Vec<u8>>>,
+    pathway: Pathway,
+    ccf_pkt: Arc<Mutex<Vec<u8>>>,
+    send_ccf_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl DyingPath {
+    fn poll_send_ccf(&self, cx: &mut Context<'_>) {
+        let mut buffer = self.ccf_pkt.lock().unwrap();
+        let io_slices = [IoSlice::new(&mut buffer[..])];
+
+        // todo: 改成 usc poll_send_via_pathway
+        let (src, dst) = match &self.pathway {
+            Pathway::Direct { local, remote } => (*local, *remote),
+            // todo: append relay hdr
+            Pathway::Relay { local, remote } => (local.addr, remote.agent),
+        };
+
+        let hdr = qudp::PacketHeader {
+            src,
+            dst,
+            ttl: 64,
+            ecn: None,
+            seg_size: MSS as u16,
+            gso: true,
+        };
+
+        log::trace!("send ccf to {}", dst);
+        let _ = self.usc.poll_send(&io_slices, &hdr, cx);
+    }
 }
 
 #[derive(Clone)]
 pub struct ArcPath(Arc<Mutex<PathState>>);
 
 impl ArcPath {
+    // 当连接主动关闭进入 closing 时，所有 path 都应该进入 dying 状态，并发送 ccf
+    pub fn enter_dying(&self, ccf: ConnectionCloseFrame, epoch: Epoch) {
+        let mut guard = self.0.lock().unwrap();
+
+        match *guard {
+            PathState::Alive(ref mut path) => {
+                tokio::spawn({
+                    let rwa_path = path.clone();
+                    let arc_path = self.clone();
+                    async move {
+                        // 进入 dying 之前打包 ccf
+                        let space = if let Some(space) = &rwa_path.spaces[epoch] {
+                            space
+                        } else {
+                            log::error!("space {:?} is none", epoch);
+                            return;
+                        };
+
+                        let dcid = rwa_path.dcid.await;
+                        let (hdr, hdr_size) = transmit::build_header(
+                            epoch,
+                            rwa_path.scid,
+                            dcid,
+                            rwa_path.spin,
+                            rwa_path.token,
+                        );
+                        let mut buffer = vec![0; MSS];
+
+                        let buf = &mut buffer[0..];
+                        // not limit when sending ccf
+                        let mut limit = TransportLimit::new(None, usize::MAX, usize::MAX);
+                        let (_, body_buf) = buf.split_at_mut(hdr_size);
+                        let (pn, pn_size) = space.read_pn(body_buf, &mut limit);
+                        let mut body_buf = &mut body_buf[pn_size..];
+
+                        body_buf.put_connection_close_frame(&ccf);
+
+                        let body_len = pn_size + ccf.encoding_size();
+                        space.read_finish();
+
+                        let sent_bytes = transmit::encrypt_packet(
+                            buf,
+                            &hdr,
+                            pn,
+                            pn_size,
+                            body_len,
+                            &rwa_path.keys,
+                        );
+
+                        buffer = buffer[..sent_bytes].to_vec();
+
+                        let mut guard = arc_path.0.lock().unwrap();
+
+                        *guard = PathState::Dying(DyingPath {
+                            usc: rwa_path.usc.clone(),
+                            ccf_pkt: Arc::new(Mutex::new(buffer)),
+                            pathway: rwa_path.pathway,
+                            send_ccf_handle: None,
+                        });
+                    }
+                });
+            }
+            _ => {
+                unreachable!();
+            }
+        }
+    }
+
     pub fn inactivate(&self) {
         let mut guard = self.0.lock().unwrap();
         match *guard {
@@ -375,26 +425,6 @@ impl ArcPath {
     fn has_been_inactivated(&self) -> HasBeenInactivated {
         HasBeenInactivated(self.clone())
     }
-
-    fn enter_dying(&self, ccf: ConnectionCloseFrame) {
-        let mut guard = self.0.lock().unwrap();
-        match *guard {
-            PathState::Alive(ref mut path) => {
-                let mut buf = Vec::with_capacity(ccf.encoding_size());
-                buf.put_connection_close_frame(&ccf);
-                let ccf_buffer = Arc::new(Mutex::new(buf));
-                // todo: 生成加密的 ccf，并发送
-                *guard = PathState::Dying(DyingPath {
-                    usc: path.usc.clone(),
-                    ccf_buffer,
-                });
-            }
-            PathState::Dying(_) => {}
-            PathState::Dead => {}
-        }
-    }
-
-    fn enter_dead(&self) {}
 }
 
 pub fn create_path(
@@ -405,10 +435,22 @@ pub fn create_path(
     flow_controller: FlowController,
     cid_registry: Registry,
     spin: SpinBit,
+    scid: ConnectionId,
+    token: Vec<u8>,
     pathes: DashMap<Pathway, ArcPath>,
 ) -> ArcPath {
     let dcid = cid_registry.remote.apply_cid();
-    let raw_path = RawPath::new(usc, pathway, spaces, keys, flow_controller, dcid);
+    let raw_path = RawPath::new(
+        usc,
+        pathway,
+        spaces,
+        keys,
+        flow_controller,
+        dcid,
+        scid,
+        token.clone(),
+        spin,
+    );
     let arc_path = ArcPath(Arc::new(Mutex::new(PathState::Alive(raw_path.clone()))));
 
     // 发送任务
@@ -416,19 +458,6 @@ pub fn create_path(
         let path = raw_path.clone();
 
         async move {
-            let predicate = |_: &ConnectionId| true;
-            let (scid, token) = match cid_registry.local.issue_cid(MAX_CID_SIZE, predicate).await {
-                Ok(frame) => {
-                    let token = (*frame.reset_token).to_vec();
-                    let scid = frame.id;
-                    // todo: put frame into space queue
-                    (scid, token)
-                }
-                Err(_) => {
-                    return;
-                }
-            };
-
             let dcid = path.dcid.clone().await;
 
             // todo: 直接传 IoSliceMut
@@ -555,7 +584,7 @@ impl Future for HasBeenInactivated {
     fn poll(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
         match *self.0 .0.lock().unwrap() {
             PathState::Alive(_) => Poll::Pending,
-            PathState::Dying(_) => Poll::Pending,
+            PathState::Dying(_) => Poll::Ready(()),
             PathState::Dead => Poll::Ready(()),
         }
     }
