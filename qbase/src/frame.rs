@@ -173,20 +173,6 @@ pub fn be_frame_type(input: &[u8]) -> nom::IResult<&[u8], FrameType, Error> {
     Ok((remain, frame_type))
 }
 
-/// 没必要
-// #[deprecated]
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame)]
-pub enum ConnFrame {
-    Close(ConnectionCloseFrame),
-    NewToken(NewTokenFrame),
-    MaxData(MaxDataFrame),
-    DataBlocked(DataBlockedFrame),
-    NewConnectionId(NewConnectionIdFrame),
-    RetireConnectionId(RetireConnectionIdFrame),
-    HandshakeDone(HandshakeDoneFrame),
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
 pub enum StreamCtlFrame {
@@ -198,14 +184,6 @@ pub enum StreamCtlFrame {
     StreamsBlocked(StreamsBlockedFrame),
 }
 
-// #[deprecated]
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame)]
-pub enum PathFrame {
-    Challenge(PathChallengeFrame),
-    Response(PathResponseFrame),
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
 pub enum DataFrame {
@@ -214,23 +192,25 @@ pub enum DataFrame {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame)]
-pub enum PureFrame {
+pub enum Frame {
     Padding(PaddingFrame),
     Ping(PingFrame),
     Ack(AckFrame),
-    Conn(ConnFrame),
+    Close(ConnectionCloseFrame),
+    NewToken(NewTokenFrame),
+    MaxData(MaxDataFrame),
+    DataBlocked(DataBlockedFrame),
+    NewConnectionId(NewConnectionIdFrame),
+    RetireConnectionId(RetireConnectionIdFrame),
+    HandshakeDone(HandshakeDoneFrame),
+    Challenge(PathChallengeFrame),
+    Response(PathResponseFrame),
     Stream(StreamCtlFrame),
-    Path(PathFrame),
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum Frame {
-    Pure(PureFrame),
     Data(DataFrame, Bytes),
     Datagram(DatagramFrame, Bytes),
 }
 
+/*
 impl BeFrame for Frame {
     fn frame_type(&self) -> FrameType {
         match self {
@@ -256,6 +236,7 @@ impl BeFrame for Frame {
         unreachable!()
     }
 }
+    */
 
 pub struct FrameReader {
     raw: Bytes,
