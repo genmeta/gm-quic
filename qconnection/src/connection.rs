@@ -7,7 +7,10 @@ use std::{ops::Deref, sync::Arc, time::Duration};
 
 use dashmap::{DashMap, DashSet};
 use deref_derive::Deref;
-use futures::{FutureExt, StreamExt};
+use futures::{
+    channel::{mpsc, oneshot},
+    FutureExt, SinkExt, StreamExt,
+};
 use qbase::{
     cid::{ConnectionId, Registry},
     error::{Error, ErrorKind},
@@ -26,7 +29,6 @@ use qrecovery::space::{ArcSpace, Epoch, ReliableTransmit};
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 pub use state::*;
-use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     auto::{self, PacketPayload},
@@ -108,10 +110,10 @@ pub fn create_connection(
 
     let datagram_flow = DatagramFlow::new(65535, 0);
 
-    let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded_channel();
-    let (handshake_pkt_tx, handshake_pkt_rx) = mpsc::unbounded_channel();
-    let (zero_rtt_pkt_tx, zero_rtt_pkt_rx) = mpsc::unbounded_channel();
-    let (one_rtt_pkt_tx, one_rtt_pkt_rx) = mpsc::unbounded_channel();
+    let (initial_pkt_tx, initial_pkt_rx) = mpsc::unbounded();
+    let (handshake_pkt_tx, handshake_pkt_rx) = mpsc::unbounded();
+    let (zero_rtt_pkt_tx, zero_rtt_pkt_rx) = mpsc::unbounded();
+    let (one_rtt_pkt_tx, one_rtt_pkt_rx) = mpsc::unbounded();
 
     let (conn_err_tx, conn_err_rx) = oneshot::channel();
     let (rcvd_ccf_tx, rcvd_ccf_rx) = oneshot::channel();
@@ -148,7 +150,7 @@ pub fn create_connection(
 
     let (countdown_tx, mut countdown_rx) = mpsc::channel(1);
 
-    let (dispath_error_tx, mut dispatch_error_rx) = mpsc::unbounded_channel();
+    let (dispath_error_tx, mut dispatch_error_rx) = mpsc::unbounded();
 
     // decode initial packet
     // producer -> producer
@@ -182,11 +184,11 @@ pub fn create_connection(
     let mut initial_ack_frame_queue_reader = initial_ack_frame_queue_writer.clone();
     // 通过select它来获取错误
     tokio::spawn({
-        let initial_dispatch_error_tx = dispath_error_tx.clone();
+        let mut initial_dispatch_error_tx = dispath_error_tx.clone();
         let conn_controller = controller.clone();
 
         async move {
-            let dispatch = |stream: &auto::InitialPacketStream, packet: PacketPayload| {
+            let mut dispatch = |stream: &auto::InitialPacketStream, packet: PacketPayload| {
                 let pn = packet.pn;
                 let path = packet.path.clone();
                 // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
@@ -294,9 +296,9 @@ pub fn create_connection(
     tokio::spawn({
         let conn_controller = controller.clone();
         let initial_keys = initial_keys.clone();
-        let handshake_dispatch_error_tx = dispath_error_tx.clone();
+        let mut handshake_dispatch_error_tx = dispath_error_tx.clone();
         async move {
-            let dispatch = |stream: &auto::HandshakePacketStream, packet: PacketPayload| {
+            let mut dispatch = |stream: &auto::HandshakePacketStream, packet: PacketPayload| {
                 let pn = packet.pn;
                 let path = packet.path.clone();
                 // TODO: 该包要认的话，还得向对方返回错误信息，并终止连接
@@ -453,10 +455,10 @@ pub fn create_connection(
     let zero_rtt_close_frame_queue_writer = ArcAsyncDeque::new();
     let mut zero_rtt_close_frame_queue_reader = zero_rtt_close_frame_queue_writer.clone();
     tokio::spawn({
-        let zero_rtt_dispatch_error_tx = dispath_error_tx.clone();
+        let mut zero_rtt_dispatch_error_tx = dispath_error_tx.clone();
         let conn_controller = controller.clone();
         async move {
-            let dispatch = |stream: &auto::ZeroRttPacketStream, packet: PacketPayload| {
+            let mut dispatch = |stream: &auto::ZeroRttPacketStream, packet: PacketPayload| {
                 let pn = packet.pn;
                 let path = packet.path.clone();
                 let dispatch_result = match conn_controller.get_state() {
@@ -607,10 +609,10 @@ pub fn create_connection(
     let one_rtt_ack_frame_queue_writer = ArcAsyncDeque::new();
     let mut one_rtt_ack_frame_queue_reader = one_rtt_ack_frame_queue_writer.clone();
     tokio::spawn({
-        let one_rtt_dispatch_error_tx = dispath_error_tx;
+        let mut one_rtt_dispatch_error_tx = dispath_error_tx;
         let conn_controller = controller.clone();
         async move {
-            let dispatch = |stream: &auto::OneRttPacketStream, packet: PacketPayload| {
+            let mut dispatch = |stream: &auto::OneRttPacketStream, packet: PacketPayload| {
                 let pn = packet.pn;
                 let path = packet.path.clone();
                 let dispatch_result = match conn_controller.get_state() {
@@ -837,7 +839,7 @@ pub fn create_connection(
         let data_space = data_space.clone();
         let datagram_flow = datagram_flow.clone();
         let connection_closing = controller.on_enter_state(ConnectionState::Closing);
-        let countdown_tx = countdown_tx.clone();
+        let mut countdown_tx = countdown_tx.clone();
         let conn_controller = controller.clone();
         async move {
             let error = tokio::select! {
@@ -856,7 +858,7 @@ pub fn create_connection(
                 Err(e) = one_rtt_crypto_stream_handle.map(Result::unwrap) => e,
                 Ok(e) = conn_err_rx => e,
                 // connection closed is handled by another task
-                Some(e) = dispatch_error_rx.recv() => e,
+                Some(e) = dispatch_error_rx.next() => e,
                 _ = connection_closing => return,
             };
 
@@ -926,7 +928,7 @@ pub fn create_connection(
     tokio::spawn({
         let connection_handle = connection_handle.clone();
         let connection_draining = controller.on_enter_state(ConnectionState::Draining);
-        let countdown_tx = countdown_tx.clone();
+        let mut countdown_tx = countdown_tx.clone();
         let conn_controller = controller.clone();
         async move {
             let ccf = tokio::select! {
@@ -972,7 +974,7 @@ pub fn create_connection(
         let connection_handle = connection_handle.clone();
 
         async move {
-            let pto_time = countdown_rx.recv().await.unwrap();
+            let pto_time = countdown_rx.next().await.unwrap();
             tokio::time::sleep(pto_time * 3).await;
             // TOOD: wait 3xPTO
 

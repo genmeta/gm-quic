@@ -7,7 +7,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures::{Future, Stream};
+use futures::{channel::mpsc, Future, Stream, StreamExt};
 use qbase::{
     error::{Error, ErrorKind},
     frame::*,
@@ -21,7 +21,6 @@ use qbase::{
     util::ArcAsyncDeque,
 };
 use qrecovery::{reliable::rcvdpkt::ArcRcvdPktRecords, space::Epoch};
-use tokio::sync::mpsc;
 
 use crate::path::ArcPath;
 
@@ -348,7 +347,7 @@ where
             let s = self.get_mut();
             let k = s.keys.get_remote_keys().await?;
             loop {
-                let (mut packet, path) = s.packet_rx.recv().await?;
+                let (mut packet, path) = s.packet_rx.next().await?;
                 let ok = packet.remove_protection(k.remote.header.deref());
 
                 if !ok {
@@ -415,7 +414,7 @@ impl Stream for ShortHeaderPacketStream {
             let s = self.get_mut();
             let (hk, pk) = s.keys.get_remote_keys().await?;
             loop {
-                let (mut packet, path) = s.packet_rx.recv().await?;
+                let (mut packet, path) = s.packet_rx.next().await?;
                 let ok = packet.remove_protection(hk.deref());
 
                 if !ok {

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use futures::channel::{mpsc, oneshot};
 use qbase::{
     error::Error,
     flow::FlowController,
@@ -11,7 +12,6 @@ use qbase::{
 };
 use qrecovery::space::{DataSpace, HandshakeSpace, InitialSpace};
 use qunreliable::DatagramFlow;
-use tokio::sync::{mpsc, oneshot};
 
 use super::state::ConnectionState;
 use crate::path::{ArcPath, PathState};
@@ -94,18 +94,18 @@ impl ConnectionStateData {
         }
     }
 
-    pub fn receive_packet_via(&self, ptk: SpacePacket, path: ArcPath) {
+    pub fn receive_packet_via(&mut self, ptk: SpacePacket, path: ArcPath) {
         match ptk {
             SpacePacket::Initial(pkt) => {
                 if let ConnectionStateData::Initial { init_pkt_queue, .. } = self {
-                    let _ = init_pkt_queue.send((pkt, path));
+                    _ = init_pkt_queue.unbounded_send((pkt, path));
                 }
             }
             SpacePacket::Handshake(pkt) => {
                 if let ConnectionStateData::Handshaking { hs_pkt_queue, .. }
                 | ConnectionStateData::Initial { hs_pkt_queue, .. } = self
                 {
-                    _ = hs_pkt_queue.send((pkt, path));
+                    _ = hs_pkt_queue.unbounded_send((pkt, path));
                 }
             }
             SpacePacket::ZeroRtt(pkt) => {
@@ -116,7 +116,7 @@ impl ConnectionStateData {
                     zero_rtt_pkt_queue, ..
                 } = self
                 {
-                    _ = zero_rtt_pkt_queue.send((pkt, path));
+                    _ = zero_rtt_pkt_queue.unbounded_send((pkt, path));
                 }
             }
             SpacePacket::OneRtt(pkt) => {
@@ -130,7 +130,7 @@ impl ConnectionStateData {
                     one_rtt_pkt_queue, ..
                 } = self
                 {
-                    _ = one_rtt_pkt_queue.send((pkt, path));
+                    _ = one_rtt_pkt_queue.unbounded_send((pkt, path));
                 }
             }
         }
