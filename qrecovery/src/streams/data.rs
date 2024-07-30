@@ -214,8 +214,7 @@ impl RawDataStreams {
 
     pub fn recv_data(
         &self,
-        stream_frame: StreamFrame,
-        body: bytes::Bytes,
+        (stream_frame, body): (StreamFrame, bytes::Bytes),
     ) -> Result<(), QuicError> {
         let sid = stream_frame.id;
         // 对方必须是发送端，才能发送此帧
