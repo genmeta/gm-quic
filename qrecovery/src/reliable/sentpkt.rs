@@ -119,8 +119,14 @@ impl<T> RawSentPktRecords<T> {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct ArcSentPktRecords<T>(Arc<Mutex<RawSentPktRecords<T>>>);
+
+impl<T> Clone for ArcSentPktRecords<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 impl<T> ArcSentPktRecords<T> {
     pub fn with_capacity(capacity: usize) -> Self {

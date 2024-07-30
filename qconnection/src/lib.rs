@@ -1,23 +1,26 @@
 use std::net::SocketAddr;
 
-use path::Pathway;
-use qbase::packet::SpacePacket;
+// use path::Pathway;
+// use qbase::packet::SpacePacket;
 
 mod pipe;
 
 pub mod connection;
 pub mod controller;
+// pub mod connection;
 pub mod crypto;
-pub mod endpoint;
-pub mod path;
+// pub mod endpoint;
+// pub mod path;
 
-pub(crate) mod auto;
-pub(crate) mod handshake;
-pub mod transmit;
+// pub(crate) mod auto;
+// pub(crate) mod handshake;
+// pub mod transmit;
 
+/*
 pub trait ReceiveProtectedPacket {
     fn receive_protected_packet(&self, protected_packet: SpacePacket, pathway: Pathway);
 }
+*/
 
 /// 发送报文的trait，但其实发送还有其他需要的形式，比如：
 /// - 携带ttl设置发送

@@ -1,7 +1,4 @@
-use std::{
-    ops::{Index, IndexMut},
-    sync::Arc,
-};
+use std::ops::{Index, IndexMut};
 
 use deref_derive::Deref;
 use qbase::frame::CryptoFrame;
@@ -48,8 +45,9 @@ where
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Deref, Clone)]
 pub struct RawSpace<T> {
+    #[deref]
     reliable_frame_queue: ArcReliableFrameDeque<T>,
     sent_pkt_records: ArcSentPktRecords<T>,
     rcvd_pkt_records: ArcRcvdPktRecords,
@@ -63,11 +61,13 @@ impl<T> RawSpace<T> {
             rcvd_pkt_records: ArcRcvdPktRecords::with_capacity(capacity),
         }
     }
-}
 
-impl<T> AsRef<ArcReliableFrameDeque<T>> for RawSpace<T> {
-    fn as_ref(&self) -> &ArcReliableFrameDeque<T> {
-        &self.reliable_frame_queue
+    pub fn sent_packets(&self) -> ArcSentPktRecords<T> {
+        self.sent_pkt_records.clone()
+    }
+
+    pub fn rcvd_packets(&self) -> ArcRcvdPktRecords {
+        self.rcvd_pkt_records.clone()
     }
 }
 
@@ -83,16 +83,32 @@ impl<T> AsRef<ArcRcvdPktRecords> for RawSpace<T> {
     }
 }
 
-#[derive(Debug, Deref, Clone)]
-pub struct ArcSpace<T>(#[deref] Arc<RawSpace<T>>);
-
-pub type InitialSpace = ArcSpace<CryptoFrame>;
-pub type HandshakeSpace = ArcSpace<CryptoFrame>;
-pub type DataSpace = ArcSpace<ReliableFrame>;
+pub type InitialSpace = RawSpace<CryptoFrame>;
+pub type HandshakeSpace = RawSpace<CryptoFrame>;
+pub type DataSpace = RawSpace<ReliableFrame>;
 
 #[derive(Debug, Clone)]
 pub enum Space {
     Initial(InitialSpace),
     Handshake(HandshakeSpace),
     Data(DataSpace),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::Deref;
+
+    use qbase::packet::PacketNumber;
+
+    #[test]
+    fn test_initial_space() {
+        use super::*;
+        let space = InitialSpace::with_capacity(10);
+        assert_eq!(space.deref().lock_guard().len(), 0);
+        // assert_eq!(AsRef::<ArcSentPktRecords<_>>::as_ref(&space).lock_guard().len(), 0);
+        assert_eq!(
+            AsRef::<ArcRcvdPktRecords>::as_ref(&space).decode_pn(PacketNumber::encode(0, 0)),
+            Ok(0)
+        );
+    }
 }
