@@ -27,6 +27,7 @@ macro_rules! pipe {
                 while let Some(item) = ::futures::stream::StreamExt::next(&mut from).await {
                     if let Err(e) = catch.$method(item) {
                         $crate::connection::ConnErrorTrigger::transmit_error(&trigger, e);
+                        return;
                     }
                 }
             }
@@ -36,61 +37,86 @@ macro_rules! pipe {
 
 #[cfg(test)]
 mod tests {
-    use futures::channel::mpsc;
-    use qbase::error::Error;
+    use futures::{channel::mpsc, SinkExt};
+    use qbase::error::{Error, ErrorKind};
 
     use crate::connection::ConnErrorTrigger;
-
-    type Item = ();
 
     #[derive(Clone, Copy)]
     struct Consumer;
     impl Consumer {
-        fn consume(&self, _item: Item) {
+        fn consume(&self, _item: ()) {
             // do nothing
         }
 
-        fn consume_return_result(&self, _item: Item) -> Result<(), Error> {
+        fn consume_return_ok(&self, _item: ()) -> Result<(), Error> {
             Ok(())
+        }
+
+        fn consume_return_error(&self, _item: ()) -> Result<(), Error> {
+            Err(Error::with_default_fty(ErrorKind::Internal, "Test error"))
         }
     }
 
-    #[test]
-    #[ignore = "no compile error means test pass"]
-    fn macro_expand() {
+    #[tokio::test]
+    async fn macro_expand() {
         let c = Consumer;
-        let (_tx, rx) = mpsc::unbounded::<Item>();
+        let (mut tx, rx) = mpsc::unbounded::<()>();
         pipe!(
             rx |> c,consume
         );
+        assert!(tx.send(()).await.is_ok());
+
         let c = (Consumer,);
-        let (_tx, rx) = mpsc::unbounded::<Item>();
+        let (mut tx, rx) = mpsc::unbounded::<()>();
         pipe!(
             rx |> c.0,consume
         );
+        assert!(tx.send(()).await.is_ok());
 
         let c = ((Consumer,),);
-        let (_tx, rx) = mpsc::unbounded::<Item>();
+        let (mut tx, rx) = mpsc::unbounded::<()>();
         pipe!(
             rx |> c.0.0,consume
         );
+        assert!(tx.send(()).await.is_ok());
 
         let c = (((Consumer,),),);
-        let (_tx, rx) = mpsc::unbounded::<Item>();
+        let (mut tx, rx) = mpsc::unbounded::<()>();
         pipe!(
             rx |> c.0.0.0,consume
         );
+        assert!(tx.send(()).await.is_ok());
     }
 
-    #[test]
-
-    fn macro_expand2() {
+    #[tokio::test]
+    async fn macro_expand2() {
         let c = Consumer;
         let trigger = ConnErrorTrigger::new();
-        let (_tx, rx) = mpsc::unbounded::<Item>();
+
+        let (mut tx1, rx1) = mpsc::unbounded::<()>();
         pipe!(
             @trigger(&trigger)
-            rx |> c,consume_return_result
+            rx1 |> c,consume_return_ok
         );
+
+        assert!(tx1.send(()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn macro_expand3() {
+        let c = Consumer;
+        let trigger = ConnErrorTrigger::new();
+
+        let (mut tx1, rx1) = mpsc::unbounded::<()>();
+        pipe!(
+            @trigger(&trigger)
+            rx1 |> c,consume_return_error
+        );
+
+        assert!(tx1.send(()).await.is_ok());
+        let e = trigger.error_occur().await;
+        assert!(e.is_active);
+        assert!(tx1.send(()).await.is_err());
     }
 }
