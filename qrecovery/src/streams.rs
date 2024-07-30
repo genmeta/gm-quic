@@ -9,7 +9,11 @@ use deref_derive::Deref;
 use futures::Future;
 use qbase::{error::Error, streamid::Role};
 
-use crate::{recv::Reader, reliable::ArcReliableFrameQueue, send::Writer};
+use crate::{
+    recv::Reader,
+    reliable::{ArcReliableFrameDeque, ReliableFrame},
+    send::Writer,
+};
 
 pub mod data;
 pub mod listener;
@@ -17,18 +21,12 @@ pub mod listener;
 #[derive(Debug, Clone, Deref)]
 pub struct DataStreams(Arc<data::RawDataStreams>);
 
-impl AsRef<DataStreams> for DataStreams {
-    fn as_ref(&self) -> &DataStreams {
-        self
-    }
-}
-
 impl DataStreams {
     pub fn with_role_and_limit(
         role: Role,
         max_bi_streams: u64,
         max_uni_streams: u64,
-        reliable_frame_queue: ArcReliableFrameQueue,
+        reliable_frame_queue: ArcReliableFrameDeque<ReliableFrame>,
     ) -> Self {
         Self(Arc::new(data::RawDataStreams::with_role_and_limit(
             role,

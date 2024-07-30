@@ -173,6 +173,8 @@ pub fn be_frame_type(input: &[u8]) -> nom::IResult<&[u8], FrameType, Error> {
     Ok((remain, frame_type))
 }
 
+/// 没必要
+// #[deprecated]
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
 pub enum ConnFrame {
@@ -196,6 +198,7 @@ pub enum StreamCtlFrame {
     StreamsBlocked(StreamsBlockedFrame),
 }
 
+// #[deprecated]
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
 pub enum PathFrame {
@@ -221,8 +224,9 @@ pub enum PureFrame {
     Path(PathFrame),
 }
 
+// #[deprecated]
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame)]
+// #[enum_dispatch(BeFrame)]
 pub enum ReliableFrame {
     Conn(ConnFrame),
     Stream(StreamCtlFrame),
