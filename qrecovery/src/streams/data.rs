@@ -7,7 +7,10 @@ use std::{
 use deref_derive::{Deref, DerefMut};
 use qbase::{
     error::{Error as QuicError, ErrorKind},
-    frame::*,
+    frame::{
+        BeFrame, FrameType, MaxStreamDataFrame, MaxStreamsFrame, ResetStreamFrame,
+        StopSendingFrame, StreamCtlFrame, StreamFrame,
+    },
     streamid::{AcceptSid, Dir, ExceedLimitError, Role, StreamId, StreamIds},
     util::TransportLimit,
     varint::VarInt,
@@ -16,7 +19,7 @@ use qbase::{
 use super::listener::ArcListener;
 use crate::{
     recv::{self, Incoming, Reader},
-    reliable::ArcReliableFrameQueue,
+    reliable::{ArcReliableFrameDeque, ReliableFrame},
     send::{self, Outgoing, Writer},
 };
 
@@ -127,7 +130,7 @@ pub struct RawDataStreams {
     listener: ArcListener,
 
     // 该queue与space中的transmitter中的frame_queue共享，为了方便向transmitter中写入帧
-    reliable_frame_queue: ArcReliableFrameQueue,
+    reliable_frame_queue: ArcReliableFrameDeque<ReliableFrame>,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
@@ -244,42 +247,42 @@ impl RawDataStreams {
 
     pub fn recv_stream_control(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), QuicError> {
         match stream_ctl_frame {
-            StreamCtlFrame::ResetStream(reset_frame) => {
-                let sid = reset_frame.stream_id;
+            StreamCtlFrame::ResetStream(reset) => {
+                let sid = reset.stream_id;
                 // 对方必须是发送端，才能发送此帧
                 if sid.role() != self.role {
                     self.try_accept_sid(sid)
-                        .map_err(wrapper_error(reset_frame.frame_type()))?;
+                        .map_err(wrapper_error(reset.frame_type()))?;
                 } else {
                     // 我方创建的流必须是双向流，对方才能发送ResetStream,否则就是错误
                     if sid.dir() == Dir::Uni {
                         return Err(QuicError::new(
                             ErrorKind::StreamState,
-                            stream_ctl_frame.frame_type(),
+                            reset.frame_type(),
                             format!("local {sid} cannot receive RESET_FRAME"),
                         ));
                     }
                 }
                 if let Ok(set) = self.input.0.lock().unwrap().as_mut() {
                     if let Some(incoming) = set.remove(&sid) {
-                        incoming.recv_reset(reset_frame)?;
+                        incoming.recv_reset(reset)?;
                     }
                 }
             }
-            StreamCtlFrame::StopSending(stop) => {
-                let sid = stop.stream_id;
+            StreamCtlFrame::StopSending(stop_sending) => {
+                let sid = stop_sending.stream_id;
                 // 对方必须是接收端，才能发送此帧
                 if sid.role() != self.role {
                     // 对方创建的单向流，接收端是我方，不可能收到对方的StopSendingFrame
                     if sid.dir() == Dir::Uni {
                         return Err(QuicError::new(
                             ErrorKind::StreamState,
-                            stream_ctl_frame.frame_type(),
+                            stop_sending.frame_type(),
                             format!("remote {sid} must not send STOP_SENDING_FRAME"),
                         ));
                     }
                     self.try_accept_sid(sid)
-                        .map_err(wrapper_error(stop.frame_type()))?;
+                        .map_err(wrapper_error(stop_sending.frame_type()))?;
                 }
                 if self
                     .output
@@ -292,13 +295,15 @@ impl RawDataStreams {
                     .map(|outgoing| outgoing.stop())
                     .unwrap_or(false)
                 {
-                    self.reliable_frame_queue.write().push_stream_control_frame(
-                        StreamCtlFrame::ResetStream(ResetStreamFrame {
-                            stream_id: sid,
-                            app_error_code: VarInt::from_u32(0),
-                            final_size: VarInt::from_u32(0),
-                        }),
-                    );
+                    self.reliable_frame_queue
+                        .lock_guard()
+                        .push_back(ReliableFrame::Stream(StreamCtlFrame::ResetStream(
+                            ResetStreamFrame {
+                                stream_id: sid,
+                                app_error_code: VarInt::from_u32(0),
+                                final_size: VarInt::from_u32(0),
+                            },
+                        )));
                 }
             }
             StreamCtlFrame::MaxStreamData(max_stream_data) => {
@@ -309,7 +314,7 @@ impl RawDataStreams {
                     if sid.dir() == Dir::Uni {
                         return Err(QuicError::new(
                             ErrorKind::StreamState,
-                            stream_ctl_frame.frame_type(),
+                            max_stream_data.frame_type(),
                             format!("remote {sid} must not send MAX_STREAM_DATA_FRAME"),
                         ));
                     }
@@ -339,7 +344,7 @@ impl RawDataStreams {
                     if sid.dir() == Dir::Uni {
                         return Err(QuicError::new(
                             ErrorKind::StreamState,
-                            stream_ctl_frame.frame_type(),
+                            stream_data_blocked.frame_type(),
                             format!("local {sid} cannot receive STREAM_DATA_BLOCKED_FRAME"),
                         ));
                     }
@@ -402,7 +407,7 @@ impl RawDataStreams {
         role: Role,
         max_bi_streams: u64,
         max_uni_streams: u64,
-        reliable_frame_queue: ArcReliableFrameQueue,
+        reliable_frame_queue: ArcReliableFrameDeque<ReliableFrame>,
     ) -> Self {
         Self {
             role,
@@ -527,14 +532,14 @@ impl RawDataStreams {
             let frames = self.reliable_frame_queue.clone();
             async move {
                 if let Some((final_size, err_code)) = outgoing.is_cancelled_by_app().await {
-                    frames
-                        .write()
-                        .push_stream_control_frame(StreamCtlFrame::ResetStream(ResetStreamFrame {
+                    frames.lock_guard().push_back(ReliableFrame::Stream(
+                        StreamCtlFrame::ResetStream(ResetStreamFrame {
                             stream_id: sid,
                             app_error_code: VarInt::from_u64(err_code)
                                 .expect("app error code must not exceed VARINT_MAX"),
                             final_size: unsafe { VarInt::from_u64_unchecked(final_size) },
-                        }));
+                        }),
+                    ));
                 }
             }
         });
@@ -549,14 +554,12 @@ impl RawDataStreams {
             let frames = self.reliable_frame_queue.clone();
             async move {
                 while let Some(max_data) = incoming.need_update_window().await {
-                    frames
-                        .write()
-                        .push_stream_control_frame(StreamCtlFrame::MaxStreamData(
-                            MaxStreamDataFrame {
-                                stream_id: sid,
-                                max_stream_data: unsafe { VarInt::from_u64_unchecked(max_data) },
-                            },
-                        ));
+                    frames.lock_guard().push_back(ReliableFrame::Stream(
+                        StreamCtlFrame::MaxStreamData(MaxStreamDataFrame {
+                            stream_id: sid,
+                            max_stream_data: unsafe { VarInt::from_u64_unchecked(max_data) },
+                        }),
+                    ));
                 }
             }
         });
@@ -566,13 +569,13 @@ impl RawDataStreams {
             let frames = self.reliable_frame_queue.clone();
             async move {
                 if let Some(err_code) = incoming.is_stopped_by_app().await {
-                    frames
-                        .write()
-                        .push_stream_control_frame(StreamCtlFrame::StopSending(StopSendingFrame {
+                    frames.lock_guard().push_back(ReliableFrame::Stream(
+                        StreamCtlFrame::StopSending(StopSendingFrame {
                             stream_id: sid,
                             app_err_code: VarInt::from_u64(err_code)
                                 .expect("app error code must not exceed VARINT_MAX"),
-                        }));
+                        }),
+                    ));
                 }
             }
         });

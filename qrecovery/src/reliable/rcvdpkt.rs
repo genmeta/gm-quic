@@ -61,6 +61,12 @@ struct RcvdPktRecords {
 }
 
 impl RcvdPktRecords {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            queue: IndexDeque::with_capacity(capacity),
+        }
+    }
+
     fn decode_pn(&mut self, pkt_number: PacketNumber) -> Result<u64, Error> {
         let expected_pn = self.queue.largest();
         let pn = pkt_number.decode(expected_pn);
@@ -157,6 +163,12 @@ pub struct ArcRcvdPktRecords {
 }
 
 impl ArcRcvdPktRecords {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(RcvdPktRecords::with_capacity(capacity))),
+        }
+    }
+
     /// 当新收到一个数据包，如果这个包很旧，那么大概率意味着是重复包，直接丢弃。
     /// 如果这个数据包号是最大的，那么它之前的空档都是尚未收到的，得记为未收到。
     /// 注意，包号合法，不代表的包内容合法，必须等到包被正确解密且其中帧被正确解出后，才能确认收到。

@@ -1,29 +1,13 @@
-pub mod data;
-pub mod nodata;
-
 use std::{
     ops::{Index, IndexMut},
     sync::Arc,
-    time::Instant,
 };
 
-use bytes::{BufMut, Bytes};
 use deref_derive::Deref;
+use qbase::frame::CryptoFrame;
 
-pub type InitialSpace = ArcSpace<nodata::NoDataSpace<nodata::Initial>>;
-pub type HandshakeSpace = ArcSpace<nodata::NoDataSpace<nodata::Handshake>>;
-pub type DataSpace = ArcSpace<data::DataSpace>;
-
-use enum_dispatch::enum_dispatch;
-use qbase::{
-    frame::{io::WriteAckFrame, *},
-    util::TransportLimit,
-};
-
-use crate::{
-    crypto::CryptoStream,
-    reliable::{rcvdpkt::ArcRcvdPktRecords, sentpkt::ArcSentPktRecords, ArcReliableFrameQueue},
-    streams::DataStreams,
+use crate::reliable::{
+    rcvdpkt::ArcRcvdPktRecords, sentpkt::ArcSentPktRecords, ArcReliableFrameDeque, ReliableFrame,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -64,114 +48,49 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum SpaceFrame {
-    Stream(StreamCtlFrame),
-    Data(DataFrame, Bytes),
-}
-
-#[derive(Debug, Clone, Deref)]
+#[derive(Debug, Default, Clone)]
 pub struct RawSpace<T> {
-    pub reliable_frame_queue: ArcReliableFrameQueue,
-    pub sent_pkt_records: ArcSentPktRecords,
-    pub rcvd_pkt_records: ArcRcvdPktRecords,
-    #[deref]
-    space: T,
+    reliable_frame_queue: ArcReliableFrameDeque<T>,
+    sent_pkt_records: ArcSentPktRecords<T>,
+    rcvd_pkt_records: ArcRcvdPktRecords,
 }
-
-// tool methods
 
 impl<T> RawSpace<T> {
-    fn read_ack_frame_until(
-        &self,
-        mut buf: &mut [u8],
-        ack_pkt: Option<(u64, Instant)>,
-    ) -> Option<(AckFrame, usize)> {
-        let remain = buf.remaining_mut();
-
-        let ack_frame = self.rcvd_pkt_records.gen_ack_frame_util(ack_pkt?, remain);
-        buf.put_ack_frame(&ack_frame);
-
-        let written = remain - buf.remaining_mut();
-        Some((ack_frame, written))
-    }
-}
-
-#[enum_dispatch]
-pub trait FillPacket: Send + Sync + 'static {
-    fn fill_packet(
-        &self,
-        limit: &mut TransportLimit,
-        buf: &mut [u8],
-        ack_pkt: Option<(u64, Instant)>,
-    ) -> FillPacketResult;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct FillPacketResult {
-    pub pn: u64,
-    pub pn_size: usize,
-    pub body_len: usize,
-    pub is_ack_eliciting: bool,
-}
-
-impl FillPacketResult {
-    pub fn new(pn: u64, pn_size: usize, body_len: usize, is_ack_eliciting: bool) -> Self {
+    pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            pn,
-            pn_size,
-            body_len,
-            is_ack_eliciting,
-        }
-    }
-
-    pub fn no_bytes_written(pn: u64, pn_size: usize) -> Self {
-        Self {
-            pn,
-            pn_size,
-            body_len: 0,
-            is_ack_eliciting: false,
+            reliable_frame_queue: ArcReliableFrameDeque::with_capacity(capacity),
+            sent_pkt_records: ArcSentPktRecords::with_capacity(capacity),
+            rcvd_pkt_records: ArcRcvdPktRecords::with_capacity(capacity),
         }
     }
 }
 
-#[enum_dispatch]
-pub trait ReliableTransmit: FillPacket {
-    fn on_ack(&self, ack_frmae: AckFrame);
-    fn may_loss_pkt(&self, pn: u64);
-    fn probe_timeout(&self);
-    fn indicate_ack(&self, pn: u64);
-}
-
-#[derive(Debug, Deref)]
-pub struct ArcSpace<T>(Arc<RawSpace<T>>);
-
-impl<T> Clone for ArcSpace<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
+impl<T> AsRef<ArcReliableFrameDeque<T>> for RawSpace<T> {
+    fn as_ref(&self) -> &ArcReliableFrameDeque<T> {
+        &self.reliable_frame_queue
     }
 }
 
-impl<T> AsRef<CryptoStream> for ArcSpace<T>
-where
-    T: AsRef<CryptoStream>,
-{
-    fn as_ref(&self) -> &CryptoStream {
-        self.0.space.as_ref()
+impl<T> AsRef<ArcSentPktRecords<T>> for RawSpace<T> {
+    fn as_ref(&self) -> &ArcSentPktRecords<T> {
+        &self.sent_pkt_records
     }
 }
 
-impl<T> AsRef<DataStreams> for ArcSpace<T>
-where
-    T: AsRef<DataStreams>,
-{
-    fn as_ref(&self) -> &DataStreams {
-        self.0.space.as_ref()
+impl<T> AsRef<ArcRcvdPktRecords> for RawSpace<T> {
+    fn as_ref(&self) -> &ArcRcvdPktRecords {
+        &self.rcvd_pkt_records
     }
 }
+
+#[derive(Debug, Deref, Clone)]
+pub struct ArcSpace<T>(#[deref] Arc<RawSpace<T>>);
+
+pub type InitialSpace = ArcSpace<CryptoFrame>;
+pub type HandshakeSpace = ArcSpace<CryptoFrame>;
+pub type DataSpace = ArcSpace<ReliableFrame>;
 
 #[derive(Debug, Clone)]
-#[enum_dispatch(ReliableTransmit, FillPacket)]
 pub enum Space {
     Initial(InitialSpace),
     Handshake(HandshakeSpace),
