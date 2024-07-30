@@ -26,7 +26,7 @@ macro_rules! pipe {
             async move {
                 while let Some(item) = ::futures::stream::StreamExt::next(&mut from).await {
                     if let Err(e) = catch.$method(item) {
-                        $crate::connection::ConnError::on_error(&error, e);
+                        $crate::error::ConnError::on_error(&error, e);
                         return;
                     }
                 }
@@ -40,7 +40,7 @@ mod tests {
     use futures::{channel::mpsc, SinkExt};
     use qbase::error::{Error, ErrorKind};
 
-    use crate::connection::ConnError;
+    use crate::error::ConnError;
 
     #[derive(Clone, Copy)]
     struct Consumer;

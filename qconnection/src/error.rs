@@ -60,7 +60,7 @@ impl ConnError {
         *guard = RawConnError::Closing(error);
     }
 
-    pub fn error(&self, error: Error) {
+    pub fn close(&self, error: Error) {
         let mut guard = self.0.lock().unwrap();
         let RawConnError::Pending(waker) = guard.deref_mut() else {
             return;
@@ -147,7 +147,7 @@ mod tests {
         });
 
         let error = Error::new(ErrorKind::Internal, Padding, "Test app error");
-        conn_error.error(error);
+        conn_error.close(error);
 
         _ = task.await;
     }
