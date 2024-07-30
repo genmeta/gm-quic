@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 pub mod error;
 pub mod pipe;
 
-// pub mod connection;
+pub mod connection;
 pub mod crypto;
 // pub mod endpoint;
 // pub mod path;
