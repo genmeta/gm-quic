@@ -1,7 +1,9 @@
 mod controller;
-pub use controller::*;
 mod data;
+mod error;
+pub use controller::*;
 pub use data::*;
+pub use error::*;
 mod state;
 use std::{ops::Deref, sync::Arc, time::Duration};
 
