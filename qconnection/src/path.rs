@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{
     future::{poll_fn, Future},
     io::IoSlice,
@@ -5,7 +7,7 @@ use std::{
     ops::Index,
     pin::Pin,
     sync::{Arc, Mutex},
-    task::{ready, Context, Poll, Waker},
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
@@ -16,7 +18,7 @@ use qbase::{
     flow::FlowController,
     frame::{
         io::{WritePathChallengeFrame, WritePathResponseFrame},
-        BeFrame, PathChallengeFrame, PathResponseFrame,
+        BeFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame,
     },
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
@@ -193,8 +195,11 @@ impl RawPath {
         }
     }
 
-    pub fn recv_challenge(&mut self, frame: &PathChallengeFrame) {
-        self.response_buffer.lock().unwrap().replace(frame.into());
+    pub fn recv_challenge(&mut self, frame: PathChallengeFrame) {
+        self.response_buffer
+            .lock()
+            .unwrap()
+            .replace((&frame).into());
     }
 }
 
@@ -219,32 +224,8 @@ struct PacketReader<'a> {
 impl<'a> Future for ArcReader<'a> {
     type Output = usize;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        //let  buffers = self.0.lock().unwrap().buffers;
-        let buffers = &mut self.0.lock().unwrap().buffers;
-        let guard = self.0.lock().unwrap();
-
-        let cc_alow = ready!(guard.cc.poll_send(cx));
-        let anti_amplifier_alow = ready!(guard.anti_amplifier.poll_get_credit(cx));
-
-        let credit = if let Ok(credit) = guard.flow_controler.sender().credit() {
-            credit
-        } else {
-            return Poll::Pending;
-        };
-
-        let mut limit = TransportLimit::new(anti_amplifier_alow, cc_alow, credit.available());
-
-        let mut total_sent: usize = 0;
-
-        let mut pkt_count = 0;
-        for buffer in (*buffers).iter_mut() {
-            if limit.available() == 0 {
-                break;
-            }
-            // todo: pack packet
-        }
-        Poll::Ready(pkt_count)
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        todo!("read from sapce")
     }
 }
 
@@ -278,14 +259,84 @@ impl<'a> PacketReader<'a> {
     }
 }
 
+struct DyingPath {
+    usc: ArcUsc,
+    pathway: Pathway,
+    ccf_pkt: Arc<Mutex<Vec<u8>>>,
+    send_ccf_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl DyingPath {
+    fn poll_send_ccf(&self, cx: &mut Context<'_>) {
+        let buffer = self.ccf_pkt.lock().unwrap();
+        let io_slices = [IoSlice::new(&buffer[..])];
+
+        // todo: 改成 usc poll_send_via_pathway
+        let (src, dst) = match &self.pathway {
+            Pathway::Direct { local, remote } => (*local, *remote),
+            // todo: append relay hdr
+            Pathway::Relay { local, remote } => (local.addr, remote.agent),
+        };
+
+        let hdr = qudp::PacketHeader {
+            src,
+            dst,
+            ttl: 64,
+            ecn: None,
+            seg_size: MSS as u16,
+            gso: true,
+        };
+
+        log::trace!("send ccf to {}", dst);
+        let _ = self.usc.poll_send(&io_slices, &hdr, cx);
+    }
+}
+
 enum PathState {
     Alive(RawPath),
-    Dying,
+    Dying(DyingPath),
     Dead,
 }
 
 #[derive(Clone)]
 pub struct ArcPath(Arc<Mutex<PathState>>);
+
+impl ArcPath {
+    fn recv_challenge(&self, frame: PathChallengeFrame) {
+        let mut guard = self.0.lock().unwrap();
+        if let PathState::Alive(path) = &mut *guard {
+            path.recv_challenge(frame)
+        }
+    }
+
+    fn recv_response(&self, frame: PathResponseFrame) {
+        let mut guard = self.0.lock().unwrap();
+        if let PathState::Alive(path) = &mut *guard {
+            path.recv_response(frame)
+        }
+    }
+
+    fn has_been_inactivated(&self) -> HasBeenInactivated {
+        HasBeenInactivated(self.clone())
+    }
+
+    fn enter_dying(&self, _ccf: ConnectionCloseFrame) {
+        // todo: pack ccf enter dying
+    }
+
+    pub fn enter_dead(&self) {
+        let mut guard = self.0.lock().unwrap();
+        match *guard {
+            PathState::Alive(_) => {
+                *guard = PathState::Dead;
+            }
+            PathState::Dying(_) => {
+                *guard = PathState::Dead;
+            }
+            PathState::Dead => {}
+        }
+    }
+}
 
 // TODO: 从 connection 构造，不需要这么多参数
 #[allow(clippy::too_many_arguments)]
@@ -316,13 +367,14 @@ pub fn create_path(
     let arc_path = ArcPath(Arc::new(Mutex::new(PathState::Alive(raw_path.clone()))));
 
     // 发送任务
+    // TODO: 离开 alive 时终止
     let send_handle = tokio::spawn({
         let path = raw_path.clone();
 
         async move {
             let dcid = path.dcid.clone().await;
 
-            // todo: 直接传 IoSliceMut
+            // TODO: 直接传 IoSliceMut
             let mut buffers = vec![vec![0u8; MSS]; BATCH_SIZE];
             let reader = path.read(&mut buffers, scid, dcid, token.clone(), spin);
 
@@ -357,5 +409,84 @@ pub fn create_path(
         }
     });
 
+    // 路径验证任务
+    let verify_handle = tokio::spawn({
+        let _anti_amplifier = raw_path.anti_amplifier.clone();
+        let cc = raw_path.cc.clone();
+        let challenge_buffer = raw_path.challenge_buffer.clone();
+        let response_listner = raw_path.response_listner.clone();
+
+        async move {
+            let challenge = PathChallengeFrame::random();
+            challenge_buffer.lock().unwrap().replace(challenge);
+
+            for _ in 0..3 {
+                let pto = cc.get_pto_time(Epoch::Data);
+                let listener = response_listner.clone();
+                match tokio::time::timeout(pto, listener).await {
+                    Ok(resp) => {
+                        if resp == (&challenge).into() {
+                            // 路径验证成功, 解除抗放大攻击
+                            // anti_amplifier.on_path_verified();
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        // TODO: enter dying
+                    }
+                }
+            }
+        }
+    });
+
+    let cc_handle = tokio::spawn({
+        let spaces = raw_path.spaces.clone();
+        let cc = raw_path.cc.clone();
+        async move {
+            loop {
+                tokio::select! {
+                    (epoch, _loss) = cc.may_loss() => {
+                        let _space = &spaces[epoch];
+
+                    },
+                    epoch = cc.probe_timeout() => {
+                       let _space = &spaces[epoch];
+                    },
+                    (epoch, _acked) = cc.indicate_ack() => {
+                        let _space = &spaces[epoch];
+
+                    },
+                }
+            }
+        }
+    });
+
+    // 失活检测任务
+    tokio::spawn({
+        let path = arc_path.clone();
+        let pathes = pathes.clone();
+        async move {
+            path.has_been_inactivated().await;
+            send_handle.abort();
+            verify_handle.abort();
+            cc_handle.abort();
+            pathes.remove(&pathway);
+        }
+    });
+
     arc_path
+}
+
+struct HasBeenInactivated(ArcPath);
+
+impl Future for HasBeenInactivated {
+    type Output = ();
+
+    fn poll(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        match *self.0 .0.lock().unwrap() {
+            PathState::Alive(_) => Poll::Pending,
+            PathState::Dying(_) => Poll::Ready(()),
+            PathState::Dead => Poll::Ready(()),
+        }
+    }
 }
