@@ -3,10 +3,9 @@ use std::net::SocketAddr;
 // use path::Pathway;
 // use qbase::packet::SpacePacket;
 
-mod pipe;
+pub mod error;
+pub mod pipe;
 
-pub mod connection;
-pub mod controller;
 // pub mod connection;
 pub mod crypto;
 // pub mod endpoint;
