@@ -213,12 +213,3 @@ impl<T: bytes::BufMut> WriteFrame<PureFrame> for T {
         }
     }
 }
-
-impl<T: bytes::BufMut> WriteFrame<ReliableFrame> for T {
-    fn put_frame(&mut self, frame: &ReliableFrame) {
-        match frame {
-            ReliableFrame::Conn(frame) => self.put_frame(frame),
-            ReliableFrame::Stream(frame) => self.put_frame(frame),
-        }
-    }
-}

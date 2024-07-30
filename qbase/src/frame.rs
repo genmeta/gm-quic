@@ -224,20 +224,6 @@ pub enum PureFrame {
     Path(PathFrame),
 }
 
-// #[deprecated]
-#[derive(Debug, Clone, Eq, PartialEq)]
-// #[enum_dispatch(BeFrame)]
-pub enum ReliableFrame {
-    Conn(ConnFrame),
-    Stream(StreamCtlFrame),
-}
-
-impl ReliableFrame {
-    pub fn is_ack_eliciting(&self) -> bool {
-        !matches!(self, ReliableFrame::Conn(ConnFrame::Close(_)))
-    }
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Frame {
     Pure(PureFrame),

@@ -24,7 +24,7 @@ use qbase::{
     token::ResetToken,
     util::ArcAsyncDeque,
 };
-use qrecovery::space::{ArcSpace, Epoch, ReliableTransmit};
+use qrecovery::space::{DataSpace, Epoch, HandshakeSpace, InitialSpace, RawSpace};
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 pub use state::*;
@@ -93,20 +93,21 @@ pub fn create_connection(
     // 某条连接的对端的无状态重置令牌
     endpoint_reset_tokens: Arc<DashMap<ResetToken, ArcConnectionHandle>>,
 ) -> ArcConnectionHandle {
+    /* 
     let resources = ConnectionResources::default();
 
     let cid_registry = Registry::new(2);
 
     let initial_keys = ArcKeys::new_pending();
-    let initial_space = ArcSpace::new_initial_space();
+    let initial_space = InitialSpace::with_capacity(8);
 
     let handshake_keys = ArcKeys::new_pending();
-    let handshake_space = ArcSpace::new_handshake_space();
+    let handshake_space = HandshakeSpace::with_capacity(8);
 
     let zero_rtt_keys = ArcKeys::new_pending();
     let one_rtt_keys = ArcOneRttKeys::new_pending();
     let flow_ctrl = FlowController::with_initial(0, 0);
-    let data_space = ArcSpace::new_data_space(role, 0, 0);
+    let data_space = DataSpace::with_capacity(8);
 
     let datagram_flow = DatagramFlow::new(65535, 0);
 
@@ -990,6 +991,8 @@ pub fn create_connection(
     });
 
     connection_handle
+    */
+    todo!("assemble connection")
 }
 
 #[cfg(test)]

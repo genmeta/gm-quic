@@ -13,7 +13,7 @@ use qbase::{
     varint::{VarInt, WriteVarInt},
 };
 use qcongestion::{congestion::MSS, CongestionControl};
-use qrecovery::space::{Epoch, FillPacket, FillPacketResult};
+use qrecovery::space::Epoch;
 
 use crate::path;
 

@@ -1,15 +1,8 @@
 use std::{
-    future::poll_fn,
-    io::IoSlice,
-    net::SocketAddr,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::{ready, Context, Poll},
-    time::{Duration, Instant},
+    future::poll_fn, io::IoSlice, net::SocketAddr, ops::Deref, pin::Pin, sync::{Arc, Mutex}, task::{ready, Context, Poll}, time::{Duration, Instant}
 };
 
 use anti_amplifier::ANTI_FACTOR;
-use bytes::BufMut;
 use futures::{Future, FutureExt};
 use log::*;
 use qbase::{
@@ -27,7 +20,7 @@ use qcongestion::{
     rtt::INITIAL_RTT,
     CongestionControl,
 };
-use qrecovery::space::{DataSpace, Epoch, HandshakeSpace, InitialSpace, ReliableTransmit, Space};
+use qrecovery::{reliable::{ArcReliableFrameDeque, ReliableFrame}, space::{DataSpace, Epoch, HandshakeSpace, InitialSpace, Space}};
 use qudp::ArcUsc;
 
 pub mod anti_amplifier;
@@ -270,21 +263,18 @@ impl PathState {
         scid: ConnectionId,
         token: &[u8],
     ) {
-        use qbase::{
-            frame::io::WriteConnectionCloseFrame,
-            packet::{PacketNumber, WritePacketNumber},
-        };
-        use qrecovery::space::{FillPacket, FillPacketResult};
+        use qbase::packet::PacketNumber;
         let pn = match &self {
-            PathState::Initial { init_space, .. } => init_space.sent_pkt_records.send().next_pn(),
-            PathState::Handshaking { hs_space, .. } => hs_space.sent_pkt_records.send().next_pn(),
-            PathState::Normal { data_space, .. } => data_space.sent_pkt_records.send().next_pn(),
+            PathState::Initial { init_space, .. } => init_space.as_ref().send().next_pn(),
+            PathState::Handshaking { hs_space, .. } => hs_space.as_ref().send().next_pn(),
+            PathState::Normal { data_space, .. } => data_space.as_ref().send().next_pn(),
             PathState::Closing { .. } | PathState::Invalid => return,
         };
 
         struct Filler(Arc<ConnectionCloseFrame>, u64, PacketNumber);
         let filler = Filler(ccf, pn.0, pn.1);
 
+        /* 
         impl FillPacket for Filler {
             fn fill_packet(
                 &self,
@@ -348,6 +338,7 @@ impl PathState {
         *self = PathState::Closing {
             datagram: Arc::new(buffers),
         }
+        */
     }
 }
 
@@ -740,9 +731,11 @@ pub fn create_path(connection: &RawConnection, pathway: Pathway, usc: &ArcUsc) -
                     };
 
                     dataspace
-                        .reliable_frame_queue
-                        .write()
-                        .push_conn_frame(ConnFrame::NewConnectionId(frame));
+                        .deref()
+                        .as_ref()
+                        .as_ref::<ArcReliableFrameDeque::<ReliableFrame>>()
+                        .lock_guard()
+                        .push_back(ConnFrame::NewConnectionId(frame));
                     (scid, token)
                 }
                 Err(_) => {

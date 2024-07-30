@@ -143,13 +143,13 @@ impl RcvdPktRecords {
         }
     }
 
-    fn inactivate(&mut self, pn: u64) {
+    fn retire(&mut self, pn: u64) {
         if let Some(record) = self.queue.get_mut(pn) {
             record.inactivate();
         }
     }
 
-    fn slide_inactive(&mut self) {
+    fn slide_retired(&mut self) {
         let n = self.queue.iter().take_while(|s| !s.is_active).count();
         self.queue.advance(n)
     }
@@ -210,14 +210,14 @@ pub struct ArcRcvdPktRecordsWriter<'a> {
 impl ArcRcvdPktRecordsWriter<'_> {
     /// 各路径自行反馈哪些数据包过期了，不必再在AckFrame反馈。
     /// 队首连续的失活状态记录可以滑走，避免收包队列持续增长。
-    pub fn inactivate(&mut self, pn: u64) {
-        self.guard.inactivate(pn);
+    pub fn retire(&mut self, pn: u64) {
+        self.guard.retire(pn);
     }
 }
 
 impl Drop for ArcRcvdPktRecordsWriter<'_> {
     fn drop(&mut self) {
-        self.guard.slide_inactive();
+        self.guard.slide_retired();
     }
 }
 
@@ -254,7 +254,7 @@ mod tests {
         {
             let mut writer = records.write();
             for i in 5..10 {
-                writer.inactivate(i);
+                writer.retire(i);
             }
         }
         assert_eq!(records.inner.read().unwrap().queue.len(), 31);
@@ -262,7 +262,7 @@ mod tests {
         {
             let mut writer = records.write();
             for i in 0..5 {
-                writer.inactivate(i);
+                writer.retire(i);
             }
         }
         assert_eq!(records.inner.read().unwrap().queue.len(), 21);
