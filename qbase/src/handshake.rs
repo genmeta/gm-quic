@@ -2,7 +2,10 @@ use std::{
     future::Future,
     ops::{Deref, DerefMut},
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     task::{Context, Poll, Waker},
 };
 
@@ -12,18 +15,27 @@ use crate::{
 };
 
 #[derive(Debug, Default, Clone)]
-pub struct ClientHandshake(Arc<Mutex<bool>>);
+pub struct ClientHandshake(Arc<AtomicBool>);
 
 impl ClientHandshake {
     fn is_handshake_done(&self) -> bool {
-        *self.0.lock().unwrap()
+        self.0.load(Ordering::Acquire)
     }
 
     fn recv_handshake_done_frame(&self, _frame: HandshakeDoneFrame) {
-        *self.0.lock().unwrap() = true;
+        self.0.store(true, Ordering::Release);
     }
 }
 
+/// Server handshake status, divided into:
+/// - Ok(Some(false)), handshake not successful, initial state;
+/// - Err(waker), external query before handshake is successful, and external
+///   waiting for handshake to complete to send HandshakeDone frame;
+/// - Ok(Some(true)), handshake successful, changed to this state through the
+///   done function, and waker is awakened.
+/// - Ok(None) indicates that the handshake was abandoned halfway, the connection
+///   ended before the handshake was completed.
+/// The handshake is considered complete when the client's 1rtt data packet is successfully decrypted.
 #[derive(Debug, Clone)]
 pub struct ServerHandshake(Arc<Mutex<Result<Option<bool>, Waker>>>);
 
@@ -133,17 +145,11 @@ impl Handshake {
     }
 
     /// Just like `recv_handshake_done_frame`, a client must wait for a HANDSHAKE_DONE frame to be done.
-    /// or it should return a PROTOCOL_VIOLATION error.
-    pub fn done(&self) -> Result<(), Error> {
+    /// So as a client, it just print a warning log.
+    pub fn done(&self) {
         match self {
-            Handshake::Server(h) => {
-                h.done();
-                Ok(())
-            }
-            _ => Err(Error::with_default_fty(
-                ErrorKind::ProtocolViolation,
-                "Client handshake must wait for a HANDSHAKE_DONE frame to be done",
-            )),
+            Handshake::Server(h) => h.done(),
+            _ => println!("WARN: it doesn't make sense to call done() on a client handshake"),
         }
     }
 
@@ -199,15 +205,8 @@ mod tests {
     fn test_client_handshake_done() {
         let handshake = super::Handshake::new_client();
         assert_eq!(handshake.is_handshake_done(), false);
-
-        let ret = handshake.done();
-        assert_eq!(
-            ret,
-            Err(Error::with_default_fty(
-                ErrorKind::ProtocolViolation,
-                "Client handshake must wait for a HANDSHAKE_DONE frame to be done",
-            ))
-        );
+        assert_eq!(handshake.done(), ());
+        assert_eq!(handshake.is_handshake_done(), false);
     }
 
     #[test]
@@ -215,8 +214,7 @@ mod tests {
         let handshake = super::Handshake::new_server();
         assert_eq!(handshake.is_handshake_done(), false);
 
-        let ret = handshake.done();
-        assert_eq!(ret, Ok(()));
+        assert_eq!(handshake.done(), ());
         assert_eq!(handshake.is_handshake_done(), true);
     }
 
@@ -244,8 +242,7 @@ mod tests {
         let ret = handshake.is_done().unwrap().poll_is_done(&mut cx);
         assert_eq!(ret, Poll::Pending);
 
-        let ret = handshake.done();
-        assert!(ret.is_ok());
+        assert_eq!(handshake.done(), ());
 
         let ret = handshake.is_done().unwrap().poll_is_done(&mut cx);
         assert_eq!(ret, Poll::Ready(Some(())));
