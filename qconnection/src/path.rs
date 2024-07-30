@@ -1,39 +1,29 @@
 #![allow(dead_code)]
 
 use std::{
-    future::{poll_fn, Future},
-    io::IoSlice,
+    future::Future,
+    io::{self, IoSlice},
     net::SocketAddr,
-    ops::Index,
-    pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
-    time::Duration,
+    task::{Context, Poll},
 };
 
-use anti_amplifier::{ArcAntiAmplifier, ANTI_FACTOR};
 use dashmap::DashMap;
+use dying::DyingPath;
 use qbase::{
-    cid::{ArcCidCell, ConnectionId, Registry},
+    cid::{ConnectionId, Registry},
     flow::FlowController,
-    frame::{
-        io::{WritePathChallengeFrame, WritePathResponseFrame},
-        BeFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame,
-    },
-    packet::{
-        keys::{ArcKeys, ArcOneRttKeys},
-        SpinBit,
-    },
-    util::TransportLimit,
+    frame::{ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame},
+    packet::SpinBit,
 };
-use qcongestion::{
-    congestion::{ArcCC, CongestionAlgorithm, MSS},
-    CongestionControl,
-};
-use qrecovery::space::{Epoch, Space};
-use qudp::{ArcUsc, BATCH_SIZE};
+use qcongestion::congestion::MSS;
+use qrecovery::space::Epoch;
+use qudp::ArcUsc;
+use raw::{AllKeys, AllSpaces, RawPath};
 
-pub mod anti_amplifier;
+mod anti_amplifier;
+mod dying;
+mod raw;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct RelayAddr {
@@ -54,244 +44,6 @@ pub enum Pathway {
     },
 }
 
-// TODO: form connection
-#[derive(Clone)]
-pub struct AllSpaces([Option<Space>; 3]);
-impl Index<Epoch> for AllSpaces {
-    type Output = Option<Space>;
-
-    fn index(&self, index: Epoch) -> &Self::Output {
-        &self.0[index as usize]
-    }
-}
-
-#[derive(Clone)]
-pub struct AllKeys {
-    init_keys: ArcKeys,
-    handshaking_keys: ArcKeys,
-    zero_rtt_keys: ArcKeys,
-    one_rtt_keys: ArcOneRttKeys,
-}
-
-#[derive(Clone)]
-struct RawPath {
-    usc: ArcUsc,
-    cc: ArcCC,
-    spaces: AllSpaces,
-    keys: AllKeys,
-    anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
-    flow_controller: FlowController,
-    pathway: Pathway,
-    dcid: ArcCidCell,
-    scid: ConnectionId,
-    token: Vec<u8>,
-    spin: SpinBit,
-    challenge_buffer: Arc<Mutex<Option<PathChallengeFrame>>>,
-    response_buffer: Arc<Mutex<Option<PathResponseFrame>>>,
-    response_listner: ArcResponseListener,
-}
-
-#[derive(Clone)]
-pub enum ResponseListener {
-    Init,
-    Pending(Waker),
-    Response(PathResponseFrame),
-    Inactive,
-}
-
-#[derive(Clone)]
-struct ArcResponseListener(Arc<Mutex<ResponseListener>>);
-
-impl Future for ArcResponseListener {
-    type Output = PathResponseFrame;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut listner = self.0.lock().unwrap();
-        match *listner {
-            ResponseListener::Init => {
-                *listner = ResponseListener::Pending(cx.waker().clone());
-                Poll::Pending
-            }
-            ResponseListener::Pending(_) => Poll::Pending,
-            ResponseListener::Response(resp) => Poll::Ready(resp),
-            ResponseListener::Inactive => unreachable!("inactive response listener"),
-        }
-    }
-}
-
-impl RawPath {
-    // TODO: 从 connection 构造，不需要这么多参数
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        usc: ArcUsc,
-        pathway: Pathway,
-        spaces: AllSpaces,
-        keys: AllKeys,
-        flow_controller: FlowController,
-        dcid: ArcCidCell,
-        scid: ConnectionId,
-        token: Vec<u8>,
-        spin: SpinBit,
-    ) -> Self {
-        let cc = ArcCC::new(CongestionAlgorithm::Bbr, Duration::from_micros(100));
-        let anti_amplifier = ArcAntiAmplifier::<3>::default();
-        Self {
-            usc,
-            cc,
-            anti_amplifier,
-            spaces,
-            keys,
-            pathway,
-            flow_controller,
-            dcid,
-            scid,
-            token,
-            spin,
-            challenge_buffer: Arc::new(Mutex::new(None)),
-            response_buffer: Arc::new(Mutex::new(None)),
-            response_listner: ArcResponseListener(Arc::new(Mutex::new(ResponseListener::Init))),
-        }
-    }
-
-    pub fn read<'a>(
-        &self,
-        bufs: &'a mut Vec<Vec<u8>>,
-        scid: ConnectionId,
-        dcid: ConnectionId,
-        token: Vec<u8>,
-        spin: SpinBit,
-    ) -> ArcReader<'a> {
-        let reader = PacketReader {
-            buffers: bufs,
-            cc: self.cc.clone(),
-            anti_amplifier: self.anti_amplifier.clone(),
-            flow_controler: self.flow_controller.clone(),
-            spaces: self.spaces.clone(),
-            keys: self.keys.clone(),
-            dcid,
-            scid,
-            rest_token: token,
-            spin,
-            challenge_buffer: self.challenge_buffer.clone(),
-            response_buffer: self.response_buffer.clone(),
-        };
-        ArcReader(Arc::new(Mutex::new(reader)))
-    }
-
-    pub fn recv_response(&mut self, frame: PathResponseFrame) {
-        let mut guard = self.response_listner.0.lock().unwrap();
-        match &*guard {
-            ResponseListener::Init => unreachable!("recv esponse before send challenge"),
-            ResponseListener::Pending(waker) => {
-                waker.wake_by_ref();
-                *guard = ResponseListener::Response(frame);
-            }
-            ResponseListener::Response(resp) => {
-                if resp != &frame {
-                    *guard = ResponseListener::Response(frame);
-                }
-            }
-            ResponseListener::Inactive => {}
-        }
-    }
-
-    pub fn recv_challenge(&mut self, frame: PathChallengeFrame) {
-        self.response_buffer
-            .lock()
-            .unwrap()
-            .replace((&frame).into());
-    }
-}
-
-#[derive(Clone)]
-struct ArcReader<'a>(Arc<Mutex<PacketReader<'a>>>);
-
-struct PacketReader<'a> {
-    buffers: &'a mut Vec<Vec<u8>>,
-    cc: ArcCC,
-    anti_amplifier: ArcAntiAmplifier<3>,
-    flow_controler: FlowController,
-    spaces: AllSpaces,
-    dcid: ConnectionId,
-    scid: ConnectionId,
-    rest_token: Vec<u8>,
-    keys: AllKeys,
-    spin: SpinBit,
-    challenge_buffer: Arc<Mutex<Option<PathChallengeFrame>>>,
-    response_buffer: Arc<Mutex<Option<PathResponseFrame>>>,
-}
-
-impl<'a> Future for ArcReader<'a> {
-    type Output = usize;
-
-    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-        todo!("read from sapce")
-    }
-}
-
-impl<'a> PacketReader<'a> {
-    fn send_challenge(&self, mut buf: &mut [u8], limit: &mut TransportLimit) -> usize {
-        let mut guard = self.challenge_buffer.lock().unwrap();
-        if let Some(challeng) = *guard {
-            let size: usize = challeng.encoding_size();
-            if limit.available() >= size {
-                guard.take();
-                limit.record_write(size);
-                buf.put_path_challenge_frame(&challeng);
-            }
-            return size;
-        }
-        0
-    }
-
-    fn send_response(&self, mut buf: &mut [u8], limit: &mut TransportLimit) -> usize {
-        let mut guard = self.response_buffer.lock().unwrap();
-        if let Some(resp) = *guard {
-            let size: usize = resp.encoding_size();
-            if limit.available() >= size {
-                guard.take();
-                limit.record_write(size);
-                buf.put_path_response_frame(&resp);
-            }
-            return size;
-        }
-        0
-    }
-}
-
-struct DyingPath {
-    usc: ArcUsc,
-    pathway: Pathway,
-    ccf_pkt: Arc<Mutex<Vec<u8>>>,
-    send_ccf_handle: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl DyingPath {
-    fn poll_send_ccf(&self, cx: &mut Context<'_>) {
-        let buffer = self.ccf_pkt.lock().unwrap();
-        let io_slices = [IoSlice::new(&buffer[..])];
-
-        // todo: 改成 usc poll_send_via_pathway
-        let (src, dst) = match &self.pathway {
-            Pathway::Direct { local, remote } => (*local, *remote),
-            // todo: append relay hdr
-            Pathway::Relay { local, remote } => (local.addr, remote.agent),
-        };
-
-        let hdr = qudp::PacketHeader {
-            src,
-            dst,
-            ttl: 64,
-            ecn: None,
-            seg_size: MSS as u16,
-            gso: true,
-        };
-
-        log::trace!("send ccf to {}", dst);
-        let _ = self.usc.poll_send(&io_slices, &hdr, cx);
-    }
-}
-
 enum PathState {
     Alive(RawPath),
     Dying(DyingPath),
@@ -302,6 +54,7 @@ enum PathState {
 pub struct ArcPath(Arc<Mutex<PathState>>);
 
 impl ArcPath {
+    /// 收到对方的路径挑战帧，如果不是 Alive 状态，直接忽略
     fn recv_challenge(&self, frame: PathChallengeFrame) {
         let mut guard = self.0.lock().unwrap();
         if let PathState::Alive(path) = &mut *guard {
@@ -309,6 +62,7 @@ impl ArcPath {
         }
     }
 
+    /// 收到对方的路径响应帧，如果不是 Alive 状态，直接忽略
     fn recv_response(&self, frame: PathResponseFrame) {
         let mut guard = self.0.lock().unwrap();
         if let PathState::Alive(path) = &mut *guard {
@@ -316,25 +70,60 @@ impl ArcPath {
         }
     }
 
+    /// 失活检测器
     fn has_been_inactivated(&self) -> HasBeenInactivated {
         HasBeenInactivated(self.clone())
     }
 
-    fn enter_dying(&self, _ccf: ConnectionCloseFrame) {
-        // todo: pack ccf enter dying
+    /// 收到 connection frame ，如果是 Alive 或者 Dying 状态，可以发一个 ccf 再进入 Dead
+    /// Dead 状态则忽略
+    fn recv_ccf(&self, frame: ConnectionCloseFrame, epoch: Epoch) {
+        let mut guard = self.0.lock().unwrap();
+        let dying = match &mut *guard {
+            PathState::Alive(raw) => {
+                let ccf = raw.read_connection_close_frame(frame, epoch);
+                DyingPath::new(raw.usc.clone(), raw.pathway, ccf, raw.pto_time())
+            }
+            PathState::Dying(dying) => dying.clone(),
+            PathState::Dead => {
+                log::trace!("recv_ccf: path is dead");
+                return;
+            }
+        };
+
+        // send ccf
+        tokio::spawn({
+            let dying = dying.clone();
+            async move {
+                let ret = dying.send_ccf().await;
+                log::trace!("send_ccf: ret={:?}", ret);
+            }
+        });
+        *guard = PathState::Dead;
     }
 
-    pub fn enter_dead(&self) {
+    // 当 connection 发生错误时或要主动结束时，进入 Cosing 状态
+    fn enter_closing(&self, frame: ConnectionCloseFrame, epoch: Epoch) {
         let mut guard = self.0.lock().unwrap();
-        match *guard {
-            PathState::Alive(_) => {
-                *guard = PathState::Dead;
+
+        let dying = if let PathState::Alive(raw) = &mut *guard {
+            let ccf = raw.read_connection_close_frame(frame, epoch);
+            DyingPath::new(raw.usc.clone(), raw.pathway, ccf, raw.pto_time())
+        } else {
+            log::debug!("enter_closing: path is not Alive");
+            return;
+        };
+
+        *guard = PathState::Dying(dying.clone());
+        tokio::spawn({
+            async move {
+                for _ in 0..3 {
+                    let ret = dying.send_ccf().await;
+                    log::trace!("send_ccf: ret={:?}", ret);
+                    tokio::time::sleep(dying.pto).await;
+                }
             }
-            PathState::Dying(_) => {
-                *guard = PathState::Dead;
-            }
-            PathState::Dead => {}
-        }
+        });
     }
 }
 
@@ -350,7 +139,7 @@ pub fn create_path(
     spin: SpinBit,
     scid: ConnectionId,
     token: Vec<u8>,
-    pathes: DashMap<Pathway, ArcPath>,
+    _pathes: DashMap<Pathway, ArcPath>,
 ) -> ArcPath {
     let dcid = cid_registry.remote.apply_cid();
     let raw_path = RawPath::new(
@@ -364,117 +153,7 @@ pub fn create_path(
         token.clone(),
         spin,
     );
-    let arc_path = ArcPath(Arc::new(Mutex::new(PathState::Alive(raw_path.clone()))));
-
-    // 发送任务
-    // TODO: 离开 alive 时终止
-    let send_handle = tokio::spawn({
-        let path = raw_path.clone();
-
-        async move {
-            let dcid = path.dcid.clone().await;
-
-            // TODO: 直接传 IoSliceMut
-            let mut buffers = vec![vec![0u8; MSS]; BATCH_SIZE];
-            let reader = path.read(&mut buffers, scid, dcid, token.clone(), spin);
-
-            let (src, dst) = match &pathway {
-                Pathway::Direct { local, remote } => (*local, *remote),
-                // todo: append relay hdr
-                Pathway::Relay { local, remote } => (local.addr, remote.agent),
-            };
-
-            let hdr = qudp::PacketHeader {
-                src,
-                dst,
-                ttl: 64,
-                ecn: None,
-                seg_size: MSS as u16,
-                gso: true,
-            };
-            loop {
-                let pkt_count = reader.clone().await;
-                let io_slices: Vec<IoSlice<'_>> = buffers
-                    .iter()
-                    .take(pkt_count)
-                    .map(|buf| IoSlice::new(buf))
-                    .collect();
-
-                let ret = poll_fn(|cx| path.usc.poll_send(&io_slices, &hdr, cx)).await;
-                match ret {
-                    Ok(_) => todo!(),
-                    Err(_) => todo!(),
-                }
-            }
-        }
-    });
-
-    // 路径验证任务
-    let verify_handle = tokio::spawn({
-        let _anti_amplifier = raw_path.anti_amplifier.clone();
-        let cc = raw_path.cc.clone();
-        let challenge_buffer = raw_path.challenge_buffer.clone();
-        let response_listner = raw_path.response_listner.clone();
-
-        async move {
-            let challenge = PathChallengeFrame::random();
-            challenge_buffer.lock().unwrap().replace(challenge);
-
-            for _ in 0..3 {
-                let pto = cc.get_pto_time(Epoch::Data);
-                let listener = response_listner.clone();
-                match tokio::time::timeout(pto, listener).await {
-                    Ok(resp) => {
-                        if resp == (&challenge).into() {
-                            // 路径验证成功, 解除抗放大攻击
-                            // anti_amplifier.on_path_verified();
-                            break;
-                        }
-                    }
-                    Err(_) => {
-                        // TODO: enter dying
-                    }
-                }
-            }
-        }
-    });
-
-    let cc_handle = tokio::spawn({
-        let spaces = raw_path.spaces.clone();
-        let cc = raw_path.cc.clone();
-        async move {
-            loop {
-                tokio::select! {
-                    (epoch, _loss) = cc.may_loss() => {
-                        let _space = &spaces[epoch];
-
-                    },
-                    epoch = cc.probe_timeout() => {
-                       let _space = &spaces[epoch];
-                    },
-                    (epoch, _acked) = cc.indicate_ack() => {
-                        let _space = &spaces[epoch];
-
-                    },
-                }
-            }
-        }
-    });
-
-    // 失活检测任务
-    tokio::spawn({
-        let path = arc_path.clone();
-        let pathes = pathes.clone();
-        async move {
-            path.has_been_inactivated().await;
-            send_handle.abort();
-            verify_handle.abort();
-            cc_handle.abort();
-            pathes.remove(&pathway);
-        }
-    });
-
-    arc_path
+    ArcPath(Arc::new(Mutex::new(PathState::Alive(raw_path.clone()))))
 }
 
 struct HasBeenInactivated(ArcPath);
@@ -488,5 +167,38 @@ impl Future for HasBeenInactivated {
             PathState::Dying(_) => Poll::Ready(()),
             PathState::Dead => Poll::Ready(()),
         }
+    }
+}
+
+pub trait ViaPathway {
+    fn poll_send_via_pathway(
+        &mut self,
+        iovecs: &[IoSlice<'_>],
+        pathway: Pathway,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<io::Result<usize>>;
+}
+
+impl ViaPathway for ArcUsc {
+    fn poll_send_via_pathway(
+        &mut self,
+        iovecs: &[IoSlice<'_>],
+        pathway: Pathway,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<io::Result<usize>> {
+        let (src, dst) = match &pathway {
+            Pathway::Direct { local, remote } => (*local, *remote),
+            // todo: append relay hdr
+            Pathway::Relay { local, remote } => (local.addr, remote.agent),
+        };
+        let hdr = qudp::PacketHeader {
+            src,
+            dst,
+            ttl: 64,
+            ecn: None,
+            seg_size: MSS as u16,
+            gso: true,
+        };
+        self.poll_send(iovecs, &hdr, cx)
     }
 }
