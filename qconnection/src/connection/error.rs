@@ -11,9 +11,9 @@ use qbase::{error::Error, frame::ConnectionCloseFrame};
 #[derive(Debug, Clone)]
 enum RawConnError {
     Pending(Option<Waker>),
-    Transmite(Error),
     App(Error),
-    Peer(Error),
+    Closing(Error),
+    Draining(Error),
 }
 
 impl Default for RawConnError {
@@ -23,18 +23,18 @@ impl Default for RawConnError {
 }
 
 #[derive(Default, Debug, Clone)]
-pub struct ConnErrorTrigger(Arc<Mutex<RawConnError>>);
+pub struct ConnError(Arc<Mutex<RawConnError>>);
 
-impl ConnErrorTrigger {
+impl ConnError {
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn error_occur(&self) -> ConnErrorOccur {
-        ConnErrorOccur::new(self.clone())
+        ConnErrorOccur(self.clone())
     }
 
-    pub fn rcvd_ccf(&self, ccf: ConnectionCloseFrame) {
+    pub fn recv_ccf(&self, ccf: ConnectionCloseFrame) {
         let mut guard = self.0.lock().unwrap();
         let RawConnError::Pending(waker) = guard.deref_mut() else {
             return;
@@ -44,10 +44,10 @@ impl ConnErrorTrigger {
             waker.wake();
         }
 
-        *guard = RawConnError::Peer(Error::from(ccf));
+        *guard = RawConnError::Draining(Error::from(ccf));
     }
 
-    pub fn transmit_error(&self, error: Error) {
+    pub fn on_error(&self, error: Error) {
         let mut guard = self.0.lock().unwrap();
         let RawConnError::Pending(waker) = guard.deref_mut() else {
             return;
@@ -57,10 +57,10 @@ impl ConnErrorTrigger {
             waker.wake();
         }
 
-        *guard = RawConnError::Transmite(error);
+        *guard = RawConnError::Closing(error);
     }
 
-    pub fn app_error(&self, error: Error) {
+    pub fn error(&self, error: Error) {
         let mut guard = self.0.lock().unwrap();
         let RawConnError::Pending(waker) = guard.deref_mut() else {
             return;
@@ -74,21 +74,11 @@ impl ConnErrorTrigger {
     }
 }
 
-pub struct ConnErrorOccur(ConnErrorTrigger);
-
-impl ConnErrorOccur {
-    pub fn new(error: ConnErrorTrigger) -> Self {
-        Self(error)
-    }
-}
-
-pub struct ConnError {
-    pub error: Error,
-    pub is_active: bool,
-}
+/// impl Future::Output = (error: [`Error`], is_active: [`bool`])
+pub struct ConnErrorOccur(ConnError);
 
 impl Future for ConnErrorOccur {
-    type Output = ConnError;
+    type Output = (Error, bool);
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut guard = self.0 .0.lock().unwrap();
@@ -97,14 +87,8 @@ impl Future for ConnErrorOccur {
                 *guard = RawConnError::Pending(Some(cx.waker().clone()));
                 Poll::Pending
             }
-            RawConnError::Transmite(error) | RawConnError::App(error) => Poll::Ready(ConnError {
-                error,
-                is_active: true,
-            }),
-            RawConnError::Peer(error) => Poll::Ready(ConnError {
-                error,
-                is_active: false,
-            }),
+            RawConnError::Closing(error) | RawConnError::App(error) => Poll::Ready((error, true)),
+            RawConnError::Draining(error) => Poll::Ready((error, false)),
         }
     }
 }
@@ -116,54 +100,54 @@ mod tests {
 
     #[tokio::test]
     async fn test_rcvd_ccf() {
-        let conn_error_trigger = ConnErrorTrigger::new();
+        let conn_error = ConnError::new();
 
         let task = tokio::spawn({
-            let conn_error_trigger = conn_error_trigger.clone();
+            let conn_error = conn_error.clone();
             async move {
-                let conn_error = conn_error_trigger.error_occur().await;
-                assert!(!conn_error.is_active);
+                let (_, is_active) = conn_error.error_occur().await;
+                assert!(!is_active);
             }
         });
 
         let ccf = ConnectionCloseFrame::new(ErrorKind::Internal, None, "Test close frame".into());
-        conn_error_trigger.rcvd_ccf(ccf);
+        conn_error.recv_ccf(ccf);
 
         _ = task.await;
     }
 
     #[tokio::test]
     async fn test_transmit_error() {
-        let conn_error_trigger = ConnErrorTrigger::new();
+        let conn_error = ConnError::new();
 
         let task = tokio::spawn({
-            let conn_error_trigger = conn_error_trigger.clone();
+            let conn_error = conn_error.clone();
             async move {
-                let conn_error = conn_error_trigger.error_occur().await;
-                assert!(conn_error.is_active);
+                let (_, is_active) = conn_error.error_occur().await;
+                assert!(is_active);
             }
         });
 
         let error = Error::new(ErrorKind::Internal, Padding, "Test transmit error");
-        conn_error_trigger.transmit_error(error);
+        conn_error.on_error(error);
 
         _ = task.await;
     }
 
     #[tokio::test]
     async fn test_app_error() {
-        let conn_error_trigger = ConnErrorTrigger::new();
+        let conn_error = ConnError::new();
 
         let task = tokio::spawn({
-            let conn_error_trigger = conn_error_trigger.clone();
+            let conn_error = conn_error.clone();
             async move {
-                let conn_error = conn_error_trigger.error_occur().await;
-                assert!(conn_error.is_active);
+                let (_, is_active) = conn_error.error_occur().await;
+                assert!(is_active);
             }
         });
 
         let error = Error::new(ErrorKind::Internal, Padding, "Test app error");
-        conn_error_trigger.app_error(error);
+        conn_error.error(error);
 
         _ = task.await;
     }
