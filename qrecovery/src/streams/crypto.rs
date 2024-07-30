@@ -280,7 +280,10 @@ impl CryptoStream {
         self.outgoing.may_loss_data(&data_frame.range())
     }
 
-    pub fn recv_data(&self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error> {
+    pub fn recv_data(
+        &self,
+        (crypto_frame, body): (CryptoFrame, bytes::Bytes),
+    ) -> Result<(), Error> {
         self.incoming.recv(crypto_frame.offset.into_inner(), body);
         Ok(())
     }
@@ -351,13 +354,13 @@ mod tests {
             .unwrap();
 
         crypto_stream
-            .recv_data(
+            .recv_data((
                 CryptoFrame {
                     offset: VarInt::from_u32(0),
                     length: VarInt::from_u32(11),
                 },
                 bytes::Bytes::copy_from_slice(b"hello world"),
-            )
+            ))
             .unwrap();
         let mut buf = [0u8; 11];
         crypto_stream.reader.read_exact(&mut buf).await.unwrap();
