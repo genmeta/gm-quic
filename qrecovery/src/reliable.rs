@@ -24,22 +24,22 @@ pub enum ReliableFrame {
 /// 对于Initial和Handshake空间，仅需负责CryptoFrame的可靠传输
 /// 对与Data空间，则需负责上述ReliableFrame的可靠传输
 #[derive(Debug, Default, Deref, DerefMut)]
-pub struct RawReliableFrameDeque<T> {
+pub struct RawReliableFrameDeque {
     #[deref]
-    queue: VecDeque<T>,
+    queue: VecDeque<ReliableFrame>,
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct ArcReliableFrameDeque<T>(Arc<Mutex<RawReliableFrameDeque<T>>>);
+pub struct ArcReliableFrameDeque(Arc<Mutex<RawReliableFrameDeque>>);
 
-impl<T> ArcReliableFrameDeque<T> {
+impl ArcReliableFrameDeque {
     pub fn with_capacity(capacity: usize) -> Self {
         Self(Arc::new(Mutex::new(RawReliableFrameDeque {
             queue: VecDeque::with_capacity(capacity),
         })))
     }
 
-    pub fn lock_guard(&self) -> MutexGuard<'_, RawReliableFrameDeque<T>> {
+    pub fn lock_guard(&self) -> MutexGuard<'_, RawReliableFrameDeque> {
         self.0.lock().unwrap()
     }
 }
