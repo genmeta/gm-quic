@@ -1,4 +1,5 @@
 mod async_deque;
+mod pipe;
 pub use async_deque::{ArcAsyncDeque, ArcAsyncDequeWriter};
 
 mod data;
