@@ -186,8 +186,6 @@ impl Handshake {
 
 #[cfg(test)]
 mod tests {
-    use std::task::Poll;
-
     use super::HandshakeDoneFrame;
     use crate::error::{Error, ErrorKind};
 
@@ -197,7 +195,7 @@ mod tests {
         assert_eq!(handshake.is_handshake_done(), false);
 
         let ret = handshake.recv_handshake_done_frame(HandshakeDoneFrame);
-        assert_eq!(ret, Ok(()));
+        assert!(ret.is_ok());
         assert_eq!(handshake.is_handshake_done(), true);
     }
 
@@ -205,7 +203,8 @@ mod tests {
     fn test_client_handshake_done() {
         let handshake = super::Handshake::new_client();
         assert_eq!(handshake.is_handshake_done(), false);
-        assert_eq!(handshake.done(), ());
+
+        handshake.done();
         assert_eq!(handshake.is_handshake_done(), false);
     }
 
@@ -214,7 +213,7 @@ mod tests {
         let handshake = super::Handshake::new_server();
         assert_eq!(handshake.is_handshake_done(), false);
 
-        assert_eq!(handshake.done(), ());
+        handshake.done();
         assert_eq!(handshake.is_handshake_done(), true);
     }
 
@@ -240,11 +239,11 @@ mod tests {
         let mut cx = std::task::Context::from_waker(&waker);
 
         let ret = handshake.is_done().unwrap().poll_is_done(&mut cx);
-        assert_eq!(ret, Poll::Pending);
+        assert!(ret.is_pending());
 
-        assert_eq!(handshake.done(), ());
+        handshake.done();
 
         let ret = handshake.is_done().unwrap().poll_is_done(&mut cx);
-        assert_eq!(ret, Poll::Ready(Some(())));
+        assert!(ret.is_ready());
     }
 }
