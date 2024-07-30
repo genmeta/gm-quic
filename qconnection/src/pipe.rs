@@ -92,7 +92,7 @@ mod tests {
     #[tokio::test]
     async fn macro_expand2() {
         let c = Consumer;
-        let error = ConnError::new();
+        let error = ConnError::default();
 
         let (mut tx1, rx1) = mpsc::unbounded::<()>();
         pipe!(
@@ -106,7 +106,7 @@ mod tests {
     #[tokio::test]
     async fn macro_expand3() {
         let c = Consumer;
-        let error = ConnError::new();
+        let error = ConnError::default();
 
         let (mut tx1, rx1) = mpsc::unbounded::<()>();
         pipe!(
@@ -115,7 +115,7 @@ mod tests {
         );
 
         assert!(tx1.send(()).await.is_ok());
-        let (_e, is_active) = error.error_occur().await;
+        let (_e, is_active) = error.await;
         assert!(is_active);
         assert!(tx1.send(()).await.is_err());
     }
