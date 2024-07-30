@@ -108,3 +108,63 @@ impl Future for ConnErrorOccur {
         }
     }
 }
+#[cfg(test)]
+mod tests {
+    use qbase::{error::ErrorKind, frame::FrameType::Padding};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_rcvd_ccf() {
+        let conn_error_trigger = ConnErrorTrigger::new();
+
+        let task = tokio::spawn({
+            let conn_error_trigger = conn_error_trigger.clone();
+            async move {
+                let conn_error = conn_error_trigger.error_occur().await;
+                assert!(!conn_error.is_active);
+            }
+        });
+
+        let ccf = ConnectionCloseFrame::new(ErrorKind::Internal, None, "Test close frame".into());
+        conn_error_trigger.rcvd_ccf(ccf);
+
+        _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn test_transmit_error() {
+        let conn_error_trigger = ConnErrorTrigger::new();
+
+        let task = tokio::spawn({
+            let conn_error_trigger = conn_error_trigger.clone();
+            async move {
+                let conn_error = conn_error_trigger.error_occur().await;
+                assert!(conn_error.is_active);
+            }
+        });
+
+        let error = Error::new(ErrorKind::Internal, Padding, "Test transmit error");
+        conn_error_trigger.transmit_error(error);
+
+        _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn test_app_error() {
+        let conn_error_trigger = ConnErrorTrigger::new();
+
+        let task = tokio::spawn({
+            let conn_error_trigger = conn_error_trigger.clone();
+            async move {
+                let conn_error = conn_error_trigger.error_occur().await;
+                assert!(conn_error.is_active);
+            }
+        });
+
+        let error = Error::new(ErrorKind::Internal, Padding, "Test app error");
+        conn_error_trigger.app_error(error);
+
+        _ = task.await;
+    }
+}
