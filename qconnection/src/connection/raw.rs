@@ -2,6 +2,7 @@ use std::{
     net::SocketAddr,
     ops::Deref,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use bytes::Bytes;
@@ -11,7 +12,9 @@ use qbase::{
     cid::Registry,
     error::{Error, ErrorKind},
     flow::FlowController,
-    frame::{AckFrame, BeFrame, ConnFrame, DataFrame, Frame, FrameReader, PathFrame, PureFrame},
+    frame::{
+        AckFrame, BeFrame, DataFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
+    },
     packet::{
         self,
         decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
@@ -23,7 +26,7 @@ use qbase::{
     streamid::Role,
 };
 use qrecovery::{
-    crypto::CryptoStream,
+    crypto::{ArcCryptoFrameDeque, CryptoStream},
     reliable::{ArcReliableFrameDeque, ReliableFrame},
     space::{DataSpace, Epoch, HandshakeSpace, InitialSpace},
     streams::DataStreams,
@@ -65,7 +68,12 @@ impl ArcPath {
         _ = (epoch, pn);
     }
 
-    pub fn recv_path_frame(&self, frame: PathFrame) -> Result<(), Error> {
+    pub fn recv_path_challenge_frame(&self, frame: PathChallengeFrame) -> Result<(), Error> {
+        _ = frame;
+        Ok(())
+    }
+
+    pub fn recv_path_response_frame(&self, frame: PathResponseFrame) -> Result<(), Error> {
         _ = frame;
         Ok(())
     }
@@ -86,17 +94,20 @@ pub struct RawConnection {
 
     initial_space: InitialSpace,
     initial_crypto_stream: CryptoStream,
+    initial_crypto_frames_deque: ArcCryptoFrameDeque,
     initial_packet_queue: InitialPacketQueue,
     initial_keys: ArcKeys,
 
     handshake_space: HandshakeSpace,
     handshake_crypto_stream: CryptoStream,
+    handshake_crypto_frames_deque: ArcCryptoFrameDeque,
     handshake_packet_queue: HandshakePacketQueue,
     handshake_keys: ArcKeys,
 
     data_space: DataSpace,
     data_crypto_stream: CryptoStream,
     data_streams: DataStreams,
+    data_reliable_frames_deque: ArcReliableFrameDeque,
     flow_control: FlowController,
 
     zero_rtt_packet_queue: ZeroRttPacketQueue,
@@ -114,20 +125,23 @@ impl RawConnection {
         let pathes = DashMap::new();
         let cid_registry = Registry::new(2);
         let spin = Arc::new(Mutex::new(SpinBit::Off));
-        let conn_error = ConnError::new();
+        let conn_error = ConnError::default();
 
         let initial_space = InitialSpace::with_capacity(0);
         let initial_crypto_stream = CryptoStream::new(0, 0);
+        let initial_crypto_frames_deque = ArcCryptoFrameDeque::with_capacity(0);
         let initial_keys = ArcKeys::new_pending();
 
         let handshake_space = HandshakeSpace::with_capacity(0);
         let handshake_crypto_stream = CryptoStream::new(0, 0);
+        let handshake_crypto_frames_deque = ArcCryptoFrameDeque::with_capacity(0);
         let handshake_keys = ArcKeys::new_pending();
 
         let data_space = DataSpace::with_capacity(0);
         let data_crypto_stream = CryptoStream::new(0, 0);
+        let data_reliable_frames_deque = ArcReliableFrameDeque::with_capacity(0);
         let data_streams =
-            DataStreams::with_role_and_limit(role, 0, 0, ArcReliableFrameDeque::clone(&data_space));
+            DataStreams::with_role_and_limit(role, 0, 0, data_reliable_frames_deque.clone());
         let flow_control = FlowController::with_initial(0, 0);
         let zero_rtt_keys = ArcKeys::new_pending();
         let one_rtt_keys = ArcOneRttKeys::new_pending();
@@ -165,7 +179,7 @@ impl RawConnection {
             let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
             pipe!(rcvd_ack_frames |> on_ack);
             let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
-            pipe!(rcvd_crypto_frames |> crypto_stream, recv_data);
+            pipe!(@error(conn_error) rcvd_crypto_frames |> crypto_stream, recv_data);
 
             async move {
                 let dispatch_frames_of_initial_packet = |frame: Frame, path: &ArcPath| {
@@ -180,7 +194,7 @@ impl RawConnection {
                         ));
                     }
                     match frame {
-                        Frame::Pure(PureFrame::Ack(ack_frame)) => {
+                        Frame::Ack(ack_frame) => {
                             path.on_ack(&ack_frame);
                             _ = ack_frames_entry.unbounded_send(ack_frame);
                             Ok(false)
@@ -250,7 +264,7 @@ impl RawConnection {
             let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
 
             pipe!(rcvd_ack_frames |> on_ack);
-            pipe!(rcvd_crypto_frames |> crypto_stream, recv_data);
+            pipe!(@error(conn_error) rcvd_crypto_frames |> crypto_stream, recv_data);
 
             async move {
                 let dispatch_frames_of_handshake_packet = |frame: Frame, path: &ArcPath| {
@@ -265,7 +279,7 @@ impl RawConnection {
                         ));
                     }
                     match frame {
-                        Frame::Pure(PureFrame::Ack(ack_frame)) => {
+                        Frame::Ack(ack_frame) => {
                             path.on_ack(&ack_frame);
                             _ = ack_frames_entry.unbounded_send(ack_frame);
                             Ok(false)
@@ -320,11 +334,11 @@ impl RawConnection {
             pipe!(rcvd_max_data_frames |> *flow_control.sender(),recv_max_data_frame);
             // let (data_blocked_frames_entry, rcvd_data_blocked_frames) = mpsc::unbounded(); ignore
             let (stream_ctrl_frames_entry, rcvd_stream_ctrl_frames) = mpsc::unbounded();
-            pipe!(rcvd_stream_ctrl_frames |> data_streams,recv_stream_control);
+            pipe!(@error(conn_error)  rcvd_stream_ctrl_frames |> data_streams,recv_stream_control);
             let (stream_frames_entry, rcvd_stream_frames) = mpsc::unbounded();
-            pipe!(rcvd_stream_frames |> data_streams,recv_data);
+            pipe!(@error(conn_error)  rcvd_stream_frames |> data_streams,recv_data);
             let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded();
-            pipe!(rcvd_datagram_frames |> datagram_flow,recv_datagram);
+            pipe!(@error(conn_error)  rcvd_datagram_frames |> datagram_flow,recv_datagram);
 
             async move {
                 let dispatch_frames_of_0rtt_packet = |frame: Frame, _path: &ArcPath| {
@@ -339,11 +353,11 @@ impl RawConnection {
                         ));
                     }
                     match frame {
-                        Frame::Pure(PureFrame::Conn(ConnFrame::MaxData(max_data))) => {
+                        Frame::MaxData(max_data) => {
                             _ = max_data_frames_entry.unbounded_send(max_data);
                             Ok(true)
                         }
-                        Frame::Pure(PureFrame::Stream(stream_ctrl)) => {
+                        Frame::Stream(stream_ctrl) => {
                             _ = stream_ctrl_frames_entry.unbounded_send(stream_ctrl);
                             Ok(true)
                         }
@@ -401,26 +415,24 @@ impl RawConnection {
             let (max_data_frames_entry, rcvd_max_data_frames) = mpsc::unbounded();
             pipe!(rcvd_max_data_frames |> *flow_control.sender(),recv_max_data_frame);
             // let (data_blocked_frames_entry, rcvd_data_blocked_frames) = mpsc::unbounded(); ignore
+
+            // TODO: impl endpoint router
             let (new_cid_frames_entry, rcvd_new_cid_frames) = mpsc::unbounded();
-            pipe!(rcvd_new_cid_frames |> cid_registry.remote,recv_new_cid_frame);
+            pipe!(@error(conn_error)  rcvd_new_cid_frames |> cid_registry.remote,recv_new_cid_frame);
             let (retire_cid_frames_entry, rcvd_retire_cid_frames) = mpsc::unbounded();
-            pipe!(rcvd_retire_cid_frames |> cid_registry.local,recv_retire_cid_frame);
+            pipe!(@error(conn_error)  rcvd_retire_cid_frames |> cid_registry.local,recv_retire_cid_frame);
 
             let (handshake_done_frames_entry, rcvd_handshake_done_frames) = mpsc::unbounded();
             let (new_token_frames_entry, rcvd_new_token_frames) = mpsc::unbounded();
 
             let (data_crypto_frames_entry, rcvd_data_crypto_frames) = mpsc::unbounded();
-            pipe!(rcvd_data_crypto_frames |> crypto_stream, recv_data);
+            pipe!(@error(conn_error) rcvd_data_crypto_frames |> crypto_stream, recv_data);
             let (stream_ctrl_frames_entry, rcvd_stream_ctrl_frames) = mpsc::unbounded();
-            pipe!(rcvd_stream_ctrl_frames |> data_streams, recv_stream_control);
+            pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> data_streams, recv_stream_control);
             let (stream_frames_entry, rcvd_stream_frames) = mpsc::unbounded();
-            pipe!(rcvd_stream_frames |> data_streams, recv_data);
+            pipe!(@error(conn_error) rcvd_stream_frames |> data_streams, recv_data);
             let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded();
-            pipe!(rcvd_datagram_frames |> datagram_flow,recv_datagram);
-            let (ccf_entry, rcvd_ccf) = mpsc::unbounded();
-            pipe!(rcvd_ccf |> conn_error,recv_ccf);
-
-            // ccf_entry, rcvd_ccf = mpsc::unbounded(); directly handled by conn_error
+            pipe!(@error(conn_error) rcvd_datagram_frames |> datagram_flow,recv_datagram);
 
             let on_ack = move |ack_frame: AckFrame| {
                 let record = space.sent_packets();
@@ -449,9 +461,13 @@ impl RawConnection {
                 }
             };
             let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
-            pipe!(rcvd_ack_frames |> on_ack);
 
+            pipe!(rcvd_ack_frames |> on_ack);
+            let (ccf_entry, rcvd_ccf) = mpsc::unbounded();
+
+            pipe!(rcvd_ccf |> conn_error, recv_ccf);
             let space = data_space.clone();
+
             async move {
                 // 除了分发的错误之外，路径帧带来的错误也会在这里被返回（TODO: 路径帧会不会触发错误？）
                 let dispatch_frames_of_1rtt_packet =
@@ -464,42 +480,44 @@ impl RawConnection {
                             ));
                         }
                         match frame {
-                            Frame::Pure(PureFrame::Conn(conn_frame)) => match conn_frame {
-                                ConnFrame::Close(ccf) => {
-                                    _ = ccf_entry.unbounded_send(ccf);
-                                    Ok(true)
-                                }
-                                ConnFrame::NewToken(new_token) => {
-                                    _ = new_token_frames_entry.unbounded_send(new_token);
-                                    Ok(true)
-                                }
-                                ConnFrame::MaxData(max_data) => {
-                                    _ = max_data_frames_entry.unbounded_send(max_data);
-                                    Ok(true)
-                                }
-                                ConnFrame::NewConnectionId(new_cid) => {
-                                    _ = new_cid_frames_entry.unbounded_send(new_cid);
-                                    Ok(true)
-                                }
-                                ConnFrame::RetireConnectionId(retire_cid) => {
-                                    _ = retire_cid_frames_entry.unbounded_send(retire_cid);
-                                    Ok(true)
-                                }
-                                ConnFrame::HandshakeDone(hs_done) => {
-                                    _ = handshake_done_frames_entry.unbounded_send(hs_done);
-                                    Ok(true)
-                                }
-                                ConnFrame::DataBlocked(_) => todo!(),
-                            },
-                            Frame::Pure(PureFrame::Ack(ack_frame)) => {
+                            Frame::Close(ccf) => {
+                                _ = ccf_entry.unbounded_send(ccf);
+                                Ok(true)
+                            }
+                            Frame::NewToken(new_token) => {
+                                _ = new_token_frames_entry.unbounded_send(new_token);
+                                Ok(true)
+                            }
+                            Frame::MaxData(max_data) => {
+                                _ = max_data_frames_entry.unbounded_send(max_data);
+                                Ok(true)
+                            }
+                            Frame::NewConnectionId(new_cid) => {
+                                _ = new_cid_frames_entry.unbounded_send(new_cid);
+                                Ok(true)
+                            }
+                            Frame::RetireConnectionId(retire_cid) => {
+                                _ = retire_cid_frames_entry.unbounded_send(retire_cid);
+                                Ok(true)
+                            }
+                            Frame::HandshakeDone(hs_done) => {
+                                _ = handshake_done_frames_entry.unbounded_send(hs_done);
+                                Ok(true)
+                            }
+                            Frame::DataBlocked(_) => Ok(true),
+                            Frame::Ack(ack_frame) => {
                                 _ = ack_frames_entry.unbounded_send(ack_frame);
                                 Ok(true)
                             }
-                            Frame::Pure(PureFrame::Path(path_frame)) => {
-                                path.recv_path_frame(path_frame)?;
+                            Frame::Challenge(challenge) => {
+                                path.recv_path_challenge_frame(challenge)?;
                                 Ok(true)
                             }
-                            Frame::Pure(PureFrame::Stream(stream_ctrl)) => {
+                            Frame::Response(response) => {
+                                path.recv_path_response_frame(response)?;
+                                Ok(true)
+                            }
+                            Frame::Stream(stream_ctrl) => {
                                 _ = stream_ctrl_frames_entry.unbounded_send(stream_ctrl);
                                 Ok(true)
                             }
@@ -550,20 +568,59 @@ impl RawConnection {
             }
         });
 
+        // tokio::spawn({
+        //     let conn_error = conn_error.clone();
+        //     let data_streams = data_streams.clone();
+        //     let datagram_flow = datagram_flow.clone();
+        //     async move {
+        //         let (error, is_active) = conn_error.did_error_occur().await;
+        //         data_streams.on_conn_error(&error);
+        //         datagram_flow.on_conn_error(&error);
+
+        //         let countdown = tokio::spawn(async {
+        //             tokio::time::sleep(Duration::from_secs(3 /* * PTO */)).await;
+        //             // final cleanup
+        //         });
+
+        //         if is_active {
+        //             let recv_ccf = async {
+        //                 loop {
+        //                     if let (e, false) = conn_error.did_error_occur().await {
+        //                         return e;
+        //                     }
+        //                 }
+        //             };
+
+        //             tokio::select! {
+        //                 _ = countdown => {}
+        //                 _ = recv_ccf => {
+        //                     // enter draining
+        //                 }
+        //             }
+        //             // enter closing
+        //         } else {
+        //             // enter draining
+        //         }
+        //     }
+        // });
+
         Self {
             pathes,
             cid_registry,
             initial_space,
             initial_crypto_stream,
+            initial_crypto_frames_deque,
             initial_packet_queue,
             initial_keys,
             handshake_space,
             handshake_crypto_stream,
+            handshake_crypto_frames_deque,
             handshake_packet_queue,
             handshake_keys,
             data_space,
             data_crypto_stream,
             data_streams,
+            data_reliable_frames_deque,
             flow_control,
             zero_rtt_packet_queue,
             zero_rtt_keys,

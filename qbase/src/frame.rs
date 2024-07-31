@@ -210,34 +210,87 @@ pub enum Frame {
     Datagram(DatagramFrame, Bytes),
 }
 
-/*
 impl BeFrame for Frame {
     fn frame_type(&self) -> FrameType {
         match self {
-            Frame::Pure(frame) => frame.frame_type(),
-            Frame::Data(frame, _) => frame.frame_type(),
-            Frame::Datagram(frame, _) => frame.frame_type(),
+            Frame::Padding(f) => f.frame_type(),
+            Frame::Ping(f) => f.frame_type(),
+            Frame::Ack(f) => f.frame_type(),
+            Frame::Close(f) => f.frame_type(),
+            Frame::NewToken(f) => f.frame_type(),
+            Frame::MaxData(f) => f.frame_type(),
+            Frame::DataBlocked(f) => f.frame_type(),
+            Frame::NewConnectionId(f) => f.frame_type(),
+            Frame::RetireConnectionId(f) => f.frame_type(),
+            Frame::HandshakeDone(f) => f.frame_type(),
+            Frame::Challenge(f) => f.frame_type(),
+            Frame::Response(f) => f.frame_type(),
+            Frame::Stream(f) => f.frame_type(),
+            Frame::Data(f, _) => f.frame_type(),
+            Frame::Datagram(f, _) => f.frame_type(),
         }
     }
 
     fn belongs_to(&self, packet_type: Type) -> bool {
         match self {
-            Frame::Pure(frame) => frame.belongs_to(packet_type),
-            Frame::Data(frame, _) => frame.belongs_to(packet_type),
-            Frame::Datagram(frame, _) => frame.belongs_to(packet_type),
+            Frame::Padding(f) => f.belongs_to(packet_type),
+            Frame::Ping(f) => f.belongs_to(packet_type),
+            Frame::Ack(f) => f.belongs_to(packet_type),
+            Frame::Close(f) => f.belongs_to(packet_type),
+            Frame::NewToken(f) => f.belongs_to(packet_type),
+            Frame::MaxData(f) => f.belongs_to(packet_type),
+            Frame::DataBlocked(f) => f.belongs_to(packet_type),
+            Frame::NewConnectionId(f) => f.belongs_to(packet_type),
+            Frame::RetireConnectionId(f) => f.belongs_to(packet_type),
+            Frame::HandshakeDone(f) => f.belongs_to(packet_type),
+            Frame::Challenge(f) => f.belongs_to(packet_type),
+            Frame::Response(f) => f.belongs_to(packet_type),
+            Frame::Stream(f) => f.belongs_to(packet_type),
+            Frame::Data(f, _) => f.belongs_to(packet_type),
+            Frame::Datagram(f, _) => f.belongs_to(packet_type),
         }
     }
 
     fn encoding_size(&self) -> usize {
-        unreachable!()
+        match self {
+            Frame::Padding(f) => f.encoding_size(),
+            Frame::Ping(f) => f.encoding_size(),
+            Frame::Ack(f) => f.encoding_size(),
+            Frame::Close(f) => f.encoding_size(),
+            Frame::NewToken(f) => f.encoding_size(),
+            Frame::MaxData(f) => f.encoding_size(),
+            Frame::DataBlocked(f) => f.encoding_size(),
+            Frame::NewConnectionId(f) => f.encoding_size(),
+            Frame::RetireConnectionId(f) => f.encoding_size(),
+            Frame::HandshakeDone(f) => f.encoding_size(),
+            Frame::Challenge(f) => f.encoding_size(),
+            Frame::Response(f) => f.encoding_size(),
+            Frame::Stream(f) => f.encoding_size(),
+            Frame::Data(f, d) => f.encoding_size() + d.len(),
+            Frame::Datagram(f, d) => f.encoding_size() + d.len(),
+        }
     }
 
     fn max_encoding_size(&self) -> usize {
-        unreachable!()
+        match self {
+            Frame::Padding(f) => f.max_encoding_size(),
+            Frame::Ping(f) => f.max_encoding_size(),
+            Frame::Ack(f) => f.max_encoding_size(),
+            Frame::Close(f) => f.max_encoding_size(),
+            Frame::NewToken(f) => f.max_encoding_size(),
+            Frame::MaxData(f) => f.max_encoding_size(),
+            Frame::DataBlocked(f) => f.max_encoding_size(),
+            Frame::NewConnectionId(f) => f.max_encoding_size(),
+            Frame::RetireConnectionId(f) => f.max_encoding_size(),
+            Frame::HandshakeDone(f) => f.max_encoding_size(),
+            Frame::Challenge(f) => f.max_encoding_size(),
+            Frame::Response(f) => f.max_encoding_size(),
+            Frame::Stream(f) => f.max_encoding_size(),
+            Frame::Data(f, d) => f.max_encoding_size() + d.len(),
+            Frame::Datagram(f, d) => f.max_encoding_size() + d.len(),
+        }
     }
 }
-    */
-
 pub struct FrameReader {
     raw: Bytes,
 }
