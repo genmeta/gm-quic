@@ -11,10 +11,11 @@ use qbase::{
     cid::Registry,
     error::{Error, ErrorKind},
     flow::FlowController,
-    frame::{AckFrame, BeFrame, ConnFrame, DataFrame, Frame, FrameReader, PureFrame},
+    frame::{AckFrame, BeFrame, ConnFrame, DataFrame, Frame, FrameReader, PathFrame, PureFrame},
     packet::{
         self,
         decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
+        header::GetType,
         keys::{ArcKeys, ArcOneRttKeys},
         HandshakePacket, InitialPacket, OneRttPacket, PacketNumber, SpacePacket, SpinBit,
         ZeroRttPacket,
@@ -23,8 +24,8 @@ use qbase::{
 };
 use qrecovery::{
     crypto::CryptoStream,
-    reliable::ArcReliableFrameDeque,
-    space::{DataSpace, HandshakeSpace, InitialSpace},
+    reliable::{ArcReliableFrameDeque, ReliableFrame},
+    space::{DataSpace, Epoch, HandshakeSpace, InitialSpace},
     streams::DataStreams,
 };
 use qudp::ArcUsc;
@@ -58,6 +59,15 @@ pub struct ArcPath;
 impl ArcPath {
     pub fn on_ack(&self, ack: &AckFrame) {
         _ = ack;
+    }
+
+    pub fn on_recv_pkt(&self, epoch: Epoch, pn: u64) {
+        _ = (epoch, pn);
+    }
+
+    pub fn recv_path_frame(&self, frame: PathFrame) -> Result<(), Error> {
+        _ = frame;
+        Ok(())
     }
 }
 
@@ -96,6 +106,8 @@ pub struct RawConnection {
 
     datagram_flow: DatagramFlow,
 }
+
+type PacketType = packet::r#type::Type;
 
 impl RawConnection {
     pub fn new(role: Role, tls_session: TlsSession) -> Self {
@@ -138,8 +150,8 @@ impl RawConnection {
                 recv_guard.update_largest(ack_frame.largest.into_inner());
 
                 for pn in ack_frame.iter().flat_map(|r| r.rev()) {
-                    for record in recv_guard.on_pkt_acked(pn) {
-                        crypto_stream.on_data_acked(record);
+                    for frame in recv_guard.on_pkt_acked(pn) {
+                        crypto_stream.on_data_acked(frame);
                     }
                 }
             };
@@ -151,9 +163,8 @@ impl RawConnection {
             let conn_error = conn_error.clone();
 
             let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
-            let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
-
             pipe!(rcvd_ack_frames |> on_ack);
+            let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
             pipe!(rcvd_crypto_frames |> crypto_stream, recv_data);
 
             async move {
@@ -185,8 +196,7 @@ impl RawConnection {
                 let rcvd_packets = space.rcvd_packets();
                 while let Some((packet, path)) = packets.next().await {
                     let decode_pn = |pn| rcvd_packets.decode_pn(pn).ok();
-                    let payload_opt =
-                        decode_long_header_packet(packet, keys.clone(), decode_pn).await;
+                    let payload_opt = decode_long_header_packet(packet, &keys, decode_pn).await;
 
                     let Some(payload) = payload_opt else {
                         return;
@@ -203,7 +213,10 @@ impl RawConnection {
 
                     match dispath_result {
                         // TODO：到底有什么用？
-                        Ok(_) => {}
+                        Ok(_is_ack_packet) => {
+                            space.rcvd_packets().register_pn(payload.pn);
+                            path.on_recv_pkt(Epoch::Initial, payload.pn);
+                        }
                         Err(e) => conn_error.on_error(e),
                     }
                 }
@@ -221,8 +234,8 @@ impl RawConnection {
                 recv_guard.update_largest(ack_frame.largest.into_inner());
 
                 for pn in ack_frame.iter().flat_map(|r| r.rev()) {
-                    for record in recv_guard.on_pkt_acked(pn) {
-                        crypto_stream.on_data_acked(record);
+                    for frame in recv_guard.on_pkt_acked(pn) {
+                        crypto_stream.on_data_acked(frame);
                     }
                 }
             };
@@ -268,8 +281,7 @@ impl RawConnection {
                 let rcvd_packets = space.rcvd_packets();
                 while let Some((packet, path)) = packets.next().await {
                     let decode_pn = |pn| rcvd_packets.decode_pn(pn).ok();
-                    let payload_opt =
-                        decode_long_header_packet(packet, keys.clone(), decode_pn).await;
+                    let payload_opt = decode_long_header_packet(packet, &keys, decode_pn).await;
 
                     let Some(payload) = payload_opt else {
                         return;
@@ -286,7 +298,10 @@ impl RawConnection {
 
                     match dispath_result {
                         // TODO：到底有什么用？
-                        Ok(_) => {}
+                        Ok(_is_ack_packet) => {
+                            space.rcvd_packets().register_pn(payload.pn);
+                            path.on_recv_pkt(Epoch::Handshake, payload.pn);
+                        }
                         Err(e) => conn_error.on_error(e),
                     }
                 }
@@ -302,17 +317,15 @@ impl RawConnection {
             let conn_error = conn_error.clone();
 
             let (max_data_frames_entry, rcvd_max_data_frames) = mpsc::unbounded();
+            pipe!(rcvd_max_data_frames |> *flow_control.sender(),recv_max_data_frame);
             // let (data_blocked_frames_entry, rcvd_data_blocked_frames) = mpsc::unbounded(); ignore
             let (stream_ctrl_frames_entry, rcvd_stream_ctrl_frames) = mpsc::unbounded();
-            let (stream_frames_entry, rcvd_stream_frames) = mpsc::unbounded();
-            let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded();
-
-            pipe!(rcvd_max_data_frames |> *flow_control.sender(),recv_max_data_frame);
             pipe!(rcvd_stream_ctrl_frames |> data_streams,recv_stream_control);
+            let (stream_frames_entry, rcvd_stream_frames) = mpsc::unbounded();
             pipe!(rcvd_stream_frames |> data_streams,recv_data);
+            let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded();
             pipe!(rcvd_datagram_frames |> datagram_flow,recv_datagram);
 
-            // data_streams.recv_stream_control()
             async move {
                 let dispatch_frames_of_0rtt_packet = |frame: Frame, _path: &ArcPath| {
                     let handshake_packet_type = packet::r#type::Type::Long(
@@ -349,8 +362,7 @@ impl RawConnection {
                 let rcvd_packets = space.rcvd_packets();
                 while let Some((packet, path)) = packets.next().await {
                     let decode_pn = |pn| rcvd_packets.decode_pn(pn).ok();
-                    let payload_opt =
-                        decode_long_header_packet(packet, keys.clone(), decode_pn).await;
+                    let payload_opt = decode_long_header_packet(packet, &keys, decode_pn).await;
 
                     let Some(payload) = payload_opt else {
                         return;
@@ -367,7 +379,171 @@ impl RawConnection {
 
                     match dispath_result {
                         // TODO：到底有什么用？
-                        Ok(_) => {}
+                        Ok(_is_ack_packet) => {
+                            space.rcvd_packets().register_pn(payload.pn);
+                            path.on_recv_pkt(Epoch::Data, payload.pn);
+                        }
+                        Err(e) => conn_error.on_error(e),
+                    }
+                }
+            }
+        });
+
+        tokio::spawn({
+            let mut packets: mpsc::UnboundedReceiver<(OneRttPacket, ArcPath)> = one_rtt_packets;
+
+            let keys = one_rtt_keys.clone();
+            let space = data_space.clone();
+            let data_streams = data_streams.clone();
+            let crypto_stream = data_crypto_stream.clone();
+            let conn_error = conn_error.clone();
+
+            let (max_data_frames_entry, rcvd_max_data_frames) = mpsc::unbounded();
+            pipe!(rcvd_max_data_frames |> *flow_control.sender(),recv_max_data_frame);
+            // let (data_blocked_frames_entry, rcvd_data_blocked_frames) = mpsc::unbounded(); ignore
+            let (new_cid_frames_entry, rcvd_new_cid_frames) = mpsc::unbounded();
+            pipe!(rcvd_new_cid_frames |> cid_registry.remote,recv_new_cid_frame);
+            let (retire_cid_frames_entry, rcvd_retire_cid_frames) = mpsc::unbounded();
+            pipe!(rcvd_retire_cid_frames |> cid_registry.local,recv_retire_cid_frame);
+
+            let (handshake_done_frames_entry, rcvd_handshake_done_frames) = mpsc::unbounded();
+            let (new_token_frames_entry, rcvd_new_token_frames) = mpsc::unbounded();
+
+            let (data_crypto_frames_entry, rcvd_data_crypto_frames) = mpsc::unbounded();
+            pipe!(rcvd_data_crypto_frames |> crypto_stream, recv_data);
+            let (stream_ctrl_frames_entry, rcvd_stream_ctrl_frames) = mpsc::unbounded();
+            pipe!(rcvd_stream_ctrl_frames |> data_streams, recv_stream_control);
+            let (stream_frames_entry, rcvd_stream_frames) = mpsc::unbounded();
+            pipe!(rcvd_stream_frames |> data_streams, recv_data);
+            let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded();
+            pipe!(rcvd_datagram_frames |> datagram_flow,recv_datagram);
+            let (ccf_entry, rcvd_ccf) = mpsc::unbounded();
+            pipe!(rcvd_ccf |> conn_error,recv_ccf);
+
+            // ccf_entry, rcvd_ccf = mpsc::unbounded(); directly handled by conn_error
+
+            let on_ack = move |ack_frame: AckFrame| {
+                let record = space.sent_packets();
+                let mut recv_guard = record.receive();
+                recv_guard.update_largest(ack_frame.largest.into_inner());
+
+                for pn in ack_frame.iter().flat_map(|r| r.rev()) {
+                    for frame in recv_guard.on_pkt_acked(pn) {
+                        match frame {
+                            ReliableFrame::Data(DataFrame::Stream(stream_frame)) => {
+                                data_streams.on_data_acked(stream_frame)
+                            }
+                            ReliableFrame::Data(DataFrame::Crypto(crypto)) => {
+                                crypto_stream.on_data_acked(crypto)
+                            }
+                            // qrecovery::reliable::ReliableFrame::NewToken(_) => todo!(),
+                            // qrecovery::reliable::ReliableFrame::MaxData(_) => todo!(),
+                            // qrecovery::reliable::ReliableFrame::DataBlocked(_) => todo!(),
+                            // qrecovery::reliable::ReliableFrame::NewConnectionId(_) => todo!(),
+                            // qrecovery::reliable::ReliableFrame::RetireConnectionId(_) => todo!(),
+                            // qrecovery::reliable::ReliableFrame::HandshakeDone(_) => todo!(),
+                            // qrecovery::reliable::ReliableFrame::Stream(_) => todo!(),
+                            _ => {}
+                        }
+                    }
+                }
+            };
+            let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
+            pipe!(rcvd_ack_frames |> on_ack);
+
+            let space = data_space.clone();
+            async move {
+                // 除了分发的错误之外，路径帧带来的错误也会在这里被返回（TODO: 路径帧会不会触发错误？）
+                let dispatch_frames_of_1rtt_packet =
+                    |frame: Frame, pty: PacketType, path: &ArcPath| {
+                        if !frame.belongs_to(pty) {
+                            return Err(Error::new(
+                                ErrorKind::ProtocolViolation,
+                                frame.frame_type(),
+                                format!("cann't exist in {:?}", pty),
+                            ));
+                        }
+                        match frame {
+                            Frame::Pure(PureFrame::Conn(conn_frame)) => match conn_frame {
+                                ConnFrame::Close(ccf) => {
+                                    _ = ccf_entry.unbounded_send(ccf);
+                                    Ok(true)
+                                }
+                                ConnFrame::NewToken(new_token) => {
+                                    _ = new_token_frames_entry.unbounded_send(new_token);
+                                    Ok(true)
+                                }
+                                ConnFrame::MaxData(max_data) => {
+                                    _ = max_data_frames_entry.unbounded_send(max_data);
+                                    Ok(true)
+                                }
+                                ConnFrame::NewConnectionId(new_cid) => {
+                                    _ = new_cid_frames_entry.unbounded_send(new_cid);
+                                    Ok(true)
+                                }
+                                ConnFrame::RetireConnectionId(retire_cid) => {
+                                    _ = retire_cid_frames_entry.unbounded_send(retire_cid);
+                                    Ok(true)
+                                }
+                                ConnFrame::HandshakeDone(hs_done) => {
+                                    _ = handshake_done_frames_entry.unbounded_send(hs_done);
+                                    Ok(true)
+                                }
+                                ConnFrame::DataBlocked(_) => todo!(),
+                            },
+                            Frame::Pure(PureFrame::Ack(ack_frame)) => {
+                                _ = ack_frames_entry.unbounded_send(ack_frame);
+                                Ok(true)
+                            }
+                            Frame::Pure(PureFrame::Path(path_frame)) => {
+                                path.recv_path_frame(path_frame)?;
+                                Ok(true)
+                            }
+                            Frame::Pure(PureFrame::Stream(stream_ctrl)) => {
+                                _ = stream_ctrl_frames_entry.unbounded_send(stream_ctrl);
+                                Ok(true)
+                            }
+                            Frame::Data(DataFrame::Stream(stream), data) => {
+                                _ = stream_frames_entry.unbounded_send((stream, data));
+                                Ok(true)
+                            }
+                            Frame::Data(DataFrame::Crypto(crypto), data) => {
+                                _ = data_crypto_frames_entry.unbounded_send((crypto, data));
+                                Ok(true)
+                            }
+                            Frame::Datagram(datagram, data) => {
+                                _ = datagram_frames_entry.unbounded_send((datagram, data));
+                                Ok(false)
+                            }
+                            _ => Ok(false),
+                        }
+                    };
+
+                let rcvd_packets = space.rcvd_packets();
+                while let Some((packet, path)) = packets.next().await {
+                    let pty = packet.header.get_type();
+                    let decode_pn = |pn| rcvd_packets.decode_pn(pn).ok();
+                    let payload_opt = decode_short_header_packet(packet, &keys, decode_pn).await;
+
+                    let Some(payload) = payload_opt else {
+                        return;
+                    };
+
+                    let dispath_result = FrameReader::new(payload.payload).try_fold(
+                        false,
+                        |is_ack_packet, frame| {
+                            let frame = frame.map_err(Error::from)?;
+                            dispatch_frames_of_1rtt_packet(frame, pty, &path)
+                                .map(|is_ack_frmae| is_ack_packet | is_ack_frmae)
+                        },
+                    );
+
+                    match dispath_result {
+                        // TODO：到底有什么用？
+                        Ok(_is_ack_packet) => {
+                            space.rcvd_packets().register_pn(payload.pn);
+                            path.on_recv_pkt(Epoch::Data, payload.pn);
+                        }
                         Err(e) => conn_error.on_error(e),
                     }
                 }
@@ -435,7 +611,7 @@ pub(crate) struct PacketPayload {
 
 async fn decode_long_header_packet<P>(
     mut packet: P,
-    keys: ArcKeys,
+    keys: &ArcKeys,
     decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
 ) -> Option<PacketPayload>
 where
@@ -458,7 +634,7 @@ where
 
 async fn decode_short_header_packet(
     mut packet: OneRttPacket,
-    keys: ArcOneRttKeys,
+    keys: &ArcOneRttKeys,
     decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
 ) -> Option<PacketPayload> {
     let (hk, pk) = keys.get_remote_keys().await?;

@@ -177,14 +177,14 @@ impl RawDataStreams {
         Some((frame, written))
     }
 
-    pub fn on_data_acked(&self, stream_frame: StreamFrame) {
+    pub fn on_data_acked(&self, frame: StreamFrame) {
         if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
             if set
-                .get(&stream_frame.id)
-                .map(|o| o.on_data_acked(&stream_frame.range()))
+                .get(&frame.id)
+                .map(|o| o.on_data_acked(&frame.range()))
                 .is_some_and(|all_data_rcvd| all_data_rcvd)
             {
-                set.remove(&stream_frame.id);
+                set.remove(&frame.id);
             }
         }
     }

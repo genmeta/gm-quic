@@ -48,7 +48,7 @@ impl RawRemoteCids {
 
     pub fn recv_new_cid_frame(
         &mut self,
-        frame: &NewConnectionIdFrame,
+        frame: NewConnectionIdFrame,
     ) -> Result<Option<ResetToken>, Error> {
         let seq = frame.sequence.into_inner();
         let retire_prior_to = frame.retire_prior_to.into_inner();
@@ -220,7 +220,7 @@ impl ArcRemoteCids {
 
     pub fn recv_new_cid_frame(
         &self,
-        frame: &NewConnectionIdFrame,
+        frame: NewConnectionIdFrame,
     ) -> Result<Option<ResetToken>, Error> {
         self.0.lock().unwrap().recv_new_cid_frame(frame)
     }
@@ -372,7 +372,7 @@ mod tests {
             id: cid,
             reset_token: ResetToken::random_gen(),
         };
-        assert!(remote_cids.recv_new_cid_frame(&frame).is_ok());
+        assert!(remote_cids.recv_new_cid_frame(frame).is_ok());
         assert_eq!(remote_cids.cid_deque.len(), 1);
 
         assert_eq!(cid_apply.get_cid().poll_unpin(&mut cx), Poll::Ready(cid));
@@ -400,7 +400,7 @@ mod tests {
                 id: cid,
                 reset_token: ResetToken::random_gen(),
             };
-            _ = guard.recv_new_cid_frame(&frame);
+            _ = guard.recv_new_cid_frame(frame);
         }
 
         let cid_apply1 = guard.apply_cid();
@@ -473,7 +473,7 @@ mod tests {
                 id: cid,
                 reset_token: ResetToken::random_gen(),
             };
-            _ = guard.recv_new_cid_frame(&frame);
+            _ = guard.recv_new_cid_frame(frame);
         }
 
         guard.retire_prior_to(4);
