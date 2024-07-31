@@ -1,8 +1,3 @@
-use std::future::Future;
-
-/// Crypto data stream
-use qbase::{error::Error, frame::CryptoFrame, util::TransportLimit};
-
 mod send {
     use std::{
         io,
@@ -233,7 +228,6 @@ mod recv {
 
 pub use recv::CryptoStreamReader;
 pub use send::CryptoStreamWriter;
-use tokio::{io::AsyncWriteExt, task::JoinHandle};
 
 /// Crypto data stream
 #[derive(Debug, Clone)]
@@ -264,54 +258,6 @@ impl CryptoStream {
 
     pub fn incoming(&self) -> recv::CryptoStreamIncoming {
         recv::CryptoStreamIncoming(self.recver.clone())
-    }
-}
-
-impl CryptoStream {
-    /// Continuously fetch data from the data source `f` until no more data is available,
-    /// then write all this data into the CryptoStream.
-    /// For a Quic connection client, handshake data, including Quic connection parameters,
-    /// must be written first before the process can start.
-    /// For the server, after receiving a connection request, server parameters, certificates,
-    /// and other information must be written before continuing.
-    pub fn write_with<F>(&self, mut f: F) -> JoinHandle<()>
-    where
-        F: FnMut(&mut Vec<u8>) + Send + 'static,
-    {
-        let mut writer = self.writer();
-        tokio::spawn(async move {
-            let mut buf = Vec::with_capacity(1200);
-            loop {
-                buf.truncate(0);
-                f(&mut buf);
-                if buf.is_empty() {
-                    break;
-                }
-
-                writer.write_all(&buf).await.unwrap();
-            }
-        })
-    }
-
-    /// The application layer handles the Crypto stream, following the common process of reading data from
-    /// the Crypto stream, processing it, and then writing it back to the Crypto stream.
-    /// The calling method is similar to the way an HTTP service is handled, i.e., passing in a handler
-    /// function, which takes the reader and writer of the Crypto stream as parameters.
-    /// The function then performs read and write operations with these parameters, executing the relevant
-    /// processing logic.
-    /// Given that AsyncFn is not yet mature, the following format is used.
-    pub fn handle<P, F>(&self, process: P) -> JoinHandle<()>
-    where
-        F: Future<Output = ()> + Send + 'static,
-        P: FnOnce(CryptoStreamReader, CryptoStreamWriter) -> F + Send + 'static,
-    {
-        tokio::spawn({
-            let reader = self.reader();
-            let writer = self.writer();
-            async move {
-                process(reader, writer).await;
-            }
-        })
     }
 }
 
