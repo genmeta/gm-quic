@@ -51,6 +51,8 @@ impl ArcConnection {
     /// The app then releases a reference count of the connection, allowing the connection to enter
     /// a self-destruct process.
     pub fn close(&self, _error: Error) {
+        // TODO: 状态切换 RawConnection -> ClosingConnection
+        // TODO: 监听 ClosingConnection.error.did_error_occur().await , 返回 (_, false) 则进入 Draining
         todo!("enter closing state from raw state");
     }
 

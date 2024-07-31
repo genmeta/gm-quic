@@ -652,7 +652,7 @@ where
     Some(PacketPayload { pn, payload })
 }
 
-async fn decode_short_header_packet(
+pub(crate) async fn decode_short_header_packet(
     mut packet: OneRttPacket,
     keys: &ArcOneRttKeys,
     decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
