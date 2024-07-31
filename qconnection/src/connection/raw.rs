@@ -11,9 +11,7 @@ use qbase::{
     cid::Registry,
     error::{Error, ErrorKind},
     flow::FlowController,
-    frame::{
-        AckFrame, BeFrame, DataFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
-    },
+    frame::{AckFrame, BeFrame, DataFrame, Frame, FrameReader},
     packet::{
         self,
         decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
@@ -35,7 +33,7 @@ use qrecovery::{
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 
-use crate::{crypto::TlsSession, error::ConnError, pipe};
+use crate::{crypto::TlsSession, error::ConnError, path::ArcPath, pipe};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct RelayAddr {
@@ -54,30 +52,6 @@ pub enum Pathway {
         local: RelayAddr,
         remote: RelayAddr,
     },
-}
-
-/// unimplemented
-#[derive(Clone)]
-pub struct ArcPath;
-
-impl ArcPath {
-    pub fn on_ack(&self, ack: &AckFrame) {
-        _ = ack;
-    }
-
-    pub fn on_recv_pkt(&self, epoch: Epoch, pn: u64) {
-        _ = (epoch, pn);
-    }
-
-    pub fn recv_path_challenge_frame(&self, frame: PathChallengeFrame) -> Result<(), Error> {
-        _ = frame;
-        Ok(())
-    }
-
-    pub fn recv_path_response_frame(&self, frame: PathResponseFrame) -> Result<(), Error> {
-        _ = frame;
-        Ok(())
-    }
 }
 
 type PacketQueue<P> = mpsc::UnboundedSender<(P, ArcPath)>;
@@ -155,6 +129,10 @@ impl RawConnection {
         let (one_rtt_packet_queue, one_rtt_packets) = mpsc::unbounded();
 
         tokio::spawn({
+            const EPOCH: Epoch = Epoch::Initial;
+            const PACKET_TYPE: packet::r#type::Type = packet::r#type::Type::Long(
+                packet::r#type::long::Type::V1(packet::r#type::long::Version::INITIAL),
+            );
             let mut packets = initial_packets;
 
             let space = initial_space.clone();
@@ -185,20 +163,17 @@ impl RawConnection {
 
             async move {
                 let dispatch_frames_of_initial_packet = |frame: Frame, path: &ArcPath| {
-                    let initial_packet_type = packet::r#type::Type::Long(
-                        packet::r#type::long::Type::V1(packet::r#type::long::Version::INITIAL),
-                    );
-                    if !frame.belongs_to(initial_packet_type) {
+                    if !frame.belongs_to(PACKET_TYPE) {
                         return Err(Error::new(
                             ErrorKind::ProtocolViolation,
                             frame.frame_type(),
-                            format!("cann't exist in {:?}", initial_packet_type),
+                            format!("cann't exist in {:?}", PACKET_TYPE),
                         ));
                     }
                     let is_ack_eliciting = frame.is_ack_eliciting();
                     match frame {
                         Frame::Ack(ack_frame) => {
-                            path.on_ack(&ack_frame);
+                            path.on_ack(EPOCH, &ack_frame);
                             _ = ack_frames_entry.unbounded_send(ack_frame);
                         }
                         Frame::Data(DataFrame::Crypto(crypto), bytes) => {
@@ -228,10 +203,9 @@ impl RawConnection {
                     );
 
                     match dispath_result {
-                        // TODO：到底有什么用？
-                        Ok(_is_ack_packet) => {
+                        Ok(is_ack_packet) => {
                             space.rcvd_packets().register_pn(payload.pn);
-                            path.on_recv_pkt(Epoch::Initial, payload.pn);
+                            path.on_recv_pkt(EPOCH, payload.pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
@@ -240,6 +214,10 @@ impl RawConnection {
         });
 
         tokio::spawn({
+            const EPOCH: Epoch = Epoch::Initial;
+            const PACKET_TYPE: packet::r#type::Type = packet::r#type::Type::Long(
+                packet::r#type::long::Type::V1(packet::r#type::long::Version::HANDSHAKE),
+            );
             let mut packets = handshake_packets;
 
             let space = handshake_space.clone();
@@ -270,20 +248,17 @@ impl RawConnection {
 
             async move {
                 let dispatch_frames_of_handshake_packet = |frame: Frame, path: &ArcPath| {
-                    let handshake_packet_type = packet::r#type::Type::Long(
-                        packet::r#type::long::Type::V1(packet::r#type::long::Version::HANDSHAKE),
-                    );
-                    if !frame.belongs_to(handshake_packet_type) {
+                    if !frame.belongs_to(PACKET_TYPE) {
                         return Err(Error::new(
                             ErrorKind::ProtocolViolation,
                             frame.frame_type(),
-                            format!("cann't exist in {:?}", handshake_packet_type),
+                            format!("cann't exist in {:?}", PACKET_TYPE),
                         ));
                     }
                     let is_ack_eliciting = frame.is_ack_eliciting();
                     match frame {
                         Frame::Ack(ack_frame) => {
-                            path.on_ack(&ack_frame);
+                            path.on_ack(EPOCH, &ack_frame);
                             _ = ack_frames_entry.unbounded_send(ack_frame);
                         }
                         Frame::Data(DataFrame::Crypto(crypto), bytes) => {
@@ -313,10 +288,9 @@ impl RawConnection {
                     );
 
                     match dispath_result {
-                        // TODO：到底有什么用？
-                        Ok(_is_ack_packet) => {
+                        Ok(is_ack_packet) => {
                             space.rcvd_packets().register_pn(payload.pn);
-                            path.on_recv_pkt(Epoch::Handshake, payload.pn);
+                            path.on_recv_pkt(Epoch::Handshake, payload.pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
@@ -325,6 +299,10 @@ impl RawConnection {
         });
 
         tokio::spawn({
+            const EPOCH: Epoch = Epoch::Data;
+            const PACKET_TYPE: packet::r#type::Type = packet::r#type::Type::Long(
+                packet::r#type::long::Type::V1(packet::r#type::long::Version::ZERO_RTT),
+            );
             let mut packets = zero_rtt_packets;
 
             let space = data_space.clone();
@@ -344,14 +322,11 @@ impl RawConnection {
 
             async move {
                 let dispatch_frames_of_0rtt_packet = |frame: Frame, _path: &ArcPath| {
-                    let handshake_packet_type = packet::r#type::Type::Long(
-                        packet::r#type::long::Type::V1(packet::r#type::long::Version::HANDSHAKE),
-                    );
-                    if !frame.belongs_to(handshake_packet_type) {
+                    if !frame.belongs_to(PACKET_TYPE) {
                         return Err(Error::new(
                             ErrorKind::ProtocolViolation,
                             frame.frame_type(),
-                            format!("cann't exist in {:?}", handshake_packet_type),
+                            format!("cann't exist in {:?}", PACKET_TYPE),
                         ));
                     }
                     let is_ack_eliciting = frame.is_ack_eliciting();
@@ -392,10 +367,9 @@ impl RawConnection {
                     );
 
                     match dispath_result {
-                        // TODO：到底有什么用？
-                        Ok(_is_ack_packet) => {
+                        Ok(is_ack_packet) => {
                             space.rcvd_packets().register_pn(payload.pn);
-                            path.on_recv_pkt(Epoch::Data, payload.pn);
+                            path.on_recv_pkt(EPOCH, payload.pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
@@ -404,6 +378,8 @@ impl RawConnection {
         });
 
         tokio::spawn({
+            const EPOCH: Epoch = Epoch::Data;
+
             let mut packets: mpsc::UnboundedReceiver<(OneRttPacket, ArcPath)> = one_rtt_packets;
 
             let keys = one_rtt_keys.clone();
@@ -469,7 +445,6 @@ impl RawConnection {
             let space = data_space.clone();
 
             async move {
-                // 除了分发的错误之外，路径帧带来的错误也会在这里被返回（TODO: 路径帧会不会触发错误？）
                 let dispatch_frames_of_1rtt_packet =
                     |frame: Frame, pty: PacketType, path: &ArcPath| {
                         if !frame.belongs_to(pty) {
@@ -504,10 +479,10 @@ impl RawConnection {
                                 _ = ack_frames_entry.unbounded_send(ack_frame);
                             }
                             Frame::Challenge(challenge) => {
-                                path.recv_path_challenge_frame(challenge)?;
+                                path.recv_challenge(challenge);
                             }
                             Frame::Response(response) => {
-                                path.recv_path_response_frame(response)?;
+                                path.recv_response(response);
                             }
                             Frame::Stream(stream_ctrl) => {
                                 _ = stream_ctrl_frames_entry.unbounded_send(stream_ctrl);
@@ -548,9 +523,9 @@ impl RawConnection {
 
                     match dispath_result {
                         // TODO：到底有什么用？
-                        Ok(_is_ack_packet) => {
+                        Ok(is_ack_packet) => {
                             space.rcvd_packets().register_pn(payload.pn);
-                            path.on_recv_pkt(Epoch::Data, payload.pn);
+                            path.on_recv_pkt(EPOCH, payload.pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
