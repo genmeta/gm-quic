@@ -1,6 +1,7 @@
 use std::{
     future::{poll_fn, Future},
     io::{IoSlice, IoSliceMut},
+    mem,
     ops::Index,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -36,7 +37,7 @@ use super::{
 
 // TODO: form connection
 #[derive(Clone)]
-pub(super) struct AllSpaces([Option<Space>; 3]);
+pub struct AllSpaces([Option<Space>; 3]);
 impl Index<Epoch> for AllSpaces {
     type Output = Option<Space>;
 
@@ -46,7 +47,7 @@ impl Index<Epoch> for AllSpaces {
 }
 
 #[derive(Clone)]
-pub(super) struct AllKeys {
+pub struct AllKeys {
     init_keys: ArcKeys,
     handshaking_keys: ArcKeys,
     zero_rtt_keys: ArcKeys,
@@ -60,10 +61,12 @@ pub(super) struct RawPath {
     cc: ArcCC,
     spaces: AllSpaces,
     keys: AllKeys,
-    anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
+    //  抗放大攻击控制器, 服务端地址验证之前有效
+    anti_amplifier: Option<ArcAntiAmplifier<ANTI_FACTOR>>,
     flow_controller: FlowController,
     dcid: ArcCidCell,
-    scid: ConnectionId,
+    // 长包头使用的原始 SCID，不会被淘汰
+    origin_cid: ConnectionId,
     token: Vec<u8>,
     spin: SpinBit,
     challenge_buffer: Arc<Mutex<Option<PathChallengeFrame>>>,
@@ -87,7 +90,7 @@ impl RawPath {
         spin: SpinBit,
     ) -> Self {
         let cc = ArcCC::new(CongestionAlgorithm::Bbr, Duration::from_micros(100));
-        let anti_amplifier = ArcAntiAmplifier::<3>::default();
+        let anti_amplifier = Some(ArcAntiAmplifier::<ANTI_FACTOR>::default());
 
         let mut path = Self {
             usc,
@@ -97,9 +100,8 @@ impl RawPath {
             keys,
             pathway,
             flow_controller,
-
             dcid,
-            scid,
+            origin_cid: scid,
             token,
             spin,
             challenge_buffer: Arc::new(Mutex::new(None)),
@@ -130,26 +132,26 @@ impl RawPath {
 
         // 路径验证任务
         let verify_handle = tokio::spawn({
-            let path = path.clone();
+            let mut path = path.clone();
 
             async move {
                 let challenge = PathChallengeFrame::random();
-                path.challenge_buffer.lock().unwrap().replace(challenge);
 
                 for _ in 0..3 {
+                    // Write to the buffer, and the sending task actually sends it
+                    // Reliability is not maintained through reliable transmission, but a stop-and-wait protocol
+                    path.challenge_buffer.lock().unwrap().replace(challenge);
                     let pto = path.cc.get_pto_time(Epoch::Data);
                     let listener = path.response_listner.clone();
+
                     match tokio::time::timeout(pto, listener).await {
-                        Ok(resp) => {
-                            if resp == (&challenge).into() {
-                                // 路径验证成功, 解除抗放大攻击
-                                // anti_amplifier.on_path_verified();
-                                break;
-                            }
+                        Ok(Some(resp)) if resp == (&challenge).into() => {
+                            path.anti_amplifier.take();
                         }
-                        Err(_) => {
-                            // TODO: enter dying
-                        }
+                        // listner inactive, stop the task
+                        Ok(None) => break,
+                        // timout or reponse don't match, try again
+                        _ => continue,
                     }
                 }
             }
@@ -195,7 +197,7 @@ impl RawPath {
             spaces: self.spaces.clone(),
             keys: self.keys.clone(),
             dcid: self.dcid.clone(),
-            scid: self.scid,
+            scid: self.origin_cid,
             rest_token: self.token.clone(),
             spin: self.spin,
             challenge_buffer: self.challenge_buffer.clone(),
@@ -261,6 +263,8 @@ impl Drop for RawPath {
         if let Some(h) = self.handle.cc_handle.lock().unwrap().take() {
             h.abort();
         }
+        let mut guard = self.response_listner.0.lock().unwrap();
+        let _ = mem::replace(&mut *guard, ResponseListener::Inactive);
     }
 }
 
@@ -270,7 +274,7 @@ struct ArcPacketReader<'a>(Arc<Mutex<PacketReader<'a>>>);
 struct PacketReader<'a> {
     io_slices: Vec<IoSliceMut<'a>>,
     cc: ArcCC,
-    anti_amplifier: ArcAntiAmplifier<3>,
+    anti_amplifier: Option<ArcAntiAmplifier<3>>,
     flow_controler: FlowController,
     spaces: AllSpaces,
     dcid: ArcCidCell,
@@ -349,7 +353,7 @@ pub(super) enum ResponseListener {
 struct ArcResponseListener(Arc<Mutex<ResponseListener>>);
 
 impl Future for ArcResponseListener {
-    type Output = PathResponseFrame;
+    type Output = Option<PathResponseFrame>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut listner = self.0.lock().unwrap();
@@ -359,8 +363,8 @@ impl Future for ArcResponseListener {
                 Poll::Pending
             }
             ResponseListener::Pending(_) => Poll::Pending,
-            ResponseListener::Response(resp) => Poll::Ready(resp),
-            ResponseListener::Inactive => unreachable!("inactive response listener"),
+            ResponseListener::Response(resp) => Poll::Ready(Some(resp)),
+            ResponseListener::Inactive => Poll::Ready(None),
         }
     }
 }

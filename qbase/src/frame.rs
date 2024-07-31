@@ -75,6 +75,18 @@ pub use streams_blocked::StreamsBlockedFrame;
 
 use super::varint::VarInt;
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[enum_dispatch(BeFrame)]
+pub enum ReliableFrame {
+    NewToken(NewTokenFrame),
+    MaxData(MaxDataFrame),
+    DataBlocked(DataBlockedFrame),
+    NewConnectionId(NewConnectionIdFrame),
+    RetireConnectionId(RetireConnectionIdFrame),
+    HandshakeDone(HandshakeDoneFrame),
+    Stream(StreamCtlFrame),
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum FrameType {
     Padding,

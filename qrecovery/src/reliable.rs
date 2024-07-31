@@ -3,30 +3,10 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use enum_dispatch::enum_dispatch;
 use qbase::frame::*;
 
 pub mod rcvdpkt;
 pub mod sentpkt;
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame)]
-pub enum ReliableFrame {
-    NewToken(NewTokenFrame),
-    MaxData(MaxDataFrame),
-    DataBlocked(DataBlockedFrame),
-    NewConnectionId(NewConnectionIdFrame),
-    RetireConnectionId(RetireConnectionIdFrame),
-    HandshakeDone(HandshakeDoneFrame),
-    Stream(StreamCtlFrame),
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame)]
-pub enum GuaranteedFrame {
-    Data(DataFrame),
-    Reliable(ReliableFrame),
-}
 
 /// 对于Initial和Handshake空间，仅需负责CryptoFrame的可靠传输
 /// 对与Data空间，则需负责上述ReliableFrame的可靠传输
