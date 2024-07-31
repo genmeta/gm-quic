@@ -61,7 +61,7 @@ impl ClosingConnection {
                             });
 
                         if let Some(ccf) = ccf {
-                            conn_error.recv_ccf(&ccf);
+                            conn_error.on_ccf_rcvd(&ccf);
                             return;
                         }
                     };
