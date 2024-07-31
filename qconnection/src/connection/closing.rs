@@ -1,24 +1,28 @@
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use futures::{channel::mpsc, StreamExt};
 use qbase::{
     cid::Registry,
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
-    packet::{keys::ArcOneRttKeys, SpacePacket},
+    packet::{header::GetType, keys::ArcOneRttKeys, SpacePacket},
 };
-use qrecovery::space::{DataSpace, Epoch};
+use qrecovery::{
+    reliable::rcvdpkt::ArcRcvdPktRecords,
+    space::{DataSpace, Epoch},
+};
 use qudp::ArcUsc;
 
-use super::raw::{OneRttPacketQueue, Pathway};
-use crate::{connection::raw::decode_short_header_packet, error::ConnError, path::ArcPath};
+use super::raw::{PacketPayload, Pathway};
+use crate::{error::ConnError, path::ArcPath};
 
 pub struct ClosingConnection {
     pathes: DashMap<Pathway, ArcPath>,
     cid_registry: Registry,
-    one_rtt_packet_queue: OneRttPacketQueue,
-    recv_record: Vec<Instant>,
+    rcvd_pkt_records: ArcRcvdPktRecords,
+    one_rtt_keys: ArcOneRttKeys,
+    rcvd_packets: usize,
+    last_send_ccf: Instant,
     error: ConnError,
 }
 
@@ -31,72 +35,60 @@ impl ClosingConnection {
         error: Error,
     ) -> Self {
         let conn_error = ConnError::default();
-        let (one_rtt_packet_queue, mut one_rtt_packets) = mpsc::unbounded();
         let ccf = ConnectionCloseFrame::from(error);
-        let recv_record = Vec::new();
 
         pathes
             .iter()
             .for_each(|path| path.enter_closing(ccf.clone(), Epoch::Data));
 
-        tokio::spawn({
-            let keys = one_rtt_keys.clone();
-            let conn_error = conn_error.clone();
-
-            async move {
-                let rcvd_packets = data_space.rcvd_packets();
-                while let Some((packet, _path)) = one_rtt_packets.next().await {
-                    let decode_pn = |pn| rcvd_packets.decode_pn(pn).ok();
-                    let payload_opt = decode_short_header_packet(packet, &keys, decode_pn).await;
-
-                    if let Some(payload) = payload_opt {
-                        let ccf = FrameReader::new(payload.payload)
-                            .filter_map(|frame| frame.ok())
-                            .find_map(|frame| {
-                                if let Frame::Close(ccf) = frame {
-                                    Some(ccf)
-                                } else {
-                                    None
-                                }
-                            });
-
-                        if let Some(ccf) = ccf {
-                            conn_error.on_ccf_rcvd(&ccf);
-                            return;
-                        }
-                    };
-                }
-            }
-        });
-
         Self {
             pathes,
             cid_registry,
-            one_rtt_packet_queue,
-            recv_record,
+            rcvd_pkt_records: data_space.rcvd_packets(),
+            one_rtt_keys,
+            rcvd_packets: 0,
+            last_send_ccf: Instant::now(),
             error: conn_error,
         }
     }
 
     // 记录收到的包数量，和收包时间，判断是否需要重发CCF；
     pub fn recv_packet_via_path(&mut self, packet: SpacePacket, path: ArcPath) {
-        let now = Instant::now();
-        self.recv_record.push(now);
-
+        self.rcvd_packets += 1;
         // TODO: 数值从配置中读取, 还是直接固定值?
-        // 如果累计收到的包超过一定数量，则发送 ccf
-        // 或 如果一定时间内收到的包超过一定数量, 则发送 ccf
-        if self.recv_record.len() > 10
-            || self.recv_record.len() > 5
-                && now - *self.recv_record.get(self.recv_record.len() - 5).unwrap()
-                    <= Duration::from_millis(100)
-        {
+        if self.rcvd_packets > 5 {
+            self.rcvd_packets = 0;
+            self.last_send_ccf = Instant::now();
             // TODO: 调用 dying path 直接发送 ccf
-            self.recv_record.clear();
+        }
+        if self.last_send_ccf.elapsed() > Duration::from_millis(100) {
+            self.rcvd_packets = 0;
+            self.last_send_ccf = Instant::now();
+            // TODO: 调用 dying path 直接发送 ccf
         }
 
         if let SpacePacket::OneRtt(packet) = packet {
-            _ = self.one_rtt_packet_queue.unbounded_send((packet, path))
+            let pkt_type = packet.header.get_type();
+            let decode_pn = |pn| self.rcvd_pkt_records.decode_pn(pn).ok();
+            let payload_opt: Option<PacketPayload> = None;
+            // let payload_opt =  decode_short_header_packet(packet, &self.one_rtt_keys, decode_pn).await;
+
+            if let Some(payload) = payload_opt {
+                let ccf = FrameReader::new(payload.payload, pkt_type)
+                    .filter_map(|frame| frame.ok())
+                    .find_map(|frame| {
+                        if let Frame::Close(ccf) = frame {
+                            Some(ccf)
+                        } else {
+                            None
+                        }
+                    });
+
+                if let Some(ccf) = ccf {
+                    self.error.on_ccf_rcvd(&ccf);
+                    return;
+                }
+            };
         }
     }
 

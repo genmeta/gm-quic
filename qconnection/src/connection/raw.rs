@@ -9,7 +9,6 @@ use dashmap::DashMap;
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
     cid::Registry,
-    error::{Error, ErrorKind},
     flow::FlowController,
     frame::{AckFrame, BeFrame, DataFrame, Frame, FrameReader},
     handshake::Handshake,
@@ -21,6 +20,7 @@ use qbase::{
         HandshakePacket, InitialPacket, OneRttPacket, PacketNumber, SpacePacket, SpinBit,
         ZeroRttPacket,
     },
+    streamid::Role,
 };
 use qrecovery::{
     reliable::{ArcReliableFrameDeque, ReliableFrame},
@@ -93,7 +93,7 @@ pub struct RawConnection {
 type PacketType = packet::r#type::Type;
 
 impl RawConnection {
-    pub fn new(role: Role, tls_session: ArcTlsSession) -> Self {
+    pub fn new(role: Role, _tls_session: ArcTlsSession) -> Self {
         let pathes = DashMap::new();
         let cid_registry = Registry::new(2);
         let handshake = Handshake::with_role(role);
@@ -368,7 +368,7 @@ impl RawConnection {
 
             let (handshake_done_frames_entry, rcvd_handshake_done_frames) = mpsc::unbounded();
             pipe!(@error(conn_error) rcvd_handshake_done_frames |> handshake,recv_handshake_done_frame);
-            let (new_token_frames_entry, rcvd_new_token_frames) = mpsc::unbounded();
+            let (new_token_frames_entry, _rcvd_new_token_frames) = mpsc::unbounded();
 
             let (data_crypto_frames_entry, rcvd_data_crypto_frames) = mpsc::unbounded();
             pipe!(rcvd_data_crypto_frames |> data_crypto_stream.incoming(), recv_crypto_frame);
