@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{
     future::Future,
     io::{self, IoSlice},
@@ -13,7 +11,7 @@ use dying::DyingPath;
 use qbase::{
     cid::{ConnectionId, Registry},
     flow::FlowController,
-    frame::{ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame},
+    frame::{AckFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame},
     packet::SpinBit,
 };
 use qcongestion::congestion::MSS;
@@ -54,8 +52,22 @@ enum PathState {
 pub struct ArcPath(Arc<Mutex<PathState>>);
 
 impl ArcPath {
+    pub fn on_ack(&self, epoch: Epoch, ack: &AckFrame) {
+        let mut guard = self.0.lock().unwrap();
+        if let PathState::Alive(path) = &mut *guard {
+            path.on_ack(epoch, ack);
+        }
+    }
+
+    pub fn on_recv_pkt(&self, epoch: Epoch, pn: u64, is_ackeliciting: bool) {
+        let mut guard = self.0.lock().unwrap();
+        if let PathState::Alive(path) = &mut *guard {
+            path.on_recv_pkt(epoch, pn, is_ackeliciting);
+        }
+    }
+
     /// 收到对方的路径挑战帧，如果不是 Alive 状态，直接忽略
-    fn recv_challenge(&self, frame: PathChallengeFrame) {
+    pub fn recv_challenge(&self, frame: PathChallengeFrame) {
         let mut guard = self.0.lock().unwrap();
         if let PathState::Alive(path) = &mut *guard {
             path.recv_challenge(frame)
@@ -63,7 +75,7 @@ impl ArcPath {
     }
 
     /// 收到对方的路径响应帧，如果不是 Alive 状态，直接忽略
-    fn recv_response(&self, frame: PathResponseFrame) {
+    pub fn recv_response(&self, frame: PathResponseFrame) {
         let mut guard = self.0.lock().unwrap();
         if let PathState::Alive(path) = &mut *guard {
             path.recv_response(frame)
@@ -71,13 +83,13 @@ impl ArcPath {
     }
 
     /// 失活检测器
-    fn has_been_inactivated(&self) -> HasBeenInactivated {
+    pub fn has_been_inactivated(&self) -> HasBeenInactivated {
         HasBeenInactivated(self.clone())
     }
 
     /// 收到 connection frame ，如果是 Alive 或者 Dying 状态，可以发一个 ccf 再进入 Dead
     /// Dead 状态则忽略
-    fn recv_ccf(&self, frame: ConnectionCloseFrame, epoch: Epoch) {
+    pub fn recv_ccf(&self, frame: ConnectionCloseFrame, epoch: Epoch) {
         let mut guard = self.0.lock().unwrap();
         let dying = match &mut *guard {
             PathState::Alive(raw) => {
@@ -103,7 +115,7 @@ impl ArcPath {
     }
 
     // 当 connection 发生错误时或要主动结束时，进入 Cosing 状态
-    fn enter_closing(&self, frame: ConnectionCloseFrame, epoch: Epoch) {
+    pub fn enter_closing(&self, frame: ConnectionCloseFrame, epoch: Epoch) {
         let mut guard = self.0.lock().unwrap();
 
         let dying = if let PathState::Alive(raw) = &mut *guard {
@@ -156,7 +168,7 @@ pub fn create_path(
     ArcPath(Arc::new(Mutex::new(PathState::Alive(raw_path.clone()))))
 }
 
-struct HasBeenInactivated(ArcPath);
+pub struct HasBeenInactivated(ArcPath);
 
 impl Future for HasBeenInactivated {
     type Output = ();

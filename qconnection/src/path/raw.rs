@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{
     future::{poll_fn, Future},
     io::{IoSlice, IoSliceMut},
@@ -16,7 +14,7 @@ use qbase::{
     flow::FlowController,
     frame::{
         io::{WritePathChallengeFrame, WritePathResponseFrame},
-        BeFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame,
+        AckFrame, BeFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame,
     },
     packet::{
         keys::{ArcKeys, ArcOneRttKeys},
@@ -38,7 +36,7 @@ use super::{
 
 // TODO: form connection
 #[derive(Clone)]
-pub struct AllSpaces([Option<Space>; 3]);
+pub(super) struct AllSpaces([Option<Space>; 3]);
 impl Index<Epoch> for AllSpaces {
     type Output = Option<Space>;
 
@@ -48,7 +46,7 @@ impl Index<Epoch> for AllSpaces {
 }
 
 #[derive(Clone)]
-pub struct AllKeys {
+pub(super) struct AllKeys {
     init_keys: ArcKeys,
     handshaking_keys: ArcKeys,
     zero_rtt_keys: ArcKeys,
@@ -77,7 +75,7 @@ pub(super) struct RawPath {
 impl RawPath {
     // TODO: 从 connection 构造，不需要这么多参数
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(super) fn new(
         usc: ArcUsc,
         pathway: Pathway,
         spaces: AllSpaces,
@@ -206,7 +204,7 @@ impl RawPath {
         ArcPacketReader(Arc::new(Mutex::new(reader)))
     }
 
-    pub fn recv_response(&mut self, frame: PathResponseFrame) {
+    pub(super) fn recv_response(&mut self, frame: PathResponseFrame) {
         let mut guard = self.response_listner.0.lock().unwrap();
         match &*guard {
             ResponseListener::Init => unreachable!("recv esponse before send challenge"),
@@ -223,14 +221,14 @@ impl RawPath {
         }
     }
 
-    pub fn recv_challenge(&mut self, frame: PathChallengeFrame) {
+    pub(super) fn recv_challenge(&mut self, frame: PathChallengeFrame) {
         self.response_buffer
             .lock()
             .unwrap()
             .replace((&frame).into());
     }
 
-    pub fn read_connection_close_frame(
+    pub(super) fn read_connection_close_frame(
         &self,
         _frame: ConnectionCloseFrame,
         _epoch: Epoch,
@@ -239,8 +237,16 @@ impl RawPath {
         todo!()
     }
 
-    pub fn pto_time(&self) -> Duration {
+    pub(super) fn pto_time(&self) -> Duration {
         self.cc.get_pto_time(Epoch::Data)
+    }
+
+    pub(super) fn on_ack(&self, epoch: Epoch, ack: &AckFrame) {
+        self.cc.on_ack(epoch, ack);
+    }
+
+    pub(super) fn on_recv_pkt(&self, epoch: Epoch, pn: u64, is_ack_eliciting: bool) {
+        self.cc.on_recv_pkt(epoch, pn, is_ack_eliciting);
     }
 }
 
@@ -249,10 +255,10 @@ impl Drop for RawPath {
         if let Some(h) = self.handle.send_handle.lock().unwrap().take() {
             h.abort();
         }
-        if let Some(h) = self.handle.send_handle.lock().unwrap().take() {
+        if let Some(h) = self.handle.verify_handle.lock().unwrap().take() {
             h.abort();
         }
-        if let Some(h) = self.handle.send_handle.lock().unwrap().take() {
+        if let Some(h) = self.handle.cc_handle.lock().unwrap().take() {
             h.abort();
         }
     }
@@ -332,7 +338,7 @@ struct Handle {
 }
 
 #[derive(Clone)]
-pub enum ResponseListener {
+pub(super) enum ResponseListener {
     Init,
     Pending(Waker),
     Response(PathResponseFrame),
