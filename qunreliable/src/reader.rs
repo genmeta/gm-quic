@@ -56,7 +56,7 @@ impl DatagramReader {
     /// Return an [`Err`] if there is a protocol violation(the datagram size exceeds the maximum size).
     pub(crate) fn recv_datagram(
         &self,
-        frame: DatagramFrame,
+        frame: &DatagramFrame,
         data: bytes::Bytes,
     ) -> Result<(), Error> {
         let reader = &mut self.0.lock().unwrap();
@@ -249,7 +249,10 @@ mod tests {
         });
 
         reader
-            .recv_datagram(DatagramFrame::new(None), Bytes::from_static(b"hello world"))
+            .recv_datagram(
+                &DatagramFrame::new(None),
+                Bytes::from_static(b"hello world"),
+            )
             .unwrap();
 
         recv.await.unwrap();

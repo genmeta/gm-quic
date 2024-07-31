@@ -50,13 +50,13 @@ impl ConnError {
     }
 
     /// When a connection close frame is received, it will change the state and wake the external if necessary.
-    pub fn recv_ccf(&self, ccf: ConnectionCloseFrame) {
+    pub fn recv_ccf(&self, ccf: &ConnectionCloseFrame) {
         let mut guard = self.0.lock().unwrap();
         // ccf具有最高的优先级
         if let ConnErrorState::Pending(waker) = guard.deref_mut() {
             waker.wake_by_ref();
         }
-        *guard = ConnErrorState::Draining(Error::from(ccf));
+        *guard = ConnErrorState::Draining(Error::from(ccf.clone()));
     }
 
     pub fn on_error(&self, error: Error) {
@@ -69,7 +69,7 @@ impl ConnError {
                 waker.wake_by_ref();
                 *guard = ConnErrorState::Closing(error);
             }
-            _ => return,
+            _ => {}
         }
     }
 
@@ -84,7 +84,7 @@ impl ConnError {
                 waker.wake_by_ref();
                 *guard = ConnErrorState::App(error);
             }
-            _ => return,
+            _ => {}
         }
     }
 }
@@ -126,7 +126,7 @@ mod tests {
         });
 
         let ccf = ConnectionCloseFrame::new(ErrorKind::Internal, None, "Test close frame".into());
-        conn_error.recv_ccf(ccf);
+        conn_error.recv_ccf(&ccf);
 
         _ = task.await;
     }

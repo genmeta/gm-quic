@@ -88,7 +88,7 @@ impl RawLocalCids {
 
     /// When a RetireConnectionIdFrame is acknowledged by the peer, call this method to
     /// retire the connection IDs of the sequence in RetireConnectionIdFrame.
-    fn recv_retire_cid_frame(&mut self, frame: RetireConnectionIdFrame) -> Result<(), Error> {
+    fn recv_retire_cid_frame(&mut self, frame: &RetireConnectionIdFrame) -> Result<(), Error> {
         let seq = frame.sequence.into_inner();
         if seq >= self.cid_deque.largest() {
             return Err(Error::new(
@@ -154,7 +154,7 @@ impl ArcLocalCids {
         self.0.lock().unwrap().retired_cids()
     }
 
-    pub fn recv_retire_cid_frame(&self, frame: RetireConnectionIdFrame) -> Result<(), Error> {
+    pub fn recv_retire_cid_frame(&self, frame: &RetireConnectionIdFrame) -> Result<(), Error> {
         self.0.lock().unwrap().recv_retire_cid_frame(frame)
     }
 }
@@ -236,7 +236,7 @@ mod tests {
         let retire_frame = RetireConnectionIdFrame {
             sequence: VarInt::from_u32(1),
         };
-        let cid2 = local_cids.recv_retire_cid_frame(retire_frame);
+        let cid2 = local_cids.recv_retire_cid_frame(&retire_frame);
         assert_eq!(cid2, Ok(()));
         assert_eq!(retired_cids.pop(), Some(issued_cid2));
         assert_eq!(local_cids.cid_deque.get(1), Some(&None));
@@ -244,7 +244,7 @@ mod tests {
         let retire_frame = RetireConnectionIdFrame {
             sequence: VarInt::from_u32(0),
         };
-        let cid1 = local_cids.recv_retire_cid_frame(retire_frame);
+        let cid1 = local_cids.recv_retire_cid_frame(&retire_frame);
         assert_eq!(cid1, Ok(()));
         assert_eq!(retired_cids.pop(), Some(issued_cid1));
         assert_eq!(local_cids.cid_deque.get(0), None); // have been slided out
@@ -252,7 +252,7 @@ mod tests {
         let retire_frame = RetireConnectionIdFrame {
             sequence: VarInt::from_u32(2),
         };
-        let cid3 = local_cids.recv_retire_cid_frame(retire_frame);
+        let cid3 = local_cids.recv_retire_cid_frame(&retire_frame);
         assert_eq!(
             cid3,
             Err(Error::new(

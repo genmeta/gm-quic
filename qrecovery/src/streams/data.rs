@@ -214,7 +214,7 @@ impl RawDataStreams {
 
     pub fn recv_data(
         &self,
-        (stream_frame, body): (StreamFrame, bytes::Bytes),
+        (stream_frame, body): &(StreamFrame, bytes::Bytes),
     ) -> Result<(), QuicError> {
         let sid = stream_frame.id;
         // 对方必须是发送端，才能发送此帧
@@ -239,12 +239,12 @@ impl RawDataStreams {
             .as_mut()
             .ok()
             .and_then(|set| set.get(&sid))
-            .map(|incoming| incoming.recv_data(stream_frame, body));
+            .map(|incoming| incoming.recv_data(stream_frame, body.clone()));
         // 否则，该流已经结束，再收到任何该流的frame，都将被忽略
         Ok(())
     }
 
-    pub fn recv_stream_control(&self, stream_ctl_frame: StreamCtlFrame) -> Result<(), QuicError> {
+    pub fn recv_stream_control(&self, stream_ctl_frame: &StreamCtlFrame) -> Result<(), QuicError> {
         match stream_ctl_frame {
             StreamCtlFrame::ResetStream(reset) => {
                 let sid = reset.stream_id;

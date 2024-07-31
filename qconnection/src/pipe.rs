@@ -9,7 +9,7 @@ macro_rules! pipe {
             let mut catch = ::std::clone::Clone::clone(&$var);
             async move {
                 while let Some(item) = ::futures::stream::StreamExt::next(&mut from).await {
-                    _ = catch.$method(item);
+                    _ = catch.$method(&item);
                 }
             }
         })
@@ -23,7 +23,7 @@ macro_rules! pipe {
             let mut lambda = $($lambda)*;
             async move {
                 while let Some(item) = ::futures::stream::StreamExt::next(&mut from).await {
-                    _ = lambda(item);
+                    _ = lambda(&item);
                 }
             }
         })
@@ -40,7 +40,7 @@ macro_rules! pipe {
 
             async move {
                 while let Some(item) = ::futures::stream::StreamExt::next(&mut from).await {
-                    if let Err(e) = catch.$method(item) {
+                    if let Err(e) = catch.$method(&item) {
                         $crate::error::ConnError::on_error(&error, e);
                         return;
                     }
@@ -59,7 +59,7 @@ macro_rules! pipe {
             let mut lambda = $($lambda)*;
             async move {
                 while let Some(item) = ::futures::stream::StreamExt::next(&mut from).await {
-                    if let Err(e) = lambda(item) {
+                    if let Err(e) = lambda(&item) {
                         $crate::error::ConnError::on_error(&error, e);
                         return;
                     }
@@ -79,15 +79,15 @@ mod tests {
     #[derive(Clone, Copy)]
     struct Consumer;
     impl Consumer {
-        fn consume(&self, _item: ()) {
+        fn consume(&self, _item: &()) {
             // do nothing
         }
 
-        fn consume_return_ok(&self, _item: ()) -> Result<(), Error> {
+        fn consume_return_ok(&self, _item: &()) -> Result<(), Error> {
             Ok(())
         }
 
-        fn consume_return_error(&self, _item: ()) -> Result<(), Error> {
+        fn consume_return_error(&self, _item: &()) -> Result<(), Error> {
             Err(Error::with_default_fty(ErrorKind::Internal, "Test error"))
         }
     }

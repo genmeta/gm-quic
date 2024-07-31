@@ -22,7 +22,7 @@ impl Incoming {
         Self(recver)
     }
 
-    pub fn recv_data(&self, stream_frame: StreamFrame, body: Bytes) -> Result<(), QuicError> {
+    pub fn recv_data(&self, stream_frame: &StreamFrame, body: Bytes) -> Result<(), QuicError> {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
         match inner {
@@ -61,7 +61,7 @@ impl Incoming {
         }
     }
 
-    pub fn recv_reset(&self, reset_frame: ResetStreamFrame) -> Result<(), QuicError> {
+    pub fn recv_reset(&self, reset_frame: &ResetStreamFrame) -> Result<(), QuicError> {
         // TODO: ResetStream中还有错误信息，比如http3的错误码，看是否能用到
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();

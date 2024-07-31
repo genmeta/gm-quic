@@ -36,7 +36,7 @@ impl Recv {
         }
     }
 
-    pub(super) fn recv(&mut self, stream_frame: StreamFrame, body: Bytes) -> Result<(), Error> {
+    pub(super) fn recv(&mut self, stream_frame: &StreamFrame, body: Bytes) -> Result<(), Error> {
         let offset = stream_frame.offset();
         // TODO: size不太准确
         let data_size = offset + body.len() as u64;
@@ -140,7 +140,7 @@ impl Recv {
         }
     }
 
-    pub(super) fn recv_reset(&mut self, reset_frame: ResetStreamFrame) -> Result<u64, Error> {
+    pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<u64, Error> {
         let final_size = reset_frame.final_size.into_inner();
         if final_size < self.largest_data_size {
             return Err(Error::new(
@@ -170,7 +170,7 @@ pub struct SizeKnown {
 }
 
 impl SizeKnown {
-    pub(super) fn recv(&mut self, stream_frame: StreamFrame, buf: Bytes) -> Result<(), Error> {
+    pub(super) fn recv(&mut self, stream_frame: &StreamFrame, buf: Bytes) -> Result<(), Error> {
         let offset = stream_frame.offset();
         let data_size = offset + buf.len() as u64;
         if data_size > self.total_size {
@@ -264,7 +264,7 @@ impl SizeKnown {
         }
     }
 
-    pub(super) fn recv_reset(&mut self, reset_frame: ResetStreamFrame) -> Result<u64, Error> {
+    pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<u64, Error> {
         let final_size = reset_frame.final_size.into_inner();
         if final_size != self.total_size {
             return Err(Error::new(
