@@ -7,7 +7,14 @@ use crate::packet::r#type::Type;
 pub trait BeFrame {
     fn frame_type(&self) -> FrameType;
 
-    fn belongs_to(&self, packet_type: Type) -> bool;
+    // TODO: 这个应该取决于FrameType而非具体的Frame吧？
+    fn belongs_to(&self, packet_type: Type) -> bool {
+        self.frame_type().belongs_to(packet_type)
+    }
+
+    fn is_ack_eliciting(&self) -> bool {
+        self.frame_type().is_ack_eliciting()
+    }
 
     fn max_encoding_size(&self) -> usize {
         1
@@ -91,6 +98,58 @@ pub enum FrameType {
     ConnectionClose(u8),
     HandshakeDone,
     Datagram(u8),
+}
+
+impl FrameType {
+    pub fn belongs_to(&self, packet_type: Type) -> bool {
+        use crate::packet::r#type::{
+            long::{Type::V1, Ver1},
+            short::OneRtt,
+        };
+        // IH01
+        let i = matches!(packet_type, Type::Long(V1(Ver1::INITIAL)));
+        let h = matches!(packet_type, Type::Long(V1(Ver1::HANDSHAKE)));
+        let o = matches!(packet_type, Type::Long(V1(Ver1::ZERO_RTT)));
+        let l = matches!(packet_type, Type::Short(OneRtt(_)));
+
+        match self {
+            FrameType::Padding => i | h | o | l,
+            FrameType::Ping => i | h | o | l,
+            FrameType::Ack(_) => i | h | l,
+            FrameType::ResetStream => o | l,
+            FrameType::StopSending => o | l,
+            FrameType::Crypto => i | h | l,
+            FrameType::NewToken => l,
+            FrameType::Stream(_) => o | l,
+            FrameType::MaxData => o | l,
+            FrameType::MaxStreamData => o | l,
+            FrameType::MaxStreams(_) => o | l,
+            FrameType::DataBlocked => o | l,
+            FrameType::StreamDataBlocked => o | l,
+            FrameType::StreamsBlocked(_) => o | l,
+            FrameType::NewConnectionId => o | l,
+            FrameType::RetireConnectionId => o | l,
+            FrameType::PathChallenge => o | l,
+            FrameType::PathResponse => l,
+            FrameType::ConnectionClose(bit) => {
+                if *bit == 0 && i || h {
+                    true
+                } else {
+                    o | l
+                }
+            }
+            FrameType::HandshakeDone => l,
+            FrameType::Datagram(_) => o | l,
+        }
+    }
+
+    pub fn is_ack_eliciting(&self) -> bool {
+        let is_not_ack_eliciting = matches!(
+            self,
+            Self::Padding | Self::Ack(..) | Self::ConnectionClose(..)
+        );
+        !is_not_ack_eliciting
+    }
 }
 
 impl TryFrom<u8> for FrameType {
@@ -228,26 +287,6 @@ impl BeFrame for Frame {
             Frame::Stream(f) => f.frame_type(),
             Frame::Data(f, _) => f.frame_type(),
             Frame::Datagram(f, _) => f.frame_type(),
-        }
-    }
-
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        match self {
-            Frame::Padding(f) => f.belongs_to(packet_type),
-            Frame::Ping(f) => f.belongs_to(packet_type),
-            Frame::Ack(f) => f.belongs_to(packet_type),
-            Frame::Close(f) => f.belongs_to(packet_type),
-            Frame::NewToken(f) => f.belongs_to(packet_type),
-            Frame::MaxData(f) => f.belongs_to(packet_type),
-            Frame::DataBlocked(f) => f.belongs_to(packet_type),
-            Frame::NewConnectionId(f) => f.belongs_to(packet_type),
-            Frame::RetireConnectionId(f) => f.belongs_to(packet_type),
-            Frame::HandshakeDone(f) => f.belongs_to(packet_type),
-            Frame::Challenge(f) => f.belongs_to(packet_type),
-            Frame::Response(f) => f.belongs_to(packet_type),
-            Frame::Stream(f) => f.belongs_to(packet_type),
-            Frame::Data(f, _) => f.belongs_to(packet_type),
-            Frame::Datagram(f, _) => f.belongs_to(packet_type),
         }
     }
 
