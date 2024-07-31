@@ -193,18 +193,18 @@ impl RawConnection {
                             format!("cann't exist in {:?}", initial_packet_type),
                         ));
                     }
+                    let is_ack_eliciting = frame.is_ack_eliciting();
                     match frame {
                         Frame::Ack(ack_frame) => {
                             path.on_ack(&ack_frame);
                             _ = ack_frames_entry.unbounded_send(ack_frame);
-                            Ok(false)
                         }
                         Frame::Data(DataFrame::Crypto(crypto), bytes) => {
                             _ = crypto_frames_entry.unbounded_send((crypto, bytes));
-                            Ok(true)
                         }
-                        _ => Ok(false),
+                        _ => {}
                     }
+                    Ok(is_ack_eliciting)
                 };
 
                 let rcvd_packets = space.rcvd_packets();
@@ -278,18 +278,18 @@ impl RawConnection {
                             format!("cann't exist in {:?}", handshake_packet_type),
                         ));
                     }
+                    let is_ack_eliciting = frame.is_ack_eliciting();
                     match frame {
                         Frame::Ack(ack_frame) => {
                             path.on_ack(&ack_frame);
                             _ = ack_frames_entry.unbounded_send(ack_frame);
-                            Ok(false)
                         }
                         Frame::Data(DataFrame::Crypto(crypto), bytes) => {
                             _ = crypto_frames_entry.unbounded_send((crypto, bytes));
-                            Ok(true)
                         }
-                        _ => Ok(false),
+                        _ => {}
                     }
+                    Ok(is_ack_eliciting)
                 };
 
                 let rcvd_packets = space.rcvd_packets();
@@ -352,25 +352,23 @@ impl RawConnection {
                             format!("cann't exist in {:?}", handshake_packet_type),
                         ));
                     }
+                    let is_ack_eliciting = frame.is_ack_eliciting();
                     match frame {
                         Frame::MaxData(max_data) => {
                             _ = max_data_frames_entry.unbounded_send(max_data);
-                            Ok(true)
                         }
                         Frame::Stream(stream_ctrl) => {
                             _ = stream_ctrl_frames_entry.unbounded_send(stream_ctrl);
-                            Ok(true)
                         }
                         Frame::Data(DataFrame::Stream(stream), data) => {
                             _ = stream_frames_entry.unbounded_send((stream, data));
-                            Ok(true)
                         }
                         Frame::Datagram(datagram, data) => {
                             _ = datagram_frames_entry.unbounded_send((datagram, data));
-                            Ok(false)
                         }
-                        _ => Ok(false),
+                        _ => {}
                     }
+                    Ok(is_ack_eliciting)
                 };
 
                 let rcvd_packets = space.rcvd_packets();
@@ -479,62 +477,52 @@ impl RawConnection {
                                 format!("cann't exist in {:?}", pty),
                             ));
                         }
+                        let is_ack_eliciting = frame.is_ack_eliciting();
                         match frame {
                             Frame::Close(ccf) => {
                                 _ = ccf_entry.unbounded_send(ccf);
-                                Ok(true)
                             }
                             Frame::NewToken(new_token) => {
                                 _ = new_token_frames_entry.unbounded_send(new_token);
-                                Ok(true)
                             }
                             Frame::MaxData(max_data) => {
                                 _ = max_data_frames_entry.unbounded_send(max_data);
-                                Ok(true)
                             }
                             Frame::NewConnectionId(new_cid) => {
                                 _ = new_cid_frames_entry.unbounded_send(new_cid);
-                                Ok(true)
                             }
                             Frame::RetireConnectionId(retire_cid) => {
                                 _ = retire_cid_frames_entry.unbounded_send(retire_cid);
-                                Ok(true)
                             }
                             Frame::HandshakeDone(hs_done) => {
                                 _ = handshake_done_frames_entry.unbounded_send(hs_done);
-                                Ok(true)
                             }
-                            Frame::DataBlocked(_) => Ok(true),
+                            Frame::DataBlocked(_) => { /* ignore */ }
                             Frame::Ack(ack_frame) => {
                                 _ = ack_frames_entry.unbounded_send(ack_frame);
-                                Ok(true)
                             }
                             Frame::Challenge(challenge) => {
                                 path.recv_path_challenge_frame(challenge)?;
-                                Ok(true)
                             }
                             Frame::Response(response) => {
                                 path.recv_path_response_frame(response)?;
-                                Ok(true)
                             }
                             Frame::Stream(stream_ctrl) => {
                                 _ = stream_ctrl_frames_entry.unbounded_send(stream_ctrl);
-                                Ok(true)
                             }
                             Frame::Data(DataFrame::Stream(stream), data) => {
                                 _ = stream_frames_entry.unbounded_send((stream, data));
-                                Ok(true)
                             }
                             Frame::Data(DataFrame::Crypto(crypto), data) => {
                                 _ = data_crypto_frames_entry.unbounded_send((crypto, data));
-                                Ok(true)
                             }
                             Frame::Datagram(datagram, data) => {
                                 _ = datagram_frames_entry.unbounded_send((datagram, data));
-                                Ok(false)
                             }
-                            _ => Ok(false),
+                            _ => {}
                         }
+
+                        Ok(is_ack_eliciting)
                     };
 
                 let rcvd_packets = space.rcvd_packets();
