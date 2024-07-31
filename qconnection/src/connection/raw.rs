@@ -12,6 +12,7 @@ use qbase::{
     error::{Error, ErrorKind},
     flow::FlowController,
     frame::{AckFrame, BeFrame, DataFrame, Frame, FrameReader},
+    handshake::Handshake,
     packet::{
         self,
         decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
@@ -61,6 +62,9 @@ pub type OneRttPacketQueue = PacketQueue<OneRttPacket>;
 pub struct RawConnection {
     pathes: DashMap<Pathway, ArcPath>,
     cid_registry: Registry,
+    // handshake done的信号
+    handshake: Handshake,
+    flow_control: FlowController,
     spin: Arc<Mutex<SpinBit>>,
     error: ConnError,
 
@@ -78,7 +82,6 @@ pub struct RawConnection {
     data_crypto_stream: CryptoStream,
     data_streams: DataStreams,
     data_reliable_frames_deque: ArcReliableFrameDeque,
-    flow_control: FlowController,
 
     zero_rtt_packet_queue: ZeroRttPacketQueue,
     zero_rtt_keys: ArcKeys,
@@ -94,6 +97,8 @@ impl RawConnection {
     pub fn new(role: Role, tls_session: TlsSession) -> Self {
         let pathes = DashMap::new();
         let cid_registry = Registry::new(2);
+        let handshake = Handshake::with_role(role);
+        let flow_control = FlowController::with_initial(0, 0);
         let spin = Arc::new(Mutex::new(SpinBit::Off));
         let conn_error = ConnError::default();
 
@@ -110,7 +115,6 @@ impl RawConnection {
         let data_reliable_frames_deque = ArcReliableFrameDeque::with_capacity(0);
         let data_streams =
             DataStreams::with_role_and_limit(role, 0, 0, data_reliable_frames_deque.clone());
-        let flow_control = FlowController::with_initial(0, 0);
         let zero_rtt_keys = ArcKeys::new_pending();
         let one_rtt_keys = ArcOneRttKeys::new_pending();
 
@@ -386,11 +390,12 @@ impl RawConnection {
 
             // TODO: impl endpoint router
             let (new_cid_frames_entry, rcvd_new_cid_frames) = mpsc::unbounded();
-            pipe!(@error(conn_error)  rcvd_new_cid_frames |> cid_registry.remote,recv_new_cid_frame);
+            pipe!(@error(conn_error) rcvd_new_cid_frames |> cid_registry.remote,recv_new_cid_frame);
             let (retire_cid_frames_entry, rcvd_retire_cid_frames) = mpsc::unbounded();
-            pipe!(@error(conn_error)  rcvd_retire_cid_frames |> cid_registry.local,recv_retire_cid_frame);
+            pipe!(@error(conn_error) rcvd_retire_cid_frames |> cid_registry.local,recv_retire_cid_frame);
 
             let (handshake_done_frames_entry, rcvd_handshake_done_frames) = mpsc::unbounded();
+            pipe!(@error(conn_error) rcvd_handshake_done_frames |> handshake,recv_handshake_done_frame);
             let (new_token_frames_entry, rcvd_new_token_frames) = mpsc::unbounded();
 
             let (data_crypto_frames_entry, rcvd_data_crypto_frames) = mpsc::unbounded();
@@ -566,6 +571,8 @@ impl RawConnection {
         Self {
             pathes,
             cid_registry,
+            handshake,
+            flow_control,
             initial_space,
             initial_crypto_stream,
             initial_packet_queue,
@@ -578,7 +585,6 @@ impl RawConnection {
             data_crypto_stream,
             data_streams,
             data_reliable_frames_deque,
-            flow_control,
             zero_rtt_packet_queue,
             zero_rtt_keys,
             one_rtt_packet_queue,

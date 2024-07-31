@@ -12,6 +12,7 @@ use std::{
 use crate::{
     error::{Error, ErrorKind},
     frame::HandshakeDoneFrame,
+    streamid::Role,
 };
 
 #[derive(Debug, Default, Clone)]
@@ -22,7 +23,7 @@ impl ClientHandshake {
         self.0.load(Ordering::Acquire)
     }
 
-    fn recv_handshake_done_frame(&self, _frame: HandshakeDoneFrame) {
+    fn recv_handshake_done_frame(&self, _frame: &HandshakeDoneFrame) {
         self.0.store(true, Ordering::Release);
     }
 }
@@ -112,6 +113,13 @@ pub enum Handshake {
 }
 
 impl Handshake {
+    pub fn with_role(role: Role) -> Self {
+        match role {
+            Role::Client => Handshake::Client(ClientHandshake::default()),
+            Role::Server => Handshake::Server(ServerHandshake::default()),
+        }
+    }
+
     pub fn new_client() -> Self {
         Handshake::Client(ClientHandshake::default())
     }
@@ -131,7 +139,7 @@ impl Handshake {
     /// A HANDSHAKE_DONE frame can only be sent by the server. Servers MUST NOT send a HANDSHAKE_DONE
     /// frame before completing the handshake. A server MUST treat receipt of a HANDSHAKE_DONE frame
     /// as a connection error of type PROTOCOL_VIOLATION.
-    pub fn recv_handshake_done_frame(&self, frame: HandshakeDoneFrame) -> Result<(), Error> {
+    pub fn recv_handshake_done_frame(&self, frame: &HandshakeDoneFrame) -> Result<(), Error> {
         match self {
             Handshake::Client(h) => {
                 h.recv_handshake_done_frame(frame);
@@ -194,7 +202,7 @@ mod tests {
         let handshake = super::Handshake::new_client();
         assert_eq!(handshake.is_handshake_done(), false);
 
-        let ret = handshake.recv_handshake_done_frame(HandshakeDoneFrame);
+        let ret = handshake.recv_handshake_done_frame(&HandshakeDoneFrame);
         assert!(ret.is_ok());
         assert_eq!(handshake.is_handshake_done(), true);
     }
@@ -222,7 +230,7 @@ mod tests {
         let handshake = super::Handshake::new_server();
         assert_eq!(handshake.is_handshake_done(), false);
 
-        let ret = handshake.recv_handshake_done_frame(HandshakeDoneFrame);
+        let ret = handshake.recv_handshake_done_frame(&HandshakeDoneFrame);
         assert_eq!(
             ret,
             Err(Error::with_default_fty(
