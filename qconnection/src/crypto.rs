@@ -10,7 +10,7 @@ use qbase::config::{
     ext::{be_transport_parameters, WriteParameters},
     TransportParameters,
 };
-use qrecovery::crypto::{CryptoStreamReader, CryptoStreamWriter};
+use qrecovery::streams::crypto::{CryptoStreamReader, CryptoStreamWriter};
 use rustls::{
     pki_types::ServerName,
     quic::{ClientConnection, Connection as TlsConnection, KeyChange},
@@ -22,17 +22,17 @@ use tokio::{
 };
 
 #[derive(Debug)]
-pub(crate) struct TlsSession {
+pub(crate) struct RawTlsSession {
     connection: TlsConnection,
     wants_write: Option<Waker>,
 }
 
-pub(crate) type ArcTlsSession = Arc<Mutex<TlsSession>>;
+pub(crate) type ArcTlsSession = Arc<Mutex<RawTlsSession>>;
 
 #[derive(Debug, Clone)]
-pub struct TlsIO(ArcTlsSession);
+pub struct TlsSession(ArcTlsSession);
 
-impl TlsIO {
+impl TlsSession {
     pub fn new_client(
         server_name: ServerName<'static>,
         client_params: TransportParameters,
@@ -53,7 +53,7 @@ impl TlsIO {
             )
             .unwrap(),
         );
-        Self(Arc::new(Mutex::new(TlsSession {
+        Self(Arc::new(Mutex::new(RawTlsSession {
             connection,
             wants_write: None,
         })))
@@ -76,7 +76,7 @@ impl TlsIO {
 pub struct TlsReader(ArcTlsSession);
 
 impl TlsReader {
-    pub fn read_hs(&mut self, plaintext: &[u8]) -> Result<(), rustls::Error> {
+    pub fn write(&mut self, plaintext: &[u8]) -> Result<(), rustls::Error> {
         let mut tls_session = self.0.lock().unwrap();
         tls_session.connection.read_hs(plaintext)?;
         if tls_session.connection.wants_write() {
@@ -87,7 +87,10 @@ impl TlsReader {
         Ok(())
     }
 
-    pub fn loop_read_from(mut self, mut stream_reader: CryptoStreamReader) -> HandshakeReader {
+    pub fn loop_read_from(
+        mut self,
+        mut stream_reader: CryptoStreamReader,
+    ) -> HandshakeReadController {
         let (close_tx, mut close_rx) = tokio::sync::oneshot::channel::<()>();
         let join_handler = tokio::spawn(async move {
             loop {
@@ -95,12 +98,12 @@ impl TlsReader {
                 select! {
                     _ = &mut close_rx => return Ok(()),
                     n = stream_reader.read(&mut buf)=> {
-                        self.read_hs(&buf[..n?]).expect("tls read hs failed");
+                        self.write(&buf[..n?]).expect("tls read hs failed");
                     },
                 }
             }
         });
-        HandshakeReader {
+        HandshakeReadController {
             close_tx,
             join_handler,
         }
@@ -139,12 +142,12 @@ impl TlsWriter {
 /// 这些都是封装在TLS库中设定好的。所以在握手期间，要不停地读取TLS握手的数据，一旦有数据要发送，就送交恰当的密
 /// 级中的Crypto流中发送，一旦有新密钥产生，还得升级密级、替换密钥，即便到1-RTT阶段，也是一样的，密钥也有更新
 /// 的可能。
-pub struct HandshakeReader {
+pub struct HandshakeReadController {
     close_tx: tokio::sync::oneshot::Sender<()>,
     join_handler: tokio::task::JoinHandle<io::Result<()>>,
 }
 
-impl HandshakeReader {
+impl HandshakeReadController {
     pub async fn end(self) -> io::Result<()> {
         self.close_tx
             .send(())
