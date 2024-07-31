@@ -26,7 +26,7 @@ async-lock = "3"
 futures = "0.3"
 rand = "0.8"
 bytes = "1"
-rustls = "0.23"
+rustls = { version = "0.23", features = ["ring"] }
 thiserror = "1"
 getset = "0.1"
 enum_dispatch = "0.3"

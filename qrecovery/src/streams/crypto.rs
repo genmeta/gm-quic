@@ -276,19 +276,19 @@ impl CryptoStream {
     /// and other information must be written before continuing.
     pub fn write_with<F>(&self, mut f: F) -> JoinHandle<()>
     where
-        F: FnMut(&mut Vec<u8>) -> usize + Send + 'static,
+        F: FnMut(&mut Vec<u8>) + Send + 'static,
     {
         let mut writer = self.writer();
         tokio::spawn(async move {
             let mut buf = Vec::with_capacity(1200);
             loop {
                 buf.truncate(0);
-                let n = f(&mut buf);
-                if n == 0 {
+                f(&mut buf);
+                if buf.is_empty() {
                     break;
                 }
 
-                writer.write_all(&buf[..n]).await.unwrap();
+                writer.write_all(&buf).await.unwrap();
             }
         })
     }
