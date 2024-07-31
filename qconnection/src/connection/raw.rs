@@ -2,7 +2,6 @@ use std::{
     net::SocketAddr,
     ops::Deref,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use bytes::Bytes;
@@ -26,10 +25,12 @@ use qbase::{
     streamid::Role,
 };
 use qrecovery::{
-    crypto::{ArcCryptoFrameDeque, CryptoStream},
     reliable::{ArcReliableFrameDeque, ReliableFrame},
     space::{DataSpace, Epoch, HandshakeSpace, InitialSpace},
-    streams::DataStreams,
+    streams::{
+        crypto::{ArcCryptoFrameDeque, CryptoStream},
+        DataStreams,
+    },
 };
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
@@ -176,10 +177,11 @@ impl RawConnection {
 
             let conn_error = conn_error.clone();
 
-            let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
-            pipe!(rcvd_ack_frames |> on_ack);
             let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
             pipe!(@error(conn_error) rcvd_crypto_frames |> crypto_stream, recv_data);
+
+            let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
+            pipe!(rcvd_ack_frames |> on_ack);
 
             async move {
                 let dispatch_frames_of_initial_packet = |frame: Frame, path: &ArcPath| {
@@ -260,11 +262,11 @@ impl RawConnection {
 
             let conn_error = conn_error.clone();
 
-            let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
             let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
-
-            pipe!(rcvd_ack_frames |> on_ack);
             pipe!(@error(conn_error) rcvd_crypto_frames |> crypto_stream, recv_data);
+
+            let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
+            pipe!(rcvd_ack_frames |> on_ack);
 
             async move {
                 let dispatch_frames_of_handshake_packet = |frame: Frame, path: &ArcPath| {
