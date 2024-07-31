@@ -1,4 +1,8 @@
-use std::future::Future;
+use std::{
+    collections::VecDeque,
+    future::Future,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
 /// Crypto data stream
 use qbase::{error::Error, frame::CryptoFrame, util::TransportLimit};
@@ -334,6 +338,23 @@ impl CryptoStream {
                 process(reader, writer).await;
             }
         })
+    }
+}
+
+type RawCryptoFrameDeque = VecDeque<CryptoFrame>;
+
+#[derive(Debug, Default, Clone)]
+pub struct ArcCryptoFrameDeque(Arc<Mutex<RawCryptoFrameDeque>>);
+
+impl ArcCryptoFrameDeque {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self(Arc::new(Mutex::new(RawCryptoFrameDeque::with_capacity(
+            capacity,
+        ))))
+    }
+
+    pub fn lock_guard(&self) -> MutexGuard<'_, RawCryptoFrameDeque> {
+        self.0.lock().unwrap()
     }
 }
 
