@@ -4,7 +4,7 @@ use qbase::{
 };
 
 /// Connection in draining state, entered from the raw state or closing state.
-/// It just ignores all packets, and waits for dismissing the connection.
+/// It just ignores all packets, and waits for dismissing.
 /// Dont forget to remove the connection from the global router.
 #[derive(Debug)]
 pub struct DrainingConnection {

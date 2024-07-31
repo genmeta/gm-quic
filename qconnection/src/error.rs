@@ -37,7 +37,7 @@ enum ConnErrorState {
 ///         assert_eq!(error.kind(), ErrorKind::Internal);
 ///    }
 /// });
-/// conn_err.set_app_error(Error::with_default_fty(ErrorKind::Internal, "Test error"));
+/// conn_err.on_error(Error::with_default_fty(ErrorKind::Internal, "Test error"));
 /// # }
 /// ```
 #[derive(Default, Debug, Clone)]
