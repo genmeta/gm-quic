@@ -331,12 +331,16 @@ impl BeFrame for Frame {
     }
 }
 pub struct FrameReader {
-    raw: Bytes,
+    payload: Bytes,
+    packet_type: Type,
 }
 
 impl FrameReader {
-    pub fn new(raw: Bytes) -> Self {
-        Self { raw }
+    pub fn new(payload: Bytes, packet_type: Type) -> Self {
+        Self {
+            payload,
+            packet_type,
+        }
     }
 }
 
@@ -346,17 +350,20 @@ impl Iterator for FrameReader {
     type Item = Result<Frame, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.raw.is_empty() {
+        if self.payload.is_empty() {
             return None;
         }
 
-        match io::be_frame(&self.raw) {
+        match io::be_frame(&self.payload) {
+            Ok((_, frame)) if !frame.frame_type().belongs_to(self.packet_type) => Some(Err(
+                Error::InvalidType(VarInt::from(u8::from(frame.frame_type()))),
+            )),
             Ok((consumed, frame)) => {
-                self.raw.advance(consumed);
+                self.payload.advance(consumed);
                 Some(Ok(frame))
             }
             Err(e) => {
-                self.raw.clear(); // no longer parsing
+                self.payload.clear(); // no longer parsing
                 Some(Err(e))
             }
         }

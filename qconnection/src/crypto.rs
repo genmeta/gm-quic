@@ -6,9 +6,12 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use qbase::config::{
-    ext::{be_transport_parameters, WriteParameters},
-    TransportParameters,
+use qbase::{
+    config::{
+        ext::{be_transport_parameters, WriteParameters},
+        TransportParameters,
+    },
+    streamid::Role,
 };
 use qrecovery::streams::crypto::{CryptoStreamReader, CryptoStreamWriter};
 use rustls::{
@@ -69,6 +72,14 @@ impl TlsSession {
 
     pub fn split_io(&self) -> (TlsReader, TlsWriter) {
         (TlsReader(self.0.clone()), TlsWriter(self.0.clone()))
+    }
+
+    pub fn role(&self) -> Role {
+        let tls_session = self.0.lock().unwrap();
+        match tls_session.connection {
+            TlsConnection::Client(_) => Role::Client,
+            TlsConnection::Server(_) => Role::Server,
+        }
     }
 }
 

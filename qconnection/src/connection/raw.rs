@@ -21,7 +21,6 @@ use qbase::{
         HandshakePacket, InitialPacket, OneRttPacket, PacketNumber, SpacePacket, SpinBit,
         ZeroRttPacket,
     },
-    streamid::Role,
 };
 use qrecovery::{
     reliable::{ArcReliableFrameDeque, ReliableFrame},
@@ -94,7 +93,9 @@ pub struct RawConnection {
 type PacketType = packet::r#type::Type;
 
 impl RawConnection {
-    pub fn new(role: Role, tls_session: TlsSession) -> Self {
+    pub fn new(tls_io: TlsSession) -> Self {
+        let role = tls_io.role();
+
         let pathes = DashMap::new();
         let cid_registry = Registry::new(2);
         let handshake = Handshake::with_role(role);
@@ -160,13 +161,6 @@ impl RawConnection {
 
             async move {
                 let dispatch_frames_of_initial_packet = |frame: Frame, path: &ArcPath| {
-                    if !frame.belongs_to(PACKET_TYPE) {
-                        return Err(Error::new(
-                            ErrorKind::ProtocolViolation,
-                            frame.frame_type(),
-                            format!("cann't exist in {:?}", PACKET_TYPE),
-                        ));
-                    }
                     let is_ack_eliciting = frame.is_ack_eliciting();
                     match frame {
                         Frame::Ack(ack_frame) => {
@@ -178,7 +172,7 @@ impl RawConnection {
                         }
                         _ => {}
                     }
-                    Ok(is_ack_eliciting)
+                    is_ack_eliciting
                 };
 
                 let rcvd_packets = space.rcvd_packets();
@@ -190,12 +184,10 @@ impl RawConnection {
                         return;
                     };
 
-                    let dispath_result = FrameReader::new(payload.payload).try_fold(
+                    let dispath_result = FrameReader::new(payload.payload, PACKET_TYPE).try_fold(
                         false,
                         |is_ack_packet, frame| {
-                            let frame = frame.map_err(Error::from)?;
-                            dispatch_frames_of_initial_packet(frame, &path)
-                                .map(|is_ack_frmae| is_ack_packet | is_ack_frmae)
+                            Ok(is_ack_packet || dispatch_frames_of_initial_packet(frame?, &path))
                         },
                     );
 
@@ -245,13 +237,6 @@ impl RawConnection {
 
             async move {
                 let dispatch_frames_of_handshake_packet = |frame: Frame, path: &ArcPath| {
-                    if !frame.belongs_to(PACKET_TYPE) {
-                        return Err(Error::new(
-                            ErrorKind::ProtocolViolation,
-                            frame.frame_type(),
-                            format!("cann't exist in {:?}", PACKET_TYPE),
-                        ));
-                    }
                     let is_ack_eliciting = frame.is_ack_eliciting();
                     match frame {
                         Frame::Ack(ack_frame) => {
@@ -263,7 +248,7 @@ impl RawConnection {
                         }
                         _ => {}
                     }
-                    Ok(is_ack_eliciting)
+                    is_ack_eliciting
                 };
 
                 let rcvd_packets = space.rcvd_packets();
@@ -275,12 +260,10 @@ impl RawConnection {
                         return;
                     };
 
-                    let dispath_result = FrameReader::new(payload.payload).try_fold(
+                    let dispath_result = FrameReader::new(payload.payload, PACKET_TYPE).try_fold(
                         false,
                         |is_ack_packet, frame| {
-                            let frame = frame.map_err(Error::from)?;
-                            dispatch_frames_of_handshake_packet(frame, &path)
-                                .map(|is_ack_frmae| is_ack_packet | is_ack_frmae)
+                            Ok(is_ack_packet || dispatch_frames_of_handshake_packet(frame?, &path))
                         },
                     );
 
@@ -319,13 +302,6 @@ impl RawConnection {
 
             async move {
                 let dispatch_frames_of_0rtt_packet = |frame: Frame, _path: &ArcPath| {
-                    if !frame.belongs_to(PACKET_TYPE) {
-                        return Err(Error::new(
-                            ErrorKind::ProtocolViolation,
-                            frame.frame_type(),
-                            format!("cann't exist in {:?}", PACKET_TYPE),
-                        ));
-                    }
                     let is_ack_eliciting = frame.is_ack_eliciting();
                     match frame {
                         Frame::MaxData(max_data) => {
@@ -342,7 +318,7 @@ impl RawConnection {
                         }
                         _ => {}
                     }
-                    Ok(is_ack_eliciting)
+                    is_ack_eliciting
                 };
 
                 let rcvd_packets = space.rcvd_packets();
@@ -354,12 +330,10 @@ impl RawConnection {
                         return;
                     };
 
-                    let dispath_result = FrameReader::new(payload.payload).try_fold(
+                    let dispath_result = FrameReader::new(payload.payload, PACKET_TYPE).try_fold(
                         false,
                         |is_ack_packet, frame| {
-                            let frame = frame.map_err(Error::from)?;
-                            dispatch_frames_of_0rtt_packet(frame, &path)
-                                .map(|is_ack_frmae| is_ack_packet | is_ack_frmae)
+                            Ok(is_ack_packet || dispatch_frames_of_0rtt_packet(frame?, &path))
                         },
                     );
 
@@ -443,63 +417,54 @@ impl RawConnection {
             let space = data_space.clone();
 
             async move {
-                let dispatch_frames_of_1rtt_packet =
-                    |frame: Frame, pty: PacketType, path: &ArcPath| {
-                        if !frame.belongs_to(pty) {
-                            return Err(Error::new(
-                                ErrorKind::ProtocolViolation,
-                                frame.frame_type(),
-                                format!("cann't exist in {:?}", pty),
-                            ));
+                let dispatch_frames_of_1rtt_packet = |frame: Frame, path: &ArcPath| {
+                    let is_ack_eliciting = frame.is_ack_eliciting();
+                    match frame {
+                        Frame::Close(ccf) => {
+                            _ = ccf_entry.unbounded_send(ccf);
                         }
-                        let is_ack_eliciting = frame.is_ack_eliciting();
-                        match frame {
-                            Frame::Close(ccf) => {
-                                _ = ccf_entry.unbounded_send(ccf);
-                            }
-                            Frame::NewToken(new_token) => {
-                                _ = new_token_frames_entry.unbounded_send(new_token);
-                            }
-                            Frame::MaxData(max_data) => {
-                                _ = max_data_frames_entry.unbounded_send(max_data);
-                            }
-                            Frame::NewConnectionId(new_cid) => {
-                                _ = new_cid_frames_entry.unbounded_send(new_cid);
-                            }
-                            Frame::RetireConnectionId(retire_cid) => {
-                                _ = retire_cid_frames_entry.unbounded_send(retire_cid);
-                            }
-                            Frame::HandshakeDone(hs_done) => {
-                                _ = handshake_done_frames_entry.unbounded_send(hs_done);
-                            }
-                            Frame::DataBlocked(_) => { /* ignore */ }
-                            Frame::Ack(ack_frame) => {
-                                path.on_ack(EPOCH, &ack_frame);
-                                _ = ack_frames_entry.unbounded_send(ack_frame);
-                            }
-                            Frame::Challenge(challenge) => {
-                                path.recv_challenge(challenge);
-                            }
-                            Frame::Response(response) => {
-                                path.recv_response(response);
-                            }
-                            Frame::Stream(stream_ctrl) => {
-                                _ = stream_ctrl_frames_entry.unbounded_send(stream_ctrl);
-                            }
-                            Frame::Data(DataFrame::Stream(stream), data) => {
-                                _ = stream_frames_entry.unbounded_send((stream, data));
-                            }
-                            Frame::Data(DataFrame::Crypto(crypto), data) => {
-                                _ = data_crypto_frames_entry.unbounded_send((crypto, data));
-                            }
-                            Frame::Datagram(datagram, data) => {
-                                _ = datagram_frames_entry.unbounded_send((datagram, data));
-                            }
-                            _ => {}
+                        Frame::NewToken(new_token) => {
+                            _ = new_token_frames_entry.unbounded_send(new_token);
                         }
-
-                        Ok(is_ack_eliciting)
-                    };
+                        Frame::MaxData(max_data) => {
+                            _ = max_data_frames_entry.unbounded_send(max_data);
+                        }
+                        Frame::NewConnectionId(new_cid) => {
+                            _ = new_cid_frames_entry.unbounded_send(new_cid);
+                        }
+                        Frame::RetireConnectionId(retire_cid) => {
+                            _ = retire_cid_frames_entry.unbounded_send(retire_cid);
+                        }
+                        Frame::HandshakeDone(hs_done) => {
+                            _ = handshake_done_frames_entry.unbounded_send(hs_done);
+                        }
+                        Frame::DataBlocked(_) => { /* ignore */ }
+                        Frame::Ack(ack_frame) => {
+                            path.on_ack(EPOCH, &ack_frame);
+                            _ = ack_frames_entry.unbounded_send(ack_frame);
+                        }
+                        Frame::Challenge(challenge) => {
+                            path.recv_challenge(challenge);
+                        }
+                        Frame::Response(response) => {
+                            path.recv_response(response);
+                        }
+                        Frame::Stream(stream_ctrl) => {
+                            _ = stream_ctrl_frames_entry.unbounded_send(stream_ctrl);
+                        }
+                        Frame::Data(DataFrame::Stream(stream), data) => {
+                            _ = stream_frames_entry.unbounded_send((stream, data));
+                        }
+                        Frame::Data(DataFrame::Crypto(crypto), data) => {
+                            _ = data_crypto_frames_entry.unbounded_send((crypto, data));
+                        }
+                        Frame::Datagram(datagram, data) => {
+                            _ = datagram_frames_entry.unbounded_send((datagram, data));
+                        }
+                        _ => {}
+                    }
+                    is_ack_eliciting
+                };
 
                 let rcvd_packets = space.rcvd_packets();
                 while let Some((packet, path)) = packets.next().await {
@@ -511,12 +476,10 @@ impl RawConnection {
                         return;
                     };
 
-                    let dispath_result = FrameReader::new(payload.payload).try_fold(
+                    let dispath_result = FrameReader::new(payload.payload, pty).try_fold(
                         false,
                         |is_ack_packet, frame| {
-                            let frame = frame.map_err(Error::from)?;
-                            dispatch_frames_of_1rtt_packet(frame, pty, &path)
-                                .map(|is_ack_frmae| is_ack_packet | is_ack_frmae)
+                            Ok(is_ack_packet || dispatch_frames_of_1rtt_packet(frame?, &path))
                         },
                     );
 
