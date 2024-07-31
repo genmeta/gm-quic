@@ -1,16 +1,8 @@
-use std::{
-    collections::VecDeque,
-    future::Future,
-    sync::{Arc, Mutex, MutexGuard},
-};
-
-/// Crypto data stream
-use qbase::{error::Error, frame::CryptoFrame, util::TransportLimit};
+use std::future::Future;
 
 mod send {
     use std::{
         io,
-        ops::Range,
         pin::Pin,
         sync::{Arc, Mutex},
         task::{Context, Poll, Waker},
@@ -56,8 +48,8 @@ mod send {
             }
         }
 
-        fn on_data_acked(&mut self, range: &Range<u64>) {
-            self.sndbuf.on_data_acked(range);
+        fn on_data_acked(&mut self, crypto_frame: &CryptoFrame) {
+            self.sndbuf.on_data_acked(&crypto_frame.range());
             if self.sndbuf.remaining_mut() > 0 {
                 if let Some(waker) = self.writable_waker.take() {
                     waker.wake();
@@ -65,8 +57,8 @@ mod send {
             }
         }
 
-        fn may_loss_data(&mut self, range: &Range<u64>) {
-            self.sndbuf.may_loss_data(range)
+        fn may_loss_data(&mut self, crypto_frame: &CryptoFrame) {
+            self.sndbuf.may_loss_data(&crypto_frame.range())
         }
     }
 
@@ -102,12 +94,12 @@ mod send {
         }
     }
 
-    type ArcSender = Arc<Mutex<Sender>>;
+    pub(super) type ArcSender = Arc<Mutex<Sender>>;
 
     #[derive(Debug, Clone)]
-    pub struct CryptoStreamWriter(ArcSender);
+    pub struct CryptoStreamWriter(pub(super) ArcSender);
     #[derive(Debug, Clone)]
-    pub(super) struct CryptoStreamOutgoing(ArcSender);
+    pub struct CryptoStreamOutgoing(pub(super) ArcSender);
 
     impl AsyncWrite for CryptoStreamWriter {
         fn poll_write(
@@ -129,7 +121,7 @@ mod send {
     }
 
     impl CryptoStreamOutgoing {
-        pub(crate) fn try_read_data(
+        pub fn try_read_data(
             &self,
             limit: &mut TransportLimit,
             buffer: &mut [u8],
@@ -137,25 +129,21 @@ mod send {
             self.0.lock().unwrap().try_read_data(limit, buffer)
         }
 
-        pub(super) fn on_data_acked(&self, range: &Range<u64>) {
-            self.0.lock().unwrap().on_data_acked(range)
+        pub fn on_data_acked(&self, crypto_frame: &CryptoFrame) {
+            self.0.lock().unwrap().on_data_acked(crypto_frame)
         }
 
-        pub(super) fn may_loss_data(&self, range: &Range<u64>) {
-            self.0.lock().unwrap().may_loss_data(range)
+        pub fn may_loss_data(&self, crypto_frame: &CryptoFrame) {
+            self.0.lock().unwrap().may_loss_data(crypto_frame)
         }
     }
 
-    pub(super) fn create(capacity: usize) -> (CryptoStreamOutgoing, CryptoStreamWriter) {
-        let sender = Arc::new(Mutex::new(Sender {
+    pub(super) fn create(capacity: usize) -> ArcSender {
+        Arc::new(Mutex::new(Sender {
             sndbuf: SendBuf::with_capacity(capacity),
             writable_waker: None,
             flush_waker: None,
-        }));
-        (
-            CryptoStreamOutgoing(sender.clone()),
-            CryptoStreamWriter(sender),
-        )
+        }))
     }
 }
 
@@ -168,13 +156,13 @@ mod recv {
     };
 
     use bytes::{BufMut, Bytes};
-    use qbase::varint::VARINT_MAX;
+    use qbase::{frame::CryptoFrame, varint::VARINT_MAX};
     use tokio::io::{AsyncRead, ReadBuf};
 
     use crate::recv::rcvbuf::RecvBuf;
 
     #[derive(Debug)]
-    struct Recver {
+    pub(super) struct Recver {
         rcvbuf: RecvBuf,
         read_waker: Option<Waker>,
     }
@@ -206,12 +194,12 @@ mod recv {
         }
     }
 
-    type ArcRecver = Arc<Mutex<Recver>>;
+    pub(super) type ArcRecver = Arc<Mutex<Recver>>;
 
     #[derive(Debug, Clone)]
-    pub struct CryptoStreamReader(ArcRecver);
+    pub struct CryptoStreamReader(pub(super) ArcRecver);
     #[derive(Debug, Clone)]
-    pub(super) struct CryptoStreamIncoming(ArcRecver);
+    pub struct CryptoStreamIncoming(pub(super) ArcRecver);
 
     impl AsyncRead for CryptoStreamReader {
         fn poll_read(
@@ -224,20 +212,19 @@ mod recv {
     }
 
     impl CryptoStreamIncoming {
-        pub(super) fn recv(&self, offset: u64, data: Bytes) {
-            self.0.lock().unwrap().recv(offset, data)
+        pub fn recv_crypto_frame(&self, (frame, data): &(CryptoFrame, Bytes)) {
+            self.0
+                .lock()
+                .unwrap()
+                .recv(frame.offset.into(), data.clone())
         }
     }
 
-    pub(super) fn create() -> (CryptoStreamIncoming, CryptoStreamReader) {
-        let recver = Arc::new(Mutex::new(Recver {
+    pub(super) fn create() -> ArcRecver {
+        Arc::new(Mutex::new(Recver {
             rcvbuf: RecvBuf::default(),
             read_waker: None,
-        }));
-        (
-            CryptoStreamIncoming(recver.clone()),
-            CryptoStreamReader(recver),
-        )
+        }))
     }
 }
 
@@ -248,49 +235,32 @@ use tokio::{io::AsyncWriteExt, task::JoinHandle};
 /// Crypto data stream
 #[derive(Debug, Clone)]
 pub struct CryptoStream {
-    incoming: recv::CryptoStreamIncoming,
-    outgoing: send::CryptoStreamOutgoing,
-    reader: CryptoStreamReader,
-    writer: CryptoStreamWriter,
+    sender: send::ArcSender,
+    recver: recv::ArcRecver,
 }
 
 impl CryptoStream {
     pub fn new(sndbuf_size: usize, _rcvbuf_size: usize) -> Self {
-        let (incoming, reader) = recv::create();
-        let (outgoing, writer) = send::create(sndbuf_size);
         Self {
-            incoming,
-            outgoing,
-            reader,
-            writer,
+            sender: send::create(sndbuf_size),
+            recver: recv::create(),
         }
     }
-}
 
-impl CryptoStream {
-    pub fn try_read_data(
-        &self,
-        limit: &mut TransportLimit,
-        buf: &mut [u8],
-    ) -> Option<(CryptoFrame, usize)> {
-        self.outgoing.try_read_data(limit, buf)
+    pub fn writer(&self) -> CryptoStreamWriter {
+        CryptoStreamWriter(self.sender.clone())
     }
 
-    pub fn on_data_acked(&self, data_frame: CryptoFrame) {
-        self.outgoing.on_data_acked(&data_frame.range());
+    pub fn reader(&self) -> CryptoStreamReader {
+        CryptoStreamReader(self.recver.clone())
     }
 
-    pub fn may_loss_data(&self, data_frame: CryptoFrame) {
-        self.outgoing.may_loss_data(&data_frame.range())
+    pub fn outgoing(&self) -> send::CryptoStreamOutgoing {
+        send::CryptoStreamOutgoing(self.sender.clone())
     }
 
-    pub fn recv_data(
-        &self,
-        (crypto_frame, body): &(CryptoFrame, bytes::Bytes),
-    ) -> Result<(), Error> {
-        self.incoming
-            .recv(crypto_frame.offset.into_inner(), body.clone());
-        Ok(())
+    pub fn incoming(&self) -> recv::CryptoStreamIncoming {
+        recv::CryptoStreamIncoming(self.recver.clone())
     }
 }
 
@@ -305,7 +275,7 @@ impl CryptoStream {
     where
         F: FnMut(&mut Vec<u8>) -> usize + Send + 'static,
     {
-        let mut writer = self.writer.clone();
+        let mut writer = self.writer();
         tokio::spawn(async move {
             let mut buf = Vec::with_capacity(1200);
             loop {
@@ -333,29 +303,12 @@ impl CryptoStream {
         P: FnOnce(CryptoStreamReader, CryptoStreamWriter) -> F + Send + 'static,
     {
         tokio::spawn({
-            let reader = self.reader.clone();
-            let writer = self.writer.clone();
+            let reader = self.reader();
+            let writer = self.writer();
             async move {
                 process(reader, writer).await;
             }
         })
-    }
-}
-
-type RawCryptoFrameDeque = VecDeque<CryptoFrame>;
-
-#[derive(Debug, Default, Clone)]
-pub struct ArcCryptoFrameDeque(Arc<Mutex<RawCryptoFrameDeque>>);
-
-impl ArcCryptoFrameDeque {
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self(Arc::new(Mutex::new(RawCryptoFrameDeque::with_capacity(
-            capacity,
-        ))))
-    }
-
-    pub fn lock_guard(&self) -> MutexGuard<'_, RawCryptoFrameDeque> {
-        self.0.lock().unwrap()
     }
 }
 
@@ -368,24 +321,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_read() {
-        let mut crypto_stream: CryptoStream = CryptoStream::new(1000_0000, 0);
+        let crypto_stream: CryptoStream = CryptoStream::new(1000_0000, 0);
         crypto_stream
-            .writer
+            .writer()
             .write_all(b"hello world")
             .await
             .unwrap();
 
-        crypto_stream
-            .recv_data(&(
-                CryptoFrame {
-                    offset: VarInt::from_u32(0),
-                    length: VarInt::from_u32(11),
-                },
-                bytes::Bytes::copy_from_slice(b"hello world"),
-            ))
-            .unwrap();
+        crypto_stream.incoming().recv_crypto_frame(&(
+            CryptoFrame {
+                offset: VarInt::from_u32(0),
+                length: VarInt::from_u32(11),
+            },
+            bytes::Bytes::copy_from_slice(b"hello world"),
+        ));
         let mut buf = [0u8; 11];
-        crypto_stream.reader.read_exact(&mut buf).await.unwrap();
+        crypto_stream.reader().read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf[..], b"hello world");
     }
 }
