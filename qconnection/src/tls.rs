@@ -75,7 +75,9 @@ impl RawTlsSession {
         }
     }
 
+    // 将plaintext中的数据写入tls_conn供其处理
     fn write_tls_msg(&mut self, plaintext: &[u8]) -> Result<(), rustls::Error> {
+        // rusltls::quic::Connection::read_hs()，该函数即消费掉plaintext的数据给到tls_conn内部处理
         self.tls_conn.read_hs(plaintext)?;
         if self.tls_conn.wants_write() {
             if let Some(waker) = self.wants_write.take() {
@@ -85,8 +87,10 @@ impl RawTlsSession {
         Ok(())
     }
 
+    // 轮询tls_conn，看是否有数据要从中读取并发送给对方，或者密钥升级。如果什么都没发生，则返回Pending
     fn poll_read_tls_msg(&mut self, cx: &mut Context<'_>) -> Poll<(Vec<u8>, Option<KeyChange>)> {
         let mut buf = Vec::with_capacity(1200);
+        // rusltls::quic::Connection::write_hs()，该函数即将tls_conn内部的数据写入到buf中
         let key_change = self.tls_conn.write_hs(&mut buf);
         if key_change.is_none() && buf.is_empty() {
             self.wants_write = Some(cx.waker().clone());
@@ -149,7 +153,7 @@ impl ArcTlsSession {
             tokio::spawn(async move {
                 // 不停地从crypto_stream_reader读取数据，读到就送给tls_conn
                 let mut buf = Vec::with_capacity(1200);
-                // TODO: 处理错误，以及何时终止？reader被销毁的时候，会终止吗？
+                // TODO: 处理错误，以及何时终止？reader被销毁的时候，会终止吗？处理它们的异常终止
                 loop {
                     buf.truncate(0);
                     let _err = crypto_stream_reader.read(&mut buf).await;
@@ -159,6 +163,7 @@ impl ArcTlsSession {
         }
 
         // 在此创建不停地检查tls_conn是否有数据要给到对方，或者产生了密钥升级
+        // TODO: 处理错误，处理它们的异常终止
         tokio::spawn({
             let tls_session = self.clone();
             let mut crypto_stream_writers = [
@@ -167,6 +172,8 @@ impl ArcTlsSession {
                 crypto_streams[2].writer(),
             ];
             async move {
+                // rustls严格限制了tls握手过程中的其中各类消息的发送顺序，这就是由read_tls_msg函数的顺序调用的返回
+                // 值保证的。因此，其返回了密钥升级，则需要升级到相应密级，然后后续的数据都将在新密级下发送。
                 let mut epoch = Epoch::Initial;
                 loop {
                     let (buf, key_upgrade) = tls_session.read_tls_msg().await;
