@@ -413,7 +413,7 @@ impl RawConnection {
             pipe!(rcvd_ack_frames |> on_ack);
             let (ccf_entry, rcvd_ccf) = mpsc::unbounded();
 
-            pipe!(rcvd_ccf |> conn_error, recv_ccf);
+            pipe!(rcvd_ccf |> conn_error, on_ccf_rcvd);
             let space = data_space.clone();
 
             async move {

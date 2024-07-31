@@ -11,14 +11,13 @@ pub mod closing;
 pub mod draining;
 pub mod raw;
 
-#[derive(Debug)]
 enum ConnState {
-    // Raw(raw::RawConnection),
+    Raw(raw::RawConnection),
     // Closing(closing::ClosingConnection),
     Draining(draining::DrainingConnection),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ArcConnection(Arc<Mutex<ConnState>>);
 
 impl ArcConnection {
@@ -40,7 +39,7 @@ impl ArcConnection {
     /// draining state. Even if the connection will enter closing state in future, the returned
     /// data streams are still available. It doesn't matter, because the returned DataStreams will
     /// be synced into Error state, and do anything about this DataStreams will return an Error.
-    pub fn streams(&self) -> Result<DataStreams, Error> {
+    pub fn streams(&self) -> Result<DataStreams, std::io::Error> {
         todo!("get the streams of the connection, return error if the connection is in closing state or draining state")
     }
 
@@ -58,7 +57,7 @@ impl ArcConnection {
 
     /// Enter draining state from raw state or closing state.
     /// Can only be called internally, and the app should not care this method.
-    pub(crate) fn drain(&self, _pto: Duration) {
+    pub(crate) fn drain(&self, _remaining: Duration) {
         todo!("enter draining state from raw state or closing state");
     }
 
