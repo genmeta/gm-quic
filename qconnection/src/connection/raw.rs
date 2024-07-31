@@ -30,7 +30,7 @@ use qrecovery::{
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 
-use crate::{crypto::TlsSession, error::ConnError, path::ArcPath, pipe};
+use crate::{error::ConnError, path::ArcPath, pipe, tls::ArcTlsSession};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct RelayAddr {
@@ -93,9 +93,7 @@ pub struct RawConnection {
 type PacketType = packet::r#type::Type;
 
 impl RawConnection {
-    pub fn new(tls_io: TlsSession) -> Self {
-        let role = tls_io.role();
-
+    pub fn new(role: Role, tls_session: ArcTlsSession) -> Self {
         let pathes = DashMap::new();
         let cid_registry = Registry::new(2);
         let handshake = Handshake::with_role(role);

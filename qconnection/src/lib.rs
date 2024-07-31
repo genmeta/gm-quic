@@ -4,7 +4,6 @@ use std::net::SocketAddr;
 // use qbase::packet::SpacePacket;
 
 pub mod connection;
-pub mod crypto;
 pub mod error;
 pub mod pipe;
 pub mod tls;
@@ -12,7 +11,6 @@ pub mod tls;
 pub mod path;
 
 // pub(crate) mod auto;
-// pub(crate) mod handshake;
 // pub mod transmit;
 
 /*
