@@ -11,6 +11,7 @@ use qbase::{error::Error, streamid::Role};
 
 use crate::{recv::Reader, reliable::ArcReliableFrameDeque, send::Writer};
 
+pub mod crypto;
 pub mod data;
 pub mod listener;
 

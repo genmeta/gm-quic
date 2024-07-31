@@ -1,3 +1,5 @@
+use std::future::Future;
+
 /// Crypto data stream
 use qbase::{error::Error, frame::CryptoFrame, util::TransportLimit};
 
@@ -237,32 +239,9 @@ mod recv {
 
 pub use recv::CryptoStreamReader;
 pub use send::CryptoStreamWriter;
+use tokio::{io::AsyncWriteExt, task::JoinHandle};
 
 /// Crypto data stream
-/// ## Example
-/// ```rust
-/// use bytes::Bytes;
-/// use qbase::{frame::CryptoFrame, varint::VarInt};
-/// use qrecovery::crypto::CryptoStream;
-/// use tokio::io::{AsyncWriteExt, AsyncReadExt};
-///
-/// #[tokio::main]
-/// async fn main() {
-///     let mut crypto_stream = CryptoStream::new(1000_0000, 0);
-///     crypto_stream.writer().write(b"hello world").await.unwrap();
-///
-///     // simulate recv some data from network
-///     crypto_stream.recv_data(CryptoFrame {
-///         offset: VarInt::from_u32(0),
-///         length: VarInt::from_u32(11),
-///     }, Bytes::copy_from_slice(b"hello world")).unwrap();
-///
-///     // async read content from crypto stream
-///     let mut buf = [0u8; 11];
-///     crypto_stream.reader().read_exact(&mut buf).await.unwrap();
-///     assert_eq!(&buf[..], b"hello world");
-/// }
-/// ```
 #[derive(Debug, Clone)]
 pub struct CryptoStream {
     incoming: recv::CryptoStreamIncoming,
@@ -282,22 +261,9 @@ impl CryptoStream {
             writer,
         }
     }
-
-    pub fn split(&self) -> (CryptoStreamReader, CryptoStreamWriter) {
-        (self.reader.clone(), self.writer.clone())
-    }
-
-    pub fn reader(&self) -> recv::CryptoStreamReader {
-        self.reader.clone()
-    }
-
-    pub fn writer(&self) -> send::CryptoStreamWriter {
-        self.writer.clone()
-    }
 }
 
 impl CryptoStream {
-    #[inline]
     pub fn try_read_data(
         &self,
         limit: &mut TransportLimit,
@@ -306,20 +272,65 @@ impl CryptoStream {
         self.outgoing.try_read_data(limit, buf)
     }
 
-    #[inline]
     pub fn on_data_acked(&self, data_frame: CryptoFrame) {
         self.outgoing.on_data_acked(&data_frame.range());
     }
 
-    #[inline]
     pub fn may_loss_data(&self, data_frame: CryptoFrame) {
         self.outgoing.may_loss_data(&data_frame.range())
     }
 
-    #[inline]
     pub fn recv_data(&self, crypto_frame: CryptoFrame, body: bytes::Bytes) -> Result<(), Error> {
         self.incoming.recv(crypto_frame.offset.into_inner(), body);
         Ok(())
+    }
+}
+
+impl CryptoStream {
+    /// Continuously fetch data from the data source `f` until no more data is available,
+    /// then write all this data into the CryptoStream.
+    /// For a Quic connection client, handshake data, including Quic connection parameters,
+    /// must be written first before the process can start.
+    /// For the server, after receiving a connection request, server parameters, certificates,
+    /// and other information must be written before continuing.
+    pub fn write_with<F>(&self, mut f: F) -> JoinHandle<()>
+    where
+        F: FnMut(&mut Vec<u8>) -> usize + Send + 'static,
+    {
+        let mut writer = self.writer.clone();
+        tokio::spawn(async move {
+            let mut buf = Vec::with_capacity(1200);
+            loop {
+                buf.truncate(0);
+                let n = f(&mut buf);
+                if n == 0 {
+                    break;
+                }
+
+                writer.write_all(&buf[..n]).await.unwrap();
+            }
+        })
+    }
+
+    /// The application layer handles the Crypto stream, following the common process of reading data from
+    /// the Crypto stream, processing it, and then writing it back to the Crypto stream.
+    /// The calling method is similar to the way an HTTP service is handled, i.e., passing in a handler
+    /// function, which takes the reader and writer of the Crypto stream as parameters.
+    /// The function then performs read and write operations with these parameters, executing the relevant
+    /// processing logic.
+    /// Given that AsyncFn is not yet mature, the following format is used.
+    pub fn handle<P, F>(&self, process: P) -> JoinHandle<()>
+    where
+        F: Future<Output = ()> + Send + 'static,
+        P: FnOnce(CryptoStreamReader, CryptoStreamWriter) -> F + Send + 'static,
+    {
+        tokio::spawn({
+            let reader = self.reader.clone();
+            let writer = self.writer.clone();
+            async move {
+                process(reader, writer).await;
+            }
+        })
     }
 }
 
@@ -332,9 +343,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_read() {
-        let crypto_stream: CryptoStream = CryptoStream::new(1000_0000, 0);
+        let mut crypto_stream: CryptoStream = CryptoStream::new(1000_0000, 0);
         crypto_stream
-            .writer()
+            .writer
             .write_all(b"hello world")
             .await
             .unwrap();
@@ -349,7 +360,7 @@ mod tests {
             )
             .unwrap();
         let mut buf = [0u8; 11];
-        crypto_stream.reader().read_exact(&mut buf).await.unwrap();
+        crypto_stream.reader.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf[..], b"hello world");
     }
 }
