@@ -24,20 +24,20 @@ use crate::{
 };
 
 pub struct RawConnection {
-    pathes: DashMap<Pathway, ArcPath>,
-    cid_registry: Registry,
+    pub pathes: DashMap<Pathway, ArcPath>,
+    pub cid_registry: Registry,
     // handshake done的信号
-    handshake: Handshake,
-    flow_ctrl: FlowController,
-    spin: Arc<Mutex<SpinBit>>,
-    error: ConnError,
+    pub handshake: Handshake,
+    pub flow_ctrl: FlowController,
+    pub spin: Arc<Mutex<SpinBit>>,
+    pub error: ConnError,
 
-    initial: InitialScope,
-    hs: HandshakeScope,
-    data: DataScope,
+    pub initial: InitialScope,
+    pub hs: HandshakeScope,
+    pub data: DataScope,
 
-    streams: DataStreams,
-    reliable_frames: ArcReliableFrameDeque,
+    pub reliable_frames: ArcReliableFrameDeque,
+    pub streams: DataStreams,
     datagrams: DatagramFlow,
 }
 

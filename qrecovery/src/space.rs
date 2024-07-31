@@ -1,8 +1,8 @@
 use std::ops::{Index, IndexMut};
 
-use qbase::frame::{CryptoFrame, ReliableFrame};
+use qbase::frame::CryptoFrame;
 
-use crate::reliable::{rcvdpkt::ArcRcvdPktRecords, sentpkt::ArcSentPktRecords};
+use crate::reliable::{rcvdpkt::ArcRcvdPktRecords, sentpkt::ArcSentPktRecords, GuaranteedFrame};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Epoch {

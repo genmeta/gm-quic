@@ -154,17 +154,3 @@ impl<T: bytes::BufMut> WriteFrame<StreamCtlFrame> for T {
         }
     }
 }
-
-impl<T: bytes::BufMut> WriteFrame<ReliableFrame> for T {
-    fn put_frame(&mut self, frame: &ReliableFrame) {
-        match frame {
-            ReliableFrame::NewToken(frame) => self.put_new_token_frame(frame),
-            ReliableFrame::MaxData(frame) => self.put_max_data_frame(frame),
-            ReliableFrame::DataBlocked(frame) => self.put_data_blocked_frame(frame),
-            ReliableFrame::NewConnectionId(frame) => self.put_new_connection_id_frame(frame),
-            ReliableFrame::RetireConnectionId(frame) => self.put_retire_connection_id_frame(frame),
-            ReliableFrame::HandshakeDone(_) => self.put_handshake_done_frame(),
-            ReliableFrame::Stream(frame) => self.put_frame(frame),
-        }
-    }
-}

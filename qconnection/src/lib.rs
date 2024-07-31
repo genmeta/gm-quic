@@ -10,7 +10,7 @@ pub mod pipe;
 pub mod tls;
 
 // pub(crate) mod auto;
-// pub mod transmit;
+pub mod transmit;
 
 /*
 pub trait ReceiveProtectedPacket {
