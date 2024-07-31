@@ -59,10 +59,10 @@ impl ArcPath {
         }
     }
 
-    pub fn on_recv_pkt(&self, epoch: Epoch, pn: u64, is_ack_eliciting: bool) {
+    pub fn on_recv_pkt(&self, epoch: Epoch, pn: u64, is_ackeliciting: bool) {
         let mut guard = self.0.lock().unwrap();
         if let PathState::Alive(path) = &mut *guard {
-            path.on_recv_pkt(epoch, pn, is_ack_eliciting);
+            path.on_recv_pkt(epoch, pn, is_ackeliciting);
         }
     }
 

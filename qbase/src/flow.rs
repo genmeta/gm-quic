@@ -65,7 +65,7 @@ impl RawSendControler {
         }
     }
 
-    fn recv_max_data_frame(&mut self, frame: MaxDataFrame) {
+    fn recv_max_data_frame(&mut self, frame: &MaxDataFrame) {
         let max_data = frame.max_data.into_inner();
         if max_data > self.max_data {
             self.max_data = max_data;
@@ -95,7 +95,7 @@ impl ArcSendControler {
     }
 
     /// Increasing Flow Control Limits by receiving a MAX_DATA frame from peer.
-    pub fn recv_max_data_frame(&self, frame: MaxDataFrame) {
+    pub fn recv_max_data_frame(&self, frame: &MaxDataFrame) {
         let mut guard = self.0.lock().unwrap();
         if let Ok(send_ctrl) = guard.deref_mut() {
             send_ctrl.recv_max_data_frame(frame);

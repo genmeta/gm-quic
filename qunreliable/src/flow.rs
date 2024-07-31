@@ -82,12 +82,15 @@ impl DatagramFlow {
 
     /// See [`DatagramReader::recv_datagram`] for more details.
     #[inline]
-    pub fn recv_datagram(&self, (frame, body): (DatagramFrame, bytes::Bytes)) -> Result<(), Error> {
+    pub fn recv_datagram(
+        &self,
+        (frame, body): &(DatagramFrame, bytes::Bytes),
+    ) -> Result<(), Error> {
         self.raw_flow
             .read()
             .unwrap()
             .reader
-            .recv_datagram(frame, body)
+            .recv_datagram(frame, body.clone())
     }
 
     /// Create a pair of [`DatagramReader`] and [`DatagramWriter`] for the application to read and write datagrams.

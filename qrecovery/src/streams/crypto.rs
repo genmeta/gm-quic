@@ -286,9 +286,10 @@ impl CryptoStream {
 
     pub fn recv_data(
         &self,
-        (crypto_frame, body): (CryptoFrame, bytes::Bytes),
+        (crypto_frame, body): &(CryptoFrame, bytes::Bytes),
     ) -> Result<(), Error> {
-        self.incoming.recv(crypto_frame.offset.into_inner(), body);
+        self.incoming
+            .recv(crypto_frame.offset.into_inner(), body.clone());
         Ok(())
     }
 }
@@ -375,7 +376,7 @@ mod tests {
             .unwrap();
 
         crypto_stream
-            .recv_data((
+            .recv_data(&(
                 CryptoFrame {
                     offset: VarInt::from_u32(0),
                     length: VarInt::from_u32(11),

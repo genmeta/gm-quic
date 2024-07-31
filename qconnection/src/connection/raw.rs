@@ -137,7 +137,7 @@ impl RawConnection {
 
             let space = initial_space.clone();
             let crypto_stream = initial_crypto_stream.clone();
-            let on_ack = move |ack_frame: AckFrame| {
+            let on_ack = move |ack_frame: &AckFrame| {
                 let record = space.sent_packets();
                 let mut recv_guard = record.receive();
                 recv_guard.update_largest(ack_frame.largest.into_inner());
@@ -222,7 +222,7 @@ impl RawConnection {
 
             let space = handshake_space.clone();
             let crypto_stream = handshake_crypto_stream.clone();
-            let on_ack = move |ack_frame: AckFrame| {
+            let on_ack = move |ack_frame: &AckFrame| {
                 let record = space.sent_packets();
                 let mut recv_guard = record.receive();
                 recv_guard.update_largest(ack_frame.largest.into_inner());
@@ -410,7 +410,7 @@ impl RawConnection {
             let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded();
             pipe!(@error(conn_error) rcvd_datagram_frames |> datagram_flow,recv_datagram);
 
-            let on_ack = move |ack_frame: AckFrame| {
+            let on_ack = move |ack_frame: &AckFrame| {
                 let record = space.sent_packets();
                 let mut recv_guard = record.receive();
                 recv_guard.update_largest(ack_frame.largest.into_inner());
@@ -476,6 +476,7 @@ impl RawConnection {
                             }
                             Frame::DataBlocked(_) => { /* ignore */ }
                             Frame::Ack(ack_frame) => {
+                                path.on_ack(EPOCH, &ack_frame);
                                 _ = ack_frames_entry.unbounded_send(ack_frame);
                             }
                             Frame::Challenge(challenge) => {
