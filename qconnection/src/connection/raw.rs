@@ -25,10 +25,7 @@ use qbase::{
 use qrecovery::{
     reliable::{ArcReliableFrameDeque, ReliableFrame},
     space::{DataSpace, Epoch, HandshakeSpace, InitialSpace},
-    streams::{
-        crypto::{ArcCryptoFrameDeque, CryptoStream},
-        DataStreams,
-    },
+    streams::{crypto::CryptoStream, DataStreams},
 };
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
@@ -69,13 +66,11 @@ pub struct RawConnection {
 
     initial_space: InitialSpace,
     initial_crypto_stream: CryptoStream,
-    initial_crypto_frames_deque: ArcCryptoFrameDeque,
     initial_packet_queue: InitialPacketQueue,
     initial_keys: ArcKeys,
 
     handshake_space: HandshakeSpace,
     handshake_crypto_stream: CryptoStream,
-    handshake_crypto_frames_deque: ArcCryptoFrameDeque,
     handshake_packet_queue: HandshakePacketQueue,
     handshake_keys: ArcKeys,
 
@@ -104,12 +99,10 @@ impl RawConnection {
 
         let initial_space = InitialSpace::with_capacity(0);
         let initial_crypto_stream = CryptoStream::new(0, 0);
-        let initial_crypto_frames_deque = ArcCryptoFrameDeque::with_capacity(0);
         let initial_keys = ArcKeys::new_pending();
 
         let handshake_space = HandshakeSpace::with_capacity(0);
         let handshake_crypto_stream = CryptoStream::new(0, 0);
-        let handshake_crypto_frames_deque = ArcCryptoFrameDeque::with_capacity(0);
         let handshake_keys = ArcKeys::new_pending();
 
         let data_space = DataSpace::with_capacity(0);
@@ -136,7 +129,7 @@ impl RawConnection {
             let mut packets = initial_packets;
 
             let space = initial_space.clone();
-            let crypto_stream = initial_crypto_stream.clone();
+            let crypto_stream_outgoing = initial_crypto_stream.outgoing();
             let on_ack = move |ack_frame: &AckFrame| {
                 let record = space.sent_packets();
                 let mut recv_guard = record.receive();
@@ -144,7 +137,7 @@ impl RawConnection {
 
                 for pn in ack_frame.iter().flat_map(|r| r.rev()) {
                     for frame in recv_guard.on_pkt_acked(pn) {
-                        crypto_stream.on_data_acked(frame);
+                        crypto_stream_outgoing.on_data_acked(&frame);
                     }
                 }
             };
@@ -156,7 +149,7 @@ impl RawConnection {
             let conn_error = conn_error.clone();
 
             let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
-            pipe!(@error(conn_error) rcvd_crypto_frames |> crypto_stream, recv_data);
+            pipe!(rcvd_crypto_frames |> crypto_stream.incoming(), recv_crypto_frame);
 
             let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
             pipe!(rcvd_ack_frames |> on_ack);
@@ -221,7 +214,7 @@ impl RawConnection {
             let mut packets = handshake_packets;
 
             let space = handshake_space.clone();
-            let crypto_stream = handshake_crypto_stream.clone();
+            let crypto_stream_outgoing = handshake_crypto_stream.outgoing();
             let on_ack = move |ack_frame: &AckFrame| {
                 let record = space.sent_packets();
                 let mut recv_guard = record.receive();
@@ -229,7 +222,7 @@ impl RawConnection {
 
                 for pn in ack_frame.iter().flat_map(|r| r.rev()) {
                     for frame in recv_guard.on_pkt_acked(pn) {
-                        crypto_stream.on_data_acked(frame);
+                        crypto_stream_outgoing.on_data_acked(&frame);
                     }
                 }
             };
@@ -241,7 +234,7 @@ impl RawConnection {
             let conn_error = conn_error.clone();
 
             let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
-            pipe!(@error(conn_error) rcvd_crypto_frames |> crypto_stream, recv_data);
+            pipe!(rcvd_crypto_frames |> crypto_stream.incoming(), recv_crypto_frame);
 
             let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
             pipe!(rcvd_ack_frames |> on_ack);
@@ -385,7 +378,6 @@ impl RawConnection {
             let keys = one_rtt_keys.clone();
             let space = data_space.clone();
             let data_streams = data_streams.clone();
-            let crypto_stream = data_crypto_stream.clone();
             let conn_error = conn_error.clone();
 
             let (max_data_frames_entry, rcvd_max_data_frames) = mpsc::unbounded();
@@ -402,7 +394,7 @@ impl RawConnection {
             let (new_token_frames_entry, rcvd_new_token_frames) = mpsc::unbounded();
 
             let (data_crypto_frames_entry, rcvd_data_crypto_frames) = mpsc::unbounded();
-            pipe!(@error(conn_error) rcvd_data_crypto_frames |> crypto_stream, recv_data);
+            pipe!(rcvd_data_crypto_frames |> data_crypto_stream.incoming(), recv_crypto_frame);
             let (stream_ctrl_frames_entry, rcvd_stream_ctrl_frames) = mpsc::unbounded();
             pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> data_streams, recv_stream_control);
             let (stream_frames_entry, rcvd_stream_frames) = mpsc::unbounded();
@@ -410,6 +402,7 @@ impl RawConnection {
             let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded();
             pipe!(@error(conn_error) rcvd_datagram_frames |> datagram_flow,recv_datagram);
 
+            let crypto_stream_outgoing = data_crypto_stream.outgoing();
             let on_ack = move |ack_frame: &AckFrame| {
                 let record = space.sent_packets();
                 let mut recv_guard = record.receive();
@@ -422,7 +415,7 @@ impl RawConnection {
                                 data_streams.on_data_acked(stream_frame)
                             }
                             ReliableFrame::Data(DataFrame::Crypto(crypto)) => {
-                                crypto_stream.on_data_acked(crypto)
+                                crypto_stream_outgoing.on_data_acked(&crypto)
                             }
                             // qrecovery::reliable::ReliableFrame::NewToken(_) => todo!(),
                             // qrecovery::reliable::ReliableFrame::MaxData(_) => todo!(),
@@ -575,12 +568,10 @@ impl RawConnection {
             cid_registry,
             initial_space,
             initial_crypto_stream,
-            initial_crypto_frames_deque,
             initial_packet_queue,
             initial_keys,
             handshake_space,
             handshake_crypto_stream,
-            handshake_crypto_frames_deque,
             handshake_packet_queue,
             handshake_keys,
             data_space,
