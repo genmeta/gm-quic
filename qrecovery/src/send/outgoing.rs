@@ -15,7 +15,7 @@ use qbase::{
         ShouldCarryLength, StreamFrame,
     },
     streamid::StreamId,
-    util::{DescribeData, TransportLimit},
+    util::{Burst, DescribeData},
     varint::VARINT_MAX,
 };
 
@@ -46,10 +46,10 @@ impl Outgoing {
         &self,
         sid: StreamId,
         credit: usize,
-        limit: &mut TransportLimit,
+        burst: &mut Burst,
         mut buf: &mut [u8],
     ) -> Option<(StreamFrame, usize, usize)> {
-        let capacity = limit.available();
+        let capacity = burst.available();
         let write = |(offset, data, is_eos): (u64, (&[u8], &[u8]), bool)| {
             let mut frame = StreamFrame::new(sid, offset, data.len());
 
@@ -75,7 +75,7 @@ impl Outgoing {
         let estimate_capacity = |offset| {
             StreamFrame::estimate_max_capacity(capacity, sid, offset).map(|cap| cap.min(credit))
         };
-        let mut picker = PickIndicator::new(estimate_capacity, Some(limit.flow_control_limit()));
+        let mut picker = PickIndicator::new(estimate_capacity, Some(burst.flow_control_limit()));
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
 
@@ -101,9 +101,9 @@ impl Outgoing {
             Err(_) => None,
         }?;
 
-        let new_data_written = limit.flow_control_limit() - picker.flow_control_limit();
-        limit.record_write_new_stream_data(new_data_written);
-        limit.record_write(written);
+        let new_data_written = burst.flow_control_limit() - picker.flow_control_limit();
+        burst.post_write_new_stream_data(new_data_written);
+        burst.post_write(written);
 
         Some((frame, data_written, written))
     }

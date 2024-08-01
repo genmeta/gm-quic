@@ -9,7 +9,7 @@ use bytes::Bytes;
 use qbase::{
     error::{Error, ErrorKind},
     frame::{io::WriteDatagramFrame, BeFrame, DatagramFrame, FrameType},
-    util::TransportLimit,
+    util::Burst,
     varint::VarInt,
 };
 
@@ -49,7 +49,7 @@ impl DatagramWriter {
     ///
     pub(super) fn try_read_datagram(
         &self,
-        limit: &mut TransportLimit,
+        limit: &mut Burst,
         mut buf: &mut [u8],
     ) -> Option<(DatagramFrame, usize)> {
         let mut guard = self.0.lock().unwrap();
@@ -202,10 +202,7 @@ mod tests {
         writer.send_bytes(data.clone()).unwrap();
 
         let (frame, written) = writer
-            .try_read_datagram(
-                &mut TransportLimit::new(None, usize::MAX, 0),
-                &mut [0; 1024],
-            )
+            .try_read_datagram(&mut Burst::new(None, usize::MAX, 0), &mut [0; 1024])
             .unwrap();
         assert_eq!(frame.length, Some(VarInt::try_from(data.len()).unwrap()));
         assert_eq!(written, 1 + 1 + data.len());
@@ -219,7 +216,7 @@ mod tests {
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
         assert_eq!(
-            writer.try_read_datagram(&mut TransportLimit::new(None, 1 + 11, 0), &mut [0; 1024]),
+            writer.try_read_datagram(&mut Burst::new(None, 1 + 11, 0), &mut [0; 1024]),
             Some((DatagramFrame::new(None), 12))
         );
     }
@@ -232,7 +229,7 @@ mod tests {
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
         assert!(writer
-            .try_read_datagram(&mut TransportLimit::new(None, 1, 0), &mut [0; 1024])
+            .try_read_datagram(&mut Burst::new(None, 1, 0), &mut [0; 1024])
             .is_none());
     }
 
