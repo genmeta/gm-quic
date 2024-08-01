@@ -12,7 +12,7 @@ use crate::{cid::ConnectionId, token::ResetToken};
 
 // QUIC的config配置
 #[derive(Getters, CopyGetters, Setters, MutGetters, Debug, PartialEq)]
-pub struct TransportParameters {
+pub struct Parameters {
     #[getset(get = "pub", set = "pub")]
     original_destination_connection_id: Option<ConnectionId>,
     #[getset(get_copy = "pub", set = "pub")]
@@ -57,7 +57,7 @@ pub struct TransportParameters {
     grease_quic_bit: bool,
 }
 
-impl TransportParameters {
+impl Parameters {
     pub fn contain_server_parameters(&self) -> bool {
         self.original_destination_connection_id().is_some()
             || self.preferred_address.is_some()
@@ -90,14 +90,14 @@ pub mod ext {
     use bytes::BufMut;
     use nom::{bytes::complete::take, combinator::map};
 
-    use super::{PreferredAddress, TransportParameters};
+    use super::{Parameters, PreferredAddress};
     use crate::{
         cid::{self, be_connection_id, ConnectionId, WriteConnectionId},
         token::{be_reset_token, ResetToken, WriteResetToken},
         varint::{be_varint, VarInt, WriteVarInt},
     };
 
-    pub fn be_transport_parameters(input: &[u8]) -> nom::IResult<&[u8], TransportParameters> {
+    pub fn be_parameters(input: &[u8]) -> nom::IResult<&[u8], Parameters> {
         let be_connection_id = |input| {
             let (remain, cid) = cid::be_connection_id(input)?;
             Ok((remain, Some(cid)))
@@ -119,7 +119,7 @@ pub mod ext {
         };
 
         let mut remain = input;
-        let mut tp = TransportParameters::default();
+        let mut tp = Parameters::default();
         while !remain.is_empty() {
             let tag: VarInt;
             let len: VarInt;
@@ -157,12 +157,12 @@ pub mod ext {
     }
 
     pub trait WriteParameters {
-        fn put_transport_parameters(&mut self, params: &TransportParameters);
+        fn put_parameters(&mut self, params: &Parameters);
         fn put_preferred_address(&mut self, addr: &super::PreferredAddress);
     }
 
     impl<T: BufMut> WriteParameters for T {
-        fn put_transport_parameters(&mut self, params: &TransportParameters) {
+        fn put_parameters(&mut self, params: &Parameters) {
             let put_varint = |buf: &mut Self, tag: u8, varint: VarInt| {
                 if varint.into_inner() > 0 {
                     buf.put_u8(tag);
@@ -275,9 +275,9 @@ pub mod ext {
     }
 }
 
-impl Default for TransportParameters {
-    fn default() -> TransportParameters {
-        TransportParameters {
+impl Default for Parameters {
+    fn default() -> Parameters {
+        Parameters {
             original_destination_connection_id: None,
             max_idle_timeout: Duration::from_secs(0),
             statelss_reset_token: None,
@@ -313,7 +313,7 @@ mod test {
     fn coding() {
         let init_cid = be_connection_id(&[0x04, 0x01, 0x02, 0x03, 0x04]).unwrap().1;
         let orgin_cid = be_connection_id(&[0x04, 0x05, 0x06, 0x07, 0x08]).unwrap().1;
-        let params = TransportParameters {
+        let params = Parameters {
             original_destination_connection_id: Some(orgin_cid),
             max_idle_timeout: Duration::from_secs(0x12345678),
             statelss_reset_token: Some(ResetToken::new(&[0x01; RESET_TOKEN_SIZE])),
@@ -348,8 +348,8 @@ mod test {
         };
 
         let mut buf = bytes::BytesMut::new();
-        buf.put_transport_parameters(&params);
-        let params2 = ext::be_transport_parameters(&buf).unwrap().1;
+        buf.put_parameters(&params);
+        let params2 = ext::be_parameters(&buf).unwrap().1;
         assert_eq!(params, params2);
     }
 }

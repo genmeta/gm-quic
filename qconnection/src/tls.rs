@@ -6,25 +6,24 @@ use std::{
 };
 
 use qbase::{
-    config::{ext::WriteParameters, TransportParameters},
+    config::{ext::WriteParameters, Parameters},
     packet::keys::{ArcKeys, ArcOneRttKeys},
 };
 use qrecovery::{space::Epoch, streams::crypto::CryptoStream};
-use rustls::quic::{ClientConnection, Connection, KeyChange, ServerConnection};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// write_tls_msg()，将明文数据写入tls_conn，同步的，可能会唤醒read数据发送
 /// poll_read_tls_msg()，从tls_conn读取数据，异步的，返回(Vec<u8>, Option<KeyChange>)
 #[derive(Debug)]
 pub(crate) struct RawTlsSession {
-    tls_conn: Connection,
+    tls_conn: rustls::quic::Connection,
     wants_write: Option<Waker>,
 }
 
 impl RawTlsSession {
     fn new_client(
         server_name: rustls::pki_types::ServerName<'static>,
-        client_params: &TransportParameters,
+        client_params: &Parameters,
     ) -> Self {
         let config =
             rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
@@ -32,10 +31,10 @@ impl RawTlsSession {
                 .with_no_client_auth();
 
         let mut params = Vec::new();
-        params.put_transport_parameters(client_params);
+        params.put_parameters(client_params);
 
-        let connection = Connection::Client(
-            ClientConnection::new(
+        let connection = rustls::quic::Connection::Client(
+            rustls::quic::ClientConnection::new(
                 Arc::new(config),
                 rustls::quic::Version::V1,
                 server_name,
@@ -52,7 +51,7 @@ impl RawTlsSession {
     pub fn new_server(
         cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
         key_der: rustls::pki_types::PrivateKeyDer<'static>,
-        server_params: &TransportParameters,
+        server_params: &Parameters,
     ) -> Self {
         let config = rustls::ServerConfig::builder_with_provider(
             rustls::crypto::ring::default_provider().into(),
@@ -64,10 +63,15 @@ impl RawTlsSession {
         .unwrap();
 
         let mut params = Vec::new();
-        params.put_transport_parameters(server_params);
+        params.put_parameters(server_params);
 
-        let connection = Connection::Server(
-            ServerConnection::new(Arc::new(config), rustls::quic::Version::V1, params).unwrap(),
+        let connection = rustls::quic::Connection::Server(
+            rustls::quic::ServerConnection::new(
+                Arc::new(config),
+                rustls::quic::Version::V1,
+                params,
+            )
+            .unwrap(),
         );
         Self {
             tls_conn: connection,
@@ -88,7 +92,10 @@ impl RawTlsSession {
     }
 
     // 轮询tls_conn，看是否有数据要从中读取并发送给对方，或者密钥升级。如果什么都没发生，则返回Pending
-    fn poll_read_tls_msg(&mut self, cx: &mut Context<'_>) -> Poll<(Vec<u8>, Option<KeyChange>)> {
+    fn poll_read_tls_msg(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<(Vec<u8>, Option<rustls::quic::KeyChange>)> {
         let mut buf = Vec::with_capacity(1200);
         // rusltls::quic::Connection::write_hs()，该函数即将tls_conn内部的数据写入到buf中
         let key_change = self.tls_conn.write_hs(&mut buf);
@@ -107,7 +114,7 @@ pub struct ArcTlsSession(Arc<Mutex<RawTlsSession>>);
 impl ArcTlsSession {
     pub fn new_client(
         server_name: rustls::pki_types::ServerName<'static>,
-        client_params: &TransportParameters,
+        client_params: &Parameters,
     ) -> Self {
         Self(Arc::new(Mutex::new(RawTlsSession::new_client(
             server_name,
@@ -118,7 +125,7 @@ impl ArcTlsSession {
     pub fn new_server(
         cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
         key_der: rustls::pki_types::PrivateKeyDer<'static>,
-        server_params: &TransportParameters,
+        server_params: &Parameters,
     ) -> Self {
         Self(Arc::new(Mutex::new(RawTlsSession::new_server(
             cert_chain,
@@ -179,11 +186,11 @@ impl ArcTlsSession {
                     let (buf, key_upgrade) = tls_session.read_tls_msg().await;
                     if let Some(key_change) = key_upgrade {
                         match key_change {
-                            KeyChange::Handshake { keys } => {
+                            rustls::quic::KeyChange::Handshake { keys } => {
                                 handshake_keys.set_keys(keys);
                                 epoch = Epoch::Handshake;
                             }
-                            KeyChange::OneRtt { keys, next } => {
+                            rustls::quic::KeyChange::OneRtt { keys, next } => {
                                 one_rtt_keys.set_keys(keys, next);
                                 // epoch = Epoch::Data;
                                 break;
@@ -203,7 +210,7 @@ impl ArcTlsSession {
 pub struct ReadTlsMsg(ArcTlsSession);
 
 impl Future for ReadTlsMsg {
-    type Output = (Vec<u8>, Option<KeyChange>);
+    type Output = (Vec<u8>, Option<rustls::quic::KeyChange>);
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.0.lock_guard().poll_read_tls_msg(cx)
