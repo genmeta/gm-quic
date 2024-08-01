@@ -133,13 +133,13 @@ impl ArcDataStreamParameters {
     fn new(
         initial_max_stream_data_bidi_local: u64,
         initial_max_stream_data_bidi_remote: u64,
-        initial_max_stream_data_uni_remote: u64,
+        initial_max_stream_data_uni: u64,
     ) -> Self {
         Self(Arc::new(Mutex::new(RawDataStreamParameters {
             initial_max_stream_data_bidi_local,
             initial_max_stream_data_bidi_remote,
-            initial_max_stream_data_uni_local: 0,
-            initial_max_stream_data_uni_remote,
+            initial_max_stream_data_uni_local: initial_max_stream_data_uni,
+            initial_max_stream_data_uni_remote: 0,
         })))
     }
 
@@ -155,8 +155,8 @@ impl ArcDataStreamParameters {
         guard.initial_max_stream_data_bidi_local = guard
             .initial_max_stream_data_bidi_local
             .max(params.initial_max_stream_data_bidi_remote().into_inner());
-        guard.initial_max_stream_data_uni_local = guard
-            .initial_max_stream_data_uni_local
+        guard.initial_max_stream_data_uni_remote = guard
+            .initial_max_stream_data_uni_remote
             .max(params.initial_max_stream_data_uni().into_inner());
     }
 }
@@ -455,14 +455,14 @@ impl RawDataStreams {
         max_uni_streams: u64,
         initial_max_stream_data_bidi_local: u64,
         initial_max_stream_data_bidi_remote: u64,
-        initial_max_stream_data_uni_remote: u64,
+        initial_max_stream_data_uni: u64,
         reliable_frame_deque: ArcReliableFrameDeque,
     ) -> Self {
         Self {
             params: ArcDataStreamParameters::new(
                 initial_max_stream_data_bidi_local,
                 initial_max_stream_data_bidi_remote,
-                initial_max_stream_data_uni_remote,
+                initial_max_stream_data_uni,
             ),
             role,
             stream_ids: StreamIds::with_role_and_limit(role, max_bi_streams, max_uni_streams),
@@ -486,8 +486,9 @@ impl RawDataStreams {
             Err(e) => return Poll::Ready(Err(e)),
         };
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Bi)) {
-            let max_stream_data = self.params.guard().initial_max_stream_data_bidi_local;
+            let max_stream_data = self.params.guard().initial_max_stream_data_bidi_remote;
             let (outgoing, writer) = self.create_sender(sid, max_stream_data);
+            let max_stream_data = self.params.guard().initial_max_stream_data_bidi_local;
             let (incoming, reader) = self.create_recver(sid, max_stream_data);
             output.insert(sid, outgoing);
             input.insert(sid, incoming);
@@ -506,7 +507,7 @@ impl RawDataStreams {
             Err(e) => return Poll::Ready(Err(e)),
         };
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Uni)) {
-            let max_stream_data = self.params.guard().initial_max_stream_data_uni_local;
+            let max_stream_data = self.params.guard().initial_max_stream_data_uni_remote;
             let (outgoing, writer) = self.create_sender(sid, max_stream_data);
             output.insert(sid, outgoing);
             Poll::Ready(Ok(Some(writer)))
@@ -544,8 +545,9 @@ impl RawDataStreams {
             AcceptSid::Old => Ok(()),
             AcceptSid::New(need_create) => {
                 for sid in need_create {
-                    let max_stream_data = self.params.guard().initial_max_stream_data_bidi_remote;
+                    let max_stream_data = self.params.guard().initial_max_stream_data_bidi_local;
                     let (incoming, reader) = self.create_recver(sid, max_stream_data);
+                    let max_stream_data = self.params.guard().initial_max_stream_data_bidi_remote;
                     let (outgoing, writer) = self.create_sender(sid, max_stream_data);
                     input.insert(sid, incoming);
                     output.insert(sid, outgoing);
@@ -570,7 +572,7 @@ impl RawDataStreams {
             AcceptSid::Old => Ok(()),
             AcceptSid::New(need_create) => {
                 for sid in need_create {
-                    let max_stream_data = self.params.guard().initial_max_stream_data_uni_remote;
+                    let max_stream_data = self.params.guard().initial_max_stream_data_uni_local;
                     let (incoming, reader) = self.create_recver(sid, max_stream_data);
                     input.insert(sid, incoming);
                     listener.push_uni_stream(reader);

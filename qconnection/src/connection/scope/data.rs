@@ -49,6 +49,7 @@ impl DataScope {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
         handshake: &Handshake,
