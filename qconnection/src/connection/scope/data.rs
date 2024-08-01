@@ -52,10 +52,10 @@ impl DataScope {
     pub fn build(
         &self,
         handshake: Handshake,
-        data_streams: DataStreams,
-        datagram_flow: DatagramFlow,
+        streams: DataStreams,
+        datagrams: DatagramFlow,
         cid_registry: &cid::Registry,
-        flow_control: &flow::FlowController,
+        flow_ctrl: &flow::FlowController,
         rcvd_0rtt_packets: RcvdZeroRttPacket,
         rcvd_1rtt_packets: RcvdOneRttPacket,
         conn_error: ConnError,
@@ -125,7 +125,7 @@ impl DataScope {
             }
         };
         let on_ack = {
-            let data_streams = data_streams.clone();
+            let data_streams = streams.clone();
             let crypto_stream_outgoing = self.crypto_stream.outgoing();
             let sent_pkt_records = self.space.sent_packets();
             move |ack_frame: &AckFrame| {
@@ -151,15 +151,15 @@ impl DataScope {
         // Assemble the pipelines of frame processing
         // TODO: impl endpoint router
         // pipe rcvd_new_token_frames
-        pipe!(rcvd_max_data_frames |> flow_control.sender, recv_max_data_frame);
-        pipe!(rcvd_data_blocked_frames |> flow_control.recver, recv_data_blocked_frame);
+        pipe!(rcvd_max_data_frames |> flow_ctrl.sender, recv_max_data_frame);
+        pipe!(rcvd_data_blocked_frames |> flow_ctrl.recver, recv_data_blocked_frame);
         pipe!(@error(conn_error) rcvd_new_cid_frames |> cid_registry.remote, recv_new_cid_frame);
         pipe!(@error(conn_error) rcvd_retire_cid_frames |> cid_registry.local, recv_retire_cid_frame);
         pipe!(@error(conn_error) rcvd_handshake_done_frames |> handshake, recv_handshake_done_frame);
         pipe!(rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_crypto_frame);
-        pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> data_streams, recv_stream_control);
-        pipe!(@error(conn_error) rcvd_stream_frames |> data_streams, recv_data);
-        pipe!(@error(conn_error) rcvd_datagram_frames |> datagram_flow, recv_datagram);
+        pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> streams, recv_stream_control);
+        pipe!(@error(conn_error) rcvd_stream_frames |> streams, recv_data);
+        pipe!(@error(conn_error) rcvd_datagram_frames |> datagrams, recv_datagram);
         pipe!(rcvd_ack_frames |> on_ack);
 
         self.parse_0rtt_packet_and_dispatch_frames(

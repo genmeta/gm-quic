@@ -22,7 +22,6 @@ use qudp::ArcUsc;
 
 use crate::{
     connection::PacketPayload,
-    error::ConnError,
     path::{ArcPath, Pathway},
 };
 

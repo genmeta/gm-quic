@@ -78,7 +78,7 @@ impl InitialScope {
         );
     }
 
-    pub fn parse_packet_and_dispatch_frames(
+    fn parse_packet_and_dispatch_frames(
         &self,
         mut rcvd_packets: RcvdInitialPacket,
         dispatch_frames: impl Fn(Frame, bool, &ArcPath) -> bool + Send + 'static,
