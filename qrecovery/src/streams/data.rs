@@ -6,6 +6,7 @@ use std::{
 
 use deref_derive::{Deref, DerefMut};
 use qbase::{
+    config::Parameters,
     error::{Error as QuicError, ErrorKind},
     frame::{
         BeFrame, FrameType, MaxStreamDataFrame, MaxStreamsFrame, ResetStreamFrame,
@@ -117,9 +118,54 @@ impl ArcInputGuard<'_> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RawDataStreamParameters {
+    initial_max_stream_data_bidi_local: u64,
+    initial_max_stream_data_bidi_remote: u64,
+    initial_max_stream_data_uni_local: u64,
+    initial_max_stream_data_uni_remote: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ArcDataStreamParameters(Arc<Mutex<RawDataStreamParameters>>);
+
+impl ArcDataStreamParameters {
+    fn new(
+        initial_max_stream_data_bidi_local: u64,
+        initial_max_stream_data_bidi_remote: u64,
+        initial_max_stream_data_uni_remote: u64,
+    ) -> Self {
+        Self(Arc::new(Mutex::new(RawDataStreamParameters {
+            initial_max_stream_data_bidi_local,
+            initial_max_stream_data_bidi_remote,
+            initial_max_stream_data_uni_local: 0,
+            initial_max_stream_data_uni_remote,
+        })))
+    }
+
+    fn guard(&self) -> MutexGuard<'_, RawDataStreamParameters> {
+        self.0.lock().unwrap()
+    }
+
+    fn apply_transport_parameters(&self, params: &Parameters) {
+        let mut guard = self.guard();
+        guard.initial_max_stream_data_bidi_remote = guard
+            .initial_max_stream_data_bidi_remote
+            .max(params.initial_max_stream_data_bidi_local().into_inner());
+        guard.initial_max_stream_data_bidi_local = guard
+            .initial_max_stream_data_bidi_local
+            .max(params.initial_max_stream_data_bidi_remote().into_inner());
+        guard.initial_max_stream_data_uni_local = guard
+            .initial_max_stream_data_uni_local
+            .max(params.initial_max_stream_data_uni().into_inner());
+    }
+}
+
 /// 专门根据Stream相关帧处理streams相关逻辑
 #[derive(Debug, Clone)]
 pub struct RawDataStreams {
+    params: ArcDataStreamParameters,
+
     role: Role,
     stream_ids: StreamIds,
     // 所有流的待写端，要发送数据，就得向这些流索取
@@ -391,13 +437,14 @@ impl RawDataStreams {
         listener.on_conn_error(err);
     }
 
-    pub fn update_limit(&self, max_bidi_stream: u64, max_uni_stream: u64) {
+    pub fn apply_transport_parameters(&self, params: &Parameters) {
         self.stream_ids
             .local
-            .permit_max_sid(Dir::Bi, max_bidi_stream);
+            .permit_max_sid(Dir::Bi, params.initial_max_streams_bidi().into_inner());
         self.stream_ids
             .local
-            .permit_max_sid(Dir::Uni, max_uni_stream);
+            .permit_max_sid(Dir::Uni, params.initial_max_streams_uni().into_inner());
+        self.params.apply_transport_parameters(params);
     }
 }
 
@@ -406,9 +453,17 @@ impl RawDataStreams {
         role: Role,
         max_bi_streams: u64,
         max_uni_streams: u64,
+        initial_max_stream_data_bidi_local: u64,
+        initial_max_stream_data_bidi_remote: u64,
+        initial_max_stream_data_uni_remote: u64,
         reliable_frame_deque: ArcReliableFrameDeque,
     ) -> Self {
         Self {
+            params: ArcDataStreamParameters::new(
+                initial_max_stream_data_bidi_local,
+                initial_max_stream_data_bidi_remote,
+                initial_max_stream_data_uni_remote,
+            ),
             role,
             stream_ids: StreamIds::with_role_and_limit(role, max_bi_streams, max_uni_streams),
             output: ArcOutput::default(),
@@ -431,8 +486,9 @@ impl RawDataStreams {
             Err(e) => return Poll::Ready(Err(e)),
         };
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Bi)) {
-            let (outgoing, writer) = self.create_sender(sid);
-            let (incoming, reader) = self.create_recver(sid);
+            let max_stream_data = self.params.guard().initial_max_stream_data_bidi_local;
+            let (outgoing, writer) = self.create_sender(sid, max_stream_data);
+            let (incoming, reader) = self.create_recver(sid, max_stream_data);
             output.insert(sid, outgoing);
             input.insert(sid, incoming);
             Poll::Ready(Ok(Some((reader, writer))))
@@ -450,7 +506,8 @@ impl RawDataStreams {
             Err(e) => return Poll::Ready(Err(e)),
         };
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Uni)) {
-            let (outgoing, writer) = self.create_sender(sid);
+            let max_stream_data = self.params.guard().initial_max_stream_data_uni_local;
+            let (outgoing, writer) = self.create_sender(sid, max_stream_data);
             output.insert(sid, outgoing);
             Poll::Ready(Ok(Some(writer)))
         } else {
@@ -487,8 +544,9 @@ impl RawDataStreams {
             AcceptSid::Old => Ok(()),
             AcceptSid::New(need_create) => {
                 for sid in need_create {
-                    let (incoming, reader) = self.create_recver(sid);
-                    let (outgoing, writer) = self.create_sender(sid);
+                    let max_stream_data = self.params.guard().initial_max_stream_data_bidi_remote;
+                    let (incoming, reader) = self.create_recver(sid, max_stream_data);
+                    let (outgoing, writer) = self.create_sender(sid, max_stream_data);
                     input.insert(sid, incoming);
                     output.insert(sid, outgoing);
                     listener.push_bi_stream((reader, writer));
@@ -512,7 +570,8 @@ impl RawDataStreams {
             AcceptSid::Old => Ok(()),
             AcceptSid::New(need_create) => {
                 for sid in need_create {
-                    let (incoming, reader) = self.create_recver(sid);
+                    let max_stream_data = self.params.guard().initial_max_stream_data_uni_remote;
+                    let (incoming, reader) = self.create_recver(sid, max_stream_data);
                     input.insert(sid, incoming);
                     listener.push_uni_stream(reader);
                 }
@@ -521,8 +580,8 @@ impl RawDataStreams {
         }
     }
 
-    fn create_sender(&self, sid: StreamId) -> (Outgoing, Writer) {
-        let (outgoing, writer) = send::new(1000_1000);
+    fn create_sender(&self, sid: StreamId, max_stream_data: u64) -> (Outgoing, Writer) {
+        let (outgoing, writer) = send::new(max_stream_data);
         // 创建异步轮询子，监听来自应用层的cancel
         // 一旦cancel，直接向对方发送reset_stream
         // 但要等ResetRecved才能真正释放该流
@@ -545,8 +604,8 @@ impl RawDataStreams {
         (outgoing, writer)
     }
 
-    fn create_recver(&self, sid: StreamId) -> (Incoming, Reader) {
-        let (incoming, reader) = recv::new(1000_1000);
+    fn create_recver(&self, sid: StreamId, max_stream_data: u64) -> (Incoming, Reader) {
+        let (incoming, reader) = recv::new(max_stream_data);
         // Continuously check whether the MaxStreamData window needs to be updated.
         tokio::spawn({
             let incoming = incoming.clone();

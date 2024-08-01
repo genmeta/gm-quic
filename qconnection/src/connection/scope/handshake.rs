@@ -37,20 +37,16 @@ impl HandshakeScope {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
 
-        let dispatch_frames_of_initial_packet =
-            move |frame: Frame, is_ack_eliciting: bool, path: &ArcPath| {
-                match frame {
-                    Frame::Ack(ack_frame) => {
-                        path.on_ack(Epoch::Initial, &ack_frame);
-                        _ = ack_frames_entry.unbounded_send(ack_frame);
-                    }
-                    Frame::Data(DataFrame::Crypto(crypto), bytes) => {
-                        _ = crypto_frames_entry.unbounded_send((crypto, bytes));
-                    }
-                    _ => {}
-                }
-                is_ack_eliciting
-            };
+        let dispatch_frames = move |frame: Frame, path: &ArcPath| match frame {
+            Frame::Ack(ack_frame) => {
+                path.on_ack(Epoch::Initial, &ack_frame);
+                _ = ack_frames_entry.unbounded_send(ack_frame);
+            }
+            Frame::Data(DataFrame::Crypto(crypto), bytes) => {
+                _ = crypto_frames_entry.unbounded_send((crypto, bytes));
+            }
+            _ => {}
+        };
         let on_ack = {
             let crypto_stream_outgoing = self.crypto_stream.outgoing();
             let sent_pkt_records = self.space.sent_packets();
@@ -68,17 +64,13 @@ impl HandshakeScope {
 
         pipe!(rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_crypto_frame);
         pipe!(rcvd_ack_frames |> on_ack);
-        self.parse_packet_and_dispatch_frames(
-            rcvd_packets,
-            dispatch_frames_of_initial_packet,
-            conn_error,
-        );
+        self.parse_packet_and_dispatch_frames(rcvd_packets, dispatch_frames, conn_error);
     }
 
     fn parse_packet_and_dispatch_frames(
         &self,
         mut rcvd_packets: RcvdHandshakePacket,
-        dispatch_frames: impl Fn(Frame, bool, &ArcPath) -> bool + Send + 'static,
+        dispatch_frames: impl Fn(Frame, &ArcPath) + Send + 'static,
         conn_error: ConnError,
     ) {
         tokio::spawn({
@@ -98,7 +90,8 @@ impl HandshakeScope {
                         false,
                         |is_ack_packet, frame| {
                             let (frame, is_ack_eliciting) = frame?;
-                            Ok(is_ack_packet || dispatch_frames(frame, is_ack_eliciting, &path))
+                            dispatch_frames(frame, &path);
+                            Ok(is_ack_packet || is_ack_eliciting)
                         },
                     );
 

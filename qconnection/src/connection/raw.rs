@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
-use futures::channel::mpsc;
+use futures::{channel::mpsc, StreamExt};
 use qbase::{
     cid::Registry,
     flow::FlowController,
@@ -36,23 +36,36 @@ pub struct RawConnection {
     hs: HandshakeScope,
     data: DataScope,
 
-    streams: DataStreams,
     reliable_frames: ArcReliableFrameDeque,
+    streams: DataStreams,
     datagrams: DatagramFlow,
 }
 
 impl RawConnection {
-    pub fn new(role: Role, _tls_session: ArcTlsSession) -> Self {
+    // TOOD: 传输参数实际上不是一开始就可以设置好的，而是在握手过程中逐渐完善的
+    pub fn new(role: Role, tls_session: ArcTlsSession) -> Self {
         let pathes = DashMap::new();
         let cid_registry = Registry::new(2);
         let handshake = Handshake::with_role(role);
-        let flow_control = FlowController::with_initial(0, 0);
+        let flow_ctrl = FlowController::with_initial(0, 0);
         let spin = Arc::new(Mutex::new(SpinBit::Off));
         let conn_error = ConnError::default();
 
         let reliable_frames = ArcReliableFrameDeque::with_capacity(0);
-        let data_streams = DataStreams::with_role_and_limit(role, 0, 0, reliable_frames.clone());
-        let datagram_flow = DatagramFlow::new(0, 0);
+        let streams = DataStreams::with_role_and_limit(
+            role,
+            // 流数量
+            0,
+            0,
+            // 对我方创建的双向流的限制
+            0,
+            // 对方创建的双向流的限制
+            0,
+            // 对对方创建的单向流的限制
+            0,
+            reliable_frames.clone(),
+        );
+        let datagrams = DatagramFlow::new(0, 0);
 
         let (initial_packets_entry, rcvd_initial_packets) = mpsc::unbounded();
         let (hs_packets_entry, rcvd_hs_packets) = mpsc::unbounded();
@@ -67,26 +80,53 @@ impl RawConnection {
         hs.build(rcvd_hs_packets, conn_error.clone());
         data.build(
             handshake.clone(),
-            data_streams.clone(),
-            datagram_flow.clone(),
+            streams.clone(),
+            datagrams.clone(),
             &cid_registry,
-            &flow_control,
+            &flow_ctrl,
             rcvd_0rtt_packets,
             rcvd_1rtt_packets,
             conn_error.clone(),
         );
 
+        let (parameters_entry, mut rcvd_transport_parameters) = mpsc::channel(1);
+        tls_session.keys_upgrade(
+            [
+                &initial.crypto_stream,
+                &hs.crypto_stream,
+                &data.crypto_stream,
+            ],
+            hs.keys.clone(),
+            data.one_rtt_keys.clone(),
+            parameters_entry,
+        );
+
+        tokio::spawn({
+            let conn_error = conn_error.clone();
+            let streams = streams.clone();
+            let flow_ctrl = flow_ctrl.clone();
+            let datagrams = datagrams.clone();
+            async move {
+                let parameter = rcvd_transport_parameters.next().await.unwrap();
+                if let Err(e) = datagrams.apply_transport_parameters(&parameter) {
+                    conn_error.on_error(e)
+                };
+                streams.apply_transport_parameters(&parameter);
+                flow_ctrl.apply_transport_parameters(&parameter);
+            }
+        });
+
         Self {
             pathes,
             cid_registry,
             handshake,
-            flow_ctrl: flow_control,
+            flow_ctrl,
             initial,
             hs,
             data,
-            streams: data_streams,
+            streams,
             reliable_frames,
-            datagrams: datagram_flow,
+            datagrams,
             spin,
             error: conn_error,
         }

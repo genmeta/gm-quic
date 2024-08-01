@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, RwLock};
 
-use qbase::{error::Error, frame::DatagramFrame, util::TransportLimit};
+use qbase::{config::Parameters, error::Error, frame::DatagramFrame, util::TransportLimit};
 
 use super::{
     reader::{DatagramReader, RawDatagramReader},
@@ -58,12 +58,13 @@ impl DatagramFlow {
             raw_flow: Arc::new(RwLock::new(flow)),
         }
     }
-
     /// See [`DatagramWriter::update_remote_max_datagram_frame_size`] for more details.
     #[inline]
-    pub fn update_remote_max_datagram_frame_size(&self, new_size: usize) -> Result<(), Error> {
+    pub fn apply_transport_parameters(&self, params: &Parameters) -> Result<(), Error> {
         let flow = self.raw_flow.read().unwrap();
-        flow.writer.update_remote_max_datagram_frame_size(new_size)
+        flow.writer.update_remote_max_datagram_frame_size(
+            params.max_datagram_frame_size().into_inner() as usize,
+        )
     }
 
     /// See [`DatagramWriter::try_read_datagram`] for more details.
