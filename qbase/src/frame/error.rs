@@ -2,7 +2,7 @@ use nom::error::ErrorKind as NomErrorKind;
 use thiserror::Error;
 
 use super::FrameType;
-use crate::varint::VarInt;
+use crate::{packet::r#type::Type, varint::VarInt};
 
 #[derive(Debug, Clone, Eq, PartialEq, Error)]
 pub enum Error {
@@ -12,6 +12,8 @@ pub enum Error {
     IncompleteType(String),
     #[error("Invalid frame type from {0}")]
     InvalidType(VarInt),
+    #[error("Wrong frame type {0:?}")]
+    WrongType(FrameType, Type),
     #[error("Incomplete frame {0:?}: {1}")]
     IncompleteFrame(FrameType, String),
     #[error("Error occurred when parsing frame {0:?}: {1}")]
@@ -39,6 +41,9 @@ impl From<Error> for TransportError {
                 FrameType::Padding,
                 e.to_string(),
             ),
+            Error::WrongType(fty, _) => {
+                Self::new(TransportErrorKind::FrameEncoding, fty, e.to_string())
+            }
             Error::IncompleteFrame(fty, _) => {
                 Self::new(TransportErrorKind::FrameEncoding, fty, e.to_string())
             }
