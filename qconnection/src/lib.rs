@@ -5,10 +5,9 @@ use std::net::SocketAddr;
 
 pub mod connection;
 pub mod error;
+pub mod path;
 pub mod pipe;
 pub mod tls;
-// pub mod endpoint;
-pub mod path;
 
 // pub(crate) mod auto;
 // pub mod transmit;
