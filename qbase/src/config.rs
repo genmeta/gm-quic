@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+use derive_builder::Builder;
 use getset::{CopyGetters, Getters, MutGetters, Setters};
 
 use super::varint::VarInt;
@@ -11,7 +12,12 @@ use crate::{cid::ConnectionId, token::ResetToken};
 /// Ref. `<https://www.iana.org/assignments/quic/quic.xhtml>`
 
 // QUIC的config配置
-#[derive(Getters, CopyGetters, Setters, MutGetters, Debug, PartialEq)]
+#[derive(Builder, Getters, CopyGetters, Setters, MutGetters, Debug, PartialEq)]
+#[builder(
+    default,
+    setter(strip_option, into,),
+    build_fn(name = "build_unchecked")
+)]
 pub struct Parameters {
     #[getset(get = "pub", set = "pub")]
     original_destination_connection_id: Option<ConnectionId>,
@@ -53,11 +59,44 @@ pub struct Parameters {
     version_information: Option<Vec<u8>>,
     #[getset(get_copy = "pub", set = "pub")]
     max_datagram_frame_size: VarInt,
+    // TOOD: 对此传输参数的支持
     #[getset(get_copy = "pub", set = "pub")]
     grease_quic_bit: bool,
 }
 
+impl ParametersBuilder {
+    pub fn build(&self) -> Result<Parameters, String> {
+        let parameters = self.build_unchecked().unwrap();
+        parameters.validate()?;
+        Ok(parameters)
+    }
+}
+
 impl Parameters {
+    pub fn builder() -> ParametersBuilder {
+        ParametersBuilder::default()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !(1200..65527).contains(&self.max_udp_payload_size.into_inner()) {
+            return Err("max_udp_payload_size must be at least 1200 bytes".to_string());
+        }
+
+        if self.ack_delay_exponent > 20 {
+            return Err("ack_delay_exponent must be at most 20".to_string());
+        }
+
+        if self.max_ack_delay > 214 {
+            return Err("max_ack_delay must be at most 214".to_string());
+        }
+
+        if self.active_connection_id_limit < 2 {
+            return Err("active_connection_id_limit must be at least 2".to_string());
+        }
+
+        Ok(())
+    }
+
     pub fn contain_server_parameters(&self) -> bool {
         self.original_destination_connection_id().is_some()
             || self.preferred_address.is_some()
@@ -143,6 +182,8 @@ pub mod ext {
                 0x0e => (remain, tp.active_connection_id_limit) = be_varint(remain)?,
                 0x0f => (remain, tp.initial_source_connection_id) = be_connection_id(remain)?,
                 0x10 => (remain, tp.retry_source_connection_id) = be_connection_id(remain)?,
+                0x20 => (remain, tp.max_datagram_frame_size) = be_varint(remain)?,
+                // 0x2ab2 => tp.grease_quic_bit = true,
                 _ => {
                     // Ref. `<https://www.rfc-editor.org/rfc/rfc9000.html#name-new-transport-parameters>
                     // An endpoint MUST ignore transport parameters that it does not support.
@@ -229,6 +270,11 @@ pub mod ext {
             put_varint(self, 0x0e, params.active_connection_id_limit);
             put_connection_id(self, 0x0f, &params.initial_source_connection_id);
             put_connection_id(self, 0x10, &params.retry_source_connection_id);
+            put_varint(self, 0x20, params.max_datagram_frame_size);
+            // if params.grease_quic_bit {
+            //     self.put_varint(&VarInt::from_u32(0x2ab2));
+            //     self.put_u8(0);
+            // }
         }
 
         fn put_preferred_address(&mut self, addr: &super::PreferredAddress) {
@@ -313,21 +359,21 @@ mod test {
     fn coding() {
         let init_cid = be_connection_id(&[0x04, 0x01, 0x02, 0x03, 0x04]).unwrap().1;
         let orgin_cid = be_connection_id(&[0x04, 0x05, 0x06, 0x07, 0x08]).unwrap().1;
-        let params = Parameters {
-            original_destination_connection_id: Some(orgin_cid),
-            max_idle_timeout: Duration::from_secs(0x12345678),
-            statelss_reset_token: Some(ResetToken::new(&[0x01; RESET_TOKEN_SIZE])),
-            max_udp_payload_size: VarInt::from_u32(0x1234),
-            initial_max_data: VarInt::from_u32(0x1234),
-            initial_max_stream_data_bidi_local: VarInt::from_u32(0),
-            initial_max_stream_data_bidi_remote: VarInt::from_u32(0),
-            initial_max_stream_data_uni: VarInt::from_u32(0),
-            initial_max_streams_bidi: VarInt::from_u32(0x1234),
-            initial_max_streams_uni: VarInt::from_u32(0x1234),
-            ack_delay_exponent: VarInt::from_u32(0x12),
-            max_ack_delay: VarInt::from_u32(0x1234),
-            disable_active_migration: true,
-            preferred_address: Some(PreferredAddress {
+        let params = Parameters::builder()
+            .original_destination_connection_id(orgin_cid)
+            .max_idle_timeout(Duration::from_secs(0x12345678))
+            .statelss_reset_token(ResetToken::new(&[0x01; RESET_TOKEN_SIZE]))
+            .max_udp_payload_size(VarInt::from_u32(0x1234))
+            .initial_max_data(VarInt::from_u32(0x1234))
+            .initial_max_stream_data_bidi_local(VarInt::from_u32(0))
+            .initial_max_stream_data_bidi_remote(VarInt::from_u32(0))
+            .initial_max_stream_data_uni(VarInt::from_u32(0))
+            .initial_max_streams_bidi(VarInt::from_u32(0x1234))
+            .initial_max_streams_uni(VarInt::from_u32(0x1234))
+            .ack_delay_exponent(VarInt::from_u32(0x12))
+            .max_ack_delay(VarInt::from_u32(0x98))
+            .disable_active_migration(true)
+            .preferred_address(PreferredAddress {
                 address_v4: SocketAddrV4::new(Ipv4Addr::new(0x01, 0x02, 0x03, 0x04), 0x1234),
                 address_v6: SocketAddrV6::new(
                     std::net::Ipv6Addr::new(0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08),
@@ -337,19 +383,41 @@ mod test {
                 ),
                 connection_id: init_cid,
                 stateless_reset_token: ResetToken::new(&[0x02; RESET_TOKEN_SIZE]),
-            }),
-            active_connection_id_limit: VarInt::from_u32(0x1234),
-            initial_source_connection_id: Some(init_cid),
-            retry_source_connection_id: Some(init_cid),
-            max_datagram_frame_size: VarInt::from_u32(65535),
-            // 下面两个字段 rfc 里没有？
-            version_information: None,
-            grease_quic_bit: false,
-        };
+            })
+            .active_connection_id_limit(VarInt::from_u32(0x1234))
+            .initial_source_connection_id(init_cid)
+            .retry_source_connection_id(init_cid)
+            .max_datagram_frame_size(VarInt::from_u32(65535))
+            .grease_quic_bit(false)
+            .build()
+            .unwrap();
 
         let mut buf = bytes::BytesMut::new();
         buf.put_parameters(&params);
         let params2 = ext::be_parameters(&buf).unwrap().1;
         assert_eq!(params, params2);
+    }
+
+    #[test]
+    fn invalid_params() {
+        let build_result = Parameters::builder()
+            .max_udp_payload_size(VarInt::from_u32(1199))
+            .build();
+        assert!(build_result.is_err());
+
+        let build_result = Parameters::builder()
+            .ack_delay_exponent(VarInt::from_u32(21))
+            .build();
+        assert!(build_result.is_err());
+
+        let build_result = Parameters::builder()
+            .max_ack_delay(VarInt::from_u32(215))
+            .build();
+        assert!(build_result.is_err());
+
+        let build_result = Parameters::builder()
+            .active_connection_id_limit(VarInt::from_u32(1))
+            .build();
+        assert!(build_result.is_err());
     }
 }
