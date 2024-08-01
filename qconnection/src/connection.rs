@@ -65,10 +65,10 @@ impl ArcConnection {
             let conn = self.clone();
             // TODO:  时间应为 PTO*3
             let duration = Duration::from_secs(3);
-            let error = closing_conn.get_error();
+            let rcvd_ccf = closing_conn.get_rcvd_ccf();
             async move {
                 let time = Instant::now();
-                match tokio::time::timeout(duration, error.did_error_occur()).await {
+                match tokio::time::timeout(duration, rcvd_ccf.did_recv()).await {
                     Ok(_) => {
                         conn.drain(duration - time.elapsed());
                     }
