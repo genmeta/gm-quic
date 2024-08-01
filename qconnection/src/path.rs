@@ -7,8 +7,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use dying::DyingPath;
-use qbase::frame::{AckFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame};
+use qbase::frame::{AckFrame, PathChallengeFrame, PathResponseFrame};
 use qcongestion::congestion::MSS;
 use qrecovery::space::Epoch;
 use qudp::ArcUsc;
@@ -17,7 +16,6 @@ use raw::RawPath;
 use crate::connection::raw::RawConnection;
 
 mod anti_amplifier;
-mod dying;
 mod raw;
 mod util;
 
@@ -42,7 +40,6 @@ pub enum Pathway {
 
 enum PathState {
     Alive(RawPath),
-    Dying(DyingPath),
     Dead,
 }
 
@@ -84,40 +81,6 @@ impl ArcPath {
     pub fn has_been_inactivated(&self) -> HasBeenInactivated {
         HasBeenInactivated(self.clone())
     }
-
-    /// 收到 connection frame ，如果是 Alive 或者 Dying 状态，可以发一个 ccf 再进入 Dead
-    /// Dead 状态则忽略
-    pub fn recv_ccf(&self, frame: ConnectionCloseFrame, epoch: Epoch) {
-        let mut guard = self.0.lock().unwrap();
-        let dying = match &mut *guard {
-            PathState::Alive(raw) => {
-                let ccf = raw.read_connection_close_frame(frame, epoch);
-                DyingPath::new(raw.usc.clone(), raw.pathway, ccf, raw.pto_time())
-            }
-            PathState::Dying(dying) => dying.clone(),
-            PathState::Dead => {
-                log::trace!("recv_ccf: path is dead");
-                return;
-            }
-        };
-
-        *guard = PathState::Dead;
-    }
-
-    // 当 connection 发生错误时或要主动结束时，进入 Cosing 状态
-    pub fn enter_closing(&self, frame: ConnectionCloseFrame, epoch: Epoch) {
-        let mut guard = self.0.lock().unwrap();
-
-        let dying = if let PathState::Alive(raw) = &mut *guard {
-            let ccf = raw.read_connection_close_frame(frame, epoch);
-            DyingPath::new(raw.usc.clone(), raw.pathway, ccf, raw.pto_time())
-        } else {
-            log::debug!("enter_closing: path is not Alive");
-            return;
-        };
-
-        *guard = PathState::Dying(dying.clone());
-    }
 }
 
 pub fn create_path(
@@ -138,7 +101,7 @@ impl Future for HasBeenInactivated {
     fn poll(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
         match *self.0 .0.lock().unwrap() {
             PathState::Alive(_) => Poll::Pending,
-            PathState::Dying(_) => Poll::Ready(()),
+            // PathState::Dying(_) => Poll::Ready(()),
             PathState::Dead => Poll::Ready(()),
         }
     }

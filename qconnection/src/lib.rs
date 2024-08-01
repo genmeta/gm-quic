@@ -9,7 +9,6 @@ pub mod path;
 pub mod pipe;
 pub mod tls;
 
-// pub(crate) mod auto;
 pub mod transmit;
 
 /*

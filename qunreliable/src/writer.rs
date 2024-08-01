@@ -49,14 +49,14 @@ impl DatagramWriter {
     ///
     pub(super) fn try_read_datagram(
         &self,
-        limit: &mut Burst,
+        burst: &mut Burst,
         mut buf: &mut [u8],
     ) -> Option<(DatagramFrame, usize)> {
         let mut guard = self.0.lock().unwrap();
         let writer = guard.as_mut().ok()?;
         let datagram = writer.queue.front()?;
 
-        let available = limit.available();
+        let available = burst.available();
 
         let max_encoding_size = available.saturating_sub(datagram.len());
         if max_encoding_size == 0 {
