@@ -6,7 +6,7 @@ use std::{
 use qbase::{
     frame::AckFrame,
     packet::PacketNumber,
-    util::IndexDeque,
+    util::{Burst, IndexDeque},
     varint::{VarInt, VARINT_MAX},
 };
 use thiserror::Error;
@@ -192,6 +192,18 @@ impl ArcRcvdPktRecords {
             .read()
             .unwrap()
             .gen_ack_frame_util((largest, recv_time), capacity)
+    }
+
+    /// TODO: 完成它，不用申请Vec先生成AckFrame，从largest往后开始成对生成
+    pub fn read_ack_frame_util(
+        &self,
+        _burst: &mut Burst,
+        _buf: &mut [u8],
+        _largest: u64,
+        _recv_time: Instant,
+    ) -> Option<usize> {
+        // 没写入，返回None
+        None
     }
 
     pub fn write(&self) -> ArcRcvdPktRecordsWriter<'_> {

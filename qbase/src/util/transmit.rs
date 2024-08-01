@@ -44,4 +44,9 @@ impl Burst {
     pub fn post_write_new_stream_data(&mut self, fresh: usize) {
         self.flow_control -= fresh;
     }
+
+    /// 根据自身信息，以及hdr_len和buf_len，计算出可以写入的量，包括拥塞量、抗放大余量、新数据量
+    pub fn measure(&self, data_len: usize, buf_len: usize) -> Option<Burst> {
+        None
+    }
 }
