@@ -145,7 +145,11 @@ impl<T> ArcSentPktRecords<T> {
     pub fn send(&self) -> SendGuard<'_, T> {
         let inner = self.0.lock().unwrap();
         let origin_len = inner.queue.len();
-        SendGuard { origin_len, inner }
+        SendGuard {
+            necessary: false,
+            origin_len,
+            inner,
+        }
     }
 }
 
@@ -177,6 +181,7 @@ impl<T> Drop for RecvGuard<'_, T> {
 
 #[derive(Debug, Deref, DerefMut)]
 pub struct SendGuard<'a, T> {
+    necessary: bool,
     origin_len: usize,
     #[deref]
     inner: MutexGuard<'a, RawSentPktRecords<T>>,
@@ -189,6 +194,11 @@ impl<T> SendGuard<'_, T> {
         (pn, encoded_pn)
     }
 
+    /// 记录平凡帧，这些帧不需要重传，如Padding、Ping、Ack，但该包的确占一个包号，因此肯定需要记录
+    pub fn record_trivial(&mut self) {
+        self.necessary = true;
+    }
+
     pub fn record_frame(&mut self, frame: T) {
         self.inner.deref_mut().push_back(frame);
     }
@@ -197,9 +207,11 @@ impl<T> SendGuard<'_, T> {
 impl<T> Drop for SendGuard<'_, T> {
     fn drop(&mut self) {
         let nframes = self.inner.queue.len() - self.origin_len;
-        self.inner
-            .records
-            .push_back(SentPktState::Flighting(nframes as u16))
-            .expect("packet number never overflow");
+        if self.necessary || nframes > 0 {
+            self.inner
+                .records
+                .push_back(SentPktState::Flighting(nframes as u16))
+                .expect("packet number never overflow");
+        }
     }
 }

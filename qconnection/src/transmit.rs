@@ -155,7 +155,7 @@ impl SpaceReaders {
             pn,
             pn_size,
             body_size,
-            &keys,
+            &keys.get_local_keys().unwrap(),
             fill_policy,
         );
 
@@ -332,17 +332,13 @@ pub fn read_long_header_and_encrypt<T>(
     pn: u64,
     pn_size: usize,
     body_size: usize,
-    keys: &ArcKeys,
+    keys: &rustls::quic::Keys,
     fill_policy: FillPolicy,
 ) -> usize
 where
     for<'a> &'a mut [u8]: Write<T>,
     LongHeader<T>: GetType + Encode,
 {
-    let keys = match keys.get_local_keys() {
-        Some(keys) => keys,
-        None => return 0,
-    };
     let max_header_size = header.size() + 2; // 2 bytes reserved for packet length, max 16KB
     let (mut hdr_buf, _) = buffer.split_at_mut(max_header_size);
 
