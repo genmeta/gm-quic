@@ -12,7 +12,7 @@ use qbase::{
     error::Error,
     packet::{
         decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
-        keys::{ArcKeys, ArcOneRttKeys},
+        keys::{ArcKeys, ArcOneRttKeys, OneRttPacketKeys},
         HandshakePacket, InitialPacket, OneRttPacket, PacketNumber, ZeroRttPacket,
     },
 };
@@ -81,10 +81,17 @@ impl ArcConnection {
     /// reason for the app's active closure.
     /// The app then releases a reference count of the connection, allowing the connection to enter
     /// a self-destruct process.
-    pub fn close(&self, error: Error) {
+    pub fn close(
+        &self,
+        one_rtt_keys: (
+            Arc<dyn rustls::quic::HeaderProtectionKey>,
+            Arc<Mutex<OneRttPacketKeys>>,
+        ),
+        error: Error,
+    ) {
         // 状态切换 RawConnection -> ClosingConnection
         let mut guard = self.0.lock().unwrap();
-        let (pathes, cid_registry, data_space, one_rtt_keys) = match *guard {
+        let (pathes, cid_registry, data_space) = match *guard {
             Raw(ref conn) => conn.enter_closing(),
             _ => return,
         };
@@ -125,41 +132,35 @@ impl ArcConnection {
     }
 }
 
-pub(crate) struct PacketPayload {
-    pub pn: u64,
-    pub payload: Bytes,
-}
-
-async fn decode_long_header_packet<P>(
+fn sync_decode_long_header_packet<P>(
     mut packet: P,
-    keys: &ArcKeys,
+    keys: &rustls::quic::DirectionalKeys,
     decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
-) -> Option<PacketPayload>
+) -> Option<(u64, Bytes)>
 where
     P: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
 {
-    let k = keys.get_remote_keys().await?;
-
-    if !packet.remove_protection(k.remote.header.deref()) {
+    if !packet.remove_protection(keys.header.deref()) {
         return None;
     }
 
     let encoded_pn = packet.decode_header().ok()?;
     let pn = decode_pn(encoded_pn)?;
     let payload = packet
-        .decrypt_packet(pn, encoded_pn.size(), k.remote.packet.deref())
+        .decrypt_packet(pn, encoded_pn.size(), keys.packet.deref())
         .ok()?;
 
-    Some(PacketPayload { pn, payload })
+    Some((pn, payload))
 }
 
-pub(crate) async fn decode_short_header_packet(
+fn sync_decode_short_header_packet(
     mut packet: OneRttPacket,
-    keys: &ArcOneRttKeys,
+    (hk, pk): &(
+        Arc<dyn rustls::quic::HeaderProtectionKey>,
+        Arc<Mutex<OneRttPacketKeys>>,
+    ),
     decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
-) -> Option<PacketPayload> {
-    let (hk, pk) = keys.get_remote_keys().await?;
-
+) -> Option<(u64, Bytes)> {
     if !packet.remove_protection(hk.deref()) {
         return None;
     }
@@ -171,7 +172,28 @@ pub(crate) async fn decode_short_header_packet(
         .decrypt_packet(pn, encoded_pn.size(), packet_key.deref())
         .ok()?;
 
-    Some(PacketPayload { pn, payload })
+    Some((pn, payload))
+}
+
+async fn decode_long_header_packet<P>(
+    packet: P,
+    keys: &ArcKeys,
+    decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
+) -> Option<(u64, Bytes)>
+where
+    P: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
+{
+    let keys = keys.get_remote_keys().await?;
+    sync_decode_long_header_packet(packet, &keys.remote, decode_pn)
+}
+
+pub async fn decode_short_header_packet(
+    packet: OneRttPacket,
+    keys: &ArcOneRttKeys,
+    decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
+) -> Option<(u64, Bytes)> {
+    let keys = keys.get_remote_keys().await?;
+    sync_decode_short_header_packet(packet, &keys, decode_pn)
 }
 
 #[cfg(test)]

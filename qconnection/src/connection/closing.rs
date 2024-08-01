@@ -12,7 +12,7 @@ use qbase::{
     cid::Registry,
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
-    packet::{header::GetType, keys::ArcOneRttKeys, SpacePacket},
+    packet::{header::GetType, keys::OneRttPacketKeys, SpacePacket},
 };
 use qrecovery::{
     reliable::rcvdpkt::ArcRcvdPktRecords,
@@ -20,16 +20,17 @@ use qrecovery::{
 };
 use qudp::ArcUsc;
 
-use crate::{
-    connection::PacketPayload,
-    path::{ArcPath, Pathway},
-};
+use super::sync_decode_short_header_packet;
+use crate::path::{ArcPath, Pathway};
 
 pub struct ClosingConnection {
     pathes: DashMap<Pathway, ArcPath>,
     cid_registry: Registry,
     rcvd_pkt_records: ArcRcvdPktRecords,
-    one_rtt_keys: ArcOneRttKeys,
+    one_rtt_keys: (
+        Arc<dyn rustls::quic::HeaderProtectionKey>,
+        Arc<Mutex<OneRttPacketKeys>>,
+    ),
     rcvd_packets: usize,
     last_send_ccf: Instant,
     revd_ccf: RcvdCcf,
@@ -40,7 +41,10 @@ impl ClosingConnection {
         pathes: DashMap<Pathway, ArcPath>,
         cid_registry: Registry,
         data_space: DataSpace,
-        one_rtt_keys: ArcOneRttKeys,
+        one_rtt_keys: (
+            Arc<dyn rustls::quic::HeaderProtectionKey>,
+            Arc<Mutex<OneRttPacketKeys>>,
+        ),
         error: Error,
     ) -> Self {
         let ccf = ConnectionCloseFrame::from(error);
@@ -74,23 +78,24 @@ impl ClosingConnection {
         if let SpacePacket::OneRtt(packet) = packet {
             let pkt_type = packet.header.get_type();
             let decode_pn = |pn| self.rcvd_pkt_records.decode_pn(pn).ok();
-            let payload_opt: Option<PacketPayload> = None;
-            // let payload_opt =  decode_short_header_packet(packet, &self.one_rtt_keys, decode_pn).await;
+            let payload =
+                match sync_decode_short_header_packet(packet, &self.one_rtt_keys, decode_pn) {
+                    Some((_, payload)) => payload,
+                    None => return,
+                };
 
-            if let Some(payload) = payload_opt {
-                let ccf = FrameReader::new(payload.payload, pkt_type)
-                    .filter_map(|frame| frame.ok())
-                    .find_map(|frame| {
-                        if let (Frame::Close(ccf), _) = frame {
-                            Some(ccf)
-                        } else {
-                            None
-                        }
-                    });
+            let ccf = FrameReader::new(payload, pkt_type)
+                .filter_map(|frame| frame.ok())
+                .find_map(|frame| {
+                    if let (Frame::Close(ccf), _) = frame {
+                        Some(ccf)
+                    } else {
+                        None
+                    }
+                });
 
-                if ccf.is_some() {
-                    self.revd_ccf.on_ccf_rcvd();
-                }
+            if ccf.is_some() {
+                self.revd_ccf.on_ccf_rcvd();
             }
         }
     }

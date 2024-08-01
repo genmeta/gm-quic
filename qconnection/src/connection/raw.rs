@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
-use futures::{channel::mpsc, StreamExt};
+use futures::channel::mpsc;
 use qbase::{
     cid::Registry,
     flow::FlowController,
@@ -36,18 +36,17 @@ pub struct RawConnection {
     hs: HandshakeScope,
     data: DataScope,
 
-    reliable_frames: ArcReliableFrameDeque,
     streams: DataStreams,
+    reliable_frames: ArcReliableFrameDeque,
     datagrams: DatagramFlow,
 }
 
 impl RawConnection {
-    // TOOD: 传输参数实际上不是一开始就可以设置好的，而是在握手过程中逐渐完善的
-    pub fn new(role: Role, tls_session: ArcTlsSession) -> Self {
+    pub fn new(role: Role, _tls_session: ArcTlsSession) -> Self {
         let pathes = DashMap::new();
         let cid_registry = Registry::new(2);
         let handshake = Handshake::with_role(role);
-        let flow_ctrl = FlowController::with_initial(0, 0);
+        let flow_control = FlowController::with_initial(0, 0);
         let spin = Arc::new(Mutex::new(SpinBit::Off));
         let conn_error = ConnError::default();
 
@@ -79,48 +78,21 @@ impl RawConnection {
         initial.build(rcvd_initial_packets, conn_error.clone());
         hs.build(rcvd_hs_packets, conn_error.clone());
         data.build(
-            handshake.clone(),
-            streams.clone(),
-            datagrams.clone(),
+            &handshake,
+            &streams,
+            &datagrams,
             &cid_registry,
-            &flow_ctrl,
+            &flow_control,
             rcvd_0rtt_packets,
             rcvd_1rtt_packets,
             conn_error.clone(),
         );
 
-        let (parameters_entry, mut rcvd_transport_parameters) = mpsc::channel(1);
-        tls_session.keys_upgrade(
-            [
-                &initial.crypto_stream,
-                &hs.crypto_stream,
-                &data.crypto_stream,
-            ],
-            hs.keys.clone(),
-            data.one_rtt_keys.clone(),
-            parameters_entry,
-        );
-
-        tokio::spawn({
-            let conn_error = conn_error.clone();
-            let streams = streams.clone();
-            let flow_ctrl = flow_ctrl.clone();
-            let datagrams = datagrams.clone();
-            async move {
-                let parameter = rcvd_transport_parameters.next().await.unwrap();
-                if let Err(e) = datagrams.apply_transport_parameters(&parameter) {
-                    conn_error.on_error(e)
-                };
-                streams.apply_transport_parameters(&parameter);
-                flow_ctrl.apply_transport_parameters(&parameter);
-            }
-        });
-
         Self {
             pathes,
             cid_registry,
             handshake,
-            flow_ctrl,
+            flow_ctrl: flow_control,
             initial,
             hs,
             data,
@@ -166,19 +138,11 @@ impl RawConnection {
             .clone()
     }
 
-    pub fn enter_closing(
-        &self,
-    ) -> (
-        DashMap<Pathway, ArcPath>,
-        Registry,
-        DataSpace,
-        ArcOneRttKeys,
-    ) {
+    pub fn enter_closing(&self) -> (DashMap<Pathway, ArcPath>, Registry, DataSpace) {
         (
             self.pathes.clone(),
             self.cid_registry.clone(),
             self.data.space.clone(),
-            self.data.one_rtt_keys.clone(),
         )
     }
 }
