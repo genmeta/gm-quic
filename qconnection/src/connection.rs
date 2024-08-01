@@ -23,6 +23,7 @@ use crate::{
     path::ArcPath,
 };
 
+mod builder;
 pub mod closing;
 pub mod draining;
 pub mod raw;

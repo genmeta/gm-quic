@@ -16,6 +16,7 @@ enum_dispatch = { workspace = true }
 deref-derive = { workspace = true }
 rustls = { workspace = true }
 log = { workspace = true }
+derive_builder = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
