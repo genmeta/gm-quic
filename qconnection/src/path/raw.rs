@@ -2,6 +2,7 @@ use std::{
     future::{poll_fn, Future},
     io::{IoSlice, IoSliceMut},
     mem,
+    ops::Deref,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{ready, Context, Poll, Waker},
@@ -26,6 +27,7 @@ use qudp::{ArcUsc, BATCH_SIZE};
 
 use super::{
     anti_amplifier::{ArcAntiAmplifier, ANTI_FACTOR},
+    util::PathFrameBuffer,
     Pathway, ViaPathway,
 };
 use crate::{connection::raw::RawConnection, transmit::SpaceReaders};
@@ -44,8 +46,8 @@ pub(super) struct RawPath {
     origin_cid: ConnectionId,
     token: Vec<u8>,
     spin: SpinBit,
-    challenge_buffer: Arc<Mutex<Option<PathChallengeFrame>>>,
-    response_buffer: Arc<Mutex<Option<PathResponseFrame>>>,
+    challenge_buffer: PathFrameBuffer<PathChallengeFrame>,
+    response_buffer: PathFrameBuffer<PathResponseFrame>,
     response_listner: ArcResponseListener,
     handle: Handle,
 }
@@ -73,8 +75,8 @@ impl RawPath {
             origin_cid: scid,
             token,
             spin: SpinBit::default(),
-            challenge_buffer: Arc::new(Mutex::new(None)),
-            response_buffer: Arc::new(Mutex::new(None)),
+            challenge_buffer: PathFrameBuffer::default(),
+            response_buffer: PathFrameBuffer::default(),
             response_listner: ArcResponseListener(Arc::new(Mutex::new(ResponseListener::Init))),
             handle: Handle::default(),
         };
@@ -114,12 +116,12 @@ impl RawPath {
                 for _ in 0..3 {
                     // Write to the buffer, and the sending task actually sends it
                     // Reliability is not maintained through reliable transmission, but a stop-and-wait protocol
-                    path.challenge_buffer.lock().unwrap().replace(challenge);
+                    path.challenge_buffer.write(challenge);
                     let pto = path.cc.get_pto_time(Epoch::Data);
                     let listener = path.response_listner.clone();
 
                     match tokio::time::timeout(pto, listener).await {
-                        Ok(Some(resp)) if resp == (&challenge).into() => {
+                        Ok(Some(resp)) if resp.deref() == challenge.deref() => {
                             path.anti_amplifier.take();
                         }
                         // listner inactive, stop the task
@@ -193,10 +195,7 @@ impl RawPath {
     }
 
     pub(super) fn recv_challenge(&mut self, frame: PathChallengeFrame) {
-        self.response_buffer
-            .lock()
-            .unwrap()
-            .replace((&frame).into());
+        self.response_buffer.write(frame.into());
     }
 
     pub(super) fn read_connection_close_frame(
@@ -250,8 +249,8 @@ struct PacketReader<'a> {
     scid: ConnectionId,
     rest_token: Vec<u8>,
     spin: SpinBit,
-    challenge_buffer: Arc<Mutex<Option<PathChallengeFrame>>>,
-    response_buffer: Arc<Mutex<Option<PathResponseFrame>>>,
+    challenge_buffer: PathFrameBuffer<PathChallengeFrame>,
+    response_buffer: PathFrameBuffer<PathResponseFrame>,
 }
 
 impl<'a> Future for ArcPacketReader<'a> {
@@ -341,18 +340,16 @@ impl<'a> Future for ArcPacketReader<'a> {
             );
             buffer = &mut buffer[pkt_size..];
 
-            let challenge = guard.challenge_buffer.lock().unwrap().take();
-            let reposne = guard.response_buffer.lock().unwrap().take();
+            let n = guard.challenge_buffer.read(buffer, &mut limit);
+            buffer = &mut buffer[n..];
+            let n = guard.response_buffer.read(buffer, &mut limit);
+            buffer = &mut buffer[n..];
 
             let need_ack = guard.cc.need_ack(Epoch::Data);
-            let (pkt_size, pn, is_ack_eliciting) = guard.space_readers.read_one_rtt_space(
-                buffer,
-                &mut limit,
-                &one_rtt_hdr,
-                need_ack,
-                challenge,
-                reposne,
-            );
+            let (pkt_size, pn, is_ack_eliciting) =
+                guard
+                    .space_readers
+                    .read_one_rtt_space(buffer, &mut limit, &one_rtt_hdr, need_ack);
             guard.cc.on_pkt_sent(
                 Epoch::Handshake,
                 pn,

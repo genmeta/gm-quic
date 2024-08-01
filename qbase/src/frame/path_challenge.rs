@@ -75,6 +75,13 @@ impl<T: bytes::BufMut> WritePathChallengeFrame for T {
     }
 }
 
+impl<T: bytes::BufMut> super::io::WriteFrame<PathChallengeFrame> for T {
+    fn put_frame(&mut self, frame: &PathChallengeFrame) {
+        self.put_u8(PATH_CHALLENGE_FRAME_TYPE);
+        self.put_slice(&frame.data);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

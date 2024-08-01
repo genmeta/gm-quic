@@ -168,8 +168,6 @@ impl SpaceReaders {
         limit: &mut TransportLimit,
         header: &OneRttHeader,
         ack_pkt: Option<(u64, Instant)>,
-        challenge_frame: Option<PathChallengeFrame>,
-        response_frame: Option<PathResponseFrame>,
     ) -> (usize, u64, bool) {
         let reader = &mut self.data;
         let max_header_size = header.size() + 2;
@@ -191,22 +189,6 @@ impl SpaceReaders {
 
         // read path challenge and response
         // TODO: 至少填充到 1200 字节
-        if let Some(challenge_frame) = challenge_frame {
-            let size = challenge_frame.encoding_size();
-            if limit.available() >= size && body_buf.remaining_mut() >= size {
-                body_buf.put_path_challenge_frame(&challenge_frame);
-                limit.record_write(size);
-            }
-        }
-
-        if let Some(response_frame) = response_frame {
-            let size = response_frame.encoding_size();
-            if limit.available() >= size && body_buf.remaining_mut() >= size {
-                body_buf.put_path_response_frame(&response_frame);
-                limit.record_write(size);
-            }
-        }
-
         // read reliable frame
         let (written, is_ack_eliciting) = read_reliable_frame(
             body_buf,

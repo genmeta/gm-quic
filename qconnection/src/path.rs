@@ -22,6 +22,7 @@ use crate::connection::raw::RawConnection;
 mod anti_amplifier;
 mod dying;
 mod raw;
+mod util;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct RelayAddr {

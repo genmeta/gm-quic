@@ -24,8 +24,8 @@ impl PathResponseFrame {
 }
 
 /// The only public way to create a PathResponseFrame is from a PathChallengeFrame
-impl From<&super::PathChallengeFrame> for PathResponseFrame {
-    fn from(challenge: &super::PathChallengeFrame) -> Self {
+impl From<super::PathChallengeFrame> for PathResponseFrame {
+    fn from(challenge: super::PathChallengeFrame) -> Self {
         Self::from_slice(challenge.deref())
     }
 }
@@ -65,6 +65,13 @@ pub trait WritePathResponseFrame {
 
 impl<T: bytes::BufMut> WritePathResponseFrame for T {
     fn put_path_response_frame(&mut self, frame: &PathResponseFrame) {
+        self.put_u8(PATH_RESPONSE_FRAME_TYPE);
+        self.put_slice(&frame.data);
+    }
+}
+
+impl<T: bytes::BufMut> super::io::WriteFrame<PathResponseFrame> for T {
+    fn put_frame(&mut self, frame: &PathResponseFrame) {
         self.put_u8(PATH_RESPONSE_FRAME_TYPE);
         self.put_slice(&frame.data);
     }

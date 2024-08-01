@@ -1,28 +1,28 @@
 #[macro_export]
 macro_rules! pipe {
     (
-        $from:ident |> $var:expr,$method:ident
+        $input:ident |> $var:expr,$method:ident
     ) => {{
         #[allow(unused)]
         ::tokio::spawn({
-            let mut from = $from;
-            let mut catch = ::std::clone::Clone::clone(&$var);
+            let mut input = $input;
+            let mut owned_capture = ::std::clone::Clone::clone(&$var);
             async move {
-                while let Some(item) = ::futures::stream::StreamExt::next(&mut from).await {
-                    _ = catch.$method(&item);
+                while let Some(item) = ::futures::stream::StreamExt::next(&mut input).await {
+                    _ = owned_capture.$method(&item);
                 }
             }
         })
     }};
     (
-        $from:ident |> $($lambda:tt)*
+        $input:ident |> $($lambda:tt)*
     ) => {{
         #[allow(unused)]
         ::tokio::spawn({
-            let mut from = $from;
+            let mut input = $input;
             let mut lambda = $($lambda)*;
             async move {
-                while let Some(item) = ::futures::stream::StreamExt::next(&mut from).await {
+                while let Some(item) = ::futures::stream::StreamExt::next(&mut input).await {
                     _ = lambda(&item);
                 }
             }
@@ -30,17 +30,17 @@ macro_rules! pipe {
     }};
     (
         @error($error:expr)
-        $from:ident |> $var:expr,$method:ident
+        $input:ident |> $var:expr,$method:ident
     ) => {{
         #[allow(unused)]
         ::tokio::spawn({
-            let mut from = $from;
-            let mut catch = ::std::clone::Clone::clone(&$var);
+            let mut input = $input;
+            let mut owned_capture = ::std::clone::Clone::clone(&$var);
             let mut error = ::std::clone::Clone::clone(&$error);
 
             async move {
-                while let Some(item) = ::futures::stream::StreamExt::next(&mut from).await {
-                    if let Err(e) = catch.$method(&item) {
+                while let Some(item) = ::futures::stream::StreamExt::next(&mut input).await {
+                    if let Err(e) = owned_capture.$method(&item) {
                         $crate::error::ConnError::on_error(&error, e);
                         return;
                     }
@@ -50,15 +50,15 @@ macro_rules! pipe {
     }};
     (
         @error($error:expr)
-        $from:ident |> $lambda:expr
+        $input:ident |> $lambda:expr
     ) => {{
         #[allow(unused)]
         ::tokio::spawn({
-            let mut from = $from;
+            let mut input = $input;
             let mut error = ::std::clone::Clone::clone(&$error);
             let mut lambda = $($lambda)*;
             async move {
-                while let Some(item) = ::futures::stream::StreamExt::next(&mut from).await {
+                while let Some(item) = ::futures::stream::StreamExt::next(&mut input).await {
                     if let Err(e) = lambda(&item) {
                         $crate::error::ConnError::on_error(&error, e);
                         return;
