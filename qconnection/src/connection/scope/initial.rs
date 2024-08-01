@@ -40,15 +40,19 @@ impl InitialScope {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
 
-        let dispatch_frames = move |frame: Frame, path: &ArcPath| match frame {
-            Frame::Ack(ack_frame) => {
-                path.on_ack(Epoch::Initial, &ack_frame);
-                _ = ack_frames_entry.unbounded_send(ack_frame);
+        let dispatch_frame = move |frame: Frame, path: &ArcPath| {
+            match frame {
+                Frame::Ack(ack_frame) => {
+                    path.on_ack(Epoch::Initial, &ack_frame);
+                    _ = ack_frames_entry.unbounded_send(ack_frame);
+                }
+                Frame::Data(DataFrame::Crypto(crypto), bytes) => {
+                    _ = crypto_frames_entry.unbounded_send((crypto, bytes));
+                }
+                Frame::Close(_) => { /* trustless */ }
+                Frame::Padding(_) | Frame::Ping(_) => {}
+                _ => unreachable!("unexpected frame: {:?} in initial packet", frame),
             }
-            Frame::Data(DataFrame::Crypto(crypto), bytes) => {
-                _ = crypto_frames_entry.unbounded_send((crypto, bytes));
-            }
-            _ => {}
         };
         let on_ack = {
             let crypto_stream_outgoing = self.crypto_stream.outgoing();
@@ -67,13 +71,13 @@ impl InitialScope {
 
         pipe!(rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_crypto_frame);
         pipe!(rcvd_ack_frames |> on_ack);
-        self.parse_packet_and_dispatch_frames(rcvd_packets, dispatch_frames, conn_error);
+        self.parse_rcvd_packets_and_dispatch_frames(rcvd_packets, dispatch_frame, conn_error);
     }
 
-    fn parse_packet_and_dispatch_frames(
+    fn parse_rcvd_packets_and_dispatch_frames(
         &self,
         mut rcvd_packets: RcvdInitialPacket,
-        dispatch_frames: impl Fn(Frame, &ArcPath) + Send + 'static,
+        dispatch_frame: impl Fn(Frame, &ArcPath) + Send + 'static,
         conn_error: ConnError,
     ) {
         tokio::spawn({
@@ -83,25 +87,19 @@ impl InitialScope {
                 while let Some((packet, path)) = rcvd_packets.next().await {
                     let pty = packet.header.get_type();
                     let decode_pn = |pn| rcvd_pkt_records.decode_pn(pn).ok();
-                    let payload_opt = decode_long_header_packet(packet, &keys, decode_pn).await;
-
-                    let Some(payload) = payload_opt else {
-                        return;
-                    };
-
-                    let dispath_result = FrameReader::new(payload.payload, pty).try_fold(
-                        false,
-                        |is_ack_packet, frame| {
-                            let (frame, is_ack_eliciting) = frame?;
-                            dispatch_frames(frame, &path);
-                            Ok(is_ack_packet || is_ack_eliciting)
-                        },
-                    );
-
-                    match dispath_result {
+                    let (pn, payload) =
+                        match decode_long_header_packet(packet, &keys, decode_pn).await {
+                            Some((pn, payload)) => (pn, payload),
+                            None => return,
+                        };
+                    match FrameReader::new(payload, pty).try_fold(false, |is_ack_packet, frame| {
+                        let (frame, is_ack_eliciting) = frame?;
+                        dispatch_frame(frame, &path);
+                        Ok(is_ack_packet || is_ack_eliciting)
+                    }) {
                         Ok(is_ack_packet) => {
-                            rcvd_pkt_records.register_pn(payload.pn);
-                            path.on_recv_pkt(Epoch::Initial, payload.pn, is_ack_packet);
+                            rcvd_pkt_records.register_pn(pn);
+                            path.on_recv_pkt(Epoch::Initial, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
