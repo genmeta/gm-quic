@@ -5,8 +5,12 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+use futures::channel::mpsc;
 use qbase::{
-    config::{ext::WriteParameters, Parameters},
+    config::{
+        ext::{be_parameters, WriteParameters},
+        Parameters,
+    },
     packet::keys::{ArcKeys, ArcOneRttKeys},
 };
 use qrecovery::{space::Epoch, streams::crypto::CryptoStream};
@@ -152,19 +156,25 @@ impl ArcTlsSession {
         crypto_streams: [&CryptoStream; 3],
         handshake_keys: ArcKeys,
         one_rtt_keys: ArcOneRttKeys,
+        parameters_entry: mpsc::Sender<Parameters>,
     ) {
         // 在此创建reader任务
         for epoch in Epoch::iter() {
             let mut crypto_stream_reader = crypto_streams[*epoch].reader();
             let tls_session = self.clone();
+            let mut parameters_entry = parameters_entry.clone();
             tokio::spawn(async move {
                 // 不停地从crypto_stream_reader读取数据，读到就送给tls_conn
                 let mut buf = Vec::with_capacity(1200);
                 // TODO: 处理错误，以及何时终止？reader被销毁的时候，会终止吗？处理它们的异常终止
+                // 还有任务结束但是还是没有得到传输参数的情况
                 loop {
                     buf.truncate(0);
                     let _err = crypto_stream_reader.read(&mut buf).await;
                     let _err = tls_session.write_tls_msg(&buf);
+                    if let Some(params) = tls_session.get_transport_parameters() {
+                        _ = parameters_entry.try_send(params);
+                    }
                 }
             });
         }
@@ -204,6 +214,12 @@ impl ArcTlsSession {
                 }
             }
         });
+    }
+
+    fn get_transport_parameters(&self) -> Option<Parameters> {
+        let tls_session = self.lock_guard();
+        let raw = tls_session.tls_conn.quic_transport_parameters()?;
+        be_parameters(raw).ok().map(|(_, p)| p)
     }
 }
 

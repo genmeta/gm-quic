@@ -12,6 +12,7 @@ use futures::{task::AtomicWaker, Future};
 use thiserror::Error;
 
 use crate::{
+    config::Parameters,
     error::Error as QuicError,
     frame::{DataBlockedFrame, MaxDataFrame},
     varint::VarInt,
@@ -65,8 +66,7 @@ impl RawSendControler {
         }
     }
 
-    fn recv_max_data_frame(&mut self, frame: &MaxDataFrame) {
-        let max_data = frame.max_data.into_inner();
+    fn increase_limit(&mut self, max_data: u64) {
         if max_data > self.max_data {
             self.max_data = max_data;
             for waker in self.wakers.drain(..) {
@@ -94,12 +94,16 @@ impl ArcSendControler {
         )))))
     }
 
+    fn increase_limit(&self, max_data: u64) {
+        let mut guard = self.0.lock().unwrap();
+        if let Ok(inner) = guard.deref_mut() {
+            inner.increase_limit(max_data);
+        }
+    }
+
     /// Increasing Flow Control Limits by receiving a MAX_DATA frame from peer.
     pub fn recv_max_data_frame(&self, frame: &MaxDataFrame) {
-        let mut guard = self.0.lock().unwrap();
-        if let Ok(send_ctrl) = guard.deref_mut() {
-            send_ctrl.recv_max_data_frame(frame);
-        }
+        self.increase_limit(frame.max_data.into_inner());
     }
 
     /// For external listening, whether it is blocked.
@@ -315,6 +319,11 @@ impl FlowController {
             sender: ArcSendControler::with_initial(peer_initial_max_data),
             recver: ArcRecvController::with_initial(local_initial_max_data),
         }
+    }
+
+    pub fn apply_transport_parameters(&self, params: &Parameters) {
+        let max_data = params.initial_max_data();
+        self.sender.increase_limit(max_data.into_inner());
     }
 
     pub fn sender(&self) -> ArcSendControler {

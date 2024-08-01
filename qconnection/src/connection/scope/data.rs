@@ -76,7 +76,7 @@ impl DataScope {
 
         let dispatch_data_frames = {
             let conn_error = conn_error.clone();
-            move |frame: Frame, is_ack_eliciting: bool, path: &ArcPath| {
+            move |frame: Frame, path: &ArcPath| {
                 match frame {
                     Frame::Close(ccf) => {
                         conn_error.on_ccf_rcvd(&ccf);
@@ -121,7 +121,6 @@ impl DataScope {
                     }
                     _ => {}
                 }
-                is_ack_eliciting
             }
         };
         let on_ack = {
@@ -177,7 +176,7 @@ impl DataScope {
     fn parse_0rtt_packet_and_dispatch_frames(
         &self,
         mut rcvd_packets: RcvdZeroRttPacket,
-        dispatch_frames: impl Fn(Frame, bool, &ArcPath) -> bool + Send + 'static,
+        dispatch_frames: impl Fn(Frame, &ArcPath) + Send + 'static,
         conn_error: ConnError,
     ) {
         tokio::spawn({
@@ -197,7 +196,8 @@ impl DataScope {
                         false,
                         |is_ack_packet, frame| {
                             let (frame, is_ack_eliciting) = frame?;
-                            Ok(is_ack_packet || dispatch_frames(frame, is_ack_eliciting, &path))
+                            dispatch_frames(frame, &path);
+                            Ok(is_ack_packet || is_ack_eliciting)
                         },
                     );
 
@@ -217,7 +217,7 @@ impl DataScope {
     fn parse_1rtt_packet_and_dispatch_frames(
         &self,
         mut rcvd_packets: RcvdOneRttPacket,
-        dispatch_frames: impl Fn(Frame, bool, &ArcPath) -> bool + Send + 'static,
+        dispatch_frames: impl Fn(Frame, &ArcPath) + Send + 'static,
         conn_error: ConnError,
     ) {
         tokio::spawn({
@@ -237,7 +237,8 @@ impl DataScope {
                         false,
                         |is_ack_packet, frame| {
                             let (frame, is_ack_eliciting) = frame?;
-                            Ok(is_ack_packet || dispatch_frames(frame, is_ack_eliciting, &path))
+                            dispatch_frames(frame, &path);
+                            Ok(is_ack_packet || is_ack_eliciting)
                         },
                     );
 

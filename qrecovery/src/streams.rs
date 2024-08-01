@@ -23,13 +23,19 @@ impl DataStreams {
         role: Role,
         max_bi_streams: u64,
         max_uni_streams: u64,
-        reliable_frame_queue: ArcReliableFrameDeque,
+        initial_max_stream_data_bidi_local: u64,
+        initial_max_stream_data_bidi_remote: u64,
+        initial_max_stream_data_uni_remote: u64,
+        reliable_frame_deque: ArcReliableFrameDeque,
     ) -> Self {
         Self(Arc::new(data::RawDataStreams::with_role_and_limit(
             role,
             max_bi_streams,
             max_uni_streams,
-            reliable_frame_queue,
+            initial_max_stream_data_bidi_local,
+            initial_max_stream_data_bidi_remote,
+            initial_max_stream_data_uni_remote,
+            reliable_frame_deque,
         )))
     }
 
