@@ -8,10 +8,7 @@ use std::{
 
 use dashmap::DashMap;
 use dying::DyingPath;
-use qbase::{
-    flow::FlowController,
-    frame::{AckFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame},
-};
+use qbase::frame::{AckFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame};
 use qcongestion::congestion::MSS;
 use qrecovery::space::Epoch;
 use qudp::ArcUsc;
@@ -104,14 +101,6 @@ impl ArcPath {
             }
         };
 
-        // send ccf
-        tokio::spawn({
-            let dying = dying.clone();
-            async move {
-                let ret = dying.send_ccf().await;
-                log::trace!("send_ccf: ret={:?}", ret);
-            }
-        });
         *guard = PathState::Dead;
     }
 
@@ -128,15 +117,6 @@ impl ArcPath {
         };
 
         *guard = PathState::Dying(dying.clone());
-        tokio::spawn({
-            async move {
-                for _ in 0..3 {
-                    let ret = dying.send_ccf().await;
-                    log::trace!("send_ccf: ret={:?}", ret);
-                    tokio::time::sleep(dying.pto).await;
-                }
-            }
-        });
     }
 }
 
@@ -165,21 +145,21 @@ impl Future for HasBeenInactivated {
 }
 
 pub trait ViaPathway {
-    fn poll_send_via_pathway(
+    fn send_via_pathway<'a>(
         &mut self,
-        iovecs: &[IoSlice<'_>],
+        iovecs: &'a [IoSlice<'a>],
         pathway: Pathway,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<io::Result<usize>>;
+    ) -> qudp::Sender<'a>;
+
+    fn sync_send_via_pathway(&mut self, iovec: Vec<u8>, pathway: Pathway) -> io::Result<()>;
 }
 
 impl ViaPathway for ArcUsc {
-    fn poll_send_via_pathway(
+    fn send_via_pathway<'a>(
         &mut self,
-        iovecs: &[IoSlice<'_>],
+        iovecs: &'a [IoSlice<'a>],
         pathway: Pathway,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<io::Result<usize>> {
+    ) -> qudp::Sender<'a> {
         let (src, dst) = match &pathway {
             Pathway::Direct { local, remote } => (*local, *remote),
             // todo: append relay hdr
@@ -193,6 +173,24 @@ impl ViaPathway for ArcUsc {
             seg_size: MSS as u16,
             gso: true,
         };
-        self.poll_send(iovecs, &hdr, cx)
+        let sender = self.sender(iovecs, hdr);
+        sender
+    }
+
+    fn sync_send_via_pathway(&mut self, iovec: Vec<u8>, pathway: Pathway) -> io::Result<()> {
+        let (src, dst) = match &pathway {
+            Pathway::Direct { local, remote } => (*local, *remote),
+            // todo: append relay hdr
+            Pathway::Relay { local, remote } => (local.addr, remote.agent),
+        };
+        let hdr = qudp::PacketHeader {
+            src,
+            dst,
+            ttl: 64,
+            ecn: None,
+            seg_size: MSS as u16,
+            gso: true,
+        };
+        self.sync_send(iovec, hdr)
     }
 }

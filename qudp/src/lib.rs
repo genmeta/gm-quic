@@ -1,4 +1,6 @@
 use std::{
+    collections::VecDeque,
+    future::Future,
     io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -18,7 +20,9 @@ pub const BATCH_SIZE: usize = 64;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub const BATCH_SIZE: usize = 1;
 
-#[derive(Clone, Copy)]
+const BUFFER_CAPACITY: usize = 5;
+
+#[derive(Clone, Copy, Debug)]
 pub struct PacketHeader {
     pub src: SocketAddr,
     pub dst: SocketAddr,
@@ -55,6 +59,7 @@ struct UdpSocketController {
     ttl: u8,
     gso_size: OffloadStatus,
     gro_size: OffloadStatus,
+    bufs: VecDeque<(Vec<u8>, PacketHeader)>,
 }
 
 impl UdpSocketController {
@@ -76,6 +81,7 @@ impl UdpSocketController {
             io,
             gso_size: OffloadStatus::Unknown,
             gro_size: OffloadStatus::Unknown,
+            bufs: VecDeque::with_capacity(BUFFER_CAPACITY),
         };
         socket.config().expect("Failed to config socket");
         socket
@@ -167,5 +173,76 @@ impl ArcUsc {
 
     pub fn local_addr(&self) -> SocketAddr {
         self.0.lock().unwrap().local_addr()
+    }
+
+    //Send synchronously, usc saves a small amount of data packets,and USC sends internal asynchronous tasks
+    pub fn sync_send(&self, packet: Vec<u8>, hdr: PacketHeader) -> io::Result<()> {
+        let mut guard = self.0.lock().unwrap();
+        if guard.bufs.len() >= BUFFER_CAPACITY {
+            return Err(io::Error::new(io::ErrorKind::WouldBlock, "buffer full"));
+        }
+        guard.bufs.push_back((packet, hdr));
+        if guard.bufs.len() == 1 {
+            tokio::spawn({
+                let usc = self.clone();
+                async move {
+                    let send_guard = SendGuard(usc);
+                    while (send_guard.clone().await).is_ok() {}
+                }
+            });
+        }
+        Ok(())
+    }
+
+    pub fn sender<'a>(&self, iovecs: &'a [IoSlice<'a>], hdr: PacketHeader) -> Sender<'a> {
+        Sender {
+            usc: self.clone(),
+            iovecs,
+            hdr,
+        }
+    }
+}
+
+pub struct Sender<'a> {
+    usc: ArcUsc,
+    iovecs: &'a [IoSlice<'a>],
+    hdr: PacketHeader,
+}
+
+impl<'a> Future for Sender<'a> {
+    type Output = io::Result<usize>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let usc = self.usc.0.lock().unwrap();
+        ready!(usc.io.poll_send_ready(cx))?;
+        let ret = usc
+            .io
+            .try_io(Interest::WRITABLE, || usc.sendmsg(self.iovecs, &self.hdr));
+
+        Poll::Ready(ret)
+    }
+}
+
+#[derive(Clone)]
+pub struct SendGuard(ArcUsc);
+
+impl Future for SendGuard {
+    type Output = io::Result<usize>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut usc = self.0 .0.lock().unwrap();
+        if let Some((pkt, hdr)) = usc.bufs.pop_front() {
+            ready!(usc.io.poll_send_ready(cx))?;
+            let ret = usc.io.try_io(Interest::WRITABLE, || {
+                usc.sendmsg(&[IoSlice::new(&pkt)], &hdr)
+            })?;
+
+            Poll::Ready(Ok(ret))
+        } else {
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "buffer empty",
+            )))
+        }
     }
 }

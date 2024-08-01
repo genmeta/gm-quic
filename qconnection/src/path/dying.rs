@@ -1,6 +1,6 @@
 use std::{
     future::Future,
-    io::IoSlice,
+    io::{self, IoSlice},
     sync::{Arc, Mutex},
     task::{Context, Poll},
     time::Duration,
@@ -14,7 +14,7 @@ use super::{Pathway, ViaPathway};
 // 最小化持有状态
 #[derive(Clone)]
 pub(super) struct DyingPath {
-    pub(super) ccf_pkt: Arc<Mutex<Vec<u8>>>,
+    pub(super) ccf_pkt: Vec<u8>,
     pub(super) pto: Duration,
     usc: ArcUsc,
     pathway: Pathway,
@@ -25,29 +25,13 @@ impl DyingPath {
         Self {
             usc,
             pto,
-            ccf_pkt: Arc::new(Mutex::new(ccf_pkt)),
+            ccf_pkt,
             pathway,
         }
     }
 
-    pub fn send_ccf(&self) -> Sender {
-        Sender(self.clone())
-    }
-}
-
-pub(super) struct Sender(DyingPath);
-
-impl Future for Sender {
-    type Output = std::io::Result<usize>;
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut dying = self.get_mut().0.clone();
-
-        let ccf_pkt = dying.ccf_pkt.lock().unwrap();
-        let ioslice = IoSlice::new(ccf_pkt.as_slice());
-
-        dying
-            .usc
-            .poll_send_via_pathway(&[ioslice], dying.pathway, cx)
+    pub fn send_ccf(&self) -> io::Result<()> {
+        todo!("remove path state")
+        // self.usc.sync_send(self.ccf_pkt, hdr);
     }
 }

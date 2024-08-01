@@ -98,8 +98,7 @@ impl RawPath {
                         .map(|buf| IoSlice::new(buf))
                         .collect();
 
-                    let ret =
-                        poll_fn(|cx| path.usc.poll_send_via_pathway(&ioves, pathway, cx)).await;
+                    let ret = path.usc.send_via_pathway(ioves.as_slice(), pathway).await;
                     match ret {
                         Ok(_) => todo!(),
                         Err(_) => todo!(),
