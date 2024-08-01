@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, Copy)]
-pub struct TransportLimit {
+pub struct Burst {
     /// *`anti-amplification`*
     anti_amplification: Option<usize>,
     /// *`congestion control`*
@@ -9,7 +9,7 @@ pub struct TransportLimit {
     flow_control: usize,
 }
 
-impl TransportLimit {
+impl Burst {
     pub fn new(
         anti_amplification: Option<usize>,
         congestion_control: usize,
@@ -34,14 +34,14 @@ impl TransportLimit {
         self.flow_control
     }
 
-    pub fn record_write(&mut self, written: usize) {
+    pub fn post_write(&mut self, written: usize) {
         if let Some(ref mut aa) = self.anti_amplification {
             *aa -= written
         };
         self.congestion_control -= written;
     }
 
-    pub fn record_write_new_stream_data(&mut self, written: usize) {
-        self.flow_control -= written;
+    pub fn post_write_new_stream_data(&mut self, fresh: usize) {
+        self.flow_control -= fresh;
     }
 }

@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, RwLock};
 
-use qbase::{config::Parameters, error::Error, frame::DatagramFrame, util::TransportLimit};
+use qbase::{config::Parameters, error::Error, frame::DatagramFrame, util::Burst};
 
 use super::{
     reader::{DatagramReader, RawDatagramReader},
@@ -71,14 +71,14 @@ impl DatagramFlow {
     #[inline]
     pub fn try_read_datagram(
         &self,
-        limit: &mut TransportLimit,
+        burst: &mut Burst,
         buf: &mut [u8],
     ) -> Option<(DatagramFrame, usize)> {
         self.raw_flow
             .read()
             .unwrap()
             .writer
-            .try_read_datagram(limit, buf)
+            .try_read_datagram(burst, buf)
     }
 
     /// See [`DatagramReader::recv_datagram`] for more details.

@@ -6,7 +6,7 @@ use std::{
 use bytes::BufMut;
 use qbase::{
     frame::{io::WriteFrame, BeFrame},
-    util::TransportLimit,
+    util::Burst,
 };
 
 #[derive(Default, Clone)]
@@ -23,13 +23,13 @@ where
     T: BeFrame,
     for<'a> &'a mut [u8]: WriteFrame<T>,
 {
-    pub fn read(&self, mut buf: &mut [u8], limit: &mut TransportLimit) -> usize {
+    pub fn read(&self, mut buf: &mut [u8], burst: &mut Burst) -> usize {
         let mut guard = self.0.lock().unwrap();
         if let Some(frame) = guard.deref() {
             let size = frame.encoding_size();
-            if limit.available() >= size && buf.remaining_mut() >= size {
+            if burst.available() >= size && buf.remaining_mut() >= size {
                 buf.put_frame(&frame);
-                limit.record_write(size);
+                burst.post_write(size);
                 *guard = None;
                 return size;
             }

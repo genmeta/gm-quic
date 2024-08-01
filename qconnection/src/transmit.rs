@@ -13,7 +13,7 @@ use qbase::{
         keys::{ArcKeys, ArcOneRttKeys},
         LongClearBits, OneRttHeader, ShortClearBits, WritePacketNumber,
     },
-    util::TransportLimit,
+    util::Burst,
     varint::{VarInt, WriteVarInt},
 };
 use qrecovery::{
@@ -96,7 +96,7 @@ impl SpaceReaders {
         &self,
         buffer: &mut [u8],
         header: &LongHeader<T>,
-        limit: &mut TransportLimit,
+        burst: &mut Burst,
         epoch: Epoch,
         ack_pkt: Option<(u64, Instant)>,
     ) -> (usize, u64, bool)
@@ -120,7 +120,7 @@ impl SpaceReaders {
 
         let max_header_size = header.size() + 2;
 
-        if limit.available() < max_header_size || buffer.remaining_mut() < max_header_size {
+        if burst.available() < max_header_size || buffer.remaining_mut() < max_header_size {
             return (0, 0, false);
         }
         let (_, body_buf) = buffer.split_at_mut(max_header_size);
@@ -128,17 +128,17 @@ impl SpaceReaders {
         // read pn
         let mut guard = send_record.send();
         // TODO: 没数据先不写 PN
-        let (pn, pn_size) = read_pn(body_buf, limit, &mut guard);
+        let (pn, pn_size) = read_pn(body_buf, burst, &mut guard);
         let body_buf = &mut body_buf[pn_size..];
 
         // read ack
-        let mut written = read_ack_frame(body_buf, limit, ack_pkt, &space.rcvd_packets());
+        let mut written = read_ack_frame(body_buf, burst, ack_pkt, &space.rcvd_packets());
         let body_buf = &mut body_buf[written..];
 
         let mut is_ack_eliciting = false;
         // read cropto frame
         written += if let Some((crypto_frame, written)) =
-            stream.outgoing().try_read_data(limit, body_buf)
+            stream.outgoing().try_read_data(burst, body_buf)
         {
             is_ack_eliciting = true;
             guard.record_frame(crypto_frame);
@@ -165,13 +165,13 @@ impl SpaceReaders {
     pub fn read_one_rtt_space(
         &mut self,
         buffer: &mut [u8],
-        limit: &mut TransportLimit,
+        burst: &mut Burst,
         header: &OneRttHeader,
         ack_pkt: Option<(u64, Instant)>,
     ) -> (usize, u64, bool) {
         let reader = &mut self.data;
         let max_header_size = header.size() + 2;
-        if limit.available() < max_header_size || buffer.remaining_mut() < max_header_size {
+        if burst.available() < max_header_size || buffer.remaining_mut() < max_header_size {
             return (0, 0, false);
         }
         let (_, body_buf) = buffer.split_at_mut(max_header_size);
@@ -180,11 +180,11 @@ impl SpaceReaders {
 
         // read pn
         let mut guard = send_record.send();
-        let (pn, pn_size) = read_pn(body_buf, limit, &mut guard);
+        let (pn, pn_size) = read_pn(body_buf, burst, &mut guard);
         let body_buf = &mut body_buf[pn_size..];
 
         // read ack
-        let written = read_ack_frame(body_buf, limit, ack_pkt, &reader.space.rcvd_packets());
+        let written = read_ack_frame(body_buf, burst, ack_pkt, &reader.space.rcvd_packets());
         let mut body_buf = &mut body_buf[written..];
 
         // read path challenge and response
@@ -192,7 +192,7 @@ impl SpaceReaders {
         // read reliable frame
         let (written, is_ack_eliciting) = read_reliable_frame(
             body_buf,
-            limit,
+            burst,
             &mut reader.reliable_frames_deque,
             &mut guard,
         );
@@ -202,7 +202,7 @@ impl SpaceReaders {
         let written = if let Some((crypto_frame, written)) = reader
             .crypto_stream
             .outgoing()
-            .try_read_data(limit, body_buf)
+            .try_read_data(burst, body_buf)
         {
             guard.record_frame(GuaranteedFrame::Data(Crypto(crypto_frame)));
             written
@@ -213,7 +213,7 @@ impl SpaceReaders {
         let body_buf = &mut body_buf[written..];
         // read data frame
         let written =
-            if let Some((frame, written)) = reader.data_streams.try_read_data(limit, body_buf) {
+            if let Some((frame, written)) = reader.data_streams.try_read_data(burst, body_buf) {
                 guard.record_frame(GuaranteedFrame::Data(Stream(frame)));
                 written
             } else {
@@ -247,15 +247,11 @@ pub enum FillPolicy {
     // Padding,     // Instead of padding frames, it's better to redundantly encode the Length.
 }
 
-pub fn read_pn<T>(
-    mut buf: &mut [u8],
-    limit: &mut TransportLimit,
-    guard: &mut SendGuard<T>,
-) -> (u64, usize) {
+pub fn read_pn<T>(mut buf: &mut [u8], burst: &mut Burst, guard: &mut SendGuard<T>) -> (u64, usize) {
     let (pn, encoded_pn) = guard.next_pn();
-    if buf.remaining_mut() > encoded_pn.size() && limit.available() > encoded_pn.size() {
+    if buf.remaining_mut() > encoded_pn.size() && burst.available() > encoded_pn.size() {
         buf.put_packet_number(encoded_pn);
-        limit.record_write(encoded_pn.size());
+        burst.post_write(encoded_pn.size());
         return (pn, encoded_pn.size());
     }
     (0, 0)
@@ -264,7 +260,7 @@ pub fn read_pn<T>(
 // TODO: 只包含 ack frame 的 packe 不计入拥塞控制
 pub fn read_ack_frame(
     mut buf: &mut [u8],
-    limit: &mut TransportLimit,
+    burst: &mut Burst,
     ack_pkt: Option<(u64, Instant)>,
     rcvd_pkt_records: &ArcRcvdPktRecords,
 ) -> usize {
@@ -278,11 +274,11 @@ pub fn read_ack_frame(
     let ack_frame = rcvd_pkt_records.gen_ack_frame_util(ack_pkt, remain);
 
     if buf.remaining_mut() > ack_frame.encoding_size()
-        && limit.available() > ack_frame.encoding_size()
+        && burst.available() > ack_frame.encoding_size()
     {
         buf.put_ack_frame(&ack_frame);
         let written = remain - buf.remaining_mut();
-        limit.record_write(written);
+        burst.post_write(written);
         written
     } else {
         0
@@ -291,11 +287,11 @@ pub fn read_ack_frame(
 
 pub fn read_crypto_stream(
     buf: &mut [u8],
-    limit: &mut TransportLimit,
+    burst: &mut Burst,
     stream: &mut CryptoStream,
     guard: &mut SendGuard<CryptoFrame>,
 ) -> usize {
-    if let Some((crypto_frame, written)) = stream.outgoing().try_read_data(limit, buf) {
+    if let Some((crypto_frame, written)) = stream.outgoing().try_read_data(burst, buf) {
         guard.record_frame(crypto_frame);
         return written;
     }
@@ -304,7 +300,7 @@ pub fn read_crypto_stream(
 
 pub fn read_reliable_frame(
     buf: &mut [u8],
-    limit: &mut TransportLimit,
+    burst: &mut Burst,
     reliable_frame_queue: &mut ArcReliableFrameDeque,
     guard: &mut SendGuard<GuaranteedFrame>,
 ) -> (usize, bool) {

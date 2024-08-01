@@ -9,7 +9,7 @@ mod send {
     use bytes::BufMut;
     use qbase::{
         frame::{io::WriteCryptoFrame, CryptoFrame},
-        util::{DescribeData, TransportLimit},
+        util::{Burst, DescribeData},
         varint::{VarInt, VARINT_MAX},
     };
     use tokio::io::AsyncWrite;
@@ -26,10 +26,10 @@ mod send {
     impl Sender {
         fn try_read_data(
             &mut self,
-            limit: &mut TransportLimit,
+            burst: &mut Burst,
             mut buffer: &mut [u8],
         ) -> Option<(CryptoFrame, usize)> {
-            let remain = limit.available();
+            let remain = burst.available();
             let estimater = |offset: u64| CryptoFrame::estimate_max_capacity(remain, offset);
             let mut picker = PickIndicator::new(estimater, None);
             if let Some((offset, data)) = self.sndbuf.pick_up(&mut picker) {
@@ -39,7 +39,7 @@ mod send {
                 };
                 buffer.put_crypto_frame(&frame, &data);
                 let written = remain - buffer.remaining_mut();
-                limit.record_write(written);
+                burst.post_write(written);
                 Some((frame, written))
             } else {
                 None
@@ -121,10 +121,10 @@ mod send {
     impl CryptoStreamOutgoing {
         pub fn try_read_data(
             &self,
-            limit: &mut TransportLimit,
+            burst: &mut Burst,
             buffer: &mut [u8],
         ) -> Option<(CryptoFrame, usize)> {
-            self.0.lock().unwrap().try_read_data(limit, buffer)
+            self.0.lock().unwrap().try_read_data(burst, buffer)
         }
 
         pub fn on_data_acked(&self, crypto_frame: &CryptoFrame) {

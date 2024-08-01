@@ -16,7 +16,7 @@ use qbase::{
     flow::FlowController,
     frame::{AckFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame},
     packet::{LongHeaderBuilder, OneRttHeader, SpinBit},
-    util::TransportLimit,
+    util::Burst,
 };
 use qcongestion::{
     congestion::{ArcCC, CongestionAlgorithm, MSS},
@@ -290,7 +290,7 @@ impl<'a> Future for ArcPacketReader<'a> {
             dcid: guard.dcid,
         };
 
-        let mut limit = TransportLimit::new(
+        let mut limit = Burst::new(
             anti_amplification,
             congestion_control,
             flow_credit.available(),
