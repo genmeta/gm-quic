@@ -85,13 +85,16 @@ impl ClosingConnection {
 
                 if let Some(ccf) = ccf {
                     self.error.on_ccf_rcvd(&ccf);
-                    return;
                 }
-            };
+            }
         }
     }
 
     pub fn get_path(&self, pathway: Pathway, _usc: &ArcUsc) -> Option<ArcPath> {
         self.pathes.get(&pathway).map(|path| path.value().clone())
+    }
+
+    pub fn get_error(&self) -> ConnError {
+        self.error.clone()
     }
 }
