@@ -276,6 +276,10 @@ impl ArcRecvController {
         self.0.on_new_rcvd(amount)
     }
 
+    pub fn recv_data_blocked_frame(&self, _frame: &DataBlockedFrame) {
+        // Do nothing, just print a log
+    }
+
     /// Polls for an increase in the receive window limit.
     pub fn incr_limit(&self) -> IncrLimit {
         IncrLimit(self.0.clone())
@@ -300,8 +304,8 @@ impl Future for IncrLimit {
 /// Represents a flow controller for managing the flow of data.
 #[derive(Debug, Clone)]
 pub struct FlowController {
-    sender: ArcSendControler,
-    recver: ArcRecvController,
+    pub sender: ArcSendControler,
+    pub recver: ArcRecvController,
 }
 
 impl FlowController {
@@ -313,11 +317,11 @@ impl FlowController {
         }
     }
 
-    pub fn sender(&self) -> &ArcSendControler {
-        &self.sender
+    pub fn sender(&self) -> ArcSendControler {
+        self.sender.clone()
     }
 
-    pub fn recver(&self) -> &ArcRecvController {
-        &self.recver
+    pub fn recver(&self) -> ArcRecvController {
+        self.recver.clone()
     }
 }

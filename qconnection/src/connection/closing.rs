@@ -20,8 +20,11 @@ use qrecovery::{
 };
 use qudp::ArcUsc;
 
-use super::raw::PacketPayload;
-use crate::path::{ArcPath, Pathway};
+use crate::{
+    connection::PacketPayload,
+    error::ConnError,
+    path::{ArcPath, Pathway},
+};
 
 pub struct ClosingConnection {
     pathes: DashMap<Pathway, ArcPath>,
