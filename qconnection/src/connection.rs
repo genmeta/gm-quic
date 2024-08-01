@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use qbase::{config::TransportParameters, error::Error};
+use qbase::{config::Parameters, error::Error};
 use qrecovery::streams::DataStreams;
 
 pub mod closing;
@@ -25,13 +25,13 @@ impl ArcConnection {
         _server_name: String,
         _address: SocketAddr,
         _token: Option<Vec<u8>>,
-        _parameters: TransportParameters,
+        _parameters: Parameters,
     ) -> Self {
         todo!("create a new client connection");
     }
 
     /// TODO: 参数不全，其实是QuicServer::accept的返回值
-    pub fn new_server(_parameters: TransportParameters) -> Self {
+    pub fn new_server(_parameters: Parameters) -> Self {
         todo!("create a new server connection");
     }
 
