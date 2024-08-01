@@ -49,9 +49,9 @@ impl ClosingConnection {
     ) -> Self {
         let ccf = ConnectionCloseFrame::from(error);
 
-        pathes
-            .iter()
-            .for_each(|path| path.enter_closing(ccf.clone(), Epoch::Data));
+        // pathes
+        //     .iter()
+        //     .for_each(|path| path.enter_closing(ccf.clone(), Epoch::Data));
 
         Self {
             pathes,

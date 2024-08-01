@@ -289,7 +289,7 @@ impl<'a> Future for ArcPacketReader<'a> {
             dcid: guard.dcid,
         };
 
-        let mut limit = Burst::new(
+        let mut burst = Burst::new(
             anti_amplification,
             congestion_control,
             flow_credit.available(),
@@ -303,7 +303,7 @@ impl<'a> Future for ArcPacketReader<'a> {
             let (pkt_size, pn, is_ack_eliciting) = guard.space_readers.read_long_header_space(
                 buffer,
                 &inital_hdr,
-                &mut limit,
+                &mut burst,
                 Epoch::Initial,
                 need_ack,
             );
@@ -324,7 +324,7 @@ impl<'a> Future for ArcPacketReader<'a> {
             let (pkt_size, pn, is_ack_eliciting) = guard.space_readers.read_long_header_space(
                 buffer,
                 &handshake_hdr,
-                &mut limit,
+                &mut burst,
                 Epoch::Handshake,
                 need_ack,
             );
@@ -339,16 +339,16 @@ impl<'a> Future for ArcPacketReader<'a> {
             );
             buffer = &mut buffer[pkt_size..];
 
-            let n = guard.challenge_buffer.read(buffer, &mut limit);
+            let n = guard.challenge_buffer.read(buffer, &mut burst);
             buffer = &mut buffer[n..];
-            let n = guard.response_buffer.read(buffer, &mut limit);
+            let n = guard.response_buffer.read(buffer, &mut burst);
             buffer = &mut buffer[n..];
 
             let need_ack = guard.cc.need_ack(Epoch::Data);
             let (pkt_size, pn, is_ack_eliciting) =
                 guard
                     .space_readers
-                    .read_one_rtt_space(buffer, &mut limit, &one_rtt_hdr, need_ack);
+                    .read_one_rtt_space(buffer, &mut burst, &one_rtt_hdr, need_ack);
             guard.cc.on_pkt_sent(
                 Epoch::Handshake,
                 pn,
