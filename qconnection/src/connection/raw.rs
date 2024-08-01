@@ -1,5 +1,4 @@
 use std::{
-    net::SocketAddr,
     ops::Deref,
     sync::{Arc, Mutex},
 };
@@ -10,7 +9,7 @@ use futures::{channel::mpsc, StreamExt};
 use qbase::{
     cid::Registry,
     flow::FlowController,
-    frame::{AckFrame, BeFrame, DataFrame, Frame, FrameReader},
+    frame::{self, AckFrame, DataFrame, Frame, FrameReader},
     handshake::Handshake,
     packet::{
         self,
@@ -23,40 +22,26 @@ use qbase::{
     streamid::Role,
 };
 use qrecovery::{
-    reliable::{ArcReliableFrameDeque, ReliableFrame},
+    reliable::{ArcReliableFrameDeque, GuaranteedFrame},
     space::{DataSpace, Epoch, HandshakeSpace, InitialSpace},
     streams::{crypto::CryptoStream, DataStreams},
 };
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 
-use crate::{error::ConnError, path::ArcPath, pipe, tls::ArcTlsSession};
+use crate::{
+    error::ConnError,
+    path::{ArcPath, Pathway},
+    pipe,
+    tls::ArcTlsSession,
+};
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
-pub struct RelayAddr {
-    pub agent: SocketAddr, // 代理人
-    pub addr: SocketAddr,
-}
+type PacketEntry<P> = mpsc::UnboundedSender<(P, ArcPath)>;
 
-/// 无论哪种Pathway，socket都必须绑定local地址
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
-pub enum Pathway {
-    Direct {
-        local: SocketAddr,
-        remote: SocketAddr,
-    },
-    Relay {
-        local: RelayAddr,
-        remote: RelayAddr,
-    },
-}
-
-type PacketQueue<P> = mpsc::UnboundedSender<(P, ArcPath)>;
-
-pub type InitialPacketQueue = PacketQueue<InitialPacket>;
-pub type HandshakePacketQueue = PacketQueue<HandshakePacket>;
-pub type ZeroRttPacketQueue = PacketQueue<ZeroRttPacket>;
-pub type OneRttPacketQueue = PacketQueue<OneRttPacket>;
+pub type InitialPacketEntry = PacketEntry<InitialPacket>;
+pub type HandshakePacketEntry = PacketEntry<HandshakePacket>;
+pub type ZeroRttPacketEntry = PacketEntry<ZeroRttPacket>;
+pub type OneRttPacketEntry = PacketEntry<OneRttPacket>;
 
 pub struct RawConnection {
     pathes: DashMap<Pathway, ArcPath>,
@@ -69,12 +54,12 @@ pub struct RawConnection {
 
     initial_space: InitialSpace,
     initial_crypto_stream: CryptoStream,
-    initial_packet_queue: InitialPacketQueue,
+    initial_packet_entry: InitialPacketEntry,
     initial_keys: ArcKeys,
 
     handshake_space: HandshakeSpace,
     handshake_crypto_stream: CryptoStream,
-    handshake_packet_queue: HandshakePacketQueue,
+    handshake_packet_entry: HandshakePacketEntry,
     handshake_keys: ArcKeys,
 
     data_space: DataSpace,
@@ -82,9 +67,9 @@ pub struct RawConnection {
     data_streams: DataStreams,
     data_reliable_frames_deque: ArcReliableFrameDeque,
 
-    zero_rtt_packet_queue: ZeroRttPacketQueue,
+    zero_rtt_packet_queue: ZeroRttPacketEntry,
     zero_rtt_keys: ArcKeys,
-    one_rtt_packet_queue: OneRttPacketQueue,
+    one_rtt_packet_entry: OneRttPacketEntry,
     one_rtt_keys: ArcOneRttKeys,
 
     datagram_flow: DatagramFlow,
@@ -158,20 +143,20 @@ impl RawConnection {
             pipe!(rcvd_ack_frames |> on_ack);
 
             async move {
-                let dispatch_frames_of_initial_packet = |frame: Frame, path: &ArcPath| {
-                    let is_ack_eliciting = frame.is_ack_eliciting();
-                    match frame {
-                        Frame::Ack(ack_frame) => {
-                            path.on_ack(EPOCH, &ack_frame);
-                            _ = ack_frames_entry.unbounded_send(ack_frame);
+                let dispatch_frames_of_initial_packet =
+                    |frame: Frame, is_ack_eliciting: bool, path: &ArcPath| {
+                        match frame {
+                            Frame::Ack(ack_frame) => {
+                                path.on_ack(EPOCH, &ack_frame);
+                                _ = ack_frames_entry.unbounded_send(ack_frame);
+                            }
+                            Frame::Data(DataFrame::Crypto(crypto), bytes) => {
+                                _ = crypto_frames_entry.unbounded_send((crypto, bytes));
+                            }
+                            _ => {}
                         }
-                        Frame::Data(DataFrame::Crypto(crypto), bytes) => {
-                            _ = crypto_frames_entry.unbounded_send((crypto, bytes));
-                        }
-                        _ => {}
-                    }
-                    is_ack_eliciting
-                };
+                        is_ack_eliciting
+                    };
 
                 let rcvd_packets = space.rcvd_packets();
                 while let Some((packet, path)) = packets.next().await {
@@ -185,7 +170,13 @@ impl RawConnection {
                     let dispath_result = FrameReader::new(payload.payload, PACKET_TYPE).try_fold(
                         false,
                         |is_ack_packet, frame| {
-                            Ok(is_ack_packet || dispatch_frames_of_initial_packet(frame?, &path))
+                            let (frame, is_ack_eliciting) = frame?;
+                            Ok(is_ack_packet
+                                || dispatch_frames_of_initial_packet(
+                                    frame,
+                                    is_ack_eliciting,
+                                    &path,
+                                ))
                         },
                     );
 
@@ -234,20 +225,20 @@ impl RawConnection {
             pipe!(rcvd_ack_frames |> on_ack);
 
             async move {
-                let dispatch_frames_of_handshake_packet = |frame: Frame, path: &ArcPath| {
-                    let is_ack_eliciting = frame.is_ack_eliciting();
-                    match frame {
-                        Frame::Ack(ack_frame) => {
-                            path.on_ack(EPOCH, &ack_frame);
-                            _ = ack_frames_entry.unbounded_send(ack_frame);
+                let dispatch_frames_of_handshake_packet =
+                    |frame: Frame, is_ack_eliciting: bool, path: &ArcPath| {
+                        match frame {
+                            Frame::Ack(ack_frame) => {
+                                path.on_ack(EPOCH, &ack_frame);
+                                _ = ack_frames_entry.unbounded_send(ack_frame);
+                            }
+                            Frame::Data(DataFrame::Crypto(crypto), bytes) => {
+                                _ = crypto_frames_entry.unbounded_send((crypto, bytes));
+                            }
+                            _ => {}
                         }
-                        Frame::Data(DataFrame::Crypto(crypto), bytes) => {
-                            _ = crypto_frames_entry.unbounded_send((crypto, bytes));
-                        }
-                        _ => {}
-                    }
-                    is_ack_eliciting
-                };
+                        is_ack_eliciting
+                    };
 
                 let rcvd_packets = space.rcvd_packets();
                 while let Some((packet, path)) = packets.next().await {
@@ -261,7 +252,13 @@ impl RawConnection {
                     let dispath_result = FrameReader::new(payload.payload, PACKET_TYPE).try_fold(
                         false,
                         |is_ack_packet, frame| {
-                            Ok(is_ack_packet || dispatch_frames_of_handshake_packet(frame?, &path))
+                            let (frame, is_ack_eliciting) = frame?;
+                            Ok(is_ack_packet
+                                || dispatch_frames_of_handshake_packet(
+                                    frame,
+                                    is_ack_eliciting,
+                                    &path,
+                                ))
                         },
                     );
 
@@ -299,25 +296,25 @@ impl RawConnection {
             pipe!(@error(conn_error)  rcvd_datagram_frames |> datagram_flow,recv_datagram);
 
             async move {
-                let dispatch_frames_of_0rtt_packet = |frame: Frame, _path: &ArcPath| {
-                    let is_ack_eliciting = frame.is_ack_eliciting();
-                    match frame {
-                        Frame::MaxData(max_data) => {
-                            _ = max_data_frames_entry.unbounded_send(max_data);
+                let dispatch_frames_of_0rtt_packet =
+                    |frame: Frame, is_ack_eliciting: bool, _path: &ArcPath| {
+                        match frame {
+                            Frame::MaxData(max_data) => {
+                                _ = max_data_frames_entry.unbounded_send(max_data);
+                            }
+                            Frame::Stream(stream_ctrl) => {
+                                _ = stream_ctrl_frames_entry.unbounded_send(stream_ctrl);
+                            }
+                            Frame::Data(DataFrame::Stream(stream), data) => {
+                                _ = stream_frames_entry.unbounded_send((stream, data));
+                            }
+                            Frame::Datagram(datagram, data) => {
+                                _ = datagram_frames_entry.unbounded_send((datagram, data));
+                            }
+                            _ => {}
                         }
-                        Frame::Stream(stream_ctrl) => {
-                            _ = stream_ctrl_frames_entry.unbounded_send(stream_ctrl);
-                        }
-                        Frame::Data(DataFrame::Stream(stream), data) => {
-                            _ = stream_frames_entry.unbounded_send((stream, data));
-                        }
-                        Frame::Datagram(datagram, data) => {
-                            _ = datagram_frames_entry.unbounded_send((datagram, data));
-                        }
-                        _ => {}
-                    }
-                    is_ack_eliciting
-                };
+                        is_ack_eliciting
+                    };
 
                 let rcvd_packets = space.rcvd_packets();
                 while let Some((packet, path)) = packets.next().await {
@@ -331,7 +328,9 @@ impl RawConnection {
                     let dispath_result = FrameReader::new(payload.payload, PACKET_TYPE).try_fold(
                         false,
                         |is_ack_packet, frame| {
-                            Ok(is_ack_packet || dispatch_frames_of_0rtt_packet(frame?, &path))
+                            let (frame, is_ack_eliciting) = frame?;
+                            Ok(is_ack_packet
+                                || dispatch_frames_of_0rtt_packet(frame, is_ack_eliciting, &path))
                         },
                     );
 
@@ -388,10 +387,10 @@ impl RawConnection {
                 for pn in ack_frame.iter().flat_map(|r| r.rev()) {
                     for frame in recv_guard.on_pkt_acked(pn) {
                         match frame {
-                            ReliableFrame::Data(DataFrame::Stream(stream_frame)) => {
+                            GuaranteedFrame::Data(DataFrame::Stream(stream_frame)) => {
                                 data_streams.on_data_acked(stream_frame)
                             }
-                            ReliableFrame::Data(DataFrame::Crypto(crypto)) => {
+                            GuaranteedFrame::Data(DataFrame::Crypto(crypto)) => {
                                 crypto_stream_outgoing.on_data_acked(&crypto)
                             }
                             // qrecovery::reliable::ReliableFrame::NewToken(_) => todo!(),
@@ -415,54 +414,54 @@ impl RawConnection {
             let space = data_space.clone();
 
             async move {
-                let dispatch_frames_of_1rtt_packet = |frame: Frame, path: &ArcPath| {
-                    let is_ack_eliciting = frame.is_ack_eliciting();
-                    match frame {
-                        Frame::Close(ccf) => {
-                            _ = ccf_entry.unbounded_send(ccf);
+                let dispatch_frames_of_1rtt_packet =
+                    |frame: Frame, is_ack_eliciting: bool, path: &ArcPath| {
+                        match frame {
+                            Frame::Close(ccf) => {
+                                _ = ccf_entry.unbounded_send(ccf);
+                            }
+                            Frame::NewToken(new_token) => {
+                                _ = new_token_frames_entry.unbounded_send(new_token);
+                            }
+                            Frame::MaxData(max_data) => {
+                                _ = max_data_frames_entry.unbounded_send(max_data);
+                            }
+                            Frame::NewConnectionId(new_cid) => {
+                                _ = new_cid_frames_entry.unbounded_send(new_cid);
+                            }
+                            Frame::RetireConnectionId(retire_cid) => {
+                                _ = retire_cid_frames_entry.unbounded_send(retire_cid);
+                            }
+                            Frame::HandshakeDone(hs_done) => {
+                                _ = handshake_done_frames_entry.unbounded_send(hs_done);
+                            }
+                            Frame::DataBlocked(_) => { /* ignore */ }
+                            Frame::Ack(ack_frame) => {
+                                path.on_ack(EPOCH, &ack_frame);
+                                _ = ack_frames_entry.unbounded_send(ack_frame);
+                            }
+                            Frame::Challenge(challenge) => {
+                                path.recv_challenge(challenge);
+                            }
+                            Frame::Response(response) => {
+                                path.recv_response(response);
+                            }
+                            Frame::Stream(stream_ctrl) => {
+                                _ = stream_ctrl_frames_entry.unbounded_send(stream_ctrl);
+                            }
+                            Frame::Data(DataFrame::Stream(stream), data) => {
+                                _ = stream_frames_entry.unbounded_send((stream, data));
+                            }
+                            Frame::Data(DataFrame::Crypto(crypto), data) => {
+                                _ = data_crypto_frames_entry.unbounded_send((crypto, data));
+                            }
+                            Frame::Datagram(datagram, data) => {
+                                _ = datagram_frames_entry.unbounded_send((datagram, data));
+                            }
+                            _ => {}
                         }
-                        Frame::NewToken(new_token) => {
-                            _ = new_token_frames_entry.unbounded_send(new_token);
-                        }
-                        Frame::MaxData(max_data) => {
-                            _ = max_data_frames_entry.unbounded_send(max_data);
-                        }
-                        Frame::NewConnectionId(new_cid) => {
-                            _ = new_cid_frames_entry.unbounded_send(new_cid);
-                        }
-                        Frame::RetireConnectionId(retire_cid) => {
-                            _ = retire_cid_frames_entry.unbounded_send(retire_cid);
-                        }
-                        Frame::HandshakeDone(hs_done) => {
-                            _ = handshake_done_frames_entry.unbounded_send(hs_done);
-                        }
-                        Frame::DataBlocked(_) => { /* ignore */ }
-                        Frame::Ack(ack_frame) => {
-                            path.on_ack(EPOCH, &ack_frame);
-                            _ = ack_frames_entry.unbounded_send(ack_frame);
-                        }
-                        Frame::Challenge(challenge) => {
-                            path.recv_challenge(challenge);
-                        }
-                        Frame::Response(response) => {
-                            path.recv_response(response);
-                        }
-                        Frame::Stream(stream_ctrl) => {
-                            _ = stream_ctrl_frames_entry.unbounded_send(stream_ctrl);
-                        }
-                        Frame::Data(DataFrame::Stream(stream), data) => {
-                            _ = stream_frames_entry.unbounded_send((stream, data));
-                        }
-                        Frame::Data(DataFrame::Crypto(crypto), data) => {
-                            _ = data_crypto_frames_entry.unbounded_send((crypto, data));
-                        }
-                        Frame::Datagram(datagram, data) => {
-                            _ = datagram_frames_entry.unbounded_send((datagram, data));
-                        }
-                        _ => {}
-                    }
-                    is_ack_eliciting
-                };
+                        is_ack_eliciting
+                    };
 
                 let rcvd_packets = space.rcvd_packets();
                 while let Some((packet, path)) = packets.next().await {
@@ -477,7 +476,9 @@ impl RawConnection {
                     let dispath_result = FrameReader::new(payload.payload, pty).try_fold(
                         false,
                         |is_ack_packet, frame| {
-                            Ok(is_ack_packet || dispatch_frames_of_1rtt_packet(frame?, &path))
+                            let (frame, is_ack_eliciting) = frame?;
+                            Ok(is_ack_packet
+                                || dispatch_frames_of_1rtt_packet(frame, is_ack_eliciting, &path))
                         },
                     );
 
@@ -536,11 +537,11 @@ impl RawConnection {
             flow_control,
             initial_space,
             initial_crypto_stream,
-            initial_packet_queue,
+            initial_packet_entry: initial_packet_queue,
             initial_keys,
             handshake_space,
             handshake_crypto_stream,
-            handshake_packet_queue,
+            handshake_packet_entry: handshake_packet_queue,
             handshake_keys,
             data_space,
             data_crypto_stream,
@@ -548,7 +549,7 @@ impl RawConnection {
             data_reliable_frames_deque,
             zero_rtt_packet_queue,
             zero_rtt_keys,
-            one_rtt_packet_queue,
+            one_rtt_packet_entry: one_rtt_packet_queue,
             one_rtt_keys,
             datagram_flow,
             spin,
@@ -559,16 +560,16 @@ impl RawConnection {
     pub fn recv_packet_via_path(&self, packet: SpacePacket, path: ArcPath) {
         match packet {
             SpacePacket::Initial(packet) => {
-                _ = self.initial_packet_queue.unbounded_send((packet, path))
+                _ = self.initial_packet_entry.unbounded_send((packet, path))
             }
             SpacePacket::Handshake(packet) => {
-                _ = self.handshake_packet_queue.unbounded_send((packet, path))
+                _ = self.handshake_packet_entry.unbounded_send((packet, path))
             }
             SpacePacket::ZeroRtt(packet) => {
                 _ = self.zero_rtt_packet_queue.unbounded_send((packet, path))
             }
             SpacePacket::OneRtt(packet) => {
-                _ = self.one_rtt_packet_queue.unbounded_send((packet, path))
+                _ = self.one_rtt_packet_entry.unbounded_send((packet, path))
             }
         }
     }

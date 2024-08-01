@@ -2,7 +2,7 @@ use std::ops::{Index, IndexMut};
 
 use qbase::frame::CryptoFrame;
 
-use crate::reliable::{rcvdpkt::ArcRcvdPktRecords, sentpkt::ArcSentPktRecords, ReliableFrame};
+use crate::reliable::{rcvdpkt::ArcRcvdPktRecords, sentpkt::ArcSentPktRecords, GuaranteedFrame};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Epoch {
@@ -79,7 +79,7 @@ impl<T> AsRef<ArcRcvdPktRecords> for RawSpace<T> {
 
 pub type InitialSpace = RawSpace<CryptoFrame>;
 pub type HandshakeSpace = RawSpace<CryptoFrame>;
-pub type DataSpace = RawSpace<ReliableFrame>;
+pub type DataSpace = RawSpace<GuaranteedFrame>;
 
 #[derive(Debug, Clone)]
 pub enum Space {

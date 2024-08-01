@@ -94,9 +94,13 @@ fn complete_frame(
     }
 }
 
-pub fn be_frame(raw: &Bytes) -> Result<(usize, Frame), Error> {
+pub fn be_frame(raw: &Bytes, packet_type: Type) -> Result<(usize, Frame, bool), Error> {
     let input = raw.as_ref();
     let (remain, frame_type) = be_frame_type(input)?;
+    if !frame_type.belongs_to(packet_type) {
+        return Err(Error::WrongType(frame_type, packet_type));
+    }
+
     let (remain, frame) = complete_frame(frame_type, raw.clone())(remain).map_err(|e| match e {
         ne @ nom::Err::Incomplete(_) => {
             nom::Err::Error(Error::IncompleteFrame(frame_type, ne.to_string()))
@@ -112,7 +116,11 @@ pub fn be_frame(raw: &Bytes) -> Result<(usize, Frame), Error> {
         }
         _ => unreachable!("parsing frame never fails"),
     })?;
-    Ok((input.len() - remain.len(), frame))
+    Ok((
+        input.len() - remain.len(),
+        frame,
+        frame_type.is_ack_eliciting(),
+    ))
 }
 
 pub use super::{

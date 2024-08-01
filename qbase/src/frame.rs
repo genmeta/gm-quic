@@ -269,6 +269,7 @@ pub enum Frame {
     Datagram(DatagramFrame, Bytes),
 }
 
+/*
 impl BeFrame for Frame {
     fn frame_type(&self) -> FrameType {
         match self {
@@ -330,6 +331,8 @@ impl BeFrame for Frame {
         }
     }
 }
+*/
+
 pub struct FrameReader {
     payload: Bytes,
     packet_type: Type,
@@ -347,20 +350,17 @@ impl FrameReader {
 pub mod io;
 
 impl Iterator for FrameReader {
-    type Item = Result<Frame, Error>;
+    type Item = Result<(Frame, bool), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.payload.is_empty() {
             return None;
         }
 
-        match io::be_frame(&self.payload) {
-            Ok((_, frame)) if !frame.frame_type().belongs_to(self.packet_type) => Some(Err(
-                Error::InvalidType(VarInt::from(u8::from(frame.frame_type()))),
-            )),
-            Ok((consumed, frame)) => {
+        match io::be_frame(&self.payload, self.packet_type) {
+            Ok((consumed, frame, is_ack_eliciting)) => {
                 self.payload.advance(consumed);
-                Some(Ok(frame))
+                Some(Ok((frame, is_ack_eliciting)))
             }
             Err(e) => {
                 self.payload.clear(); // no longer parsing

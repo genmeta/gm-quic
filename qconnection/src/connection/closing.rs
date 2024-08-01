@@ -13,8 +13,11 @@ use qrecovery::{
 };
 use qudp::ArcUsc;
 
-use super::raw::{PacketPayload, Pathway};
-use crate::{error::ConnError, path::ArcPath};
+use super::raw::PacketPayload;
+use crate::{
+    error::ConnError,
+    path::{ArcPath, Pathway},
+};
 
 pub struct ClosingConnection {
     pathes: DashMap<Pathway, ArcPath>,
@@ -53,18 +56,14 @@ impl ClosingConnection {
     }
 
     // 记录收到的包数量，和收包时间，判断是否需要重发CCF；
-    pub fn recv_packet_via_path(&mut self, packet: SpacePacket, path: ArcPath) {
+    pub fn recv_packet_via_path(&mut self, packet: SpacePacket, pathway: Pathway, usc: ArcUsc) {
         self.rcvd_packets += 1;
         // TODO: 数值从配置中读取, 还是直接固定值?
-        if self.rcvd_packets > 5 {
+        if self.rcvd_packets > 5 || self.last_send_ccf.elapsed() > Duration::from_millis(100) {
             self.rcvd_packets = 0;
             self.last_send_ccf = Instant::now();
             // TODO: 调用 dying path 直接发送 ccf
-        }
-        if self.last_send_ccf.elapsed() > Duration::from_millis(100) {
-            self.rcvd_packets = 0;
-            self.last_send_ccf = Instant::now();
-            // TODO: 调用 dying path 直接发送 ccf
+            // usc.poll_send_via_pathway(iovecs, pathway, cx);
         }
 
         if let SpacePacket::OneRtt(packet) = packet {
@@ -77,7 +76,7 @@ impl ClosingConnection {
                 let ccf = FrameReader::new(payload.payload, pkt_type)
                     .filter_map(|frame| frame.ok())
                     .find_map(|frame| {
-                        if let Frame::Close(ccf) = frame {
+                        if let (Frame::Close(ccf), _) = frame {
                             Some(ccf)
                         } else {
                             None
