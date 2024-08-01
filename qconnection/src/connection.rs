@@ -1,17 +1,47 @@
 use std::{
     net::SocketAddr,
+    ops::Deref,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-use qbase::{config::Parameters, error::Error};
+use bytes::Bytes;
+use futures::channel::mpsc;
+use qbase::{
+    config::Parameters,
+    error::Error,
+    packet::{
+        decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
+        keys::{ArcKeys, ArcOneRttKeys},
+        HandshakePacket, InitialPacket, OneRttPacket, PacketNumber, ZeroRttPacket,
+    },
+};
 use qrecovery::streams::DataStreams;
 
-use crate::connection::ConnState::{Closing, Raw};
+use crate::{
+    connection::ConnState::{Closing, Raw},
+    path::ArcPath,
+};
 
 pub mod closing;
 pub mod draining;
 pub mod raw;
+pub mod scope;
+
+type PacketEntry<P> = mpsc::UnboundedSender<(P, ArcPath)>;
+type RcvdPacket<P> = mpsc::UnboundedReceiver<(P, ArcPath)>;
+
+pub type InitialPacketEntry = PacketEntry<InitialPacket>;
+pub type RcvdInitialPacket = RcvdPacket<InitialPacket>;
+
+pub type HandshakePacketEntry = PacketEntry<HandshakePacket>;
+pub type RcvdHandshakePacket = RcvdPacket<HandshakePacket>;
+
+pub type ZeroRttPacketEntry = PacketEntry<ZeroRttPacket>;
+pub type RcvdZeroRttPacket = RcvdPacket<ZeroRttPacket>;
+
+pub type OneRttPacketEntry = PacketEntry<OneRttPacket>;
+pub type RcvdOneRttPacket = RcvdPacket<OneRttPacket>;
 
 enum ConnState {
     Raw(raw::RawConnection),
@@ -93,6 +123,55 @@ impl ArcConnection {
     pub(crate) fn die(&self) {
         todo!("remove the connection from the global router");
     }
+}
+
+pub(crate) struct PacketPayload {
+    pub pn: u64,
+    pub payload: Bytes,
+}
+
+async fn decode_long_header_packet<P>(
+    mut packet: P,
+    keys: &ArcKeys,
+    decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
+) -> Option<PacketPayload>
+where
+    P: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
+{
+    let k = keys.get_remote_keys().await?;
+
+    if !packet.remove_protection(k.remote.header.deref()) {
+        return None;
+    }
+
+    let encoded_pn = packet.decode_header().ok()?;
+    let pn = decode_pn(encoded_pn)?;
+    let payload = packet
+        .decrypt_packet(pn, encoded_pn.size(), k.remote.packet.deref())
+        .ok()?;
+
+    Some(PacketPayload { pn, payload })
+}
+
+pub(crate) async fn decode_short_header_packet(
+    mut packet: OneRttPacket,
+    keys: &ArcOneRttKeys,
+    decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
+) -> Option<PacketPayload> {
+    let (hk, pk) = keys.get_remote_keys().await?;
+
+    if !packet.remove_protection(hk.deref()) {
+        return None;
+    }
+
+    let (encoded_pn, key_phase) = packet.decode_header().ok()?;
+    let pn = decode_pn(encoded_pn)?;
+    let packet_key = pk.lock().unwrap().get_remote(key_phase, pn);
+    let payload = packet
+        .decrypt_packet(pn, encoded_pn.size(), packet_key.deref())
+        .ok()?;
+
+    Some(PacketPayload { pn, payload })
 }
 
 #[cfg(test)]

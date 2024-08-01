@@ -1,23 +1,17 @@
-use std::{
-    ops::Deref,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
-use bytes::Bytes;
 use dashmap::DashMap;
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
     cid::Registry,
     flow::FlowController,
-    frame::{self, AckFrame, DataFrame, Frame, FrameReader},
+    frame::{AckFrame, DataFrame, Frame, FrameReader},
     handshake::Handshake,
     packet::{
         self,
-        decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
         header::GetType,
         keys::{ArcKeys, ArcOneRttKeys},
-        HandshakePacket, InitialPacket, OneRttPacket, PacketNumber, SpacePacket, SpinBit,
-        ZeroRttPacket,
+        OneRttPacket, SpacePacket, SpinBit,
     },
     streamid::Role,
 };
@@ -29,19 +23,14 @@ use qrecovery::{
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 
+use super::{HandshakePacketEntry, InitialPacketEntry, OneRttPacketEntry, ZeroRttPacketEntry};
 use crate::{
+    connection::{decode_long_header_packet, decode_short_header_packet},
     error::ConnError,
     path::{ArcPath, Pathway},
     pipe,
     tls::ArcTlsSession,
 };
-
-type PacketEntry<P> = mpsc::UnboundedSender<(P, ArcPath)>;
-
-pub type InitialPacketEntry = PacketEntry<InitialPacket>;
-pub type HandshakePacketEntry = PacketEntry<HandshakePacket>;
-pub type ZeroRttPacketEntry = PacketEntry<ZeroRttPacket>;
-pub type OneRttPacketEntry = PacketEntry<OneRttPacket>;
 
 pub struct RawConnection {
     pathes: DashMap<Pathway, ArcPath>,
@@ -286,7 +275,7 @@ impl RawConnection {
             let conn_error = conn_error.clone();
 
             let (max_data_frames_entry, rcvd_max_data_frames) = mpsc::unbounded();
-            pipe!(rcvd_max_data_frames |> *flow_control.sender(),recv_max_data_frame);
+            pipe!(rcvd_max_data_frames |> flow_control.sender,recv_max_data_frame);
             // let (data_blocked_frames_entry, rcvd_data_blocked_frames) = mpsc::unbounded(); ignore
             let (stream_ctrl_frames_entry, rcvd_stream_ctrl_frames) = mpsc::unbounded();
             pipe!(@error(conn_error)  rcvd_stream_ctrl_frames |> data_streams,recv_stream_control);
@@ -356,7 +345,7 @@ impl RawConnection {
             let conn_error = conn_error.clone();
 
             let (max_data_frames_entry, rcvd_max_data_frames) = mpsc::unbounded();
-            pipe!(rcvd_max_data_frames |> *flow_control.sender(),recv_max_data_frame);
+            pipe!(rcvd_max_data_frames |> flow_control.sender,recv_max_data_frame);
             // let (data_blocked_frames_entry, rcvd_data_blocked_frames) = mpsc::unbounded(); ignore
 
             // TODO: impl endpoint router
@@ -600,53 +589,4 @@ impl RawConnection {
             self.one_rtt_keys.clone(),
         )
     }
-}
-
-pub(crate) struct PacketPayload {
-    pub pn: u64,
-    pub payload: Bytes,
-}
-
-async fn decode_long_header_packet<P>(
-    mut packet: P,
-    keys: &ArcKeys,
-    decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
-) -> Option<PacketPayload>
-where
-    P: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
-{
-    let k = keys.get_remote_keys().await?;
-
-    if !packet.remove_protection(k.remote.header.deref()) {
-        return None;
-    }
-
-    let encoded_pn = packet.decode_header().ok()?;
-    let pn = decode_pn(encoded_pn)?;
-    let payload = packet
-        .decrypt_packet(pn, encoded_pn.size(), k.remote.packet.deref())
-        .ok()?;
-
-    Some(PacketPayload { pn, payload })
-}
-
-pub(crate) async fn decode_short_header_packet(
-    mut packet: OneRttPacket,
-    keys: &ArcOneRttKeys,
-    decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
-) -> Option<PacketPayload> {
-    let (hk, pk) = keys.get_remote_keys().await?;
-
-    if !packet.remove_protection(hk.deref()) {
-        return None;
-    }
-
-    let (encoded_pn, key_phase) = packet.decode_header().ok()?;
-    let pn = decode_pn(encoded_pn)?;
-    let packet_key = pk.lock().unwrap().get_remote(key_phase, pn);
-    let payload = packet
-        .decrypt_packet(pn, encoded_pn.size(), packet_key.deref())
-        .ok()?;
-
-    Some(PacketPayload { pn, payload })
 }
