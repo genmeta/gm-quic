@@ -584,6 +584,22 @@ impl RawConnection {
             .value()
             .clone()
     }
+
+    pub fn enter_closing(
+        &self,
+    ) -> (
+        DashMap<Pathway, ArcPath>,
+        Registry,
+        DataSpace,
+        ArcOneRttKeys,
+    ) {
+        (
+            self.pathes.clone(),
+            self.cid_registry.clone(),
+            self.data_space.clone(),
+            self.one_rtt_keys.clone(),
+        )
+    }
 }
 
 pub(crate) struct PacketPayload {

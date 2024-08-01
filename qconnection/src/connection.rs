@@ -1,11 +1,13 @@
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use qbase::{config::Parameters, error::Error};
 use qrecovery::streams::DataStreams;
+
+use crate::connection::ConnState::{Closing, Raw};
 
 pub mod closing;
 pub mod draining;
@@ -13,7 +15,7 @@ pub mod raw;
 
 enum ConnState {
     Raw(raw::RawConnection),
-    // Closing(closing::ClosingConnection),
+    Closing(closing::ClosingConnection),
     Draining(draining::DrainingConnection),
 }
 
@@ -49,10 +51,35 @@ impl ArcConnection {
     /// reason for the app's active closure.
     /// The app then releases a reference count of the connection, allowing the connection to enter
     /// a self-destruct process.
-    pub fn close(&self, _error: Error) {
-        // TODO: 状态切换 RawConnection -> ClosingConnection
-        // TODO: 监听 ClosingConnection.error.did_error_occur().await , 返回 (_, false) 则进入 Draining
-        todo!("enter closing state from raw state");
+    pub fn close(&self, error: Error) {
+        // 状态切换 RawConnection -> ClosingConnection
+        let mut guard = self.0.lock().unwrap();
+        let (pathes, cid_registry, data_space, one_rtt_keys) = match *guard {
+            Raw(ref conn) => conn.enter_closing(),
+            _ => return,
+        };
+        let closing_conn =
+            closing::ClosingConnection::new(pathes, cid_registry, data_space, one_rtt_keys, error);
+
+        tokio::spawn({
+            let conn = self.clone();
+            // TODO:  时间应为 PTO*3
+            let duration = Duration::from_secs(3);
+            let error = closing_conn.get_error();
+            async move {
+                let time = Instant::now();
+                match tokio::time::timeout(duration, error.did_error_occur()).await {
+                    Ok(_) => {
+                        conn.drain(duration - time.elapsed());
+                    }
+                    Err(_) => {
+                        conn.die();
+                    }
+                }
+            }
+        });
+
+        *guard = Closing(closing_conn);
     }
 
     /// Enter draining state from raw state or closing state.

@@ -166,7 +166,7 @@ impl RawPath {
 
                         },
                         epoch = cc.probe_timeout() => {
-                           let _space = &spaces[epoch];
+                            let _space = &spaces[epoch];
                         },
                         (epoch, _acked) = cc.indicate_ack() => {
                             let _space = &spaces[epoch];
