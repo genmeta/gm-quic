@@ -6,10 +6,7 @@ use qbase::{
     cid::Registry,
     flow::FlowController,
     handshake::Handshake,
-    packet::{
-        keys::{ArcKeys, ArcOneRttKeys},
-        SpacePacket, SpinBit,
-    },
+    packet::{keys::ArcKeys, SpacePacket, SpinBit},
     streamid::Role,
 };
 use qrecovery::{reliable::ArcReliableFrameDeque, space::DataSpace, streams::DataStreams};
@@ -38,7 +35,7 @@ pub struct RawConnection {
 
     pub reliable_frames: ArcReliableFrameDeque,
     pub streams: DataStreams,
-    datagrams: DatagramFlow,
+    pub datagrams: DatagramFlow,
 }
 
 impl RawConnection {
