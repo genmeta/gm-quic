@@ -1,4 +1,11 @@
-use std::time::{Duration, Instant};
+use std::{
+    future::Future,
+    ops::DerefMut,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
+    time::{Duration, Instant},
+};
 
 use dashmap::DashMap;
 use qbase::{
@@ -14,10 +21,7 @@ use qrecovery::{
 use qudp::ArcUsc;
 
 use super::raw::PacketPayload;
-use crate::{
-    error::ConnError,
-    path::{ArcPath, Pathway},
-};
+use crate::path::{ArcPath, Pathway};
 
 pub struct ClosingConnection {
     pathes: DashMap<Pathway, ArcPath>,
@@ -26,7 +30,7 @@ pub struct ClosingConnection {
     one_rtt_keys: ArcOneRttKeys,
     rcvd_packets: usize,
     last_send_ccf: Instant,
-    error: ConnError,
+    revd_ccf: RcvdCcf,
 }
 
 impl ClosingConnection {
@@ -37,7 +41,6 @@ impl ClosingConnection {
         one_rtt_keys: ArcOneRttKeys,
         error: Error,
     ) -> Self {
-        let conn_error = ConnError::default();
         let ccf = ConnectionCloseFrame::from(error);
 
         pathes
@@ -51,7 +54,7 @@ impl ClosingConnection {
             one_rtt_keys,
             rcvd_packets: 0,
             last_send_ccf: Instant::now(),
-            error: conn_error,
+            revd_ccf: RcvdCcf::default(),
         }
     }
 
@@ -83,8 +86,8 @@ impl ClosingConnection {
                         }
                     });
 
-                if let Some(ccf) = ccf {
-                    self.error.on_ccf_rcvd(&ccf);
+                if ccf.is_some() {
+                    self.revd_ccf.on_ccf_rcvd();
                 }
             }
         }
@@ -94,7 +97,47 @@ impl ClosingConnection {
         self.pathes.get(&pathway).map(|path| path.value().clone())
     }
 
-    pub fn get_error(&self) -> ConnError {
-        self.error.clone()
+    pub fn get_rcvd_ccf(&self) -> RcvdCcf {
+        self.revd_ccf.clone()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+enum RcvdCcfState {
+    #[default]
+    None,
+    Pending(Waker),
+    Rcvd,
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct RcvdCcf(Arc<Mutex<RcvdCcfState>>);
+
+impl RcvdCcf {
+    pub fn did_recv(&self) -> Self {
+        self.clone()
+    }
+
+    pub fn on_ccf_rcvd(&self) {
+        let mut guard = self.0.lock().unwrap();
+        if let RcvdCcfState::Pending(waker) = guard.deref_mut() {
+            waker.wake_by_ref();
+        }
+        *guard = RcvdCcfState::Rcvd;
+    }
+}
+
+impl Future for RcvdCcf {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut guard = self.0.lock().unwrap();
+        match guard.deref_mut() {
+            RcvdCcfState::None | RcvdCcfState::Pending(_) => {
+                *guard = RcvdCcfState::Pending(cx.waker().clone());
+                Poll::Pending
+            }
+            RcvdCcfState::Rcvd => Poll::Ready(()),
+        }
     }
 }
