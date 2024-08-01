@@ -9,15 +9,15 @@ use std::{
 use dashmap::DashMap;
 use dying::DyingPath;
 use qbase::{
-    cid::{ConnectionId, Registry},
     flow::FlowController,
     frame::{AckFrame, ConnectionCloseFrame, PathChallengeFrame, PathResponseFrame},
-    packet::SpinBit,
 };
 use qcongestion::congestion::MSS;
 use qrecovery::space::Epoch;
 use qudp::ArcUsc;
-use raw::{AllKeys, AllSpaces, RawPath};
+use raw::RawPath;
+
+use crate::connection::raw::RawConnection;
 
 mod anti_amplifier;
 mod dying;
@@ -139,32 +139,13 @@ impl ArcPath {
     }
 }
 
-// TODO: 从 connection 构造，不需要这么多参数
-#[allow(clippy::too_many_arguments)]
 pub fn create_path(
     usc: ArcUsc,
     pathway: Pathway,
-    spaces: AllSpaces,
-    keys: AllKeys,
-    flow_controller: FlowController,
-    cid_registry: Registry,
-    spin: SpinBit,
-    scid: ConnectionId,
-    token: Vec<u8>,
+    connection: &RawConnection,
     _pathes: DashMap<Pathway, ArcPath>,
 ) -> ArcPath {
-    let dcid = cid_registry.remote.apply_cid();
-    let raw_path = RawPath::new(
-        usc,
-        pathway,
-        spaces,
-        keys,
-        flow_controller,
-        dcid,
-        scid,
-        token.clone(),
-        spin,
-    );
+    let raw_path = RawPath::new(usc, pathway, connection);
     ArcPath(Arc::new(Mutex::new(PathState::Alive(raw_path.clone()))))
 }
 

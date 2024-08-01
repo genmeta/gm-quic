@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    ops::DerefMut,
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -186,6 +187,10 @@ impl<T> SendGuard<'_, T> {
         let pn = self.inner.records.largest();
         let encoded_pn = PacketNumber::encode(pn, self.inner.largest_acked_pktno);
         (pn, encoded_pn)
+    }
+
+    pub fn record_frame(&mut self, frame: T) {
+        self.inner.deref_mut().push_back(frame);
     }
 }
 
