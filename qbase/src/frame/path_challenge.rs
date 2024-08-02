@@ -64,17 +64,6 @@ pub fn be_path_challenge_frame(input: &[u8]) -> nom::IResult<&[u8], PathChalleng
 }
 
 // BufMut write extension for PATH_CHALLENGE_FRAME
-pub trait WritePathChallengeFrame {
-    fn put_path_challenge_frame(&mut self, frame: &PathChallengeFrame);
-}
-
-impl<T: bytes::BufMut> WritePathChallengeFrame for T {
-    fn put_path_challenge_frame(&mut self, frame: &PathChallengeFrame) {
-        self.put_u8(PATH_CHALLENGE_FRAME_TYPE);
-        self.put_slice(&frame.data);
-    }
-}
-
 impl<T: bytes::BufMut> super::io::WriteFrame<PathChallengeFrame> for T {
     fn put_frame(&mut self, frame: &PathChallengeFrame) {
         self.put_u8(PATH_CHALLENGE_FRAME_TYPE);
@@ -120,12 +109,12 @@ mod tests {
 
     #[test]
     fn test_write_path_challenge_frame() {
-        use super::WritePathChallengeFrame;
+        use crate::frame::io::WriteFrame;
         let mut buf = Vec::new();
         let frame = super::PathChallengeFrame {
             data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
         };
-        buf.put_path_challenge_frame(&frame);
+        buf.put_frame(&frame);
         assert_eq!(
             buf,
             vec![

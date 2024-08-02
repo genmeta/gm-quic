@@ -3,10 +3,9 @@ use std::{ops::Deref, time::Instant};
 use bytes::BufMut;
 use qbase::{
     frame::{
-        io::{WriteAckFrame, WritePathChallengeFrame, WritePathResponseFrame},
+        io::WriteAckFrame,
         BeFrame, CryptoFrame,
         DataFrame::{Crypto, Stream},
-        PathChallengeFrame, PathResponseFrame,
     },
     packet::{
         header::{Encode, GetType, LongHeader, Write, WriteLongHeader, WriteOneRttHeader},

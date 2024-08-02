@@ -59,17 +59,6 @@ pub fn be_path_response_frame(input: &[u8]) -> nom::IResult<&[u8], PathResponseF
 }
 
 // BufMut write extension for PATH_RESPONSE_FRAME
-pub trait WritePathResponseFrame {
-    fn put_path_response_frame(&mut self, frame: &PathResponseFrame);
-}
-
-impl<T: bytes::BufMut> WritePathResponseFrame for T {
-    fn put_path_response_frame(&mut self, frame: &PathResponseFrame) {
-        self.put_u8(PATH_RESPONSE_FRAME_TYPE);
-        self.put_slice(&frame.data);
-    }
-}
-
 impl<T: bytes::BufMut> super::io::WriteFrame<PathResponseFrame> for T {
     fn put_frame(&mut self, frame: &PathResponseFrame) {
         self.put_u8(PATH_RESPONSE_FRAME_TYPE);
@@ -115,12 +104,12 @@ mod tests {
 
     #[test]
     fn test_write_path_response_frame() {
-        use super::WritePathResponseFrame;
+        use crate::frame::io::WriteFrame;
         let mut buf = Vec::<u8>::new();
         let frame = super::PathResponseFrame {
             data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
         };
-        buf.put_path_response_frame(&frame);
+        buf.put_frame(&frame);
         assert_eq!(
             buf,
             vec![

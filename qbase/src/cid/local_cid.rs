@@ -21,7 +21,7 @@ where
     cid_deque: IndexDeque<Option<(ConnectionId, ResetToken)>, VARINT_MAX>,
     cid_len: usize,
     uniqueness: U,
-    // Each issued connection ID will be written into the retired_cids.
+    // Each issued connection ID will be written into this issued_cids.
     issued_cids: T,
     retired_cids: ArcAsyncDeque<ConnectionId>,
     // This is an integer value specifying the maximum number of connection
