@@ -169,7 +169,7 @@ impl RawPath {
             dcid,
             scid: self.origin_cid,
             rest_token: self.token.clone(),
-            spin: self.spin.clone(),
+            spin: self.spin,
             challenge_buffer: self.challenge_buffer.clone(),
             response_buffer: self.response_buffer.clone(),
         };
@@ -260,21 +260,16 @@ impl<'a> Future for ArcPacketReader<'a> {
         let mut guard = self.0.lock().unwrap();
 
         let congestion_control = ready!(guard.cc.poll_send(cx));
+        // TODO: 连接第一个 path 已经过握手的地址验证，无需再路径验证
         let anti_amplification = if let Some(anti_amplifier) = guard.anti_amplifier.as_ref() {
             match anti_amplifier.poll_get_credit(cx) {
-                Poll::Ready(credit) => {
-                    guard.cc.anti_amplification_limit_off();
-                    credit
-                }
-                Poll::Pending => {
-                    guard.cc.anti_amplification_limit_on();
-                    return Poll::Pending;
-                }
+                Poll::Ready(credit) => credit,
+                Poll::Pending => return Poll::Pending,
             }
         } else {
-            guard.cc.anti_amplification_limit_off();
             None
         };
+
         let send_controller = guard.flow_controler.sender();
         let flow_credit = match send_controller.credit() {
             Ok(credit) => credit,
