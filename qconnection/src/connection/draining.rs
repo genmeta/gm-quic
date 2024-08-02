@@ -1,7 +1,9 @@
 use qbase::{
-    cid::{ArcLocalCids, ConnectionId},
+    cid::ConnectionId,
     packet::{HandshakePacket, InitialPacket, OneRttPacket, ZeroRttPacket},
 };
+
+use super::ArcLocalCids;
 
 /// Connection in draining state, entered from the raw state or closing state.
 /// It just ignores all packets, and waits for dismissing.

@@ -8,7 +8,7 @@
 // }
 
 use crate::{
-    cid::{be_connection_id, ConnectionId, WriteConnectionId},
+    cid::{be_connection_id, ConnectionId, UniqueCid, WriteConnectionId},
     packet::r#type::Type,
     token::{be_reset_token, ResetToken, RESET_TOKEN_SIZE},
     varint::{be_varint, VarInt, WriteVarInt},
@@ -16,12 +16,30 @@ use crate::{
 
 const NEW_CONNECTION_ID_FRAME_TYPE: u8 = 0x18;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NewConnectionIdFrame {
     pub sequence: VarInt,
     pub retire_prior_to: VarInt,
     pub id: ConnectionId,
     pub reset_token: ResetToken,
+}
+
+impl NewConnectionIdFrame {
+    pub fn gen<U>(len: usize, sequence: VarInt, retire_prior_to: VarInt, uniqueness: &U) -> Self
+    where
+        U: UniqueCid,
+    {
+        let id = std::iter::from_fn(|| Some(ConnectionId::random_gen(len)))
+            .find(|cid| uniqueness.is_unique_cid(cid))
+            .unwrap();
+        let reset_token = ResetToken::random_gen();
+        Self {
+            sequence,
+            retire_prior_to,
+            id,
+            reset_token,
+        }
+    }
 }
 
 impl super::BeFrame for NewConnectionIdFrame {
@@ -93,6 +111,16 @@ pub trait WriteNewConnectionIdFrame {
 
 impl<T: bytes::BufMut> WriteNewConnectionIdFrame for T {
     fn put_new_connection_id_frame(&mut self, frame: &NewConnectionIdFrame) {
+        self.put_u8(NEW_CONNECTION_ID_FRAME_TYPE);
+        self.put_varint(&frame.sequence);
+        self.put_varint(&frame.retire_prior_to);
+        self.put_connection_id(&frame.id);
+        self.put_slice(&frame.reset_token);
+    }
+}
+
+impl<T: bytes::BufMut> super::io::WriteFrame<NewConnectionIdFrame> for T {
+    fn put_frame(&mut self, frame: &NewConnectionIdFrame) {
         self.put_u8(NEW_CONNECTION_ID_FRAME_TYPE);
         self.put_varint(&frame.sequence);
         self.put_varint(&frame.retire_prior_to);

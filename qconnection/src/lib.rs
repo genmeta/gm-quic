@@ -1,4 +1,11 @@
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
+
+use connection::ArcConnection;
+use dashmap::DashMap;
+use qbase::cid::{ConnectionId, UniqueCid};
 
 // use path::Pathway;
 // use qbase::packet::SpacePacket;
@@ -7,6 +14,7 @@ pub mod connection;
 pub mod error;
 pub mod path;
 pub mod pipe;
+pub mod router;
 pub mod tls;
 
 pub mod transmit;

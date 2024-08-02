@@ -1,6 +1,6 @@
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
-    cid, flow,
+    flow,
     frame::{AckFrame, DataFrame, Frame, FrameReader},
     handshake::Handshake,
     packet::{
@@ -17,8 +17,8 @@ use qunreliable::DatagramFlow;
 
 use crate::{
     connection::{
-        decode_long_header_packet, decode_short_header_packet, OneRttPacketEntry, RcvdOneRttPacket,
-        RcvdZeroRttPacket, ZeroRttPacketEntry,
+        decode_long_header_packet, decode_short_header_packet, CidRegistry, OneRttPacketEntry,
+        RcvdOneRttPacket, RcvdZeroRttPacket, ZeroRttPacketEntry,
     },
     error::ConnError,
     path::ArcPath,
@@ -55,7 +55,7 @@ impl DataScope {
         handshake: &Handshake,
         streams: &DataStreams,
         datagrams: &DatagramFlow,
-        cid_registry: &cid::Registry,
+        cid_registry: &CidRegistry,
         flow_ctrl: &flow::FlowController,
         rcvd_0rtt_packets: RcvdZeroRttPacket,
         rcvd_1rtt_packets: RcvdOneRttPacket,

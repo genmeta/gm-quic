@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use dashmap::DashMap;
 use futures::channel::mpsc;
 use qbase::{
-    cid::Registry,
+    cid::ConnectionId,
     flow::FlowController,
     handshake::Handshake,
     packet::{keys::ArcKeys, SpacePacket, SpinBit},
@@ -13,16 +13,20 @@ use qrecovery::{reliable::ArcReliableFrameDeque, space::DataSpace, streams::Data
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 
-use super::scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope};
+use super::{
+    scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope},
+    CidRegistry,
+};
 use crate::{
     error::ConnError,
     path::{ArcPath, Pathway},
+    router::ArcRouter,
     tls::ArcTlsSession,
 };
 
 pub struct RawConnection {
     pub pathes: DashMap<Pathway, ArcPath>,
-    pub cid_registry: Registry,
+    pub cid_registry: CidRegistry,
     // handshake done的信号
     pub handshake: Handshake,
     pub flow_ctrl: FlowController,
@@ -39,15 +43,16 @@ pub struct RawConnection {
 }
 
 impl RawConnection {
-    pub fn new(role: Role, _tls_session: ArcTlsSession) -> Self {
+    pub fn new(role: Role, _tls_session: ArcTlsSession, router: ArcRouter) -> Self {
+        let reliable_frames = ArcReliableFrameDeque::with_capacity(0);
+
         let pathes = DashMap::new();
-        let cid_registry = Registry::new(2);
+        let cid_registry = CidRegistry::new(8, reliable_frames.clone(), router, 2);
         let handshake = Handshake::with_role(role);
-        let flow_control = FlowController::with_initial(0, 0);
+        let flow_ctrl = FlowController::with_initial(0, 0);
         let spin = Arc::new(Mutex::new(SpinBit::Off));
         let conn_error = ConnError::default();
 
-        let reliable_frames = ArcReliableFrameDeque::with_capacity(0);
         let streams = DataStreams::with_role_and_limit(
             role,
             // 流数量
@@ -79,7 +84,7 @@ impl RawConnection {
             &streams,
             &datagrams,
             &cid_registry,
-            &flow_control,
+            &flow_ctrl,
             rcvd_0rtt_packets,
             rcvd_1rtt_packets,
             conn_error.clone(),
@@ -89,7 +94,7 @@ impl RawConnection {
             pathes,
             cid_registry,
             handshake,
-            flow_ctrl: flow_control,
+            flow_ctrl,
             initial,
             hs,
             data,
@@ -135,7 +140,7 @@ impl RawConnection {
             .clone()
     }
 
-    pub fn enter_closing(&self) -> (DashMap<Pathway, ArcPath>, Registry, DataSpace) {
+    pub fn enter_closing(&self) -> (DashMap<Pathway, ArcPath>, CidRegistry, DataSpace) {
         (
             self.pathes.clone(),
             self.cid_registry.clone(),
