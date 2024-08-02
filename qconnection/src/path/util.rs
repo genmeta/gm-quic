@@ -10,7 +10,7 @@ use qbase::{
 };
 
 #[derive(Default, Clone)]
-pub(super) struct PathFrameBuffer<T>(Arc<Mutex<Option<T>>>);
+pub struct PathFrameBuffer<T>(Arc<Mutex<Option<T>>>);
 
 impl<T> PathFrameBuffer<T> {
     pub fn write(&self, frame: T) {
@@ -23,7 +23,7 @@ where
     T: BeFrame,
     for<'a> &'a mut [u8]: WriteFrame<T>,
 {
-    pub fn read(&self, mut buf: &mut [u8], burst: &mut Burst) -> usize {
+    pub fn read(&self, burst: &mut Burst, mut buf: &mut [u8]) -> usize {
         let mut guard = self.0.lock().unwrap();
         if let Some(frame) = guard.deref() {
             let size = frame.encoding_size();

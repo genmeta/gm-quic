@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{ops::Deref, time::Instant};
 
 use bytes::BufMut;
 use futures::{channel::mpsc, StreamExt};
@@ -8,7 +8,7 @@ use qbase::{
     packet::{
         header::{Encode, GetType, WriteLongHeader},
         keys::ArcKeys,
-        LongHeaderBuilder, WritePacketNumber,
+        LongClearBits, LongHeaderBuilder, WritePacketNumber,
     },
     util::Burst,
 };
@@ -118,7 +118,7 @@ impl HandshakeScope {
         });
     }
 
-    pub fn sending_closure(
+    pub fn reader(
         &self,
     ) -> impl FnMut(
         &mut Burst,
@@ -180,6 +180,8 @@ impl HandshakeScope {
 
             // 7. 填充，保护头部，加密
             hdr_buf.put_long_header(&hdr);
+            let clear_bits = LongClearBits::from_pn(&pkt_no);
+            hdr_buf[0] |= clear_bits.deref();
             pn_buf.put_packet_number(pkt_no);
             let body_size = body_size - body_buf.remaining_mut();
             let sent_size = hdr.size() + 2 + pkt_no.size() + body_size;
