@@ -168,7 +168,7 @@ impl HandshakeScope {
 
             // 5. 从CryptoStream提取数据，当前无流控，仅最大努力，提取限制之内的最大数据量
             while let Some((frame, n)) = crypto_stream_outgoing.try_read_data(&mut b, body_buf) {
-                send_guard.push_back(frame);
+                send_guard.record_frame(frame);
                 body_buf = &mut body_buf[n..];
                 is_ack_eliciting = true;
                 in_flight = true;

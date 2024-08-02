@@ -9,23 +9,19 @@ use std::{
 
 use dashmap::DashMap;
 use qbase::{
-    cid::Registry,
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
     packet::{header::GetType, keys::OneRttPacketKeys, SpacePacket},
 };
-use qrecovery::{
-    reliable::rcvdpkt::ArcRcvdPktRecords,
-    space::{DataSpace, Epoch},
-};
+use qrecovery::{reliable::rcvdpkt::ArcRcvdPktRecords, space::DataSpace};
 use qudp::ArcUsc;
 
-use super::sync_decode_short_header_packet;
+use super::{sync_decode_short_header_packet, CidRegistry};
 use crate::path::{ArcPath, Pathway};
 
 pub struct ClosingConnection {
     pathes: DashMap<Pathway, ArcPath>,
-    cid_registry: Registry,
+    cid_registry: CidRegistry,
     rcvd_pkt_records: ArcRcvdPktRecords,
     one_rtt_keys: (
         Arc<dyn rustls::quic::HeaderProtectionKey>,
@@ -39,7 +35,7 @@ pub struct ClosingConnection {
 impl ClosingConnection {
     pub fn new(
         pathes: DashMap<Pathway, ArcPath>,
-        cid_registry: Registry,
+        cid_registry: CidRegistry,
         data_space: DataSpace,
         one_rtt_keys: (
             Arc<dyn rustls::quic::HeaderProtectionKey>,

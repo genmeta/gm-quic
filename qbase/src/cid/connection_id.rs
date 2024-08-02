@@ -71,6 +71,20 @@ impl std::ops::Deref for ConnectionId {
     }
 }
 
+pub trait UniqueCid {
+    fn is_unique_cid(&self, cid: &ConnectionId) -> bool;
+}
+
+#[cfg(test)]
+pub struct AlwaysUnique;
+
+#[cfg(test)]
+impl UniqueCid for AlwaysUnique {
+    fn is_unique_cid(&self, _cid: &ConnectionId) -> bool {
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

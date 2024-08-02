@@ -179,11 +179,10 @@ impl<T> Drop for RecvGuard<'_, T> {
     }
 }
 
-#[derive(Debug, Deref, DerefMut)]
+#[derive(Debug)]
 pub struct SendGuard<'a, T> {
     necessary: bool,
     origin_len: usize,
-    #[deref]
     inner: MutexGuard<'a, RawSentPktRecords<T>>,
 }
 
@@ -194,7 +193,9 @@ impl<T> SendGuard<'_, T> {
         (pn, encoded_pn)
     }
 
-    /// 记录平凡帧，这些帧不需要重传，如Padding、Ping、Ack，但该包的确占一个包号，因此肯定需要记录
+    /// Records trivial frames that do not need retransmission, such as Padding, Ping, and Ack.
+    /// However, this packet does occupy a packet number. Even if no other reliable frames are sent,
+    /// it still needs to be recorded, with the number of reliable frames in this packet being 0.
     pub fn record_trivial(&mut self) {
         self.necessary = true;
     }

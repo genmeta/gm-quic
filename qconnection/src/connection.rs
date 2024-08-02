@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     net::SocketAddr,
     ops::Deref,
     sync::{Arc, Mutex},
@@ -8,6 +9,7 @@ use std::{
 use bytes::Bytes;
 use futures::channel::mpsc;
 use qbase::{
+    cid,
     config::Parameters,
     error::Error,
     packet::{
@@ -16,11 +18,12 @@ use qbase::{
         HandshakePacket, InitialPacket, OneRttPacket, PacketNumber, ZeroRttPacket,
     },
 };
-use qrecovery::streams::DataStreams;
+use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 
 use crate::{
     connection::ConnState::{Closing, Raw},
     path::ArcPath,
+    router::ArcRouter,
 };
 
 mod builder;
@@ -44,6 +47,9 @@ pub type RcvdZeroRttPacket = RcvdPacket<ZeroRttPacket>;
 pub type OneRttPacketEntry = PacketEntry<OneRttPacket>;
 pub type RcvdOneRttPacket = RcvdPacket<OneRttPacket>;
 
+pub type CidRegistry = cid::Registry<ArcReliableFrameDeque, ArcRouter>;
+pub type ArcLocalCids = cid::ArcLocalCids<ArcReliableFrameDeque, ArcRouter>;
+
 enum ConnState {
     Raw(raw::RawConnection),
     Closing(closing::ClosingConnection),
@@ -52,6 +58,12 @@ enum ConnState {
 
 #[derive(Clone)]
 pub struct ArcConnection(Arc<Mutex<ConnState>>);
+
+impl Debug for ArcConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "QUIC Connection")
+    }
+}
 
 impl ArcConnection {
     pub fn new_client(
