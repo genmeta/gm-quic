@@ -128,8 +128,7 @@ pub use super::{
     data_blocked::WriteDataBlockedFrame, datagram::WriteDatagramFrame,
     handshake_done::WriteHandshakeDoneFrame, max_data::WriteMaxDataFrame,
     new_connection_id::WriteNewConnectionIdFrame, new_token::WriteNewTokenFrame,
-    padding::WritePaddingFrame, path_challenge::WritePathChallengeFrame,
-    path_response::WritePathResponseFrame, ping::WritePingFrame,
+    padding::WritePaddingFrame, ping::WritePingFrame,
     retire_connection_id::WriteRetireConnectionIdFrame, stream::WriteStreamFrame,
 };
 use super::{

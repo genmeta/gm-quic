@@ -251,6 +251,18 @@ pub enum DataFrame {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+#[enum_dispatch(BeFrame)]
+pub enum ReliableFrame {
+    NewToken(NewTokenFrame),
+    MaxData(MaxDataFrame),
+    DataBlocked(DataBlockedFrame),
+    NewConnectionId(NewConnectionIdFrame),
+    RetireConnectionId(RetireConnectionIdFrame),
+    HandshakeDone(HandshakeDoneFrame),
+    Stream(StreamCtlFrame),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Frame {
     Padding(PaddingFrame),
     Ping(PingFrame),

@@ -9,7 +9,7 @@ use qbase::{
     config::Parameters,
     error::{Error as QuicError, ErrorKind},
     frame::{
-        BeFrame, FrameType, MaxStreamDataFrame, MaxStreamsFrame, ResetStreamFrame,
+        BeFrame, FrameType, MaxStreamDataFrame, MaxStreamsFrame, ReliableFrame, ResetStreamFrame,
         StopSendingFrame, StreamCtlFrame, StreamFrame,
     },
     streamid::{AcceptSid, Dir, ExceedLimitError, Role, StreamId, StreamIds},
@@ -20,7 +20,7 @@ use qbase::{
 use super::listener::ArcListener;
 use crate::{
     recv::{self, Incoming, Reader},
-    reliable::{ArcReliableFrameDeque, ReliableFrame},
+    reliable::ArcReliableFrameDeque,
     send::{self, Outgoing, Writer},
 };
 
