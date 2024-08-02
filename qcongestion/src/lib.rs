@@ -75,11 +75,6 @@ pub trait CongestionControl {
     /// 获取当前 path 的 pto time
     fn get_pto_time(&self, epoch: Epoch) -> Duration;
 
-    /// 更新抗放大攻击状态
-    fn anti_amplification_limit_on(&self);
-
-    fn anti_amplification_limit_off(&self);
-
     /// 更新握手密钥状态
     fn on_get_handshake_keys(&self);
 

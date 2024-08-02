@@ -62,7 +62,6 @@ pub struct CongestionController {
     ack_waker: Option<Waker>,
     pto_waker: Option<Waker>,
 
-    is_anti_amplification_limit: bool,
     has_handshake_keys: bool,
     is_handshake_done: bool,
 }
@@ -95,7 +94,6 @@ impl CongestionController {
             loss_waker: None,
             ack_waker: None,
             pto_waker: None,
-            is_anti_amplification_limit: false,
             has_handshake_keys: false,
             is_handshake_done: false,
         }
@@ -129,15 +127,12 @@ impl CongestionController {
     }
 
     // A.6. On Receiving a Datagram
-    // todo: on_revd_datagram
     pub fn on_datagram_rcvd(&mut self, now: Instant) {
         // If this datagram unblocks the server, arm the PTO timer to avoid deadlock.
-        if self.is_anti_amplification_limit {
-            self.set_loss_timer();
-            if self.loss_timer.is_timeout(now) {
-                // Execute PTO if it would have expired while the amplification limit applied.
-                self.on_loss_timeout(now);
-            }
+        self.set_loss_timer();
+        if self.loss_timer.is_timeout(now) {
+            // Execute PTO if it would have expired while the amplification limit applied.
+            self.on_loss_timeout(now);
         }
     }
 
@@ -237,12 +232,6 @@ impl CongestionController {
             return;
         }
 
-        if self.is_anti_amplification_limit {
-            // server's timer is not set if nothing can be sent
-            self.loss_timer.cancel();
-            return;
-        }
-
         if self.no_ack_eliciting_in_flight() && self.server_completed_address_validation() {
             self.loss_timer.cancel();
             return;
@@ -267,8 +256,11 @@ impl CongestionController {
 
         // probe timeout
         if self.no_ack_eliciting_in_flight() {
-            assert!(self.server_completed_address_validation());
-            if self.is_handshake_done {
+            assert!(!self.server_completed_address_validation());
+            // Client sends an anti-deadlock packet: Initial is padded
+            // to earn more anti-amplification credit,
+            // a Handshake packet proves address ownership.
+            if self.has_handshake_keys {
                 self.pto_space = Some(Epoch::Handshake);
             } else {
                 self.pto_space = Some(Epoch::Initial);
@@ -290,11 +282,11 @@ impl CongestionController {
     fn get_loss_time_and_space(&self) -> (Option<Instant>, Epoch) {
         let mut time = self.loss_time[Epoch::Initial];
         let mut space = Epoch::Initial;
-        for s in [Epoch::Handshake, Epoch::Data].iter() {
-            if let Some(loss) = self.loss_time[*s] {
+        for &epoch in Epoch::iter() {
+            if let Some(loss) = self.loss_time[epoch] {
                 if time.is_none() || loss < time.unwrap() {
                     time = Some(loss);
-                    space = *s;
+                    space = epoch;
                 }
             }
         }
@@ -319,11 +311,11 @@ impl CongestionController {
         }
 
         let mut pto_time = None;
-        for space in Epoch::iter() {
-            if self.time_of_last_ack_eliciting_packet[*space].is_none() {
+        for &space in Epoch::iter() {
+            if self.time_of_last_ack_eliciting_packet[space].is_none() {
                 continue;
             }
-            if *space == Epoch::Data {
+            if space == Epoch::Data {
                 // An endpoint MUST NOT set its PTO timer for the Application Data
                 // packet number space until the handshake is confirmed
                 if !self.is_handshake_done {
@@ -331,13 +323,14 @@ impl CongestionController {
                 }
                 duration += self.max_ack_delay * 2_u32.pow(self.pto_count);
             }
-            let new_time = self.time_of_last_ack_eliciting_packet[*space].unwrap() + duration;
+            let new_time = self.time_of_last_ack_eliciting_packet[space].unwrap() + duration;
             if pto_time.is_none() || new_time < pto_time.unwrap() {
                 pto_time = Some(new_time);
             }
         }
         pto_time
     }
+
     fn remove_loss_packets(&mut self, space: Epoch, now: Instant) -> Vec<SentPkt> {
         assert!(self.largest_acked_packet[space].is_some());
         let largest_acked = self.largest_acked_packet[space].unwrap();
@@ -409,7 +402,6 @@ impl CongestionController {
     }
 
     fn server_completed_address_validation(&mut self) -> bool {
-        // is server return true
         self.has_handshake_keys || self.is_handshake_done
     }
 
@@ -503,14 +495,12 @@ impl super::CongestionControl for ArcCC {
     }
 
     fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_eliciting: bool) {
-        let now = Instant::now();
-        let recved = Recved { pn, recv_time: now };
-        let mut guard = self.0.lock().unwrap();
-        guard.on_datagram_rcvd(now);
         if !is_ack_eliciting {
             return;
         }
-
+        let now = Instant::now();
+        let recved = Recved { pn, recv_time: now };
+        let mut guard = self.0.lock().unwrap();
         if let Some(r) = &guard.largest_ack_eliciting_packet[space] {
             if pn > r.pn {
                 guard.largest_ack_eliciting_packet[space] = Some(recved);
@@ -543,16 +533,6 @@ impl super::CongestionControl for ArcCC {
         let mut guard = self.0.lock().unwrap();
         guard.is_handshake_done = true;
         guard.rtt.on_handshake_done();
-    }
-
-    fn anti_amplification_limit_off(&self) {
-        let mut guard = self.0.lock().unwrap();
-        guard.is_anti_amplification_limit = false;
-    }
-
-    fn anti_amplification_limit_on(&self) {
-        let mut guard = self.0.lock().unwrap();
-        guard.is_anti_amplification_limit = true;
     }
 }
 
