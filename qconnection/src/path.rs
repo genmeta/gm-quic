@@ -19,6 +19,8 @@ mod anti_amplifier;
 mod raw;
 mod util;
 
+pub use util::PathFrameBuffer;
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct RelayAddr {
     pub agent: SocketAddr, // 代理人

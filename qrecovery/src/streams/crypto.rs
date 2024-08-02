@@ -226,8 +226,8 @@ mod recv {
     }
 }
 
-pub use recv::CryptoStreamReader;
-pub use send::CryptoStreamWriter;
+pub use recv::{CryptoStreamIncoming, CryptoStreamReader};
+pub use send::{CryptoStreamOutgoing, CryptoStreamWriter};
 
 /// Crypto data stream
 #[derive(Debug, Clone)]

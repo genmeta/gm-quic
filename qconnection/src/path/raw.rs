@@ -1,5 +1,5 @@
 use std::{
-    future::{poll_fn, Future},
+    future::Future,
     io::{IoSlice, IoSliceMut},
     mem,
     ops::Deref,
@@ -30,13 +30,12 @@ use super::{
     util::PathFrameBuffer,
     Pathway, ViaPathway,
 };
-use crate::{connection::raw::RawConnection, transmit::SpaceReaders};
+use crate::connection::raw::RawConnection;
 
 #[derive(Clone)]
 pub(super) struct RawPath {
     pub(super) usc: ArcUsc,
     pub(super) pathway: Pathway,
-    space_readers: SpaceReaders,
     cc: ArcCC,
     //  抗放大攻击控制器, 服务端地址验证之前有效
     anti_amplifier: Option<ArcAntiAmplifier<ANTI_FACTOR>>,
@@ -63,12 +62,10 @@ impl RawPath {
         // 到 1 rtt 空间不再需要
         let (scid, token) = (ConnectionId::random_gen(MAX_CID_SIZE), Vec::new());
 
-        let space_readers = SpaceReaders::new(connection);
         let mut path = Self {
             usc,
             cc,
             anti_amplifier,
-            space_readers,
             pathway,
             flow_ctrl: connection.flow_ctrl.clone(),
             dcid,
@@ -132,6 +129,7 @@ impl RawPath {
             }
         });
 
+        /*
         let cc_handle = tokio::spawn({
             let cc = path.cc.clone();
             let space_readers = path.space_readers.clone();
@@ -145,11 +143,13 @@ impl RawPath {
                 }
             }
         });
+        */
 
         let handle = Handle {
             send_handle: Arc::new(Mutex::new(Some(send_handle))),
             verify_handle: Arc::new(Mutex::new(Some(verify_handle))),
-            cc_handle: Arc::new(Mutex::new(Some(cc_handle))),
+            cc_handle: Arc::new(Mutex::new(None)),
+            // cc_handle: Arc::new(Mutex::new(Some(cc_handle))),
         };
         path.handle = handle;
         path
@@ -165,7 +165,6 @@ impl RawPath {
             cc: self.cc.clone(),
             anti_amplifier: self.anti_amplifier.clone(),
             flow_controler: self.flow_ctrl.clone(),
-            space_readers: self.space_readers.clone(),
             dcid,
             scid: self.origin_cid,
             rest_token: self.token.clone(),
@@ -243,7 +242,6 @@ struct PacketReader<'a> {
     cc: ArcCC,
     anti_amplifier: Option<ArcAntiAmplifier<3>>,
     flow_controler: FlowController,
-    space_readers: SpaceReaders,
     dcid: ConnectionId,
     scid: ConnectionId,
     rest_token: Vec<u8>,
@@ -291,6 +289,7 @@ impl<'a> Future for ArcPacketReader<'a> {
         );
 
         let mut count: usize = 0;
+        /*
         for ioslice in ioslices.iter_mut() {
             let mut buffer = ioslice.as_mut();
             let origin = buffer.remaining_mut();
@@ -334,9 +333,9 @@ impl<'a> Future for ArcPacketReader<'a> {
             );
             buffer = &mut buffer[pkt_size..];
 
-            let n = guard.challenge_buffer.read(buffer, &mut burst);
+            let n = guard.challenge_buffer.read(&mut burst, buffer);
             buffer = &mut buffer[n..];
-            let n = guard.response_buffer.read(buffer, &mut burst);
+            let n = guard.response_buffer.read(&mut burst, buffer);
             buffer = &mut buffer[n..];
 
             let need_ack = guard.cc.need_ack(Epoch::Data);
@@ -361,6 +360,7 @@ impl<'a> Future for ArcPacketReader<'a> {
                 break;
             }
         }
+        */
         // TODO: flow_credit 扣除发送的总数据
         Poll::Ready(count)
     }

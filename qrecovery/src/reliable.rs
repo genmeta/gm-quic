@@ -5,7 +5,10 @@ use std::{
 
 use deref_derive::{Deref, DerefMut};
 use enum_dispatch::enum_dispatch;
-use qbase::frame::{DataFrame, ReliableFrame};
+use qbase::{
+    frame::{DataFrame, ReliableFrame},
+    util::Burst,
+};
 
 pub mod rcvdpkt;
 pub mod sentpkt;
@@ -62,6 +65,11 @@ impl ArcReliableFrameDeque {
 
     pub fn lock_guard(&self) -> MutexGuard<'_, RawReliableFrameDeque> {
         self.0.lock().unwrap()
+    }
+
+    /// TODO: 写入可靠帧
+    pub fn try_read(&self, burst: &mut Burst, buf: &mut [u8]) -> Option<(ReliableFrame, usize)> {
+        todo!()
     }
 }
 
