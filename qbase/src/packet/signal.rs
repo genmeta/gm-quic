@@ -6,8 +6,8 @@ const KEY_PHASE_BIT: u8 = 0x04;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Toggle<const B: u8> {
     #[default]
-    Off,
-    On,
+    Zero,
+    One,
 }
 
 pub type SpinBit = Toggle<SPIN_BIT>;
@@ -16,29 +16,29 @@ pub type KeyPhaseBit = Toggle<KEY_PHASE_BIT>;
 impl<const B: u8> Toggle<B> {
     pub fn toggle(&mut self) {
         *self = match self {
-            Toggle::Off => Toggle::On,
-            Toggle::On => Toggle::Off,
+            Toggle::Zero => Toggle::One,
+            Toggle::One => Toggle::Zero,
         }
     }
 
     pub fn value(&self) -> u8 {
         match self {
-            Toggle::Off => 0,
-            Toggle::On => B,
+            Toggle::Zero => 0,
+            Toggle::One => B,
         }
     }
 
     pub fn imply(&self, byte: &mut u8) {
         match self {
-            Toggle::Off => *byte &= !B,
-            Toggle::On => *byte |= B,
+            Toggle::Zero => *byte &= !B,
+            Toggle::One => *byte |= B,
         }
     }
 
     pub(crate) fn as_index(&self) -> usize {
         match self {
-            Toggle::Off => 0,
-            Toggle::On => 1,
+            Toggle::Zero => 0,
+            Toggle::One => 1,
         }
     }
 }
@@ -48,8 +48,8 @@ impl<const B: u8> std::ops::Not for Toggle<B> {
 
     fn not(self) -> Self::Output {
         match self {
-            Toggle::Off => Toggle::On,
-            Toggle::On => Toggle::Off,
+            Toggle::Zero => Toggle::One,
+            Toggle::One => Toggle::Zero,
         }
     }
 }
@@ -57,9 +57,34 @@ impl<const B: u8> std::ops::Not for Toggle<B> {
 impl<const B: u8> From<u8> for Toggle<B> {
     fn from(value: u8) -> Self {
         if value & B == 0 {
-            Toggle::Off
+            Toggle::Zero
         } else {
-            Toggle::On
+            Toggle::One
+        }
+    }
+}
+
+impl<const B: u8> From<Toggle<B>> for u8 {
+    fn from(value: Toggle<B>) -> Self {
+        value.value()
+    }
+}
+
+impl<const B: u8> From<bool> for Toggle<B> {
+    fn from(value: bool) -> Self {
+        if value {
+            Toggle::One
+        } else {
+            Toggle::Zero
+        }
+    }
+}
+
+impl<const B: u8> From<Toggle<B>> for bool {
+    fn from(value: Toggle<B>) -> Self {
+        match value {
+            Toggle::Zero => false,
+            Toggle::One => true,
         }
     }
 }

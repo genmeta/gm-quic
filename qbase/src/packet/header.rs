@@ -231,12 +231,12 @@ mod tests {
         // OneRtt Header
         let buf = vec![];
         let (remain, one_rtt_header) =
-            be_header(Type::Short(OneRtt(SpinBit::On)), 0, &buf).unwrap();
+            be_header(Type::Short(OneRtt(SpinBit::One)), 0, &buf).unwrap();
         assert_eq!(remain.len(), 0);
         match one_rtt_header {
             Header::OneRtt(one_rtt) => {
                 assert_eq!(one_rtt.dcid, ConnectionId::default());
-                assert_eq!(one_rtt.spin, SpinBit::On);
+                assert_eq!(one_rtt.spin, SpinBit::One);
             }
             _ => panic!("unexpected header type"),
         }
@@ -337,7 +337,7 @@ mod tests {
         // OneRtt Header with SpinBit::On
         let mut buf = vec![];
         let one_rtt_long_header = Header::OneRtt(OneRttHeader {
-            spin: SpinBit::On,
+            spin: SpinBit::One,
             dcid: ConnectionId::default(),
         });
         buf.put_header(&one_rtt_long_header);
@@ -346,7 +346,7 @@ mod tests {
         // OneRtt Header with SpinBit::Off
         let mut buf = vec![];
         let one_rtt_long_header = Header::OneRtt(OneRttHeader {
-            spin: SpinBit::Off,
+            spin: SpinBit::Zero,
             dcid: ConnectionId::default(),
         });
         buf.put_header(&one_rtt_long_header);

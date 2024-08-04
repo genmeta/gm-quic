@@ -50,7 +50,7 @@ impl RawConnection {
         let cid_registry = CidRegistry::new(8, reliable_frames.clone(), router, 2);
         let handshake = Handshake::with_role(role);
         let flow_ctrl = FlowController::with_initial(0, 0);
-        let spin = Arc::new(Mutex::new(SpinBit::Off));
+        let spin = Arc::new(Mutex::new(SpinBit::Zero));
         let conn_error = ConnError::default();
 
         let streams = DataStreams::with_role_and_limit(
