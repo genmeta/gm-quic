@@ -70,10 +70,10 @@ mod tests {
         use super::ext::be_one_rtt_header;
         use crate::packet::{header::ConnectionId, SpinBit};
 
-        let (remain, header) = be_one_rtt_header(SpinBit::On, 0, &[][..]).unwrap();
+        let (remain, header) = be_one_rtt_header(SpinBit::One, 0, &[][..]).unwrap();
 
         assert_eq!(remain.len(), 0);
-        assert_eq!(header.spin, SpinBit::On);
+        assert_eq!(header.spin, SpinBit::One);
         assert_eq!(header.dcid, ConnectionId::default());
     }
 
@@ -84,7 +84,7 @@ mod tests {
 
         let mut buf = vec![];
         let header = OneRttHeader {
-            spin: SpinBit::On,
+            spin: SpinBit::One,
             dcid: ConnectionId::default(),
         };
 

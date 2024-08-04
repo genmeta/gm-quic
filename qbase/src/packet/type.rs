@@ -190,11 +190,11 @@ mod tests {
     fn test_set_key_phase_bit() {
         let mut clear_bits = ShortClearBits::with_pn_size(4);
         assert_eq!(clear_bits.0, 0x03);
-        clear_bits.set_key_phase(KeyPhaseBit::On);
+        clear_bits.set_key_phase(KeyPhaseBit::One);
         assert_eq!(clear_bits.0, 0x07);
-        assert_eq!(clear_bits.key_phase(), KeyPhaseBit::On);
-        clear_bits.set_key_phase(KeyPhaseBit::Off);
+        assert_eq!(clear_bits.key_phase(), KeyPhaseBit::One);
+        clear_bits.set_key_phase(KeyPhaseBit::Zero);
         assert_eq!(clear_bits.0, 0x03);
-        assert_eq!(clear_bits.key_phase(), KeyPhaseBit::Off);
+        assert_eq!(clear_bits.key_phase(), KeyPhaseBit::Zero);
     }
 }
