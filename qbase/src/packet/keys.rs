@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    ops::DerefMut,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
@@ -54,17 +55,22 @@ impl ArcKeys {
         }
     }
 
-    pub fn invalid(&self) {
+    /// Invalidate the keys, which means that the keys are no longer available.
+    /// This is used when the connection enters the closing state or draining state.
+    /// Especially in the closing state, the return keys are used to generate the final packet
+    /// containing the ConnectionClose frame, and decrypt the data packets received from the
+    /// peer for a while.
+    pub fn invalid(&self) -> Option<Arc<Keys>> {
         let mut state = self.0.lock().unwrap();
-        match &mut *state {
+        match std::mem::replace(state.deref_mut(), KeysState::Invalid) {
             KeysState::Pending(rx_waker) => {
-                if let Some(waker) = rx_waker.take() {
+                if let Some(waker) = rx_waker {
                     waker.wake();
                 }
-                *state = KeysState::Invalid;
+                None
             }
-            KeysState::Ready(_) => *state = KeysState::Invalid,
-            KeysState::Invalid => {}
+            KeysState::Ready(keys) => Some(keys),
+            KeysState::Invalid => unreachable!(),
         }
     }
 }
@@ -91,7 +97,7 @@ impl Future for GetRemoteKeys {
 enum OneRttKeysState {
     Pending(Option<Waker>),
     Ready {
-        psk: (Arc<dyn HeaderProtectionKey>, Arc<dyn HeaderProtectionKey>),
+        hpk: (Arc<dyn HeaderProtectionKey>, Arc<dyn HeaderProtectionKey>),
         pk: Arc<Mutex<OneRttPacketKeys>>,
     },
     Invalid,
@@ -164,30 +170,35 @@ impl ArcOneRttKeys {
                 if let Some(waker) = rx_waker.take() {
                     waker.wake();
                 }
-                let psk = (Arc::from(keys.remote.header), Arc::from(keys.local.header));
+                let hpk = (Arc::from(keys.remote.header), Arc::from(keys.local.header));
                 let pk = Arc::new(Mutex::new(OneRttPacketKeys::new(
                     keys.remote.packet,
                     keys.local.packet,
                     secrets,
                 )));
-                *state = OneRttKeysState::Ready { psk, pk };
+                *state = OneRttKeysState::Ready { hpk, pk };
             }
             OneRttKeysState::Ready { .. } => panic!("set_keys called twice"),
             OneRttKeysState::Invalid => panic!("set_keys called after invalidation"),
         }
     }
 
-    pub fn invalid(&self) {
+    pub fn invalid(
+        &self,
+    ) -> Option<(
+        (Arc<dyn HeaderProtectionKey>, Arc<dyn HeaderProtectionKey>),
+        Arc<Mutex<OneRttPacketKeys>>,
+    )> {
         let mut state = self.0.lock().unwrap();
-        match &mut *state {
+        match std::mem::replace(state.deref_mut(), OneRttKeysState::Invalid) {
             OneRttKeysState::Pending(rx_waker) => {
-                if let Some(waker) = rx_waker.take() {
+                if let Some(waker) = rx_waker {
                     waker.wake();
                 }
-                *state = OneRttKeysState::Invalid;
+                None
             }
-            OneRttKeysState::Ready { .. } => *state = OneRttKeysState::Invalid,
-            OneRttKeysState::Invalid => {}
+            OneRttKeysState::Ready { hpk, pk } => Some((hpk, pk)),
+            OneRttKeysState::Invalid => unreachable!(),
         }
     }
 
@@ -197,7 +208,7 @@ impl ArcOneRttKeys {
     ) -> Option<(Arc<dyn HeaderProtectionKey>, Arc<Mutex<OneRttPacketKeys>>)> {
         let mut keys = self.0.lock().unwrap();
         match &mut *keys {
-            OneRttKeysState::Ready { psk, pk } => Some((psk.1.clone(), pk.clone())),
+            OneRttKeysState::Ready { hpk, pk } => Some((hpk.1.clone(), pk.clone())),
             _ => None,
         }
     }
@@ -220,7 +231,7 @@ impl Future for GetRemoteOneRttKeys {
                 *rx_waker = Some(cx.waker().clone());
                 Poll::Pending
             }
-            OneRttKeysState::Ready { psk, pk } => Poll::Ready(Some((psk.0.clone(), pk.clone()))),
+            OneRttKeysState::Ready { hpk, pk } => Poll::Ready(Some((hpk.0.clone(), pk.clone()))),
             OneRttKeysState::Invalid => Poll::Ready(None),
         }
     }
