@@ -10,6 +10,13 @@ pub struct VarInt(u64);
 
 pub const VARINT_MAX: u64 = 0x3fff_ffff_ffff_ffff;
 
+pub enum EncodeBytes {
+    One = 1,
+    Two = 2,
+    Four = 4,
+    Eight = 8,
+}
+
 impl VarInt {
     /// The largest representable value
     pub const MAX: Self = Self(VARINT_MAX);
@@ -137,7 +144,7 @@ pub mod err {
     pub struct Overflow(pub(super) u64);
 }
 
-use bytes::{Buf, BufMut};
+use bytes::BufMut;
 use nom::{bits::streaming::take, combinator::flat_map, error::Error, IResult};
 
 /// Parse a variable-length integer, can be used like `be_u8/be_u16/be_u32` etc.
@@ -162,21 +169,33 @@ pub fn be_varint(input: &[u8]) -> IResult<&[u8], VarInt> {
     .map(|((buf, _), value)| (buf, VarInt(value)))
 }
 
-pub trait BufExt {
-    fn get_varint(&mut self) -> Result<VarInt, err::Overflow>;
-}
-
+/// Write a variable-length integer.
+/// `put_varint` will write the smallest number of bytes needed to represent the value.
+/// `encode_varint` will write the specified number of bytes, and panic if the specified number of bytes
+/// is less than the smallest number of bytes needed to repressent the value.
+///
+/// # Example
+/// ```rust
+/// use bytes::BufMut;
+/// use qbase::varint::{EncodeBytes, VarInt, WriteVarInt};
+///
+/// let val = VarInt::from_u32(1);
+/// let mut encode_buf = [0u8; 8];
+///
+/// let mut buf = &mut encode_buf[..];
+/// buf.put_varint(&val);
+/// assert_eq!(buf.len(), 7);
+/// assert_eq!(encode_buf[0..1], [0x01]);
+///
+/// let mut buf = &mut encode_buf[..];
+/// buf.encode_varint(&val, EncodeBytes::Two);
+/// assert_eq!(buf.len(), 6);
+/// assert_eq!(encode_buf[0..2], [0x40, 0x01]);
+/// ```
 pub trait WriteVarInt {
     fn put_varint(&mut self, value: &VarInt);
-}
 
-impl<T: Buf> BufExt for T {
-    fn get_varint(&mut self) -> Result<VarInt, err::Overflow> {
-        let remained = self.remaining();
-        let (remain, value) = be_varint(self.chunk()).map_err(|_| err::Overflow(0))?;
-        self.advance(remained - remain.len());
-        Ok(value)
-    }
+    fn encode_varint(&mut self, value: &VarInt, nbytes: EncodeBytes);
 }
 
 // 所有的BufMut都可以调用put_varint来写入VarInt了
@@ -187,21 +206,40 @@ impl<T: BufMut> WriteVarInt for T {
             self.put_u8(x as u8);
         } else if x < 1u64 << 14 {
             self.put_u16(0b01 << 14 | x as u16);
-        } else if x < 2u64 << 30 {
+        } else if x < 1u64 << 30 {
             self.put_u32(0b10 << 30 | x as u32);
-        } else if x < 2u64 << 62 {
+        } else if x < 1u64 << 62 {
             self.put_u64(0b11 << 62 | x);
         } else {
             unreachable!("malformed VarInt")
+        }
+    }
+
+    fn encode_varint(&mut self, value: &VarInt, nbytes: EncodeBytes) {
+        match nbytes {
+            EncodeBytes::One => {
+                assert!(value.0 < 1u64 << 6);
+                self.put_u8(value.0 as u8);
+            }
+            EncodeBytes::Two => {
+                assert!(value.0 < 1u64 << 14);
+                self.put_u16(0b01 << 14 | value.0 as u16);
+            }
+            EncodeBytes::Four => {
+                assert!(value.0 < 1u64 << 30);
+                self.put_u32(0b10 << 30 | value.0 as u32);
+            }
+            EncodeBytes::Eight => {
+                assert!(value.0 < 1u64 << 62);
+                self.put_u64(0b11 << 62 | value.0);
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use bytes::BufMut;
-
-    use super::{VarInt, WriteVarInt};
+    use super::{EncodeBytes, VarInt, WriteVarInt};
 
     #[test]
     fn test_be_varint() {
@@ -232,12 +270,44 @@ mod tests {
         }
     }
 
-    #[test]
-    fn write_varint() {
-        let val = VarInt::from(255u32);
+    fn assert_put_varint_eq(val: u64, expected: &[u8]) {
+        let val = VarInt::from_u64(val).unwrap();
         let mut buf = vec![];
         buf.put_varint(&val);
-        buf.put_u16(65535);
-        assert_eq!(buf, vec![64, 255, 255, 255]);
+        assert_eq!(buf, expected);
+    }
+
+    #[test]
+    fn test_put_varint() {
+        assert_put_varint_eq(0x0000_0000_0000_0000, &[0]);
+        assert_put_varint_eq(0x0000_0000_0000_003F, &[0x3F]);
+        assert_put_varint_eq(0x0000_0000_0000_0040, &[0x40, 0x40]);
+        assert_put_varint_eq(0x0000_0000_0000_3FFF, &[0x7F, 0xFF]);
+        assert_put_varint_eq(0x0000_0000_0000_4000, &[0x80, 0x00, 0x40, 0x00]);
+        assert_put_varint_eq(0x0000_0000_3FFF_FFFF, &[0xBF, 0xFF, 0xFF, 0xFF]);
+        assert_put_varint_eq(
+            0x0000_0000_4000_0000,
+            &[0xC0, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00],
+        );
+        assert_put_varint_eq(
+            0x3FFF_FFFF_FFFF_FFFF,
+            &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+        );
+    }
+
+    #[test]
+    fn test_encode_varint() {
+        let val = VarInt::from_u32(1);
+        let mut encode_buf = [0u8; 8];
+
+        let mut buf = &mut encode_buf[..];
+        buf.put_varint(&val);
+        assert_eq!(buf.len(), 7);
+        assert_eq!(encode_buf[0..1], [0x01]);
+
+        let mut buf = &mut encode_buf[..];
+        buf.encode_varint(&val, EncodeBytes::Two);
+        assert_eq!(buf.len(), 6);
+        assert_eq!(encode_buf[0..2], [0x40, 0x01]);
     }
 }
