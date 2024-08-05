@@ -28,7 +28,7 @@ where
         if let Some(frame) = guard.deref() {
             let size = frame.encoding_size();
             if burst.available() >= size && buf.remaining_mut() >= size {
-                buf.put_frame(&frame);
+                buf.put_frame(frame);
                 burst.post_write(size);
                 *guard = None;
                 return size;

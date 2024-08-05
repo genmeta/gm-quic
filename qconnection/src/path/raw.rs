@@ -1,6 +1,6 @@
 use std::{
     future::Future,
-    io::{IoSliceMut},
+    io::IoSliceMut,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{ready, Context, Poll, Waker},
@@ -19,19 +19,17 @@ use qcongestion::{
     CongestionControl,
 };
 use qrecovery::space::Epoch;
-use qudp::{ArcUsc};
+use qudp::ArcUsc;
 
 use super::{
     anti_amplifier::{ArcAntiAmplifier, ANTI_FACTOR},
     util::PathFrameBuffer,
-    Pathway,
 };
 use crate::connection::raw::RawConnection;
 
 #[derive(Clone)]
 pub struct RawPath {
     pub(super) usc: ArcUsc,
-    pub(super) pathway: Pathway,
     pub(super) response_listner: ArcResponseListener,
     pub(super) cc: ArcCC,
     pub(super) anti_amplifier: Option<ArcAntiAmplifier<ANTI_FACTOR>>,
@@ -42,11 +40,10 @@ pub struct RawPath {
     pub(super) spin: SpinBit,
     pub(super) challenge_buffer: PathFrameBuffer<PathChallengeFrame>,
     pub(super) response_buffer: PathFrameBuffer<PathResponseFrame>,
-    pub(super) inactive_waker: Arc<Mutex<Option<Waker>>>,
 }
 
 impl RawPath {
-    pub(super) fn new(usc: ArcUsc, pathway: Pathway, connection: &RawConnection) -> Self {
+    pub(super) fn new(usc: ArcUsc, connection: &RawConnection) -> Self {
         let cc = ArcCC::new(CongestionAlgorithm::Bbr, Duration::from_micros(100));
         let anti_amplifier = Some(ArcAntiAmplifier::<ANTI_FACTOR>::default());
 
@@ -60,7 +57,6 @@ impl RawPath {
             usc,
             cc,
             anti_amplifier,
-            pathway,
             flow_ctrl: connection.flow_ctrl.clone(),
             dcid,
             origin_cid: scid,
@@ -69,7 +65,6 @@ impl RawPath {
             challenge_buffer: PathFrameBuffer::default(),
             response_buffer: PathFrameBuffer::default(),
             response_listner: ArcResponseListener::new(),
-            inactive_waker: Arc::new(Mutex::new(None)),
         }
     }
 
