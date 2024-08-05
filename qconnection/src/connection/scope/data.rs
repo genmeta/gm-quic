@@ -98,7 +98,7 @@ impl DataScope {
                     conn_error.on_ccf_rcvd(&ccf);
                 }
                 Frame::Ack(ack_frame) => {
-                    path.on_ack(Epoch::Data, &ack_frame);
+                    path.lock_guard().on_ack(Epoch::Data, &ack_frame);
                     _ = ack_frames_entry.unbounded_send(ack_frame);
                 }
                 Frame::NewToken(new_token) => {
@@ -120,10 +120,10 @@ impl DataScope {
                     _ = data_blocked_frames_entry.unbounded_send(data_blocked);
                 }
                 Frame::Challenge(challenge) => {
-                    path.recv_challenge(challenge);
+                    path.lock_guard().recv_challenge(challenge);
                 }
                 Frame::Response(response) => {
-                    path.recv_response(response);
+                    path.lock_guard().recv_response(response);
                 }
                 Frame::Stream(stream_ctrl) => {
                     _ = stream_ctrl_frames_entry.unbounded_send(stream_ctrl);
@@ -216,7 +216,8 @@ impl DataScope {
                     }) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.on_recv_pkt(Epoch::Data, pn, is_ack_packet);
+                            path.lock_guard()
+                                .on_recv_pkt(Epoch::Data, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
@@ -250,7 +251,8 @@ impl DataScope {
                     }) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.on_recv_pkt(Epoch::Data, pn, is_ack_packet);
+                            path.lock_guard()
+                                .on_recv_pkt(Epoch::Data, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }

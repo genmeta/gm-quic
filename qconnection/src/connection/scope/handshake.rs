@@ -51,7 +51,7 @@ impl HandshakeScope {
             let conn_error = conn_error.clone();
             move |frame: Frame, path: &ArcPath| match frame {
                 Frame::Ack(ack_frame) => {
-                    path.on_ack(Epoch::Initial, &ack_frame);
+                    path.lock_guard().on_ack(Epoch::Initial, &ack_frame);
                     _ = ack_frames_entry.unbounded_send(ack_frame);
                 }
                 Frame::Close(ccf) => {
@@ -109,7 +109,8 @@ impl HandshakeScope {
                     }) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.on_recv_pkt(Epoch::Initial, pn, is_ack_packet);
+                            path.lock_guard()
+                                .on_recv_pkt(Epoch::Initial, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }

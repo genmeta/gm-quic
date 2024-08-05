@@ -1,17 +1,18 @@
 use std::{
     future::Future,
-    io::{self, IoSlice},
+    io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
+    ops::Deref,
     sync::{Arc, Mutex},
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 
-use dashmap::DashMap;
-use qbase::frame::{AckFrame, PathChallengeFrame, PathResponseFrame};
-use qcongestion::congestion::MSS;
+use qbase::frame::{PathChallengeFrame};
+use qcongestion::{congestion::MSS, CongestionControl};
 use qrecovery::space::Epoch;
-use qudp::ArcUsc;
+use qudp::{ArcUsc, Sender, BATCH_SIZE};
 use raw::RawPath;
+use tokio::task::JoinHandle;
 
 use crate::connection::raw::RawConnection;
 
@@ -40,59 +41,106 @@ pub enum Pathway {
     },
 }
 
-enum PathState {
-    Alive(RawPath),
-    Dead,
+#[derive(Clone)]
+pub struct ArcPath {
+    raw_path: Arc<Mutex<RawPath>>,
+    send_handle: Arc<Mutex<JoinHandle<()>>>,
+    inactive_waker: Option<Waker>,
 }
 
-#[derive(Clone)]
-pub struct ArcPath(Arc<Mutex<PathState>>);
-
 impl ArcPath {
-    pub fn on_ack(&self, epoch: Epoch, ack: &AckFrame) {
-        let mut guard = self.0.lock().unwrap();
-        if let PathState::Alive(path) = &mut *guard {
-            path.on_ack(epoch, ack);
-        }
+    pub fn lock_guard(&self) -> std::sync::MutexGuard<'_, RawPath> {
+        self.raw_path.lock().unwrap()
     }
 
-    pub fn on_recv_pkt(&self, epoch: Epoch, pn: u64, is_ackeliciting: bool) {
-        let mut guard = self.0.lock().unwrap();
-        if let PathState::Alive(path) = &mut *guard {
-            path.on_recv_pkt(epoch, pn, is_ackeliciting);
-        }
-    }
-
-    /// 收到对方的路径挑战帧，如果不是 Alive 状态，直接忽略
-    pub fn recv_challenge(&self, frame: PathChallengeFrame) {
-        let mut guard = self.0.lock().unwrap();
-        if let PathState::Alive(path) = &mut *guard {
-            path.recv_challenge(frame)
-        }
-    }
-
-    /// 收到对方的路径响应帧，如果不是 Alive 状态，直接忽略
-    pub fn recv_response(&self, frame: PathResponseFrame) {
-        let mut guard = self.0.lock().unwrap();
-        if let PathState::Alive(path) = &mut *guard {
-            path.recv_response(frame)
-        }
-    }
-
-    /// 失活检测器
+    /// Externally observe whether the path is inactive.
+    /// The main reason for internal inactivation is path verification failure.
     pub fn has_been_inactivated(&self) -> HasBeenInactivated {
         HasBeenInactivated(self.clone())
     }
+
+    /// Mark the path as inactive due to one of the following reasons:
+    /// 1. The connection is closed actively.
+    /// 2. The connection is closed due to an error.
+    /// 3. Path verification fails.
+    pub fn inactive(&self) {
+        self.lock_guard().inactive();
+        self.send_handle.lock().unwrap().abort();
+
+        if let Some(waker) = &self.inactive_waker {
+            waker.wake_by_ref();
+        }
+    }
 }
 
-pub fn create_path(
-    usc: ArcUsc,
-    pathway: Pathway,
-    connection: &RawConnection,
-    _pathes: DashMap<Pathway, ArcPath>,
-) -> ArcPath {
-    let raw_path = RawPath::new(usc, pathway, connection);
-    ArcPath(Arc::new(Mutex::new(PathState::Alive(raw_path.clone()))))
+pub fn create_path(usc: ArcUsc, pathway: Pathway, connection: &RawConnection) -> ArcPath {
+    let path = RawPath::new(usc, pathway, connection);
+
+    let send_handle = tokio::spawn({
+        let mut path = path.clone();
+        async move {
+            let mut buffers = vec![vec![0u8; MSS]; BATCH_SIZE];
+            let io_slices: Vec<IoSliceMut> =
+                buffers.iter_mut().map(|buf| IoSliceMut::new(buf)).collect();
+
+            let dcid = path.dcid.clone().await;
+            let reader = path.packet_reader(dcid, io_slices);
+
+            loop {
+                let count = reader.clone().await;
+                let ioves: Vec<IoSlice<'_>> = buffers
+                    .iter()
+                    .take(count)
+                    .map(|buf| IoSlice::new(buf))
+                    .collect();
+
+                let ret = path.usc.send_via_pathway(ioves.as_slice(), pathway).await;
+                match ret {
+                    Ok(_) => todo!(),
+                    Err(_) => todo!(),
+                }
+            }
+        }
+    });
+
+    let path = ArcPath {
+        raw_path: Arc::new(Mutex::new(path)),
+        send_handle: Arc::new(Mutex::new(send_handle)),
+        inactive_waker: None,
+    };
+
+    tokio::spawn({
+        let path = path.clone();
+        async move {
+            let challenge = PathChallengeFrame::random();
+
+            let mut success = false;
+            for _ in 0..3 {
+                // Write to the buffer, and the sending task actually sends it
+                // Reliability is not maintained through reliable transmission, but a stop-and-wait protocol
+                path.lock_guard().challenge_buffer.write(challenge);
+                let pto = path.lock_guard().cc.get_pto_time(Epoch::Data);
+                let listener = path.lock_guard().response_listner.clone();
+                match tokio::time::timeout(pto, listener).await {
+                    Ok(Some(resp)) if resp.deref() == challenge.deref() => {
+                        path.lock_guard().anti_amplifier.take();
+                        success = true;
+                        break;
+                    }
+                    // listner inactive, stop the task
+                    Ok(None) => break,
+                    // timout or reponse don't match, try again
+                    _ => continue,
+                }
+            }
+            // Path verification failed, inactivate the path
+            if !success {
+                path.inactive();
+            }
+        }
+    });
+
+    path
 }
 
 pub struct HasBeenInactivated(ArcPath);
@@ -100,11 +148,13 @@ pub struct HasBeenInactivated(ArcPath);
 impl Future for HasBeenInactivated {
     type Output = ();
 
-    fn poll(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-        match *self.0 .0.lock().unwrap() {
-            PathState::Alive(_) => Poll::Pending,
-            // PathState::Dying(_) => Poll::Ready(()),
-            PathState::Dead => Poll::Ready(()),
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        if this.0.lock_guard().is_inactive() {
+            Poll::Ready(())
+        } else {
+            this.0.inactive_waker = Some(cx.waker().clone());
+            Poll::Pending
         }
     }
 }
@@ -130,16 +180,18 @@ impl ViaPathway for ArcUsc {
             // todo: append relay hdr
             Pathway::Relay { local, remote } => (local.addr, remote.agent),
         };
-        let hdr = qudp::PacketHeader {
-            src,
-            dst,
-            ttl: 64,
-            ecn: None,
-            seg_size: MSS as u16,
-            gso: true,
-        };
-        let sender = self.sender(iovecs, hdr);
-        sender
+        Sender {
+            usc: self.clone(),
+            iovecs,
+            hdr: qudp::PacketHeader {
+                src,
+                dst,
+                ttl: 64,
+                ecn: None,
+                seg_size: MSS as u16,
+                gso: true,
+            },
+        }
     }
 
     fn sync_send_via_pathway(&mut self, iovec: Vec<u8>, pathway: Pathway) -> io::Result<()> {
