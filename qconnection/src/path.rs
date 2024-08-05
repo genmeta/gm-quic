@@ -3,11 +3,11 @@ use std::{
     io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
     ops::Deref,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
 
-use qbase::frame::{PathChallengeFrame};
+use qbase::frame::PathChallengeFrame;
 use qcongestion::{congestion::MSS, CongestionControl};
 use qrecovery::space::Epoch;
 use qudp::{ArcUsc, Sender, BATCH_SIZE};
@@ -49,7 +49,77 @@ pub struct ArcPath {
 }
 
 impl ArcPath {
-    pub fn lock_guard(&self) -> std::sync::MutexGuard<'_, RawPath> {
+    pub fn new(usc: ArcUsc, pathway: Pathway, connection: &RawConnection) -> ArcPath {
+        let path = RawPath::new(usc, connection);
+
+        let send_handle = tokio::spawn({
+            let mut path = path.clone();
+            async move {
+                let mut buffers = vec![[0u8; MSS]; BATCH_SIZE];
+                let io_slices: Vec<IoSliceMut> =
+                    buffers.iter_mut().map(|buf| IoSliceMut::new(buf)).collect();
+
+                let dcid = path.dcid.clone().await;
+                let reader = path.packet_reader(dcid, io_slices);
+
+                loop {
+                    let count = reader.clone().await;
+                    let ioves: Vec<IoSlice<'_>> = buffers
+                        .iter()
+                        .take(count)
+                        .map(|buf| IoSlice::new(buf))
+                        .collect();
+
+                    let ret = path.usc.send_via_pathway(ioves.as_slice(), pathway).await;
+                    match ret {
+                        Ok(_) => todo!(),
+                        Err(_) => todo!(),
+                    }
+                }
+            }
+        });
+
+        let path = ArcPath {
+            raw_path: Arc::new(Mutex::new(path)),
+            send_handle: Arc::new(Mutex::new(send_handle)),
+            inactive_waker: None,
+        };
+
+        tokio::spawn({
+            let path = path.clone();
+            async move {
+                let challenge = PathChallengeFrame::random();
+
+                let mut success = false;
+                for _ in 0..3 {
+                    // Write to the buffer, and the sending task actually sends it
+                    // Reliability is not maintained through reliable transmission, but a stop-and-wait protocol
+                    path.lock_guard().challenge_buffer.write(challenge);
+                    let pto = path.lock_guard().cc.get_pto_time(Epoch::Data);
+                    let listener = path.lock_guard().response_listner.clone();
+                    match tokio::time::timeout(pto, listener).await {
+                        Ok(Some(resp)) if resp.deref() == challenge.deref() => {
+                            path.lock_guard().anti_amplifier.take();
+                            success = true;
+                            break;
+                        }
+                        // listner inactive, stop the task
+                        Ok(None) => break,
+                        // timout or reponse don't match, try again
+                        _ => continue,
+                    }
+                }
+                // Path verification failed, inactivate the path
+                if !success {
+                    path.inactive();
+                }
+            }
+        });
+
+        path
+    }
+
+    pub fn lock_guard(&self) -> MutexGuard<'_, RawPath> {
         self.raw_path.lock().unwrap()
     }
 
@@ -71,76 +141,6 @@ impl ArcPath {
             waker.wake_by_ref();
         }
     }
-}
-
-pub fn create_path(usc: ArcUsc, pathway: Pathway, connection: &RawConnection) -> ArcPath {
-    let path = RawPath::new(usc, pathway, connection);
-
-    let send_handle = tokio::spawn({
-        let mut path = path.clone();
-        async move {
-            let mut buffers = vec![vec![0u8; MSS]; BATCH_SIZE];
-            let io_slices: Vec<IoSliceMut> =
-                buffers.iter_mut().map(|buf| IoSliceMut::new(buf)).collect();
-
-            let dcid = path.dcid.clone().await;
-            let reader = path.packet_reader(dcid, io_slices);
-
-            loop {
-                let count = reader.clone().await;
-                let ioves: Vec<IoSlice<'_>> = buffers
-                    .iter()
-                    .take(count)
-                    .map(|buf| IoSlice::new(buf))
-                    .collect();
-
-                let ret = path.usc.send_via_pathway(ioves.as_slice(), pathway).await;
-                match ret {
-                    Ok(_) => todo!(),
-                    Err(_) => todo!(),
-                }
-            }
-        }
-    });
-
-    let path = ArcPath {
-        raw_path: Arc::new(Mutex::new(path)),
-        send_handle: Arc::new(Mutex::new(send_handle)),
-        inactive_waker: None,
-    };
-
-    tokio::spawn({
-        let path = path.clone();
-        async move {
-            let challenge = PathChallengeFrame::random();
-
-            let mut success = false;
-            for _ in 0..3 {
-                // Write to the buffer, and the sending task actually sends it
-                // Reliability is not maintained through reliable transmission, but a stop-and-wait protocol
-                path.lock_guard().challenge_buffer.write(challenge);
-                let pto = path.lock_guard().cc.get_pto_time(Epoch::Data);
-                let listener = path.lock_guard().response_listner.clone();
-                match tokio::time::timeout(pto, listener).await {
-                    Ok(Some(resp)) if resp.deref() == challenge.deref() => {
-                        path.lock_guard().anti_amplifier.take();
-                        success = true;
-                        break;
-                    }
-                    // listner inactive, stop the task
-                    Ok(None) => break,
-                    // timout or reponse don't match, try again
-                    _ => continue,
-                }
-            }
-            // Path verification failed, inactivate the path
-            if !success {
-                path.inactive();
-            }
-        }
-    });
-
-    path
 }
 
 pub struct HasBeenInactivated(ArcPath);

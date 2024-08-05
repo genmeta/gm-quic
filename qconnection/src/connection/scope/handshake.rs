@@ -25,6 +25,7 @@ use crate::{
     transmit::{read_long_header_and_encrypt, FillPolicy},
 };
 
+#[derive(Clone)]
 pub struct HandshakeScope {
     pub keys: ArcKeys,
     pub space: HandshakeSpace,

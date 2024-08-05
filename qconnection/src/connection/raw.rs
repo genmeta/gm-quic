@@ -23,6 +23,7 @@ use crate::{
     tls::ArcTlsSession,
 };
 
+#[derive(Clone)]
 pub struct RawConnection {
     pub pathes: DashMap<Pathway, ArcPath>,
     pub cid_registry: CidRegistry,
@@ -132,8 +133,18 @@ impl RawConnection {
         self.pathes
             .entry(pathway)
             .or_insert_with(|| {
-                let _ = (pathway, usc);
-                unimplemented!()
+                let path = ArcPath::new(usc.clone(), pathway, self);
+                self.pathes.insert(pathway, path.clone());
+
+                tokio::spawn({
+                    let path = path.clone();
+                    let connection = self.clone();
+                    async move {
+                        path.has_been_inactivated().await;
+                        connection.pathes.remove(&pathway);
+                    }
+                });
+                path
             })
             .value()
             .clone()

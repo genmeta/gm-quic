@@ -1,7 +1,4 @@
-use std::{
-    net::SocketAddr,
-};
-
+use std::net::SocketAddr;
 
 // use path::Pathway;
 // use qbase::packet::SpacePacket;

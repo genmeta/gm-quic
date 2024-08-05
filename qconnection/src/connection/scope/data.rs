@@ -41,6 +41,7 @@ use crate::{
     transmit::{read_long_header_and_encrypt, read_short_header_and_encrypt, FillPolicy},
 };
 
+#[derive(Clone)]
 pub struct DataScope {
     pub zero_rtt_keys: ArcKeys,
     pub one_rtt_keys: ArcOneRttKeys,
