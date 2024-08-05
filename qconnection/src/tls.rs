@@ -1,27 +1,34 @@
 use std::{
     future::Future,
+    ops::DerefMut,
     pin::Pin,
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
 
-use futures::channel::mpsc;
 use qbase::{
     config::{
         ext::{be_parameters, WriteParameters},
         Parameters,
     },
+    error::Error,
     packet::keys::{ArcKeys, ArcOneRttKeys},
 };
 use qrecovery::{space::Epoch, streams::crypto::CryptoStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
+
+use crate::error::ConnError;
 
 /// write_tls_msg()，将明文数据写入tls_conn，同步的，可能会唤醒read数据发送
 /// poll_read_tls_msg()，从tls_conn读取数据，异步的，返回(Vec<u8>, Option<KeyChange>)
 #[derive(Debug)]
-pub(crate) struct RawTlsSession {
-    tls_conn: rustls::quic::Connection,
-    wants_write: Option<Waker>,
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum RawTlsSession {
+    Exist {
+        tls_conn: rustls::quic::Connection,
+        wants_write: Option<Waker>,
+    },
+    Invalid,
 }
 
 impl RawTlsSession {
@@ -46,7 +53,7 @@ impl RawTlsSession {
             )
             .unwrap(),
         );
-        Self {
+        Self::Exist {
             tls_conn: connection,
             wants_write: None,
         }
@@ -77,7 +84,7 @@ impl RawTlsSession {
             )
             .unwrap(),
         );
-        Self {
+        Self::Exist {
             tls_conn: connection,
             wants_write: None,
         }
@@ -85,10 +92,17 @@ impl RawTlsSession {
 
     // 将plaintext中的数据写入tls_conn供其处理
     fn write_tls_msg(&mut self, plaintext: &[u8]) -> Result<(), rustls::Error> {
+        let Self::Exist {
+            tls_conn,
+            wants_write,
+        } = self
+        else {
+            return Ok(());
+        };
         // rusltls::quic::Connection::read_hs()，该函数即消费掉plaintext的数据给到tls_conn内部处理
-        self.tls_conn.read_hs(plaintext)?;
-        if self.tls_conn.wants_write() {
-            if let Some(waker) = self.wants_write.take() {
+        tls_conn.read_hs(plaintext)?;
+        if tls_conn.wants_write() {
+            if let Some(waker) = wants_write.take() {
                 waker.wake();
             }
         }
@@ -99,16 +113,23 @@ impl RawTlsSession {
     fn poll_read_tls_msg(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<(Vec<u8>, Option<rustls::quic::KeyChange>)> {
+    ) -> Poll<Option<(Vec<u8>, Option<rustls::quic::KeyChange>)>> {
+        let Self::Exist {
+            tls_conn,
+            wants_write,
+        } = self
+        else {
+            return Poll::Ready(None);
+        };
         let mut buf = Vec::with_capacity(1200);
         // rusltls::quic::Connection::write_hs()，该函数即将tls_conn内部的数据写入到buf中
-        let key_change = self.tls_conn.write_hs(&mut buf);
+        let key_change = tls_conn.write_hs(&mut buf);
         if key_change.is_none() && buf.is_empty() {
-            self.wants_write = Some(cx.waker().clone());
+            *wants_write = Some(cx.waker().clone());
             return Poll::Pending;
         }
 
-        Poll::Ready((buf, key_change))
+        Poll::Ready(Some((buf, key_change)))
     }
 }
 
@@ -150,40 +171,65 @@ impl ArcTlsSession {
         ReadTlsMsg(self.clone())
     }
 
+    fn invalid(&self) {
+        let mut guard = self.lock_guard();
+        if let RawTlsSession::Exist { wants_write, .. } = guard.deref_mut() {
+            if let Some(waker) = wants_write.take() {
+                waker.wake();
+            }
+        }
+        *guard = RawTlsSession::Invalid;
+    }
+
+    pub fn on_conn_error(&self, error: &Error) {
+        _ = error;
+        self.invalid();
+    }
+
     /// 自托管密钥升级
     pub fn keys_upgrade(
         &self,
         crypto_streams: [&CryptoStream; 3],
         handshake_keys: ArcKeys,
         one_rtt_keys: ArcOneRttKeys,
-        parameters_entry: mpsc::Sender<Parameters>,
-    ) {
-        // 在此创建reader任务
-        for epoch in Epoch::iter() {
-            let mut crypto_stream_reader = crypto_streams[*epoch].reader();
+        conn_error: ConnError,
+    ) -> GetParameters {
+        let get_parameters = GetParameters::default();
+
+        let for_each_epoch = |epoch: Epoch| {
+            let mut crypto_stream_reader = crypto_streams[epoch].reader();
             let tls_session = self.clone();
-            let mut parameters_entry = parameters_entry.clone();
+            let get_parameters = get_parameters.clone();
+            let conn_error = conn_error.clone();
             tokio::spawn(async move {
                 // 不停地从crypto_stream_reader读取数据，读到就送给tls_conn
                 let mut buf = Vec::with_capacity(1200);
-                // TODO: 处理错误，以及何时终止？reader被销毁的时候，会终止吗？处理它们的异常终止
-                // 还有任务结束但是还是没有得到传输参数的情况
                 loop {
                     buf.truncate(0);
-                    let _err = crypto_stream_reader.read(&mut buf).await;
-                    let _err = tls_session.write_tls_msg(&buf);
+                    // 总是Ok
+                    _ = crypto_stream_reader.read(&mut buf).await;
+                    let tls_write_result = tls_session.write_tls_msg(&buf);
+                    if let Err(err) = tls_write_result {
+                        conn_error.on_error(err.into());
+                        break;
+                    }
+
                     if let Some(params) = tls_session.get_transport_parameters() {
-                        _ = parameters_entry.try_send(params);
+                        get_parameters.set_parameters(params);
                     }
                 }
-            });
-        }
+            })
+        };
+
+        // 在此创建reader任务
+        let crypto_readers = Epoch::EPOCHS.map(for_each_epoch);
 
         // 在此创建不停地检查tls_conn是否有数据要给到对方，或者产生了密钥升级
         // TODO: 处理错误，处理它们的异常终止
         tokio::spawn({
             let tls_session = self.clone();
-            let mut crypto_stream_writers = [
+            let get_parameters = get_parameters.clone();
+            let crypto_stream_writers = [
                 crypto_streams[0].writer(),
                 crypto_streams[1].writer(),
                 crypto_streams[2].writer(),
@@ -193,7 +239,9 @@ impl ArcTlsSession {
                 // 值保证的。因此，其返回了密钥升级，则需要升级到相应密级，然后后续的数据都将在新密级下发送。
                 let mut epoch = Epoch::Initial;
                 loop {
-                    let (buf, key_upgrade) = tls_session.read_tls_msg().await;
+                    let Some((buf, key_upgrade)) = tls_session.read_tls_msg().await else {
+                        break;
+                    };
                     if let Some(key_change) = key_upgrade {
                         match key_change {
                             rustls::quic::KeyChange::Handshake { keys } => {
@@ -209,26 +257,104 @@ impl ArcTlsSession {
                     }
 
                     if !buf.is_empty() {
-                        let _err = crypto_stream_writers[epoch].write(&buf).await;
+                        let write_result = crypto_stream_writers[epoch].write(&buf).await;
+                        if let Err(err) = write_result {
+                            conn_error.on_error(err);
+                            break;
+                        }
                     }
                 }
+
+                for reader in crypto_readers {
+                    reader.abort();
+                }
+                get_parameters.on_handshake_done();
             }
         });
+        get_parameters
     }
 
     fn get_transport_parameters(&self) -> Option<Parameters> {
-        let tls_session = self.lock_guard();
-        let raw = tls_session.tls_conn.quic_transport_parameters()?;
-        be_parameters(raw).ok().map(|(_, p)| p)
+        let mut tls_session = self.lock_guard();
+        if let RawTlsSession::Exist { tls_conn, .. } = tls_session.deref_mut() {
+            let raw = tls_conn.quic_transport_parameters()?;
+            be_parameters(raw).ok().map(|(_, p)| p)
+        } else {
+            None
+        }
     }
 }
 
 pub struct ReadTlsMsg(ArcTlsSession);
 
 impl Future for ReadTlsMsg {
-    type Output = (Vec<u8>, Option<rustls::quic::KeyChange>);
+    type Output = Option<(Vec<u8>, Option<rustls::quic::KeyChange>)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.0.lock_guard().poll_read_tls_msg(cx)
+    }
+}
+
+#[derive(Default, Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
+enum RawGetParameters {
+    #[default]
+    None,
+    Pending(Waker),
+    Ready(Parameters),
+    End,
+}
+
+impl RawGetParameters {
+    fn poll_get_parameters(&mut self, cx: &mut Context) -> Poll<Option<Parameters>> {
+        match self {
+            RawGetParameters::None | RawGetParameters::Pending(..) => {
+                *self = RawGetParameters::Pending(cx.waker().clone());
+                Poll::Pending
+            }
+            RawGetParameters::Ready(..) => {
+                let p = std::mem::replace(self, RawGetParameters::End);
+                let RawGetParameters::Ready(p) = p else {
+                    unreachable!()
+                };
+                Poll::Ready(Some(p))
+            }
+            RawGetParameters::End => Poll::Ready(None),
+        }
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct GetParameters(Arc<Mutex<RawGetParameters>>);
+
+impl GetParameters {
+    fn set_parameters(&self, parameters: Parameters) {
+        let mut guard = self.0.lock().unwrap();
+        let RawGetParameters::Pending(waker) = guard.deref_mut() else {
+            return;
+        };
+        waker.wake_by_ref();
+        *guard = RawGetParameters::Ready(parameters);
+    }
+
+    fn on_handshake_done(&self) {
+        let mut guard = self.0.lock().unwrap();
+        let RawGetParameters::Pending(waker) = guard.deref_mut() else {
+            return;
+        };
+        waker.wake_by_ref();
+        *guard = RawGetParameters::End;
+    }
+
+    pub fn poll_get_parameters(&self, cx: &mut Context) -> Poll<Option<Parameters>> {
+        self.0.lock().unwrap().poll_get_parameters(cx)
+    }
+}
+
+impl Future for GetParameters {
+    type Output = Option<Parameters>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.lock().unwrap().poll_get_parameters(cx)
     }
 }

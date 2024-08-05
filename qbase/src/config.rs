@@ -12,7 +12,7 @@ use crate::{cid::ConnectionId, token::ResetToken};
 /// Ref. `<https://www.iana.org/assignments/quic/quic.xhtml>`
 
 // QUIC的config配置
-#[derive(Builder, Getters, CopyGetters, Setters, MutGetters, Debug, PartialEq)]
+#[derive(Builder, Getters, CopyGetters, Setters, MutGetters, Debug, Clone, PartialEq)]
 #[builder(
     default,
     setter(strip_option, into,),
