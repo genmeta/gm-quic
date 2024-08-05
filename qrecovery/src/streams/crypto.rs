@@ -1,18 +1,18 @@
 mod send {
     use std::{
+        future::poll_fn,
         io,
-        pin::Pin,
         sync::{Arc, Mutex},
         task::{Context, Poll, Waker},
     };
 
     use bytes::BufMut;
     use qbase::{
+        error::{Error, ErrorKind},
         frame::{io::WriteCryptoFrame, CryptoFrame},
         util::{Burst, DescribeData},
         varint::{VarInt, VARINT_MAX},
     };
-    use tokio::io::AsyncWrite;
 
     use crate::send::sndbuf::{PickIndicator, SendBuf};
 
@@ -61,12 +61,12 @@ mod send {
     }
 
     impl Sender {
-        fn poll_write(&mut self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        fn poll_write(&mut self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, Error>> {
             assert!(self.writable_waker.is_none());
             assert!(self.flush_waker.is_none());
             if self.sndbuf.len() + buf.len() as u64 > VARINT_MAX {
-                return Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
+                return Poll::Ready(Err(Error::with_default_fty(
+                    ErrorKind::CryptoBufferExceeded,
                     "The largest offset delivered on the crypto stream cannot exceed 2^62-1",
                 )));
             }
@@ -99,22 +99,16 @@ mod send {
     #[derive(Debug, Clone)]
     pub struct CryptoStreamOutgoing(pub(super) ArcSender);
 
-    impl AsyncWrite for CryptoStreamWriter {
-        fn poll_write(
-            self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            buf: &[u8],
-        ) -> Poll<io::Result<usize>> {
-            self.0.lock().unwrap().poll_write(cx, buf)
+    impl CryptoStreamWriter {
+        // TODO: 有更好的方案吗？
+        // 如果不返回QUICError，在外部就需要将io::Error再转换为QUICError
+        // 如果返回QUICError，那就不能为它实现AsyncWrite特征，和CryproStreamReader不一致
+        pub async fn write(&self, buf: &[u8]) -> Result<usize, Error> {
+            poll_fn(|cx| self.0.lock().unwrap().poll_write(cx, buf)).await
         }
 
-        fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            self.0.lock().unwrap().poll_flush(cx)
-        }
-
-        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            // 永远不会关闭，直到Connection级别的关闭
-            Poll::Pending
+        pub async fn flush(&self) -> io::Result<()> {
+            poll_fn(|cx| self.0.lock().unwrap().poll_flush(cx)).await
         }
     }
 
@@ -264,18 +258,14 @@ impl CryptoStream {
 #[cfg(test)]
 mod tests {
     use qbase::{frame::CryptoFrame, varint::VarInt};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncReadExt;
 
     use super::CryptoStream;
 
     #[tokio::test]
     async fn test_read() {
         let crypto_stream: CryptoStream = CryptoStream::new(1000_0000, 0);
-        crypto_stream
-            .writer()
-            .write_all(b"hello world")
-            .await
-            .unwrap();
+        crypto_stream.writer().write(b"hello world").await.unwrap();
 
         crypto_stream.incoming().recv_crypto_frame(&(
             CryptoFrame {

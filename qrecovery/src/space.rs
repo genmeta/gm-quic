@@ -12,9 +12,9 @@ pub enum Epoch {
 }
 
 impl Epoch {
+    pub const EPOCHS: [Epoch; 3] = [Epoch::Initial, Epoch::Handshake, Epoch::Data];
     pub fn iter() -> std::slice::Iter<'static, Epoch> {
-        const EPOCHS: [Epoch; 3] = [Epoch::Initial, Epoch::Handshake, Epoch::Data];
-        EPOCHS.iter()
+        Self::EPOCHS.iter()
     }
 
     pub const fn count() -> usize {

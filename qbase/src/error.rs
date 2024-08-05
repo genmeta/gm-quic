@@ -166,5 +166,12 @@ impl From<crate::frame::ConnectionCloseFrame> for Error {
     }
 }
 
+impl From<rustls::Error> for Error {
+    fn from(value: rustls::Error) -> Self {
+        // rustls的Error和rfc不一致，为避免实现极为复杂，使用通用错误码Internal
+        Self::with_default_fty(ErrorKind::Internal, format!("TLS error: {}", value))
+    }
+}
+
 #[cfg(test)]
 mod tests {}
