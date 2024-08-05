@@ -19,7 +19,7 @@ use super::{
 use crate::{
     error::ConnError,
     path::{ArcPath, Pathway},
-    router::ArcRouter,
+    router::ROUTER,
     tls::ArcTlsSession,
 };
 
@@ -43,11 +43,11 @@ pub struct RawConnection {
 }
 
 impl RawConnection {
-    pub fn new(role: Role, _tls_session: ArcTlsSession, router: ArcRouter) -> Self {
+    pub fn new(role: Role, _tls_session: ArcTlsSession) -> Self {
         let reliable_frames = ArcReliableFrameDeque::with_capacity(0);
 
         let pathes = DashMap::new();
-        let cid_registry = CidRegistry::new(8, reliable_frames.clone(), router, 2);
+        let cid_registry = CidRegistry::new(8, reliable_frames.clone(), ROUTER.clone(), 2);
         let handshake = Handshake::with_role(role);
         let flow_ctrl = FlowController::with_initial(0, 0);
         let spin = Arc::new(Mutex::new(SpinBit::Zero));

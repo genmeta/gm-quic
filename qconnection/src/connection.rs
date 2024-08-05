@@ -5,19 +5,22 @@ use std::{
     time::{Duration, Instant},
 };
 
+use draining::DrainingConnection;
 use futures::channel::mpsc;
 use qbase::{
     cid,
     config::Parameters,
     error::Error,
     packet::{keys::OneRttPacketKeys, DataPacket},
+    streamid::Role,
 };
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 
 use crate::{
-    connection::ConnState::{Closing, Raw},
+    connection::ConnState::{Closing, Draining, Raw},
     path::ArcPath,
-    router::ArcRouter,
+    router::{ArcRouter, ROUTER},
+    tls::ArcTlsSession,
 };
 
 mod builder;
@@ -49,12 +52,28 @@ impl Debug for ArcConnection {
 
 impl ArcConnection {
     pub fn new_client(
-        _server_name: String,
+        server_name: String,
         _address: SocketAddr,
         _token: Option<Vec<u8>>,
-        _parameters: Parameters,
+        params: Parameters,
     ) -> Self {
-        todo!("create a new client connection");
+        let Ok(server_name) = server_name.try_into() else {
+            panic!("server_name is not valid")
+        };
+
+        let raw = raw::RawConnection::new(
+            Role::Client,
+            ArcTlsSession::new_client(server_name, &params),
+        );
+        let local_cids = raw.cid_registry.local.clone();
+        let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Raw(raw))));
+
+        local_cids
+            .active_cids()
+            .into_iter()
+            .for_each(|cid| ROUTER.add_conn(cid, conn.clone()));
+
+        conn
     }
 
     /// TODO: 参数不全，其实是QuicServer::accept的返回值
@@ -84,19 +103,25 @@ impl ArcConnection {
         ),
         error: Error,
     ) {
-        // 状态切换 RawConnection -> ClosingConnection
         let mut guard = self.0.lock().unwrap();
         let (pathes, cid_registry, data_space) = match *guard {
             Raw(ref conn) => conn.enter_closing(),
             _ => return,
         };
+
+        let ptos = pathes
+            .iter()
+            .map(|path| path.pto_time())
+            .collect::<Vec<_>>();
+
+        let pto = ptos.iter().sum::<Duration>() / ptos.len() as u32;
+
         let closing_conn =
             closing::ClosingConnection::new(pathes, cid_registry, data_space, one_rtt_keys, error);
 
         tokio::spawn({
             let conn = self.clone();
-            // TODO:  时间应为 PTO*3
-            let duration = Duration::from_secs(3);
+            let duration = pto * 3;
             let rcvd_ccf = closing_conn.get_rcvd_ccf();
             async move {
                 let time = Instant::now();
@@ -116,14 +141,38 @@ impl ArcConnection {
 
     /// Enter draining state from raw state or closing state.
     /// Can only be called internally, and the app should not care this method.
-    pub(crate) fn drain(&self, _remaining: Duration) {
-        todo!("enter draining state from raw state or closing state");
+    pub(crate) fn drain(self, remaining: Duration) {
+        let mut guard = self.0.lock().unwrap();
+        let local_cids = match *guard {
+            Raw(ref conn) => conn.cid_registry.local.clone(),
+            Closing(ref conn) => conn.cid_registry.local.clone(),
+            _ => return,
+        };
+
+        tokio::spawn({
+            let conn = self.clone();
+            async move {
+                tokio::time::sleep(remaining).await;
+                conn.die();
+            }
+        });
+
+        *guard = Draining(DrainingConnection::new(local_cids));
     }
 
     /// Dismiss the connection, remove it from the global router.
     /// Can only be called internally, and the app should not care this method.
-    pub(crate) fn die(&self) {
-        todo!("remove the connection from the global router");
+    pub(crate) fn die(self) {
+        let local_cids = match *self.0.lock().unwrap() {
+            Raw(_) => unreachable!(),
+            Closing(ref conn) => conn.cid_registry.local.clone(),
+            Draining(ref conn) => conn.local_cids().clone(),
+        };
+
+        local_cids
+            .active_cids()
+            .into_iter()
+            .for_each(|cid| ROUTER.remove_conn(cid));
     }
 }
 

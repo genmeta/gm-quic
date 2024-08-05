@@ -154,6 +154,16 @@ where
         ))))
     }
 
+    pub fn active_cids(&self) -> Vec<ConnectionId> {
+        self.0
+            .lock()
+            .unwrap()
+            .cid_deque
+            .iter()
+            .filter_map(|v| v.map(|(cid, _)| cid))
+            .collect()
+    }
+
     pub fn set_limit(&self, active_cid_limit: u64) -> Result<(), Error> {
         self.0.lock().unwrap().set_limit(active_cid_limit)
     }
