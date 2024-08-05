@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex};
 use dashmap::DashMap;
 use futures::channel::mpsc;
 use qbase::{
-    cid::ConnectionId,
     flow::FlowController,
     handshake::Handshake,
     packet::{keys::ArcKeys, SpacePacket, SpinBit},

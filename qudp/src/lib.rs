@@ -204,9 +204,9 @@ impl ArcUsc {
 }
 
 pub struct Sender<'a> {
-    usc: ArcUsc,
-    iovecs: &'a [IoSlice<'a>],
-    hdr: PacketHeader,
+    pub usc: ArcUsc,
+    pub iovecs: &'a [IoSlice<'a>],
+    pub hdr: PacketHeader,
 }
 
 impl<'a> Future for Sender<'a> {
