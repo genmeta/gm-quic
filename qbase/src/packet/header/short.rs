@@ -10,8 +10,6 @@ pub struct OneRttHeader {
     pub dcid: ConnectionId,
 }
 
-impl Protect for OneRttHeader {}
-
 impl Encode for OneRttHeader {
     fn size(&self) -> usize {
         1 + self.dcid.len()

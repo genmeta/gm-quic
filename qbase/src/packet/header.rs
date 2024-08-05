@@ -7,7 +7,7 @@ pub mod short;
 
 pub use long::{
     ext::{LongHeaderBuilder, Write, WriteLongHeader},
-    HandshakeHeader, InitialHeader, LongHeader, RetryHeader, VersionNegotiationHeader,
+    DataHeader, HandshakeHeader, InitialHeader, LongHeader, RetryHeader, VersionNegotiationHeader,
     ZeroRttHeader,
 };
 pub use short::{ext::WriteOneRttHeader, OneRttHeader};
@@ -18,19 +18,9 @@ use super::r#type::{
     Type,
 };
 
+#[enum_dispatch]
 pub trait GetType {
     fn get_type(&self) -> Type;
-}
-
-pub trait Protect {}
-
-/// Some long packet headers such as Initial, Handshake, ZeroRtt, etc. have lengths,
-/// so they need to implement this trait.
-/// However, the length is variable-length encoding, and the length is unknown when
-/// writing. The special handling of variable-length encoding length is left to the
-/// sending logic to handle, so there is no method to set the length.
-pub trait HasLength {
-    fn get_length(&self) -> usize;
 }
 
 /// When encoding a packet for sending, we need to know the length of the packet,
@@ -186,7 +176,7 @@ mod tests {
         }
 
         // Initial Header
-        let buf = vec![0x00, 0x00, 0x03, 0x01, 0x02, 0x03, 0x00];
+        let buf = vec![0x00, 0x00, 0x03, 0x01, 0x02, 0x03];
         let (remain, initial_long_header) =
             be_header(Type::Long(long::Type::V1(Ver1::INITIAL)), 0, &buf).unwrap();
         assert_eq!(remain.len(), 0);
@@ -195,13 +185,12 @@ mod tests {
                 assert_eq!(initial.dcid, ConnectionId::default());
                 assert_eq!(initial.scid, ConnectionId::default());
                 assert_eq!(initial.token, [0x01, 0x02, 0x03,]);
-                assert_eq!(initial.length, 0x00);
             }
             _ => panic!("unexpected header type"),
         }
 
         // ZeroRTT Header
-        let buf = vec![0x00, 0x00, 0x00];
+        let buf = vec![0x00, 0x00];
         let (remain, zero_rtt_long_header) =
             be_header(Type::Long(long::Type::V1(Ver1::ZERO_RTT)), 0, &buf).unwrap();
         assert_eq!(remain.len(), 0);
@@ -209,13 +198,12 @@ mod tests {
             Header::ZeroRtt(zero_rtt) => {
                 assert_eq!(zero_rtt.dcid, ConnectionId::default());
                 assert_eq!(zero_rtt.scid, ConnectionId::default());
-                assert_eq!(zero_rtt.length, 0x00);
             }
             _ => panic!("unexpected header type"),
         }
 
         // Handshake Header
-        let buf = vec![0x00, 0x00, 0x00];
+        let buf = vec![0x00, 0x00];
         let (remain, handshake_long_header) =
             be_header(Type::Long(long::Type::V1(Ver1::HANDSHAKE)), 0, &buf).unwrap();
         assert_eq!(remain.len(), 0);
@@ -223,7 +211,6 @@ mod tests {
             Header::Handshake(handshake) => {
                 assert_eq!(handshake.dcid, ConnectionId::default());
                 assert_eq!(handshake.scid, ConnectionId::default());
-                assert_eq!(handshake.length, 0x00);
             }
             _ => panic!("unexpected header type"),
         }
@@ -251,7 +238,6 @@ mod tests {
         use crate::{
             cid::ConnectionId,
             packet::{header::ext::WriteHeader, Header, OneRttHeader, SpinBit},
-            varint::VarInt,
         };
 
         // VersionNegotiation Header
@@ -296,15 +282,14 @@ mod tests {
 
         // Initial Header
         let mut buf = vec![];
-        let initial_long_header = Header::Initial(
+        let initial_header = Header::Initial(
             LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
                 Initial {
-                    length: VarInt::from_u32(0),
                     token: vec![0x01, 0x02, 0x03],
                 },
             ),
         );
-        buf.put_header(&initial_long_header);
+        buf.put_header(&initial_header);
         assert_eq!(
             buf,
             [0xc0, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x03, 0x01, 0x02, 0x03]
@@ -312,44 +297,38 @@ mod tests {
 
         // ZeroRtt Header
         let mut buf = vec![];
-        let zero_rtt_long_header = Header::ZeroRtt(
-            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
-                ZeroRtt {
-                    length: VarInt::from_u32(0),
-                },
-            ),
+        let zero_rtt_header = Header::ZeroRtt(
+            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default())
+                .wrap(ZeroRtt),
         );
-        buf.put_header(&zero_rtt_long_header);
+        buf.put_header(&zero_rtt_header);
         assert_eq!(buf, [0xd0, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00]);
 
         // Handshake Header
         let mut buf = vec![];
-        let handshake_long_header = Header::Handshake(
-            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
-                Handshake {
-                    length: VarInt::from_u32(0),
-                },
-            ),
+        let handshake_header = Header::Handshake(
+            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default())
+                .wrap(Handshake),
         );
-        buf.put_header(&handshake_long_header);
+        buf.put_header(&handshake_header);
         assert_eq!(buf, [0xe0, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00]);
 
         // OneRtt Header with SpinBit::On
         let mut buf = vec![];
-        let one_rtt_long_header = Header::OneRtt(OneRttHeader {
+        let one_rtt_header = Header::OneRtt(OneRttHeader {
             spin: SpinBit::One,
             dcid: ConnectionId::default(),
         });
-        buf.put_header(&one_rtt_long_header);
+        buf.put_header(&one_rtt_header);
         assert_eq!(buf, [0x60]);
 
         // OneRtt Header with SpinBit::Off
         let mut buf = vec![];
-        let one_rtt_long_header = Header::OneRtt(OneRttHeader {
+        let one_rtt_header = Header::OneRtt(OneRttHeader {
             spin: SpinBit::Zero,
             dcid: ConnectionId::default(),
         });
-        buf.put_header(&one_rtt_long_header);
+        buf.put_header(&one_rtt_header);
         assert_eq!(buf, [0x40]);
     }
 }

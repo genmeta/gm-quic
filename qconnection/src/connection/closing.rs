@@ -11,17 +11,22 @@ use dashmap::DashMap;
 use qbase::{
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
-    packet::{header::GetType, keys::OneRttPacketKeys, SpacePacket},
+    packet::{
+        decrypt::{decrypt_packet, remove_protection_of_short_packet},
+        header::GetType,
+        keys::OneRttPacketKeys,
+        DataHeader, DataPacket,
+    },
 };
 use qrecovery::{reliable::rcvdpkt::ArcRcvdPktRecords, space::DataSpace};
 use qudp::ArcUsc;
 
-use super::{sync_decode_short_header_packet, CidRegistry};
+use super::CidRegistry;
 use crate::path::{ArcPath, Pathway};
 
 pub struct ClosingConnection {
     pathes: DashMap<Pathway, ArcPath>,
-    cid_registry: CidRegistry,
+    _cid_registry: CidRegistry,
     rcvd_pkt_records: ArcRcvdPktRecords,
     one_rtt_keys: (
         Arc<dyn rustls::quic::HeaderProtectionKey>,
@@ -43,7 +48,7 @@ impl ClosingConnection {
         ),
         error: Error,
     ) -> Self {
-        let ccf = ConnectionCloseFrame::from(error);
+        let _ccf = ConnectionCloseFrame::from(error);
 
         // pathes
         //     .iter()
@@ -51,7 +56,7 @@ impl ClosingConnection {
 
         Self {
             pathes,
-            cid_registry,
+            _cid_registry: cid_registry,
             rcvd_pkt_records: data_space.rcvd_packets(),
             one_rtt_keys,
             rcvd_packets: 0,
@@ -61,7 +66,12 @@ impl ClosingConnection {
     }
 
     // 记录收到的包数量，和收包时间，判断是否需要重发CCF；
-    pub fn recv_packet_via_path(&mut self, packet: SpacePacket, pathway: Pathway, usc: ArcUsc) {
+    pub fn recv_packet_via_path(
+        &mut self,
+        mut packet: DataPacket,
+        _pathway: Pathway,
+        _usc: ArcUsc,
+    ) {
         self.rcvd_packets += 1;
         // TODO: 数值从配置中读取, 还是直接固定值?
         if self.rcvd_packets > 5 || self.last_send_ccf.elapsed() > Duration::from_millis(100) {
@@ -71,16 +81,37 @@ impl ClosingConnection {
             // usc.poll_send_via_pathway(iovecs, pathway, cx);
         }
 
-        if let SpacePacket::OneRtt(packet) = packet {
-            let pkt_type = packet.header.get_type();
-            let decode_pn = |pn| self.rcvd_pkt_records.decode_pn(pn).ok();
-            let payload =
-                match sync_decode_short_header_packet(packet, &self.one_rtt_keys, decode_pn) {
-                    Some((_, payload)) => payload,
-                    None => return,
-                };
+        if let DataHeader::Short(h) = packet.header {
+            let pkt_type = h.get_type();
+            let (undecoded_pn, key_phase) = match remove_protection_of_short_packet(
+                self.one_rtt_keys.0.as_ref(),
+                packet.bytes.as_mut(),
+                packet.offset,
+            ) {
+                Ok(Some(pn)) => pn,
+                Ok(None) => return,
+                Err(_e) => {
+                    // conn_error.on_error(e);
+                    return;
+                }
+            };
 
-            let ccf = FrameReader::new(payload, pkt_type)
+            let pn = match self.rcvd_pkt_records.decode_pn(undecoded_pn) {
+                Ok(pn) => pn,
+                // TooOld/TooLarge/HasRcvd
+                Err(_e) => return,
+            };
+            let body_offset = packet.offset + undecoded_pn.size();
+            let pk = self
+                .one_rtt_keys
+                .1
+                .lock()
+                .unwrap()
+                .get_remote(key_phase, pn);
+            decrypt_packet(pk.as_ref(), pn, &mut packet.bytes.as_mut(), body_offset).unwrap();
+            let body = packet.bytes.split_off(body_offset);
+
+            let ccf = FrameReader::new(body.freeze(), pkt_type)
                 .filter_map(|frame| frame.ok())
                 .find_map(|frame| {
                     if let (Frame::Close(ccf), _) = frame {

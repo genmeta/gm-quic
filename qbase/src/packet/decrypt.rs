@@ -1,87 +1,64 @@
-use bytes::Bytes;
 use rustls::quic::{HeaderProtectionKey, PacketKey};
 
 use super::{
-    error::Error,
-    header::{long::LongHeader, Protect},
-    take_pn_len, GetPacketNumberLength, KeyPhaseBit, LongClearBits, OneRttHeader, PacketNumber,
-    PacketWrapper, ShortClearBits,
+    error::Error, take_pn_len, GetPacketNumberLength, KeyPhaseBit, LongClearBits, PacketNumber,
+    ShortClearBits,
 };
 
-pub trait RemoteProtection {
-    fn remove_protection(&mut self, header_protection_key: &dyn HeaderProtectionKey) -> bool;
-}
-
-pub trait DecodeHeader {
-    type Output;
-
-    /// Will return Error::InvalidReservedBits if the reserved bits are not 0.
-    fn decode_header(&self) -> Result<Self::Output, Error>;
-}
-
-pub trait DecryptPacket {
-    fn decrypt_packet(
-        self,
-        pn: u64,
-        encoded_pn_size: usize,
-        packet_key: &dyn PacketKey,
-    ) -> Result<Bytes, Error>;
-}
-
-impl<H: Protect> RemoteProtection for PacketWrapper<H> {
-    fn remove_protection(&mut self, header_protection_key: &dyn HeaderProtectionKey) -> bool {
-        let (header, payload) = self.raw_data.split_at_mut(self.pn_offset);
-        let first_byte = &mut header[0];
-        let (pn_bytes, sample) = payload.split_at_mut(4);
-        // Decryption failure is not a fatal error. When facing a key upgrade,
-        // you need to try again with the next key. If it still fails, it may be forged
-        // and should be discarded. In any case, it won't cause a connection error!
-        header_protection_key
-            .decrypt_in_place(sample, first_byte, pn_bytes)
-            .map_err(|_| Error::RemoveProtectionFailure)
-            .is_ok()
+pub fn remove_protection_of_long_packet(
+    key: &dyn HeaderProtectionKey,
+    pkt_buf: &mut [u8],
+    payload_offset: usize,
+) -> Result<Option<PacketNumber>, Error> {
+    let (pre_data, payload) = pkt_buf.split_at_mut(payload_offset);
+    let first_byte = &mut pre_data[0];
+    let (max_pn_buf, sample) = payload.split_at_mut(4);
+    // 去除包头保护失败，忽略即可
+    if key
+        .decrypt_in_place(sample, first_byte, max_pn_buf)
+        .is_err()
+    {
+        return Ok(None);
     }
+
+    let clear_bits = LongClearBits::from(*first_byte);
+    let pn_len = clear_bits.pn_len()?;
+    let (_, undecoded_pn) = take_pn_len(pn_len)(max_pn_buf).unwrap();
+
+    Ok(Some(undecoded_pn))
 }
 
-impl DecodeHeader for PacketWrapper<OneRttHeader> {
-    type Output = (PacketNumber, KeyPhaseBit);
-
-    fn decode_header(&self) -> Result<Self::Output, Error> {
-        let clear_bits = ShortClearBits::from(self.raw_data[0]);
-        let pn_len = clear_bits.pn_len()?;
-        let pn_bytes = &self.raw_data[self.pn_offset..self.pn_offset + pn_len as usize];
-        let (_, pn) = take_pn_len(pn_len)(pn_bytes).unwrap();
-        Ok((pn, clear_bits.key_phase()))
+pub fn remove_protection_of_short_packet(
+    key: &dyn HeaderProtectionKey,
+    pkt_buf: &mut [u8],
+    payload_offset: usize,
+) -> Result<Option<(PacketNumber, KeyPhaseBit)>, Error> {
+    let (pre_data, payload) = pkt_buf.split_at_mut(payload_offset);
+    let first_byte = &mut pre_data[0];
+    let (max_pn_buf, sample) = payload.split_at_mut(4);
+    // 去除包头保护失败，忽略即可
+    if key
+        .decrypt_in_place(sample, first_byte, max_pn_buf)
+        .is_err()
+    {
+        return Ok(None);
     }
+
+    let clear_bits = ShortClearBits::from(*first_byte);
+    let pn_len = clear_bits.pn_len()?;
+    let (_, undecoded_pn) = take_pn_len(pn_len)(max_pn_buf).unwrap();
+
+    Ok(Some((undecoded_pn, clear_bits.key_phase())))
 }
 
-impl<S> DecodeHeader for PacketWrapper<LongHeader<S>> {
-    type Output = PacketNumber;
-
-    fn decode_header(&self) -> Result<PacketNumber, Error> {
-        let clear_bits = LongClearBits::from(self.raw_data[0]);
-        let pn_len = clear_bits.pn_len()?;
-        let pn_bytes = &self.raw_data[self.pn_offset..self.pn_offset + pn_len as usize];
-        let (_, pn) = take_pn_len(pn_len)(pn_bytes).unwrap();
-        Ok(pn)
-    }
-}
-
-impl<H: Protect> DecryptPacket for PacketWrapper<H> {
-    fn decrypt_packet(
-        self,
-        pn: u64,
-        encoded_pn_size: usize,
-        remote_keys: &dyn PacketKey,
-    ) -> Result<Bytes, Error> {
-        // decrypt packet
-        let mut raw_data = self.raw_data;
-        let header_offset = self.pn_offset + encoded_pn_size;
-        let mut body = raw_data.split_off(header_offset);
-        let header = raw_data;
-        remote_keys
-            .decrypt_in_place(pn, &header, &mut body)
-            .map_err(|_| Error::DecryptPacketFailure)?;
-        Ok(body.freeze())
-    }
+pub fn decrypt_packet(
+    key: &dyn PacketKey,
+    pn: u64,
+    pkt_buf: &mut [u8],
+    body_offset: usize,
+) -> Result<(), Error> {
+    let (aad, body) = pkt_buf.split_at_mut(body_offset);
+    key.decrypt_in_place(pn, aad, body)
+        .map_err(|_| Error::DecryptPacketFailure)?;
+    Ok(())
 }

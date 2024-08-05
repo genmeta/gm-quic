@@ -5,7 +5,7 @@ use futures::channel::mpsc;
 use qbase::{
     flow::FlowController,
     handshake::Handshake,
-    packet::{keys::ArcKeys, SpacePacket, SpinBit},
+    packet::{keys::ArcKeys, long, DataHeader, DataPacket, SpinBit},
     streamid::Role,
 };
 use qrecovery::{reliable::ArcReliableFrameDeque, space::DataSpace, streams::DataStreams};
@@ -106,21 +106,21 @@ impl RawConnection {
         }
     }
 
-    pub fn recv_packet_via_path(&self, packet: SpacePacket, path: ArcPath) {
-        match packet {
-            SpacePacket::Initial(packet) => {
+    pub fn recv_packet_via_path(&self, packet: DataPacket, path: ArcPath) {
+        match packet.header {
+            DataHeader::Long(long::DataHeader::Initial(_)) => {
                 _ = self.initial.packets_entry.unbounded_send((packet, path))
             }
-            SpacePacket::Handshake(packet) => {
+            DataHeader::Long(long::DataHeader::Handshake(_)) => {
                 _ = self.hs.packets_entry.unbounded_send((packet, path))
             }
-            SpacePacket::ZeroRtt(packet) => {
+            DataHeader::Long(long::DataHeader::ZeroRtt(_)) => {
                 _ = self
                     .data
                     .zero_rtt_packets_entry
                     .unbounded_send((packet, path))
             }
-            SpacePacket::OneRtt(packet) => {
+            DataHeader::Short(_) => {
                 _ = self
                     .data
                     .one_rtt_packets_entry

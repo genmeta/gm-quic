@@ -67,16 +67,16 @@ where
         hdr_buf.put_varint(&VarInt::from_u64(body_size as u64).unwrap());
     }
 
-    let header_size = max_header_size - offset;
-    let header_and_pn_size = header_size + pn_size;
-    let pkt_size = header_size + body_size;
+    let payload_offset = max_header_size - offset;
+    let body_offset = payload_offset + pn_size;
+    let pkt_size = body_offset + body_size;
     let pkt_buffer = &mut buffer[offset..offset + pkt_size];
     // encode pn length in the first byte
-    let clear_bits = LongClearBits::with_pn_size(pn_size);
+    let clear_bits = LongClearBits::with_pn_len(pn_size);
     pkt_buffer[0] |= clear_bits.deref();
 
     // encrypt packet payload
-    let (header, body) = pkt_buffer.split_at_mut(header_and_pn_size);
+    let (header, body) = pkt_buffer.split_at_mut(body_offset);
     keys.deref()
         .local
         .packet
@@ -84,7 +84,7 @@ where
         .unwrap();
 
     // add header protection
-    let (header, pn_and_body) = pkt_buffer.split_at_mut(header_size);
+    let (header, pn_and_body) = pkt_buffer.split_at_mut(payload_offset);
     let (pn_max, sample) = pn_and_body.split_at_mut(4);
     keys.deref()
         .local
@@ -107,23 +107,23 @@ pub fn read_short_header_and_encrypt(
 
     buffer.put_one_rtt_header(header);
 
-    let header_and_pn_size = header_size + pn_size;
+    let body_offset = header_size + pn_size;
     let pkt_size = header_size + body_size;
     let pkt_buffer = &mut buffer[0..pkt_size];
 
     // encode pn length in the first byte
     let (key_phase, pk) = pk.lock().unwrap().get_local();
-    let mut clear_bits = ShortClearBits::with_pn_size(pn_size);
+    let mut clear_bits = ShortClearBits::with_pn_len(pn_size);
     clear_bits.set_key_phase(key_phase);
     pkt_buffer[0] |= *clear_bits;
 
     // encrypt packet payload
-    let (header, body) = pkt_buffer.split_at_mut(header_and_pn_size);
+    let (header, body) = pkt_buffer.split_at_mut(body_offset);
     pk.deref().encrypt_in_place(pn, header, body).unwrap();
 
     // add header protection
-    let (header, pn_and_body) = pkt_buffer.split_at_mut(header_size);
-    let (pn_max, sample) = pn_and_body.split_at_mut(4);
+    let (header, payload) = pkt_buffer.split_at_mut(header_size);
+    let (pn_max, sample) = payload.split_at_mut(4);
     hpk.deref()
         .encrypt_in_place(sample, &mut header[0], &mut pn_max[..pn_size])
         .unwrap();

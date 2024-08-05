@@ -10,21 +10,24 @@ const HEADER_FORM_MASK: u8 = 0x80;
 /// The next bit (0x40) of byte 0 is set to 1, unless the packet is a Version Negotiation packet.
 const FIXED_BIT: u8 = 0x40;
 
+pub const LONG_RESERVED_MASK: u8 = 0x0C;
+pub const SHORT_RESERVED_MASK: u8 = 0x18;
+
 /// After removing the packet header protection, the clear first byte part,
 /// 'R' represents the reserved bits. The long packet header is 0x0C, and
 /// the short packet header is 0x18.
 #[derive(Debug, Clone, Copy, Deref)]
-pub struct ClearBits<const R: u8>(#[deref] pub(super) u8);
+pub struct ClearBits<const R: u8>(pub(super) u8);
 
-pub type ShortClearBits = ClearBits<0x18>;
-pub type LongClearBits = ClearBits<0xC>;
+pub type LongClearBits = ClearBits<HEADER_FORM_MASK>;
+pub type ShortClearBits = ClearBits<SHORT_RESERVED_MASK>;
 
 impl<const R: u8> ClearBits<R> {
     pub fn from_pn(pn: &PacketNumber) -> Self {
         Self(pn.size() as u8 - 1)
     }
 
-    pub fn with_pn_size(pn_size: usize) -> Self {
+    pub fn with_pn_len(pn_size: usize) -> Self {
         debug_assert!(pn_size <= 4 && pn_size > 0);
         Self(pn_size as u8 - 1)
     }
@@ -148,13 +151,13 @@ mod tests {
             Err(Error::InvalidReservedBits(0x08, 0x0C))
         );
 
-        let clear_bits = LongClearBits::with_pn_size(4);
+        let clear_bits = LongClearBits::with_pn_len(4);
         assert_eq!(clear_bits.pn_len().unwrap(), 4);
-        let clear_bits = LongClearBits::with_pn_size(3);
+        let clear_bits = LongClearBits::with_pn_len(3);
         assert_eq!(clear_bits.pn_len().unwrap(), 3);
-        let clear_bits = LongClearBits::with_pn_size(2);
+        let clear_bits = LongClearBits::with_pn_len(2);
         assert_eq!(clear_bits.pn_len().unwrap(), 2);
-        let clear_bits = LongClearBits::with_pn_size(1);
+        let clear_bits = LongClearBits::with_pn_len(1);
         assert_eq!(clear_bits.pn_len().unwrap(), 1);
     }
 
@@ -176,19 +179,19 @@ mod tests {
             Err(Error::InvalidReservedBits(0x08, 0x18))
         );
 
-        let clear_bits = ShortClearBits::with_pn_size(4);
+        let clear_bits = ShortClearBits::with_pn_len(4);
         assert_eq!(clear_bits.pn_len().unwrap(), 4);
-        let clear_bits = ShortClearBits::with_pn_size(3);
+        let clear_bits = ShortClearBits::with_pn_len(3);
         assert_eq!(clear_bits.pn_len().unwrap(), 3);
-        let clear_bits = ShortClearBits::with_pn_size(2);
+        let clear_bits = ShortClearBits::with_pn_len(2);
         assert_eq!(clear_bits.pn_len().unwrap(), 2);
-        let clear_bits = ShortClearBits::with_pn_size(1);
+        let clear_bits = ShortClearBits::with_pn_len(1);
         assert_eq!(clear_bits.pn_len().unwrap(), 1);
     }
 
     #[test]
     fn test_set_key_phase_bit() {
-        let mut clear_bits = ShortClearBits::with_pn_size(4);
+        let mut clear_bits = ShortClearBits::with_pn_len(4);
         assert_eq!(clear_bits.0, 0x03);
         clear_bits.set_key_phase(KeyPhaseBit::One);
         assert_eq!(clear_bits.0, 0x07);

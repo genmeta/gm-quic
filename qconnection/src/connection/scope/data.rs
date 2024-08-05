@@ -12,6 +12,9 @@ use qbase::{
     frame::{AckFrame, DataFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame},
     handshake::Handshake,
     packet::{
+        decrypt::{
+            decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
+        },
         header::{Encode, GetType, WriteLongHeader, WriteOneRttHeader},
         keys::{ArcKeys, ArcOneRttKeys, OneRttPacketKeys},
         KeyPhaseBit, LongClearBits, LongHeaderBuilder, OneRttHeader, ShortClearBits, SpinBit,
@@ -31,10 +34,7 @@ use qunreliable::DatagramFlow;
 use rustls::quic::HeaderProtectionKey;
 
 use crate::{
-    connection::{
-        decode_long_header_packet, decode_short_header_packet, CidRegistry, OneRttPacketEntry,
-        RcvdOneRttPacket, RcvdZeroRttPacket, ZeroRttPacketEntry,
-    },
+    connection::{CidRegistry, PacketEntry, RcvdPacket},
     error::ConnError,
     path::{ArcPath, PathFrameBuffer},
     pipe,
@@ -47,15 +47,12 @@ pub struct DataScope {
     pub one_rtt_keys: ArcOneRttKeys,
     pub space: DataSpace,
     pub crypto_stream: CryptoStream,
-    pub zero_rtt_packets_entry: ZeroRttPacketEntry,
-    pub one_rtt_packets_entry: OneRttPacketEntry,
+    pub zero_rtt_packets_entry: PacketEntry,
+    pub one_rtt_packets_entry: PacketEntry,
 }
 
 impl DataScope {
-    pub fn new(
-        zero_rtt_packets_entry: ZeroRttPacketEntry,
-        one_rtt_packets_entry: OneRttPacketEntry,
-    ) -> Self {
+    pub fn new(zero_rtt_packets_entry: PacketEntry, one_rtt_packets_entry: PacketEntry) -> Self {
         Self {
             zero_rtt_keys: ArcKeys::new_pending(),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
@@ -74,8 +71,8 @@ impl DataScope {
         datagrams: &DatagramFlow,
         cid_registry: &CidRegistry,
         flow_ctrl: &flow::FlowController,
-        rcvd_0rtt_packets: RcvdZeroRttPacket,
-        rcvd_1rtt_packets: RcvdOneRttPacket,
+        rcvd_0rtt_packets: RcvdPacket,
+        rcvd_1rtt_packets: RcvdPacket,
         conn_error: ConnError,
     ) {
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
@@ -193,7 +190,7 @@ impl DataScope {
 
     fn parse_rcvd_0rtt_packet_and_dispatch_frames(
         &self,
-        mut rcvd_packets: RcvdZeroRttPacket,
+        mut rcvd_packets: RcvdPacket,
         dispatch_frame: impl Fn(Frame, &ArcPath) + Send + 'static,
         conn_error: ConnError,
     ) {
@@ -201,20 +198,46 @@ impl DataScope {
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.zero_rtt_keys.clone();
             async move {
-                while let Some((packet, path)) = rcvd_packets.next().await {
+                while let Some((mut packet, path)) = rcvd_packets.next().await {
                     let pty = packet.header.get_type();
-                    let decode_pn = |pn| rcvd_pkt_records.decode_pn(pn).ok();
-                    let (pn, payload) =
-                        match decode_long_header_packet(packet, &keys, decode_pn).await {
-                            Some((pn, payload)) => (pn, payload),
-                            None => return,
-                        };
+                    let Some(keys) = keys.get_remote_keys().await else {
+                        break;
+                    };
+                    let undecoded_pn = match remove_protection_of_long_packet(
+                        keys.remote.header.as_ref(),
+                        packet.bytes.as_mut(),
+                        packet.offset,
+                    ) {
+                        Ok(Some(pn)) => pn,
+                        Ok(None) => continue,
+                        Err(_e) => {
+                            // conn_error.on_error(e);
+                            return;
+                        }
+                    };
 
-                    match FrameReader::new(payload, pty).try_fold(false, |is_ack_packet, frame| {
-                        let (frame, is_ack_eliciting) = frame?;
-                        dispatch_frame(frame, &path);
-                        Ok(is_ack_packet || is_ack_eliciting)
-                    }) {
+                    let pn = match rcvd_pkt_records.decode_pn(undecoded_pn) {
+                        Ok(pn) => pn,
+                        // TooOld/TooLarge/HasRcvd
+                        Err(_e) => continue,
+                    };
+                    let body_offset = packet.offset + undecoded_pn.size();
+                    decrypt_packet(
+                        keys.remote.packet.as_ref(),
+                        pn,
+                        &mut packet.bytes.as_mut(),
+                        body_offset,
+                    )
+                    .unwrap();
+                    let body = packet.bytes.split_off(body_offset);
+                    match FrameReader::new(body.freeze(), pty).try_fold(
+                        false,
+                        |is_ack_packet, frame| {
+                            let (frame, is_ack_eliciting) = frame?;
+                            dispatch_frame(frame, &path);
+                            Ok(is_ack_packet || is_ack_eliciting)
+                        },
+                    ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
                             path.lock_guard()
@@ -229,7 +252,7 @@ impl DataScope {
 
     fn parse_rcvd_1rtt_packet_and_dispatch_frames(
         &self,
-        mut rcvd_packets: RcvdOneRttPacket,
+        mut rcvd_packets: RcvdPacket,
         dispatch_frame: impl Fn(Frame, &ArcPath) + Send + 'static,
         conn_error: ConnError,
     ) {
@@ -237,19 +260,42 @@ impl DataScope {
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.one_rtt_keys.clone();
             async move {
-                while let Some((packet, path)) = rcvd_packets.next().await {
+                while let Some((mut packet, path)) = rcvd_packets.next().await {
                     let pty = packet.header.get_type();
-                    let decode_pn = |pn| rcvd_pkt_records.decode_pn(pn).ok();
-                    let (pn, payload) =
-                        match decode_short_header_packet(packet, &keys, decode_pn).await {
-                            Some((pn, payload)) => (pn, payload),
-                            None => return,
-                        };
-                    match FrameReader::new(payload, pty).try_fold(false, |is_ack_packet, frame| {
-                        let (frame, is_ack_eliciting) = frame?;
-                        dispatch_frame(frame, &path);
-                        Ok(is_ack_packet || is_ack_eliciting)
-                    }) {
+                    let Some((hpk, pk)) = keys.get_remote_keys().await else {
+                        break;
+                    };
+                    let (undecoded_pn, key_phase) = match remove_protection_of_short_packet(
+                        hpk.as_ref(),
+                        packet.bytes.as_mut(),
+                        packet.offset,
+                    ) {
+                        Ok(Some(pn)) => pn,
+                        Ok(None) => continue,
+                        Err(_e) => {
+                            // conn_error.on_error(e);
+                            return;
+                        }
+                    };
+
+                    let pn = match rcvd_pkt_records.decode_pn(undecoded_pn) {
+                        Ok(pn) => pn,
+                        // TooOld/TooLarge/HasRcvd
+                        Err(_e) => continue,
+                    };
+                    let body_offset = packet.offset + undecoded_pn.size();
+                    let pk = pk.lock().unwrap().get_remote(key_phase, pn);
+                    decrypt_packet(pk.as_ref(), pn, &mut packet.bytes.as_mut(), body_offset)
+                        .unwrap();
+                    let body = packet.bytes.split_off(body_offset);
+                    match FrameReader::new(body.freeze(), pty).try_fold(
+                        false,
+                        |is_ack_packet, frame| {
+                            let (frame, is_ack_eliciting) = frame?;
+                            dispatch_frame(frame, &path);
+                            Ok(is_ack_packet || is_ack_eliciting)
+                        },
+                    ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
                             path.lock_guard()
