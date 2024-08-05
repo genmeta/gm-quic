@@ -1,22 +1,16 @@
 use std::{
     fmt::Debug,
     net::SocketAddr,
-    ops::Deref,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-use bytes::Bytes;
 use futures::channel::mpsc;
 use qbase::{
     cid,
     config::Parameters,
     error::Error,
-    packet::{
-        decrypt::{DecodeHeader, DecryptPacket, RemoteProtection},
-        keys::{ArcKeys, ArcOneRttKeys, OneRttPacketKeys},
-        HandshakePacket, InitialPacket, OneRttPacket, PacketNumber, ZeroRttPacket,
-    },
+    packet::{keys::OneRttPacketKeys, DataPacket},
 };
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 
@@ -32,20 +26,8 @@ pub mod draining;
 pub mod raw;
 pub mod scope;
 
-type PacketEntry<P> = mpsc::UnboundedSender<(P, ArcPath)>;
-type RcvdPacket<P> = mpsc::UnboundedReceiver<(P, ArcPath)>;
-
-pub type InitialPacketEntry = PacketEntry<InitialPacket>;
-pub type RcvdInitialPacket = RcvdPacket<InitialPacket>;
-
-pub type HandshakePacketEntry = PacketEntry<HandshakePacket>;
-pub type RcvdHandshakePacket = RcvdPacket<HandshakePacket>;
-
-pub type ZeroRttPacketEntry = PacketEntry<ZeroRttPacket>;
-pub type RcvdZeroRttPacket = RcvdPacket<ZeroRttPacket>;
-
-pub type OneRttPacketEntry = PacketEntry<OneRttPacket>;
-pub type RcvdOneRttPacket = RcvdPacket<OneRttPacket>;
+type PacketEntry = mpsc::UnboundedSender<(DataPacket, ArcPath)>;
+type RcvdPacket = mpsc::UnboundedReceiver<(DataPacket, ArcPath)>;
 
 pub type CidRegistry = cid::Registry<ArcReliableFrameDeque, ArcRouter>;
 pub type ArcLocalCids = cid::ArcLocalCids<ArcReliableFrameDeque, ArcRouter>;
@@ -143,70 +125,6 @@ impl ArcConnection {
     pub(crate) fn die(&self) {
         todo!("remove the connection from the global router");
     }
-}
-
-fn sync_decode_long_header_packet<P>(
-    mut packet: P,
-    keys: &rustls::quic::DirectionalKeys,
-    decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
-) -> Option<(u64, Bytes)>
-where
-    P: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
-{
-    if !packet.remove_protection(keys.header.deref()) {
-        return None;
-    }
-
-    let encoded_pn = packet.decode_header().ok()?;
-    let pn = decode_pn(encoded_pn)?;
-    let payload = packet
-        .decrypt_packet(pn, encoded_pn.size(), keys.packet.deref())
-        .ok()?;
-
-    Some((pn, payload))
-}
-
-fn sync_decode_short_header_packet(
-    mut packet: OneRttPacket,
-    (hk, pk): &(
-        Arc<dyn rustls::quic::HeaderProtectionKey>,
-        Arc<Mutex<OneRttPacketKeys>>,
-    ),
-    decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
-) -> Option<(u64, Bytes)> {
-    if !packet.remove_protection(hk.deref()) {
-        return None;
-    }
-
-    let (encoded_pn, key_phase) = packet.decode_header().ok()?;
-    let pn = decode_pn(encoded_pn)?;
-    let packet_key = pk.lock().unwrap().get_remote(key_phase, pn);
-    let payload = packet
-        .decrypt_packet(pn, encoded_pn.size(), packet_key.deref())
-        .ok()?;
-
-    Some((pn, payload))
-}
-
-async fn decode_long_header_packet<P>(
-    packet: P,
-    keys: &ArcKeys,
-    decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
-) -> Option<(u64, Bytes)>
-where
-    P: DecodeHeader<Output = PacketNumber> + DecryptPacket + RemoteProtection,
-{
-    let keys = keys.get_remote_keys().await?;
-    sync_decode_long_header_packet(packet, &keys.remote, decode_pn)
-}
-
-pub async fn decode_short_header_packet(
-    packet: OneRttPacket,
-    keys: &ArcOneRttKeys,
-    decode_pn: impl FnOnce(PacketNumber) -> Option<u64>,
-) -> Option<(u64, Bytes)> {
-    let keys = keys.get_remote_keys().await?;
-    sync_decode_short_header_packet(packet, &keys, decode_pn)
 }
 
 #[cfg(test)]

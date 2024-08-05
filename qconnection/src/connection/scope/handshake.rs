@@ -6,6 +6,7 @@ use qbase::{
     cid::ConnectionId,
     frame::{AckFrame, DataFrame, Frame, FrameReader},
     packet::{
+        decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::{Encode, GetType, WriteLongHeader},
         keys::ArcKeys,
         LongClearBits, LongHeaderBuilder, WritePacketNumber,
@@ -18,7 +19,7 @@ use qrecovery::{
 };
 
 use crate::{
-    connection::{decode_long_header_packet, HandshakePacketEntry, RcvdHandshakePacket},
+    connection::{PacketEntry, RcvdPacket},
     error::ConnError,
     path::ArcPath,
     pipe,
@@ -30,12 +31,12 @@ pub struct HandshakeScope {
     pub keys: ArcKeys,
     pub space: HandshakeSpace,
     pub crypto_stream: CryptoStream,
-    pub packets_entry: HandshakePacketEntry,
+    pub packets_entry: PacketEntry,
 }
 
 impl HandshakeScope {
     // Initial keys应该是预先知道的，或者传入dcid，可以构造出来
-    pub fn new(packets_entry: HandshakePacketEntry) -> Self {
+    pub fn new(packets_entry: PacketEntry) -> Self {
         Self {
             keys: ArcKeys::new_pending(),
             space: HandshakeSpace::with_capacity(16),
@@ -44,7 +45,7 @@ impl HandshakeScope {
         }
     }
 
-    pub fn build(&self, rcvd_packets: RcvdHandshakePacket, conn_error: ConnError) {
+    pub fn build(&self, rcvd_packets: RcvdPacket, conn_error: ConnError) {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
 
@@ -87,7 +88,7 @@ impl HandshakeScope {
 
     fn parse_rcvd_packets_and_dispatch_frames(
         &self,
-        mut rcvd_packets: RcvdHandshakePacket,
+        mut rcvd_packets: RcvdPacket,
         dispatch_frame: impl Fn(Frame, &ArcPath) + Send + 'static,
         conn_error: ConnError,
     ) {
@@ -95,23 +96,50 @@ impl HandshakeScope {
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.keys.clone();
             async move {
-                while let Some((packet, path)) = rcvd_packets.next().await {
+                while let Some((mut packet, path)) = rcvd_packets.next().await {
                     let pty = packet.header.get_type();
-                    let decode_pn = |pn| rcvd_pkt_records.decode_pn(pn).ok();
-                    let (pn, payload) =
-                        match decode_long_header_packet(packet, &keys, decode_pn).await {
-                            Some((pn, payload)) => (pn, payload),
-                            None => return,
-                        };
-                    match FrameReader::new(payload, pty).try_fold(false, |is_ack_packet, frame| {
-                        let (frame, is_ack_eliciting) = frame?;
-                        dispatch_frame(frame, &path);
-                        Ok(is_ack_packet || is_ack_eliciting)
-                    }) {
+                    let Some(keys) = keys.get_remote_keys().await else {
+                        break;
+                    };
+                    let undecoded_pn = match remove_protection_of_long_packet(
+                        keys.remote.header.as_ref(),
+                        packet.bytes.as_mut(),
+                        packet.offset,
+                    ) {
+                        Ok(Some(pn)) => pn,
+                        Ok(None) => continue,
+                        Err(_e) => {
+                            // conn_error.on_error(e);
+                            return;
+                        }
+                    };
+
+                    let pn = match rcvd_pkt_records.decode_pn(undecoded_pn) {
+                        Ok(pn) => pn,
+                        // TooOld/TooLarge/HasRcvd
+                        Err(_e) => continue,
+                    };
+                    let body_offset = packet.offset + undecoded_pn.size();
+                    decrypt_packet(
+                        keys.remote.packet.as_ref(),
+                        pn,
+                        &mut packet.bytes.as_mut(),
+                        body_offset,
+                    )
+                    .unwrap();
+                    let body = packet.bytes.split_off(body_offset);
+                    match FrameReader::new(body.freeze(), pty).try_fold(
+                        false,
+                        |is_ack_packet, frame| {
+                            let (frame, is_ack_eliciting) = frame?;
+                            dispatch_frame(frame, &path);
+                            Ok(is_ack_packet || is_ack_eliciting)
+                        },
+                    ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
                             path.lock_guard()
-                                .on_recv_pkt(Epoch::Initial, pn, is_ack_packet);
+                                .on_recv_pkt(Epoch::Handshake, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }

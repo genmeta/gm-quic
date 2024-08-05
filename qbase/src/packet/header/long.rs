@@ -1,5 +1,4 @@
 use deref_derive::{Deref, DerefMut};
-use nom::ToUsize;
 
 use super::*;
 use crate::{cid::ConnectionId, varint::VarInt};
@@ -32,32 +31,13 @@ impl Retry {
 #[derive(Debug, Default, Clone)]
 pub struct Initial {
     pub token: Vec<u8>,
-    pub length: VarInt,
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct ZeroRtt {
-    pub length: VarInt,
-}
+pub struct ZeroRtt;
 
 #[derive(Debug, Default, Clone)]
-pub struct Handshake {
-    pub length: VarInt,
-}
-
-macro_rules! protect {
-    ($($type:ty),*) => {
-        $(
-            impl super::HasLength for $type {
-                fn get_length(&self) -> usize {
-                    self.length.to_usize()
-                }
-            }
-        )*
-    };
-}
-
-protect!(Initial, ZeroRtt, Handshake);
+pub struct Handshake;
 
 impl Encode for Initial {
     fn size(&self) -> usize {
@@ -107,11 +87,7 @@ pub type InitialHeader = LongHeader<Initial>;
 pub type HandshakeHeader = LongHeader<Handshake>;
 pub type ZeroRttHeader = LongHeader<ZeroRtt>;
 
-impl Protect for InitialHeader {}
-impl Protect for ZeroRttHeader {}
-impl Protect for HandshakeHeader {}
-
-impl<S: Encode + HasLength> Encode for LongHeader<S> {
+impl<S: Encode> Encode for LongHeader<S> {
     fn size(&self) -> usize {
         1 + self.dcid.len()       // dcid长度最多20字节，长度编码只占1字节，加上cid本身的长度
             + 1 + self.scid.len() // scid一样
@@ -139,6 +115,14 @@ bind_type!(
     HandshakeHeader => Type::Long(LongType::V1(Version::<1, _>(v1::Type::Handshake)))
 );
 
+#[derive(Debug, Clone)]
+#[enum_dispatch(Encode, GetType, GetDcid)]
+pub enum DataHeader {
+    Initial(InitialHeader),
+    ZeroRtt(ZeroRttHeader),
+    Handshake(HandshakeHeader),
+}
+
 pub(super) mod ext {
     use std::ops::Deref;
 
@@ -148,7 +132,6 @@ pub(super) mod ext {
         combinator::{eof, map},
         multi::{length_data, many_till},
         number::streaming::be_u32,
-        sequence::tuple,
         Err,
     };
 
@@ -168,21 +151,17 @@ pub(super) mod ext {
     }
 
     pub fn be_initial(input: &[u8]) -> nom::IResult<&[u8], Initial> {
-        map(
-            tuple((length_data(be_varint), be_varint)),
-            |(token, length)| Initial {
-                token: Vec::from(token),
-                length,
-            },
-        )(input)
+        map(length_data(be_varint), |token| Initial {
+            token: Vec::from(token),
+        })(input)
     }
 
     pub fn be_zero_rtt(input: &[u8]) -> nom::IResult<&[u8], ZeroRtt> {
-        map(be_varint, |length| ZeroRtt { length })(input)
+        Ok((input, ZeroRtt))
     }
 
     pub fn be_handshake(input: &[u8]) -> nom::IResult<&[u8], Handshake> {
-        map(be_varint, |length| Handshake { length })(input)
+        Ok((input, Handshake))
     }
 
     pub fn be_retry(input: &[u8]) -> nom::IResult<&[u8], Retry> {
@@ -206,22 +185,15 @@ pub(super) mod ext {
 
         /// TODO: Initail/Handshake/ZeroRtt Header should not include length field
         pub fn initial(self, token: Vec<u8>) -> LongHeader<Initial> {
-            self.wrap(Initial {
-                token,
-                length: VarInt::default(),
-            })
+            self.wrap(Initial { token })
         }
 
         pub fn zero_rtt(self) -> LongHeader<ZeroRtt> {
-            self.wrap(ZeroRtt {
-                length: VarInt::default(),
-            })
+            self.wrap(ZeroRtt)
         }
 
         pub fn handshake(self) -> LongHeader<Handshake> {
-            self.wrap(Handshake {
-                length: VarInt::default(),
-            })
+            self.wrap(Handshake)
         }
 
         pub fn wrap<T>(self, specific: T) -> LongHeader<T> {
@@ -361,10 +333,9 @@ mod tests {
         use crate::packet::header::long::ext::be_initial;
         // Note: The length of the last bit is filled in when sending, here set as 0x01
         // Consistent behavior with zero_rtt and handshake
-        let buf = vec![0x03, 0x00, 0x00, 0x00, 0x01];
+        let buf = vec![0x03, 0x00, 0x00, 0x00];
         let (remain, initial) = be_initial(buf.as_ref()).unwrap();
         assert_eq!(initial.token, vec![0x00, 0x00, 0x00]);
-        assert_eq!(initial.length.into_inner(), 0x01);
         assert_eq!(remain.len(), 0);
     }
 

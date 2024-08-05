@@ -13,8 +13,8 @@ pub enum Error {
     IncompleteType(String),
     #[error("Incomplete packet header {0:?}: {1}")]
     IncompleteHeader(Type, String),
-    #[error("Incomplete packet {0:?}: Need {1} bytes, but only {2} bytes left in the packet")]
-    IncompletePacket(Type, usize, usize),
+    #[error("Incomplete packet body {0:?}: {1}")]
+    IncompletePacket(Type, String),
     #[error("Sampling of packet content less than 20 bytes, only {0} bytes available")]
     UnderSampling(usize),
     #[error("Fail to remove protection")]

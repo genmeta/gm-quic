@@ -1,6 +1,6 @@
 use qbase::{
     cid::ConnectionId,
-    packet::{HandshakePacket, InitialPacket, OneRttPacket, ZeroRttPacket},
+    packet::{header::GetType, DataPacket},
 };
 
 use super::ArcLocalCids;
@@ -25,23 +25,11 @@ impl DrainingConnection {
     }
 
     /// Just ignore the packet, with a warning log
-    pub fn recv_initial_pkt(&self, _pkt: InitialPacket) {
-        println!("WARN: Receive a initial packet in the draining state, ignore it");
-    }
-
-    /// Just ignore the packet, with a warning log
-    pub fn recv_0rtt_pkt(&self, _pkt: ZeroRttPacket) {
-        println!("WARN: Receive a 0-rtt packet in the draining state, ignore it");
-    }
-
-    /// Just ignore the packet, with a warning log
-    pub fn recv_handshake_pkt(&self, _pkt: HandshakePacket) {
-        println!("WARN: Receive a handshake packet in the draining state, ignore it");
-    }
-
-    /// Just ignore the packet, with a warning log
-    pub fn recv_1rtt_pkt(&self, _pkt: OneRttPacket) {
-        println!("WARN: Receive a 1-rtt packet in the draining state, ignore it");
+    pub fn recv_packet_via_path(&self, packet: DataPacket) {
+        println!(
+            "WARN: Receive a {:?} packet in the draining state, ignore it",
+            packet.header.get_type()
+        );
     }
 
     /// Return the original connection ID, which is used to remove item in the global router
