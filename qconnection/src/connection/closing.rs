@@ -25,16 +25,16 @@ use super::CidRegistry;
 use crate::path::{ArcPath, Pathway};
 
 pub struct ClosingConnection {
-    pathes: DashMap<Pathway, ArcPath>,
-    _cid_registry: CidRegistry,
-    rcvd_pkt_records: ArcRcvdPktRecords,
-    one_rtt_keys: (
+    pub pathes: DashMap<Pathway, ArcPath>,
+    pub cid_registry: CidRegistry,
+    pub rcvd_pkt_records: ArcRcvdPktRecords,
+    pub one_rtt_keys: (
         Arc<dyn rustls::quic::HeaderProtectionKey>,
         Arc<Mutex<OneRttPacketKeys>>,
     ),
-    rcvd_packets: usize,
-    last_send_ccf: Instant,
-    revd_ccf: RcvdCcf,
+    pub rcvd_packets: usize,
+    pub last_send_ccf: Instant,
+    pub revd_ccf: RcvdCcf,
 }
 
 impl ClosingConnection {
@@ -50,13 +50,9 @@ impl ClosingConnection {
     ) -> Self {
         let _ccf = ConnectionCloseFrame::from(error);
 
-        // pathes
-        //     .iter()
-        //     .for_each(|path| path.enter_closing(ccf.clone(), Epoch::Data));
-
         Self {
             pathes,
-            _cid_registry: cid_registry,
+            cid_registry,
             rcvd_pkt_records: data_space.rcvd_packets(),
             one_rtt_keys,
             rcvd_packets: 0,
@@ -77,7 +73,7 @@ impl ClosingConnection {
         if self.rcvd_packets > 5 || self.last_send_ccf.elapsed() > Duration::from_millis(100) {
             self.rcvd_packets = 0;
             self.last_send_ccf = Instant::now();
-            // TODO: 调用 dying path 直接发送 ccf
+            // TODO: 调用 usc 直接发送 报文
             // usc.poll_send_via_pathway(iovecs, pathway, cx);
         }
 
@@ -108,7 +104,7 @@ impl ClosingConnection {
                 .lock()
                 .unwrap()
                 .get_remote(key_phase, pn);
-            decrypt_packet(pk.as_ref(), pn, &mut packet.bytes.as_mut(), body_offset).unwrap();
+            decrypt_packet(pk.as_ref(), pn, packet.bytes.as_mut(), body_offset).unwrap();
             let body = packet.bytes.split_off(body_offset);
 
             let ccf = FrameReader::new(body.freeze(), pkt_type)

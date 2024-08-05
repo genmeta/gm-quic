@@ -1,7 +1,4 @@
-use qbase::{
-    cid::ConnectionId,
-    packet::{header::GetType, DataPacket},
-};
+use qbase::packet::{header::GetType, DataPacket};
 
 use super::ArcLocalCids;
 
@@ -9,19 +6,13 @@ use super::ArcLocalCids;
 /// It just ignores all packets, and waits for dismissing.
 /// Dont forget to remove the connection from the global router.
 #[derive(Debug)]
-pub struct DrainingConnection {
-    origin_cid: ConnectionId,
-    local_cids: ArcLocalCids,
-}
+pub struct DrainingConnection(ArcLocalCids);
 
 impl DrainingConnection {
     // TODO: 应该是由RawConnection或者ClosingConnection Into而来
-    //       为其实现From trait为宜，等RawConnection/ClosingConnection实现好
-    pub fn new(origin_cid: ConnectionId, local_cids: ArcLocalCids) -> Self {
-        Self {
-            origin_cid,
-            local_cids,
-        }
+    // 为其实现From trait为宜，等RawConnection/ClosingConnection实现好
+    pub fn new(local_cids: ArcLocalCids) -> Self {
+        Self(local_cids)
     }
 
     /// Just ignore the packet, with a warning log
@@ -32,13 +23,8 @@ impl DrainingConnection {
         );
     }
 
-    /// Return the original connection ID, which is used to remove item in the global router
-    pub fn origin_cid(&self) -> &ConnectionId {
-        &self.origin_cid
-    }
-
     /// Return the local connection IDs, which are used to remove item in the global router
     pub fn local_cids(&self) -> &ArcLocalCids {
-        &self.local_cids
+        &self.0
     }
 }
