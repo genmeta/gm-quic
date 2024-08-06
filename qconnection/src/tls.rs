@@ -11,11 +11,11 @@ use qbase::{
         ext::{be_parameters, WriteParameters},
         Parameters,
     },
-    error::Error,
+    error::{Error, ErrorKind},
     packet::keys::{ArcKeys, ArcOneRttKeys},
 };
 use qrecovery::{space::Epoch, streams::crypto::CryptoStream};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::error::ConnError;
 
@@ -229,7 +229,7 @@ impl ArcTlsSession {
         tokio::spawn({
             let tls_session = self.clone();
             let get_parameters = get_parameters.clone();
-            let crypto_stream_writers = [
+            let mut crypto_stream_writers = [
                 crypto_streams[0].writer(),
                 crypto_streams[1].writer(),
                 crypto_streams[2].writer(),
@@ -259,7 +259,10 @@ impl ArcTlsSession {
                     if !buf.is_empty() {
                         let write_result = crypto_stream_writers[epoch].write(&buf).await;
                         if let Err(err) = write_result {
-                            conn_error.on_error(err);
+                            conn_error.on_error(Error::with_default_fty(
+                                ErrorKind::Internal,
+                                err.to_string(),
+                            ));
                             break;
                         }
                     }
