@@ -317,6 +317,10 @@ impl ArcCidCell {
         self.0.lock().unwrap().assign(cid);
     }
 
+    pub fn poll_get_cid(&self, cx: &mut Context<'_>) -> Poll<ConnectionId> {
+        self.0.lock().unwrap().poll_get_cid(cx)
+    }
+
     /// Getting the connection ID, if it is not ready, return a future
     #[inline]
     pub fn get_cid(&self) -> ArcCidCell {

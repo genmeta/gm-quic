@@ -17,8 +17,8 @@ pub fn encrypt_packet(key: &dyn PacketKey, pn: u64, pkt_buf: &mut [u8], body_off
 pub fn protect_long_header(
     key: &dyn HeaderProtectionKey,
     pkt_buf: &mut [u8],
-    pn_len: usize,
     payload_offset: usize,
+    pn_len: usize,
 ) {
     let (predata, payload) = pkt_buf.split_at_mut(payload_offset);
     let first_byte = &mut predata[0];
@@ -34,10 +34,10 @@ pub fn protect_long_header(
 
 pub fn protect_short_header(
     key: &dyn HeaderProtectionKey,
-    pkt_buf: &mut [u8],
-    pn_len: usize,
     key_phase: KeyPhaseBit,
+    pkt_buf: &mut [u8],
     payload_offset: usize,
+    pn_len: usize,
 ) {
     let (predata, payload) = pkt_buf.split_at_mut(payload_offset);
     let first_byte = &mut predata[0];
