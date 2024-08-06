@@ -5,7 +5,6 @@ use std::{
     ops::Deref,
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
-    time::Duration,
 };
 
 use qbase::frame::PathChallengeFrame;
@@ -128,10 +127,6 @@ impl ArcPath {
     /// The main reason for internal inactivation is path verification failure.
     pub fn has_been_inactivated(&self) -> HasBeenInactivated {
         HasBeenInactivated(self.clone())
-    }
-
-    pub fn pto_time(&self) -> Duration {
-        self.raw_path.lock().unwrap().pto_time()
     }
 
     /// Mark the path as inactive due to one of the following reasons:

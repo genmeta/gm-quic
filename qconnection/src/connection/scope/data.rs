@@ -5,11 +5,17 @@ use std::{
 };
 
 use bytes::BufMut;
-use futures::{channel::mpsc, StreamExt};
+use futures::{
+    channel::mpsc::{self, UnboundedSender},
+    StreamExt,
+};
 use qbase::{
     cid::ConnectionId,
     flow,
-    frame::{AckFrame, DataFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame},
+    frame::{
+        AckFrame, DataFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
+        RetireConnectionIdFrame,
+    },
     handshake::Handshake,
     packet::{
         decrypt::{
@@ -34,7 +40,7 @@ use qunreliable::DatagramFlow;
 use rustls::quic::HeaderProtectionKey;
 
 use crate::{
-    connection::{CidRegistry, PacketEntry, RcvdPacket},
+    connection::{CidEvent, CidRegistry, PacketEntry, RcvdPacket},
     error::ConnError,
     path::{ArcPath, PathFrameBuffer},
     pipe,
@@ -73,6 +79,7 @@ impl DataScope {
         flow_ctrl: &flow::FlowController,
         rcvd_0rtt_packets: RcvdPacket,
         rcvd_1rtt_packets: RcvdPacket,
+        cid_event_entry: UnboundedSender<CidEvent>,
         conn_error: ConnError,
     ) {
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
@@ -162,13 +169,28 @@ impl DataScope {
             }
         };
 
+        let on_recv_retire_cid_frame = {
+            let local_cids = cid_registry.local.clone();
+            let error = conn_error.clone();
+            move |frame: &RetireConnectionIdFrame| match local_cids.recv_retire_cid_frame(frame) {
+                Ok(Some((cid, new_cid))) => {
+                    let _ = cid_event_entry.unbounded_send(CidEvent::Retire(cid));
+                    let _ = cid_event_entry.unbounded_send(CidEvent::New(new_cid));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    error.on_error(e);
+                }
+            }
+        };
+
         // Assemble the pipelines of frame processing
         // TODO: impl endpoint router
         // pipe rcvd_new_token_frames
         pipe!(rcvd_max_data_frames |> flow_ctrl.sender, recv_max_data_frame);
         pipe!(rcvd_data_blocked_frames |> flow_ctrl.recver, recv_data_blocked_frame);
         pipe!(@error(conn_error) rcvd_new_cid_frames |> cid_registry.remote, recv_new_cid_frame);
-        pipe!(@error(conn_error) rcvd_retire_cid_frames |> cid_registry.local, recv_retire_cid_frame);
+        pipe!(rcvd_retire_cid_frames |> on_recv_retire_cid_frame);
         pipe!(@error(conn_error) rcvd_handshake_done_frames |> *handshake, recv_handshake_done_frame);
         pipe!(rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_crypto_frame);
         pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> *streams, recv_stream_control);
@@ -225,7 +247,7 @@ impl DataScope {
                     decrypt_packet(
                         keys.remote.packet.as_ref(),
                         pn,
-                        &mut packet.bytes.as_mut(),
+                        packet.bytes.as_mut(),
                         body_offset,
                     )
                     .unwrap();
@@ -285,8 +307,7 @@ impl DataScope {
                     };
                     let body_offset = packet.offset + undecoded_pn.size();
                     let pk = pk.lock().unwrap().get_remote(key_phase, pn);
-                    decrypt_packet(pk.as_ref(), pn, &mut packet.bytes.as_mut(), body_offset)
-                        .unwrap();
+                    decrypt_packet(pk.as_ref(), pn, packet.bytes.as_mut(), body_offset).unwrap();
                     let body = packet.bytes.split_off(body_offset);
                     match FrameReader::new(body.freeze(), pty).try_fold(
                         false,

@@ -123,7 +123,7 @@ impl InitialScope {
                     decrypt_packet(
                         keys.remote.packet.as_ref(),
                         pn,
-                        &mut packet.bytes.as_mut(),
+                        packet.bytes.as_mut(),
                         body_offset,
                     )
                     .unwrap();
