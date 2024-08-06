@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, Copy)]
-pub struct Burst {
+pub struct Constraints {
     /// *`anti-amplification`*
     anti_amplification: Option<usize>,
     /// *`congestion control`*
@@ -9,7 +9,7 @@ pub struct Burst {
     flow_control: usize,
 }
 
-impl Burst {
+impl Constraints {
     pub fn new(
         anti_amplification: Option<usize>,
         congestion_control: usize,
@@ -46,7 +46,7 @@ impl Burst {
     }
 
     /// 根据自身信息，以及hdr_len和buf_len，计算出可以写入的量，包括拥塞量、抗放大余量、新数据量
-    pub fn measure(&self, data_len: usize, buf_len: usize) -> Option<Burst> {
+    pub fn measure(&self, data_len: usize, buf_len: usize) -> Option<Constraints> {
         None
     }
 }

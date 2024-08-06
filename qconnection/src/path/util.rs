@@ -9,7 +9,7 @@ use std::{
 use bytes::BufMut;
 use qbase::{
     frame::{io::WriteFrame, BeFrame},
-    util::Burst,
+    util::Constraints,
 };
 
 #[derive(Default, Clone)]
@@ -26,13 +26,13 @@ where
     T: BeFrame,
     for<'a> &'a mut [u8]: WriteFrame<T>,
 {
-    pub fn read(&self, burst: &mut Burst, mut buf: &mut [u8]) -> usize {
+    pub fn read(&self, constraints: &mut Constraints, mut buf: &mut [u8]) -> usize {
         let mut guard = self.0.lock().unwrap();
         if let Some(frame) = guard.deref() {
             let size = frame.encoding_size();
-            if burst.available() >= size && buf.remaining_mut() >= size {
+            if constraints.available() >= size && buf.remaining_mut() >= size {
                 buf.put_frame(frame);
-                burst.post_write(size);
+                constraints.post_write(size);
                 *guard = None;
                 return size;
             }

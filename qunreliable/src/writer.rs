@@ -9,7 +9,7 @@ use bytes::Bytes;
 use qbase::{
     error::{Error, ErrorKind},
     frame::{io::WriteDatagramFrame, BeFrame, DatagramFrame, FrameType},
-    util::Burst,
+    util::Constraints,
     varint::VarInt,
 };
 
@@ -49,14 +49,14 @@ impl DatagramWriter {
     ///
     pub(super) fn try_read_datagram(
         &self,
-        burst: &mut Burst,
+        constraints: &mut Constraints,
         mut buf: &mut [u8],
     ) -> Option<(DatagramFrame, usize)> {
         let mut guard = self.0.lock().unwrap();
         let writer = guard.as_mut().ok()?;
         let datagram = writer.queue.front()?;
 
-        let available = burst.available();
+        let available = constraints.available();
 
         let max_encoding_size = available.saturating_sub(datagram.len());
         if max_encoding_size == 0 {
@@ -202,7 +202,7 @@ mod tests {
         writer.send_bytes(data.clone()).unwrap();
 
         let (frame, written) = writer
-            .try_read_datagram(&mut Burst::new(None, usize::MAX, 0), &mut [0; 1024])
+            .try_read_datagram(&mut Constraints::new(None, usize::MAX, 0), &mut [0; 1024])
             .unwrap();
         assert_eq!(frame.length, Some(VarInt::try_from(data.len()).unwrap()));
         assert_eq!(written, 1 + 1 + data.len());
@@ -216,7 +216,7 @@ mod tests {
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
         assert_eq!(
-            writer.try_read_datagram(&mut Burst::new(None, 1 + 11, 0), &mut [0; 1024]),
+            writer.try_read_datagram(&mut Constraints::new(None, 1 + 11, 0), &mut [0; 1024]),
             Some((DatagramFrame::new(None), 12))
         );
     }
@@ -229,7 +229,7 @@ mod tests {
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
         assert!(writer
-            .try_read_datagram(&mut Burst::new(None, 1, 0), &mut [0; 1024])
+            .try_read_datagram(&mut Constraints::new(None, 1, 0), &mut [0; 1024])
             .is_none());
     }
 
