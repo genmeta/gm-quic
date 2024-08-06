@@ -79,7 +79,7 @@ where
         Ok(())
     }
 
-    fn issue_new_cid(&mut self) {
+    fn issue_new_cid(&mut self) -> ConnectionId {
         let seq = VarInt::from_u64(self.cid_deque.largest()).unwrap();
         let retire_prior_to = VarInt::from_u64(self.cid_deque.offset()).unwrap();
         let new_cid_frame =
@@ -87,11 +87,15 @@ where
         self.issued_cids.extend([&new_cid_frame]);
         self.cid_deque.push_back(Some((new_cid_frame.id, new_cid_frame.reset_token)))
             .expect("it's very very hard to issue a new connection ID whose sequence excceeds VARINT_MAX");
+        new_cid_frame.id
     }
 
     /// When a RetireConnectionIdFrame is acknowledged by the peer, call this method to
     /// retire the connection IDs of the sequence in RetireConnectionIdFrame.
-    fn recv_retire_cid_frame(&mut self, frame: &RetireConnectionIdFrame) -> Result<(), Error> {
+    fn recv_retire_cid_frame(
+        &mut self,
+        frame: &RetireConnectionIdFrame,
+    ) -> Result<Option<(ConnectionId, ConnectionId)>, Error> {
         let seq = frame.sequence.into_inner();
         if seq >= self.cid_deque.largest() {
             return Err(Error::new(
@@ -111,10 +115,11 @@ where
                 self.retired_cids.push(cid);
 
                 // generates a new connection ID while retiring an old one.
-                self.issue_new_cid();
+                let new_cid = self.issue_new_cid();
+                return Ok(Some((cid, new_cid)));
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     pub fn retired_cids(&self) -> ArcAsyncDeque<ConnectionId> {
@@ -172,7 +177,10 @@ where
         self.0.lock().unwrap().retired_cids()
     }
 
-    pub fn recv_retire_cid_frame(&self, frame: &RetireConnectionIdFrame) -> Result<(), Error> {
+    pub fn recv_retire_cid_frame(
+        &self,
+        frame: &RetireConnectionIdFrame,
+    ) -> Result<Option<(ConnectionId, ConnectionId)>, Error> {
         self.0.lock().unwrap().recv_retire_cid_frame(frame)
     }
 }

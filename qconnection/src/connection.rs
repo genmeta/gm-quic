@@ -8,7 +8,7 @@ use std::{
 use draining::DrainingConnection;
 use futures::channel::mpsc;
 use qbase::{
-    cid,
+    cid::{self, ConnectionId},
     config::Parameters,
     error::Error,
     packet::{keys::OneRttPacketKeys, DataPacket},
@@ -19,6 +19,7 @@ use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use crate::{
     connection::ConnState::{Closing, Draining, Raw},
     path::ArcPath,
+    pipe,
     router::{ArcRouter, ROUTER},
     tls::ArcTlsSession,
 };
@@ -61,17 +62,33 @@ impl ArcConnection {
             panic!("server_name is not valid")
         };
 
-        let raw = raw::RawConnection::new(
+        let (cid_event_entry, rcvd_cid_event) = mpsc::unbounded::<CidEvent>();
+
+        let raw_conn = raw::RawConnection::new(
             Role::Client,
             ArcTlsSession::new_client(server_name, &params),
+            cid_event_entry,
         );
-        let local_cids = raw.cid_registry.local.clone();
-        let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Raw(raw))));
+        let local_cids = raw_conn.cid_registry.local.clone();
+        let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Raw(raw_conn))));
 
         local_cids
             .active_cids()
             .into_iter()
             .for_each(|cid| ROUTER.add_conn(cid, conn.clone()));
+
+        let on_recv_cid_event = {
+            let conn = conn.clone();
+            move |entry: &CidEvent| match entry {
+                CidEvent::New(cid) => {
+                    ROUTER.add_conn(*cid, conn.clone());
+                }
+                CidEvent::Retire(cid) => {
+                    ROUTER.remove_conn(*cid);
+                }
+            }
+        };
+        pipe!(rcvd_cid_event |> on_recv_cid_event);
 
         conn
     }
@@ -111,7 +128,7 @@ impl ArcConnection {
 
         let ptos = pathes
             .iter()
-            .map(|path| path.pto_time())
+            .map(|path| path.lock_guard().pto_time())
             .collect::<Vec<_>>();
 
         let pto = ptos.iter().sum::<Duration>() / ptos.len() as u32;
@@ -174,6 +191,11 @@ impl ArcConnection {
             .into_iter()
             .for_each(|cid| ROUTER.remove_conn(cid));
     }
+}
+
+pub enum CidEvent {
+    New(ConnectionId),
+    Retire(ConnectionId),
 }
 
 #[cfg(test)]

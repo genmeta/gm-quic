@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
-use futures::channel::mpsc;
+use futures::channel::mpsc::{self, UnboundedSender};
 use qbase::{
     flow::FlowController,
     handshake::Handshake,
@@ -14,7 +14,7 @@ use qunreliable::DatagramFlow;
 
 use super::{
     scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope},
-    CidRegistry,
+    CidEvent, CidRegistry,
 };
 use crate::{
     error::ConnError,
@@ -43,7 +43,11 @@ pub struct RawConnection {
 }
 
 impl RawConnection {
-    pub fn new(role: Role, _tls_session: ArcTlsSession) -> Self {
+    pub fn new(
+        role: Role,
+        _tls_session: ArcTlsSession,
+        cid_event_entry: UnboundedSender<CidEvent>,
+    ) -> Self {
         let reliable_frames = ArcReliableFrameDeque::with_capacity(0);
 
         let pathes = DashMap::new();
@@ -87,6 +91,7 @@ impl RawConnection {
             &flow_ctrl,
             rcvd_0rtt_packets,
             rcvd_1rtt_packets,
+            cid_event_entry,
             conn_error.clone(),
         );
 

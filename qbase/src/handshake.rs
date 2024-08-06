@@ -36,6 +36,7 @@ impl ClientHandshake {
 ///   done function, and waker is awakened.
 /// - Ok(None) indicates that the handshake was abandoned halfway, the connection
 ///   ended before the handshake was completed.
+///
 /// The handshake is considered complete when the client's 1rtt data packet is successfully decrypted.
 #[derive(Debug, Clone)]
 pub struct ServerHandshake(Arc<Mutex<Result<Option<bool>, Waker>>>);
@@ -200,35 +201,35 @@ mod tests {
     #[test]
     fn test_client_handshake() {
         let handshake = super::Handshake::new_client();
-        assert_eq!(handshake.is_handshake_done(), false);
+        assert!(!handshake.is_handshake_done());
 
         let ret = handshake.recv_handshake_done_frame(&HandshakeDoneFrame);
         assert!(ret.is_ok());
-        assert_eq!(handshake.is_handshake_done(), true);
+        assert!(handshake.is_handshake_done());
     }
 
     #[test]
     fn test_client_handshake_done() {
         let handshake = super::Handshake::new_client();
-        assert_eq!(handshake.is_handshake_done(), false);
+        assert!(!handshake.is_handshake_done());
 
         handshake.done();
-        assert_eq!(handshake.is_handshake_done(), false);
+        assert!(!handshake.is_handshake_done());
     }
 
     #[test]
     fn test_server_handshake() {
         let handshake = super::Handshake::new_server();
-        assert_eq!(handshake.is_handshake_done(), false);
+        assert!(!handshake.is_handshake_done());
 
         handshake.done();
-        assert_eq!(handshake.is_handshake_done(), true);
+        assert!(handshake.is_handshake_done());
     }
 
     #[test]
     fn test_server_recv_handshake_done_frame() {
         let handshake = super::Handshake::new_server();
-        assert_eq!(handshake.is_handshake_done(), false);
+        assert!(!handshake.is_handshake_done());
 
         let ret = handshake.recv_handshake_done_frame(&HandshakeDoneFrame);
         assert_eq!(
