@@ -13,7 +13,7 @@ use qbase::{
         StopSendingFrame, StreamCtlFrame, StreamFrame,
     },
     streamid::{AcceptSid, Dir, ExceedLimitError, Role, StreamId, StreamIds},
-    util::Burst,
+    util::Constraints,
     varint::VarInt,
 };
 
@@ -184,7 +184,11 @@ fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
 }
 
 impl RawDataStreams {
-    pub fn try_read_data(&self, burst: &mut Burst, buf: &mut [u8]) -> Option<(StreamFrame, usize)> {
+    pub fn try_read_data(
+        &self,
+        constraints: &mut Constraints,
+        buf: &mut [u8],
+    ) -> Option<(StreamFrame, usize)> {
         let guard = &mut self.output.0.lock().unwrap();
         let output = guard.as_mut().ok()?;
 
@@ -213,7 +217,7 @@ impl RawDataStreams {
                     .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_CREDIT))
             })?;
 
-        let (frame, data_written, written) = outgoing.try_read(sid, credit, burst, buf)?;
+        let (frame, data_written, written) = outgoing.try_read(sid, credit, constraints, buf)?;
         output.cur_credit = Some((sid, credit - data_written));
 
         Some((frame, written))

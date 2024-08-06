@@ -9,7 +9,7 @@ use qbase::{
         keys::ArcKeys,
         Encode, LongHeaderBuilder, WritePacketNumber,
     },
-    util::Burst,
+    util::Constraints,
     varint::{EncodeBytes, VarInt, WriteVarInt},
 };
 use qrecovery::{space::HandshakeSpace, streams::crypto::CryptoStreamOutgoing};
@@ -23,7 +23,7 @@ pub struct HandshakeSpaceReader {
 impl HandshakeSpaceReader {
     pub fn try_read(
         &self,
-        burst: &mut Burst,
+        constraints: &mut Constraints,
         buf: &mut [u8],
         scid: ConnectionId,
         dcid: ConnectionId,
@@ -32,9 +32,9 @@ impl HandshakeSpaceReader {
         // 1. 判定keys是否有效，无效或者尚未拿到，直接返回
         let k = self.keys.get_local_keys()?;
 
-        // 2. 生成包头，预留2字节len，根据包头大小，配合burst、剩余空间，检查是否能发送，不能的话，直接返回
+        // 2. 生成包头，预留2字节len，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
         let hdr = LongHeaderBuilder::with_cid(dcid, scid).handshake();
-        let b = burst.measure(hdr.size() + 2, buf.remaining_mut())?;
+        let b = constraints.measure(hdr.size() + 2, buf.remaining_mut())?;
         let (mut hdr_buf, payload_buf) = buf.split_at_mut(hdr.size() + 2);
 
         // 3. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
@@ -67,8 +67,8 @@ impl HandshakeSpaceReader {
         }
         drop(send_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
 
-        // 6. 记录burst变化，后面肯定要发送了，反馈给拥塞控制，抗放大攻击(该空间不涉及流控)
-        *burst = b;
+        // 6. 记录constraints变化，后面肯定要发送了，反馈给拥塞控制，抗放大攻击(该空间不涉及流控)
+        *constraints = b;
 
         // 7. 填充，保护头部，加密
         let hdr_len = hdr_buf.len();

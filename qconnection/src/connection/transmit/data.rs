@@ -13,7 +13,7 @@ use qbase::{
         keys::{ArcKeys, ArcOneRttKeys, OneRttPacketKeys},
         Encode, LongHeaderBuilder, OneRttHeader, SpinBit, WritePacketNumber,
     },
-    util::Burst,
+    util::Constraints,
     varint::{EncodeBytes, VarInt, WriteVarInt},
 };
 use qrecovery::{
@@ -49,7 +49,7 @@ impl DataSpaceReader {
 
     pub fn read_1rtt(
         &self,
-        burst: &mut Burst,
+        constraints: &mut Constraints,
         pkt_buf: &mut [u8],
         dcid: ConnectionId,
         spin: SpinBit,
@@ -57,9 +57,9 @@ impl DataSpaceReader {
         keys: (Arc<dyn HeaderProtectionKey>, Arc<Mutex<OneRttPacketKeys>>),
     ) -> Option<(u64, bool, usize, bool, Option<u64>)> {
         // 0. 检查1rtt keys是否有效，没有则回退到0rtt包
-        // 1. 生成包头，根据包头大小，配合burst、剩余空间，检查是否能发送，不能的话，直接返回
+        // 1. 生成包头，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
         let hdr = OneRttHeader { spin, dcid };
-        let b = burst.measure(hdr.size(), pkt_buf.remaining_mut())?;
+        let b = constraints.measure(hdr.size(), pkt_buf.remaining_mut())?;
         let (mut hdr_buf, payload_buf) = pkt_buf.split_at_mut(hdr.size());
 
         // 2. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
@@ -73,7 +73,7 @@ impl DataSpaceReader {
         let mut in_flight = false;
         let body_size = body_buf.remaining_mut();
 
-        // 3. 检查PathFrameBuffer，尝试写，但发送记录并不记录，若写入一个字节，则burst开始记录
+        // 3. 检查PathFrameBuffer，尝试写，但发送记录并不记录，若写入一个字节，则constraints开始记录
         let n = self.challenge_sndbuf.read(&mut b, body_buf);
         if n > 0 {
             send_guard.record_trivial();
@@ -89,7 +89,7 @@ impl DataSpaceReader {
             body_buf = &mut body_buf[n..];
         }
 
-        // 4. 检查是否需要发送Ack，若是，且符合（burst + buf）节制，生成ack并写入，但发送记录并不记录
+        // 4. 检查是否需要发送Ack，若是，且符合（constraints + buf）节制，生成ack并写入，但发送记录并不记录
         let mut sent_ack = None;
         if let Some((largest, recv_time)) = ack_pkt {
             let rcvd_pkt_records = self.space.rcvd_packets();
@@ -99,7 +99,7 @@ impl DataSpaceReader {
             body_buf = &mut body_buf[n..];
         }
 
-        // 5. 检查可靠帧，若有且符合（burst + buf）节制，写入，burst、发包记录都记录
+        // 5. 检查可靠帧，若有且符合（constraints + buf）节制，写入，burst、发包记录都记录
         while let Some((frame, n)) = self.reliable_frames.try_read(&mut b, body_buf) {
             send_guard.record_frame(GuaranteedFrame::Reliable(frame));
             body_buf = &mut body_buf[n..];
@@ -117,14 +117,14 @@ impl DataSpaceReader {
             in_flight = true;
         }
 
-        // 8. 检查DataStreams是否需要发送，若有，且符合（burst + buf）节制，写入，burst、发包记录都记录
+        // 8. 检查DataStreams是否需要发送，若有，且符合（constraints + buf）节制，写入，burst、发包记录都记录
         while let Some((_frame, n)) = self.datagrams.try_read_datagram(&mut b, body_buf) {
             body_buf = &mut body_buf[n..];
             is_ack_eliciting = true;
             in_flight = true;
         }
 
-        // 9. 检查Datagrams是否需要发送，若有，且符合(burst + buf) 节制，写入，burst、发包记录都记录
+        // 9. 检查Datagrams是否需要发送，若有，且符合(constraints + buf) 节制，写入，burst、发包记录都记录
         while let Some((_frame, n)) = self.datagrams.try_read_datagram(&mut b, body_buf) {
             body_buf = &mut body_buf[n..];
             is_ack_eliciting = true;
@@ -132,9 +132,9 @@ impl DataSpaceReader {
         }
         drop(send_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
 
-        // 10. 任何时候，（burst、buf）不再能写入任何数据后，停止写入
-        //     若有东西发，记录burst变化，后面肯定要发送了，反馈给拥塞控制，抗放大攻击(该空间不涉及流控)
-        *burst = b;
+        // 10. 任何时候，（constraints、buf）不再能写入任何数据后，停止写入
+        //     若有东西发，记录constraints变化，后面肯定要发送了，反馈给拥塞控制，抗放大攻击(该空间不涉及流控)
+        *constraints = b;
 
         let hdr_len = hdr_buf.len();
         let pn_len = pn_buf.len();
@@ -155,7 +155,7 @@ impl DataSpaceReader {
 
     pub fn try_read_0rtt(
         &self,
-        burst: &mut Burst,
+        constraints: &mut Constraints,
         pkt_buf: &mut [u8],
         scid: ConnectionId,
         dcid: ConnectionId,
@@ -163,9 +163,9 @@ impl DataSpaceReader {
         // 1. 检查0rtt keys是否有效，没有则结束
         let k = self.zero_rtt_keys.get_local_keys()?;
 
-        // 2. 生成包头，预留2字节len，根据包头大小，配合burst、剩余空间，检查是否能发送，不能的话，直接返回
+        // 2. 生成包头，预留2字节len，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
         let hdr = LongHeaderBuilder::with_cid(dcid, scid).zero_rtt();
-        let b = burst.measure(hdr.size() + 2, pkt_buf.remaining_mut())?;
+        let b = constraints.measure(hdr.size() + 2, pkt_buf.remaining_mut())?;
         let (mut hdr_buf, payload_buf) = pkt_buf.split_at_mut(hdr.size() + 2);
 
         // 3. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
@@ -179,7 +179,7 @@ impl DataSpaceReader {
         let mut in_flight = false;
         let body_size = body_buf.remaining_mut();
 
-        // 4. 只检查PathChallengeBuffer，尝试写，但发送记录并不记录，若写入一个帧，则burst开始记录
+        // 4. 只检查PathChallengeBuffer，尝试写，但发送记录并不记录，若写入一个帧，则constraints开始记录
         //    可能没有Challenge帧，所以仍要继续
         let n = self.challenge_sndbuf.read(&mut b, body_buf);
         if n > 0 {
@@ -189,7 +189,7 @@ impl DataSpaceReader {
             body_buf = &mut body_buf[n..];
         }
 
-        // 5. 检查可靠帧，若有且符合（burst + buf）节制，写入，burst、发包记录都记录
+        // 5. 检查可靠帧，若有且符合（constraints + buf）节制，写入，burst、发包记录都记录
         while let Some((frame, n)) = self.reliable_frames.try_read(&mut b, body_buf) {
             send_guard.record_frame(GuaranteedFrame::Reliable(frame));
             body_buf = &mut body_buf[n..];
@@ -197,7 +197,7 @@ impl DataSpaceReader {
             in_flight = true;
         }
 
-        // 6. 检查DataStreams是否需要发送，若有，且符合（burst + buf）节制，写入，burst、发包记录都记录
+        // 6. 检查DataStreams是否需要发送，若有，且符合（constraints + buf）节制，写入，burst、发包记录都记录
         // TODO: 要注意和Datagrams的公平了
         while let Some((frame, n)) = self.data_streams.try_read_data(&mut b, body_buf) {
             send_guard.record_frame(GuaranteedFrame::Data(DataFrame::Stream(frame)));
@@ -206,7 +206,7 @@ impl DataSpaceReader {
             in_flight = true;
         }
 
-        // 7. 检查Datagrams是否需要发送，若有，且符合(burst + buf) 节制，写入，burst、发包记录都记录
+        // 7. 检查Datagrams是否需要发送，若有，且符合(constraints + buf) 节制，写入，burst、发包记录都记录
         while let Some((_frame, n)) = self.datagrams.try_read_datagram(&mut b, body_buf) {
             body_buf = &mut body_buf[n..];
             is_ack_eliciting = true;
@@ -214,8 +214,8 @@ impl DataSpaceReader {
         }
         drop(send_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
 
-        // 8. 记录burst变化，后面肯定要发送了，反馈给拥塞控制，抗放大攻击(该空间不涉及流控)
-        *burst = b;
+        // 8. 记录constraints变化，后面肯定要发送了，反馈给拥塞控制，抗放大攻击(该空间不涉及流控)
+        *constraints = b;
 
         // 9. 填充，保护头部，加密
         let hdr_len = hdr_buf.len();
