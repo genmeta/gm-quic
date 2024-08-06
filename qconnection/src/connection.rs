@@ -29,6 +29,7 @@ pub mod closing;
 pub mod draining;
 pub mod raw;
 pub mod scope;
+pub mod transmit;
 
 type PacketEntry = mpsc::UnboundedSender<(DataPacket, ArcPath)>;
 type RcvdPacket = mpsc::UnboundedReceiver<(DataPacket, ArcPath)>;

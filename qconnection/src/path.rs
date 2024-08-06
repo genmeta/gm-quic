@@ -2,14 +2,11 @@ use std::{
     future::Future,
     io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
-    ops::Deref,
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
 
-use qbase::frame::PathChallengeFrame;
-use qcongestion::{congestion::MSS, CongestionControl};
-use qrecovery::space::Epoch;
+use qcongestion::congestion::MSS;
 use qudp::{ArcUsc, Sender, BATCH_SIZE};
 use raw::RawPath;
 use tokio::task::JoinHandle;
@@ -20,7 +17,10 @@ mod anti_amplifier;
 mod raw;
 mod util;
 
-pub use util::PathFrameBuffer;
+pub mod read;
+
+pub use anti_amplifier::ArcAntiAmplifier;
+pub use util::{RecvBuffer, SendBuffer};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct RelayAddr {
@@ -60,6 +60,7 @@ impl ArcPath {
                     buffers.iter_mut().map(|buf| IoSliceMut::new(buf)).collect();
 
                 let dcid = path.dcid.clone().await;
+                /*
                 let reader = path.packet_reader(dcid, io_slices);
 
                 loop {
@@ -76,6 +77,7 @@ impl ArcPath {
                         Err(_) => todo!(),
                     }
                 }
+                */
             }
         });
 
@@ -84,37 +86,6 @@ impl ArcPath {
             send_handle: Arc::new(Mutex::new(send_handle)),
             inactive_waker: None,
         };
-
-        tokio::spawn({
-            let path = path.clone();
-            async move {
-                let challenge = PathChallengeFrame::random();
-
-                let mut success = false;
-                for _ in 0..3 {
-                    // Write to the buffer, and the sending task actually sends it
-                    // Reliability is not maintained through reliable transmission, but a stop-and-wait protocol
-                    path.lock_guard().challenge_buffer.write(challenge);
-                    let pto = path.lock_guard().cc.get_pto_time(Epoch::Data);
-                    let listener = path.lock_guard().response_listner.clone();
-                    match tokio::time::timeout(pto, listener).await {
-                        Ok(Some(resp)) if resp.deref() == challenge.deref() => {
-                            path.lock_guard().anti_amplifier.take();
-                            success = true;
-                            break;
-                        }
-                        // listner inactive, stop the task
-                        Ok(None) => break,
-                        // timout or reponse don't match, try again
-                        _ => continue,
-                    }
-                }
-                // Path verification failed, inactivate the path
-                if !success {
-                    path.inactive();
-                }
-            }
-        });
 
         path
     }
@@ -134,12 +105,14 @@ impl ArcPath {
     /// 2. The connection is closed due to an error.
     /// 3. Path verification fails.
     pub fn inactive(&self) {
+        /*
         self.lock_guard().inactive();
         self.send_handle.lock().unwrap().abort();
 
         if let Some(waker) = &self.inactive_waker {
             waker.wake_by_ref();
         }
+        */
     }
 }
 

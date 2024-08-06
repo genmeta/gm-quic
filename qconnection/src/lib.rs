@@ -10,8 +10,6 @@ pub mod pipe;
 pub mod router;
 pub mod tls;
 
-pub mod transmit;
-
 /*
 pub trait ReceiveProtectedPacket {
     fn receive_protected_packet(&self, protected_packet: SpacePacket, pathway: Pathway);
