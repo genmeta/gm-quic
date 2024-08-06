@@ -138,7 +138,9 @@ impl RawConnection {
         self.pathes
             .entry(pathway)
             .or_insert_with(|| {
-                let path = ArcPath::new(usc.clone(), pathway, self);
+                // if is connection migration, need validate pathway
+                let is_migration = !self.pathes.is_empty();
+                let path = ArcPath::new(usc.clone(), pathway, self, is_migration);
                 self.pathes.insert(pathway, path.clone());
 
                 tokio::spawn({

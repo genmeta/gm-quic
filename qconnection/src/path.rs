@@ -6,6 +6,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+use qbase::handshake::Handshake::{Client, Server};
 use qcongestion::congestion::MSS;
 use qudp::{ArcUsc, Sender, BATCH_SIZE};
 use raw::RawPath;
@@ -49,11 +50,16 @@ pub struct ArcPath {
 }
 
 impl ArcPath {
-    pub fn new(usc: ArcUsc, pathway: Pathway, connection: &RawConnection) -> ArcPath {
+    pub fn new(
+        usc: ArcUsc,
+        pathway: Pathway,
+        connection: &RawConnection,
+        is_migration: bool,
+    ) -> ArcPath {
         let path = RawPath::new(usc, connection);
 
         let send_handle = tokio::spawn({
-            let mut path = path.clone();
+            let path = path.clone();
             async move {
                 let mut buffers = vec![[0u8; MSS]; BATCH_SIZE];
                 let io_slices: Vec<IoSliceMut> =
@@ -86,6 +92,27 @@ impl ArcPath {
             send_handle: Arc::new(Mutex::new(send_handle)),
             inactive_waker: None,
         };
+
+        if is_migration {
+            path.lock_guard().begin_path_validation();
+        } else {
+            match &connection.handshake {
+                Server(handshake) => {
+                    tokio::spawn({
+                        let handshake = handshake.clone();
+                        let path = path.clone();
+                        async move {
+                            handshake.await;
+                            path.lock_guard().anti_amplifier.abort();
+                        }
+                    });
+                }
+                Client(_) => {
+                    // Client doesn't need anti-amplification
+                    path.lock_guard().anti_amplifier.abort();
+                }
+            }
+        }
 
         path
     }
