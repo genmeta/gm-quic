@@ -140,6 +140,14 @@ impl Constraints {
         }
     }
 
+    /// 结束条件
+    /// - 抗放大攻击额度用完
+    /// - 抗放大攻击额度没用完，但发送配额用完
+    ///  + 此时，仍可以仅发送Ack帧
+    pub fn is_available(&self) -> bool {
+        self.credit_limit > 0
+    }
+
     pub fn constrain<'b>(&self, buf: &'b mut [u8]) -> &'b mut [u8] {
         let min_len = buf
             .remaining_mut()
@@ -153,13 +161,6 @@ impl Constraints {
         if !is_just_ack {
             self.send_quota = self.send_quota.saturating_sub(len);
         }
-    }
-
-    pub fn summary(&self, credit_limit: usize, send_quota: usize) -> (usize, usize) {
-        (
-            credit_limit.saturating_sub(self.credit_limit),
-            send_quota.saturating_sub(self.send_quota),
-        )
     }
 }
 

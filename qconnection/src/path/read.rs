@@ -38,7 +38,7 @@ pub struct ReadIntoPacket {
 }
 
 impl ReadIntoPacket {
-    fn read_datagram(
+    fn read_into_datagram(
         &self,
         constraints: &mut Constraints,
         flow_limit: usize,
@@ -188,7 +188,7 @@ impl ReadIntoPacket {
 }
 
 impl Future for ReadIntoPacket {
-    type Output = Option<usize>;
+    type Output = Option<Vec<Vec<u8>>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let dcid = ready!(self.dcid.poll_get_cid(cx));
@@ -206,15 +206,43 @@ impl Future for ReadIntoPacket {
             return Poll::Ready(None);
         };
         let flow_limit = send_flow_credit.available();
-
-        let mut datagram = [0u8; 1500];
-        let datagram = &mut datagram[..];
         let mut constraints = Constraints::new(credit_limit, send_quota);
-        let (datagram_size, fresh_bytes) =
-            self.read_datagram(&mut constraints, flow_limit, datagram, dcid);
 
-        self.anti_amplifier.on_sent(datagram_size);
-        send_flow_credit.post_sent(fresh_bytes);
-        Poll::Pending
+        // 遍历，填充每一个包
+        let mut datagrams: Vec<Vec<u8>> = Vec::new();
+        let mut total_bytes = 0;
+        let mut total_fresh_bytes = 0;
+        while constraints.is_available() {
+            let mut datagram = Vec::with_capacity(1200);
+
+            let (datagram_size, fresh_bytes) =
+                self.read_into_datagram(&mut constraints, flow_limit, datagram.as_mut(), dcid);
+
+            // 啥也没读到，就结束吧
+            // TODO: 若因没有数据可发，将waker挂载到数据控制器上一份，包括帧数据、流数据，
+            //       一旦有任何数据发送，唤醒该任务发一次
+            if datagram_size == 0 {
+                break;
+            }
+
+            unsafe {
+                datagram.set_len(datagram_size);
+            }
+            datagrams.push(datagram);
+            total_bytes += datagram_size;
+            total_fresh_bytes += fresh_bytes;
+        }
+
+        // 最终将要发送前，反馈给各个限制条件。除了拥塞控制的，在每个Epoch发包后，都已直接反馈给cc过了
+        self.anti_amplifier.on_sent(total_bytes);
+        send_flow_credit.post_sent(total_fresh_bytes);
+
+        if datagrams.is_empty() {
+            // 就算Constraints允许发送，但也不一定真的有数据供发送
+            Poll::Pending
+        } else {
+            // 返回这个后，datagrams肯定等着被发送了
+            Poll::Ready(Some(datagrams))
+        }
     }
 }
