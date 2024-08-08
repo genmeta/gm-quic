@@ -22,16 +22,17 @@ impl Incoming {
         Self(recver)
     }
 
-    pub fn recv_data(&self, stream_frame: &StreamFrame, body: Bytes) -> Result<(), QuicError> {
+    pub fn recv_data(&self, stream_frame: &StreamFrame, body: Bytes) -> Result<usize, QuicError> {
         let mut recver = self.0.lock().unwrap();
         let inner = recver.deref_mut();
+        let mut new_data_size = 0;
         match inner {
             Ok(receiving_state) => match receiving_state {
                 Recver::Recv(r) => {
-                    r.recv(stream_frame, body)?;
+                    new_data_size = r.recv(stream_frame, body)?;
                 }
                 Recver::SizeKnown(r) => {
-                    r.recv(stream_frame, body)?;
+                    new_data_size = r.recv(stream_frame, body)?;
                     if r.is_all_rcvd() {
                         *receiving_state = Recver::DataRcvd(r.into());
                     }
@@ -42,7 +43,7 @@ impl Incoming {
             },
             Err(_) => (),
         }
-        Ok(())
+        Ok(new_data_size)
     }
 
     pub fn end(&self, final_size: u64) {

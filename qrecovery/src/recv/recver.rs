@@ -18,7 +18,7 @@ pub(super) struct Recv {
     read_waker: Option<Waker>,
     stop_state: Option<u64>,
     stop_waker: Option<Waker>,
-    largest_data_size: u64,
+    largest_data_offset: u64,
     max_data_size: u64,
     buf_exceeds_half_waker: Option<Waker>,
 }
@@ -30,34 +30,34 @@ impl Recv {
             read_waker: None,
             stop_state: None,
             stop_waker: None,
-            largest_data_size: 0,
+            largest_data_offset: 0,
             max_data_size,
             buf_exceeds_half_waker: None,
         }
     }
 
-    pub(super) fn recv(&mut self, stream_frame: &StreamFrame, body: Bytes) -> Result<(), Error> {
-        let offset = stream_frame.offset();
-        // TODO: size不太准确
-        let data_size = offset + body.len() as u64;
-        if data_size > self.max_data_size {
+    pub(super) fn recv(&mut self, stream_frame: &StreamFrame, body: Bytes) -> Result<usize, Error> {
+        let begin = stream_frame.offset();
+
+        let data_offset = begin + body.len() as u64;
+        if data_offset > self.max_data_size {
             return Err(Error::new(
                 ErrorKind::FlowControl,
                 stream_frame.frame_type(),
                 format!(
-                    "{} send {data_size} bytes which exceeds the stream data limit {}",
+                    "{} send {data_offset} bytes which exceeds the stream data limit {}",
                     stream_frame.id, self.max_data_size
                 ),
             ));
         }
-        self.largest_data_size = std::cmp::max(self.largest_data_size, data_size);
-        self.rcvbuf.recv(offset, body);
+        self.largest_data_offset = std::cmp::max(self.largest_data_offset, data_offset);
+        let new_data_size = self.rcvbuf.recv(begin, body);
         if self.rcvbuf.is_readable() {
             if let Some(waker) = self.read_waker.take() {
                 waker.wake()
             }
         }
-        Ok(())
+        Ok(new_data_size)
     }
 
     pub(super) fn poll_read<T: BufMut>(
@@ -142,13 +142,13 @@ impl Recv {
 
     pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<u64, Error> {
         let final_size = reset_frame.final_size.into_inner();
-        if final_size < self.largest_data_size {
+        if final_size < self.largest_data_offset {
             return Err(Error::new(
                 ErrorKind::FinalSize,
                 reset_frame.frame_type(),
                 format!(
                     "{} reset with a wrong smaller final size {final_size} than the largest rcvd data offset {}",
-                    reset_frame.stream_id, self.largest_data_size
+                    reset_frame.stream_id, self.largest_data_offset
                 ),
             ));
         }
@@ -170,7 +170,7 @@ pub struct SizeKnown {
 }
 
 impl SizeKnown {
-    pub(super) fn recv(&mut self, stream_frame: &StreamFrame, buf: Bytes) -> Result<(), Error> {
+    pub(super) fn recv(&mut self, stream_frame: &StreamFrame, buf: Bytes) -> Result<usize, Error> {
         let offset = stream_frame.offset();
         let data_size = offset + buf.len() as u64;
         if data_size > self.total_size {
@@ -193,13 +193,13 @@ impl SizeKnown {
                 ),
             ));
         }
-        self.rcvbuf.recv(offset, buf);
+        let new_data_size = self.rcvbuf.recv(offset, buf);
         if self.rcvbuf.is_readable() {
             if let Some(waker) = self.read_waker.take() {
                 waker.wake()
             }
         }
-        Ok(())
+        Ok(new_data_size)
     }
 
     pub(super) fn is_all_rcvd(&self) -> bool {

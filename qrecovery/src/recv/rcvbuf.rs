@@ -70,9 +70,10 @@ impl RecvBuf {
         self.nread
     }
 
-    pub fn recv(&mut self, mut offset: u64, mut data: Bytes) {
+    // Returns the number of newly read bytes
+    pub fn recv(&mut self, mut offset: u64, mut data: Bytes) -> usize {
         if data.is_empty() {
-            return;
+            return 0;
         }
 
         if offset < self.nread {
@@ -83,67 +84,73 @@ impl RecvBuf {
         match self.segments.binary_search_by(|s| s.offset.cmp(&offset)) {
             // 恰好落在一个片段上
             Ok(seg_idx) => {
-                self.overlap_seg(seg_idx, data);
+                let new_data_size = self.overlap_seg(seg_idx, data);
                 self.try_merge(seg_idx);
+                return new_data_size;
             }
             // 并没有落在一个片段上，offset比任何一个片段都小
             Err(0) => {
                 // 优先尝试添加到后一个片段之前
-                if self.try_prepend(0, offset, &data) {
-                    return;
+                if let Some(new_data_size) = self.try_prepend(0, offset, &data) {
+                    return new_data_size;
                 }
-                self.inset(0, offset, data);
+                return self.inset(0, offset, data);
             }
             // segments[recommend].offset < offset
             Err(recommend) => {
                 // 优先尝试添加到前一个片段之后
-                if self.try_append(recommend - 1, offset, &data) {
-                    return;
+                if let Some(new_data_size) = self.try_append(recommend - 1, offset, &data) {
+                    return new_data_size;
                 }
                 // 再尝试添加到后一个片段之前
-                if self.try_prepend(recommend, offset, &data) {
-                    return;
+                if let Some(new_data_size) = self.try_prepend(recommend, offset, &data) {
+                    return new_data_size;
                 }
-                self.inset(recommend, offset, data);
+                return self.inset(recommend, offset, data);
             }
         }
     }
 
     // 返回片段之间是否有连接
-    fn try_prepend(&mut self, seg_idx: usize, offset: u64, data: &Bytes) -> bool {
+    // 如果有连接，返回 Some(new_data_size)，否则返回 None
+    fn try_prepend(&mut self, seg_idx: usize, offset: u64, data: &Bytes) -> Option<usize> {
         let data_end = offset + data.len() as u64;
+        let mut new_data_size = 0;
         match self.segments.get(seg_idx) {
             Some(next_seg) if data_end >= next_seg.offset => {
                 let end = (next_seg.offset - offset) as usize;
                 let next_end = next_seg.offset + next_seg.length;
                 self.segments[seg_idx].prepend(data.slice(..end));
-
+                new_data_size += end;
                 // 有可能被追加在前的片段覆盖了整个段
                 if data_end > next_end {
                     let remain = data.slice((next_end - offset) as usize..);
-                    self.try_append(seg_idx, next_end, &remain);
+                    if let Some(new_data) = self.try_append(seg_idx, next_end, &remain) {
+                        new_data_size += new_data;
+                    }
                 }
-                true
+                Some(new_data_size)
             }
-            _ => false,
+            _ => None,
         }
     }
 
     // 需要 offset >= segs[seg_idx].offset
     // 返回片段之间是否有连接
-    fn try_append(&mut self, seg_idx: usize, offset: u64, data: &Bytes) -> bool {
+    // 如果有连接，返回 Some(new_data_size)，否则返回 None
+    fn try_append(&mut self, seg_idx: usize, offset: u64, data: &Bytes) -> Option<usize> {
         let pre_seg = &self.segments[seg_idx];
         let data_end = offset + data.len() as u64;
         let pre_seg_end = pre_seg.offset + pre_seg.length;
 
         // 已经完全被前一个片段包含，不需要处理
         if data_end <= pre_seg_end {
-            return true;
+            return Some(0);
         }
 
         // 完全和前一个片段没有连接
         if offset > pre_seg_end {
-            return false;
+            return None;
         }
 
         let start = if offset < pre_seg_end {
@@ -151,7 +158,6 @@ impl RecvBuf {
         } else {
             0
         };
-
         // 可能这段数据已经覆盖了下一段数据
         let next_offset = self.segments.get(seg_idx + 1).map(|seg| seg.offset);
         let end = match next_offset {
@@ -160,31 +166,37 @@ impl RecvBuf {
         }
         .min(data.len());
 
+        let mut new_data_size = 0;
+        new_data_size += end - start;
         self.segments[seg_idx].append(data.slice(start..end));
 
         // 有可能片段和下一个段有连接
         if data.len() > end {
-            self.overlap_seg(seg_idx + 1, data.slice(end..));
+            new_data_size += self.overlap_seg(seg_idx + 1, data.slice(end..));
         }
         self.try_merge(seg_idx);
-        true
+        Some(new_data_size)
     }
 
-    fn inset(&mut self, at: usize, offset: u64, data: Bytes) {
+    fn inset(&mut self, at: usize, offset: u64, data: Bytes) -> usize {
         let mut seg = Segment::from_offset(offset);
         seg.append(data);
+        let new_data_size = seg.length as usize;
         self.segments.insert(at, seg);
+        return new_data_size;
     }
 
     // 不同于 append 和 prepend，这是对于和段从头开始重合的情况
     // 是append的特化情况
-    fn overlap_seg(&mut self, mut seg_idx: usize, mut data: Bytes) {
+    // 返回新增的数据字节数
+    fn overlap_seg(&mut self, mut seg_idx: usize, mut data: Bytes) -> usize {
+        let mut new_data_size = 0;
         loop {
             let cur_seg = &self.segments[seg_idx];
             let offset = cur_seg.offset;
 
             if data.len() as u64 <= cur_seg.length {
-                break;
+                break new_data_size;
             }
 
             let start = cur_seg.length as usize;
@@ -197,11 +209,12 @@ impl RecvBuf {
 
             self.segments[seg_idx].append(data.slice(start..end));
 
+            new_data_size += end - start;
             if data.len() > end {
                 data = data.slice(end..);
                 seg_idx += 1;
             } else {
-                break;
+                break new_data_size;
             }
 
             // 不在这里merge，而是在外部，是因为append可能多创造一个连接段
