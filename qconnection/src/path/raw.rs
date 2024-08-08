@@ -77,7 +77,7 @@ impl RawPath {
             let challenge = PathChallengeFrame::random();
             for _ in 0..3 {
                 let pto = congestion_ctrl.get_pto_time(Epoch::Data);
-                challenge_sndbuf.write(challenge.clone());
+                challenge_sndbuf.write(challenge);
                 match timeout(pto, response_rcvbuf.receive()).await {
                     Ok(Some(response)) if *response == *challenge => {
                         anti_amplifier.grant();

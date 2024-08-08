@@ -38,9 +38,9 @@ pub trait CongestionControl {
     /// 若有Ack信息，也要记录下来。未来该包被确认，那么该AckFrame中largest之前的，接收到的包，通知ack观察者失活
     fn on_pkt_sent(
         &self,
-        space: Epoch,
+        epoch: Epoch,
         pn: u64,
-        is_ack_elicition: bool,
+        is_ack_eliciting: bool,
         sent_bytes: usize,
         in_flight: bool,
         ack: Option<u64>,

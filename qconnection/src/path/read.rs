@@ -8,7 +8,6 @@ use std::{
     task::{ready, Context, Poll},
 };
 
-use bytes::BufMut;
 use qbase::{
     cid::{ArcCidCell, ConnectionId},
     flow::ArcSendControler,
@@ -16,7 +15,7 @@ use qbase::{
     util::Constraints,
 };
 use qcongestion::{congestion::ArcCC, CongestionControl};
-use qrecovery::{space::Epoch, streams::data};
+use qrecovery::space::Epoch;
 
 use super::{anti_amplifier::ANTI_FACTOR, ArcAntiAmplifier};
 use crate::connection::transmit::{

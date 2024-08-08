@@ -2,7 +2,7 @@ use std::{
     future::Future,
     ops::DerefMut,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
 
@@ -21,20 +21,24 @@ enum KeysState {
 pub struct ArcKeys(Arc<Mutex<KeysState>>);
 
 impl ArcKeys {
+    fn lock_guard(&self) -> MutexGuard<KeysState> {
+        self.0.lock().unwrap()
+    }
+
     pub fn new_pending() -> Self {
-        Self(Arc::new(Mutex::new(KeysState::Pending(None))))
+        Self(Arc::new(KeysState::Pending(None).into()))
     }
 
     pub fn with_keys(keys: Keys) -> Self {
-        Self(Arc::new(Mutex::new(KeysState::Ready(Arc::new(keys)))))
+        Self(Arc::new(KeysState::Ready(Arc::new(keys)).into()))
     }
 
     pub fn get_remote_keys(&self) -> GetRemoteKeys {
-        GetRemoteKeys(self.0.clone())
+        GetRemoteKeys(self.clone())
     }
 
     pub fn get_local_keys(&self) -> Option<Arc<Keys>> {
-        let state = self.0.lock().unwrap();
+        let state = self.lock_guard();
         match &*state {
             KeysState::Ready(keys) => Some(keys.clone()),
             _ => None,
@@ -42,7 +46,7 @@ impl ArcKeys {
     }
 
     pub fn set_keys(&self, keys: Keys) {
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.lock_guard();
         match &mut *state {
             KeysState::Pending(rx_waker) => {
                 if let Some(waker) = rx_waker.take() {
@@ -61,7 +65,7 @@ impl ArcKeys {
     /// containing the ConnectionClose frame, and decrypt the data packets received from the
     /// peer for a while.
     pub fn invalid(&self) -> Option<Arc<Keys>> {
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.lock_guard();
         match std::mem::replace(state.deref_mut(), KeysState::Invalid) {
             KeysState::Pending(rx_waker) => {
                 if let Some(waker) = rx_waker {
@@ -75,13 +79,13 @@ impl ArcKeys {
     }
 }
 
-pub struct GetRemoteKeys(Arc<Mutex<KeysState>>);
+pub struct GetRemoteKeys(ArcKeys);
 
 impl Future for GetRemoteKeys {
     type Output = Option<Arc<Keys>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut keys = self.0.lock().unwrap();
+        let mut keys = self.0.lock_guard();
         match &mut *keys {
             KeysState::Pending(rx_waker) => {
                 assert!(rx_waker.is_none());
@@ -92,15 +96,6 @@ impl Future for GetRemoteKeys {
             KeysState::Invalid => Poll::Ready(None),
         }
     }
-}
-
-enum OneRttKeysState {
-    Pending(Option<Waker>),
-    Ready {
-        hpk: (Arc<dyn HeaderProtectionKey>, Arc<dyn HeaderProtectionKey>),
-        pk: Arc<Mutex<OneRttPacketKeys>>,
-    },
-    Invalid,
 }
 
 pub struct OneRttPacketKeys {
@@ -156,26 +151,58 @@ impl OneRttPacketKeys {
 }
 
 #[derive(Clone)]
+pub struct ArcOneRttPacketKeys(Arc<Mutex<OneRttPacketKeys>>);
+
+impl ArcOneRttPacketKeys {
+    pub fn lock_guard(&self) -> MutexGuard<OneRttPacketKeys> {
+        self.0.lock().unwrap()
+    }
+}
+
+pub struct ArcOneRttHeaderProtectionKey {
+    pub local: Arc<dyn HeaderProtectionKey>,
+    pub remote: Arc<dyn HeaderProtectionKey>,
+}
+
+enum OneRttKeysState {
+    Pending(Option<Waker>),
+    Ready {
+        hpk: ArcOneRttHeaderProtectionKey,
+        pk: ArcOneRttPacketKeys,
+    },
+    Invalid,
+}
+
+#[derive(Clone)]
 pub struct ArcOneRttKeys(Arc<Mutex<OneRttKeysState>>);
 
 impl ArcOneRttKeys {
+    fn lock_guard(&self) -> MutexGuard<OneRttKeysState> {
+        self.0.lock().unwrap()
+    }
+
     pub fn new_pending() -> Self {
-        Self(Arc::new(Mutex::new(OneRttKeysState::Pending(None))))
+        Self(Arc::new(OneRttKeysState::Pending(None).into()))
     }
 
     pub fn set_keys(&self, keys: Keys, secrets: Secrets) {
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.lock_guard();
         match &mut *state {
             OneRttKeysState::Pending(rx_waker) => {
                 if let Some(waker) = rx_waker.take() {
                     waker.wake();
                 }
-                let hpk = (Arc::from(keys.remote.header), Arc::from(keys.local.header));
-                let pk = Arc::new(Mutex::new(OneRttPacketKeys::new(
+                let (remote_hpk, local_hpk) =
+                    (Arc::from(keys.remote.header), Arc::from(keys.local.header));
+                let hpk = ArcOneRttHeaderProtectionKey {
+                    remote: remote_hpk,
+                    local: local_hpk,
+                };
+                let pk = ArcOneRttPacketKeys(Arc::new(Mutex::new(OneRttPacketKeys::new(
                     keys.remote.packet,
                     keys.local.packet,
                     secrets,
-                )));
+                ))));
                 *state = OneRttKeysState::Ready { hpk, pk };
             }
             OneRttKeysState::Ready { .. } => panic!("set_keys called twice"),
@@ -183,13 +210,8 @@ impl ArcOneRttKeys {
         }
     }
 
-    pub fn invalid(
-        &self,
-    ) -> Option<(
-        (Arc<dyn HeaderProtectionKey>, Arc<dyn HeaderProtectionKey>),
-        Arc<Mutex<OneRttPacketKeys>>,
-    )> {
-        let mut state = self.0.lock().unwrap();
+    pub fn invalid(&self) -> Option<(ArcOneRttHeaderProtectionKey, ArcOneRttPacketKeys)> {
+        let mut state = self.lock_guard();
         match std::mem::replace(state.deref_mut(), OneRttKeysState::Invalid) {
             OneRttKeysState::Pending(rx_waker) => {
                 if let Some(waker) = rx_waker {
@@ -202,36 +224,35 @@ impl ArcOneRttKeys {
         }
     }
 
-    #[allow(clippy::type_complexity)]
-    pub fn get_local_keys(
-        &self,
-    ) -> Option<(Arc<dyn HeaderProtectionKey>, Arc<Mutex<OneRttPacketKeys>>)> {
-        let mut keys = self.0.lock().unwrap();
+    pub fn get_local_keys(&self) -> Option<(Arc<dyn HeaderProtectionKey>, ArcOneRttPacketKeys)> {
+        let mut keys = self.lock_guard();
         match &mut *keys {
-            OneRttKeysState::Ready { hpk, pk } => Some((hpk.1.clone(), pk.clone())),
+            OneRttKeysState::Ready { hpk, pk, .. } => Some((hpk.local.clone(), pk.clone())),
             _ => None,
         }
     }
 
     pub fn get_remote_keys(&self) -> GetRemoteOneRttKeys {
-        GetRemoteOneRttKeys(self.0.clone())
+        GetRemoteOneRttKeys(self.clone())
     }
 }
 
-pub struct GetRemoteOneRttKeys(Arc<Mutex<OneRttKeysState>>);
+pub struct GetRemoteOneRttKeys(ArcOneRttKeys);
 
 impl Future for GetRemoteOneRttKeys {
-    type Output = Option<(Arc<dyn HeaderProtectionKey>, Arc<Mutex<OneRttPacketKeys>>)>;
+    type Output = Option<(Arc<dyn HeaderProtectionKey>, ArcOneRttPacketKeys)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut keys = self.0.lock().unwrap();
+        let mut keys = self.0.lock_guard();
         match &mut *keys {
             OneRttKeysState::Pending(rx_waker) => {
                 assert!(rx_waker.is_none());
                 *rx_waker = Some(cx.waker().clone());
                 Poll::Pending
             }
-            OneRttKeysState::Ready { hpk, pk } => Poll::Ready(Some((hpk.0.clone(), pk.clone()))),
+            OneRttKeysState::Ready { hpk, pk, .. } => {
+                Poll::Ready(Some((hpk.remote.clone(), pk.clone())))
+            }
             OneRttKeysState::Invalid => Poll::Ready(None),
         }
     }
