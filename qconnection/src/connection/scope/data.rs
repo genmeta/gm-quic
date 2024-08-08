@@ -1,9 +1,11 @@
+use bytes::Bytes;
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
+    error::{Error as QuicError, ErrorKind},
     flow,
     frame::{
-        AckFrame, DataFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
-        RetireConnectionIdFrame,
+        AckFrame, BeFrame, DataFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
+        ReliableFrame, RetireConnectionIdFrame, StreamFrame,
     },
     handshake::Handshake,
     packet::{
@@ -175,9 +177,15 @@ impl DataScope {
         pipe!(@error(conn_error) rcvd_handshake_done_frames |> *handshake, recv_handshake_done_frame);
         pipe!(rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_crypto_frame);
         pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> *streams, recv_stream_control);
-        pipe!(@error(conn_error) rcvd_stream_frames |> *streams, recv_data);
         pipe!(@error(conn_error) rcvd_datagram_frames |> *datagrams, recv_datagram);
         pipe!(rcvd_ack_frames |> on_ack);
+
+        self.handle_stream_frame_with_flow_ctrl(
+            streams,
+            flow_ctrl,
+            conn_error.clone(),
+            rcvd_stream_frames,
+        );
 
         self.parse_rcvd_0rtt_packet_and_dispatch_frames(
             rcvd_0rtt_packets,
@@ -304,6 +312,54 @@ impl DataScope {
                                 .on_recv_pkt(Epoch::Data, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
+                    }
+                }
+            }
+        });
+    }
+
+    pub fn handle_stream_frame_with_flow_ctrl(
+        &self,
+        streams: &DataStreams,
+        flow_ctrl: &flow::FlowController,
+        conn_error: ConnError,
+        mut rcvd_stream_frames: mpsc::UnboundedReceiver<(StreamFrame, Bytes)>,
+    ) {
+        // Increasing Flow Control Limits
+        tokio::spawn({
+            let flow_ctrl = flow_ctrl.clone();
+            let frames = streams.reliable_frame_deque.clone();
+            async move {
+                while let Some(frame) = flow_ctrl.recver().incr_limit().await {
+                    frames.lock_guard().push_back(ReliableFrame::MaxData(frame));
+                }
+            }
+        });
+
+        // Handling Stream Frames
+        tokio::spawn({
+            let streams = streams.clone();
+            let flow_ctrl = flow_ctrl.clone();
+            let error = conn_error.clone();
+
+            async move {
+                while let Some(frame) = rcvd_stream_frames.next().await {
+                    match streams.recv_data(&frame) {
+                        Ok(new_data_size) => {
+                            if let Err(e) = flow_ctrl.recver().on_new_rcvd(new_data_size) {
+                                ConnError::on_error(
+                                    &error,
+                                    QuicError::new(
+                                        ErrorKind::FlowControl,
+                                        frame.0.frame_type(),
+                                        format!("{} flow control overflow: {}", frame.0.id, e),
+                                    ),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            ConnError::on_error(&error, e);
+                        }
                     }
                 }
             }
