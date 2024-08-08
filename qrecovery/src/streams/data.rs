@@ -13,7 +13,6 @@ use qbase::{
         StopSendingFrame, StreamCtlFrame, StreamFrame,
     },
     streamid::{AcceptSid, Dir, ExceedLimitError, Role, StreamId, StreamIds},
-    util::Constraints,
     varint::VarInt,
 };
 
@@ -186,9 +185,9 @@ fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
 impl RawDataStreams {
     pub fn try_read_data(
         &self,
-        constraints: &mut Constraints,
         buf: &mut [u8],
-    ) -> Option<(StreamFrame, usize)> {
+        flow_limit: usize,
+    ) -> Option<(StreamFrame, usize, usize)> {
         let guard = &mut self.output.0.lock().unwrap();
         let output = guard.as_mut().ok()?;
 
@@ -217,10 +216,10 @@ impl RawDataStreams {
                     .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_CREDIT))
             })?;
 
-        let (frame, data_written, written) = outgoing.try_read(sid, credit, constraints, buf)?;
-        output.cur_credit = Some((sid, credit - data_written));
+        let (frame, dat_len, is_fresh, written) = outgoing.try_read(sid, buf, flow_limit)?;
+        output.cur_credit = Some((sid, credit - dat_len));
 
-        Some((frame, written))
+        Some((frame, written, if is_fresh { dat_len } else { 0 }))
     }
 
     pub fn on_data_acked(&self, frame: StreamFrame) {

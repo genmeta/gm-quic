@@ -5,10 +5,7 @@ use std::{
 
 use deref_derive::{Deref, DerefMut};
 use enum_dispatch::enum_dispatch;
-use qbase::{
-    frame::{DataFrame, ReliableFrame},
-    util::Constraints,
-};
+use qbase::frame::{DataFrame, ReliableFrame};
 
 pub mod rcvdpkt;
 pub mod sentpkt;
@@ -68,11 +65,7 @@ impl ArcReliableFrameDeque {
     }
 
     /// TODO: 写入可靠帧
-    pub fn try_read(
-        &self,
-        constraints: &mut Constraints,
-        buf: &mut [u8],
-    ) -> Option<(ReliableFrame, usize)> {
+    pub fn try_read(&self, _buf: &mut [u8]) -> Option<(ReliableFrame, usize)> {
         todo!()
     }
 }

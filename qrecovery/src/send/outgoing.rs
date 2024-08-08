@@ -15,14 +15,11 @@ use qbase::{
         ShouldCarryLength, StreamFrame,
     },
     streamid::StreamId,
-    util::{Constraints, DescribeData},
+    util::DescribeData,
     varint::VARINT_MAX,
 };
 
-use super::{
-    sender::{ArcSender, DataSentSender, Sender, SendingSender},
-    sndbuf::PickIndicator,
-};
+use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
 
 #[derive(Debug, Clone)]
 pub struct Outgoing(pub(super) ArcSender);
@@ -45,13 +42,11 @@ impl Outgoing {
     pub fn try_read(
         &self,
         sid: StreamId,
-        credit: usize,
-        constraints: &mut Constraints,
         mut buf: &mut [u8],
-    ) -> Option<(StreamFrame, usize, usize)> {
-        let origin = buf.remaining_mut();
-        let capacity = constraints.available().min(origin);
-        let write = |(offset, data, is_eos): (u64, (&[u8], &[u8]), bool)| {
+        flow_limit: usize,
+    ) -> Option<(StreamFrame, usize, bool, usize)> {
+        let capacity = buf.len();
+        let write = |(offset, is_fresh, data, is_eos): (u64, bool, (&[u8], &[u8]), bool)| {
             let mut frame = StreamFrame::new(sid, offset, data.len());
 
             frame.set_eos_flag(is_eos);
@@ -70,43 +65,34 @@ impl Outgoing {
                     buf.put_stream_frame(&frame, &data);
                 }
             }
-            (frame, data.len(), origin - buf.remaining_mut())
+            (frame, data.len(), is_fresh, capacity - buf.remaining_mut())
         };
 
-        let estimate_capacity = |offset| StreamFrame::estimate_max_capacity(capacity, sid, offset);
-        let flow_control_limit = Some(constraints.flow_control_limit().min(credit));
-        let mut picker = PickIndicator::new(estimate_capacity, flow_control_limit);
-
+        let predicate = |offset| StreamFrame::estimate_max_capacity(capacity, sid, offset);
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
 
-        let (frame, data_written, written) = match inner {
+        match inner {
             Ok(sending_state) => match sending_state {
                 Sender::Ready(s) => {
                     let result;
                     if s.is_shutdown() {
                         let mut s: DataSentSender = s.into();
-                        result = s.pick_up(&mut picker).map(write);
+                        result = s.pick_up(predicate, flow_limit).map(write);
                         *sending_state = Sender::DataSent(s);
                     } else {
                         let mut s: SendingSender = s.into();
-                        result = s.pick_up(&mut picker).map(write);
+                        result = s.pick_up(predicate, flow_limit).map(write);
                         *sending_state = Sender::Sending(s);
                     }
                     result
                 }
-                Sender::Sending(s) => s.pick_up(&mut picker).map(write),
-                Sender::DataSent(s) => s.pick_up(&mut picker).map(write),
+                Sender::Sending(s) => s.pick_up(predicate, flow_limit).map(write),
+                Sender::DataSent(s) => s.pick_up(predicate, flow_limit).map(write),
                 _ => None,
             },
             Err(_) => None,
-        }?;
-
-        let new_data_written = constraints.flow_control_limit() - picker.flow_control_limit();
-        constraints.post_write_new_stream_data(new_data_written);
-        constraints.post_write(written);
-
-        Some((frame, data_written, written))
+        }
     }
 
     /// return true if all data has been rcvd

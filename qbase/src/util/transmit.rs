@@ -1,52 +1,52 @@
+use bytes::BufMut;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Constraints {
-    /// *`anti-amplification`*
-    anti_amplification: Option<usize>,
-    /// *`congestion control`*
-    congestion_control: usize,
-    /// flow control
-    /// [`InitialSpace`] and [`HandshakeSpace`] ignore this
-    flow_control: usize,
+    // 信用额度，源于抗放大攻击；当验证通过后，将不再设限，表现为usize::MAX
+    // 作用于所有数据，包括包头
+    credit_limit: usize,
+    // 发送配额，源于拥塞控制算法，随着时间的流逝，得到的本次Burst应当发送的数据量
+    // 作用于ack-eliciting数据包，除非该包只发送Padding/Ack/Ccf帧
+    send_quota: usize,
 }
 
 impl Constraints {
-    pub fn new(
-        anti_amplification: Option<usize>,
-        congestion_control: usize,
-        flow_control: usize,
-    ) -> Self {
+    pub fn new(credit_limit: usize, send_quota: usize) -> Self {
         Self {
-            anti_amplification,
-            congestion_control,
-            flow_control,
+            credit_limit,
+            send_quota,
         }
     }
 
-    pub fn available(&self) -> usize {
-        if let Some(aa) = self.anti_amplification {
-            aa.min(self.congestion_control)
-        } else {
-            self.congestion_control
+    pub fn constrain<'b>(&self, buf: &'b mut [u8]) -> &'b mut [u8] {
+        let min_len = buf
+            .remaining_mut()
+            .min(self.credit_limit)
+            .min(self.send_quota);
+        &mut buf[..min_len]
+    }
+
+    pub fn commit(&mut self, len: usize, is_just_ack: bool) {
+        self.credit_limit = self.credit_limit.saturating_sub(len);
+        if !is_just_ack {
+            self.send_quota = self.send_quota.saturating_sub(len);
         }
     }
 
-    pub fn flow_control_limit(&self) -> usize {
-        self.flow_control
+    pub fn summary(&self, credit_limit: usize, send_quota: usize) -> (usize, usize) {
+        (
+            credit_limit.saturating_sub(self.credit_limit),
+            send_quota.saturating_sub(self.send_quota),
+        )
     }
+}
 
-    pub fn post_write(&mut self, written: usize) {
-        if let Some(ref mut aa) = self.anti_amplification {
-            *aa -= written
-        };
-        self.congestion_control -= written;
-    }
+pub trait ApplyConstraints {
+    fn apply(self, constraints: &Constraints) -> Self;
+}
 
-    pub fn post_write_new_stream_data(&mut self, fresh: usize) {
-        self.flow_control -= fresh;
-    }
-
-    /// 根据自身信息，以及hdr_len和buf_len，计算出可以写入的量，包括拥塞量、抗放大余量、新数据量
-    pub fn measure(&self, data_len: usize, buf_len: usize) -> Option<Constraints> {
-        None
+impl ApplyConstraints for &mut [u8] {
+    fn apply(self, constraints: &Constraints) -> Self {
+        constraints.constrain(self)
     }
 }

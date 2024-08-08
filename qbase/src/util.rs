@@ -8,4 +8,4 @@ mod index_deque;
 pub use index_deque::{Error as IndexError, IndexDeque};
 
 mod transmit;
-pub use transmit::Constraints;
+pub use transmit::{ApplyConstraints, Constraints};

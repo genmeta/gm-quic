@@ -7,7 +7,7 @@ use std::{
 
 use qbase::util::DescribeData;
 
-use super::sndbuf::{PickIndicator, SendBuf};
+use super::sndbuf::SendBuf;
 
 /// The "Ready" state represents a newly created stream that is able to accept data from the application.
 /// Stream data might be buffered in this state in preparation for sending.
@@ -187,7 +187,7 @@ pub struct SendingSender {
     cancel_waker: Option<Waker>,
 }
 
-type StreamData<'s> = (u64, (&'s [u8], &'s [u8]), bool);
+type StreamData<'s> = (u64, bool, (&'s [u8], &'s [u8]), bool);
 
 impl SendingSender {
     pub(super) fn poll_write(
@@ -225,16 +225,16 @@ impl SendingSender {
         }
     }
 
-    pub(super) fn pick_up<E>(&mut self, picker: &mut PickIndicator<E>) -> Option<StreamData>
+    pub(super) fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Option<StreamData>
     where
-        E: Fn(u64) -> Option<usize>,
+        P: Fn(u64) -> Option<usize>,
     {
         if self.cancel_state.is_some() {
             return None;
         }
         self.sndbuf
-            .pick_up(picker)
-            .map(|(offset, data)| (offset, data, false))
+            .pick_up(predicate, flow_limit)
+            .map(|(offset, is_fresh, data)| (offset, is_fresh, data, false))
     }
 
     pub(super) fn on_data_acked(&mut self, range: &Range<u64>) {
@@ -348,19 +348,21 @@ pub struct DataSentSender {
 }
 
 impl DataSentSender {
-    pub(super) fn pick_up<E>(&mut self, picker: &mut PickIndicator<E>) -> Option<StreamData>
+    pub(super) fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Option<StreamData>
     where
-        E: Fn(u64) -> Option<usize>,
+        P: Fn(u64) -> Option<usize>,
     {
         if self.cancel_state.is_some() {
             return None;
         }
 
         let final_size = self.sndbuf.len();
-        self.sndbuf.pick_up(picker).map(|(offset, data)| {
-            let is_eos = offset + data.len() as u64 == final_size;
-            (offset, data, is_eos)
-        })
+        self.sndbuf
+            .pick_up(predicate, flow_limit)
+            .map(|(offset, is_fresh, data)| {
+                let is_eos = offset + data.len() as u64 == final_size;
+                (offset, is_fresh, data, is_eos)
+            })
     }
 
     pub(super) fn on_data_acked(&mut self, range: &Range<u64>) {

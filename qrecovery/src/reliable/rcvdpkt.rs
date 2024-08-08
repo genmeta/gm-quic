@@ -6,7 +6,7 @@ use std::{
 use qbase::{
     frame::AckFrame,
     packet::PacketNumber,
-    util::{Constraints, IndexDeque},
+    util::IndexDeque,
     varint::{VarInt, VARINT_MAX},
 };
 use thiserror::Error;
@@ -197,7 +197,6 @@ impl ArcRcvdPktRecords {
     /// TODO: 完成它，不用申请Vec先生成AckFrame，从largest往后开始成对生成
     pub fn read_ack_frame_util(
         &self,
-        _constraints: &mut Constraints,
         _buf: &mut [u8],
         _largest: u64,
         _recv_time: Instant,
