@@ -68,10 +68,13 @@ impl DatagramWriter {
                 let written = frame_with_len.encoding_size() + datagram.len();
                 Some((frame_with_len, written))
             }
-            // 不编码长度
-            _ => {
+            // 不编码长度，可能需要padding
+            n => {
+                debug_assert_eq!(frame_without_len.encoding_size(), 1);
+                buf = &mut buf[n - frame_without_len.encoding_size()..];
                 buf.put_datagram_frame(&frame_without_len, &datagram);
-                Some((frame_without_len, 1 + datagram.len()))
+                let written = n + datagram.len();
+                Some((frame_without_len, written))
             }
         }
     }
@@ -250,7 +253,6 @@ mod tests {
         assert_eq!(buffer, expected_buffer);
     }
 
-    /*
     #[test]
     fn test_datagram_writer_padding_first() {
         let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new(1024))));
@@ -275,7 +277,6 @@ mod tests {
 
         assert_eq!(buffer, expected_buffer);
     }
-    */
 
     #[test]
     fn test_datagram_writer_exceeds_limit() {
