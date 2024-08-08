@@ -49,7 +49,8 @@ impl Outgoing {
         constraints: &mut Constraints,
         mut buf: &mut [u8],
     ) -> Option<(StreamFrame, usize, usize)> {
-        let capacity = constraints.available();
+        let origin = buf.remaining_mut();
+        let capacity = constraints.available().min(origin);
         let write = |(offset, data, is_eos): (u64, (&[u8], &[u8]), bool)| {
             let mut frame = StreamFrame::new(sid, offset, data.len());
 
@@ -69,14 +70,13 @@ impl Outgoing {
                     buf.put_stream_frame(&frame, &data);
                 }
             }
-            (frame, data.len(), capacity - buf.remaining_mut())
+            (frame, data.len(), origin - buf.remaining_mut())
         };
 
-        let estimate_capacity = |offset| {
-            StreamFrame::estimate_max_capacity(capacity, sid, offset).map(|cap| cap.min(credit))
-        };
-        let mut picker =
-            PickIndicator::new(estimate_capacity, Some(constraints.flow_control_limit()));
+        let estimate_capacity = |offset| StreamFrame::estimate_max_capacity(capacity, sid, offset);
+        let flow_control_limit = Some(constraints.flow_control_limit().min(credit));
+        let mut picker = PickIndicator::new(estimate_capacity, flow_control_limit);
+
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
 

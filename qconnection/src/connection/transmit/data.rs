@@ -73,7 +73,7 @@ impl DataSpaceReader {
         let mut in_flight = false;
         let body_size = body_buf.remaining_mut();
 
-        // 3. 检查PathFrameBuffer，尝试写，但发送记录并不记录，若写入一个字节，则constraints开始记录
+        // 3. 检查PathFrameBuffer，尝试写，但发送记录并不记录，若写入，则constraints开始记录
         let n = self.challenge_sndbuf.read(&mut b, body_buf);
         if n > 0 {
             send_guard.record_trivial();
@@ -118,7 +118,8 @@ impl DataSpaceReader {
         }
 
         // 8. 检查DataStreams是否需要发送，若有，且符合（constraints + buf）节制，写入，burst、发包记录都记录
-        while let Some((_frame, n)) = self.datagrams.try_read_datagram(&mut b, body_buf) {
+        while let Some((frame, n)) = self.data_streams.try_read_data(&mut b, body_buf) {
+            send_guard.record_frame(GuaranteedFrame::Data(DataFrame::Stream(frame)));
             body_buf = &mut body_buf[n..];
             is_ack_eliciting = true;
             in_flight = true;
