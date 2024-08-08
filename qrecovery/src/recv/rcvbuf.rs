@@ -295,8 +295,8 @@ mod tests {
     #[test]
     fn test_recvbuf_recv() {
         let mut buf = RecvBuf::default();
-        buf.recv(0, Bytes::from("hello"));
-        buf.recv(6, Bytes::from("world"));
+        assert_eq!(buf.recv(0, Bytes::from("hello")), 5);
+        assert_eq!(buf.recv(6, Bytes::from("world")), 5);
 
         assert_eq!(buf.segments.len(), 2);
         assert_eq!(buf.segments[0].offset, 0);
@@ -308,7 +308,7 @@ mod tests {
         assert_eq!(buf.segments[1].fragments.len(), 1);
         assert_eq!(buf.segments[1].fragments[0], Bytes::from("world"));
 
-        buf.recv(5, Bytes::from(" "));
+        assert_eq!(buf.recv(5, Bytes::from(" ")), 1);
         assert_eq!(buf.segments.len(), 1);
         assert_eq!(buf.segments[0].offset, 0);
         assert_eq!(buf.segments[0].length, 11);
@@ -316,14 +316,20 @@ mod tests {
         assert_eq!(buf.segments[0].fragments[0], Bytes::from("hello"));
         assert_eq!(buf.segments[0].fragments[1], Bytes::from(" "));
         assert_eq!(buf.segments[0].fragments[2], Bytes::from("world"));
+
+        assert_eq!(buf.recv(12, Bytes::from("hello")), 5);
+        assert_eq!(buf.recv(6, Bytes::from("world.hell")), 1);
+        assert_eq!(buf.segments[0].fragments[2], Bytes::from("world"));
+        assert_eq!(buf.segments[0].fragments[3], Bytes::from("."));
+        assert_eq!(buf.segments[0].fragments[4], Bytes::from("hello"));
     }
 
     #[test]
     fn test_rcvbuf_recv_extend() {
         let mut buf = RecvBuf::default();
-        buf.recv(0, Bytes::from("hello"));
-        buf.recv(6, Bytes::from("world"));
-        buf.recv(5, Bytes::from(" wor"));
+        assert_eq!(buf.recv(0, Bytes::from("hello")), 5);
+        assert_eq!(buf.recv(6, Bytes::from("world")), 5);
+        assert_eq!(buf.recv(5, Bytes::from(" wor")), 1);
 
         assert_eq!(buf.segments.len(), 1);
         assert_eq!(buf.segments[0].offset, 0);
@@ -337,9 +343,9 @@ mod tests {
     #[test]
     fn test_rcvbuf_recv_extend_more() {
         let mut buf = RecvBuf::default();
-        buf.recv(0, Bytes::from("hello"));
-        buf.recv(6, Bytes::from("world"));
-        buf.recv(5, Bytes::from(" world!"));
+        assert_eq!(buf.recv(0, Bytes::from("hello")), 5);
+        assert_eq!(buf.recv(6, Bytes::from("world")), 5);
+        assert_eq!(buf.recv(5, Bytes::from(" world!")), 2);
 
         assert_eq!(buf.segments.len(), 1);
         assert_eq!(buf.segments[0].offset, 0);
@@ -354,8 +360,8 @@ mod tests {
     #[test]
     fn test_overlap() {
         let mut buf = RecvBuf::default();
-        buf.recv(2, Bytes::from("4514"));
-        buf.recv(0, Bytes::from("1199"));
+        assert_eq!(buf.recv(2, Bytes::from("4514")), 4);
+        assert_eq!(buf.recv(0, Bytes::from("1199")), 2);
 
         assert_eq!(buf.segments.len(), 1);
         assert_eq!(buf.segments[0].offset, 0);
@@ -368,9 +374,9 @@ mod tests {
     #[test]
     fn test_rcvbuf_recv_extend_and_replace() {
         let mut buf = RecvBuf::default();
-        buf.recv(0, Bytes::from("hello"));
-        buf.recv(7, Bytes::from("world"));
-        buf.recv(6, Bytes::from(" world!"));
+        assert_eq!(buf.recv(0, Bytes::from("hello")), 5);
+        assert_eq!(buf.recv(7, Bytes::from("world")), 5);
+        assert_eq!(buf.recv(6, Bytes::from(" world!")), 2);
 
         assert_eq!(buf.segments.len(), 2);
         assert_eq!(buf.segments[0].offset, 0);
@@ -388,9 +394,10 @@ mod tests {
     #[test]
     fn test_recvbuf_recv_and_insert() {
         let mut buf = RecvBuf::default();
-        buf.recv(0, Bytes::from("how"));
-        buf.recv(9, Bytes::from("you"));
-        buf.recv(5, Bytes::from("are"));
+        assert_eq!(buf.recv(0, Bytes::from("how")), 3);
+        assert_eq!(buf.recv(9, Bytes::from("you")), 3);
+        assert_eq!(buf.recv(5, Bytes::from("are")), 3);
+
         assert_eq!(buf.segments.len(), 3);
         assert_eq!(buf.segments[0].offset, 0);
         assert_eq!(buf.segments[0].length, 3);
@@ -405,7 +412,7 @@ mod tests {
         assert_eq!(buf.segments[2].fragments.len(), 1);
         assert_eq!(buf.segments[2].fragments[0], Bytes::from("you"));
 
-        buf.recv(3, Bytes::from("w are you"));
+        assert_eq!(buf.recv(3, Bytes::from("w are you")), 3);
 
         assert_eq!(buf.segments.len(), 1);
         assert_eq!(buf.segments[0].offset, 0);
@@ -421,15 +428,15 @@ mod tests {
     #[test]
     fn test_recvbuf_read() {
         let mut rcvbuf = RecvBuf::default();
-        rcvbuf.recv(0, Bytes::from("hello"));
-        rcvbuf.recv(6, Bytes::from("world"));
+        assert_eq!(rcvbuf.recv(0, Bytes::from("hello")), 5);
+        assert_eq!(rcvbuf.recv(6, Bytes::from("world")), 5);
 
         let mut dst = [0u8; 20];
         let mut buf = &mut dst[..];
         rcvbuf.read(&mut buf);
         assert_eq!(buf.remaining_mut(), 15);
 
-        rcvbuf.recv(5, Bytes::from(" "));
+        assert_eq!(rcvbuf.recv(5, Bytes::from(" ")), 1);
         rcvbuf.read(&mut buf);
 
         assert_eq!(buf.remaining_mut(), 9);
@@ -439,14 +446,14 @@ mod tests {
     #[test]
     fn test_rcvbuf_recv_overlap_seg() {
         let mut buf = RecvBuf::default();
-        buf.recv(0, Bytes::from("he"));
-        buf.recv(6, Bytes::from("world"));
-        buf.recv(0, Bytes::from("hello"));
+        assert_eq!(buf.recv(0, Bytes::from("he")), 2);
+        assert_eq!(buf.recv(6, Bytes::from("world")), 5);
+        assert_eq!(buf.recv(0, Bytes::from("hello")), 3);
 
         let mut buf = RecvBuf::default();
-        buf.recv(0, Bytes::from("he"));
-        buf.recv(6, Bytes::from("wo"));
-        buf.recv(12, Bytes::from("00"));
-        buf.recv(0, Bytes::from("hello world"));
+        assert_eq!(buf.recv(0, Bytes::from("he")), 2);
+        assert_eq!(buf.recv(6, Bytes::from("wo")), 2);
+        assert_eq!(buf.recv(12, Bytes::from("00")), 2);
+        assert_eq!(buf.recv(0, Bytes::from("hello world")), 7);
     }
 }
