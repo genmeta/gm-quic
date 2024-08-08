@@ -163,6 +163,8 @@ impl ArcDataStreamParameters {
 /// 专门根据Stream相关帧处理streams相关逻辑
 #[derive(Debug, Clone)]
 pub struct RawDataStreams {
+    // 该queue与space中的transmitter中的frame_queue共享，为了方便向transmitter中写入帧
+    pub reliable_frame_deque: ArcReliableFrameDeque,
     params: ArcDataStreamParameters,
 
     role: Role,
@@ -173,9 +175,6 @@ pub struct RawDataStreams {
     input: ArcInput,
     // 对方主动创建的流
     listener: ArcListener,
-
-    // 该queue与space中的transmitter中的frame_queue共享，为了方便向transmitter中写入帧
-    reliable_frame_deque: ArcReliableFrameDeque,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
@@ -260,7 +259,7 @@ impl RawDataStreams {
     pub fn recv_data(
         &self,
         (stream_frame, body): &(StreamFrame, bytes::Bytes),
-    ) -> Result<(), QuicError> {
+    ) -> Result<usize, QuicError> {
         let sid = stream_frame.id;
         // 对方必须是发送端，才能发送此帧
         if sid.role() != self.role {
@@ -277,7 +276,8 @@ impl RawDataStreams {
                 ));
             }
         }
-        self.input
+        let ret = self
+            .input
             .0
             .lock()
             .unwrap()
@@ -286,8 +286,11 @@ impl RawDataStreams {
             .and_then(|set| set.get(&sid))
             .map(|incoming| incoming.recv_data(stream_frame, body.clone()));
 
-        // 否则，该流已经结束，再收到任何该流的frame，都将被忽略
-        Ok(())
+        match ret {
+            Some(recv_ret) => return recv_ret,
+            // 该流已结束，收到的数据将被忽略
+            None => Ok(0),
+        }
     }
 
     pub fn recv_stream_control(&self, stream_ctl_frame: &StreamCtlFrame) -> Result<(), QuicError> {
