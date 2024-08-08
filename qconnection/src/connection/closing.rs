@@ -12,7 +12,7 @@ use qbase::{
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_short_packet},
         header::GetType,
-        keys::OneRttPacketKeys,
+        keys::ArcOneRttPacketKeys,
         DataHeader, DataPacket,
     },
 };
@@ -28,7 +28,7 @@ pub struct ClosingConnection {
     pub rcvd_pkt_records: ArcRcvdPktRecords,
     pub one_rtt_keys: (
         Arc<dyn rustls::quic::HeaderProtectionKey>,
-        Arc<Mutex<OneRttPacketKeys>>,
+        ArcOneRttPacketKeys,
     ),
     pub rcvd_packets: usize,
     pub last_send_ccf: Instant,
@@ -41,7 +41,7 @@ impl From<RawConnection> for ClosingConnection {
         let cid_registry = conn.cid_registry;
         let data_space = conn.data.space;
         let one_rtt_keys = match conn.data.one_rtt_keys.invalid() {
-            Some((hpk, pk)) => (hpk.0, pk),
+            Some((hpk, pk)) => (hpk.local, pk),
             _ => unreachable!(),
         };
         let error = conn.error;
@@ -99,12 +99,7 @@ impl ClosingConnection {
                 Err(_e) => return,
             };
             let body_offset = packet.offset + undecoded_pn.size();
-            let pk = self
-                .one_rtt_keys
-                .1
-                .lock()
-                .unwrap()
-                .get_remote(key_phase, pn);
+            let pk = self.one_rtt_keys.1.lock_guard().get_remote(key_phase, pn);
             decrypt_packet(pk.as_ref(), pn, packet.bytes.as_mut(), body_offset).unwrap();
             let body = packet.bytes.split_off(body_offset);
 

@@ -15,7 +15,6 @@ use qudp::ArcUsc;
 
 use crate::{
     connection::ConnState::{Closed, Closing, Draining, Raw},
-    error,
     path::Pathway,
     router::{ArcRouter, RouterRegistry, ROUTER},
     tls::ArcTlsSession,

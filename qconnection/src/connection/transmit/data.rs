@@ -1,7 +1,4 @@
-use std::{
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::{sync::Arc, time::Instant};
 
 use bytes::BufMut;
 use qbase::{
@@ -10,7 +7,7 @@ use qbase::{
     packet::{
         encrypt::{encrypt_packet, protect_long_header, protect_short_header},
         header::{WriteLongHeader, WriteOneRttHeader},
-        keys::{ArcKeys, ArcOneRttKeys, OneRttPacketKeys},
+        keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys},
         Encode, LongHeaderBuilder, OneRttHeader, SpinBit, WritePacketNumber,
     },
     varint::{EncodeBytes, VarInt, WriteVarInt},
@@ -40,9 +37,7 @@ pub struct DataSpaceReader {
 }
 
 impl DataSpaceReader {
-    pub fn one_rtt_keys(
-        &self,
-    ) -> Option<(Arc<dyn HeaderProtectionKey>, Arc<Mutex<OneRttPacketKeys>>)> {
+    pub fn one_rtt_keys(&self) -> Option<(Arc<dyn HeaderProtectionKey>, ArcOneRttPacketKeys)> {
         self.one_rtt_keys.get_local_keys()
     }
 
@@ -53,7 +48,7 @@ impl DataSpaceReader {
         dcid: ConnectionId,
         spin: SpinBit,
         ack_pkt: Option<(u64, Instant)>,
-        keys: (Arc<dyn HeaderProtectionKey>, Arc<Mutex<OneRttPacketKeys>>),
+        keys: (Arc<dyn HeaderProtectionKey>, ArcOneRttPacketKeys),
     ) -> Option<(u64, bool, bool, usize, usize, bool, Option<u64>)> {
         // 0. 检查1rtt keys是否有效，没有则回退到0rtt包
         // 1. 生成包头，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
@@ -166,7 +161,7 @@ impl DataSpaceReader {
         pn_buf.put_packet_number(encoded_pn);
 
         // 11 保护包头，加密数据
-        let pk_guard = keys.1.lock().unwrap();
+        let pk_guard = keys.1.lock_guard();
         let (key_phase, pk) = pk_guard.get_local();
         encrypt_packet(pk.as_ref(), pn, buf, hdr_len + pn_len);
         protect_short_header(keys.0.as_ref(), key_phase, buf, hdr_len, encoded_pn.size());
