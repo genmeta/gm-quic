@@ -6,7 +6,6 @@ use std::{
         Arc,
     },
     task::{Context, Poll},
-    usize,
 };
 
 use deref_derive::Deref;

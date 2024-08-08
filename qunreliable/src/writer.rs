@@ -54,29 +54,31 @@ impl DatagramWriter {
     ) -> Option<(DatagramFrame, usize)> {
         let mut guard = self.0.lock().unwrap();
         let writer = guard.as_mut().ok()?;
-        let datagram = writer.queue.front()?;
+        let data = writer.queue.front()?;
 
         let available = constraints.available();
 
-        let max_encoding_size = available.saturating_sub(datagram.len());
+        let max_encoding_size = available.saturating_sub(data.len());
         if max_encoding_size == 0 {
             return None;
         }
 
-        let datagram = writer.queue.pop_front()?;
+        let data = writer.queue.pop_front()?;
         let frame_without_len = DatagramFrame::new(None);
-        let frame_with_len = DatagramFrame::new(Some(VarInt::try_from(datagram.len()).unwrap()));
+        let frame_with_len = DatagramFrame::new(Some(VarInt::try_from(data.len()).unwrap()));
         match max_encoding_size {
             // 编码长度
             n if n >= frame_with_len.encoding_size() => {
-                buf.put_datagram_frame(&frame_with_len, &datagram);
-                let written = frame_with_len.encoding_size() + datagram.len();
+                buf.put_datagram_frame(&frame_with_len, &data);
+                let written = frame_with_len.encoding_size() + data.len();
                 Some((frame_with_len, written))
             }
             // 不编码长度
-            _ => {
-                buf.put_datagram_frame(&frame_without_len, &datagram);
-                Some((frame_without_len, 1 + datagram.len()))
+            n => {
+                // 0 == Padding Frame
+                buf = &mut buf[n..];
+                buf.put_datagram_frame(&frame_without_len, &data);
+                Some((frame_without_len, 1 + n + data.len()))
             }
         }
     }
@@ -93,9 +95,9 @@ impl DatagramWriter {
     ///
     /// if the connection is already closed, the new error will be ignored.
     pub(super) fn on_conn_error(&self, error: &Error) {
-        let writer = &mut self.0.lock().unwrap();
+        let mut writer = self.0.lock().unwrap();
         if writer.is_ok() {
-            **writer = Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()));
+            *writer = Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()));
         }
     }
 

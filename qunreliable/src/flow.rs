@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use qbase::{config::Parameters, error::Error, frame::DatagramFrame, util::Constraints};
 
@@ -13,6 +13,9 @@ pub struct RawDatagramFlow {
     reader: DatagramReader,
     writer: DatagramWriter,
 }
+
+#[derive(Debug, Clone)]
+pub struct DatagramFlow(Arc<RawDatagramFlow>);
 
 impl RawDatagramFlow {
     /// Creates a new instance of [`DatagramFlow`].
@@ -41,10 +44,6 @@ impl RawDatagramFlow {
 }
 
 /// The shared [`RawDatagramFlow`] struct represents a flow for sending and receiving datagrams frame from a connection.
-#[derive(Debug, Clone)]
-pub struct DatagramFlow {
-    raw_flow: Arc<RwLock<RawDatagramFlow>>,
-}
 
 impl DatagramFlow {
     /// see [`RawDatagramFlow::new`] for more details.
@@ -54,15 +53,12 @@ impl DatagramFlow {
             local_max_datagram_frame_size,
             remote_max_datagram_frame_size,
         );
-        Self {
-            raw_flow: Arc::new(RwLock::new(flow)),
-        }
+        Self(Arc::new(flow))
     }
     /// See [`DatagramWriter::update_remote_max_datagram_frame_size`] for more details.
     #[inline]
     pub fn apply_transport_parameters(&self, params: &Parameters) -> Result<(), Error> {
-        let flow = self.raw_flow.read().unwrap();
-        flow.writer.update_remote_max_datagram_frame_size(
+        self.0.writer.update_remote_max_datagram_frame_size(
             params.max_datagram_frame_size().into_inner() as usize,
         )
     }
@@ -74,11 +70,7 @@ impl DatagramFlow {
         constraints: &mut Constraints,
         buf: &mut [u8],
     ) -> Option<(DatagramFrame, usize)> {
-        self.raw_flow
-            .read()
-            .unwrap()
-            .writer
-            .try_read_datagram(constraints, buf)
+        self.0.writer.try_read_datagram(constraints, buf)
     }
 
     /// See [`DatagramReader::recv_datagram`] for more details.
@@ -87,17 +79,13 @@ impl DatagramFlow {
         &self,
         (frame, body): &(DatagramFrame, bytes::Bytes),
     ) -> Result<(), Error> {
-        self.raw_flow
-            .read()
-            .unwrap()
-            .reader
-            .recv_datagram(frame, body.clone())
+        self.0.reader.recv_datagram(frame, body.clone())
     }
 
     /// Create a pair of [`DatagramReader`] and [`DatagramWriter`] for the application to read and write datagrams.
     #[inline]
     pub fn rw(&self) -> (DatagramReader, DatagramWriter) {
-        let flow = self.raw_flow.read().unwrap();
+        let flow = &self.0;
         (
             DatagramReader(flow.reader.0.clone()),
             DatagramWriter(flow.writer.0.clone()),
@@ -119,7 +107,7 @@ impl DatagramFlow {
     /// See [`DatagramReader::on_conn_error`] and [`DatagramWriter::on_conn_error`] for more details.
     #[inline]
     pub fn on_conn_error(&self, error: &Error) {
-        let raw_flow = self.raw_flow.read().unwrap();
+        let raw_flow = &self.0;
         raw_flow.reader.on_conn_error(error);
         raw_flow.writer.on_conn_error(error);
     }

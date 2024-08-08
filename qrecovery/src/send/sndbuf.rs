@@ -97,12 +97,6 @@ pub struct PickIndicator<E> {
     flow_control_limit: Option<usize>,
 }
 
-impl PickIndicator<()> {
-    pub fn from_usize(size: usize) -> PickIndicator<impl Fn(u64) -> Option<usize>> {
-        PickIndicator::new(move |_| Some(size), None)
-    }
-}
-
 impl<E> PickIndicator<E>
 where
     E: Fn(u64) -> Option<usize>,
@@ -121,8 +115,11 @@ where
     fn estimate_capacity(&self, offset: u64, color: Color) -> Option<usize> {
         let capacity = (self.estimate_capacity)(offset)?;
         match (color, self.flow_control_limit) {
-            (Color::Pending, Some(limit)) => Some(limit.min(capacity)),
-            _ => Some(capacity),
+            // 受到流量控制限制，并且不被限制
+            (Color::Pending, Some(limit)) if limit != 0 => Some(limit.min(capacity)),
+            // 不受流量控制限制，或者重传
+            (Color::Pending, None) | (Color::Lost, _) => Some(capacity),
+            _ => None,
         }
     }
 
@@ -172,17 +169,15 @@ impl BufMap {
         // 先找到第一个能发送的区间，并将该区间染成Flight，返回原State
         self.0
             .iter_mut()
-            .filter_map(|state| {
-                Some((
-                    picker.estimate_capacity(state.offset(), state.color())?,
-                    state,
-                ))
-            })
             .enumerate()
-            .find(|(_, (_, s))| matches!(s.color(), Color::Pending | Color::Lost))
-            .map(|(index, (max, s))| {
-                let pre_state = *s; // 此处能归还self.0的可变借用
-                s.set_color(Color::Flighting);
+            .filter(|(.., state)| matches!(state.color(), Color::Pending | Color::Lost))
+            .find_map(|(idx, state)| {
+                let max = picker.estimate_capacity(state.offset(), state.color())?;
+                Some((idx, max, state))
+            })
+            .map(|(index, max, state)| {
+                let pre_state = *state; // 此处能归还self.0的可变借用
+                state.set_color(Color::Flighting);
                 (index, pre_state, max)
             })
             .map(|(index, pre_state, max)| {
@@ -641,6 +636,12 @@ impl SendBuf {
 mod tests {
     use super::{BufMap, Color, State};
     use crate::send::sndbuf::PickIndicator;
+
+    impl PickIndicator<()> {
+        pub fn from_usize(size: usize) -> PickIndicator<impl Fn(u64) -> Option<usize>> {
+            PickIndicator::new(move |_| Some(size), None)
+        }
+    }
 
     #[test]
     fn test_bufmap_empty() {
