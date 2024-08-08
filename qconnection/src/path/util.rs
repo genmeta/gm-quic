@@ -7,10 +7,7 @@ use std::{
 };
 
 use bytes::BufMut;
-use qbase::{
-    frame::{io::WriteFrame, BeFrame},
-    util::Constraints,
-};
+use qbase::frame::{io::WriteFrame, BeFrame};
 
 #[derive(Default, Clone)]
 pub struct SendBuffer<T>(Arc<Mutex<Option<T>>>);
@@ -26,13 +23,12 @@ where
     T: BeFrame,
     for<'a> &'a mut [u8]: WriteFrame<T>,
 {
-    pub fn read(&self, constraints: &mut Constraints, mut buf: &mut [u8]) -> usize {
+    pub fn try_read(&self, mut buf: &mut [u8]) -> usize {
         let mut guard = self.0.lock().unwrap();
         if let Some(frame) = guard.deref() {
             let size = frame.encoding_size();
-            if constraints.available() >= size && buf.remaining_mut() >= size {
+            if buf.remaining_mut() >= size {
                 buf.put_frame(frame);
-                constraints.post_write(size);
                 *guard = None;
                 return size;
             }

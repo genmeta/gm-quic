@@ -9,12 +9,12 @@ mod send {
     use bytes::BufMut;
     use qbase::{
         frame::{io::WriteCryptoFrame, CryptoFrame},
-        util::{Constraints, DescribeData},
+        util::DescribeData,
         varint::{VarInt, VARINT_MAX},
     };
     use tokio::io::AsyncWrite;
 
-    use crate::send::sndbuf::{PickIndicator, SendBuf};
+    use crate::send::sndbuf::SendBuf;
 
     #[derive(Debug)]
     pub(super) struct Sender {
@@ -24,22 +24,16 @@ mod send {
     }
 
     impl Sender {
-        fn try_read_data(
-            &mut self,
-            constraints: &mut Constraints,
-            mut buffer: &mut [u8],
-        ) -> Option<(CryptoFrame, usize)> {
-            let remain = constraints.available();
-            let estimater = |offset: u64| CryptoFrame::estimate_max_capacity(remain, offset);
-            let mut picker = PickIndicator::new(estimater, None);
-            if let Some((offset, data)) = self.sndbuf.pick_up(&mut picker) {
+        fn try_read_data(&mut self, mut buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
+            let buf_len = buffer.len();
+            let predicate = |offset: u64| CryptoFrame::estimate_max_capacity(buf_len, offset);
+            if let Some((offset, _is_fresh, data)) = self.sndbuf.pick_up(predicate, usize::MAX) {
                 let frame = CryptoFrame {
                     offset: VarInt::from_u64(offset).unwrap(),
                     length: VarInt::try_from(data.len()).unwrap(),
                 };
                 buffer.put_crypto_frame(&frame, &data);
-                let written = remain - buffer.remaining_mut();
-                constraints.post_write(written);
+                let written = buf_len - buffer.remaining_mut();
                 Some((frame, written))
             } else {
                 None
@@ -119,12 +113,8 @@ mod send {
     }
 
     impl CryptoStreamOutgoing {
-        pub fn try_read_data(
-            &self,
-            constraints: &mut Constraints,
-            buffer: &mut [u8],
-        ) -> Option<(CryptoFrame, usize)> {
-            self.0.lock().unwrap().try_read_data(constraints, buffer)
+        pub fn try_read_data(&self, buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
+            self.0.lock().unwrap().try_read_data(buffer)
         }
 
         pub fn on_data_acked(&self, crypto_frame: &CryptoFrame) {

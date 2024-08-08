@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use qbase::{config::Parameters, error::Error, frame::DatagramFrame, util::Constraints};
+use qbase::{config::Parameters, error::Error, frame::DatagramFrame};
 
 use super::{
     reader::{DatagramReader, RawDatagramReader},
@@ -65,12 +65,8 @@ impl DatagramFlow {
 
     /// See [`DatagramWriter::try_read_datagram`] for more details.
     #[inline]
-    pub fn try_read_datagram(
-        &self,
-        constraints: &mut Constraints,
-        buf: &mut [u8],
-    ) -> Option<(DatagramFrame, usize)> {
-        self.0.writer.try_read_datagram(constraints, buf)
+    pub fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
+        self.0.writer.try_read_datagram(buf)
     }
 
     /// See [`DatagramReader::recv_datagram`] for more details.
