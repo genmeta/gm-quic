@@ -142,10 +142,10 @@ impl BufMap {
                 };
                 Some((idx, allowance, state))
             })
-            .map(|(index, max, state)| {
+            .map(|(index, allowance, state)| {
                 let origin_state = *state; // 此处能归还self.0的可变借用
                 state.set_color(Color::Flighting);
-                (index, origin_state, max)
+                (index, origin_state, allowance)
             })
             .map(|(index, origin_state, allowance)| {
                 // 找到了一个合适的区间来发送，但检查区间长度是否足够，过长的话，还要拆区间一分为二
