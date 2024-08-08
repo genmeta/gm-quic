@@ -281,7 +281,7 @@ impl DataScope {
                         Err(_e) => continue,
                     };
                     let body_offset = packet.offset + undecoded_pn.size();
-                    let pk = pk.lock().unwrap().get_remote(key_phase, pn);
+                    let pk = pk.lock_guard().get_remote(key_phase, pn);
                     decrypt_packet(pk.as_ref(), pn, packet.bytes.as_mut(), body_offset).unwrap();
                     handshake.done();
                     let path = pathes.get(pathway, usc);
