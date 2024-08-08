@@ -75,10 +75,9 @@ impl DatagramWriter {
             }
             // 不编码长度
             n => {
-                // 0 == Padding Frame
-                buf = &mut buf[n..];
+                buf = &mut buf[n - frame_without_len.encoding_size()..];
                 buf.put_datagram_frame(&frame_without_len, &data);
-                Some((frame_without_len, 1 + n + data.len()))
+                Some((frame_without_len, n + data.len()))
             }
         }
     }
@@ -193,46 +192,95 @@ impl DatagramWriter {
 
 #[cfg(test)]
 mod tests {
+    use qbase::frame::io::WritePaddingFrame;
+
     use super::*;
 
     #[test]
-    fn test_datagram_writer() {
+    fn test_datagram_writer_with_length() {
         let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new(1024))));
         let writer = DatagramWriter(writer);
 
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
 
-        let (frame, written) = writer
-            .try_read_datagram(&mut Constraints::new(None, usize::MAX, 0), &mut [0; 1024])
-            .unwrap();
-        assert_eq!(frame.length, Some(VarInt::try_from(data.len()).unwrap()));
-        assert_eq!(written, 1 + 1 + data.len());
+        let mut buffer = [0; 1024];
+        let expected_frame = DatagramFrame::new(Some(VarInt::try_from(data.len()).unwrap()));
+        assert_eq!(
+            writer.try_read_datagram(&mut Constraints::new(None, usize::MAX, 0), &mut buffer),
+            Some((expected_frame, 1 + 1 + data.len()))
+        );
+
+        let mut expected_buffer = [0; 1024];
+        {
+            let mut expected_buffer = &mut expected_buffer[..];
+            expected_buffer.put_datagram_frame(&expected_frame, &data);
+        }
+        assert_eq!(buffer, expected_buffer);
     }
 
     #[test]
-    fn test_datagram_writer_no_length() {
+    fn test_datagram_writer_without_length() {
         let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new(1024))));
         let writer = DatagramWriter(writer);
 
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
+
+        let mut buffer = [0; 1024];
         assert_eq!(
-            writer.try_read_datagram(&mut Constraints::new(None, 1 + 11, 0), &mut [0; 1024]),
+            writer.try_read_datagram(&mut Constraints::new(None, 1 + 11, 0), &mut buffer),
             Some((DatagramFrame::new(None), 12))
         );
+
+        let mut expected_buffer = [0; 1024];
+        {
+            let mut expected_buffer = &mut expected_buffer[..];
+            expected_buffer.put_datagram_frame(&DatagramFrame::new(None), &data);
+        }
+        assert_eq!(buffer, expected_buffer);
     }
 
     #[test]
-    fn test_datagram_writer_un_written() {
+    fn test_datagram_writer_unwritten() {
         let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new(1024))));
         let writer = DatagramWriter(writer);
 
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
+
+        let mut buffer = [0; 1024];
         assert!(writer
-            .try_read_datagram(&mut Constraints::new(None, 1, 0), &mut [0; 1024])
+            .try_read_datagram(&mut Constraints::new(None, 1, 0), &mut buffer)
             .is_none());
+
+        let expected_buffer = [0; 1024];
+        assert_eq!(buffer, expected_buffer);
+    }
+
+    #[test]
+    fn test_datagram_writer_padding_first() {
+        let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new(1024))));
+        let writer = DatagramWriter(writer);
+
+        // will be encoded to 2 bytes
+        let data = Bytes::from_static(&[b'a'; 2usize.pow(8 - 2)]);
+        writer.send_bytes(data.clone()).unwrap();
+
+        let mut buffer = [0; 1024];
+        assert_eq!(
+            writer.try_read_datagram(&mut Constraints::new(None, data.len() + 2, 0), &mut buffer),
+            Some((DatagramFrame::new(None), data.len() + 2))
+        );
+
+        let mut expected_buffer = [0; 1024];
+        {
+            let mut expected_buffer = &mut expected_buffer[..];
+            expected_buffer.put_padding_frame();
+            expected_buffer.put_datagram_frame(&DatagramFrame::new(None), &data);
+        }
+
+        assert_eq!(buffer, expected_buffer);
     }
 
     #[test]
