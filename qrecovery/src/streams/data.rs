@@ -27,7 +27,7 @@ use crate::{
 struct RawOutput {
     #[deref]
     outgoings: BTreeMap<StreamId, Outgoing>,
-    cur_credit: Option<(StreamId, usize)>,
+    cur_sending_stream: Option<(StreamId, usize)>,
 }
 
 /// ArcOutput里面包含一个Result类型，一旦发生quic error，就会被替换为Err
@@ -191,21 +191,23 @@ impl RawDataStreams {
         let guard = &mut self.output.0.lock().unwrap();
         let output = guard.as_mut().ok()?;
 
-        const DEFAULT_CREDIT: usize = 4096;
+        const DEFAULT_TOKENS: usize = 4096;
 
-        let (sid, outgoing, credit) = output
-            .cur_credit
-            .and_then(|(sid, credit): (StreamId, usize)| {
-                if credit == 0 {
+        // 该tokens是令牌桶算法的token，为了多条Stream的公平性，给每个流定期地发放tokens，不累积
+        // 各流轮流按令牌桶算法发放的tokens来整理数据去发送
+        let (sid, outgoing, tokens) = output
+            .cur_sending_stream
+            .and_then(|(sid, tokens): (StreamId, usize)| {
+                if tokens == 0 {
                     // 没有额度：下一个
                     output
                         .outgoings
                         .range(sid..)
                         .nth(1)
-                        .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_CREDIT))
+                        .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS))
                 } else {
                     // 有额度：继续
-                    Some((sid, output.outgoings.get(&sid)?, credit))
+                    Some((sid, output.outgoings.get(&sid)?, tokens))
                 }
             })
             .or_else(|| {
@@ -213,11 +215,12 @@ impl RawDataStreams {
                 output
                     .outgoings
                     .first_key_value()
-                    .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_CREDIT))
+                    .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS))
             })?;
 
-        let (frame, dat_len, is_fresh, written) = outgoing.try_read(sid, buf, flow_limit)?;
-        output.cur_credit = Some((sid, credit - dat_len));
+        let (frame, dat_len, is_fresh, written) =
+            outgoing.try_read(sid, buf, tokens, flow_limit)?;
+        output.cur_sending_stream = Some((sid, tokens - dat_len));
 
         Some((frame, written, if is_fresh { dat_len } else { 0 }))
     }

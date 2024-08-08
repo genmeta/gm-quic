@@ -26,7 +26,11 @@ impl InitialSpaceReader {
         scid: ConnectionId,
         dcid: ConnectionId,
         ack_pkt: Option<(u64, Instant)>,
-    ) -> Option<(u64, bool, bool, usize, bool, Option<u64>)> {
+    ) -> Option<(
+        impl FnOnce(&mut [u8], usize) -> (u64, bool, bool, usize, bool, Option<u64>),
+        usize,
+        bool,
+    )> {
         // 1. 判定keys是否有效，无效或者尚未拿到，直接返回
         let k = self.keys.get_local_keys()?;
 
@@ -71,40 +75,59 @@ impl InitialSpaceReader {
         }
         drop(send_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
 
-        // TODO: 此时返回一个闭包，用于如果后续没什么数据发送了，就Padding至1200字节
-
-        // 6. 填充，保护头部，加密
         let hdr_len = hdr_buf.len();
         let pn_len = pn_buf.len();
-        let body_size = body_size - body_buf.remaining_mut();
-        let pkt_size = hdr_len + 2 + pn_len + body_size;
+        let mut body_len = body_size - body_buf.remaining_mut();
+        let mut pkt_size = hdr_len + pn_len + body_len;
 
         hdr_buf.put_long_header(&hdr);
-        hdr_buf.encode_varint(
-            &VarInt::try_from(pn_len + body_size).unwrap(),
-            EncodeBytes::Two,
-        );
         pn_buf.put_packet_number(encoded_pn);
 
-        encrypt_packet(
-            k.remote.packet.as_ref(),
-            pn,
-            &mut buf[..pkt_size],
-            hdr_len + pn_len,
-        );
-        protect_long_header(
-            k.remote.header.as_ref(),
-            &mut buf[..pkt_size],
-            hdr_len,
-            pn_len,
-        );
+        // TODO: 此时返回一个闭包，用于如果后续没什么数据发送了，就Padding至1200字节
         Some((
-            pn,
-            is_ack_eliciting,
+            move |buf: &mut [u8], len: usize| -> (u64, bool, bool, usize, bool, Option<u64>) {
+                // 6. 填充，保护头部，加密
+                let (_hdr_buf, remain) = buf.split_at_mut(hdr_len - 2);
+                let (mut length_buf, remain) = remain.split_at_mut(2);
+                let (_pn_buf, remain) = remain.split_at_mut(pn_len);
+                let (_body, mut remain) = remain.split_at_mut(body_len);
+
+                // 追加padding
+                if len > pkt_size {
+                    remain.put_bytes(0, len - pkt_size);
+                    is_just_ack = false;
+                    body_len += len - pkt_size;
+                    pkt_size = len;
+                }
+
+                length_buf.encode_varint(
+                    &VarInt::try_from(pn_len + body_len).unwrap(),
+                    EncodeBytes::Two,
+                );
+
+                encrypt_packet(
+                    k.remote.packet.as_ref(),
+                    pn,
+                    &mut buf[..pkt_size],
+                    hdr_len + pn_len,
+                );
+                protect_long_header(
+                    k.remote.header.as_ref(),
+                    &mut buf[..pkt_size],
+                    hdr_len,
+                    pn_len,
+                );
+                (
+                    pn,
+                    is_ack_eliciting,
+                    is_just_ack,
+                    pkt_size,
+                    in_flight,
+                    sent_ack,
+                )
+            },
+            hdr_len + pn_len + body_len,
             is_just_ack,
-            pkt_size,
-            in_flight,
-            sent_ack,
         ))
     }
 }

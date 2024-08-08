@@ -43,6 +43,7 @@ impl Outgoing {
         &self,
         sid: StreamId,
         mut buf: &mut [u8],
+        tokens: usize,
         flow_limit: usize,
     ) -> Option<(StreamFrame, usize, bool, usize)> {
         let capacity = buf.len();
@@ -68,7 +69,9 @@ impl Outgoing {
             (frame, data.len(), is_fresh, capacity - buf.remaining_mut())
         };
 
-        let predicate = |offset| StreamFrame::estimate_max_capacity(capacity, sid, offset);
+        let predicate = |offset| {
+            StreamFrame::estimate_max_capacity(capacity, sid, offset).map(|c| tokens.min(c))
+        };
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
 
