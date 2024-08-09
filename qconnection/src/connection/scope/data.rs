@@ -4,8 +4,8 @@ use qbase::{
     error::{Error as QuicError, ErrorKind},
     flow,
     frame::{
-        AckFrame, BeFrame, DataFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
-        ReliableFrame, RetireConnectionIdFrame, StreamFrame,
+        AckFrame, BeFrame, DataFrame, Frame, FrameReader, HandshakeDoneFrame, PathChallengeFrame,
+        PathResponseFrame, ReliableFrame, RetireConnectionIdFrame, StreamFrame,
     },
     handshake::Handshake,
     packet::{
@@ -15,6 +15,7 @@ use qbase::{
         header::GetType,
         keys::{ArcKeys, ArcOneRttKeys},
     },
+    streamid::Role,
 };
 use qrecovery::{
     reliable::{ArcReliableFrameDeque, GuaranteedFrame},
@@ -179,6 +180,10 @@ impl DataScope {
         pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> *streams, recv_stream_control);
         pipe!(@error(conn_error) rcvd_datagram_frames |> *datagrams, recv_datagram);
         pipe!(rcvd_ack_frames |> on_ack);
+
+        if handshake.role() == Role::Server {
+            self.handle_server_handshake_done(handshake, streams.reliable_frame_deque.clone());
+        }
 
         self.handle_stream_frame_with_flow_ctrl(
             streams,
@@ -354,7 +359,6 @@ impl DataScope {
             let streams = streams.clone();
             let flow_ctrl = flow_ctrl.clone();
             let conn_error = conn_error.clone();
-
             async move {
                 while let Some(frame) = rcvd_stream_frames.next().await {
                     match streams.recv_data(&frame) {
@@ -368,6 +372,23 @@ impl DataScope {
                             }
                         }
                         Err(e) => conn_error.on_error(e),
+                    }
+                }
+            }
+        });
+    }
+
+    // The server calls this function when creating a data space.
+    fn handle_server_handshake_done(&self, handshake: &Handshake, frames: ArcReliableFrameDeque) {
+        assert_eq!(handshake.role(), Role::Server);
+        tokio::spawn({
+            let handshake = handshake.clone();
+            async move {
+                if let Some(hs) = handshake.is_done() {
+                    if hs.await.is_some() {
+                        frames
+                            .lock_guard()
+                            .push_back(ReliableFrame::HandshakeDone(HandshakeDoneFrame));
                     }
                 }
             }
