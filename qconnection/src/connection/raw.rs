@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use dashmap::DashMap;
 use futures::channel::mpsc::{self, UnboundedSender};
 use qbase::{
+    error::Error as QuicError,
     flow::FlowController,
     handshake::Handshake,
     packet::{keys::ArcKeys, long, DataHeader, DataPacket, SpinBit},
@@ -20,7 +21,7 @@ use crate::{
     error::ConnError,
     path::{ArcPath, Pathway},
     router::ROUTER,
-    tls::ArcTlsSession,
+    tls::{ArcTlsSession, GetParameters},
 };
 
 #[derive(Clone)]
@@ -40,12 +41,14 @@ pub struct RawConnection {
     pub reliable_frames: ArcReliableFrameDeque,
     pub streams: DataStreams,
     pub datagrams: DatagramFlow,
+
+    pub params: GetParameters,
 }
 
 impl RawConnection {
     pub fn new(
         role: Role,
-        _tls_session: ArcTlsSession,
+        tls_session: ArcTlsSession,
         cid_event_entry: UnboundedSender<CidEvent>,
     ) -> Self {
         let reliable_frames = ArcReliableFrameDeque::with_capacity(0);
@@ -95,6 +98,18 @@ impl RawConnection {
             conn_error.clone(),
         );
 
+        let get_params = tls_session.keys_upgrade(
+            [
+                &initial.crypto_stream,
+                &hs.crypto_stream,
+                &data.crypto_stream,
+            ],
+            hs.keys.clone(),
+            data.one_rtt_keys.clone(),
+            handshake.clone(),
+            conn_error.clone(),
+        );
+
         Self {
             pathes,
             cid_registry,
@@ -108,6 +123,7 @@ impl RawConnection {
             datagrams,
             spin,
             error: conn_error,
+            params: get_params,
         }
     }
 
@@ -157,7 +173,11 @@ impl RawConnection {
             .clone()
     }
 
-    pub fn enter_closing(&self) -> (DashMap<Pathway, ArcPath>, CidRegistry, DataSpace) {
+    pub fn enter_closing(
+        &self,
+        error: &QuicError,
+    ) -> (DashMap<Pathway, ArcPath>, CidRegistry, DataSpace) {
+        self.flow_ctrl.on_error(error);
         (
             self.pathes.clone(),
             self.cid_registry.clone(),

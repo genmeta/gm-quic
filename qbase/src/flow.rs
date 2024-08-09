@@ -333,4 +333,9 @@ impl FlowController {
     pub fn recver(&self) -> ArcRecvController {
         self.recver.clone()
     }
+
+    pub fn on_error(&self, error: &QuicError) {
+        self.sender.on_error(error);
+        self.recver.on_error();
+    }
 }

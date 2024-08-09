@@ -123,7 +123,7 @@ impl ArcConnection {
     ) {
         let mut guard = self.0.lock().unwrap();
         let (pathes, cid_registry, data_space) = match *guard {
-            Raw(ref conn) => conn.enter_closing(),
+            Raw(ref conn) => conn.enter_closing(&error),
             _ => return,
         };
 

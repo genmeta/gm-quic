@@ -12,7 +12,9 @@ use qbase::{
         Parameters,
     },
     error::{Error, ErrorKind},
+    handshake::Handshake,
     packet::keys::{ArcKeys, ArcOneRttKeys},
+    streamid::Role,
 };
 use qrecovery::{space::Epoch, streams::crypto::CryptoStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -192,6 +194,7 @@ impl ArcTlsSession {
         crypto_streams: [&CryptoStream; 3],
         handshake_keys: ArcKeys,
         one_rtt_keys: ArcOneRttKeys,
+        handshake: Handshake,
         conn_error: ConnError,
     ) -> GetParameters {
         let get_parameters = GetParameters::default();
@@ -234,6 +237,7 @@ impl ArcTlsSession {
                 crypto_streams[1].writer(),
                 crypto_streams[2].writer(),
             ];
+            let handshake = handshake.clone();
             async move {
                 // rustls严格限制了tls握手过程中的其中各类消息的发送顺序，这就是由read_tls_msg函数的顺序调用的返回
                 // 值保证的。因此，其返回了密钥升级，则需要升级到相应密级，然后后续的数据都将在新密级下发送。
@@ -272,6 +276,11 @@ impl ArcTlsSession {
                     reader.abort();
                 }
                 get_parameters.on_handshake_done();
+
+                // The server obtains the 1RTT key, which means the handshake is complete.
+                if handshake.role() == Role::Server {
+                    handshake.done();
+                }
             }
         });
         get_parameters

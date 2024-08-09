@@ -191,6 +191,13 @@ impl Handshake {
             h.abort()
         }
     }
+
+    pub fn role(&self) -> Role {
+        match self {
+            Handshake::Client(_) => Role::Client,
+            Handshake::Server(_) => Role::Server,
+        }
+    }
 }
 
 #[cfg(test)]
