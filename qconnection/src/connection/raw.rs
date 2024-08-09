@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use dashmap::DashMap;
 use futures::channel::mpsc::{self, UnboundedSender};
 use qbase::{
+    error::Error as QuicError,
     flow::FlowController,
     handshake::Handshake,
     packet::{keys::ArcKeys, long, DataHeader, DataPacket, SpinBit},
@@ -157,7 +158,12 @@ impl RawConnection {
             .clone()
     }
 
-    pub fn enter_closing(&self) -> (DashMap<Pathway, ArcPath>, CidRegistry, DataSpace) {
+    pub fn enter_closing(
+        &self,
+        error: &QuicError,
+    ) -> (DashMap<Pathway, ArcPath>, CidRegistry, DataSpace) {
+        self.flow_ctrl.sender().on_error(error);
+        self.flow_ctrl.recver().on_error();
         (
             self.pathes.clone(),
             self.cid_registry.clone(),
