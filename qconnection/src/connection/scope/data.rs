@@ -340,26 +340,21 @@ impl DataScope {
         tokio::spawn({
             let streams = streams.clone();
             let flow_ctrl = flow_ctrl.clone();
-            let error = conn_error.clone();
+            let conn_error = conn_error.clone();
 
             async move {
                 while let Some(frame) = rcvd_stream_frames.next().await {
                     match streams.recv_data(&frame) {
                         Ok(new_data_size) => {
                             if let Err(e) = flow_ctrl.recver().on_new_rcvd(new_data_size) {
-                                ConnError::on_error(
-                                    &error,
-                                    QuicError::new(
-                                        ErrorKind::FlowControl,
-                                        frame.0.frame_type(),
-                                        format!("{} flow control overflow: {}", frame.0.id, e),
-                                    ),
-                                );
+                                conn_error.on_error(QuicError::new(
+                                    ErrorKind::FlowControl,
+                                    frame.0.frame_type(),
+                                    format!("{} flow control overflow: {}", frame.0.id, e),
+                                ));
                             }
                         }
-                        Err(e) => {
-                            ConnError::on_error(&error, e);
-                        }
+                        Err(e) => conn_error.on_error(e),
                     }
                 }
             }

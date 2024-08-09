@@ -36,7 +36,8 @@ impl InitialSpaceReader {
 
         // 2. 生成包头，预留2字节len，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
         let hdr = LongHeaderBuilder::with_cid(dcid, scid).initial(Vec::new());
-        if buf.len() <= hdr.size() + 2 {
+        // length字段预留2字节, 20字节为最小Payload长度，为了保护包头的Sample至少16字节
+        if buf.len() < hdr.size() + 2 + 20 {
             return None;
         }
         let (mut hdr_buf, payload_buf) = buf.split_at_mut(hdr.size() + 2);
@@ -98,6 +99,13 @@ impl InitialSpaceReader {
                     is_just_ack = false;
                     body_len += len - pkt_size;
                     pkt_size = len;
+                }
+                // payload(pn + body)长度不足20字节，填充之
+                if pn_len + body_len < 20 {
+                    let padding_len = 20 - pn_len - body_len;
+                    remain.put_bytes(0, padding_len);
+                    body_len += padding_len;
+                    pkt_size += padding_len;
                 }
 
                 length_buf.encode_varint(

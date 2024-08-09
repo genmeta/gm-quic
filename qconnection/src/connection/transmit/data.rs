@@ -48,7 +48,7 @@ impl DataSpaceReader {
 
     pub fn try_read_1rtt(
         &self,
-        pkt_buf: &mut [u8],
+        buf: &mut [u8],
         mut flow_limit: usize,
         dcid: ConnectionId,
         spin: SpinBit,
@@ -58,10 +58,11 @@ impl DataSpaceReader {
         // 0. 检查1rtt keys是否有效，没有则回退到0rtt包
         // 1. 生成包头，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
         let hdr = OneRttHeader { spin, dcid };
-        if pkt_buf.len() <= hdr.size() {
+        // 20字节为最小Payload长度，为了保护包头的Sample至少16字节
+        if buf.len() < hdr.size() + 20 {
             return None;
         }
-        let (mut hdr_buf, payload_buf) = pkt_buf.split_at_mut(hdr.size());
+        let (mut hdr_buf, payload_buf) = buf.split_at_mut(hdr.size());
 
         // 2. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
         let sent_pkt_records = self.space.sent_packets();
@@ -148,7 +149,13 @@ impl DataSpaceReader {
 
         let hdr_len = hdr_buf.len();
         let pn_len = pn_buf.len();
-        let body_size = body_size - body_buf.remaining_mut();
+        let mut body_size = body_size - body_buf.remaining_mut();
+        // payload(pn + body)长度不足20字节，填充之
+        if body_size + pn_len < 20 {
+            let padding_len = 20 - body_size - pn_len;
+            body_buf.put_bytes(0, padding_len);
+            body_size += padding_len;
+        }
         let sent_size = hdr_len + pn_len + body_size;
 
         hdr_buf.put_one_rtt_header(&hdr);
@@ -157,14 +164,8 @@ impl DataSpaceReader {
         // 11 保护包头，加密数据
         let pk_guard = keys.1.lock().unwrap();
         let (key_phase, pk) = pk_guard.get_local();
-        encrypt_packet(pk.as_ref(), pn, pkt_buf, hdr_len + pn_len);
-        protect_short_header(
-            keys.0.as_ref(),
-            key_phase,
-            pkt_buf,
-            hdr_len,
-            encoded_pn.size(),
-        );
+        encrypt_packet(pk.as_ref(), pn, buf, hdr_len + pn_len);
+        protect_short_header(keys.0.as_ref(), key_phase, buf, hdr_len, encoded_pn.size());
 
         Some((
             pn,
@@ -179,7 +180,7 @@ impl DataSpaceReader {
 
     pub fn try_read_0rtt(
         &self,
-        pkt_buf: &mut [u8],
+        buf: &mut [u8],
         mut flow_limit: usize,
         scid: ConnectionId,
         dcid: ConnectionId,
@@ -189,10 +190,11 @@ impl DataSpaceReader {
 
         // 2. 生成包头，预留2字节len，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
         let hdr = LongHeaderBuilder::with_cid(dcid, scid).zero_rtt();
-        if pkt_buf.len() <= hdr.size() + 2 {
+        // length字段预留2字节, 20字节为最小Payload长度，为了保护包头的Sample至少16字节
+        if buf.len() < hdr.size() + 2 + 20 {
             return None;
         }
-        let (mut hdr_buf, payload_buf) = pkt_buf.split_at_mut(hdr.size() + 2);
+        let (mut hdr_buf, payload_buf) = buf.split_at_mut(hdr.size() + 2);
 
         // 3. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
         let sent_pkt_records = self.space.sent_packets();
@@ -248,7 +250,13 @@ impl DataSpaceReader {
         // 8. 填充，保护头部，加密
         let hdr_len = hdr_buf.len();
         let pn_len = pn_buf.len();
-        let body_size = body_size - body_buf.remaining_mut();
+        let mut body_size = body_size - body_buf.remaining_mut();
+        // payload(pn + body)长度不足20字节，填充之
+        if body_size + pn_len < 20 {
+            let padding_len = 20 - body_size - pn_len;
+            body_buf.put_bytes(0, padding_len);
+            body_size += padding_len;
+        }
         let sent_size = hdr_len + 2 + pn_len + body_size;
 
         hdr_buf.put_long_header(&hdr);
@@ -258,8 +266,8 @@ impl DataSpaceReader {
         );
         pn_buf.put_packet_number(encoded_pn);
 
-        encrypt_packet(k.remote.packet.as_ref(), pn, pkt_buf, hdr_len + pn_len);
-        protect_long_header(k.remote.header.as_ref(), pkt_buf, hdr_len, pn_len);
+        encrypt_packet(k.remote.packet.as_ref(), pn, buf, hdr_len + pn_len);
+        protect_long_header(k.remote.header.as_ref(), buf, hdr_len, pn_len);
 
         // 0RTT包不能发送Ack
         Some((pn, is_ack_eliciting, sent_size, fresh_bytes, in_flight))
