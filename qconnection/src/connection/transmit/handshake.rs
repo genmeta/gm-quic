@@ -32,7 +32,8 @@ impl HandshakeSpaceReader {
 
         // 2. 生成包头，预留2字节len，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
         let hdr = LongHeaderBuilder::with_cid(dcid, scid).handshake();
-        if buf.len() <= hdr.size() + 2 {
+        // length字段预留2字节, 20字节为最小Payload长度，为了保护包头的Sample至少16字节
+        if buf.len() < hdr.size() + 2 + 20 {
             return None;
         }
         let (mut hdr_buf, payload_buf) = buf.split_at_mut(hdr.size() + 2);
@@ -74,7 +75,13 @@ impl HandshakeSpaceReader {
         // 7. 填充，保护头部，加密
         let hdr_len = hdr_buf.len();
         let pn_len = pn_buf.len();
-        let body_size = body_size - body_buf.remaining_mut();
+        let mut body_size = body_size - body_buf.remaining_mut();
+        // payload(pn + body)长度不足20字节，填充之
+        if body_size + pn_len < 20 {
+            let padding_len = 20 - body_size - pn_len;
+            body_buf.put_bytes(0, padding_len);
+            body_size += padding_len;
+        }
         let pkt_size = hdr_len + 2 + pn_len + body_size;
 
         hdr_buf.put_long_header(&hdr);
