@@ -1,6 +1,5 @@
 use std::{
-    future::Future,
-    pin::Pin,
+    io::IoSlice,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -13,7 +12,10 @@ use qbase::{
     flow::ArcSendControler,
     packet::SpinBit,
 };
-use qcongestion::{congestion::ArcCC, CongestionControl};
+use qcongestion::{
+    congestion::{ArcCC, MSS},
+    CongestionControl,
+};
 use qrecovery::space::Epoch;
 
 use super::{
@@ -25,7 +27,7 @@ use crate::connection::transmit::{
     data::DataSpaceReader, handshake::HandshakeSpaceReader, initial::InitialSpaceReader,
 };
 
-pub struct ReadIntoPacket {
+pub struct ReadIntoDatagrams {
     scid: ConnectionId,
     dcid: ArcCidCell,
     spin: Arc<AtomicBool>,
@@ -37,7 +39,7 @@ pub struct ReadIntoPacket {
     data_space_reader: DataSpaceReader,
 }
 
-impl ReadIntoPacket {
+impl ReadIntoDatagrams {
     fn read_into_datagram(
         &self,
         constraints: &mut Constraints,
@@ -185,12 +187,12 @@ impl ReadIntoPacket {
         }
         0
     }
-}
 
-impl Future for ReadIntoPacket {
-    type Output = Option<Vec<Vec<u8>>>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    pub fn poll_read(
+        &self,
+        cx: &mut Context<'_>,
+        buffers: &mut Vec<[u8; MSS]>,
+    ) -> Poll<Option<(usize, usize)>> {
         let dcid = ready!(self.dcid.poll_get_cid(cx));
         let send_quota = ready!(self.cc.poll_send(cx));
         let credit_limit = ready!(self.anti_amplifier.poll_balance(cx));
@@ -209,15 +211,24 @@ impl Future for ReadIntoPacket {
         let mut constraints = Constraints::new(credit_limit, send_quota);
 
         // 遍历，填充每一个包
-        let mut datagrams: Vec<Vec<u8>> = Vec::new();
+
         let mut total_bytes = 0;
         let mut total_fresh_bytes = 0;
+
+        let mut buffers_used = 0;
+        let mut last_buffer_written = 0;
+
         while constraints.is_available() {
-            let mut datagram = Vec::with_capacity(1200);
+            let datagarm = match buffers.get_mut(buffers_used) {
+                Some(buffer) => buffer,
+                None => {
+                    buffers.push([0; MSS]);
+                    &mut buffers[buffers_used]
+                }
+            };
 
             let (datagram_size, fresh_bytes) =
-                self.read_into_datagram(&mut constraints, flow_limit, datagram.as_mut(), dcid);
-
+                self.read_into_datagram(&mut constraints, flow_limit, datagarm, dcid);
             // 啥也没读到，就结束吧
             // TODO: 若因没有数据可发，将waker挂载到数据控制器上一份，包括帧数据、流数据，
             //       一旦有任何数据发送，唤醒该任务发一次
@@ -225,24 +236,46 @@ impl Future for ReadIntoPacket {
                 break;
             }
 
-            unsafe {
-                datagram.set_len(datagram_size);
-            }
-            datagrams.push(datagram);
             total_bytes += datagram_size;
             total_fresh_bytes += fresh_bytes;
+            buffers_used += 1;
+            last_buffer_written = datagram_size;
+        }
+
+        if buffers_used == 0 {
+            // 就算Constraints允许发送，但也不一定真的有数据供发送
+            return Poll::Pending;
         }
 
         // 最终将要发送前，反馈给各个限制条件。除了拥塞控制的，在每个Epoch发包后，都已直接反馈给cc过了
         self.anti_amplifier.on_sent(total_bytes);
         send_flow_credit.post_sent(total_fresh_bytes);
+        // 返回这个后，datagrams肯定等着被发送了
+        Poll::Ready(Some((buffers_used, last_buffer_written)))
+    }
 
-        if datagrams.is_empty() {
-            // 就算Constraints允许发送，但也不一定真的有数据供发送
-            Poll::Pending
-        } else {
-            // 返回这个后，datagrams肯定等着被发送了
-            Poll::Ready(Some(datagrams))
-        }
+    pub async fn read<'ds>(&self, buffers: &'ds mut Vec<[u8; MSS]>) -> Option<Vec<IoSlice<'ds>>> {
+        // 直接让poll_read_into_packet返回Vec<IoSlice<'ds>>会带来问题
+        // 所以这里就让poll返回生成Vec<IoSlice<'ds>>所需要的数据。虽然会导致poll_read_into_packet的返回和这里的返回不一致
+
+        // 如果是别的写法，比如为一个包装了buffer和Reader的结构体实现Future，在poll方法内，通过self.buffer拿到buffer会让'ds周期协变，小于'ds
+        // 协变的问题可以通过在buffer上包装一个Option来解决，使用时将buffer take出来，这样buffer的生命周期绕过了Pin<&mut Self>，得到的buffer具有'ds周期
+        // 但是，如果poll_read_into_packet返回Vec<IoSlice<'ds>>返回了Pending，此时需要将buffer返还到Option中
+        // rust借用检查器不够智能，认为Poll::Pending借用了buffer，所以无法将buffer归还回Option中
+        // 这个问题可以通过让poll_read_into_packet_inner返回Result<Vec<IoSlice<'ds>>, &'ds mut Vec<[u8; MSS]>>>来解决，Err对应Pending
+        // 但是但是这个是在太过于诡异，太过于不直观，所以这里就不这么做了
+
+        let (buffers_used, last_buffer_written) =
+        // 对于这种写法，如果返回Vec<IoSlice<'ds>>，会受制于FnMut的捕获机制，buffer的周期会因为捕获而协变，和上一个方案的第一个问题是一致的     
+            core::future::poll_fn(|cx| self.poll_read(cx, buffers)).await?;
+
+        debug_assert!(buffers_used > 0);
+        let datagrams = (0..buffers_used - 1)
+            .map(|i| IoSlice::new(&buffers[i]))
+            .chain(Some(IoSlice::new(
+                &buffers[buffers_used - 1][..last_buffer_written],
+            )))
+            .collect::<Vec<_>>();
+        Some(datagrams)
     }
 }
