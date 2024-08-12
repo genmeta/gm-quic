@@ -183,7 +183,6 @@ pub(super) mod ext {
             Self { dcid, scid }
         }
 
-        /// TODO: Initail/Handshake/ZeroRtt Header should not include length field
         pub fn initial(self, token: Vec<u8>) -> LongHeader<Initial> {
             self.wrap(Initial { token })
         }

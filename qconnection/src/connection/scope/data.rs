@@ -145,8 +145,7 @@ impl DataScope {
         */
 
         // Assemble the pipelines of frame processing
-        // TODO: impl endpoint router
-        // pipe rcvd_new_token_frames
+        // TODO: pipe rcvd_new_token_frames
         pipe!(rcvd_max_data_frames |> flow_ctrl.sender, recv_max_data_frame);
         pipe!(rcvd_data_blocked_frames |> flow_ctrl.recver, recv_data_blocked_frame);
         pipe!(@error(conn_error) rcvd_new_cid_frames |> cid_registry.remote, recv_new_cid_frame);

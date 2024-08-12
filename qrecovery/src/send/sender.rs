@@ -195,9 +195,6 @@ impl SendingSender {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        // TODO: 应该使用一个错误, write after close
-        assert!(self.shutdown_waker.is_none());
-        assert!(self.writable_waker.is_none());
         if let Some(err_code) = self.cancel_state {
             Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,

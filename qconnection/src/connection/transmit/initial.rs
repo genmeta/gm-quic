@@ -88,7 +88,6 @@ impl InitialSpaceReader {
         hdr_buf.put_long_header(&hdr);
         pn_buf.put_packet_number(encoded_pn);
 
-        // TODO: 此时返回一个闭包，用于如果后续没什么数据发送了，就Padding至1200字节
         Some((
             move |buf: &mut [u8], len: usize| -> (u64, bool, bool, usize, bool, Option<u64>) {
                 // 6. 填充，保护头部，加密
