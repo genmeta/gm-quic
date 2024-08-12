@@ -4,8 +4,8 @@ use qbase::{
     error::{Error as QuicError, ErrorKind},
     flow,
     frame::{
-        AckFrame, BeFrame, DataFrame, Frame, FrameReader, HandshakeDoneFrame, PathChallengeFrame,
-        PathResponseFrame, ReliableFrame, StreamFrame,
+        AckFrame, BeFrame, DataFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
+        ReliableFrame, StreamFrame,
     },
     handshake::Handshake,
     packet::{
@@ -15,7 +15,6 @@ use qbase::{
         header::GetType,
         keys::{ArcKeys, ArcOneRttKeys},
     },
-    streamid::Role,
 };
 use qrecovery::{
     reliable::{ArcReliableFrameDeque, GuaranteedFrame},
@@ -58,7 +57,7 @@ impl DataScope {
     pub fn build(
         &self,
         pathes: &ArcPathes,
-        handshake: &Handshake,
+        handshake: &Handshake<ArcReliableFrameDeque>,
         streams: &DataStreams,
         datagrams: &DatagramFlow,
         cid_registry: &CidRegistry,
@@ -164,10 +163,6 @@ impl DataScope {
         pipe!(@error(conn_error) rcvd_datagram_frames |> *datagrams, recv_datagram);
         pipe!(rcvd_ack_frames |> on_data_acked);
 
-        if handshake.role() == Role::Server {
-            self.handle_server_handshake_done(handshake, streams.reliable_frame_deque.clone());
-        }
-
         self.handle_stream_frame_with_flow_ctrl(
             streams,
             flow_ctrl,
@@ -184,6 +179,7 @@ impl DataScope {
         let join_handler1 = self.parse_rcvd_1rtt_packet_and_dispatch_frames(
             rcvd_1rtt_packets,
             pathes.clone(),
+            handshake,
             dispatch_data_frame,
             conn_error.clone(),
         );
@@ -259,12 +255,14 @@ impl DataScope {
         &self,
         mut rcvd_packets: RcvdPackets,
         pathes: ArcPathes,
+        handshake: &Handshake<ArcReliableFrameDeque>,
         dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
         conn_error: ConnError,
     ) -> JoinHandle<RcvdPackets> {
         tokio::spawn({
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.one_rtt_keys.clone();
+            let mut handshake = handshake.clone();
             async move {
                 while let Some((mut packet, pathway, usc)) = rcvd_packets.next().await {
                     let pty = packet.header.get_type();
@@ -292,6 +290,7 @@ impl DataScope {
                     let body_offset = packet.offset + undecoded_pn.size();
                     let pk = pk.lock().unwrap().get_remote(key_phase, pn);
                     decrypt_packet(pk.as_ref(), pn, packet.bytes.as_mut(), body_offset).unwrap();
+                    handshake.done();
                     let path = pathes.get(pathway, usc);
                     let body = packet.bytes.split_off(body_offset);
                     match FrameReader::new(body.freeze(), pty).try_fold(
@@ -363,25 +362,6 @@ impl DataScope {
                             }
                         }
                         Err(e) => conn_error.on_error(e),
-                    }
-                }
-            }
-        });
-    }
-
-    // The server calls this function when creating a data space.
-    fn handle_server_handshake_done(
-        &self,
-        handshake: &Handshake,
-        mut frames: ArcReliableFrameDeque,
-    ) {
-        assert_eq!(handshake.role(), Role::Server);
-        tokio::spawn({
-            let handshake = handshake.clone();
-            async move {
-                if let Some(hs) = handshake.is_done() {
-                    if hs.await.is_some() {
-                        frames.extend([HandshakeDoneFrame]);
                     }
                 }
             }

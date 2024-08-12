@@ -76,16 +76,6 @@ pub trait UniqueCid {
 }
 
 #[cfg(test)]
-pub struct AlwaysUnique;
-
-#[cfg(test)]
-impl UniqueCid for AlwaysUnique {
-    fn is_unique_cid(&self, _cid: &ConnectionId) -> bool {
-        true
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
