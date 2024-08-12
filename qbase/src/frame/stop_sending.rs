@@ -56,13 +56,8 @@ pub fn be_stop_sending_frame(input: &[u8]) -> nom::IResult<&[u8], StopSendingFra
     )(input)
 }
 
-// BufMut write extension for STOP_SENDING_FRAME
-pub trait WriteStopSendingFrame {
-    fn put_stop_sending_frame(&mut self, frame: &StopSendingFrame);
-}
-
-impl<T: bytes::BufMut> WriteStopSendingFrame for T {
-    fn put_stop_sending_frame(&mut self, frame: &StopSendingFrame) {
+impl<T: bytes::BufMut> super::io::WriteFrame<StopSendingFrame> for T {
+    fn put_frame(&mut self, frame: &StopSendingFrame) {
         self.put_u8(STOP_SENDING_FRAME_TYPE);
         self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.app_err_code);
@@ -71,8 +66,8 @@ impl<T: bytes::BufMut> WriteStopSendingFrame for T {
 
 #[cfg(test)]
 mod tests {
-    use super::{StopSendingFrame, WriteStopSendingFrame, STOP_SENDING_FRAME_TYPE};
-    use crate::varint::VarInt;
+    use super::{StopSendingFrame, STOP_SENDING_FRAME_TYPE};
+    use crate::{frame::io::WriteFrame, varint::VarInt};
 
     #[test]
     fn test_parse_stop_sending_frame() {
@@ -85,7 +80,7 @@ mod tests {
             app_err_code: VarInt::from_u32(0x5678),
         };
         let mut buf = Vec::new();
-        buf.put_stop_sending_frame(&frame);
+        buf.put_frame(&frame);
         let (input, parsed) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() == STOP_SENDING_FRAME_TYPE as u64 {
                 be_stop_sending_frame
@@ -105,7 +100,7 @@ mod tests {
             stream_id: VarInt::from_u32(0x1234).into(),
             app_err_code: VarInt::from_u32(0x5678),
         };
-        buf.put_stop_sending_frame(&frame);
+        buf.put_frame(&frame);
         assert_eq!(
             buf,
             vec![STOP_SENDING_FRAME_TYPE, 0x52, 0x34, 0x80, 0, 0x56, 0x78]

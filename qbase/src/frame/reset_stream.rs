@@ -61,13 +61,8 @@ pub fn be_reset_stream_frame(input: &[u8]) -> nom::IResult<&[u8], ResetStreamFra
     )(input)
 }
 
-// BufMut write extension for RESET_STREAM_FRAME
-pub trait WriteResetStreamFrame {
-    fn put_reset_stream_frame(&mut self, frame: &ResetStreamFrame);
-}
-
-impl<T: bytes::BufMut> WriteResetStreamFrame for T {
-    fn put_reset_stream_frame(&mut self, frame: &ResetStreamFrame) {
+impl<T: bytes::BufMut> super::io::WriteFrame<ResetStreamFrame> for T {
+    fn put_frame(&mut self, frame: &ResetStreamFrame) {
         self.put_u8(RESET_STREAM_FRAME_TYPE);
         self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.app_error_code);
@@ -79,8 +74,11 @@ impl<T: bytes::BufMut> WriteResetStreamFrame for T {
 mod tests {
     use nom::combinator::flat_map;
 
-    use super::{ResetStreamFrame, WriteResetStreamFrame, RESET_STREAM_FRAME_TYPE};
-    use crate::varint::{be_varint, VarInt};
+    use super::{ResetStreamFrame, RESET_STREAM_FRAME_TYPE};
+    use crate::{
+        frame::io::WriteFrame,
+        varint::{be_varint, VarInt},
+    };
 
     #[test]
     fn test_read_reset_stream_frame() {
@@ -119,7 +117,7 @@ mod tests {
     #[test]
     fn test_write_reset_stream_frame() {
         let mut buf = Vec::new();
-        buf.put_reset_stream_frame(&ResetStreamFrame {
+        buf.put_frame(&ResetStreamFrame {
             stream_id: VarInt::from_u32(0x1234).into(),
             // 0x5678 = 0b01010110 01111000 => 0b10000000 0x00 0x56 0x78
             app_error_code: VarInt::from_u32(0x5678),

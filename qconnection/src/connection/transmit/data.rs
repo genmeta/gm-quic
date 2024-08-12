@@ -6,7 +6,7 @@ use std::{
 use bytes::BufMut;
 use qbase::{
     cid::ConnectionId,
-    frame::{DataFrame, PathChallengeFrame, PathResponseFrame},
+    frame::{PathChallengeFrame, PathResponseFrame},
     packet::{
         encrypt::{encrypt_packet, protect_long_header, protect_short_header},
         header::{WriteLongHeader, WriteOneRttHeader},
@@ -119,7 +119,7 @@ impl DataSpaceReader {
 
         // 7. 象征性地检查一下CryptoStream
         while let Some((frame, n)) = self.crypto_stream_outgoing.try_read_data(body_buf) {
-            send_guard.record_frame(GuaranteedFrame::Data(DataFrame::Crypto(frame)));
+            send_guard.record_frame(GuaranteedFrame::Crypto(frame));
             body_buf = &mut body_buf[n..];
             is_ack_eliciting = true;
             is_just_ack = false;
@@ -129,7 +129,7 @@ impl DataSpaceReader {
         // 8. 检查DataStreams是否需要发送，若有，且符合（constraints + buf）节制，写入，burst、发包记录都记录
         let mut fresh_bytes = 0;
         while let Some((frame, n, m)) = self.streams.try_read_data(body_buf, flow_limit) {
-            send_guard.record_frame(GuaranteedFrame::Data(DataFrame::Stream(frame)));
+            send_guard.record_frame(GuaranteedFrame::Stream(frame));
             flow_limit -= m;
             fresh_bytes += m;
             body_buf = &mut body_buf[n..];
@@ -235,7 +235,7 @@ impl DataSpaceReader {
         // TODO: 要注意和Datagrams的公平了
         let mut fresh_bytes = 0;
         while let Some((frame, n, m)) = self.streams.try_read_data(body_buf, flow_limit) {
-            send_guard.record_frame(GuaranteedFrame::Data(DataFrame::Stream(frame)));
+            send_guard.record_frame(GuaranteedFrame::Stream(frame));
             body_buf = &mut body_buf[n..];
             flow_limit -= m;
             fresh_bytes += m;

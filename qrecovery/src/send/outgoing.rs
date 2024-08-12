@@ -10,10 +10,7 @@ use bytes::BufMut;
 use futures::ready;
 use qbase::{
     error::Error as QuicError,
-    frame::{
-        io::{WritePaddingFrame, WriteStreamFrame},
-        ShouldCarryLength, StreamFrame,
-    },
+    frame::{io::WriteDataFrame, ShouldCarryLength, StreamFrame},
     streamid::StreamId,
     util::DescribeData,
     varint::VARINT_MAX,
@@ -53,17 +50,14 @@ impl Outgoing {
             frame.set_eos_flag(is_eos);
             match frame.should_carry_length(capacity) {
                 ShouldCarryLength::NoProblem => {
-                    buf.put_stream_frame(&frame, &data);
+                    buf.put_data_frame(&frame, &data);
                 }
                 ShouldCarryLength::PaddingFirst(n) => {
-                    for _ in 0..n {
-                        buf.put_padding_frame();
-                    }
-                    buf.put_stream_frame(&frame, &data);
+                    (&mut buf[n..]).put_data_frame(&frame, &data);
                 }
                 ShouldCarryLength::ShouldAfter(_not_carry_len, _carry_len) => {
                     frame.carry_length();
-                    buf.put_stream_frame(&frame, &data);
+                    buf.put_data_frame(&frame, &data);
                 }
             }
             (frame, data.len(), is_fresh, capacity - buf.remaining_mut())

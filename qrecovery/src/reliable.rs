@@ -5,7 +5,7 @@ use std::{
 
 use deref_derive::{Deref, DerefMut};
 use enum_dispatch::enum_dispatch;
-use qbase::frame::{DataFrame, ReliableFrame};
+use qbase::frame::{CryptoFrame, ReliableFrame, StreamFrame};
 
 pub mod rcvdpkt;
 pub mod sentpkt;
@@ -13,7 +13,8 @@ pub mod sentpkt;
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
 pub enum GuaranteedFrame {
-    Data(DataFrame),
+    Stream(StreamFrame),
+    Crypto(CryptoFrame),
     Reliable(ReliableFrame),
 }
 

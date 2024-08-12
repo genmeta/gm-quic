@@ -197,19 +197,12 @@ pub fn stream_frame_with_flag(flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8],
     }
 }
 
-pub trait WriteStreamFrame<D>: WriteData<D>
-where
-    D: DescribeData,
-{
-    fn put_stream_frame(&mut self, frame: &StreamFrame, data: &D);
-}
-
-impl<T, D> WriteStreamFrame<D> for T
+impl<T, D> super::io::WriteDataFrame<StreamFrame, D> for T
 where
     T: bytes::BufMut + WriteData<D>,
     D: DescribeData,
 {
-    fn put_stream_frame(&mut self, frame: &StreamFrame, data: &D) {
+    fn put_data_frame(&mut self, frame: &StreamFrame, data: &D) {
         let mut stream_type = STREAM_FRAME_TYPE;
         if frame.offset.into_inner() != 0 {
             stream_type |= 0x04;
@@ -233,8 +226,11 @@ mod tests {
     use bytes::Bytes;
     use nom::combinator::flat_map;
 
-    use super::{stream_frame_with_flag, StreamFrame, WriteStreamFrame, STREAM_FRAME_TYPE};
-    use crate::varint::{be_varint, VarInt};
+    use super::{stream_frame_with_flag, StreamFrame, STREAM_FRAME_TYPE};
+    use crate::{
+        frame::io::WriteDataFrame,
+        varint::{be_varint, VarInt},
+    };
 
     #[test]
     fn test_read_stream_frame() {
@@ -307,7 +303,7 @@ mod tests {
             length: 11,
             flag: 0b011,
         };
-        buf.put_stream_frame(&frame, b"hello world");
+        buf.put_data_frame(&frame, b"hello world");
         assert_eq!(
             buf,
             vec![
@@ -326,7 +322,7 @@ mod tests {
             length: 11,
             flag: 0b001,
         };
-        buf.put_stream_frame(&frame, b"hello world");
+        buf.put_data_frame(&frame, b"hello world");
         assert_eq!(
             buf,
             vec![0x9, 0x52, 0x34, b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o', b'r', b'l', b'd']
@@ -342,7 +338,7 @@ mod tests {
             length: 11,
             flag: 0b111,
         };
-        buf.put_stream_frame(&frame, b"hello world");
+        buf.put_data_frame(&frame, b"hello world");
         assert_eq!(
             buf,
             vec![
@@ -361,7 +357,7 @@ mod tests {
             length: 11,
             flag: 0b110,
         };
-        buf.put_stream_frame(&frame, b"hello world");
+        buf.put_data_frame(&frame, b"hello world");
         assert_eq!(
             buf,
             vec![

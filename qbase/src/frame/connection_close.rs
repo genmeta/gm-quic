@@ -108,12 +108,9 @@ pub fn connection_close_frame_at_layer(
         ))
     }
 }
-pub trait WriteConnectionCloseFrame {
-    fn put_connection_close_frame(&mut self, frame: &ConnectionCloseFrame);
-}
 
-impl<T: bytes::BufMut> WriteConnectionCloseFrame for T {
-    fn put_connection_close_frame(&mut self, frame: &ConnectionCloseFrame) {
+impl<T: bytes::BufMut> super::io::WriteFrame<ConnectionCloseFrame> for T {
+    fn put_frame(&mut self, frame: &ConnectionCloseFrame) {
         use crate::{frame::WriteFrameType, varint::WriteVarInt};
         let layer = if frame.frame_type.is_some() {
             QUIC_LAYER
@@ -132,7 +129,7 @@ impl<T: bytes::BufMut> WriteConnectionCloseFrame for T {
 
 #[cfg(test)]
 mod tests {
-    use crate::error::ErrorKind;
+    use crate::{error::ErrorKind, frame::io::WriteFrame};
 
     #[test]
     fn test_read_connection_close_frame() {
@@ -171,14 +168,14 @@ mod tests {
 
     #[test]
     fn test_write_connection_close_frame() {
-        use super::{FrameType, WriteConnectionCloseFrame};
+        use super::FrameType;
         let mut buf = Vec::<u8>::new();
         let frame = super::ConnectionCloseFrame {
             error_kind: ErrorKind::FlowControl,
             frame_type: Some(FrameType::Stream(0b110)),
             reason: "wrong".into(),
         };
-        buf.put_connection_close_frame(&frame);
+        buf.put_frame(&frame);
         assert_eq!(
             buf,
             vec![

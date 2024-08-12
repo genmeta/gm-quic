@@ -233,7 +233,7 @@ pub fn be_frame_type(input: &[u8]) -> nom::IResult<&[u8], FrameType, Error> {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame)]
+#[enum_dispatch(BeFrame, WriteFrame)]
 pub enum StreamCtlFrame {
     ResetStream(ResetStreamFrame),
     StopSending(StopSendingFrame),
@@ -244,14 +244,7 @@ pub enum StreamCtlFrame {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame)]
-pub enum DataFrame {
-    Crypto(CryptoFrame),
-    Stream(StreamFrame),
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame)]
+#[enum_dispatch(BeFrame, WriteFrame)]
 pub enum ReliableFrame {
     NewToken(NewTokenFrame),
     MaxData(MaxDataFrame),
@@ -276,8 +269,9 @@ pub enum Frame {
     HandshakeDone(HandshakeDoneFrame),
     Challenge(PathChallengeFrame),
     Response(PathResponseFrame),
-    Stream(StreamCtlFrame),
-    Data(DataFrame, Bytes),
+    StreamCtl(StreamCtlFrame),
+    Stream(StreamFrame, Bytes),
+    Crypto(CryptoFrame, Bytes),
     Datagram(DatagramFrame, Bytes),
 }
 

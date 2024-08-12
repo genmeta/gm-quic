@@ -8,7 +8,7 @@ mod send {
 
     use bytes::BufMut;
     use qbase::{
-        frame::{io::WriteCryptoFrame, CryptoFrame},
+        frame::{io::WriteDataFrame, CryptoFrame},
         util::DescribeData,
         varint::{VarInt, VARINT_MAX},
     };
@@ -32,7 +32,7 @@ mod send {
                     offset: VarInt::from_u64(offset).unwrap(),
                     length: VarInt::try_from(data.len()).unwrap(),
                 };
-                buffer.put_crypto_frame(&frame, &data);
+                buffer.put_data_frame(&frame, &data);
                 let written = buf_len - buffer.remaining_mut();
                 Some((frame, written))
             } else {
