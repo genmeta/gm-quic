@@ -1,6 +1,6 @@
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
-    frame::{AckFrame, DataFrame, Frame, FrameReader},
+    frame::{AckFrame, Frame, FrameReader},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::GetType,
@@ -47,13 +47,11 @@ impl InitialScope {
 
         let dispatch_frame = move |frame: Frame, path: &RawPath| {
             match frame {
-                Frame::Ack(ack_frame) => {
-                    path.on_ack(Epoch::Initial, &ack_frame);
-                    _ = ack_frames_entry.unbounded_send(ack_frame);
+                Frame::Ack(f) => {
+                    path.on_ack(Epoch::Initial, &f);
+                    _ = ack_frames_entry.unbounded_send(f)
                 }
-                Frame::Data(DataFrame::Crypto(crypto), bytes) => {
-                    _ = crypto_frames_entry.unbounded_send((crypto, bytes));
-                }
+                Frame::Crypto(f, bytes) => _ = crypto_frames_entry.unbounded_send((f, bytes)),
                 Frame::Close(_) => { /* trustless */ }
                 Frame::Padding(_) | Frame::Ping(_) => {}
                 _ => unreachable!("unexpected frame: {:?} in initial packet", frame),

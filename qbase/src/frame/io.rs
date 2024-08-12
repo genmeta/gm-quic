@@ -12,6 +12,7 @@ use super::{
     stream_data_blocked::be_stream_data_blocked_frame,
     streams_blocked::streams_blocked_frame_with_dir, *,
 };
+use crate::util::DescribeData;
 
 /// Some frames like `STREAM` and `CRYPTO` have a data body, which use `bytes::Bytes` to store.
 fn complete_frame(
@@ -38,19 +39,19 @@ fn complete_frame(
         FrameType::HandshakeDone => Ok((input, Frame::HandshakeDone(HandshakeDoneFrame))),
         FrameType::NewToken => map(be_new_token_frame, Frame::NewToken)(input),
         FrameType::Ack(ecn) => map(ack_frame_with_flag(ecn), Frame::Ack)(input),
-        FrameType::ResetStream => map(be_reset_stream_frame, |f| Frame::Stream(f.into()))(input),
-        FrameType::StopSending => map(be_stop_sending_frame, |f| Frame::Stream(f.into()))(input),
+        FrameType::ResetStream => map(be_reset_stream_frame, |f| Frame::StreamCtl(f.into()))(input),
+        FrameType::StopSending => map(be_stop_sending_frame, |f| Frame::StreamCtl(f.into()))(input),
         FrameType::MaxStreamData => {
-            map(be_max_stream_data_frame, |f| Frame::Stream(f.into()))(input)
+            map(be_max_stream_data_frame, |f| Frame::StreamCtl(f.into()))(input)
         }
-        FrameType::MaxStreams(dir) => {
-            map(max_streams_frame_with_dir(dir), |f| Frame::Stream(f.into()))(input)
-        }
+        FrameType::MaxStreams(dir) => map(max_streams_frame_with_dir(dir), |f| {
+            Frame::StreamCtl(f.into())
+        })(input),
         FrameType::StreamsBlocked(dir) => map(streams_blocked_frame_with_dir(dir), |f| {
-            Frame::Stream(f.into())
+            Frame::StreamCtl(f.into())
         })(input),
         FrameType::StreamDataBlocked => {
-            map(be_stream_data_blocked_frame, |f| Frame::Stream(f.into()))(input)
+            map(be_stream_data_blocked_frame, |f| Frame::StreamCtl(f.into()))(input)
         }
         FrameType::Crypto => {
             let (input, frame) = be_crypto_frame(input)?;
@@ -60,7 +61,7 @@ fn complete_frame(
                 Err(nom::Err::Incomplete(nom::Needed::new(len - input.len())))
             } else {
                 let data = raw.slice(start..start + len);
-                Ok((&input[len..], Frame::Data(DataFrame::Crypto(frame), data)))
+                Ok((&input[len..], Frame::Crypto(frame, data)))
             }
         }
         FrameType::Stream(flag) => {
@@ -71,7 +72,7 @@ fn complete_frame(
                 Err(nom::Err::Incomplete(nom::Needed::new(len - input.len())))
             } else {
                 let data = raw.slice(start..start + len);
-                Ok((&input[len..], Frame::Data(DataFrame::Stream(frame), data)))
+                Ok((&input[len..], Frame::Stream(frame, data)))
             }
         }
         FrameType::Datagram(with_len) => {
@@ -123,33 +124,11 @@ pub fn be_frame(raw: &Bytes, packet_type: Type) -> Result<(usize, Frame, bool), 
     ))
 }
 
-pub use super::{
-    ack::WriteAckFrame, connection_close::WriteConnectionCloseFrame, crypto::WriteCryptoFrame,
-    data_blocked::WriteDataBlockedFrame, datagram::WriteDatagramFrame,
-    handshake_done::WriteHandshakeDoneFrame, max_data::WriteMaxDataFrame,
-    new_connection_id::WriteNewConnectionIdFrame, new_token::WriteNewTokenFrame,
-    padding::WritePaddingFrame, ping::WritePingFrame,
-    retire_connection_id::WriteRetireConnectionIdFrame, stream::WriteStreamFrame,
-};
-use super::{
-    max_stream_data::WriteMaxStreamDataFrame, max_streams::WriteMaxStreamsFrame,
-    reset_stream::WriteResetStreamFrame, stop_sending::WriteStopSendingFrame,
-    stream_data_blocked::WriteStreamDataBlockedFrame, streams_blocked::WriteStreamsBlockedFrame,
-};
-
+#[enum_dispatch::enum_dispatch]
 pub trait WriteFrame<F> {
     fn put_frame(&mut self, frame: &F);
 }
 
-impl<T: bytes::BufMut> WriteFrame<StreamCtlFrame> for T {
-    fn put_frame(&mut self, frame: &StreamCtlFrame) {
-        match frame {
-            StreamCtlFrame::ResetStream(frame) => self.put_reset_stream_frame(frame),
-            StreamCtlFrame::StopSending(frame) => self.put_stop_sending_frame(frame),
-            StreamCtlFrame::MaxStreamData(frame) => self.put_max_stream_data_frame(frame),
-            StreamCtlFrame::MaxStreams(frame) => self.put_max_streams_frame(frame),
-            StreamCtlFrame::StreamDataBlocked(frame) => self.put_stream_data_blocked_frame(frame),
-            StreamCtlFrame::StreamsBlocked(frame) => self.put_streams_blocked_frame(frame),
-        }
-    }
+pub trait WriteDataFrame<F, D: DescribeData> {
+    fn put_data_frame(&mut self, frame: &F, data: &D);
 }

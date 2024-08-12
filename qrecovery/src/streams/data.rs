@@ -290,7 +290,7 @@ impl RawDataStreams {
             .map(|incoming| incoming.recv_data(stream_frame, body.clone()));
 
         match ret {
-            Some(recv_ret) => return recv_ret,
+            Some(recv_ret) => recv_ret,
             // 该流已结束，收到的数据将被忽略
             None => Ok(0),
         }

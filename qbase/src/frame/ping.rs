@@ -36,20 +36,15 @@ pub fn be_ping_frame(input: &[u8]) -> nom::IResult<&[u8], PingFrame> {
     Ok((input, PingFrame))
 }
 
-// BufMut write extension for PING_FRAME
-pub trait WritePingFrame {
-    fn put_ping_frame(&mut self);
-}
-
-impl<T: bytes::BufMut> WritePingFrame for T {
-    fn put_ping_frame(&mut self) {
+impl<T: bytes::BufMut> super::io::WriteFrame<PingFrame> for T {
+    fn put_frame(&mut self, _: &PingFrame) {
         self.put_u8(PING_FRAME_TYPE);
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::{PingFrame, PING_FRAME_TYPE};
+    use crate::frame::io::WriteFrame;
 
     #[test]
     fn test_read_ping_frame() {
@@ -72,9 +67,8 @@ mod tests {
 
     #[test]
     fn test_write_ping_frame() {
-        use super::WritePingFrame;
         let mut buf = Vec::new();
-        buf.put_ping_frame();
+        buf.put_frame(&PingFrame);
         assert_eq!(buf, vec![PING_FRAME_TYPE]);
     }
 }

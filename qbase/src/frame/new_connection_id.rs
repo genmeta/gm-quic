@@ -105,20 +105,6 @@ pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnec
     ))
 }
 
-pub trait WriteNewConnectionIdFrame {
-    fn put_new_connection_id_frame(&mut self, frame: &NewConnectionIdFrame);
-}
-
-impl<T: bytes::BufMut> WriteNewConnectionIdFrame for T {
-    fn put_new_connection_id_frame(&mut self, frame: &NewConnectionIdFrame) {
-        self.put_u8(NEW_CONNECTION_ID_FRAME_TYPE);
-        self.put_varint(&frame.sequence);
-        self.put_varint(&frame.retire_prior_to);
-        self.put_connection_id(&frame.id);
-        self.put_slice(&frame.reset_token);
-    }
-}
-
 impl<T: bytes::BufMut> super::io::WriteFrame<NewConnectionIdFrame> for T {
     fn put_frame(&mut self, frame: &NewConnectionIdFrame) {
         self.put_u8(NEW_CONNECTION_ID_FRAME_TYPE);

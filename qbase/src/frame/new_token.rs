@@ -52,20 +52,17 @@ pub fn be_new_token_frame(input: &[u8]) -> nom::IResult<&[u8], NewTokenFrame> {
     })(input)
 }
 
-pub trait WriteNewTokenFrame {
-    fn put_new_token_frame(&mut self, frame: &NewTokenFrame);
-}
-
-impl<T: bytes::BufMut> WriteNewTokenFrame for T {
-    fn put_new_token_frame(&mut self, frame: &NewTokenFrame) {
+impl<T: bytes::BufMut> super::io::WriteFrame<NewTokenFrame> for T {
+    fn put_frame(&mut self, frame: &NewTokenFrame) {
         self.put_u8(NEW_TOKEN_FRAME_TYPE);
         self.put_varint(&VarInt::from_u32(frame.token.len() as u32));
         self.put_slice(&frame.token);
     }
 }
-
 #[cfg(test)]
 mod tests {
+    use crate::frame::io::WriteFrame;
+
     #[test]
     fn test_read_new_token_frame() {
         use super::be_new_token_frame;
@@ -77,12 +74,11 @@ mod tests {
 
     #[test]
     fn test_write_new_token_frame() {
-        use super::WriteNewTokenFrame;
         let mut buf = Vec::<u8>::new();
         let frame = super::NewTokenFrame {
             token: vec![0x01, 0x02],
         };
-        buf.put_new_token_frame(&frame);
+        buf.put_frame(&frame);
         assert_eq!(buf, vec![0x07, 0x02, 0x01, 0x02]);
     }
 }

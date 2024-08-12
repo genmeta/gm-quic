@@ -1,6 +1,6 @@
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
-    frame::{AckFrame, DataFrame, Frame, FrameReader},
+    frame::{AckFrame, Frame, FrameReader},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::GetType,
@@ -51,14 +51,12 @@ impl HandshakeScope {
         let dispatch_frame = {
             let conn_error = conn_error.clone();
             move |frame: Frame, path: &RawPath| match frame {
-                Frame::Ack(ack_frame) => {
-                    path.on_ack(Epoch::Initial, &ack_frame);
-                    _ = ack_frames_entry.unbounded_send(ack_frame);
+                Frame::Ack(f) => {
+                    path.on_ack(Epoch::Initial, &f);
+                    _ = ack_frames_entry.unbounded_send(f);
                 }
-                Frame::Data(DataFrame::Crypto(crypto), bytes) => {
-                    _ = crypto_frames_entry.unbounded_send((crypto, bytes));
-                }
-                Frame::Close(ccf) => conn_error.on_ccf_rcvd(&ccf),
+                Frame::Close(f) => conn_error.on_ccf_rcvd(&f),
+                Frame::Crypto(f, bytes) => _ = crypto_frames_entry.unbounded_send((f, bytes)),
                 Frame::Padding(_) | Frame::Ping(_) => {}
                 _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
             }
@@ -128,7 +126,7 @@ impl HandshakeScope {
                     decrypt_packet(
                         keys.remote.packet.as_ref(),
                         pn,
-                        &mut packet.bytes.as_mut(),
+                        packet.bytes.as_mut(),
                         body_offset,
                     )
                     .unwrap();

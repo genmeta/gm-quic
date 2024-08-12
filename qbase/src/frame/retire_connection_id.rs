@@ -47,13 +47,8 @@ pub fn be_retire_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], Retire
     map(be_varint, |sequence| RetireConnectionIdFrame { sequence })(input)
 }
 
-// BufMut extension trait for RETIRE_CONNECTION_ID_FRAME
-pub trait WriteRetireConnectionIdFrame {
-    fn put_retire_connection_id_frame(&mut self, frame: &RetireConnectionIdFrame);
-}
-
-impl<T: bytes::BufMut> WriteRetireConnectionIdFrame for T {
-    fn put_retire_connection_id_frame(&mut self, frame: &RetireConnectionIdFrame) {
+impl<T: bytes::BufMut> super::io::WriteFrame<RetireConnectionIdFrame> for T {
+    fn put_frame(&mut self, frame: &RetireConnectionIdFrame) {
         self.put_u8(RETIRE_CONNECTION_ID_FRAME_TYPE);
         self.put_varint(&frame.sequence);
     }
@@ -62,7 +57,7 @@ impl<T: bytes::BufMut> WriteRetireConnectionIdFrame for T {
 #[cfg(test)]
 mod tests {
     use super::{be_retire_connection_id_frame, RetireConnectionIdFrame};
-    use crate::varint::VarInt;
+    use crate::{frame::io::WriteFrame, varint::VarInt};
 
     #[test]
     fn test_read_retire_connection_id_frame() {
@@ -79,12 +74,11 @@ mod tests {
 
     #[test]
     fn test_write_retire_connection_id_frame() {
-        use super::WriteRetireConnectionIdFrame;
         let mut buf = Vec::new();
         let frame = RetireConnectionIdFrame {
             sequence: VarInt::from_u32(0x1234),
         };
-        buf.put_retire_connection_id_frame(&frame);
+        buf.put_frame(&frame);
         assert_eq!(buf, vec![0x19, 0x52, 0x34]);
     }
 }

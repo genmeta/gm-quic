@@ -56,13 +56,8 @@ pub fn be_max_stream_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxStreamDa
     )(input)
 }
 
-// BufMut write extension for MAX_STREAM_DATA_FRAME
-pub trait WriteMaxStreamDataFrame {
-    fn put_max_stream_data_frame(&mut self, frame: &MaxStreamDataFrame);
-}
-
-impl<T: bytes::BufMut> WriteMaxStreamDataFrame for T {
-    fn put_max_stream_data_frame(&mut self, frame: &MaxStreamDataFrame) {
+impl<T: bytes::BufMut> super::io::WriteFrame<MaxStreamDataFrame> for T {
+    fn put_frame(&mut self, frame: &MaxStreamDataFrame) {
         self.put_u8(MAX_STREAM_DATA_FRAME_TYPE);
         self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.max_stream_data);
@@ -72,7 +67,7 @@ impl<T: bytes::BufMut> WriteMaxStreamDataFrame for T {
 #[cfg(test)]
 mod tests {
     use super::{MaxStreamDataFrame, MAX_STREAM_DATA_FRAME_TYPE};
-    use crate::varint::VarInt;
+    use crate::{frame::io::WriteFrame, varint::VarInt};
 
     #[test]
     fn test_read_max_stream_data_frame() {
@@ -85,9 +80,8 @@ mod tests {
 
     #[test]
     fn test_write_max_stream_data_frame() {
-        use super::WriteMaxStreamDataFrame;
         let mut buf = Vec::new();
-        buf.put_max_stream_data_frame(&MaxStreamDataFrame {
+        buf.put_frame(&MaxStreamDataFrame {
             stream_id: VarInt::from_u32(0x1234).into(),
             max_stream_data: VarInt::from_u32(0x5678),
         });

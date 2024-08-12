@@ -159,19 +159,8 @@ pub(super) fn be_ecn_counts(input: &[u8]) -> nom::IResult<&[u8], EcnCounts> {
     )(input)
 }
 
-pub trait WriteAckFrame {
-    fn put_ecn_counts(&mut self, ecn: &EcnCounts);
-    fn put_ack_frame(&mut self, frame: &AckFrame);
-}
-
-impl<T: bytes::BufMut> WriteAckFrame for T {
-    fn put_ecn_counts(&mut self, ecn: &EcnCounts) {
-        self.put_varint(&ecn.ect0);
-        self.put_varint(&ecn.ect1);
-        self.put_varint(&ecn.ce);
-    }
-
-    fn put_ack_frame(&mut self, frame: &AckFrame) {
+impl<T: bytes::BufMut> super::io::WriteFrame<AckFrame> for T {
+    fn put_frame(&mut self, frame: &AckFrame) {
         let mut frame_type = ACK_FRAME_TYPE;
         if frame.ecn.is_some() {
             frame_type |= ECN_OPT;
@@ -188,7 +177,9 @@ impl<T: bytes::BufMut> WriteAckFrame for T {
             self.put_varint(ack);
         }
         if let Some(ecn) = &frame.ecn {
-            self.put_ecn_counts(ecn);
+            self.put_varint(&ecn.ect0);
+            self.put_varint(&ecn.ect1);
+            self.put_varint(&ecn.ce);
         }
     }
 }
@@ -197,10 +188,11 @@ impl<T: bytes::BufMut> WriteAckFrame for T {
 mod tests {
     use nom::combinator::flat_map;
 
-    use super::{
-        ack_frame_with_flag, be_ecn_counts, AckFrame, EcnCounts, WriteAckFrame, ACK_FRAME_TYPE,
+    use super::{ack_frame_with_flag, be_ecn_counts, AckFrame, EcnCounts, ACK_FRAME_TYPE};
+    use crate::{
+        frame::io::WriteFrame,
+        varint::{be_varint, VarInt},
     };
-    use crate::varint::{be_varint, VarInt};
 
     #[test]
     fn test_read_ecn_count() {
@@ -242,18 +234,6 @@ mod tests {
     }
 
     #[test]
-    fn test_write_ecn_count() {
-        let mut buf = Vec::new();
-        let ecn = EcnCounts {
-            ect0: VarInt::from_u32(0x1234),
-            ect1: VarInt::from_u32(0x1234),
-            ce: VarInt::from_u32(0x1234),
-        };
-        buf.put_ecn_counts(&ecn);
-        assert_eq!(buf, vec![0x52, 0x34, 0x52, 0x34, 0x52, 0x34]);
-    }
-
-    #[test]
     fn test_write_ack_frame() {
         let mut buf = Vec::new();
         let frame = AckFrame {
@@ -261,13 +241,20 @@ mod tests {
             delay: VarInt::from_u32(0x1234),
             first_range: VarInt::from_u32(0x1234),
             ranges: vec![(VarInt::from_u32(3), VarInt::from_u32(20))],
-            ecn: None,
+            ecn: Some(EcnCounts {
+                ect0: VarInt::from_u32(0x1234),
+                ect1: VarInt::from_u32(0x1234),
+                ce: VarInt::from_u32(0x1234),
+            }),
         };
 
-        buf.put_ack_frame(&frame);
+        buf.put_frame(&frame);
         assert_eq!(
             buf,
-            vec![0x02, 0x52, 0x34, 0x52, 0x34, 0x01, 0x52, 0x34, 3, 20]
+            vec![
+                0x03, 0x52, 0x34, 0x52, 0x34, 0x01, 0x52, 0x34, 3, 20, // frame
+                0x52, 0x34, 0x52, 0x34, 0x52, 0x34 // ecn
+            ]
         );
     }
 

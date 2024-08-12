@@ -47,13 +47,8 @@ pub fn be_max_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxDataFrame> {
     map(be_varint, |max_data| MaxDataFrame { max_data })(input)
 }
 
-// BufMut write extension for MAX_DATA_FRAME
-pub trait WriteMaxDataFrame {
-    fn put_max_data_frame(&mut self, frame: &MaxDataFrame);
-}
-
-impl<T: bytes::BufMut> WriteMaxDataFrame for T {
-    fn put_max_data_frame(&mut self, frame: &MaxDataFrame) {
+impl<T: bytes::BufMut> super::io::WriteFrame<MaxDataFrame> for T {
+    fn put_frame(&mut self, frame: &MaxDataFrame) {
         self.put_u8(MAX_DATA_FRAME_TYPE);
         self.put_varint(&frame.max_data);
     }
@@ -62,7 +57,7 @@ impl<T: bytes::BufMut> WriteMaxDataFrame for T {
 #[cfg(test)]
 mod tests {
     use super::{MaxDataFrame, MAX_DATA_FRAME_TYPE};
-    use crate::varint::VarInt;
+    use crate::{frame::io::WriteFrame, varint::VarInt};
 
     #[test]
     fn test_read_max_data_frame() {
@@ -90,10 +85,8 @@ mod tests {
 
     #[test]
     fn test_write_max_data_frame() {
-        use super::WriteMaxDataFrame;
-
         let mut buf = Vec::new();
-        buf.put_max_data_frame(&MaxDataFrame {
+        buf.put_frame(&MaxDataFrame {
             max_data: VarInt::from_u32(0x1234),
         });
         assert_eq!(buf, vec![MAX_DATA_FRAME_TYPE, 0x52, 0x34]);

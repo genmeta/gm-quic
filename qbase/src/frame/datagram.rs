@@ -61,19 +61,12 @@ pub fn datagram_frame_with_flag(flag: u8) -> impl FnOnce(&[u8]) -> IResult<&[u8]
     }
 }
 
-pub trait WriteDatagramFrame<D>: WriteData<D>
-where
-    D: DescribeData,
-{
-    fn put_datagram_frame(&mut self, frame: &DatagramFrame, data: &D);
-}
-
-impl<T, D> WriteDatagramFrame<D> for T
+impl<T, D> super::io::WriteDataFrame<DatagramFrame, D> for T
 where
     T: bytes::BufMut + WriteData<D>,
     D: DescribeData,
 {
-    fn put_datagram_frame(&mut self, frame: &DatagramFrame, data: &D) {
+    fn put_data_frame(&mut self, frame: &DatagramFrame, data: &D) {
         self.put_u8(frame.frame_type().into());
         if let Some(len) = frame.length {
             self.put_varint(&len);
@@ -85,6 +78,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::io::WriteDataFrame;
 
     #[test]
     fn test_datagram_frame_with_flag() {
@@ -112,7 +106,7 @@ mod tests {
             length: Some(VarInt::from_u32(3)),
         };
         let mut buf = Vec::new();
-        buf.put_datagram_frame(&frame, &[0x01, 0x02, 0x03]);
+        buf.put_data_frame(&frame, &[0x01, 0x02, 0x03]);
         assert_eq!(&buf, &[0x31, 0x03, 0x01, 0x02, 0x03]);
     }
 
@@ -120,7 +114,7 @@ mod tests {
     fn test_put_datagram_frame_no_length() {
         let frame = DatagramFrame { length: None };
         let mut buf = Vec::new();
-        buf.put_datagram_frame(&frame, &[0x01, 0x02, 0x03]);
+        buf.put_data_frame(&frame, &[0x01, 0x02, 0x03]);
         assert_eq!(&buf, &[0x30, 0x01, 0x02, 0x03]);
     }
 }

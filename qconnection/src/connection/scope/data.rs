@@ -4,7 +4,7 @@ use qbase::{
     error::{Error as QuicError, ErrorKind},
     flow,
     frame::{
-        AckFrame, BeFrame, DataFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
+        AckFrame, BeFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
         ReliableFrame, StreamFrame,
     },
     handshake::Handshake,
@@ -83,9 +83,9 @@ impl DataScope {
         let dispatch_data_frame = {
             let conn_error = conn_error.clone();
             move |frame: Frame, path: &RawPath| match frame {
-                Frame::Ack(ack_frame) => {
-                    path.on_ack(Epoch::Data, &ack_frame);
-                    _ = ack_frames_entry.unbounded_send(ack_frame);
+                Frame::Ack(f) => {
+                    path.on_ack(Epoch::Data, &f);
+                    _ = ack_frames_entry.unbounded_send(f)
                 }
                 Frame::NewToken(f) => _ = new_token_frames_entry.unbounded_send(f),
                 Frame::MaxData(f) => _ = max_data_frames_entry.unbounded_send(f),
@@ -95,17 +95,11 @@ impl DataScope {
                 Frame::DataBlocked(f) => _ = data_blocked_frames_entry.unbounded_send(f),
                 Frame::Challenge(f) => path.recv_challenge(f),
                 Frame::Response(f) => path.recv_response(f),
-                Frame::Stream(f) => _ = stream_ctrl_frames_entry.unbounded_send(f),
-                Frame::Data(DataFrame::Stream(f), data) => {
-                    _ = stream_frames_entry.unbounded_send((f, data));
-                }
-                Frame::Data(DataFrame::Crypto(f), data) => {
-                    _ = crypto_frames_entry.unbounded_send((f, data));
-                }
-                Frame::Datagram(f, data) => {
-                    _ = datagram_frames_entry.unbounded_send((f, data));
-                }
-                Frame::Close(ccf) => conn_error.on_ccf_rcvd(&ccf),
+                Frame::StreamCtl(f) => _ = stream_ctrl_frames_entry.unbounded_send(f),
+                Frame::Stream(f, data) => _ = stream_frames_entry.unbounded_send((f, data)),
+                Frame::Crypto(f, bytes) => _ = crypto_frames_entry.unbounded_send((f, bytes)),
+                Frame::Datagram(f, data) => _ = datagram_frames_entry.unbounded_send((f, data)),
+                Frame::Close(f) => conn_error.on_ccf_rcvd(&f),
                 _ => {}
             }
         };
@@ -120,11 +114,11 @@ impl DataScope {
                 for pn in ack_frame.iter().flat_map(|r| r.rev()) {
                     for frame in recv_guard.on_pkt_acked(pn) {
                         match frame {
-                            GuaranteedFrame::Data(DataFrame::Stream(stream_frame)) => {
+                            GuaranteedFrame::Stream(stream_frame) => {
                                 data_streams.on_data_acked(stream_frame)
                             }
-                            GuaranteedFrame::Data(DataFrame::Crypto(crypto)) => {
-                                crypto_stream_outgoing.on_data_acked(&crypto)
+                            GuaranteedFrame::Crypto(crypto_frame) => {
+                                crypto_stream_outgoing.on_data_acked(&crypto_frame)
                             }
                             _ => { /* nothing to do */ }
                         }

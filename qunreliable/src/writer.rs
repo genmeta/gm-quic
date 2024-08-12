@@ -8,7 +8,7 @@ use std::{
 use bytes::Bytes;
 use qbase::{
     error::{Error, ErrorKind},
-    frame::{io::WriteDatagramFrame, BeFrame, DatagramFrame, FrameType},
+    frame::{io::WriteDataFrame, BeFrame, DatagramFrame, FrameType},
     varint::VarInt,
 };
 
@@ -64,7 +64,7 @@ impl DatagramWriter {
         match max_encoding_size {
             // 编码长度
             n if n >= frame_with_len.encoding_size() => {
-                buf.put_datagram_frame(&frame_with_len, &datagram);
+                buf.put_data_frame(&frame_with_len, &datagram);
                 let written = frame_with_len.encoding_size() + datagram.len();
                 Some((frame_with_len, written))
             }
@@ -72,7 +72,7 @@ impl DatagramWriter {
             n => {
                 debug_assert_eq!(frame_without_len.encoding_size(), 1);
                 buf = &mut buf[n - frame_without_len.encoding_size()..];
-                buf.put_datagram_frame(&frame_without_len, &datagram);
+                buf.put_data_frame(&frame_without_len, &datagram);
                 let written = n + datagram.len();
                 Some((frame_without_len, written))
             }
@@ -190,7 +190,7 @@ impl DatagramWriter {
 #[cfg(test)]
 mod tests {
 
-    use qbase::frame::io::WritePaddingFrame;
+    use qbase::frame::{io::WriteFrame, PaddingFrame};
 
     use super::*;
 
@@ -212,7 +212,7 @@ mod tests {
         let mut expected_buffer = [0; 1024];
         {
             let mut expected_buffer = &mut expected_buffer[..];
-            expected_buffer.put_datagram_frame(&expected_frame, &data);
+            expected_buffer.put_data_frame(&expected_frame, &data);
         }
         assert_eq!(buffer, expected_buffer);
     }
@@ -234,7 +234,7 @@ mod tests {
         let mut expected_buffer = [0; 1024];
         {
             let mut expected_buffer = &mut expected_buffer[..];
-            expected_buffer.put_datagram_frame(&DatagramFrame::new(None), &data);
+            expected_buffer.put_data_frame(&DatagramFrame::new(None), &data);
         }
         assert_eq!(buffer, expected_buffer);
     }
@@ -272,8 +272,8 @@ mod tests {
         let mut expected_buffer = [0; 1024];
         {
             let mut expected_buffer = &mut expected_buffer[..];
-            expected_buffer.put_padding_frame();
-            expected_buffer.put_datagram_frame(&DatagramFrame::new(None), &data);
+            expected_buffer.put_frame(&PaddingFrame);
+            expected_buffer.put_data_frame(&DatagramFrame::new(None), &data);
         }
 
         assert_eq!(buffer, expected_buffer);

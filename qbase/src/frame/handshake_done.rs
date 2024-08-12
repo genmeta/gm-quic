@@ -27,19 +27,16 @@ pub fn be_handshake_done_frame(input: &[u8]) -> nom::IResult<&[u8], HandshakeDon
     Ok((input, HandshakeDoneFrame))
 }
 
-// BufMut write extension for HANDSHAKE_DONE_FRAME
-pub trait WriteHandshakeDoneFrame {
-    fn put_handshake_done_frame(&mut self);
-}
-
-impl<T: bytes::BufMut> WriteHandshakeDoneFrame for T {
-    fn put_handshake_done_frame(&mut self) {
+impl<T: bytes::BufMut> super::io::WriteFrame<HandshakeDoneFrame> for T {
+    fn put_frame(&mut self, _: &HandshakeDoneFrame) {
         self.put_u8(HANDSHAKE_DONE_FRAME_TYPE);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::frame::{io::WriteFrame, HandshakeDoneFrame};
+
     #[test]
     fn test_read_handshake_done_frame() {
         use nom::combinator::flat_map;
@@ -61,9 +58,8 @@ mod tests {
 
     #[test]
     fn test_write_handshake_done_frame() {
-        use super::WriteHandshakeDoneFrame;
         let mut buf = Vec::new();
-        buf.put_handshake_done_frame();
+        buf.put_frame(&HandshakeDoneFrame);
         assert_eq!(buf, vec![super::HANDSHAKE_DONE_FRAME_TYPE]);
     }
 }
