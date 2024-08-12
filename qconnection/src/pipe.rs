@@ -36,7 +36,7 @@ macro_rules! pipe {
         ::tokio::spawn({
             let mut input = $input;
             let mut owned_capture = ::std::clone::Clone::clone(&$var);
-            let mut error = ::std::clone::Clone::clone(&$error);
+            let mut error = ::std::clone::Clone::clone($error);
 
             async move {
                 while let Some(item) = ::futures::stream::StreamExt::next(&mut input).await {
@@ -55,7 +55,7 @@ macro_rules! pipe {
         #[allow(unused)]
         ::tokio::spawn({
             let mut input = $input;
-            let mut error = ::std::clone::Clone::clone(&$error);
+            let mut error = ::std::clone::Clone::clone($error);
             let mut lambda = $($lambda)*;
             async move {
                 while let Some(item) = ::futures::stream::StreamExt::next(&mut input).await {
@@ -126,7 +126,7 @@ mod tests {
     #[tokio::test]
     async fn macro_expand2() {
         let c = Consumer;
-        let error = ConnError::default();
+        let error = &ConnError::default();
 
         let (mut tx1, rx1) = mpsc::unbounded::<()>();
         pipe!(
@@ -144,7 +144,7 @@ mod tests {
 
         let (mut tx1, rx1) = mpsc::unbounded::<()>();
         pipe!(
-            @error(error)
+            @error(&error)
             rx1 |> c,consume_return_error
         );
 

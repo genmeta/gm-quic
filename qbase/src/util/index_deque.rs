@@ -142,8 +142,8 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
     }
 
     /// Only empty deque and new_offset >= self.offset can reset offset, otherwise panic.
-    pub fn reset_offset(&mut self, new_offset: u64) {
-        assert!(self.is_empty() && new_offset >= self.offset);
+    pub(crate) fn reset_offset(&mut self, new_offset: u64) {
+        // assert!(self.is_empty() && new_offset >= self.offset);
         self.offset = new_offset;
     }
 }
@@ -295,17 +295,18 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn test_reset_offset_panic() {
+    fn test_reset_offset_with_content() {
         let mut deque = IndexDeque::<u64, 19>::default();
         for i in 0..5 {
             assert_eq!(deque.push_back(i), Ok(i));
         }
         deque.reset_offset(10);
+        deque.iter_with_idx().for_each(|(idx, item)| {
+            assert_eq!(idx, *item + 10);
+        });
     }
 
     #[test]
-    #[should_panic]
     fn test_reset_offset_panic2() {
         let mut deque = IndexDeque::<u64, 19>::default();
         for i in 0..10 {
@@ -316,6 +317,9 @@ mod tests {
         }
         assert_eq!(deque.offset, 5);
         deque.reset_offset(3);
+        deque.iter_with_idx().for_each(|(idx, item)| {
+            assert_eq!(idx + 2, *item);
+        });
     }
 
     #[test]

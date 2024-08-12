@@ -16,7 +16,7 @@ impl DrainingConnection {
     }
 
     /// Just ignore the packet, with a warning log
-    pub fn recv_packet_via_path(&self, packet: DataPacket) {
+    pub fn recv_packet(&self, packet: DataPacket) {
         println!(
             "WARN: Receive a {:?} packet in the draining state, ignore it",
             packet.header.get_type()
