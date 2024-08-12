@@ -5,7 +5,7 @@ use std::{
 
 use deref_derive::{Deref, DerefMut};
 use enum_dispatch::enum_dispatch;
-use qbase::frame::{CryptoFrame, ReliableFrame, StreamFrame};
+use qbase::frame::{io::WriteFrame, BeFrame, CryptoFrame, ReliableFrame, StreamFrame};
 
 pub mod rcvdpkt;
 pub mod sentpkt;
@@ -22,8 +22,19 @@ pub enum GuaranteedFrame {
 pub struct RawReliableFrameDeque(VecDeque<ReliableFrame>);
 
 impl RawReliableFrameDeque {
-    pub fn with_capacity(capacity: usize) -> Self {
+    fn with_capacity(capacity: usize) -> Self {
         Self(VecDeque::with_capacity(capacity))
+    }
+
+    fn try_read(&mut self, mut buf: &mut [u8]) -> Option<(ReliableFrame, usize)> {
+        let frame = self.0.front()?;
+        if frame.max_encoding_size() <= buf.len() || frame.encoding_size() <= buf.len() {
+            let buf_len = buf.len();
+            buf.put_frame(frame);
+            Some((self.0.pop_front().unwrap(), buf_len - buf.len()))
+        } else {
+            None
+        }
     }
 }
 
@@ -65,23 +76,10 @@ impl ArcReliableFrameDeque {
         self.0.lock().unwrap()
     }
 
-    /// TODO: 写入可靠帧
-    pub fn try_read(&self, _buf: &mut [u8]) -> Option<(ReliableFrame, usize)> {
-        todo!()
+    pub fn try_read(&self, buf: &mut [u8]) -> Option<(ReliableFrame, usize)> {
+        self.lock_guard().try_read(buf)
     }
 }
-
-/*
-impl<'a, T> Extend<&'a T> for ArcReliableFrameDeque
-where
-    T: Into<ReliableFrame> + Clone,
-{
-    /// 代价是，要对ArcReliableFrameDeque进行可变引用才行
-    fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
-        self.lock_guard().extend(iter);
-    }
-}
-    */
 
 impl<T> Extend<T> for ArcReliableFrameDeque
 where

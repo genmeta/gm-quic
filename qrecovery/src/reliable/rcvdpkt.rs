@@ -4,7 +4,7 @@ use std::{
 };
 
 use qbase::{
-    frame::AckFrame,
+    frame::{io::WriteFrame, AckFrame},
     packet::PacketNumber,
     util::IndexDeque,
     varint::{VarInt, VARINT_MAX},
@@ -96,8 +96,8 @@ impl RcvdPktRecords {
     fn gen_ack_frame_util(
         &self,
         (largest, recv_time): (u64, Instant),
-        _capacity: usize,
-    ) -> AckFrame {
+        mut capacity: usize,
+    ) -> Option<AckFrame> {
         let mut iter = self
             .queue
             .iter_with_idx()
@@ -112,10 +112,34 @@ impl RcvdPktRecords {
                 .1
                 .is_received
         );
-        let first_range = iter.by_ref().take_while(|(_, s)| s.is_received).count();
 
+        let largest = VarInt::from_u64(largest).unwrap();
+        let delay = VarInt::from_u64(recv_time.elapsed().as_micros() as u64).unwrap();
+        // 最小长度，至少包含ACK帧类型、largest、delay、range count(从0开始至少占1字节)
+        let min_len = 1 + largest.encoding_size() + delay.encoding_size() + 1;
+        if capacity < min_len {
+            return None;
+        }
+        capacity -= min_len;
+
+        let first_range = iter.by_ref().take_while(|(_, s)| s.is_received).count();
+        let mut ack_range_count = 0u64;
         let mut ranges = Vec::with_capacity(16);
         loop {
+            let additional_count_encoding = if ack_range_count == (1 << 6) - 1 {
+                1 // 下一个ack_range_count需要用2字节编码了
+            } else if ack_range_count == (1 << 30) - 1 {
+                2 // 下一个ack_range_count需要用4字节编码了
+            } else if ack_range_count == (1 << 62) - 1 {
+                4 // 下一个ack_range_count需要用8字节编码了
+            } else {
+                0
+            };
+            if capacity <= additional_count_encoding {
+                break;
+            }
+            capacity -= additional_count_encoding;
+
             if iter.next().is_none() {
                 break;
             }
@@ -126,21 +150,37 @@ impl RcvdPktRecords {
             }
             let acked = iter.by_ref().take_while(|(_, s)| s.is_received).count();
 
-            ranges.push(unsafe {
-                (
-                    VarInt::from_u64_unchecked(gap as u64),
-                    VarInt::from_u64_unchecked(acked as u64),
-                )
-            });
+            let gap = VarInt::try_from(gap).unwrap();
+            let acked = VarInt::try_from(acked).unwrap();
+            if capacity < gap.encoding_size() + acked.encoding_size() {
+                break;
+            }
+            capacity -= gap.encoding_size() + acked.encoding_size();
+
+            ranges.push((gap, acked));
+            ack_range_count += 1;
         }
 
-        AckFrame {
-            largest: unsafe { VarInt::from_u64_unchecked(largest) },
-            delay: unsafe { VarInt::from_u64_unchecked(recv_time.elapsed().as_micros() as u64) },
+        Some(AckFrame {
+            largest,
+            delay,
             first_range: unsafe { VarInt::from_u64_unchecked(first_range as u64) },
             ranges,
             ecn: None,
-        }
+        })
+    }
+
+    fn read_ack_frame_util(
+        &self,
+        mut buf: &mut [u8],
+        largest: u64,
+        recv_time: Instant,
+    ) -> Option<usize> {
+        // TODO: 未来替换成，不用申请Vec先生成AckFrame，从largest往后开始成对生成
+        let buf_len = buf.len();
+        let ack_frame = self.gen_ack_frame_util((largest, recv_time), buf_len)?;
+        buf.put_frame(&ack_frame);
+        Some(buf_len - buf.len())
     }
 
     fn retire(&mut self, pn: u64) {
@@ -187,22 +227,23 @@ impl ArcRcvdPktRecords {
         &self,
         (largest, recv_time): (u64, Instant),
         capacity: usize,
-    ) -> AckFrame {
+    ) -> Option<AckFrame> {
         self.inner
             .read()
             .unwrap()
             .gen_ack_frame_util((largest, recv_time), capacity)
     }
 
-    /// TODO: 完成它，不用申请Vec先生成AckFrame，从largest往后开始成对生成
     pub fn read_ack_frame_util(
         &self,
-        _buf: &mut [u8],
-        _largest: u64,
-        _recv_time: Instant,
+        buf: &mut [u8],
+        largest: u64,
+        recv_time: Instant,
     ) -> Option<usize> {
-        // 没写入，返回None
-        None
+        self.inner
+            .read()
+            .unwrap()
+            .read_ack_frame_util(buf, largest, recv_time)
     }
 
     pub fn write(&self) -> ArcRcvdPktRecordsWriter<'_> {

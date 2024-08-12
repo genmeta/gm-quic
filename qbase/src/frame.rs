@@ -1,5 +1,6 @@
 // This folder defines all the frames, including their parsing and packaging processes.
 use enum_dispatch::enum_dispatch;
+use io::WriteFrame;
 
 use crate::packet::r#type::Type;
 
@@ -232,7 +233,7 @@ pub fn be_frame_type(input: &[u8]) -> nom::IResult<&[u8], FrameType, Error> {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame, WriteFrame)]
+#[enum_dispatch(BeFrame)]
 pub enum StreamCtlFrame {
     ResetStream(ResetStreamFrame),
     StopSending(StopSendingFrame),
@@ -243,7 +244,7 @@ pub enum StreamCtlFrame {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame, WriteFrame)]
+#[enum_dispatch(BeFrame)]
 pub enum ReliableFrame {
     NewToken(NewTokenFrame),
     MaxData(MaxDataFrame),
@@ -307,6 +308,33 @@ impl Iterator for FrameReader {
                 self.payload.clear(); // no longer parsing
                 Some(Err(e))
             }
+        }
+    }
+}
+
+impl<T: BufMut> WriteFrame<StreamCtlFrame> for T {
+    fn put_frame(&mut self, frame: &StreamCtlFrame) {
+        match frame {
+            StreamCtlFrame::ResetStream(frame) => self.put_frame(frame),
+            StreamCtlFrame::StopSending(frame) => self.put_frame(frame),
+            StreamCtlFrame::MaxStreamData(frame) => self.put_frame(frame),
+            StreamCtlFrame::MaxStreams(frame) => self.put_frame(frame),
+            StreamCtlFrame::StreamDataBlocked(frame) => self.put_frame(frame),
+            StreamCtlFrame::StreamsBlocked(frame) => self.put_frame(frame),
+        }
+    }
+}
+
+impl<T: BufMut> WriteFrame<ReliableFrame> for T {
+    fn put_frame(&mut self, frame: &ReliableFrame) {
+        match frame {
+            ReliableFrame::NewToken(frame) => self.put_frame(frame),
+            ReliableFrame::MaxData(frame) => self.put_frame(frame),
+            ReliableFrame::DataBlocked(frame) => self.put_frame(frame),
+            ReliableFrame::NewConnectionId(frame) => self.put_frame(frame),
+            ReliableFrame::RetireConnectionId(frame) => self.put_frame(frame),
+            ReliableFrame::HandshakeDone(frame) => self.put_frame(frame),
+            ReliableFrame::Stream(frame) => self.put_frame(frame),
         }
     }
 }
