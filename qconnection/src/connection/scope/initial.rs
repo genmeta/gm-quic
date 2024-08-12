@@ -152,9 +152,10 @@ impl InitialScope {
 
     pub fn reader_with_token(
         &self,
-        _token: Vec<u8>, // if no token, use empty Vec
+        token: Vec<u8>, // if no token, use empty Vec
     ) -> InitialSpaceReader {
         InitialSpaceReader {
+            token,
             keys: self.keys.clone(),
             space: self.space.clone(),
             crypto_stream_outgoing: self.crypto_stream.outgoing(),

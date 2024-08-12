@@ -28,15 +28,15 @@ use crate::connection::transmit::{
 };
 
 pub struct ReadIntoDatagrams {
-    scid: ConnectionId,
-    dcid: ArcCidCell<ArcReliableFrameDeque>,
-    spin: Arc<AtomicBool>,
-    cc: ArcCC,
-    anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
-    send_flow_ctrl: ArcSendControler,
-    initial_space_reader: InitialSpaceReader,
-    handshake_space_reader: HandshakeSpaceReader,
-    data_space_reader: DataSpaceReader,
+    pub(super) scid: ConnectionId,
+    pub(super) dcid: ArcCidCell<ArcReliableFrameDeque>,
+    pub(super) spin: Arc<AtomicBool>,
+    pub(super) cc: ArcCC,
+    pub(super) anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
+    pub(super) send_flow_ctrl: ArcSendControler,
+    pub(super) initial_space_reader: InitialSpaceReader,
+    pub(super) handshake_space_reader: HandshakeSpaceReader,
+    pub(super) data_space_reader: DataSpaceReader,
 }
 
 impl ReadIntoDatagrams {

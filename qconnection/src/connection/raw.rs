@@ -86,10 +86,33 @@ impl RawConnection {
 
         let pathes = ArcPathes::new(Box::new({
             let remote_cids = cid_registry.remote.clone();
-            move |_pathway, usc| {
+            let flow_ctrl = flow_ctrl.clone();
+            let gen_readers = {
+                let initial = initial.clone();
+                let hs = hs.clone();
+                let data = data.clone();
+                let reliable_frames = reliable_frames.clone();
+                let streams = streams.clone();
+                let datagrams = datagrams.clone();
+                move |path: &RawPath| {
+                    (
+                        initial.reader_with_token(Vec::new()),
+                        hs.reader(),
+                        data.reader(
+                            path.challenge_sndbuf(),
+                            path.response_sndbuf(),
+                            reliable_frames.clone(),
+                            streams.clone(),
+                            datagrams.clone(),
+                        ),
+                    )
+                }
+            };
+            move |pathway, usc| {
                 let dcid = remote_cids.apply_cid();
                 let path = RawPath::new(usc.clone(), dcid);
-                // TODO: 启动发包任务
+                path.begin_validation();
+                path.begin_sending(pathway, &flow_ctrl, &gen_readers);
                 path
             }
         }));
