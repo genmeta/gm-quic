@@ -8,7 +8,6 @@ use std::{
 };
 
 use qbase::{
-    error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_short_packet},
@@ -17,10 +16,10 @@ use qbase::{
         DataHeader, DataPacket,
     },
 };
-use qrecovery::{reliable::rcvdpkt::ArcRcvdPktRecords, space::DataSpace};
+use qrecovery::reliable::rcvdpkt::ArcRcvdPktRecords;
 use qudp::ArcUsc;
 
-use super::CidRegistry;
+use super::{raw::RawConnection, CidRegistry};
 use crate::path::{ArcPathes, Pathway};
 
 pub struct ClosingConnection {
@@ -36,19 +35,22 @@ pub struct ClosingConnection {
     pub revd_ccf: RcvdCcf,
 }
 
-impl ClosingConnection {
-    pub fn new(
-        pathes: ArcPathes,
-        cid_registry: CidRegistry,
-        data_space: DataSpace,
-        one_rtt_keys: (
-            Arc<dyn rustls::quic::HeaderProtectionKey>,
-            Arc<Mutex<OneRttPacketKeys>>,
-        ),
-        error: Error,
-    ) -> Self {
-        let _ccf = ConnectionCloseFrame::from(error);
+impl From<RawConnection> for ClosingConnection {
+    fn from(conn: RawConnection) -> Self {
+        let pathes = conn.pathes;
+        let cid_registry = conn.cid_registry;
+        let data_space = conn.data.space;
+        let one_rtt_keys = match conn.data.one_rtt_keys.invalid() {
+            Some((hpk, pk)) => (hpk.0, pk),
+            _ => {
+                unreachable!()
+            }
+        };
+        let error = conn.error;
+        let error = error.get_error().unwrap();
+        conn.flow_ctrl.on_error(&error);
 
+        let _ccf = ConnectionCloseFrame::from(error);
         Self {
             pathes,
             cid_registry,
@@ -59,7 +61,9 @@ impl ClosingConnection {
             revd_ccf: RcvdCcf::default(),
         }
     }
+}
 
+impl ClosingConnection {
     // 记录收到的包数量，和收包时间，判断是否需要重发CCF；
     pub fn recv_packet_via_pathway(
         &mut self,

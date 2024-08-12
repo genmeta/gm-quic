@@ -1,6 +1,6 @@
 use qbase::packet::{header::GetType, DataPacket};
 
-use super::ArcLocalCids;
+use super::{closing::ClosingConnection, raw::RawConnection, ArcLocalCids};
 
 /// Connection in draining state, entered from the raw state or closing state.
 /// It just ignores all packets, and waits for dismissing.
@@ -8,13 +8,19 @@ use super::ArcLocalCids;
 #[derive(Debug)]
 pub struct DrainingConnection(ArcLocalCids);
 
-impl DrainingConnection {
-    // TODO: 应该是由RawConnection或者ClosingConnection Into而来
-    // 为其实现From trait为宜，等RawConnection/ClosingConnection实现好
-    pub fn new(local_cids: ArcLocalCids) -> Self {
-        Self(local_cids)
+impl From<RawConnection> for DrainingConnection {
+    fn from(value: RawConnection) -> Self {
+        Self(value.cid_registry.local)
     }
+}
 
+impl From<ClosingConnection> for DrainingConnection {
+    fn from(value: ClosingConnection) -> Self {
+        Self(value.cid_registry.local)
+    }
+}
+
+impl DrainingConnection {
     /// Just ignore the packet, with a warning log
     pub fn recv_packet(&self, packet: DataPacket) {
         println!(

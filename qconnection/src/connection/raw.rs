@@ -7,7 +7,7 @@ use qbase::{
     packet::{keys::ArcKeys, SpinBit},
     streamid::Role,
 };
-use qrecovery::{reliable::ArcReliableFrameDeque, space::DataSpace, streams::DataStreams};
+use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qunreliable::DatagramFlow;
 
 use super::{
@@ -157,13 +157,5 @@ impl RawConnection {
             error: conn_error,
             params: get_params,
         }
-    }
-
-    pub fn enter_closing(&self) -> (ArcPathes, CidRegistry, DataSpace) {
-        (
-            self.pathes.clone(),
-            self.cid_registry.clone(),
-            self.data.space.clone(),
-        )
     }
 }
