@@ -1,12 +1,6 @@
-use std::{
-    future::Future,
-    ops::{Deref, DerefMut},
-    pin::Pin,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
-    task::{Context, Poll, Waker},
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
 };
 
 use crate::{
@@ -39,85 +33,57 @@ impl ClientHandshake {
 ///
 /// The handshake is considered complete when the client's 1rtt data packet is successfully decrypted.
 #[derive(Debug, Clone)]
-pub struct ServerHandshake(Arc<Mutex<Result<Option<bool>, Waker>>>);
-
-impl Default for ServerHandshake {
-    fn default() -> Self {
-        ServerHandshake(Arc::new(Mutex::new(Ok(Some(false)))))
-    }
+pub struct ServerHandshake<T>
+where
+    T: Extend<HandshakeDoneFrame> + Clone,
+{
+    is_done: Arc<AtomicBool>,
+    output: T,
 }
 
-impl ServerHandshake {
+impl<T> ServerHandshake<T>
+where
+    T: Extend<HandshakeDoneFrame> + Clone,
+{
+    fn new(output: T) -> Self {
+        ServerHandshake {
+            is_done: Arc::new(AtomicBool::new(false)),
+            output,
+        }
+    }
+
     fn is_handshake_done(&self) -> bool {
-        let guard = self.0.lock().unwrap();
-        matches!(guard.deref(), Ok(Some(true)))
+        self.is_done.load(Ordering::Acquire)
     }
 
-    fn poll_is_done(&self, cx: &mut Context<'_>) -> Poll<Option<()>> {
-        let mut guard = self.0.lock().unwrap();
-        match guard.deref_mut() {
-            Ok(Some(true)) => Poll::Ready(Some(())),
-            Ok(Some(false)) => {
-                *guard = Err(cx.waker().clone());
-                Poll::Pending
-            }
-            Err(ref mut w) => {
-                w.clone_from(cx.waker());
-                Poll::Pending
-            }
-            Ok(None) => Poll::Ready(None),
+    fn done(&mut self) {
+        if self
+            .is_done
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            self.output.extend([HandshakeDoneFrame]);
         }
-    }
-
-    fn is_done(&self) -> ServerHandshake {
-        // because itself impl Future<Output=bool>, can be awaited for the result
-        self.clone()
-    }
-
-    fn done(&self) {
-        let mut guard = self.0.lock().unwrap();
-        match guard.deref_mut() {
-            Ok(Some(false)) => *guard = Ok(Some(true)),
-            Err(w) => {
-                w.wake_by_ref();
-                *guard = Ok(Some(true));
-            }
-            _ => (),
-        }
-    }
-
-    fn abort(&self) {
-        let mut guard = self.0.lock().unwrap();
-        match guard.deref_mut() {
-            Err(w) => {
-                w.wake_by_ref();
-                *guard = Ok(None);
-            }
-            Ok(Some(false)) => *guard = Ok(None),
-            _ => (),
-        }
-    }
-}
-
-impl Future for ServerHandshake {
-    type Output = Option<()>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.poll_is_done(cx)
     }
 }
 
 #[derive(Debug, Clone)]
-pub enum Handshake {
+pub enum Handshake<T>
+where
+    T: Extend<HandshakeDoneFrame> + Clone,
+{
     Client(ClientHandshake),
-    Server(ServerHandshake),
+    Server(ServerHandshake<T>),
 }
 
-impl Handshake {
-    pub fn with_role(role: Role) -> Self {
+impl<T> Handshake<T>
+where
+    T: Extend<HandshakeDoneFrame> + Clone,
+{
+    pub fn new(role: Role, output: T) -> Self {
         match role {
             Role::Client => Handshake::Client(ClientHandshake::default()),
-            Role::Server => Handshake::Server(ServerHandshake::default()),
+            Role::Server => Handshake::Server(ServerHandshake::new(output)),
         }
     }
 
@@ -125,8 +91,8 @@ impl Handshake {
         Handshake::Client(ClientHandshake::default())
     }
 
-    pub fn new_server() -> Self {
-        Handshake::Server(ServerHandshake::default())
+    pub fn new_server(output: T) -> Self {
+        Handshake::Server(ServerHandshake::new(output))
     }
 
     pub fn is_handshake_done(&self) -> bool {
@@ -155,40 +121,10 @@ impl Handshake {
 
     /// Just like `recv_handshake_done_frame`, a client must wait for a HANDSHAKE_DONE frame to be done.
     /// So as a client, it just print a warning log.
-    pub fn done(&self) {
+    pub fn done(&mut self) {
         match self {
             Handshake::Server(h) => h.done(),
             _ => println!("WARN: it doesn't make sense to call done() on a client handshake"),
-        }
-    }
-
-    /// Bypass role check. If it returns a Some(future), a task needs to be created to listen
-    /// for when to send the HANDSHAKE_DONE frame.
-    /// # Example
-    /// ```rust
-    /// use qbase::handshake::Handshake;
-    ///
-    /// # async fn monitor_hs_done(handshake: Handshake) {
-    /// if let Some(is_handshake_done) = handshake.is_done() {
-    ///     tokio::spawn(async move {
-    ///         match is_handshake_done.await {
-    ///             Some(_) => { /* send HANDSHAKE_DONE frame */ },
-    ///             None => { /* abort the handshake, do nothing */ },
-    ///         }
-    ///     });
-    /// }
-    /// # }
-    /// ```
-    pub fn is_done(&self) -> Option<ServerHandshake> {
-        match self {
-            Handshake::Server(h) => Some(h.is_done()),
-            _ => None,
-        }
-    }
-
-    pub fn abort(&self) {
-        if let Handshake::Server(h) = self {
-            h.abort()
         }
     }
 
@@ -202,12 +138,12 @@ impl Handshake {
 
 #[cfg(test)]
 mod tests {
-    use super::HandshakeDoneFrame;
+    use super::{HandshakeDoneFrame, ServerHandshake};
     use crate::error::{Error, ErrorKind};
 
     #[test]
     fn test_client_handshake() {
-        let handshake = super::Handshake::new_client();
+        let handshake = super::Handshake::<Vec<_>>::new_client();
         assert!(!handshake.is_handshake_done());
 
         let ret = handshake.recv_handshake_done_frame(&HandshakeDoneFrame);
@@ -217,7 +153,7 @@ mod tests {
 
     #[test]
     fn test_client_handshake_done() {
-        let handshake = super::Handshake::new_client();
+        let mut handshake = super::Handshake::<Vec<_>>::new_client();
         assert!(!handshake.is_handshake_done());
 
         handshake.done();
@@ -226,7 +162,7 @@ mod tests {
 
     #[test]
     fn test_server_handshake() {
-        let handshake = super::Handshake::new_server();
+        let mut handshake = super::Handshake::new_server(Vec::new());
         assert!(!handshake.is_handshake_done());
 
         handshake.done();
@@ -235,7 +171,7 @@ mod tests {
 
     #[test]
     fn test_server_recv_handshake_done_frame() {
-        let handshake = super::Handshake::new_server();
+        let handshake = super::Handshake::new_server(Vec::new());
         assert!(!handshake.is_handshake_done());
 
         let ret = handshake.recv_handshake_done_frame(&HandshakeDoneFrame);
@@ -250,16 +186,9 @@ mod tests {
 
     #[test]
     fn test_server_send_handshake_done_frame() {
-        let handshake = super::Handshake::new_server();
-        let waker = futures::task::noop_waker();
-        let mut cx = std::task::Context::from_waker(&waker);
-
-        let ret = handshake.is_done().unwrap().poll_is_done(&mut cx);
-        assert!(ret.is_pending());
-
+        let mut handshake = ServerHandshake::new(Vec::new());
         handshake.done();
-
-        let ret = handshake.is_done().unwrap().poll_is_done(&mut cx);
-        assert!(ret.is_ready());
+        assert!(handshake.is_handshake_done());
+        assert_eq!(handshake.output, [HandshakeDoneFrame]);
     }
 }

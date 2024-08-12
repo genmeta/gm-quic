@@ -26,7 +26,7 @@ pub struct RawConnection {
     pub pathes: ArcPathes,
     pub cid_registry: CidRegistry,
     // handshake done的信号
-    pub handshake: Handshake,
+    pub handshake: Handshake<ArcReliableFrameDeque>,
     pub flow_ctrl: FlowController,
     pub spin: Arc<Mutex<SpinBit>>,
     pub error: ConnError,
@@ -60,7 +60,7 @@ impl RawConnection {
             ],
         );
         let cid_registry = CidRegistry::new(8, router_registry, reliable_frames.clone(), 2);
-        let handshake = Handshake::with_role(role);
+        let handshake = Handshake::new(role, reliable_frames.clone());
         let flow_ctrl = FlowController::with_initial(0, 0);
         let spin = Arc::new(Mutex::new(SpinBit::Zero));
         let conn_error = ConnError::default();
@@ -116,7 +116,6 @@ impl RawConnection {
             ],
             hs.keys.clone(),
             data.one_rtt_keys.clone(),
-            handshake.clone(),
             conn_error.clone(),
         );
 
