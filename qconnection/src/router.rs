@@ -32,7 +32,7 @@ impl ArcRouter {
     ) -> bool {
         let dcid = packet.header.get_dcid();
         self.0
-            .get(&dcid)
+            .get(dcid)
             .map(|packet_entries| {
                 let index = match packet.header {
                     DataHeader::Long(long::DataHeader::Initial(_)) => 0,

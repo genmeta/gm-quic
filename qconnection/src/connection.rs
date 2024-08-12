@@ -1,24 +1,20 @@
 use std::{
     fmt::Debug,
+    mem,
     net::SocketAddr,
+    ops::DerefMut,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use draining::DrainingConnection;
 use futures::channel::mpsc;
-use qbase::{
-    cid,
-    config::Parameters,
-    error::Error,
-    packet::{keys::OneRttPacketKeys, DataPacket},
-    streamid::Role,
-};
+use qbase::{cid, config::Parameters, packet::DataPacket, streamid::Role};
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qudp::ArcUsc;
 
 use crate::{
-    connection::ConnState::{Closing, Draining, Raw},
+    connection::ConnState::{Closed, Closing, Draining, Raw},
     path::Pathway,
     router::{ArcRouter, RouterRegistry, ROUTER},
     tls::ArcTlsSession,
@@ -41,6 +37,7 @@ enum ConnState {
     Raw(raw::RawConnection),
     Closing(closing::ClosingConnection),
     Draining(draining::DrainingConnection),
+    Closed,
 }
 
 #[derive(Clone)]
@@ -69,31 +66,24 @@ impl ArcConnection {
             ArcTlsSession::new_client(server_name, &params),
             router,
         );
-        let one_rtt_keys = raw_conn.data.one_rtt_keys.clone();
         let pathes = raw_conn.pathes.clone();
+        let one_rtt_keys = raw_conn.data.one_rtt_keys.clone();
         let conn_error = raw_conn.error.clone();
         let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Raw(raw_conn))));
+
         tokio::spawn({
             let conn = conn.clone();
             async move {
-                let (error, is_active) = conn_error.did_error_occur().await;
-
-                let ptos = pathes
-                    .iter()
-                    .map(|path| path.pto_time())
-                    .collect::<Vec<_>>();
-                let pto = ptos.iter().sum::<Duration>() / ptos.len() as u32;
-
-                match (one_rtt_keys.invalid(), is_active) {
-                    (Some((hpk, pk)), true) => {
-                        conn.close((hpk.0, pk), error);
-                    }
-                    _ => {
-                        conn.drain(pto * 3);
-                    }
+                let is_active = conn_error.did_error_occur().await;
+                if one_rtt_keys.invalid().is_some() && is_active {
+                    conn.close();
+                } else {
+                    let pto = pathes.iter().map(|p| p.pto_time()).max().unwrap();
+                    conn.drain(pto * 3);
                 }
             }
         });
+
         conn
     }
 
@@ -116,29 +106,21 @@ impl ArcConnection {
     /// reason for the app's active closure.
     /// The app then releases a reference count of the connection, allowing the connection to enter
     /// a self-destruct process.
-    pub fn close(
-        &self,
-        one_rtt_keys: (
-            Arc<dyn rustls::quic::HeaderProtectionKey>,
-            Arc<Mutex<OneRttPacketKeys>>,
-        ),
-        error: Error,
-    ) {
+    pub fn close(self) {
         let mut guard = self.0.lock().unwrap();
-        let (pathes, cid_registry, data_space) = match *guard {
-            Raw(ref conn) => conn.enter_closing(),
-            _ => return,
+        let raw_conn = match mem::replace(guard.deref_mut(), ConnState::Closed) {
+            ConnState::Raw(conn) => conn,
+            _ => unreachable!(),
         };
 
-        let ptos = pathes
+        let pto = raw_conn
+            .pathes
             .iter()
             .map(|path| path.pto_time())
-            .collect::<Vec<_>>();
+            .max()
+            .unwrap();
 
-        let pto = ptos.iter().sum::<Duration>() / ptos.len() as u32;
-
-        let closing_conn =
-            closing::ClosingConnection::new(pathes, cid_registry, data_space, one_rtt_keys, error);
+        let closing_conn = closing::ClosingConnection::from(raw_conn);
 
         tokio::spawn({
             let conn = self.clone();
@@ -146,13 +128,13 @@ impl ArcConnection {
             let rcvd_ccf = closing_conn.get_rcvd_ccf();
             async move {
                 let time = Instant::now();
-                match tokio::time::timeout(duration, rcvd_ccf.did_recv()).await {
-                    Ok(_) => {
-                        conn.drain(duration - time.elapsed());
-                    }
-                    Err(_) => {
-                        conn.die();
-                    }
+                if tokio::time::timeout(duration, rcvd_ccf.did_recv())
+                    .await
+                    .is_ok()
+                {
+                    conn.drain(duration - time.elapsed());
+                } else {
+                    conn.die();
                 }
             }
         });
@@ -164,10 +146,10 @@ impl ArcConnection {
     /// Can only be called internally, and the app should not care this method.
     pub(crate) fn drain(self, remaining: Duration) {
         let mut guard = self.0.lock().unwrap();
-        let local_cids = match *guard {
-            Raw(ref conn) => conn.cid_registry.local.clone(),
-            Closing(ref conn) => conn.cid_registry.local.clone(),
-            _ => return,
+        let draining_conn = match mem::replace(guard.deref_mut(), ConnState::Closed) {
+            Raw(conn) => DrainingConnection::from(conn),
+            Closing(closing_conn) => DrainingConnection::from(closing_conn),
+            _ => unreachable!(),
         };
 
         tokio::spawn({
@@ -178,16 +160,18 @@ impl ArcConnection {
             }
         });
 
-        *guard = Draining(DrainingConnection::new(local_cids));
+        *guard = Draining(draining_conn);
     }
 
     /// Dismiss the connection, remove it from the global router.
     /// Can only be called internally, and the app should not care this method.
     pub(crate) fn die(self) {
-        let local_cids = match *self.0.lock().unwrap() {
-            Raw(ref conn) => conn.cid_registry.local.clone(),
-            Closing(ref conn) => conn.cid_registry.local.clone(),
-            Draining(ref conn) => conn.local_cids().clone(),
+        let mut guard = self.0.lock().unwrap();
+        let local_cids = match mem::replace(guard.deref_mut(), ConnState::Closed) {
+            Raw(conn) => conn.cid_registry.local,
+            Closing(conn) => conn.cid_registry.local,
+            Draining(conn) => conn.local_cids().clone(),
+            Closed => return,
         };
 
         local_cids

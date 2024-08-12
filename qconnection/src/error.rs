@@ -31,10 +31,9 @@ enum ConnErrorState {
 /// tokio::spawn({
 ///     let conn_err = conn_err.clone();
 ///     async move {
-///        let (error, is_active) = conn_err.await;
+///        let is_active = conn_err.await;
 ///        // or you can `let (error, is_active) = conn_err.did_error_occur().await;``
 ///         assert!(is_active);
-///         assert_eq!(error.kind(), ErrorKind::Internal);
 ///    }
 /// });
 /// conn_err.on_error(Error::with_default_fty(ErrorKind::Internal, "Test error"));
@@ -44,6 +43,18 @@ enum ConnErrorState {
 pub struct ConnError(Arc<Mutex<ConnErrorState>>);
 
 impl ConnError {
+    /// If there is an error, return an error, otherwise return None
+    pub fn get_error(&self) -> Option<Error> {
+        let guard = self.0.lock().unwrap();
+        match *guard {
+            ConnErrorState::Closing(ref error) | ConnErrorState::App(ref error) => {
+                Some(error.clone())
+            }
+            ConnErrorState::Draining(ref error) => Some(error.clone()),
+            _ => None,
+        }
+    }
+
     /// Just for being more semantic, it will return the same cloned instance.
     pub fn did_error_occur(&self) -> Self {
         self.clone()
@@ -91,7 +102,7 @@ impl ConnError {
 
 /// impl Future::Output = (error: [`Error`], is_active: [`bool`])
 impl Future for ConnError {
-    type Output = (Error, bool);
+    type Output = bool;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut guard = self.0.lock().unwrap();
@@ -100,10 +111,8 @@ impl Future for ConnError {
                 *guard = ConnErrorState::Pending(cx.waker().clone());
                 Poll::Pending
             }
-            ConnErrorState::Closing(error) | ConnErrorState::App(error) => {
-                Poll::Ready((error.clone(), true))
-            }
-            ConnErrorState::Draining(error) => Poll::Ready((error.clone(), false)),
+            ConnErrorState::Closing(_) | ConnErrorState::App(_) => Poll::Ready(true),
+            ConnErrorState::Draining(_) => Poll::Ready(false),
         }
     }
 }
@@ -120,7 +129,7 @@ mod tests {
         let task = tokio::spawn({
             let conn_error = conn_error.clone();
             async move {
-                let (_, is_active) = conn_error.await;
+                let is_active = conn_error.await;
                 assert!(!is_active);
             }
         });
@@ -138,7 +147,7 @@ mod tests {
         let task = tokio::spawn({
             let conn_error = conn_error.clone();
             async move {
-                let (_, is_active) = conn_error.await;
+                let is_active = conn_error.await;
                 assert!(is_active);
             }
         });
@@ -156,7 +165,7 @@ mod tests {
         let task = tokio::spawn({
             let conn_error = conn_error.clone();
             async move {
-                let (_, is_active) = conn_error.did_error_occur().await;
+                let is_active = conn_error.did_error_occur().await;
                 assert!(is_active);
             }
         });
