@@ -11,6 +11,7 @@ use super::{
     CidRegistry, RcvdPackets,
 };
 use crate::{
+    address_validator::ArcNewTokens,
     error::ConnError,
     path::{ArcPathes, RawPath},
     router::ArcRouter,
@@ -44,6 +45,7 @@ impl RawConnection {
         let (zero_rtt_packets_entry, rcvd_0rtt_packets) = mpsc::unbounded();
         let (hs_packets_entry, rcvd_hs_packets) = mpsc::unbounded();
         let (one_rtt_packets_entry, rcvd_1rtt_packets) = mpsc::unbounded();
+        let (retry_packets_entry, rcvd_retry_packets) = mpsc::unbounded();
 
         let reliable_frames = ArcReliableFrameDeque::with_capacity(0);
         let router_registry = router.registry(
@@ -54,6 +56,7 @@ impl RawConnection {
                 hs_packets_entry.clone(),
                 one_rtt_packets_entry.clone(),
             ],
+            retry_packets_entry.clone(),
         );
         let cid_registry = CidRegistry::new(8, router_registry, reliable_frames.clone(), 2);
         let handshake = Handshake::new(role, reliable_frames.clone());

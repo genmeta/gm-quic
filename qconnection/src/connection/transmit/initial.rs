@@ -1,4 +1,7 @@
-use std::time::Instant;
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use bytes::BufMut;
 use qbase::{
@@ -14,7 +17,7 @@ use qbase::{
 use qrecovery::{space::InitialSpace, streams::crypto::CryptoStreamOutgoing};
 
 pub struct InitialSpaceReader {
-    pub(crate) token: Vec<u8>,
+    pub(crate) token: Arc<Mutex<Vec<u8>>>,
     pub(crate) keys: ArcKeys,
     pub(crate) space: InitialSpace,
     pub(crate) crypto_stream_outgoing: CryptoStreamOutgoing,
@@ -36,7 +39,8 @@ impl InitialSpaceReader {
         let k = self.keys.get_local_keys()?;
 
         // 2. 生成包头，预留2字节len，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
-        let hdr = LongHeaderBuilder::with_cid(dcid, scid).initial(self.token.clone());
+        let token = self.token.lock().unwrap();
+        let hdr = LongHeaderBuilder::with_cid(dcid, scid).initial(token.clone());
         // length字段预留2字节, 20字节为最小Payload长度，为了保护包头的Sample至少16字节
         if buf.len() < hdr.size() + 2 + 20 {
             return None;

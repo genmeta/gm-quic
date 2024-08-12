@@ -30,6 +30,8 @@ pub mod transmit;
 
 pub type PacketEntry = mpsc::UnboundedSender<(DataPacket, Pathway, ArcUsc)>;
 pub type RcvdPackets = mpsc::UnboundedReceiver<(DataPacket, Pathway, ArcUsc)>;
+pub type RetryEntry = mpsc::UnboundedSender<RetryHeader>;
+pub type RcvdRetry = mpsc::UnboundedReceiver<RetryHeader>;
 
 pub type CidRegistry = cid::Registry<RouterRegistry<ArcReliableFrameDeque>, ArcReliableFrameDeque>;
 pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
