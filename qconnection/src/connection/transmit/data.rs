@@ -34,7 +34,7 @@ pub struct DataSpaceReader {
     pub(crate) response_sndbuf: SendBuffer<PathResponseFrame>,
     pub(crate) crypto_stream_outgoing: CryptoStreamOutgoing,
     pub(crate) reliable_frames: ArcReliableFrameDeque,
-    pub(crate) data_streams: DataStreams,
+    pub(crate) streams: DataStreams,
     pub(crate) datagrams: DatagramFlow,
     // 为了各个流的公平性，包括不可靠数据帧，需要额外维护一些信息
 }
@@ -128,7 +128,7 @@ impl DataSpaceReader {
 
         // 8. 检查DataStreams是否需要发送，若有，且符合（constraints + buf）节制，写入，burst、发包记录都记录
         let mut fresh_bytes = 0;
-        while let Some((frame, n, m)) = self.data_streams.try_read_data(body_buf, flow_limit) {
+        while let Some((frame, n, m)) = self.streams.try_read_data(body_buf, flow_limit) {
             send_guard.record_frame(GuaranteedFrame::Data(DataFrame::Stream(frame)));
             flow_limit -= m;
             fresh_bytes += m;
@@ -234,7 +234,7 @@ impl DataSpaceReader {
         // 6. 检查DataStreams是否需要发送，若有，且符合（constraints + buf）节制，写入，burst、发包记录都记录
         // TODO: 要注意和Datagrams的公平了
         let mut fresh_bytes = 0;
-        while let Some((frame, n, m)) = self.data_streams.try_read_data(body_buf, flow_limit) {
+        while let Some((frame, n, m)) = self.streams.try_read_data(body_buf, flow_limit) {
             send_guard.record_frame(GuaranteedFrame::Data(DataFrame::Stream(frame)));
             body_buf = &mut body_buf[n..];
             flow_limit -= m;

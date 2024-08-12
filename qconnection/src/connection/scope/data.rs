@@ -373,7 +373,7 @@ impl DataScope {
         challenge_sndbuf: SendBuffer<PathChallengeFrame>,
         response_sndbuf: SendBuffer<PathResponseFrame>,
         reliable_frames: ArcReliableFrameDeque,
-        data_streams: DataStreams,
+        streams: DataStreams,
         datagrams: DatagramFlow,
     ) -> DataSpaceReader {
         DataSpaceReader {
@@ -384,7 +384,7 @@ impl DataScope {
             response_sndbuf,
             crypto_stream_outgoing: self.crypto_stream.outgoing(),
             reliable_frames,
-            data_streams,
+            streams,
             datagrams,
         }
     }
