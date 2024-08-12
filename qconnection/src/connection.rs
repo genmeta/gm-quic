@@ -8,19 +8,19 @@ use std::{
 use draining::DrainingConnection;
 use futures::channel::mpsc;
 use qbase::{
-    cid::{self, ConnectionId},
+    cid,
     config::Parameters,
     error::Error,
     packet::{keys::OneRttPacketKeys, DataPacket},
     streamid::Role,
 };
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
+use qudp::ArcUsc;
 
 use crate::{
     connection::ConnState::{Closing, Draining, Raw},
-    path::ArcPath,
-    pipe,
-    router::{ArcRouter, ROUTER},
+    path::Pathway,
+    router::{ArcRouter, RouterRegistry, ROUTER},
     tls::ArcTlsSession,
 };
 
@@ -31,11 +31,11 @@ pub mod raw;
 pub mod scope;
 pub mod transmit;
 
-type PacketEntry = mpsc::UnboundedSender<(DataPacket, ArcPath)>;
-type RcvdPacket = mpsc::UnboundedReceiver<(DataPacket, ArcPath)>;
+pub type PacketEntry = mpsc::UnboundedSender<(DataPacket, Pathway, ArcUsc)>;
+pub type RcvdPackets = mpsc::UnboundedReceiver<(DataPacket, Pathway, ArcUsc)>;
 
-pub type CidRegistry = cid::Registry<ArcReliableFrameDeque, ArcRouter>;
-pub type ArcLocalCids = cid::ArcLocalCids<ArcReliableFrameDeque, ArcRouter>;
+pub type CidRegistry = cid::Registry<RouterRegistry<ArcReliableFrameDeque>, ArcReliableFrameDeque>;
+pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
 
 enum ConnState {
     Raw(raw::RawConnection),
@@ -58,44 +58,21 @@ impl ArcConnection {
         _address: SocketAddr,
         _token: Option<Vec<u8>>,
         params: Parameters,
+        router: ArcRouter,
     ) -> Self {
         let Ok(server_name) = server_name.try_into() else {
             panic!("server_name is not valid")
         };
 
-        let (cid_event_entry, rcvd_cid_event) = mpsc::unbounded::<CidEvent>();
-
         let raw_conn = raw::RawConnection::new(
             Role::Client,
             ArcTlsSession::new_client(server_name, &params),
-            cid_event_entry,
+            router,
         );
-        let local_cids = raw_conn.cid_registry.local.clone();
-        let conn_error = raw_conn.error.clone();
         let one_rtt_keys = raw_conn.data.one_rtt_keys.clone();
         let pathes = raw_conn.pathes.clone();
-
+        let conn_error = raw_conn.error.clone();
         let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Raw(raw_conn))));
-
-        local_cids
-            .active_cids()
-            .into_iter()
-            .for_each(|cid| ROUTER.add_conn(cid, conn.clone()));
-
-        let on_recv_cid_event = {
-            let conn = conn.clone();
-            move |entry: &CidEvent| match entry {
-                CidEvent::New(cid) => {
-                    ROUTER.add_conn(*cid, conn.clone());
-                }
-                CidEvent::Retire(cid) => {
-                    ROUTER.remove_conn(*cid);
-                }
-            }
-        };
-
-        pipe!(rcvd_cid_event |> on_recv_cid_event);
-
         tokio::spawn({
             let conn = conn.clone();
             async move {
@@ -103,7 +80,7 @@ impl ArcConnection {
 
                 let ptos = pathes
                     .iter()
-                    .map(|path| path.lock_guard().pto_time())
+                    .map(|path| path.pto_time())
                     .collect::<Vec<_>>();
                 let pto = ptos.iter().sum::<Duration>() / ptos.len() as u32;
 
@@ -117,7 +94,6 @@ impl ArcConnection {
                 }
             }
         });
-
         conn
     }
 
@@ -150,13 +126,13 @@ impl ArcConnection {
     ) {
         let mut guard = self.0.lock().unwrap();
         let (pathes, cid_registry, data_space) = match *guard {
-            Raw(ref conn) => conn.enter_closing(&error),
+            Raw(ref conn) => conn.enter_closing(),
             _ => return,
         };
 
         let ptos = pathes
             .iter()
-            .map(|path| path.lock_guard().pto_time())
+            .map(|path| path.pto_time())
             .collect::<Vec<_>>();
 
         let pto = ptos.iter().sum::<Duration>() / ptos.len() as u32;
@@ -219,11 +195,6 @@ impl ArcConnection {
             .into_iter()
             .for_each(|cid| ROUTER.remove_conn(cid));
     }
-}
-
-pub enum CidEvent {
-    New(ConnectionId),
-    Retire(ConnectionId),
 }
 
 #[cfg(test)]

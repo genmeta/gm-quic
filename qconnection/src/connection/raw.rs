@@ -1,32 +1,29 @@
 use std::sync::{Arc, Mutex};
 
-use dashmap::DashMap;
-use futures::channel::mpsc::{self, UnboundedSender};
+use futures::channel::mpsc;
 use qbase::{
-    error::Error as QuicError,
     flow::FlowController,
     handshake::Handshake,
-    packet::{keys::ArcKeys, long, DataHeader, DataPacket, SpinBit},
+    packet::{keys::ArcKeys, SpinBit},
     streamid::Role,
 };
 use qrecovery::{reliable::ArcReliableFrameDeque, space::DataSpace, streams::DataStreams};
-use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 
 use super::{
     scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope},
-    CidEvent, CidRegistry,
+    CidRegistry,
 };
 use crate::{
     error::ConnError,
-    path::{ArcPath, Pathway},
-    router::ROUTER,
+    path::{ArcPathes, RawPath},
+    router::ArcRouter,
     tls::{ArcTlsSession, GetParameters},
 };
 
 #[derive(Clone)]
 pub struct RawConnection {
-    pub pathes: DashMap<Pathway, ArcPath>,
+    pub pathes: ArcPathes,
     pub cid_registry: CidRegistry,
     // handshake done的信号
     pub handshake: Handshake,
@@ -46,15 +43,23 @@ pub struct RawConnection {
 }
 
 impl RawConnection {
-    pub fn new(
-        role: Role,
-        tls_session: ArcTlsSession,
-        cid_event_entry: UnboundedSender<CidEvent>,
-    ) -> Self {
-        let reliable_frames = ArcReliableFrameDeque::with_capacity(0);
+    pub fn new(role: Role, tls_session: ArcTlsSession, router: ArcRouter) -> Self {
+        let (initial_packets_entry, rcvd_initial_packets) = mpsc::unbounded();
+        let (zero_rtt_packets_entry, rcvd_0rtt_packets) = mpsc::unbounded();
+        let (hs_packets_entry, rcvd_hs_packets) = mpsc::unbounded();
+        let (one_rtt_packets_entry, rcvd_1rtt_packets) = mpsc::unbounded();
 
-        let pathes = DashMap::new();
-        let cid_registry = CidRegistry::new(8, reliable_frames.clone(), ROUTER.clone(), 2);
+        let reliable_frames = ArcReliableFrameDeque::with_capacity(0);
+        let router_registry = router.registry(
+            reliable_frames.clone(),
+            [
+                initial_packets_entry.clone(),
+                zero_rtt_packets_entry.clone(),
+                hs_packets_entry.clone(),
+                one_rtt_packets_entry.clone(),
+            ],
+        );
+        let cid_registry = CidRegistry::new(8, router_registry, reliable_frames.clone(), 2);
         let handshake = Handshake::with_role(role);
         let flow_ctrl = FlowController::with_initial(0, 0);
         let spin = Arc::new(Mutex::new(SpinBit::Zero));
@@ -75,27 +80,32 @@ impl RawConnection {
         );
         let datagrams = DatagramFlow::new(0, 0);
 
-        let (initial_packets_entry, rcvd_initial_packets) = mpsc::unbounded();
-        let (hs_packets_entry, rcvd_hs_packets) = mpsc::unbounded();
-        let (zero_rtt_packets_entry, rcvd_0rtt_packets) = mpsc::unbounded();
-        let (one_rtt_packets_entry, rcvd_1rtt_packets) = mpsc::unbounded();
-
         let initial = InitialScope::new(ArcKeys::new_pending(), initial_packets_entry);
         let hs = HandshakeScope::new(hs_packets_entry);
         let data = DataScope::new(zero_rtt_packets_entry, one_rtt_packets_entry);
 
-        initial.build(rcvd_initial_packets, conn_error.clone());
-        hs.build(rcvd_hs_packets, conn_error.clone());
+        let pathes = ArcPathes::new(Box::new({
+            let remote_cids = cid_registry.remote.clone();
+            move |_pathway, usc| {
+                let dcid = remote_cids.apply_cid();
+                let path = RawPath::new(usc.clone(), dcid);
+                // TODO: 启动发包任务
+                path
+            }
+        }));
+
+        initial.build(rcvd_initial_packets, &pathes, &conn_error);
+        hs.build(rcvd_hs_packets, &pathes, &conn_error);
         data.build(
+            &pathes,
             &handshake,
             &streams,
             &datagrams,
             &cid_registry,
             &flow_ctrl,
+            &conn_error,
             rcvd_0rtt_packets,
             rcvd_1rtt_packets,
-            cid_event_entry,
-            conn_error.clone(),
         );
 
         let get_params = tls_session.keys_upgrade(
@@ -127,57 +137,7 @@ impl RawConnection {
         }
     }
 
-    pub fn recv_packet_via_path(&self, packet: DataPacket, path: ArcPath) {
-        match packet.header {
-            DataHeader::Long(long::DataHeader::Initial(_)) => {
-                _ = self.initial.packets_entry.unbounded_send((packet, path))
-            }
-            DataHeader::Long(long::DataHeader::Handshake(_)) => {
-                _ = self.hs.packets_entry.unbounded_send((packet, path))
-            }
-            DataHeader::Long(long::DataHeader::ZeroRtt(_)) => {
-                _ = self
-                    .data
-                    .zero_rtt_packets_entry
-                    .unbounded_send((packet, path))
-            }
-            DataHeader::Short(_) => {
-                _ = self
-                    .data
-                    .one_rtt_packets_entry
-                    .unbounded_send((packet, path))
-            }
-        }
-    }
-
-    pub fn get_path(&self, pathway: Pathway, usc: &ArcUsc) -> ArcPath {
-        self.pathes
-            .entry(pathway)
-            .or_insert_with(|| {
-                // if is connection migration, need validate pathway
-                let is_migration = !self.pathes.is_empty();
-                let path = ArcPath::new(usc.clone(), pathway, self, is_migration);
-                self.pathes.insert(pathway, path.clone());
-
-                tokio::spawn({
-                    let path = path.clone();
-                    let connection = self.clone();
-                    async move {
-                        path.has_been_inactivated().await;
-                        connection.pathes.remove(&pathway);
-                    }
-                });
-                path
-            })
-            .value()
-            .clone()
-    }
-
-    pub fn enter_closing(
-        &self,
-        error: &QuicError,
-    ) -> (DashMap<Pathway, ArcPath>, CidRegistry, DataSpace) {
-        self.flow_ctrl.on_error(error);
+    pub fn enter_closing(&self) -> (ArcPathes, CidRegistry, DataSpace) {
         (
             self.pathes.clone(),
             self.cid_registry.clone(),

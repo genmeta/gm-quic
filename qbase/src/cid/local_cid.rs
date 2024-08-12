@@ -12,17 +12,17 @@ use crate::{
 /// 我方负责发放足够的cid，poll_issue_cid，将当前有效的cid注册到连接id路由。
 /// 当cid不足时，就发放新的连接id，包括增大active_cid_limit，以及对方淘汰旧的cid。
 #[derive(Debug)]
-pub struct RawLocalCids<T, U>
+pub struct RawLocalCids<ISSUED>
 where
-    T: for<'a> Extend<&'a NewConnectionIdFrame>,
-    U: UniqueCid,
+    ISSUED: Extend<NewConnectionIdFrame> + UniqueCid,
 {
     // If the item in cid_deque is None, it means the connection ID has been retired.
     cid_deque: IndexDeque<Option<(ConnectionId, ResetToken)>, VARINT_MAX>,
     cid_len: usize,
-    uniqueness: U,
     // Each issued connection ID will be written into this issued_cids.
-    issued_cids: T,
+    // The frames in issued_cids should be able to enter the QUIC sending channel
+    // and be reliably sent to the peer.
+    issued_cids: ISSUED,
     retired_cids: ArcAsyncDeque<ConnectionId>,
     // This is an integer value specifying the maximum number of connection
     // IDs from the peer that an endpoint is willing to store.
@@ -31,21 +31,20 @@ where
     active_cid_limit: Option<u64>,
 }
 
-impl<T, U> RawLocalCids<T, U>
+impl<ISSUED> RawLocalCids<ISSUED>
 where
-    T: for<'a> Extend<&'a NewConnectionIdFrame>,
-    U: UniqueCid,
+    ISSUED: Extend<NewConnectionIdFrame> + UniqueCid,
 {
-    fn new(cid_len: usize, mut issued_cids: T, predicate: U) -> Self {
+    fn new(cid_len: usize, mut issued_cids: ISSUED) -> Self {
         let mut cid_deque = IndexDeque::default();
         for seq in 0..2 {
             let new_cid_frame = NewConnectionIdFrame::gen(
                 cid_len,
                 VarInt::from_u32(seq),
                 VarInt::from_u32(0),
-                &predicate,
+                &issued_cids,
             );
-            issued_cids.extend([&new_cid_frame]);
+            issued_cids.extend([new_cid_frame]);
             cid_deque
                 .push_back(Some((new_cid_frame.id, new_cid_frame.reset_token)))
                 .unwrap();
@@ -53,7 +52,6 @@ where
         Self {
             cid_deque,
             cid_len,
-            uniqueness: predicate,
             issued_cids,
             retired_cids: ArcAsyncDeque::default(),
             active_cid_limit: None,
@@ -83,8 +81,8 @@ where
         let seq = VarInt::from_u64(self.cid_deque.largest()).unwrap();
         let retire_prior_to = VarInt::from_u64(self.cid_deque.offset()).unwrap();
         let new_cid_frame =
-            NewConnectionIdFrame::gen(self.cid_len, seq, retire_prior_to, &self.uniqueness);
-        self.issued_cids.extend([&new_cid_frame]);
+            NewConnectionIdFrame::gen(self.cid_len, seq, retire_prior_to, &self.issued_cids);
+        self.issued_cids.extend([new_cid_frame]);
         self.cid_deque.push_back(Some((new_cid_frame.id, new_cid_frame.reset_token)))
             .expect("it's very very hard to issue a new connection ID whose sequence excceeds VARINT_MAX");
         new_cid_frame.id
@@ -127,10 +125,9 @@ where
     }
 }
 
-impl<T, U> Drop for RawLocalCids<T, U>
+impl<IssuedCids> Drop for RawLocalCids<IssuedCids>
 where
-    T: for<'a> Extend<&'a NewConnectionIdFrame>,
-    U: UniqueCid,
+    IssuedCids: Extend<NewConnectionIdFrame> + UniqueCid,
 {
     fn drop(&mut self) {
         self.cid_deque
@@ -141,21 +138,18 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct ArcLocalCids<T, U>(Arc<Mutex<RawLocalCids<T, U>>>)
+pub struct ArcLocalCids<ISSUED>(Arc<Mutex<RawLocalCids<ISSUED>>>)
 where
-    T: for<'a> Extend<&'a NewConnectionIdFrame>,
-    U: UniqueCid;
+    ISSUED: Extend<NewConnectionIdFrame> + UniqueCid;
 
-impl<T, P> ArcLocalCids<T, P>
+impl<ISSUED> ArcLocalCids<ISSUED>
 where
-    T: for<'a> Extend<&'a NewConnectionIdFrame>,
-    P: UniqueCid,
+    ISSUED: Extend<NewConnectionIdFrame> + UniqueCid,
 {
-    pub fn new(cid_len: usize, issued_cids: T, predicate: P) -> Self {
+    pub fn new(cid_len: usize, issued_cids: ISSUED) -> Self {
         Self(Arc::new(Mutex::new(RawLocalCids::new(
             cid_len,
             issued_cids,
-            predicate,
         ))))
     }
 
@@ -187,12 +181,28 @@ where
 
 #[cfg(test)]
 mod tests {
+    use deref_derive::Deref;
+
     use super::*;
-    use crate::cid::AlwaysUnique;
+
+    #[derive(Debug, Deref, Default)]
+    struct IssuedCids(Vec<NewConnectionIdFrame>);
+
+    impl UniqueCid for IssuedCids {
+        fn is_unique_cid(&self, _cid: &ConnectionId) -> bool {
+            true
+        }
+    }
+
+    impl Extend<NewConnectionIdFrame> for IssuedCids {
+        fn extend<I: IntoIterator<Item = NewConnectionIdFrame>>(&mut self, iter: I) {
+            self.0.extend(iter);
+        }
+    }
 
     #[test]
     fn test_issue_cid() {
-        let local_cids = ArcLocalCids::new(8, Vec::new(), AlwaysUnique);
+        let local_cids = ArcLocalCids::new(8, IssuedCids::default());
         let mut guard = local_cids.0.lock().unwrap();
 
         assert_eq!(guard.cid_deque.len(), 2);
@@ -203,7 +213,7 @@ mod tests {
 
     #[test]
     fn test_recv_retire_cid_frame() {
-        let mut local_cids = RawLocalCids::new(8, Vec::new(), AlwaysUnique);
+        let mut local_cids = RawLocalCids::new(8, IssuedCids::default());
         let retired_cids = local_cids.retired_cids();
 
         assert_eq!(local_cids.cid_deque.len(), 2);

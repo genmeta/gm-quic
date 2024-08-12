@@ -11,7 +11,7 @@ use qcongestion::{
     congestion::{ArcCC, CongestionAlgorithm},
     CongestionControl,
 };
-use qrecovery::space::Epoch;
+use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
 use qudp::ArcUsc;
 use tokio::time::timeout;
 
@@ -19,14 +19,13 @@ use super::{
     anti_amplifier::{ArcAntiAmplifier, ANTI_FACTOR},
     util::{RecvBuffer, SendBuffer},
 };
-use crate::connection::raw::RawConnection;
 
 #[derive(Clone)]
 pub struct RawPath {
     pub(super) usc: ArcUsc,
     pub(super) cc: ArcCC,
     pub(super) anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
-    pub(super) dcid: ArcCidCell,
+    pub(super) dcid: ArcCidCell<ArcReliableFrameDeque>,
     pub(super) scid: ConnectionId,
     pub(super) spin: Arc<AtomicBool>,
     pub(super) challenge_sndbuf: SendBuffer<PathChallengeFrame>,
@@ -35,22 +34,17 @@ pub struct RawPath {
 }
 
 impl RawPath {
-    pub(super) fn new(usc: ArcUsc, connection: &RawConnection) -> Self {
-        let cc = ArcCC::new(CongestionAlgorithm::Bbr, Duration::from_micros(100));
-        let anti_amplifier = ArcAntiAmplifier::<ANTI_FACTOR>::default();
-
-        let dcid = connection.cid_registry.remote.apply_cid();
-
+    pub fn new(usc: ArcUsc, dcid: ArcCidCell<ArcReliableFrameDeque>) -> Self {
         // TODO: 从cid_registry.local 随便选一个能用的
         // 到 1 rtt 空间不再需要
         let scid = ConnectionId::random_gen(MAX_CID_SIZE);
 
         Self {
             usc,
-            cc,
-            anti_amplifier,
             dcid,
             scid,
+            cc: ArcCC::new(CongestionAlgorithm::Bbr, Duration::from_micros(100)),
+            anti_amplifier: ArcAntiAmplifier::<ANTI_FACTOR>::default(),
             spin: Arc::new(AtomicBool::new(false)),
             challenge_sndbuf: SendBuffer::default(),
             response_sndbuf: SendBuffer::default(),
@@ -58,12 +52,12 @@ impl RawPath {
         }
     }
 
-    pub fn recv_response(&mut self, frame: PathResponseFrame) {
+    pub fn recv_response(&self, frame: PathResponseFrame) {
         self.response_rcvbuf.write(frame);
     }
 
     /// 收到Challenge，马上响应Response
-    pub fn recv_challenge(&mut self, frame: PathChallengeFrame) {
+    pub fn recv_challenge(&self, frame: PathChallengeFrame) {
         self.response_sndbuf.write(frame.into());
     }
 

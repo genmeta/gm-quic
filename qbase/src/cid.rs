@@ -7,27 +7,32 @@ pub use local_cid::*;
 mod remote_cid;
 pub use remote_cid::*;
 
-use crate::frame::NewConnectionIdFrame;
+use crate::frame::{NewConnectionIdFrame, RetireConnectionIdFrame};
 
 #[derive(Debug, Clone)]
-pub struct Registry<T, U>
+pub struct Registry<ISSUED, RETIRED>
 where
-    T: for<'a> Extend<&'a NewConnectionIdFrame>,
-    U: UniqueCid,
+    ISSUED: Extend<NewConnectionIdFrame> + UniqueCid,
+    RETIRED: Extend<RetireConnectionIdFrame> + Clone,
 {
-    pub local: ArcLocalCids<T, U>,
-    pub remote: ArcRemoteCids,
+    pub local: ArcLocalCids<ISSUED>,
+    pub remote: ArcRemoteCids<RETIRED>,
 }
 
-impl<T, U> Registry<T, U>
+impl<ISSUED, RETIRED> Registry<ISSUED, RETIRED>
 where
-    T: for<'a> Extend<&'a NewConnectionIdFrame>,
-    U: UniqueCid,
+    ISSUED: Extend<NewConnectionIdFrame> + UniqueCid,
+    RETIRED: Extend<RetireConnectionIdFrame> + Clone,
 {
-    pub fn new(cid_len: usize, issued_cids: T, predicate: U, remote_active_cid_limit: u64) -> Self {
+    pub fn new(
+        cid_len: usize,
+        issued_cids: ISSUED,
+        retired_cids: RETIRED,
+        remote_active_cid_limit: u64,
+    ) -> Self {
         Self {
-            local: ArcLocalCids::new(cid_len, issued_cids, predicate),
-            remote: ArcRemoteCids::with_limit(remote_active_cid_limit),
+            local: ArcLocalCids::new(cid_len, issued_cids),
+            remote: ArcRemoteCids::with_limit(remote_active_cid_limit, retired_cids),
         }
     }
 }

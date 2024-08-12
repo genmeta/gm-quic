@@ -5,7 +5,7 @@ use qbase::{
     flow,
     frame::{
         AckFrame, BeFrame, DataFrame, Frame, FrameReader, HandshakeDoneFrame, PathChallengeFrame,
-        PathResponseFrame, ReliableFrame, RetireConnectionIdFrame, StreamFrame,
+        PathResponseFrame, ReliableFrame, StreamFrame,
     },
     handshake::Handshake,
     packet::{
@@ -23,11 +23,12 @@ use qrecovery::{
     streams::{crypto::CryptoStream, DataStreams},
 };
 use qunreliable::DatagramFlow;
+use tokio::task::JoinHandle;
 
 use crate::{
-    connection::{transmit::data::DataSpaceReader, CidEvent, CidRegistry, PacketEntry, RcvdPacket},
+    connection::{transmit::data::DataSpaceReader, CidRegistry, PacketEntry, RcvdPackets},
     error::ConnError,
-    path::{ArcPath, SendBuffer},
+    path::{ArcPathes, RawPath, SendBuffer},
     pipe,
 };
 
@@ -56,16 +57,16 @@ impl DataScope {
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
+        pathes: &ArcPathes,
         handshake: &Handshake,
         streams: &DataStreams,
         datagrams: &DatagramFlow,
         cid_registry: &CidRegistry,
         flow_ctrl: &flow::FlowController,
-        rcvd_0rtt_packets: RcvdPacket,
-        rcvd_1rtt_packets: RcvdPacket,
-        cid_event_entry: mpsc::UnboundedSender<CidEvent>,
-        conn_error: ConnError,
-    ) {
+        conn_error: &ConnError,
+        rcvd_0rtt_packets: RcvdPackets,
+        rcvd_1rtt_packets: RcvdPackets,
+    ) -> (JoinHandle<RcvdPackets>, JoinHandle<RcvdPackets>) {
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
         // 连接级的
         let (max_data_frames_entry, rcvd_max_data_frames) = mpsc::unbounded();
@@ -82,54 +83,34 @@ impl DataScope {
 
         let dispatch_data_frame = {
             let conn_error = conn_error.clone();
-            move |frame: Frame, path: &ArcPath| match frame {
-                Frame::Close(ccf) => {
-                    conn_error.on_ccf_rcvd(&ccf);
-                }
+            move |frame: Frame, path: &RawPath| match frame {
                 Frame::Ack(ack_frame) => {
-                    path.lock_guard().on_ack(Epoch::Data, &ack_frame);
+                    path.on_ack(Epoch::Data, &ack_frame);
                     _ = ack_frames_entry.unbounded_send(ack_frame);
                 }
-                Frame::NewToken(new_token) => {
-                    _ = new_token_frames_entry.unbounded_send(new_token);
+                Frame::NewToken(f) => _ = new_token_frames_entry.unbounded_send(f),
+                Frame::MaxData(f) => _ = max_data_frames_entry.unbounded_send(f),
+                Frame::NewConnectionId(f) => _ = new_cid_frames_entry.unbounded_send(f),
+                Frame::RetireConnectionId(f) => _ = retire_cid_frames_entry.unbounded_send(f),
+                Frame::HandshakeDone(f) => _ = handshake_done_frames_entry.unbounded_send(f),
+                Frame::DataBlocked(f) => _ = data_blocked_frames_entry.unbounded_send(f),
+                Frame::Challenge(f) => path.recv_challenge(f),
+                Frame::Response(f) => path.recv_response(f),
+                Frame::Stream(f) => _ = stream_ctrl_frames_entry.unbounded_send(f),
+                Frame::Data(DataFrame::Stream(f), data) => {
+                    _ = stream_frames_entry.unbounded_send((f, data));
                 }
-                Frame::MaxData(max_data) => {
-                    _ = max_data_frames_entry.unbounded_send(max_data);
+                Frame::Data(DataFrame::Crypto(f), data) => {
+                    _ = crypto_frames_entry.unbounded_send((f, data));
                 }
-                Frame::NewConnectionId(new_cid) => {
-                    _ = new_cid_frames_entry.unbounded_send(new_cid);
+                Frame::Datagram(f, data) => {
+                    _ = datagram_frames_entry.unbounded_send((f, data));
                 }
-                Frame::RetireConnectionId(retire_cid) => {
-                    _ = retire_cid_frames_entry.unbounded_send(retire_cid);
-                }
-                Frame::HandshakeDone(hs_done) => {
-                    _ = handshake_done_frames_entry.unbounded_send(hs_done);
-                }
-                Frame::DataBlocked(data_blocked) => {
-                    _ = data_blocked_frames_entry.unbounded_send(data_blocked);
-                }
-                Frame::Challenge(challenge) => {
-                    path.lock_guard().recv_challenge(challenge);
-                }
-                Frame::Response(response) => {
-                    path.lock_guard().recv_response(response);
-                }
-                Frame::Stream(stream_ctrl) => {
-                    _ = stream_ctrl_frames_entry.unbounded_send(stream_ctrl);
-                }
-                Frame::Data(DataFrame::Stream(stream), data) => {
-                    _ = stream_frames_entry.unbounded_send((stream, data));
-                }
-                Frame::Data(DataFrame::Crypto(crypto), data) => {
-                    _ = crypto_frames_entry.unbounded_send((crypto, data));
-                }
-                Frame::Datagram(datagram, data) => {
-                    _ = datagram_frames_entry.unbounded_send((datagram, data));
-                }
+                Frame::Close(ccf) => conn_error.on_ccf_rcvd(&ccf),
                 _ => {}
             }
         };
-        let on_ack = {
+        let on_data_acked = {
             let data_streams = streams.clone();
             let crypto_stream_outgoing = self.crypto_stream.outgoing();
             let sent_pkt_records = self.space.sent_packets();
@@ -153,6 +134,7 @@ impl DataScope {
             }
         };
 
+        /*
         let on_recv_retire_cid_frame = {
             let local_cids = cid_registry.local.clone();
             let error = conn_error.clone();
@@ -167,6 +149,7 @@ impl DataScope {
                 }
             }
         };
+        */
 
         // Assemble the pipelines of frame processing
         // TODO: impl endpoint router
@@ -174,12 +157,12 @@ impl DataScope {
         pipe!(rcvd_max_data_frames |> flow_ctrl.sender, recv_max_data_frame);
         pipe!(rcvd_data_blocked_frames |> flow_ctrl.recver, recv_data_blocked_frame);
         pipe!(@error(conn_error) rcvd_new_cid_frames |> cid_registry.remote, recv_new_cid_frame);
-        pipe!(rcvd_retire_cid_frames |> on_recv_retire_cid_frame);
+        pipe!(rcvd_retire_cid_frames |> cid_registry.local, recv_retire_cid_frame);
         pipe!(@error(conn_error) rcvd_handshake_done_frames |> *handshake, recv_handshake_done_frame);
         pipe!(rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_crypto_frame);
         pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> *streams, recv_stream_control);
         pipe!(@error(conn_error) rcvd_datagram_frames |> *datagrams, recv_datagram);
-        pipe!(rcvd_ack_frames |> on_ack);
+        pipe!(rcvd_ack_frames |> on_data_acked);
 
         if handshake.role() == Role::Server {
             self.handle_server_handshake_done(handshake, streams.reliable_frame_deque.clone());
@@ -192,29 +175,33 @@ impl DataScope {
             rcvd_stream_frames,
         );
 
-        self.parse_rcvd_0rtt_packet_and_dispatch_frames(
+        let join_handler0 = self.parse_rcvd_0rtt_packet_and_dispatch_frames(
             rcvd_0rtt_packets,
+            pathes.clone(),
             dispatch_data_frame.clone(),
             conn_error.clone(),
         );
-        self.parse_rcvd_1rtt_packet_and_dispatch_frames(
+        let join_handler1 = self.parse_rcvd_1rtt_packet_and_dispatch_frames(
             rcvd_1rtt_packets,
+            pathes.clone(),
             dispatch_data_frame,
-            conn_error,
+            conn_error.clone(),
         );
+        (join_handler0, join_handler1)
     }
 
     fn parse_rcvd_0rtt_packet_and_dispatch_frames(
         &self,
-        mut rcvd_packets: RcvdPacket,
-        dispatch_frame: impl Fn(Frame, &ArcPath) + Send + 'static,
+        mut rcvd_packets: RcvdPackets,
+        pathes: ArcPathes,
+        dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
         conn_error: ConnError,
-    ) {
+    ) -> JoinHandle<RcvdPackets> {
         tokio::spawn({
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.zero_rtt_keys.clone();
             async move {
-                while let Some((mut packet, path)) = rcvd_packets.next().await {
+                while let Some((mut packet, pathway, usc)) = rcvd_packets.next().await {
                     let pty = packet.header.get_type();
                     let Some(keys) = keys.get_remote_keys().await else {
                         break;
@@ -228,7 +215,7 @@ impl DataScope {
                         Ok(None) => continue,
                         Err(_e) => {
                             // conn_error.on_error(e);
-                            return;
+                            break;
                         }
                     };
 
@@ -245,6 +232,8 @@ impl DataScope {
                         body_offset,
                     )
                     .unwrap();
+
+                    let path = pathes.get(pathway, usc.clone());
                     let body = packet.bytes.split_off(body_offset);
                     match FrameReader::new(body.freeze(), pty).try_fold(
                         false,
@@ -256,27 +245,28 @@ impl DataScope {
                     ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.lock_guard()
-                                .on_recv_pkt(Epoch::Data, pn, is_ack_packet);
+                            path.on_recv_pkt(Epoch::Data, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
                 }
+                rcvd_packets
             }
-        });
+        })
     }
 
     fn parse_rcvd_1rtt_packet_and_dispatch_frames(
         &self,
-        mut rcvd_packets: RcvdPacket,
-        dispatch_frame: impl Fn(Frame, &ArcPath) + Send + 'static,
+        mut rcvd_packets: RcvdPackets,
+        pathes: ArcPathes,
+        dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
         conn_error: ConnError,
-    ) {
+    ) -> JoinHandle<RcvdPackets> {
         tokio::spawn({
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.one_rtt_keys.clone();
             async move {
-                while let Some((mut packet, path)) = rcvd_packets.next().await {
+                while let Some((mut packet, pathway, usc)) = rcvd_packets.next().await {
                     let pty = packet.header.get_type();
                     let Some((hpk, pk)) = keys.get_remote_keys().await else {
                         break;
@@ -290,7 +280,7 @@ impl DataScope {
                         Ok(None) => continue,
                         Err(_e) => {
                             // conn_error.on_error(e);
-                            return;
+                            break;
                         }
                     };
 
@@ -302,6 +292,7 @@ impl DataScope {
                     let body_offset = packet.offset + undecoded_pn.size();
                     let pk = pk.lock().unwrap().get_remote(key_phase, pn);
                     decrypt_packet(pk.as_ref(), pn, packet.bytes.as_mut(), body_offset).unwrap();
+                    let path = pathes.get(pathway, usc);
                     let body = packet.bytes.split_off(body_offset);
                     match FrameReader::new(body.freeze(), pty).try_fold(
                         false,
@@ -313,14 +304,14 @@ impl DataScope {
                     ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.lock_guard()
-                                .on_recv_pkt(Epoch::Data, pn, is_ack_packet);
+                            path.on_recv_pkt(Epoch::Data, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
                 }
+                rcvd_packets
             }
-        });
+        })
     }
 
     pub fn handle_stream_frame_with_flow_ctrl(
@@ -379,16 +370,18 @@ impl DataScope {
     }
 
     // The server calls this function when creating a data space.
-    fn handle_server_handshake_done(&self, handshake: &Handshake, frames: ArcReliableFrameDeque) {
+    fn handle_server_handshake_done(
+        &self,
+        handshake: &Handshake,
+        mut frames: ArcReliableFrameDeque,
+    ) {
         assert_eq!(handshake.role(), Role::Server);
         tokio::spawn({
             let handshake = handshake.clone();
             async move {
                 if let Some(hs) = handshake.is_done() {
                     if hs.await.is_some() {
-                        frames
-                            .lock_guard()
-                            .push_back(ReliableFrame::HandshakeDone(HandshakeDoneFrame));
+                        frames.extend([HandshakeDoneFrame]);
                     }
                 }
             }

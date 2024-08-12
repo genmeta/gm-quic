@@ -7,7 +7,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use dashmap::DashMap;
 use qbase::{
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
@@ -22,10 +21,10 @@ use qrecovery::{reliable::rcvdpkt::ArcRcvdPktRecords, space::DataSpace};
 use qudp::ArcUsc;
 
 use super::CidRegistry;
-use crate::path::{ArcPath, Pathway};
+use crate::path::{ArcPathes, Pathway};
 
 pub struct ClosingConnection {
-    pub pathes: DashMap<Pathway, ArcPath>,
+    pub pathes: ArcPathes,
     pub cid_registry: CidRegistry,
     pub rcvd_pkt_records: ArcRcvdPktRecords,
     pub one_rtt_keys: (
@@ -39,7 +38,7 @@ pub struct ClosingConnection {
 
 impl ClosingConnection {
     pub fn new(
-        pathes: DashMap<Pathway, ArcPath>,
+        pathes: ArcPathes,
         cid_registry: CidRegistry,
         data_space: DataSpace,
         one_rtt_keys: (
@@ -62,7 +61,7 @@ impl ClosingConnection {
     }
 
     // 记录收到的包数量，和收包时间，判断是否需要重发CCF；
-    pub fn recv_packet_via_path(
+    pub fn recv_packet_via_pathway(
         &mut self,
         mut packet: DataPacket,
         _pathway: Pathway,
@@ -121,10 +120,6 @@ impl ClosingConnection {
                 self.revd_ccf.on_ccf_rcvd();
             }
         }
-    }
-
-    pub fn get_path(&self, pathway: Pathway, _usc: &ArcUsc) -> Option<ArcPath> {
-        self.pathes.get(&pathway).map(|path| path.value().clone())
     }
 
     pub fn get_rcvd_ccf(&self) -> RcvdCcf {

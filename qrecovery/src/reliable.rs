@@ -26,12 +26,12 @@ impl RawReliableFrameDeque {
     }
 }
 
-impl<'a, T> Extend<&'a T> for RawReliableFrameDeque
+impl<T> Extend<T> for RawReliableFrameDeque
 where
-    T: Into<ReliableFrame> + Clone,
+    T: Into<ReliableFrame>,
 {
-    fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
-        self.0.extend(iter.into_iter().cloned().map(Into::into));
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        self.0.extend(iter.into_iter().map(Into::into));
     }
 }
 
@@ -45,10 +45,10 @@ where
 /// use qrecovery::reliable::ArcReliableFrameDeque;
 ///
 /// let mut reliable_frame_deque = ArcReliableFrameDeque::with_capacity(10);
-/// reliable_frame_deque.extend([&HandshakeDoneFrame]);
+/// reliable_frame_deque.extend([HandshakeDoneFrame]);
 ///
 /// let reliable_frame_deque = ArcReliableFrameDeque::with_capacity(10);
-/// reliable_frame_deque.lock_guard().extend([&HandshakeDoneFrame]);
+/// reliable_frame_deque.lock_guard().extend([HandshakeDoneFrame]);
 /// ```
 #[derive(Debug, Default, Clone)]
 pub struct ArcReliableFrameDeque(Arc<Mutex<RawReliableFrameDeque>>);
@@ -70,12 +70,23 @@ impl ArcReliableFrameDeque {
     }
 }
 
+/*
 impl<'a, T> Extend<&'a T> for ArcReliableFrameDeque
 where
     T: Into<ReliableFrame> + Clone,
 {
     /// 代价是，要对ArcReliableFrameDeque进行可变引用才行
     fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
+        self.lock_guard().extend(iter);
+    }
+}
+    */
+
+impl<T> Extend<T> for ArcReliableFrameDeque
+where
+    T: Into<ReliableFrame>,
+{
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         self.lock_guard().extend(iter);
     }
 }

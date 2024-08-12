@@ -100,6 +100,18 @@ impl<T> Stream for ArcAsyncDeque<T> {
     }
 }
 
+impl<T> Extend<T> for ArcAsyncDeque<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        let mut guard = self.0.lock().unwrap();
+        if let Some(queue) = &mut guard.queue {
+            queue.extend(iter);
+            if let Some(waker) = guard.waker.take() {
+                waker.wake();
+            }
+        }
+    }
+}
+
 pub struct ArcAsyncDequeWriter<'a, T> {
     guard: MutexGuard<'a, AsyncDeque<T>>,
     old_len: usize,

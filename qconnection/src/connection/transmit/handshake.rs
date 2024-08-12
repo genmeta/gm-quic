@@ -76,6 +76,10 @@ impl HandshakeSpaceReader {
         let hdr_len = hdr_buf.len();
         let pn_len = pn_buf.len();
         let mut body_size = body_size - body_buf.remaining_mut();
+        if body_size == 0 {
+            // 无有效数据，那就不打包Handshake包发送了
+            return None;
+        }
         // payload(pn + body)长度不足20字节，填充之
         if body_size + pn_len < 20 {
             let padding_len = 20 - body_size - pn_len;

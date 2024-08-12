@@ -16,7 +16,7 @@ use qcongestion::{
     congestion::{ArcCC, MSS},
     CongestionControl,
 };
-use qrecovery::space::Epoch;
+use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
 
 use super::{
     anti_amplifier::ANTI_FACTOR,
@@ -29,7 +29,7 @@ use crate::connection::transmit::{
 
 pub struct ReadIntoDatagrams {
     scid: ConnectionId,
-    dcid: ArcCidCell,
+    dcid: ArcCidCell<ArcReliableFrameDeque>,
     spin: Arc<AtomicBool>,
     cc: ArcCC,
     anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,

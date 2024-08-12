@@ -79,6 +79,9 @@ impl InitialSpaceReader {
         let hdr_len = hdr_buf.len();
         let pn_len = pn_buf.len();
         let mut body_len = body_size - body_buf.remaining_mut();
+        if body_len == 0 {
+            return None;
+        }
         let mut pkt_size = hdr_len + pn_len + body_len;
 
         hdr_buf.put_long_header(&hdr);
@@ -105,7 +108,6 @@ impl InitialSpaceReader {
                     let padding_len = 20 - pn_len - body_len;
                     remain.put_bytes(0, padding_len);
                     body_len += padding_len;
-                    pkt_size += padding_len;
                 }
 
                 length_buf.encode_varint(
