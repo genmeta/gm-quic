@@ -19,3 +19,5 @@ rustls = { workspace = true }
 log = { workspace = true }
 deref-derive = { workspace = true }
 dashmap = { workspace = true }
+serde = {workspace = true}
+serde_json = {workspace = true}

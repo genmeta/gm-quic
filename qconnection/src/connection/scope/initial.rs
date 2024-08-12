@@ -7,6 +7,7 @@ use qbase::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::GetType,
         keys::ArcKeys,
+        long::{LongHeader, Retry},
     },
 };
 use qrecovery::{
@@ -82,6 +83,8 @@ impl InitialScope {
 
         pipe!(@error(conn_error) rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_frame);
         pipe!(rcvd_ack_frames |> on_data_acked);
+
+        self.recv_retry(rcvd_retry);
         self.parse_rcvd_packets_and_dispatch_frames(
             rcvd_packets,
             pathes,
@@ -169,10 +172,23 @@ impl InitialScope {
         token: Vec<u8>, // if no token, use empty Vec
     ) -> InitialSpaceReader {
         InitialSpaceReader {
-            token,
+            token: Arc::new(Mutex::new(token)),
             keys: self.keys.clone(),
             space: self.space.clone(),
             crypto_stream_outgoing: self.crypto_stream.outgoing(),
         }
+    }
+
+    pub fn recv_retry(&self, mut rcvd_retry: RcvdRetry) {
+        tokio::spawn({
+            let token = self.retry_token.clone();
+            async move {
+                if let Some(retry) = rcvd_retry.next().await {
+                    *token.lock().unwrap() = retry.token.to_vec();
+                    // 客户端只会接受一次 Retry 包，如果是服务端应该报错
+                    rcvd_retry.close();
+                }
+            }
+        });
     }
 }
