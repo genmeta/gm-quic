@@ -71,6 +71,10 @@ impl ArcConnection {
             cid_event_entry,
         );
         let local_cids = raw_conn.cid_registry.local.clone();
+        let conn_error = raw_conn.error.clone();
+        let one_rtt_keys = raw_conn.data.one_rtt_keys.clone();
+        let pathes = raw_conn.pathes.clone();
+
         let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Raw(raw_conn))));
 
         local_cids
@@ -89,7 +93,30 @@ impl ArcConnection {
                 }
             }
         };
+
         pipe!(rcvd_cid_event |> on_recv_cid_event);
+
+        tokio::spawn({
+            let conn = conn.clone();
+            async move {
+                let (error, is_active) = conn_error.did_error_occur().await;
+
+                let ptos = pathes
+                    .iter()
+                    .map(|path| path.lock_guard().pto_time())
+                    .collect::<Vec<_>>();
+                let pto = ptos.iter().sum::<Duration>() / ptos.len() as u32;
+
+                match (one_rtt_keys.invalid(), is_active) {
+                    (Some((hpk, pk)), true) => {
+                        conn.close((hpk.0, pk), error);
+                    }
+                    _ => {
+                        conn.drain(pto * 3);
+                    }
+                }
+            }
+        });
 
         conn
     }
@@ -182,7 +209,7 @@ impl ArcConnection {
     /// Can only be called internally, and the app should not care this method.
     pub(crate) fn die(self) {
         let local_cids = match *self.0.lock().unwrap() {
-            Raw(_) => unreachable!(),
+            Raw(ref conn) => conn.cid_registry.local.clone(),
             Closing(ref conn) => conn.cid_registry.local.clone(),
             Draining(ref conn) => conn.local_cids().clone(),
         };
