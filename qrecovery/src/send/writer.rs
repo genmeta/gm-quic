@@ -9,7 +9,6 @@ use tokio::io::AsyncWrite;
 
 use super::sender::{ArcSender, Sender};
 
-/// TODO: Drop视为自动cancel
 #[derive(Debug)]
 pub struct Writer(pub(super) ArcSender);
 

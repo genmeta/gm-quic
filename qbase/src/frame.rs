@@ -7,7 +7,6 @@ use crate::packet::r#type::Type;
 pub trait BeFrame {
     fn frame_type(&self) -> FrameType;
 
-    // TODO: 这个应该取决于FrameType而非具体的Frame吧？
     fn belongs_to(&self, packet_type: Type) -> bool {
         self.frame_type().belongs_to(packet_type)
     }
@@ -274,70 +273,6 @@ pub enum Frame {
     Crypto(CryptoFrame, Bytes),
     Datagram(DatagramFrame, Bytes),
 }
-
-/*
-impl BeFrame for Frame {
-    fn frame_type(&self) -> FrameType {
-        match self {
-            Frame::Padding(f) => f.frame_type(),
-            Frame::Ping(f) => f.frame_type(),
-            Frame::Ack(f) => f.frame_type(),
-            Frame::Close(f) => f.frame_type(),
-            Frame::NewToken(f) => f.frame_type(),
-            Frame::MaxData(f) => f.frame_type(),
-            Frame::DataBlocked(f) => f.frame_type(),
-            Frame::NewConnectionId(f) => f.frame_type(),
-            Frame::RetireConnectionId(f) => f.frame_type(),
-            Frame::HandshakeDone(f) => f.frame_type(),
-            Frame::Challenge(f) => f.frame_type(),
-            Frame::Response(f) => f.frame_type(),
-            Frame::Stream(f) => f.frame_type(),
-            Frame::Data(f, _) => f.frame_type(),
-            Frame::Datagram(f, _) => f.frame_type(),
-        }
-    }
-
-    fn encoding_size(&self) -> usize {
-        match self {
-            Frame::Padding(f) => f.encoding_size(),
-            Frame::Ping(f) => f.encoding_size(),
-            Frame::Ack(f) => f.encoding_size(),
-            Frame::Close(f) => f.encoding_size(),
-            Frame::NewToken(f) => f.encoding_size(),
-            Frame::MaxData(f) => f.encoding_size(),
-            Frame::DataBlocked(f) => f.encoding_size(),
-            Frame::NewConnectionId(f) => f.encoding_size(),
-            Frame::RetireConnectionId(f) => f.encoding_size(),
-            Frame::HandshakeDone(f) => f.encoding_size(),
-            Frame::Challenge(f) => f.encoding_size(),
-            Frame::Response(f) => f.encoding_size(),
-            Frame::Stream(f) => f.encoding_size(),
-            Frame::Data(f, d) => f.encoding_size() + d.len(),
-            Frame::Datagram(f, d) => f.encoding_size() + d.len(),
-        }
-    }
-
-    fn max_encoding_size(&self) -> usize {
-        match self {
-            Frame::Padding(f) => f.max_encoding_size(),
-            Frame::Ping(f) => f.max_encoding_size(),
-            Frame::Ack(f) => f.max_encoding_size(),
-            Frame::Close(f) => f.max_encoding_size(),
-            Frame::NewToken(f) => f.max_encoding_size(),
-            Frame::MaxData(f) => f.max_encoding_size(),
-            Frame::DataBlocked(f) => f.max_encoding_size(),
-            Frame::NewConnectionId(f) => f.max_encoding_size(),
-            Frame::RetireConnectionId(f) => f.max_encoding_size(),
-            Frame::HandshakeDone(f) => f.max_encoding_size(),
-            Frame::Challenge(f) => f.max_encoding_size(),
-            Frame::Response(f) => f.max_encoding_size(),
-            Frame::Stream(f) => f.max_encoding_size(),
-            Frame::Data(f, d) => f.max_encoding_size() + d.len(),
-            Frame::Datagram(f, d) => f.max_encoding_size() + d.len(),
-        }
-    }
-}
-*/
 
 pub struct FrameReader {
     payload: Bytes,
