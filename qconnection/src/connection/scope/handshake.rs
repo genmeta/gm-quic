@@ -7,9 +7,11 @@ use qbase::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::GetType,
         keys::ArcKeys,
+        DataPacket, PacketNumber,
     },
 };
 use qrecovery::{
+    reliable::rcvdpkt::ArcRcvdPktRecords,
     space::{Epoch, HandshakeSpace},
     streams::crypto::CryptoStream,
 };
@@ -165,5 +167,52 @@ impl HandshakeScope {
             space: self.space.clone(),
             crypto_stream_outgoing: self.crypto_stream.outgoing(),
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct ClosingHandshakeScope {
+    keys: Arc<rustls::quic::Keys>,
+    rcvd_pkt_records: ArcRcvdPktRecords,
+    // 发包时用得着
+    _next_sending_pn: (u64, PacketNumber),
+}
+
+impl TryFrom<HandshakeScope> for ClosingHandshakeScope {
+    type Error = ();
+
+    fn try_from(hs: HandshakeScope) -> Result<Self, Self::Error> {
+        let Some(keys) = hs.keys.invalid() else {
+            return Err(());
+        };
+        let rcvd_pkt_records = hs.space.rcvd_packets();
+        let next_sending_pn = hs.space.sent_packets().send().next_pn();
+
+        Ok(Self {
+            keys,
+            rcvd_pkt_records,
+            _next_sending_pn: next_sending_pn,
+        })
+    }
+}
+
+impl super::RecvPacket for ClosingHandshakeScope {
+    fn has_rcvd_ccf(&self, mut packet: DataPacket) -> bool {
+        let undecoded_pn = match remove_protection_of_long_packet(
+            self.keys.remote.header.as_ref(),
+            packet.bytes.as_mut(),
+            packet.offset,
+        ) {
+            Ok(Some(pn)) => pn,
+            _ => return false,
+        };
+
+        let pn = match self.rcvd_pkt_records.decode_pn(undecoded_pn) {
+            Ok(pn) => pn,
+            // TooOld/TooLarge/HasRcvd
+            Err(_e) => return false,
+        };
+        let body_offset = packet.offset + undecoded_pn.size();
+        Self::decrypt_and_parse(self.keys.remote.packet.as_ref(), pn, packet, body_offset)
     }
 }

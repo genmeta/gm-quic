@@ -15,11 +15,13 @@ use qbase::{
             decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
         },
         header::GetType,
-        keys::{ArcKeys, ArcOneRttKeys},
+        keys::{ArcHeaderProtectionKeys, ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys},
+        r#type::Type,
+        DataPacket, PacketNumber,
     },
 };
 use qrecovery::{
-    reliable::{ArcReliableFrameDeque, GuaranteedFrame},
+    reliable::{rcvdpkt::ArcRcvdPktRecords, ArcReliableFrameDeque, GuaranteedFrame},
     space::{DataSpace, Epoch},
     streams::{crypto::CryptoStream, DataStreams},
 };
@@ -82,7 +84,7 @@ impl DataScope {
 
         let dispatch_data_frame = {
             let conn_error = conn_error.clone();
-            move |frame: Frame, path: &RawPath| match frame {
+            move |frame: Frame, pty: Type, path: &RawPath| match frame {
                 Frame::Ack(f) => {
                     path.on_ack(Epoch::Data, &f);
                     _ = ack_frames_entry.unbounded_send(f)
@@ -99,7 +101,7 @@ impl DataScope {
                 Frame::Stream(f, data) => _ = stream_frames_entry.unbounded_send((f, data)),
                 Frame::Crypto(f, bytes) => _ = crypto_frames_entry.unbounded_send((f, bytes)),
                 Frame::Datagram(f, data) => _ = datagram_frames_entry.unbounded_send((f, data)),
-                Frame::Close(f) => conn_error.on_ccf_rcvd(&f),
+                Frame::Close(f) if matches!(pty, Type::Short(_)) => conn_error.on_ccf_rcvd(&f),
                 _ => {}
             }
         };
@@ -185,7 +187,7 @@ impl DataScope {
         &self,
         mut rcvd_packets: RcvdPackets,
         pathes: ArcPathes,
-        dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
+        dispatch_frame: impl Fn(Frame, Type, &RawPath) + Send + 'static,
         notify: Arc<Notify>,
         conn_error: ConnError,
     ) -> JoinHandle<RcvdPackets> {
@@ -233,7 +235,7 @@ impl DataScope {
                         false,
                         |is_ack_packet, frame| {
                             let (frame, is_ack_eliciting) = frame?;
-                            dispatch_frame(frame, &path);
+                            dispatch_frame(frame, pty, &path);
                             Ok(is_ack_packet || is_ack_eliciting)
                         },
                     ) {
@@ -254,7 +256,7 @@ impl DataScope {
         mut rcvd_packets: RcvdPackets,
         pathes: ArcPathes,
         handshake: &Handshake<ArcReliableFrameDeque>,
-        dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
+        dispatch_frame: impl Fn(Frame, Type, &RawPath) + Send + 'static,
         notify: Arc<Notify>,
         conn_error: ConnError,
     ) -> JoinHandle<RcvdPackets> {
@@ -298,7 +300,7 @@ impl DataScope {
                         false,
                         |is_ack_packet, frame| {
                             let (frame, is_ack_eliciting) = frame?;
-                            dispatch_frame(frame, &path);
+                            dispatch_frame(frame, pty, &path);
                             Ok(is_ack_packet || is_ack_eliciting)
                         },
                     ) {
@@ -388,5 +390,53 @@ impl DataScope {
             streams,
             datagrams,
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct ClosingOneRttScope {
+    keys: (ArcHeaderProtectionKeys, ArcOneRttPacketKeys),
+    rcvd_pkt_records: ArcRcvdPktRecords,
+    // 发包时用得着
+    _next_sending_pn: (u64, PacketNumber),
+}
+
+impl TryFrom<DataScope> for ClosingOneRttScope {
+    type Error = ();
+
+    fn try_from(data: DataScope) -> Result<Self, Self::Error> {
+        let Some(keys) = data.one_rtt_keys.invalid() else {
+            return Err(());
+        };
+        let rcvd_pkt_records = data.space.rcvd_packets();
+        let next_sending_pn = data.space.sent_packets().send().next_pn();
+
+        Ok(Self {
+            keys,
+            rcvd_pkt_records,
+            _next_sending_pn: next_sending_pn,
+        })
+    }
+}
+
+impl super::RecvPacket for ClosingOneRttScope {
+    fn has_rcvd_ccf(&self, mut packet: DataPacket) -> bool {
+        let (undecoded_pn, key_phase) = match remove_protection_of_short_packet(
+            self.keys.0.remote.as_ref(),
+            packet.bytes.as_mut(),
+            packet.offset,
+        ) {
+            Ok(Some(pn)) => pn,
+            _ => return false,
+        };
+
+        let pn = match self.rcvd_pkt_records.decode_pn(undecoded_pn) {
+            Ok(pn) => pn,
+            // TooOld/TooLarge/HasRcvd
+            Err(_e) => return false,
+        };
+        let body_offset = packet.offset + undecoded_pn.size();
+        let pk = self.keys.1.lock_guard().get_remote(key_phase, pn);
+        Self::decrypt_and_parse(pk.as_ref(), pn, packet, body_offset)
     }
 }

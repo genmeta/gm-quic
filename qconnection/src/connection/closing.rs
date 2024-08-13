@@ -10,69 +10,47 @@ use std::{
     time::{Duration, Instant},
 };
 
-use qbase::{
-    frame::{ConnectionCloseFrame, Frame, FrameReader},
-    packet::{
-        decrypt::{decrypt_packet, remove_protection_of_short_packet},
-        header::GetType,
-        keys::ArcOneRttPacketKeys,
-        DataHeader, DataPacket,
-    },
-};
-use qrecovery::reliable::rcvdpkt::ArcRcvdPktRecords;
+use qbase::packet::{long, DataHeader, DataPacket};
 use qudp::ArcUsc;
 
-use super::{raw::RawConnection, CidRegistry};
+use super::{
+    scope::{data::ClosingOneRttScope, handshake::ClosingHandshakeScope, RecvPacket},
+    CidRegistry,
+};
 use crate::path::{ArcPathes, Pathway};
 
 #[derive(Clone)]
 pub struct ClosingConnection {
     pub pathes: ArcPathes,
     pub cid_registry: CidRegistry,
-    pub rcvd_pkt_records: ArcRcvdPktRecords,
-    pub one_rtt_keys: (
-        Arc<dyn rustls::quic::HeaderProtectionKey>,
-        ArcOneRttPacketKeys,
-    ),
+    pub hs: Option<ClosingHandshakeScope>,
+    pub one_rtt: Option<ClosingOneRttScope>,
+
     pub rcvd_packets: Arc<AtomicUsize>,
     pub last_send_ccf: Arc<Mutex<Instant>>,
     pub revd_ccf: RcvdCcf,
 }
 
-impl From<RawConnection> for ClosingConnection {
-    fn from(conn: RawConnection) -> Self {
-        let pathes = conn.pathes;
-        let cid_registry = conn.cid_registry;
-        let data_space = conn.data.space;
-        let one_rtt_keys = match conn.data.one_rtt_keys.invalid() {
-            Some((hpk, pk)) => (hpk.local, pk),
-            _ => unreachable!(),
-        };
-        let error = conn.error;
-        let error = error.get_error().unwrap();
-        conn.flow_ctrl.on_error(&error);
-
-        let _ccf = ConnectionCloseFrame::from(error);
+impl ClosingConnection {
+    pub fn new(
+        pathes: ArcPathes,
+        cid_registry: CidRegistry,
+        hs: Option<ClosingHandshakeScope>,
+        one_rtt: Option<ClosingOneRttScope>,
+    ) -> Self {
         Self {
             pathes,
             cid_registry,
-            rcvd_pkt_records: data_space.rcvd_packets(),
-            one_rtt_keys,
+            hs,
+            one_rtt,
             rcvd_packets: Arc::new(AtomicUsize::new(0)),
             last_send_ccf: Arc::new(Mutex::new(Instant::now())),
             revd_ccf: RcvdCcf::default(),
         }
     }
-}
 
-impl ClosingConnection {
     // 记录收到的包数量，和收包时间，判断是否需要重发CCF；
-    pub fn recv_packet_via_pathway(
-        &mut self,
-        mut packet: DataPacket,
-        _pathway: Pathway,
-        _usc: ArcUsc,
-    ) {
+    pub fn recv_packet_via_pathway(&mut self, packet: DataPacket, _pathway: Pathway, _usc: ArcUsc) {
         self.rcvd_packets.fetch_add(1, Ordering::Release);
         // TODO: 数值从配置中读取, 还是直接固定值?
         let mut last_send_ccf = self.last_send_ccf.lock().unwrap();
@@ -86,42 +64,24 @@ impl ClosingConnection {
         }
         drop(last_send_ccf);
 
-        if let DataHeader::Short(h) = packet.header {
-            let pkt_type = h.get_type();
-            let (undecoded_pn, key_phase) = match remove_protection_of_short_packet(
-                self.one_rtt_keys.0.as_ref(),
-                packet.bytes.as_mut(),
-                packet.offset,
-            ) {
-                Ok(Some(pn)) => pn,
-                Ok(None) => return,
-                Err(_e) => {
-                    // conn_error.on_error(e);
-                    return;
-                }
-            };
+        match packet.header {
+            DataHeader::Short(_) => self.parse_1rtt_packet(packet),
+            DataHeader::Long(long::DataHeader::Handshake(_)) => self.parse_hs_packet(packet),
+            _ => { /* turstless, just ignore */ }
+        };
+    }
 
-            let pn = match self.rcvd_pkt_records.decode_pn(undecoded_pn) {
-                Ok(pn) => pn,
-                // TooOld/TooLarge/HasRcvd
-                Err(_e) => return,
-            };
-            let body_offset = packet.offset + undecoded_pn.size();
-            let pk = self.one_rtt_keys.1.lock_guard().get_remote(key_phase, pn);
-            decrypt_packet(pk.as_ref(), pn, packet.bytes.as_mut(), body_offset).unwrap();
-            let body = packet.bytes.split_off(body_offset);
+    fn parse_hs_packet(&self, packet: DataPacket) {
+        if let Some(hs_scope) = &self.hs {
+            if hs_scope.has_rcvd_ccf(packet) {
+                self.revd_ccf.on_ccf_rcvd();
+            }
+        }
+    }
 
-            let ccf = FrameReader::new(body.freeze(), pkt_type)
-                .filter_map(|frame| frame.ok())
-                .find_map(|frame| {
-                    if let (Frame::Close(ccf), _) = frame {
-                        Some(ccf)
-                    } else {
-                        None
-                    }
-                });
-
-            if ccf.is_some() {
+    fn parse_1rtt_packet(&self, packet: DataPacket) {
+        if let Some(one_rtt_scope) = &self.one_rtt {
+            if one_rtt_scope.has_rcvd_ccf(packet) {
                 self.revd_ccf.on_ccf_rcvd();
             }
         }
