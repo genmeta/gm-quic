@@ -2,7 +2,7 @@ use std::{
     fmt::Debug,
     mem,
     net::SocketAddr,
-    ops::DerefMut,
+    ops::{Deref, DerefMut},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -211,10 +211,9 @@ impl ArcConnection {
             Closed => return,
         };
 
-        local_cids
-            .active_cids()
-            .into_iter()
-            .for_each(|cid| ROUTER.remove_conn(cid));
+        local_cids.active_cids().iter().for_each(|cid| {
+            ROUTER.remove(cid);
+        });
     }
 }
 
