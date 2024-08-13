@@ -275,6 +275,12 @@ pub enum Frame {
     Datagram(DatagramFrame, Bytes),
 }
 
+pub trait ReceiveFrame<T> {
+    type Output;
+
+    fn recv_frame(&mut self, frame: &T) -> Result<Self::Output, crate::error::Error>;
+}
+
 pub struct FrameReader {
     payload: Bytes,
     packet_type: Type,

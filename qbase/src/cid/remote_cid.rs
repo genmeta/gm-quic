@@ -10,7 +10,7 @@ use deref_derive::{Deref, DerefMut};
 use super::ConnectionId;
 use crate::{
     error::Error,
-    frame::{BeFrame, NewConnectionIdFrame, RetireConnectionIdFrame},
+    frame::{BeFrame, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame},
     token::ResetToken,
     util::IndexDeque,
     varint::{VarInt, VARINT_MAX},
@@ -201,13 +201,6 @@ where
         ))))
     }
 
-    pub fn recv_new_cid_frame(
-        &self,
-        frame: &NewConnectionIdFrame,
-    ) -> Result<Option<ResetToken>, Error> {
-        self.0.lock().unwrap().recv_new_cid_frame(frame)
-    }
-
     /// Return a ArcCidCell, which holds the state of the connection ID, included:
     /// - not be allocated yet
     /// - have been allocated
@@ -215,6 +208,17 @@ where
     /// - have been retired
     pub fn apply_cid(&self) -> ArcCidCell<RETIRED> {
         self.0.lock().unwrap().apply_cid()
+    }
+}
+
+impl<RETIRED> ReceiveFrame<NewConnectionIdFrame> for ArcRemoteCids<RETIRED>
+where
+    RETIRED: Extend<RetireConnectionIdFrame> + Clone,
+{
+    type Output = Option<ResetToken>;
+
+    fn recv_frame(&mut self, frame: &NewConnectionIdFrame) -> Result<Self::Output, Error> {
+        self.0.lock().unwrap().recv_new_cid_frame(frame)
     }
 }
 

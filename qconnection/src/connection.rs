@@ -2,7 +2,7 @@ use std::{
     fmt::Debug,
     mem,
     net::SocketAddr,
-    ops::{Deref, DerefMut},
+    ops::DerefMut,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };

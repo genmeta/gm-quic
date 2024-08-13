@@ -14,7 +14,7 @@ use thiserror::Error;
 use crate::{
     config::Parameters,
     error::Error as QuicError,
-    frame::{DataBlockedFrame, MaxDataFrame},
+    frame::{DataBlockedFrame, MaxDataFrame, ReceiveFrame},
     varint::VarInt,
 };
 
@@ -101,11 +101,6 @@ impl ArcSendControler {
         }
     }
 
-    /// Increasing Flow Control Limits by receiving a MAX_DATA frame from peer.
-    pub fn recv_max_data_frame(&self, frame: &MaxDataFrame) {
-        self.increase_limit(frame.max_data.into_inner());
-    }
-
     /// For external listening, whether it is blocked.
     /// If so, a DataBlockedFrame needs to be sent to the other party.
     pub fn would_block(&self) -> WouldBlock {
@@ -142,6 +137,16 @@ impl ArcSendControler {
             inner.wake_all();
         }
         *guard = Err(error.clone());
+    }
+}
+
+/// Increasing Flow Control Limits by receiving a MAX_DATA frame from peer.
+impl ReceiveFrame<MaxDataFrame> for ArcSendControler {
+    type Output = ();
+
+    fn recv_frame(&mut self, frame: &MaxDataFrame) -> Result<Self::Output, QuicError> {
+        self.increase_limit(frame.max_data.into_inner());
+        Ok(())
     }
 }
 
@@ -280,10 +285,6 @@ impl ArcRecvController {
         self.0.on_new_rcvd(amount)
     }
 
-    pub fn recv_data_blocked_frame(&self, _frame: &DataBlockedFrame) {
-        // Do nothing, just print a log
-    }
-
     /// Polls for an increase in the receive window limit.
     pub fn incr_limit(&self) -> IncrLimit {
         IncrLimit(self.0.clone())
@@ -292,6 +293,15 @@ impl ArcRecvController {
     /// Closes the receiver if connection meets error.
     pub fn on_error(&self) {
         self.0.on_error();
+    }
+}
+
+impl ReceiveFrame<DataBlockedFrame> for ArcRecvController {
+    type Output = ();
+
+    fn recv_frame(&mut self, _frame: &DataBlockedFrame) -> Result<Self::Output, QuicError> {
+        // Do nothing, just print a log
+        Ok(())
     }
 }
 

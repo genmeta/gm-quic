@@ -1,6 +1,10 @@
 use std::sync::{Arc, Mutex};
 
-use qbase::{config::Parameters, error::Error, frame::DatagramFrame};
+use qbase::{
+    config::Parameters,
+    error::Error,
+    frame::{DatagramFrame, ReceiveFrame},
+};
 
 use super::{
     reader::{DatagramReader, RawDatagramReader},
@@ -69,15 +73,6 @@ impl DatagramFlow {
         self.0.writer.try_read_datagram(buf)
     }
 
-    /// See [`DatagramReader::recv_datagram`] for more details.
-    #[inline]
-    pub fn recv_datagram(
-        &self,
-        (frame, body): &(DatagramFrame, bytes::Bytes),
-    ) -> Result<(), Error> {
-        self.0.reader.recv_datagram(frame, body.clone())
-    }
-
     /// Create a pair of [`DatagramReader`] and [`DatagramWriter`] for the application to read and write datagrams.
     #[inline]
     pub fn rw(&self) -> (DatagramReader, DatagramWriter) {
@@ -106,5 +101,18 @@ impl DatagramFlow {
         let raw_flow = &self.0;
         raw_flow.reader.on_conn_error(error);
         raw_flow.writer.on_conn_error(error);
+    }
+}
+
+/// See [`DatagramReader::recv_datagram`] for more details.
+impl ReceiveFrame<(DatagramFrame, bytes::Bytes)> for DatagramFlow {
+    type Output = ();
+
+    #[inline]
+    fn recv_frame(
+        &mut self,
+        (frame, body): &(DatagramFrame, bytes::Bytes),
+    ) -> Result<Self::Output, Error> {
+        self.0.reader.recv_datagram(frame, body.clone())
     }
 }

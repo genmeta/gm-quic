@@ -6,7 +6,7 @@ use qbase::{
     error::{Error as QuicError, ErrorKind},
     flow,
     frame::{
-        AckFrame, BeFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
+        AckFrame, BeFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame, ReceiveFrame,
         ReliableFrame, StreamFrame,
     },
     handshake::Handshake,
@@ -148,14 +148,15 @@ impl DataScope {
 
         // Assemble the pipelines of frame processing
         // TODO: pipe rcvd_new_token_frames
-        pipe!(rcvd_max_data_frames |> flow_ctrl.sender, recv_max_data_frame);
-        pipe!(rcvd_data_blocked_frames |> flow_ctrl.recver, recv_data_blocked_frame);
-        pipe!(@error(conn_error) rcvd_new_cid_frames |> cid_registry.remote, recv_new_cid_frame);
-        pipe!(rcvd_retire_cid_frames |> cid_registry.local, recv_retire_cid_frame);
-        pipe!(@error(conn_error) rcvd_handshake_done_frames |> *handshake, recv_handshake_done_frame);
-        pipe!(rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_crypto_frame);
-        pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> *streams, recv_stream_control);
-        pipe!(@error(conn_error) rcvd_datagram_frames |> *datagrams, recv_datagram);
+        pipe!(rcvd_max_data_frames |> flow_ctrl.sender, recv_frame);
+        pipe!(rcvd_data_blocked_frames |> flow_ctrl.recver, recv_frame);
+        pipe!(@error(conn_error) rcvd_new_cid_frames |> cid_registry.remote, recv_frame);
+        pipe!(rcvd_retire_cid_frames |> cid_registry.local, recv_frame);
+        pipe!(@error(conn_error) rcvd_handshake_done_frames |> *handshake, recv_frame);
+        pipe!(@error(conn_error) rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_frame);
+        pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> *streams, recv_frame);
+        // pipe!(@error(conn_error) rcvd_stream_frames |> *streams, recv_data);
+        pipe!(@error(conn_error) rcvd_datagram_frames |> *datagrams, recv_frame);
         pipe!(rcvd_ack_frames |> on_data_acked);
 
         self.handle_stream_frame_with_flow_ctrl(
