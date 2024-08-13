@@ -7,8 +7,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use closing::ClosingConnection;
 use draining::DrainingConnection;
-use futures::channel::mpsc;
+use futures::{channel::mpsc, StreamExt};
 use qbase::{cid, config::Parameters, error::Error, packet::DataPacket, streamid::Role};
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qudp::ArcUsc;
@@ -75,10 +76,10 @@ impl ArcConnection {
             let conn = conn.clone();
             async move {
                 if conn_error.did_error_occur().await && one_rtt_keys.invalid().is_some() {
-                    conn.close();
+                    conn.should_enter_closing();
                 } else {
                     let pto = pathes.iter().map(|p| p.pto_time()).max().unwrap();
-                    conn.drain(pto * 3);
+                    conn.enter_draining(pto * 3);
                 }
             }
         });
@@ -101,13 +102,23 @@ impl ArcConnection {
 
     /// Gracefully closes the connection.
     ///
+    /// Closes the connection with a specified error.
+    /// This function is intended for use by the application layer to signal an
+    /// error and initiate the connection closure.
+    pub fn close_with_error(self, error: Error) {
+        let guard = self.0.lock().unwrap();
+        if let ConnState::Raw(ref raw_conn) = *guard {
+            raw_conn.error.set_app_error(error)
+        }
+    }
+
     /// This function transitioning connection to a `Closing` state and
     /// initiating a background task to manage the closing handshake. This task awaits
     /// confirmation from the peer (Connection Close Frame) within a timeout derived
     /// from the connection's Path Termination Timeout (PTO).  Upon successful
     /// confirmation, any remaining data is drained.  If the timeout expires without
     /// confirmation, the connection is forcefully terminated.
-    fn close(self) {
+    fn should_enter_closing(&self) {
         let mut guard = self.0.lock().unwrap();
 
         let ConnState::Raw(raw_conn) = mem::replace(guard.deref_mut(), ConnState::Closed) else {
@@ -121,7 +132,32 @@ impl ArcConnection {
             .max()
             .unwrap();
 
-        let closing_conn = closing::ClosingConnection::from(raw_conn);
+        let hs = raw_conn.hs.try_into();
+        let one_rtt = raw_conn.data.try_into();
+        if hs.is_err() && one_rtt.is_err() {
+            // 没法进入到Closing，则直接进入到Draining
+            self.enter_draining(pto * 3);
+            return;
+        }
+
+        let closing_conn = ClosingConnection::new(
+            raw_conn.pathes,
+            raw_conn.cid_registry,
+            hs.ok(),
+            one_rtt.ok(),
+        );
+
+        // Redirect the received packets of this connection to ClosingConnection
+        raw_conn.notify.notify_waiters();
+        for handle in raw_conn.join_handles {
+            let mut closing_conn = closing_conn.clone();
+            tokio::spawn(async move {
+                let mut rcvd_packets = handle.await.unwrap();
+                while let Some((packet, pathway, usc)) = rcvd_packets.next().await {
+                    closing_conn.recv_packet_via_pathway(packet, pathway, usc);
+                }
+            });
+        }
 
         tokio::spawn({
             let conn = self.clone();
@@ -133,7 +169,7 @@ impl ArcConnection {
                     .await
                     .is_ok()
                 {
-                    conn.drain(duration - time.elapsed());
+                    conn.enter_draining(duration - time.elapsed());
                 } else {
                     conn.die();
                 }
@@ -143,19 +179,9 @@ impl ArcConnection {
         *guard = Closing(closing_conn);
     }
 
-    /// Closes the connection with a specified error.
-    /// This function is intended for use by the application layer to signal an
-    /// error and initiate the connection closure.
-    pub fn close_with_error(&self, error: Error) {
-        let guard = self.0.lock().unwrap();
-        if let ConnState::Raw(ref raw_conn) = *guard {
-            raw_conn.error.set_app_error(error)
-        }
-    }
-
     /// Enter draining state from raw state or closing state.
     /// Can only be called internally, and the app should not care this method.
-    pub(crate) fn drain(self, remaining: Duration) {
+    pub(crate) fn enter_draining(&self, remaining: Duration) {
         let mut guard = self.0.lock().unwrap();
         let draining_conn = match mem::replace(guard.deref_mut(), ConnState::Closed) {
             Raw(conn) => DrainingConnection::from(conn),

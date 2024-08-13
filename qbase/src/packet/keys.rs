@@ -159,7 +159,8 @@ impl ArcOneRttPacketKeys {
     }
 }
 
-pub struct ArcOneRttHeaderProtectionKey {
+#[derive(Clone)]
+pub struct ArcHeaderProtectionKeys {
     pub local: Arc<dyn HeaderProtectionKey>,
     pub remote: Arc<dyn HeaderProtectionKey>,
 }
@@ -167,7 +168,7 @@ pub struct ArcOneRttHeaderProtectionKey {
 enum OneRttKeysState {
     Pending(Option<Waker>),
     Ready {
-        hpk: ArcOneRttHeaderProtectionKey,
+        hpk: ArcHeaderProtectionKeys,
         pk: ArcOneRttPacketKeys,
     },
     Invalid,
@@ -194,7 +195,7 @@ impl ArcOneRttKeys {
                 }
                 let (remote_hpk, local_hpk) =
                     (Arc::from(keys.remote.header), Arc::from(keys.local.header));
-                let hpk = ArcOneRttHeaderProtectionKey {
+                let hpk = ArcHeaderProtectionKeys {
                     remote: remote_hpk,
                     local: local_hpk,
                 };
@@ -210,7 +211,7 @@ impl ArcOneRttKeys {
         }
     }
 
-    pub fn invalid(&self) -> Option<(ArcOneRttHeaderProtectionKey, ArcOneRttPacketKeys)> {
+    pub fn invalid(&self) -> Option<(ArcHeaderProtectionKeys, ArcOneRttPacketKeys)> {
         let mut state = self.lock_guard();
         match std::mem::replace(state.deref_mut(), OneRttKeysState::Invalid) {
             OneRttKeysState::Pending(rx_waker) => {

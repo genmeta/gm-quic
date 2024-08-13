@@ -1,19 +1,12 @@
-use std::{
-    sync::{atomic::AtomicUsize, Arc, Mutex},
-    time::Instant,
-};
+use std::sync::Arc;
 
-use futures::{channel::mpsc, StreamExt};
-use qbase::{
-    error::Error, flow::FlowController, frame::ConnectionCloseFrame, handshake::Handshake,
-    packet::keys::ArcKeys, streamid::Role,
-};
+use futures::channel::mpsc;
+use qbase::{flow::FlowController, handshake::Handshake, packet::keys::ArcKeys, streamid::Role};
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qunreliable::DatagramFlow;
 use tokio::{sync::Notify, task::JoinHandle};
 
 use super::{
-    closing::{ClosingConnection, RcvdCcf},
     scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope},
     CidRegistry, RcvdPackets,
 };
@@ -39,7 +32,7 @@ pub struct RawConnection {
     pub initial: InitialScope,
     pub hs: HandshakeScope,
     pub data: DataScope,
-    pub notify: Arc<Notify>,
+    pub notify: Arc<Notify>, // Notifier for closing the packet receiving task
     pub join_handles: [JoinHandle<RcvdPackets>; 4],
 
     pub params: GetParameters,
@@ -134,7 +127,7 @@ impl RawConnection {
             rcvd_0rtt_packets,
             rcvd_1rtt_packets,
         );
-        let join_handlers = [join_initial, join_0rtt, join_hs, join_1rtt];
+        let join_handles = [join_initial, join_0rtt, join_hs, join_1rtt];
 
         let get_params = tls_session.keys_upgrade(
             [
@@ -159,43 +152,9 @@ impl RawConnection {
             hs,
             data,
             notify,
-            join_handles: join_handlers,
+            join_handles,
             error: conn_error,
             params: get_params,
         }
-    }
-
-    pub fn to_closing(self, error: Error) -> ClosingConnection {
-        let pathes = self.pathes;
-        let cid_registry = self.cid_registry;
-        let rcvd_pkt_records = self.data.space.rcvd_packets();
-        let one_rtt_keys = match self.data.one_rtt_keys.invalid() {
-            Some((hpk, pk)) => (hpk.0, pk),
-            _ => unreachable!(),
-        };
-        self.flow_ctrl.on_error(&error);
-
-        let _ccf = ConnectionCloseFrame::from(error);
-        let closing_conn = ClosingConnection {
-            pathes,
-            cid_registry,
-            rcvd_pkt_records,
-            one_rtt_keys,
-            rcvd_packets: Arc::new(AtomicUsize::new(0)),
-            last_send_ccf: Arc::new(Mutex::new(Instant::now())),
-            revd_ccf: RcvdCcf::default(),
-        };
-
-        self.notify.notify_waiters();
-        for join_handle in self.join_handles {
-            let mut closing_conn = closing_conn.clone();
-            tokio::spawn(async move {
-                let mut rcvd_packets = join_handle.await.unwrap();
-                while let Some((packet, pathway, usc)) = rcvd_packets.next().await {
-                    closing_conn.recv_packet_via_pathway(packet, pathway, usc);
-                }
-            });
-        }
-        closing_conn
     }
 }
