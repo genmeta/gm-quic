@@ -3,7 +3,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use dashmap::DashMap;
 use futures::io;
 
 use crate::{frame::NewTokenFrame, streamid::Role};
@@ -56,6 +55,7 @@ where
     path: String,
     issued: ISSUED,
     queue: ArcTokenQueue,
+    retry_token: Option<Vec<u8>>,
 }
 
 impl<ISSUED> Server<ISSUED>
@@ -73,6 +73,7 @@ where
             path,
             issued,
             queue,
+            retry_token: None,
         }
     }
 
@@ -91,16 +92,26 @@ where
         self.queue.flush(self.path.as_str());
     }
 
+    // 如果发过 Retry 包，校验 Retry Token，否则校验 new token
     pub fn validate(&mut self, token: &[u8]) -> bool {
+        if let Some(retry_token) = &self.retry_token {
+            if token == retry_token {
+                return true;
+            }
+            return false;
+        }
         self.queue.remove_expired();
         self.queue.contains(token)
+    }
+
+    pub fn send_retry_token(&mut self, token: Vec<u8>) {
+        self.retry_token = Some(token);
     }
 }
 
 #[derive(Clone)]
 pub struct Client {
-    name: String,
-    queue: ArcTokenQueue,
+    pub initial_token: Arc<Mutex<Vec<u8>>>,
 }
 
 impl Client {
@@ -111,14 +122,15 @@ impl Client {
             ArcTokenQueue(queue)
         });
 
+        let initial_token = queue.pop_back().map(|(token, _)| token).unwrap_or_default();
         Self {
-            name: server_name,
-            queue,
+            initial_token: Arc::new(Mutex::new(initial_token)),
         }
     }
 
-    pub fn pop_token(&self) -> Option<Vec<u8>> {
-        self.queue.pop_back().map(|(token, _)| token)
+    // 收到 retry token，后续 initial 包都需要使用这个 token
+    pub fn recv_retry_token(&mut self, token: Vec<u8>) {
+        *self.initial_token.lock().unwrap() = token;
     }
 }
 

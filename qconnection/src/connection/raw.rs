@@ -1,14 +1,24 @@
 use std::sync::Arc;
 
 use futures::channel::mpsc;
-use qbase::{flow::FlowController, handshake::Handshake, packet::keys::ArcKeys, streamid::Role};
+use qbase::{
+    flow::FlowController,
+    handshake::Handshake,
+    packet::{keys::ArcKeys, SpinBit},
+    streamid::Role,
+    token_registry::TokenRegistry,
+};
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qunreliable::DatagramFlow;
 use tokio::{sync::Notify, task::JoinHandle};
 
 use super::{
-    scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope},
-    CidRegistry, RcvdPackets,
+    scope::{
+        data::DataScope,
+        handshake::HandshakeScope,
+        initial::{ArcAddrValidator, InitialScope},
+    },
+    CidRegistry,
 };
 use crate::{
     error::ConnError,
@@ -65,6 +75,7 @@ impl RawConnection {
         let handshake = Handshake::new(role, reliable_frames.clone());
         let flow_ctrl = FlowController::with_initial(0, 0);
         let conn_error = ConnError::default();
+        let addr_validator = ArcAddrValidator::default();
 
         let streams = DataStreams::with_role_and_limit(
             role,
@@ -81,13 +92,19 @@ impl RawConnection {
         );
         let datagrams = DatagramFlow::new(0, 0);
 
-        let initial = InitialScope::new(ArcKeys::new_pending());
-        let hs = HandshakeScope::new();
-        let data = DataScope::new();
+        let initial = InitialScope::new(
+            ArcKeys::new_pending(),
+            initial_packets_entry,
+            token_registry.clone(),
+            addr_validator.clone(),
+        );
+        let hs = HandshakeScope::new(hs_packets_entry, addr_validator.clone());
+        let data = DataScope::new(zero_rtt_packets_entry, one_rtt_packets_entry);
 
         let pathes = ArcPathes::new(Box::new({
             let remote_cids = cid_registry.remote.clone();
             let flow_ctrl = flow_ctrl.clone();
+            let handshake = handshake.clone();
             let gen_readers = {
                 let initial = initial.clone();
                 let hs = hs.clone();
@@ -113,7 +130,28 @@ impl RawConnection {
             move |pathway, usc| {
                 let dcid = remote_cids.apply_cid();
                 let path = RawPath::new(usc.clone(), dcid);
-                path.begin_validation();
+                // 如果未握手完成
+                // 服务端需要进行地址验证来接触抗放大攻击
+                // 客户端没有抗放大攻击
+                // 如果握手完成，则是路径迁移，进行路径验证
+                if !handshake.is_handshake_done() {
+                    match role {
+                        Role::Client => path.anti_amplifier.grant(),
+                        Role::Server => {
+                            tokio::spawn({
+                                let addr_validator = addr_validator.clone();
+                                let path = path.clone();
+                                async move {
+                                    if addr_validator.await {
+                                        path.anti_amplifier.grant();
+                                    }
+                                }
+                            });
+                        }
+                    }
+                } else {
+                    path.begin_validation();
+                }
                 path.begin_sending(pathway, &flow_ctrl, &gen_readers);
                 path
             }

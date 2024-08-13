@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 // use path::Pathway;
 // use qbase::packet::SpacePacket;
 
-pub mod address_validator;
 pub mod connection;
 pub mod error;
 pub mod path;

@@ -25,6 +25,8 @@ use crate::{
     pipe,
 };
 
+use super::initial::ArcAddrValidator;
+
 #[derive(Clone)]
 pub struct HandshakeScope {
     pub keys: ArcKeys,
@@ -105,6 +107,7 @@ impl HandshakeScope {
         tokio::spawn({
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.keys.clone();
+            let addr_validator = self.addr_validator.clone();
             async move {
                 while let Some((mut packet, pathway, usc)) =
                     any!(rcvd_packets.next(), notify.notified())
@@ -139,6 +142,8 @@ impl HandshakeScope {
                         body_offset,
                     )
                     .unwrap();
+
+                    addr_validator.0.validate();
                     let path = pathes.get(pathway, usc);
                     let body = packet.bytes.split_off(body_offset);
                     match FrameReader::new(body.freeze(), pty).try_fold(
