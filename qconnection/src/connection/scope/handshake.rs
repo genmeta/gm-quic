@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use connection::validator::ArcAddrValidator;
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
     frame::{AckFrame, Frame, FrameReader, ReceiveFrame},
@@ -17,10 +18,9 @@ use qrecovery::{
 };
 use tokio::{sync::Notify, task::JoinHandle};
 
-use super::initial::ArcAddrValidator;
 use crate::{
     any,
-    connection::{transmit::handshake::HandshakeSpaceReader, RcvdPackets},
+    connection::{self, transmit::handshake::HandshakeSpaceReader, RcvdPackets},
     error::ConnError,
     path::{ArcPathes, RawPath},
     pipe,
