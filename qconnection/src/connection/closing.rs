@@ -42,9 +42,7 @@ impl From<RawConnection> for ClosingConnection {
         let data_space = conn.data.space;
         let one_rtt_keys = match conn.data.one_rtt_keys.invalid() {
             Some((hpk, pk)) => (hpk.0, pk),
-            _ => {
-                unreachable!()
-            }
+            _ => unreachable!(),
         };
         let error = conn.error;
         let error = error.get_error().unwrap();
