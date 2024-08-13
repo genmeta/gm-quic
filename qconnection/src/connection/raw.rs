@@ -1,20 +1,17 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures::channel::mpsc;
 use qbase::{
     flow::FlowController, handshake::Handshake, packet::keys::ArcKeys, streamid::Role,
-    token_registry::TokenRegistry,
+    token::TokenRegistry,
 };
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qunreliable::DatagramFlow;
 use tokio::{sync::Notify, task::JoinHandle};
 
 use super::{
-    scope::{
-        data::DataScope,
-        handshake::HandshakeScope,
-        initial::{ArcAddrValidator, InitialScope},
-    },
+    scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope},
+    validator::ArcAddrValidator,
     CidRegistry, RcvdPackets,
 };
 use crate::{
@@ -47,7 +44,12 @@ pub struct RawConnection {
 }
 
 impl RawConnection {
-    pub fn new(role: Role, tls_session: ArcTlsSession, router: ArcRouter) -> Self {
+    pub fn new(
+        role: Role,
+        server_name: String,
+        tls_session: ArcTlsSession,
+        router: ArcRouter,
+    ) -> Self {
         let (initial_packets_entry, rcvd_initial_packets) = mpsc::unbounded();
         let (zero_rtt_packets_entry, rcvd_0rtt_packets) = mpsc::unbounded();
         let (hs_packets_entry, rcvd_hs_packets) = mpsc::unbounded();
@@ -66,8 +68,7 @@ impl RawConnection {
             retry_packets_entry.clone(),
         );
 
-        // todo: server name
-        let token_registry = TokenRegistry::new(role, "".to_string(), reliable_frames.clone());
+        let token_registry = TokenRegistry::new(role, server_name, reliable_frames.clone());
         let cid_registry = CidRegistry::new(8, router_registry, reliable_frames.clone(), 2);
         let handshake = Handshake::new(role, reliable_frames.clone());
         let flow_ctrl = FlowController::with_initial(0, 0);
@@ -105,10 +106,13 @@ impl RawConnection {
                 let reliable_frames = reliable_frames.clone();
                 let streams = streams.clone();
                 let datagrams = datagrams.clone();
-                let token_registry = token_registry.clone();
+                let token = match &token_registry {
+                    TokenRegistry::Client(client) => client.initial_token.clone(),
+                    _ => Arc::new(Mutex::new(Vec::new())),
+                };
                 move |path: &RawPath| {
                     (
-                        initial.reader(token_registry.clone()),
+                        initial.reader(token.clone()),
                         hs.reader(),
                         data.reader(
                             path.challenge_sndbuf(),
@@ -123,25 +127,7 @@ impl RawConnection {
             move |pathway, usc| {
                 let dcid = remote_cids.apply_cid();
                 let path = RawPath::new(usc.clone(), dcid);
-
-                if !handshake.is_handshake_done() {
-                    match role {
-                        Role::Client => path.anti_amplifier.grant(),
-                        Role::Server => {
-                            tokio::spawn({
-                                let addr_validator = addr_validator.clone();
-                                let path = path.clone();
-                                async move {
-                                    if addr_validator.await {
-                                        path.anti_amplifier.grant();
-                                    }
-                                }
-                            });
-                        }
-                    }
-                } else {
-                    path.begin_validation();
-                }
+                path.begin_validation(&handshake, &addr_validator);
                 path.begin_sending(pathway, &flow_ctrl, &gen_readers);
                 path
             }

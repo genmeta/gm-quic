@@ -33,6 +33,7 @@ pub mod draining;
 pub mod raw;
 pub mod scope;
 pub mod transmit;
+pub mod validator;
 
 pub type PacketEntry = mpsc::UnboundedSender<(DataPacket, Pathway, ArcUsc)>;
 pub type RcvdPackets = mpsc::UnboundedReceiver<(DataPacket, Pathway, ArcUsc)>;
@@ -66,12 +67,14 @@ impl ArcConnection {
         params: Parameters,
         router: ArcRouter,
     ) -> Self {
+        let name = server_name.clone();
         let Ok(server_name) = server_name.try_into() else {
             panic!("server_name is not valid")
         };
 
         let raw_conn = raw::RawConnection::new(
             Role::Client,
+            name,
             ArcTlsSession::new_client(server_name, &params),
             router,
         );
