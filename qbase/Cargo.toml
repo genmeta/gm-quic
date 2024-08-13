@@ -17,7 +17,6 @@ deref-derive = { workspace = true }
 rustls = { workspace = true }
 log = { workspace = true }
 derive_builder = { workspace = true }
-dashmap = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

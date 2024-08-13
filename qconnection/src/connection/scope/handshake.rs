@@ -15,8 +15,9 @@ use qrecovery::{
     space::{Epoch, HandshakeSpace},
     streams::crypto::CryptoStream,
 };
-use tokio::{select, sync::Notify, task::JoinHandle};
+use tokio::{sync::Notify, task::JoinHandle};
 
+use super::initial::ArcAddrValidator;
 use crate::{
     any,
     connection::{transmit::handshake::HandshakeSpaceReader, RcvdPackets},
@@ -24,8 +25,6 @@ use crate::{
     path::{ArcPathes, RawPath},
     pipe,
 };
-
-use super::initial::ArcAddrValidator;
 
 #[derive(Clone)]
 pub struct HandshakeScope {
@@ -50,6 +49,7 @@ impl HandshakeScope {
         pathes: &ArcPathes,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
+        addr_validator: ArcAddrValidator,
     ) -> JoinHandle<RcvdPackets> {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
@@ -90,6 +90,7 @@ impl HandshakeScope {
             dispatch_frame,
             notify,
             conn_error,
+            addr_validator,
         )
     }
 
@@ -100,6 +101,7 @@ impl HandshakeScope {
         dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
+        addr_validator: ArcAddrValidator,
     ) -> JoinHandle<RcvdPackets> {
         let pathes = pathes.clone();
         let conn_error = conn_error.clone();
@@ -107,7 +109,6 @@ impl HandshakeScope {
         tokio::spawn({
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.keys.clone();
-            let addr_validator = self.addr_validator.clone();
             async move {
                 while let Some((mut packet, pathway, usc)) =
                     any!(rcvd_packets.next(), notify.notified())

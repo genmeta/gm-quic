@@ -10,7 +10,13 @@ use std::{
 use closing::ClosingConnection;
 use draining::DrainingConnection;
 use futures::{channel::mpsc, StreamExt};
-use qbase::{cid, config::Parameters, error::Error, packet::DataPacket, streamid::Role};
+use qbase::{
+    cid,
+    config::Parameters,
+    error::Error,
+    packet::{DataPacket, RetryHeader},
+    streamid::Role,
+};
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qudp::ArcUsc;
 
