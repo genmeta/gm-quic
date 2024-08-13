@@ -68,15 +68,15 @@ impl ArcConnection {
             router,
         );
         let pathes = raw_conn.pathes.clone();
-        let one_rtt_keys = raw_conn.data.one_rtt_keys.clone();
         let conn_error = raw_conn.error.clone();
         let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Raw(raw_conn))));
 
         tokio::spawn({
             let conn = conn.clone();
             async move {
-                if conn_error.did_error_occur().await && one_rtt_keys.invalid().is_some() {
-                    conn.should_enter_closing();
+                let (err, is_active) = conn_error.did_error_occur().await;
+                if is_active {
+                    conn.should_enter_closing_with_error(err);
                 } else {
                     let pto = pathes.iter().map(|p| p.pto_time()).max().unwrap();
                     conn.enter_draining(pto * 3);
@@ -118,7 +118,7 @@ impl ArcConnection {
     /// from the connection's Path Termination Timeout (PTO).  Upon successful
     /// confirmation, any remaining data is drained.  If the timeout expires without
     /// confirmation, the connection is forcefully terminated.
-    fn should_enter_closing(&self) {
+    fn should_enter_closing_with_error(&self, error: Error) {
         let mut guard = self.0.lock().unwrap();
 
         let ConnState::Raw(raw_conn) = mem::replace(guard.deref_mut(), ConnState::Closed) else {
@@ -141,6 +141,7 @@ impl ArcConnection {
         }
 
         let closing_conn = ClosingConnection::new(
+            error,
             raw_conn.pathes,
             raw_conn.cid_registry,
             hs.ok(),

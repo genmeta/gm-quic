@@ -159,7 +159,7 @@ mod tests {
         );
 
         assert!(tx1.send(()).await.is_ok());
-        let is_active = error.await;
+        let (_, is_active) = error.await;
         assert!(is_active);
         assert!(tx1.send(()).await.is_err());
     }
