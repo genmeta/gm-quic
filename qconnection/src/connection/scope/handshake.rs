@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
     frame::{AckFrame, Frame, FrameReader},
@@ -11,10 +13,11 @@ use qrecovery::{
     space::{Epoch, HandshakeSpace},
     streams::crypto::CryptoStream,
 };
-use tokio::task::JoinHandle;
+use tokio::{select, sync::Notify, task::JoinHandle};
 
 use crate::{
-    connection::{transmit::handshake::HandshakeSpaceReader, PacketEntry, RcvdPackets},
+    any,
+    connection::{transmit::handshake::HandshakeSpaceReader, RcvdPackets},
     error::ConnError,
     path::{ArcPathes, RawPath},
     pipe,
@@ -25,17 +28,15 @@ pub struct HandshakeScope {
     pub keys: ArcKeys,
     pub space: HandshakeSpace,
     pub crypto_stream: CryptoStream,
-    pub packets_entry: PacketEntry,
 }
 
 impl HandshakeScope {
     // Initial keys应该是预先知道的，或者传入dcid，可以构造出来
-    pub fn new(packets_entry: PacketEntry) -> Self {
+    pub fn new() -> Self {
         Self {
             keys: ArcKeys::new_pending(),
             space: HandshakeSpace::with_capacity(16),
             crypto_stream: CryptoStream::new(4096, 4096),
-            packets_entry,
         }
     }
 
@@ -43,6 +44,7 @@ impl HandshakeScope {
         &self,
         rcvd_packets: RcvdPackets,
         pathes: &ArcPathes,
+        notify: &Arc<Notify>,
         conn_error: &ConnError,
     ) -> JoinHandle<RcvdPackets> {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
@@ -82,6 +84,7 @@ impl HandshakeScope {
             rcvd_packets,
             pathes,
             dispatch_frame,
+            notify,
             conn_error,
         )
     }
@@ -91,17 +94,21 @@ impl HandshakeScope {
         mut rcvd_packets: RcvdPackets,
         pathes: &ArcPathes,
         dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
+        notify: &Arc<Notify>,
         conn_error: &ConnError,
     ) -> JoinHandle<RcvdPackets> {
         let pathes = pathes.clone();
         let conn_error = conn_error.clone();
+        let notify = notify.clone();
         tokio::spawn({
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.keys.clone();
             async move {
-                while let Some((mut packet, pathway, usc)) = rcvd_packets.next().await {
+                while let Some((mut packet, pathway, usc)) =
+                    any!(rcvd_packets.next(), notify.notified())
+                {
                     let pty = packet.header.get_type();
-                    let Some(keys) = keys.get_remote_keys().await else {
+                    let Some(keys) = any!(keys.get_remote_keys(), notify.notified()) else {
                         break;
                     };
                     let undecoded_pn = match remove_protection_of_long_packet(
