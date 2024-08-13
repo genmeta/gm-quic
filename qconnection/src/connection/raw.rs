@@ -1,18 +1,21 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{atomic::AtomicUsize, Arc, Mutex},
+    time::Instant,
+};
 
-use futures::channel::mpsc;
+use futures::{channel::mpsc, StreamExt};
 use qbase::{
-    flow::FlowController,
-    handshake::Handshake,
-    packet::{keys::ArcKeys, SpinBit},
-    streamid::Role,
+    error::Error, flow::FlowController, frame::ConnectionCloseFrame, handshake::Handshake,
+    packet::keys::ArcKeys, streamid::Role,
 };
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qunreliable::DatagramFlow;
+use tokio::{sync::Notify, task::JoinHandle};
 
 use super::{
+    closing::{ClosingConnection, RcvdCcf},
     scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope},
-    CidRegistry,
+    CidRegistry, RcvdPackets,
 };
 use crate::{
     error::ConnError,
@@ -21,23 +24,23 @@ use crate::{
     tls::{ArcTlsSession, GetParameters},
 };
 
-#[derive(Clone)]
 pub struct RawConnection {
     pub pathes: ArcPathes,
     pub cid_registry: CidRegistry,
     // handshake done的信号
     pub handshake: Handshake<ArcReliableFrameDeque>,
     pub flow_ctrl: FlowController,
-    pub spin: Arc<Mutex<SpinBit>>,
     pub error: ConnError,
-
-    pub initial: InitialScope,
-    pub hs: HandshakeScope,
-    pub data: DataScope,
 
     pub reliable_frames: ArcReliableFrameDeque,
     pub streams: DataStreams,
     pub datagrams: DatagramFlow,
+
+    pub initial: InitialScope,
+    pub hs: HandshakeScope,
+    pub data: DataScope,
+    pub notify: Arc<Notify>,
+    pub join_handles: [JoinHandle<RcvdPackets>; 4],
 
     pub params: GetParameters,
 }
@@ -62,7 +65,6 @@ impl RawConnection {
         let cid_registry = CidRegistry::new(8, router_registry, reliable_frames.clone(), 2);
         let handshake = Handshake::new(role, reliable_frames.clone());
         let flow_ctrl = FlowController::with_initial(0, 0);
-        let spin = Arc::new(Mutex::new(SpinBit::Zero));
         let conn_error = ConnError::default();
 
         let streams = DataStreams::with_role_and_limit(
@@ -80,9 +82,9 @@ impl RawConnection {
         );
         let datagrams = DatagramFlow::new(0, 0);
 
-        let initial = InitialScope::new(ArcKeys::new_pending(), initial_packets_entry);
-        let hs = HandshakeScope::new(hs_packets_entry);
-        let data = DataScope::new(zero_rtt_packets_entry, one_rtt_packets_entry);
+        let initial = InitialScope::new(ArcKeys::new_pending());
+        let hs = HandshakeScope::new();
+        let data = DataScope::new();
 
         let pathes = ArcPathes::new(Box::new({
             let remote_cids = cid_registry.remote.clone();
@@ -117,19 +119,22 @@ impl RawConnection {
             }
         }));
 
-        initial.build(rcvd_initial_packets, &pathes, &conn_error);
-        hs.build(rcvd_hs_packets, &pathes, &conn_error);
-        data.build(
+        let notify = Arc::new(Notify::new());
+        let join_initial = initial.build(rcvd_initial_packets, &pathes, &notify, &conn_error);
+        let join_hs = hs.build(rcvd_hs_packets, &pathes, &notify, &conn_error);
+        let (join_0rtt, join_1rtt) = data.build(
             &pathes,
             &handshake,
             &streams,
             &datagrams,
             &cid_registry,
             &flow_ctrl,
+            &notify,
             &conn_error,
             rcvd_0rtt_packets,
             rcvd_1rtt_packets,
         );
+        let join_handlers = [join_initial, join_0rtt, join_hs, join_1rtt];
 
         let get_params = tls_session.keys_upgrade(
             [
@@ -147,15 +152,50 @@ impl RawConnection {
             cid_registry,
             handshake,
             flow_ctrl,
-            initial,
-            hs,
-            data,
             streams,
             reliable_frames,
             datagrams,
-            spin,
+            initial,
+            hs,
+            data,
+            notify,
+            join_handles: join_handlers,
             error: conn_error,
             params: get_params,
         }
+    }
+
+    pub fn to_closing(self, error: Error) -> ClosingConnection {
+        let pathes = self.pathes;
+        let cid_registry = self.cid_registry;
+        let rcvd_pkt_records = self.data.space.rcvd_packets();
+        let one_rtt_keys = match self.data.one_rtt_keys.invalid() {
+            Some((hpk, pk)) => (hpk.0, pk),
+            _ => unreachable!(),
+        };
+        self.flow_ctrl.on_error(&error);
+
+        let _ccf = ConnectionCloseFrame::from(error);
+        let closing_conn = ClosingConnection {
+            pathes,
+            cid_registry,
+            rcvd_pkt_records,
+            one_rtt_keys,
+            rcvd_packets: Arc::new(AtomicUsize::new(0)),
+            last_send_ccf: Arc::new(Mutex::new(Instant::now())),
+            revd_ccf: RcvdCcf::default(),
+        };
+
+        self.notify.notify_waiters();
+        for join_handle in self.join_handles {
+            let mut closing_conn = closing_conn.clone();
+            tokio::spawn(async move {
+                let mut rcvd_packets = join_handle.await.unwrap();
+                while let Some((packet, pathway, usc)) = rcvd_packets.next().await {
+                    closing_conn.recv_packet_via_pathway(packet, pathway, usc);
+                }
+            });
+        }
+        closing_conn
     }
 }

@@ -69,6 +69,16 @@ macro_rules! pipe {
     }};
 }
 
+#[macro_export]
+macro_rules! any {
+    ($rcvd:expr, $notify:expr) => {
+        select! {
+            res = $rcvd => res,
+            _ = $notify => None,
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use futures::{channel::mpsc, SinkExt};

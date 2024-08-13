@@ -2,7 +2,10 @@ use std::{
     future::Future,
     ops::DerefMut,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
@@ -22,6 +25,7 @@ use qudp::ArcUsc;
 use super::{raw::RawConnection, CidRegistry};
 use crate::path::{ArcPathes, Pathway};
 
+#[derive(Clone)]
 pub struct ClosingConnection {
     pub pathes: ArcPathes,
     pub cid_registry: CidRegistry,
@@ -30,8 +34,8 @@ pub struct ClosingConnection {
         Arc<dyn rustls::quic::HeaderProtectionKey>,
         Arc<Mutex<OneRttPacketKeys>>,
     ),
-    pub rcvd_packets: usize,
-    pub last_send_ccf: Instant,
+    pub rcvd_packets: Arc<AtomicUsize>,
+    pub last_send_ccf: Arc<Mutex<Instant>>,
     pub revd_ccf: RcvdCcf,
 }
 
@@ -54,8 +58,8 @@ impl From<RawConnection> for ClosingConnection {
             cid_registry,
             rcvd_pkt_records: data_space.rcvd_packets(),
             one_rtt_keys,
-            rcvd_packets: 0,
-            last_send_ccf: Instant::now(),
+            rcvd_packets: Arc::new(AtomicUsize::new(0)),
+            last_send_ccf: Arc::new(Mutex::new(Instant::now())),
             revd_ccf: RcvdCcf::default(),
         }
     }
@@ -69,14 +73,18 @@ impl ClosingConnection {
         _pathway: Pathway,
         _usc: ArcUsc,
     ) {
-        self.rcvd_packets += 1;
+        self.rcvd_packets.fetch_add(1, Ordering::Release);
         // TODO: 数值从配置中读取, 还是直接固定值?
-        if self.rcvd_packets > 5 || self.last_send_ccf.elapsed() > Duration::from_millis(100) {
-            self.rcvd_packets = 0;
-            self.last_send_ccf = Instant::now();
+        let mut last_send_ccf = self.last_send_ccf.lock().unwrap();
+        if self.rcvd_packets.load(Ordering::Relaxed) > 5
+            || last_send_ccf.elapsed() > Duration::from_millis(100)
+        {
+            self.rcvd_packets.store(0, Ordering::Release);
+            *last_send_ccf = Instant::now();
             // TODO: 调用 usc 直接发送 报文
             // usc.poll_send_via_pathway(iovecs, pathway, cx);
         }
+        drop(last_send_ccf);
 
         if let DataHeader::Short(h) = packet.header {
             let pkt_type = h.get_type();
