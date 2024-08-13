@@ -5,7 +5,7 @@ use crate::{
     error::{Error, ErrorKind},
     frame::{BeFrame, FrameType, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame},
     token::ResetToken,
-    util::{ArcAsyncDeque, IndexDeque},
+    util::IndexDeque,
     varint::{VarInt, VARINT_MAX},
 };
 
@@ -23,7 +23,6 @@ where
     // The frames in issued_cids should be able to enter the QUIC sending channel
     // and be reliably sent to the peer.
     issued_cids: ISSUED,
-    retired_cids: ArcAsyncDeque<ConnectionId>,
     // This is an integer value specifying the maximum number of connection
     // IDs from the peer that an endpoint is willing to store.
     // While the client does not know the server's parameters, it can be set to None.
@@ -53,7 +52,6 @@ where
             cid_deque,
             cid_len,
             issued_cids,
-            retired_cids: ArcAsyncDeque::default(),
             active_cid_limit: None,
         }
     }
@@ -109,7 +107,6 @@ where
             if let Some((cid, _)) = value.take() {
                 let n = self.cid_deque.iter().take_while(|v| v.is_none()).count();
                 self.cid_deque.advance(n);
-                self.retired_cids.push(cid);
 
                 // generates a new connection ID while retiring an old one.
                 self.issue_new_cid();
@@ -117,22 +114,6 @@ where
             }
         }
         Ok(None)
-    }
-
-    pub fn retired_cids(&self) -> ArcAsyncDeque<ConnectionId> {
-        self.retired_cids.clone()
-    }
-}
-
-impl<IssuedCids> Drop for RawLocalCids<IssuedCids>
-where
-    IssuedCids: Extend<NewConnectionIdFrame> + UniqueCid,
-{
-    fn drop(&mut self) {
-        self.cid_deque
-            .iter()
-            .filter_map(|item| item.map(|(cid, _)| cid))
-            .for_each(|cid| self.retired_cids.push(cid));
     }
 }
 
@@ -164,10 +145,6 @@ where
 
     pub fn set_limit(&self, active_cid_limit: u64) -> Result<(), Error> {
         self.0.lock().unwrap().set_limit(active_cid_limit)
-    }
-
-    pub fn retired_cids(&self) -> ArcAsyncDeque<ConnectionId> {
-        self.0.lock().unwrap().retired_cids()
     }
 }
 
@@ -220,7 +197,6 @@ mod tests {
     #[test]
     fn test_recv_retire_cid_frame() {
         let mut local_cids = RawLocalCids::new(8, IssuedCids::default());
-        let retired_cids = local_cids.retired_cids();
 
         assert_eq!(local_cids.cid_deque.len(), 2);
         assert_eq!(local_cids.issued_cids.len(), 2);
@@ -233,7 +209,7 @@ mod tests {
         };
         let cid2 = local_cids.recv_retire_cid_frame(&retire_frame);
         assert!(cid2.is_ok());
-        assert_eq!(retired_cids.pop(), Some(issued_cid2));
+        assert_eq!(cid2, Ok(Some(issued_cid2)));
         assert_eq!(local_cids.cid_deque.get(1), Some(&None));
         // issued new cid while retiring an old one
         assert_eq!(local_cids.cid_deque.len(), 3);
@@ -244,7 +220,7 @@ mod tests {
         };
         let cid1 = local_cids.recv_retire_cid_frame(&retire_frame);
         assert!(cid1.is_ok());
-        assert_eq!(retired_cids.pop(), Some(issued_cid1));
+        assert_eq!(cid1, Ok(Some(issued_cid1)));
         assert_eq!(local_cids.cid_deque.get(0), None); // have been slided out
 
         assert_eq!(local_cids.cid_deque.len(), 2);
