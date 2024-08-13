@@ -2,15 +2,19 @@ use std::sync::Arc;
 
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
-    frame::{AckFrame, Frame, FrameReader, ReceiveFrame},
+    frame::{AckFrame, Frame, FrameReader},
+    new_token::{Client, Server, TokenRegistry},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::GetType,
         keys::ArcKeys,
-        long::{LongHeader, Retry},
+        long::{self, Initial},
+        DataHeader,
     },
+    token,
 };
 use qrecovery::{
+    reliable::ArcReliableFrameDeque,
     space::{Epoch, InitialSpace},
     streams::crypto::CryptoStream,
 };
@@ -142,6 +146,22 @@ impl InitialScope {
                         body_offset,
                     )
                     .unwrap();
+
+                    if let TokenRegistry::Server(server) = &mut token_registry {
+                        let token = if let DataHeader::Long(long::DataHeader::Initial(initial)) =
+                            packet.header
+                        {
+                            initial.token.clone()
+                        } else {
+                            unreachable!("Must be initial packet")
+                        };
+
+                        if server.validate(&token) {
+                            server.issue_new_token();
+                            // todo: validate wakeup
+                        }
+                    }
+
                     let path = pathes.get(pathway, usc);
                     let body = packet.bytes.split_off(body_offset);
                     match FrameReader::new(body.freeze(), pty).try_fold(
@@ -167,10 +187,11 @@ impl InitialScope {
         })
     }
 
-    pub fn reader_with_token(
-        &self,
-        token: Vec<u8>, // if no token, use empty Vec
-    ) -> InitialSpaceReader {
+    pub fn reader(&self) -> InitialSpaceReader {
+        let token = match &self.token_registry {
+            TokenRegistry::Client(client) => client.pop_token().unwrap_or_else(Vec::new),
+            _ => Vec::new(),
+        };
         InitialSpaceReader {
             token: Arc::new(Mutex::new(token)),
             keys: self.keys.clone(),
