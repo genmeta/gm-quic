@@ -114,7 +114,7 @@ where
             // it is not necessary to resize the deque, because all elements will be drained
             // // self.cid_cells.resize(seq, ArcCidCell::default()).expect("");
             self.retired_cids
-                .extend((self.cid_cells.offset()..seq).into_iter().map(|seq| {
+                .extend((self.cid_cells.offset()..seq).map(|seq| {
                     RetireConnectionIdFrame {
                         sequence: VarInt::from_u64(seq)
                             .expect("Sequence of connection id is very hard to exceed VARINT_MAX"),
@@ -157,16 +157,12 @@ where
             if max_applied < seq {
                 self.cid_cells.reset_offset(seq);
                 // even the cid that has not been applied is retired right now
-                self.retired_cids
-                    .extend(
-                        (max_applied..seq)
-                            .into_iter()
-                            .map(|seq| RetireConnectionIdFrame {
-                                sequence: VarInt::from_u64(seq).expect(
-                                    "Sequence of connection id is very hard to exceed VARINT_MAX",
-                                ),
-                            }),
-                    );
+                self.retired_cids.extend((max_applied..seq).map(|seq| {
+                    RetireConnectionIdFrame {
+                        sequence: VarInt::from_u64(seq)
+                            .expect("Sequence of connection id is very hard to exceed VARINT_MAX"),
+                    }
+                }));
             }
             // _ = self.cid_cells.drain_to(seq);
         }

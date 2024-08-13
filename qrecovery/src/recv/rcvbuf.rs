@@ -17,11 +17,11 @@ impl fmt::Display for Segment {
 }
 
 impl Segment {
-    fn from_offset(offset: u64) -> Self {
+    fn new_with_data(offset: u64, data: Bytes) -> Self {
         Segment {
             offset,
-            length: 0,
-            fragments: VecDeque::new(),
+            length: data.len() as u64,
+            fragments: vec![data].into(),
         }
     }
 
@@ -86,7 +86,7 @@ impl RecvBuf {
             Ok(seg_idx) => {
                 let new_data_size = self.overlap_seg(seg_idx, data);
                 self.try_merge(seg_idx);
-                return new_data_size;
+                new_data_size
             }
             // 并没有落在一个片段上，offset比任何一个片段都小
             Err(0) => {
@@ -94,7 +94,7 @@ impl RecvBuf {
                 if let Some(new_data_size) = self.try_prepend(0, offset, &data) {
                     return new_data_size;
                 }
-                return self.inset(0, offset, data);
+                self.insert(0, Segment::new_with_data(offset, data))
             }
             // segments[recommend].offset < offset
             Err(recommend) => {
@@ -106,7 +106,7 @@ impl RecvBuf {
                 if let Some(new_data_size) = self.try_prepend(recommend, offset, &data) {
                     return new_data_size;
                 }
-                return self.inset(recommend, offset, data);
+                self.insert(recommend, Segment::new_with_data(offset, data))
             }
         }
     }
@@ -178,12 +178,10 @@ impl RecvBuf {
         Some(new_data_size)
     }
 
-    fn inset(&mut self, at: usize, offset: u64, data: Bytes) -> usize {
-        let mut seg = Segment::from_offset(offset);
-        seg.append(data);
+    fn insert(&mut self, at: usize, seg: Segment) -> usize {
         let new_data_size = seg.length as usize;
         self.segments.insert(at, seg);
-        return new_data_size;
+        new_data_size
     }
 
     // 不同于 append 和 prepend，这是对于和段从头开始重合的情况

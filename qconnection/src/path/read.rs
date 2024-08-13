@@ -188,7 +188,7 @@ impl ReadIntoDatagrams {
         0
     }
 
-    pub fn poll_read(
+    fn poll_read_inner(
         &self,
         cx: &mut Context<'_>,
         buffers: &mut Vec<[u8; MSS]>,
@@ -219,7 +219,7 @@ impl ReadIntoDatagrams {
         let mut last_buffer_written = 0;
 
         while constraints.is_available() {
-            let datagarm = match buffers.get_mut(buffers_used) {
+            let datagram = match buffers.get_mut(buffers_used) {
                 Some(buffer) => buffer,
                 None => {
                     buffers.push([0; MSS]);
@@ -228,18 +228,34 @@ impl ReadIntoDatagrams {
             };
 
             let (datagram_size, fresh_bytes) =
-                self.read_into_datagram(&mut constraints, flow_limit, datagarm, dcid);
+                self.read_into_datagram(&mut constraints, flow_limit, datagram, dcid);
             // 啥也没读到，就结束吧
             // TODO: 若因没有数据可发，将waker挂载到数据控制器上一份，包括帧数据、流数据，
             //       一旦有任何数据发送，唤醒该任务发一次
             if datagram_size == 0 {
                 break;
             }
-
             total_bytes += datagram_size;
             total_fresh_bytes += fresh_bytes;
             buffers_used += 1;
             last_buffer_written = datagram_size;
+
+            let remaining = (&mut datagram[..]).apply(&constraints);
+            match remaining.len() {
+                0 => continue,
+                // 如果数据报没有没填满，需要填充padding帧，否则datagram会被之前的数据污染
+                len if len == MSS - datagram_size => {
+                    /* use qbase::frame::io::WriteFrame;
+                    use qbase::frame::PaddingFrame;
+                    for _ in 0..remaining.remaining_mut() {
+                        remaining.put_frame(&PaddingFrame);
+                    } */
+                    remaining.fill(0);
+                    constraints.commit(MSS - datagram_size, false);
+                }
+                // 如果拥塞控制，抗放大限制不允许填充帧，那本次装填就此结结束
+                _ => break,
+            }
         }
 
         if buffers_used == 0 {
@@ -267,7 +283,7 @@ impl ReadIntoDatagrams {
 
         let (buffers_used, last_buffer_written) =
         // 对于这种写法，如果返回Vec<IoSlice<'ds>>，会受制于FnMut的捕获机制，buffer的周期会因为捕获而协变，和上一个方案的第一个问题是一致的     
-            core::future::poll_fn(|cx| self.poll_read(cx, buffers)).await?;
+            core::future::poll_fn(|cx| self.poll_read_inner(cx, buffers)).await?;
 
         debug_assert!(buffers_used > 0);
         let datagrams = (0..buffers_used - 1)
