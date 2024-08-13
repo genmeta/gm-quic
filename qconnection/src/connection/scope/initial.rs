@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
     frame::{AckFrame, Frame, FrameReader},
@@ -11,9 +13,11 @@ use qrecovery::{
     space::{Epoch, InitialSpace},
     streams::crypto::CryptoStream,
 };
+use tokio::{select, sync::Notify, task::JoinHandle};
 
 use crate::{
-    connection::{transmit::initial::InitialSpaceReader, PacketEntry, RcvdPackets},
+    any,
+    connection::{transmit::initial::InitialSpaceReader, RcvdPackets},
     error::ConnError,
     path::{ArcPathes, RawPath},
     pipe,
@@ -24,12 +28,11 @@ pub struct InitialScope {
     pub keys: ArcKeys,
     pub space: InitialSpace,
     pub crypto_stream: CryptoStream,
-    pub packets_entry: PacketEntry,
 }
 
 impl InitialScope {
     // Initial keys应该是预先知道的，或者传入dcid，可以构造出来
-    pub fn new(keys: ArcKeys, packets_entry: PacketEntry) -> Self {
+    pub fn new(keys: ArcKeys) -> Self {
         let space = InitialSpace::with_capacity(16);
         let crypto_stream = CryptoStream::new(0, 0);
 
@@ -37,11 +40,16 @@ impl InitialScope {
             keys,
             space,
             crypto_stream,
-            packets_entry,
         }
     }
 
-    pub fn build(&self, rcvd_packets: RcvdPackets, pathes: &ArcPathes, conn_error: &ConnError) {
+    pub fn build(
+        &self,
+        rcvd_packets: RcvdPackets,
+        pathes: &ArcPathes,
+        notify: &Arc<Notify>,
+        conn_error: &ConnError,
+    ) -> JoinHandle<RcvdPackets> {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
 
@@ -78,8 +86,9 @@ impl InitialScope {
             rcvd_packets,
             pathes,
             dispatch_frame,
+            notify,
             conn_error,
-        );
+        )
     }
 
     fn parse_rcvd_packets_and_dispatch_frames(
@@ -87,17 +96,21 @@ impl InitialScope {
         mut rcvd_packets: RcvdPackets,
         pathes: &ArcPathes,
         dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
+        notify: &Arc<Notify>,
         conn_error: &ConnError,
-    ) {
+    ) -> JoinHandle<RcvdPackets> {
         let pathes = pathes.clone();
         let conn_error = conn_error.clone();
         tokio::spawn({
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.keys.clone();
+            let notify = notify.clone();
             async move {
-                while let Some((mut packet, pathway, usc)) = rcvd_packets.next().await {
+                while let Some((mut packet, pathway, usc)) =
+                    any!(rcvd_packets.next(), notify.notified())
+                {
                     let pty = packet.header.get_type();
-                    let Some(keys) = keys.get_remote_keys().await else {
+                    let Some(keys) = any!(keys.get_remote_keys(), notify.notified()) else {
                         break;
                     };
                     let undecoded_pn = match remove_protection_of_long_packet(
@@ -140,12 +153,15 @@ impl InitialScope {
                             rcvd_pkt_records.register_pn(pn);
                             path.on_recv_pkt(Epoch::Initial, pn, is_ack_packet);
                         }
-                        Err(e) => conn_error.on_error(e),
+                        Err(e) => {
+                            conn_error.on_error(e);
+                            break;
+                        }
                     }
                 }
                 rcvd_packets
             }
-        });
+        })
     }
 
     pub fn reader_with_token(

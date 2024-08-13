@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
@@ -22,10 +24,11 @@ use qrecovery::{
     streams::{crypto::CryptoStream, DataStreams},
 };
 use qunreliable::DatagramFlow;
-use tokio::task::JoinHandle;
+use tokio::{select, sync::Notify, task::JoinHandle};
 
 use crate::{
-    connection::{transmit::data::DataSpaceReader, CidRegistry, PacketEntry, RcvdPackets},
+    any,
+    connection::{transmit::data::DataSpaceReader, CidRegistry, RcvdPackets},
     error::ConnError,
     path::{ArcPathes, RawPath, SendBuffer},
     pipe,
@@ -37,19 +40,15 @@ pub struct DataScope {
     pub one_rtt_keys: ArcOneRttKeys,
     pub space: DataSpace,
     pub crypto_stream: CryptoStream,
-    pub zero_rtt_packets_entry: PacketEntry,
-    pub one_rtt_packets_entry: PacketEntry,
 }
 
 impl DataScope {
-    pub fn new(zero_rtt_packets_entry: PacketEntry, one_rtt_packets_entry: PacketEntry) -> Self {
+    pub fn new() -> Self {
         Self {
             zero_rtt_keys: ArcKeys::new_pending(),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
             space: DataSpace::with_capacity(16),
             crypto_stream: CryptoStream::new(0, 0),
-            zero_rtt_packets_entry,
-            one_rtt_packets_entry,
         }
     }
 
@@ -62,6 +61,7 @@ impl DataScope {
         datagrams: &DatagramFlow,
         cid_registry: &CidRegistry,
         flow_ctrl: &flow::FlowController,
+        notify: &Arc<Notify>,
         conn_error: &ConnError,
         rcvd_0rtt_packets: RcvdPackets,
         rcvd_1rtt_packets: RcvdPackets,
@@ -167,6 +167,7 @@ impl DataScope {
             rcvd_0rtt_packets,
             pathes.clone(),
             dispatch_data_frame.clone(),
+            notify.clone(),
             conn_error.clone(),
         );
         let join_handler1 = self.parse_rcvd_1rtt_packet_and_dispatch_frames(
@@ -174,6 +175,7 @@ impl DataScope {
             pathes.clone(),
             handshake,
             dispatch_data_frame,
+            notify.clone(),
             conn_error.clone(),
         );
         (join_handler0, join_handler1)
@@ -184,15 +186,18 @@ impl DataScope {
         mut rcvd_packets: RcvdPackets,
         pathes: ArcPathes,
         dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
+        notify: Arc<Notify>,
         conn_error: ConnError,
     ) -> JoinHandle<RcvdPackets> {
         tokio::spawn({
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.zero_rtt_keys.clone();
             async move {
-                while let Some((mut packet, pathway, usc)) = rcvd_packets.next().await {
+                while let Some((mut packet, pathway, usc)) =
+                    any!(rcvd_packets.next(), notify.notified())
+                {
                     let pty = packet.header.get_type();
-                    let Some(keys) = keys.get_remote_keys().await else {
+                    let Some(keys) = any!(keys.get_remote_keys(), notify.notified()) else {
                         break;
                     };
                     let undecoded_pn = match remove_protection_of_long_packet(
@@ -250,6 +255,7 @@ impl DataScope {
         pathes: ArcPathes,
         handshake: &Handshake<ArcReliableFrameDeque>,
         dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
+        notify: Arc<Notify>,
         conn_error: ConnError,
     ) -> JoinHandle<RcvdPackets> {
         tokio::spawn({
@@ -257,9 +263,11 @@ impl DataScope {
             let keys = self.one_rtt_keys.clone();
             let mut handshake = handshake.clone();
             async move {
-                while let Some((mut packet, pathway, usc)) = rcvd_packets.next().await {
+                while let Some((mut packet, pathway, usc)) =
+                    any!(rcvd_packets.next(), notify.notified())
+                {
                     let pty = packet.header.get_type();
-                    let Some((hpk, pk)) = keys.get_remote_keys().await else {
+                    let Some((hpk, pk)) = any!(keys.get_remote_keys(), notify.notified()) else {
                         break;
                     };
                     let (undecoded_pn, key_phase) = match remove_protection_of_short_packet(
