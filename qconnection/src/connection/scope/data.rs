@@ -34,6 +34,7 @@ use crate::{
     error::ConnError,
     path::{ArcPathes, RawPath, SendBuffer},
     pipe,
+    router::ArcRouter,
 };
 
 #[derive(Clone)]
@@ -57,6 +58,7 @@ impl DataScope {
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
+        router: &ArcRouter,
         pathes: &ArcPathes,
         handshake: &Handshake<ArcReliableFrameDeque>,
         streams: &DataStreams,
@@ -129,29 +131,13 @@ impl DataScope {
             }
         };
 
-        /*
-        let on_recv_retire_cid_frame = {
-            let local_cids = cid_registry.local.clone();
-            let error = conn_error.clone();
-            move |frame: &RetireConnectionIdFrame| match local_cids.recv_retire_cid_frame(frame) {
-                Ok(Some((cid, new_cid))) => {
-                    let _ = cid_event_entry.unbounded_send(CidEvent::Retire(cid));
-                    let _ = cid_event_entry.unbounded_send(CidEvent::New(new_cid));
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    error.on_error(e);
-                }
-            }
-        };
-        */
-
         // Assemble the pipelines of frame processing
         // TODO: pipe rcvd_new_token_frames
+        let local_cids_with_router = router.revoke(cid_registry.local.clone());
+        pipe!(rcvd_retire_cid_frames |> local_cids_with_router, recv_frame);
+        pipe!(@error(conn_error) rcvd_new_cid_frames |> cid_registry.remote, recv_frame);
         pipe!(rcvd_max_data_frames |> flow_ctrl.sender, recv_frame);
         pipe!(rcvd_data_blocked_frames |> flow_ctrl.recver, recv_frame);
-        pipe!(@error(conn_error) rcvd_new_cid_frames |> cid_registry.remote, recv_frame);
-        pipe!(rcvd_retire_cid_frames |> cid_registry.local, recv_frame);
         pipe!(@error(conn_error) rcvd_handshake_done_frames |> *handshake, recv_frame);
         pipe!(@error(conn_error) rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_frame);
         pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> *streams, recv_frame);

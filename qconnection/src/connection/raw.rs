@@ -116,6 +116,7 @@ impl RawConnection {
         let join_initial = initial.build(rcvd_initial_packets, &pathes, &notify, &conn_error);
         let join_hs = hs.build(rcvd_hs_packets, &pathes, &notify, &conn_error);
         let (join_0rtt, join_1rtt) = data.build(
+            &router,
             &pathes,
             &handshake,
             &streams,

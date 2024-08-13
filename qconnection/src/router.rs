@@ -4,7 +4,8 @@ use dashmap::DashMap;
 use deref_derive::Deref;
 use qbase::{
     cid::{ConnectionId, UniqueCid},
-    frame::NewConnectionIdFrame,
+    error::Error,
+    frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame},
     packet::{header::GetDcid, long, DataHeader, DataPacket},
 };
 use qudp::ArcUsc;
@@ -60,6 +61,13 @@ impl ArcRouter {
             packet_entries,
         }
     }
+
+    pub fn revoke<T>(&self, local_cids: T) -> RevokeRouter<T> {
+        RevokeRouter {
+            router: self.clone(),
+            local_cids,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -83,5 +91,25 @@ where
 impl<T> UniqueCid for RouterRegistry<T> {
     fn is_unique_cid(&self, cid: &ConnectionId) -> bool {
         self.router.is_unique_cid(cid)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RevokeRouter<T> {
+    router: ArcRouter,
+    local_cids: T,
+}
+
+impl<T> ReceiveFrame<RetireConnectionIdFrame> for RevokeRouter<T>
+where
+    T: ReceiveFrame<RetireConnectionIdFrame, Output = Option<ConnectionId>>,
+{
+    type Output = ();
+
+    fn recv_frame(&mut self, frame: &RetireConnectionIdFrame) -> Result<Self::Output, Error> {
+        if let Some(cid) = self.local_cids.recv_frame(frame)? {
+            self.router.remove(&cid);
+        }
+        Ok(())
     }
 }
