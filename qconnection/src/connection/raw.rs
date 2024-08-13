@@ -11,7 +11,6 @@ use super::{
     CidRegistry, RcvdPackets,
 };
 use crate::{
-    address_validator::ArcNewTokens,
     error::ConnError,
     path::{ArcPathes, RawPath},
     router::ArcRouter,
@@ -21,6 +20,7 @@ use crate::{
 pub struct RawConnection {
     pub pathes: ArcPathes,
     pub cid_registry: CidRegistry,
+    pub token_registry: TokenRegistry<ArcReliableFrameDeque>,
     // handshake done的信号
     pub handshake: Handshake<ArcReliableFrameDeque>,
     pub flow_ctrl: FlowController,
@@ -58,6 +58,9 @@ impl RawConnection {
             ],
             retry_packets_entry.clone(),
         );
+
+        // todo: server name
+        let token_registry = TokenRegistry::new(role, "".to_string(), reliable_frames.clone());
         let cid_registry = CidRegistry::new(8, router_registry, reliable_frames.clone(), 2);
         let handshake = Handshake::new(role, reliable_frames.clone());
         let flow_ctrl = FlowController::with_initial(0, 0);
@@ -92,9 +95,10 @@ impl RawConnection {
                 let reliable_frames = reliable_frames.clone();
                 let streams = streams.clone();
                 let datagrams = datagrams.clone();
+
                 move |path: &RawPath| {
                     (
-                        initial.reader_with_token(Vec::new()),
+                        initial.reader(),
                         hs.reader(),
                         data.reader(
                             path.challenge_sndbuf(),
@@ -147,6 +151,7 @@ impl RawConnection {
         Self {
             pathes,
             cid_registry,
+            token_registry,
             handshake,
             flow_ctrl,
             streams,
