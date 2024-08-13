@@ -114,7 +114,6 @@ impl RawPath {
         tokio::spawn(async move {
             let mut datagrams = Vec::with_capacity(4);
             loop {
-                datagrams.clear();
                 if let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
                     let _err = usc.send_via_pathway(&iovec, pathway).await;
                     // TODO: 处理错误
