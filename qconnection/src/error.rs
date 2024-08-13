@@ -55,7 +55,10 @@ impl ConnError {
         }
     }
 
-    /// Just for being more semantic, it will return the same cloned instance.
+    /// Returns a `ConnError` instance that can be used to track connection errors.
+    ///
+    /// This method simply clones the current `ConnError` instance and returns it.
+    /// The returned instance can then be used to poll for connection errors using its `Future` implementation.
     pub fn did_error_occur(&self) -> Self {
         self.clone()
     }
@@ -100,10 +103,25 @@ impl ConnError {
     }
 }
 
-/// impl Future::Output = (error: [`Error`], is_active: [`bool`])
+/// A future that resolves when a connection error occurs.
+
+/// This future is used to track the state of a connection and determine whether it is closing
+/// due to an application error or draining gracefully. It implements the `Future` trait, allowing
+/// it to be polled for completion.
 impl Future for ConnError {
+    /// The output of the `ConnError` future.
+    ///
+    /// `true` indicates that the connection is closing or has been closed due to an application error.
+    /// `false` indicates that the connection is draining and will be closed gracefully.
     type Output = bool;
 
+    /// Polls the `ConnError` future for completion.
+    ///
+    /// This method checks the internal state of the connection error.
+    ///
+    /// - If the state is `None` or `Pending`, it registers the current waker and returns `Poll::Pending`.
+    /// - If the state is `Closing` or `App`, it returns `Poll::Ready(true)`, indicating that the connection is closing or has been closed due to an application error.
+    /// - If the state is `Draining`, it returns `Poll::Ready(false)`, indicating that the connection is draining and will be closed gracefully.
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut guard = self.0.lock().unwrap();
         match guard.deref_mut() {
