@@ -69,6 +69,7 @@ impl ArcConnection {
             ArcTlsSession::new_client(server_name, &params),
             router,
         );
+
         let pathes = raw_conn.pathes.clone();
         let conn_error = raw_conn.error.clone();
         let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Raw(raw_conn))));

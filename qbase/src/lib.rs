@@ -4,10 +4,10 @@ pub mod error;
 pub mod flow;
 pub mod frame;
 pub mod handshake;
-pub mod new_token;
 pub mod packet;
 pub mod streamid;
 pub mod token;
+pub mod token_registry;
 pub mod util;
 pub mod varint;
 

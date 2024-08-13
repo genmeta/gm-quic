@@ -1,28 +1,33 @@
-use std::sync::Arc;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc, Mutex,
+    },
+    task::{Context, Poll},
+};
 
-use futures::{channel::mpsc, StreamExt};
+use futures::{channel::mpsc, task::AtomicWaker, StreamExt};
 use qbase::{
     frame::{AckFrame, Frame, FrameReader},
-    new_token::{Client, Server, TokenRegistry},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::GetType,
         keys::ArcKeys,
-        long::{self, Initial},
+        long::{self},
         DataHeader,
     },
-    token,
+    token_registry::TokenRegistry,
 };
 use qrecovery::{
     reliable::ArcReliableFrameDeque,
     space::{Epoch, InitialSpace},
     streams::crypto::CryptoStream,
 };
-use tokio::{select, sync::Notify, task::JoinHandle};
 
 use crate::{
-    any,
-    connection::{transmit::initial::InitialSpaceReader, RcvdPackets},
+    connection::{transmit::initial::InitialSpaceReader, PacketEntry, RcvdPackets, RcvdRetry},
     error::ConnError,
     path::{ArcPathes, RawPath},
     pipe,
@@ -147,18 +152,24 @@ impl InitialScope {
                     )
                     .unwrap();
 
-                    if let TokenRegistry::Server(server) = &mut token_registry {
-                        let token = if let DataHeader::Long(long::DataHeader::Initial(initial)) =
-                            packet.header
-                        {
-                            initial.token.clone()
-                        } else {
-                            unreachable!("Must be initial packet")
-                        };
+                    match &mut token_registry {
+                        TokenRegistry::Server(server) => {
+                            let token =
+                                if let DataHeader::Long(long::DataHeader::Initial(initial)) =
+                                    packet.header
+                                {
+                                    initial.token.clone()
+                                } else {
+                                    unreachable!("Must be initial packet")
+                                };
 
-                        if server.validate(&token) {
-                            server.issue_new_token();
-                            // todo: validate wakeup
+                            if server.validate(&token) {
+                                server.issue_new_token();
+                                addr_validator.0.validate();
+                            }
+                        }
+                        TokenRegistry::Client(_) => {
+                            addr_validator.0.validate();
                         }
                     }
 
@@ -189,11 +200,12 @@ impl InitialScope {
 
     pub fn reader(&self) -> InitialSpaceReader {
         let token = match &self.token_registry {
-            TokenRegistry::Client(client) => client.pop_token().unwrap_or_else(Vec::new),
-            _ => Vec::new(),
+            TokenRegistry::Client(client) => client.initial_token.clone(),
+            _ => Arc::new(Mutex::new(Vec::new())),
         };
+
         InitialSpaceReader {
-            token: Arc::new(Mutex::new(token)),
+            token,
             keys: self.keys.clone(),
             space: self.space.clone(),
             crypto_stream_outgoing: self.crypto_stream.outgoing(),
@@ -202,14 +214,82 @@ impl InitialScope {
 
     pub fn recv_retry(&self, mut rcvd_retry: RcvdRetry) {
         tokio::spawn({
-            let token = self.retry_token.clone();
+            let mut token_registry = self.token_registry.clone();
             async move {
                 if let Some(retry) = rcvd_retry.next().await {
-                    *token.lock().unwrap() = retry.token.to_vec();
-                    // 客户端只会接受一次 Retry 包，如果是服务端应该报错
+                    match &mut token_registry {
+                        TokenRegistry::Client(client) => {
+                            client.recv_retry_token(retry.token.clone())
+                        }
+                        TokenRegistry::Server(_) => {
+                            unreachable!("Server should not receive retry")
+                        }
+                    }
                     rcvd_retry.close();
                 }
             }
         });
+    }
+}
+
+#[derive(Default)]
+pub struct AddrValidator {
+    waker: AtomicWaker,
+    state: AtomicU8,
+}
+
+impl AddrValidator {
+    const NORMAL: u8 = 0;
+    const VALIDATED: u8 = 1;
+    const ABORTED: u8 = 2;
+
+    pub fn validate(&self) {
+        if self
+            .state
+            .compare_exchange(
+                Self::NORMAL,
+                Self::ABORTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.waker.wake();
+        }
+    }
+
+    pub fn abort(&self) {
+        if self
+            .state
+            .compare_exchange(
+                Self::NORMAL,
+                Self::ABORTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.waker.wake();
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct ArcAddrValidator(pub Arc<AddrValidator>);
+
+impl Future for ArcAddrValidator {
+    type Output = bool;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        let state = self.0.state.load(Ordering::Acquire);
+        match state {
+            AddrValidator::NORMAL => {
+                self.0.waker.register(cx.waker());
+                Poll::Pending
+            }
+            AddrValidator::VALIDATED => Poll::Ready(true),
+            AddrValidator::ABORTED => Poll::Ready(false),
+            _ => unreachable!("invalid state"),
+        }
     }
 }
