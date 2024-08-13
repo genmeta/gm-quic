@@ -149,7 +149,7 @@ impl RawPath {
     }
     */
 
-    pub(super) fn is_inactive(&self) -> bool {
+    pub fn is_inactive(&self) -> bool {
         false
         /*
         let listner = self.response_listner.0.lock().unwrap();

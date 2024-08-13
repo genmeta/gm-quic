@@ -25,9 +25,11 @@ use qrecovery::{
     space::{Epoch, InitialSpace},
     streams::crypto::CryptoStream,
 };
+use tokio::{sync::Notify, task::JoinHandle};
 
 use crate::{
-    connection::{transmit::initial::InitialSpaceReader, PacketEntry, RcvdPackets, RcvdRetry},
+    any,
+    connection::{transmit::initial::InitialSpaceReader, RcvdPackets, RcvdRetry},
     error::ConnError,
     path::{ArcPathes, RawPath},
     pipe,
@@ -56,9 +58,12 @@ impl InitialScope {
     pub fn build(
         &self,
         rcvd_packets: RcvdPackets,
+        rcvd_retry: RcvdRetry,
         pathes: &ArcPathes,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
+        addr_validator: ArcAddrValidator,
+        token_registry: TokenRegistry<ArcReliableFrameDeque>,
     ) -> JoinHandle<RcvdPackets> {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
@@ -93,13 +98,16 @@ impl InitialScope {
         pipe!(@error(conn_error) rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_frame);
         pipe!(rcvd_ack_frames |> on_data_acked);
 
-        self.recv_retry(rcvd_retry);
+        self.recv_retry(rcvd_retry, token_registry.clone());
+
         self.parse_rcvd_packets_and_dispatch_frames(
             rcvd_packets,
             pathes,
             dispatch_frame,
             notify,
             conn_error,
+            addr_validator,
+            token_registry,
         )
     }
 
@@ -110,6 +118,8 @@ impl InitialScope {
         dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
+        addr_validator: ArcAddrValidator,
+        token_registry: TokenRegistry<ArcReliableFrameDeque>,
     ) -> JoinHandle<RcvdPackets> {
         let pathes = pathes.clone();
         let conn_error = conn_error.clone();
@@ -117,6 +127,8 @@ impl InitialScope {
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.keys.clone();
             let notify = notify.clone();
+            let addr_validator = addr_validator.clone();
+            let mut token_registry = token_registry.clone();
             async move {
                 while let Some((mut packet, pathway, usc)) =
                     any!(rcvd_packets.next(), notify.notified())
@@ -198,8 +210,11 @@ impl InitialScope {
         })
     }
 
-    pub fn reader(&self) -> InitialSpaceReader {
-        let token = match &self.token_registry {
+    pub fn reader(
+        &self,
+        token_registry: TokenRegistry<ArcReliableFrameDeque>,
+    ) -> InitialSpaceReader {
+        let token = match token_registry {
             TokenRegistry::Client(client) => client.initial_token.clone(),
             _ => Arc::new(Mutex::new(Vec::new())),
         };
@@ -212,9 +227,12 @@ impl InitialScope {
         }
     }
 
-    pub fn recv_retry(&self, mut rcvd_retry: RcvdRetry) {
+    pub fn recv_retry(
+        &self,
+        mut rcvd_retry: RcvdRetry,
+        mut token_registry: TokenRegistry<ArcReliableFrameDeque>,
+    ) {
         tokio::spawn({
-            let mut token_registry = self.token_registry.clone();
             async move {
                 if let Some(retry) = rcvd_retry.next().await {
                     match &mut token_registry {

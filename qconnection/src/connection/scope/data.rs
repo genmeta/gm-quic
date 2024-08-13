@@ -6,8 +6,8 @@ use qbase::{
     error::{Error as QuicError, ErrorKind},
     flow,
     frame::{
-        AckFrame, BeFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame, ReceiveFrame,
-        ReliableFrame, StreamFrame,
+        AckFrame, BeFrame, Frame, FrameReader, NewTokenFrame, PathChallengeFrame,
+        PathResponseFrame, ReliableFrame, StreamFrame,
     },
     handshake::Handshake,
     packet::{
@@ -19,6 +19,7 @@ use qbase::{
         r#type::Type,
         DataPacket, PacketNumber,
     },
+    token_registry::TokenRegistry,
 };
 use qrecovery::{
     reliable::{rcvdpkt::ArcRcvdPktRecords, ArcReliableFrameDeque, GuaranteedFrame},
@@ -26,7 +27,7 @@ use qrecovery::{
     streams::{crypto::CryptoStream, DataStreams},
 };
 use qunreliable::DatagramFlow;
-use tokio::{select, sync::Notify, task::JoinHandle};
+use tokio::{sync::Notify, task::JoinHandle};
 
 use crate::{
     any,
@@ -69,6 +70,7 @@ impl DataScope {
         conn_error: &ConnError,
         rcvd_0rtt_packets: RcvdPackets,
         rcvd_1rtt_packets: RcvdPackets,
+        mut token_registry: TokenRegistry<ArcReliableFrameDeque>,
     ) -> (JoinHandle<RcvdPackets>, JoinHandle<RcvdPackets>) {
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
         // 连接级的
@@ -77,7 +79,7 @@ impl DataScope {
         let (new_cid_frames_entry, rcvd_new_cid_frames) = mpsc::unbounded();
         let (retire_cid_frames_entry, rcvd_retire_cid_frames) = mpsc::unbounded();
         let (handshake_done_frames_entry, rcvd_handshake_done_frames) = mpsc::unbounded();
-        let (new_token_frames_entry, _rcvd_new_token_frames) = mpsc::unbounded();
+        let (new_token_frames_entry, rcvd_new_token_frames) = mpsc::unbounded();
         // 数据级的
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
         let (stream_ctrl_frames_entry, rcvd_stream_ctrl_frames) = mpsc::unbounded();
@@ -131,6 +133,15 @@ impl DataScope {
             }
         };
 
+        let on_recv_new_token_frame = {
+            move |frame: &NewTokenFrame| match &mut token_registry {
+                TokenRegistry::Client(client) => {
+                    client.recv_new_token(frame.token.clone());
+                }
+                TokenRegistry::Server(_) => unreachable!("server should not receive new token"),
+            }
+        };
+
         // Assemble the pipelines of frame processing
         // TODO: pipe rcvd_new_token_frames
         let local_cids_with_router = router.revoke(cid_registry.local.clone());
@@ -144,6 +155,7 @@ impl DataScope {
         // pipe!(@error(conn_error) rcvd_stream_frames |> *streams, recv_data);
         pipe!(@error(conn_error) rcvd_datagram_frames |> *datagrams, recv_frame);
         pipe!(rcvd_ack_frames |> on_data_acked);
+        pipe!(rcvd_new_token_frames |> on_recv_new_token_frame);
 
         self.handle_stream_frame_with_flow_ctrl(
             streams,

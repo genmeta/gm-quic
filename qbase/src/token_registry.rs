@@ -111,6 +111,8 @@ where
 
 #[derive(Clone)]
 pub struct Client {
+    path: String,
+    queue: ArcTokenQueue,
     pub initial_token: Arc<Mutex<Vec<u8>>>,
 }
 
@@ -124,6 +126,8 @@ impl Client {
 
         let initial_token = queue.pop_back().map(|(token, _)| token).unwrap_or_default();
         Self {
+            path,
+            queue,
             initial_token: Arc::new(Mutex::new(initial_token)),
         }
     }
@@ -131,6 +135,19 @@ impl Client {
     // 收到 retry token，后续 initial 包都需要使用这个 token
     pub fn recv_retry_token(&mut self, token: Vec<u8>) {
         *self.initial_token.lock().unwrap() = token;
+    }
+
+    pub fn recv_new_token(&mut self, token: Vec<u8>) {
+        let queue = &mut self.queue;
+        let exp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs()
+            + LIFETIME;
+
+        queue.push_back((token, exp));
+        queue.remove_expired();
+        queue.flush(self.path.as_str());
     }
 }
 

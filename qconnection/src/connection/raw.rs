@@ -2,10 +2,7 @@ use std::sync::Arc;
 
 use futures::channel::mpsc;
 use qbase::{
-    flow::FlowController,
-    handshake::Handshake,
-    packet::{keys::ArcKeys, SpinBit},
-    streamid::Role,
+    flow::FlowController, handshake::Handshake, packet::keys::ArcKeys, streamid::Role,
     token_registry::TokenRegistry,
 };
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
@@ -18,7 +15,7 @@ use super::{
         handshake::HandshakeScope,
         initial::{ArcAddrValidator, InitialScope},
     },
-    CidRegistry,
+    CidRegistry, RcvdPackets,
 };
 use crate::{
     error::ConnError,
@@ -92,19 +89,15 @@ impl RawConnection {
         );
         let datagrams = DatagramFlow::new(0, 0);
 
-        let initial = InitialScope::new(
-            ArcKeys::new_pending(),
-            initial_packets_entry,
-            token_registry.clone(),
-            addr_validator.clone(),
-        );
-        let hs = HandshakeScope::new(hs_packets_entry, addr_validator.clone());
-        let data = DataScope::new(zero_rtt_packets_entry, one_rtt_packets_entry);
+        let initial = InitialScope::new(ArcKeys::new_pending());
+        let hs = HandshakeScope::new();
+        let data = DataScope::new();
 
         let pathes = ArcPathes::new(Box::new({
             let remote_cids = cid_registry.remote.clone();
             let flow_ctrl = flow_ctrl.clone();
             let handshake = handshake.clone();
+            let addr_validator = addr_validator.clone();
             let gen_readers = {
                 let initial = initial.clone();
                 let hs = hs.clone();
@@ -112,10 +105,10 @@ impl RawConnection {
                 let reliable_frames = reliable_frames.clone();
                 let streams = streams.clone();
                 let datagrams = datagrams.clone();
-
+                let token_registry = token_registry.clone();
                 move |path: &RawPath| {
                     (
-                        initial.reader(),
+                        initial.reader(token_registry.clone()),
                         hs.reader(),
                         data.reader(
                             path.challenge_sndbuf(),
@@ -130,10 +123,7 @@ impl RawConnection {
             move |pathway, usc| {
                 let dcid = remote_cids.apply_cid();
                 let path = RawPath::new(usc.clone(), dcid);
-                // 如果未握手完成
-                // 服务端需要进行地址验证来接触抗放大攻击
-                // 客户端没有抗放大攻击
-                // 如果握手完成，则是路径迁移，进行路径验证
+
                 if !handshake.is_handshake_done() {
                     match role {
                         Role::Client => path.anti_amplifier.grant(),
@@ -158,8 +148,22 @@ impl RawConnection {
         }));
 
         let notify = Arc::new(Notify::new());
-        let join_initial = initial.build(rcvd_initial_packets, &pathes, &notify, &conn_error);
-        let join_hs = hs.build(rcvd_hs_packets, &pathes, &notify, &conn_error);
+        let join_initial = initial.build(
+            rcvd_initial_packets,
+            rcvd_retry_packets,
+            &pathes,
+            &notify,
+            &conn_error,
+            addr_validator.clone(),
+            token_registry.clone(),
+        );
+        let join_hs = hs.build(
+            rcvd_hs_packets,
+            &pathes,
+            &notify,
+            &conn_error,
+            addr_validator.clone(),
+        );
         let (join_0rtt, join_1rtt) = data.build(
             &router,
             &pathes,
@@ -172,6 +176,7 @@ impl RawConnection {
             &conn_error,
             rcvd_0rtt_packets,
             rcvd_1rtt_packets,
+            token_registry.clone(),
         );
         let join_handles = [join_initial, join_0rtt, join_hs, join_1rtt];
 

@@ -72,7 +72,7 @@ macro_rules! pipe {
 #[macro_export]
 macro_rules! any {
     ($rcvd:expr, $notify:expr) => {
-        select! {
+        tokio::select! {
             res = $rcvd => res,
             _ = $notify => None,
         }
