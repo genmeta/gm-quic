@@ -5,9 +5,14 @@ use std::{
     task::{Context, Poll},
 };
 
+use bytes::Bytes;
 use deref_derive::Deref;
 use futures::Future;
-use qbase::{error::Error, streamid::Role};
+use qbase::{
+    error::Error,
+    frame::{ReceiveFrame, StreamCtlFrame, StreamFrame},
+    streamid::Role,
+};
 
 use crate::{recv::Reader, reliable::ArcReliableFrameDeque, send::Writer};
 
@@ -55,6 +60,22 @@ impl DataStreams {
 
     pub fn listener(&self) -> listener::ArcListener {
         self.0.listener()
+    }
+}
+
+impl ReceiveFrame<StreamCtlFrame> for DataStreams {
+    type Output = ();
+
+    fn recv_frame(&mut self, frame: &StreamCtlFrame) -> Result<Self::Output, Error> {
+        self.0.recv_stream_control(frame)
+    }
+}
+
+impl ReceiveFrame<(StreamFrame, Bytes)> for DataStreams {
+    type Output = usize;
+
+    fn recv_frame(&mut self, frame: &(StreamFrame, Bytes)) -> Result<Self::Output, Error> {
+        self.0.recv_data(frame)
     }
 }
 

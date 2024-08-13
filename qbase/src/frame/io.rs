@@ -124,7 +124,6 @@ pub fn be_frame(raw: &Bytes, packet_type: Type) -> Result<(usize, Frame, bool), 
     ))
 }
 
-#[enum_dispatch::enum_dispatch]
 pub trait WriteFrame<F> {
     fn put_frame(&mut self, frame: &F);
 }

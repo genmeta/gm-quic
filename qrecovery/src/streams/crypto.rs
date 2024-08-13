@@ -144,7 +144,11 @@ mod recv {
     };
 
     use bytes::{BufMut, Bytes};
-    use qbase::{frame::CryptoFrame, varint::VARINT_MAX};
+    use qbase::{
+        error::Error,
+        frame::{CryptoFrame, ReceiveFrame},
+        varint::VARINT_MAX,
+    };
     use tokio::io::{AsyncRead, ReadBuf};
 
     use crate::recv::rcvbuf::RecvBuf;
@@ -199,12 +203,18 @@ mod recv {
         }
     }
 
-    impl CryptoStreamIncoming {
-        pub fn recv_crypto_frame(&self, (frame, data): &(CryptoFrame, Bytes)) {
+    impl ReceiveFrame<(CryptoFrame, Bytes)> for CryptoStreamIncoming {
+        type Output = ();
+
+        fn recv_frame(
+            &mut self,
+            (frame, data): &(CryptoFrame, Bytes),
+        ) -> Result<Self::Output, Error> {
             self.0
                 .lock()
                 .unwrap()
-                .recv(frame.offset.into(), data.clone())
+                .recv(frame.offset.into(), data.clone());
+            Ok(())
         }
     }
 
@@ -253,7 +263,10 @@ impl CryptoStream {
 
 #[cfg(test)]
 mod tests {
-    use qbase::{frame::CryptoFrame, varint::VarInt};
+    use qbase::{
+        frame::{CryptoFrame, ReceiveFrame},
+        varint::VarInt,
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::CryptoStream;
@@ -267,13 +280,16 @@ mod tests {
             .await
             .unwrap();
 
-        crypto_stream.incoming().recv_crypto_frame(&(
-            CryptoFrame {
-                offset: VarInt::from_u32(0),
-                length: VarInt::from_u32(11),
-            },
-            bytes::Bytes::copy_from_slice(b"hello world"),
-        ));
+        crypto_stream
+            .incoming()
+            .recv_frame(&(
+                CryptoFrame {
+                    offset: VarInt::from_u32(0),
+                    length: VarInt::from_u32(11),
+                },
+                bytes::Bytes::copy_from_slice(b"hello world"),
+            ))
+            .unwrap();
         let mut buf = [0u8; 11];
         crypto_stream.reader().read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf[..], b"hello world");

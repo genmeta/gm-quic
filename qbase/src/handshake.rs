@@ -5,7 +5,7 @@ use std::sync::{
 
 use crate::{
     error::{Error, ErrorKind},
-    frame::HandshakeDoneFrame,
+    frame::{HandshakeDoneFrame, ReceiveFrame},
     streamid::Role,
 };
 
@@ -102,23 +102,6 @@ where
         }
     }
 
-    /// See [RFC 9000 section 19.20](https://www.rfc-editor.org/rfc/rfc9000.html#section-19.20):
-    /// A HANDSHAKE_DONE frame can only be sent by the server. Servers MUST NOT send a HANDSHAKE_DONE
-    /// frame before completing the handshake. A server MUST treat receipt of a HANDSHAKE_DONE frame
-    /// as a connection error of type PROTOCOL_VIOLATION.
-    pub fn recv_handshake_done_frame(&self, frame: &HandshakeDoneFrame) -> Result<(), Error> {
-        match self {
-            Handshake::Client(h) => {
-                h.recv_handshake_done_frame(frame);
-                Ok(())
-            }
-            _ => Err(Error::with_default_fty(
-                ErrorKind::ProtocolViolation,
-                "Server received a HANDSHAKE_DONE frame",
-            )),
-        }
-    }
-
     /// Just like `recv_handshake_done_frame`, a client must wait for a HANDSHAKE_DONE frame to be done.
     /// So as a client, it just print a warning log.
     pub fn done(&mut self) {
@@ -136,17 +119,44 @@ where
     }
 }
 
+/// See [RFC 9000 section 19.20](https://www.rfc-editor.org/rfc/rfc9000.html#section-19.20):
+/// A HANDSHAKE_DONE frame can only be sent by the server. Servers MUST NOT send a HANDSHAKE_DONE
+/// frame before completing the handshake. A server MUST treat receipt of a HANDSHAKE_DONE frame
+/// as a connection error of type PROTOCOL_VIOLATION.
+impl<T> ReceiveFrame<HandshakeDoneFrame> for Handshake<T>
+where
+    T: Extend<HandshakeDoneFrame> + Clone,
+{
+    type Output = ();
+
+    fn recv_frame(&mut self, frame: &HandshakeDoneFrame) -> Result<(), Error> {
+        match self {
+            Handshake::Client(h) => {
+                h.recv_handshake_done_frame(frame);
+                Ok(())
+            }
+            _ => Err(Error::with_default_fty(
+                ErrorKind::ProtocolViolation,
+                "Server received a HANDSHAKE_DONE frame",
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{HandshakeDoneFrame, ServerHandshake};
-    use crate::error::{Error, ErrorKind};
+    use crate::{
+        error::{Error, ErrorKind},
+        frame::ReceiveFrame,
+    };
 
     #[test]
     fn test_client_handshake() {
-        let handshake = super::Handshake::<Vec<_>>::new_client();
+        let mut handshake = super::Handshake::<Vec<_>>::new_client();
         assert!(!handshake.is_handshake_done());
 
-        let ret = handshake.recv_handshake_done_frame(&HandshakeDoneFrame);
+        let ret = handshake.recv_frame(&HandshakeDoneFrame);
         assert!(ret.is_ok());
         assert!(handshake.is_handshake_done());
     }
@@ -171,10 +181,10 @@ mod tests {
 
     #[test]
     fn test_server_recv_handshake_done_frame() {
-        let handshake = super::Handshake::new_server(Vec::new());
+        let mut handshake = super::Handshake::new_server(Vec::new());
         assert!(!handshake.is_handshake_done());
 
-        let ret = handshake.recv_handshake_done_frame(&HandshakeDoneFrame);
+        let ret = handshake.recv_frame(&HandshakeDoneFrame);
         assert_eq!(
             ret,
             Err(Error::with_default_fty(

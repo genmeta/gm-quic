@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use super::{ConnectionId, UniqueCid};
 use crate::{
     error::{Error, ErrorKind},
-    frame::{BeFrame, FrameType, NewConnectionIdFrame, RetireConnectionIdFrame},
+    frame::{BeFrame, FrameType, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame},
     token::ResetToken,
     util::{ArcAsyncDeque, IndexDeque},
     varint::{VarInt, VARINT_MAX},
@@ -77,7 +77,7 @@ where
         Ok(())
     }
 
-    fn issue_new_cid(&mut self) -> ConnectionId {
+    fn issue_new_cid(&mut self) {
         let seq = VarInt::from_u64(self.cid_deque.largest()).unwrap();
         let retire_prior_to = VarInt::from_u64(self.cid_deque.offset()).unwrap();
         let new_cid_frame =
@@ -85,7 +85,6 @@ where
         self.issued_cids.extend([new_cid_frame]);
         self.cid_deque.push_back(Some((new_cid_frame.id, new_cid_frame.reset_token)))
             .expect("it's very very hard to issue a new connection ID whose sequence excceeds VARINT_MAX");
-        new_cid_frame.id
     }
 
     /// When a RetireConnectionIdFrame is acknowledged by the peer, call this method to
@@ -93,7 +92,7 @@ where
     fn recv_retire_cid_frame(
         &mut self,
         frame: &RetireConnectionIdFrame,
-    ) -> Result<Option<(ConnectionId, ConnectionId)>, Error> {
+    ) -> Result<Option<ConnectionId>, Error> {
         let seq = frame.sequence.into_inner();
         if seq >= self.cid_deque.largest() {
             return Err(Error::new(
@@ -113,8 +112,8 @@ where
                 self.retired_cids.push(cid);
 
                 // generates a new connection ID while retiring an old one.
-                let new_cid = self.issue_new_cid();
-                return Ok(Some((cid, new_cid)));
+                self.issue_new_cid();
+                return Ok(Some(cid));
             }
         }
         Ok(None)
@@ -170,11 +169,18 @@ where
     pub fn retired_cids(&self) -> ArcAsyncDeque<ConnectionId> {
         self.0.lock().unwrap().retired_cids()
     }
+}
 
-    pub fn recv_retire_cid_frame(
-        &self,
+impl<ISSUED> ReceiveFrame<RetireConnectionIdFrame> for ArcLocalCids<ISSUED>
+where
+    ISSUED: Extend<NewConnectionIdFrame> + UniqueCid,
+{
+    type Output = Option<ConnectionId>;
+
+    fn recv_frame(
+        &mut self,
         frame: &RetireConnectionIdFrame,
-    ) -> Result<Option<(ConnectionId, ConnectionId)>, Error> {
+    ) -> Result<Self::Output, crate::error::Error> {
         self.0.lock().unwrap().recv_retire_cid_frame(frame)
     }
 }
