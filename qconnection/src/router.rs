@@ -60,14 +60,6 @@ impl ArcRouter {
             packet_entries,
         }
     }
-
-    pub fn add_conn(&self, cid: ConnectionId, packet_entries: [PacketEntry; 4]) {
-        self.0.insert(cid, packet_entries);
-    }
-
-    pub fn remove_conn(&self, cid: ConnectionId) {
-        self.0.remove(&cid);
-    }
 }
 
 #[derive(Debug, Clone)]
