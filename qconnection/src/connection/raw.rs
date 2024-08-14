@@ -1,10 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use futures::channel::mpsc;
-use qbase::{
-    flow::FlowController, handshake::Handshake, packet::keys::ArcKeys, streamid::Role,
-    token::TokenRegistry,
-};
+use qbase::{flow::FlowController, handshake::Handshake, packet::keys::ArcKeys, streamid::Role};
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qunreliable::DatagramFlow;
 use tokio::{sync::Notify, task::JoinHandle};
@@ -12,7 +9,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 use super::{
     scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope},
     validator::ArcAddrValidator,
-    CidRegistry, RcvdPackets,
+    CidRegistry, RcvdPackets, TokenRegistry,
 };
 use crate::{
     error::ConnError,
@@ -24,7 +21,7 @@ use crate::{
 pub struct RawConnection {
     pub pathes: ArcPathes,
     pub cid_registry: CidRegistry,
-    pub token_registry: TokenRegistry<ArcReliableFrameDeque>,
+    pub token_registry: TokenRegistry,
     // handshake done的信号
     pub handshake: Handshake<ArcReliableFrameDeque>,
     pub flow_ctrl: FlowController,
@@ -54,10 +51,19 @@ impl RawConnection {
         let (zero_rtt_packets_entry, rcvd_0rtt_packets) = mpsc::unbounded();
         let (hs_packets_entry, rcvd_hs_packets) = mpsc::unbounded();
         let (one_rtt_packets_entry, rcvd_1rtt_packets) = mpsc::unbounded();
-        let (retry_packets_entry, rcvd_retry_packets) = mpsc::unbounded();
 
         let reliable_frames = ArcReliableFrameDeque::with_capacity(0);
+        let initial = InitialScope::new(ArcKeys::new_pending());
+        let hs = HandshakeScope::new();
+        let data = DataScope::new();
+
+        let token_registry = if role == Role::Client {
+            TokenRegistry::new_client(server_name, initial.clone())
+        } else {
+            TokenRegistry::new_server(server_name, reliable_frames.clone())
+        };
         let router_registry = router.registry(
+            token_registry.clone(),
             reliable_frames.clone(),
             [
                 initial_packets_entry.clone(),
@@ -65,10 +71,8 @@ impl RawConnection {
                 hs_packets_entry.clone(),
                 one_rtt_packets_entry.clone(),
             ],
-            retry_packets_entry.clone(),
         );
 
-        let token_registry = TokenRegistry::new(role, server_name, reliable_frames.clone());
         let cid_registry = CidRegistry::new(8, router_registry, reliable_frames.clone(), 2);
         let handshake = Handshake::new(role, reliable_frames.clone());
         let flow_ctrl = FlowController::with_initial(0, 0);
@@ -89,10 +93,6 @@ impl RawConnection {
             reliable_frames.clone(),
         );
         let datagrams = DatagramFlow::new(0, 0);
-
-        let initial = InitialScope::new(ArcKeys::new_pending());
-        let hs = HandshakeScope::new();
-        let data = DataScope::new();
 
         let pathes = ArcPathes::new(Box::new({
             let remote_cids = cid_registry.remote.clone();
@@ -136,7 +136,6 @@ impl RawConnection {
         let notify = Arc::new(Notify::new());
         let join_initial = initial.build(
             rcvd_initial_packets,
-            rcvd_retry_packets,
             &pathes,
             &notify,
             &conn_error,

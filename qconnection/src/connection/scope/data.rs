@@ -19,7 +19,6 @@ use qbase::{
         r#type::Type,
         DataPacket, PacketNumber,
     },
-    token::TokenRegistry,
 };
 use qrecovery::{
     reliable::{rcvdpkt::ArcRcvdPktRecords, ArcReliableFrameDeque, GuaranteedFrame},
@@ -31,7 +30,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use crate::{
     any,
-    connection::{transmit::data::DataSpaceReader, CidRegistry, RcvdPackets},
+    connection::{transmit::data::DataSpaceReader, CidRegistry, RcvdPackets, TokenRegistry},
     error::ConnError,
     path::{ArcPathes, RawPath, SendBuffer},
     pipe,
@@ -70,7 +69,7 @@ impl DataScope {
         conn_error: &ConnError,
         rcvd_0rtt_packets: RcvdPackets,
         rcvd_1rtt_packets: RcvdPackets,
-        token_registry: TokenRegistry<ArcReliableFrameDeque>,
+        token_registry: TokenRegistry,
     ) -> (JoinHandle<RcvdPackets>, JoinHandle<RcvdPackets>) {
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
         // 连接级的

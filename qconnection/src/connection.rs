@@ -10,15 +10,10 @@ use std::{
 use closing::ClosingConnection;
 use draining::DrainingConnection;
 use futures::{channel::mpsc, StreamExt};
-use qbase::{
-    cid,
-    config::Parameters,
-    error::Error,
-    packet::{DataPacket, RetryHeader},
-    streamid::Role,
-};
+use qbase::{cid, config::Parameters, error::Error, packet::DataPacket, streamid::Role, token};
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qudp::ArcUsc;
+use scope::InitialScope;
 
 use crate::{
     connection::ConnState::{Closed, Closing, Draining, Raw},
@@ -37,11 +32,11 @@ pub mod validator;
 
 pub type PacketEntry = mpsc::UnboundedSender<(DataPacket, Pathway, ArcUsc)>;
 pub type RcvdPackets = mpsc::UnboundedReceiver<(DataPacket, Pathway, ArcUsc)>;
-pub type RetryEntry = mpsc::UnboundedSender<RetryHeader>;
-pub type RcvdRetry = mpsc::UnboundedReceiver<RetryHeader>;
 
 pub type CidRegistry = cid::Registry<RouterRegistry<ArcReliableFrameDeque>, ArcReliableFrameDeque>;
 pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
+
+pub type TokenRegistry = token::TokenRegistry<ArcReliableFrameDeque, InitialScope>;
 
 enum ConnState {
     Raw(raw::RawConnection),

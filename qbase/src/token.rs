@@ -11,7 +11,6 @@ use rand::Rng;
 use crate::{
     error::{Error, ErrorKind},
     frame::{BeFrame, NewTokenFrame, ReceiveFrame},
-    streamid::Role,
 };
 
 const TOKEN_PATH: &str = "/tmp/gm-quic";
@@ -60,7 +59,7 @@ impl std::ops::Deref for ResetToken {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct ArcTokenQueue(Arc<Mutex<VecDeque<(Vec<u8>, u64)>>>);
 
 impl ArcTokenQueue {
@@ -97,7 +96,7 @@ impl ArcTokenQueue {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Server<ISSUED>
 where
     ISSUED: Extend<NewTokenFrame>,
@@ -159,15 +158,22 @@ where
     }
 }
 
-#[derive(Clone)]
-pub struct Client {
+#[derive(Clone, Debug)]
+pub struct Client<RETRY>
+where
+    RETRY: RetryInitial,
+{
     path: String,
     queue: ArcTokenQueue,
+    retry: RETRY,
     pub initial_token: Arc<Mutex<Vec<u8>>>,
 }
 
-impl Client {
-    pub fn new(server_name: String) -> Self {
+impl<RETRY> Client<RETRY>
+where
+    RETRY: RetryInitial,
+{
+    pub fn new(server_name: String, retry: RETRY) -> Self {
         let path = format!("{}/client/{}.json", TOKEN_PATH, server_name);
         let queue = ArcTokenQueue::read(path.as_str()).unwrap_or_else(|_| {
             let queue = Arc::new(Mutex::new(VecDeque::new()));
@@ -178,6 +184,7 @@ impl Client {
         Self {
             path,
             queue,
+            retry,
             initial_token: Arc::new(Mutex::new(initial_token)),
         }
     }
@@ -185,6 +192,7 @@ impl Client {
     // 收到 retry token，后续 initial 包都需要使用这个 token
     pub fn recv_retry_token(&mut self, token: Vec<u8>) {
         *self.initial_token.lock().unwrap() = token;
+        self.retry.retry_initial();
     }
 
     pub fn recv_new_token(&mut self, token: Vec<u8>) {
@@ -201,30 +209,41 @@ impl Client {
     }
 }
 
-#[derive(Clone)]
-pub enum TokenRegistry<ISSUED>
+#[derive(Clone, Debug)]
+pub enum TokenRegistry<ISSUED, RETRY>
 where
     ISSUED: Extend<NewTokenFrame>,
+    RETRY: RetryInitial,
 {
     Server(Server<ISSUED>),
-    Client(Client),
+    Client(Client<RETRY>),
 }
 
-impl<ISSUED> TokenRegistry<ISSUED>
+impl<ISSUED, RETRY> TokenRegistry<ISSUED, RETRY>
 where
     ISSUED: Extend<NewTokenFrame>,
+    RETRY: RetryInitial,
 {
-    pub fn new(role: Role, server_name: String, issued: ISSUED) -> Self {
-        match role {
-            Role::Server => Self::Server(Server::new(server_name, issued)),
-            Role::Client => Self::Client(Client::new(server_name)),
+    pub fn new_server(server_name: String, issued: ISSUED) -> Self {
+        Self::Server(Server::new(server_name, issued))
+    }
+
+    pub fn new_client(server_name: String, retry: RETRY) -> Self {
+        Self::Client(Client::new(server_name, retry))
+    }
+
+    pub fn receive_retry_packet(&mut self, token: Vec<u8>) {
+        match self {
+            TokenRegistry::Server(_) => unreachable!("Server cannot receive Retry packet"),
+            TokenRegistry::Client(client) => client.recv_retry_token(token),
         }
     }
 }
 
-impl<ISSUED> ReceiveFrame<NewTokenFrame> for TokenRegistry<ISSUED>
+impl<ISSUED, RETRY> ReceiveFrame<NewTokenFrame> for TokenRegistry<ISSUED, RETRY>
 where
     ISSUED: Extend<NewTokenFrame>,
+    RETRY: RetryInitial,
 {
     type Output = ();
 
@@ -243,6 +262,10 @@ where
             }
         }
     }
+}
+
+pub trait RetryInitial {
+    fn retry_initial(&mut self);
 }
 
 #[cfg(test)]

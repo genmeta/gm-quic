@@ -171,6 +171,10 @@ impl<T: Clone> RecvGuard<'_, T> {
     pub fn may_loss_pkt(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ {
         self.inner.may_loss_pkt(pn)
     }
+
+    pub fn largest_pn(&self) -> u64 {
+        self.inner.records.largest()
+    }
 }
 
 impl<T> Drop for RecvGuard<'_, T> {

@@ -33,9 +33,9 @@ use crate::connection::{
 
 #[derive(Clone)]
 pub struct RawPath {
-    pub anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
     pub(super) usc: ArcUsc,
     pub(super) cc: ArcCC,
+    pub(super) anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
     pub(super) dcid: ArcCidCell<ArcReliableFrameDeque>,
     pub(super) scid: ConnectionId,
     pub(super) spin: Arc<AtomicBool>,
