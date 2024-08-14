@@ -22,7 +22,6 @@ use qrecovery::{
 use tokio::{sync::Notify, task::JoinHandle};
 
 use crate::{
-    any,
     connection::{
         transmit::initial::InitialSpaceReader, validator::ArcAddrValidator, RcvdPackets,
         TokenRegistry,
@@ -31,6 +30,8 @@ use crate::{
     path::{ArcPathes, RawPath},
     pipe,
 };
+
+use super::any;
 
 #[derive(Clone)]
 pub struct InitialScope {
@@ -124,11 +125,10 @@ impl InitialScope {
             let addr_validator = addr_validator.clone();
             let mut token_registry = token_registry.clone();
             async move {
-                while let Some((mut packet, pathway, usc)) =
-                    any!(rcvd_packets.next(), notify.notified())
+                while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
                 {
                     let pty = packet.header.get_type();
-                    let Some(keys) = any!(keys.get_remote_keys(), notify.notified()) else {
+                    let Some(keys) = any(keys.get_remote_keys(), &notify).await else {
                         break;
                     };
                     let undecoded_pn = match remove_protection_of_long_packet(
