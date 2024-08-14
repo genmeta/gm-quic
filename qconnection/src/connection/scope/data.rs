@@ -29,13 +29,14 @@ use qunreliable::DatagramFlow;
 use tokio::{sync::Notify, task::JoinHandle};
 
 use crate::{
-    any,
     connection::{transmit::data::DataSpaceReader, CidRegistry, RcvdPackets, TokenRegistry},
     error::ConnError,
     path::{ArcPathes, RawPath, SendBuffer},
     pipe,
     router::ArcRouter,
 };
+
+use super::any;
 
 #[derive(Clone)]
 pub struct DataScope {
@@ -184,11 +185,10 @@ impl DataScope {
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.zero_rtt_keys.clone();
             async move {
-                while let Some((mut packet, pathway, usc)) =
-                    any!(rcvd_packets.next(), notify.notified())
+                while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
                 {
                     let pty = packet.header.get_type();
-                    let Some(keys) = any!(keys.get_remote_keys(), notify.notified()) else {
+                    let Some(keys) = any(keys.get_remote_keys(), &notify).await else {
                         break;
                     };
                     let undecoded_pn = match remove_protection_of_long_packet(
@@ -254,11 +254,10 @@ impl DataScope {
             let keys = self.one_rtt_keys.clone();
             let mut handshake = handshake.clone();
             async move {
-                while let Some((mut packet, pathway, usc)) =
-                    any!(rcvd_packets.next(), notify.notified())
+                while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
                 {
                     let pty = packet.header.get_type();
-                    let Some((hpk, pk)) = any!(keys.get_remote_keys(), notify.notified()) else {
+                    let Some((hpk, pk)) = any(keys.get_remote_keys(), &notify).await else {
                         break;
                     };
                     let (undecoded_pn, key_phase) = match remove_protection_of_short_packet(
