@@ -165,19 +165,4 @@ impl RawPath {
     pub fn response_sndbuf(&self) -> SendBuffer<PathResponseFrame> {
         self.response_sndbuf.clone()
     }
-
-    /*
-    pub(super) fn inactive(&mut self) {
-        self.dcid.retire();
-        self.response_listner.0.lock().unwrap().inactive();
-    }
-    */
-
-    pub fn is_inactive(&self) -> bool {
-        false
-        /*
-        let listner = self.response_listner.0.lock().unwrap();
-        matches!(*listner, ResponseListener::Inactive)
-        */
-    }
 }

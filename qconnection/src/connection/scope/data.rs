@@ -28,6 +28,7 @@ use qrecovery::{
 use qunreliable::DatagramFlow;
 use tokio::{sync::Notify, task::JoinHandle};
 
+use super::any;
 use crate::{
     connection::{transmit::data::DataSpaceReader, CidRegistry, RcvdPackets, TokenRegistry},
     error::ConnError,
@@ -36,14 +37,18 @@ use crate::{
     router::ArcRouter,
 };
 
-use super::any;
-
 #[derive(Clone)]
 pub struct DataScope {
     pub zero_rtt_keys: ArcKeys,
     pub one_rtt_keys: ArcOneRttKeys,
     pub space: DataSpace,
     pub crypto_stream: CryptoStream,
+}
+
+impl Default for DataScope {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DataScope {

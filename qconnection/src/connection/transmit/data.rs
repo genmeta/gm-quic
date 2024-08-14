@@ -41,6 +41,8 @@ impl DataSpaceReader {
         self.one_rtt_keys.get_local_keys()
     }
 
+    /// Returns (pn, is_ack_eliciting, is_just_ack, sent_size, fresh_bytes, in_flight, sent_ack) or None
+    #[allow(clippy::type_complexity)]
     pub fn try_read_1rtt(
         &self,
         buf: &mut [u8],
@@ -177,6 +179,7 @@ impl DataSpaceReader {
         ))
     }
 
+    /// Returns (pn, is_ack_eliciting, sent_size, fresh_bytes, in_flight) or None
     pub fn try_read_0rtt(
         &self,
         buf: &mut [u8],
