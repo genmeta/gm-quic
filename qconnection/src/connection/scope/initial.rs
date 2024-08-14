@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    fmt::Debug,
+    sync::{Arc, Mutex},
+};
 
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
@@ -10,10 +13,9 @@ use qbase::{
         long::{self},
         DataHeader,
     },
-    token::TokenRegistry,
+    token::RetryInitial,
 };
 use qrecovery::{
-    reliable::ArcReliableFrameDeque,
     space::{Epoch, InitialSpace},
     streams::crypto::CryptoStream,
 };
@@ -22,7 +24,8 @@ use tokio::{sync::Notify, task::JoinHandle};
 use crate::{
     any,
     connection::{
-        transmit::initial::InitialSpaceReader, validator::ArcAddrValidator, RcvdPackets, RcvdRetry,
+        transmit::initial::InitialSpaceReader, validator::ArcAddrValidator, RcvdPackets,
+        TokenRegistry,
     },
     error::ConnError,
     path::{ArcPathes, RawPath},
@@ -52,12 +55,11 @@ impl InitialScope {
     pub fn build(
         &self,
         rcvd_packets: RcvdPackets,
-        rcvd_retry: RcvdRetry,
         pathes: &ArcPathes,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
         addr_validator: ArcAddrValidator,
-        token_registry: TokenRegistry<ArcReliableFrameDeque>,
+        token_registry: TokenRegistry,
     ) -> JoinHandle<RcvdPackets> {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
@@ -92,8 +94,6 @@ impl InitialScope {
         pipe!(@error(conn_error) rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_frame);
         pipe!(rcvd_ack_frames |> on_data_acked);
 
-        self.recv_retry(rcvd_retry, token_registry.clone());
-
         self.parse_rcvd_packets_and_dispatch_frames(
             rcvd_packets,
             pathes,
@@ -113,7 +113,7 @@ impl InitialScope {
         notify: &Arc<Notify>,
         conn_error: &ConnError,
         addr_validator: ArcAddrValidator,
-        token_registry: TokenRegistry<ArcReliableFrameDeque>,
+        token_registry: TokenRegistry,
     ) -> JoinHandle<RcvdPackets> {
         let pathes = pathes.clone();
         let conn_error = conn_error.clone();
@@ -168,9 +168,8 @@ impl InitialScope {
                                 } else {
                                     unreachable!("Must be initial packet")
                                 };
-
+                            server.issue_new_token();
                             if server.validate(&token) {
-                                server.issue_new_token();
                                 addr_validator.0.validate();
                             }
                         }
@@ -212,26 +211,24 @@ impl InitialScope {
             crypto_stream_outgoing: self.crypto_stream.outgoing(),
         }
     }
+}
 
-    pub fn recv_retry(
-        &self,
-        mut rcvd_retry: RcvdRetry,
-        mut token_registry: TokenRegistry<ArcReliableFrameDeque>,
-    ) {
-        tokio::spawn({
-            async move {
-                if let Some(retry) = rcvd_retry.next().await {
-                    match &mut token_registry {
-                        TokenRegistry::Client(client) => {
-                            client.recv_retry_token(retry.token.clone())
-                        }
-                        TokenRegistry::Server(_) => {
-                            unreachable!("Server should not receive retry")
-                        }
-                    }
-                    rcvd_retry.close();
-                }
-            }
-        });
+impl RetryInitial for InitialScope {
+    fn retry_initial(&mut self) {
+        let largest_pn = self.space.sent_packets().receive().largest_pn();
+        // Packet numbers in each space start at packet number 0.
+        // All packets in the initial space are considered lost.
+        for pn in 0..largest_pn {
+            let _ = self.space.sent_packets().receive().may_loss_pkt(pn);
+        }
+    }
+}
+
+impl Debug for InitialScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InitialScope")
+            .field("space", &self.space)
+            .field("crypto_stream", &self.crypto_stream)
+            .finish()
     }
 }
