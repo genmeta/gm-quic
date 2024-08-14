@@ -13,6 +13,7 @@ use futures::{channel::mpsc, StreamExt};
 use qbase::{cid, config::Parameters, error::Error, packet::DataPacket, streamid::Role, token};
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qudp::ArcUsc;
+use raw::RawConnection;
 use scope::InitialScope;
 
 use crate::{
@@ -22,7 +23,6 @@ use crate::{
     tls::ArcTlsSession,
 };
 
-mod builder;
 pub mod closing;
 pub mod draining;
 pub mod raw;
@@ -39,14 +39,16 @@ pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>
 pub type TokenRegistry = token::TokenRegistry<ArcReliableFrameDeque, InitialScope>;
 
 enum ConnState {
-    Raw(raw::RawConnection),
-    Closing(closing::ClosingConnection),
-    Draining(draining::DrainingConnection),
+    Raw(RawConnection),
+    Closing(ClosingConnection),
+    Draining(DrainingConnection),
     Closed,
 }
 
 #[derive(Clone)]
 pub struct ArcConnection(Arc<Mutex<ConnState>>);
+
+pub type QuicConnection = ArcConnection;
 
 impl Debug for ArcConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -67,7 +69,7 @@ impl ArcConnection {
             panic!("server_name is not valid")
         };
 
-        let raw_conn = raw::RawConnection::new(
+        let raw_conn = RawConnection::new(
             Role::Client,
             name,
             ArcTlsSession::new_client(server_name, &params),

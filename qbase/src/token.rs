@@ -249,13 +249,11 @@ where
 
     fn recv_frame(&mut self, frame: &NewTokenFrame) -> Result<Self::Output, crate::error::Error> {
         match self {
-            Self::Server(_) => {
-                return Err(Error::new(
-                    ErrorKind::ProtocolViolation,
-                    frame.frame_type(),
-                    "Server received NewTokenFrame",
-                ))
-            }
+            Self::Server(_) => Err(Error::new(
+                ErrorKind::ProtocolViolation,
+                frame.frame_type(),
+                "Server received NewTokenFrame",
+            )),
             Self::Client(client) => {
                 client.recv_new_token(frame.token.clone());
                 Ok(())

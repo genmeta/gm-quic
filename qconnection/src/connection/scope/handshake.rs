@@ -18,6 +18,7 @@ use qrecovery::{
 };
 use tokio::{sync::Notify, task::JoinHandle};
 
+use super::any;
 use crate::{
     connection::{self, transmit::handshake::HandshakeSpaceReader, RcvdPackets},
     error::ConnError,
@@ -25,13 +26,17 @@ use crate::{
     pipe,
 };
 
-use super::any;
-
 #[derive(Clone)]
 pub struct HandshakeScope {
     pub keys: ArcKeys,
     pub space: HandshakeSpace,
     pub crypto_stream: CryptoStream,
+}
+
+impl Default for HandshakeScope {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HandshakeScope {

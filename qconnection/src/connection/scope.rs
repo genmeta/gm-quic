@@ -26,8 +26,7 @@ pub trait RecvPacket {
         let body = packet.bytes.split_off(body_offset);
         FrameReader::new(body.freeze(), packet.header.get_type())
             .filter_map(|frame| frame.ok())
-            .map(|(f, _)| matches!(f, Frame::Close(_)))
-            .fold(false, |sum, v| sum || v)
+            .any(|(f, _)| matches!(f, Frame::Close(_)))
     }
 }
 

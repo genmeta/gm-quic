@@ -59,7 +59,7 @@ impl ArcRouter {
         self.0
             .get_mut(dcid)
             .map(|mut item| {
-                _ = item.1.receive_retry_packet(packet.token.clone());
+                item.1.receive_retry_packet(packet.token.clone());
                 true
             })
             .unwrap_or(false)

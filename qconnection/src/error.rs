@@ -123,6 +123,7 @@ impl Future for ConnError {
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use qbase::{error::ErrorKind, frame::FrameType::Padding};
