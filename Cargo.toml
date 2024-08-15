@@ -7,6 +7,7 @@ members = [
     "qcongestion",
     "qudp",
     "qunreliable",
+    "quic",
 ]
 default-members = [
     "qbase",
@@ -15,6 +16,7 @@ default-members = [
     "qcongestion",
     "qudp",
     "qunreliable",
+    "quic",
 ]
 
 [workspace.package]
@@ -39,7 +41,6 @@ log = "0.4"
 clap = { version = "4", features = ["derive"] }
 dashmap = "6"
 derive_builder = "0.20"
-   
 
 
 [workspace.dependencies.qbase]
