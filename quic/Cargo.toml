@@ -1,0 +1,22 @@
+[package]
+name = "quic"
+version.workspace = true
+edition.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+futures = { workspace = true }
+tokio = { workspace = true }
+qbase = { workspace = true }
+qrecovery = { workspace = true }
+qcongestion = { workspace = true }
+qunreliable = { workspace = true }
+qconnection = { workspace = true }
+qudp = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+rustls = { workspace = true }
+log = { workspace = true }
+deref-derive = { workspace = true }
+dashmap = { workspace = true }
