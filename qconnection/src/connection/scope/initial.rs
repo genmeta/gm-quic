@@ -150,7 +150,7 @@ impl InitialScope {
                     )
                     .unwrap();
 
-                    let mut path = pathes.get(pathway, usc);
+                    let path = pathes.get(pathway, usc);
                     let remote_scid = match packet.header {
                         DataHeader::Long(ref long_header) => *long_header.get_scid(),
                         _ => unreachable!(),

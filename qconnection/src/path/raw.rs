@@ -63,7 +63,7 @@ impl RawPath {
         self.response_sndbuf.write(frame.into());
     }
 
-    pub fn set_dcid(&mut self, cid: ConnectionId) {
+    pub fn set_dcid(&self, cid: ConnectionId) {
         self.dcid.set_cid(cid)
     }
 
