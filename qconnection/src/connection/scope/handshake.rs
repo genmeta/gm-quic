@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use connection::validator::ArcAddrValidator;
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
     frame::{AckFrame, Frame, FrameReader, ReceiveFrame},
@@ -20,7 +19,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::any;
 use crate::{
-    connection::{self, transmit::handshake::HandshakeSpaceReader, RcvdPackets},
+    connection::{transmit::handshake::HandshakeSpaceReader, RcvdPackets},
     error::ConnError,
     path::{ArcPathes, RawPath},
     pipe,
@@ -55,7 +54,6 @@ impl HandshakeScope {
         pathes: &ArcPathes,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
-        addr_validator: ArcAddrValidator,
     ) -> JoinHandle<RcvdPackets> {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
@@ -96,7 +94,6 @@ impl HandshakeScope {
             dispatch_frame,
             notify,
             conn_error,
-            addr_validator,
         )
     }
 
@@ -107,7 +104,6 @@ impl HandshakeScope {
         dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
-        addr_validator: ArcAddrValidator,
     ) -> JoinHandle<RcvdPackets> {
         let pathes = pathes.clone();
         let conn_error = conn_error.clone();
@@ -149,8 +145,14 @@ impl HandshakeScope {
                     )
                     .unwrap();
 
-                    addr_validator.0.validate();
                     let path = pathes.get(pathway, usc);
+
+                    // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
+                    // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
+                    // address to have been validated.
+                    // It may have already been verified using tokens in the Initial space
+                    path.anti_amplifier.grant();
+
                     let body = packet.bytes.split_off(body_offset);
                     match FrameReader::new(body.freeze(), pty).try_fold(
                         false,

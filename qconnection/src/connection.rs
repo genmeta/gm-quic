@@ -28,7 +28,6 @@ pub mod draining;
 pub mod raw;
 pub mod scope;
 pub mod transmit;
-pub mod validator;
 
 pub type PacketEntry = mpsc::UnboundedSender<(DataPacket, Pathway, ArcUsc)>;
 pub type RcvdPackets = mpsc::UnboundedReceiver<(DataPacket, Pathway, ArcUsc)>;

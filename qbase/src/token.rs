@@ -59,8 +59,9 @@ impl std::ops::Deref for ResetToken {
     }
 }
 
+type TokenQueue = VecDeque<(Vec<u8>, u64)>;
 #[derive(Clone, Debug)]
-struct ArcTokenQueue(Arc<Mutex<VecDeque<(Vec<u8>, u64)>>>);
+struct ArcTokenQueue(Arc<Mutex<TokenQueue>>);
 
 impl ArcTokenQueue {
     fn remove_expired(&mut self) {

@@ -8,7 +8,6 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::{
     scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope},
-    validator::ArcAddrValidator,
     CidRegistry, RcvdPackets, TokenRegistry,
 };
 use crate::{
@@ -77,7 +76,6 @@ impl RawConnection {
         let handshake = Handshake::new(role, reliable_frames.clone());
         let flow_ctrl = FlowController::with_initial(0, 0);
         let conn_error = ConnError::default();
-        let addr_validator = ArcAddrValidator::default();
 
         let streams = DataStreams::with_role_and_limit(
             role,
@@ -98,7 +96,6 @@ impl RawConnection {
             let remote_cids = cid_registry.remote.clone();
             let flow_ctrl = flow_ctrl.clone();
             let handshake = handshake.clone();
-            let addr_validator = addr_validator.clone();
             let gen_readers = {
                 let initial = initial.clone();
                 let hs = hs.clone();
@@ -127,7 +124,14 @@ impl RawConnection {
             move |pathway, usc| {
                 let dcid = remote_cids.apply_cid();
                 let path = RawPath::new(usc.clone(), dcid);
-                path.begin_validation(&handshake, &addr_validator);
+
+                if !handshake.is_handshake_done() {
+                    if role == Role::Client {
+                        path.anti_amplifier.grant();
+                    }
+                } else {
+                    path.begin_validation();
+                }
                 path.begin_sending(pathway, &flow_ctrl, &gen_readers);
                 path
             }
@@ -139,16 +143,9 @@ impl RawConnection {
             &pathes,
             &notify,
             &conn_error,
-            addr_validator.clone(),
             token_registry.clone(),
         );
-        let join_hs = hs.build(
-            rcvd_hs_packets,
-            &pathes,
-            &notify,
-            &conn_error,
-            addr_validator.clone(),
-        );
+        let join_hs = hs.build(rcvd_hs_packets, &pathes, &notify, &conn_error);
         let (join_0rtt, join_1rtt) = data.build(
             &router,
             &pathes,
