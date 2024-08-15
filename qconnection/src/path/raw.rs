@@ -4,7 +4,7 @@ use std::{
 };
 
 use qbase::{
-    cid::{ArcCidCell, ConnectionId, MAX_CID_SIZE},
+    cid::{ArcCidCell, ConnectionId},
     flow::FlowController,
     frame::{AckFrame, PathChallengeFrame, PathResponseFrame},
 };
@@ -40,11 +40,7 @@ pub struct RawPath {
 }
 
 impl RawPath {
-    pub fn new(usc: ArcUsc, dcid: ArcCidCell<ArcReliableFrameDeque>) -> Self {
-        // TODO: 从cid_registry.local 随便选一个能用的
-        // 到 1 rtt 空间不再需要
-        let scid = ConnectionId::random_gen(MAX_CID_SIZE);
-
+    pub fn new(usc: ArcUsc, scid: ConnectionId, dcid: ArcCidCell<ArcReliableFrameDeque>) -> Self {
         Self {
             usc,
             dcid,
@@ -65,6 +61,10 @@ impl RawPath {
     /// 收到Challenge，马上响应Response
     pub fn recv_challenge(&self, frame: PathChallengeFrame) {
         self.response_sndbuf.write(frame.into());
+    }
+
+    pub fn set_dcid(&mut self, cid: ConnectionId) {
+        self.dcid.set_cid(cid)
     }
 
     pub fn begin_validation(&self) {

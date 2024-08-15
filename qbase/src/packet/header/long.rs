@@ -80,6 +80,12 @@ impl<T> super::GetDcid for LongHeader<T> {
     }
 }
 
+impl<T> super::GetScid for LongHeader<T> {
+    fn get_scid(&self) -> &ConnectionId {
+        &self.scid
+    }
+}
+
 pub type VersionNegotiationHeader = LongHeader<VersionNegotiation>;
 pub type RetryHeader = LongHeader<Retry>;
 
@@ -116,7 +122,7 @@ bind_type!(
 );
 
 #[derive(Debug, Clone)]
-#[enum_dispatch(Encode, GetType, GetDcid)]
+#[enum_dispatch(Encode, GetType, GetDcid, GetScid)]
 pub enum DataHeader {
     Initial(InitialHeader),
     ZeroRtt(ZeroRttHeader),

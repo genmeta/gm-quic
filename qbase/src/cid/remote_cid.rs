@@ -39,9 +39,18 @@ where
     RETIRED: Extend<RetireConnectionIdFrame> + Clone,
 {
     fn with_limit(active_cid_limit: u64, retired_cids: RETIRED) -> Self {
+        let mut cid_deque = IndexDeque::default();
+
+        let seq = 0;
+        let cid = ConnectionId::random_gen(8);
+        let reset_token = ResetToken::default();
+        cid_deque
+            .insert(seq, Some((seq, cid, reset_token)))
+            .unwrap();
+
         Self {
             active_cid_limit,
-            cid_deque: Default::default(),
+            cid_deque,
             cid_cells: Default::default(),
             cursor: Default::default(),
             retired_cids,
@@ -256,6 +265,11 @@ impl CidState {
         *self = CidState::Ready(cid);
     }
 
+    /// When first path receive the initial packet to change the dcid
+    fn set_cid(&mut self, cid: ConnectionId) {
+        *self = CidState::Ready(cid);
+    }
+
     fn clear(&mut self) {
         // Allow transition from Ready state to None state, but not from Closed state
         // While meeting Demand state, it will not change && not wake the waker
@@ -308,6 +322,10 @@ where
         self.0.lock().unwrap().assign(cid);
     }
 
+    pub fn set_cid(&self, cid: ConnectionId) {
+        self.0.lock().unwrap().set_cid(cid);
+    }
+
     pub fn poll_get_cid(&self, cx: &mut Context<'_>) -> Poll<ConnectionId> {
         self.0.lock().unwrap().poll_get_cid(cx)
     }
@@ -358,6 +376,10 @@ mod tests {
         let retired_cids = ArcAsyncDeque::<RetireConnectionIdFrame>::new();
         let mut remote_cids = RawRemoteCids::with_limit(8, retired_cids);
 
+        // The random CID generated to create the first path, which will be overwritten
+        // by the SCID carried in the subsequent initial package.
+        let _intial_cid = remote_cids.apply_cid();
+
         // Will return Pending, because the peer hasn't issue any connection id
         let cid_apply = remote_cids.apply_cid();
         assert_eq!(cid_apply.get_cid().poll_unpin(&mut cx), Poll::Pending);
@@ -368,13 +390,13 @@ mod tests {
 
         let cid = ConnectionId::random_gen(8);
         let frame = NewConnectionIdFrame {
-            sequence: VarInt::from_u32(0),
+            sequence: VarInt::from_u32(1),
             retire_prior_to: VarInt::from_u32(0),
             id: cid,
             reset_token: ResetToken::random_gen(),
         };
         assert!(remote_cids.recv_new_cid_frame(&frame).is_ok());
-        assert_eq!(remote_cids.cid_deque.len(), 1);
+        assert_eq!(remote_cids.cid_deque.len(), 2);
 
         assert_eq!(cid_apply.get_cid().poll_unpin(&mut cx), Poll::Ready(cid));
 

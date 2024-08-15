@@ -34,20 +34,15 @@ pub struct HandshakeScope {
 
 impl Default for HandshakeScope {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl HandshakeScope {
-    // Initial keys应该是预先知道的，或者传入dcid，可以构造出来
-    pub fn new() -> Self {
         Self {
             keys: ArcKeys::new_pending(),
             space: HandshakeSpace::with_capacity(16),
             crypto_stream: CryptoStream::new(4096, 4096),
         }
     }
+}
 
+impl HandshakeScope {
     pub fn build(
         &self,
         rcvd_packets: RcvdPackets,

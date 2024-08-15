@@ -47,12 +47,6 @@ pub struct DataScope {
 
 impl Default for DataScope {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl DataScope {
-    pub fn new() -> Self {
         Self {
             zero_rtt_keys: ArcKeys::new_pending(),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
@@ -60,7 +54,9 @@ impl DataScope {
             crypto_stream: CryptoStream::new(0, 0),
         }
     }
+}
 
+impl DataScope {
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
