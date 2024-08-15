@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{
     error::ConnError,
-    path::{ArcPathes, RawPath},
+    path::{ArcPath, ArcPathes, RawPath},
     router::ArcRouter,
     tls::{ArcTlsSession, GetParameters},
 };
@@ -124,7 +124,7 @@ impl RawConnection {
             move |pathway, usc| {
                 let scid = cid_registry.local.active_cids()[0];
                 let dcid = cid_registry.remote.apply_cid();
-                let path = RawPath::new(usc.clone(), scid, dcid);
+                let path = ArcPath::new(usc.clone(), scid, dcid);
 
                 if !handshake.is_handshake_done() {
                     if role == Role::Client {

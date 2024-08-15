@@ -6,7 +6,9 @@ use std::{
 
 use dashmap::DashMap;
 use deref_derive::{Deref, DerefMut};
+use qbase::cid::{ArcCidCell, ConnectionId};
 use qcongestion::congestion::MSS;
+use qrecovery::reliable::ArcReliableFrameDeque;
 use qudp::{ArcUsc, Sender};
 
 mod anti_amplifier;
@@ -91,22 +93,31 @@ impl ViaPathway for ArcUsc {
     }
 }
 
+#[derive(Clone, Deref)]
+pub struct ArcPath(Arc<RawPath>);
+
+impl ArcPath {
+    pub fn new(usc: ArcUsc, scid: ConnectionId, dcid: ArcCidCell<ArcReliableFrameDeque>) -> Self {
+        Self(Arc::new(RawPath::new(usc, scid, dcid)))
+    }
+}
+
 #[derive(Deref, DerefMut)]
 pub struct Pathes {
     #[deref]
-    map: DashMap<Pathway, RawPath>,
-    creator: Box<dyn Fn(Pathway, ArcUsc) -> RawPath + Send + Sync + 'static>,
+    map: DashMap<Pathway, ArcPath>,
+    creator: Box<dyn Fn(Pathway, ArcUsc) -> ArcPath + Send + Sync + 'static>,
 }
 
 impl Pathes {
-    fn new(creator: Box<dyn Fn(Pathway, ArcUsc) -> RawPath + Send + Sync + 'static>) -> Self {
+    fn new(creator: Box<dyn Fn(Pathway, ArcUsc) -> ArcPath + Send + Sync + 'static>) -> Self {
         Self {
             map: DashMap::new(),
             creator,
         }
     }
 
-    pub fn get(&self, pathway: Pathway, usc: ArcUsc) -> RawPath {
+    pub fn get(&self, pathway: Pathway, usc: ArcUsc) -> ArcPath {
         self.map
             .entry(pathway)
             .or_insert_with(|| {
@@ -131,7 +142,7 @@ impl Pathes {
 pub struct ArcPathes(Arc<Pathes>);
 
 impl ArcPathes {
-    pub fn new(creator: Box<dyn Fn(Pathway, ArcUsc) -> RawPath + Send + Sync + 'static>) -> Self {
+    pub fn new(creator: Box<dyn Fn(Pathway, ArcUsc) -> ArcPath + Send + Sync + 'static>) -> Self {
         Self(Arc::new(Pathes::new(creator)))
     }
 }
