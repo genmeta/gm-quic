@@ -8,7 +8,7 @@ use qbase::{
     frame::{AckFrame, Frame, FrameReader, ReceiveFrame},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
-        header::GetType,
+        header::{GetScid, GetType},
         keys::ArcKeys,
         long, DataHeader, DataPacket,
     },
@@ -150,7 +150,15 @@ impl InitialScope {
                     )
                     .unwrap();
 
-                    let path = pathes.get(pathway, usc);
+                    let mut path = pathes.get(pathway, usc);
+                    let remote_scid = match packet.header {
+                        DataHeader::Long(ref long_header) => *long_header.get_scid(),
+                        _ => unreachable!(),
+                    };
+                    // When receiving the initial packet, change the DCID of the
+                    // path to the SCID carried in the received packet.
+                    path.set_dcid(remote_scid);
+
                     InitialScope::address_validate(&path, &mut token_registry, &packet);
 
                     let body = packet.bytes.split_off(body_offset);

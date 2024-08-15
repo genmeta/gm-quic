@@ -39,6 +39,11 @@ pub trait GetDcid {
     fn get_dcid(&self) -> &ConnectionId;
 }
 
+#[enum_dispatch]
+pub trait GetScid {
+    fn get_scid(&self) -> &ConnectionId;
+}
+
 #[derive(Debug, Clone)]
 #[enum_dispatch(GetDcid)]
 pub enum Header {

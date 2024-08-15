@@ -53,8 +53,8 @@ impl RawConnection {
 
         let reliable_frames = ArcReliableFrameDeque::with_capacity(0);
         let initial = InitialScope::new(ArcKeys::new_pending());
-        let hs = HandshakeScope::new();
-        let data = DataScope::new();
+        let hs = HandshakeScope::default();
+        let data = DataScope::default();
 
         let token_registry = if role == Role::Client {
             TokenRegistry::new_client(server_name, initial.clone())
@@ -93,7 +93,7 @@ impl RawConnection {
         let datagrams = DatagramFlow::new(0, 0);
 
         let pathes = ArcPathes::new(Box::new({
-            let remote_cids = cid_registry.remote.clone();
+            let cid_registry = cid_registry.clone();
             let flow_ctrl = flow_ctrl.clone();
             let handshake = handshake.clone();
             let gen_readers = {
@@ -122,8 +122,9 @@ impl RawConnection {
                 }
             };
             move |pathway, usc| {
-                let dcid = remote_cids.apply_cid();
-                let path = RawPath::new(usc.clone(), dcid);
+                let scid = cid_registry.local.active_cids()[0];
+                let dcid = cid_registry.remote.apply_cid();
+                let path = RawPath::new(usc.clone(), scid, dcid);
 
                 if !handshake.is_handshake_done() {
                     if role == Role::Client {
