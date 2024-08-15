@@ -10,8 +10,7 @@ use qbase::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::GetType,
         keys::ArcKeys,
-        long::{self},
-        DataHeader,
+        long, DataHeader, DataPacket,
     },
     token::RetryInitial,
 };
@@ -23,10 +22,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::any;
 use crate::{
-    connection::{
-        transmit::initial::InitialSpaceReader, validator::ArcAddrValidator, RcvdPackets,
-        TokenRegistry,
-    },
+    connection::{transmit::initial::InitialSpaceReader, RcvdPackets, TokenRegistry},
     error::ConnError,
     path::{ArcPathes, RawPath},
     pipe,
@@ -58,7 +54,6 @@ impl InitialScope {
         pathes: &ArcPathes,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
-        addr_validator: ArcAddrValidator,
         token_registry: TokenRegistry,
     ) -> JoinHandle<RcvdPackets> {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
@@ -100,7 +95,6 @@ impl InitialScope {
             dispatch_frame,
             notify,
             conn_error,
-            addr_validator,
             token_registry,
         )
     }
@@ -112,7 +106,6 @@ impl InitialScope {
         dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
-        addr_validator: ArcAddrValidator,
         token_registry: TokenRegistry,
     ) -> JoinHandle<RcvdPackets> {
         let pathes = pathes.clone();
@@ -121,7 +114,7 @@ impl InitialScope {
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.keys.clone();
             let notify = notify.clone();
-            let addr_validator = addr_validator.clone();
+
             let mut token_registry = token_registry.clone();
             async move {
                 while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
@@ -157,27 +150,9 @@ impl InitialScope {
                     )
                     .unwrap();
 
-                    match &mut token_registry {
-                        TokenRegistry::Server(server) => {
-                            let token =
-                                if let DataHeader::Long(long::DataHeader::Initial(initial)) =
-                                    packet.header
-                                {
-                                    initial.token.clone()
-                                } else {
-                                    unreachable!("Must be initial packet")
-                                };
-                            server.issue_new_token();
-                            if server.validate(&token) {
-                                addr_validator.0.validate();
-                            }
-                        }
-                        TokenRegistry::Client(_) => {
-                            addr_validator.0.validate();
-                        }
-                    }
-
                     let path = pathes.get(pathway, usc);
+                    InitialScope::address_validate(&path, &mut token_registry, &packet);
+
                     let body = packet.bytes.split_off(body_offset);
                     match FrameReader::new(body.freeze(), pty).try_fold(
                         false,
@@ -208,6 +183,26 @@ impl InitialScope {
             keys: self.keys.clone(),
             space: self.space.clone(),
             crypto_stream_outgoing: self.crypto_stream.outgoing(),
+        }
+    }
+
+    /// See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
+    /// A server might wish to validate the client address before starting the cryptographic handshake.
+    /// QUIC uses a token in the Initial packet to provide address validation prior to completing the handshake.
+    /// This token is delivered to the client during connection establishment with a Retry packet (see Section 8.1.2)
+    /// or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
+    pub fn address_validate(
+        path: &RawPath,
+        token_registry: &mut TokenRegistry,
+        packet: &DataPacket,
+    ) {
+        if let DataHeader::Long(long::DataHeader::Initial(initial)) = &packet.header {
+            if let TokenRegistry::Server(server) = token_registry {
+                server.issue_new_token();
+                if server.validate(&initial.token) {
+                    path.anti_amplifier.grant();
+                }
+            }
         }
     }
 }

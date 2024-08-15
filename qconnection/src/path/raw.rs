@@ -7,8 +7,6 @@ use qbase::{
     cid::{ArcCidCell, ConnectionId, MAX_CID_SIZE},
     flow::FlowController,
     frame::{AckFrame, PathChallengeFrame, PathResponseFrame},
-    handshake::Handshake,
-    streamid::Role::Client,
 };
 use qcongestion::{
     congestion::{ArcCC, CongestionAlgorithm},
@@ -24,18 +22,15 @@ use super::{
     util::{RecvBuffer, SendBuffer},
     Pathway, ViaPathway,
 };
-use crate::connection::{
-    transmit::{
-        data::DataSpaceReader, handshake::HandshakeSpaceReader, initial::InitialSpaceReader,
-    },
-    validator::ArcAddrValidator,
+use crate::connection::transmit::{
+    data::DataSpaceReader, handshake::HandshakeSpaceReader, initial::InitialSpaceReader,
 };
 
 #[derive(Clone)]
 pub struct RawPath {
+    pub anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
     pub(super) usc: ArcUsc,
     pub(super) cc: ArcCC,
-    pub(super) anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
     pub(super) dcid: ArcCidCell<ArcReliableFrameDeque>,
     pub(super) scid: ConnectionId,
     pub(super) spin: Arc<AtomicBool>,
@@ -72,26 +67,7 @@ impl RawPath {
         self.response_sndbuf.write(frame.into());
     }
 
-    pub fn begin_validation(
-        &self,
-        handshake: &Handshake<ArcReliableFrameDeque>,
-        addr_validator: &ArcAddrValidator,
-    ) {
-        if !handshake.is_handshake_done() {
-            if handshake.role() == Client {
-                self.anti_amplifier.grant();
-                return;
-            }
-            tokio::spawn({
-                let anti_amplifier = self.anti_amplifier.clone();
-                let addr_validator = addr_validator.clone();
-                async move {
-                    addr_validator.await;
-                    anti_amplifier.grant();
-                }
-            });
-            return;
-        }
+    pub fn begin_validation(&self) {
         let anti_amplifier = self.anti_amplifier.clone();
         let challenge_sndbuf = self.challenge_sndbuf.clone();
         let response_rcvbuf = self.response_rcvbuf.clone();

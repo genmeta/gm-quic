@@ -6,11 +6,7 @@ use qbase::{
     cid::{ConnectionId, UniqueCid},
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame},
-    packet::{
-        header::GetDcid,
-        long::{self},
-        DataHeader, DataPacket, RetryHeader,
-    },
+    packet::{header::GetDcid, long, DataHeader, DataPacket, RetryHeader},
 };
 use qudp::ArcUsc;
 
