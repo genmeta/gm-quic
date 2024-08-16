@@ -10,11 +10,17 @@ use std::{
 use closing::ClosingConnection;
 use draining::DrainingConnection;
 use futures::{channel::mpsc, StreamExt};
-use qbase::{cid, config::Parameters, error::Error, packet::DataPacket, streamid::Role, token};
+use qbase::{
+    cid,
+    config::Parameters,
+    error::Error,
+    packet::{DataPacket, RetryHeader},
+    streamid::Role,
+    token::{TokenProvider, TokenSink},
+};
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qudp::ArcUsc;
 use raw::RawConnection;
-use scope::InitialScope;
 
 use crate::{
     connection::ConnState::{Closed, Closing, Draining, Raw},
@@ -34,8 +40,6 @@ pub type RcvdPackets = mpsc::UnboundedReceiver<(DataPacket, Pathway, ArcUsc)>;
 
 pub type CidRegistry = cid::Registry<RouterRegistry<ArcReliableFrameDeque>, ArcReliableFrameDeque>;
 pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
-
-pub type TokenRegistry = token::TokenRegistry<ArcReliableFrameDeque, InitialScope>;
 
 enum ConnState {
     Raw(RawConnection),
@@ -62,20 +66,22 @@ impl ArcConnection {
         _token: Option<Vec<u8>>,
         params: Parameters,
         router: ArcRouter,
+        token_skin: Option<TokenSink>,
+        token_provider: Option<TokenProvider>,
     ) -> Self {
-        let name = server_name.clone();
         let Ok(server_name) = server_name.try_into() else {
-            panic!("server_name is not valid")
+            panic!("server_name is invalid")
         };
 
         let raw_conn = RawConnection::new(
             Role::Client,
-            name,
             ArcTlsSession::new_client(server_name, &params),
             router,
+            token_skin,
+            token_provider,
         );
 
-        let pathes = raw_conn.pathes.clone();
+        let pathes: crate::path::ArcPathes = raw_conn.pathes.clone();
         let conn_error = raw_conn.error.clone();
         let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Raw(raw_conn))));
 
@@ -98,6 +104,13 @@ impl ArcConnection {
     /// TODO: 参数不全，其实是QuicServer::accept的返回值
     pub fn new_server(_parameters: Parameters) -> Self {
         todo!("create a new server connection");
+    }
+
+    pub fn recv_retry_packet(&self, packet: RetryHeader) {
+        let mut guard = self.0.lock().unwrap();
+        if let ConnState::Raw(ref mut raw_conn) = *guard {
+            raw_conn.retry(packet.token.clone())
+        }
     }
 
     /// Get the streams of the connection, return error if the connection is in closing state or

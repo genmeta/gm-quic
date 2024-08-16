@@ -1,20 +1,18 @@
-use std::{
-    fmt::Debug,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
-    frame::{AckFrame, Frame, FrameReader, ReceiveFrame},
+    frame::{AckFrame, Frame, FrameReader, ReceiveFrame, ReliableFrame},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::{GetScid, GetType},
         keys::ArcKeys,
         long, DataHeader, DataPacket,
     },
-    token::RetryInitial,
+    token::TokenProvider,
 };
 use qrecovery::{
+    reliable::ArcReliableFrameDeque,
     space::{Epoch, InitialSpace},
     streams::crypto::CryptoStream,
 };
@@ -22,7 +20,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::any;
 use crate::{
-    connection::{transmit::initial::InitialSpaceReader, RcvdPackets, TokenRegistry},
+    connection::{transmit::initial::InitialSpaceReader, RcvdPackets},
     error::ConnError,
     path::{ArcPathes, RawPath},
     pipe,
@@ -53,8 +51,9 @@ impl InitialScope {
         rcvd_packets: RcvdPackets,
         pathes: &ArcPathes,
         notify: &Arc<Notify>,
+        reliable_frames: ArcReliableFrameDeque,
+        token_provider: Option<TokenProvider>,
         conn_error: &ConnError,
-        token_registry: TokenRegistry,
     ) -> JoinHandle<RcvdPackets> {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
@@ -95,7 +94,8 @@ impl InitialScope {
             dispatch_frame,
             notify,
             conn_error,
-            token_registry,
+            reliable_frames,
+            token_provider,
         )
     }
 
@@ -106,7 +106,8 @@ impl InitialScope {
         dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
-        token_registry: TokenRegistry,
+        reliable_frames: ArcReliableFrameDeque,
+        token_provider: Option<TokenProvider>,
     ) -> JoinHandle<RcvdPackets> {
         let pathes = pathes.clone();
         let conn_error = conn_error.clone();
@@ -115,7 +116,8 @@ impl InitialScope {
             let keys = self.keys.clone();
             let notify = notify.clone();
 
-            let mut token_registry = token_registry.clone();
+            let reliable_frames = reliable_frames.clone();
+            let mut token_provider = token_provider.clone();
             async move {
                 while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
                 {
@@ -159,7 +161,13 @@ impl InitialScope {
                     // path to the SCID carried in the received packet.
                     path.set_dcid(remote_scid);
 
-                    InitialScope::address_validate(&path, &mut token_registry, &packet);
+                    if let Some(token_provider) = &mut token_provider {
+                        InitialScope::address_validate(&path, token_provider, &packet);
+                        let frame = token_provider.issue_new_token();
+                        reliable_frames
+                            .lock_guard()
+                            .push_back(ReliableFrame::NewToken(frame));
+                    }
 
                     let body = packet.bytes.split_off(body_offset);
                     match FrameReader::new(body.freeze(), pty).try_fold(
@@ -201,36 +209,13 @@ impl InitialScope {
     /// or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
     pub fn address_validate(
         path: &RawPath,
-        token_registry: &mut TokenRegistry,
+        token_provider: &mut TokenProvider,
         packet: &DataPacket,
     ) {
         if let DataHeader::Long(long::DataHeader::Initial(initial)) = &packet.header {
-            if let TokenRegistry::Server(server) = token_registry {
-                server.issue_new_token();
-                if server.validate(&initial.token) {
-                    path.anti_amplifier.grant();
-                }
+            if token_provider.validate(&initial.token) {
+                path.anti_amplifier.grant();
             }
         }
-    }
-}
-
-impl RetryInitial for InitialScope {
-    fn retry_initial(&mut self) {
-        let largest_pn = self.space.sent_packets().receive().largest_pn();
-        // Packet numbers in each space start at packet number 0.
-        // All packets in the initial space are considered lost.
-        for pn in 0..largest_pn {
-            let _ = self.space.sent_packets().receive().may_loss_pkt(pn);
-        }
-    }
-}
-
-impl Debug for InitialScope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InitialScope")
-            .field("space", &self.space)
-            .field("crypto_stream", &self.crypto_stream)
-            .finish()
     }
 }

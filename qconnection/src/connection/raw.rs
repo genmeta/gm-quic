@@ -1,14 +1,20 @@
 use std::sync::{Arc, Mutex};
 
 use futures::channel::mpsc;
-use qbase::{flow::FlowController, handshake::Handshake, packet::keys::ArcKeys, streamid::Role};
+use qbase::{
+    flow::FlowController,
+    handshake::Handshake,
+    packet::keys::ArcKeys,
+    streamid::Role,
+    token::{TokenProvider, TokenSink},
+};
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qunreliable::DatagramFlow;
 use tokio::{sync::Notify, task::JoinHandle};
 
 use super::{
     scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope},
-    CidRegistry, RcvdPackets, TokenRegistry,
+    CidRegistry, RcvdPackets,
 };
 use crate::{
     error::ConnError,
@@ -20,7 +26,6 @@ use crate::{
 pub struct RawConnection {
     pub pathes: ArcPathes,
     pub cid_registry: CidRegistry,
-    pub token_registry: TokenRegistry,
     // handshake done的信号
     pub handshake: Handshake<ArcReliableFrameDeque>,
     pub flow_ctrl: FlowController,
@@ -36,15 +41,17 @@ pub struct RawConnection {
     pub notify: Arc<Notify>, // Notifier for closing the packet receiving task
     pub join_handles: [JoinHandle<RcvdPackets>; 4],
 
+    pub token: Arc<Mutex<Vec<u8>>>,
     pub params: GetParameters,
 }
 
 impl RawConnection {
     pub fn new(
         role: Role,
-        server_name: String,
         tls_session: ArcTlsSession,
         router: ArcRouter,
+        mut token_skin: Option<TokenSink>,
+        token_provider: Option<TokenProvider>,
     ) -> Self {
         let (initial_packets_entry, rcvd_initial_packets) = mpsc::unbounded();
         let (zero_rtt_packets_entry, rcvd_0rtt_packets) = mpsc::unbounded();
@@ -56,13 +63,7 @@ impl RawConnection {
         let hs = HandshakeScope::default();
         let data = DataScope::default();
 
-        let token_registry = if role == Role::Client {
-            TokenRegistry::new_client(server_name, initial.clone())
-        } else {
-            TokenRegistry::new_server(server_name, reliable_frames.clone())
-        };
         let router_registry = router.registry(
-            token_registry.clone(),
             reliable_frames.clone(),
             [
                 initial_packets_entry.clone(),
@@ -92,6 +93,13 @@ impl RawConnection {
         );
         let datagrams = DatagramFlow::new(0, 0);
 
+        let token = match &mut token_skin {
+            Some(token_sink) => token_sink.get_token().unwrap_or_else(Vec::new),
+            None => Vec::new(),
+        };
+
+        let token = Arc::new(Mutex::new(token));
+
         let pathes = ArcPathes::new(Box::new({
             let cid_registry = cid_registry.clone();
             let flow_ctrl = flow_ctrl.clone();
@@ -103,10 +111,7 @@ impl RawConnection {
                 let reliable_frames = reliable_frames.clone();
                 let streams = streams.clone();
                 let datagrams = datagrams.clone();
-                let token = match &token_registry {
-                    TokenRegistry::Client(client) => client.initial_token.clone(),
-                    _ => Arc::new(Mutex::new(Vec::new())),
-                };
+                let token = token.clone();
                 move |path: &RawPath| {
                     (
                         initial.reader(token.clone()),
@@ -143,8 +148,9 @@ impl RawConnection {
             rcvd_initial_packets,
             &pathes,
             &notify,
+            reliable_frames.clone(),
+            token_provider,
             &conn_error,
-            token_registry.clone(),
         );
         let join_hs = hs.build(rcvd_hs_packets, &pathes, &notify, &conn_error);
         let (join_0rtt, join_1rtt) = data.build(
@@ -159,7 +165,7 @@ impl RawConnection {
             &conn_error,
             rcvd_0rtt_packets,
             rcvd_1rtt_packets,
-            token_registry.clone(),
+            token_skin,
         );
         let join_handles = [join_initial, join_0rtt, join_hs, join_1rtt];
 
@@ -177,7 +183,6 @@ impl RawConnection {
         Self {
             pathes,
             cid_registry,
-            token_registry,
             handshake,
             flow_ctrl,
             streams,
@@ -190,6 +195,15 @@ impl RawConnection {
             join_handles,
             error: conn_error,
             params: get_params,
+            token,
+        }
+    }
+
+    pub fn retry(&self, token: Vec<u8>) {
+        *self.token.lock().unwrap() = token;
+        let largest = self.initial.space.sent_packets().receive().largest_pn();
+        for pn in 0..largest {
+            let _ = self.initial.space.sent_packets().receive().may_loss_pkt(pn);
         }
     }
 }

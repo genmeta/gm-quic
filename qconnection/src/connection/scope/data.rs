@@ -19,6 +19,7 @@ use qbase::{
         r#type::Type,
         DataPacket, PacketNumber,
     },
+    token::TokenSink,
 };
 use qrecovery::{
     reliable::{rcvdpkt::ArcRcvdPktRecords, ArcReliableFrameDeque, GuaranteedFrame},
@@ -30,7 +31,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::any;
 use crate::{
-    connection::{transmit::data::DataSpaceReader, CidRegistry, RcvdPackets, TokenRegistry},
+    connection::{transmit::data::DataSpaceReader, CidRegistry, RcvdPackets},
     error::ConnError,
     path::{ArcPathes, RawPath, SendBuffer},
     pipe,
@@ -71,7 +72,7 @@ impl DataScope {
         conn_error: &ConnError,
         rcvd_0rtt_packets: RcvdPackets,
         rcvd_1rtt_packets: RcvdPackets,
-        token_registry: TokenRegistry,
+        token_skin: Option<TokenSink>,
     ) -> (JoinHandle<RcvdPackets>, JoinHandle<RcvdPackets>) {
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
         // 连接级的
@@ -147,7 +148,9 @@ impl DataScope {
         // pipe!(@error(conn_error) rcvd_stream_frames |> *streams, recv_data);
         pipe!(@error(conn_error) rcvd_datagram_frames |> *datagrams, recv_frame);
         pipe!(rcvd_ack_frames |> on_data_acked);
-        pipe!(rcvd_new_token_frames |> token_registry,recv_frame);
+        if let Some(token_skin) = token_skin {
+            pipe!(rcvd_new_token_frames |> token_skin, recv_frame);
+        }
 
         self.handle_stream_frame_with_flow_ctrl(
             streams,

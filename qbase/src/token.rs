@@ -8,10 +8,7 @@ use futures::io;
 use nom::{bytes::complete::take, IResult};
 use rand::Rng;
 
-use crate::{
-    error::{Error, ErrorKind},
-    frame::{BeFrame, NewTokenFrame, ReceiveFrame},
-};
+use crate::frame::{NewTokenFrame, ReceiveFrame};
 
 const TOKEN_PATH: &str = "/tmp/gm-quic";
 const LIFETIME: u64 = 60 * 60 * 24 * 3; // 3 days
@@ -59,6 +56,8 @@ impl std::ops::Deref for ResetToken {
     }
 }
 
+pub type ArcToken = Arc<Mutex<Vec<u8>>>;
+
 type TokenQueue = VecDeque<(Vec<u8>, u64)>;
 #[derive(Clone, Debug)]
 struct ArcTokenQueue(Arc<Mutex<TokenQueue>>);
@@ -98,21 +97,14 @@ impl ArcTokenQueue {
 }
 
 #[derive(Clone, Debug)]
-pub struct Server<ISSUED>
-where
-    ISSUED: Extend<NewTokenFrame>,
-{
+pub struct TokenProvider {
     path: String,
-    issued: ISSUED,
     queue: ArcTokenQueue,
     retry_token: Option<Vec<u8>>,
 }
 
-impl<ISSUED> Server<ISSUED>
-where
-    ISSUED: Extend<NewTokenFrame>,
-{
-    pub fn new(name: String, issued: ISSUED) -> Self {
+impl TokenProvider {
+    pub fn new(name: String) -> Self {
         let path = format!("{}/server/{}.json", TOKEN_PATH, name);
         let queue = ArcTokenQueue::read(path.as_str()).unwrap_or_else(|_| {
             let queue = Arc::new(Mutex::new(VecDeque::new()));
@@ -121,13 +113,12 @@ where
 
         Self {
             path,
-            issued,
             queue,
             retry_token: None,
         }
     }
 
-    pub fn issue_new_token(&mut self) {
+    pub fn issue_new_token(&mut self) -> NewTokenFrame {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("Time went backwards")
@@ -136,10 +127,11 @@ where
 
         let token = rand::random::<[u8; 16]>();
         self.queue.push_back((token.to_vec(), exp));
-        self.issued.extend([NewTokenFrame {
-            token: token.to_vec(),
-        }]);
         self.queue.flush(self.path.as_str());
+
+        NewTokenFrame {
+            token: token.to_vec(),
+        }
     }
 
     // 如果发过 Retry 包，校验 Retry Token，否则校验 new token
@@ -160,43 +152,32 @@ where
 }
 
 #[derive(Clone, Debug)]
-pub struct Client<RETRY>
-where
-    RETRY: RetryInitial,
-{
+pub struct TokenSink {
     path: String,
     queue: ArcTokenQueue,
-    retry: RETRY,
-    pub initial_token: Arc<Mutex<Vec<u8>>>,
 }
 
-impl<RETRY> Client<RETRY>
-where
-    RETRY: RetryInitial,
-{
-    pub fn new(server_name: String, retry: RETRY) -> Self {
+impl TokenSink {
+    pub fn new(server_name: String) -> Self {
         let path = format!("{}/client/{}.json", TOKEN_PATH, server_name);
         let queue = ArcTokenQueue::read(path.as_str()).unwrap_or_else(|_| {
             let queue = Arc::new(Mutex::new(VecDeque::new()));
             ArcTokenQueue(queue)
         });
 
-        let initial_token = queue.pop_back().map(|(token, _)| token).unwrap_or_default();
-        Self {
-            path,
-            queue,
-            retry,
-            initial_token: Arc::new(Mutex::new(initial_token)),
-        }
+        Self { path, queue }
     }
 
-    // 收到 retry token，后续 initial 包都需要使用这个 token
-    pub fn recv_retry_token(&mut self, token: Vec<u8>) {
-        *self.initial_token.lock().unwrap() = token;
-        self.retry.retry_initial();
+    pub fn get_token(&mut self) -> Option<Vec<u8>> {
+        self.queue.remove_expired();
+        self.queue.pop_back().map(|(token, _)| token)
     }
+}
 
-    pub fn recv_new_token(&mut self, token: Vec<u8>) {
+impl ReceiveFrame<NewTokenFrame> for TokenSink {
+    type Output = ();
+
+    fn recv_frame(&mut self, frame: &NewTokenFrame) -> Result<Self::Output, crate::error::Error> {
         let queue = &mut self.queue;
         let exp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -204,67 +185,11 @@ where
             .as_secs()
             + LIFETIME;
 
-        queue.push_back((token, exp));
+        queue.push_back((frame.token.clone(), exp));
         queue.remove_expired();
         queue.flush(self.path.as_str());
+        Ok(())
     }
-}
-
-#[derive(Clone, Debug)]
-pub enum TokenRegistry<ISSUED, RETRY>
-where
-    ISSUED: Extend<NewTokenFrame>,
-    RETRY: RetryInitial,
-{
-    Server(Server<ISSUED>),
-    Client(Client<RETRY>),
-}
-
-impl<ISSUED, RETRY> TokenRegistry<ISSUED, RETRY>
-where
-    ISSUED: Extend<NewTokenFrame>,
-    RETRY: RetryInitial,
-{
-    pub fn new_server(server_name: String, issued: ISSUED) -> Self {
-        Self::Server(Server::new(server_name, issued))
-    }
-
-    pub fn new_client(server_name: String, retry: RETRY) -> Self {
-        Self::Client(Client::new(server_name, retry))
-    }
-
-    pub fn receive_retry_packet(&mut self, token: Vec<u8>) {
-        match self {
-            TokenRegistry::Server(_) => unreachable!("Server cannot receive Retry packet"),
-            TokenRegistry::Client(client) => client.recv_retry_token(token),
-        }
-    }
-}
-
-impl<ISSUED, RETRY> ReceiveFrame<NewTokenFrame> for TokenRegistry<ISSUED, RETRY>
-where
-    ISSUED: Extend<NewTokenFrame>,
-    RETRY: RetryInitial,
-{
-    type Output = ();
-
-    fn recv_frame(&mut self, frame: &NewTokenFrame) -> Result<Self::Output, crate::error::Error> {
-        match self {
-            Self::Server(_) => Err(Error::new(
-                ErrorKind::ProtocolViolation,
-                frame.frame_type(),
-                "Server received NewTokenFrame",
-            )),
-            Self::Client(client) => {
-                client.recv_new_token(frame.token.clone());
-                Ok(())
-            }
-        }
-    }
-}
-
-pub trait RetryInitial {
-    fn retry_initial(&mut self);
 }
 
 #[cfg(test)]
