@@ -1,9 +1,15 @@
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{
+    fs::File,
+    io::{self, BufReader},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    path::Path,
+    sync::Arc,
+};
 
 use qbase::config::Parameters;
 use qconnection::connection::QuicConnection;
 use rustls::{
-    client::WantsClientCert, ClientConfig as TlsClientConfig, ConfigBuilder, Error, WantsVerifier,
+    client::WantsClientCert, ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
 };
 
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
@@ -14,14 +20,17 @@ pub struct QuicClient {
     _reuse_connection: bool,
     _enable_happy_eyepballs: bool,
     _prefered_versions: Vec<u32>,
-    _parameters: Parameters,
-    _tls_config: TlsClientConfig,
+    parameters: Parameters,
+    tls_config: Arc<TlsClientConfig>,
 }
 
 impl QuicClient {
     /// 无论向哪里发起连接，都使用同一个本地的Usc，包括一对v4和v6的，这在P2P场景下很有用
     pub fn solo() -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
-        QuicClient::bind(["0.0.0.0:0".parse().unwrap(), "[::]:0".parse().unwrap()])
+        QuicClient::bind([
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        ])
     }
 
     /// 绑定一个地址，若该地址
@@ -55,7 +64,7 @@ impl QuicClient {
             addresses: addresses.into_iter().collect(),
             reuse_connection: true,
             enable_happy_eyepballs: false,
-            prefered_versions: vec![1],
+            preferred_versions: vec![1],
             parameters: Parameters::default(),
             tls_config: TlsClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
         }
@@ -77,10 +86,16 @@ impl QuicClient {
     /// 那如果开启了reuse_connection选项，则会优先从该全局QuicConnection集合里获取到server_name的
     pub fn connect(
         &self,
-        _server_name: String,
-        _server_addr: SocketAddr,
+        server_name: String,
+        server_addr: SocketAddr,
     ) -> io::Result<QuicConnection> {
-        todo!()
+        Ok(QuicConnection::new_client(
+            server_name,
+            self.tls_config.clone(),
+            server_addr,
+            None,
+            &self.parameters,
+        ))
     }
 }
 
@@ -88,7 +103,7 @@ pub struct QuicClientBuilder<T> {
     addresses: Vec<SocketAddr>,
     reuse_connection: bool,
     enable_happy_eyepballs: bool,
-    prefered_versions: Vec<u32>,
+    preferred_versions: Vec<u32>,
     parameters: Parameters,
     tls_config: T,
 }
@@ -110,7 +125,7 @@ impl<T> QuicClientBuilder<T> {
     /// 当服务端发来版本协商包，其中包含了支持的版本号，那么客户端可以选择使用哪个版本
     /// 将按照客户端设定的versions的顺序优先选择
     pub fn prefer_versions(&mut self, versions: impl IntoIterator<Item = u32>) -> &mut Self {
-        self.prefered_versions.extend(versions);
+        self.preferred_versions.extend(versions);
         self
     }
 
@@ -131,14 +146,6 @@ impl<T> QuicClientBuilder<T> {
     pub fn with_token_sink(&mut self) -> &mut Self {
         todo!()
     }
-
-    pub fn with_auth(
-        self,
-        _cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
-        _key_der: rustls::pki_types::PrivateKeyDer<'static>,
-    ) -> QuicClient {
-        todo!()
-    }
 }
 
 impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
@@ -146,12 +153,12 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
     pub fn with_root_certificates(
         self,
         root_store: impl Into<Arc<rustls::RootCertStore>>,
-    ) -> QuicClientBuilder<ConfigBuilder<TlsClientConfig, WantsClientCert>> {
+    ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
             addresses: self.addresses,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
-            prefered_versions: self.prefered_versions,
+            preferred_versions: self.preferred_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_root_certificates(root_store),
         }
@@ -159,12 +166,12 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
     pub fn with_webpki_verifier(
         self,
         verifier: Arc<rustls::client::WebPkiServerVerifier>,
-    ) -> QuicClientBuilder<ConfigBuilder<TlsClientConfig, WantsClientCert>> {
+    ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
             addresses: self.addresses,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
-            prefered_versions: self.prefered_versions,
+            preferred_versions: self.preferred_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_webpki_verifier(verifier),
         }
@@ -172,28 +179,42 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
 }
 
 impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
-    pub fn with_auth_cert(
+    pub fn with_cert(
         self,
-        cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
-        key_der: rustls::pki_types::PrivateKeyDer<'static>,
-    ) -> Result<QuicClientBuilder<TlsClientConfig>, Error> {
-        Ok(QuicClientBuilder {
-            addresses: self.addresses,
-            reuse_connection: self.reuse_connection,
-            enable_happy_eyepballs: self.enable_happy_eyepballs,
-            prefered_versions: self.prefered_versions,
-            parameters: self.parameters,
-            tls_config: self.tls_config.with_client_auth_cert(cert_chain, key_der)?,
-        })
-    }
+        cert_file: impl AsRef<Path>,
+        key_file: impl AsRef<Path>,
+    ) -> QuicClientBuilder<TlsClientConfig> {
+        let cert_chain = rustls_pemfile::certs(&mut BufReader::new(
+            File::open(cert_file).expect("Failed to open cert file"),
+        ))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("Failed to read and extract cert from the cert file");
 
-    /// Do not support client auth.
-    pub fn with_no_auth(self) -> QuicClientBuilder<TlsClientConfig> {
+        let key_der = rustls_pemfile::private_key(&mut BufReader::new(
+            File::open(key_file).expect("Failed to open private key file"),
+        ))
+        .expect("Failed to read PEM sections from the private key file")
+        .unwrap();
+
         QuicClientBuilder {
             addresses: self.addresses,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
-            prefered_versions: self.prefered_versions,
+            preferred_versions: self.preferred_versions,
+            parameters: self.parameters,
+            tls_config: self
+                .tls_config
+                .with_client_auth_cert(cert_chain, key_der)
+                .expect("The private key was wrong encoded or failed validation"),
+        }
+    }
+
+    pub fn without_cert(self) -> QuicClientBuilder<TlsClientConfig> {
+        QuicClientBuilder {
+            addresses: self.addresses,
+            reuse_connection: self.reuse_connection,
+            enable_happy_eyepballs: self.enable_happy_eyepballs,
+            preferred_versions: self.preferred_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_no_client_auth(),
         }
@@ -201,30 +222,29 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
 
     pub fn with_cert_resolver(
         self,
-        client_auth_cert_resolver: Arc<dyn rustls::client::ResolvesClientCert>,
+        cert_resolver: Arc<dyn rustls::client::ResolvesClientCert>,
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             addresses: self.addresses,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
-            prefered_versions: self.prefered_versions,
+            preferred_versions: self.preferred_versions,
             parameters: self.parameters,
-            tls_config: self
-                .tls_config
-                .with_client_cert_resolver(client_auth_cert_resolver),
+            tls_config: self.tls_config.with_client_cert_resolver(cert_resolver),
         }
     }
 }
 
 impl QuicClientBuilder<TlsClientConfig> {
     pub fn build(self) -> QuicClient {
+        // TODO: 创建好相应的usc
         QuicClient {
             addresses: self.addresses,
             _reuse_connection: self.reuse_connection,
             _enable_happy_eyepballs: self.enable_happy_eyepballs,
-            _prefered_versions: self.prefered_versions,
-            _parameters: self.parameters,
-            _tls_config: self.tls_config,
+            _prefered_versions: self.preferred_versions,
+            parameters: self.parameters,
+            tls_config: Arc::new(self.tls_config),
         }
     }
 }

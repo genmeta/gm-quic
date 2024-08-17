@@ -19,7 +19,7 @@ use scope::InitialScope;
 use crate::{
     connection::ConnState::{Closed, Closing, Draining, Raw},
     path::Pathway,
-    router::{ArcRouter, RouterRegistry, ROUTER},
+    router::{RouterRegistry, ROUTER},
     tls::ArcTlsSession,
 };
 
@@ -58,10 +58,10 @@ impl Debug for ArcConnection {
 impl ArcConnection {
     pub fn new_client(
         server_name: String,
+        tls_config: Arc<rustls::ClientConfig>,
         _address: SocketAddr,
         _token: Option<Vec<u8>>,
-        params: Parameters,
-        router: ArcRouter,
+        parameters: &Parameters,
     ) -> Self {
         let name = server_name.clone();
         let Ok(server_name) = server_name.try_into() else {
@@ -71,8 +71,8 @@ impl ArcConnection {
         let raw_conn = RawConnection::new(
             Role::Client,
             name,
-            ArcTlsSession::new_client(server_name, &params),
-            router,
+            ArcTlsSession::new_client(server_name, tls_config, parameters),
+            ROUTER.clone(),
         );
 
         let pathes = raw_conn.pathes.clone();

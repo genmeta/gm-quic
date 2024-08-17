@@ -29,6 +29,7 @@ futures = "0.3"
 rand = "0.8"
 bytes = "1"
 rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
 thiserror = "1"
 getset = "0.1"
 enum_dispatch = "0.3"
@@ -67,6 +68,9 @@ version = "0.1.0"
 path = "./qunreliable"
 version = "0.1.0"
 
+[workspace.dependencies.quic]
+path = "./quic"
+version = "0.1.0"
 
 [profile.bench]
 debug = true
