@@ -1,4 +1,10 @@
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{
+    fs::File,
+    io::{self, BufReader},
+    net::SocketAddr,
+    path::Path,
+    sync::Arc,
+};
 
 use dashmap::DashMap;
 use qbase::{
@@ -7,11 +13,27 @@ use qbase::{
 };
 use qconnection::connection::QuicConnection;
 use rustls::{
-    server::{danger::ClientCertVerifier, NoClientAuth, WantsServerCert},
-    ConfigBuilder, Error, ServerConfig as TlsServerConfig, WantsVerifier,
+    server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
+    ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
+
+#[derive(Debug, Default)]
+pub struct VirtualHosts(Arc<DashMap<String, Host>>);
+
+impl ResolvesServerCert for VirtualHosts {
+    fn resolve(
+        &self,
+        client_hello: rustls::server::ClientHello,
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        self.0.get(client_hello.server_name()?).map(|host| {
+            let cert =
+                rustls::sign::CertifiedKey::new(host.cert_chain.clone(), host.private_key.clone());
+            Arc::new(cert)
+        })
+    }
+}
 
 /// 服务端的Quic连接，可以接受新的连接
 /// 实际上服务端的性质，类似于收包。不管包从哪个usc来，都可以根据需要来创建
@@ -22,8 +44,7 @@ pub struct QuicServer {
     _restrict: bool,
     _supported_versions: Vec<u32>,
     _load_balance: Option<Arc<dyn Fn(InitialHeader) -> Option<RetryHeader>>>,
-    _hosts: DashMap<String, Host>,
-    _tls_config: TlsServerConfig,
+    _tls_config: Arc<TlsServerConfig>,
 }
 
 impl QuicServer {
@@ -40,7 +61,6 @@ impl QuicServer {
             restrict,
             supported_versions: Vec::with_capacity(2),
             load_balance: None,
-            hosts: DashMap::default(),
             tls_config: TlsServerConfig::builder_with_provider(
                 rustls::crypto::ring::default_provider().into(),
             )
@@ -62,9 +82,10 @@ impl QuicServer {
     }
 }
 
+#[derive(Debug)]
 struct Host {
-    _cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
-    _key_der: rustls::pki_types::PrivateKeyDer<'static>,
+    cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
+    private_key: Arc<dyn rustls::sign::SigningKey>,
     _parameter: Parameters,
 }
 
@@ -73,7 +94,15 @@ pub struct QuicServerBuilder<T> {
     restrict: bool,
     supported_versions: Vec<u32>,
     load_balance: Option<Arc<dyn Fn(InitialHeader) -> Option<RetryHeader>>>,
-    hosts: DashMap<String, Host>,
+    tls_config: T,
+}
+
+pub struct QuicServerSniBuilder<T> {
+    addresses: Vec<SocketAddr>,
+    restrict: bool,
+    supported_versions: Vec<u32>,
+    load_balance: Option<Arc<dyn Fn(InitialHeader) -> Option<RetryHeader>>>,
+    hosts: Arc<DashMap<String, Host>>,
     tls_config: T,
 }
 
@@ -97,27 +126,6 @@ impl<T> QuicServerBuilder<T> {
         self
     }
 
-    /// 添加服务器，包括证书链、私钥、参数
-    /// 可以调用多次，支持多服务器，支持TLS SNI
-    /// 若是新连接的server_name没有对应的配置，则会被拒绝
-    pub fn add_host(
-        &mut self,
-        server_name: impl ToOwned<Owned = String>,
-        cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
-        key_der: rustls::pki_types::PrivateKeyDer<'static>,
-        parameter: Parameters,
-    ) -> &mut Self {
-        self.hosts.insert(
-            server_name.to_owned(),
-            Host {
-                _cert_chain: cert_chain,
-                _key_der: key_der,
-                _parameter: parameter,
-            },
-        );
-        self
-    }
-
     /// TokenProvider有2个功能：
     /// TokenProvider需要向客户端颁发新Token
     /// 同时，收到新连接，TokenProvider也要验证客户端的Initial包中的Token
@@ -138,7 +146,6 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             restrict: self.restrict,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
-            hosts: self.hosts,
             tls_config: self
                 .tls_config
                 .with_client_cert_verifier(client_cert_verifier),
@@ -152,7 +159,6 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             restrict: self.restrict,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
-            hosts: self.hosts,
             tls_config: self
                 .tls_config
                 .with_client_cert_verifier(Arc::new(NoClientAuth)),
@@ -161,63 +167,145 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
 }
 
 impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
+    /// 所有的Host都符合泛域名证书的话，可以用该函数
     pub fn with_single_cert(
         self,
-        cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
-        key_der: rustls::pki_types::PrivateKeyDer<'static>,
-    ) -> Result<QuicServerBuilder<TlsServerConfig>, Error> {
-        Ok(QuicServerBuilder {
-            addresses: self.addresses,
-            restrict: self.restrict,
-            supported_versions: self.supported_versions,
-            load_balance: self.load_balance,
-            hosts: self.hosts,
-            tls_config: self.tls_config.with_single_cert(cert_chain, key_der)?,
-        })
-    }
-
-    pub fn with_single_cert_with_ocsp(
-        self,
-        cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
-        key_der: rustls::pki_types::PrivateKeyDer<'static>,
-        ocsp: Vec<u8>,
-    ) -> Result<QuicServerBuilder<TlsServerConfig>, Error> {
-        Ok(QuicServerBuilder {
-            addresses: self.addresses,
-            restrict: self.restrict,
-            supported_versions: self.supported_versions,
-            load_balance: self.load_balance,
-            hosts: self.hosts,
-            tls_config: self
-                .tls_config
-                .with_single_cert_with_ocsp(cert_chain, key_der, ocsp)?,
-        })
-    }
-
-    pub fn with_cert_resolver(
-        self,
-        cert_resolver: Arc<dyn rustls::server::ResolvesServerCert>,
+        cert_file: impl AsRef<Path>,
+        key_file: impl AsRef<Path>,
     ) -> QuicServerBuilder<TlsServerConfig> {
+        let cert_chain = rustls_pemfile::certs(&mut BufReader::new(
+            File::open(cert_file).expect("Failed to open cert file"),
+        ))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("Failed to read and extract cert from the cert file");
+
+        let key_der = rustls_pemfile::private_key(&mut BufReader::new(
+            File::open(key_file).expect("Failed to open private key file"),
+        ))
+        .expect("Failed to read PEM sections from the private key file")
+        .unwrap();
+
         QuicServerBuilder {
             addresses: self.addresses,
             restrict: self.restrict,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
-            hosts: self.hosts,
-            tls_config: self.tls_config.with_cert_resolver(cert_resolver),
+            tls_config: self
+                .tls_config
+                .with_single_cert(cert_chain, key_der)
+                .expect("The private key was wrong encoded or failed validation"),
         }
+    }
+
+    pub fn with_single_cert_with_ocsp(
+        self,
+        cert_file: impl AsRef<Path>,
+        key_file: impl AsRef<Path>,
+        ocsp: Vec<u8>,
+    ) -> QuicServerBuilder<TlsServerConfig> {
+        let cert_chain = rustls_pemfile::certs(&mut BufReader::new(
+            File::open(cert_file).expect("Failed to open cert file"),
+        ))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("Failed to read and extract cert from the cert file");
+
+        let key_der = rustls_pemfile::private_key(&mut BufReader::new(
+            std::fs::File::open(key_file).expect("Failed to open private key file"),
+        ))
+        .expect("Failed to read PEM sections from the private key file")
+        .unwrap();
+
+        QuicServerBuilder {
+            addresses: self.addresses,
+            restrict: self.restrict,
+            supported_versions: self.supported_versions,
+            load_balance: self.load_balance,
+            tls_config: self
+                .tls_config
+                .with_single_cert_with_ocsp(cert_chain, key_der, ocsp)
+                .expect("The private key was wrong encoded or failed validation"),
+        }
+    }
+
+    /// 应该是自动调用它，根据ClientHello中的servername，寻找所有主机中的key
+    pub fn with_sni_supported(self) -> QuicServerSniBuilder<TlsServerConfig> {
+        let hosts = Arc::new(DashMap::new());
+        QuicServerSniBuilder {
+            addresses: self.addresses,
+            restrict: self.restrict,
+            supported_versions: self.supported_versions,
+            load_balance: self.load_balance,
+            tls_config: self
+                .tls_config
+                .with_cert_resolver(Arc::new(VirtualHosts(hosts.clone()))),
+            hosts,
+        }
+    }
+}
+
+impl QuicServerSniBuilder<TlsServerConfig> {
+    /// 添加服务器，包括证书链、私钥、参数
+    /// 可以调用多次，支持多服务器，支持TLS SNI
+    /// 若是新连接的server_name没有对应的配置，则会被拒绝
+    pub fn add_host(
+        &mut self,
+        server_name: impl ToOwned<Owned = String>,
+        cert_file: impl AsRef<Path>,
+        key_file: impl AsRef<Path>,
+        parameter: Parameters,
+    ) -> &mut Self {
+        let cert_chain = rustls_pemfile::certs(&mut BufReader::new(
+            File::open(cert_file).expect("Failed to open cert file"),
+        ))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("Failed to read and extract cert from the cert file");
+
+        let key_der = rustls_pemfile::private_key(&mut BufReader::new(
+            std::fs::File::open(key_file).expect("Failed to open private key file"),
+        ))
+        .expect("Failed to read PEM sections from the private key file")
+        .unwrap();
+
+        let private_key = self
+            .tls_config
+            .crypto_provider()
+            .key_provider
+            .load_private_key(key_der)
+            .unwrap();
+        self.hosts.insert(
+            server_name.to_owned(),
+            Host {
+                cert_chain,
+                private_key,
+                _parameter: parameter,
+            },
+        );
+        self
     }
 }
 
 impl QuicServerBuilder<TlsServerConfig> {
     pub fn listen(self) -> QuicServer {
+        // TODO: 创建好相应的监听usc
         QuicServer {
             addresses: self.addresses,
             _restrict: self.restrict,
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
-            _hosts: self.hosts,
-            _tls_config: self.tls_config,
+            _tls_config: Arc::new(self.tls_config),
+        }
+    }
+}
+
+impl QuicServerSniBuilder<TlsServerConfig> {
+    pub fn listen(self) -> QuicServer {
+        // TODO: 创建好相应的监听usc
+        QuicServer {
+            addresses: self.addresses,
+            _restrict: self.restrict,
+            _supported_versions: self.supported_versions,
+            _load_balance: self.load_balance,
+            _tls_config: Arc::new(self.tls_config),
         }
     }
 }

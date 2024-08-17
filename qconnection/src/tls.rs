@@ -34,22 +34,18 @@ pub(crate) enum RawTlsSession {
 impl RawTlsSession {
     fn new_client(
         server_name: rustls::pki_types::ServerName<'static>,
-        client_params: &Parameters,
+        tls_config: Arc<rustls::ClientConfig>,
+        parameters: &Parameters,
     ) -> Self {
-        let config =
-            rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
-                .with_root_certificates(rustls::RootCertStore::empty())
-                .with_no_client_auth();
-
-        let mut params = Vec::new();
-        params.put_parameters(client_params);
+        let mut params_bytes = Vec::new();
+        params_bytes.put_parameters(parameters);
 
         let connection = rustls::quic::Connection::Client(
             rustls::quic::ClientConnection::new(
-                Arc::new(config),
+                tls_config,
                 rustls::quic::Version::V1,
                 server_name,
-                params,
+                params_bytes,
             )
             .unwrap(),
         );
@@ -59,30 +55,13 @@ impl RawTlsSession {
         }
     }
 
-    pub fn new_server(
-        cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
-        key_der: rustls::pki_types::PrivateKeyDer<'static>,
-        server_params: &Parameters,
-    ) -> Self {
-        let config = rustls::ServerConfig::builder_with_provider(
-            rustls::crypto::ring::default_provider().into(),
-        )
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(cert_chain, key_der)
-        .unwrap();
-
+    pub fn new_server(tls_config: Arc<rustls::ServerConfig>, server_params: &Parameters) -> Self {
         let mut params = Vec::new();
         params.put_parameters(server_params);
 
         let connection = rustls::quic::Connection::Server(
-            rustls::quic::ServerConnection::new(
-                Arc::new(config),
-                rustls::quic::Version::V1,
-                params,
-            )
-            .unwrap(),
+            rustls::quic::ServerConnection::new(tls_config, rustls::quic::Version::V1, params)
+                .unwrap(),
         );
         Self::Exist {
             tls_conn: connection,
@@ -139,23 +118,19 @@ pub struct ArcTlsSession(Arc<Mutex<RawTlsSession>>);
 impl ArcTlsSession {
     pub fn new_client(
         server_name: rustls::pki_types::ServerName<'static>,
-        client_params: &Parameters,
+        tls_config: Arc<rustls::ClientConfig>,
+        parameters: &Parameters,
     ) -> Self {
         Self(Arc::new(Mutex::new(RawTlsSession::new_client(
             server_name,
-            client_params,
+            tls_config,
+            parameters,
         ))))
     }
 
-    pub fn new_server(
-        cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
-        key_der: rustls::pki_types::PrivateKeyDer<'static>,
-        server_params: &Parameters,
-    ) -> Self {
+    pub fn new_server(tls_config: Arc<rustls::ServerConfig>, parameters: &Parameters) -> Self {
         Self(Arc::new(Mutex::new(RawTlsSession::new_server(
-            cert_chain,
-            key_der,
-            server_params,
+            tls_config, parameters,
         ))))
     }
 
