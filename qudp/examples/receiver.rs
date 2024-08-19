@@ -28,7 +28,7 @@ async fn main() {
 
     let args = Args::parse();
     let addr = args.bind.parse().unwrap();
-    let socket = ArcUsc::new(addr);
+    let socket = ArcUsc::new(addr).expect("failed to create socket");
     let mut count = 0;
     loop {
         let receiver = Receiver {
