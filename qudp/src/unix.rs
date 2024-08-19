@@ -13,24 +13,15 @@ const OPTION_OFF: libc::c_int = 0;
 pub(super) const DEFAULT_TTL: libc::c_int = 64;
 
 macro_rules! handle_io_error {
-    ($e:expr, $sent_packets:expr) => {
+    ($e:expr, $n:expr) => {
         match $e.raw_os_error() {
-            Some(libc::EINTR) => {
-                // retry immediately
-                continue;
-            }
-            Some(libc::EWOULDBLOCK) => {
-                // wait for next writeable event
-                return Ok($sent_packets);
-            }
-            Some(libc::EBADE) | Some(libc::EPIPE) | Some(libc::ENETDOWN) => {
-                // indicate that the socket has been broken
-                return Err($e);
-            }
-            _ => {
-                // for other errors, break the loop
-                break;
-            }
+            Some(libc::EINTR) => continue,
+            Some(libc::EWOULDBLOCK) => return Ok($n),
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "openbsd",))]
+            Some(libc::EBADF) | Some(libc::EPIPE) | Some(libc::ENOTCONN) => return Err($e),
+            #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
+            Some(libc::EBADE) | Some(libc::EPIPE) | Some(libc::ENOTCONN) => return Err($e),
+            _ => break,
         }
     };
 }
@@ -298,26 +289,32 @@ unsafe fn recvmmsg(
 
     use std::ptr;
     let timeout = ptr::null_mut::<libc::timespec>();
-    let ret = libc::syscall(libc::SYS_recvmmsg, sockfd, msgvec, vlen, flags, timeout);
-    match to_result(ret as isize) {
-        Ok(n) => Ok(Rcvd::MsgCount(n)),
-        Err(e) => {
-            // ENOSYS indicates that recvmmsg is not supported
-            if let Some(libc::ENOSYS) = e.raw_os_error() {
-                return recvmsg(sockfd, &mut (*msgvec).msg_hdr);
+    loop {
+        let ret = libc::syscall(libc::SYS_recvmmsg, sockfd, msgvec, vlen, flags, timeout);
+        match to_result(ret as isize) {
+            Ok(n) => return Ok(Rcvd::MsgCount(n)),
+            Err(e) => {
+                // ENOSYS indicates that recvmmsg is not supported
+                if let Some(libc::ENOSYS) = e.raw_os_error() {
+                    return recvmsg(sockfd, &mut (*msgvec).msg_hdr);
+                }
+                handle_io_error!(e, Rcvd::MsgCount(0))
             }
-            Err(e)
         }
     }
+    return Ok(Rcvd::MsgCount(0));
 }
 
 fn recvmsg(sockfd: libc::c_int, msghdr: *mut libc::msghdr) -> io::Result<Rcvd> {
     let flags = 0;
-    let ret = to_result(unsafe { libc::recvmsg(sockfd, msghdr, flags) });
-    match ret {
-        Ok(n) => Ok(Rcvd::MsgSize(n)),
-        Err(e) => Err(e),
+    loop {
+        let ret = to_result(unsafe { libc::recvmsg(sockfd, msghdr, flags) });
+        match ret {
+            Ok(n) => return Ok(Rcvd::MsgSize(n)),
+            Err(e) => handle_io_error!(e, Rcvd::MsgSize(0)),
+        };
     }
+    return Ok(Rcvd::MsgSize(0));
 }
 
 fn to_result(code: isize) -> io::Result<usize> {
