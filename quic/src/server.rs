@@ -44,6 +44,7 @@ pub struct QuicServer {
     _restrict: bool,
     _supported_versions: Vec<u32>,
     _load_balance: Option<Arc<dyn Fn(InitialHeader) -> Option<RetryHeader>>>,
+    _parameters: DashMap<String, Parameters>,
     _tls_config: Arc<TlsServerConfig>,
 }
 
@@ -61,6 +62,7 @@ impl QuicServer {
             restrict,
             supported_versions: Vec::with_capacity(2),
             load_balance: None,
+            parameters: DashMap::new(),
             tls_config: TlsServerConfig::builder_with_provider(
                 rustls::crypto::ring::default_provider().into(),
             )
@@ -86,7 +88,6 @@ impl QuicServer {
 struct Host {
     cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
     private_key: Arc<dyn rustls::sign::SigningKey>,
-    _parameter: Parameters,
 }
 
 pub struct QuicServerBuilder<T> {
@@ -94,6 +95,7 @@ pub struct QuicServerBuilder<T> {
     restrict: bool,
     supported_versions: Vec<u32>,
     load_balance: Option<Arc<dyn Fn(InitialHeader) -> Option<RetryHeader>>>,
+    parameters: DashMap<String, Parameters>,
     tls_config: T,
 }
 
@@ -103,14 +105,12 @@ pub struct QuicServerSniBuilder<T> {
     supported_versions: Vec<u32>,
     load_balance: Option<Arc<dyn Fn(InitialHeader) -> Option<RetryHeader>>>,
     hosts: Arc<DashMap<String, Host>>,
+    parameters: DashMap<String, Parameters>,
     tls_config: T,
 }
 
 impl<T> QuicServerBuilder<T> {
-    pub fn with_supported_versions(
-        &mut self,
-        versions: impl IntoIterator<Item = u32>,
-    ) -> &mut Self {
+    pub fn with_supported_versions(mut self, versions: impl IntoIterator<Item = u32>) -> Self {
         self.supported_versions.clear();
         self.supported_versions.extend(versions);
         self
@@ -119,9 +119,9 @@ impl<T> QuicServerBuilder<T> {
     /// 设置负载均衡器，当收到新连接的时候，是否需要为了负载均衡重定向到其他服务器
     /// 所谓负载均衡，就是收到新连接的Initial包，是否需要回复一个Retry，让客户端连接到新地址上
     pub fn with_load_balance(
-        &mut self,
+        mut self,
         load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader>>,
-    ) -> &mut Self {
+    ) -> Self {
         self.load_balance = Some(load_balance);
         self
     }
@@ -129,7 +129,7 @@ impl<T> QuicServerBuilder<T> {
     /// TokenProvider有2个功能：
     /// TokenProvider需要向客户端颁发新Token
     /// 同时，收到新连接，TokenProvider也要验证客户端的Initial包中的Token
-    pub fn with_token_provider(&mut self) -> &mut Self {
+    pub fn with_token_provider(self) -> Self {
         // TODO: 完善该函数
         self
     }
@@ -137,7 +137,7 @@ impl<T> QuicServerBuilder<T> {
 
 impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
     /// Choose how to verify client certificates.
-    pub fn with_client_cert_verifier(
+    pub fn with_cert_verifier(
         self,
         client_cert_verifier: Arc<dyn ClientCertVerifier>,
     ) -> QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
@@ -146,6 +146,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             restrict: self.restrict,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
+            parameters: self.parameters,
             tls_config: self
                 .tls_config
                 .with_client_cert_verifier(client_cert_verifier),
@@ -153,12 +154,15 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
     }
 
     /// Disable client authentication.
-    pub fn with_no_client_auth(self) -> QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
+    pub fn without_cert_verifier(
+        self,
+    ) -> QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerBuilder {
             addresses: self.addresses,
             restrict: self.restrict,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
+            parameters: self.parameters,
             tls_config: self
                 .tls_config
                 .with_client_cert_verifier(Arc::new(NoClientAuth)),
@@ -167,6 +171,15 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
 }
 
 impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
+    /// 设值服务端连接参数。若不设置，则会使用一组默认参数。
+    /// 后续接受新的连接，会直接使用这些参数。不过在sni模式下，各个host可以有不同的参数，该函数将失去意义。
+    /// 因此，它最好配合[`with_single_cert`]或者[`with_single_cert_with_ocsp`]一起使用
+    /// 可以多次调用该函数，会覆盖上一次设置的参数。
+    pub fn with_parameters(self, parameters: impl Into<Parameters>) -> Self {
+        self.parameters.insert("*".to_owned(), parameters.into());
+        self
+    }
+
     /// 所有的Host都符合泛域名证书的话，可以用该函数
     pub fn with_single_cert(
         self,
@@ -190,6 +203,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
             restrict: self.restrict,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
+            parameters: self.parameters,
             tls_config: self
                 .tls_config
                 .with_single_cert(cert_chain, key_der)
@@ -220,6 +234,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
             restrict: self.restrict,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
+            parameters: self.parameters,
             tls_config: self
                 .tls_config
                 .with_single_cert_with_ocsp(cert_chain, key_der, ocsp)
@@ -228,13 +243,14 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
     }
 
     /// 应该是自动调用它，根据ClientHello中的servername，寻找所有主机中的key
-    pub fn with_sni_supported(self) -> QuicServerSniBuilder<TlsServerConfig> {
+    pub fn enable_sni(self) -> QuicServerSniBuilder<TlsServerConfig> {
         let hosts = Arc::new(DashMap::new());
         QuicServerSniBuilder {
             addresses: self.addresses,
             restrict: self.restrict,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
+            parameters: DashMap::new(),
             tls_config: self
                 .tls_config
                 .with_cert_resolver(Arc::new(VirtualHosts(hosts.clone()))),
@@ -252,7 +268,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
         server_name: impl ToOwned<Owned = String>,
         cert_file: impl AsRef<Path>,
         key_file: impl AsRef<Path>,
-        parameter: Parameters,
+        parameters: Parameters,
     ) -> &mut Self {
         let cert_chain = rustls_pemfile::certs(&mut BufReader::new(
             File::open(cert_file).expect("Failed to open cert file"),
@@ -272,12 +288,12 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             .key_provider
             .load_private_key(key_der)
             .unwrap();
+        self.parameters.insert(server_name.to_owned(), parameters);
         self.hosts.insert(
             server_name.to_owned(),
             Host {
                 cert_chain,
                 private_key,
-                _parameter: parameter,
             },
         );
         self
@@ -292,6 +308,7 @@ impl QuicServerBuilder<TlsServerConfig> {
             _restrict: self.restrict,
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
+            _parameters: self.parameters,
             _tls_config: Arc::new(self.tls_config),
         }
     }
@@ -305,6 +322,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             _restrict: self.restrict,
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
+            _parameters: self.parameters,
             _tls_config: Arc::new(self.tls_config),
         }
     }

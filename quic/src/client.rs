@@ -89,6 +89,7 @@ impl QuicClient {
         server_name: String,
         server_addr: SocketAddr,
     ) -> io::Result<QuicConnection> {
+        // 把usc，及path这些，给到QuicConnection::add_path
         Ok(QuicConnection::new_client(
             server_name,
             self.tls_config.clone(),
@@ -111,20 +112,21 @@ pub struct QuicClientBuilder<T> {
 impl<T> QuicClientBuilder<T> {
     /// 在优先使用IPv6的情况下，可以设置一个IPv4的地址，以备IPv6无法使用时的备用
     /// 必须bind的地址中一个是v4，一个是v6，才有意义
-    pub fn enable_happy_eyeballs(&mut self) -> &mut Self {
+    pub fn enable_happy_eyeballs(mut self) -> Self {
         self.enable_happy_eyepballs = true;
         self
     }
 
     /// 是否高效复用连接，假如已经有了一个到server_name的连接，那再去连的话，就直接复用
-    pub fn reuse_connection(&mut self) -> &mut Self {
+    pub fn reuse_connection(mut self) -> Self {
         self.reuse_connection = true;
         self
     }
 
     /// 当服务端发来版本协商包，其中包含了支持的版本号，那么客户端可以选择使用哪个版本
     /// 将按照客户端设定的versions的顺序优先选择
-    pub fn prefer_versions(&mut self, versions: impl IntoIterator<Item = u32>) -> &mut Self {
+    pub fn prefer_versions(mut self, versions: impl IntoIterator<Item = u32>) -> Self {
+        self.preferred_versions.clear();
         self.preferred_versions.extend(versions);
         self
     }
@@ -132,7 +134,7 @@ impl<T> QuicClientBuilder<T> {
     /// 设值客户端连接参数。若不设置，则会使用一组默认参数。
     /// 后续使用该QuicClient创建新连接，会直接使用这些参数。
     /// 可以多次调用该函数，覆盖上一次设置的参数。
-    pub fn with_parameters(&mut self, parameters: impl Into<Parameters>) -> &mut Self {
+    pub fn with_parameters(mut self, parameters: impl Into<Parameters>) -> Self {
         self.parameters = parameters.into();
         self
     }
@@ -143,7 +145,7 @@ impl<T> QuicClientBuilder<T> {
     /// 如不设置，则会丢弃这些NewToken
     /// TokenSink会在创建新连接时，尝试根据server_name获取可用Token
     /// TokenSink还需保存服务端颁发的关联Token，以便未来连接时使用
-    pub fn with_token_sink(&mut self) -> &mut Self {
+    pub fn with_token_sink(self) -> Self {
         todo!()
     }
 }
