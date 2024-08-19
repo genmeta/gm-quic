@@ -61,6 +61,17 @@ impl ConnectionId {
             bytes,
         }
     }
+
+    pub fn random_gen_with_mark(len: usize, mark: u8, mask: u8) -> Self {
+        debug_assert!(len > 0 && len <= MAX_CID_SIZE);
+        let mut bytes = [0; MAX_CID_SIZE];
+        rand::thread_rng().fill(&mut bytes[..len]);
+        bytes[0] = (bytes[0] & mask) | mark;
+        Self {
+            len: len as u8,
+            bytes,
+        }
+    }
 }
 
 impl std::ops::Deref for ConnectionId {

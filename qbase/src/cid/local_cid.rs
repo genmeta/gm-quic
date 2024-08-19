@@ -12,13 +12,14 @@ use crate::{
 /// 我方负责发放足够的cid，poll_issue_cid，将当前有效的cid注册到连接id路由。
 /// 当cid不足时，就发放新的连接id，包括增大active_cid_limit，以及对方淘汰旧的cid。
 #[derive(Debug)]
-pub struct RawLocalCids<ISSUED>
+pub struct RawLocalCids<GENERATOR, ISSUED>
 where
+    GENERATOR: Fn() -> ConnectionId,
     ISSUED: Extend<NewConnectionIdFrame> + UniqueCid,
 {
+    generator: GENERATOR,
     // If the item in cid_deque is None, it means the connection ID has been retired.
     cid_deque: IndexDeque<Option<(ConnectionId, ResetToken)>, VARINT_MAX>,
-    cid_len: usize,
     // Each issued connection ID will be written into this issued_cids.
     // The frames in issued_cids should be able to enter the QUIC sending channel
     // and be reliably sent to the peer.
@@ -30,27 +31,30 @@ where
     active_cid_limit: Option<u64>,
 }
 
-impl<ISSUED> RawLocalCids<ISSUED>
+impl<GENERATOR, ISSUED> RawLocalCids<GENERATOR, ISSUED>
 where
+    GENERATOR: Fn() -> ConnectionId,
     ISSUED: Extend<NewConnectionIdFrame> + UniqueCid,
 {
-    fn new(cid_len: usize, mut issued_cids: ISSUED) -> Self {
+    fn new(generator: GENERATOR, scid: ConnectionId, mut issued_cids: ISSUED) -> Self {
         let mut cid_deque = IndexDeque::default();
-        for seq in 0..2 {
-            let new_cid_frame = NewConnectionIdFrame::gen(
-                cid_len,
-                VarInt::from_u32(seq),
-                VarInt::from_u32(0),
-                &issued_cids,
-            );
-            issued_cids.extend([new_cid_frame]);
-            cid_deque
-                .push_back(Some((new_cid_frame.id, new_cid_frame.reset_token)))
-                .unwrap();
-        }
+        cid_deque
+            .push_back(Some((scid, ResetToken::default())))
+            .unwrap();
+
+        let new_cid_frame = NewConnectionIdFrame::gen(
+            &generator,
+            VarInt::from_u32(1),
+            VarInt::from_u32(0),
+            &issued_cids,
+        );
+        issued_cids.extend([new_cid_frame]);
+        cid_deque
+            .push_back(Some((new_cid_frame.id, new_cid_frame.reset_token)))
+            .unwrap();
         Self {
+            generator,
             cid_deque,
-            cid_len,
             issued_cids,
             active_cid_limit: None,
         }
@@ -79,7 +83,7 @@ where
         let seq = VarInt::from_u64(self.cid_deque.largest()).unwrap();
         let retire_prior_to = VarInt::from_u64(self.cid_deque.offset()).unwrap();
         let new_cid_frame =
-            NewConnectionIdFrame::gen(self.cid_len, seq, retire_prior_to, &self.issued_cids);
+            NewConnectionIdFrame::gen(&self.generator, seq, retire_prior_to, &self.issued_cids);
         self.issued_cids.extend([new_cid_frame]);
         self.cid_deque.push_back(Some((new_cid_frame.id, new_cid_frame.reset_token)))
             .expect("it's very very hard to issue a new connection ID whose sequence excceeds VARINT_MAX");
@@ -118,19 +122,19 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct ArcLocalCids<ISSUED>(Arc<Mutex<RawLocalCids<ISSUED>>>)
+pub struct ArcLocalCids<GENERATOR, ISSUED>(Arc<Mutex<RawLocalCids<GENERATOR, ISSUED>>>)
 where
+    GENERATOR: Fn() -> ConnectionId,
     ISSUED: Extend<NewConnectionIdFrame> + UniqueCid;
 
-impl<ISSUED> ArcLocalCids<ISSUED>
+impl<GENERATOR, ISSUED> ArcLocalCids<GENERATOR, ISSUED>
 where
+    GENERATOR: Fn() -> ConnectionId,
     ISSUED: Extend<NewConnectionIdFrame> + UniqueCid,
 {
-    pub fn new(cid_len: usize, issued_cids: ISSUED) -> Self {
-        Self(Arc::new(Mutex::new(RawLocalCids::new(
-            cid_len,
-            issued_cids,
-        ))))
+    pub fn new(generator: GENERATOR, scid: ConnectionId, issued_cids: ISSUED) -> Self {
+        let raw_local_cids = RawLocalCids::new(generator, scid, issued_cids);
+        Self(Arc::new(Mutex::new(raw_local_cids)))
     }
 
     pub fn active_cids(&self) -> Vec<ConnectionId> {
@@ -148,8 +152,9 @@ where
     }
 }
 
-impl<ISSUED> ReceiveFrame<RetireConnectionIdFrame> for ArcLocalCids<ISSUED>
+impl<GENERATOR, ISSUED> ReceiveFrame<RetireConnectionIdFrame> for ArcLocalCids<GENERATOR, ISSUED>
 where
+    GENERATOR: Fn() -> ConnectionId,
     ISSUED: Extend<NewConnectionIdFrame> + UniqueCid,
 {
     type Output = Option<ConnectionId>;
@@ -183,9 +188,14 @@ mod tests {
         }
     }
 
+    fn generator() -> ConnectionId {
+        ConnectionId::random_gen_with_mark(8, 0x80, 0x7F)
+    }
+
     #[test]
     fn test_issue_cid() {
-        let local_cids = ArcLocalCids::new(8, IssuedCids::default());
+        let initial_scid = ConnectionId::random_gen(8);
+        let local_cids = ArcLocalCids::new(generator, initial_scid, IssuedCids::default());
         let mut guard = local_cids.0.lock().unwrap();
 
         assert_eq!(guard.cid_deque.len(), 2);
@@ -196,13 +206,13 @@ mod tests {
 
     #[test]
     fn test_recv_retire_cid_frame() {
-        let mut local_cids = RawLocalCids::new(8, IssuedCids::default());
+        let initial_scid = ConnectionId::random_gen(8);
+        let mut local_cids = RawLocalCids::new(generator, initial_scid, IssuedCids::default());
 
         assert_eq!(local_cids.cid_deque.len(), 2);
-        assert_eq!(local_cids.issued_cids.len(), 2);
+        assert_eq!(local_cids.issued_cids.len(), 1);
 
-        let issued_cid1 = local_cids.issued_cids[0].id;
-        let issued_cid2 = local_cids.issued_cids[1].id;
+        let issued_cid2 = local_cids.issued_cids[0].id;
 
         let retire_frame = RetireConnectionIdFrame {
             sequence: VarInt::from_u32(1),
@@ -213,18 +223,18 @@ mod tests {
         assert_eq!(local_cids.cid_deque.get(1), Some(&None));
         // issued new cid while retiring an old one
         assert_eq!(local_cids.cid_deque.len(), 3);
-        assert_eq!(local_cids.issued_cids.len(), 3);
+        assert_eq!(local_cids.issued_cids.len(), 2);
 
         let retire_frame = RetireConnectionIdFrame {
             sequence: VarInt::from_u32(0),
         };
         let cid1 = local_cids.recv_retire_cid_frame(&retire_frame);
         assert!(cid1.is_ok());
-        assert_eq!(cid1, Ok(Some(issued_cid1)));
+        assert_eq!(cid1, Ok(Some(initial_scid)));
         assert_eq!(local_cids.cid_deque.get(0), None); // have been slided out
 
         assert_eq!(local_cids.cid_deque.len(), 2);
-        assert_eq!(local_cids.issued_cids.len(), 4);
+        assert_eq!(local_cids.issued_cids.len(), 3);
 
         let retire_frame = RetireConnectionIdFrame {
             sequence: VarInt::from_u32(2),

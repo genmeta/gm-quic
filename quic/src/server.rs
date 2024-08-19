@@ -11,11 +11,12 @@ use qbase::{
     config::Parameters,
     packet::{InitialHeader, RetryHeader},
 };
-use qconnection::connection::QuicConnection;
 use rustls::{
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };
+
+use crate::QuicConnection;
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
 

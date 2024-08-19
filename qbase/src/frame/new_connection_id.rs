@@ -25,11 +25,17 @@ pub struct NewConnectionIdFrame {
 }
 
 impl NewConnectionIdFrame {
-    pub fn gen<U>(len: usize, sequence: VarInt, retire_prior_to: VarInt, uniqueness: &U) -> Self
+    pub fn gen<G, U>(
+        generator: G,
+        sequence: VarInt,
+        retire_prior_to: VarInt,
+        uniqueness: &U,
+    ) -> Self
     where
+        G: Fn() -> ConnectionId,
         U: UniqueCid,
     {
-        let id = std::iter::from_fn(|| Some(ConnectionId::random_gen(len)))
+        let id = std::iter::from_fn(|| Some(generator()))
             .find(|cid| uniqueness.is_unique_cid(cid))
             .unwrap();
         let reset_token = ResetToken::random_gen();
