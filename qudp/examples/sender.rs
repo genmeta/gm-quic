@@ -53,7 +53,7 @@ async fn main() {
     };
     let ret = sender.await;
     match ret {
-        Ok(n) => println!("sent {} bytes", n),
+        Ok(n) => println!("sent {} packets", n),
         Err(e) => println!("send failed: {}", e),
     }
 }

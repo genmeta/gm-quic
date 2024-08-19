@@ -1,5 +1,4 @@
 use std::{
-    io::IoSlice,
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
@@ -115,12 +114,12 @@ impl RawPath {
         tokio::spawn(async move {
             let mut datagrams = Vec::with_capacity(4);
             while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
-                let mut iovec: &[IoSlice] = &iovec;
+                let mut iovec = iovec.as_slice();
                 loop {
                     let ret = usc.send_via_pathway(iovec, pathway).await;
                     match ret {
                         Ok(n) => {
-                            // 发送了一部分，遇到 wouldblock，
+                            // 发送了一部分，遇到 EWOULDBLOCK
                             // 等待下次可写事件，发送剩余部分
                             if n < iovec.len() {
                                 iovec = &iovec[n..];
@@ -130,7 +129,8 @@ impl RawPath {
                             }
                         }
                         Err(_) => {
-                            // usc 致命错误， path 失活
+                            // poll_send_ready error 或 sendmsg error 都意味着 usc 不可用
+                            // TODO: 路径失活
                         }
                     }
                 }

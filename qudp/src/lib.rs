@@ -7,7 +7,6 @@ use std::{
     task::{ready, Context, Poll},
 };
 
-use bytes::buf;
 use msg::Encoder;
 use socket2::{Domain, Socket, Type};
 use tokio::io::Interest;
