@@ -1,7 +1,6 @@
 use std::{
     fmt::Debug,
     mem,
-    net::SocketAddr,
     ops::DerefMut,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -10,7 +9,14 @@ use std::{
 use closing::ClosingConnection;
 use draining::DrainingConnection;
 use futures::{channel::mpsc, StreamExt};
-use qbase::{cid, config::Parameters, error::Error, packet::DataPacket, streamid::Role, token};
+use qbase::{
+    cid::{self, ConnectionId},
+    config::Parameters,
+    error::Error,
+    packet::DataPacket,
+    streamid::Role,
+    token,
+};
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qudp::ArcUsc;
 use raw::RawConnection;
@@ -32,8 +38,10 @@ pub mod transmit;
 pub type PacketEntry = mpsc::UnboundedSender<(DataPacket, Pathway, ArcUsc)>;
 pub type RcvdPackets = mpsc::UnboundedReceiver<(DataPacket, Pathway, ArcUsc)>;
 
-pub type CidRegistry = cid::Registry<RouterRegistry<ArcReliableFrameDeque>, ArcReliableFrameDeque>;
-pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
+pub type ArcLocalCids =
+    cid::ArcLocalCids<fn() -> ConnectionId, RouterRegistry<ArcReliableFrameDeque>>;
+pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
+pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
 
 pub type TokenRegistry = token::TokenRegistry<ArcReliableFrameDeque, InitialScope>;
 
@@ -47,8 +55,6 @@ enum ConnState {
 #[derive(Clone)]
 pub struct ArcConnection(Arc<Mutex<ConnState>>);
 
-pub type QuicConnection = ArcConnection;
-
 impl Debug for ArcConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "QUIC Connection")
@@ -59,20 +65,37 @@ impl ArcConnection {
     pub fn new_client(
         server_name: String,
         tls_config: Arc<rustls::ClientConfig>,
-        _address: SocketAddr,
-        _token: Option<Vec<u8>>,
         parameters: &Parameters,
+        scid: ConnectionId,
+        _token: Option<Vec<u8>>,
     ) -> Self {
         let name = server_name.clone();
         let Ok(server_name) = server_name.try_into() else {
             panic!("server_name is not valid")
         };
 
+        // We're confident that the *ring* default provider contains TLS13_AES_128_GCM_SHA256
+        let suite = tls_config
+            .crypto_provider()
+            .cipher_suites
+            .iter()
+            .find_map(|cs| match (cs.suite(), cs.tls13()) {
+                (rustls::CipherSuite::TLS13_AES_128_GCM_SHA256, Some(suite)) => {
+                    Some(suite.quic_suite())
+                }
+                _ => None,
+            })
+            .flatten()
+            .unwrap();
+        let dcid = ConnectionId::random_gen(8);
+        let initial_keys = suite.keys(&dcid, rustls::Side::Client, rustls::quic::Version::V1);
+
         let raw_conn = RawConnection::new(
             Role::Client,
             name,
             ArcTlsSession::new_client(server_name, tls_config, parameters),
-            ROUTER.clone(),
+            scid,
+            initial_keys,
         );
 
         let pathes = raw_conn.pathes.clone();

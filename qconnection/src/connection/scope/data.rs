@@ -34,7 +34,7 @@ use crate::{
     error::ConnError,
     path::{ArcPathes, RawPath, SendBuffer},
     pipe,
-    router::ArcRouter,
+    router::ROUTER,
 };
 
 #[derive(Clone)]
@@ -60,7 +60,6 @@ impl DataScope {
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
-        router: &ArcRouter,
         pathes: &ArcPathes,
         handshake: &Handshake<ArcReliableFrameDeque>,
         streams: &DataStreams,
@@ -136,7 +135,7 @@ impl DataScope {
 
         // Assemble the pipelines of frame processing
         // TODO: pipe rcvd_new_token_frames
-        let local_cids_with_router = router.revoke(cid_registry.local.clone());
+        let local_cids_with_router = ROUTER.revoke(cid_registry.local.clone());
         pipe!(rcvd_retire_cid_frames |> local_cids_with_router, recv_frame);
         pipe!(@error(conn_error) rcvd_new_cid_frames |> cid_registry.remote, recv_frame);
         pipe!(rcvd_max_data_frames |> flow_ctrl.sender, recv_frame);

@@ -6,11 +6,13 @@ use std::{
     sync::Arc,
 };
 
-use qbase::config::Parameters;
-use qconnection::connection::QuicConnection;
+use qbase::{cid::ConnectionId, config::Parameters};
+use qconnection::connection::ArcConnection;
 use rustls::{
     client::WantsClientCert, ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
 };
+
+use crate::{ConnKey, QuicConnection, CONNECTIONS};
 
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 
@@ -76,6 +78,10 @@ impl QuicClient {
         self.addresses.extend(addresses);
     }
 
+    fn gen_cid() -> ConnectionId {
+        ConnectionId::random_gen_with_mark(8, 0, 0x7F)
+    }
+
     /// 使用QuicClient的usc，去创建一个QuicConnection
     /// 需要注意，usc的地址是v4还是v6的，要跟server_addr保持一致
     /// server_name要填写在ClientHello中，
@@ -87,16 +93,26 @@ impl QuicClient {
     pub fn connect(
         &self,
         server_name: String,
-        server_addr: SocketAddr,
+        _server_addr: SocketAddr,
     ) -> io::Result<QuicConnection> {
-        // 把usc，及path这些，给到QuicConnection::add_path
-        Ok(QuicConnection::new_client(
+        // TODO: 把usc，及path这些，给到QuicConnection::add_path
+        let connections = CONNECTIONS.lock().unwrap();
+        let scid = std::iter::repeat_with(Self::gen_cid)
+            .find(|cid| !connections.contains_key(&ConnKey::Client(*cid)))
+            .unwrap();
+        let inner = ArcConnection::new_client(
             server_name,
             self.tls_config.clone(),
-            server_addr,
-            None,
             &self.parameters,
-        ))
+            scid,
+            None,
+        );
+        let conn = QuicConnection {
+            key: ConnKey::Client(scid),
+            _inner: inner,
+        };
+        connections.insert(ConnKey::Client(scid), conn.clone());
+        Ok(conn)
     }
 }
 
