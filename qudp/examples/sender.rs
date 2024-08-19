@@ -34,7 +34,7 @@ async fn main() {
 
     let args = Args::parse();
     let addr = args.src.parse().unwrap();
-    let socket = ArcUsc::new(addr);
+    let socket = ArcUsc::new(addr).expect("failed to create socket");
     let dst = args.dst.parse().unwrap();
 
     let send_hdr = PacketHeader {

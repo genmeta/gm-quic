@@ -12,6 +12,29 @@ const OPTION_ON: libc::c_int = 1;
 const OPTION_OFF: libc::c_int = 0;
 pub(super) const DEFAULT_TTL: libc::c_int = 64;
 
+macro_rules! handle_io_error {
+    ($e:expr, $sent_packets:expr) => {
+        match $e.raw_os_error() {
+            Some(libc::EINTR) => {
+                // retry immediately
+                continue;
+            }
+            Some(libc::EWOULDBLOCK) => {
+                // wait for next writeable event
+                return Ok($sent_packets);
+            }
+            Some(libc::EBADE) | Some(libc::EPIPE) | Some(libc::ENETDOWN) => {
+                // indicate that the socket has been broken
+                return Err($e);
+            }
+            _ => {
+                // for other errors, break the loop
+                break;
+            }
+        }
+    };
+}
+
 #[cfg(any(
     target_os = "linux",
     target_os = "freebsd",
@@ -178,48 +201,46 @@ pub(super) fn sendmmsg(
     let mut message = Message::default();
     message.prepare_sent(send_hdr, dst, gso_size as u16, BATCH_SIZE);
 
-    let mut sent_bytes = 0;
+    let mut sent_packets = 0;
     for batch in bufs.chunks(gso_size * BATCH_SIZE) {
         let mut mmsg_batch_size: usize = 0;
-        let mut sent: usize = 0;
         for (i, gso_batch) in batch.chunks(gso_size).enumerate() {
             mmsg_batch_size += 1;
             let hdr = &mut message.hdrs[i].msg_hdr;
             let iovec = &mut iovecs[i];
             iovec.clear();
             iovec.extend(gso_batch.iter().map(|payload| IoSlice::new(payload)));
-            sent += iovec.len() * send_hdr.seg_size as usize;
             hdr.msg_iov = iovec.as_ptr() as *mut _;
             hdr.msg_iovlen = iovec.len() as _;
         }
 
+        let mut msgvec = message.hdrs.as_mut_ptr();
+        let mut vlen = mmsg_batch_size as u32;
         loop {
-            let ret = to_result(unsafe {
-                libc::sendmmsg(
-                    io.as_raw_fd(),
-                    message.hdrs.as_mut_ptr(),
-                    mmsg_batch_size as u32,
-                    0,
-                )
-            } as isize);
+            let ret =
+                to_result(unsafe { libc::sendmmsg(io.as_raw_fd(), msgvec, vlen, 0) } as isize);
 
             match ret {
-                Ok(_) => {
-                    sent_bytes += sent;
+                // On success, sendmmsg() returns the number of messages sent from
+                // msgvec; if this is less than vlen, the caller can retry with a
+                // further sendmmsg() call to send the remaining messages.
+                Ok(n) => {
+                    sent_packets += n;
+                    if n != vlen as usize {
+                        log::warn!("sendmmsg : only {} messages sent out of {}", n, vlen);
+                        vlen = n as u32 - vlen;
+                        msgvec = message.hdrs[n..].as_mut_ptr();
+                        continue;
+                    }
                     break;
                 }
-                Err(e) => match e.kind() {
-                    io::ErrorKind::Interrupted => {}
-                    io::ErrorKind::WouldBlock => return Err(e),
-                    _ => {
-                        log::warn!("sendmmsg failed: {}", e);
-                        break;
-                    }
-                },
+                Err(e) => {
+                    handle_io_error!(e, sent_packets)
+                }
             }
         }
     }
-    Ok(sent_bytes)
+    Ok(sent_packets)
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "openbsd",))]
@@ -234,7 +255,7 @@ pub(super) fn sendmsg(
     let mut msg = Message::default();
     msg.prepare_sent(send_hdr, dst, gso_size as u16, 1);
 
-    let mut sent_bytes = 0;
+    let mut sent_packets = 0;
     for batch in bufs.chunks(gso_size) {
         let mut iovec: Vec<IoSlice> = Vec::with_capacity(gso_size);
         iovec.extend(batch.iter().map(|buf| IoSlice::new(buf)));
@@ -247,22 +268,17 @@ pub(super) fn sendmsg(
             let ret = to_result(unsafe { libc::sendmsg(io.as_raw_fd(), hdr, 0) });
             match ret {
                 Ok(n) => {
-                    sent_bytes += n;
+                    sent_packets += 1;
                     break;
                 }
-                Err(e) => match e.kind() {
-                    io::ErrorKind::Interrupted => {}
-                    io::ErrorKind::WouldBlock => return Err(e),
-                    _ => {
-                        log::warn!("sendmsg failed: {}", e);
-                        break;
-                    }
-                },
+                Err(e) => {
+                    handle_io_error!(e, sent_packets)
+                }
             }
         }
     }
 
-    Ok(sent_bytes)
+    Ok(sent_packets)
 }
 
 #[allow(dead_code)]

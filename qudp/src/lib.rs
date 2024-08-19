@@ -7,6 +7,7 @@ use std::{
     task::{ready, Context, Poll},
 };
 
+use bytes::buf;
 use msg::Encoder;
 use socket2::{Domain, Socket, Type};
 use tokio::io::Interest;
@@ -63,7 +64,7 @@ struct UdpSocketController {
 }
 
 impl UdpSocketController {
-    fn new(addr: SocketAddr) -> Self {
+    fn new(addr: SocketAddr) -> io::Result<Self> {
         let domain = if addr.is_ipv4() {
             Domain::IPV4
         } else {
@@ -71,7 +72,10 @@ impl UdpSocketController {
         };
 
         let socket = Socket::new(domain, Type::DGRAM, None).expect("Failed to create socket");
-        socket.bind(&addr.into()).expect("Failed to bind socket");
+        if let Err(e) = socket.bind(&addr.into()) {
+            log::error!("Failed to bind socket: {}", e);
+            return Err(io::Error::new(io::ErrorKind::AddrInUse, e));
+        }
 
         let io =
             tokio::net::UdpSocket::from_std(socket.into()).expect("Failed to create tokio socket");
@@ -84,7 +88,7 @@ impl UdpSocketController {
             bufs: VecDeque::with_capacity(BUFFER_CAPACITY),
         };
         socket.config().expect("Failed to config socket");
-        socket
+        Ok(socket)
     }
 
     fn local_addr(&self) -> SocketAddr {
@@ -130,8 +134,11 @@ trait Gro: Io {
 pub struct ArcUsc(Arc<Mutex<UdpSocketController>>);
 
 impl ArcUsc {
-    pub fn new(addr: SocketAddr) -> Self {
-        Self(Arc::new(Mutex::new(UdpSocketController::new(addr))))
+    pub fn new(addr: SocketAddr) -> io::Result<Self> {
+        match UdpSocketController::new(addr) {
+            Ok(usc) => Ok(Self(Arc::new(Mutex::new(usc)))),
+            Err(e) => Err(e),
+        }
     }
 
     pub fn poll_send(
@@ -175,7 +182,7 @@ impl ArcUsc {
         self.0.lock().unwrap().local_addr()
     }
 
-    //Send synchronously, usc saves a small amount of data packets,and USC sends internal asynchronous tasks
+    // Send synchronously, usc saves a small amount of data packets,and USC sends internal asynchronous tasks
     pub fn sync_send(&self, packet: Vec<u8>, hdr: PacketHeader) -> io::Result<()> {
         let mut guard = self.0.lock().unwrap();
         if guard.bufs.len() >= BUFFER_CAPACITY {
