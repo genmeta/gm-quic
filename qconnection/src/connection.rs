@@ -64,6 +64,8 @@ impl Debug for ArcConnection {
 impl ArcConnection {
     pub fn new_client(
         server_name: String,
+        pathway: Pathway,
+        usc: ArcUsc,
         tls_config: Arc<rustls::ClientConfig>,
         parameters: &Parameters,
         scid: ConnectionId,
@@ -99,6 +101,9 @@ impl ArcConnection {
         );
 
         let pathes = raw_conn.pathes.clone();
+        // Add the pathway to the pathes
+        pathes.get(pathway, usc);
+
         let conn_error = raw_conn.error.clone();
         let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Raw(raw_conn))));
 

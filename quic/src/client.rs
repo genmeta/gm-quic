@@ -7,12 +7,12 @@ use std::{
 };
 
 use qbase::{cid::ConnectionId, config::Parameters};
-use qconnection::connection::ArcConnection;
+use qconnection::{connection::ArcConnection, path::Pathway};
 use rustls::{
     client::WantsClientCert, ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
 };
 
-use crate::{ConnKey, QuicConnection, CONNECTIONS};
+use crate::{get_usc, ConnKey, QuicConnection, CONNECTIONS};
 
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 
@@ -93,15 +93,28 @@ impl QuicClient {
     pub fn connect(
         &self,
         server_name: String,
-        _server_addr: SocketAddr,
+        server_addr: SocketAddr,
     ) -> io::Result<QuicConnection> {
-        // TODO: 把usc，及path这些，给到QuicConnection::add_path
-        let connections = CONNECTIONS.lock().unwrap();
+        let bind_addr = self
+            .addresses
+            .iter()
+            .find(|addr| addr.is_ipv4() == server_addr.is_ipv4())
+            .unwrap();
+
+        let usc = get_usc(bind_addr);
+
+        let pathway = Pathway::Direct {
+            local: *bind_addr,
+            remote: server_addr,
+        };
+
         let scid = std::iter::repeat_with(Self::gen_cid)
-            .find(|cid| !connections.contains_key(&ConnKey::Client(*cid)))
+            .find(|cid| !CONNECTIONS.contains_key(&ConnKey::Client(*cid)))
             .unwrap();
         let inner = ArcConnection::new_client(
             server_name,
+            pathway,
+            usc,
             self.tls_config.clone(),
             &self.parameters,
             scid,
@@ -111,7 +124,7 @@ impl QuicClient {
             key: ConnKey::Client(scid),
             _inner: inner,
         };
-        connections.insert(ConnKey::Client(scid), conn.clone());
+        CONNECTIONS.insert(ConnKey::Client(scid), conn.clone());
         Ok(conn)
     }
 }
