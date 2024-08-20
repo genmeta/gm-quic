@@ -1,6 +1,7 @@
 use std::{
+    ops::Deref,
     sync::{atomic::AtomicBool, Arc},
-    time::Duration,
+    time::{self, Duration},
 };
 
 use qbase::{
@@ -19,6 +20,7 @@ use tokio::time::timeout;
 use super::{
     anti_amplifier::{ArcAntiAmplifier, ANTI_FACTOR},
     read::ReadIntoDatagrams,
+    state::ArcPathState,
     util::{RecvBuffer, SendBuffer},
     Pathway, ViaPathway,
 };
@@ -37,6 +39,7 @@ pub struct RawPath {
     pub(super) challenge_sndbuf: SendBuffer<PathChallengeFrame>,
     pub(super) response_sndbuf: SendBuffer<PathResponseFrame>,
     pub(super) response_rcvbuf: RecvBuffer<PathResponseFrame>,
+    pub(super) state: ArcPathState,
 }
 
 impl RawPath {
@@ -51,6 +54,7 @@ impl RawPath {
             challenge_sndbuf: SendBuffer::default(),
             response_sndbuf: SendBuffer::default(),
             response_rcvbuf: RecvBuffer::default(),
+            state: ArcPathState::new(),
         }
     }
 
@@ -73,6 +77,7 @@ impl RawPath {
         let response_rcvbuf = self.response_rcvbuf.clone();
         // THINK: 这里应该只需要一个ArcRtt，并不需congestion controller出面
         let congestion_ctrl = self.cc.clone();
+        let state = self.state.clone();
         tokio::spawn(async move {
             let challenge = PathChallengeFrame::random();
             for _ in 0..3 {
@@ -90,7 +95,7 @@ impl RawPath {
                 }
             }
             anti_amplifier.abort();
-            // TODO: 告知Path不可用，并通知外部观察者处理该Path
+            state.to_inactive();
         });
     }
 
@@ -99,6 +104,7 @@ impl RawPath {
         G: Fn(&RawPath) -> (InitialSpaceReader, HandshakeSpaceReader, DataSpaceReader),
     {
         let mut usc = self.usc.clone();
+        let state = self.state.clone();
         let space_readers = gen_readers(self);
         let read_into_datagram = ReadIntoDatagrams {
             scid: self.scid,
@@ -113,27 +119,35 @@ impl RawPath {
         };
         tokio::spawn(async move {
             let mut datagrams = Vec::with_capacity(4);
-            while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
-                let mut iovec = iovec.as_slice();
-                loop {
-                    let ret = usc.send_via_pathway(iovec, pathway).await;
-                    match ret {
-                        Ok(n) => {
-                            // 发送了一部分，遇到 EWOULDBLOCK
-                            // 等待下次可写事件，发送剩余部分
-                            if n < iovec.len() {
-                                iovec = &iovec[n..];
-                                continue;
-                            } else {
+            let send_loop = async {
+                while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
+                    let mut iovec = iovec.as_slice();
+                    loop {
+                        let ret = usc.send_via_pathway(iovec, pathway).await;
+                        match ret {
+                            Ok(n) => {
+                                // 发送了一部分，遇到 EWOULDBLOCK
+                                // 等待下次可写事件，发送剩余部分
+                                if n < iovec.len() {
+                                    iovec = &iovec[n..];
+                                    continue;
+                                } else {
+                                    break;
+                                }
+                            }
+                            Err(_) => {
+                                // poll_send_ready error 或 sendmsg error 都意味着 usc 不可用
+                                // 路径失活
+                                state.to_inactive();
                                 break;
                             }
                         }
-                        Err(_) => {
-                            // poll_send_ready error 或 sendmsg error 都意味着 usc 不可用
-                            // TODO: 路径失活
-                        }
                     }
                 }
+            };
+            tokio::select! {
+                _ = send_loop => {},
+                _ = state.has_been_inactivated() => {},
             }
         });
     }
@@ -156,5 +170,10 @@ impl RawPath {
 
     pub fn response_sndbuf(&self) -> SendBuffer<PathResponseFrame> {
         self.response_sndbuf.clone()
+    }
+
+    /// Sets the receive time to the current instant.
+    pub fn update_recv_time(&self) {
+        *self.state.deref().lock().unwrap() = time::Instant::now();
     }
 }

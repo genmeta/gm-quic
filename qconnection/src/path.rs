@@ -13,6 +13,7 @@ use qudp::{ArcUsc, Sender};
 
 mod anti_amplifier;
 mod raw;
+mod state;
 mod util;
 
 pub mod read;
@@ -124,11 +125,10 @@ impl Pathes {
             .or_insert_with(|| {
                 let path = (self.creator)(pathway, usc);
                 tokio::spawn({
-                    let _path = path.clone();
+                    let state = path.state.clone();
                     let map = self.map.clone();
                     async move {
-                        // TODO: 监听Path的死亡
-                        // path.has_been_inactivated().await;
+                        state.has_been_inactivated().await;
                         map.remove(&pathway);
                     }
                 });
