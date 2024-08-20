@@ -192,8 +192,8 @@ impl ArcUsc {
             tokio::spawn({
                 let usc = self.clone();
                 async move {
-                    let send_guard = SendGuard(usc);
-                    while (send_guard.clone().await).is_ok() {}
+                    let sync_guard = SyncGuard(usc);
+                    while (sync_guard.clone().await).is_ok() {}
                 }
             });
         }
@@ -205,6 +205,18 @@ impl ArcUsc {
             usc: self.clone(),
             iovecs,
             hdr,
+        }
+    }
+
+    pub fn receiver(&self) -> Receiver {
+        Receiver {
+            usc: self.clone(),
+            iovecs: (0..BATCH_SIZE)
+                .map(|_| Vec::with_capacity(1500))
+                .collect::<Vec<_>>(),
+            headers: (0..BATCH_SIZE)
+                .map(|_| PacketHeader::default())
+                .collect::<Vec<_>>(),
         }
     }
 }
@@ -230,9 +242,9 @@ impl<'a> Future for Sender<'a> {
 }
 
 #[derive(Clone)]
-pub struct SendGuard(ArcUsc);
+struct SyncGuard(ArcUsc);
 
-impl Future for SendGuard {
+impl Future for SyncGuard {
     type Output = io::Result<usize>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -250,5 +262,29 @@ impl Future for SendGuard {
                 "buffer empty",
             )))
         }
+    }
+}
+
+pub struct Receiver {
+    pub usc: ArcUsc,
+    pub iovecs: Vec<Vec<u8>>,
+    pub headers: Vec<PacketHeader>,
+}
+
+impl Future for Receiver {
+    type Output = io::Result<usize>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let mut bufs = this
+            .iovecs
+            .iter_mut()
+            .map(|b| {
+                b.clear();
+                IoSliceMut::new(b)
+            })
+            .collect::<Vec<_>>();
+
+        this.usc.poll_recv(&mut bufs, &mut this.headers, cx)
     }
 }

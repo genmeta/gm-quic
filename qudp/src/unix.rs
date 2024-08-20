@@ -302,7 +302,7 @@ unsafe fn recvmmsg(
             }
         }
     }
-    return Ok(Rcvd::MsgCount(0));
+    Ok(Rcvd::MsgCount(0))
 }
 
 fn recvmsg(sockfd: libc::c_int, msghdr: *mut libc::msghdr) -> io::Result<Rcvd> {
