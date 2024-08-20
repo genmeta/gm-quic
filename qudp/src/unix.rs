@@ -258,7 +258,7 @@ pub(super) fn sendmsg(
         loop {
             let ret = to_result(unsafe { libc::sendmsg(io.as_raw_fd(), hdr, 0) });
             match ret {
-                Ok(n) => {
+                Ok(_n) => {
                     sent_packets += 1;
                     break;
                 }
@@ -314,7 +314,7 @@ fn recvmsg(sockfd: libc::c_int, msghdr: *mut libc::msghdr) -> io::Result<Rcvd> {
             Err(e) => handle_io_error!(e, Rcvd::MsgSize(0)),
         };
     }
-    return Ok(Rcvd::MsgSize(0));
+    Ok(Rcvd::MsgSize(0))
 }
 
 fn to_result(code: isize) -> io::Result<usize> {

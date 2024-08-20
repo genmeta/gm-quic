@@ -45,6 +45,9 @@ impl ArcRouter {
                     DataHeader::Short(_) => 3,
                 };
                 _ = item.0[index].unbounded_send((packet, pathway, usc.clone()));
+                // TODO: 从全局维护的 connection 中获取对应的 connection
+                // 获取 pathway 对应的 path, 并更新最后接收时间
+                // path.update_recv_time();
                 true
             })
             .unwrap_or(false)
