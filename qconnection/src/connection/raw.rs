@@ -16,7 +16,7 @@ use super::{
 };
 use crate::{
     error::ConnError,
-    path::{ArcPath, ArcPathes, RawPath},
+    path::{ArcPath, ArcPathes, Pathway, RawPath},
     router::ROUTER,
     tls::{ArcTlsSession, GetParameters},
 };
@@ -199,6 +199,12 @@ impl RawConnection {
             join_handles,
             error: conn_error,
             params: get_params,
+        }
+    }
+
+    pub fn update_path_recv_time(&self, pathway: Pathway) {
+        if let Some(path) = self.pathes.try_get(&pathway).try_unwrap() {
+            path.update_recv_time();
         }
     }
 }
