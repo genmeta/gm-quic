@@ -122,7 +122,7 @@ impl QuicClient {
         );
         let conn = QuicConnection {
             key: ConnKey::Client(scid),
-            _inner: inner,
+            inner,
         };
         CONNECTIONS.insert(ConnKey::Client(scid), conn.clone());
         Ok(conn)

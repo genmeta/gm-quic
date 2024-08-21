@@ -252,6 +252,13 @@ impl ArcConnection {
             ROUTER.remove(cid);
         });
     }
+
+    pub fn update_path_recv_time(&self, pathway: Pathway) {
+        let guard = self.0.lock().unwrap();
+        if let ConnState::Raw(ref raw_conn) = *guard {
+            raw_conn.update_path_recv_time(pathway);
+        }
+    }
 }
 
 #[cfg(test)]

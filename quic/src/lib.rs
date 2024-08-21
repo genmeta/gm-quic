@@ -24,13 +24,13 @@ static CONNECTIONS: LazyLock<DashMap<ConnKey, QuicConnection>> = LazyLock::new(D
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ConnKey {
     Client(ConnectionId),
-    _Server(ConnectionId),
+    Server(ConnectionId),
 }
 
 #[derive(Debug, Clone)]
 pub struct QuicConnection {
     key: ConnKey,
-    _inner: ArcConnection,
+    inner: ArcConnection,
 }
 
 impl QuicConnection {
@@ -40,6 +40,10 @@ impl QuicConnection {
 
     pub fn recv_retry_packet(&self, _retry: &RetryHeader) {
         // self.inner.recv_retry_packet(retry);
+    }
+
+    pub fn update_path_recv_time(&self, pathway: Pathway) {
+        self.inner.update_path_recv_time(pathway);
     }
 }
 
@@ -77,6 +81,7 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                             let key = ConnKey::Client(*vn.get_dcid());
                             if let Some(conn) = CONNECTIONS.get(&key) {
                                 conn.recv_version_negotiation(&vn);
+                                conn.update_path_recv_time(pathway);
                             } else {
                                 log::error!("No connection found for VN packet");
                             }
@@ -85,11 +90,20 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                             let key = ConnKey::Client(*retry.get_dcid());
                             if let Some(conn) = CONNECTIONS.get(&key) {
                                 conn.recv_retry_packet(&retry);
+                                conn.update_path_recv_time(pathway);
                             } else {
                                 log::error!("No connection found for Retry packet");
                             }
                         }
                         Packet::Data(packet) => {
+                            let dcid = *packet.get_dcid();
+                            match CONNECTIONS
+                                .get(&ConnKey::Client(dcid))
+                                .or_else(|| CONNECTIONS.get(&ConnKey::Server(dcid)))
+                            {
+                                Some(conn) => conn.update_path_recv_time(pathway),
+                                None => log::error!("No connection found for Data packet"),
+                            }
                             ROUTER.recv_packet_via_pathway(packet, pathway, &receiver.usc.clone());
                         }
                     }
