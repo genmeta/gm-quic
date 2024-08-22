@@ -76,56 +76,37 @@ impl ArcConnection {
             panic!("server_name is not valid")
         };
 
-        // We're confident that the *ring* default provider contains TLS13_AES_128_GCM_SHA256
-        let suite = tls_config
-            .crypto_provider()
-            .cipher_suites
-            .iter()
-            .find_map(|cs| match (cs.suite(), cs.tls13()) {
-                (rustls::CipherSuite::TLS13_AES_128_GCM_SHA256, Some(suite)) => {
-                    Some(suite.quic_suite())
-                }
-                _ => None,
-            })
-            .flatten()
-            .unwrap();
         let dcid = ConnectionId::random_gen(8);
-        let initial_keys = suite.keys(&dcid, rustls::Side::Client, rustls::quic::Version::V1);
 
         let raw_conn = RawConnection::new(
             Role::Client,
             name,
-            ArcTlsSession::new_client(server_name, tls_config, parameters),
+            ArcTlsSession::new_client(server_name, tls_config.clone(), parameters),
             scid,
-            initial_keys,
+            ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Client, dcid),
         );
 
         let pathes = raw_conn.pathes.clone();
         // Add the pathway to the pathes
         pathes.get(pathway, usc);
-
-        let conn_error = raw_conn.error.clone();
-        let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Raw(raw_conn))));
-
-        tokio::spawn({
-            let conn = conn.clone();
-            async move {
-                let (err, is_active) = conn_error.did_error_occur().await;
-                if is_active {
-                    conn.should_enter_closing_with_error(err);
-                } else {
-                    let pto = pathes.iter().map(|p| p.pto_time()).max().unwrap();
-                    conn.enter_draining(pto * 3);
-                }
-            }
-        });
-
-        conn
+        raw_conn.into()
     }
 
-    /// TODO: 参数不全，其实是QuicServer::accept的返回值
-    pub fn new_server(_parameters: Parameters) -> Self {
-        todo!("create a new server connection");
+    pub fn new_server(
+        tls_config: Arc<rustls::ServerConfig>,
+        parameters: &Parameters,
+        scid: ConnectionId,
+        dcid: ConnectionId,
+    ) -> Self {
+        // TODO: server name 解析 client hello 后从 tlsSession 获取
+        let raw_conn = RawConnection::new(
+            Role::Server,
+            "".to_string(),
+            ArcTlsSession::new_server(tls_config.clone(), parameters),
+            scid,
+            ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Server, dcid),
+        );
+        raw_conn.into()
     }
 
     /// Get the streams of the connection, return error if the connection is in closing state or
@@ -261,5 +242,27 @@ impl ArcConnection {
     }
 }
 
+impl From<RawConnection> for ArcConnection {
+    fn from(raw_conn: RawConnection) -> Self {
+        let conn_error = raw_conn.error.clone();
+        let pathes = raw_conn.pathes.clone();
+        let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Raw(raw_conn))));
+
+        tokio::spawn({
+            let conn = conn.clone();
+            async move {
+                let (err, is_active) = conn_error.did_error_occur().await;
+                if is_active {
+                    conn.should_enter_closing_with_error(err);
+                } else {
+                    let pto = pathes.iter().map(|p| p.pto_time()).max().unwrap();
+                    conn.enter_draining(pto * 3);
+                }
+            }
+        });
+
+        conn
+    }
+}
 #[cfg(test)]
 mod tests {}

@@ -7,6 +7,7 @@ use std::{
 };
 
 use qbase::{
+    cid::ConnectionId,
     config::{
         ext::{be_parameters, WriteParameters},
         Parameters,
@@ -15,6 +16,7 @@ use qbase::{
     packet::keys::{ArcKeys, ArcOneRttKeys},
 };
 use qrecovery::{space::Epoch, streams::crypto::CryptoStream};
+use rustls::{crypto::CryptoProvider, quic::Keys, Side};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::error::ConnError;
@@ -132,6 +134,25 @@ impl ArcTlsSession {
         Self(Arc::new(Mutex::new(RawTlsSession::new_server(
             tls_config, parameters,
         ))))
+    }
+
+    pub fn initial_keys(
+        crypto_provider: &Arc<CryptoProvider>,
+        side: Side,
+        cid: ConnectionId,
+    ) -> Keys {
+        let suite = crypto_provider
+            .cipher_suites
+            .iter()
+            .find_map(|cs| match (cs.suite(), cs.tls13()) {
+                (rustls::CipherSuite::TLS13_AES_128_GCM_SHA256, Some(suite)) => {
+                    Some(suite.quic_suite())
+                }
+                _ => None,
+            })
+            .flatten()
+            .unwrap();
+        suite.keys(&cid, side, rustls::quic::Version::V1)
     }
 
     fn lock_guard(&self) -> MutexGuard<'_, RawTlsSession> {

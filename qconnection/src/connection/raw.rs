@@ -22,6 +22,7 @@ use crate::{
 };
 
 pub struct RawConnection {
+    pub server_name: String,
     pub pathes: ArcPathes,
     pub cid_registry: CidRegistry,
     pub token_registry: TokenRegistry,
@@ -65,10 +66,11 @@ impl RawConnection {
         let hs = HandshakeScope::default();
         let data = DataScope::default();
 
+        // TODO: Token Skin 和 Token Provider 由外面传提供，不需要在此创建
         let token_registry = if role == Role::Client {
-            TokenRegistry::new_client(server_name, initial.clone())
+            TokenRegistry::new_client(server_name.clone(), initial.clone())
         } else {
-            TokenRegistry::new_server(server_name, reliable_frames.clone())
+            TokenRegistry::new_server(server_name.clone(), reliable_frames.clone())
         };
         let router_registry = ROUTER.registry(
             token_registry.clone(),
@@ -184,6 +186,7 @@ impl RawConnection {
         );
 
         Self {
+            server_name,
             pathes,
             cid_registry,
             token_registry,

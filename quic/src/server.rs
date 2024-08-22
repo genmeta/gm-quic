@@ -8,15 +8,17 @@ use std::{
 
 use dashmap::DashMap;
 use qbase::{
+    cid::ConnectionId,
     config::Parameters,
     packet::{InitialHeader, RetryHeader},
 };
+use qconnection::connection::ArcConnection;
 use rustls::{
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };
 
-use crate::QuicConnection;
+use crate::{ConnKey, QuicConnection, CONNECTIONS, LISTENER};
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
 
@@ -80,8 +82,17 @@ impl QuicServer {
     /// 监听新连接的到来
     /// 新连接可能通过本地的任何一个有效usc来创建
     /// 只有调用该函数，才会有被动创建的Connection存放队列，等待着应用层来处理
-    pub async fn accept(&self) -> io::Result<(QuicConnection, SocketAddr)> {
-        todo!()
+    pub async fn accept(&mut self) -> io::Result<(QuicConnection, SocketAddr)> {
+        let (conn, addr) = LISTENER.accept().await;
+        Ok((conn, addr))
+    }
+}
+
+impl Drop for QuicServer {
+    fn drop(&mut self) {
+        for addr in self.addresses.iter() {
+            LISTENER.unregister(addr);
+        }
     }
 }
 
@@ -303,28 +314,60 @@ impl QuicServerSniBuilder<TlsServerConfig> {
 
 impl QuicServerBuilder<TlsServerConfig> {
     pub fn listen(self) -> QuicServer {
-        // TODO: 创建好相应的监听usc
+        let tls_config = Arc::new(self.tls_config);
+        listen_addresses(&self.addresses, &tls_config);
         QuicServer {
             addresses: self.addresses,
             _restrict: self.restrict,
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
             _parameters: self.parameters,
-            _tls_config: Arc::new(self.tls_config),
+            _tls_config: tls_config,
         }
     }
 }
 
 impl QuicServerSniBuilder<TlsServerConfig> {
     pub fn listen(self) -> QuicServer {
-        // TODO: 创建好相应的监听usc
+        let tls_config = Arc::new(self.tls_config);
+        listen_addresses(&self.addresses, &tls_config);
         QuicServer {
             addresses: self.addresses,
             _restrict: self.restrict,
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
             _parameters: self.parameters,
-            _tls_config: Arc::new(self.tls_config),
+            _tls_config: tls_config,
         }
     }
+}
+
+fn listen_addresses(addresses: &[SocketAddr], tls_config: &Arc<TlsServerConfig>) {
+    addresses.iter().for_each(|addr| {
+        let ret = LISTENER.listen(
+            *addr,
+            Box::new({
+                let tls_config = tls_config.clone();
+                let parameters = Parameters::default();
+                move |dcid| {
+                    let scid =
+                        std::iter::repeat_with(|| ConnectionId::random_gen_with_mark(8, 0, 0x7F))
+                            .find(|cid| !CONNECTIONS.contains_key(&ConnKey::Server(*cid)))
+                            .unwrap();
+
+                    let inner =
+                        ArcConnection::new_server(tls_config.clone(), &parameters, scid, dcid);
+                    let conn = QuicConnection {
+                        key: ConnKey::Server(scid),
+                        _inner: inner,
+                    };
+                    CONNECTIONS.insert(ConnKey::Server(scid), conn.clone());
+                    conn
+                }
+            }),
+        );
+        if ret.is_err() {
+            log::error!("Failed to listen on : {} {}", addr, ret.unwrap_err())
+        }
+    });
 }
