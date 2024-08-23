@@ -56,9 +56,11 @@ pub fn decrypt_packet(
     pn: u64,
     pkt_buf: &mut [u8],
     body_offset: usize,
-) -> Result<(), Error> {
+) -> Result<usize, Error> {
     let (aad, body) = pkt_buf.split_at_mut(body_offset);
-    key.decrypt_in_place(pn, aad, body)
+    let plain = key
+        .decrypt_in_place(pn, aad, body)
         .map_err(|_| Error::DecryptPacketFailure)?;
-    Ok(())
+    // should return plain.len()
+    Ok(plain.len())
 }

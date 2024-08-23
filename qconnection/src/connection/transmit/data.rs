@@ -5,7 +5,9 @@ use qbase::{
     cid::ConnectionId,
     frame::{PathChallengeFrame, PathResponseFrame},
     packet::{
-        encrypt::{encrypt_packet, protect_long_header, protect_short_header},
+        encrypt::{
+            encode_long_first_byte, encode_short_first_byte, encrypt_packet, protect_header,
+        },
         header::{WriteLongHeader, WriteOneRttHeader},
         keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys},
         Encode, LongHeaderBuilder, OneRttHeader, SpinBit, WritePacketNumber,
@@ -59,7 +61,10 @@ impl DataSpaceReader {
         if buf.len() < hdr.size() + 20 {
             return None;
         }
-        let (mut hdr_buf, payload_buf) = buf.split_at_mut(hdr.size());
+        let (mut hdr_buf, payload_tag) = buf.split_at_mut(hdr.size());
+        let payload_tag_len = payload_tag.len();
+        let tag_len = keys.1.tag_len();
+        let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
 
         // 2. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
         let sent_pkt_records = self.space.sent_packets();
@@ -146,18 +151,18 @@ impl DataSpaceReader {
 
         let hdr_len = hdr_buf.len();
         let pn_len = pn_buf.len();
-        let mut body_size = body_size - body_buf.remaining_mut();
-        if body_size == 0 {
+        let mut body_len = body_size - body_buf.remaining_mut();
+        if body_len == 0 {
             // 无有效数据，那就不打包1Rtt包发送了
             return None;
         }
         // payload(pn + body)长度不足20字节，填充之
-        if body_size + pn_len < 20 {
-            let padding_len = 20 - body_size - pn_len;
+        if pn_len + body_len + tag_len < 20 {
+            let padding_len = 20 - pn_len - body_len - tag_len;
             body_buf.put_bytes(0, padding_len);
-            body_size += padding_len;
+            body_len += padding_len;
         }
-        let sent_size = hdr_len + pn_len + body_size;
+        let sent_size = hdr_len + pn_len + body_len + tag_len;
 
         hdr_buf.put_one_rtt_header(&hdr);
         pn_buf.put_packet_number(encoded_pn);
@@ -165,8 +170,9 @@ impl DataSpaceReader {
         // 11 保护包头，加密数据
         let pk_guard = keys.1.lock_guard();
         let (key_phase, pk) = pk_guard.get_local();
+        encode_short_first_byte(&mut hdr_buf[0], pn_len, key_phase);
         encrypt_packet(pk.as_ref(), pn, buf, hdr_len + pn_len);
-        protect_short_header(keys.0.as_ref(), key_phase, buf, hdr_len, encoded_pn.size());
+        protect_header(keys.0.as_ref(), buf, hdr_len, pn_len);
 
         Some((
             pn,
@@ -196,7 +202,11 @@ impl DataSpaceReader {
         if buf.len() < hdr.size() + 2 + 20 {
             return None;
         }
-        let (mut hdr_buf, payload_buf) = buf.split_at_mut(hdr.size() + 2);
+        let (mut hdr_buf, payload_tag) = buf.split_at_mut(hdr.size() + 2);
+        // 至少预留tag空间，加密时足够填充加密的部分
+        let payload_tag_len = payload_tag.len();
+        let tag_len = k.local.packet.as_ref().tag_len();
+        let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
 
         // 3. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
         let sent_pkt_records = self.space.sent_packets();
@@ -252,28 +262,29 @@ impl DataSpaceReader {
         // 8. 填充，保护头部，加密
         let hdr_len = hdr_buf.len();
         let pn_len = pn_buf.len();
-        let mut body_size = body_size - body_buf.remaining_mut();
-        if body_size == 0 {
+        let mut body_len = body_size - body_buf.remaining_mut();
+        if body_len == 0 {
             // 无有效数据，那就不打包0Rtt包发送了
             return None;
         }
         // payload(pn + body)长度不足20字节，填充之
-        if body_size + pn_len < 20 {
-            let padding_len = 20 - body_size - pn_len;
+        if pn_len + body_len + tag_len < 20 {
+            let padding_len = 20 - pn_len - body_len - tag_len;
             body_buf.put_bytes(0, padding_len);
-            body_size += padding_len;
+            body_len += padding_len;
         }
-        let sent_size = hdr_len + 2 + pn_len + body_size;
+        let sent_size = hdr_len + pn_len + body_len + tag_len;
 
         hdr_buf.put_long_header(&hdr);
         hdr_buf.encode_varint(
-            &VarInt::try_from(pn_len + body_size).unwrap(),
+            &VarInt::try_from(pn_len + body_len + tag_len).unwrap(),
             EncodeBytes::Two,
         );
         pn_buf.put_packet_number(encoded_pn);
 
+        encode_long_first_byte(&mut hdr_buf[0], pn_len);
         encrypt_packet(k.remote.packet.as_ref(), pn, buf, hdr_len + pn_len);
-        protect_long_header(k.remote.header.as_ref(), buf, hdr_len, pn_len);
+        protect_header(k.remote.header.as_ref(), buf, hdr_len, pn_len);
 
         // 0RTT包不能发送Ack
         Some((pn, is_ack_eliciting, sent_size, fresh_bytes, in_flight))
