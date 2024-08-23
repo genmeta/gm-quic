@@ -49,8 +49,8 @@ impl QuicConnection {
         // self.inner.recv_version_negotiation(vn);
     }
 
-    pub fn recv_retry_packet(&self, _retry: &RetryHeader) {
-        // self.inner.recv_retry_packet(retry);
+    pub fn recv_retry_packet(&self, retry: &RetryHeader) {
+        self.inner.recv_retry_packet(retry);
     }
 
     pub fn update_path_recv_time(&self, pathway: Pathway) {
@@ -87,6 +87,7 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                                 let key = ConnKey::Client(*vn.get_dcid());
                                 if let Some(conn) = CONNECTIONS.get(&key) {
                                     conn.recv_version_negotiation(&vn);
+                                    conn.update_path_recv_time(pathway);
                                 } else {
                                     log::error!("No connection found for VN packet");
                                 }
@@ -95,13 +96,13 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                                 let key = ConnKey::Client(*retry.get_dcid());
                                 if let Some(conn) = CONNECTIONS.get(&key) {
                                     conn.recv_retry_packet(&retry);
+                                    conn.update_path_recv_time(pathway);
                                 } else {
                                     log::error!("No connection found for Retry packet");
                                 }
                             }
                             Packet::Data(packet) => {
                                 let dcid = packet.header.get_dcid();
-                                // Can not find connection, try create new one if it is Initial packet or ZeroRtt packet
                                 if !ROUTER.contains_key(dcid)
                                     && matches!(
                                         packet.header,
@@ -111,6 +112,14 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                                 {
                                     LISTENER.try_accept(bind_addr, *dcid);
                                 }
+                                match CONNECTIONS
+                                    .get(&ConnKey::Client(*dcid))
+                                    .or_else(|| CONNECTIONS.get(&ConnKey::Server(*dcid)))
+                                {
+                                    Some(conn) => conn.update_path_recv_time(pathway),
+                                    None => log::error!("No connection found for Data packet"),
+                                }
+
                                 ROUTER.recv_packet_via_pathway(
                                     packet,
                                     pathway,

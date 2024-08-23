@@ -136,11 +136,7 @@ impl ArcTlsSession {
         ))))
     }
 
-    pub fn initial_keys(
-        crypto_provider: &Arc<CryptoProvider>,
-        side: Side,
-        cid: ConnectionId,
-    ) -> Keys {
+    pub fn initial_keys(crypto_provider: &CryptoProvider, side: Side, cid: ConnectionId) -> Keys {
         let suite = crypto_provider
             .cipher_suites
             .iter()
