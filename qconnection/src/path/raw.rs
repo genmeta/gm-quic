@@ -104,7 +104,7 @@ impl RawPath {
         G: Fn(&RawPath) -> (InitialSpaceReader, HandshakeSpaceReader, DataSpaceReader),
     {
         let mut usc = self.usc.clone();
-        let state = self.state.clone();
+        let path_state = self.state.clone();
         let space_readers = gen_readers(self);
         let read_into_datagram = ReadIntoDatagrams {
             scid: self.scid,
@@ -120,26 +120,14 @@ impl RawPath {
         tokio::spawn(async move {
             let mut datagrams = Vec::with_capacity(4);
             let send_loop = async {
-                while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
-                    let mut iovec = iovec.as_slice();
-                    loop {
-                        let ret = usc.send_via_pathway(iovec, pathway).await;
-                        match ret {
-                            Ok(n) => {
-                                // 发送了一部分，遇到 EWOULDBLOCK
-                                // 等待下次可写事件，发送剩余部分
-                                if n < iovec.len() {
-                                    iovec = &iovec[n..];
-                                    continue;
-                                } else {
-                                    break;
-                                }
-                            }
+                'read: while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
+                    let mut io_slices = iovec.as_slice();
+                    while !io_slices.is_empty() {
+                        match usc.send_via_pathway(io_slices, pathway).await {
+                            Ok(n) => io_slices = &io_slices[n..],
                             Err(_) => {
-                                // poll_send_ready error 或 sendmsg error 都意味着 usc 不可用
-                                // 路径失活
-                                state.to_inactive();
-                                break;
+                                path_state.to_inactive();
+                                break 'read;
                             }
                         }
                     }
@@ -147,7 +135,7 @@ impl RawPath {
             };
             tokio::select! {
                 _ = send_loop => {},
-                _ = state.has_been_inactivated() => {},
+                _ = path_state.has_been_inactivated() => {},
             }
         });
     }
