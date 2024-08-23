@@ -383,7 +383,7 @@ fn listen_addresses(
                     );
                     let conn = QuicConnection {
                         key: ConnKey::Server(scid),
-                        _inner: inner,
+                        inner,
                     };
                     CONNECTIONS.insert(ConnKey::Server(scid), conn.clone());
                     conn

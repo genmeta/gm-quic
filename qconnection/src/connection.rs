@@ -13,7 +13,7 @@ use qbase::{
     cid::{self, ConnectionId},
     config::Parameters,
     error::Error,
-    packet::DataPacket,
+    packet::{DataPacket, RetryHeader},
     streamid::Role,
     token::ArcTokenRegistry,
 };
@@ -234,6 +234,19 @@ impl ArcConnection {
         let guard = self.0.lock().unwrap();
         if let ConnState::Raw(ref raw_conn) = *guard {
             raw_conn.update_path_recv_time(pathway);
+        }
+    }
+
+    pub fn recv_retry_packet(&self, retry: &RetryHeader) {
+        if let Raw(conn) = &mut *self.0.lock().unwrap() {
+            *conn.token.lock().unwrap() = retry.token.to_vec();
+            let sent_record = conn.initial.space.sent_packets();
+            let mut guard = sent_record.receive();
+            for i in 0..guard.largest_pn() {
+                for frame in guard.may_loss_pkt(i) {
+                    conn.initial.crypto_stream.outgoing().may_loss_data(&frame);
+                }
+            }
         }
     }
 }
