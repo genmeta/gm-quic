@@ -1,7 +1,4 @@
-use std::{
-    fmt::Debug,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
@@ -10,9 +7,8 @@ use qbase::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::{GetScid, GetType},
         keys::ArcKeys,
-        long, DataHeader, DataPacket,
+        long, DataHeader,
     },
-    token::RetryInitial,
 };
 use qrecovery::{
     space::{Epoch, InitialSpace},
@@ -22,9 +18,9 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::any;
 use crate::{
-    connection::{transmit::initial::InitialSpaceReader, RcvdPackets, TokenRegistry},
+    connection::{transmit::initial::InitialSpaceReader, RcvdPackets},
     error::ConnError,
-    path::{ArcPathes, RawPath},
+    path::{ArcPath, ArcPathes, RawPath},
     pipe,
 };
 
@@ -54,7 +50,7 @@ impl InitialScope {
         pathes: &ArcPathes,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
-        token_registry: TokenRegistry,
+        validator: impl Fn(&[u8], ArcPath) + Send + 'static,
     ) -> JoinHandle<RcvdPackets> {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
@@ -95,7 +91,7 @@ impl InitialScope {
             dispatch_frame,
             notify,
             conn_error,
-            token_registry,
+            validator,
         )
     }
 
@@ -106,7 +102,7 @@ impl InitialScope {
         dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
-        token_registry: TokenRegistry,
+        validator: impl Fn(&[u8], ArcPath) + Send + 'static,
     ) -> JoinHandle<RcvdPackets> {
         let pathes = pathes.clone();
         let conn_error = conn_error.clone();
@@ -115,7 +111,6 @@ impl InitialScope {
             let keys = self.keys.clone();
             let notify = notify.clone();
 
-            let mut token_registry = token_registry.clone();
             async move {
                 while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
                 {
@@ -160,8 +155,6 @@ impl InitialScope {
                     // path to the SCID carried in the received packet.
                     path.set_dcid(remote_scid);
 
-                    InitialScope::address_validate(&path, &mut token_registry, &packet);
-
                     let body = packet.bytes.split_off(body_offset);
                     match FrameReader::new(body.freeze(), pty).try_fold(
                         false,
@@ -180,6 +173,16 @@ impl InitialScope {
                             break;
                         }
                     }
+                    // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
+                    // A server might wish to validate the client address before starting the cryptographic handshake.
+                    // QUIC uses a token in the Initial packet to provide address validation prior to completing the handshake.
+                    // This token is delivered to the client during connection establishment with a Retry packet (see Section 8.1.2)
+                    // or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
+                    if let DataHeader::Long(long::DataHeader::Initial(initial)) = &packet.header {
+                        if !initial.token.is_empty() {
+                            validator(&initial.token, path);
+                        }
+                    }
                 }
                 rcvd_packets
             }
@@ -193,45 +196,5 @@ impl InitialScope {
             space: self.space.clone(),
             crypto_stream_outgoing: self.crypto_stream.outgoing(),
         }
-    }
-
-    /// See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
-    /// A server might wish to validate the client address before starting the cryptographic handshake.
-    /// QUIC uses a token in the Initial packet to provide address validation prior to completing the handshake.
-    /// This token is delivered to the client during connection establishment with a Retry packet (see Section 8.1.2)
-    /// or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
-    pub fn address_validate(
-        path: &RawPath,
-        token_registry: &mut TokenRegistry,
-        packet: &DataPacket,
-    ) {
-        if let DataHeader::Long(long::DataHeader::Initial(initial)) = &packet.header {
-            if let TokenRegistry::Server(server) = token_registry {
-                server.issue_new_token();
-                if server.validate(&initial.token) {
-                    path.anti_amplifier.grant();
-                }
-            }
-        }
-    }
-}
-
-impl RetryInitial for InitialScope {
-    fn retry_initial(&mut self) {
-        let largest_pn = self.space.sent_packets().receive().largest_pn();
-        // Packet numbers in each space start at packet number 0.
-        // All packets in the initial space are considered lost.
-        for pn in 0..largest_pn {
-            let _ = self.space.sent_packets().receive().may_loss_pkt(pn);
-        }
-    }
-}
-
-impl Debug for InitialScope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InitialScope")
-            .field("space", &self.space)
-            .field("crypto_stream", &self.crypto_stream)
-            .finish()
     }
 }

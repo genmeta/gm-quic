@@ -6,20 +6,17 @@ use qbase::{
     cid::{ConnectionId, UniqueCid},
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame},
-    packet::{header::GetDcid, long, DataHeader, DataPacket, RetryHeader},
+    packet::{header::GetDcid, long, DataHeader, DataPacket},
 };
 use qudp::ArcUsc;
 
-use crate::{
-    connection::{PacketEntry, TokenRegistry},
-    path::Pathway,
-};
+use crate::{connection::PacketEntry, path::Pathway};
 
 /// Global Router for managing connections.
 pub static ROUTER: LazyLock<ArcRouter> = LazyLock::new(|| ArcRouter(Arc::new(DashMap::new())));
 
 #[derive(Clone, Deref, Debug)]
-pub struct ArcRouter(Arc<DashMap<ConnectionId, ([PacketEntry; 4], TokenRegistry)>>);
+pub struct ArcRouter(Arc<DashMap<ConnectionId, [PacketEntry; 4]>>);
 
 impl UniqueCid for ArcRouter {
     fn is_unique_cid(&self, cid: &ConnectionId) -> bool {
@@ -37,25 +34,14 @@ impl ArcRouter {
         let dcid = packet.header.get_dcid();
         self.0
             .get(dcid)
-            .map(|item| {
+            .map(|packet_entry| {
                 let index = match packet.header {
                     DataHeader::Long(long::DataHeader::Initial(_)) => 0,
                     DataHeader::Long(long::DataHeader::ZeroRtt(_)) => 1,
                     DataHeader::Long(long::DataHeader::Handshake(_)) => 2,
                     DataHeader::Short(_) => 3,
                 };
-                _ = item.0[index].unbounded_send((packet, pathway, usc.clone()));
-                true
-            })
-            .unwrap_or(false)
-    }
-
-    pub fn recv_retry_packet(&self, packet: RetryHeader) -> bool {
-        let dcid = packet.get_dcid();
-        self.0
-            .get_mut(dcid)
-            .map(|mut item| {
-                item.1.receive_retry_packet(packet.token.clone());
+                _ = packet_entry[index].unbounded_send((packet, pathway, usc.clone()));
                 true
             })
             .unwrap_or(false)
@@ -63,7 +49,6 @@ impl ArcRouter {
 
     pub fn registry<ISSUED>(
         &self,
-        token_registry: TokenRegistry,
         issued_cids: ISSUED,
         packet_entries: [PacketEntry; 4],
     ) -> RouterRegistry<ISSUED>
@@ -73,7 +58,6 @@ impl ArcRouter {
         RouterRegistry {
             router: self.clone(),
             issued_cids,
-            token_registry,
             packet_entries,
         }
     }
@@ -90,7 +74,6 @@ impl ArcRouter {
 pub struct RouterRegistry<ISSUED> {
     router: ArcRouter,
     issued_cids: ISSUED,
-    token_registry: TokenRegistry,
     packet_entries: [PacketEntry; 4],
 }
 
@@ -100,10 +83,7 @@ where
 {
     fn extend<I: IntoIterator<Item = NewConnectionIdFrame>>(&mut self, iter: I) {
         self.issued_cids.extend(iter.into_iter().inspect(|frame| {
-            self.router.insert(
-                frame.id,
-                (self.packet_entries.clone(), self.token_registry.clone()),
-            );
+            self.router.insert(frame.id, self.packet_entries.clone());
         }))
     }
 }

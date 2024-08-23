@@ -11,6 +11,7 @@ use qbase::{
     cid::ConnectionId,
     config::Parameters,
     packet::{InitialHeader, RetryHeader},
+    token::{ArcTokenRegistry, TokenProvider},
 };
 use qconnection::connection::ArcConnection;
 use rustls::{
@@ -71,6 +72,7 @@ impl QuicServer {
             )
             .with_protocol_versions(&[&rustls::version::TLS13])
             .unwrap(),
+            token_provider: None,
         }
     }
 
@@ -109,6 +111,7 @@ pub struct QuicServerBuilder<T> {
     load_balance: Option<Arc<dyn Fn(InitialHeader) -> Option<RetryHeader>>>,
     parameters: DashMap<String, Parameters>,
     tls_config: T,
+    token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
 pub struct QuicServerSniBuilder<T> {
@@ -119,6 +122,7 @@ pub struct QuicServerSniBuilder<T> {
     hosts: Arc<DashMap<String, Host>>,
     parameters: DashMap<String, Parameters>,
     tls_config: T,
+    token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
 impl<T> QuicServerBuilder<T> {
@@ -141,8 +145,8 @@ impl<T> QuicServerBuilder<T> {
     /// TokenProvider有2个功能：
     /// TokenProvider需要向客户端颁发新Token
     /// 同时，收到新连接，TokenProvider也要验证客户端的Initial包中的Token
-    pub fn with_token_provider(self) -> Self {
-        // TODO: 完善该函数
+    pub fn with_token_provider(mut self, token_provider: Arc<dyn TokenProvider>) -> Self {
+        self.token_provider = Some(token_provider);
         self
     }
 }
@@ -162,6 +166,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             tls_config: self
                 .tls_config
                 .with_client_cert_verifier(client_cert_verifier),
+            token_provider: self.token_provider,
         }
     }
 
@@ -178,6 +183,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             tls_config: self
                 .tls_config
                 .with_client_cert_verifier(Arc::new(NoClientAuth)),
+            token_provider: self.token_provider,
         }
     }
 }
@@ -220,6 +226,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
                 .tls_config
                 .with_single_cert(cert_chain, key_der)
                 .expect("The private key was wrong encoded or failed validation"),
+            token_provider: self.token_provider,
         }
     }
 
@@ -251,6 +258,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
                 .tls_config
                 .with_single_cert_with_ocsp(cert_chain, key_der, ocsp)
                 .expect("The private key was wrong encoded or failed validation"),
+            token_provider: self.token_provider,
         }
     }
 
@@ -267,6 +275,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
                 .tls_config
                 .with_cert_resolver(Arc::new(VirtualHosts(hosts.clone()))),
             hosts,
+            token_provider: self.token_provider,
         }
     }
 }
@@ -315,7 +324,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
 impl QuicServerBuilder<TlsServerConfig> {
     pub fn listen(self) -> QuicServer {
         let tls_config = Arc::new(self.tls_config);
-        listen_addresses(&self.addresses, &tls_config);
+        listen_addresses(&self.addresses, &tls_config, &self.token_provider);
         QuicServer {
             addresses: self.addresses,
             _restrict: self.restrict,
@@ -330,7 +339,7 @@ impl QuicServerBuilder<TlsServerConfig> {
 impl QuicServerSniBuilder<TlsServerConfig> {
     pub fn listen(self) -> QuicServer {
         let tls_config = Arc::new(self.tls_config);
-        listen_addresses(&self.addresses, &tls_config);
+        listen_addresses(&self.addresses, &tls_config, &self.token_provider);
         QuicServer {
             addresses: self.addresses,
             _restrict: self.restrict,
@@ -342,12 +351,17 @@ impl QuicServerSniBuilder<TlsServerConfig> {
     }
 }
 
-fn listen_addresses(addresses: &[SocketAddr], tls_config: &Arc<TlsServerConfig>) {
+fn listen_addresses(
+    addresses: &[SocketAddr],
+    tls_config: &Arc<TlsServerConfig>,
+    token_provider: &Option<Arc<dyn TokenProvider>>,
+) {
     addresses.iter().for_each(|addr| {
         let ret = LISTENER.listen(
             *addr,
             Box::new({
                 let tls_config = tls_config.clone();
+                let token_provider = token_provider.clone();
                 let parameters = Parameters::default();
                 move |dcid| {
                     let scid =
@@ -355,8 +369,18 @@ fn listen_addresses(addresses: &[SocketAddr], tls_config: &Arc<TlsServerConfig>)
                             .find(|cid| !CONNECTIONS.contains_key(&ConnKey::Server(*cid)))
                             .unwrap();
 
-                    let inner =
-                        ArcConnection::new_server(tls_config.clone(), &parameters, scid, dcid);
+                    let token_provider = match &token_provider {
+                        Some(provider) => ArcTokenRegistry::with_provider(provider.clone()),
+                        None => ArcTokenRegistry::default_provider(),
+                    };
+
+                    let inner = ArcConnection::new_server(
+                        tls_config.clone(),
+                        &parameters,
+                        scid,
+                        dcid,
+                        token_provider,
+                    );
                     let conn = QuicConnection {
                         key: ConnKey::Server(scid),
                         _inner: inner,

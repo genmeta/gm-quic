@@ -273,6 +273,18 @@ impl ArcTlsSession {
         get_parameters
     }
 
+    pub fn server_name(&self) -> Option<String> {
+        let mut tls_session = self.lock_guard();
+        if let RawTlsSession::Exist { tls_conn, .. } = tls_session.deref_mut() {
+            if let rustls::quic::Connection::Server(server) = tls_conn {
+                return server.server_name().map(|s| s.to_string());
+            } else {
+                return None;
+            }
+        }
+        None
+    }
+
     fn get_transport_parameters(&self) -> Option<Parameters> {
         let mut tls_session = self.lock_guard();
         if let RawTlsSession::Exist { tls_conn, .. } = tls_session.deref_mut() {

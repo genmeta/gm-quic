@@ -6,7 +6,11 @@ use std::{
     sync::Arc,
 };
 
-use qbase::{cid::ConnectionId, config::Parameters};
+use qbase::{
+    cid::ConnectionId,
+    config::Parameters,
+    token::{ArcTokenRegistry, TokenSink},
+};
 use qconnection::{connection::ArcConnection, path::Pathway};
 use rustls::{
     client::WantsClientCert, ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
@@ -24,6 +28,7 @@ pub struct QuicClient {
     _prefered_versions: Vec<u32>,
     parameters: Parameters,
     tls_config: Arc<TlsClientConfig>,
+    token_sink: Option<Arc<dyn TokenSink>>,
 }
 
 impl QuicClient {
@@ -69,6 +74,7 @@ impl QuicClient {
             preferred_versions: vec![1],
             parameters: Parameters::default(),
             tls_config: TlsClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
+            token_sink: None,
         }
     }
 
@@ -111,6 +117,12 @@ impl QuicClient {
         let scid = std::iter::repeat_with(Self::gen_cid)
             .find(|cid| !CONNECTIONS.contains_key(&ConnKey::Client(*cid)))
             .unwrap();
+
+        let token_registry = match &self.token_sink {
+            Some(sink) => ArcTokenRegistry::with_sink(server_name.clone(), sink.clone()),
+            None => ArcTokenRegistry::default_sink(server_name.clone()),
+        };
+
         let inner = ArcConnection::new_client(
             server_name,
             pathway,
@@ -118,7 +130,7 @@ impl QuicClient {
             self.tls_config.clone(),
             &self.parameters,
             scid,
-            None,
+            token_registry,
         );
         let conn = QuicConnection {
             key: ConnKey::Client(scid),
@@ -136,6 +148,7 @@ pub struct QuicClientBuilder<T> {
     preferred_versions: Vec<u32>,
     parameters: Parameters,
     tls_config: T,
+    token_sink: Option<Arc<dyn TokenSink>>,
 }
 
 impl<T> QuicClientBuilder<T> {
@@ -174,8 +187,9 @@ impl<T> QuicClientBuilder<T> {
     /// 如不设置，则会丢弃这些NewToken
     /// TokenSink会在创建新连接时，尝试根据server_name获取可用Token
     /// TokenSink还需保存服务端颁发的关联Token，以便未来连接时使用
-    pub fn with_token_sink(self) -> Self {
-        todo!()
+    pub fn with_token_sink(mut self, sink: Arc<dyn TokenSink>) -> Self {
+        self.token_sink = Some(sink);
+        self
     }
 }
 
@@ -192,6 +206,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
             preferred_versions: self.preferred_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_root_certificates(root_store),
+            token_sink: self.token_sink,
         }
     }
     pub fn with_webpki_verifier(
@@ -205,6 +220,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
             preferred_versions: self.preferred_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_webpki_verifier(verifier),
+            token_sink: self.token_sink,
         }
     }
 }
@@ -237,6 +253,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
                 .tls_config
                 .with_client_auth_cert(cert_chain, key_der)
                 .expect("The private key was wrong encoded or failed validation"),
+            token_sink: self.token_sink,
         }
     }
 
@@ -248,6 +265,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
             preferred_versions: self.preferred_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_no_client_auth(),
+            token_sink: self.token_sink,
         }
     }
 
@@ -262,13 +280,13 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
             preferred_versions: self.preferred_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_client_cert_resolver(cert_resolver),
+            token_sink: self.token_sink,
         }
     }
 }
 
 impl QuicClientBuilder<TlsClientConfig> {
     pub fn build(self) -> QuicClient {
-        // TODO: 创建好相应的usc
         QuicClient {
             addresses: self.addresses,
             _reuse_connection: self.reuse_connection,
@@ -276,6 +294,7 @@ impl QuicClientBuilder<TlsClientConfig> {
             _prefered_versions: self.preferred_versions,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
+            token_sink: self.token_sink,
         }
     }
 }
