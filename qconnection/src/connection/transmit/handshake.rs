@@ -4,7 +4,7 @@ use bytes::BufMut;
 use qbase::{
     cid::ConnectionId,
     packet::{
-        encrypt::{encrypt_packet, protect_long_header},
+        encrypt::{encode_long_first_byte, encrypt_packet, protect_header},
         header::WriteLongHeader,
         keys::ArcKeys,
         Encode, LongHeaderBuilder, WritePacketNumber,
@@ -36,7 +36,10 @@ impl HandshakeSpaceReader {
         if buf.len() < hdr.size() + 2 + 20 {
             return None;
         }
-        let (mut hdr_buf, payload_buf) = buf.split_at_mut(hdr.size() + 2);
+        let (mut hdr_buf, payload_tag) = buf.split_at_mut(hdr.size() + 2);
+        let payload_tag_len = payload_tag.len();
+        let tag_len = k.local.packet.as_ref().tag_len();
+        let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
 
         // 3. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
         let sent_pkt_records = self.space.sent_packets();
@@ -75,33 +78,34 @@ impl HandshakeSpaceReader {
         // 7. 填充，保护头部，加密
         let hdr_len = hdr_buf.len();
         let pn_len = pn_buf.len();
-        let mut body_size = body_size - body_buf.remaining_mut();
-        if body_size == 0 {
+        let mut body_len = body_size - body_buf.remaining_mut();
+        if body_len == 0 {
             // 无有效数据，那就不打包Handshake包发送了
             return None;
         }
         // payload(pn + body)长度不足20字节，填充之
-        if body_size + pn_len < 20 {
-            let padding_len = 20 - body_size - pn_len;
+        if pn_len + body_len + tag_len < 20 {
+            let padding_len = 20 - pn_len - body_len - tag_len;
             body_buf.put_bytes(0, padding_len);
-            body_size += padding_len;
+            body_len += padding_len;
         }
-        let pkt_size = hdr_len + 2 + pn_len + body_size;
+        let pkt_size = hdr_len + pn_len + body_len + tag_len;
 
         hdr_buf.put_long_header(&hdr);
         hdr_buf.encode_varint(
-            &VarInt::try_from(pn_len + body_size).unwrap(),
+            &VarInt::try_from(pn_len + body_len + tag_len).unwrap(),
             EncodeBytes::Two,
         );
         pn_buf.put_packet_number(encoded_pn);
 
+        encode_long_first_byte(&mut hdr_buf[0], pn_len);
         encrypt_packet(
             k.remote.packet.as_ref(),
             pn,
             &mut buf[..pkt_size],
             hdr_len + pn_len,
         );
-        protect_long_header(
+        protect_header(
             k.remote.header.as_ref(),
             &mut buf[..pkt_size],
             hdr_len,

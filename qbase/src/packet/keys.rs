@@ -150,12 +150,17 @@ impl OneRttPacketKeys {
     }
 }
 
+/// For performance reasons, the second element of the tuple is the length of the tag of the local packet key.
 #[derive(Clone)]
-pub struct ArcOneRttPacketKeys(Arc<Mutex<OneRttPacketKeys>>);
+pub struct ArcOneRttPacketKeys(Arc<(Mutex<OneRttPacketKeys>, usize)>);
 
 impl ArcOneRttPacketKeys {
     pub fn lock_guard(&self) -> MutexGuard<OneRttPacketKeys> {
-        self.0.lock().unwrap()
+        self.0 .0.lock().unwrap()
+    }
+
+    pub fn tag_len(&self) -> usize {
+        self.0 .1
     }
 }
 
@@ -199,11 +204,15 @@ impl ArcOneRttKeys {
                     remote: remote_hpk,
                     local: local_hpk,
                 };
-                let pk = ArcOneRttPacketKeys(Arc::new(Mutex::new(OneRttPacketKeys::new(
-                    keys.remote.packet,
-                    keys.local.packet,
-                    secrets,
-                ))));
+                let tag_len = keys.local.packet.tag_len();
+                let pk = ArcOneRttPacketKeys(Arc::new((
+                    Mutex::new(OneRttPacketKeys::new(
+                        keys.remote.packet,
+                        keys.local.packet,
+                        secrets,
+                    )),
+                    tag_len,
+                )));
                 *state = OneRttKeysState::Ready { hpk, pk };
             }
             OneRttKeysState::Ready { .. } => panic!("set_keys called twice"),
