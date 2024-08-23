@@ -2,8 +2,12 @@ use std::sync::{Arc, Mutex};
 
 use futures::channel::mpsc;
 use qbase::{
-    cid::ConnectionId, flow::FlowController, handshake::Handshake, packet::keys::ArcKeys,
+    cid::ConnectionId,
+    flow::FlowController,
+    handshake::Handshake,
+    packet::keys::ArcKeys,
     streamid::Role,
+    token::{ArcTokenRegistry, TokenRegistry},
 };
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qunreliable::DatagramFlow;
@@ -12,7 +16,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::{
     scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope},
-    ArcLocalCids, ArcRemoteCids, CidRegistry, RcvdPackets, TokenRegistry,
+    ArcLocalCids, ArcRemoteCids, CidRegistry, RcvdPackets,
 };
 use crate::{
     error::ConnError,
@@ -22,10 +26,9 @@ use crate::{
 };
 
 pub struct RawConnection {
-    pub server_name: String,
+    pub token: Arc<Mutex<Vec<u8>>>,
     pub pathes: ArcPathes,
     pub cid_registry: CidRegistry,
-    pub token_registry: TokenRegistry,
     // handshake done的信号
     pub handshake: Handshake<ArcReliableFrameDeque>,
     pub flow_ctrl: FlowController,
@@ -51,10 +54,10 @@ impl RawConnection {
 
     pub fn new(
         role: Role,
-        server_name: String,
         tls_session: ArcTlsSession,
         scid: ConnectionId,
         initial_keys: Keys,
+        token_registry: ArcTokenRegistry,
     ) -> Self {
         let (initial_packets_entry, rcvd_initial_packets) = mpsc::unbounded();
         let (zero_rtt_packets_entry, rcvd_0rtt_packets) = mpsc::unbounded();
@@ -66,14 +69,7 @@ impl RawConnection {
         let hs = HandshakeScope::default();
         let data = DataScope::default();
 
-        // TODO: Token Skin 和 Token Provider 由外面传提供，不需要在此创建
-        let token_registry = if role == Role::Client {
-            TokenRegistry::new_client(server_name.clone(), initial.clone())
-        } else {
-            TokenRegistry::new_server(server_name.clone(), reliable_frames.clone())
-        };
         let router_registry = ROUTER.registry(
-            token_registry.clone(),
             reliable_frames.clone(),
             [
                 initial_packets_entry.clone(),
@@ -104,6 +100,14 @@ impl RawConnection {
         );
         let datagrams = DatagramFlow::new(0, 0);
 
+        let token = match &*token_registry.lock_guard() {
+            TokenRegistry::Client((server_name, client)) => {
+                Arc::new(Mutex::new(client.get_token(server_name)))
+            }
+
+            TokenRegistry::Server(_) => Arc::new(Mutex::new(vec![])),
+        };
+
         let pathes = ArcPathes::new(Box::new({
             let cid_registry = cid_registry.clone();
             let flow_ctrl = flow_ctrl.clone();
@@ -115,10 +119,7 @@ impl RawConnection {
                 let reliable_frames = reliable_frames.clone();
                 let streams = streams.clone();
                 let datagrams = datagrams.clone();
-                let token = match &token_registry {
-                    TokenRegistry::Client(client) => client.initial_token.clone(),
-                    _ => Arc::new(Mutex::new(Vec::new())),
-                };
+                let token = token.clone();
                 move |path: &RawPath| {
                     (
                         initial.reader(token.clone()),
@@ -150,14 +151,29 @@ impl RawConnection {
             }
         }));
 
+        let validator = {
+            let tls_session = tls_session.clone();
+            let token_registry = token_registry.clone();
+            move |initial_token: &[u8], path: ArcPath| {
+                if let TokenRegistry::Server(provider) = &*token_registry.lock_guard() {
+                    if let Some(server_name) = tls_session.server_name() {
+                        if provider.validate_token(server_name, initial_token) {
+                            path.anti_amplifier.grant();
+                        }
+                    }
+                }
+            }
+        };
+
         let notify = Arc::new(Notify::new());
         let join_initial = initial.build(
             rcvd_initial_packets,
             &pathes,
             &notify,
             &conn_error,
-            token_registry.clone(),
+            validator,
         );
+
         let join_hs = hs.build(rcvd_hs_packets, &pathes, &notify, &conn_error);
         let (join_0rtt, join_1rtt) = data.build(
             &pathes,
@@ -170,7 +186,7 @@ impl RawConnection {
             &conn_error,
             rcvd_0rtt_packets,
             rcvd_1rtt_packets,
-            token_registry.clone(),
+            token_registry,
         );
         let join_handles = [join_initial, join_0rtt, join_hs, join_1rtt];
 
@@ -186,10 +202,9 @@ impl RawConnection {
         );
 
         Self {
-            server_name,
+            token,
             pathes,
             cid_registry,
-            token_registry,
             handshake,
             flow_ctrl,
             streams,

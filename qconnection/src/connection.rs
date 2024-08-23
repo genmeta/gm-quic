@@ -15,12 +15,11 @@ use qbase::{
     error::Error,
     packet::DataPacket,
     streamid::Role,
-    token,
+    token::ArcTokenRegistry,
 };
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qudp::ArcUsc;
 use raw::RawConnection;
-use scope::InitialScope;
 
 use crate::{
     connection::ConnState::{Closed, Closing, Draining, Raw},
@@ -42,8 +41,6 @@ pub type ArcLocalCids =
     cid::ArcLocalCids<fn() -> ConnectionId, RouterRegistry<ArcReliableFrameDeque>>;
 pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
 pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
-
-pub type TokenRegistry = token::TokenRegistry<ArcReliableFrameDeque, InitialScope>;
 
 enum ConnState {
     Raw(RawConnection),
@@ -69,9 +66,8 @@ impl ArcConnection {
         tls_config: Arc<rustls::ClientConfig>,
         parameters: &Parameters,
         scid: ConnectionId,
-        _token: Option<Vec<u8>>,
+        token_registry: ArcTokenRegistry,
     ) -> Self {
-        let name = server_name.clone();
         let Ok(server_name) = server_name.try_into() else {
             panic!("server_name is not valid")
         };
@@ -80,10 +76,10 @@ impl ArcConnection {
 
         let raw_conn = RawConnection::new(
             Role::Client,
-            name,
             ArcTlsSession::new_client(server_name, tls_config.clone(), parameters),
             scid,
             ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Client, dcid),
+            token_registry,
         );
 
         let pathes = raw_conn.pathes.clone();
@@ -97,14 +93,14 @@ impl ArcConnection {
         parameters: &Parameters,
         scid: ConnectionId,
         dcid: ConnectionId,
+        token_registry: ArcTokenRegistry,
     ) -> Self {
-        // TODO: server name 解析 client hello 后从 tlsSession 获取
         let raw_conn = RawConnection::new(
             Role::Server,
-            "".to_string(),
             ArcTlsSession::new_server(tls_config.clone(), parameters),
             scid,
             ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Server, dcid),
+            token_registry,
         );
         raw_conn.into()
     }

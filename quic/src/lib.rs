@@ -167,7 +167,6 @@ impl Listener {
         let ret = self.creators.get(&bind_addr).map(|creator| creator(dcid));
         if let Some(conn) = ret {
             self.acceptor.accept((conn, bind_addr));
-            self.acceptor.wake();
         }
     }
 
@@ -193,9 +192,6 @@ impl Acceptor {
 
     fn accept(&self, value: (QuicConnection, SocketAddr)) {
         *self.0.lock().unwrap() = Some(value);
-    }
-
-    fn wake(&self) {
         if let Some(waker) = self.1.lock().unwrap().take() {
             waker.wake();
         }

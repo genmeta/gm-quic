@@ -1,10 +1,6 @@
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use bytes::BufMut;
-use futures::io;
 use nom::{bytes::complete::take, IResult};
 use rand::Rng;
 
@@ -13,8 +9,6 @@ use crate::{
     frame::{BeFrame, NewTokenFrame, ReceiveFrame},
 };
 
-const TOKEN_PATH: &str = "/tmp/gm-quic";
-const LIFETIME: u64 = 60 * 60 * 24 * 3; // 3 days
 pub const RESET_TOKEN_SIZE: usize = 16;
 
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash)]
@@ -59,212 +53,100 @@ impl std::ops::Deref for ResetToken {
     }
 }
 
-type TokenQueue = VecDeque<(Vec<u8>, u64)>;
-#[derive(Clone, Debug)]
-struct ArcTokenQueue(Arc<Mutex<TokenQueue>>);
+pub trait TokenSink: Send + Sync {
+    fn sink(&self, server_name: &str, token: Vec<u8>);
 
-impl ArcTokenQueue {
-    fn remove_expired(&mut self) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        let mut queue = self.0.lock().unwrap();
-        queue.retain(|(_, exp)| exp > &now);
-    }
-
-    fn contains(&self, token: &[u8]) -> bool {
-        let queue = self.0.lock().unwrap();
-        queue.iter().any(|(t, _)| t == token)
-    }
-
-    fn flush(&self, _: &str) {
-        todo!("Write token file to disk and serialize it from a TokenQueue")
-    }
-
-    fn read(_: &str) -> io::Result<Self> {
-        todo!("Read token file from disk and deserialize it into a TokenQueue")
-    }
-
-    fn push_back(&self, token: (Vec<u8>, u64)) {
-        let mut queue = self.0.lock().unwrap();
-        queue.push_back(token);
-    }
-
-    fn pop_back(&self) -> Option<(Vec<u8>, u64)> {
-        let mut queue = self.0.lock().unwrap();
-        queue.pop_back()
-    }
+    fn get_token(&self, server_name: &str) -> Vec<u8>;
 }
 
-#[derive(Clone, Debug)]
-pub struct Server<ISSUED>
-where
-    ISSUED: Extend<NewTokenFrame>,
-{
-    path: String,
-    issued: ISSUED,
-    queue: ArcTokenQueue,
-    retry_token: Option<Vec<u8>>,
+pub trait TokenProvider: Send + Sync {
+    fn provide_new_token(&self, server_name: &str) -> Vec<u8>;
+
+    fn provide_retry_token(&self, server_name: &str) -> Vec<u8>;
+
+    // A token sent in a NEW_TOKEN frame or a Retry packet MUST be constructed in
+    // a way that allows the server to identify how it was provided to a client
+    fn validate_token(&self, server_name: String, token: &[u8]) -> bool;
 }
 
-impl<ISSUED> Server<ISSUED>
-where
-    ISSUED: Extend<NewTokenFrame>,
-{
-    pub fn new(name: String, issued: ISSUED) -> Self {
-        let path = format!("{}/server/{}.json", TOKEN_PATH, name);
-        let queue = ArcTokenQueue::read(path.as_str()).unwrap_or_else(|_| {
-            let queue = Arc::new(Mutex::new(VecDeque::new()));
-            ArcTokenQueue(queue)
-        });
+#[derive(Clone)]
+pub struct ArcTokenRegistry(Arc<Mutex<TokenRegistry>>);
 
-        Self {
-            path,
-            issued,
-            queue,
-            retry_token: None,
-        }
+impl ArcTokenRegistry {
+    pub fn default_sink(server_name: String) -> Self {
+        Self(Arc::new(Mutex::new(TokenRegistry::Client((
+            server_name,
+            Arc::new(DefaultTokenRegistry),
+        )))))
     }
 
-    pub fn issue_new_token(&mut self) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        let exp = now + LIFETIME;
-
-        let token = rand::random::<[u8; 16]>();
-        self.queue.push_back((token.to_vec(), exp));
-        self.issued.extend([NewTokenFrame {
-            token: token.to_vec(),
-        }]);
-        self.queue.flush(self.path.as_str());
+    pub fn default_provider() -> Self {
+        Self(Arc::new(Mutex::new(TokenRegistry::Server(Arc::new(
+            DefaultTokenRegistry,
+        )))))
     }
 
-    // 如果发过 Retry 包，校验 Retry Token，否则校验 new token
-    pub fn validate(&mut self, token: &[u8]) -> bool {
-        if let Some(retry_token) = &self.retry_token {
-            if token == retry_token {
-                return true;
-            }
-            return false;
-        }
-        self.queue.remove_expired();
-        self.queue.contains(token)
+    pub fn with_sink(server_name: String, client: Arc<dyn TokenSink>) -> Self {
+        Self(Arc::new(Mutex::new(TokenRegistry::Client((
+            server_name,
+            client,
+        )))))
     }
 
-    pub fn send_retry_token(&mut self, token: Vec<u8>) {
-        self.retry_token = Some(token);
+    pub fn with_provider(provider: Arc<dyn TokenProvider>) -> Self {
+        Self(Arc::new(Mutex::new(TokenRegistry::Server(provider))))
+    }
+
+    pub fn lock_guard(&self) -> MutexGuard<TokenRegistry> {
+        self.0.lock().unwrap()
     }
 }
-
-#[derive(Clone, Debug)]
-pub struct Client<RETRY>
-where
-    RETRY: RetryInitial,
-{
-    path: String,
-    queue: ArcTokenQueue,
-    retry: RETRY,
-    pub initial_token: Arc<Mutex<Vec<u8>>>,
+pub enum TokenRegistry {
+    Client((String, Arc<dyn TokenSink>)),
+    Server(Arc<dyn TokenProvider>),
 }
 
-impl<RETRY> Client<RETRY>
-where
-    RETRY: RetryInitial,
-{
-    pub fn new(server_name: String, retry: RETRY) -> Self {
-        let path = format!("{}/client/{}.json", TOKEN_PATH, server_name);
-        let queue = ArcTokenQueue::read(path.as_str()).unwrap_or_else(|_| {
-            let queue = Arc::new(Mutex::new(VecDeque::new()));
-            ArcTokenQueue(queue)
-        });
-
-        let initial_token = queue.pop_back().map(|(token, _)| token).unwrap_or_default();
-        Self {
-            path,
-            queue,
-            retry,
-            initial_token: Arc::new(Mutex::new(initial_token)),
-        }
-    }
-
-    // 收到 retry token，后续 initial 包都需要使用这个 token
-    pub fn recv_retry_token(&mut self, token: Vec<u8>) {
-        *self.initial_token.lock().unwrap() = token;
-        self.retry.retry_initial();
-    }
-
-    pub fn recv_new_token(&mut self, token: Vec<u8>) {
-        let queue = &mut self.queue;
-        let exp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs()
-            + LIFETIME;
-
-        queue.push_back((token, exp));
-        queue.remove_expired();
-        queue.flush(self.path.as_str());
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum TokenRegistry<ISSUED, RETRY>
-where
-    ISSUED: Extend<NewTokenFrame>,
-    RETRY: RetryInitial,
-{
-    Server(Server<ISSUED>),
-    Client(Client<RETRY>),
-}
-
-impl<ISSUED, RETRY> TokenRegistry<ISSUED, RETRY>
-where
-    ISSUED: Extend<NewTokenFrame>,
-    RETRY: RetryInitial,
-{
-    pub fn new_server(server_name: String, issued: ISSUED) -> Self {
-        Self::Server(Server::new(server_name, issued))
-    }
-
-    pub fn new_client(server_name: String, retry: RETRY) -> Self {
-        Self::Client(Client::new(server_name, retry))
-    }
-
-    pub fn receive_retry_packet(&mut self, token: Vec<u8>) {
-        match self {
-            TokenRegistry::Server(_) => unreachable!("Server cannot receive Retry packet"),
-            TokenRegistry::Client(client) => client.recv_retry_token(token),
-        }
-    }
-}
-
-impl<ISSUED, RETRY> ReceiveFrame<NewTokenFrame> for TokenRegistry<ISSUED, RETRY>
-where
-    ISSUED: Extend<NewTokenFrame>,
-    RETRY: RetryInitial,
-{
+impl ReceiveFrame<NewTokenFrame> for ArcTokenRegistry {
     type Output = ();
 
     fn recv_frame(&mut self, frame: &NewTokenFrame) -> Result<Self::Output, crate::error::Error> {
-        match self {
-            Self::Server(_) => Err(Error::new(
+        let guard = self.0.lock().unwrap();
+        match &*guard {
+            TokenRegistry::Client((server_name, client)) => {
+                client.sink(server_name, frame.token.clone());
+                Ok(())
+            }
+            TokenRegistry::Server(_) => Err(Error::new(
                 ErrorKind::ProtocolViolation,
                 frame.frame_type(),
                 "Server received NewTokenFrame",
             )),
-            Self::Client(client) => {
-                client.recv_new_token(frame.token.clone());
-                Ok(())
-            }
         }
     }
 }
 
-pub trait RetryInitial {
-    fn retry_initial(&mut self);
+struct DefaultTokenRegistry;
+
+impl TokenSink for DefaultTokenRegistry {
+    fn sink(&self, _: &str, _: Vec<u8>) {}
+
+    fn get_token(&self, _: &str) -> Vec<u8> {
+        Vec::new()
+    }
+}
+
+impl TokenProvider for DefaultTokenRegistry {
+    fn provide_new_token(&self, _: &str) -> Vec<u8> {
+        Vec::new()
+    }
+
+    fn provide_retry_token(&self, _: &str) -> Vec<u8> {
+        Vec::new()
+    }
+
+    fn validate_token(&self, _: String, _: &[u8]) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
