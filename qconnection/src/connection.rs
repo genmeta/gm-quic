@@ -239,9 +239,11 @@ impl ArcConnection {
         }
     }
 
-    pub fn recv_retry_packet(&self, retry: &RetryHeader) {
+    pub fn recv_retry_packet(&self, retry: &RetryHeader, pathway: Pathway, usc: ArcUsc) {
         if let Raw(conn) = &mut *self.0.lock().unwrap() {
             *conn.token.lock().unwrap() = retry.token.to_vec();
+            let path = conn.pathes.get(pathway, usc);
+            path.set_dcid(retry.scid);
             let sent_record = conn.initial.space.sent_packets();
             let mut guard = sent_record.receive();
             for i in 0..guard.largest_pn() {

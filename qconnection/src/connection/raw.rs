@@ -105,7 +105,6 @@ impl RawConnection {
             TokenRegistry::Client((server_name, client)) => {
                 Arc::new(Mutex::new(client.get_token(server_name)))
             }
-
             TokenRegistry::Server(_) => Arc::new(Mutex::new(vec![])),
         };
 
