@@ -33,6 +33,7 @@ With these layers in place, it becomes clear that the `Accept Functor` and the `
 - **qrecovery**: The reliable transport part of QUIC, encompassing the state machine evolution of the sender/receiver, and the internal logic interaction between the application layer and the transport layer.
 - **qcongestion**: Congestion control in QUIC, which abstracts a unified congestion control interface and implements BBRv1. In the future, it will also implement more transport control algorithms such as Cubic and others.
 - **qconnection**: Encapsulation of QUIC connections, linking the necessary components and tasks within a QUIC connection to ensure smooth operation.
+- **quic**: QUIC协议的顶层封装，包括QUIC客户端和服务端2部分的接口
 - **qudp**: High-performance UDP encapsulation for QUIC. Ordinary UDP incurs a system call for each packet sent or received, resulting in poor performance. 
 qudp optimizes UDP performance to the extreme using techniques like GSO (Generic Segmentation Offload) and GRO (Generic Receive Offload). The performance test results for sending are as follows:
 
@@ -68,11 +69,64 @@ sent 1200000000 bytes
 100.00    5.670961         362     15648         2 total
 ```
 
-## Progress Updates
+## Usage
 
-`gm-quic` is not fully complete yet, but most of its basic functional modules are already usable. 
-The remaining tasks involve filling gaps in qconnection and linking various modules together. 
-The core team is working hard to complete this final piece of the puzzle. Stay tuned!
+`gm-quic` provides user-friendly interfaces for creating client and server connections, while also supporting additional features that meet modern network requirements.
+
+The QUIC client not only offers configuration options specified by the QUIC protocol's Parameters but also includes additional options such as `reuse_connection` and `enable_happy_eyeballs` enabling the IPv6-preferred Happy Eyeballs algorithm. More advanced features allow the QUIC client to set its own certificates as its ID for server verification and manage its own Token manager, which handles tokens issued by servers for future connections with these servers.
+
+```rust
+let quic_client = QuicClient::bind([
+        "[2001:db8::1]:8080".parse().unwrap(),
+        "127.0.0.1:8080".parse().unwrap(),
+    ])
+    .reuse_connection()
+    .enable_happy_eyeballs()
+    // The QUIC version negotiation mechanism prioritizes using the earlier versions, 
+    // currently only supporting V1.
+    .prefer_versions([1u32])                
+    // .with_parameter(&client_parameters)      // If not set, the default parameters will be used
+    // .with_token_sink(token_sink)             // Manage Tokens issued by various servers
+    .with_root_certificates(root_certificates)
+    // .with_webpki_verifier(verifier)          // More advanced ways to verify server certificates
+    .without_cert()                             // Generally, clients do not need to set certificates
+    .build();
+
+let quic_client_conn = quic_client
+    .connect("localhost", "127.0.0.1:5000")
+    .unwrap();
+```
+
+The QUIC server supports SNI, allowing the configuration of multiple server names and certificates. Additionally, `gm-quic` provides a custom load balancing interface that determines how to return Retry packets based on the Initial packet of a new connection. This interface leverages the inherent features of QUIC to enable load-balanced scheduling across multiple hosts.
+
+```rust
+let quic_server = QuicServer::bind([
+        "[2001:db8::1]:8080".parse().unwrap(),
+        "127.0.0.1:8080".parse().unwrap(),
+    ])
+    .with_supported_versions([1u32])
+    .with_load_balance(move |initial_packet: &InitialPacket| -> Option<RetryPacket> {
+      ...
+    })
+    .without_cert_verifier()      // Generally, client identity is not verified
+    .enable_sni()
+    .add_host("www.genmeta.net", www_cert, www_key, www_server_paramester)
+    .add_host("developer.genmeta.net", dev_cert, dev_key, dev_server_parameters)
+    .listen();
+
+while let Ok(quic_server_conn) = quic_server.accept().await? {
+    // The following is a demonstration
+    tokio::spawn(handle_quic_conn(quic_server_conn));
+}
+```
+
+There is an asynchronous interface for creating unidirectional or bidirectional QUIC streams from a QUIC Connection, or for listening to incoming streams from the other side of a QUIC Connection. This interface is almost identical to the one in [`hyperium/h3`](https://github.com/hyperium/h3/blob/master/docs/PROPOSAL.md#5-quic-transport).
+
+As for reading and writing data from a QUIC stream, the tokio's `AsyncRead` and `AsyncWrite` interfaces are implemented for QUIC streams, making it very convenient to use.
+
+## Progress
+
+`gm-quic` has entered the final testing phase. Next, we will further improve the documentation and add the qlog module. Stay tuned.
 
 ## Documentation 
 
