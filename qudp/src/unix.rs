@@ -16,11 +16,16 @@ macro_rules! handle_io_error {
     ($e:expr, $n:expr) => {
         match $e.raw_os_error() {
             Some(libc::EINTR) => continue,
-            Some(libc::EWOULDBLOCK) => return Ok($n),
             #[cfg(any(target_os = "macos", target_os = "ios", target_os = "openbsd",))]
-            Some(libc::EBADF) | Some(libc::EPIPE) | Some(libc::ENOTCONN) => return Err($e),
+            Some(libc::EWOULDBLOCK)
+            | Some(libc::EBADF)
+            | Some(libc::EPIPE)
+            | Some(libc::ENOTCONN) => return Err($e),
             #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
-            Some(libc::EBADE) | Some(libc::EPIPE) | Some(libc::ENOTCONN) => return Err($e),
+            Some(libc::EWOULDBLOCK)
+            | Some(libc::EBADE)
+            | Some(libc::EPIPE)
+            | Some(libc::ENOTCONN) => return Err($e),
             _ => break,
         }
     };
@@ -137,41 +142,36 @@ impl Io for UdpSocketController {
         let max_msg_count = bufs.len().min(BATCH_SIZE);
 
         msg.prepare_recv(bufs, max_msg_count);
-        let mut ret: io::Result<Rcvd>;
-        let msg_count = loop {
-            #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
-            {
-                ret = unsafe {
-                    recvmmsg(
-                        self.io.as_raw_fd(),
-                        msg.hdrs.as_mut_ptr(),
-                        max_msg_count as _,
-                    )
-                };
-            }
+        let ret: io::Result<Rcvd>;
+        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
+        {
+            ret = unsafe {
+                recvmmsg(
+                    self.io.as_raw_fd(),
+                    msg.hdrs.as_mut_ptr(),
+                    max_msg_count as _,
+                )
+            };
+        }
 
-            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "openbsd",))]
-            {
-                ret = recvmsg(self.io.as_raw_fd(), &mut msg.hdrs[0]);
-            }
-            match ret {
-                Ok(rcvd) => match rcvd {
-                    Rcvd::MsgCount(n) => break n,
-                    Rcvd::MsgSize(n) => {
-                        recv_hdrs[0].seg_size = n as u16;
-                        break 1;
-                    }
-                },
-                Err(e) => {
-                    if e.kind() == io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    return Err(e);
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "openbsd",))]
+        {
+            ret = recvmsg(self.io.as_raw_fd(), &mut msg.hdrs[0]);
+        }
+        let msg_count = match ret {
+            Ok(rcvd) => match rcvd {
+                Rcvd::MsgCount(n) => n,
+                Rcvd::MsgSize(n) => {
+                    recv_hdrs[0].seg_size = n as u16;
+                    1
                 }
+            },
+            Err(e) => {
+                return Err(e);
             }
         };
 
-        msg.decode_recv(recv_hdrs, msg_count);
+        msg.decode_recv(recv_hdrs, msg_count, self.local_addr().port());
         Ok(msg_count)
     }
 }
@@ -225,9 +225,13 @@ pub(super) fn sendmmsg(
                     }
                     break;
                 }
-                Err(e) => {
-                    handle_io_error!(e, sent_packets)
-                }
+                Err(e) => match e.raw_os_error() {
+                    Some(libc::EINTR) => continue,
+                    Some(libc::EWOULDBLOCK) if sent_packets > 0 => return Ok(sent_packets),
+                    Some(libc::EWOULDBLOCK) if sent_packets == 0 => return Err(e),
+                    Some(libc::EBADE) | Some(libc::EPIPE) | Some(libc::ENOTCONN) => return Err(e),
+                    _ => break,
+                },
             }
         }
     }
@@ -262,9 +266,13 @@ pub(super) fn sendmsg(
                     sent_packets += 1;
                     break;
                 }
-                Err(e) => {
-                    handle_io_error!(e, sent_packets)
-                }
+                Err(e) => match e.raw_os_error() {
+                    Some(libc::EINTR) => continue,
+                    Some(libc::EWOULDBLOCK) if sent_packets > 0 => return Ok(sent_packets),
+                    Some(libc::EWOULDBLOCK) if sent_packets == 0 => return Err(e),
+                    Some(libc::EBADF) | Some(libc::EPIPE) | Some(libc::ENOTCONN) => return Err(e),
+                    _ => break,
+                },
             }
         }
     }
