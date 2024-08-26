@@ -49,8 +49,8 @@ impl QuicConnection {
         // self.inner.recv_version_negotiation(vn);
     }
 
-    pub fn recv_retry_packet(&self, retry: &RetryHeader) {
-        self.inner.recv_retry_packet(retry);
+    pub fn recv_retry_packet(&self, retry: &RetryHeader, pathway: Pathway, usc: ArcUsc) {
+        self.inner.recv_retry_packet(retry, pathway, usc);
     }
 
     pub fn update_path_recv_time(&self, pathway: Pathway) {
@@ -95,7 +95,7 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                             Packet::Retry(retry) => {
                                 let key = ConnKey::Client(*retry.get_dcid());
                                 if let Some(conn) = CONNECTIONS.get(&key) {
-                                    conn.recv_retry_packet(&retry);
+                                    conn.recv_retry_packet(&retry, pathway, usc.clone());
                                     conn.update_path_recv_time(pathway);
                                 } else {
                                     log::error!("No connection found for Retry packet");
