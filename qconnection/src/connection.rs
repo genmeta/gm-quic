@@ -64,7 +64,7 @@ impl ArcConnection {
         pathway: Pathway,
         usc: ArcUsc,
         tls_config: Arc<rustls::ClientConfig>,
-        parameters: &Parameters,
+        parameters: Parameters,
         scid: ConnectionId,
         token_registry: ArcTokenRegistry,
     ) -> Self {
@@ -76,7 +76,7 @@ impl ArcConnection {
 
         let raw_conn = RawConnection::new(
             Role::Client,
-            ArcTlsSession::new_client(server_name, tls_config.clone(), parameters),
+            ArcTlsSession::new_client(server_name, tls_config.clone(), parameters, scid),
             scid,
             Some(dcid),
             ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Client, dcid),
