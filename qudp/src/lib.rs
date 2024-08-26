@@ -166,6 +166,12 @@ impl ArcUsc {
         let ret = controller
             .io
             .try_io(Interest::READABLE, || controller.recvmsg(bufs, hdrs));
+
+        if let Err(e) = &ret {
+            if e.kind() == io::ErrorKind::WouldBlock {
+                return Poll::Ready(Ok(0));
+            }
+        }
         Poll::Ready(ret)
     }
 
@@ -212,7 +218,7 @@ impl ArcUsc {
         Receiver {
             usc: self.clone(),
             iovecs: (0..BATCH_SIZE)
-                .map(|_| Vec::with_capacity(1500))
+                .map(|_| [0u8; 1500].to_vec())
                 .collect::<Vec<_>>(),
             headers: (0..BATCH_SIZE)
                 .map(|_| PacketHeader::default())
@@ -236,7 +242,6 @@ impl<'a> Future for Sender<'a> {
         let ret = usc
             .io
             .try_io(Interest::WRITABLE, || usc.sendmsg(self.iovecs, &self.hdr));
-
         Poll::Ready(ret)
     }
 }
@@ -279,10 +284,7 @@ impl Future for Receiver {
         let mut bufs = this
             .iovecs
             .iter_mut()
-            .map(|b| {
-                b.clear();
-                IoSliceMut::new(b)
-            })
+            .map(|b| IoSliceMut::new(b))
             .collect::<Vec<_>>();
 
         this.usc.poll_recv(&mut bufs, &mut this.headers, cx)

@@ -5,7 +5,7 @@ use qbase::{
     frame::{AckFrame, Frame, FrameReader, ReceiveFrame},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
-        header::{GetDcid, GetScid, GetType},
+        header::{GetScid, GetType},
         keys::ArcKeys,
         long, DataHeader,
     },

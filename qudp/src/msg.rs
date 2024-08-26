@@ -102,7 +102,12 @@ impl Message {
         }
     }
 
-    pub(super) fn decode_recv(&mut self, recv_hdrs: &mut [PacketHeader], msg_count: usize) {
+    pub(super) fn decode_recv(
+        &mut self,
+        recv_hdrs: &mut [PacketHeader],
+        msg_count: usize,
+        port: u16,
+    ) {
         assert!(msg_count <= BATCH_SIZE);
         for (i, hdr) in self.hdrs.iter_mut().enumerate().take(msg_count) {
             #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
@@ -167,6 +172,7 @@ impl Message {
                 }
             }
 
+            recv_hdr.dst.set_port(port);
             recv_hdr.src = match libc::c_int::from(name.ss_family) {
                 libc::AF_INET => {
                     let addr: &libc::sockaddr_in =

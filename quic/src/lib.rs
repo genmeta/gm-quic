@@ -120,11 +120,7 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                                     None => log::error!("No connection found for Data packet"),
                                 }
 
-                                ROUTER.recv_packet_via_pathway(
-                                    packet,
-                                    pathway,
-                                    &receiver.usc.clone(),
-                                );
+                                ROUTER.recv_packet_via_pathway(packet, pathway, &usc.clone());
                             }
                         }
                     }

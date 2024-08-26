@@ -21,7 +21,7 @@ struct Args {
     #[arg(long, default_value_t = 1200)]
     msg_size: usize,
 
-    #[arg(long, default_value_t = 1_000)]
+    #[arg(long, default_value_t = 1)]
     msg_count: usize,
 
     #[arg(long, default_value_t = false)]
@@ -59,7 +59,7 @@ async fn main() {
 }
 
 fn payloads(args: &Args) -> Vec<Bytes> {
-    let payload: Vec<u8> = iter::repeat(1u8).take(args.msg_size).collect();
+    let payload: Vec<u8> = iter::repeat(8u8).take(args.msg_size).collect();
     let payload = Bytes::from(payload);
     iter::repeat_with(|| payload.clone())
         .take(args.msg_count)
