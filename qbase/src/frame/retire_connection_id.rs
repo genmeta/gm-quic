@@ -63,7 +63,7 @@ mod tests {
     fn test_read_retire_connection_id_frame() {
         let buf = vec![0x52, 0x34];
         let (remain, frame) = be_retire_connection_id_frame(&buf).unwrap();
-        assert_eq!(remain, &[]);
+        assert!(remain.is_empty());
         assert_eq!(
             frame,
             RetireConnectionIdFrame {

@@ -112,7 +112,7 @@ mod tests {
             }
         })(buf.as_ref())
         .unwrap();
-        assert_eq!(input, &[]);
+        assert!(input.is_empty());
         assert_eq!(frame, MaxStreamsFrame::Bi(VarInt::from_u32(0x1234)));
 
         let buf = vec![MAX_STREAMS_FRAME_TYPE | 0x1, 0x52, 0x36];
@@ -124,7 +124,7 @@ mod tests {
             }
         })(buf.as_ref())
         .unwrap();
-        assert_eq!(input, &[]);
+        assert!(input.is_empty());
         assert_eq!(frame, MaxStreamsFrame::Uni(VarInt::from_u32(0x1236)));
     }
 

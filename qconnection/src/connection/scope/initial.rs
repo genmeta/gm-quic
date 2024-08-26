@@ -35,7 +35,7 @@ impl InitialScope {
     // Initial keys应该是预先知道的，或者传入dcid，可以构造出来
     pub fn new(keys: ArcKeys) -> Self {
         let space = InitialSpace::with_capacity(16);
-        let crypto_stream = CryptoStream::new(0, 0);
+        let crypto_stream = CryptoStream::new(4096, 4096);
 
         Self {
             keys,

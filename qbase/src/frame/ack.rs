@@ -198,7 +198,7 @@ mod tests {
     fn test_read_ecn_count() {
         let input = vec![0x52, 0x34, 0x52, 0x34, 0x52, 0x34];
         let (input, ecn) = be_ecn_counts(&input).unwrap();
-        assert_eq!(input, &[]);
+        assert!(input.is_empty());
         assert_eq!(
             ecn,
             EcnCounts {
@@ -220,7 +220,7 @@ mod tests {
             }
         })(&input)
         .unwrap();
-        assert_eq!(input, &[]);
+        assert!(input.is_empty());
         assert_eq!(
             ack_frame,
             AckFrame {

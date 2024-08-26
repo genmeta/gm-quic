@@ -94,7 +94,7 @@ mod tests {
     fn test_read_connection_id() {
         let buf = vec![0x04, 0x01, 0x02, 0x03, 0x04];
         let (remain, cid) = be_connection_id(&buf).unwrap();
-        assert_eq!(remain, &[]);
+        assert!(remain.is_empty());
         assert_eq!(*cid, [0x01, 0x02, 0x03, 0x04],);
 
         let buf = vec![21, 0x01, 0x02, 0x03, 0x04];
