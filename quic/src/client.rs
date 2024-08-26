@@ -128,7 +128,7 @@ impl QuicClient {
             pathway,
             usc,
             self.tls_config.clone(),
-            &self.parameters,
+            self.parameters.clone(),
             scid,
             token_registry,
         );

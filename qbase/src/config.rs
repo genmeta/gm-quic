@@ -131,15 +131,22 @@ pub mod ext {
 
     use super::{Parameters, PreferredAddress};
     use crate::{
-        cid::{self, be_connection_id, ConnectionId, WriteConnectionId},
+        cid::{be_connection_id, ConnectionId, WriteConnectionId, MAX_CID_SIZE},
         token::{be_reset_token, ResetToken, WriteResetToken},
         varint::{be_varint, VarInt, WriteVarInt},
     };
 
     pub fn be_parameters(input: &[u8]) -> nom::IResult<&[u8], Parameters> {
-        let be_connection_id = |input| {
-            let (remain, cid) = cid::be_connection_id(input)?;
-            Ok((remain, Some(cid)))
+        let be_connection_id = |input, len: VarInt| {
+            let len = len.into_inner() as usize;
+            if len > MAX_CID_SIZE {
+                return Err(nom::Err::Error(nom::error::make_error(
+                    input,
+                    nom::error::ErrorKind::TooLarge,
+                )));
+            }
+            let (remain, bytes) = take(len)(input)?;
+            Ok((remain, Some(ConnectionId::from_slice(bytes))))
         };
 
         let be_max_idle_timeout = |input| {
@@ -165,7 +172,9 @@ pub mod ext {
             (remain, tag) = be_varint(remain)?;
             (remain, len) = be_varint(remain)?;
             match tag.into_inner() {
-                0x00 => (remain, tp.original_destination_connection_id) = be_connection_id(remain)?,
+                0x00 => {
+                    (remain, tp.original_destination_connection_id) = be_connection_id(remain, len)?
+                }
                 0x01 => (remain, tp.max_idle_timeout) = be_max_idle_timeout(remain)?,
                 0x02 => (remain, tp.statelss_reset_token) = be_reset_token(remain)?,
                 0x03 => (remain, tp.max_udp_payload_size) = be_varint(remain)?,
@@ -180,8 +189,8 @@ pub mod ext {
                 0x0c => tp.disable_active_migration = true,
                 0x0d => (remain, tp.preferred_address) = be_preferred_address(remain)?,
                 0x0e => (remain, tp.active_connection_id_limit) = be_varint(remain)?,
-                0x0f => (remain, tp.initial_source_connection_id) = be_connection_id(remain)?,
-                0x10 => (remain, tp.retry_source_connection_id) = be_connection_id(remain)?,
+                0x0f => (remain, tp.initial_source_connection_id) = be_connection_id(remain, len)?,
+                0x10 => (remain, tp.retry_source_connection_id) = be_connection_id(remain, len)?,
                 0x20 => (remain, tp.max_datagram_frame_size) = be_varint(remain)?,
                 // 0x2ab2 => tp.grease_quic_bit = true,
                 _ => {
@@ -217,9 +226,6 @@ pub mod ext {
             let put_connection_id = |buf: &mut Self, tag: u8, cid: &Option<ConnectionId>| {
                 if let Some(cid) = cid {
                     buf.put_u8(tag);
-                    buf.put_varint(&unsafe {
-                        VarInt::from_u64_unchecked(cid.encoding_size() as u64)
-                    });
                     buf.put_connection_id(cid);
                 }
             };

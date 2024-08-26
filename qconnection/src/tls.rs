@@ -37,10 +37,10 @@ impl RawTlsSession {
     fn new_client(
         server_name: rustls::pki_types::ServerName<'static>,
         tls_config: Arc<rustls::ClientConfig>,
-        parameters: &Parameters,
+        parameters: Parameters,
     ) -> Self {
         let mut params_bytes = Vec::new();
-        params_bytes.put_parameters(parameters);
+        params_bytes.put_parameters(&parameters);
 
         let connection = rustls::quic::Connection::Client(
             rustls::quic::ClientConnection::new(
@@ -121,8 +121,10 @@ impl ArcTlsSession {
     pub fn new_client(
         server_name: rustls::pki_types::ServerName<'static>,
         tls_config: Arc<rustls::ClientConfig>,
-        parameters: &Parameters,
+        mut parameters: Parameters,
+        scid: ConnectionId,
     ) -> Self {
+        parameters.set_initial_source_connection_id(Some(scid));
         Self(Arc::new(Mutex::new(RawTlsSession::new_client(
             server_name,
             tls_config,
