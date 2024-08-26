@@ -19,7 +19,7 @@ pub const SHORT_RESERVED_MASK: u8 = 0x18;
 #[derive(Debug, Clone, Copy, Deref)]
 pub struct ClearBits<const R: u8>(pub(super) u8);
 
-pub type LongClearBits = ClearBits<HEADER_FORM_MASK>;
+pub type LongClearBits = ClearBits<LONG_RESERVED_MASK>;
 pub type ShortClearBits = ClearBits<SHORT_RESERVED_MASK>;
 
 impl<const R: u8> ClearBits<R> {

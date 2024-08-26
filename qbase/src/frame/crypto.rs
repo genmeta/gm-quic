@@ -127,7 +127,7 @@ mod tests {
         use super::be_crypto_frame;
         let buf = vec![0x52, 0x34, 0x80, 0x00, 0x56, 0x78];
         let (remain, frame) = be_crypto_frame(&buf).unwrap();
-        assert_eq!(remain, &[]);
+        assert!(remain.is_empty());
         assert_eq!(
             frame,
             CryptoFrame {

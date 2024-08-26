@@ -89,7 +89,7 @@ mod tests {
             }
         })(buf.as_ref())
         .unwrap();
-        assert_eq!(input, &[][..]);
+        assert!(input.is_empty());
         assert_eq!(parsed, frame);
     }
 

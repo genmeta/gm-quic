@@ -93,6 +93,9 @@ impl InitialSpaceReader {
         let mut pkt_size = hdr_len + pn_len + body_len + tag_len;
 
         hdr_buf.put_long_header(&hdr);
+        // TODO: 可能别的地方也要改
+        hdr_buf[0] |= (encoded_pn.size() - 1) as u8;
+
         pn_buf.put_packet_number(encoded_pn);
 
         Some((
@@ -125,13 +128,13 @@ impl InitialSpaceReader {
 
                 encode_long_first_byte(&mut hdr_buf[0], pn_len);
                 encrypt_packet(
-                    k.remote.packet.as_ref(),
+                    k.local.packet.as_ref(),
                     pn,
                     &mut buf[..pkt_size],
                     hdr_len + pn_len,
                 );
                 protect_header(
-                    k.remote.header.as_ref(),
+                    k.local.header.as_ref(),
                     &mut buf[..pkt_size],
                     hdr_len,
                     pn_len,

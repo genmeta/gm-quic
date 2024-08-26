@@ -124,13 +124,11 @@ impl Pathes {
             .entry(pathway)
             .or_insert_with(|| {
                 let path = (self.creator)(pathway, usc);
-                tokio::spawn({
-                    let state = path.state.clone();
-                    let map = self.map.clone();
-                    async move {
-                        state.has_been_inactivated().await;
-                        map.remove(&pathway);
-                    }
+                let state = path.state.clone();
+                let map = self.map.clone();
+                tokio::spawn(async move {
+                    state.has_been_inactivated().await;
+                    map.remove(&pathway);
                 });
                 path
             })

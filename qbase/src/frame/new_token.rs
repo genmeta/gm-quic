@@ -68,7 +68,7 @@ mod tests {
         use super::be_new_token_frame;
         let buf = vec![0x02, 0x01, 0x02];
         let (input, frame) = be_new_token_frame(&buf).unwrap();
-        assert_eq!(input, &[]);
+        assert!(input.is_empty());
         assert_eq!(frame.token, vec![0x01, 0x02]);
     }
 

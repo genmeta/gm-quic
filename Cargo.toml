@@ -42,8 +42,7 @@ log = "0.4"
 clap = { version = "4", features = ["derive"] }
 dashmap = "6"
 derive_builder = "0.20"
-
-
+env_logger = "0.11"
 [workspace.dependencies.qbase]
 path = "./qbase"
 version = "0.1.0"

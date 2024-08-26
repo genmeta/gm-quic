@@ -78,6 +78,7 @@ impl ArcConnection {
             Role::Client,
             ArcTlsSession::new_client(server_name, tls_config.clone(), parameters),
             scid,
+            Some(dcid),
             ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Client, dcid),
             token_registry,
         );
@@ -99,6 +100,7 @@ impl ArcConnection {
             Role::Server,
             ArcTlsSession::new_server(tls_config.clone(), parameters),
             scid,
+            None,
             ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Server, dcid),
             token_registry,
         );
