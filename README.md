@@ -33,7 +33,7 @@ With these layers in place, it becomes clear that the `Accept Functor` and the `
 - **qrecovery**: The reliable transport part of QUIC, encompassing the state machine evolution of the sender/receiver, and the internal logic interaction between the application layer and the transport layer.
 - **qcongestion**: Congestion control in QUIC, which abstracts a unified congestion control interface and implements BBRv1. In the future, it will also implement more transport control algorithms such as Cubic and others.
 - **qconnection**: Encapsulation of QUIC connections, linking the necessary components and tasks within a QUIC connection to ensure smooth operation.
-- **quic**: QUIC协议的顶层封装，包括QUIC客户端和服务端2部分的接口
+- **quic**: The top-level encapsulation of the QUIC protocol, including interfaces for both the QUIC client and server.
 - **qudp**: High-performance UDP encapsulation for QUIC. Ordinary UDP incurs a system call for each packet sent or received, resulting in poor performance. 
 qudp optimizes UDP performance to the extreme using techniques like GSO (Generic Segmentation Offload) and GRO (Generic Receive Offload). The performance test results for sending are as follows:
 
@@ -73,7 +73,7 @@ sent 1200000000 bytes
 
 `gm-quic` provides user-friendly interfaces for creating client and server connections, while also supporting additional features that meet modern network requirements.
 
-The QUIC client not only offers configuration options specified by the QUIC protocol's Parameters but also includes additional options such as `reuse_connection` and `enable_happy_eyeballs` enabling the IPv6-preferred Happy Eyeballs algorithm. More advanced features allow the QUIC client to set its own certificates as its ID for server verification and manage its own Token manager, which handles tokens issued by servers for future connections with these servers.
+The QUIC client not only offers configuration options specified by the QUIC protocol's Parameters but also includes additional options such as `reuse_connection` and `enable_happy_eyeballs` enabling the IPv6-preferred Happy Eyeballs algorithm. More advanced features allow the QUIC client to set its own certificates as its ID for server verification and manage the Tokens issued by servers for future connections with these servers.
 
 ```rust
 let quic_client = QuicClient::bind([
@@ -97,7 +97,7 @@ let quic_client_conn = quic_client
     .unwrap();
 ```
 
-The QUIC server supports SNI, allowing the configuration of multiple server names and certificates. Additionally, `gm-quic` provides a custom load balancing interface that determines how to return Retry packets based on the Initial packet of a new connection. This interface leverages the inherent features of QUIC to enable load-balanced scheduling across multiple hosts.
+The QUIC server provides SNI(Server Name Indication) support in TLS, allowing the configuration of multiple server names and certificates. Additionally, `gm-quic` provides a custom load balancing interface that let developers determine how to return Retry packets based on the Initial packet of a new connection. This interface leverages the inherent features of QUIC to schedule across multiple hosts balancely.
 
 ```rust
 let quic_server = QuicServer::bind([
