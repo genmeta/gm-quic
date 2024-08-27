@@ -7,6 +7,8 @@ use std::{
 };
 
 use deref_derive::Deref;
+use qbase::cid::ArcCidCell;
+use qrecovery::reliable::ArcReliableFrameDeque;
 
 #[derive(Debug, Clone, Default)]
 pub enum PathState {
@@ -29,7 +31,7 @@ impl ArcPathState {
     /// This function initializes the struct with the current time as the initial receive time and spawns a Tokio task that periodically checks if the path has been inactive for a specified duration (currently 30 seconds).
     ///
     /// The background task runs in a loop, comparing the current time with the last recorded receive time. If the difference exceeds the inactivity threshold, the path is transitioned to the InActive state and the task terminates.
-    pub fn new() -> Self {
+    pub fn new(cid: ArcCidCell<ArcReliableFrameDeque>) -> Self {
         let state = Self {
             recv_time: Arc::new(Mutex::new(time::Instant::now())),
             state: Default::default(),
@@ -43,7 +45,7 @@ impl ArcPathState {
                     let recv_time = *state.lock().unwrap();
                     // TODO: 失活时间暂定30s
                     if now.duration_since(recv_time) >= time::Duration::from_secs(30) {
-                        state.to_inactive();
+                        state.to_inactive(cid);
                         break;
                     }
                     tokio::time::sleep_until((recv_time + time::Duration::from_secs(30)).into())
@@ -67,6 +69,7 @@ impl ArcPathState {
     }
 
     /// Transitions the internal state of the associated path to `InActive` and wakes up any pending tasks waiting on it.
+    /// and retire the cid.
     ///
     /// This function acquires a lock on the internal mutex protecting the path's state. If the current state is `Pending`,
     /// it indicates that a task is waiting for the path to become active. In this case, the associated waker is invoked
@@ -74,8 +77,9 @@ impl ArcPathState {
     ///
     /// Regardless of the initial state, the function sets the state to `InActive`, signifying that the path is no longer
     /// actively being processed or monitored.
-    pub fn to_inactive(&self) {
-        // TODO: ArcCidCell::retire(&dcid)
+    pub fn to_inactive(&self, cid: ArcCidCell<ArcReliableFrameDeque>) {
+        ArcCidCell::retire(&cid);
+
         let mut guard = self.state.lock().unwrap();
         if let PathState::Pending(ref mut wakers) = *guard {
             let wakers = std::mem::take(wakers);

@@ -46,7 +46,7 @@ impl RawPath {
     pub fn new(usc: ArcUsc, scid: ConnectionId, dcid: ArcCidCell<ArcReliableFrameDeque>) -> Self {
         Self {
             usc,
-            dcid,
+            dcid: dcid.clone(),
             scid,
             cc: ArcCC::new(CongestionAlgorithm::Bbr, Duration::from_micros(100)),
             anti_amplifier: ArcAntiAmplifier::<ANTI_FACTOR>::default(),
@@ -54,7 +54,7 @@ impl RawPath {
             challenge_sndbuf: SendBuffer::default(),
             response_sndbuf: SendBuffer::default(),
             response_rcvbuf: RecvBuffer::default(),
-            state: ArcPathState::new(),
+            state: ArcPathState::new(dcid),
         }
     }
 
@@ -78,6 +78,7 @@ impl RawPath {
         // THINK: 这里应该只需要一个ArcRtt，并不需congestion controller出面
         let congestion_ctrl = self.cc.clone();
         let state = self.state.clone();
+        let cid = self.dcid.get_cid();
         tokio::spawn(async move {
             let challenge = PathChallengeFrame::random();
             for _ in 0..3 {
@@ -95,7 +96,7 @@ impl RawPath {
                 }
             }
             anti_amplifier.abort();
-            state.to_inactive();
+            state.to_inactive(cid);
         });
     }
 
@@ -104,7 +105,8 @@ impl RawPath {
         G: Fn(&RawPath) -> (InitialSpaceReader, HandshakeSpaceReader, DataSpaceReader),
     {
         let mut usc = self.usc.clone();
-        let path_state = self.state.clone();
+        let state = self.state.clone();
+        let cid = self.dcid.get_cid();
         let space_readers = gen_readers(self);
         let read_into_datagram = ReadIntoDatagrams {
             scid: self.scid,
@@ -117,6 +119,7 @@ impl RawPath {
             handshake_space_reader: space_readers.1,
             data_space_reader: space_readers.2,
         };
+
         tokio::spawn(async move {
             let sending_loop = async {
                 let mut datagrams = Vec::with_capacity(4);
@@ -127,7 +130,7 @@ impl RawPath {
                         match usc.send_via_pathway(io_slices, pathway).await {
                             Ok(n) => io_slices = &io_slices[n..],
                             Err(_) => {
-                                path_state.to_inactive();
+                                state.to_inactive(cid);
                                 break 'read;
                             }
                         }
@@ -136,7 +139,7 @@ impl RawPath {
             };
             tokio::select! {
                 _ = sending_loop => {},
-                _ = path_state.has_been_inactivated() => {}
+                _ = state.has_been_inactivated() => {}
             }
         });
     }
