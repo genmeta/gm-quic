@@ -24,6 +24,7 @@ dashmap = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
+<<<<<<< HEAD
 clap = { workspace = true }
 url = { workspace = true }
 
@@ -32,3 +33,4 @@ name = "client"
 
 [[example]]
 name = "connection"
+rcgen = { workspace = true }

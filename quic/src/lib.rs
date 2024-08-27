@@ -1,6 +1,6 @@
 use std::{
     future::Future,
-    io,
+    io::{self, Read},
     net::SocketAddr,
     sync::{Arc, LazyLock, Mutex},
     task::{Poll, Waker},
@@ -102,25 +102,43 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                                 }
                             }
                             Packet::Data(packet) => {
-                                let dcid = packet.header.get_dcid();
-                                if !ROUTER.contains_key(dcid)
+                                let mut dcid = *packet.header.get_dcid();
+                                println!("crate connection for dcid: {:?}", dcid);
+                                if !ROUTER.contains_key(&dcid)
                                     && matches!(
                                         packet.header,
                                         DataHeader::Long(long::DataHeader::Initial(_))
                                             | DataHeader::Long(long::DataHeader::ZeroRtt(_))
                                     )
                                 {
-                                    LISTENER.try_accept(bind_addr, *dcid);
+                                    if let Some(conn) = LISTENER.try_accept(bind_addr, dcid) {
+                                        if let ConnKey::Server(scid) = conn.key {
+                                            dcid = scid;
+                                        }
+                                        CONNECTIONS.insert(conn.key, conn);
+                                    }
                                 }
+
                                 match CONNECTIONS
-                                    .get(&ConnKey::Client(*dcid))
-                                    .or_else(|| CONNECTIONS.get(&ConnKey::Server(*dcid)))
+                                    .get(&ConnKey::Client(dcid))
+                                    .or_else(|| CONNECTIONS.get(&ConnKey::Server(dcid)))
                                 {
                                     Some(conn) => conn.update_path_recv_time(pathway),
                                     None => log::error!("No connection found for Data packet"),
                                 }
 
-                                ROUTER.recv_packet_via_pathway(packet, pathway, &usc.clone());
+                                if !ROUTER.recv_packet_via_pathway(
+                                    packet,
+                                    dcid,
+                                    pathway,
+                                    &usc.clone(),
+                                ) {
+                                    log::error!(
+                                        "Failed to recv packet via pathway {:?}, dicd{:?}",
+                                        pathway,
+                                        dcid
+                                    );
+                                }
                             }
                         }
                     }
@@ -145,14 +163,12 @@ type ConnCreator = Box<dyn Fn(ConnectionId) -> QuicConnection + Send + Sync>;
 
 struct Listener {
     creators: DashMap<SocketAddr, ConnCreator>,
-    acceptor: Acceptor,
 }
 
 impl Listener {
     fn new() -> Self {
         Self {
             creators: DashMap::new(),
-            acceptor: Acceptor::new(),
         }
     }
 
@@ -164,55 +180,20 @@ impl Listener {
             ));
         }
         let _ = get_usc(&bind_addr);
+        println!("listen on: {:?}", bind_addr);
         self.creators.insert(bind_addr, creator);
         Ok(())
     }
 
-    fn try_accept(&self, bind_addr: SocketAddr, dcid: ConnectionId) {
-        let ret = self.creators.get(&bind_addr).map(|creator| creator(dcid));
-        if let Some(conn) = ret {
-            self.acceptor.accept((conn, bind_addr));
-        }
+    fn try_accept(&self, bind_addr: SocketAddr, dcid: ConnectionId) -> Option<QuicConnection> {
+        println!(
+            "try accept for bind addr: {:?}, dcid: {:?}",
+            bind_addr, dcid
+        );
+        self.creators.get(&bind_addr).map(|creator| creator(dcid))
     }
 
     fn unregister(&self, bind_addr: &SocketAddr) {
         self.creators.remove(bind_addr);
-    }
-
-    fn accept(&self) -> Acceptor {
-        self.acceptor.clone()
-    }
-}
-
-#[derive(Clone)]
-struct Acceptor(
-    Arc<Mutex<Option<(QuicConnection, SocketAddr)>>>,
-    Arc<Mutex<Option<Waker>>>,
-);
-
-impl Acceptor {
-    fn new() -> Self {
-        Self(Arc::new(Mutex::new(None)), Arc::new(Mutex::new(None)))
-    }
-
-    fn accept(&self, value: (QuicConnection, SocketAddr)) {
-        *self.0.lock().unwrap() = Some(value);
-        if let Some(waker) = self.1.lock().unwrap().take() {
-            waker.wake();
-        }
-    }
-}
-
-impl Future for Acceptor {
-    type Output = (QuicConnection, SocketAddr);
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        if let Some(value) = this.0.lock().unwrap().take() {
-            Poll::Ready(value)
-        } else {
-            this.1 = Arc::new(Mutex::new(Some(cx.waker().clone())));
-            Poll::Pending
-        }
     }
 }

@@ -71,6 +71,7 @@ impl RawConnection {
         let data = DataScope::default();
 
         let router_registry = ROUTER.registry(
+            scid,
             reliable_frames.clone(),
             [
                 initial_packets_entry.clone(),
