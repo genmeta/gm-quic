@@ -73,7 +73,7 @@ let quic_client = QuicClient::bind([
     .reuse_connection()
     .enable_happy_eyeballs()
     .prefer_versions([1u32])                // QUIC的版本协商机制，会优先使用靠前的版本，目前仅支持V1
-    // .with_parameter(&client_parameters)  // 不设置即为实用默认参数
+    // .with_parameter(&client_parameters)  // 不设置即为使用默认参数
     // .with_token_sink(token_sink)         // 管理各服务器颁发的Token
     .with_root_certificates(root_certificates)
     // .with_webpki_verifier(verifier)      // 更高级地验证服务端证书的办法
@@ -81,11 +81,11 @@ let quic_client = QuicClient::bind([
     .build();
 
 let quic_client_conn = quic_client
-    .connect("localhost", "127.0.0.1:5000")
+    .connect("localhost", "127.0.0.1:5000".parse().unwrap())
     .unwrap();
 ```
 
-QUIC服务端支持SNI，可以设置多台Server的名字、证书等信息，同时`gm-quic`开放了根据新连接的Initial数据包，如何返回Retry数据包的自定义负载均衡接口，该接口可利用QUIC本身的特性让多台主机间的负载均衡地调度。
+QUIC服务端支持SNI（Server Name Indication），可以设置多台Server的名字、证书等信息，同时`gm-quic`开放了根据新连接的Initial数据包，如何返回Retry数据包的自定义负载均衡接口，该接口可利用QUIC本身的特性让多台主机间的负载均衡地调度。
 
 ```rust
 let quic_server = QuicServer::bind([
@@ -129,6 +129,6 @@ while let Ok(quic_server_conn) = quic_server.accept().await? {
 ## 社区交流
 
 - [用户论坛](https://github.com/genmeta/gm-quic/discussions)
-- 飞书聊天群：[发送邮件](mailto:quic_team@genmeta.net)介绍一下您的贡献，我们将邮件回复您加群链接及群二维码。
+- 聊天群：[发送邮件](mailto:quic_team@genmeta.net)介绍一下您的贡献，我们将邮件回复您加群链接及群二维码。
 
 [1]: https://www.rfc-editor.org/rfc/rfc9000.html

@@ -98,9 +98,10 @@ impl QuicClient {
     /// 那如果开启了reuse_connection选项，则会优先从该全局QuicConnection集合里获取到server_name的
     pub fn connect(
         &self,
-        server_name: String,
+        server_name: impl Into<String>,
         server_addr: SocketAddr,
     ) -> io::Result<QuicConnection> {
+        let server_name = server_name.into();
         let bind_addr = self
             .addresses
             .iter()

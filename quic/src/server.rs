@@ -286,7 +286,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
     /// 若是新连接的server_name没有对应的配置，则会被拒绝
     pub fn add_host(
         &mut self,
-        server_name: impl ToOwned<Owned = String>,
+        server_name: impl Into<String>,
         cert_file: impl AsRef<Path>,
         key_file: impl AsRef<Path>,
         parameters: Parameters,
@@ -309,9 +309,11 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             .key_provider
             .load_private_key(key_der)
             .unwrap();
-        self.parameters.insert(server_name.to_owned(), parameters);
+
+        let server_name = server_name.into();
+        self.parameters.insert(server_name.clone(), parameters);
         self.hosts.insert(
-            server_name.to_owned(),
+            server_name,
             Host {
                 cert_chain,
                 private_key,

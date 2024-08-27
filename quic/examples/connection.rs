@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .build();
 
     let _conn = client
-        .connect("localhost".to_string(), "127.0.0.1:5000".parse().unwrap())
+        .connect("localhost", "127.0.0.1:5000".parse().unwrap())
         .unwrap();
     Ok(())
 }
