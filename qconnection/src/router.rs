@@ -28,12 +28,13 @@ impl ArcRouter {
     pub fn recv_packet_via_pathway(
         &self,
         packet: DataPacket,
+        dcid: ConnectionId,
         pathway: Pathway,
         usc: &ArcUsc,
     ) -> bool {
-        let dcid = packet.header.get_dcid();
+        println!("get dcid: {:?}", dcid);
         self.0
-            .get(dcid)
+            .get(&dcid)
             .map(|packet_entry| {
                 let index = match packet.header {
                     DataHeader::Long(long::DataHeader::Initial(_)) => 0,
@@ -41,7 +42,8 @@ impl ArcRouter {
                     DataHeader::Long(long::DataHeader::Handshake(_)) => 2,
                     DataHeader::Short(_) => 3,
                 };
-                _ = packet_entry[index].unbounded_send((packet, pathway, usc.clone()));
+                let ret = packet_entry[index].unbounded_send((packet, pathway, usc.clone()));
+                println!("send packet to packet entry: {} ret {:?}", index, ret);
                 true
             })
             .unwrap_or(false)
@@ -49,12 +51,15 @@ impl ArcRouter {
 
     pub fn registry<ISSUED>(
         &self,
+        scid: ConnectionId,
         issued_cids: ISSUED,
         packet_entries: [PacketEntry; 4],
     ) -> RouterRegistry<ISSUED>
     where
         ISSUED: Extend<NewConnectionIdFrame>,
     {
+        println!("registe cid: {:?}", scid);
+        self.0.insert(scid, packet_entries.clone());
         RouterRegistry {
             router: self.clone(),
             issued_cids,
