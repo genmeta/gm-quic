@@ -93,7 +93,7 @@ let quic_client = QuicClient::bind([
     .build();
 
 let quic_client_conn = quic_client
-    .connect("localhost", "127.0.0.1:5000")
+    .connect("localhost", "127.0.0.1:5000".parse().unwrap())
     .unwrap();
 ```
 
@@ -146,7 +146,7 @@ This ensures the feature is reasonable and has a solid implementation plan.
 ## Community 
 
 - [Official Community](https://github.com/genmeta/gm-quic/discussions)
-- feishu group：[send email](mailto:quic_team@genmeta.net) to introduce your contribution, 
+- chat group：[send email](mailto:quic_team@genmeta.net) to introduce your contribution, 
 and we will reply to your email with an invitation link and QR code to join the group.
 
 [1]: https://www.rfc-editor.org/rfc/rfc9000.html
