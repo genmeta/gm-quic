@@ -75,6 +75,7 @@ impl ArcPathState {
     /// Regardless of the initial state, the function sets the state to `InActive`, signifying that the path is no longer
     /// actively being processed or monitored.
     pub fn to_inactive(&self) {
+        // TODO: ArcCidCell::retire(&dcid)
         let mut guard = self.state.lock().unwrap();
         if let PathState::Pending(ref mut wakers) = *guard {
             let wakers = std::mem::take(wakers);

@@ -118,8 +118,9 @@ impl RawPath {
             data_space_reader: space_readers.2,
         };
         tokio::spawn(async move {
-            let mut datagrams = Vec::with_capacity(4);
-            let send_loop = async {
+            let sending_loop = async {
+                let mut datagrams = Vec::with_capacity(4);
+
                 'read: while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
                     let mut io_slices = iovec.as_slice();
                     while !io_slices.is_empty() {
@@ -134,8 +135,8 @@ impl RawPath {
                 }
             };
             tokio::select! {
-                _ = send_loop => {},
-                _ = path_state.has_been_inactivated() => {},
+                _ = sending_loop => {},
+                _ = path_state.has_been_inactivated() => {}
             }
         });
     }

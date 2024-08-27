@@ -193,7 +193,9 @@ impl ReadIntoDatagrams {
         cx: &mut Context<'_>,
         buffers: &mut Vec<[u8; MSS]>,
     ) -> Poll<Option<(usize, usize)>> {
-        let dcid = ready!(self.dcid.poll_get_cid(cx));
+        let Poll::Ready(Some(dcid)) = self.dcid.poll_get_cid(cx) else {
+            return Poll::Ready(None);
+        };
         let send_quota = ready!(self.cc.poll_send(cx));
         let credit_limit = ready!(self.anti_amplifier.poll_balance(cx));
         let Some(credit_limit) = credit_limit else {
@@ -271,18 +273,7 @@ impl ReadIntoDatagrams {
     }
 
     pub async fn read<'ds>(&self, buffers: &'ds mut Vec<[u8; MSS]>) -> Option<Vec<IoSlice<'ds>>> {
-        // 直接让poll_read_into_packet返回Vec<IoSlice<'ds>>会带来问题
-        // 所以这里就让poll返回生成Vec<IoSlice<'ds>>所需要的数据。虽然会导致poll_read_into_packet的返回和这里的返回不一致
-
-        // 如果是别的写法，比如为一个包装了buffer和Reader的结构体实现Future，在poll方法内，通过self.buffer拿到buffer会让'ds周期协变，小于'ds
-        // 协变的问题可以通过在buffer上包装一个Option来解决，使用时将buffer take出来，这样buffer的生命周期绕过了Pin<&mut Self>，得到的buffer具有'ds周期
-        // 但是，如果poll_read_into_packet返回Vec<IoSlice<'ds>>返回了Pending，此时需要将buffer返还到Option中
-        // rust借用检查器不够智能，认为Poll::Pending借用了buffer，所以无法将buffer归还回Option中
-        // 这个问题可以通过让poll_read_into_packet_inner返回Result<Vec<IoSlice<'ds>>, &'ds mut Vec<[u8; MSS]>>>来解决，Err对应Pending
-        // 但是但是这个是在太过于诡异，太过于不直观，所以这里就不这么做了
-
         let (buffers_used, last_buffer_written) =
-        // 对于这种写法，如果返回Vec<IoSlice<'ds>>，会受制于FnMut的捕获机制，buffer的周期会因为捕获而协变，和上一个方案的第一个问题是一致的     
             core::future::poll_fn(|cx| self.poll_read_inner(cx, buffers)).await?;
 
         debug_assert!(buffers_used > 0);

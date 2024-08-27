@@ -251,7 +251,7 @@ enum CidState {
 }
 
 impl CidState {
-    fn poll_get_cid(&mut self, cx: &mut Context) -> Poll<ConnectionId> {
+    fn poll_get_cid(&mut self, cx: &mut Context) -> Poll<Option<ConnectionId>> {
         match self {
             CidState::None => {
                 *self = CidState::Demand(cx.waker().clone());
@@ -261,8 +261,8 @@ impl CidState {
                 waker.clone_from(cx.waker());
                 Poll::Pending
             }
-            CidState::Ready(cid) => Poll::Ready(*cid),
-            CidState::Retired => unreachable!("CidCell is closed"),
+            CidState::Ready(cid) => Poll::Ready(Some(*cid)),
+            CidState::Retired => Poll::Ready(None),
         }
     }
 
@@ -291,6 +291,9 @@ impl CidState {
     }
 
     fn retire(&mut self) {
+        if let CidState::Demand(waker) = self {
+            waker.wake_by_ref();
+        }
         *self = CidState::Retired;
     }
 
@@ -336,7 +339,7 @@ where
         self.0.lock().unwrap().set_cid(cid);
     }
 
-    pub fn poll_get_cid(&self, cx: &mut Context<'_>) -> Poll<ConnectionId> {
+    pub fn poll_get_cid(&self, cx: &mut Context<'_>) -> Poll<Option<ConnectionId>> {
         self.0.lock().unwrap().poll_get_cid(cx)
     }
 
@@ -365,7 +368,7 @@ impl<RETIRED> Future for ArcCidCell<RETIRED>
 where
     RETIRED: Extend<RetireConnectionIdFrame> + Clone,
 {
-    type Output = ConnectionId;
+    type Output = Option<ConnectionId>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.0.lock().unwrap().poll_get_cid(cx)
@@ -404,7 +407,10 @@ mod tests {
         assert!(remote_cids.recv_new_cid_frame(&frame).is_ok());
         assert_eq!(remote_cids.cid_deque.len(), 1);
 
-        assert_eq!(cid_apply.get_cid().poll_unpin(&mut cx), Poll::Ready(cid));
+        assert_eq!(
+            cid_apply.get_cid().poll_unpin(&mut cx),
+            Poll::Ready(Some(cid))
+        );
 
         // Additionally, a new request will be made because if the peer-issued CID is
         // insufficient, it will still return Pending.
@@ -439,11 +445,11 @@ mod tests {
         assert_eq!(cid_apply2.0.lock().unwrap().seq, 1);
         assert_eq!(
             cid_apply1.get_cid().poll_unpin(&mut cx),
-            Poll::Ready(cids[0])
+            Poll::Ready(Some(cids[0]))
         );
         assert_eq!(
             cid_apply2.get_cid().poll_unpin(&mut cx),
-            Poll::Ready(cids[1])
+            Poll::Ready(Some(cids[1]))
         );
 
         guard.retire_prior_to(4);
@@ -469,11 +475,11 @@ mod tests {
         guard.arrange_idle_cid();
         assert_eq!(
             cid_apply1.get_cid().poll_unpin(&mut cx),
-            Poll::Ready(cids[4])
+            Poll::Ready(Some(cids[4]))
         );
         assert_eq!(
             cid_apply2.get_cid().poll_unpin(&mut cx),
-            Poll::Ready(cids[5])
+            Poll::Ready(Some(cids[5]))
         );
 
         cid_apply2.retire();
@@ -518,11 +524,11 @@ mod tests {
         assert_eq!(cid_apply2.0.lock().unwrap().seq, 5);
         assert_eq!(
             cid_apply1.get_cid().poll_unpin(&mut cx),
-            Poll::Ready(cids[4])
+            Poll::Ready(Some(cids[4]))
         );
         assert_eq!(
             cid_apply2.get_cid().poll_unpin(&mut cx),
-            Poll::Ready(cids[5])
+            Poll::Ready(Some(cids[5]))
         );
     }
 }
