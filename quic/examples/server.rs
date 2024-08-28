@@ -1,4 +1,4 @@
-use std::{io::Write, os::unix::net::SocketAddr, path::Path};
+use std::{io::Write, path::Path};
 
 use quic::QuicServer;
 use rcgen::CertifiedKey;
@@ -22,8 +22,7 @@ async fn main() -> Result<(), std::io::Error> {
         .with_single_cert(cert_path, key_path)
         .listen();
 
-    let (connection, addr) = server.accept().await?;
-    println!("Accepted connection from: {}, conn {:?}", addr, connection);
+    _ = server.accept().await?;
     Ok(())
 }
 

@@ -62,8 +62,6 @@ impl Debug for ArcConnection {
 impl ArcConnection {
     pub fn new_client(
         server_name: String,
-        pathway: Pathway,
-        usc: ArcUsc,
         tls_config: Arc<rustls::ClientConfig>,
         parameters: Parameters,
         scid: ConnectionId,
@@ -74,7 +72,6 @@ impl ArcConnection {
         };
 
         let dcid = ConnectionId::random_gen(8);
-
         let raw_conn = RawConnection::new(
             Role::Client,
             ArcTlsSession::new_client(server_name, tls_config.clone(), parameters, scid),
@@ -83,11 +80,15 @@ impl ArcConnection {
             ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Client, dcid),
             token_registry,
         );
-
-        let pathes = raw_conn.pathes.clone();
-        // Add the pathway to the pathes
-        pathes.get(pathway, usc);
         raw_conn.into()
+    }
+
+    pub fn start_client(&self, pathway: Pathway, usc: ArcUsc) {
+        let guard = self.0.lock().unwrap();
+        if let Raw(ref conn) = *guard {
+            // client create first path
+            conn.pathes.get(pathway, usc);
+        }
     }
 
     pub fn new_server(
@@ -245,7 +246,8 @@ impl ArcConnection {
     }
 
     pub fn recv_retry_packet(&self, retry: &RetryHeader, pathway: Pathway, usc: ArcUsc) {
-        if let Raw(conn) = &mut *self.0.lock().unwrap() {
+        let guard = self.0.lock().unwrap();
+        if let Raw(ref conn) = *guard {
             *conn.token.lock().unwrap() = retry.token.to_vec();
             let path = conn.pathes.get(pathway, usc);
             path.set_dcid(retry.scid);

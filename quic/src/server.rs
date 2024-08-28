@@ -17,7 +17,6 @@ use qbase::{
 };
 use qconnection::connection::ArcConnection;
 use rustls::{
-    pki_types::{CertificateDer, PrivateKeyDer},
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };

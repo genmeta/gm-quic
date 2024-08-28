@@ -126,8 +126,6 @@ impl QuicClient {
 
         let inner = ArcConnection::new_client(
             server_name,
-            pathway,
-            usc,
             self.tls_config.clone(),
             self.parameters.clone(),
             scid,
@@ -135,9 +133,11 @@ impl QuicClient {
         );
         let conn = QuicConnection {
             key: ConnKey::Client(scid),
-            inner,
+            inner: inner.clone(),
         };
+
         CONNECTIONS.insert(ConnKey::Client(scid), conn.clone());
+        inner.start_client(pathway, usc);
         Ok(conn)
     }
 }

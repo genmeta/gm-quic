@@ -114,10 +114,6 @@ impl InitialScope {
             async move {
                 while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
                 {
-                    println!(
-                        "initial scope: Received , pathway: {:?}, usc: {:?}",
-                        pathway, usc
-                    );
                     let pty = packet.header.get_type();
                     let Some(keys) = any(keys.get_remote_keys(), &notify).await else {
                         break;
