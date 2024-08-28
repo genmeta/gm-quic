@@ -18,11 +18,11 @@ use qbase::{
 ///
 /// the Application can read the received datagrams from the internal queue by calling the [`DatagramReader::recv`] method.
 #[derive(Default, Debug)]
-pub struct RawDatagramReader {
+pub(crate) struct RawDatagramReader {
     /// the maximum size of the datagram that can be received.
     local_max_size: usize,
     queue: VecDeque<Bytes>,
-    wakers: VecDeque<Waker>,
+    waker: Option<Waker>,
 }
 
 impl RawDatagramReader {
@@ -30,16 +30,16 @@ impl RawDatagramReader {
         Self {
             local_max_size,
             queue: Default::default(),
-            wakers: Default::default(),
+            waker: Default::default(),
         }
     }
 }
 
-pub type ArcDatagramReader = Arc<Mutex<io::Result<RawDatagramReader>>>;
+pub(crate) type ArcDatagramReader = Arc<Mutex<io::Result<RawDatagramReader>>>;
 /// The shared [`DatagramReader`] struct represents a reader for receiving datagrams frame from a connection.
 ///
 /// the Application can read the received datagrams from the internal queue by calling the [`DatagramReader::recv`] method.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DatagramReader(pub(super) ArcDatagramReader);
 
 impl DatagramReader {
@@ -77,7 +77,7 @@ impl DatagramReader {
         }
 
         reader.queue.push_back(data);
-        if let Some(waker) = reader.wakers.pop_front() {
+        if let Some(waker) = reader.waker.take() {
             waker.wake();
         }
 
@@ -99,7 +99,9 @@ impl DatagramReader {
         let reader = &mut self.0.lock().unwrap();
         let inner = reader.deref_mut();
         if let Ok(reader) = inner {
-            reader.wakers.drain(..).for_each(|waker| waker.wake());
+            if let Some(waker) = reader.waker.take() {
+                waker.wake();
+            }
             *inner = Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()));
         }
     }
@@ -164,6 +166,13 @@ impl DatagramReader {
             Err(error) => Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string())),
         }
     }
+
+    pub fn into_result(self) -> io::Result<Self> {
+        if let Err(e) = &*self.0.lock().unwrap() {
+            return Err(io::Error::new(e.kind(), e.to_string()));
+        }
+        Ok(self)
+    }
 }
 
 /// the [`Future`] created by [`DatagramReader::recv`]
@@ -187,7 +196,7 @@ impl Future for ReadIntoSlice<'_> {
                     Poll::Ready(Ok(len))
                 }
                 None => {
-                    reader.wakers.push_back(cx.waker().clone());
+                    reader.waker = Some(cx.waker().clone());
                     Poll::Pending
                 }
             },
@@ -219,7 +228,7 @@ where
                     Poll::Ready(Ok(len))
                 }
                 None => {
-                    reader.wakers.push_back(cx.waker().clone());
+                    reader.waker = Some(cx.waker().clone());
                     Poll::Pending
                 }
             },
@@ -241,7 +250,7 @@ mod tests {
         let reader = DatagramReader(reader);
 
         let recv = tokio::spawn({
-            let reader = reader.clone();
+            let reader = DatagramReader(reader.0.clone());
             async move {
                 let n = reader.recv(&mut [0u8; 1024]).await.unwrap();
                 assert_eq!(n, 11);
