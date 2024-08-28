@@ -1,15 +1,9 @@
-use std::{
-    future::Future,
-    io::{self, Read},
-    net::SocketAddr,
-    sync::{Arc, LazyLock, Mutex},
-    task::{Poll, Waker},
-};
+use std::{io, net::SocketAddr, sync::LazyLock};
 
 use bytes::BytesMut;
 use dashmap::DashMap;
 use qbase::{
-    cid::{ConnectionId, MAX_CID_SIZE},
+    cid::ConnectionId,
     packet::{
         header::GetDcid, long, DataHeader, Packet, PacketReader, RetryHeader,
         VersionNegotiationHeader,
@@ -80,7 +74,8 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                         local: hdr.dst,
                         remote: hdr.src,
                     };
-                    let reader = PacketReader::new(data, MAX_CID_SIZE);
+
+                    let reader = PacketReader::new(data, 8);
                     for pkt in reader.flatten() {
                         match pkt {
                             Packet::VN(vn) => {
@@ -103,7 +98,6 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                             }
                             Packet::Data(packet) => {
                                 let mut dcid = *packet.header.get_dcid();
-                                println!("crate connection for dcid: {:?}", dcid);
                                 if !ROUTER.contains_key(&dcid)
                                     && matches!(
                                         packet.header,
@@ -180,16 +174,11 @@ impl Listener {
             ));
         }
         let _ = get_usc(&bind_addr);
-        println!("listen on: {:?}", bind_addr);
         self.creators.insert(bind_addr, creator);
         Ok(())
     }
 
     fn try_accept(&self, bind_addr: SocketAddr, dcid: ConnectionId) -> Option<QuicConnection> {
-        println!(
-            "try accept for bind addr: {:?}, dcid: {:?}",
-            bind_addr, dcid
-        );
         self.creators.get(&bind_addr).map(|creator| creator(dcid))
     }
 

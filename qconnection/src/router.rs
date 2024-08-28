@@ -6,7 +6,7 @@ use qbase::{
     cid::{ConnectionId, UniqueCid},
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame},
-    packet::{header::GetDcid, long, DataHeader, DataPacket},
+    packet::{long, DataHeader, DataPacket},
 };
 use qudp::ArcUsc;
 
@@ -32,7 +32,6 @@ impl ArcRouter {
         pathway: Pathway,
         usc: &ArcUsc,
     ) -> bool {
-        println!("get dcid: {:?}", dcid);
         self.0
             .get(&dcid)
             .map(|packet_entry| {
@@ -42,8 +41,7 @@ impl ArcRouter {
                     DataHeader::Long(long::DataHeader::Handshake(_)) => 2,
                     DataHeader::Short(_) => 3,
                 };
-                let ret = packet_entry[index].unbounded_send((packet, pathway, usc.clone()));
-                println!("send packet to packet entry: {} ret {:?}", index, ret);
+                _ = packet_entry[index].unbounded_send((packet, pathway, usc.clone()));
                 true
             })
             .unwrap_or(false)
@@ -58,7 +56,6 @@ impl ArcRouter {
     where
         ISSUED: Extend<NewConnectionIdFrame>,
     {
-        println!("registe cid: {:?}", scid);
         self.0.insert(scid, packet_entries.clone());
         RouterRegistry {
             router: self.clone(),
