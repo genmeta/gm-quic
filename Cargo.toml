@@ -24,7 +24,6 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace.dependencies]
-async-lock = "3"
 futures = "0.3"
 rand = "0.8"
 bytes = "1"
@@ -43,6 +42,9 @@ clap = { version = "4", features = ["derive"] }
 dashmap = "6"
 derive_builder = "0.20"
 env_logger = "0.11"
+parking_lot = "0.11"
+
+
 [workspace.dependencies.qbase]
 path = "./qbase"
 version = "0.1.0"

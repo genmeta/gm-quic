@@ -2,10 +2,11 @@ use std::{
     future::Future,
     ops::DerefMut,
     pin::Pin,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::Arc,
     task::{Context, Poll, Waker},
 };
 
+use parking_lot::{Mutex, MutexGuard};
 use rustls::quic::{HeaderProtectionKey, Keys, PacketKey, Secrets};
 
 use super::KeyPhaseBit;
@@ -22,7 +23,7 @@ pub struct ArcKeys(Arc<Mutex<KeysState>>);
 
 impl ArcKeys {
     fn lock_guard(&self) -> MutexGuard<KeysState> {
-        self.0.lock().unwrap()
+        self.0.lock()
     }
 
     pub fn new_pending() -> Self {
@@ -156,7 +157,7 @@ pub struct ArcOneRttPacketKeys(Arc<(Mutex<OneRttPacketKeys>, usize)>);
 
 impl ArcOneRttPacketKeys {
     pub fn lock_guard(&self) -> MutexGuard<OneRttPacketKeys> {
-        self.0 .0.lock().unwrap()
+        self.0 .0.lock()
     }
 
     pub fn tag_len(&self) -> usize {
@@ -184,7 +185,7 @@ pub struct ArcOneRttKeys(Arc<Mutex<OneRttKeysState>>);
 
 impl ArcOneRttKeys {
     fn lock_guard(&self) -> MutexGuard<OneRttKeysState> {
-        self.0.lock().unwrap()
+        self.0.lock()
     }
 
     pub fn new_pending() -> Self {

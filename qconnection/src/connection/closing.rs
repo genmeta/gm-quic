@@ -4,12 +4,13 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
 
+use parking_lot::Mutex;
 use qbase::{
     error::Error,
     frame::ConnectionCloseFrame,
@@ -60,7 +61,7 @@ impl ClosingConnection {
     pub fn recv_packet_via_pathway(&mut self, packet: DataPacket, _pathway: Pathway, _usc: ArcUsc) {
         self.rcvd_packets.fetch_add(1, Ordering::Release);
         // TODO: 数值从配置中读取, 还是直接固定值?
-        let mut last_send_ccf = self.last_send_ccf.lock().unwrap();
+        let mut last_send_ccf = self.last_send_ccf.lock();
         if self.rcvd_packets.load(Ordering::Relaxed) > 5
             || last_send_ccf.elapsed() > Duration::from_millis(100)
         {
@@ -116,7 +117,7 @@ impl RcvdCcf {
     }
 
     pub fn on_ccf_rcvd(&self) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         if let RcvdCcfState::Pending(waker) = guard.deref_mut() {
             waker.wake_by_ref();
         }
@@ -128,7 +129,7 @@ impl Future for RcvdCcf {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         match guard.deref_mut() {
             RcvdCcfState::None | RcvdCcfState::Pending(_) => {
                 *guard = RcvdCcfState::Pending(cx.waker().clone());

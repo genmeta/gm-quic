@@ -1,6 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use futures::channel::mpsc;
+use parking_lot::Mutex;
 use qbase::{
     cid::ConnectionId,
     flow::FlowController,

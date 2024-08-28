@@ -1,10 +1,11 @@
 use std::{
     io,
     ops::Range,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll, Waker},
 };
 
+use parking_lot::Mutex;
 use qbase::util::DescribeData;
 
 use super::sndbuf::SendBuf;

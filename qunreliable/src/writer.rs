@@ -1,11 +1,7 @@
-use std::{
-    collections::VecDeque,
-    io,
-    ops::DerefMut,
-    sync::{Arc, Mutex},
-};
+use std::{collections::VecDeque, io, ops::DerefMut, sync::Arc};
 
 use bytes::Bytes;
+use parking_lot::Mutex;
 use qbase::{
     error::{Error, ErrorKind},
     frame::{io::WriteDataFrame, BeFrame, DatagramFrame, FrameType},
@@ -47,7 +43,7 @@ impl DatagramWriter {
     /// contain the datagram.
     ///
     pub(super) fn try_read_datagram(&self, mut buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         let writer = guard.as_mut().ok()?;
         let datagram = writer.queue.front()?;
 
@@ -91,7 +87,7 @@ impl DatagramWriter {
     ///
     /// if the connection is already closed, the new error will be ignored.
     pub(super) fn on_conn_error(&self, error: &Error) {
-        let writer = &mut self.0.lock().unwrap();
+        let writer = &mut self.0.lock();
         if writer.is_ok() {
             **writer = Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()));
         }
@@ -111,7 +107,7 @@ impl DatagramWriter {
     ///
     /// Return [`Err`] when the connection is closing or already closed
     pub fn send_bytes(&self, data: Bytes) -> io::Result<()> {
-        match self.0.lock().unwrap().deref_mut() {
+        match self.0.lock().deref_mut() {
             Ok(writer) => {
                 // 这里只考虑最小的编码方式：也就是1字节
                 if (1 + data.len()) > writer.remote_max_size {
@@ -157,7 +153,7 @@ impl DatagramWriter {
     /// The value may have been set by a previous connection. This method will return [`Err`] when the new size
     /// is less than the previous size, or the current connection is closing or already closed.
     pub(crate) fn update_remote_max_datagram_frame_size(&self, size: usize) -> Result<(), Error> {
-        let mut writer = self.0.lock().unwrap();
+        let mut writer = self.0.lock();
         let inner = writer.deref_mut();
 
         if let Ok(writer) = inner {
@@ -179,7 +175,7 @@ impl DatagramWriter {
     ///
     /// Return [`Err`] when the connection is closing or already closed
     pub fn get_remote_max_datagram_frame_size(&self) -> io::Result<usize> {
-        let reader = self.0.lock().unwrap();
+        let reader = self.0.lock();
         match &*reader {
             Ok(reader) => Ok(reader.remote_max_size),
             Err(error) => Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string())),
@@ -295,7 +291,7 @@ mod tests {
         let writer = DatagramWriter(writer);
 
         writer.update_remote_max_datagram_frame_size(2048).unwrap();
-        let writer_guard = writer.0.lock().unwrap();
+        let writer_guard = writer.0.lock();
         let writer = writer_guard.as_ref().unwrap();
         assert_eq!(writer.remote_max_size, 2048);
     }
@@ -319,7 +315,7 @@ mod tests {
             FrameType::Datagram(0),
             "test",
         ));
-        let writer_guard = writer.0.lock().unwrap();
+        let writer_guard = writer.0.lock();
         assert!(writer_guard.as_ref().is_err());
     }
 }

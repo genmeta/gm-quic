@@ -2,12 +2,13 @@ use std::{
     future::Future,
     io,
     net::SocketAddr,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{Arc, LazyLock},
     task::{Poll, Waker},
 };
 
 use bytes::BytesMut;
 use dashmap::DashMap;
+use parking_lot::Mutex;
 use qbase::{
     cid::{ConnectionId, MAX_CID_SIZE},
     packet::{
@@ -196,8 +197,8 @@ impl Acceptor {
     }
 
     fn accept(&self, value: (QuicConnection, SocketAddr)) {
-        *self.0.lock().unwrap() = Some(value);
-        if let Some(waker) = self.1.lock().unwrap().take() {
+        *self.0.lock() = Some(value);
+        if let Some(waker) = self.1.lock().take() {
             waker.wake();
         }
     }
@@ -208,7 +209,7 @@ impl Future for Acceptor {
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        if let Some(value) = this.0.lock().unwrap().take() {
+        if let Some(value) = this.0.lock().take() {
             Poll::Ready(value)
         } else {
             this.1 = Arc::new(Mutex::new(Some(cx.waker().clone())));

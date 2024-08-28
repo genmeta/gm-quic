@@ -1,8 +1,9 @@
 use std::{
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
+use parking_lot::Mutex;
 pub const INITIAL_RTT: Duration = Duration::from_millis(333);
 const GRANULARITY: Duration = Duration::from_millis(1);
 const TIME_THRESHOLD: f32 = 1.125;
@@ -92,27 +93,27 @@ impl ArcRtt {
     }
 
     pub fn update(&self, latest_rtt: Duration, ack_delay: Duration) {
-        self.0.lock().unwrap().update(latest_rtt, ack_delay);
+        self.0.lock().update(latest_rtt, ack_delay);
     }
 
     pub fn loss_delay(&self) -> Duration {
-        self.0.lock().unwrap().loss_delay()
+        self.0.lock().loss_delay()
     }
 
     pub fn on_handshake_done(&self) {
-        self.0.lock().unwrap().on_handshake_done();
+        self.0.lock().on_handshake_done();
     }
 
     pub fn pto_base_duration(&self, times: u32) -> Duration {
-        self.0.lock().unwrap().pto_base_duration(times)
+        self.0.lock().pto_base_duration(times)
     }
 
     pub fn smoothed_rtt(&self) -> Duration {
-        self.0.lock().unwrap().smoothed_rtt
+        self.0.lock().smoothed_rtt
     }
 
     pub fn rttvar(&self) -> Duration {
-        self.0.lock().unwrap().rttvar
+        self.0.lock().rttvar
     }
 }
 

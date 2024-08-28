@@ -22,10 +22,10 @@ impl Reader {
     /// It meaning sending a STOP_SENDING frame to peer.
     pub fn stop(self, error_code: u64) {
         debug_assert!(error_code <= VARINT_MAX);
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.lock();
         let inner = recver.deref_mut();
-        match inner {
-            Ok(receiving_state) => match receiving_state {
+        if let Ok(receiving_state) = inner {
+            match receiving_state {
                 Recver::Recv(r) => {
                     r.stop(error_code);
                 }
@@ -33,8 +33,7 @@ impl Reader {
                     r.stop(error_code);
                 }
                 _ => (),
-            },
-            Err(_) => (),
+            }
         }
     }
 }
@@ -45,7 +44,7 @@ impl AsyncRead for Reader {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.lock();
         let inner = recver.deref_mut();
         // 能相当清楚地看到应用层读取数据驱动的接收状态演变
         match inner {
@@ -79,29 +78,26 @@ impl AsyncRead for Reader {
 
 impl Drop for Reader {
     fn drop(&mut self) {
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.lock();
         let inner = recver.deref_mut();
-        match inner {
-            // strict mode: don't forget to call stop with the error code when an
-            // abnormal termination occurs, or it will panic.
-            Ok(receiving_state) => match receiving_state {
+        if let Ok(receiving_state) = inner {
+            match receiving_state {
                 Recver::Recv(r) => {
                     assert!(
                         r.is_stopped(),
                         r#"RecvStream in Recv State must be 
-                            stopped with error code before dropped!"#
+                        stopped with error code before dropped!"#
                     )
                 }
                 Recver::SizeKnown(r) => {
                     assert!(
                         r.is_stopped(),
                         r#"RecvStream in Recv State must be 
-                            stopped with error code before dropped!"#
+                        stopped with error code before dropped!"#
                     )
                 }
                 _ => (),
-            },
-            Err(_) => (),
+            }
         }
     }
 }

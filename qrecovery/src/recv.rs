@@ -4,9 +4,10 @@ mod recver;
 
 pub mod rcvbuf;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub use incoming::{Incoming, IsStopped, UpdateWindow};
+use parking_lot::Mutex;
 pub use reader::Reader;
 use recver::Recver;
 

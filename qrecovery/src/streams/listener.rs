@@ -2,10 +2,11 @@ use std::{
     collections::VecDeque,
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::Arc,
     task::{Context, Poll, Waker},
 };
 
+use parking_lot::{Mutex, MutexGuard};
 use qbase::error::Error as QuicError;
 
 use crate::{recv::Reader, send::Writer};
@@ -67,7 +68,7 @@ impl Default for ArcListener {
 
 impl ArcListener {
     pub(crate) fn guard(&self) -> Result<ListenerGuard, QuicError> {
-        let guard = self.0.lock().unwrap();
+        let guard = self.0.lock();
         match guard.as_ref() {
             Ok(_) => Ok(ListenerGuard { inner: guard }),
             Err(e) => Err(e.clone()),
@@ -90,14 +91,14 @@ impl ArcListener {
         &self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(Reader, Writer), QuicError>> {
-        match self.0.lock().unwrap().as_mut() {
+        match self.0.lock().as_mut() {
             Ok(set) => set.poll_accept_bi_stream(cx),
             Err(e) => Poll::Ready(Err(e.clone())),
         }
     }
 
     pub fn poll_accept_recv_stream(&self, cx: &mut Context<'_>) -> Poll<Result<Reader, QuicError>> {
-        match self.0.lock().unwrap().as_mut() {
+        match self.0.lock().as_mut() {
             Ok(set) => set.poll_accept_recv_stream(cx),
             Err(e) => Poll::Ready(Err(e.clone())),
         }

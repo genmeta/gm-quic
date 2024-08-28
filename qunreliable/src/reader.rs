@@ -4,11 +4,12 @@ use std::{
     io,
     ops::DerefMut,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll, Waker},
 };
 
 use bytes::{BufMut, Bytes};
+use parking_lot::Mutex;
 use qbase::{
     error::{Error, ErrorKind},
     frame::{BeFrame, DatagramFrame},
@@ -59,7 +60,7 @@ impl DatagramReader {
         frame: &DatagramFrame,
         data: bytes::Bytes,
     ) -> Result<(), Error> {
-        let reader = &mut self.0.lock().unwrap();
+        let reader = &mut self.0.lock();
         let inner = reader.deref_mut();
         let Ok(reader) = inner else {
             return Ok(());
@@ -96,7 +97,7 @@ impl DatagramReader {
     ///
     /// if the connection is already closed, the new error will be ignored.
     pub(super) fn on_conn_error(&self, error: &Error) {
-        let reader = &mut self.0.lock().unwrap();
+        let reader = &mut self.0.lock();
         let inner = reader.deref_mut();
         if let Ok(reader) = inner {
             reader.wakers.drain(..).for_each(|waker| waker.wake());
@@ -158,7 +159,7 @@ impl DatagramReader {
     ///
     /// Return [`Err`] when the connection is closing or already closed
     pub fn get_local_max_datagram_frame_size(&self) -> io::Result<usize> {
-        let reader = self.0.lock().unwrap();
+        let reader = self.0.lock();
         match &*reader {
             Ok(reader) => Ok(reader.local_max_size),
             Err(error) => Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string())),
@@ -178,7 +179,7 @@ impl Future for ReadIntoSlice<'_> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let s = self.get_mut();
 
-        let mut reader = s.reader.lock().unwrap();
+        let mut reader = s.reader.lock();
         match reader.deref_mut() {
             Ok(reader) => match reader.queue.pop_front() {
                 Some(bytes) => {
@@ -210,7 +211,7 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let s = self.get_mut();
-        let mut reader = s.reader.lock().unwrap();
+        let mut reader = s.reader.lock();
         match reader.deref_mut() {
             Ok(reader) => match reader.queue.pop_front() {
                 Some(bytes) => {

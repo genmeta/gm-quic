@@ -2,11 +2,12 @@ use std::{
     future::Future,
     ops::{Deref, DerefMut},
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll, Waker},
 };
 
 use bytes::BufMut;
+use parking_lot::Mutex;
 use qbase::frame::{io::WriteFrame, BeFrame};
 
 #[derive(Default, Clone)]
@@ -14,7 +15,7 @@ pub struct SendBuffer<T>(Arc<Mutex<Option<T>>>);
 
 impl<T> SendBuffer<T> {
     pub fn write(&self, frame: T) {
-        *self.0.lock().unwrap() = Some(frame);
+        *self.0.lock() = Some(frame);
     }
 }
 
@@ -24,7 +25,7 @@ where
     for<'a> &'a mut [u8]: WriteFrame<T>,
 {
     pub fn try_read(&self, mut buf: &mut [u8]) -> usize {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         if let Some(frame) = guard.deref() {
             let size = frame.encoding_size();
             if buf.remaining_mut() >= size {
@@ -55,7 +56,7 @@ impl<T> RecvBuffer<T> {
     }
 
     pub fn write(&self, value: T) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         match guard.deref() {
             RecvState::None => *guard = RecvState::Rcvd(value),
             RecvState::Pending(waker) => {
@@ -92,7 +93,7 @@ impl<T> RecvBuffer<T> {
     }
 
     pub fn dismiss(&self) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         if let RecvState::Pending(waker) = guard.deref() {
             waker.wake_by_ref();
         }
@@ -104,7 +105,7 @@ impl<T> Future for RecvBuffer<T> {
     type Output = Option<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         match std::mem::take(guard.deref_mut()) {
             RecvState::None | RecvState::Pending(_) => {
                 *guard = RecvState::Pending(cx.waker().clone());

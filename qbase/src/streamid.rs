@@ -1,9 +1,10 @@
 use std::{
     fmt, ops,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll, Waker},
 };
 
+use parking_lot::Mutex;
 use thiserror::Error;
 
 use super::varint::{be_varint, VarInt, WriteVarInt};
@@ -344,13 +345,13 @@ impl ArcLocalStreamIds {
     }
 
     pub fn role(&self) -> Role {
-        self.0.lock().unwrap().role()
+        self.0.lock().role()
     }
 
     /// The maximum stream ID that we can create is limited by peer. Therefore, it mainly
     /// depends on the peer's attitude and is subject to the MAX_STREAM_FRAME frame sent by peer.
     pub fn permit_max_sid(&self, dir: Dir, val: u64) {
-        self.0.lock().unwrap().permit_max_sid(dir, val);
+        self.0.lock().permit_max_sid(dir, val);
     }
 
     /// We are creating a new stream, and it should be incremented based on the previous stream ID. However,
@@ -360,7 +361,7 @@ impl ArcLocalStreamIds {
     /// maximum stream ID and cannot increase it further. In this case, we should close the connection
     /// because sending MAX_STREAMS will not be received and would violate the protocol.
     pub fn poll_alloc_sid(&self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<StreamId>> {
-        self.0.lock().unwrap().poll_alloc_sid(cx, dir)
+        self.0.lock().poll_alloc_sid(cx, dir)
     }
 }
 
@@ -378,17 +379,17 @@ impl ArcRemoteStreamIds {
     }
 
     pub fn role(&self) -> Role {
-        self.0.lock().unwrap().role()
+        self.0.lock().role()
     }
 
     /// RFC9000: Before a stream is created, all streams of the same type
     /// with lower-numbered stream IDs MUST be created.
     pub fn try_accept_sid(&self, sid: StreamId) -> Result<AcceptSid, ExceedLimitError> {
-        self.0.lock().unwrap().try_accept_sid(sid)
+        self.0.lock().try_accept_sid(sid)
     }
 
     pub fn poll_extend_sid(&self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<VarInt>> {
-        self.0.lock().unwrap().poll_extend_sid(cx, dir)
+        self.0.lock().poll_extend_sid(cx, dir)
     }
 }
 
@@ -444,15 +445,15 @@ mod tests {
             Poll::Ready(Some(StreamId(0)))
         );
         assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Bi), Poll::Pending);
-        assert!(local.0.lock().unwrap().wakers[0].is_some());
+        assert!(local.0.lock().wakers[0].is_some());
         local.permit_max_sid(Dir::Bi, 1);
-        let _ = local.0.lock().unwrap().wakers[0].take();
+        let _ = local.0.lock().wakers[0].take();
         assert_eq!(
             local.poll_alloc_sid(&mut cx, Dir::Bi),
             Poll::Ready(Some(StreamId(4)))
         );
         assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Bi), Poll::Pending);
-        assert!(local.0.lock().unwrap().wakers[0].is_some());
+        assert!(local.0.lock().wakers[0].is_some());
 
         local.permit_max_sid(Dir::Uni, 2);
         assert_eq!(
@@ -468,7 +469,7 @@ mod tests {
             Poll::Ready(Some(StreamId(10)))
         );
         assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Uni), Poll::Pending);
-        assert!(local.0.lock().unwrap().wakers[1].is_some());
+        assert!(local.0.lock().wakers[1].is_some());
     }
 
     #[test]
@@ -482,7 +483,7 @@ mod tests {
                 end: StreamId(21)
             }))
         );
-        assert_eq!(remote.0.lock().unwrap().unallocated[0], StreamId(25));
+        assert_eq!(remote.0.lock().unallocated[0], StreamId(25));
 
         let result = remote.try_accept_sid(StreamId(25));
         assert_eq!(
@@ -492,7 +493,7 @@ mod tests {
                 end: StreamId(25)
             }))
         );
-        assert_eq!(remote.0.lock().unwrap().unallocated[0], StreamId(29));
+        assert_eq!(remote.0.lock().unallocated[0], StreamId(29));
 
         let result = remote.try_accept_sid(StreamId(41));
         assert_eq!(
@@ -502,7 +503,7 @@ mod tests {
                 end: StreamId(41)
             }))
         );
-        assert_eq!(remote.0.lock().unwrap().unallocated[0], StreamId(45));
+        assert_eq!(remote.0.lock().unallocated[0], StreamId(45));
         if let Ok(AcceptSid::New(mut range)) = result {
             assert_eq!(range.next(), Some(StreamId(29)));
             assert_eq!(range.next(), Some(StreamId(33)));

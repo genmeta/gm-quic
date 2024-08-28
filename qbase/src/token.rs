@@ -1,7 +1,8 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use bytes::BufMut;
 use nom::{bytes::complete::take, IResult};
+use parking_lot::{Mutex, MutexGuard};
 use rand::Rng;
 
 use crate::{
@@ -98,7 +99,7 @@ impl ArcTokenRegistry {
     }
 
     pub fn lock_guard(&self) -> MutexGuard<TokenRegistry> {
-        self.0.lock().unwrap()
+        self.0.lock()
     }
 }
 pub enum TokenRegistry {
@@ -110,7 +111,7 @@ impl ReceiveFrame<NewTokenFrame> for ArcTokenRegistry {
     type Output = ();
 
     fn recv_frame(&mut self, frame: &NewTokenFrame) -> Result<Self::Output, crate::error::Error> {
-        let guard = self.0.lock().unwrap();
+        let guard = self.0.lock();
         match &*guard {
             TokenRegistry::Client((server_name, client)) => {
                 client.sink(server_name, frame.token.clone());

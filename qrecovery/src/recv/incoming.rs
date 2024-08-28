@@ -23,11 +23,11 @@ impl Incoming {
     }
 
     pub fn recv_data(&self, stream_frame: &StreamFrame, body: Bytes) -> Result<usize, QuicError> {
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.lock();
         let inner = recver.deref_mut();
         let mut new_data_size = 0;
-        match inner {
-            Ok(receiving_state) => match receiving_state {
+        if let Ok(receiving_state) = inner {
+            match receiving_state {
                 Recver::Recv(r) => {
                     new_data_size = r.recv(stream_frame, body)?;
                 }
@@ -40,34 +40,32 @@ impl Incoming {
                 _ => {
                     log::debug!("ignored stream frame {:?}", stream_frame);
                 }
-            },
-            Err(_) => (),
+            }
         }
         Ok(new_data_size)
     }
 
     pub fn end(&self, final_size: u64) {
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.lock();
         let inner = recver.deref_mut();
-        match inner {
-            Ok(receiving_state) => match receiving_state {
+        if let Ok(receiving_state) = inner {
+            match receiving_state {
                 Recver::Recv(r) => {
                     *receiving_state = Recver::SizeKnown(r.determin_size(final_size));
                 }
                 _ => {
                     log::debug!("there is sth wrong, ignored finish");
                 }
-            },
-            Err(_) => (),
+            }
         }
     }
 
     pub fn recv_reset(&self, reset_frame: &ResetStreamFrame) -> Result<(), QuicError> {
         // TODO: ResetStream中还有错误信息，比如http3的错误码，看是否能用到
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.lock();
         let inner = recver.deref_mut();
-        match inner {
-            Ok(receiving_state) => match receiving_state {
+        if let Ok(receiving_state) = inner {
+            match receiving_state {
                 Recver::Recv(r) => {
                     let final_size = r.recv_reset(reset_frame)?;
                     *receiving_state = Recver::ResetRcvd(final_size);
@@ -80,14 +78,13 @@ impl Incoming {
                     log::error!("there is sth wrong, ignored recv_reset");
                     unreachable!();
                 }
-            },
-            Err(_) => (),
+            }
         }
         Ok(())
     }
 
     pub fn on_conn_error(&self, err: &QuicError) {
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.lock();
         let inner = recver.deref_mut();
         match inner {
             Ok(receiving_state) => match receiving_state {
@@ -117,7 +114,7 @@ impl Future for UpdateWindow {
     type Output = Option<u64>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.lock();
         let inner = recver.deref_mut();
         match inner {
             Ok(receiving_state) => match receiving_state {
@@ -141,7 +138,7 @@ impl Future for IsStopped {
     type Output = Option<u64>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.lock();
         let inner = recver.deref_mut();
         match inner {
             Ok(receiving_state) => match receiving_state {

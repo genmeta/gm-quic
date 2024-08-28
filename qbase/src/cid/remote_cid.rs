@@ -1,11 +1,12 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll, Waker},
 };
 
 use deref_derive::{Deref, DerefMut};
+use parking_lot::Mutex;
 
 use super::ConnectionId;
 use crate::{
@@ -145,7 +146,7 @@ where
             // retire the cids before seq, including the applied and unapplied
             for seq in self.cid_cells.offset()..max_retired {
                 let (_, cell) = self.cid_cells.pop_front().unwrap();
-                let mut guard = cell.0.lock().unwrap();
+                let mut guard = cell.0.lock();
                 if guard.is_retired() {
                     continue;
                 } else {
@@ -226,7 +227,7 @@ where
     /// - have been allocated again after retirement of last cid
     /// - have been retired
     pub fn apply_cid(&self) -> ArcCidCell<RETIRED> {
-        self.0.lock().unwrap().apply_cid()
+        self.0.lock().apply_cid()
     }
 }
 
@@ -237,7 +238,7 @@ where
     type Output = Option<ResetToken>;
 
     fn recv_frame(&mut self, frame: &NewConnectionIdFrame) -> Result<Self::Output, Error> {
-        self.0.lock().unwrap().recv_new_cid_frame(frame)
+        self.0.lock().recv_new_cid_frame(frame)
     }
 }
 
@@ -332,15 +333,15 @@ where
     }
 
     fn assign(&self, cid: ConnectionId) {
-        self.0.lock().unwrap().assign(cid);
+        self.0.lock().assign(cid);
     }
 
     pub fn set_cid(&self, cid: ConnectionId) {
-        self.0.lock().unwrap().set_cid(cid);
+        self.0.lock().set_cid(cid);
     }
 
     pub fn poll_get_cid(&self, cx: &mut Context<'_>) -> Poll<Option<ConnectionId>> {
-        self.0.lock().unwrap().poll_get_cid(cx)
+        self.0.lock().poll_get_cid(cx)
     }
 
     /// Getting the connection ID, if it is not ready, return a future
@@ -353,7 +354,7 @@ where
     /// is marked as no longer in use, with a RetireConnectionIdFrame being sent to peer.
     #[inline]
     pub fn retire(&self) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         if !guard.is_retired() {
             guard.state.retire();
             let seq = guard.seq;
@@ -371,7 +372,7 @@ where
     type Output = Option<ConnectionId>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.lock().unwrap().poll_get_cid(cx)
+        self.0.lock().poll_get_cid(cx)
     }
 }
 
@@ -392,10 +393,7 @@ mod tests {
         // Will return Pending, because the peer hasn't issue any connection id
         let cid_apply = remote_cids.apply_cid();
         assert_eq!(cid_apply.get_cid().poll_unpin(&mut cx), Poll::Pending);
-        assert!(matches!(
-            cid_apply.0.lock().unwrap().state,
-            CidState::Demand(_)
-        ));
+        assert!(matches!(cid_apply.0.lock().state, CidState::Demand(_)));
 
         let cid = ConnectionId::random_gen(8);
         let frame = NewConnectionIdFrame {
@@ -424,7 +422,7 @@ mod tests {
         let mut cx = std::task::Context::from_waker(&waker);
         let retired_cids = ArcAsyncDeque::<RetireConnectionIdFrame>::new();
         let remote_cids = ArcRemoteCids::with_limit(8, retired_cids, None);
-        let mut guard = remote_cids.0.lock().unwrap();
+        let mut guard = remote_cids.0.lock();
 
         let mut cids = vec![];
         for seq in 0..8 {
@@ -441,8 +439,8 @@ mod tests {
 
         let cid_apply1 = guard.apply_cid();
         let cid_apply2 = guard.apply_cid();
-        assert_eq!(cid_apply1.0.lock().unwrap().seq, 0);
-        assert_eq!(cid_apply2.0.lock().unwrap().seq, 1);
+        assert_eq!(cid_apply1.0.lock().seq, 0);
+        assert_eq!(cid_apply2.0.lock().seq, 1);
         assert_eq!(
             cid_apply1.get_cid().poll_unpin(&mut cx),
             Poll::Ready(Some(cids[0]))
@@ -457,8 +455,8 @@ mod tests {
         assert_eq!(guard.cid_cells.offset(), 4);
         assert_eq!(guard.retired_cids.len(), 4);
 
-        assert_eq!(cid_apply1.0.lock().unwrap().seq, 4);
-        assert_eq!(cid_apply2.0.lock().unwrap().seq, 5);
+        assert_eq!(cid_apply1.0.lock().seq, 4);
+        assert_eq!(cid_apply2.0.lock().seq, 5);
 
         for i in 0..4 {
             assert_eq!(
@@ -498,7 +496,7 @@ mod tests {
         let mut cx = std::task::Context::from_waker(&waker);
         let retired_cids = ArcAsyncDeque::<RetireConnectionIdFrame>::new();
         let remote_cids = ArcRemoteCids::with_limit(8, retired_cids, None);
-        let mut guard = remote_cids.0.lock().unwrap();
+        let mut guard = remote_cids.0.lock();
 
         let mut cids = vec![];
         for seq in 0..8 {
@@ -520,8 +518,8 @@ mod tests {
 
         let cid_apply1 = guard.apply_cid();
         let cid_apply2 = guard.apply_cid();
-        assert_eq!(cid_apply1.0.lock().unwrap().seq, 4);
-        assert_eq!(cid_apply2.0.lock().unwrap().seq, 5);
+        assert_eq!(cid_apply1.0.lock().seq, 4);
+        assert_eq!(cid_apply2.0.lock().seq, 5);
         assert_eq!(
             cid_apply1.get_cid().poll_unpin(&mut cx),
             Poll::Ready(Some(cids[4]))

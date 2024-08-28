@@ -3,11 +3,12 @@ use std::{
     future::Future,
     io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{ready, Context, Poll},
 };
 
 use msg::Encoder;
+use parking_lot::Mutex;
 use socket2::{Domain, Socket, Type};
 use tokio::io::Interest;
 use unix::DEFAULT_TTL;
@@ -146,7 +147,7 @@ impl ArcUsc {
         hdr: &PacketHeader,
         cx: &mut Context,
     ) -> Poll<io::Result<usize>> {
-        let controller = self.0.lock().unwrap();
+        let controller = self.0.lock();
         ready!(controller.io.poll_send_ready(cx))?;
         let ret = controller
             .io
@@ -161,7 +162,7 @@ impl ArcUsc {
         hdrs: &mut [PacketHeader],
         cx: &mut Context,
     ) -> Poll<io::Result<usize>> {
-        let controller = self.0.lock().unwrap();
+        let controller = self.0.lock();
         ready!(controller.io.poll_recv_ready(cx))?;
         let ret = controller
             .io
@@ -176,20 +177,20 @@ impl ArcUsc {
     }
 
     pub fn ttl(&self) -> u8 {
-        self.0.lock().unwrap().ttl
+        self.0.lock().ttl
     }
 
     pub fn set_ttl(&self, ttl: u8) -> io::Result<()> {
-        self.0.lock().unwrap().set_ttl(ttl)
+        self.0.lock().set_ttl(ttl)
     }
 
     pub fn local_addr(&self) -> SocketAddr {
-        self.0.lock().unwrap().local_addr()
+        self.0.lock().local_addr()
     }
 
     // Send synchronously, usc saves a small amount of data packets,and USC sends internal asynchronous tasks
     pub fn sync_send(&self, packet: Vec<u8>, hdr: PacketHeader) -> io::Result<()> {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         if guard.bufs.len() >= BUFFER_CAPACITY {
             return Err(io::Error::new(io::ErrorKind::WouldBlock, "buffer full"));
         }
@@ -237,7 +238,7 @@ impl<'a> Future for Sender<'a> {
     type Output = io::Result<usize>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let usc = self.usc.0.lock().unwrap();
+        let usc = self.usc.0.lock();
         ready!(usc.io.poll_send_ready(cx))?;
         let ret = usc
             .io
@@ -253,7 +254,7 @@ impl Future for SyncGuard {
     type Output = io::Result<usize>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut usc = self.0 .0.lock().unwrap();
+        let mut usc = self.0 .0.lock();
         if let Some((pkt, hdr)) = usc.bufs.pop_front() {
             ready!(usc.io.poll_send_ready(cx))?;
             let ret = usc.io.try_io(Interest::WRITABLE, || {

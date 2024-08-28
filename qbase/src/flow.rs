@@ -3,12 +3,13 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard,
+        Arc,
     },
     task::{Context, Poll, Waker},
 };
 
 use futures::{task::AtomicWaker, Future};
+use parking_lot::{Mutex, MutexGuard};
 use thiserror::Error;
 
 use crate::{
@@ -95,7 +96,7 @@ impl ArcSendControler {
     }
 
     fn increase_limit(&self, max_data: u64) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         if let Ok(inner) = guard.deref_mut() {
             inner.increase_limit(max_data);
         }
@@ -109,7 +110,7 @@ impl ArcSendControler {
 
     /// Apply for sending data. If it has meet error, it will return Err directly.
     pub fn credit(&self) -> Result<Credit<'_>, QuicError> {
-        let guard = self.0.lock().unwrap();
+        let guard = self.0.lock();
         if let Err(e) = guard.deref() {
             return Err(e.clone());
         }
@@ -121,7 +122,7 @@ impl ArcSendControler {
     /// not require to register the send task on the flow control, as there may still be
     /// retransmission data that can be sent.
     pub fn register_waker(&self, waker: Waker) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         if let Ok(inner) = guard.deref_mut() {
             inner.register_waker(waker);
         }
@@ -129,7 +130,7 @@ impl ArcSendControler {
 
     /// Flow control can only be terminated if the connection encounters an error
     pub fn on_error(&self, error: &QuicError) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         if guard.deref().is_err() {
             return;
         }
@@ -156,7 +157,7 @@ impl Future for WouldBlock {
     type Output = Result<DataBlockedFrame, QuicError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.0 .0.lock().unwrap();
+        let mut guard = self.0 .0.lock();
         match guard.deref_mut() {
             Ok(inner) => inner.poll_would_block(cx),
             Err(e) => Poll::Ready(Err(e.clone())),

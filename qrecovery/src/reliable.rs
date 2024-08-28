@@ -1,10 +1,8 @@
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex, MutexGuard},
-};
+use std::{collections::VecDeque, sync::Arc};
 
 use deref_derive::{Deref, DerefMut};
 use enum_dispatch::enum_dispatch;
+use parking_lot::{Mutex, MutexGuard};
 use qbase::frame::{io::WriteFrame, BeFrame, CryptoFrame, ReliableFrame, StreamFrame};
 
 pub mod rcvdpkt;
@@ -73,7 +71,7 @@ impl ArcReliableFrameDeque {
     }
 
     pub fn lock_guard(&self) -> MutexGuard<'_, RawReliableFrameDeque> {
-        self.0.lock().unwrap()
+        self.0.lock()
     }
 
     pub fn try_read(&self, buf: &mut [u8]) -> Option<(ReliableFrame, usize)> {

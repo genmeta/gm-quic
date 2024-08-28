@@ -8,3 +8,4 @@ tokio = { workspace = true }
 bytes = { workspace = true }
 qbase = { workspace = true }
 futures = { workspace = true }
+parking_lot = { workspace = true }

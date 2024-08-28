@@ -2,11 +2,12 @@ use std::{
     cmp::Ordering,
     collections::VecDeque,
     future::Future,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
 
+use parking_lot::Mutex;
 use qbase::frame::{AckFrame, EcnCounts};
 use qrecovery::space::Epoch;
 
@@ -425,7 +426,7 @@ impl ArcCC {
 
 impl super::CongestionControl for ArcCC {
     fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize> {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
 
         let now = Instant::now();
         if guard.loss_timer.is_timeout(now) {
@@ -459,7 +460,7 @@ impl super::CongestionControl for ArcCC {
     }
 
     fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)> {
-        let guard = self.0.lock().unwrap();
+        let guard = self.0.lock();
         if let Some(recved) = &guard.largest_ack_eliciting_packet[space] {
             return Some((recved.pn, recved.recv_time));
         }
@@ -475,7 +476,7 @@ impl super::CongestionControl for ArcCC {
         in_flight: bool,
         ack: Option<u64>,
     ) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         let now = Instant::now();
         guard.on_packet_sent(pn, epoch, is_ack_eliciting, in_flight, sent_bytes, now);
 
@@ -489,7 +490,7 @@ impl super::CongestionControl for ArcCC {
     }
 
     fn on_ack(&self, space: Epoch, ack_frame: &AckFrame) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         let now = Instant::now();
         guard.on_ack_rcvd(space, ack_frame, now);
     }
@@ -500,7 +501,7 @@ impl super::CongestionControl for ArcCC {
         }
         let now = Instant::now();
         let recved = Recved { pn, recv_time: now };
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         if let Some(r) = &guard.largest_ack_eliciting_packet[space] {
             if pn > r.pn {
                 guard.largest_ack_eliciting_packet[space] = Some(recved);
@@ -521,16 +522,16 @@ impl super::CongestionControl for ArcCC {
     }
 
     fn get_pto_time(&self, epoch: Epoch) -> Duration {
-        self.0.lock().unwrap().get_pto_time(epoch)
+        self.0.lock().get_pto_time(epoch)
     }
 
     fn on_get_handshake_keys(&self) {
-        let mut gurad = self.0.lock().unwrap();
+        let mut gurad = self.0.lock();
         gurad.has_handshake_keys = true;
     }
 
     fn on_handshake_done(&self) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         guard.is_handshake_done = true;
         guard.rtt.on_handshake_done();
     }
@@ -542,7 +543,7 @@ impl Future for MayLoss {
     type Output = (Epoch, Vec<u64>);
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.0 .0.lock().unwrap();
+        let mut guard = self.0 .0.lock();
 
         if let Some(loss) = guard.loss_pns.take() {
             return Poll::Ready(loss);
@@ -558,7 +559,7 @@ impl Future for IndicateAck {
     type Output = (Epoch, Vec<u64>);
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.0 .0.lock().unwrap();
+        let mut guard = self.0 .0.lock();
         if let Some(acked) = guard.newly_ack_pns.take() {
             return Poll::Ready(acked);
         }
@@ -573,7 +574,7 @@ impl Future for Prober {
     type Output = Epoch;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.0 .0.lock().unwrap();
+        let mut guard = self.0 .0.lock();
         if let Some(space) = guard.pto_space {
             return Poll::Ready(space);
         }

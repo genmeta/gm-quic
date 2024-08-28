@@ -11,6 +11,8 @@ socket2 = { workspace = true }
 libc = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
+parking_lot = { workspace = true }
+
 
 [dev-dependencies]
 env_logger = "0"

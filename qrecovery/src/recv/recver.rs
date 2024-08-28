@@ -1,10 +1,11 @@
 use std::{
     io,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll, Waker},
 };
 
 use bytes::{BufMut, Bytes};
+use parking_lot::Mutex;
 use qbase::{
     error::{Error, ErrorKind},
     frame::{BeFrame, ResetStreamFrame, StreamFrame},

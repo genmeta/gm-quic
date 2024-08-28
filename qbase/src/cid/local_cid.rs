@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use super::{ConnectionId, UniqueCid};
 use crate::{
@@ -8,7 +10,6 @@ use crate::{
     util::IndexDeque,
     varint::{VarInt, VARINT_MAX},
 };
-
 /// 我方负责发放足够的cid，poll_issue_cid，将当前有效的cid注册到连接id路由。
 /// 当cid不足时，就发放新的连接id，包括增大active_cid_limit，以及对方淘汰旧的cid。
 #[derive(Debug)]
@@ -140,7 +141,6 @@ where
     pub fn active_cids(&self) -> Vec<ConnectionId> {
         self.0
             .lock()
-            .unwrap()
             .cid_deque
             .iter()
             .filter_map(|v| v.map(|(cid, _)| cid))
@@ -148,7 +148,7 @@ where
     }
 
     pub fn set_limit(&self, active_cid_limit: u64) -> Result<(), Error> {
-        self.0.lock().unwrap().set_limit(active_cid_limit)
+        self.0.lock().set_limit(active_cid_limit)
     }
 }
 
@@ -163,7 +163,7 @@ where
         &mut self,
         frame: &RetireConnectionIdFrame,
     ) -> Result<Self::Output, crate::error::Error> {
-        self.0.lock().unwrap().recv_retire_cid_frame(frame)
+        self.0.lock().recv_retire_cid_frame(frame)
     }
 }
 
@@ -196,7 +196,7 @@ mod tests {
     fn test_issue_cid() {
         let initial_scid = ConnectionId::random_gen(8);
         let local_cids = ArcLocalCids::new(generator, initial_scid, IssuedCids::default());
-        let mut guard = local_cids.0.lock().unwrap();
+        let mut guard = local_cids.0.lock();
 
         assert_eq!(guard.cid_deque.len(), 2);
 

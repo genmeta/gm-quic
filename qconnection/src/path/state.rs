@@ -1,12 +1,13 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll, Waker},
     time,
 };
 
 use deref_derive::Deref;
+use parking_lot::Mutex;
 use qbase::cid::ArcCidCell;
 use qrecovery::reliable::ArcReliableFrameDeque;
 
@@ -42,7 +43,7 @@ impl ArcPathState {
             async move {
                 loop {
                     let now = time::Instant::now();
-                    let recv_time = *state.lock().unwrap();
+                    let recv_time = *state.lock();
                     // TODO: 失活时间暂定30s
                     if now.duration_since(recv_time) >= time::Duration::from_secs(30) {
                         state.to_inactive(cid);
@@ -80,7 +81,7 @@ impl ArcPathState {
     pub fn to_inactive(&self, cid: ArcCidCell<ArcReliableFrameDeque>) {
         ArcCidCell::retire(&cid);
 
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock();
         if let PathState::Pending(ref mut wakers) = *guard {
             let wakers = std::mem::take(wakers);
             *guard = PathState::InActive;
@@ -95,7 +96,7 @@ impl Future for ArcPathState {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock();
 
         match *guard {
             PathState::Active => *guard = PathState::Pending(vec![cx.waker().clone()]),

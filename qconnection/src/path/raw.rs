@@ -166,6 +166,6 @@ impl RawPath {
 
     /// Sets the receive time to the current instant.
     pub fn update_recv_time(&self) {
-        *self.state.deref().lock().unwrap() = time::Instant::now();
+        *self.state.deref().lock() = time::Instant::now();
     }
 }

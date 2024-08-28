@@ -19,3 +19,4 @@ rustls = { workspace = true }
 log = { workspace = true }
 deref-derive = { workspace = true }
 dashmap = { workspace = true }
+parking_lot = { workspace = true }

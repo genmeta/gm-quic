@@ -1,10 +1,7 @@
-use std::{
-    collections::VecDeque,
-    ops::DerefMut,
-    sync::{Arc, Mutex, MutexGuard},
-};
+use std::{collections::VecDeque, ops::DerefMut, sync::Arc};
 
 use deref_derive::{Deref, DerefMut};
+use parking_lot::{Mutex, MutexGuard};
 use qbase::{packet::PacketNumber, util::IndexDeque, varint::VARINT_MAX};
 
 /// 记录发送的数据包的状态，包括
@@ -138,12 +135,12 @@ impl<T> ArcSentPktRecords<T> {
 
     pub fn receive(&self) -> RecvGuard<'_, T> {
         RecvGuard {
-            inner: self.0.lock().unwrap(),
+            inner: self.0.lock(),
         }
     }
 
     pub fn send(&self) -> SendGuard<'_, T> {
-        let inner = self.0.lock().unwrap();
+        let inner = self.0.lock();
         let origin_len = inner.queue.len();
         SendGuard {
             necessary: false,

@@ -2,11 +2,12 @@ mod send {
     use std::{
         io,
         pin::Pin,
-        sync::{Arc, Mutex},
+        sync::Arc,
         task::{Context, Poll, Waker},
     };
 
     use bytes::BufMut;
+    use parking_lot::Mutex;
     use qbase::{
         frame::{io::WriteDataFrame, CryptoFrame},
         util::DescribeData,
@@ -99,11 +100,11 @@ mod send {
             cx: &mut Context<'_>,
             buf: &[u8],
         ) -> Poll<io::Result<usize>> {
-            self.0.lock().unwrap().poll_write(cx, buf)
+            self.0.lock().poll_write(cx, buf)
         }
 
         fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            self.0.lock().unwrap().poll_flush(cx)
+            self.0.lock().poll_flush(cx)
         }
 
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -114,15 +115,15 @@ mod send {
 
     impl CryptoStreamOutgoing {
         pub fn try_read_data(&self, buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
-            self.0.lock().unwrap().try_read_data(buffer)
+            self.0.lock().try_read_data(buffer)
         }
 
         pub fn on_data_acked(&self, crypto_frame: &CryptoFrame) {
-            self.0.lock().unwrap().on_data_acked(crypto_frame)
+            self.0.lock().on_data_acked(crypto_frame)
         }
 
         pub fn may_loss_data(&self, crypto_frame: &CryptoFrame) {
-            self.0.lock().unwrap().may_loss_data(crypto_frame)
+            self.0.lock().may_loss_data(crypto_frame)
         }
     }
 
@@ -139,11 +140,12 @@ mod recv {
     use std::{
         io,
         pin::Pin,
-        sync::{Arc, Mutex},
+        sync::Arc,
         task::{Context, Poll, Waker},
     };
 
     use bytes::{BufMut, Bytes};
+    use parking_lot::Mutex;
     use qbase::{
         error::Error,
         frame::{CryptoFrame, ReceiveFrame},
@@ -199,7 +201,7 @@ mod recv {
             cx: &mut Context<'_>,
             buf: &mut ReadBuf<'_>,
         ) -> Poll<io::Result<()>> {
-            self.0.lock().unwrap().poll_read(cx, buf)
+            self.0.lock().poll_read(cx, buf)
         }
     }
 
@@ -210,10 +212,7 @@ mod recv {
             &mut self,
             (frame, data): &(CryptoFrame, Bytes),
         ) -> Result<Self::Output, Error> {
-            self.0
-                .lock()
-                .unwrap()
-                .recv(frame.offset.into(), data.clone());
+            self.0.lock().recv(frame.offset.into(), data.clone());
             Ok(())
         }
     }

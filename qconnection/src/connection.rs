@@ -2,13 +2,14 @@ use std::{
     fmt::Debug,
     mem,
     ops::DerefMut,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use closing::ClosingConnection;
 use draining::DrainingConnection;
 use futures::{channel::mpsc, StreamExt};
+use parking_lot::Mutex;
 use qbase::{
     cid::{self, ConnectionId},
     config::Parameters,
@@ -121,7 +122,7 @@ impl ArcConnection {
     /// This function is intended for use by the application layer to signal an
     /// error and initiate the connection closure.
     pub fn close_with_error(self, error: Error) {
-        let guard = self.0.lock().unwrap();
+        let guard = self.0.lock();
         if let ConnState::Raw(ref raw_conn) = *guard {
             raw_conn.error.set_app_error(error)
         }
@@ -134,7 +135,7 @@ impl ArcConnection {
     /// confirmation, any remaining data is drained.  If the timeout expires without
     /// confirmation, the connection is forcefully terminated.
     fn should_enter_closing_with_error(&self, error: Error) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
 
         let ConnState::Raw(raw_conn) = mem::replace(guard.deref_mut(), ConnState::Closed) else {
             unreachable!()
@@ -198,7 +199,7 @@ impl ArcConnection {
     /// Enter draining state from raw state or closing state.
     /// Can only be called internally, and the app should not care this method.
     pub(crate) fn enter_draining(&self, remaining: Duration) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         let draining_conn = match mem::replace(guard.deref_mut(), ConnState::Closed) {
             Raw(conn) => DrainingConnection::from(conn),
             Closing(closing_conn) => DrainingConnection::from(closing_conn),
@@ -219,7 +220,7 @@ impl ArcConnection {
     /// Dismiss the connection, remove it from the global router.
     /// Can only be called internally, and the app should not care this method.
     pub(crate) fn die(self) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         let local_cids = match mem::replace(guard.deref_mut(), ConnState::Closed) {
             Raw(conn) => conn.cid_registry.local,
             Closing(conn) => conn.cid_registry.local,
@@ -233,15 +234,15 @@ impl ArcConnection {
     }
 
     pub fn update_path_recv_time(&self, pathway: Pathway) {
-        let guard = self.0.lock().unwrap();
+        let guard = self.0.lock();
         if let ConnState::Raw(ref raw_conn) = *guard {
             raw_conn.update_path_recv_time(pathway);
         }
     }
 
     pub fn recv_retry_packet(&self, retry: &RetryHeader, pathway: Pathway, usc: ArcUsc) {
-        if let Raw(conn) = &mut *self.0.lock().unwrap() {
-            *conn.token.lock().unwrap() = retry.token.to_vec();
+        if let Raw(conn) = &mut *self.0.lock() {
+            *conn.token.lock() = retry.token.to_vec();
             let path = conn.pathes.get(pathway, usc);
             path.set_dcid(retry.scid);
             let sent_record = conn.initial.space.sent_packets();

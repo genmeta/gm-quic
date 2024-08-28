@@ -2,10 +2,11 @@ use std::{
     future::Future,
     ops::DerefMut,
     pin::Pin,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::Arc,
     task::{Context, Poll, Waker},
 };
 
+use parking_lot::{Mutex, MutexGuard};
 use qbase::{
     cid::ConnectionId,
     config::{
@@ -154,7 +155,7 @@ impl ArcTlsSession {
     }
 
     fn lock_guard(&self) -> MutexGuard<'_, RawTlsSession> {
-        self.0.lock().unwrap()
+        self.0.lock()
     }
 
     pub fn write_tls_msg(&self, plaintext: &[u8]) -> Result<(), rustls::Error> {
@@ -338,7 +339,7 @@ pub struct GetParameters(Arc<Mutex<RawGetParameters>>);
 
 impl GetParameters {
     fn set_parameters(&self, parameters: Parameters) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         let RawGetParameters::Pending(waker) = guard.deref_mut() else {
             return;
         };
@@ -347,7 +348,7 @@ impl GetParameters {
     }
 
     fn on_handshake_done(&self) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         let RawGetParameters::Pending(waker) = guard.deref_mut() else {
             return;
         };
@@ -356,7 +357,7 @@ impl GetParameters {
     }
 
     pub fn poll_get_parameters(&self, cx: &mut Context) -> Poll<Option<Parameters>> {
-        self.0.lock().unwrap().poll_get_parameters(cx)
+        self.0.lock().poll_get_parameters(cx)
     }
 }
 
@@ -364,6 +365,6 @@ impl Future for GetParameters {
     type Output = Option<Parameters>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.lock().unwrap().poll_get_parameters(cx)
+        self.0.lock().poll_get_parameters(cx)
     }
 }

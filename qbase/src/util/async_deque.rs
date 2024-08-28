@@ -1,11 +1,12 @@
 use std::{
     collections::VecDeque,
     pin::Pin,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::Arc,
     task::{Context, Poll, Waker},
 };
 
 use futures::Stream;
+use parking_lot::{Mutex, MutexGuard};
 
 #[derive(Debug)]
 struct AsyncDeque<T> {
@@ -25,7 +26,7 @@ impl<T> ArcAsyncDeque<T> {
     }
 
     pub fn push(&self, value: T) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         if let Some(queue) = &mut guard.queue {
             queue.push_back(value);
             if let Some(waker) = guard.waker.take() {
@@ -35,18 +36,12 @@ impl<T> ArcAsyncDeque<T> {
     }
 
     pub fn pop(&self) -> Option<T> {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         guard.queue.as_mut().and_then(|q| q.pop_front())
     }
 
     pub fn len(&self) -> usize {
-        self.0
-            .lock()
-            .unwrap()
-            .queue
-            .as_ref()
-            .map(|v| v.len())
-            .unwrap_or(0)
+        self.0.lock().queue.as_ref().map(|v| v.len()).unwrap_or(0)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -54,7 +49,7 @@ impl<T> ArcAsyncDeque<T> {
     }
 
     pub fn close(&self) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         guard.queue = None;
         if let Some(waker) = guard.waker.take() {
             waker.wake();
@@ -63,7 +58,7 @@ impl<T> ArcAsyncDeque<T> {
 
     // pub fn writer<'a>(&'a self) -> ArcFrameQueueWriter<'a, T> {
     pub fn writer(&self) -> ArcAsyncDequeWriter<'_, T> {
-        let guard = self.0.lock().unwrap();
+        let guard = self.0.lock();
         let old_len = guard.queue.as_ref().map(|q| q.len()).unwrap_or(0);
         ArcAsyncDequeWriter { guard, old_len }
     }
@@ -85,7 +80,7 @@ impl<T> Stream for ArcAsyncDeque<T> {
     type Item = T;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         match &mut guard.queue {
             Some(queue) => {
                 if let Some(frame) = queue.pop_front() {
@@ -102,7 +97,7 @@ impl<T> Stream for ArcAsyncDeque<T> {
 
 impl<T> Extend<T> for ArcAsyncDeque<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         if let Some(queue) = &mut guard.queue {
             queue.extend(iter);
             if let Some(waker) = guard.waker.take() {
@@ -137,15 +132,12 @@ impl<T> ArcAsyncDequeWriter<'_, T> {
 
 impl<T> Drop for ArcAsyncDequeWriter<'_, T> {
     fn drop(&mut self) {
-        match &mut self.guard.queue {
-            Some(queue) => {
-                if queue.len() > self.old_len {
-                    if let Some(waker) = self.guard.waker.take() {
-                        waker.wake();
-                    }
+        if let Some(queue) = &mut self.guard.queue {
+            if queue.len() > self.old_len {
+                if let Some(waker) = self.guard.waker.take() {
+                    waker.wake();
                 }
             }
-            None => {}
         }
     }
 }

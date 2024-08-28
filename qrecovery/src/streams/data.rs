@@ -1,10 +1,11 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::Arc,
     task::{ready, Context, Poll},
 };
 
 use deref_derive::{Deref, DerefMut};
+use parking_lot::{Mutex, MutexGuard};
 use qbase::{
     config::Parameters,
     error::{Error as QuicError, ErrorKind},
@@ -44,7 +45,7 @@ impl Default for ArcOutput {
 
 impl ArcOutput {
     fn guard(&self) -> Result<ArcOutputGuard, QuicError> {
-        let guard = self.0.lock().unwrap();
+        let guard = self.0.lock();
         match guard.as_ref() {
             Ok(_) => Ok(ArcOutputGuard { inner: guard }),
             Err(e) => Err(e.clone()),
@@ -88,7 +89,7 @@ impl Default for ArcInput {
 
 impl ArcInput {
     fn guard(&self) -> Result<ArcInputGuard, QuicError> {
-        let guard = self.0.lock().unwrap();
+        let guard = self.0.lock();
         match guard.as_ref() {
             Ok(_) => Ok(ArcInputGuard { inner: guard }),
             Err(e) => Err(e.clone()),
@@ -143,7 +144,7 @@ impl ArcDataStreamParameters {
     }
 
     fn guard(&self) -> MutexGuard<'_, RawDataStreamParameters> {
-        self.0.lock().unwrap()
+        self.0.lock()
     }
 
     fn apply_transport_parameters(&self, params: &Parameters) {
@@ -187,7 +188,7 @@ impl RawDataStreams {
         buf: &mut [u8],
         flow_limit: usize,
     ) -> Option<(StreamFrame, usize, usize)> {
-        let guard = &mut self.output.0.lock().unwrap();
+        let guard = &mut self.output.0.lock();
         let output = guard.as_mut().ok()?;
 
         const DEFAULT_TOKENS: usize = 4096;
@@ -225,7 +226,7 @@ impl RawDataStreams {
     }
 
     pub fn on_data_acked(&self, frame: StreamFrame) {
-        if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
+        if let Ok(set) = self.output.0.lock().as_mut() {
             if set
                 .get(&frame.id)
                 .map(|o| o.on_data_acked(&frame.range()))
@@ -241,7 +242,6 @@ impl RawDataStreams {
             .output
             .0
             .lock()
-            .unwrap()
             .as_mut()
             .ok()
             .and_then(|set| set.get(&stream_frame.id))
@@ -251,7 +251,7 @@ impl RawDataStreams {
     }
 
     pub fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
-        if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
+        if let Ok(set) = self.output.0.lock().as_mut() {
             if let Some(o) = set.remove(&reset_frame.stream_id) {
                 o.on_reset_acked();
             }
@@ -283,7 +283,6 @@ impl RawDataStreams {
             .input
             .0
             .lock()
-            .unwrap()
             .as_mut()
             .ok()
             .and_then(|set| set.get(&sid))
@@ -314,7 +313,7 @@ impl RawDataStreams {
                         ));
                     }
                 }
-                if let Ok(set) = self.input.0.lock().unwrap().as_mut() {
+                if let Ok(set) = self.input.0.lock().as_mut() {
                     if let Some(incoming) = set.remove(&sid) {
                         incoming.recv_reset(reset)?;
                     }
@@ -339,7 +338,6 @@ impl RawDataStreams {
                     .output
                     .0
                     .lock()
-                    .unwrap()
                     .as_mut()
                     .ok()
                     .and_then(|set| set.get(&sid))
@@ -376,7 +374,6 @@ impl RawDataStreams {
                     .output
                     .0
                     .lock()
-                    .unwrap()
                     .as_ref()
                     .ok()
                     .and_then(|set| set.get(&sid))

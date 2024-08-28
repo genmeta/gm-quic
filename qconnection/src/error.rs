@@ -2,10 +2,11 @@ use std::{
     future::Future,
     ops::DerefMut,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll, Waker},
 };
 
+use parking_lot::Mutex;
 use qbase::{error::Error, frame::ConnectionCloseFrame};
 
 #[derive(Debug, Clone, Default)]
@@ -53,7 +54,7 @@ impl ConnError {
 
     /// When a connection close frame is received, it will change the state and wake the external if necessary.
     pub fn on_ccf_rcvd(&self, ccf: &ConnectionCloseFrame) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         // ccf具有最高的优先级
         if let ConnErrorState::Pending(waker) = guard.deref_mut() {
             waker.wake_by_ref();
@@ -62,7 +63,7 @@ impl ConnError {
     }
 
     pub fn on_error(&self, error: Error) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         match guard.deref_mut() {
             ConnErrorState::None => {
                 *guard = ConnErrorState::Closing(error);
@@ -77,7 +78,7 @@ impl ConnError {
 
     /// App actively close the connection with an error
     pub fn set_app_error(&self, error: Error) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         match guard.deref_mut() {
             ConnErrorState::None => {
                 *guard = ConnErrorState::App(error);
@@ -111,7 +112,7 @@ impl Future for ConnError {
     /// - If the state is `Closing` or `App`, it returns `Poll::Ready(true)`, indicating that the connection is closing or has been closed due to an application error.
     /// - If the state is `Draining`, it returns `Poll::Ready(false)`, indicating that the connection is draining and will be closed gracefully.
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock();
         match guard.deref_mut() {
             ConnErrorState::None | ConnErrorState::Pending(_) => {
                 *guard = ConnErrorState::Pending(cx.waker().clone());
