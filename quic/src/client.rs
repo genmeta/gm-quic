@@ -137,6 +137,7 @@ impl QuicClient {
             key: ConnKey::Client(scid),
             inner,
         };
+        log::debug!("Insert connection: {:?}", scid);
         CONNECTIONS.insert(ConnKey::Client(scid), conn.clone());
         Ok(conn)
     }

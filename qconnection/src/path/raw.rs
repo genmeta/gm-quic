@@ -125,6 +125,7 @@ impl RawPath {
                 let mut datagrams = Vec::with_capacity(4);
 
                 'read: while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
+                    log::debug!("Sending some data");
                     let mut io_slices = iovec.as_slice();
                     while !io_slices.is_empty() {
                         match usc.send_via_pathway(io_slices, pathway).await {

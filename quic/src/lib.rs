@@ -9,7 +9,7 @@ use std::{
 use bytes::BytesMut;
 use dashmap::DashMap;
 use qbase::{
-    cid::{ConnectionId, MAX_CID_SIZE},
+    cid::ConnectionId,
     packet::{
         header::GetDcid, long, DataHeader, Packet, PacketReader, RetryHeader,
         VersionNegotiationHeader,
@@ -80,7 +80,8 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                         local: hdr.dst,
                         remote: hdr.src,
                     };
-                    let reader = PacketReader::new(data, MAX_CID_SIZE);
+                    // TODO: dcid 长度和生成时的长度一致
+                    let reader = PacketReader::new(data, 8);
                     for pkt in reader.flatten() {
                         match pkt {
                             Packet::VN(vn) => {
@@ -119,7 +120,11 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                                     Some(conn) => conn.update_path_recv_time(pathway),
                                     None => log::error!("No connection found for Data packet"),
                                 }
-
+                                log::debug!(
+                                    "Recv Data packet: {:?} pathway: {:?}",
+                                    packet,
+                                    pathway
+                                );
                                 ROUTER.recv_packet_via_pathway(packet, pathway, &usc.clone());
                             }
                         }
