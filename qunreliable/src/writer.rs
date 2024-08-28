@@ -13,7 +13,7 @@ use qbase::{
 };
 
 #[derive(Debug)]
-pub struct RawDatagramWriter {
+pub(crate) struct RawDatagramWriter {
     remote_max_size: usize,
     queue: VecDeque<Bytes>,
 }
@@ -27,7 +27,7 @@ impl RawDatagramWriter {
     }
 }
 
-pub type ArcDatagramWriter = Arc<Mutex<io::Result<RawDatagramWriter>>>;
+pub(crate) type ArcDatagramWriter = Arc<Mutex<io::Result<RawDatagramWriter>>>;
 
 #[derive(Debug, Clone)]
 pub struct DatagramWriter(pub(super) ArcDatagramWriter);
@@ -184,6 +184,13 @@ impl DatagramWriter {
             Ok(reader) => Ok(reader.remote_max_size),
             Err(error) => Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string())),
         }
+    }
+
+    pub fn into_result(self) -> io::Result<Self> {
+        if let Err(e) = &*self.0.lock().unwrap() {
+            return Err(io::Error::new(e.kind(), e.to_string()));
+        }
+        Ok(self)
     }
 }
 

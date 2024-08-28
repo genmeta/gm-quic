@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    io,
+    sync::{atomic::AtomicBool, Arc, Mutex},
+};
 
 use qbase::{
     config::Parameters,
@@ -12,10 +15,11 @@ use super::{
 };
 
 /// The unique [`RawDatagramFlow`] struct represents a flow for sending and receiving datagrams frame from a connection.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RawDatagramFlow {
     reader: DatagramReader,
     writer: DatagramWriter,
+    reader_taken: AtomicBool,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +47,7 @@ impl RawDatagramFlow {
         Self {
             reader: DatagramReader(Arc::new(Mutex::new(Ok(reader)))),
             writer: DatagramWriter(Arc::new(Mutex::new(Ok(writer)))),
+            reader_taken: AtomicBool::new(false),
         }
     }
 }
@@ -73,14 +78,22 @@ impl DatagramFlow {
         self.0.writer.try_read_datagram(buf)
     }
 
-    /// Create a pair of [`DatagramReader`] and [`DatagramWriter`] for the application to read and write datagrams.
     #[inline]
-    pub fn rw(&self) -> (DatagramReader, DatagramWriter) {
-        let flow = &self.0;
-        (
-            DatagramReader(flow.reader.0.clone()),
-            DatagramWriter(flow.writer.0.clone()),
-        )
+    pub fn reader(&self) -> io::Result<DatagramReader> {
+        use std::sync::atomic::Ordering;
+        if self.0.reader_taken.swap(true, Ordering::AcqRel) {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "The reader has been taken once",
+            ));
+        }
+
+        DatagramReader(self.0.reader.0.clone()).into_result()
+    }
+
+    #[inline]
+    pub fn writer(&self) -> io::Result<DatagramWriter> {
+        DatagramWriter(self.0.writer.0.clone()).into_result()
     }
 
     /// Handles a connection error.

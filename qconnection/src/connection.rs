@@ -19,6 +19,7 @@ use qbase::{
 };
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qudp::ArcUsc;
+use qunreliable::DatagramFlow;
 use raw::RawConnection;
 
 use crate::{
@@ -111,8 +112,12 @@ impl ArcConnection {
     /// draining state. Even if the connection will enter closing state in future, the returned
     /// data streams are still available. It doesn't matter, because the returned DataStreams will
     /// be synced into Error state, and do anything about this DataStreams will return an Error.
-    pub fn streams(&self) -> Result<DataStreams, std::io::Error> {
+    pub fn streams(&self) -> std::io::Result<DataStreams> {
         todo!("get the streams of the connection, return error if the connection is in closing state or draining state")
+    }
+
+    pub fn datagrams(&self) -> std::io::Result<DatagramFlow> {
+        todo!()
     }
 
     /// Gracefully closes the connection.
