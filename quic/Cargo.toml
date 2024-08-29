@@ -24,3 +24,11 @@ dashmap = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
+clap = { workspace = true }
+url = { workspace = true }
+
+[[example]]
+name = "client"
+
+[[example]]
+name = "connection"
