@@ -287,6 +287,20 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
 }
 
 impl QuicClientBuilder<TlsClientConfig> {
+    /// Ref. [alpn-protocol-ids](https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml#alpn-protocol-ids)
+    /// client_builder.with_alpn(["http/0.9", "http/1.0", "http/1.1", "h3"]);
+    pub fn with_alpn(mut self, alpn: impl IntoIterator<Item = Vec<u8>>) -> Self {
+        self.tls_config.alpn_protocols.extend(alpn);
+        self
+    }
+
+    pub fn with_keylog(mut self, flag: bool) -> Self {
+        if flag {
+            self.tls_config.key_log = Arc::new(rustls::KeyLogFile::new());
+        }
+        self
+    }
+
     pub fn build(self) -> QuicClient {
         QuicClient {
             addresses: self.addresses,
