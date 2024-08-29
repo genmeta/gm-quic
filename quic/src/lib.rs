@@ -66,13 +66,13 @@ impl Drop for QuicConnection {
 
 pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
     let recv_task = |usc: ArcUsc, bind_addr: SocketAddr| {
-        let mut receiver = usc.receiver();
+        let mut receive = usc.receive();
         tokio::spawn(async move {
-            while let Ok(msg_count) = (&mut receiver).await {
-                for (hdr, buf) in receiver
+            while let Ok(msg_count) = (&mut receive).await {
+                for (hdr, buf) in receive
                     .headers
                     .iter()
-                    .zip(receiver.iovecs.iter())
+                    .zip(receive.iovecs.iter())
                     .take(msg_count)
                 {
                     let data: BytesMut = buf[0..hdr.seg_size as usize].into();

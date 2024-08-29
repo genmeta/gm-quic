@@ -3,6 +3,7 @@ use std::{
     future::Future,
     io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
+    pin::Pin,
     sync::{Arc, Mutex},
     task::{ready, Context, Poll},
 };
@@ -206,8 +207,16 @@ impl ArcUsc {
         Ok(())
     }
 
-    pub fn receiver(&self) -> Receiver {
-        Receiver {
+    pub fn send<'a>(&'a self, iovecs: &'a [IoSlice<'a>], header: PacketHeader) -> Send<'a> {
+        Send {
+            usc: self.clone(),
+            iovecs,
+            header,
+        }
+    }
+
+    pub fn receive(&self) -> Receive {
+        Receive {
             usc: self.clone(),
             iovecs: (0..BATCH_SIZE)
                 .map(|_| [0u8; 1500].to_vec())
@@ -225,7 +234,7 @@ struct SyncGuard(ArcUsc);
 impl Future for SyncGuard {
     type Output = io::Result<usize>;
 
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut usc = self.0 .0.lock().unwrap();
         if let Some((pkt, hdr)) = usc.bufs.pop_front() {
             ready!(usc.io.poll_send_ready(cx))?;
@@ -243,16 +252,31 @@ impl Future for SyncGuard {
     }
 }
 
-pub struct Receiver {
+pub struct Send<'a> {
+    pub usc: ArcUsc,
+    pub iovecs: &'a [IoSlice<'a>],
+    pub header: PacketHeader,
+}
+
+impl Future for Send<'_> {
+    type Output = io::Result<usize>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        this.usc.poll_send(this.iovecs, &this.header, cx)
+    }
+}
+
+pub struct Receive {
     pub usc: ArcUsc,
     pub iovecs: Vec<Vec<u8>>,
     pub headers: Vec<PacketHeader>,
 }
 
-impl Future for Receiver {
+impl Future for Receive {
     type Output = io::Result<usize>;
 
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let mut bufs = this
             .iovecs
