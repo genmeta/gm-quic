@@ -139,6 +139,7 @@ impl HandshakeScope {
                         body_offset,
                     )
                     .unwrap();
+                    let _header = packet.bytes.split_to(body_offset);
                     packet.bytes.truncate(pkt_len);
 
                     let path = pathes.get(pathway, usc);
@@ -149,8 +150,7 @@ impl HandshakeScope {
                     // It may have already been verified using tokens in the Initial space
                     path.anti_amplifier.grant();
 
-                    let body = packet.bytes.split_off(body_offset);
-                    match FrameReader::new(body.freeze(), pty).try_fold(
+                    match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
                         false,
                         |is_ack_packet, frame| {
                             let (frame, is_ack_eliciting) = frame?;
