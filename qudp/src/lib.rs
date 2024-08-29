@@ -188,12 +188,12 @@ impl ArcUsc {
     }
 
     // Send synchronously, usc saves a small amount of data packets,and USC sends internal asynchronous tasks
-    pub fn sync_send(&self, packet: Vec<u8>, hdr: PacketHeader) -> io::Result<()> {
+    pub fn sync_send(&self, packet: Vec<u8>, hdr: &PacketHeader) -> io::Result<()> {
         let mut guard = self.0.lock().unwrap();
         if guard.bufs.len() >= BUFFER_CAPACITY {
             return Err(io::Error::new(io::ErrorKind::WouldBlock, "buffer full"));
         }
-        guard.bufs.push_back((packet, hdr));
+        guard.bufs.push_back((packet, *hdr));
         if guard.bufs.len() == 1 {
             tokio::spawn({
                 let usc = self.clone();
@@ -206,14 +206,6 @@ impl ArcUsc {
         Ok(())
     }
 
-    pub fn sender<'a>(&self, iovecs: &'a [IoSlice<'a>], hdr: PacketHeader) -> Sender<'a> {
-        Sender {
-            usc: self.clone(),
-            iovecs,
-            hdr,
-        }
-    }
-
     pub fn receiver(&self) -> Receiver {
         Receiver {
             usc: self.clone(),
@@ -224,25 +216,6 @@ impl ArcUsc {
                 .map(|_| PacketHeader::default())
                 .collect::<Vec<_>>(),
         }
-    }
-}
-
-pub struct Sender<'a> {
-    pub usc: ArcUsc,
-    pub iovecs: &'a [IoSlice<'a>],
-    pub hdr: PacketHeader,
-}
-
-impl<'a> Future for Sender<'a> {
-    type Output = io::Result<usize>;
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let usc = self.usc.0.lock().unwrap();
-        ready!(usc.io.poll_send_ready(cx))?;
-        let ret = usc
-            .io
-            .try_io(Interest::WRITABLE, || usc.sendmsg(self.iovecs, &self.hdr));
-        Poll::Ready(ret)
     }
 }
 
