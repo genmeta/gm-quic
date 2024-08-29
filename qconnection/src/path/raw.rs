@@ -22,7 +22,7 @@ use super::{
     read::ReadIntoDatagrams,
     state::ArcPathState,
     util::{RecvBuffer, SendBuffer},
-    Pathway, ViaPathway,
+    Pathway, ViaPathWayExt,
 };
 use crate::connection::transmit::{
     data::DataSpaceReader, handshake::HandshakeSpaceReader, initial::InitialSpaceReader,
@@ -121,25 +121,14 @@ impl RawPath {
         };
 
         tokio::spawn(async move {
-            let sending_loop = async {
-                let mut datagrams = Vec::with_capacity(4);
+            let mut datagrams = Vec::with_capacity(4);
 
-                'read: while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
-                    let mut io_slices = iovec.as_slice();
-                    while !io_slices.is_empty() {
-                        match usc.send_via_pathway(io_slices, pathway).await {
-                            Ok(n) => io_slices = &io_slices[n..],
-                            Err(_) => {
-                                state.to_inactive(cid);
-                                break 'read;
-                            }
-                        }
-                    }
+            while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
+                let send_result = usc.send_all_via_pathway(&iovec, pathway).await;
+                if send_result.is_err() {
+                    state.to_inactive(cid);
+                    return;
                 }
-            };
-            tokio::select! {
-                _ = sending_loop => {},
-                _ = state.has_been_inactivated() => {}
             }
         });
     }
