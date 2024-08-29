@@ -34,5 +34,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _conn = client
         .connect("localhost", "127.0.0.1:5000".parse().unwrap())
         .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(100000)).await;
     Ok(())
 }
