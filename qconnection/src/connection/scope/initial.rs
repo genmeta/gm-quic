@@ -144,6 +144,7 @@ impl InitialScope {
                         body_offset,
                     )
                     .unwrap();
+                    let _header = packet.bytes.split_to(body_offset);
                     packet.bytes.truncate(pkt_len);
 
                     let path = pathes.get(pathway, usc);
@@ -155,8 +156,7 @@ impl InitialScope {
                     // path to the SCID carried in the received packet.
                     path.set_dcid(remote_scid);
 
-                    let body = packet.bytes.split_off(body_offset);
-                    match FrameReader::new(body.freeze(), pty).try_fold(
+                    match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
                         false,
                         |is_ack_packet, frame| {
                             let (frame, is_ack_eliciting) = frame?;

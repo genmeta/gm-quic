@@ -218,11 +218,11 @@ impl DataScope {
                         body_offset,
                     )
                     .unwrap();
+                    let _header = packet.bytes.split_to(body_offset);
                     packet.bytes.truncate(pkt_len);
 
                     let path = pathes.get(pathway, usc.clone());
-                    let body = packet.bytes.split_off(body_offset);
-                    match FrameReader::new(body.freeze(), pty).try_fold(
+                    match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
                         false,
                         |is_ack_packet, frame| {
                             let (frame, is_ack_eliciting) = frame?;
@@ -285,11 +285,11 @@ impl DataScope {
                     let pkt_len =
                         decrypt_packet(pk.as_ref(), pn, packet.bytes.as_mut(), body_offset)
                             .unwrap();
+                    let _header = packet.bytes.split_to(body_offset);
                     packet.bytes.truncate(pkt_len);
                     handshake.done();
                     let path = pathes.get(pathway, usc);
-                    let body = packet.bytes.split_off(body_offset);
-                    match FrameReader::new(body.freeze(), pty).try_fold(
+                    match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
                         false,
                         |is_ack_packet, frame| {
                             let (frame, is_ack_eliciting) = frame?;

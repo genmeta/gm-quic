@@ -24,13 +24,15 @@ dashmap = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
-<<<<<<< HEAD
 clap = { workspace = true }
 url = { workspace = true }
+rcgen = { workspace = true }
 
 [[example]]
 name = "client"
 
 [[example]]
 name = "connection"
-rcgen = { workspace = true }
+
+[[example]]
+name = "server"
