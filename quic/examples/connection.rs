@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    let cert_data = std::fs::read("/tmp/gm-quic/cert/server_cert.der").unwrap();
+    let cert_data = std::fs::read("/tmp/gm-quic/cert/cert.der").unwrap();
     let mut certs = rustls::RootCertStore::empty();
     certs.add(CertificateDer::from(cert_data))?;
 
