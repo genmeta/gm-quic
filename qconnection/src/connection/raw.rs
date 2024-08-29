@@ -152,7 +152,7 @@ impl RawConnection {
             }
         }));
 
-        let validator = {
+        let validate = {
             let tls_session = tls_session.clone();
             let token_registry = token_registry.clone();
             move |initial_token: &[u8], path: ArcPath| {
@@ -172,7 +172,7 @@ impl RawConnection {
             &pathes,
             &notify,
             &conn_error,
-            validator,
+            validate,
         );
 
         let join_hs = hs.build(rcvd_hs_packets, &pathes, &notify, &conn_error);

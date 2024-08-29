@@ -6,7 +6,7 @@ use qbase::{
     cid::{ConnectionId, UniqueCid},
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame},
-    packet::{long, DataHeader, DataPacket},
+    packet::{header::GetDcid, long, DataHeader, DataPacket},
 };
 use qudp::ArcUsc;
 
@@ -28,12 +28,12 @@ impl ArcRouter {
     pub fn recv_packet_via_pathway(
         &self,
         packet: DataPacket,
-        dcid: ConnectionId,
         pathway: Pathway,
         usc: &ArcUsc,
     ) -> bool {
+        let dcid = packet.header.get_dcid();
         self.0
-            .get(&dcid)
+            .get(dcid)
             .map(|packet_entry| {
                 let index = match packet.header {
                     DataHeader::Long(long::DataHeader::Initial(_)) => 0,

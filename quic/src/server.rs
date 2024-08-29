@@ -1,21 +1,21 @@
 use std::{
     fs::File,
-    future::Future,
     io::{self, BufReader},
     net::SocketAddr,
     path::Path,
-    sync::{Arc, Mutex},
-    task::Waker,
+    sync::Arc,
 };
 
 use dashmap::DashMap;
+use futures::{SinkExt, StreamExt};
 use qbase::{
     cid::ConnectionId,
     config::Parameters,
-    packet::{InitialHeader, RetryHeader},
+    packet::{header::GetDcid, long, DataHeader, InitialHeader, RetryHeader},
     token::{ArcTokenRegistry, TokenProvider},
+    util::ArcAsyncDeque,
 };
-use qconnection::connection::ArcConnection;
+use qconnection::{connection::ArcConnection, router::ROUTER};
 use rustls::{
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
@@ -24,6 +24,7 @@ use rustls::{
 use crate::{ConnKey, QuicConnection, CONNECTIONS, LISTENER};
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
+type QuicListner = ArcAsyncDeque<(QuicConnection, SocketAddr)>;
 
 #[derive(Debug, Default)]
 pub struct VirtualHosts(Arc<DashMap<String, Host>>);
@@ -47,7 +48,7 @@ impl ResolvesServerCert for VirtualHosts {
 /// 如果不创建QuicServer，那意味着不接收新连接
 pub struct QuicServer {
     addresses: Vec<SocketAddr>,
-    acceptor: ArcAcceptor,
+    listner: QuicListner,
     _restrict: bool,
     _supported_versions: Vec<u32>,
     _load_balance: Option<Arc<dyn Fn(InitialHeader) -> Option<RetryHeader>>>,
@@ -88,9 +89,14 @@ impl QuicServer {
     /// 新连接可能通过本地的任何一个有效usc来创建
     /// 只有调用该函数，才会有被动创建的Connection存放队列，等待着应用层来处理
     pub async fn accept(&mut self) -> io::Result<(QuicConnection, SocketAddr)> {
-        // TODO: 错误处理
-        let (conn, addr) = (&mut self.acceptor).await;
-        Ok((conn, addr))
+        let ret = self.listner.next().await;
+        if let Some((conn, addr)) = ret {
+            return Ok((conn, addr));
+        }
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            "No connection available",
+        ))
     }
 }
 
@@ -330,10 +336,10 @@ impl QuicServerSniBuilder<TlsServerConfig> {
 impl QuicServerBuilder<TlsServerConfig> {
     pub fn listen(self) -> QuicServer {
         let tls_config = Arc::new(self.tls_config);
-        let acceptor = listen_addresses(&self.addresses, &tls_config, &self.token_provider);
+        let listner = listen_addresses(&self.addresses, &tls_config, &self.token_provider);
         QuicServer {
             addresses: self.addresses,
-            acceptor,
+            listner,
             _restrict: self.restrict,
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
@@ -346,10 +352,10 @@ impl QuicServerBuilder<TlsServerConfig> {
 impl QuicServerSniBuilder<TlsServerConfig> {
     pub fn listen(self) -> QuicServer {
         let tls_config = Arc::new(self.tls_config);
-        let acceptor = listen_addresses(&self.addresses, &tls_config, &self.token_provider);
+        let listner = listen_addresses(&self.addresses, &tls_config, &self.token_provider);
         QuicServer {
             addresses: self.addresses,
-            acceptor,
+            listner,
             _restrict: self.restrict,
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
@@ -363,8 +369,8 @@ fn listen_addresses(
     addresses: &[SocketAddr],
     tls_config: &Arc<TlsServerConfig>,
     token_provider: &Option<Arc<dyn TokenProvider>>,
-) -> ArcAcceptor {
-    let acceptor = ArcAcceptor::default();
+) -> QuicListner {
+    let quic_listner = QuicListner::default();
     addresses.iter().for_each(|addr| {
         let ret = LISTENER.listen(
             *addr,
@@ -372,9 +378,9 @@ fn listen_addresses(
                 let tls_config = tls_config.clone();
                 let token_provider = token_provider.clone();
                 let parameters = Parameters::default();
-                let acceptor = acceptor.clone();
-                let addr = addr.clone();
-                move |dcid| {
+                let addr = *addr;
+                let listener = quic_listner.clone();
+                move |packet, pathway, usc| {
                     let scid =
                         std::iter::repeat_with(|| ConnectionId::random_gen_with_mark(8, 0, 0x7F))
                             .find(|cid| !CONNECTIONS.contains_key(&ConnKey::Server(*cid)))
@@ -389,14 +395,23 @@ fn listen_addresses(
                         tls_config.clone(),
                         &parameters,
                         scid,
-                        dcid,
+                        *packet.header.get_dcid(),
                         token_provider,
                     );
                     let conn = QuicConnection {
                         key: ConnKey::Server(scid),
                         inner,
                     };
-                    acceptor.accept(conn.clone(), addr);
+                    listener.push((conn.clone(), addr));
+
+                    if let Some(mut entry) = ROUTER.get_mut(&scid) {
+                        let index = match packet.header {
+                            DataHeader::Long(long::DataHeader::Initial(_)) => 0,
+                            DataHeader::Long(long::DataHeader::ZeroRtt(_)) => 1,
+                            _ => unreachable!(),
+                        };
+                        _ = entry[index].send((packet, pathway, usc));
+                    };
                     conn
                 }
             }),
@@ -405,37 +420,5 @@ fn listen_addresses(
             log::error!("Failed to listen on : {} {}", addr, ret.unwrap_err())
         }
     });
-    acceptor
-}
-
-#[derive(Default)]
-struct RawAcceptor(Option<(QuicConnection, SocketAddr)>, Option<Waker>);
-
-#[derive(Clone, Default)]
-struct ArcAcceptor(Arc<Mutex<RawAcceptor>>);
-
-impl Future for ArcAcceptor {
-    type Output = (QuicConnection, SocketAddr);
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        let mut this = self.0.lock().unwrap();
-        if let Some((conn, addr)) = this.0.take() {
-            return std::task::Poll::Ready((conn, addr));
-        }
-        this.1.replace(cx.waker().clone());
-        std::task::Poll::Pending
-    }
-}
-
-impl ArcAcceptor {
-    fn accept(&self, conn: QuicConnection, addr: SocketAddr) {
-        let mut this = self.0.lock().unwrap();
-        this.0 = Some((conn, addr));
-        if let Some(waker) = this.1.take() {
-            waker.wake();
-        }
-    }
+    quic_listner
 }

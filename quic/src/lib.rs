@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use qbase::{
     cid::ConnectionId,
     packet::{
-        header::GetDcid, long, DataHeader, Packet, PacketReader, RetryHeader,
+        header::GetDcid, long, DataHeader, DataPacket, Packet, PacketReader, RetryHeader,
         VersionNegotiationHeader,
     },
 };
@@ -97,20 +97,11 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                                 }
                             }
                             Packet::Data(packet) => {
-                                let mut dcid = *packet.header.get_dcid();
-                                if !ROUTER.contains_key(&dcid)
-                                    && matches!(
-                                        packet.header,
-                                        DataHeader::Long(long::DataHeader::Initial(_))
-                                            | DataHeader::Long(long::DataHeader::ZeroRtt(_))
-                                    )
-                                {
-                                    if let Some(conn) = LISTENER.try_accept(bind_addr, dcid) {
-                                        if let ConnKey::Server(scid) = conn.key {
-                                            dcid = scid;
-                                        }
-                                        CONNECTIONS.insert(conn.key, conn);
-                                    }
+                                let dcid = *packet.header.get_dcid();
+                                if !ROUTER.contains_key(&dcid) {
+                                    LISTENER.try_accept(bind_addr, packet, pathway, usc.clone());
+                                } else {
+                                    ROUTER.recv_packet_via_pathway(packet, pathway, &usc.clone());
                                 }
 
                                 match CONNECTIONS
@@ -119,19 +110,6 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                                 {
                                     Some(_conn) => {} //TODO: conn.update_path_recv_time(pathway),
                                     None => log::error!("No connection found for Data packet"),
-                                }
-
-                                if !ROUTER.recv_packet_via_pathway(
-                                    packet,
-                                    dcid,
-                                    pathway,
-                                    &usc.clone(),
-                                ) {
-                                    log::error!(
-                                        "Failed to recv packet via pathway {:?}, dicd{:?}",
-                                        pathway,
-                                        dcid
-                                    );
                                 }
                             }
                         }
@@ -153,7 +131,7 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
     usc
 }
 
-type ConnCreator = Box<dyn Fn(ConnectionId) -> QuicConnection + Send + Sync>;
+type ConnCreator = Box<dyn Fn(DataPacket, Pathway, ArcUsc) -> QuicConnection + Send + Sync>;
 
 struct Listener {
     creators: DashMap<SocketAddr, ConnCreator>,
@@ -178,8 +156,20 @@ impl Listener {
         Ok(())
     }
 
-    fn try_accept(&self, bind_addr: SocketAddr, dcid: ConnectionId) -> Option<QuicConnection> {
-        self.creators.get(&bind_addr).map(|creator| creator(dcid))
+    fn try_accept(&self, bind_addr: SocketAddr, packet: DataPacket, pathway: Pathway, usc: ArcUsc) {
+        if matches!(
+            packet.header,
+            DataHeader::Long(long::DataHeader::Initial(_))
+                | DataHeader::Long(long::DataHeader::ZeroRtt(_))
+        ) {
+            if let Some(conn) = self
+                .creators
+                .get(&bind_addr)
+                .map(|creator| creator(packet, pathway, usc))
+            {
+                CONNECTIONS.insert(conn.key, conn);
+            }
+        }
     }
 
     fn unregister(&self, bind_addr: &SocketAddr) {

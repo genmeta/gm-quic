@@ -50,7 +50,7 @@ impl InitialScope {
         pathes: &ArcPathes,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
-        validator: impl Fn(&[u8], ArcPath) + Send + 'static,
+        validate: impl Fn(&[u8], ArcPath) + Send + 'static,
     ) -> JoinHandle<RcvdPackets> {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
@@ -91,7 +91,7 @@ impl InitialScope {
             dispatch_frame,
             notify,
             conn_error,
-            validator,
+            validate,
         )
     }
 
@@ -102,7 +102,7 @@ impl InitialScope {
         dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
-        validator: impl Fn(&[u8], ArcPath) + Send + 'static,
+        validate: impl Fn(&[u8], ArcPath) + Send + 'static,
     ) -> JoinHandle<RcvdPackets> {
         let pathes = pathes.clone();
         let conn_error = conn_error.clone();
@@ -180,7 +180,7 @@ impl InitialScope {
                     // or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
                     if let DataHeader::Long(long::DataHeader::Initial(initial)) = &packet.header {
                         if !initial.token.is_empty() {
-                            validator(&initial.token, path);
+                            validate(&initial.token, path);
                         }
                     }
                 }
