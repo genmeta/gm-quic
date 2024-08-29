@@ -137,7 +137,7 @@ impl QuicClient {
         };
 
         CONNECTIONS.insert(ConnKey::Client(scid), conn.clone());
-        inner.start_client(pathway, usc);
+        inner.add_initial_path(pathway, usc);
         Ok(conn)
     }
 }

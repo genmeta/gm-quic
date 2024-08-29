@@ -83,10 +83,9 @@ impl ArcConnection {
         raw_conn.into()
     }
 
-    pub fn start_client(&self, pathway: Pathway, usc: ArcUsc) {
+    pub fn add_initial_path(&self, pathway: Pathway, usc: ArcUsc) {
         let guard = self.0.lock().unwrap();
         if let Raw(ref conn) = *guard {
-            // client create first path
             conn.pathes.get(pathway, usc);
         }
     }

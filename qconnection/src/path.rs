@@ -212,6 +212,17 @@ impl Pathes {
             .value()
             .clone()
     }
+
+    pub fn insert(&self, pathway: Pathway, usc: ArcUsc) {
+        let path = (self.creator)(pathway, usc);
+        let state = path.state.clone();
+        let map_clone = self.map.clone();
+        tokio::spawn(async move {
+            state.has_been_inactivated().await;
+            map_clone.remove(&pathway);
+        });
+        self.map.insert(pathway, path);
+    }
 }
 
 #[derive(Clone, Deref, DerefMut)]
