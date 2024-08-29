@@ -13,13 +13,13 @@ tokio = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
-env_logger = "0"
+env_logger = "0.11"
 clap.workspace = true
 
 [[example]]
-name = "sender"
-path = "examples/sender.rs"
+name = "send"
+path = "examples/send.rs"
 
 [[example]]
-name = "receiver"
-path = "examples/receiver.rs"
+name = "receive"
+path = "examples/receive.rs"
