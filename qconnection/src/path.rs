@@ -197,15 +197,15 @@ impl Pathes {
     }
 
     pub fn get(&self, pathway: Pathway, usc: ArcUsc) -> ArcPath {
+        let map_clone = self.map.clone();
         self.map
             .entry(pathway)
             .or_insert_with(|| {
                 let path = (self.creator)(pathway, usc);
                 let state = path.state.clone();
-                let map = self.map.clone();
                 tokio::spawn(async move {
                     state.has_been_inactivated().await;
-                    map.remove(&pathway);
+                    map_clone.remove(&pathway);
                 });
                 path
             })
