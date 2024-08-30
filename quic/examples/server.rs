@@ -1,45 +1,53 @@
-use std::{io::Write, path::Path};
+use std::{net::SocketAddr, path::PathBuf};
 
+use clap::Parser;
 use quic::QuicServer;
-use rcgen::CertifiedKey;
-use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+
+// cargo run --example server -- \
+//      --cert quic/examples/keychain/quic.test.net/quic-test-net-ECC.crt \
+//      --key  quic/examples/keychain/quic.test.net/quic-test-net-ECC.key \
+//      --bind 127.0.0.1:4433
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Opt {
+    #[clap(long, required = true)]
+    cert: PathBuf,
+    #[clap(long, required = true)]
+    key: PathBuf,
+    #[arg(long, default_value = "0.0.0.0:0")]
+    bind: SocketAddr,
+}
+
+fn main() {
+    let opt = Opt::parse();
+    let code = {
+        if let Err(e) = run(opt) {
+            eprintln!("ERROR: {e}");
+            1
+        } else {
+            0
+        }
+    };
+    ::std::process::exit(code);
+}
 
 #[tokio::main]
-async fn main() -> Result<(), std::io::Error> {
-    let cert_path = "/tmp/gm-quic/cert/cert.der";
-    let key_path = "/tmp/gm-quic/cert/key.der";
-
+async fn run(options: Opt) -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Trace)
+        .init();
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");
-    generate_certificate(&cert_path, &key_path)?;
 
-    let server_addr = ["127.0.0.1:12345".parse().unwrap()];
-    let builder = QuicServer::bind(server_addr, true);
-
-    let mut server = builder
+    let mut server = QuicServer::bind([options.bind], true)
+        .with_supported_versions([0x00000001u32])
         .without_cert_verifier()
-        .with_single_cert(cert_path, key_path)
+        .with_single_cert(options.cert, options.key)
         .listen();
 
-    _ = server.accept().await?;
-    Ok(())
-}
-
-fn generate_certificate(cert_path: &str, key_path: &str) -> Result<(), std::io::Error> {
-    let cert_path = Path::new(cert_path);
-    if cert_path.exists() {
-        return Ok(());
+    while let Ok((_conn, addr)) = server.accept().await {
+        log::trace!("New connection from {}", addr);
     }
-    let CertifiedKey { cert, key_pair } =
-        rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let cert_der = CertificateDer::from(cert);
-
-    let mut cert_file = std::fs::File::create(cert_path)?;
-    let mut private_key_file = std::fs::File::create(key_path)?;
-
-    let priv_key = PrivatePkcs8KeyDer::from(key_pair.serialize_der());
-    cert_file.write_all(&cert_der)?;
-    private_key_file.write_all(&priv_key.secret_pkcs8_der())?;
     Ok(())
 }
