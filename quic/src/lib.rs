@@ -110,7 +110,7 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                                     .get(&ConnKey::Client(dcid))
                                     .or_else(|| CONNECTIONS.get(&ConnKey::Server(dcid)))
                                 {
-                                    Some(_conn) => {} //TODO: conn.update_path_recv_time(pathway),
+                                    Some(conn) => conn.update_path_recv_time(pathway),
                                     None => log::error!("No connection found for Data packet"),
                                 }
                             }
