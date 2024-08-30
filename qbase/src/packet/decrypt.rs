@@ -38,7 +38,7 @@ pub fn remove_protection_of_short_packet(
     let (max_pn_buf, sample) = payload.split_at_mut(4);
     // 去除包头保护失败，忽略即可
     if key
-        .decrypt_in_place(sample, first_byte, max_pn_buf)
+        .decrypt_in_place(&sample[..key.sample_len()], first_byte, max_pn_buf)
         .is_err()
     {
         return Ok(None);

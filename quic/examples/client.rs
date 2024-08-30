@@ -53,7 +53,7 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let client = QuicClient::bind([
-        "[2001:db8::1]:0".parse().unwrap(),
+        // "[2001:db8::1]:0".parse().unwrap(),
         "127.0.0.1:0".parse().unwrap(),
     ])
     .reuse_connection()
