@@ -194,15 +194,10 @@ impl ArcOneRttKeys {
     pub fn set_keys(&self, keys: Keys, secrets: Secrets) {
         let mut state = self.lock_guard();
         match &mut *state {
-            OneRttKeysState::Pending(rx_waker) => {
-                if let Some(waker) = rx_waker.take() {
-                    waker.wake();
-                }
-                let (remote_hpk, local_hpk) =
-                    (Arc::from(keys.remote.header), Arc::from(keys.local.header));
+            OneRttKeysState::Pending(waker) => {
                 let hpk = ArcHeaderProtectionKeys {
-                    remote: remote_hpk,
-                    local: local_hpk,
+                    local: Arc::from(keys.local.header),
+                    remote: Arc::from(keys.remote.header),
                 };
                 let tag_len = keys.local.packet.tag_len();
                 let pk = ArcOneRttPacketKeys(Arc::new((
@@ -213,6 +208,9 @@ impl ArcOneRttKeys {
                     )),
                     tag_len,
                 )));
+                if let Some(w) = waker.take() {
+                    w.wake();
+                }
                 *state = OneRttKeysState::Ready { hpk, pk };
             }
             OneRttKeysState::Ready { .. } => panic!("set_keys called twice"),
@@ -255,9 +253,9 @@ impl Future for GetRemoteOneRttKeys {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut keys = self.0.lock_guard();
         match &mut *keys {
-            OneRttKeysState::Pending(rx_waker) => {
-                assert!(rx_waker.is_none());
-                *rx_waker = Some(cx.waker().clone());
+            OneRttKeysState::Pending(waker) => {
+                assert!(waker.is_none());
+                *waker = Some(cx.waker().clone());
                 Poll::Pending
             }
             OneRttKeysState::Ready { hpk, pk, .. } => {
