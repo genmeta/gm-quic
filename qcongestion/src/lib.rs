@@ -17,6 +17,9 @@ pub mod min_max;
 pub mod pacing;
 
 pub trait CongestionControl {
+    /// 驱动 congestion control 算法
+    fn do_tick(&self);
+
     /// 轮询是否可以发包，若可以，返回可以发包的数据量；该数据量包含各个空间的包能发的数据量总和
     /// 如果返回0，代表着结束，不再发包，并停止循环
     fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize>;

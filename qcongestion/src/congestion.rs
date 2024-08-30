@@ -58,6 +58,7 @@ pub struct CongestionController {
     newly_ack_pns: Option<(Epoch, Vec<u64>)>,
     pto_space: Option<Epoch>,
     // waker
+    send_waker: Option<Waker>,
     loss_waker: Option<Waker>,
     ack_waker: Option<Waker>,
     pto_waker: Option<Waker>,
@@ -91,6 +92,7 @@ impl CongestionController {
             loss_pns: None,
             newly_ack_pns: None,
             pto_space: None,
+            send_waker: None,
             loss_waker: None,
             ack_waker: None,
             pto_waker: None,
@@ -424,9 +426,20 @@ impl ArcCC {
 }
 
 impl super::CongestionControl for ArcCC {
+    fn do_tick(&self) {
+        let mut guard = self.0.lock().unwrap();
+        let now = Instant::now();
+        if guard.loss_timer.is_timeout(now) {
+            guard.on_loss_timeout(now);
+        }
+        if let Some(waker) = guard.send_waker.take() {
+            waker.wake();
+        }
+    }
+
     fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize> {
         let mut guard = self.0.lock().unwrap();
-
+        guard.send_waker = Some(cx.waker().clone());
         let now = Instant::now();
         if guard.loss_timer.is_timeout(now) {
             guard.on_loss_timeout(now);
@@ -454,7 +467,6 @@ impl super::CongestionControl for ArcCC {
         if (need_ack && elapsed >= guard.max_ack_delay) || elapsed >= MAX_SENT_DELAY {
             return Poll::Ready(tokens);
         }
-        cx.waker().wake_by_ref();
         Poll::Pending
     }
 
