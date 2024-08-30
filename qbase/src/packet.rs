@@ -133,7 +133,6 @@ pub mod ext {
         }
         let packet_length = datagram.len() - remain.len();
         let bytes = datagram.split_to(packet_length);
-        datagram.truncate(packet_length);
         Ok((bytes, packet_length - payload_len))
     }
 
