@@ -28,7 +28,7 @@ use crate::error::ConnError;
 pub(crate) enum RawTlsSession {
     Exist {
         tls_conn: rustls::quic::Connection,
-        wants_write: Option<Waker>,
+        waker: Option<Waker>,
     },
     Invalid,
 }
@@ -53,7 +53,7 @@ impl RawTlsSession {
         );
         Self::Exist {
             tls_conn: connection,
-            wants_write: None,
+            waker: None,
         }
     }
 
@@ -67,24 +67,21 @@ impl RawTlsSession {
         );
         Self::Exist {
             tls_conn: connection,
-            wants_write: None,
+            waker: None,
         }
     }
 
     // 将plaintext中的数据写入tls_conn供其处理
     fn write_tls_msg(&mut self, plaintext: &[u8]) -> Result<(), rustls::Error> {
-        let Self::Exist {
-            tls_conn,
-            wants_write,
-        } = self
-        else {
+        let Self::Exist { tls_conn, waker } = self else {
             return Ok(());
         };
         // rusltls::quic::Connection::read_hs()，该函数即消费掉plaintext的数据给到tls_conn内部处理
         tls_conn.read_hs(plaintext)?;
-        if tls_conn.wants_write() {
-            if let Some(waker) = wants_write.take() {
-                waker.wake();
+        // want to read from tls_conn and then write into the crypto stream?
+        if tls_conn.wants_read() {
+            if let Some(w) = waker.take() {
+                w.wake();
             }
         }
         Ok(())
@@ -95,18 +92,14 @@ impl RawTlsSession {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<(Vec<u8>, Option<rustls::quic::KeyChange>)>> {
-        let Self::Exist {
-            tls_conn,
-            wants_write,
-        } = self
-        else {
+        let Self::Exist { tls_conn, waker } = self else {
             return Poll::Ready(None);
         };
         let mut buf = Vec::with_capacity(1200);
         // rusltls::quic::Connection::write_hs()，该函数即将tls_conn内部的数据写入到buf中
         let key_change = tls_conn.write_hs(&mut buf);
         if key_change.is_none() && buf.is_empty() {
-            *wants_write = Some(cx.waker().clone());
+            *waker = Some(cx.waker().clone());
             return Poll::Pending;
         }
 
@@ -167,9 +160,9 @@ impl ArcTlsSession {
 
     fn invalid(&self) {
         let mut guard = self.lock_guard();
-        if let RawTlsSession::Exist { wants_write, .. } = guard.deref_mut() {
-            if let Some(waker) = wants_write.take() {
-                waker.wake();
+        if let RawTlsSession::Exist { waker, .. } = guard.deref_mut() {
+            if let Some(w) = waker.take() {
+                w.wake();
             }
         }
         *guard = RawTlsSession::Invalid;
@@ -197,12 +190,15 @@ impl ArcTlsSession {
             let conn_error = conn_error.clone();
             tokio::spawn(async move {
                 // 不停地从crypto_stream_reader读取数据，读到就送给tls_conn
-                let mut buf = Vec::with_capacity(1200);
+                let mut buf = [0u8; 1500];
                 loop {
-                    buf.truncate(0);
                     // 总是Ok
-                    _ = crypto_stream_reader.read(&mut buf).await;
-                    let tls_write_result = tls_session.write_tls_msg(&buf);
+                    let n = match crypto_stream_reader.read(&mut buf[..]).await {
+                        Ok(n) => n,
+                        // 读取到EOF，即crypto_stream_reader已经关闭，连接都已经关闭
+                        Err(_err) => break,
+                    };
+                    let tls_write_result = tls_session.write_tls_msg(&buf[..n]);
                     if let Err(err) = tls_write_result {
                         conn_error.on_error(err.into());
                         break;

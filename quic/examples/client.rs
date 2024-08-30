@@ -9,7 +9,7 @@ use quic::QuicClient;
 ///     --addr 127.0.0.1:4433
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct Opt {
+struct Arguments {
     #[arg(long)]
     keylog: bool,
     #[arg(long)]
@@ -23,9 +23,9 @@ struct Opt {
 }
 
 fn main() {
-    let opt = Opt::parse();
+    let args = Arguments::parse();
     let code = {
-        if let Err(e) = run(opt) {
+        if let Err(e) = run(args) {
             eprintln!("ERROR: {e}");
             1
         } else {
@@ -36,7 +36,7 @@ fn main() {
 }
 
 #[tokio::main]
-async fn run(options: Opt) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
     env_logger::builder()
         .filter_level(log::LevelFilter::Trace)
         .init();
@@ -47,25 +47,25 @@ async fn run(options: Opt) -> Result<(), Box<dyn std::error::Error>> {
     let mut root_cert_store = rustls::RootCertStore::empty();
     root_cert_store.add_parsable_certificates(
         rustls_pemfile::certs(&mut BufReader::new(
-            File::open(options.root).expect("Failed to open cert file"),
+            File::open(args.root).expect("Failed to open cert file"),
         ))
         .map(|cert| cert.expect("Failed to read and extract cert from the cert file")),
     );
 
     let client = QuicClient::bind([
-        "[2001:db8::1]:8080".parse().unwrap(),
-        "127.0.0.1:8080".parse().unwrap(),
+        "[2001:db8::1]:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
     ])
     .reuse_connection()
     .enable_happy_eyeballs()
     .prefer_versions([0x00000001u32])
     .with_root_certificates(Arc::new(root_cert_store))
     .without_cert()
-    .with_keylog(options.keylog)
-    .with_alpn([b"http/1.1".as_ref()].iter().map(|s| s.to_vec()))
+    .with_keylog(args.keylog)
+    .with_alpn([b"hq-29".as_ref()].iter().map(|s| s.to_vec()))
     .build();
 
-    let _quic_conn = client.connect(options.domain, options.addr).unwrap();
+    let _quic_conn = client.connect(args.domain, args.addr).unwrap();
     loop {
         let mut input = String::new();
         let _n = std::io::stdin().read_line(&mut input).unwrap();

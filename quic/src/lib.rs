@@ -2,6 +2,7 @@ use std::{io, net::SocketAddr, sync::LazyLock};
 
 use bytes::BytesMut;
 use dashmap::DashMap;
+use deref_derive::Deref;
 use qbase::{
     cid::ConnectionId,
     packet::{
@@ -32,9 +33,10 @@ enum ConnKey {
     Server(ConnectionId),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deref)]
 pub struct QuicConnection {
     key: ConnKey,
+    #[deref]
     inner: ArcConnection,
 }
 
