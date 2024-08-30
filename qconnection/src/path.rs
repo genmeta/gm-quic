@@ -10,7 +10,7 @@ use std::{
 use dashmap::DashMap;
 use deref_derive::{Deref, DerefMut};
 use qbase::cid::{ArcCidCell, ConnectionId};
-use qcongestion::congestion::MSS;
+use qcongestion::{congestion::MSS, CongestionControl};
 use qrecovery::reliable::ArcReliableFrameDeque;
 use qudp::ArcUsc;
 
@@ -202,11 +202,7 @@ impl Pathes {
             .entry(pathway)
             .or_insert_with(|| {
                 let path = (self.creator)(pathway, usc);
-                let state = path.state.clone();
-                tokio::spawn(async move {
-                    state.has_been_inactivated().await;
-                    map_clone.remove(&pathway);
-                });
+                Self::drive_path(map_clone, path.clone(), pathway);
                 path
             })
             .value()
@@ -215,13 +211,29 @@ impl Pathes {
 
     pub fn insert(&self, pathway: Pathway, usc: ArcUsc) {
         let path = (self.creator)(pathway, usc);
+        Self::drive_path(self.map.clone(), path.clone(), pathway);
+        self.map.insert(pathway, path);
+    }
+
+    fn drive_path(map: DashMap<Pathway, ArcPath>, path: ArcPath, pathway: Pathway) {
         let state = path.state.clone();
-        let map_clone = self.map.clone();
+        tokio::spawn({
+            let state = state.clone();
+            let cc = path.cc.clone();
+            async move {
+                loop {
+                    tokio::select! {
+                        _ = state.has_been_inactivated() => break,
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => cc.do_tick(),
+
+                    }
+                }
+            }
+        });
         tokio::spawn(async move {
             state.has_been_inactivated().await;
-            map_clone.remove(&pathway);
+            map.remove(&pathway);
         });
-        self.map.insert(pathway, path);
     }
 }
 
