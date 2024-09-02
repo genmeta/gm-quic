@@ -96,9 +96,11 @@ impl HandshakeSpaceReader {
             &VarInt::try_from(pn_len + body_len + tag_len).unwrap(),
             EncodeBytes::Two,
         );
+
         pn_buf.put_packet_number(encoded_pn);
 
-        encode_long_first_byte(&mut hdr_buf[0], pn_len);
+        buf[0] |= (encoded_pn.size() - 1) as u8;
+        encode_long_first_byte(&mut buf[0], pn_len);
         encrypt_packet(
             k.remote.packet.as_ref(),
             pn,

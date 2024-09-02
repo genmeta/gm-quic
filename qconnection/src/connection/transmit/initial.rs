@@ -93,10 +93,10 @@ impl InitialSpaceReader {
         let mut pkt_size = hdr_len + pn_len + body_len + tag_len;
 
         hdr_buf.put_long_header(&hdr);
-        // TODO: 可能别的地方也要改
-        hdr_buf[0] |= (encoded_pn.size() - 1) as u8;
 
         pn_buf.put_packet_number(encoded_pn);
+
+        buf[0] |= (encoded_pn.size() - 1) as u8;
 
         Some((
             move |buf: &mut [u8], len: usize| -> (u64, bool, bool, usize, bool, Option<u64>) {
