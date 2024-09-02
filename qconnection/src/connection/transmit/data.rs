@@ -52,7 +52,7 @@ impl DataSpaceReader {
         dcid: ConnectionId,
         spin: SpinBit,
         ack_pkt: Option<(u64, Instant)>,
-        keys: (Arc<dyn HeaderProtectionKey>, ArcOneRttPacketKeys),
+        (hpk, pk): (Arc<dyn HeaderProtectionKey>, ArcOneRttPacketKeys),
     ) -> Option<(u64, bool, bool, usize, usize, bool, Option<u64>)> {
         // 0. 检查1rtt keys是否有效，没有则回退到0rtt包
         // 1. 生成包头，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
@@ -63,7 +63,7 @@ impl DataSpaceReader {
         }
         let (mut hdr_buf, payload_tag) = buf.split_at_mut(hdr.size());
         let payload_tag_len = payload_tag.len();
-        let tag_len = keys.1.tag_len();
+        let tag_len = pk.tag_len();
         let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
 
         // 2. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
@@ -167,13 +167,12 @@ impl DataSpaceReader {
         hdr_buf.put_one_rtt_header(&hdr);
         pn_buf.put_packet_number(encoded_pn);
 
-        buf[0] |= (encoded_pn.size() - 1) as u8;
         // 11 保护包头，加密数据
-        let pk_guard = keys.1.lock_guard();
+        let pk_guard = pk.lock_guard();
         let (key_phase, pk) = pk_guard.get_local();
         encode_short_first_byte(&mut buf[0], pn_len, key_phase);
-        encrypt_packet(pk.as_ref(), pn, buf, hdr_len + pn_len);
-        protect_header(keys.0.as_ref(), buf, hdr_len, pn_len);
+        encrypt_packet(pk.as_ref(), pn, &mut buf[..sent_size], hdr_len + pn_len);
+        protect_header(hpk.as_ref(), &mut buf[..sent_size], hdr_len, pn_len);
 
         Some((
             pn,
@@ -283,9 +282,19 @@ impl DataSpaceReader {
         );
         pn_buf.put_packet_number(encoded_pn);
 
-        encode_long_first_byte(&mut hdr_buf[0], pn_len);
-        encrypt_packet(k.local.packet.as_ref(), pn, buf, hdr_len + pn_len);
-        protect_header(k.local.header.as_ref(), buf, hdr_len, pn_len);
+        encode_long_first_byte(&mut buf[0], pn_len);
+        encrypt_packet(
+            k.local.packet.as_ref(),
+            pn,
+            &mut buf[..sent_size],
+            hdr_len + pn_len,
+        );
+        protect_header(
+            k.local.header.as_ref(),
+            &mut buf[..sent_size],
+            hdr_len,
+            pn_len,
+        );
 
         // 0RTT包不能发送Ack
         Some((pn, is_ack_eliciting, sent_size, fresh_bytes, in_flight))
