@@ -8,7 +8,7 @@ use std::{
 
 use qbase::{
     cid::ConnectionId,
-    config::Parameters,
+    config::{ClientParameters, Parameters},
     token::{ArcTokenRegistry, TokenSink},
 };
 use qconnection::{connection::ArcConnection, path::Pathway};
@@ -177,7 +177,7 @@ impl<T> QuicClientBuilder<T> {
     /// 设值客户端连接参数。若不设置，则会使用一组默认参数。
     /// 后续使用该QuicClient创建新连接，会直接使用这些参数。
     /// 可以多次调用该函数，覆盖上一次设置的参数。
-    pub fn with_parameters(mut self, parameters: impl Into<Parameters>) -> Self {
+    pub fn with_parameters(mut self, parameters: ClientParameters) -> Self {
         self.parameters = parameters.into();
         self
     }

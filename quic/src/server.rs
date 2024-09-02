@@ -11,7 +11,7 @@ use deref_derive::Deref;
 use futures::SinkExt;
 use qbase::{
     cid::ConnectionId,
-    config::Parameters,
+    config::{Parameters, ServerParameters},
     packet::{header::GetScid, long, DataHeader, DataPacket, InitialHeader, RetryHeader},
     token::{ArcTokenRegistry, TokenProvider},
     util::ArcAsyncDeque,
@@ -255,7 +255,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
     /// 后续接受新的连接，会直接使用这些参数。不过在sni模式下，各个host可以有不同的参数，该函数将失去意义。
     /// 因此，它最好配合[`with_single_cert`]或者[`with_single_cert_with_ocsp`]一起使用
     /// 可以多次调用该函数，会覆盖上一次设置的参数。
-    pub fn with_parameters(self, parameters: impl Into<Parameters>) -> Self {
+    pub fn with_parameters(self, parameters: ServerParameters) -> Self {
         self.parameters.insert("*".to_owned(), parameters.into());
         self
     }
