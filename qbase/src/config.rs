@@ -1,22 +1,26 @@
+mod client;
+mod server;
 use std::{
     net::{SocketAddrV4, SocketAddrV6},
     time::Duration,
 };
 
-use derive_builder::Builder;
-use getset::{CopyGetters, Getters, MutGetters, Setters};
+pub use client::*;
+/// Ref. `<https://www.iana.org/assignments/quic/quic.xhtml>`
+// QUIC的config配置
+use derive_builder::*;
+use getset::{Getters, MutGetters, Setters, *};
+pub use server::*;
 
 use super::varint::VarInt;
-use crate::{cid::ConnectionId, token::ResetToken};
+use crate::{cid::ConnectionId, generate_validate, token::ResetToken};
 
-/// Ref. `<https://www.iana.org/assignments/quic/quic.xhtml>`
-
-// QUIC的config配置
 #[derive(Builder, Getters, CopyGetters, Setters, MutGetters, Debug, Clone, PartialEq)]
 #[builder(
     default,
     setter(strip_option, into,),
-    build_fn(name = "build_unchecked")
+    build_fn(skip),
+    name = "CommonBuilder"
 )]
 pub struct Parameters {
     #[getset(get = "pub", set = "pub")]
@@ -51,9 +55,9 @@ pub struct Parameters {
     #[getset(get_copy = "pub", set = "pub")]
     active_connection_id_limit: VarInt,
 
-    #[getset(get = "pub", set = "pub")]
+    #[getset(get_copy = "pub", set = "pub")]
     initial_source_connection_id: Option<ConnectionId>,
-    #[getset(get = "pub", set = "pub")]
+    #[getset(get_copy = "pub", set = "pub")]
     retry_source_connection_id: Option<ConnectionId>,
     #[getset(get = "pub", set = "pub")]
     version_information: Option<Vec<u8>>,
@@ -64,46 +68,57 @@ pub struct Parameters {
     grease_quic_bit: bool,
 }
 
-impl ParametersBuilder {
-    pub fn build(&self) -> Result<Parameters, String> {
-        let parameters = self.build_unchecked().unwrap();
-        parameters.validate()?;
-        Ok(parameters)
+impl Default for Parameters {
+    fn default() -> Self {
+        Self {
+            original_destination_connection_id: None,
+            max_idle_timeout: Duration::from_secs(0),
+            statelss_reset_token: None,
+            max_udp_payload_size: VarInt::from_u32(65527), // 65535 - 8
+            initial_max_data: VarInt::default(),
+            initial_max_stream_data_bidi_local: VarInt::default(),
+            initial_max_stream_data_bidi_remote: VarInt::default(),
+            initial_max_stream_data_uni: VarInt::default(),
+            initial_max_streams_bidi: VarInt::default(),
+            initial_max_streams_uni: VarInt::default(),
+            ack_delay_exponent: VarInt::from_u32(3),
+            max_ack_delay: VarInt::from_u32(25),
+            disable_active_migration: false,
+            preferred_address: None,
+            active_connection_id_limit: VarInt::from_u32(2),
+            initial_source_connection_id: None,
+            retry_source_connection_id: None,
+            version_information: None,
+            max_datagram_frame_size: VarInt::from_u32(65535),
+            grease_quic_bit: false,
+        }
     }
 }
 
-impl Parameters {
-    pub fn builder() -> ParametersBuilder {
-        ParametersBuilder::default()
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        if !(1200..65527).contains(&self.max_udp_payload_size.into_inner()) {
-            return Err("max_udp_payload_size must be at least 1200 bytes".to_string());
+#[macro_export(local_inner_macros)]
+macro_rules! generate_validate {
+    ($t:ty) => {
+        impl $t {
+            pub fn validate(&self) -> Result<(), &'static str> {
+                if !(1200..65527).contains(&self.max_udp_payload_size.into_inner()) {
+                    return Err("max_udp_payload_size must be at least 1200 bytes");
+                }
+                if self.ack_delay_exponent > 20 {
+                    return Err("ack_delay_exponent must be at most 20");
+                }
+                if self.max_ack_delay > 214 {
+                    return Err("max_ack_delay must be at most 214");
+                }
+                if self.active_connection_id_limit < 2 {
+                    return Err("active_connection_id_limit must be at least 2");
+                }
+                Ok(())
+            }
         }
-
-        if self.ack_delay_exponent > 20 {
-            return Err("ack_delay_exponent must be at most 20".to_string());
-        }
-
-        if self.max_ack_delay > 214 {
-            return Err("max_ack_delay must be at most 214".to_string());
-        }
-
-        if self.active_connection_id_limit < 2 {
-            return Err("active_connection_id_limit must be at least 2".to_string());
-        }
-
-        Ok(())
-    }
-
-    pub fn contain_server_parameters(&self) -> bool {
-        self.original_destination_connection_id().is_some()
-            || self.preferred_address.is_some()
-            || self.retry_source_connection_id.is_some()
-            || self.statelss_reset_token().is_some()
-    }
+    };
 }
+
+generate_validate!(Parameters);
 
 #[derive(Getters, Setters, MutGetters, Debug, PartialEq, Clone, Copy)]
 pub struct PreferredAddress {
@@ -327,33 +342,6 @@ pub mod ext {
     }
 }
 
-impl Default for Parameters {
-    fn default() -> Parameters {
-        Parameters {
-            original_destination_connection_id: None,
-            max_idle_timeout: Duration::from_secs(0),
-            statelss_reset_token: None,
-            max_udp_payload_size: VarInt::from_u32(65527), // 65535 - 8
-            initial_max_data: VarInt::default(),
-            initial_max_stream_data_bidi_local: VarInt::default(),
-            initial_max_stream_data_bidi_remote: VarInt::default(),
-            initial_max_stream_data_uni: VarInt::default(),
-            initial_max_streams_bidi: VarInt::default(),
-            initial_max_streams_uni: VarInt::default(),
-            ack_delay_exponent: VarInt::from_u32(3),
-            max_ack_delay: VarInt::from_u32(25),
-            disable_active_migration: false,
-            preferred_address: None,
-            active_connection_id_limit: VarInt::from_u32(2),
-            initial_source_connection_id: None,
-            retry_source_connection_id: None,
-            version_information: None,
-            max_datagram_frame_size: VarInt::from_u32(65535),
-            grease_quic_bit: false,
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
     use std::net::Ipv4Addr;
@@ -365,7 +353,7 @@ mod test {
     fn coding() {
         let init_cid = be_connection_id(&[0x04, 0x01, 0x02, 0x03, 0x04]).unwrap().1;
         let orgin_cid = be_connection_id(&[0x04, 0x05, 0x06, 0x07, 0x08]).unwrap().1;
-        let params = Parameters::builder()
+        let params = ServerParameters::builder()
             .original_destination_connection_id(orgin_cid)
             .max_idle_timeout(Duration::from_secs(0x12345678))
             .statelss_reset_token(ResetToken::new(&[0x01; RESET_TOKEN_SIZE]))
@@ -396,7 +384,8 @@ mod test {
             .max_datagram_frame_size(VarInt::from_u32(65535))
             .grease_quic_bit(false)
             .build()
-            .unwrap();
+            .unwrap()
+            .into();
 
         let mut buf = bytes::BytesMut::new();
         buf.put_parameters(&params);
@@ -406,22 +395,22 @@ mod test {
 
     #[test]
     fn invalid_params() {
-        let build_result = Parameters::builder()
+        let build_result = ClientParameters::builder()
             .max_udp_payload_size(VarInt::from_u32(1199))
             .build();
         assert!(build_result.is_err());
 
-        let build_result = Parameters::builder()
+        let build_result = ClientParameters::builder()
             .ack_delay_exponent(VarInt::from_u32(21))
             .build();
         assert!(build_result.is_err());
 
-        let build_result = Parameters::builder()
+        let build_result = ClientParameters::builder()
             .max_ack_delay(VarInt::from_u32(215))
             .build();
         assert!(build_result.is_err());
 
-        let build_result = Parameters::builder()
+        let build_result = ClientParameters::builder()
             .active_connection_id_limit(VarInt::from_u32(1))
             .build();
         assert!(build_result.is_err());
