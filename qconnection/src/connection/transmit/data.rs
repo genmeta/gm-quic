@@ -284,8 +284,8 @@ impl DataSpaceReader {
         pn_buf.put_packet_number(encoded_pn);
 
         encode_long_first_byte(&mut hdr_buf[0], pn_len);
-        encrypt_packet(k.remote.packet.as_ref(), pn, buf, hdr_len + pn_len);
-        protect_header(k.remote.header.as_ref(), buf, hdr_len, pn_len);
+        encrypt_packet(k.local.packet.as_ref(), pn, buf, hdr_len + pn_len);
+        protect_header(k.local.header.as_ref(), buf, hdr_len, pn_len);
 
         // 0RTT包不能发送Ack
         Some((pn, is_ack_eliciting, sent_size, fresh_bytes, in_flight))
