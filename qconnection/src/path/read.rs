@@ -242,7 +242,7 @@ impl ReadIntoDatagrams {
             buffers_used += 1;
             last_buffer_written = datagram_size;
 
-            let remaining = (&mut datagram[..]).apply(&constraints);
+            let remaining = (&mut datagram[datagram_size..]).apply(&constraints);
             match remaining.len() {
                 0 => continue,
                 // 如果数据报没有没填满，需要填充padding帧，否则datagram会被之前的数据污染

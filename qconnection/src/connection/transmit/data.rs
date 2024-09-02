@@ -167,6 +167,7 @@ impl DataSpaceReader {
         hdr_buf.put_one_rtt_header(&hdr);
         pn_buf.put_packet_number(encoded_pn);
 
+        buf[0] |= (encoded_pn.size() - 1) as u8;
         // 11 保护包头，加密数据
         let pk_guard = keys.1.lock_guard();
         let (key_phase, pk) = pk_guard.get_local();
