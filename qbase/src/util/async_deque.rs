@@ -137,15 +137,12 @@ impl<T> ArcAsyncDequeWriter<'_, T> {
 
 impl<T> Drop for ArcAsyncDequeWriter<'_, T> {
     fn drop(&mut self) {
-        match &mut self.guard.queue {
-            Some(queue) => {
-                if queue.len() > self.old_len {
-                    if let Some(waker) = self.guard.waker.take() {
-                        waker.wake();
-                    }
+        if let Some(queue) = &mut self.guard.queue {
+            if queue.len() > self.old_len {
+                if let Some(waker) = self.guard.waker.take() {
+                    waker.wake();
                 }
             }
-            None => {}
         }
     }
 }

@@ -69,9 +69,9 @@ pub enum Packet {
     Data(DataPacket),
 }
 
-/// The parsing here does not involve removing header protection or decrypting the packet. It only parses information such as packet type and connection ID,
-/// and prepares for further delivery to the connection by finding the connection ID. The removal of header protection and decryption of the packet is done at the connection layer.
-/// The received packet is a BytesMut, in order to make as few copies as possible until it is read by the application layer.
+// The parsing here does not involve removing header protection or decrypting the packet. It only parses information such as packet type and connection ID,
+// and prepares for further delivery to the connection by finding the connection ID. The removal of header protection and decryption of the packet is done at the connection layer.
+// The received packet is a BytesMut, in order to make as few copies as possible until it is read by the application layer.
 #[derive(Debug)]
 pub struct PacketReader {
     raw: BytesMut,

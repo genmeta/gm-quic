@@ -25,6 +25,7 @@ pub trait GetType {
 
 /// When encoding a packet for sending, we need to know the length of the packet,
 /// so this trait needs to be implemented.
+///
 /// However, the length field of the packet header is variable-length encoded and
 /// requires special handling, which is not considered within the scope of Encode::size.
 #[enum_dispatch]
