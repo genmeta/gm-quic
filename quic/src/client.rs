@@ -16,7 +16,7 @@ use rustls::{
     client::WantsClientCert, ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
 };
 
-use crate::{get_usc, ConnKey, QuicConnection, CONNECTIONS};
+use crate::{get_usc_or_create, ConnKey, QuicConnection, CONNECTIONS};
 
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 
@@ -108,7 +108,7 @@ impl QuicClient {
             .find(|addr| addr.is_ipv4() == server_addr.is_ipv4())
             .unwrap();
 
-        let usc = get_usc(bind_addr);
+        let usc = get_usc_or_create(bind_addr);
 
         let pathway = Pathway::Direct {
             local: usc.local_addr(),
@@ -125,10 +125,10 @@ impl QuicClient {
         };
 
         let inner = ArcConnection::new_client(
-            server_name,
-            self.tls_config.clone(),
-            self.parameters.clone(),
             scid,
+            server_name,
+            self.parameters.clone(),
+            self.tls_config.clone(),
             token_registry,
         );
         let conn = QuicConnection {

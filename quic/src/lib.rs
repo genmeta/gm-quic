@@ -1,14 +1,14 @@
-use std::{io, net::SocketAddr, sync::LazyLock};
+use std::{
+    net::SocketAddr,
+    sync::{LazyLock, RwLock},
+};
 
 use bytes::BytesMut;
 use dashmap::DashMap;
 use deref_derive::Deref;
 use qbase::{
     cid::ConnectionId,
-    packet::{
-        header::GetDcid, long, DataHeader, DataPacket, Packet, PacketReader, RetryHeader,
-        VersionNegotiationHeader,
-    },
+    packet::{header::GetDcid, Packet, PacketReader, RetryHeader, VersionNegotiationHeader},
 };
 use qconnection::{connection::ArcConnection, path::Pathway, router::ROUTER};
 use qudp::ArcUsc;
@@ -25,7 +25,8 @@ static USC_REGISTRY: LazyLock<DashMap<SocketAddr, ArcUsc>> = LazyLock::new(DashM
 /// 包括被动接收的连接和主动发起的连接
 static CONNECTIONS: LazyLock<DashMap<ConnKey, QuicConnection>> = LazyLock::new(DashMap::new);
 
-static LISTENER: LazyLock<Listener> = LazyLock::new(Listener::new);
+/// 理应全局只有一个server
+static SERVER: LazyLock<RwLock<Option<QuicServer>>> = LazyLock::new(|| RwLock::new(None));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ConnKey {
@@ -45,8 +46,8 @@ impl QuicConnection {
         // self.inner.recv_version_negotiation(vn);
     }
 
-    pub fn recv_retry_packet(&self, retry: &RetryHeader, pathway: Pathway, usc: ArcUsc) {
-        self.inner.recv_retry_packet(retry, pathway, usc);
+    pub fn recv_retry_packet(&self, retry: &RetryHeader) {
+        self.inner.recv_retry_packet(retry);
     }
 
     pub fn update_path_recv_time(&self, pathway: Pathway) {
@@ -60,8 +61,8 @@ impl Drop for QuicConnection {
     }
 }
 
-pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
-    let recv_task = |usc: ArcUsc, bind_addr: SocketAddr| {
+pub fn get_usc_or_create(bind_addr: &SocketAddr) -> ArcUsc {
+    let recv_task = |usc: ArcUsc, _bind_addr: SocketAddr| {
         let mut receive = usc.receive();
         tokio::spawn(async move {
             while let Ok(msg_count) = (&mut receive).await {
@@ -92,19 +93,22 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
                             Packet::Retry(retry) => {
                                 let key = ConnKey::Client(*retry.get_dcid());
                                 if let Some(conn) = CONNECTIONS.get(&key) {
-                                    conn.recv_retry_packet(&retry, pathway, usc.clone());
+                                    conn.recv_retry_packet(&retry);
                                     conn.update_path_recv_time(pathway);
                                 } else {
                                     log::error!("No connection found for Retry packet");
                                 }
                             }
                             Packet::Data(packet) => {
-                                let dcid = *packet.header.get_dcid();
-                                if !ROUTER.contains_key(&dcid) {
-                                    LISTENER.try_accept(bind_addr, packet, pathway, usc.clone());
-                                } else {
-                                    ROUTER.recv_packet_via_pathway(packet, pathway, &usc.clone());
-                                }
+                                let dcid = *packet.get_dcid();
+                                ROUTER
+                                    .recv_packet_via_pathway(packet, pathway, &usc)
+                                    .and_then(|packet| {
+                                        if let Some(server) = SERVER.read().unwrap().as_ref() {
+                                            server.recv_unmatched_packet(packet, pathway, &usc);
+                                        }
+                                        Option::<()>::None
+                                    });
 
                                 match CONNECTIONS
                                     .get(&ConnKey::Client(dcid))
@@ -131,50 +135,4 @@ pub fn get_usc(bind_addr: &SocketAddr) -> ArcUsc {
         .value()
         .clone();
     usc
-}
-
-type ConnCreator = Box<dyn Fn(DataPacket, Pathway, ArcUsc) -> QuicConnection + Send + Sync>;
-
-struct Listener {
-    creators: DashMap<SocketAddr, ConnCreator>,
-}
-
-impl Listener {
-    fn new() -> Self {
-        Self {
-            creators: DashMap::new(),
-        }
-    }
-
-    fn listen(&self, bind_addr: SocketAddr, creator: ConnCreator) -> io::Result<()> {
-        if self.creators.contains_key(&bind_addr) {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                "Address already in use",
-            ));
-        }
-        let _ = get_usc(&bind_addr);
-        self.creators.insert(bind_addr, creator);
-        Ok(())
-    }
-
-    fn try_accept(&self, bind_addr: SocketAddr, packet: DataPacket, pathway: Pathway, usc: ArcUsc) {
-        if matches!(
-            packet.header,
-            DataHeader::Long(long::DataHeader::Initial(_))
-                | DataHeader::Long(long::DataHeader::ZeroRtt(_))
-        ) {
-            if let Some(conn) = self
-                .creators
-                .get(&bind_addr)
-                .map(|creator| creator(packet, pathway, usc))
-            {
-                CONNECTIONS.insert(conn.key, conn);
-            }
-        }
-    }
-
-    fn unregister(&self, bind_addr: &SocketAddr) {
-        self.creators.remove(bind_addr);
-    }
 }

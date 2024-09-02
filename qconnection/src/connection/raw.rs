@@ -55,8 +55,8 @@ impl RawConnection {
     pub fn new(
         role: Role,
         tls_session: ArcTlsSession,
-        scid: ConnectionId,
-        init_cid: Option<ConnectionId>,
+        initial_scid: ConnectionId,
+        initial_dcid: ConnectionId,
         initial_keys: Keys,
         token_registry: ArcTokenRegistry,
     ) -> Self {
@@ -71,7 +71,7 @@ impl RawConnection {
         let data = DataScope::default();
 
         let router_registry = ROUTER.registry(
-            scid,
+            initial_scid,
             reliable_frames.clone(),
             [
                 initial_packets_entry.clone(),
@@ -80,8 +80,8 @@ impl RawConnection {
                 one_rtt_packets_entry.clone(),
             ],
         );
-        let local_cids = ArcLocalCids::new(Self::gen_cid, scid, router_registry);
-        let remote_cids = ArcRemoteCids::with_limit(2, reliable_frames.clone(), init_cid);
+        let local_cids = ArcLocalCids::new(Self::gen_cid, initial_scid, router_registry);
+        let remote_cids = ArcRemoteCids::new(initial_dcid, 2, reliable_frames.clone());
         let cid_registry = CidRegistry::new(local_cids, remote_cids);
         let handshake = Handshake::new(role, reliable_frames.clone());
         let flow_ctrl = FlowController::with_initial(65535, 65535);
@@ -137,7 +137,7 @@ impl RawConnection {
             };
             move |pathway, usc| {
                 let scid = cid_registry.local.active_cids()[0];
-                let dcid = cid_registry.remote.apply_cid();
+                let dcid = cid_registry.remote.apply_dcid();
                 let path = ArcPath::new(usc.clone(), scid, dcid);
 
                 if !handshake.is_handshake_done() {
@@ -170,6 +170,7 @@ impl RawConnection {
         let join_initial = initial.build(
             rcvd_initial_packets,
             &pathes,
+            &cid_registry.remote,
             &notify,
             &conn_error,
             validate,

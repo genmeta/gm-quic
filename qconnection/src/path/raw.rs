@@ -67,10 +67,6 @@ impl RawPath {
         self.response_sndbuf.write(frame.into());
     }
 
-    pub fn set_dcid(&self, cid: ConnectionId) {
-        self.dcid.set_cid(cid)
-    }
-
     pub fn begin_validation(&self) {
         let anti_amplifier = self.anti_amplifier.clone();
         let challenge_sndbuf = self.challenge_sndbuf.clone();

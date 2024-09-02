@@ -38,31 +38,33 @@ impl<RETIRED> RawRemoteCids<RETIRED>
 where
     RETIRED: Extend<RetireConnectionIdFrame> + Clone,
 {
-    fn with_limit(
-        active_cid_limit: u64,
-        retired_cids: RETIRED,
-        init_cid: Option<ConnectionId>,
-    ) -> Self {
+    fn new(initial_dcid: ConnectionId, active_cid_limit: u64, retired_cids: RETIRED) -> Self {
         let mut cid_deque = IndexDeque::default();
 
-        if let Some(cid) = init_cid {
-            let seq = 0;
-            let reset_token = ResetToken::default();
-            cid_deque
-                .insert(seq, Some((seq, cid, reset_token)))
-                .unwrap();
-        }
+        let reset_token = ResetToken::default();
+        cid_deque
+            .push_back(Some((0, initial_dcid, reset_token)))
+            .unwrap();
 
         Self {
             active_cid_limit,
             cid_deque,
             cid_cells: Default::default(),
-            cursor: Default::default(),
+            cursor: 0,
             retired_cids,
         }
     }
 
-    pub fn recv_new_cid_frame(
+    fn revise_initial_dcid(&mut self, initial_dcid: ConnectionId) {
+        let first_dcid = self.cid_deque.get_mut(0).unwrap();
+        *first_dcid = Some((0, initial_dcid, ResetToken::default()));
+
+        if let Some(apply) = self.cid_cells.get_mut(0) {
+            apply.revise(initial_dcid);
+        }
+    }
+
+    fn recv_new_cid_frame(
         &mut self,
         frame: &NewConnectionIdFrame,
     ) -> Result<Option<ResetToken>, Error> {
@@ -182,7 +184,7 @@ where
         }
     }
 
-    fn apply_cid(&mut self) -> ArcCidCell<RETIRED> {
+    fn apply_dcid(&mut self) -> ArcCidCell<RETIRED> {
         let state = if let Some(Some((_, cid, _))) = self.cid_deque.get(self.cursor) {
             self.cursor += 1;
             CidState::Ready(*cid)
@@ -208,16 +210,19 @@ impl<RETIRED> ArcRemoteCids<RETIRED>
 where
     RETIRED: Extend<RetireConnectionIdFrame> + Clone,
 {
-    pub fn with_limit(
-        active_cid_limit: u64,
-        retired_cids: RETIRED,
-        init_cid: Option<ConnectionId>,
-    ) -> Self {
-        Self(Arc::new(Mutex::new(RawRemoteCids::with_limit(
+    pub fn new(initial_dcid: ConnectionId, active_cid_limit: u64, retired_cids: RETIRED) -> Self {
+        Self(Arc::new(Mutex::new(RawRemoteCids::new(
+            initial_dcid,
             active_cid_limit,
             retired_cids,
-            init_cid,
         ))))
+    }
+
+    /// Only when the client initially connects to the server, a temporary initial dcid is used;
+    /// When a response packet is received from the server, the initial dcid should be updated
+    /// based on the scid in the response packet.
+    pub fn revise_initial_dcid(&self, initial_dcid: ConnectionId) {
+        self.0.lock().unwrap().revise_initial_dcid(initial_dcid);
     }
 
     /// Return a ArcCidCell, which holds the state of the connection ID, included:
@@ -225,8 +230,8 @@ where
     /// - have been allocated
     /// - have been allocated again after retirement of last cid
     /// - have been retired
-    pub fn apply_cid(&self) -> ArcCidCell<RETIRED> {
-        self.0.lock().unwrap().apply_cid()
+    pub fn apply_dcid(&self) -> ArcCidCell<RETIRED> {
+        self.0.lock().unwrap().apply_dcid()
     }
 }
 
@@ -266,17 +271,19 @@ impl CidState {
         }
     }
 
-    fn assign(&mut self, cid: ConnectionId) {
-        // Only allow transition from None or Demand state to Ready state
-        debug_assert!(matches!(self, Self::None | Self::Demand(_)));
+    fn revise(&mut self, cid: ConnectionId) {
         if let CidState::Demand(waker) = std::mem::take(self) {
             waker.wake();
         }
         *self = CidState::Ready(cid);
     }
 
-    /// When first path receive the initial packet to change the dcid
-    fn set_cid(&mut self, cid: ConnectionId) {
+    fn assign(&mut self, cid: ConnectionId) {
+        // Only allow transition from None or Demand state to Ready state
+        debug_assert!(matches!(self, Self::None | Self::Demand(_)));
+        if let CidState::Demand(waker) = std::mem::take(self) {
+            waker.wake();
+        }
         *self = CidState::Ready(cid);
     }
 
@@ -331,12 +338,12 @@ where
         })))
     }
 
-    fn assign(&self, cid: ConnectionId) {
-        self.0.lock().unwrap().assign(cid);
+    fn revise(&self, cid: ConnectionId) {
+        self.0.lock().unwrap().revise(cid);
     }
 
-    pub fn set_cid(&self, cid: ConnectionId) {
-        self.0.lock().unwrap().set_cid(cid);
+    fn assign(&self, cid: ConnectionId) {
+        self.0.lock().unwrap().assign(cid);
     }
 
     pub fn poll_get_cid(&self, cx: &mut Context<'_>) -> Poll<Option<ConnectionId>> {
@@ -377,7 +384,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use futures::{FutureExt, StreamExt};
+    use futures::FutureExt;
 
     use super::*;
     use crate::util::ArcAsyncDeque;
@@ -386,35 +393,42 @@ mod tests {
     fn test_remote_cids() {
         let waker = futures::task::noop_waker();
         let mut cx = std::task::Context::from_waker(&waker);
+        let initial_dcid = ConnectionId::random_gen(8);
         let retired_cids = ArcAsyncDeque::<RetireConnectionIdFrame>::new();
-        let mut remote_cids = RawRemoteCids::with_limit(8, retired_cids, None);
+        let mut remote_cids = RawRemoteCids::new(initial_dcid, 8, retired_cids);
+
+        let cid_apply0 = remote_cids.apply_dcid();
+        assert_eq!(
+            cid_apply0.get_cid().poll_unpin(&mut cx),
+            Poll::Ready(Some(initial_dcid))
+        );
 
         // Will return Pending, because the peer hasn't issue any connection id
-        let cid_apply = remote_cids.apply_cid();
-        assert_eq!(cid_apply.get_cid().poll_unpin(&mut cx), Poll::Pending);
+        let cid_apply1 = remote_cids.apply_dcid();
+        assert_eq!(cid_apply1.get_cid().poll_unpin(&mut cx), Poll::Pending);
         assert!(matches!(
-            cid_apply.0.lock().unwrap().state,
+            cid_apply1.0.lock().unwrap().state,
             CidState::Demand(_)
         ));
 
         let cid = ConnectionId::random_gen(8);
         let frame = NewConnectionIdFrame {
-            sequence: VarInt::from_u32(0),
+            sequence: VarInt::from_u32(1),
             retire_prior_to: VarInt::from_u32(0),
             id: cid,
             reset_token: ResetToken::random_gen(),
         };
         assert!(remote_cids.recv_new_cid_frame(&frame).is_ok());
-        assert_eq!(remote_cids.cid_deque.len(), 1);
+        assert_eq!(remote_cids.cid_deque.len(), 2);
 
         assert_eq!(
-            cid_apply.get_cid().poll_unpin(&mut cx),
+            cid_apply1.get_cid().poll_unpin(&mut cx),
             Poll::Ready(Some(cid))
         );
 
         // Additionally, a new request will be made because if the peer-issued CID is
         // insufficient, it will still return Pending.
-        let cid_apply2 = remote_cids.apply_cid();
+        let cid_apply2 = remote_cids.apply_dcid();
         assert_eq!(cid_apply2.get_cid().poll_unpin(&mut cx), Poll::Pending);
     }
 
@@ -422,12 +436,13 @@ mod tests {
     fn test_retire_in_remote_cids() {
         let waker = futures::task::noop_waker();
         let mut cx = std::task::Context::from_waker(&waker);
+        let initial_dcid = ConnectionId::random_gen(8);
         let retired_cids = ArcAsyncDeque::<RetireConnectionIdFrame>::new();
-        let remote_cids = ArcRemoteCids::with_limit(8, retired_cids, None);
+        let remote_cids = ArcRemoteCids::new(initial_dcid, 8, retired_cids);
         let mut guard = remote_cids.0.lock().unwrap();
 
-        let mut cids = vec![];
-        for seq in 0..8 {
+        let mut cids = vec![initial_dcid];
+        for seq in 1..8 {
             let cid = ConnectionId::random_gen(8);
             cids.push(cid);
             let frame = NewConnectionIdFrame {
@@ -439,8 +454,8 @@ mod tests {
             _ = guard.recv_new_cid_frame(&frame);
         }
 
-        let cid_apply1 = guard.apply_cid();
-        let cid_apply2 = guard.apply_cid();
+        let cid_apply1 = guard.apply_dcid();
+        let cid_apply2 = guard.apply_dcid();
         assert_eq!(cid_apply1.0.lock().unwrap().seq, 0);
         assert_eq!(cid_apply2.0.lock().unwrap().seq, 1);
         assert_eq!(
@@ -462,7 +477,7 @@ mod tests {
 
         for i in 0..4 {
             assert_eq!(
-                guard.retired_cids.poll_next_unpin(&mut cx),
+                guard.retired_cids.poll_pop(&mut cx),
                 Poll::Ready(Some(RetireConnectionIdFrame {
                     sequence: VarInt::from_u32(i),
                 }))
@@ -485,7 +500,7 @@ mod tests {
         cid_apply2.retire();
         assert_eq!(guard.retired_cids.len(), 1);
         assert_eq!(
-            guard.retired_cids.poll_next_unpin(&mut cx),
+            guard.retired_cids.poll_pop(&mut cx),
             Poll::Ready(Some(RetireConnectionIdFrame {
                 sequence: VarInt::from_u32(5),
             }))
@@ -496,12 +511,13 @@ mod tests {
     fn test_retire_without_apply() {
         let waker = futures::task::noop_waker();
         let mut cx = std::task::Context::from_waker(&waker);
+        let initial_dcid = ConnectionId::random_gen(8);
         let retired_cids = ArcAsyncDeque::<RetireConnectionIdFrame>::new();
-        let remote_cids = ArcRemoteCids::with_limit(8, retired_cids, None);
+        let remote_cids = ArcRemoteCids::new(initial_dcid, 8, retired_cids);
         let mut guard = remote_cids.0.lock().unwrap();
 
-        let mut cids = vec![];
-        for seq in 0..8 {
+        let mut cids = vec![initial_dcid];
+        for seq in 1..8 {
             let cid = ConnectionId::random_gen(8);
             cids.push(cid);
             let frame = NewConnectionIdFrame {
@@ -518,8 +534,8 @@ mod tests {
         assert_eq!(guard.cid_cells.offset(), 4);
         assert_eq!(guard.retired_cids.len(), 4);
 
-        let cid_apply1 = guard.apply_cid();
-        let cid_apply2 = guard.apply_cid();
+        let cid_apply1 = guard.apply_dcid();
+        let cid_apply2 = guard.apply_dcid();
         assert_eq!(cid_apply1.0.lock().unwrap().seq, 4);
         assert_eq!(cid_apply2.0.lock().unwrap().seq, 5);
         assert_eq!(
