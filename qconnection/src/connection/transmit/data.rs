@@ -170,7 +170,7 @@ impl DataSpaceReader {
         // 11 保护包头，加密数据
         let pk_guard = keys.1.lock_guard();
         let (key_phase, pk) = pk_guard.get_local();
-        encode_short_first_byte(&mut hdr_buf[0], pn_len, key_phase);
+        encode_short_first_byte(&mut buf[0], pn_len, key_phase);
         encrypt_packet(pk.as_ref(), pn, buf, hdr_len + pn_len);
         protect_header(keys.0.as_ref(), buf, hdr_len, pn_len);
 
