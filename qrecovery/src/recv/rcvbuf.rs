@@ -78,6 +78,12 @@ impl RecvBuf {
             return 0;
         }
 
+        // 1. All data has been read.
+        // 2. Without a limit, `self.nread - offset` will exceed the `data.len()`, causing a panic.
+        if offset + data.len() as u64 <= self.nread {
+            return 0;
+        }
+
         if offset < self.nread {
             data = data.slice((self.nread - offset) as usize..);
             offset = self.nread;
