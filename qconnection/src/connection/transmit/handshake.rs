@@ -99,7 +99,6 @@ impl HandshakeSpaceReader {
 
         pn_buf.put_packet_number(encoded_pn);
 
-        buf[0] |= (encoded_pn.size() - 1) as u8;
         encode_long_first_byte(&mut buf[0], pn_len);
         encrypt_packet(
             k.local.packet.as_ref(),

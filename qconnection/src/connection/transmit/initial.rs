@@ -93,15 +93,12 @@ impl InitialSpaceReader {
         let mut pkt_size = hdr_len + pn_len + body_len + tag_len;
 
         hdr_buf.put_long_header(&hdr);
-
         pn_buf.put_packet_number(encoded_pn);
-
-        buf[0] |= (encoded_pn.size() - 1) as u8;
 
         Some((
             move |buf: &mut [u8], len: usize| -> (u64, bool, bool, usize, bool, Option<u64>) {
                 // 6. 填充，保护头部，加密
-                let (hdr_buf, remain) = buf.split_at_mut(hdr_len - 2);
+                let (_hdr_buf, remain) = buf.split_at_mut(hdr_len - 2);
                 let (mut length_buf, remain) = remain.split_at_mut(2);
                 let (_pn_buf, remain) = remain.split_at_mut(pn_len);
                 let (_body, mut remain) = remain.split_at_mut(body_len);
@@ -126,7 +123,7 @@ impl InitialSpaceReader {
                     EncodeBytes::Two,
                 );
 
-                encode_long_first_byte(&mut hdr_buf[0], pn_len);
+                encode_long_first_byte(&mut buf[0], pn_len);
                 encrypt_packet(
                     k.local.packet.as_ref(),
                     pn,
