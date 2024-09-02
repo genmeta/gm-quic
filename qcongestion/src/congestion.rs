@@ -513,11 +513,11 @@ impl super::CongestionControl for ArcCC {
         let now = Instant::now();
         let recved = Recved { pn, recv_time: now };
         let mut guard = self.0.lock().unwrap();
-        if let Some(r) = &guard.largest_ack_eliciting_packet[space] {
-            if pn > r.pn {
-                guard.largest_ack_eliciting_packet[space] = Some(recved);
-            }
-        }
+        guard.largest_ack_eliciting_packet[space] = match &guard.largest_ack_eliciting_packet[space]
+        {
+            Some(r) if pn > r.pn => Some(recved),
+            _ => Some(recved),
+        };
     }
 
     fn may_loss(&self) -> impl Future<Output = (Epoch, Vec<u64>)> {
