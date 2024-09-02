@@ -102,13 +102,13 @@ impl HandshakeSpaceReader {
         buf[0] |= (encoded_pn.size() - 1) as u8;
         encode_long_first_byte(&mut buf[0], pn_len);
         encrypt_packet(
-            k.remote.packet.as_ref(),
+            k.local.packet.as_ref(),
             pn,
             &mut buf[..pkt_size],
             hdr_len + pn_len,
         );
         protect_header(
-            k.remote.header.as_ref(),
+            k.local.header.as_ref(),
             &mut buf[..pkt_size],
             hdr_len,
             pn_len,

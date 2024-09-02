@@ -148,7 +148,7 @@ impl InitialSpaceReader {
                     sent_ack,
                 )
             },
-            hdr_len + pn_len + body_len,
+            hdr_len + pn_len + body_len + tag_len,
             is_just_ack,
         ))
     }

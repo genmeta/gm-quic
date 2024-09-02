@@ -84,7 +84,7 @@ impl RawConnection {
         let remote_cids = ArcRemoteCids::with_limit(2, reliable_frames.clone(), init_cid);
         let cid_registry = CidRegistry::new(local_cids, remote_cids);
         let handshake = Handshake::new(role, reliable_frames.clone());
-        let flow_ctrl = FlowController::with_initial(0, 0);
+        let flow_ctrl = FlowController::with_initial(65535, 65535);
         let conn_error = ConnError::default();
 
         let streams = DataStreams::with_role_and_limit(
