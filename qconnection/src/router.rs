@@ -30,21 +30,20 @@ impl ArcRouter {
         packet: DataPacket,
         pathway: Pathway,
         usc: &ArcUsc,
-    ) -> bool {
+    ) -> Option<DataPacket> {
         let dcid = packet.header.get_dcid();
-        self.0
-            .get(dcid)
-            .map(|packet_entry| {
-                let index = match packet.header {
-                    DataHeader::Long(long::DataHeader::Initial(_)) => 0,
-                    DataHeader::Long(long::DataHeader::ZeroRtt(_)) => 1,
-                    DataHeader::Long(long::DataHeader::Handshake(_)) => 2,
-                    DataHeader::Short(_) => 3,
-                };
-                _ = packet_entry[index].unbounded_send((packet, pathway, usc.clone()));
-                true
-            })
-            .unwrap_or(false)
+        if let Some(entries) = self.0.get(dcid) {
+            let index = match packet.header {
+                DataHeader::Long(long::DataHeader::Initial(_)) => 0,
+                DataHeader::Long(long::DataHeader::ZeroRtt(_)) => 1,
+                DataHeader::Long(long::DataHeader::Handshake(_)) => 2,
+                DataHeader::Short(_) => 3,
+            };
+            _ = entries[index].unbounded_send((packet, pathway, usc.clone()));
+            None
+        } else {
+            Some(packet)
+        }
     }
 
     pub fn registry<ISSUED>(

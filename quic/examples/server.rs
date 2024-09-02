@@ -40,7 +40,7 @@ async fn run(options: Opt) -> Result<(), Box<dyn std::error::Error>> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    let mut server = QuicServer::bind([options.bind], true)
+    let server = QuicServer::bind([options.bind], true)
         .with_supported_versions([0x00000001u32])
         .without_cert_verifier()
         .with_single_cert(options.cert, options.key)

@@ -18,7 +18,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::any;
 use crate::{
-    connection::{transmit::initial::InitialSpaceReader, RcvdPackets},
+    connection::{transmit::initial::InitialSpaceReader, ArcRemoteCids, RcvdPackets},
     error::ConnError,
     path::{ArcPath, ArcPathes, RawPath},
     pipe,
@@ -48,6 +48,7 @@ impl InitialScope {
         &self,
         rcvd_packets: RcvdPackets,
         pathes: &ArcPathes,
+        remote_cids: &ArcRemoteCids,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
         validate: impl Fn(&[u8], ArcPath) + Send + 'static,
@@ -88,6 +89,7 @@ impl InitialScope {
         self.parse_rcvd_packets_and_dispatch_frames(
             rcvd_packets,
             pathes,
+            remote_cids,
             dispatch_frame,
             notify,
             conn_error,
@@ -95,10 +97,12 @@ impl InitialScope {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn parse_rcvd_packets_and_dispatch_frames(
         &self,
         mut rcvd_packets: RcvdPackets,
         pathes: &ArcPathes,
+        remote_cids: &ArcRemoteCids,
         dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
@@ -109,6 +113,7 @@ impl InitialScope {
         tokio::spawn({
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.keys.clone();
+            let remote_cids = remote_cids.clone();
             let notify = notify.clone();
 
             async move {
@@ -149,12 +154,12 @@ impl InitialScope {
 
                     let path = pathes.get(pathway, usc);
                     let remote_scid = match packet.header {
-                        DataHeader::Long(ref long_header) => *long_header.get_scid(),
+                        DataHeader::Long(ref long_header) => long_header.get_scid(),
                         _ => unreachable!(),
                     };
                     // When receiving the initial packet, change the DCID of the
                     // path to the SCID carried in the received packet.
-                    path.set_dcid(remote_scid);
+                    remote_cids.revise_initial_dcid(*remote_scid);
 
                     match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
                         false,

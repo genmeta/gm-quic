@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    future::Future,
     pin::Pin,
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
@@ -8,9 +9,49 @@ use std::{
 use futures::Stream;
 
 #[derive(Debug)]
-struct AsyncDeque<T> {
+pub struct AsyncDeque<T> {
     queue: Option<VecDeque<T>>,
     waker: Option<Waker>,
+}
+
+impl<T> AsyncDeque<T> {
+    pub fn push(&mut self, value: T) {
+        if let Some(queue) = &mut self.queue {
+            queue.push_back(value);
+            if let Some(waker) = self.waker.take() {
+                waker.wake();
+            }
+        }
+    }
+
+    pub fn poll_pop(&mut self, cx: &mut Context<'_>) -> Poll<Option<T>> {
+        match &mut self.queue {
+            Some(queue) => {
+                if let Some(frame) = queue.pop_front() {
+                    Poll::Ready(Some(frame))
+                } else {
+                    self.waker = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+            None => Poll::Ready(None),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.queue.as_ref().map(|v| v.len()).unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn close(&mut self) {
+        self.queue = None;
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -24,29 +65,24 @@ impl<T> ArcAsyncDeque<T> {
         })))
     }
 
-    pub fn push(&self, value: T) {
-        let mut guard = self.0.lock().unwrap();
-        if let Some(queue) = &mut guard.queue {
-            queue.push_back(value);
-            if let Some(waker) = guard.waker.take() {
-                waker.wake();
-            }
-        }
+    pub fn lock_guard(&self) -> MutexGuard<'_, AsyncDeque<T>> {
+        self.0.lock().unwrap()
     }
 
-    pub fn pop(&self) -> Option<T> {
-        let mut guard = self.0.lock().unwrap();
-        guard.queue.as_mut().and_then(|q| q.pop_front())
+    pub fn push(&self, value: T) {
+        self.lock_guard().push(value);
+    }
+
+    pub fn pop(&self) -> Self {
+        self.clone()
+    }
+
+    pub fn poll_pop(&self, cx: &mut Context<'_>) -> Poll<Option<T>> {
+        self.lock_guard().poll_pop(cx)
     }
 
     pub fn len(&self) -> usize {
-        self.0
-            .lock()
-            .unwrap()
-            .queue
-            .as_ref()
-            .map(|v| v.len())
-            .unwrap_or(0)
+        self.lock_guard().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -54,11 +90,7 @@ impl<T> ArcAsyncDeque<T> {
     }
 
     pub fn close(&self) {
-        let mut guard = self.0.lock().unwrap();
-        guard.queue = None;
-        if let Some(waker) = guard.waker.take() {
-            waker.wake();
-        }
+        self.lock_guard().close();
     }
 
     // pub fn writer<'a>(&'a self) -> ArcFrameQueueWriter<'a, T> {
@@ -81,17 +113,25 @@ impl<T> Clone for ArcAsyncDeque<T> {
     }
 }
 
-impl<T> Stream for ArcAsyncDeque<T> {
+impl<T> Future for ArcAsyncDeque<T> {
+    type Output = Option<T>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.poll_pop(cx)
+    }
+}
+
+impl<T: Unpin> Stream for AsyncDeque<T> {
     type Item = T;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut guard = self.0.lock().unwrap();
-        match &mut guard.queue {
+        let inner = self.get_mut();
+        match &mut inner.queue {
             Some(queue) => {
                 if let Some(frame) = queue.pop_front() {
                     Poll::Ready(Some(frame))
                 } else {
-                    guard.waker = Some(cx.waker().clone());
+                    inner.waker = Some(cx.waker().clone());
                     Poll::Pending
                 }
             }

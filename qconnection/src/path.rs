@@ -44,6 +44,29 @@ pub enum Pathway {
     },
 }
 
+impl Pathway {
+    pub fn local_addr(&self) -> SocketAddr {
+        match self {
+            Pathway::Direct { local, .. } => *local,
+            Pathway::Relay { local, .. } => local.addr,
+        }
+    }
+
+    pub fn remote_addr(&self) -> SocketAddr {
+        match self {
+            Pathway::Direct { remote, .. } => *remote,
+            Pathway::Relay { remote, .. } => remote.addr,
+        }
+    }
+
+    pub fn dst_addr(&self) -> SocketAddr {
+        match self {
+            Pathway::Direct { remote, .. } => *remote,
+            Pathway::Relay { remote, .. } => remote.agent,
+        }
+    }
+}
+
 pub trait ViaPathway {
     fn poll_send_via_pathway(
         self: Pin<&mut Self>,
@@ -62,15 +85,10 @@ impl ViaPathway for ArcUsc {
         bufs: &[IoSlice<'_>],
         pathway: Pathway,
     ) -> Poll<io::Result<usize>> {
-        let (src, dst) = match &pathway {
-            Pathway::Direct { local, remote } => (*local, *remote),
-            // todo: append relay hdr
-            Pathway::Relay { local, remote } => (local.addr, remote.agent),
-        };
-
+        // todo: append relay hdr
         let hdr = qudp::PacketHeader {
-            src,
-            dst,
+            src: pathway.local_addr(),
+            dst: pathway.dst_addr(),
             ttl: 64,
             ecn: None,
             seg_size: MSS as u16,
@@ -80,20 +98,16 @@ impl ViaPathway for ArcUsc {
     }
 
     fn sync_send_via_path_way(&mut self, iovec: Vec<u8>, pathway: Pathway) -> io::Result<()> {
-        let (src, dst) = match &pathway {
-            Pathway::Direct { local, remote } => (*local, *remote),
-            // todo: append relay hdr
-            Pathway::Relay { local, remote } => (local.addr, remote.agent),
-        };
+        // todo: append relay hdr
         let hdr = qudp::PacketHeader {
-            src,
-            dst,
+            src: pathway.local_addr(),
+            dst: pathway.dst_addr(),
             ttl: 64,
             ecn: None,
             seg_size: MSS as u16,
             gso: true,
         };
-        ArcUsc::sync_send(self, iovec, &hdr)
+        self.sync_send(iovec, &hdr)
     }
 }
 

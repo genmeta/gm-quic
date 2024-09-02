@@ -7,21 +7,23 @@ use std::{
 };
 
 use dashmap::DashMap;
-use futures::{SinkExt, StreamExt};
+use deref_derive::Deref;
+use futures::SinkExt;
 use qbase::{
     cid::ConnectionId,
     config::Parameters,
-    packet::{header::GetDcid, long, DataHeader, InitialHeader, RetryHeader},
+    packet::{header::GetScid, long, DataHeader, DataPacket, InitialHeader, RetryHeader},
     token::{ArcTokenRegistry, TokenProvider},
     util::ArcAsyncDeque,
 };
-use qconnection::{connection::ArcConnection, router::ROUTER};
+use qconnection::{connection::ArcConnection, path::Pathway, router::ROUTER};
+use qudp::ArcUsc;
 use rustls::{
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };
 
-use crate::{ConnKey, QuicConnection, CONNECTIONS, LISTENER};
+use crate::{get_usc_or_create, ConnKey, QuicConnection, CONNECTIONS, SERVER};
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
 type QuicListner = ArcAsyncDeque<(QuicConnection, SocketAddr)>;
@@ -46,15 +48,19 @@ impl ResolvesServerCert for VirtualHosts {
 /// 实际上服务端的性质，类似于收包。不管包从哪个usc来，都可以根据需要来创建
 /// 要想有服务端的功能，得至少有一个usc可以收包。
 /// 如果不创建QuicServer，那意味着不接收新连接
-pub struct QuicServer {
+pub struct RawQuicServer {
     addresses: Vec<SocketAddr>,
-    listner: QuicListner,
+    listener: QuicListner,
     _restrict: bool,
     _supported_versions: Vec<u32>,
-    _load_balance: Option<Arc<dyn Fn(InitialHeader) -> Option<RetryHeader>>>,
+    _load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     _parameters: DashMap<String, Parameters>,
-    _tls_config: Arc<TlsServerConfig>,
+    tls_config: Arc<TlsServerConfig>,
+    token_provider: Option<Arc<dyn TokenProvider + Send + Sync + 'static>>,
 }
+
+#[derive(Clone, Deref)]
+pub struct QuicServer(Arc<RawQuicServer>);
 
 impl QuicServer {
     /// 指定绑定的地址，即服务端的usc的监听地址
@@ -69,7 +75,7 @@ impl QuicServer {
             addresses: addresses.into_iter().collect(),
             restrict,
             supported_versions: Vec::with_capacity(2),
-            load_balance: None,
+            load_balance: Arc::new(|_| None),
             parameters: DashMap::new(),
             tls_config: TlsServerConfig::builder_with_provider(
                 rustls::crypto::ring::default_provider().into(),
@@ -79,17 +85,71 @@ impl QuicServer {
             token_provider: None,
         }
     }
+}
 
+impl RawQuicServer {
     /// 获取所有监听的地址，因为客户端创建的每一个usc都可以成为监听端口
     pub fn listen_addresses(&self) -> &Vec<SocketAddr> {
         &self.addresses
     }
 
+    pub fn initial_server_keys(&self, dcid: ConnectionId) -> rustls::quic::Keys {
+        let suite = self
+            .tls_config
+            .crypto_provider()
+            .cipher_suites
+            .iter()
+            .find_map(|cs| match (cs.suite(), cs.tls13()) {
+                (rustls::CipherSuite::TLS13_AES_128_GCM_SHA256, Some(suite)) => {
+                    Some(suite.quic_suite())
+                }
+                _ => None,
+            })
+            .flatten()
+            .unwrap();
+        suite.keys(&dcid, rustls::Side::Server, rustls::quic::Version::V1)
+    }
+
+    pub fn recv_unmatched_packet(&self, packet: DataPacket, pathway: Pathway, usc: &ArcUsc) {
+        let (index, initial_dcid) = match &packet.header {
+            DataHeader::Long(hdr @ long::DataHeader::Initial(_)) => (0, *hdr.get_scid()),
+            DataHeader::Long(hdr @ long::DataHeader::ZeroRtt(_)) => (1, *hdr.get_scid()),
+            _ => return,
+        };
+        let initial_scid =
+            std::iter::repeat_with(|| ConnectionId::random_gen_with_mark(8, 0, 0x7F))
+                .find(|cid| !CONNECTIONS.contains_key(&ConnKey::Server(*cid)))
+                .unwrap();
+
+        let token_provider = match &self.token_provider {
+            Some(provider) => ArcTokenRegistry::with_provider(provider.clone()),
+            None => ArcTokenRegistry::default_provider(),
+        };
+
+        let initial_keys = self.initial_server_keys(initial_dcid);
+        let inner = ArcConnection::new_server(
+            initial_scid,
+            initial_dcid,
+            &Parameters::default(), // &self.parameters,
+            initial_keys,
+            self.tls_config.clone(),
+            token_provider,
+        );
+        let conn = QuicConnection {
+            key: ConnKey::Server(initial_scid),
+            inner,
+        };
+        self.listener.push((conn.clone(), pathway.remote_addr()));
+        if let Some(mut entry) = ROUTER.get_mut(&initial_scid) {
+            _ = entry[index].send((packet, pathway, usc.clone()));
+        };
+    }
+
     /// 监听新连接的到来
     /// 新连接可能通过本地的任何一个有效usc来创建
     /// 只有调用该函数，才会有被动创建的Connection存放队列，等待着应用层来处理
-    pub async fn accept(&mut self) -> io::Result<(QuicConnection, SocketAddr)> {
-        let ret = self.listner.next().await;
+    pub async fn accept(&self) -> io::Result<(QuicConnection, SocketAddr)> {
+        let ret = self.listener.pop().await;
         if let Some((conn, addr)) = ret {
             return Ok((conn, addr));
         }
@@ -97,14 +157,6 @@ impl QuicServer {
             io::ErrorKind::Other,
             "No connection available",
         ))
-    }
-}
-
-impl Drop for QuicServer {
-    fn drop(&mut self) {
-        for addr in self.addresses.iter() {
-            LISTENER.unregister(addr);
-        }
     }
 }
 
@@ -118,21 +170,21 @@ pub struct QuicServerBuilder<T> {
     addresses: Vec<SocketAddr>,
     restrict: bool,
     supported_versions: Vec<u32>,
-    load_balance: Option<Arc<dyn Fn(InitialHeader) -> Option<RetryHeader>>>,
+    load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     parameters: DashMap<String, Parameters>,
     tls_config: T,
-    token_provider: Option<Arc<dyn TokenProvider>>,
+    token_provider: Option<Arc<dyn TokenProvider + Send + Sync + 'static>>,
 }
 
 pub struct QuicServerSniBuilder<T> {
     addresses: Vec<SocketAddr>,
     restrict: bool,
     supported_versions: Vec<u32>,
-    load_balance: Option<Arc<dyn Fn(InitialHeader) -> Option<RetryHeader>>>,
+    load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     hosts: Arc<DashMap<String, Host>>,
     parameters: DashMap<String, Parameters>,
     tls_config: T,
-    token_provider: Option<Arc<dyn TokenProvider>>,
+    token_provider: Option<Arc<dyn TokenProvider + Send + Sync + 'static>>,
 }
 
 impl<T> QuicServerBuilder<T> {
@@ -146,9 +198,9 @@ impl<T> QuicServerBuilder<T> {
     /// 所谓负载均衡，就是收到新连接的Initial包，是否需要回复一个Retry，让客户端连接到新地址上
     pub fn with_load_balance(
         mut self,
-        load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader>>,
+        load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     ) -> Self {
-        self.load_balance = Some(load_balance);
+        self.load_balance = load_balance;
         self
     }
 
@@ -335,90 +387,40 @@ impl QuicServerSniBuilder<TlsServerConfig> {
 
 impl QuicServerBuilder<TlsServerConfig> {
     pub fn listen(self) -> QuicServer {
-        let tls_config = Arc::new(self.tls_config);
-        let listner = listen_addresses(&self.addresses, &tls_config, &self.token_provider);
-        QuicServer {
+        for addr in &self.addresses {
+            _ = get_usc_or_create(addr);
+        }
+        let quic_server = QuicServer(Arc::new(RawQuicServer {
             addresses: self.addresses,
-            listner,
+            listener: Default::default(),
             _restrict: self.restrict,
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
             _parameters: self.parameters,
-            _tls_config: tls_config,
-        }
+            tls_config: Arc::new(self.tls_config),
+            token_provider: self.token_provider,
+        }));
+        *SERVER.write().unwrap() = Some(quic_server.clone());
+        quic_server
     }
 }
 
 impl QuicServerSniBuilder<TlsServerConfig> {
     pub fn listen(self) -> QuicServer {
-        let tls_config = Arc::new(self.tls_config);
-        let listner = listen_addresses(&self.addresses, &tls_config, &self.token_provider);
-        QuicServer {
+        for addr in &self.addresses {
+            _ = get_usc_or_create(addr);
+        }
+        let quic_server = QuicServer(Arc::new(RawQuicServer {
             addresses: self.addresses,
-            listner,
+            listener: Default::default(),
             _restrict: self.restrict,
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
             _parameters: self.parameters,
-            _tls_config: tls_config,
-        }
+            tls_config: Arc::new(self.tls_config),
+            token_provider: self.token_provider,
+        }));
+        *SERVER.write().unwrap() = Some(quic_server.clone());
+        quic_server
     }
-}
-
-fn listen_addresses(
-    addresses: &[SocketAddr],
-    tls_config: &Arc<TlsServerConfig>,
-    token_provider: &Option<Arc<dyn TokenProvider>>,
-) -> QuicListner {
-    let quic_listner = QuicListner::default();
-    addresses.iter().for_each(|addr| {
-        let ret = LISTENER.listen(
-            *addr,
-            Box::new({
-                let tls_config = tls_config.clone();
-                let token_provider = token_provider.clone();
-                let parameters = Parameters::default();
-                let addr = *addr;
-                let listener = quic_listner.clone();
-                move |packet, pathway, usc| {
-                    let scid =
-                        std::iter::repeat_with(|| ConnectionId::random_gen_with_mark(8, 0, 0x7F))
-                            .find(|cid| !CONNECTIONS.contains_key(&ConnKey::Server(*cid)))
-                            .unwrap();
-
-                    let token_provider = match &token_provider {
-                        Some(provider) => ArcTokenRegistry::with_provider(provider.clone()),
-                        None => ArcTokenRegistry::default_provider(),
-                    };
-
-                    let inner = ArcConnection::new_server(
-                        tls_config.clone(),
-                        &parameters,
-                        scid,
-                        *packet.header.get_dcid(),
-                        token_provider,
-                    );
-                    let conn = QuicConnection {
-                        key: ConnKey::Server(scid),
-                        inner,
-                    };
-                    listener.push((conn.clone(), addr));
-
-                    if let Some(mut entry) = ROUTER.get_mut(&scid) {
-                        let index = match packet.header {
-                            DataHeader::Long(long::DataHeader::Initial(_)) => 0,
-                            DataHeader::Long(long::DataHeader::ZeroRtt(_)) => 1,
-                            _ => unreachable!(),
-                        };
-                        _ = entry[index].send((packet, pathway, usc));
-                    };
-                    conn
-                }
-            }),
-        );
-        if ret.is_err() {
-            log::error!("Failed to listen on : {} {}", addr, ret.unwrap_err())
-        }
-    });
-    quic_listner
 }

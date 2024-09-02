@@ -61,10 +61,10 @@ impl Debug for ArcConnection {
 
 impl ArcConnection {
     pub fn new_client(
-        server_name: String,
-        tls_config: Arc<rustls::ClientConfig>,
-        parameters: Parameters,
         scid: ConnectionId,
+        server_name: String,
+        parameters: Parameters,
+        tls_config: Arc<rustls::ClientConfig>,
         token_registry: ArcTokenRegistry,
     ) -> Self {
         let Ok(server_name) = server_name.try_into() else {
@@ -76,7 +76,7 @@ impl ArcConnection {
             Role::Client,
             ArcTlsSession::new_client(server_name, tls_config.clone(), parameters, scid),
             scid,
-            Some(dcid),
+            dcid,
             ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Client, dcid),
             token_registry,
         );
@@ -91,18 +91,19 @@ impl ArcConnection {
     }
 
     pub fn new_server(
-        tls_config: Arc<rustls::ServerConfig>,
+        initial_scid: ConnectionId,
+        initial_dcid: ConnectionId,
         parameters: &Parameters,
-        scid: ConnectionId,
-        dcid: ConnectionId,
+        initial_keys: rustls::quic::Keys,
+        tls_config: Arc<rustls::ServerConfig>,
         token_registry: ArcTokenRegistry,
     ) -> Self {
         let raw_conn = RawConnection::new(
             Role::Server,
             ArcTlsSession::new_server(tls_config.clone(), parameters),
-            scid,
-            None,
-            ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Server, dcid),
+            initial_scid,
+            initial_dcid,
+            initial_keys,
             token_registry,
         );
         raw_conn.into()
@@ -244,12 +245,11 @@ impl ArcConnection {
         }
     }
 
-    pub fn recv_retry_packet(&self, retry: &RetryHeader, pathway: Pathway, usc: ArcUsc) {
+    pub fn recv_retry_packet(&self, retry: &RetryHeader) {
         let guard = self.0.lock().unwrap();
         if let Raw(ref conn) = *guard {
             *conn.token.lock().unwrap() = retry.token.to_vec();
-            let path = conn.pathes.get(pathway, usc);
-            path.set_dcid(retry.scid);
+            conn.cid_registry.remote.revise_initial_dcid(retry.scid);
             let sent_record = conn.initial.space.sent_packets();
             let mut guard = sent_record.receive();
             for i in 0..guard.largest_pn() {
