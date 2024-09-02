@@ -26,13 +26,8 @@ impl Outgoing {
         assert!(max_data_size <= VARINT_MAX);
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        match inner {
-            Ok(sending_state) => {
-                if let Sender::Sending(s) = sending_state {
-                    s.update_window(max_data_size);
-                }
-            }
-            Err(_) => (),
+        if let Ok(Sender::Sending(s)) = inner {
+            s.update_window(max_data_size);
         }
     }
 
@@ -96,8 +91,8 @@ impl Outgoing {
     pub fn on_data_acked(&self, range: &Range<u64>) -> bool {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        match inner {
-            Ok(sending_state) => match sending_state {
+        if let Ok(sending_state) = inner {
+            match sending_state {
                 Sender::Ready(_) => {
                     unreachable!("never send data before recv data");
                 }
@@ -113,8 +108,7 @@ impl Outgoing {
                 }
                 // ignore recv
                 _ => {}
-            },
-            Err(_) => (),
+            }
         };
         false
     }
@@ -122,8 +116,8 @@ impl Outgoing {
     pub fn may_loss_data(&self, range: &Range<u64>) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        match inner {
-            Ok(sending_state) => match sending_state {
+        if let Ok(sending_state) = inner {
+            match sending_state {
                 Sender::Ready(_) => {
                     unreachable!("never send data before recv data");
                 }
@@ -135,8 +129,7 @@ impl Outgoing {
                 }
                 // ignore loss
                 _ => (),
-            },
-            Err(_) => (),
+            }
         };
     }
 
@@ -166,18 +159,17 @@ impl Outgoing {
     pub fn on_reset_acked(&self) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        match inner {
-            Ok(sending_state) => match sending_state {
+        if let Ok(sending_state) = inner {
+            match sending_state {
                 Sender::ResetSent(_) | Sender::ResetRcvd => {
                     *sending_state = Sender::ResetRcvd;
                 }
                 _ => {
                     unreachable!(
-                        "If no RESET_STREAM has been sent, how can there be a received acknowledgment?"
-                    );
+                    "If no RESET_STREAM has been sent, how can there be a received acknowledgment?"
+                );
                 }
-            },
-            Err(_) => (),
+            }
         }
     }
 

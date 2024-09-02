@@ -76,6 +76,8 @@ impl<const R: u8> GetPacketNumberLength for ClearBits<R> {
     }
 }
 
+/// The Type of the packet
+///
 /// The Type is only extracted from the first 3 or 4 bits of the first byte, these contents
 /// are not protected, there is no distinction between ciphertext and plaintext.
 /// For simplicity and future-oriented considerations, the Version of the long packet header

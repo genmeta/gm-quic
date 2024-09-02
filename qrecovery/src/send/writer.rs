@@ -123,8 +123,8 @@ impl Writer {
     pub fn cancel(self, err_code: u64) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        match inner {
-            Ok(sending_state) => match sending_state {
+        if let Ok(sending_state) = inner {
+            match sending_state {
                 Sender::Ready(s) => {
                     s.cancel(err_code);
                 }
@@ -135,8 +135,7 @@ impl Writer {
                     s.cancel(err_code);
                 }
                 _ => (),
-            },
-            Err(_) => (),
+            }
         };
     }
 }
@@ -145,34 +144,31 @@ impl Drop for Writer {
     fn drop(&mut self) {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
-        match inner {
-            // strict mode: don't forget to call cancel with the error code when an
-            // abnormal termination occurs, or it will panic.
-            Ok(sending_state) => match sending_state {
+        if let Ok(sending_state) = inner {
+            match sending_state {
                 Sender::Ready(s) => {
                     assert!(
                         s.is_cancelled(),
                         "SendingStream in Ready State must be 
-                            cancelled with error code before dropped!"
+                        cancelled with error code before dropped!"
                     );
                 }
                 Sender::Sending(s) => {
                     assert!(
                         s.is_cancelled(),
                         "SendingStream in Sending State must be 
-                            cancelled with error code before dropped!"
+                        cancelled with error code before dropped!"
                     );
                 }
                 Sender::DataSent(s) => {
                     assert!(
                         s.is_cancelled(),
                         "SendingStream in DataSent State must be 
-                            cancelled with error code before dropped!"
+                        cancelled with error code before dropped!"
                     );
                 }
                 _ => (),
-            },
-            Err(_) => (),
+            }
         };
     }
 }

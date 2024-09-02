@@ -41,6 +41,8 @@ impl Segment {
     }
 }
 
+/// Received data of a stream is stored in RecvBuf.
+///
 /// The receiving buffer is relatively simple, as it receives segmented data
 /// that may not be continuous. It sequentially stores the received data
 /// fragments and then reassembles them into a continuous data stream for

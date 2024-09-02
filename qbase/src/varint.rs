@@ -170,6 +170,7 @@ pub fn be_varint(input: &[u8]) -> IResult<&[u8], VarInt> {
 }
 
 /// Write a variable-length integer.
+///
 /// `put_varint` will write the smallest number of bytes needed to represent the value.
 /// `encode_varint` will write the specified number of bytes, and panic if the specified number of bytes
 /// is less than the smallest number of bytes needed to repressent the value.
