@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use qbase::{error::Error, frame::ConnectionCloseFrame, util::AsyncCell};
+use qbase::{error::Error, frame::ConnectionCloseFrame, util::ArcAsyncCell};
 
 #[derive(Debug, Clone)]
 pub enum ConnErrorKind {
@@ -35,7 +35,7 @@ pub enum ConnErrorKind {
 /// # }
 /// ```
 #[derive(Default, Debug, Clone)]
-pub struct ConnError(AsyncCell<ConnErrorKind>);
+pub struct ConnError(ArcAsyncCell<ConnErrorKind>);
 
 impl ConnError {
     /// Returns a `ConnError` instance that can be used to track connection errors.
