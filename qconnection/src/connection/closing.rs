@@ -21,7 +21,7 @@ use super::{
     scope::{data::ClosingOneRttScope, handshake::ClosingHandshakeScope, RecvPacket},
     CidRegistry,
 };
-use crate::path::{ArcPathes, Pathway};
+use crate::path::{pathway::Pathway, ArcPathes};
 
 #[derive(Clone)]
 pub struct ClosingConnection {

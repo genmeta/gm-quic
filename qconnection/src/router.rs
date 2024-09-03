@@ -10,7 +10,7 @@ use qbase::{
 };
 use qudp::ArcUsc;
 
-use crate::{connection::PacketEntry, path::Pathway};
+use crate::{connection::PacketEntry, path::pathway::Pathway};
 
 /// Global Router for managing connections.
 pub static ROUTER: LazyLock<ArcRouter> = LazyLock::new(|| ArcRouter(Arc::new(DashMap::new())));

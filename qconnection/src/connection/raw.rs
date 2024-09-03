@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     error::ConnError,
-    path::{ArcPath, ArcPathes, Pathway, RawPath},
+    path::{pathway::Pathway, ArcPath, ArcPathes, RawPath},
     router::ROUTER,
     tls::{ArcTlsSession, GetParameters},
 };

@@ -25,7 +25,7 @@ use raw::RawConnection;
 
 use crate::{
     connection::ConnState::{Closed, Closing, Draining, Raw},
-    path::Pathway,
+    path::pathway::Pathway,
     router::{RouterRegistry, ROUTER},
     tls::ArcTlsSession,
 };
@@ -87,7 +87,7 @@ impl ArcConnection {
     pub fn add_initial_path(&self, pathway: Pathway, usc: ArcUsc) {
         let guard = self.0.lock().unwrap();
         if let Raw(ref conn) = *guard {
-            conn.pathes.get(pathway, usc);
+            conn.pathes.insert(pathway, usc);
         }
     }
 

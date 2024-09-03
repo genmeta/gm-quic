@@ -20,7 +20,12 @@ async fn main() {
         let mut receive = socket.receive();
         match (&mut receive).await {
             Ok(n) => {
-                log::info!("received {} packets", n);
+                log::info!(
+                    "received {} packets, dst {}, src {}",
+                    n,
+                    receive.headers[0].dst,
+                    receive.headers[0].src
+                );
             }
             Err(e) => {
                 log::error!("receive failed: {}", e);
