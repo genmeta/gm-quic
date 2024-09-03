@@ -1,7 +1,6 @@
 use std::{
     future::Future,
     io::{self, IoSlice},
-    net::SocketAddr,
     pin::Pin,
     sync::Arc,
     task::{ready, Context, Poll},
@@ -19,53 +18,13 @@ mod raw;
 mod state;
 mod util;
 
+pub mod pathway;
 pub mod read;
 
 pub use anti_amplifier::ArcAntiAmplifier;
+pub use pathway::Pathway;
 pub use raw::RawPath;
 pub use util::{RecvBuffer, SendBuffer};
-
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
-pub struct RelayAddr {
-    pub agent: SocketAddr, // 代理人
-    pub addr: SocketAddr,
-}
-
-/// 无论哪种Pathway，socket都必须绑定local地址
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
-pub enum Pathway {
-    Direct {
-        local: SocketAddr,
-        remote: SocketAddr,
-    },
-    Relay {
-        local: RelayAddr,
-        remote: RelayAddr,
-    },
-}
-
-impl Pathway {
-    pub fn local_addr(&self) -> SocketAddr {
-        match self {
-            Pathway::Direct { local, .. } => *local,
-            Pathway::Relay { local, .. } => local.addr,
-        }
-    }
-
-    pub fn remote_addr(&self) -> SocketAddr {
-        match self {
-            Pathway::Direct { remote, .. } => *remote,
-            Pathway::Relay { remote, .. } => remote.addr,
-        }
-    }
-
-    pub fn dst_addr(&self) -> SocketAddr {
-        match self {
-            Pathway::Direct { remote, .. } => *remote,
-            Pathway::Relay { remote, .. } => remote.agent,
-        }
-    }
-}
 
 pub trait ViaPathway {
     fn poll_send_via_pathway(

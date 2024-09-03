@@ -52,18 +52,15 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
         .map(|cert| cert.expect("Failed to read and extract cert from the cert file")),
     );
 
-    let client = QuicClient::bind([
-        // "[2001:db8::1]:0".parse().unwrap(),
-        "127.0.0.1:0".parse().unwrap(),
-    ])
-    .reuse_connection()
-    .enable_happy_eyeballs()
-    .prefer_versions([0x00000001u32])
-    .with_root_certificates(Arc::new(root_cert_store))
-    .without_cert()
-    .with_keylog(args.keylog)
-    .with_alpn([b"hq-29".as_ref()].iter().map(|s| s.to_vec()))
-    .build();
+    let client = QuicClient::bind([args.bind])
+        .reuse_connection()
+        .enable_happy_eyeballs()
+        .prefer_versions([0x00000001u32])
+        .with_root_certificates(Arc::new(root_cert_store))
+        .without_cert()
+        .with_keylog(args.keylog)
+        .with_alpn([b"hq-29".as_ref()].iter().map(|s| s.to_vec()))
+        .build();
 
     let _quic_conn = client.connect(args.domain, args.addr).unwrap();
     loop {

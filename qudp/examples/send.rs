@@ -9,7 +9,7 @@ struct Args {
     #[arg(long, default_value_t = String::from("[::]:0"))]
     src: String,
 
-    #[arg(long, default_value_t = String::from("[::1]:12345"))]
+    #[arg(long, default_value_t = String::from("127.0.0.1:12345"))]
     dst: String,
 
     #[arg(long, default_value_t = 1200)]
@@ -44,7 +44,7 @@ async fn main() {
     let payloads = vec![IoSlice::new(&payload[..]); args.msg_count];
 
     match socket.send(&payloads, send_hdr).await {
-        Ok(n) => log::info!("sent {} packets", n),
+        Ok(n) => log::info!("sent {} packets, dest: {}", n, dst),
         Err(e) => log::error!("send failed: {}", e),
     }
 }
