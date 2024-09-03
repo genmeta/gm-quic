@@ -1,19 +1,14 @@
 use std::{
     future::Future,
-    ops::DerefMut,
     pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
+    task::{Context, Poll},
 };
 
-use qbase::{error::Error, frame::ConnectionCloseFrame};
+use qbase::{error::Error, frame::ConnectionCloseFrame, util::AsyncCell};
 
-#[derive(Debug, Clone, Default)]
-enum ConnErrorState {
-    #[default]
-    None,
-    Pending(Waker),
-    App(Error),
+#[derive(Debug, Clone)]
+pub enum ConnErrorKind {
+    Application(Error),
     Closing(Error),
     Draining(Error),
 }
@@ -40,7 +35,7 @@ enum ConnErrorState {
 /// # }
 /// ```
 #[derive(Default, Debug, Clone)]
-pub struct ConnError(Arc<Mutex<ConnErrorState>>);
+pub struct ConnError(AsyncCell<ConnErrorKind>);
 
 impl ConnError {
     /// Returns a `ConnError` instance that can be used to track connection errors.
@@ -53,41 +48,22 @@ impl ConnError {
 
     /// When a connection close frame is received, it will change the state and wake the external if necessary.
     pub fn on_ccf_rcvd(&self, ccf: &ConnectionCloseFrame) {
-        let mut guard = self.0.lock().unwrap();
-        // ccf具有最高的优先级
-        if let ConnErrorState::Pending(waker) = guard.deref_mut() {
-            waker.wake_by_ref();
-        }
-        *guard = ConnErrorState::Draining(Error::from(ccf.clone()));
+        _ = self
+            .0
+            .write(ConnErrorKind::Draining(Error::from(ccf.clone())));
     }
 
     pub fn on_error(&self, error: Error) {
-        let mut guard = self.0.lock().unwrap();
-        match guard.deref_mut() {
-            ConnErrorState::None => {
-                *guard = ConnErrorState::Closing(error);
-            }
-            ConnErrorState::Pending(waker) => {
-                waker.wake_by_ref();
-                *guard = ConnErrorState::Closing(error);
-            }
-            _ => {}
-        }
+        _ = self
+            .0
+            .write_if(ConnErrorKind::Closing(error), Option::is_none);
     }
 
     /// App actively close the connection with an error
     pub fn set_app_error(&self, error: Error) {
-        let mut guard = self.0.lock().unwrap();
-        match guard.deref_mut() {
-            ConnErrorState::None => {
-                *guard = ConnErrorState::App(error);
-            }
-            ConnErrorState::Pending(waker) => {
-                waker.wake_by_ref();
-                *guard = ConnErrorState::App(error);
-            }
-            _ => {}
-        }
+        _ = self
+            .0
+            .write_if(ConnErrorKind::Application(error), Option::is_none);
     }
 }
 
@@ -111,15 +87,12 @@ impl Future for ConnError {
     /// - If the state is `Closing` or `App`, it returns `Poll::Ready(true)`, indicating that the connection is closing or has been closed due to an application error.
     /// - If the state is `Draining`, it returns `Poll::Ready(false)`, indicating that the connection is draining and will be closed gracefully.
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.0.lock().unwrap();
-        match guard.deref_mut() {
-            ConnErrorState::None | ConnErrorState::Pending(_) => {
-                *guard = ConnErrorState::Pending(cx.waker().clone());
-                Poll::Pending
-            }
-            ConnErrorState::App(e) => Poll::Ready((e.clone(), true)),
-            ConnErrorState::Closing(e) => Poll::Ready((e.clone(), true)),
-            ConnErrorState::Draining(e) => Poll::Ready((e.clone(), false)),
+        match core::task::ready!(self.0.poll_take_clone(cx))
+            .expect("connection error shound never be retired")
+        {
+            ConnErrorKind::Application(e) => Poll::Ready((e, true)),
+            ConnErrorKind::Closing(e) => Poll::Ready((e, true)),
+            ConnErrorKind::Draining(e) => Poll::Ready((e, false)),
         }
     }
 }
