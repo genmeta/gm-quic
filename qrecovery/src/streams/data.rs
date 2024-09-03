@@ -228,7 +228,7 @@ impl RawDataStreams {
         if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
             if set
                 .get(&frame.id)
-                .map(|o| o.on_data_acked(&frame.range()))
+                .map(|o| o.on_data_acked(&frame.range(), frame.is_fin()))
                 .is_some_and(|all_data_rcvd| all_data_rcvd)
             {
                 set.remove(&frame.id);

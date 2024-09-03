@@ -80,19 +80,20 @@ impl AsyncWrite for Writer {
         match inner {
             Ok(sending_state) => match sending_state {
                 Sender::Ready(s) => {
-                    // 鉴于Ready是尚未分配StreamId的，所以还不具备直接变成DataSent资格
-                    // THINK: 如果将来实现的Sender，确实不需要StreamId选项，那可以直接
-                    // 转化成DataSent
-                    s.poll_shutdown(cx)
+                    if let Err(e) = s.shutdown(cx) {
+                        Poll::Ready(Err(e))
+                    } else {
+                        *sending_state = Sender::DataSent(s.into());
+                        Poll::Pending
+                    }
                 }
                 Sender::Sending(s) => {
-                    let result = s.poll_shutdown(cx);
-                    match &result {
-                        Poll::Pending => *sending_state = Sender::DataSent(s.into()),
-                        Poll::Ready(_) => *sending_state = Sender::DataRcvd,
+                    if let Err(e) = s.shutdown(cx) {
+                        Poll::Ready(Err(e))
+                    } else {
+                        *sending_state = Sender::DataSent(s.into());
+                        Poll::Pending
                     }
-                    // 有可能是Poll::Pending，也有可能是已经发送完数据的Poll::Ready
-                    result
                 }
                 Sender::DataSent(s) => {
                     let result = s.poll_shutdown(cx);

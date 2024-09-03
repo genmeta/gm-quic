@@ -88,7 +88,7 @@ impl Outgoing {
     }
 
     /// return true if all data has been rcvd
-    pub fn on_data_acked(&self, range: &Range<u64>) -> bool {
+    pub fn on_data_acked(&self, range: &Range<u64>, is_fin: bool) -> bool {
         let mut sender = self.0.lock().unwrap();
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
@@ -100,7 +100,7 @@ impl Outgoing {
                     s.on_data_acked(range);
                 }
                 Sender::DataSent(s) => {
-                    s.on_data_acked(range);
+                    s.on_data_acked(range, is_fin);
                     if s.is_all_rcvd() {
                         *sending_state = Sender::DataRcvd;
                         return true;
