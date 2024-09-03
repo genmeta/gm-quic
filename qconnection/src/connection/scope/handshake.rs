@@ -143,6 +143,7 @@ impl HandshakeScope {
                     packet.bytes.truncate(pkt_len);
 
                     let path = pathes.get(pathway, usc);
+                    path.update_recv_time();
 
                     // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
                     // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
