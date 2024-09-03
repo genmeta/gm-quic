@@ -15,6 +15,33 @@ enum AsyncCellState<T> {
     Invalid,
 }
 
+impl<T> AsyncCellState<T> {
+    fn modify<U, F>(&mut self, f: F) -> Option<U>
+    where
+        F: FnOnce(&mut Option<T>) -> U,
+    {
+        let (waker, mut opt) = match std::mem::replace(self, AsyncCellState::Invalid) {
+            AsyncCellState::None => (None, None),
+            AsyncCellState::Demand(waker) => (Some(waker), None),
+            AsyncCellState::Ready(item) => (None, Some(item)),
+            AsyncCellState::Invalid => return None,
+        };
+        let r = f(&mut opt);
+
+        *self = match (waker, opt) {
+            (None, None) => AsyncCellState::None,
+            (None, Some(item)) => AsyncCellState::Ready(item),
+            (Some(waker), None) => AsyncCellState::Demand(waker),
+            (Some(waker), Some(item)) => {
+                waker.wake();
+                AsyncCellState::Ready(item)
+            }
+        };
+
+        Some(r)
+    }
+}
+
 #[derive(Debug)]
 struct RawAsyncCell<T> {
     state: Mutex<AsyncCellState<T>>,
@@ -30,6 +57,7 @@ impl<T> Default for RawAsyncCell<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct AsyncCell<T> {
     raw: Arc<RawAsyncCell<T>>,
 }
@@ -51,10 +79,12 @@ impl<T> Default for AsyncCell<T> {
 }
 
 impl<T> AsyncCell<T> {
+    #[inline]
     pub fn new() -> Self {
         Default::default()
     }
 
+    #[inline]
     pub fn new_with(item: T) -> Self {
         Self {
             raw: Arc::new(RawAsyncCell {
@@ -63,18 +93,47 @@ impl<T> AsyncCell<T> {
         }
     }
 
-    pub fn put(&self, item: T) {
+    pub fn write(&self, item: T) -> Result<Option<T>, T> {
         let mut state = self.raw.state.lock().unwrap();
         let state = state.deref_mut();
+
         if let AsyncCellState::Invalid = state {
-            return;
+            return Err(item);
         }
         if let AsyncCellState::Demand(waker) = state {
             waker.wake_by_ref();
         }
-        *state = AsyncCellState::Ready(item);
+        let previous = core::mem::replace(state, AsyncCellState::Ready(item));
+        match previous {
+            AsyncCellState::Ready(previous) => Ok(Some(previous)),
+            _ => Ok(None),
+        }
     }
 
+    #[inline]
+    pub fn write_if<F>(&self, item: T, predicate: F) -> Result<Option<T>, T>
+    where
+        F: FnOnce(&Option<T>) -> bool,
+    {
+        let mut state = self.raw.state.lock().unwrap();
+        let state = state.deref_mut();
+
+        if let AsyncCellState::Invalid = state {
+            return Err(item);
+        }
+
+        state
+            .modify(|opt| {
+                if predicate(opt) {
+                    Ok(opt.replace(item))
+                } else {
+                    Err(item)
+                }
+            })
+            .unwrap()
+    }
+
+    #[inline]
     pub fn take(&self) -> Option<T> {
         let mut state = self.raw.state.lock().unwrap();
         let state = state.deref_mut();
@@ -88,6 +147,7 @@ impl<T> AsyncCell<T> {
         }
     }
 
+    #[inline]
     pub fn poll_take_out(&self, cx: &mut Context<'_>) -> Poll<Option<T>> {
         let mut state = self.raw.state.lock().unwrap();
         let state = state.deref_mut();
@@ -104,6 +164,7 @@ impl<T> AsyncCell<T> {
         }
     }
 
+    #[inline]
     pub fn poll_take_clone(&self, cx: &mut Context<'_>) -> Poll<Option<T>>
     where
         T: Clone,
@@ -120,6 +181,7 @@ impl<T> AsyncCell<T> {
         }
     }
 
+    #[inline]
     pub fn invalid(&self) {
         let mut state = self.raw.state.lock().unwrap();
         let state = state.deref_mut();
@@ -129,14 +191,18 @@ impl<T> AsyncCell<T> {
         *state = AsyncCellState::Invalid;
     }
 
+    #[inline]
     pub fn take_out(&self) -> TakeOut<'_, T> {
         TakeOut { cell: self }
     }
 
+    #[inline]
     pub fn take_clone(&self) -> TakeClone<'_, T> {
         TakeClone { cell: self }
     }
 
+    // 由于Mutex::map不稳定，暂时无法通过任何方法实现返回一个&mut T, 此方法为一个替代方案
+    #[inline]
     pub fn compute<U, F>(&self, operator: F) -> Compute<'_, T, U, F>
     where
         F: FnOnce(&mut T) -> U + Unpin,
@@ -146,6 +212,14 @@ impl<T> AsyncCell<T> {
             operator: Some(operator),
             _phantom: PhantomData,
         }
+    }
+
+    #[inline]
+    pub fn modify<U, F>(&self, f: F) -> Option<U>
+    where
+        F: FnOnce(&mut Option<T>) -> U,
+    {
+        self.raw.state.lock().unwrap().modify(f)
     }
 }
 
@@ -215,6 +289,8 @@ where
 #[cfg(test)]
 mod tests {
 
+    use std::future::pending;
+
     use tokio::sync::Notify;
 
     use super::*;
@@ -222,17 +298,18 @@ mod tests {
     #[test]
     fn new() {
         let cell = AsyncCell::new();
-        cell.put("Hello world");
+        assert_eq!(cell.write("Hello world"), Ok(None));
         assert_eq!(cell.take(), Some("Hello world"));
 
         let cell = AsyncCell::new_with("Hello World");
-        assert_eq!(cell.take(), Some("Hello World"));
+        assert_eq!(cell.write("Hello world"), Ok(Some("Hello World")));
+        assert_eq!(cell.take(), Some("Hello world"));
     }
 
     #[tokio::test]
     async fn take_out() {
         let cell = AsyncCell::new();
-        cell.put("Hello world");
+        assert_eq!(cell.write("Hello world"), Ok(None));
         assert_eq!(cell.take_out().await, Some("Hello world"));
 
         let putin = Arc::new(Notify::new());
@@ -251,7 +328,7 @@ mod tests {
         });
 
         putin.notified().await;
-        cell.put("Hello world");
+        assert_eq!(cell.write("Hello world"), Ok(None));
         task.await.unwrap();
     }
 
@@ -275,7 +352,7 @@ mod tests {
         });
 
         putin.notified().await;
-        cell.put("Hello world");
+        assert_eq!(cell.write("Hello world"), Ok(None));
         task.await.unwrap();
     }
 
@@ -299,7 +376,7 @@ mod tests {
         });
 
         putin.notified().await;
-        cell.put("Hello world");
+        assert_eq!(cell.write("Hello world"), Ok(None));
         task.await.unwrap();
     }
 
@@ -307,7 +384,7 @@ mod tests {
     async fn invalid() {
         let cell: AsyncCell<&str> = AsyncCell::new();
 
-        cell.put("Hello world");
+        assert_eq!(cell.write("Hello world"), Ok(None));
         assert_eq!(cell.take_out().await, Some("Hello world"));
 
         cell.invalid();
@@ -344,7 +421,58 @@ mod tests {
         let cell: AsyncCell<&str> = AsyncCell::new();
         assert_eq!(cell.take(), None);
         cell.invalid();
-        cell.put("Hello world");
+        assert_eq!(cell.write("Hello world"), Err("Hello world"));
         assert_eq!(cell.take(), None);
+    }
+
+    #[test]
+    fn modify() {
+        let cell: AsyncCell<&str> = AsyncCell::new();
+        assert_eq!(cell.modify(|s| s.map(|s| s.len())), Some(None));
+        assert_eq!(cell.write("Hello world"), Ok(None));
+        assert_eq!(cell.modify(|s| s.take().map(|s| s.len())), Some(Some(11)));
+        assert_eq!(cell.take(), None);
+        assert_eq!(cell.modify(|s| s.map(|s| s.len())), Some(None));
+        cell.invalid();
+        assert_eq!(cell.modify(|s| s.take().map(|s| s.len())), None);
+    }
+
+    #[tokio::test]
+    async fn wake_by_modify() {
+        let putin = Arc::new(Notify::new());
+        let cell: AsyncCell<&str> = AsyncCell::new();
+        let task = tokio::spawn({
+            let cell = cell.clone();
+            let putin = putin.clone();
+            async move {
+                tokio::select! {
+                    biased;
+                    _ = cell.take_out() => {}
+                    _ = {putin.notify_one();pending()} => {}
+                }
+            }
+        });
+
+        putin.notified().await;
+
+        cell.modify(|s| *s = None);
+        cell.modify(|s| *s = Some("Hello world"));
+
+        task.await.unwrap();
+    }
+
+    #[test]
+    fn put_if() {
+        let cell: AsyncCell<&str> = AsyncCell::new();
+        assert_eq!(cell.write_if("Hello World", Option::is_none), Ok(None));
+        assert_eq!(
+            cell.write_if("Hello world", |s| s.is_none()),
+            Err("Hello world")
+        );
+        assert_eq!(
+            cell.write_if("Hello world", |s| s.is_some()),
+            Ok(Some("Hello World"))
+        );
+        assert_eq!(cell.take(), Some("Hello world"));
     }
 }
