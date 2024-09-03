@@ -85,8 +85,9 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
             .expect("very very hard to exhaust the available stream ids");
         tokio::spawn(async move {
             // 模拟发送一个请求
-            let request = format!("GET {} HTTP/1.1\r\n", input.trim());
+            let request = format!("GET {}\r\n", input.trim());
             stream_writer.write_all(request.as_bytes()).await.unwrap();
+            stream_writer.shutdown().await.unwrap();
 
             // 读取响应
             let mut response = [0u8; 1024];

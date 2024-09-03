@@ -16,24 +16,24 @@ use super::sndbuf::SendBuf;
 #[derive(Debug)]
 pub struct ReadySender {
     sndbuf: SendBuf,
-    max_data_size: u64,
     cancel_state: Option<u64>,
-    writable_waker: Option<Waker>,
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
     cancel_waker: Option<Waker>,
+    writable_waker: Option<Waker>,
+    max_data_size: u64,
 }
 
 impl ReadySender {
     pub(super) fn with_buf_size(initial_max_stream_data: u64) -> ReadySender {
         ReadySender {
             sndbuf: SendBuf::with_capacity(initial_max_stream_data as usize),
-            max_data_size: initial_max_stream_data,
             cancel_state: None,
-            writable_waker: None,
             flush_waker: None,
             shutdown_waker: None,
             cancel_waker: None,
+            writable_waker: None,
+            max_data_size: initial_max_stream_data,
         }
     }
 
@@ -92,15 +92,15 @@ impl ReadySender {
         }
     }
 
-    pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    pub(super) fn shutdown(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
         if let Some(err_code) = self.cancel_state {
-            Poll::Ready(Err(io::Error::new(
+            Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 format!("cancelled by app with error code {err_code}"),
-            )))
+            ))
         } else {
             self.shutdown_waker = Some(cx.waker().clone());
-            Poll::Pending
+            Ok(())
         }
     }
 
@@ -153,12 +153,12 @@ impl From<&mut ReadySender> for SendingSender {
     fn from(value: &mut ReadySender) -> Self {
         SendingSender {
             sndbuf: std::mem::take(&mut value.sndbuf),
-            max_data_size: value.max_data_size,
             cancel_state: value.cancel_state.take(),
-            writable_waker: value.writable_waker.take(),
             flush_waker: value.flush_waker.take(),
             shutdown_waker: value.shutdown_waker.take(),
             cancel_waker: value.cancel_waker.take(),
+            writable_waker: value.writable_waker.take(),
+            max_data_size: value.max_data_size,
         }
     }
 }
@@ -167,11 +167,12 @@ impl From<&mut ReadySender> for SendingSender {
 impl From<&mut ReadySender> for DataSentSender {
     fn from(value: &mut ReadySender) -> Self {
         DataSentSender {
-            cancel_state: value.cancel_state.take(),
             sndbuf: std::mem::take(&mut value.sndbuf),
+            cancel_state: value.cancel_state.take(),
             flush_waker: value.flush_waker.take(),
             shutdown_waker: value.shutdown_waker.take(),
             cancel_waker: value.cancel_waker.take(),
+            fin_state: FinState::None,
         }
     }
 }
@@ -179,12 +180,12 @@ impl From<&mut ReadySender> for DataSentSender {
 #[derive(Debug)]
 pub struct SendingSender {
     sndbuf: SendBuf,
-    max_data_size: u64,
     cancel_state: Option<u64>,
-    writable_waker: Option<Waker>,
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
     cancel_waker: Option<Waker>,
+    writable_waker: Option<Waker>,
+    max_data_size: u64,
 }
 
 type StreamData<'s> = (u64, bool, (&'s [u8], &'s [u8]), bool);
@@ -261,18 +262,15 @@ impl SendingSender {
         }
     }
 
-    pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    pub(super) fn shutdown(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
         if let Some(err_code) = self.cancel_state {
-            Poll::Ready(Err(io::Error::new(
+            Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 format!("cancelled by app with error code {err_code}"),
-            )))
-        } else if self.sndbuf.is_all_rcvd() {
-            // 都已经关闭了，不再写数据数据了，如果所有数据都已发送完，那就是已关闭了
-            Poll::Ready(Ok(()))
+            ))
         } else {
             self.shutdown_waker = Some(cx.waker().clone());
-            Poll::Pending
+            Ok(())
         }
     }
 
@@ -326,13 +324,23 @@ impl SendingSender {
 impl From<&mut SendingSender> for DataSentSender {
     fn from(value: &mut SendingSender) -> Self {
         DataSentSender {
-            cancel_state: value.cancel_state.take(),
             sndbuf: std::mem::take(&mut value.sndbuf),
+            cancel_state: value.cancel_state.take(),
             flush_waker: value.flush_waker.take(),
             shutdown_waker: value.shutdown_waker.take(),
             cancel_waker: value.cancel_waker.take(),
+            fin_state: FinState::None,
         }
     }
+}
+
+/// 表示发送fin标志位的状态。当所有数据都发完但没发过fin的Stream帧时，也应发一个携带fin标志位的空Stream帧
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum FinState {
+    #[default]
+    None, // 未发送过fin的Stream帧
+    Sent, // 已发送过fin的Stream帧
+    Rcvd, // 对端已确认收到fin状态
 }
 
 #[derive(Debug)]
@@ -342,6 +350,7 @@ pub struct DataSentSender {
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
     cancel_waker: Option<Waker>,
+    fin_state: FinState,
 }
 
 impl DataSentSender {
@@ -355,16 +364,31 @@ impl DataSentSender {
 
         let final_size = self.sndbuf.len();
         self.sndbuf
-            .pick_up(predicate, flow_limit)
+            .pick_up(&predicate, flow_limit)
             .map(|(offset, is_fresh, data)| {
                 let is_eos = offset + data.len() as u64 == final_size;
+                if is_eos {
+                    self.fin_state = FinState::Sent;
+                }
                 (offset, is_fresh, data, is_eos)
+            })
+            .or_else(|| {
+                if self.fin_state == FinState::None {
+                    let _ = predicate(final_size)?;
+                    self.fin_state = FinState::Sent;
+                    Some((final_size, false, (&[], &[]), true))
+                } else {
+                    None
+                }
             })
     }
 
-    pub(super) fn on_data_acked(&mut self, range: &Range<u64>) {
+    pub(super) fn on_data_acked(&mut self, range: &Range<u64>, is_fin: bool) {
         self.sndbuf.on_data_acked(range);
-        if self.sndbuf.is_all_rcvd() {
+        if is_fin {
+            self.fin_state = FinState::Rcvd;
+        }
+        if self.is_all_rcvd() {
             if let Some(waker) = self.flush_waker.take() {
                 waker.wake();
             }
@@ -375,7 +399,7 @@ impl DataSentSender {
     }
 
     pub(super) fn is_all_rcvd(&self) -> bool {
-        self.sndbuf.is_all_rcvd()
+        self.sndbuf.is_all_rcvd() && self.fin_state == FinState::Rcvd
     }
 
     pub(super) fn may_loss_data(&mut self, range: &Range<u64>) {
@@ -388,7 +412,7 @@ impl DataSentSender {
                 io::ErrorKind::BrokenPipe,
                 format!("cancelled by app with error code {err_code}"),
             )))
-        } else if self.sndbuf.is_all_rcvd() {
+        } else if self.is_all_rcvd() {
             Poll::Ready(Ok(()))
         } else {
             self.flush_waker = Some(cx.waker().clone());
