@@ -1,8 +1,8 @@
 use std::{
     future::Future,
-    ops::DerefMut,
+    ops::{Deref, DerefMut},
     pin::Pin,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
 
@@ -17,6 +17,7 @@ use qbase::{
 };
 use qrecovery::{space::Epoch, streams::crypto::CryptoStream};
 use rustls::{crypto::CryptoProvider, quic::Keys, Side};
+use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::error::ConnError;
@@ -25,13 +26,14 @@ use crate::error::ConnError;
 /// poll_read_tls_msg()，从tls_conn读取数据，异步的，返回(Vec<u8>, Option<KeyChange>)
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
-pub(crate) enum RawTlsSession {
-    Exist {
-        tls_conn: rustls::quic::Connection,
-        waker: Option<Waker>,
-    },
-    Invalid,
+pub(crate) struct RawTlsSession {
+    tls_conn: rustls::quic::Connection,
+    waker: Option<Waker>,
 }
+
+#[derive(Debug, Error)]
+#[error("TLS session is aborted")]
+pub struct Aborted;
 
 impl RawTlsSession {
     fn new_client(
@@ -51,7 +53,7 @@ impl RawTlsSession {
             )
             .unwrap(),
         );
-        Self::Exist {
+        Self {
             tls_conn: connection,
             waker: None,
         }
@@ -65,7 +67,7 @@ impl RawTlsSession {
             rustls::quic::ServerConnection::new(tls_config, rustls::quic::Version::V1, params)
                 .unwrap(),
         );
-        Self::Exist {
+        Self {
             tls_conn: connection,
             waker: None,
         }
@@ -73,14 +75,11 @@ impl RawTlsSession {
 
     // 将plaintext中的数据写入tls_conn供其处理
     fn write_tls_msg(&mut self, plaintext: &[u8]) -> Result<(), rustls::Error> {
-        let Self::Exist { tls_conn, waker } = self else {
-            return Ok(());
-        };
         // rusltls::quic::Connection::read_hs()，该函数即消费掉plaintext的数据给到tls_conn内部处理
-        tls_conn.read_hs(plaintext)?;
+        self.tls_conn.read_hs(plaintext)?;
         // want to read from tls_conn and then write into the crypto stream?
-        if tls_conn.wants_read() {
-            if let Some(w) = waker.take() {
+        if self.tls_conn.wants_read() {
+            if let Some(w) = self.waker.take() {
                 w.wake();
             }
         }
@@ -92,23 +91,24 @@ impl RawTlsSession {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<(Vec<u8>, Option<rustls::quic::KeyChange>)>> {
-        let Self::Exist { tls_conn, waker } = self else {
-            return Poll::Ready(None);
-        };
         let mut buf = Vec::with_capacity(1200);
         // rusltls::quic::Connection::write_hs()，该函数即将tls_conn内部的数据写入到buf中
-        let key_change = tls_conn.write_hs(&mut buf);
+        let key_change = self.tls_conn.write_hs(&mut buf);
         if key_change.is_none() && buf.is_empty() {
-            *waker = Some(cx.waker().clone());
+            self.waker = Some(cx.waker().clone());
             return Poll::Pending;
         }
 
         Poll::Ready(Some((buf, key_change)))
     }
+
+    fn alert(&self) -> Option<rustls::AlertDescription> {
+        self.tls_conn.alert()
+    }
 }
 
 #[derive(Debug, Clone)]
-pub struct ArcTlsSession(Arc<Mutex<RawTlsSession>>);
+pub struct ArcTlsSession(Arc<Mutex<Result<RawTlsSession, Aborted>>>);
 
 impl ArcTlsSession {
     pub fn new_client(
@@ -118,17 +118,17 @@ impl ArcTlsSession {
         scid: ConnectionId,
     ) -> Self {
         parameters.set_initial_source_connection_id(Some(scid));
-        Self(Arc::new(Mutex::new(RawTlsSession::new_client(
+        Self(Arc::new(Mutex::new(Ok(RawTlsSession::new_client(
             server_name,
             tls_config,
             parameters,
-        ))))
+        )))))
     }
 
     pub fn new_server(tls_config: Arc<rustls::ServerConfig>, parameters: &Parameters) -> Self {
-        Self(Arc::new(Mutex::new(RawTlsSession::new_server(
+        Self(Arc::new(Mutex::new(Ok(RawTlsSession::new_server(
             tls_config, parameters,
-        ))))
+        )))))
     }
 
     pub fn initial_keys(crypto_provider: &CryptoProvider, side: Side, cid: ConnectionId) -> Keys {
@@ -146,31 +146,35 @@ impl ArcTlsSession {
         suite.keys(&cid, side, rustls::quic::Version::V1)
     }
 
-    fn lock_guard(&self) -> MutexGuard<'_, RawTlsSession> {
-        self.0.lock().unwrap()
-    }
-
     pub fn write_tls_msg(&self, plaintext: &[u8]) -> Result<(), rustls::Error> {
-        self.lock_guard().write_tls_msg(plaintext)
+        let mut guard = self.0.lock().unwrap();
+        match guard.deref_mut() {
+            Ok(tls_conn) => tls_conn.write_tls_msg(plaintext),
+            Err(_) => Ok(()),
+        }
     }
 
     pub fn read_tls_msg(&self) -> ReadTlsMsg {
         ReadTlsMsg(self.clone())
     }
 
-    fn invalid(&self) {
-        let mut guard = self.lock_guard();
-        if let RawTlsSession::Exist { waker, .. } = guard.deref_mut() {
-            if let Some(w) = waker.take() {
-                w.wake();
-            }
+    pub fn alert(&self) -> Option<rustls::AlertDescription> {
+        let guard = self.0.lock().unwrap();
+        if let Ok(ref tls_conn) = guard.deref() {
+            tls_conn.alert()
+        } else {
+            None
         }
-        *guard = RawTlsSession::Invalid;
     }
 
-    pub fn on_conn_error(&self, error: &Error) {
-        _ = error;
-        self.invalid();
+    pub fn abort(&self) {
+        let mut guard = self.0.lock().unwrap();
+        if let Ok(ref mut tls_conn) = guard.deref_mut() {
+            if let Some(waker) = tls_conn.waker.take() {
+                waker.wake();
+            }
+        }
+        *guard = Err(Aborted);
     }
 
     /// 自托管密钥升级
@@ -199,8 +203,16 @@ impl ArcTlsSession {
                         Err(_err) => break,
                     };
                     let tls_write_result = tls_session.write_tls_msg(&buf[..n]);
-                    if let Err(err) = tls_write_result {
-                        conn_error.on_error(err.into());
+                    if let Err(e) = tls_write_result {
+                        let error_kind = if let Some(alert) = tls_session.alert() {
+                            ErrorKind::Crypto(alert.into())
+                        } else {
+                            ErrorKind::ProtocolViolation
+                        };
+                        conn_error.on_error(Error::with_default_fty(
+                            error_kind,
+                            format!("TLS error: {e}"),
+                        ));
                         break;
                     }
 
@@ -232,6 +244,18 @@ impl ArcTlsSession {
                     let Some((buf, key_upgrade)) = tls_session.read_tls_msg().await else {
                         break;
                     };
+
+                    if !buf.is_empty() {
+                        let write_result = crypto_stream_writers[epoch].write(&buf).await;
+                        if let Err(err) = write_result {
+                            conn_error.on_error(Error::with_default_fty(
+                                ErrorKind::Internal,
+                                err.to_string(),
+                            ));
+                            break;
+                        }
+                    }
+
                     if let Some(key_change) = key_upgrade {
                         match key_change {
                             rustls::quic::KeyChange::Handshake { keys } => {
@@ -243,17 +267,6 @@ impl ArcTlsSession {
                                 // epoch = Epoch::Data;
                                 break;
                             }
-                        }
-                    }
-
-                    if !buf.is_empty() {
-                        let write_result = crypto_stream_writers[epoch].write(&buf).await;
-                        if let Err(err) = write_result {
-                            conn_error.on_error(Error::with_default_fty(
-                                ErrorKind::Internal,
-                                err.to_string(),
-                            ));
-                            break;
                         }
                     }
                 }
@@ -268,9 +281,9 @@ impl ArcTlsSession {
     }
 
     pub fn server_name(&self) -> Option<String> {
-        let mut tls_session = self.lock_guard();
-        if let RawTlsSession::Exist { tls_conn, .. } = tls_session.deref_mut() {
-            if let rustls::quic::Connection::Server(server) = tls_conn {
+        let mut guard = self.0.lock().unwrap();
+        if let Ok(ref mut tls_session) = guard.deref_mut() {
+            if let rustls::quic::Connection::Server(server) = &tls_session.tls_conn {
                 return server.server_name().map(|s| s.to_string());
             } else {
                 return None;
@@ -280,9 +293,9 @@ impl ArcTlsSession {
     }
 
     fn get_transport_parameters(&self) -> Option<Parameters> {
-        let mut tls_session = self.lock_guard();
-        if let RawTlsSession::Exist { tls_conn, .. } = tls_session.deref_mut() {
-            let raw = tls_conn.quic_transport_parameters()?;
+        let mut guard = self.0.lock().unwrap();
+        if let Ok(ref mut tls_session) = guard.deref_mut() {
+            let raw = tls_session.tls_conn.quic_transport_parameters()?;
             be_parameters(raw).ok().map(|(_, p)| p)
         } else {
             None
@@ -296,7 +309,12 @@ impl Future for ReadTlsMsg {
     type Output = Option<(Vec<u8>, Option<rustls::quic::KeyChange>)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.lock_guard().poll_read_tls_msg(cx)
+        let mut guard = self.0 .0.lock().unwrap();
+        if let Ok(ref mut tls_session) = guard.deref_mut() {
+            tls_session.poll_read_tls_msg(cx)
+        } else {
+            Poll::Ready(None)
+        }
     }
 }
 
