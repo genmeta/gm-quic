@@ -45,19 +45,30 @@ impl DataStreams {
     }
 
     #[inline]
-    pub fn open_bi(&self) -> BiDataStreamCreator {
-        BiDataStreamCreator {
+    pub fn open_bi(&self) -> OpenBiStream {
+        OpenBiStream {
             inner: self.0.clone(),
         }
     }
 
     #[inline]
-    pub fn open_uni(&self) -> UniDataStreamCreator {
-        UniDataStreamCreator {
+    pub fn open_uni(&self) -> OpenUniStream {
+        OpenUniStream {
             inner: self.0.clone(),
         }
     }
 
+    #[inline]
+    pub async fn accept_bi(&self) -> Result<(Reader, Writer), Error> {
+        self.0.accept_bi().await
+    }
+
+    #[inline]
+    pub async fn accept_uni(&self) -> Result<Reader, Error> {
+        self.0.accept_uni().await
+    }
+
+    #[inline]
     pub fn listener(&self) -> listener::ArcListener {
         self.0.listener()
     }
@@ -79,11 +90,11 @@ impl ReceiveFrame<(StreamFrame, Bytes)> for DataStreams {
     }
 }
 
-pub struct BiDataStreamCreator {
+pub struct OpenBiStream {
     inner: Arc<data::RawDataStreams>,
 }
 
-impl Future for BiDataStreamCreator {
+impl Future for OpenBiStream {
     type Output = Result<Option<(Reader, Writer)>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -91,11 +102,11 @@ impl Future for BiDataStreamCreator {
     }
 }
 
-pub struct UniDataStreamCreator {
+pub struct OpenUniStream {
     inner: Arc<data::RawDataStreams>,
 }
 
-impl Future for UniDataStreamCreator {
+impl Future for OpenUniStream {
     type Output = Result<Option<Writer>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
