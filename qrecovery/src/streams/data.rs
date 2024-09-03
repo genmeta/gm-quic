@@ -492,10 +492,10 @@ impl RawDataStreams {
             Err(e) => return Poll::Ready(Err(e)),
         };
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Bi)) {
-            let max_stream_data = self.params.guard().initial_max_stream_data_bidi_remote;
-            let (outgoing, writer) = self.create_sender(sid, max_stream_data);
-            let max_stream_data = self.params.guard().initial_max_stream_data_bidi_local;
-            let (incoming, reader) = self.create_recver(sid, max_stream_data);
+            let _max_stream_data = self.params.guard().initial_max_stream_data_bidi_remote;
+            let (outgoing, writer) = self.create_sender(sid, 65536);
+            let _max_stream_data = self.params.guard().initial_max_stream_data_bidi_local;
+            let (incoming, reader) = self.create_recver(sid, 65536);
             output.insert(sid, outgoing);
             input.insert(sid, incoming);
             Poll::Ready(Ok(Some((reader, writer))))
@@ -520,6 +520,16 @@ impl RawDataStreams {
         } else {
             Poll::Ready(Ok(None))
         }
+    }
+
+    #[inline]
+    pub(super) async fn accept_bi(&self) -> Result<(Reader, Writer), QuicError> {
+        self.listener.accept_bi_stream().await
+    }
+
+    #[inline]
+    pub(super) async fn accept_uni(&self) -> Result<Reader, QuicError> {
+        self.listener.accept_uni_stream().await
     }
 
     pub(super) fn listener(&self) -> ArcListener {

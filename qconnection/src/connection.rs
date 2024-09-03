@@ -1,6 +1,7 @@
 use std::{
+    borrow::Cow,
     fmt::Debug,
-    mem,
+    io, mem,
     ops::DerefMut,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -12,7 +13,7 @@ use futures::{channel::mpsc, StreamExt};
 use qbase::{
     cid::{self, ConnectionId},
     config::Parameters,
-    error::Error,
+    error::{Error, ErrorKind},
     packet::{DataPacket, RetryHeader},
     streamid::Role,
     token::ArcTokenRegistry,
@@ -113,12 +114,30 @@ impl ArcConnection {
     /// draining state. Even if the connection will enter closing state in future, the returned
     /// data streams are still available. It doesn't matter, because the returned DataStreams will
     /// be synced into Error state, and do anything about this DataStreams will return an Error.
-    pub fn streams(&self) -> std::io::Result<DataStreams> {
-        todo!("get the streams of the connection, return error if the connection is in closing state or draining state")
+    pub fn streams(&self) -> io::Result<DataStreams> {
+        // TODO: ArcConnection不再暴露赤裸的streams接口，而是根据双方Parameters使用
+        //      raw_conn.streams().open_bi(...)去异步地创建
+        let guard = self.0.lock().unwrap();
+        if let ConnState::Raw(ref raw_conn) = *guard {
+            Ok(raw_conn.streams.clone())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Connection is closing or closed",
+            ))
+        }
     }
 
-    pub fn datagrams(&self) -> std::io::Result<DatagramFlow> {
-        todo!()
+    pub fn datagrams(&self) -> io::Result<DatagramFlow> {
+        let guard = self.0.lock().unwrap();
+        if let ConnState::Raw(ref raw_conn) = *guard {
+            Ok(raw_conn.datagrams.clone())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Connection is closing or closed",
+            ))
+        }
     }
 
     /// Gracefully closes the connection.
@@ -126,10 +145,12 @@ impl ArcConnection {
     /// Closes the connection with a specified error.
     /// This function is intended for use by the application layer to signal an
     /// error and initiate the connection closure.
-    pub fn close_with_error(self, error: Error) {
+    pub fn close(&self, msg: impl Into<Cow<'static, str>>) {
         let guard = self.0.lock().unwrap();
         if let ConnState::Raw(ref raw_conn) = *guard {
-            raw_conn.error.set_app_error(error)
+            raw_conn
+                .error
+                .set_app_error(Error::with_default_fty(ErrorKind::Application, msg));
         }
     }
 

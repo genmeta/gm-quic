@@ -146,6 +146,12 @@ impl Error {
     }
 }
 
+impl From<Error> for std::io::Error {
+    fn from(e: Error) -> Self {
+        Self::new(std::io::ErrorKind::BrokenPipe, e)
+    }
+}
+
 impl From<Error> for crate::frame::ConnectionCloseFrame {
     fn from(e: Error) -> Self {
         Self {
