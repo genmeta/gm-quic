@@ -153,6 +153,8 @@ impl InitialScope {
                     packet.bytes.truncate(pkt_len);
 
                     let path = pathes.get(pathway, usc);
+                    path.update_recv_time();
+
                     let remote_scid = match packet.header {
                         DataHeader::Long(ref long_header) => long_header.get_scid(),
                         _ => unreachable!(),

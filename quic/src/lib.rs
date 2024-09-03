@@ -100,22 +100,12 @@ pub fn get_usc_or_create(bind_addr: &SocketAddr) -> ArcUsc {
                                 }
                             }
                             Packet::Data(packet) => {
-                                let dcid = *packet.get_dcid();
-                                ROUTER
-                                    .recv_packet_via_pathway(packet, pathway, &usc)
-                                    .and_then(|packet| {
-                                        if let Some(server) = SERVER.read().unwrap().as_ref() {
-                                            server.recv_unmatched_packet(packet, pathway, &usc);
-                                        }
-                                        Option::<()>::None
-                                    });
-
-                                match CONNECTIONS
-                                    .get(&ConnKey::Client(dcid))
-                                    .or_else(|| CONNECTIONS.get(&ConnKey::Server(dcid)))
+                                if let Some(packet) =
+                                    ROUTER.recv_packet_via_pathway(packet, pathway, &usc)
                                 {
-                                    Some(conn) => conn.update_path_recv_time(pathway),
-                                    None => log::error!("No connection found for Data packet"),
+                                    if let Some(server) = SERVER.read().unwrap().as_ref() {
+                                        server.recv_unmatched_packet(packet, pathway, &usc);
+                                    }
                                 }
                             }
                         }

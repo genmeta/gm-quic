@@ -222,6 +222,8 @@ impl DataScope {
                     packet.bytes.truncate(pkt_len);
 
                     let path = pathes.get(pathway, usc.clone());
+                    path.update_recv_time();
+
                     match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
                         false,
                         |is_ack_packet, frame| {
@@ -289,6 +291,8 @@ impl DataScope {
                     packet.bytes.truncate(pkt_len);
                     handshake.done();
                     let path = pathes.get(pathway, usc);
+                    path.update_recv_time();
+
                     match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
                         false,
                         |is_ack_packet, frame| {
