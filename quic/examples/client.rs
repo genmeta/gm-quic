@@ -1,4 +1,3 @@
-use core::str;
 use std::{fs::File, io::BufReader, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
@@ -99,17 +98,9 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
             stream_writer.shutdown().await.unwrap();
 
             // 读取响应
-            let mut response = [0u8; 1024];
-            eprint!("Response: ");
-            loop {
-                let n = stream_reader.read(&mut response[..]).await?;
-                if n == 0 {
-                    break;
-                }
-
-                eprint!("{}", str::from_utf8(&response[..n]).unwrap());
-            }
-            eprintln!();
+            let mut response = String::new();
+            let n = stream_reader.read_to_string(&mut response).await?;
+            eprintln!("Response {n} bytes: {response}");
             Ok::<(), std::io::Error>(())
         });
     }

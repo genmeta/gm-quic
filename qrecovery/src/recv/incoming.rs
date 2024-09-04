@@ -29,7 +29,18 @@ impl Incoming {
         if let Ok(receiving_state) = inner {
             match receiving_state {
                 Recver::Recv(r) => {
-                    new_data_size = r.recv(stream_frame, body)?;
+                    if stream_frame.is_fin() {
+                        let final_size = stream_frame.offset() + stream_frame.len() as u64;
+                        let mut size_known = r.determin_size(final_size);
+                        new_data_size = size_known.recv(stream_frame, body)?;
+                        if size_known.is_all_rcvd() {
+                            *receiving_state = Recver::DataRcvd(size_known.into());
+                        } else {
+                            *receiving_state = Recver::SizeKnown(size_known);
+                        }
+                    } else {
+                        new_data_size = r.recv(stream_frame, body)?;
+                    }
                 }
                 Recver::SizeKnown(r) => {
                     new_data_size = r.recv(stream_frame, body)?;
@@ -43,21 +54,6 @@ impl Incoming {
             }
         }
         Ok(new_data_size)
-    }
-
-    pub fn end(&self, final_size: u64) {
-        let mut recver = self.0.lock().unwrap();
-        let inner = recver.deref_mut();
-        if let Ok(receiving_state) = inner {
-            match receiving_state {
-                Recver::Recv(r) => {
-                    *receiving_state = Recver::SizeKnown(r.determin_size(final_size));
-                }
-                _ => {
-                    log::debug!("there is sth wrong, ignored finish");
-                }
-            }
-        }
     }
 
     pub fn recv_reset(&self, reset_frame: &ResetStreamFrame) -> Result<(), QuicError> {

@@ -28,7 +28,7 @@ echo "quic.test.net 127.0.0.1" >> /etc/hosts
 RUST_LOG=DEBUG cargo run --example server -- ${path_to}/quinn     \
   --key ${path_to}/keychain/quic.test.net/quic-test-net-ECC.key   \
   --cert ${path_to}/keychain/quic.test.net/quic-test-net-ECC.crt  \
-  --listen 0.0.0.0:4433                                          \
+  --listen 0.0.0.0:4433                                           \
   --keylog
 ```
 

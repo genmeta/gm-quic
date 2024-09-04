@@ -250,7 +250,7 @@ impl RecvBuf {
     /// Otherwise, the data will be discontinuous and cannot be read. At most, buf.len()
     /// bytes will be read, and if it cannot read that many, it will return the number
     /// of bytes read.
-    pub fn read<T: BufMut>(&mut self, buf: &mut T) {
+    pub fn read(&mut self, buf: &mut impl BufMut) {
         if let Some(mut seg) = self.segments.pop_front() {
             if seg.offset != self.nread {
                 self.segments.push_front(seg);
