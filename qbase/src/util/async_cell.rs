@@ -46,20 +46,11 @@ impl<T> RawAsyncCell<T> {
         matches!(self, Self::Invalid)
     }
 
-    pub fn replace(&mut self, item: T) -> Result<Option<T>, T> {
-        if self.is_invalid() {
-            return Err(item);
-        }
-        let previous = self.take();
-        *self = RawAsyncCell::Ready(item);
-        Ok(previous)
-    }
-
     /// Replace the current value with a new one directly with out wakeup the consumer
     ///
     /// be different from [`AsyncCellState::write_option`], this method will not
     /// wake the consumer though the state is [`AsyncCellState::Demand`] and the new value is not [`None`]
-    pub fn replace_option(&mut self, opt: Option<T>) -> Result<Option<T>, Option<T>> {
+    pub fn repace(&mut self, opt: Option<T>) -> Result<Option<T>, Option<T>> {
         if self.is_invalid() {
             return Err(opt);
         }
@@ -84,39 +75,6 @@ impl<T> RawAsyncCell<T> {
         }
     }
 
-    /// Write a new value to the async cell state
-    ///
-    /// * if the cell is [`AsyncCellState::Invalid`], the new value will be returned as [`Err`]
-    /// * if there has been a value in the cell, the new value will be returned as [`Ok(Some(T))`],
-    /// * if there is no value in the cell, the new value will be returned as [`Ok(None)`]
-    /// * if the cell is [`AsyncCellState::Demand`], the waker will be waked
-    pub fn write_option(&mut self, opt: Option<T>) -> Result<Option<T>, Option<T>> {
-        match (std::mem::replace(self, Self::Invalid), opt) {
-            (RawAsyncCell::Invalid, item) => Err(item),
-            (RawAsyncCell::Ready(previous), None) => {
-                *self = RawAsyncCell::None;
-                Ok(Some(previous))
-            }
-            (previous, None) => {
-                *self = previous;
-                Ok(None)
-            }
-            (RawAsyncCell::None, Some(item)) => {
-                *self = RawAsyncCell::Ready(item);
-                Ok(None)
-            }
-            (RawAsyncCell::Demand(waker), Some(item)) => {
-                waker.wake();
-                *self = RawAsyncCell::Ready(item);
-                Ok(None)
-            }
-            (RawAsyncCell::Ready(previous), Some(new)) => {
-                *self = RawAsyncCell::Ready(new);
-                Ok(Some(previous))
-            }
-        }
-    }
-
     pub fn wtite_if<F>(&mut self, item: T, predicate: F) -> Result<Option<T>, T>
     where
         F: FnOnce(&Option<T>) -> bool,
@@ -132,27 +90,10 @@ impl<T> RawAsyncCell<T> {
             Ok(previous)
         } else {
             // the previosu value is not changed
-            let _replace_result = self.replace_option(previous);
+            let _replace_result = self.repace(previous);
             debug_assert!(_replace_result.is_ok());
             Err(item)
         }
-    }
-
-    pub fn modify<U, F>(&mut self, f: F) -> Option<U>
-    where
-        F: FnOnce(&mut Option<T>) -> U,
-    {
-        if self.is_invalid() {
-            return None;
-        }
-
-        let mut opt = self.take();
-        let result = f(&mut opt);
-        // the previous value may be changed
-        let _replace_result = self.write_option(opt);
-        debug_assert!(_replace_result.is_ok());
-
-        Some(result)
     }
 
     pub fn take(&mut self) -> Option<T> {
@@ -170,31 +111,13 @@ impl<T> RawAsyncCell<T> {
         }
     }
 
-    pub fn poll_take_out(&mut self, cx: &mut Context<'_>) -> Poll<Option<T>> {
-        match std::mem::replace(self, RawAsyncCell::None) {
-            RawAsyncCell::None | RawAsyncCell::Demand(_) => {
-                *self = RawAsyncCell::Demand(cx.waker().clone());
-                Poll::Pending
-            }
-            RawAsyncCell::Invalid => {
-                *self = RawAsyncCell::Invalid;
-                Poll::Ready(None)
-            }
-            RawAsyncCell::Ready(item) => Poll::Ready(Some(item)),
-        }
-    }
-
-    pub fn poll_take_clone(&mut self, cx: &mut Context<'_>) -> Poll<Option<T>>
-    where
-        T: Clone,
-    {
+    pub fn poll_wait(&mut self, cx: &mut Context<'_>) -> Poll<&mut Self> {
         match self {
-            RawAsyncCell::None | RawAsyncCell::Demand(_) => {
+            RawAsyncCell::None | RawAsyncCell::Demand(..) => {
                 *self = RawAsyncCell::Demand(cx.waker().clone());
                 Poll::Pending
             }
-            RawAsyncCell::Ready(item) => Poll::Ready(Some(item.clone())),
-            RawAsyncCell::Invalid => Poll::Ready(None),
+            RawAsyncCell::Ready(_) | RawAsyncCell::Invalid => Poll::Ready(self),
         }
     }
 
@@ -274,36 +197,13 @@ impl<T> AsyncCell<T> {
     }
 
     #[inline]
-    pub fn write_option(&self, opt: Option<T>) -> Result<Option<T>, Option<T>> {
-        self.state().write_option(opt)
-    }
-
-    #[inline]
-    pub fn replace(&self, opt: T) -> Result<Option<T>, T> {
-        self.state().replace(opt)
-    }
-
-    #[inline]
-    pub fn replace_option(&self, opt: Option<T>) -> Result<Option<T>, Option<T>> {
-        self.state().replace_option(opt)
+    pub fn replace(&self, opt: Option<T>) -> Result<Option<T>, Option<T>> {
+        self.state().repace(opt)
     }
 
     #[inline]
     pub fn take(&self) -> Option<T> {
         self.state().take()
-    }
-
-    #[inline]
-    pub fn poll_take_out(&self, cx: &mut Context<'_>) -> Poll<Option<T>> {
-        self.state().poll_take_out(cx)
-    }
-
-    #[inline]
-    pub fn poll_take_clone(&self, cx: &mut Context<'_>) -> Poll<Option<T>>
-    where
-        T: Clone,
-    {
-        self.state().poll_take_clone(cx)
     }
 
     /// Invalid the state
@@ -315,29 +215,18 @@ impl<T> AsyncCell<T> {
     }
 
     #[inline]
-    pub fn modify<U, F>(&self, f: F) -> Option<U>
-    where
-        F: FnOnce(&mut Option<T>) -> U,
-    {
-        self.state().modify(f)
-    }
-
-    #[inline]
     pub fn state(&self) -> MutexGuard<RawAsyncCell<T>> {
         self.state.lock().unwrap()
     }
 
-    #[inline]
-    pub fn take_out<'a>(self: &'a Arc<Self>) -> TakeOut<'a, T> {
-        TakeOut { cell: self }
+    pub fn poll_wait(&self, cx: &mut Context<'_>) -> Poll<MutexGuard<'_, RawAsyncCell<T>>> {
+        let mut guard = self.state();
+        core::task::ready!(guard.poll_wait(cx));
+        Poll::Ready(guard)
     }
 
-    #[inline]
-    pub fn take_clone<'a>(self: &'a Arc<Self>) -> TakeClone<'a, T>
-    where
-        T: Clone,
-    {
-        TakeClone { cell: self }
+    pub fn wait<'a>(self: &'a Arc<Self>) -> Wait<'a, T> {
+        Wait { cell: self }
     }
 }
 
@@ -349,41 +238,22 @@ impl<T> Default for AsyncCell<T> {
     }
 }
 
-pub struct TakeOut<'s, T> {
+pub struct Wait<'s, T> {
     cell: &'s Arc<AsyncCell<T>>,
 }
 
-impl<T: Unpin> Unpin for TakeOut<'_, T> {}
+impl<T> Unpin for Wait<'_, T> {}
 
-impl<T> Future for TakeOut<'_, T> {
-    type Output = Option<T>;
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.cell.poll_take_out(cx)
-    }
-}
-
-pub struct TakeClone<'s, T> {
-    cell: &'s Arc<AsyncCell<T>>,
-}
-
-impl<T: Unpin> Unpin for TakeClone<'_, T> {}
-
-impl<T> Future for TakeClone<'_, T>
-where
-    T: Clone,
-{
-    type Output = Option<T>;
+impl<'s, T> Future for Wait<'s, T> {
+    type Output = MutexGuard<'s, RawAsyncCell<T>>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.cell.poll_take_clone(cx)
+        self.cell.poll_wait(cx)
     }
 }
 
 #[cfg(test)]
 mod tests {
-
-    use std::future::pending;
 
     use tokio::sync::Notify;
 
@@ -395,6 +265,7 @@ mod tests {
         assert!(cell.is_none());
         assert_eq!(cell.state().as_ref(), None);
         assert_eq!(cell.state().as_mut(), None);
+
         assert_eq!(cell.write("Hello world"), Ok(None));
         assert!(cell.is_ready());
         assert!(cell.state().as_ref().is_some());
@@ -405,55 +276,29 @@ mod tests {
         assert_eq!(cell.write("Hello world"), Ok(Some("Hello World")));
         assert_eq!(cell.take(), Some("Hello world"));
     }
-
     #[tokio::test]
-    async fn take_out() {
-        let cell = Arc::new(AsyncCell::new());
-        assert_eq!(cell.write("Hello world"), Ok(None));
-        assert_eq!(cell.take_out().await, Some("Hello world"));
-
-        let putin = Arc::new(Notify::new());
-        let cell = Arc::new(AsyncCell::new());
+    async fn wait() {
+        let cell = Arc::new(AsyncCell::<&str>::new());
+        let write = Arc::new(Notify::new());
         let task = tokio::spawn({
             let cell = cell.clone();
-            let putin = putin.clone();
+            let write = write.clone();
             async move {
                 assert!(matches!(
-                    core::future::poll_fn(|cx| Poll::Ready(cell.poll_take_out(cx))).await,
+                    core::future::poll_fn(|cx| Poll::Ready(cell.poll_wait(cx))).await,
                     Poll::Pending
                 ));
-                putin.notify_one();
-                assert_eq!(cell.take_out().await, Some("Hello world"));
+
+                write.notify_one();
+                let raw_cell = cell.wait().await;
+                assert_eq!(raw_cell.as_ref(), Some(&"Hello world"));
             }
         });
 
-        putin.notified().await;
+        write.notified().await;
         assert!(cell.is_demand());
         assert_eq!(cell.write("Hello world"), Ok(None));
-        task.await.unwrap();
-    }
 
-    #[tokio::test]
-    async fn take_clone() {
-        let putin = Arc::new(Notify::new());
-        let cell = Arc::new(AsyncCell::new());
-        let task = tokio::spawn({
-            let cell = cell.clone();
-            let putin = putin.clone();
-            async move {
-                assert!(matches!(
-                    core::future::poll_fn(|cx| Poll::Ready(cell.poll_take_clone(cx))).await,
-                    Poll::Pending
-                ));
-                putin.notify_one();
-                assert_eq!(cell.take_clone().await, Some("Hello world"));
-                assert_eq!(cell.take_clone().await, Some("Hello world"));
-                assert_eq!(cell.take_clone().await, Some("Hello world"));
-            }
-        });
-
-        putin.notified().await;
-        assert_eq!(cell.write("Hello world"), Ok(None));
         task.await.unwrap();
     }
 
@@ -462,19 +307,20 @@ mod tests {
         let cell = Arc::new(AsyncCell::new());
 
         assert_eq!(cell.write("Hello world"), Ok(None));
-        assert_eq!(cell.take_out().await, Some("Hello world"));
 
         cell.invalid();
         assert!(cell.is_invalid());
-        assert_eq!(cell.take_out().await, None);
-        assert_eq!(cell.take_clone().await, None);
+
         assert_eq!(cell.write("Hello world"), Err("Hello world"));
-        assert_eq!(cell.write_option(Some("hw")), Err(Some("hw")));
         assert_eq!(cell.write_if("hw", Option::is_none), Err("hw"));
-        assert_eq!(cell.replace("Hello world"), Err("Hello world"));
-        assert_eq!(cell.replace_option(Some("hw")), Err(Some("hw")));
-        assert_eq!(cell.modify(|s| s.take()), None);
+        assert_eq!(cell.replace(Some("hw")), Err(Some("hw")));
         assert_eq!(cell.take(), None);
+
+        let poll = core::future::poll_fn(|cx| Poll::Ready(cell.poll_wait(cx))).await;
+        let Poll::Ready(raw_cell) = poll else {
+            panic!()
+        };
+        assert!(raw_cell.is_invalid());
     }
 
     #[tokio::test]
@@ -486,11 +332,11 @@ mod tests {
             let invalid = invalid.clone();
             async move {
                 assert!(matches!(
-                    core::future::poll_fn(|cx| Poll::Ready(cell.poll_take_out(cx))).await,
+                    core::future::poll_fn(|cx| Poll::Ready(cell.poll_wait(cx))).await,
                     Poll::Pending
                 ));
                 invalid.notify_one();
-                assert_eq!(cell.take_out().await, None);
+                assert_eq!(cell.wait().await.take(), None);
             }
         });
 
@@ -506,40 +352,6 @@ mod tests {
         cell.invalid();
         assert_eq!(cell.write("Hello world"), Err("Hello world"));
         assert_eq!(cell.take(), None);
-    }
-
-    #[test]
-    fn modify() {
-        let cell = Arc::new(AsyncCell::<&str>::new());
-        assert_eq!(cell.modify(|s| s.map(|s| s.len())), Some(None));
-        assert_eq!(cell.write("Hello world"), Ok(None));
-        assert_eq!(cell.modify(|s| s.take().map(|s| s.len())), Some(Some(11)));
-        assert_eq!(cell.take(), None);
-        assert_eq!(cell.modify(|s| s.map(|s| s.len())), Some(None));
-    }
-
-    #[tokio::test]
-    async fn wake_by_modify() {
-        let putin = Arc::new(Notify::new());
-        let cell = Arc::new(AsyncCell::<&str>::new());
-        let task = tokio::spawn({
-            let cell = cell.clone();
-            let putin = putin.clone();
-            async move {
-                tokio::select! {
-                    biased;
-                    _ = cell.take_out() => {}
-                    _ = {putin.notify_one();pending()} => {}
-                }
-            }
-        });
-
-        putin.notified().await;
-
-        cell.modify(|s| *s = None);
-        cell.modify(|s| *s = Some("Hello world"));
-
-        task.await.unwrap();
     }
 
     #[test]
@@ -562,17 +374,5 @@ mod tests {
         let cell = AsyncCell::new();
         assert_eq!(cell.replace(Some("Hello world")), Ok(None));
         assert!(cell.is_ready());
-    }
-
-    #[test]
-    fn write_option() {
-        let cell = Arc::new(AsyncCell::new());
-        assert_eq!(cell.write_option(Some("Hello World")), Ok(None));
-        assert_eq!(
-            cell.write_option(Some("Hello world")),
-            Ok(Some("Hello World"))
-        );
-        assert_eq!(cell.write_option(None), Ok(Some("Hello world")));
-        assert_eq!(cell.take(), None);
     }
 }

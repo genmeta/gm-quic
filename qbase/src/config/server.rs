@@ -41,8 +41,6 @@ pub struct ServerParameters {
     initial_source_connection_id: Option<ConnectionId>,
     #[getset(get_copy = "pub", set = "pub")]
     retry_source_connection_id: Option<ConnectionId>,
-    #[getset(get = "pub", set = "pub")]
-    version_information: Option<Vec<u8>>,
     #[getset(get_copy = "pub", set = "pub")]
     max_datagram_frame_size: VarInt,
     // TOOD: 对此传输参数的支持
@@ -106,9 +104,6 @@ impl ServerParametersBuilder {
             retry_source_connection_id: this
                 .retry_source_connection_id
                 .unwrap_or(default.retry_source_connection_id),
-            version_information: this
-                .version_information
-                .unwrap_or(default.version_information),
             max_datagram_frame_size: this
                 .max_datagram_frame_size
                 .unwrap_or(default.max_datagram_frame_size),
@@ -139,7 +134,6 @@ impl From<ServerParameters> for Parameters {
             active_connection_id_limit: value.active_connection_id_limit,
             initial_source_connection_id: value.initial_source_connection_id,
             retry_source_connection_id: value.retry_source_connection_id,
-            version_information: value.version_information,
             max_datagram_frame_size: value.max_datagram_frame_size,
             grease_quic_bit: value.grease_quic_bit,
         }

@@ -127,7 +127,7 @@ impl QuicClient {
         let inner = ArcConnection::new_client(
             scid,
             server_name,
-            self.parameters.clone(),
+            self.parameters,
             self.tls_config.clone(),
             token_registry,
         );

@@ -3,11 +3,13 @@ use std::sync::{Arc, Mutex};
 use futures::channel::mpsc;
 use qbase::{
     cid::ConnectionId,
+    config::Parameters,
     flow::FlowController,
     handshake::Handshake,
     packet::keys::ArcKeys,
     streamid::Role,
     token::{ArcTokenRegistry, TokenRegistry},
+    util::AsyncCell,
 };
 use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
 use qunreliable::DatagramFlow;
@@ -22,7 +24,7 @@ use crate::{
     error::ConnError,
     path::{pathway::Pathway, ArcPath, ArcPathes, RawPath},
     router::ROUTER,
-    tls::{ArcTlsSession, GetParameters},
+    tls::ArcTlsSession,
 };
 
 pub struct RawConnection {
@@ -44,7 +46,8 @@ pub struct RawConnection {
     pub notify: Arc<Notify>, // Notifier for closing the packet receiving task
     pub join_handles: [JoinHandle<RcvdPackets>; 4],
 
-    pub params: GetParameters,
+    pub local_params: Arc<Parameters>,
+    pub remote_params: Arc<AsyncCell<Parameters>>,
 }
 
 impl RawConnection {
@@ -54,6 +57,7 @@ impl RawConnection {
 
     pub fn new(
         role: Role,
+        local_params: Parameters,
         tls_session: ArcTlsSession,
         initial_scid: ConnectionId,
         initial_dcid: ConnectionId,
@@ -87,18 +91,11 @@ impl RawConnection {
         let flow_ctrl = FlowController::with_initial(65535, 65535);
         let conn_error = ConnError::default();
 
-        let streams = DataStreams::with_role_and_limit(
+        let streams = DataStreams::new(
             role,
             // 流数量
-            0,
-            0,
-            // 对我方创建的双向流的限制
-            0,
-            // 对方创建的双向流的限制
-            0,
-            // 对对方创建的单向流的限制
-            0,
-            reliable_frames.clone(),
+            &local_params,
+            Default::default(),
         );
         let datagrams = DatagramFlow::new(0, 0);
 
@@ -177,6 +174,18 @@ impl RawConnection {
         );
 
         let join_hs = hs.build(rcvd_hs_packets, &pathes, &notify, &conn_error);
+
+        let get_params = tls_session.keys_upgrade(
+            [
+                &initial.crypto_stream,
+                &hs.crypto_stream,
+                &data.crypto_stream,
+            ],
+            hs.keys.clone(),
+            data.one_rtt_keys.clone(),
+            conn_error.clone(),
+        );
+
         let (join_0rtt, join_1rtt) = data.build(
             &pathes,
             &handshake,
@@ -189,19 +198,10 @@ impl RawConnection {
             rcvd_0rtt_packets,
             rcvd_1rtt_packets,
             token_registry,
+            &local_params,
+            get_params.clone(),
         );
         let join_handles = [join_initial, join_0rtt, join_hs, join_1rtt];
-
-        let get_params = tls_session.keys_upgrade(
-            [
-                &initial.crypto_stream,
-                &hs.crypto_stream,
-                &data.crypto_stream,
-            ],
-            hs.keys.clone(),
-            data.one_rtt_keys.clone(),
-            conn_error.clone(),
-        );
 
         Self {
             token,
@@ -218,7 +218,8 @@ impl RawConnection {
             notify,
             join_handles,
             error: conn_error,
-            params: get_params,
+            local_params: local_params.into(),
+            remote_params: get_params,
         }
     }
 

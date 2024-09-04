@@ -65,7 +65,6 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     let quic_conn = client.connect(args.domain, args.addr).unwrap();
-    let quic_streams = quic_conn.streams()?;
     let mut counter = 0;
     loop {
         let mut input = String::new();
@@ -87,8 +86,8 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
-        let (mut stream_reader, mut stream_writer) = quic_streams
-            .open_bi()
+        let (mut stream_reader, mut stream_writer) = quic_conn
+            .open_bi_stream()
             .await?
             .expect("very very hard to exhaust the available stream ids");
         tokio::spawn(async move {

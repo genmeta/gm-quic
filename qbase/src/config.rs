@@ -15,7 +15,7 @@ pub use server::*;
 use super::varint::VarInt;
 use crate::{cid::ConnectionId, generate_validate, token::ResetToken};
 
-#[derive(Builder, Getters, CopyGetters, Setters, MutGetters, Debug, Clone, PartialEq)]
+#[derive(Builder, Getters, CopyGetters, Setters, MutGetters, Debug, Clone, Copy, PartialEq)]
 #[builder(
     default,
     setter(strip_option, into,),
@@ -59,8 +59,6 @@ pub struct Parameters {
     initial_source_connection_id: Option<ConnectionId>,
     #[getset(get_copy = "pub", set = "pub")]
     retry_source_connection_id: Option<ConnectionId>,
-    #[getset(get = "pub", set = "pub")]
-    version_information: Option<Vec<u8>>,
     #[getset(get_copy = "pub", set = "pub")]
     max_datagram_frame_size: VarInt,
     // TOOD: 对此传输参数的支持
@@ -88,7 +86,6 @@ impl Default for Parameters {
             active_connection_id_limit: VarInt::from_u32(2),
             initial_source_connection_id: None,
             retry_source_connection_id: None,
-            version_information: None,
             max_datagram_frame_size: VarInt::from_u32(65535),
             grease_quic_bit: false,
         }
