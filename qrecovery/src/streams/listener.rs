@@ -80,8 +80,8 @@ impl ArcListener {
         }
     }
 
-    pub fn accept_uni_stream(&self) -> AcceptRecvStream {
-        AcceptRecvStream {
+    pub fn accept_uni_stream(&self) -> AcceptUniStream {
+        AcceptUniStream {
             inner: self.clone(),
         }
     }
@@ -96,7 +96,7 @@ impl ArcListener {
         }
     }
 
-    pub fn poll_accept_recv_stream(&self, cx: &mut Context<'_>) -> Poll<Result<Reader, QuicError>> {
+    pub fn poll_accept_uni_stream(&self, cx: &mut Context<'_>) -> Poll<Result<Reader, QuicError>> {
         match self.0.lock().unwrap().as_mut() {
             Ok(set) => set.poll_accept_recv_stream(cx),
             Err(e) => Poll::Ready(Err(e.clone())),
@@ -153,14 +153,14 @@ impl Future for AcceptBiStream {
 }
 
 #[derive(Debug, Clone)]
-pub struct AcceptRecvStream {
+pub struct AcceptUniStream {
     inner: ArcListener,
 }
 
-impl Future for AcceptRecvStream {
+impl Future for AcceptUniStream {
     type Output = Result<Reader, QuicError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.inner.poll_accept_recv_stream(cx)
+        self.inner.poll_accept_uni_stream(cx)
     }
 }

@@ -14,6 +14,7 @@ use qbase::{
     },
     error::{Error, ErrorKind},
     packet::keys::{ArcKeys, ArcOneRttKeys},
+    util::AsyncCell,
 };
 use qrecovery::{space::Epoch, streams::crypto::CryptoStream};
 use rustls::{crypto::CryptoProvider, quic::Keys, Side};
@@ -39,10 +40,10 @@ impl RawTlsSession {
     fn new_client(
         server_name: rustls::pki_types::ServerName<'static>,
         tls_config: Arc<rustls::ClientConfig>,
-        parameters: Parameters,
+        parameters: &Parameters,
     ) -> Self {
         let mut params_bytes = Vec::new();
-        params_bytes.put_parameters(&parameters);
+        params_bytes.put_parameters(parameters);
 
         let connection = rustls::quic::Connection::Client(
             rustls::quic::ClientConnection::new(
@@ -114,7 +115,7 @@ impl ArcTlsSession {
     pub fn new_client(
         server_name: rustls::pki_types::ServerName<'static>,
         tls_config: Arc<rustls::ClientConfig>,
-        mut parameters: Parameters,
+        parameters: &mut Parameters,
         scid: ConnectionId,
     ) -> Self {
         parameters.set_initial_source_connection_id(Some(scid));
@@ -184,13 +185,13 @@ impl ArcTlsSession {
         handshake_keys: ArcKeys,
         one_rtt_keys: ArcOneRttKeys,
         conn_error: ConnError,
-    ) -> GetParameters {
-        let get_parameters = GetParameters::default();
+    ) -> Arc<AsyncCell<Parameters>> {
+        let remote_params = Arc::new(AsyncCell::new());
 
         let for_each_epoch = |epoch: Epoch| {
             let mut crypto_stream_reader = crypto_streams[epoch].reader();
             let tls_session = self.clone();
-            let get_parameters = get_parameters.clone();
+            let remote_params = remote_params.clone();
             let conn_error = conn_error.clone();
             tokio::spawn(async move {
                 // 不停地从crypto_stream_reader读取数据，读到就送给tls_conn
@@ -217,7 +218,7 @@ impl ArcTlsSession {
                     }
 
                     if let Some(params) = tls_session.get_transport_parameters() {
-                        get_parameters.set_parameters(params);
+                        _ = remote_params.write(params);
                     }
                 }
             })
@@ -230,7 +231,6 @@ impl ArcTlsSession {
         // TODO: 处理错误，处理它们的异常终止
         tokio::spawn({
             let tls_session = self.clone();
-            let get_parameters = get_parameters.clone();
             let mut crypto_stream_writers = [
                 crypto_streams[0].writer(),
                 crypto_streams[1].writer(),
@@ -274,10 +274,9 @@ impl ArcTlsSession {
                 for reader in crypto_readers {
                     reader.abort();
                 }
-                get_parameters.on_handshake_done();
             }
         });
-        get_parameters
+        remote_params
     }
 
     pub fn server_name(&self) -> Option<String> {
@@ -315,69 +314,5 @@ impl Future for ReadTlsMsg {
         } else {
             Poll::Ready(None)
         }
-    }
-}
-
-#[derive(Default, Debug, Clone)]
-#[allow(clippy::large_enum_variant)]
-enum RawGetParameters {
-    #[default]
-    None,
-    Pending(Waker),
-    Ready(Parameters),
-    End,
-}
-
-impl RawGetParameters {
-    fn poll_get_parameters(&mut self, cx: &mut Context) -> Poll<Option<Parameters>> {
-        match self {
-            RawGetParameters::None | RawGetParameters::Pending(..) => {
-                *self = RawGetParameters::Pending(cx.waker().clone());
-                Poll::Pending
-            }
-            RawGetParameters::Ready(..) => {
-                let p = std::mem::replace(self, RawGetParameters::End);
-                let RawGetParameters::Ready(p) = p else {
-                    unreachable!()
-                };
-                Poll::Ready(Some(p))
-            }
-            RawGetParameters::End => Poll::Ready(None),
-        }
-    }
-}
-
-#[derive(Default, Clone)]
-pub struct GetParameters(Arc<Mutex<RawGetParameters>>);
-
-impl GetParameters {
-    fn set_parameters(&self, parameters: Parameters) {
-        let mut guard = self.0.lock().unwrap();
-        let RawGetParameters::Pending(waker) = guard.deref_mut() else {
-            return;
-        };
-        waker.wake_by_ref();
-        *guard = RawGetParameters::Ready(parameters);
-    }
-
-    fn on_handshake_done(&self) {
-        let mut guard = self.0.lock().unwrap();
-        let RawGetParameters::Pending(waker) = guard.deref_mut() else {
-            return;
-        };
-        waker.wake_by_ref();
-        *guard = RawGetParameters::End;
-    }
-
-    pub fn poll_get_parameters(&self, cx: &mut Context) -> Poll<Option<Parameters>> {
-        self.0.lock().unwrap().poll_get_parameters(cx)
-    }
-}
-
-impl Future for GetParameters {
-    type Output = Option<Parameters>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.lock().unwrap().poll_get_parameters(cx)
     }
 }

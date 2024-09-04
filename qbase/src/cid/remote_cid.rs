@@ -251,7 +251,7 @@ struct CidState(RawAsyncCell<ConnectionId>);
 
 impl CidState {
     fn poll_get_cid(&mut self, cx: &mut Context) -> Poll<Option<ConnectionId>> {
-        self.0.poll_take_clone(cx)
+        self.0.poll_wait(cx).map(|cid| cid.as_ref().map(|cid| *cid))
     }
 
     fn revise(&mut self, cid: ConnectionId) {

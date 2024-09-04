@@ -34,8 +34,6 @@ pub struct ClientParameters {
 
     #[getset(get = "pub", set = "pub")]
     initial_source_connection_id: Option<ConnectionId>,
-    #[getset(get = "pub", set = "pub")]
-    version_information: Option<Vec<u8>>,
     #[getset(get_copy = "pub", set = "pub")]
     max_datagram_frame_size: VarInt,
     // TOOD: 对此传输参数的支持
@@ -60,7 +58,6 @@ impl Default for ClientParameters {
             disable_active_migration: params.disable_active_migration,
             active_connection_id_limit: params.active_connection_id_limit,
             initial_source_connection_id: params.initial_source_connection_id,
-            version_information: params.version_information,
             max_datagram_frame_size: params.max_datagram_frame_size,
             grease_quic_bit: params.grease_quic_bit,
         }
@@ -113,9 +110,6 @@ impl ClientParametersBuilder {
             initial_source_connection_id: builder
                 .initial_source_connection_id
                 .unwrap_or(default.initial_source_connection_id),
-            version_information: builder
-                .version_information
-                .unwrap_or(default.version_information),
             max_datagram_frame_size: builder
                 .max_datagram_frame_size
                 .unwrap_or(default.max_datagram_frame_size),
@@ -142,7 +136,6 @@ impl From<ClientParameters> for Parameters {
             disable_active_migration: value.disable_active_migration,
             active_connection_id_limit: value.active_connection_id_limit,
             initial_source_connection_id: value.initial_source_connection_id,
-            version_information: value.version_information,
             max_datagram_frame_size: value.max_datagram_frame_size,
             grease_quic_bit: value.grease_quic_bit,
             ..Default::default()

@@ -130,7 +130,7 @@ impl RawQuicServer {
         let inner = ArcConnection::new_server(
             initial_scid,
             initial_dcid,
-            &Parameters::default(), // &self.parameters,
+            Parameters::default(), // &self.parameters,
             initial_keys,
             self.tls_config.clone(),
             token_provider,

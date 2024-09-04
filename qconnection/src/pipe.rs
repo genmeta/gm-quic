@@ -50,7 +50,7 @@ macro_rules! pipe {
     }};
     (
         @error($error:expr)
-        $input:ident |> $lambda:expr
+        $input:ident |> $($lambda:tt)*
     ) => {{
         #[allow(unused)]
         ::tokio::spawn({

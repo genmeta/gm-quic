@@ -18,7 +18,7 @@ use qbase::{
     streamid::Role,
     token::ArcTokenRegistry,
 };
-use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
+use qrecovery::{recv::Reader, reliable::ArcReliableFrameDeque, send::Writer};
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 use raw::RawConnection;
@@ -64,7 +64,7 @@ impl ArcConnection {
     pub fn new_client(
         scid: ConnectionId,
         server_name: String,
-        parameters: Parameters,
+        mut parameters: Parameters,
         tls_config: Arc<rustls::ClientConfig>,
         token_registry: ArcTokenRegistry,
     ) -> Self {
@@ -73,9 +73,12 @@ impl ArcConnection {
         };
 
         let dcid = ConnectionId::random_gen(8);
+        let tls_session =
+            ArcTlsSession::new_client(server_name, tls_config.clone(), &mut parameters, scid);
         let raw_conn = RawConnection::new(
             Role::Client,
-            ArcTlsSession::new_client(server_name, tls_config.clone(), parameters, scid),
+            parameters,
+            tls_session,
             scid,
             dcid,
             ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Client, dcid),
@@ -94,14 +97,16 @@ impl ArcConnection {
     pub fn new_server(
         initial_scid: ConnectionId,
         initial_dcid: ConnectionId,
-        parameters: &Parameters,
+        parameters: Parameters,
         initial_keys: rustls::quic::Keys,
         tls_config: Arc<rustls::ServerConfig>,
         token_registry: ArcTokenRegistry,
     ) -> Self {
+        let tls_session = ArcTlsSession::new_server(tls_config.clone(), &parameters);
         let raw_conn = RawConnection::new(
             Role::Server,
-            ArcTlsSession::new_server(tls_config.clone(), parameters),
+            parameters,
+            tls_session,
             initial_scid,
             initial_dcid,
             initial_keys,
@@ -110,22 +115,115 @@ impl ArcConnection {
         raw_conn.into()
     }
 
-    /// Get the streams of the connection, return error if the connection is in closing state or
-    /// draining state. Even if the connection will enter closing state in future, the returned
-    /// data streams are still available. It doesn't matter, because the returned DataStreams will
-    /// be synced into Error state, and do anything about this DataStreams will return an Error.
-    pub fn streams(&self) -> io::Result<DataStreams> {
-        // TODO: ArcConnection不再暴露赤裸的streams接口，而是根据双方Parameters使用
-        //      raw_conn.streams().open_bi(...)去异步地创建
-        let guard = self.0.lock().unwrap();
-        if let ConnState::Raw(ref raw_conn) = *guard {
-            Ok(raw_conn.streams.clone())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "Connection is closing or closed",
-            ))
-        }
+    // /// Get the streams of the connection, return error if the connection is in closing state or
+    // /// draining state. Even if the connection will enter closing state in future, the returned
+    // /// data streams are still available. It doesn't matter, because the returned DataStreams will
+    // /// be synced into Error state, and do anything about this DataStreams will return an Error.
+    // pub fn streams(&self) -> io::Result<DataStreams> {
+    //     // TODO: ArcConnection不再暴露赤裸的streams接口，而是根据双方Parameters使用
+    //     //      raw_conn.streams().open_bi(...)去异步地创建
+    //     let guard = self.0.lock().unwrap();
+    //     if let ConnState::Raw(ref raw_conn) = *guard {
+    //         Ok(raw_conn.streams.clone())
+    //     } else {
+    //         Err(io::Error::new(
+    //             io::ErrorKind::BrokenPipe,
+    //             "Connection is closing or closed",
+    //         ))
+    //     }
+    // }
+
+    pub async fn open_bi_stream(&self) -> io::Result<Option<(Reader, Writer)>> {
+        let (local_params, remote_params, data_streams, conn_error) = {
+            let guard = self.0.lock().unwrap();
+            let ConnState::Raw(raw_conn) = &*guard else {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "Connection is closing or closed",
+                ));
+            };
+
+            (
+                raw_conn.local_params.clone(),
+                raw_conn.remote_params.clone(),
+                raw_conn.streams.clone(),
+                raw_conn.error.clone(),
+            )
+        };
+
+        let remote_params = { remote_params.wait().await.as_ref().cloned().unwrap() };
+
+        let result = data_streams
+            .open_bi(&local_params, &remote_params)
+            .await
+            .inspect_err(|e| conn_error.on_error(e.clone()));
+        Ok(result?)
+    }
+
+    pub async fn open_uni_stream(&self) -> io::Result<Option<Writer>> {
+        let (remote_params, data_streams, conn_error) = {
+            let guard = self.0.lock().unwrap();
+            let ConnState::Raw(raw_conn) = &*guard else {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "Connection is closing or closed",
+                ));
+            };
+
+            (
+                raw_conn.remote_params.clone(),
+                raw_conn.streams.clone(),
+                raw_conn.error.clone(),
+            )
+        };
+
+        let remote_params = { remote_params.wait().await.as_ref().cloned().unwrap() };
+
+        let result = data_streams
+            .open_uni(&remote_params)
+            .await
+            .inspect_err(|e| conn_error.on_error(e.clone()));
+        Ok(result?)
+    }
+
+    pub async fn accept_bi_stream(&self) -> io::Result<(Reader, Writer)> {
+        let (data_streams, conn_error) = {
+            let guard = self.0.lock().unwrap();
+            let ConnState::Raw(raw_conn) = &*guard else {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "Connection is closing or closed",
+                ));
+            };
+
+            (raw_conn.streams.clone(), raw_conn.error.clone())
+        };
+
+        let result = data_streams
+            .accept_bi()
+            .await
+            .inspect_err(|e| conn_error.on_error(e.clone()));
+        Ok(result?)
+    }
+
+    pub async fn accept_uni_stream(&self) -> io::Result<Reader> {
+        let (data_streams, conn_error) = {
+            let guard = self.0.lock().unwrap();
+            let ConnState::Raw(raw_conn) = &*guard else {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "Connection is closing or closed",
+                ));
+            };
+
+            (raw_conn.streams.clone(), raw_conn.error.clone())
+        };
+
+        let result = data_streams
+            .accept_uni()
+            .await
+            .inspect_err(|e| conn_error.on_error(e.clone()));
+        Ok(result?)
     }
 
     pub fn datagrams(&self) -> io::Result<DatagramFlow> {

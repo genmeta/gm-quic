@@ -16,7 +16,7 @@ use qbase::{
     varint::VarInt,
 };
 
-use super::listener::ArcListener;
+use super::listener::{AcceptBiStream, AcceptUniStream, ArcListener};
 use crate::{
     recv::{self, Incoming, Reader},
     reliable::ArcReliableFrameDeque,
@@ -117,55 +117,11 @@ impl ArcInputGuard<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct RawDataStreamParameters {
-    initial_max_stream_data_bidi_local: u64,
-    initial_max_stream_data_bidi_remote: u64,
-    initial_max_stream_data_uni_local: u64,
-    initial_max_stream_data_uni_remote: u64,
-}
-
-#[derive(Debug, Clone)]
-struct ArcDataStreamParameters(Arc<Mutex<RawDataStreamParameters>>);
-
-impl ArcDataStreamParameters {
-    fn new(
-        initial_max_stream_data_bidi_local: u64,
-        initial_max_stream_data_bidi_remote: u64,
-        initial_max_stream_data_uni: u64,
-    ) -> Self {
-        Self(Arc::new(Mutex::new(RawDataStreamParameters {
-            initial_max_stream_data_bidi_local,
-            initial_max_stream_data_bidi_remote,
-            initial_max_stream_data_uni_local: initial_max_stream_data_uni,
-            initial_max_stream_data_uni_remote: 0,
-        })))
-    }
-
-    fn guard(&self) -> MutexGuard<'_, RawDataStreamParameters> {
-        self.0.lock().unwrap()
-    }
-
-    fn apply_transport_parameters(&self, params: &Parameters) {
-        let mut guard = self.guard();
-        guard.initial_max_stream_data_bidi_remote = guard
-            .initial_max_stream_data_bidi_remote
-            .max(params.initial_max_stream_data_bidi_local().into_inner());
-        guard.initial_max_stream_data_bidi_local = guard
-            .initial_max_stream_data_bidi_local
-            .max(params.initial_max_stream_data_bidi_remote().into_inner());
-        guard.initial_max_stream_data_uni_remote = guard
-            .initial_max_stream_data_uni_remote
-            .max(params.initial_max_stream_data_uni().into_inner());
-    }
-}
-
 /// 专门根据Stream相关帧处理streams相关逻辑
 #[derive(Debug, Clone)]
 pub struct RawDataStreams {
     // 该queue与space中的transmitter中的frame_queue共享，为了方便向transmitter中写入帧
     pub reliable_frame_deque: ArcReliableFrameDeque,
-    params: ArcDataStreamParameters,
 
     role: Role,
     stream_ids: StreamIds,
@@ -261,13 +217,16 @@ impl RawDataStreams {
 
     pub fn recv_data(
         &self,
-        (stream_frame, body): &(StreamFrame, bytes::Bytes),
+        local_params: &Parameters,
+        remote_params: &Parameters,
+        stream_frame: &StreamFrame,
+        body: bytes::Bytes,
     ) -> Result<usize, QuicError> {
         let sid = stream_frame.id;
         // 对方必须是发送端，才能发送此帧
         if sid.role() != self.role {
             // 对方的sid，看是否跳跃，把跳跃的流给创建好
-            self.try_accept_sid(sid)
+            self.try_accept_sid(sid, local_params, remote_params)
                 .map_err(wrapper_error(stream_frame.frame_type()))?;
         } else {
             // 我方的sid，那必须是双向流才能收到对方的数据，否则就是错误
@@ -287,7 +246,7 @@ impl RawDataStreams {
             .as_mut()
             .ok()
             .and_then(|set| set.get(&sid))
-            .map(|incoming| incoming.recv_data(stream_frame, body.clone()));
+            .map(|incoming| incoming.recv_data(stream_frame, body));
 
         match ret {
             Some(recv_ret) => recv_ret,
@@ -296,13 +255,18 @@ impl RawDataStreams {
         }
     }
 
-    pub fn recv_stream_control(&self, stream_ctl_frame: &StreamCtlFrame) -> Result<(), QuicError> {
+    pub fn recv_stream_control(
+        &self,
+        local_params: &Parameters,
+        remote_params: &Parameters,
+        stream_ctl_frame: &StreamCtlFrame,
+    ) -> Result<(), QuicError> {
         match stream_ctl_frame {
             StreamCtlFrame::ResetStream(reset) => {
                 let sid = reset.stream_id;
                 // 对方必须是发送端，才能发送此帧
                 if sid.role() != self.role {
-                    self.try_accept_sid(sid)
+                    self.try_accept_sid(sid, local_params, remote_params)
                         .map_err(wrapper_error(reset.frame_type()))?;
                 } else {
                     // 我方创建的流必须是双向流，对方才能发送ResetStream,否则就是错误
@@ -332,7 +296,7 @@ impl RawDataStreams {
                             format!("remote {sid} must not send STOP_SENDING_FRAME"),
                         ));
                     }
-                    self.try_accept_sid(sid)
+                    self.try_accept_sid(sid, local_params, remote_params)
                         .map_err(wrapper_error(stop_sending.frame_type()))?;
                 }
                 if self
@@ -369,7 +333,7 @@ impl RawDataStreams {
                             format!("remote {sid} must not send MAX_STREAM_DATA_FRAME"),
                         ));
                     }
-                    self.try_accept_sid(sid)
+                    self.try_accept_sid(sid, local_params, remote_params)
                         .map_err(wrapper_error(max_stream_data.frame_type()))?;
                 }
                 if let Some(outgoing) = self
@@ -388,7 +352,7 @@ impl RawDataStreams {
                 let sid = stream_data_blocked.stream_id;
                 // 对方必须是发送端，才能发送此帧
                 if sid.role() != self.role {
-                    self.try_accept_sid(sid)
+                    self.try_accept_sid(sid, local_params, remote_params)
                         .map_err(wrapper_error(stream_data_blocked.frame_type()))?;
                 } else {
                     // 我方创建的，必须是双向流，对方才是发送端，才能发出StreamDataBlocked；否则就是错误
@@ -450,28 +414,18 @@ impl RawDataStreams {
         self.stream_ids
             .local
             .permit_max_sid(Dir::Uni, params.initial_max_streams_uni().into_inner());
-        self.params.apply_transport_parameters(params);
     }
 }
 
 impl RawDataStreams {
-    pub(super) fn with_role_and_limit(
+    pub(super) fn new(
         role: Role,
-        max_bi_streams: u64,
-        max_uni_streams: u64,
-        initial_max_stream_data_bidi_local: u64,
-        initial_max_stream_data_bidi_remote: u64,
-        initial_max_stream_data_uni: u64,
+        local_params: &Parameters,
         reliable_frame_deque: ArcReliableFrameDeque,
     ) -> Self {
         Self {
-            params: ArcDataStreamParameters::new(
-                initial_max_stream_data_bidi_local,
-                initial_max_stream_data_bidi_remote,
-                initial_max_stream_data_uni,
-            ),
             role,
-            stream_ids: StreamIds::with_role_and_limit(role, max_bi_streams, max_uni_streams),
+            stream_ids: StreamIds::new(role, local_params),
             output: ArcOutput::default(),
             input: ArcInput::default(),
             listener: ArcListener::default(),
@@ -482,6 +436,8 @@ impl RawDataStreams {
     pub(super) fn poll_open_bi_stream(
         &self,
         cx: &mut Context<'_>,
+        local_params: &Parameters,
+        remote_params: &Parameters,
     ) -> Poll<Result<Option<(Reader, Writer)>, QuicError>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
@@ -492,10 +448,10 @@ impl RawDataStreams {
             Err(e) => return Poll::Ready(Err(e)),
         };
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Bi)) {
-            let _max_stream_data = self.params.guard().initial_max_stream_data_bidi_remote;
-            let (outgoing, writer) = self.create_sender(sid, 65536);
-            let _max_stream_data = self.params.guard().initial_max_stream_data_bidi_local;
-            let (incoming, reader) = self.create_recver(sid, 65536);
+            let writer_max_stream_data = remote_params.initial_max_stream_data_bidi_remote().into();
+            let (outgoing, writer) = self.create_sender(sid, writer_max_stream_data);
+            let reader_max_stream_data = local_params.initial_max_stream_data_bidi_local().into();
+            let (incoming, reader) = self.create_recver(sid, reader_max_stream_data);
             output.insert(sid, outgoing);
             input.insert(sid, incoming);
             Poll::Ready(Ok(Some((reader, writer))))
@@ -507,13 +463,14 @@ impl RawDataStreams {
     pub(super) fn poll_open_uni_stream(
         &self,
         cx: &mut Context<'_>,
+        remote_params: &Parameters,
     ) -> Poll<Result<Option<Writer>, QuicError>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(e) => return Poll::Ready(Err(e)),
         };
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Uni)) {
-            let max_stream_data = self.params.guard().initial_max_stream_data_uni_remote;
+            let max_stream_data = remote_params.initial_max_stream_data_uni().into();
             let (outgoing, writer) = self.create_sender(sid, max_stream_data);
             output.insert(sid, outgoing);
             Poll::Ready(Ok(Some(writer)))
@@ -523,27 +480,37 @@ impl RawDataStreams {
     }
 
     #[inline]
-    pub(super) async fn accept_bi(&self) -> Result<(Reader, Writer), QuicError> {
-        self.listener.accept_bi_stream().await
+    pub(super) fn accept_bi(&self) -> AcceptBiStream {
+        self.listener.accept_bi_stream()
     }
 
     #[inline]
-    pub(super) async fn accept_uni(&self) -> Result<Reader, QuicError> {
-        self.listener.accept_uni_stream().await
+    pub(super) fn accept_uni(&self) -> AcceptUniStream {
+        self.listener.accept_uni_stream()
     }
 
     pub(super) fn listener(&self) -> ArcListener {
         self.listener.clone()
     }
 
-    fn try_accept_sid(&self, sid: StreamId) -> Result<(), ExceedLimitError> {
+    fn try_accept_sid(
+        &self,
+        sid: StreamId,
+        local_params: &Parameters,
+        remote_params: &Parameters,
+    ) -> Result<(), ExceedLimitError> {
         match sid.dir() {
-            Dir::Bi => self.try_accept_bi_sid(sid),
-            Dir::Uni => self.try_accept_uni_sid(sid),
+            Dir::Bi => self.try_accept_bi_sid(sid, local_params, remote_params),
+            Dir::Uni => self.try_accept_uni_sid(sid, local_params),
         }
     }
 
-    fn try_accept_bi_sid(&self, sid: StreamId) -> Result<(), ExceedLimitError> {
+    fn try_accept_bi_sid(
+        &self,
+        sid: StreamId,
+        local_params: &Parameters,
+        remote_params: &Parameters,
+    ) -> Result<(), ExceedLimitError> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(_) => return Ok(()),
@@ -557,14 +524,18 @@ impl RawDataStreams {
             Err(_) => return Ok(()),
         };
         let result = self.stream_ids.remote.try_accept_sid(sid)?;
+
         match result {
             AcceptSid::Old => Ok(()),
             AcceptSid::New(need_create) => {
+                let reader_max_stream_data =
+                    local_params.initial_max_stream_data_bidi_remote().into();
+                let writer_max_stream_data =
+                    remote_params.initial_max_stream_data_bidi_local().into();
+
                 for sid in need_create {
-                    let max_stream_data = self.params.guard().initial_max_stream_data_bidi_local;
-                    let (incoming, reader) = self.create_recver(sid, max_stream_data);
-                    let max_stream_data = self.params.guard().initial_max_stream_data_bidi_remote;
-                    let (outgoing, writer) = self.create_sender(sid, max_stream_data);
+                    let (incoming, reader) = self.create_recver(sid, reader_max_stream_data);
+                    let (outgoing, writer) = self.create_sender(sid, writer_max_stream_data);
                     input.insert(sid, incoming);
                     output.insert(sid, outgoing);
                     listener.push_bi_stream((reader, writer));
@@ -574,7 +545,11 @@ impl RawDataStreams {
         }
     }
 
-    fn try_accept_uni_sid(&self, sid: StreamId) -> Result<(), ExceedLimitError> {
+    fn try_accept_uni_sid(
+        &self,
+        sid: StreamId,
+        local_params: &Parameters,
+    ) -> Result<(), ExceedLimitError> {
         let mut input = match self.input.guard() {
             Ok(input) => input,
             Err(_) => return Ok(()),
@@ -587,9 +562,10 @@ impl RawDataStreams {
         match result {
             AcceptSid::Old => Ok(()),
             AcceptSid::New(need_create) => {
+                let reader_max_stream_data = local_params.initial_max_stream_data_uni().into();
+
                 for sid in need_create {
-                    let max_stream_data = self.params.guard().initial_max_stream_data_uni_local;
-                    let (incoming, reader) = self.create_recver(sid, max_stream_data);
+                    let (incoming, reader) = self.create_recver(sid, reader_max_stream_data);
                     input.insert(sid, incoming);
                     listener.push_uni_stream(reader);
                 }

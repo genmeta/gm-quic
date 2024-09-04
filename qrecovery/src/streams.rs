@@ -1,18 +1,14 @@
 use std::{
     fmt::Debug,
+    future::Future,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
 
-use bytes::Bytes;
 use deref_derive::Deref;
-use futures::Future;
-use qbase::{
-    error::Error,
-    frame::{ReceiveFrame, StreamCtlFrame, StreamFrame},
-    streamid::Role,
-};
+use listener::{AcceptBiStream, AcceptUniStream};
+use qbase::{config::Parameters, error::Error, streamid::Role};
 
 use crate::{recv::Reader, reliable::ArcReliableFrameDeque, send::Writer};
 
@@ -24,93 +20,82 @@ pub mod listener;
 pub struct DataStreams(Arc<data::RawDataStreams>);
 
 impl DataStreams {
-    pub fn with_role_and_limit(
+    pub fn new(
         role: Role,
-        max_bi_streams: u64,
-        max_uni_streams: u64,
-        initial_max_stream_data_bidi_local: u64,
-        initial_max_stream_data_bidi_remote: u64,
-        initial_max_stream_data_uni: u64,
+        local_params: &Parameters,
         reliable_frame_deque: ArcReliableFrameDeque,
     ) -> Self {
-        Self(Arc::new(data::RawDataStreams::with_role_and_limit(
-            role,
-            max_bi_streams,
-            max_uni_streams,
-            initial_max_stream_data_bidi_local,
-            initial_max_stream_data_bidi_remote,
-            initial_max_stream_data_uni,
-            reliable_frame_deque,
-        )))
+        let raw = data::RawDataStreams::new(role, local_params, reliable_frame_deque);
+
+        Self(Arc::new(raw))
     }
 
     #[inline]
-    pub fn open_bi(&self) -> OpenBiStream {
+    pub fn open_bi<'a>(
+        &'a self,
+        local_params: &'a Parameters,
+        remote_params: &'a Parameters,
+    ) -> OpenBiStream<'a> {
         OpenBiStream {
-            inner: self.0.clone(),
+            stream: self,
+            local_params,
+            remote_params,
         }
     }
 
     #[inline]
-    pub fn open_uni(&self) -> OpenUniStream {
+    pub fn open_uni<'a>(&'a self, remote_params: &'a Parameters) -> OpenUniStream<'a> {
         OpenUniStream {
-            inner: self.0.clone(),
+            stream: self,
+            remote_params,
         }
     }
 
     #[inline]
-    pub async fn accept_bi(&self) -> Result<(Reader, Writer), Error> {
-        self.0.accept_bi().await
+    pub fn accept_bi(&self) -> AcceptBiStream {
+        self.0.accept_bi()
     }
 
     #[inline]
-    pub async fn accept_uni(&self) -> Result<Reader, Error> {
-        self.0.accept_uni().await
+    pub fn accept_uni(&self) -> AcceptUniStream {
+        self.0.accept_uni()
     }
 
     #[inline]
     pub fn listener(&self) -> listener::ArcListener {
         self.0.listener()
     }
-}
 
-impl ReceiveFrame<StreamCtlFrame> for DataStreams {
-    type Output = ();
-
-    fn recv_frame(&mut self, frame: &StreamCtlFrame) -> Result<Self::Output, Error> {
-        self.0.recv_stream_control(frame)
+    pub fn apply_transport_parameters(&self, params: &Parameters) {
+        self.0.apply_transport_parameters(params);
     }
 }
 
-impl ReceiveFrame<(StreamFrame, Bytes)> for DataStreams {
-    type Output = usize;
-
-    fn recv_frame(&mut self, frame: &(StreamFrame, Bytes)) -> Result<Self::Output, Error> {
-        self.0.recv_data(frame)
-    }
+pub struct OpenBiStream<'a> {
+    stream: &'a DataStreams,
+    local_params: &'a Parameters,
+    remote_params: &'a Parameters,
 }
 
-pub struct OpenBiStream {
-    inner: Arc<data::RawDataStreams>,
-}
-
-impl Future for OpenBiStream {
+impl Future for OpenBiStream<'_> {
     type Output = Result<Option<(Reader, Writer)>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.inner.poll_open_bi_stream(cx)
+        self.stream
+            .poll_open_bi_stream(cx, self.local_params, self.remote_params)
     }
 }
 
-pub struct OpenUniStream {
-    inner: Arc<data::RawDataStreams>,
+pub struct OpenUniStream<'a> {
+    stream: &'a DataStreams,
+    remote_params: &'a Parameters,
 }
 
-impl Future for OpenUniStream {
+impl Future for OpenUniStream<'_> {
     type Output = Result<Option<Writer>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.inner.poll_open_uni_stream(cx)
+        self.stream.poll_open_uni_stream(cx, self.remote_params)
     }
 }
 

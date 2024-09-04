@@ -88,7 +88,7 @@ impl Future for ConnError {
     /// - If the state is `Closing` or `App`, it returns `Poll::Ready(true)`, indicating that the connection is closing or has been closed due to an application error.
     /// - If the state is `Draining`, it returns `Poll::Ready(false)`, indicating that the connection is draining and will be closed gracefully.
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match core::task::ready!(self.0.poll_take_clone(cx))
+        match core::task::ready!(self.0.poll_wait(cx).map(|cell| cell.as_ref().cloned()))
             .expect("connection error shound never be retired")
         {
             ConnErrorKind::Application(e) => Poll::Ready((e, true)),
