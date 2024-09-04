@@ -7,7 +7,6 @@ use std::{
 use thiserror::Error;
 
 use super::varint::{be_varint, VarInt, WriteVarInt};
-use crate::config::Parameters;
 
 /**
  * QUIC有4种流类型，对应着4个流ID空间，分别是：
@@ -400,14 +399,10 @@ pub struct StreamIds {
 }
 
 impl StreamIds {
-    pub fn new(role: Role, local_params: &Parameters) -> Self {
+    pub fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64) -> Self {
         // 缺省为0
         let local = ArcLocalStreamIds::new(role, 0, 0);
-        let remote = ArcRemoteStreamIds::new(
-            !role,
-            local_params.initial_max_streams_bidi().into(),
-            local_params.initial_max_streams_uni().into(),
-        );
+        let remote = ArcRemoteStreamIds::new(!role, max_bi_streams, max_uni_streams);
         Self { local, remote }
     }
 }
@@ -441,8 +436,7 @@ mod tests {
 
     #[test]
     fn test_permit_max_sid() {
-        let params = Parameters::default();
-        let StreamIds { local, remote: _ } = StreamIds::new(Role::Client, &params);
+        let StreamIds { local, remote: _ } = StreamIds::new(Role::Client, 10, 2);
         local.permit_max_sid(Dir::Bi, 0);
         let waker = empty_waker();
         let mut cx = Context::from_waker(&waker);
@@ -480,11 +474,7 @@ mod tests {
 
     #[test]
     fn test_try_accept_sid() {
-        let mut params = Parameters::default();
-        params.set_initial_max_streams_bidi(10u8.into());
-        params.set_initial_max_streams_uni(5u8.into());
-
-        let StreamIds { local: _, remote } = StreamIds::new(Role::Client, &params);
+        let StreamIds { local: _, remote } = StreamIds::new(Role::Client, 10, 5);
         let result = remote.try_accept_sid(StreamId(21));
         assert_eq!(
             result,

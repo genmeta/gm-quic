@@ -25,15 +25,15 @@ pub struct ReadySender {
 }
 
 impl ReadySender {
-    pub(super) fn with_buf_size(initial_max_stream_data: u64) -> ReadySender {
+    pub(super) fn with_wnd_size(wnd_size: u64) -> ReadySender {
         ReadySender {
-            sndbuf: SendBuf::with_capacity(initial_max_stream_data as usize),
+            sndbuf: SendBuf::with_capacity(wnd_size as usize),
             cancel_state: None,
             flush_waker: None,
             shutdown_waker: None,
             cancel_waker: None,
             writable_waker: None,
-            max_data_size: initial_max_stream_data,
+            max_data_size: wnd_size,
         }
     }
 
@@ -486,8 +486,8 @@ pub enum Sender {
 }
 
 impl Sender {
-    pub fn with_buf_size(initial_max_stream_data: u64) -> Self {
-        Sender::Ready(ReadySender::with_buf_size(initial_max_stream_data))
+    pub fn with_wnd_size(wnd_size: u64) -> Self {
+        Sender::Ready(ReadySender::with_wnd_size(wnd_size))
     }
 }
 

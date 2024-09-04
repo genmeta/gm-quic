@@ -121,10 +121,16 @@ impl ArcInputGuard<'_> {
 #[derive(Debug, Clone)]
 pub struct RawDataStreams {
     // 该queue与space中的transmitter中的frame_queue共享，为了方便向transmitter中写入帧
-    pub reliable_frame_deque: ArcReliableFrameDeque,
+    reliable_frame_deque: ArcReliableFrameDeque,
 
     role: Role,
     stream_ids: StreamIds,
+    // the receive buffer size for the accpeted unidirectional stream created by peer
+    uni_stream_rcvbuf_size: u64,
+    // the receive buffer size of the bidirectional stream actively created by local
+    local_bi_stream_rcvbuf_size: u64,
+    // the receive buffer size for the accpeted bidirectional stream created by peer
+    remote_bi_stream_rcvbuf_size: u64,
     // 所有流的待写端，要发送数据，就得向这些流索取
     output: ArcOutput,
     // 所有流的待读端，收到了数据，交付给这些流
@@ -217,16 +223,13 @@ impl RawDataStreams {
 
     pub fn recv_data(
         &self,
-        local_params: &Parameters,
-        remote_params: &Parameters,
-        stream_frame: &StreamFrame,
-        body: bytes::Bytes,
+        (stream_frame, body): &(StreamFrame, bytes::Bytes),
     ) -> Result<usize, QuicError> {
         let sid = stream_frame.id;
         // 对方必须是发送端，才能发送此帧
         if sid.role() != self.role {
             // 对方的sid，看是否跳跃，把跳跃的流给创建好
-            self.try_accept_sid(sid, local_params, remote_params)
+            self.try_accept_sid(sid)
                 .map_err(wrapper_error(stream_frame.frame_type()))?;
         } else {
             // 我方的sid，那必须是双向流才能收到对方的数据，否则就是错误
@@ -246,7 +249,7 @@ impl RawDataStreams {
             .as_mut()
             .ok()
             .and_then(|set| set.get(&sid))
-            .map(|incoming| incoming.recv_data(stream_frame, body));
+            .map(|incoming| incoming.recv_data(stream_frame, body.clone()));
 
         match ret {
             Some(recv_ret) => recv_ret,
@@ -255,18 +258,13 @@ impl RawDataStreams {
         }
     }
 
-    pub fn recv_stream_control(
-        &self,
-        local_params: &Parameters,
-        remote_params: &Parameters,
-        stream_ctl_frame: &StreamCtlFrame,
-    ) -> Result<(), QuicError> {
+    pub fn recv_stream_control(&self, stream_ctl_frame: &StreamCtlFrame) -> Result<(), QuicError> {
         match stream_ctl_frame {
             StreamCtlFrame::ResetStream(reset) => {
                 let sid = reset.stream_id;
                 // 对方必须是发送端，才能发送此帧
                 if sid.role() != self.role {
-                    self.try_accept_sid(sid, local_params, remote_params)
+                    self.try_accept_sid(sid)
                         .map_err(wrapper_error(reset.frame_type()))?;
                 } else {
                     // 我方创建的流必须是双向流，对方才能发送ResetStream,否则就是错误
@@ -296,7 +294,7 @@ impl RawDataStreams {
                             format!("remote {sid} must not send STOP_SENDING_FRAME"),
                         ));
                     }
-                    self.try_accept_sid(sid, local_params, remote_params)
+                    self.try_accept_sid(sid)
                         .map_err(wrapper_error(stop_sending.frame_type()))?;
                 }
                 if self
@@ -333,7 +331,7 @@ impl RawDataStreams {
                             format!("remote {sid} must not send MAX_STREAM_DATA_FRAME"),
                         ));
                     }
-                    self.try_accept_sid(sid, local_params, remote_params)
+                    self.try_accept_sid(sid)
                         .map_err(wrapper_error(max_stream_data.frame_type()))?;
                 }
                 if let Some(outgoing) = self
@@ -352,7 +350,7 @@ impl RawDataStreams {
                 let sid = stream_data_blocked.stream_id;
                 // 对方必须是发送端，才能发送此帧
                 if sid.role() != self.role {
-                    self.try_accept_sid(sid, local_params, remote_params)
+                    self.try_accept_sid(sid)
                         .map_err(wrapper_error(stream_data_blocked.frame_type()))?;
                 } else {
                     // 我方创建的，必须是双向流，对方才是发送端，才能发出StreamDataBlocked；否则就是错误
@@ -420,7 +418,14 @@ impl RawDataStreams {
     ) -> Self {
         Self {
             role,
-            stream_ids: StreamIds::new(role, local_params),
+            stream_ids: StreamIds::new(
+                role,
+                local_params.initial_max_streams_bidi().into(),
+                local_params.initial_max_streams_uni().into(),
+            ),
+            uni_stream_rcvbuf_size: local_params.initial_max_stream_data_uni().into(),
+            local_bi_stream_rcvbuf_size: local_params.initial_max_stream_data_bidi_local().into(),
+            remote_bi_stream_rcvbuf_size: local_params.initial_max_stream_data_bidi_remote().into(),
             output: ArcOutput::default(),
             input: ArcInput::default(),
             listener: ArcListener::default(),
@@ -431,8 +436,7 @@ impl RawDataStreams {
     pub(super) fn poll_open_bi_stream(
         &self,
         cx: &mut Context<'_>,
-        local_params: &Parameters,
-        remote_params: &Parameters,
+        snd_wnd_size: u64,
     ) -> Poll<Result<Option<(Reader, Writer)>, QuicError>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
@@ -443,10 +447,8 @@ impl RawDataStreams {
             Err(e) => return Poll::Ready(Err(e)),
         };
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Bi)) {
-            let writer_max_stream_data = remote_params.initial_max_stream_data_bidi_remote().into();
-            let (outgoing, writer) = self.create_sender(sid, writer_max_stream_data);
-            let reader_max_stream_data = local_params.initial_max_stream_data_bidi_local().into();
-            let (incoming, reader) = self.create_recver(sid, reader_max_stream_data);
+            let (outgoing, writer) = self.create_sender(sid, snd_wnd_size);
+            let (incoming, reader) = self.create_recver(sid, self.local_bi_stream_rcvbuf_size);
             output.insert(sid, outgoing);
             input.insert(sid, incoming);
             Poll::Ready(Ok(Some((reader, writer))))
@@ -458,15 +460,14 @@ impl RawDataStreams {
     pub(super) fn poll_open_uni_stream(
         &self,
         cx: &mut Context<'_>,
-        remote_params: &Parameters,
+        snd_wnd_size: u64,
     ) -> Poll<Result<Option<Writer>, QuicError>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(e) => return Poll::Ready(Err(e)),
         };
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Uni)) {
-            let max_stream_data = remote_params.initial_max_stream_data_uni().into();
-            let (outgoing, writer) = self.create_sender(sid, max_stream_data);
+            let (outgoing, writer) = self.create_sender(sid, snd_wnd_size);
             output.insert(sid, outgoing);
             Poll::Ready(Ok(Some(writer)))
         } else {
@@ -488,24 +489,14 @@ impl RawDataStreams {
         self.listener.clone()
     }
 
-    fn try_accept_sid(
-        &self,
-        sid: StreamId,
-        local_params: &Parameters,
-        remote_params: &Parameters,
-    ) -> Result<(), ExceedLimitError> {
+    fn try_accept_sid(&self, sid: StreamId) -> Result<(), ExceedLimitError> {
         match sid.dir() {
-            Dir::Bi => self.try_accept_bi_sid(sid, local_params, remote_params),
-            Dir::Uni => self.try_accept_uni_sid(sid, local_params),
+            Dir::Bi => self.try_accept_bi_sid(sid),
+            Dir::Uni => self.try_accept_uni_sid(sid),
         }
     }
 
-    fn try_accept_bi_sid(
-        &self,
-        sid: StreamId,
-        local_params: &Parameters,
-        remote_params: &Parameters,
-    ) -> Result<(), ExceedLimitError> {
+    fn try_accept_bi_sid(&self, sid: StreamId) -> Result<(), ExceedLimitError> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(_) => return Ok(()),
@@ -523,14 +514,10 @@ impl RawDataStreams {
         match result {
             AcceptSid::Old => Ok(()),
             AcceptSid::New(need_create) => {
-                let reader_max_stream_data =
-                    local_params.initial_max_stream_data_bidi_remote().into();
-                let writer_max_stream_data =
-                    remote_params.initial_max_stream_data_bidi_local().into();
-
+                let rcv_buf_size = self.remote_bi_stream_rcvbuf_size;
                 for sid in need_create {
-                    let (incoming, reader) = self.create_recver(sid, reader_max_stream_data);
-                    let (outgoing, writer) = self.create_sender(sid, writer_max_stream_data);
+                    let (incoming, reader) = self.create_recver(sid, rcv_buf_size);
+                    let (outgoing, writer) = self.create_sender(sid, 0);
                     input.insert(sid, incoming);
                     output.insert(sid, outgoing);
                     listener.push_bi_stream((reader, writer));
@@ -540,11 +527,7 @@ impl RawDataStreams {
         }
     }
 
-    fn try_accept_uni_sid(
-        &self,
-        sid: StreamId,
-        local_params: &Parameters,
-    ) -> Result<(), ExceedLimitError> {
+    fn try_accept_uni_sid(&self, sid: StreamId) -> Result<(), ExceedLimitError> {
         let mut input = match self.input.guard() {
             Ok(input) => input,
             Err(_) => return Ok(()),
@@ -557,10 +540,10 @@ impl RawDataStreams {
         match result {
             AcceptSid::Old => Ok(()),
             AcceptSid::New(need_create) => {
-                let reader_max_stream_data = local_params.initial_max_stream_data_uni().into();
+                let rcv_buf_size = self.uni_stream_rcvbuf_size;
 
                 for sid in need_create {
-                    let (incoming, reader) = self.create_recver(sid, reader_max_stream_data);
+                    let (incoming, reader) = self.create_recver(sid, rcv_buf_size);
                     input.insert(sid, incoming);
                     listener.push_uni_stream(reader);
                 }
@@ -569,8 +552,8 @@ impl RawDataStreams {
         }
     }
 
-    fn create_sender(&self, sid: StreamId, max_stream_data: u64) -> (Outgoing, Writer) {
-        let (outgoing, writer) = send::new(max_stream_data);
+    fn create_sender(&self, sid: StreamId, wnd_size: u64) -> (Outgoing, Writer) {
+        let (outgoing, writer) = send::new(wnd_size);
         // 创建异步轮询子，监听来自应用层的cancel
         // 一旦cancel，直接向对方发送reset_stream
         // 但要等ResetRecved才能真正释放该流
@@ -593,8 +576,8 @@ impl RawDataStreams {
         (outgoing, writer)
     }
 
-    fn create_recver(&self, sid: StreamId, max_stream_data: u64) -> (Incoming, Reader) {
-        let (incoming, reader) = recv::new(max_stream_data);
+    fn create_recver(&self, sid: StreamId, buf_size: u64) -> (Incoming, Reader) {
+        let (incoming, reader) = recv::new(buf_size);
         // Continuously check whether the MaxStreamData window needs to be updated.
         tokio::spawn({
             let incoming = incoming.clone();
