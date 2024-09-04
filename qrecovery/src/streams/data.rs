@@ -9,7 +9,7 @@ use qbase::{
     config::Parameters,
     error::{Error as QuicError, ErrorKind},
     frame::{
-        BeFrame, FrameType, MaxStreamDataFrame, MaxStreamsFrame, ReliableFrame, ResetStreamFrame,
+        BeFrame, FrameType, MaxStreamDataFrame, MaxStreamsFrame, ResetStreamFrame, SendFrame,
         StopSendingFrame, StreamCtlFrame, StreamFrame,
     },
     streamid::{AcceptSid, Dir, ExceedLimitError, Role, StreamId, StreamIds},
@@ -19,7 +19,6 @@ use qbase::{
 use super::listener::{AcceptBiStream, AcceptUniStream, ArcListener};
 use crate::{
     recv::{self, Incoming, Reader},
-    reliable::ArcReliableFrameDeque,
     send::{self, Outgoing, Writer},
 };
 
@@ -119,9 +118,12 @@ impl ArcInputGuard<'_> {
 
 /// 专门根据Stream相关帧处理streams相关逻辑
 #[derive(Debug, Clone)]
-pub struct RawDataStreams {
+pub struct RawDataStreams<T>
+where
+    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+{
     // 该queue与space中的transmitter中的frame_queue共享，为了方便向transmitter中写入帧
-    reliable_frame_deque: ArcReliableFrameDeque,
+    ctrl_frames: T,
 
     role: Role,
     stream_ids: StreamIds,
@@ -143,7 +145,10 @@ fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
     move |e| QuicError::new(ErrorKind::StreamLimit, fty, e.to_string())
 }
 
-impl RawDataStreams {
+impl<T> RawDataStreams<T>
+where
+    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+{
     pub fn try_read_data(
         &self,
         buf: &mut [u8],
@@ -308,15 +313,12 @@ impl RawDataStreams {
                     .map(|outgoing| outgoing.stop())
                     .unwrap_or(false)
                 {
-                    self.reliable_frame_deque
-                        .lock_guard()
-                        .push_back(ReliableFrame::Stream(StreamCtlFrame::ResetStream(
-                            ResetStreamFrame {
-                                stream_id: sid,
-                                app_error_code: VarInt::from_u32(0),
-                                final_size: VarInt::from_u32(0),
-                            },
-                        )));
+                    self.ctrl_frames
+                        .send_frame([StreamCtlFrame::ResetStream(ResetStreamFrame {
+                            stream_id: sid,
+                            app_error_code: VarInt::from_u32(0),
+                            final_size: VarInt::from_u32(0),
+                        })]);
                 }
             }
             StreamCtlFrame::MaxStreamData(max_stream_data) => {
@@ -410,12 +412,11 @@ impl RawDataStreams {
     }
 }
 
-impl RawDataStreams {
-    pub(super) fn new(
-        role: Role,
-        local_params: &Parameters,
-        reliable_frame_deque: ArcReliableFrameDeque,
-    ) -> Self {
+impl<T> RawDataStreams<T>
+where
+    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+{
+    pub(super) fn new(role: Role, local_params: &Parameters, ctrl_frames: T) -> Self {
         Self {
             role,
             stream_ids: StreamIds::new(
@@ -429,7 +430,7 @@ impl RawDataStreams {
             output: ArcOutput::default(),
             input: ArcInput::default(),
             listener: ArcListener::default(),
-            reliable_frame_deque,
+            ctrl_frames,
         }
     }
 
@@ -559,17 +560,15 @@ impl RawDataStreams {
         // 但要等ResetRecved才能真正释放该流
         tokio::spawn({
             let outgoing = outgoing.clone();
-            let frames = self.reliable_frame_deque.clone();
+            let ctrl_frames = self.ctrl_frames.clone();
             async move {
                 if let Some((final_size, err_code)) = outgoing.is_cancelled_by_app().await {
-                    frames.lock_guard().push_back(ReliableFrame::Stream(
-                        StreamCtlFrame::ResetStream(ResetStreamFrame {
-                            stream_id: sid,
-                            app_error_code: VarInt::from_u64(err_code)
-                                .expect("app error code must not exceed VARINT_MAX"),
-                            final_size: unsafe { VarInt::from_u64_unchecked(final_size) },
-                        }),
-                    ));
+                    ctrl_frames.send_frame([StreamCtlFrame::ResetStream(ResetStreamFrame {
+                        stream_id: sid,
+                        app_error_code: VarInt::from_u64(err_code)
+                            .expect("app error code must not exceed VARINT_MAX"),
+                        final_size: unsafe { VarInt::from_u64_unchecked(final_size) },
+                    })]);
                 }
             }
         });
@@ -581,31 +580,27 @@ impl RawDataStreams {
         // Continuously check whether the MaxStreamData window needs to be updated.
         tokio::spawn({
             let incoming = incoming.clone();
-            let frames = self.reliable_frame_deque.clone();
+            let ctrl_frames = self.ctrl_frames.clone();
             async move {
                 while let Some(max_data) = incoming.need_update_window().await {
-                    frames.lock_guard().push_back(ReliableFrame::Stream(
-                        StreamCtlFrame::MaxStreamData(MaxStreamDataFrame {
-                            stream_id: sid,
-                            max_stream_data: unsafe { VarInt::from_u64_unchecked(max_data) },
-                        }),
-                    ));
+                    ctrl_frames.send_frame([StreamCtlFrame::MaxStreamData(MaxStreamDataFrame {
+                        stream_id: sid,
+                        max_stream_data: unsafe { VarInt::from_u64_unchecked(max_data) },
+                    })]);
                 }
             }
         });
         // 监听是否被应用stop了。如果是，则要发送一个StopSendingFrame
         tokio::spawn({
             let incoming = incoming.clone();
-            let frames = self.reliable_frame_deque.clone();
+            let ctrl_frames = self.ctrl_frames.clone();
             async move {
                 if let Some(err_code) = incoming.is_stopped_by_app().await {
-                    frames.lock_guard().push_back(ReliableFrame::Stream(
-                        StreamCtlFrame::StopSending(StopSendingFrame {
-                            stream_id: sid,
-                            app_err_code: VarInt::from_u64(err_code)
-                                .expect("app error code must not exceed VARINT_MAX"),
-                        }),
-                    ));
+                    ctrl_frames.send_frame([StreamCtlFrame::StopSending(StopSendingFrame {
+                        stream_id: sid,
+                        app_err_code: VarInt::from_u64(err_code)
+                            .expect("app error code must not exceed VARINT_MAX"),
+                    })]);
                 }
             }
         });

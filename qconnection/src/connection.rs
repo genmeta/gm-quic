@@ -18,7 +18,7 @@ use qbase::{
     streamid::Role,
     token::ArcTokenRegistry,
 };
-use qrecovery::{recv::Reader, reliable::ArcReliableFrameDeque, send::Writer};
+use qrecovery::{recv::Reader, reliable::ArcReliableFrameDeque, send::Writer, streams};
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 use raw::RawConnection;
@@ -43,6 +43,8 @@ pub type ArcLocalCids =
     cid::ArcLocalCids<fn() -> ConnectionId, RouterRegistry<ArcReliableFrameDeque>>;
 pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
 pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
+
+pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
 
 enum ConnState {
     Raw(RawConnection),

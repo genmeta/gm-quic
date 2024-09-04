@@ -275,10 +275,14 @@ pub enum Frame {
     Datagram(DatagramFrame, Bytes),
 }
 
+pub trait SendFrame<T> {
+    fn send_frame<I: IntoIterator<Item = T>>(&self, iter: I);
+}
+
 pub trait ReceiveFrame<T> {
     type Output;
 
-    fn recv_frame(&mut self, frame: &T) -> Result<Self::Output, crate::error::Error>;
+    fn recv_frame(&self, frame: &T) -> Result<Self::Output, crate::error::Error>;
 }
 
 pub struct FrameReader {

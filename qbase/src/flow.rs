@@ -144,7 +144,7 @@ impl ArcSendControler {
 impl ReceiveFrame<MaxDataFrame> for ArcSendControler {
     type Output = ();
 
-    fn recv_frame(&mut self, frame: &MaxDataFrame) -> Result<Self::Output, QuicError> {
+    fn recv_frame(&self, frame: &MaxDataFrame) -> Result<Self::Output, QuicError> {
         self.increase_limit(frame.max_data.into_inner());
         Ok(())
     }
@@ -299,7 +299,7 @@ impl ArcRecvController {
 impl ReceiveFrame<DataBlockedFrame> for ArcRecvController {
     type Output = ();
 
-    fn recv_frame(&mut self, _frame: &DataBlockedFrame) -> Result<Self::Output, QuicError> {
+    fn recv_frame(&self, _frame: &DataBlockedFrame) -> Result<Self::Output, QuicError> {
         // Do nothing, just print a log
         Ok(())
     }

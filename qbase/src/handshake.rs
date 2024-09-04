@@ -5,7 +5,7 @@ use std::sync::{
 
 use crate::{
     error::{Error, ErrorKind},
-    frame::{HandshakeDoneFrame, ReceiveFrame},
+    frame::{HandshakeDoneFrame, ReceiveFrame, SendFrame},
     streamid::Role,
 };
 
@@ -35,7 +35,7 @@ impl ClientHandshake {
 #[derive(Debug, Clone)]
 pub struct ServerHandshake<T>
 where
-    T: Extend<HandshakeDoneFrame> + Clone,
+    T: SendFrame<HandshakeDoneFrame> + Clone,
 {
     is_done: Arc<AtomicBool>,
     output: T,
@@ -43,7 +43,7 @@ where
 
 impl<T> ServerHandshake<T>
 where
-    T: Extend<HandshakeDoneFrame> + Clone,
+    T: SendFrame<HandshakeDoneFrame> + Clone,
 {
     fn new(output: T) -> Self {
         ServerHandshake {
@@ -56,13 +56,13 @@ where
         self.is_done.load(Ordering::Acquire)
     }
 
-    fn done(&mut self) {
+    fn done(&self) {
         if self
             .is_done
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            self.output.extend([HandshakeDoneFrame]);
+            self.output.send_frame([HandshakeDoneFrame]);
         }
     }
 }
@@ -70,7 +70,7 @@ where
 #[derive(Debug, Clone)]
 pub enum Handshake<T>
 where
-    T: Extend<HandshakeDoneFrame> + Clone,
+    T: SendFrame<HandshakeDoneFrame> + Clone,
 {
     Client(ClientHandshake),
     Server(ServerHandshake<T>),
@@ -78,7 +78,7 @@ where
 
 impl<T> Handshake<T>
 where
-    T: Extend<HandshakeDoneFrame> + Clone,
+    T: SendFrame<HandshakeDoneFrame> + Clone,
 {
     pub fn new(role: Role, output: T) -> Self {
         match role {
@@ -104,7 +104,7 @@ where
 
     /// Just like `recv_handshake_done_frame`, a client must wait for a HANDSHAKE_DONE frame to be done.
     /// So as a client, it just print a warning log.
-    pub fn done(&mut self) {
+    pub fn done(&self) {
         match self {
             Handshake::Server(h) => h.done(),
             _ => println!("WARN: it doesn't make sense to call done() on a client handshake"),
@@ -125,11 +125,11 @@ where
 /// as a connection error of type PROTOCOL_VIOLATION.
 impl<T> ReceiveFrame<HandshakeDoneFrame> for Handshake<T>
 where
-    T: Extend<HandshakeDoneFrame> + Clone,
+    T: SendFrame<HandshakeDoneFrame> + Clone,
 {
     type Output = ();
 
-    fn recv_frame(&mut self, frame: &HandshakeDoneFrame) -> Result<(), Error> {
+    fn recv_frame(&self, frame: &HandshakeDoneFrame) -> Result<(), Error> {
         match self {
             Handshake::Client(h) => {
                 h.recv_handshake_done_frame(frame);
@@ -149,11 +149,12 @@ mod tests {
     use crate::{
         error::{Error, ErrorKind},
         frame::ReceiveFrame,
+        util::ArcAsyncDeque,
     };
 
     #[test]
     fn test_client_handshake() {
-        let mut handshake = super::Handshake::<Vec<_>>::new_client();
+        let handshake = super::Handshake::<ArcAsyncDeque<_>>::new_client();
         assert!(!handshake.is_handshake_done());
 
         let ret = handshake.recv_frame(&HandshakeDoneFrame);
@@ -163,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_client_handshake_done() {
-        let mut handshake = super::Handshake::<Vec<_>>::new_client();
+        let handshake = super::Handshake::<ArcAsyncDeque<_>>::new_client();
         assert!(!handshake.is_handshake_done());
 
         handshake.done();
@@ -172,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_server_handshake() {
-        let mut handshake = super::Handshake::new_server(Vec::new());
+        let handshake = super::Handshake::new_server(ArcAsyncDeque::new());
         assert!(!handshake.is_handshake_done());
 
         handshake.done();
@@ -181,7 +182,7 @@ mod tests {
 
     #[test]
     fn test_server_recv_handshake_done_frame() {
-        let mut handshake = super::Handshake::new_server(Vec::new());
+        let handshake = super::Handshake::new_server(ArcAsyncDeque::new());
         assert!(!handshake.is_handshake_done());
 
         let ret = handshake.recv_frame(&HandshakeDoneFrame);
@@ -196,9 +197,9 @@ mod tests {
 
     #[test]
     fn test_server_send_handshake_done_frame() {
-        let mut handshake = ServerHandshake::new(Vec::new());
+        let handshake = ServerHandshake::new(ArcAsyncDeque::new());
         handshake.done();
         assert!(handshake.is_handshake_done());
-        assert_eq!(handshake.output, [HandshakeDoneFrame]);
+        assert_eq!(handshake.output.len(), 1);
     }
 }
