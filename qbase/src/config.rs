@@ -80,7 +80,7 @@ impl Default for Parameters {
             initial_max_streams_bidi: VarInt::from_u32(100),
             initial_max_streams_uni: VarInt::from_u32(10),
             ack_delay_exponent: VarInt::from_u32(3),
-            max_ack_delay: VarInt::from_u32(1_000),
+            max_ack_delay: VarInt::from_u32(25),
             disable_active_migration: false,
             preferred_address: None,
             active_connection_id_limit: VarInt::from_u32(2),
