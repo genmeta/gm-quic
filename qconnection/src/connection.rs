@@ -137,7 +137,7 @@ impl ArcConnection {
     // }
 
     pub async fn open_bi_stream(&self) -> io::Result<Option<(Reader, Writer)>> {
-        let (local_params, remote_params, data_streams, conn_error) = {
+        let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let ConnState::Raw(raw_conn) = &*guard else {
                 return Err(io::Error::new(
@@ -147,7 +147,6 @@ impl ArcConnection {
             };
 
             (
-                raw_conn.local_params.clone(),
                 raw_conn.remote_params.clone(),
                 raw_conn.streams.clone(),
                 raw_conn.error.clone(),
@@ -157,7 +156,7 @@ impl ArcConnection {
         let remote_params = remote_params.state().as_ref().cloned().unwrap();
 
         let result = data_streams
-            .open_bi(&local_params, &remote_params)
+            .open_bi(remote_params.initial_max_stream_data_bidi_remote().into())
             .await
             .inspect_err(|e| conn_error.on_error(e.clone()));
         Ok(result?)
@@ -183,7 +182,7 @@ impl ArcConnection {
         let remote_params = remote_params.state().as_ref().cloned().unwrap();
 
         let result = data_streams
-            .open_uni(&remote_params)
+            .open_uni(remote_params.initial_max_stream_data_uni().into())
             .await
             .inspect_err(|e| conn_error.on_error(e.clone()));
         Ok(result?)
@@ -205,8 +204,9 @@ impl ArcConnection {
         let result = data_streams
             .accept_bi()
             .await
-            .inspect_err(|e| conn_error.on_error(e.clone()));
-        Ok(result?)
+            .inspect_err(|e| conn_error.on_error(e.clone()))?;
+        // TODO: writer提供方法，设置初始的发送窗口大小，即remotei.initial_max_stream_data_bidi_local
+        Ok(result)
     }
 
     pub async fn accept_uni_stream(&self) -> io::Result<Reader> {
@@ -225,8 +225,9 @@ impl ArcConnection {
         let result = data_streams
             .accept_uni()
             .await
-            .inspect_err(|e| conn_error.on_error(e.clone()));
-        Ok(result?)
+            .inspect_err(|e| conn_error.on_error(e.clone()))?;
+        // TODO: writer提供方法，设置初始的发送窗口大小，即remotei.initial_max_stream_data_uni
+        Ok(result)
     }
 
     pub fn datagrams(&self) -> io::Result<DatagramFlow> {

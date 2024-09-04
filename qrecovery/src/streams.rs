@@ -6,11 +6,13 @@ use std::{
     task::{Context, Poll},
 };
 
+use bytes::Bytes;
 use deref_derive::Deref;
 use listener::{AcceptBiStream, AcceptUniStream};
 use qbase::{
     config::Parameters,
     error::Error,
+    frame::{ReceiveFrame, StreamCtlFrame, StreamFrame},
     streamid::{Dir, Role},
 };
 
@@ -35,23 +37,18 @@ impl DataStreams {
     }
 
     #[inline]
-    pub fn open_bi<'a>(
-        &'a self,
-        local_params: &'a Parameters,
-        remote_params: &'a Parameters,
-    ) -> OpenBiStream<'a> {
+    pub fn open_bi(&self, snd_wnd_size: u64) -> OpenBiStream {
         OpenBiStream {
-            stream: self,
-            local_params,
-            remote_params,
+            inner: self.0.clone(),
+            snd_wnd_size,
         }
     }
 
     #[inline]
-    pub fn open_uni<'a>(&'a self, remote_params: &'a Parameters) -> OpenUniStream<'a> {
+    pub fn open_uni(&self, snd_wnd_size: u64) -> OpenUniStream {
         OpenUniStream {
-            stream: self,
-            remote_params,
+            inner: self.0.clone(),
+            snd_wnd_size,
         }
     }
 
@@ -76,31 +73,45 @@ impl DataStreams {
     }
 }
 
-pub struct OpenBiStream<'a> {
-    stream: &'a DataStreams,
-    local_params: &'a Parameters,
-    remote_params: &'a Parameters,
-}
+impl ReceiveFrame<StreamCtlFrame> for DataStreams {
+    type Output = ();
 
-impl Future for OpenBiStream<'_> {
-    type Output = Result<Option<(Reader, Writer)>, Error>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.stream
-            .poll_open_bi_stream(cx, self.local_params, self.remote_params)
+    fn recv_frame(&mut self, frame: &StreamCtlFrame) -> Result<Self::Output, Error> {
+        self.0.recv_stream_control(frame)
     }
 }
 
-pub struct OpenUniStream<'a> {
-    stream: &'a DataStreams,
-    remote_params: &'a Parameters,
+impl ReceiveFrame<(StreamFrame, Bytes)> for DataStreams {
+    type Output = usize;
+
+    fn recv_frame(&mut self, frame: &(StreamFrame, Bytes)) -> Result<Self::Output, Error> {
+        self.0.recv_data(frame)
+    }
 }
 
-impl Future for OpenUniStream<'_> {
+pub struct OpenBiStream {
+    inner: Arc<data::RawDataStreams>,
+    snd_wnd_size: u64,
+}
+
+impl Future for OpenBiStream {
+    type Output = Result<Option<(Reader, Writer)>, Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.inner.poll_open_bi_stream(cx, self.snd_wnd_size)
+    }
+}
+
+pub struct OpenUniStream {
+    inner: Arc<data::RawDataStreams>,
+    snd_wnd_size: u64,
+}
+
+impl Future for OpenUniStream {
     type Output = Result<Option<Writer>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.stream.poll_open_uni_stream(cx, self.remote_params)
+        self.inner.poll_open_uni_stream(cx, self.snd_wnd_size)
     }
 }
 

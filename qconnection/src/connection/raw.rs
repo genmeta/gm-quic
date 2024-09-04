@@ -222,6 +222,7 @@ impl RawConnection {
         let (join_0rtt, join_1rtt) = data.build(
             &pathes,
             &handshake,
+            &reliable_frames,
             &streams,
             &datagrams,
             &cid_registry,
@@ -231,8 +232,6 @@ impl RawConnection {
             rcvd_0rtt_packets,
             rcvd_1rtt_packets,
             token_registry,
-            &local_params,
-            remote_params.clone(),
         );
         let join_handles = [join_initial, join_0rtt, join_hs, join_1rtt];
 

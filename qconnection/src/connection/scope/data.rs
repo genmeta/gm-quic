@@ -3,12 +3,11 @@ use std::sync::Arc;
 use bytes::Bytes;
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
-    config::Parameters,
     error::{Error as QuicError, ErrorKind},
     flow,
     frame::{
         AckFrame, BeFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame, ReceiveFrame,
-        ReliableFrame, StreamCtlFrame, StreamFrame,
+        ReliableFrame, StreamFrame,
     },
     handshake::Handshake,
     packet::{
@@ -21,7 +20,6 @@ use qbase::{
         DataPacket, PacketNumber,
     },
     token::ArcTokenRegistry,
-    util::AsyncCell,
 };
 use qrecovery::{
     reliable::{rcvdpkt::ArcRcvdPktRecords, ArcReliableFrameDeque, GuaranteedFrame},
@@ -65,6 +63,7 @@ impl DataScope {
         &self,
         pathes: &ArcPathes,
         handshake: &Handshake<ArcReliableFrameDeque>,
+        reliable_frames: &ArcReliableFrameDeque,
         streams: &DataStreams,
         datagrams: &DatagramFlow,
         cid_registry: &CidRegistry,
@@ -74,8 +73,6 @@ impl DataScope {
         rcvd_0rtt_packets: RcvdPackets,
         rcvd_1rtt_packets: RcvdPackets,
         recv_new_token: ArcTokenRegistry,
-        local_params: &Parameters,
-        remote_params: Arc<AsyncCell<Parameters>>,
     ) -> (JoinHandle<RcvdPackets>, JoinHandle<RcvdPackets>) {
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
         // 连接级的
@@ -137,16 +134,6 @@ impl DataScope {
                 }
             }
         };
-        let receive_stream_ctrl_frame = {
-            let streams = streams.clone();
-            let local_params = *local_params;
-            let remote_params = remote_params.clone();
-            move |frame: &StreamCtlFrame| {
-                let remote_params = remote_params.state();
-                let remote_params = remote_params.as_ref().unwrap();
-                streams.recv_stream_control(&local_params, remote_params, frame)
-            }
-        };
 
         // Assemble the pipelines of frame processing
         // TODO: pipe rcvd_new_token_frames
@@ -157,18 +144,17 @@ impl DataScope {
         pipe!(rcvd_data_blocked_frames |> flow_ctrl.recver, recv_frame);
         pipe!(@error(conn_error) rcvd_handshake_done_frames |> *handshake, recv_frame);
         pipe!(@error(conn_error) rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_frame);
-        pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> receive_stream_ctrl_frame);
+        pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> *streams, recv_frame);
         // pipe!(@error(conn_error) rcvd_stream_frames |> receive_stream_frame);
         pipe!(@error(conn_error) rcvd_datagram_frames |> *datagrams, recv_frame);
         pipe!(rcvd_ack_frames |> on_data_acked);
         pipe!(rcvd_new_token_frames |> recv_new_token,recv_frame);
 
         self.handle_stream_frame_with_flow_ctrl(
+            reliable_frames,
             streams,
             flow_ctrl,
             conn_error.clone(),
-            *local_params,
-            remote_params,
             rcvd_stream_frames,
         );
 
@@ -333,20 +319,19 @@ impl DataScope {
 
     pub fn handle_stream_frame_with_flow_ctrl(
         &self,
+        reliable_frames: &ArcReliableFrameDeque,
         streams: &DataStreams,
         flow_ctrl: &flow::FlowController,
         conn_error: ConnError,
-        local_params: Parameters,
-        remote_params: Arc<AsyncCell<Parameters>>,
         mut rcvd_stream_frames: mpsc::UnboundedReceiver<(StreamFrame, Bytes)>,
     ) {
         // Sender Would Block
         tokio::spawn({
             let flow_ctrl = flow_ctrl.clone();
-            let frames = streams.reliable_frame_deque.clone();
+            let reliable_frames = reliable_frames.clone();
             async move {
                 while let Ok(frame) = flow_ctrl.sender().would_block().await {
-                    frames
+                    reliable_frames
                         .lock_guard()
                         .push_back(ReliableFrame::DataBlocked(frame));
                 }
@@ -356,10 +341,12 @@ impl DataScope {
         //  Recver Increasing Flow Control Limits
         tokio::spawn({
             let flow_ctrl = flow_ctrl.clone();
-            let frames = streams.reliable_frame_deque.clone();
+            let reliable_frames = reliable_frames.clone();
             async move {
                 while let Some(frame) = flow_ctrl.recver().incr_limit().await {
-                    frames.lock_guard().push_back(ReliableFrame::MaxData(frame));
+                    reliable_frames
+                        .lock_guard()
+                        .push_back(ReliableFrame::MaxData(frame));
                 }
             }
         });
@@ -370,16 +357,14 @@ impl DataScope {
             let flow_ctrl = flow_ctrl.clone();
             let conn_error = conn_error.clone();
             async move {
-                while let Some((frame, data)) = rcvd_stream_frames.next().await {
-                    let remote_params = remote_params.state();
-                    let remote_params = remote_params.as_ref().unwrap();
-                    match streams.recv_data(&local_params, remote_params, &frame, data) {
+                while let Some(data_frame) = rcvd_stream_frames.next().await {
+                    match streams.recv_data(&data_frame) {
                         Ok(new_data_size) => {
                             if let Err(e) = flow_ctrl.recver().on_new_rcvd(new_data_size) {
                                 conn_error.on_error(QuicError::new(
                                     ErrorKind::FlowControl,
-                                    frame.frame_type(),
-                                    format!("{} flow control overflow: {}", frame.id, e),
+                                    data_frame.0.frame_type(),
+                                    format!("{} flow control overflow: {}", data_frame.0.id, e),
                                 ));
                             }
                         }

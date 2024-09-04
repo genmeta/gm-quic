@@ -24,14 +24,14 @@ pub(super) struct Recv {
 }
 
 impl Recv {
-    pub(super) fn with(max_data_size: u64) -> Self {
+    pub(super) fn with(buf_size: u64) -> Self {
         Self {
             rcvbuf: rcvbuf::RecvBuf::default(),
             read_waker: None,
             stop_state: None,
             stop_waker: None,
             largest_data_offset: 0,
-            max_data_size,
+            max_data_size: buf_size,
             buf_exceeds_half_waker: None,
         }
     }
@@ -351,8 +351,8 @@ pub(super) enum Recver {
 pub(super) type ArcRecver = Arc<Mutex<io::Result<Recver>>>;
 
 impl Recver {
-    pub(super) fn new(max_data_size: u64) -> Self {
-        Self::Recv(Recv::with(max_data_size))
+    pub(super) fn new(buf_size: u64) -> Self {
+        Self::Recv(Recv::with(buf_size))
     }
 }
 
