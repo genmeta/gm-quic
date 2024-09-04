@@ -60,10 +60,10 @@ impl Recv {
         Ok(new_data_size)
     }
 
-    pub(super) fn poll_read<T: BufMut>(
+    pub(super) fn poll_read(
         &mut self,
         cx: &mut Context<'_>,
-        buf: &mut T,
+        buf: &mut impl BufMut,
     ) -> Poll<io::Result<()>> {
         if self.rcvbuf.is_readable() {
             self.rcvbuf.read(buf);
@@ -117,6 +117,9 @@ impl Recv {
 
     pub(super) fn determin_size(&mut self, total_size: u64) -> SizeKnown {
         if let Some(waker) = self.buf_exceeds_half_waker.take() {
+            waker.wake();
+        }
+        if let Some(waker) = self.read_waker.take() {
             waker.wake();
         }
         SizeKnown {
@@ -217,10 +220,10 @@ impl SizeKnown {
         }
     }
 
-    pub(super) fn poll_read<T: BufMut>(
+    pub(super) fn poll_read(
         &mut self,
         cx: &mut Context<'_>,
-        buf: &mut T,
+        buf: &mut impl BufMut,
     ) -> Poll<io::Result<()>> {
         if self.rcvbuf.is_readable() {
             self.rcvbuf.read(buf);
@@ -283,11 +286,18 @@ impl SizeKnown {
 
 impl From<&mut SizeKnown> for DataRcvd {
     fn from(size_known: &mut SizeKnown) -> Self {
-        if let Some(waker) = size_known.stop_waker.take() {
-            waker.wake();
-        }
+        size_known.wake_all();
         DataRcvd {
             rcvbuf: std::mem::take(&mut size_known.rcvbuf),
+        }
+    }
+}
+
+impl From<SizeKnown> for DataRcvd {
+    fn from(mut size_known: SizeKnown) -> Self {
+        size_known.wake_all();
+        DataRcvd {
+            rcvbuf: size_known.rcvbuf,
         }
     }
 }
@@ -315,7 +325,7 @@ impl DataRcvd {
     /// Unlike the previous states, when there is no more data, it no longer returns
     /// "Pending" but instead returns "Ready". However, in reality, nothing has been
     /// read. This kind of result typically indicates the end.
-    pub(super) fn poll_read<T: BufMut>(&mut self, buf: &mut T) {
+    pub(super) fn poll_read(&mut self, buf: &mut impl BufMut) {
         self.rcvbuf.read(buf);
     }
 
