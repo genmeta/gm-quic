@@ -5,7 +5,7 @@ use deref_derive::Deref;
 use qbase::{
     cid::{ConnectionId, UniqueCid},
     error::Error,
-    frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame},
+    frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     packet::{header::GetDcid, long, DataHeader, DataPacket},
 };
 use qudp::ArcUsc;
@@ -53,7 +53,7 @@ impl ArcRouter {
         packet_entries: [PacketEntry; 4],
     ) -> RouterRegistry<ISSUED>
     where
-        ISSUED: Extend<NewConnectionIdFrame>,
+        ISSUED: SendFrame<NewConnectionIdFrame>,
     {
         self.0.insert(scid, packet_entries.clone());
         RouterRegistry {
@@ -78,14 +78,15 @@ pub struct RouterRegistry<ISSUED> {
     packet_entries: [PacketEntry; 4],
 }
 
-impl<T> Extend<NewConnectionIdFrame> for RouterRegistry<T>
+impl<T> SendFrame<NewConnectionIdFrame> for RouterRegistry<T>
 where
-    T: Extend<NewConnectionIdFrame>,
+    T: SendFrame<NewConnectionIdFrame>,
 {
-    fn extend<I: IntoIterator<Item = NewConnectionIdFrame>>(&mut self, iter: I) {
-        self.issued_cids.extend(iter.into_iter().inspect(|frame| {
-            self.router.insert(frame.id, self.packet_entries.clone());
-        }))
+    fn send_frame<I: IntoIterator<Item = NewConnectionIdFrame>>(&self, iter: I) {
+        self.issued_cids
+            .send_frame(iter.into_iter().inspect(|frame| {
+                self.router.insert(frame.id, self.packet_entries.clone());
+            }))
     }
 }
 
@@ -107,7 +108,7 @@ where
 {
     type Output = ();
 
-    fn recv_frame(&mut self, frame: &RetireConnectionIdFrame) -> Result<Self::Output, Error> {
+    fn recv_frame(&self, frame: &RetireConnectionIdFrame) -> Result<Self::Output, Error> {
         if let Some(cid) = self.local_cids.recv_frame(frame)? {
             self.router.remove(&cid);
         }

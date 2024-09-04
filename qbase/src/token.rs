@@ -109,7 +109,7 @@ pub enum TokenRegistry {
 impl ReceiveFrame<NewTokenFrame> for ArcTokenRegistry {
     type Output = ();
 
-    fn recv_frame(&mut self, frame: &NewTokenFrame) -> Result<Self::Output, crate::error::Error> {
+    fn recv_frame(&self, frame: &NewTokenFrame) -> Result<Self::Output, crate::error::Error> {
         let guard = self.0.lock().unwrap();
         match &*guard {
             TokenRegistry::Client((server_name, client)) => {

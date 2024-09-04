@@ -10,7 +10,7 @@ use deref_derive::{Deref, DerefMut};
 use super::ConnectionId;
 use crate::{
     error::Error,
-    frame::{BeFrame, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame},
+    frame::{BeFrame, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     token::ResetToken,
     util::{IndexDeque, RawAsyncCell},
     varint::{VarInt, VARINT_MAX},
@@ -19,7 +19,7 @@ use crate::{
 #[derive(Debug)]
 pub struct RawRemoteCids<RETIRED>
 where
-    RETIRED: Extend<RetireConnectionIdFrame> + Clone,
+    RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
     // the cid issued by the peer, the sequence number maybe not continuous
     // since the disordered NewConnectionIdFrame
@@ -36,7 +36,7 @@ where
 
 impl<RETIRED> RawRemoteCids<RETIRED>
 where
-    RETIRED: Extend<RetireConnectionIdFrame> + Clone,
+    RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
     fn new(initial_dcid: ConnectionId, active_cid_limit: u64, retired_cids: RETIRED) -> Self {
         let mut cid_deque = IndexDeque::default();
@@ -130,7 +130,7 @@ where
             // it is not necessary to resize the deque, because all elements will be drained
             // // self.cid_cells.resize(seq, ArcCidCell::default()).expect("");
             self.retired_cids
-                .extend((self.cid_cells.offset()..seq).map(|seq| {
+                .send_frame((self.cid_cells.offset()..seq).map(|seq| {
                     RetireConnectionIdFrame {
                         sequence: VarInt::from_u64(seq)
                             .expect("Sequence of connection id is very hard to exceed VARINT_MAX"),
@@ -159,7 +159,7 @@ where
                 drop(guard);
 
                 // retire the old cid and prepare to inform the peer with a RetireConnectionIdFrame
-                self.retired_cids.extend([RetireConnectionIdFrame {
+                self.retired_cids.send_frame([RetireConnectionIdFrame {
                     sequence: VarInt::from_u64(seq)
                         .expect("Sequence of connection id is very hard to exceed VARINT_MAX"),
                 }]);
@@ -173,7 +173,7 @@ where
             if max_applied < seq {
                 self.cid_cells.reset_offset(seq);
                 // even the cid that has not been applied is retired right now
-                self.retired_cids.extend((max_applied..seq).map(|seq| {
+                self.retired_cids.send_frame((max_applied..seq).map(|seq| {
                     RetireConnectionIdFrame {
                         sequence: VarInt::from_u64(seq)
                             .expect("Sequence of connection id is very hard to exceed VARINT_MAX"),
@@ -204,11 +204,11 @@ where
 #[derive(Debug, Clone)]
 pub struct ArcRemoteCids<RETIRED>(Arc<Mutex<RawRemoteCids<RETIRED>>>)
 where
-    RETIRED: Extend<RetireConnectionIdFrame> + Clone;
+    RETIRED: SendFrame<RetireConnectionIdFrame> + Clone;
 
 impl<RETIRED> ArcRemoteCids<RETIRED>
 where
-    RETIRED: Extend<RetireConnectionIdFrame> + Clone,
+    RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
     pub fn new(initial_dcid: ConnectionId, active_cid_limit: u64, retired_cids: RETIRED) -> Self {
         Self(Arc::new(Mutex::new(RawRemoteCids::new(
@@ -237,11 +237,11 @@ where
 
 impl<RETIRED> ReceiveFrame<NewConnectionIdFrame> for ArcRemoteCids<RETIRED>
 where
-    RETIRED: Extend<RetireConnectionIdFrame> + Clone,
+    RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
     type Output = Option<ResetToken>;
 
-    fn recv_frame(&mut self, frame: &NewConnectionIdFrame) -> Result<Self::Output, Error> {
+    fn recv_frame(&self, frame: &NewConnectionIdFrame) -> Result<Self::Output, Error> {
         self.0.lock().unwrap().recv_new_cid_frame(frame)
     }
 }
@@ -282,7 +282,7 @@ impl CidState {
 #[derive(Debug, Deref, DerefMut)]
 struct CidCell<RETIRED>
 where
-    RETIRED: Extend<RetireConnectionIdFrame>,
+    RETIRED: SendFrame<RetireConnectionIdFrame>,
 {
     retired_cids: RETIRED,
     // The sequence number of the connection ID had beed assigned or to be allocated
@@ -294,11 +294,11 @@ where
 #[derive(Debug, Clone)]
 pub struct ArcCidCell<RETIRED>(Arc<Mutex<CidCell<RETIRED>>>)
 where
-    RETIRED: Extend<RetireConnectionIdFrame> + Clone;
+    RETIRED: SendFrame<RetireConnectionIdFrame> + Clone;
 
 impl<RETIRED> ArcCidCell<RETIRED>
 where
-    RETIRED: Extend<RetireConnectionIdFrame> + Clone,
+    RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
     fn new(retired_cids: RETIRED, seq: u64, state: CidState) -> Self {
         Self(Arc::new(Mutex::new(CidCell {
@@ -330,14 +330,14 @@ where
                 .expect("Sequence of connection id is very hard to exceed VARINT_MAX");
             guard
                 .retired_cids
-                .extend([RetireConnectionIdFrame { sequence }]);
+                .send_frame([RetireConnectionIdFrame { sequence }]);
         }
     }
 }
 
 impl<RETIRED> Future for ArcCidCell<RETIRED>
 where
-    RETIRED: Extend<RetireConnectionIdFrame> + Clone,
+    RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
     type Output = Option<ConnectionId>;
 

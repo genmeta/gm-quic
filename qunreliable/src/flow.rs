@@ -122,7 +122,7 @@ impl ReceiveFrame<(DatagramFrame, bytes::Bytes)> for DatagramFlow {
 
     #[inline]
     fn recv_frame(
-        &mut self,
+        &self,
         (frame, body): &(DatagramFrame, bytes::Bytes),
     ) -> Result<Self::Output, Error> {
         self.0.reader.recv_datagram(frame, body.clone())

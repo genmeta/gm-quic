@@ -11,14 +11,14 @@ use qbase::{
     token::{ArcTokenRegistry, TokenRegistry},
     util::AsyncCell,
 };
-use qrecovery::{reliable::ArcReliableFrameDeque, streams::DataStreams};
+use qrecovery::reliable::ArcReliableFrameDeque;
 use qunreliable::DatagramFlow;
 use rustls::quic::Keys;
 use tokio::{sync::Notify, task::JoinHandle};
 
 use super::{
     scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope},
-    ArcLocalCids, ArcRemoteCids, CidRegistry, RcvdPackets,
+    ArcLocalCids, ArcRemoteCids, CidRegistry, DataStreams, RcvdPackets,
 };
 use crate::{
     error::ConnError,

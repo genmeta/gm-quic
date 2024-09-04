@@ -5,7 +5,7 @@ use std::{
 
 use deref_derive::{Deref, DerefMut};
 use enum_dispatch::enum_dispatch;
-use qbase::frame::{io::WriteFrame, BeFrame, CryptoFrame, ReliableFrame, StreamFrame};
+use qbase::frame::{io::WriteFrame, BeFrame, CryptoFrame, ReliableFrame, SendFrame, StreamFrame};
 
 pub mod rcvdpkt;
 pub mod sentpkt;
@@ -53,11 +53,11 @@ where
 ///
 /// # Example
 /// ```rust
-/// use qbase::frame::HandshakeDoneFrame;
+/// use qbase::frame::{HandshakeDoneFrame, SendFrame};
 /// use qrecovery::reliable::ArcReliableFrameDeque;
 ///
 /// let mut reliable_frame_deque = ArcReliableFrameDeque::with_capacity(10);
-/// reliable_frame_deque.extend([HandshakeDoneFrame]);
+/// reliable_frame_deque.send_frame([HandshakeDoneFrame]);
 ///
 /// let reliable_frame_deque = ArcReliableFrameDeque::with_capacity(10);
 /// reliable_frame_deque.lock_guard().extend([HandshakeDoneFrame]);
@@ -81,11 +81,11 @@ impl ArcReliableFrameDeque {
     }
 }
 
-impl<T> Extend<T> for ArcReliableFrameDeque
+impl<T> SendFrame<T> for ArcReliableFrameDeque
 where
     T: Into<ReliableFrame>,
 {
-    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+    fn send_frame<I: IntoIterator<Item = T>>(&self, iter: I) {
         self.lock_guard().extend(iter);
     }
 }

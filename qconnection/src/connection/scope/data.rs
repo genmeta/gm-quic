@@ -24,14 +24,14 @@ use qbase::{
 use qrecovery::{
     reliable::{rcvdpkt::ArcRcvdPktRecords, ArcReliableFrameDeque, GuaranteedFrame},
     space::{DataSpace, Epoch},
-    streams::{crypto::CryptoStream, DataStreams},
+    streams::crypto::CryptoStream,
 };
 use qunreliable::DatagramFlow;
 use tokio::{sync::Notify, task::JoinHandle};
 
 use super::any;
 use crate::{
-    connection::{transmit::data::DataSpaceReader, CidRegistry, RcvdPackets},
+    connection::{transmit::data::DataSpaceReader, CidRegistry, DataStreams, RcvdPackets},
     error::ConnError,
     path::{ArcPathes, RawPath, SendBuffer},
     pipe,
@@ -258,7 +258,7 @@ impl DataScope {
         tokio::spawn({
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.one_rtt_keys.clone();
-            let mut handshake = handshake.clone();
+            let handshake = handshake.clone();
             async move {
                 while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
                 {

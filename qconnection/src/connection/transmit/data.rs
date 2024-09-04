@@ -17,12 +17,12 @@ use qbase::{
 use qrecovery::{
     reliable::{ArcReliableFrameDeque, GuaranteedFrame},
     space::DataSpace,
-    streams::{crypto::CryptoStreamOutgoing, DataStreams},
+    streams::crypto::CryptoStreamOutgoing,
 };
 use qunreliable::DatagramFlow;
 use rustls::quic::HeaderProtectionKey;
 
-use crate::path::SendBuffer;
+use crate::{connection::DataStreams, path::SendBuffer};
 
 pub struct DataSpaceReader {
     pub(crate) space: DataSpace,

@@ -206,10 +206,7 @@ mod recv {
     impl ReceiveFrame<(CryptoFrame, Bytes)> for CryptoStreamIncoming {
         type Output = ();
 
-        fn recv_frame(
-            &mut self,
-            (frame, data): &(CryptoFrame, Bytes),
-        ) -> Result<Self::Output, Error> {
+        fn recv_frame(&self, (frame, data): &(CryptoFrame, Bytes)) -> Result<Self::Output, Error> {
             self.0
                 .lock()
                 .unwrap()

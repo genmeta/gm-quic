@@ -8,6 +8,8 @@ use std::{
 
 use futures::Stream;
 
+use crate::frame::SendFrame;
+
 #[derive(Debug)]
 pub struct AsyncDeque<T> {
     queue: Option<VecDeque<T>>,
@@ -142,6 +144,18 @@ impl<T: Unpin> Stream for AsyncDeque<T> {
 
 impl<T> Extend<T> for ArcAsyncDeque<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        let mut guard = self.0.lock().unwrap();
+        if let Some(queue) = &mut guard.queue {
+            queue.extend(iter);
+            if let Some(waker) = guard.waker.take() {
+                waker.wake();
+            }
+        }
+    }
+}
+
+impl<F> SendFrame<F> for ArcAsyncDeque<F> {
+    fn send_frame<I: IntoIterator<Item = F>>(&self, iter: I) {
         let mut guard = self.0.lock().unwrap();
         if let Some(queue) = &mut guard.queue {
             queue.extend(iter);
