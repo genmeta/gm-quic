@@ -23,17 +23,24 @@ echo "quic.test.net 127.0.0.1" >> /etc/hosts
 ```
 
 接下来编译并启动`quinn`的server，注意启动的时候，要将预先生成的密钥文件指定进去，该server响应HTTP/1.1请求的静态文件夹也可以指定：
+
 ```
-cargo run --example server -- ./  \
-  --root ${path_to}/www \
-  --key ${path_to}/keychain/quic.test.net/quic-test-net-ECC.key \
-  --cert ${path_to}/keychain/quic.test.net/quic-test-net-ECC.crt \
+RUST_LOG=DEBUG cargo run --example server -- ${path_to}/quinn     \
+  --key ${path_to}/keychain/quic.test.net/quic-test-net-ECC.key   \
+  --cert ${path_to}/keychain/quic.test.net/quic-test-net-ECC.crt  \
+  --listen '0.0.0.0:4433                                          \
   --keylog
 ```
 
 ## 使用client测试
 
 此时，可启动`gm-quic`的client去尝试连接`quinn`的server。但要注意，客户端需要用预生成的根证书来验证服务端的证书，不可自己生成，亦不可使用系统内部预定的根证书，除非将预生成的根证书安装到系统里。
+
+```
+cargo run --example client -- --domain=quic.test.net                    \
+  --root=${path_to}/gm-quic/quic/examples/keychain/root/rootCA-ECC.crt  \
+  --addr=127.0.0.1:4433
+```
 
 ## wireshark抓包
 

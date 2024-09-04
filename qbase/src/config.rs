@@ -72,17 +72,17 @@ impl Default for Parameters {
     fn default() -> Self {
         Self {
             original_destination_connection_id: None,
-            max_idle_timeout: Duration::from_secs(0),
+            max_idle_timeout: Duration::from_secs(10_000),
             statelss_reset_token: None,
-            max_udp_payload_size: VarInt::from_u32(65527), // 65535 - 8
-            initial_max_data: VarInt::default(),
-            initial_max_stream_data_bidi_local: VarInt::default(),
-            initial_max_stream_data_bidi_remote: VarInt::default(),
-            initial_max_stream_data_uni: VarInt::default(),
-            initial_max_streams_bidi: VarInt::default(),
-            initial_max_streams_uni: VarInt::default(),
+            max_udp_payload_size: VarInt::from_u32(1472), // 65535 - 8
+            initial_max_data: VarInt::from_u32(65536),
+            initial_max_stream_data_bidi_local: VarInt::from_u32(1_250_000),
+            initial_max_stream_data_bidi_remote: VarInt::from_u32(1_250_000),
+            initial_max_stream_data_uni: VarInt::from_u32(1_250_000),
+            initial_max_streams_bidi: VarInt::from_u32(100),
+            initial_max_streams_uni: VarInt::from_u32(10),
             ack_delay_exponent: VarInt::from_u32(3),
-            max_ack_delay: VarInt::from_u32(25),
+            max_ack_delay: VarInt::from_u32(1_000),
             disable_active_migration: false,
             preferred_address: None,
             active_connection_id_limit: VarInt::from_u32(2),
@@ -355,15 +355,15 @@ mod test {
         let orgin_cid = be_connection_id(&[0x04, 0x05, 0x06, 0x07, 0x08]).unwrap().1;
         let params = ServerParameters::builder()
             .original_destination_connection_id(orgin_cid)
-            .max_idle_timeout(Duration::from_secs(0x12345678))
+            .max_idle_timeout(Duration::from_secs(10_000))
             .statelss_reset_token(ResetToken::new(&[0x01; RESET_TOKEN_SIZE]))
-            .max_udp_payload_size(VarInt::from_u32(0x1234))
-            .initial_max_data(VarInt::from_u32(0x1234))
-            .initial_max_stream_data_bidi_local(VarInt::from_u32(0))
-            .initial_max_stream_data_bidi_remote(VarInt::from_u32(0))
-            .initial_max_stream_data_uni(VarInt::from_u32(0))
-            .initial_max_streams_bidi(VarInt::from_u32(0x1234))
-            .initial_max_streams_uni(VarInt::from_u32(0x1234))
+            .max_udp_payload_size(VarInt::from_u32(1472))
+            .initial_max_data(VarInt::from_u32(65536))
+            .initial_max_stream_data_bidi_local(VarInt::from_u32(1_250_000))
+            .initial_max_stream_data_bidi_remote(VarInt::from_u32(1_250_000))
+            .initial_max_stream_data_uni(VarInt::from_u32(1_250_000))
+            .initial_max_streams_bidi(VarInt::from_u32(100))
+            .initial_max_streams_uni(VarInt::from_u32(10))
             .ack_delay_exponent(VarInt::from_u32(0x12))
             .max_ack_delay(VarInt::from_u32(0x98))
             .disable_active_migration(true)

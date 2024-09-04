@@ -1,3 +1,4 @@
+use core::str;
 use std::{fs::File, io::BufReader, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
@@ -65,9 +66,16 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
 
     let quic_conn = client.connect(args.domain, args.addr).unwrap();
     let quic_streams = quic_conn.streams()?;
+    let mut counter = 0;
     loop {
         let mut input = String::new();
-        let _n = std::io::stdin().read_line(&mut input).unwrap();
+
+        if counter == 0 {
+            input = "/README.md".to_string();
+            counter += 1;
+        } else {
+            let _n = std::io::stdin().read_line(&mut input).unwrap();
+        }
 
         let content = input.trim();
         if content.is_empty() {
@@ -86,19 +94,22 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             // 模拟发送一个请求
             let request = format!("GET {}\r\n", input.trim());
+            eprintln!("Request: {request}");
             stream_writer.write_all(request.as_bytes()).await.unwrap();
             stream_writer.shutdown().await.unwrap();
 
             // 读取响应
             let mut response = [0u8; 1024];
+            eprint!("Response: ");
             loop {
                 let n = stream_reader.read(&mut response[..]).await?;
                 if n == 0 {
                     break;
                 }
 
-                eprint!("Response: {:?}", &response[..n]);
+                eprint!("{}", str::from_utf8(&response[..n]).unwrap());
             }
+            eprintln!();
             Ok::<(), std::io::Error>(())
         });
     }
