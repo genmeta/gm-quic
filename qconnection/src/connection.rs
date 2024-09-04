@@ -154,7 +154,7 @@ impl ArcConnection {
             )
         };
 
-        let remote_params = { remote_params.wait().await.as_ref().cloned().unwrap() };
+        let remote_params = remote_params.state().as_ref().cloned().unwrap();
 
         let result = data_streams
             .open_bi(&local_params, &remote_params)
@@ -180,7 +180,7 @@ impl ArcConnection {
             )
         };
 
-        let remote_params = { remote_params.wait().await.as_ref().cloned().unwrap() };
+        let remote_params = remote_params.state().as_ref().cloned().unwrap();
 
         let result = data_streams
             .open_uni(&remote_params)

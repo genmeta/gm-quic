@@ -80,7 +80,7 @@ impl Default for Parameters {
             initial_max_streams_bidi: VarInt::from_u32(100),
             initial_max_streams_uni: VarInt::from_u32(10),
             ack_delay_exponent: VarInt::from_u32(3),
-            max_ack_delay: VarInt::from_u32(25),
+            max_ack_delay: VarInt::from_u32(1000),
             disable_active_migration: false,
             preferred_address: None,
             active_connection_id_limit: VarInt::from_u32(2),
@@ -103,8 +103,8 @@ macro_rules! generate_validate {
                 if self.ack_delay_exponent > 20 {
                     return Err("ack_delay_exponent must be at most 20");
                 }
-                if self.max_ack_delay > 214 {
-                    return Err("max_ack_delay must be at most 214");
+                if self.max_ack_delay > 2u64.pow(14) {
+                    return Err("max_ack_delay must be at most 2^14");
                 }
                 if self.active_connection_id_limit < 2 {
                     return Err("active_connection_id_limit must be at least 2");
@@ -399,11 +399,6 @@ mod test {
 
         let build_result = ClientParameters::builder()
             .ack_delay_exponent(VarInt::from_u32(21))
-            .build();
-        assert!(build_result.is_err());
-
-        let build_result = ClientParameters::builder()
-            .max_ack_delay(VarInt::from_u32(215))
             .build();
         assert!(build_result.is_err());
 
