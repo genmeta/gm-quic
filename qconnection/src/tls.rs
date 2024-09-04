@@ -218,7 +218,10 @@ impl ArcTlsSession {
                     }
 
                     if let Some(params) = tls_session.get_transport_parameters() {
-                        _ = remote_params.write(params);
+                        match params {
+                            Ok(params) => _ = remote_params.write(params),
+                            Err(error) => conn_error.on_error(error),
+                        }
                     }
                 }
             })
@@ -291,11 +294,26 @@ impl ArcTlsSession {
         None
     }
 
-    fn get_transport_parameters(&self) -> Option<Parameters> {
+    fn get_transport_parameters(&self) -> Option<Result<Parameters, Error>> {
         let mut guard = self.0.lock().unwrap();
         if let Ok(ref mut tls_session) = guard.deref_mut() {
             let raw = tls_session.tls_conn.quic_transport_parameters()?;
-            be_parameters(raw).ok().map(|(_, p)| p)
+            let params = match be_parameters(raw) {
+                Ok((_, params)) => params,
+                Err(e) => {
+                    return Some(Err(Error::with_default_fty(
+                        ErrorKind::Internal,
+                        e.to_string(),
+                    )))
+                }
+            };
+            if let Err(reason) = params.validate() {
+                return Some(Err(Error::with_default_fty(
+                    ErrorKind::TransportParameter,
+                    reason,
+                )));
+            }
+            Some(Ok(params))
         } else {
             None
         }

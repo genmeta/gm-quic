@@ -16,7 +16,8 @@ pub enum RawAsyncCell<T> {
 impl<T> RawAsyncCell<T> {
     /// Returns `true` if the async cell state is [`None`].
     ///
-    /// [`None`]: AsyncCellState::None
+    /// [`None`]: RawAsyncCell::None
+    #[inline]
     #[must_use]
     pub fn is_none(&self) -> bool {
         matches!(self, Self::None)
@@ -24,7 +25,8 @@ impl<T> RawAsyncCell<T> {
 
     /// Returns `true` if the async cell state is [`Demand`].
     ///
-    /// [`Demand`]: AsyncCellState::Demand
+    /// [`Demand`]: RawAsyncCell::Demand
+    #[inline]
     #[must_use]
     pub fn is_demand(&self) -> bool {
         matches!(self, Self::Demand(..))
@@ -32,7 +34,8 @@ impl<T> RawAsyncCell<T> {
 
     /// Returns `true` if the async cell state is [`Ready`].
     ///
-    /// [`Ready`]: AsyncCellState::Ready
+    /// [`Ready`]: RawAsyncCell::Ready
+    #[inline]
     #[must_use]
     pub fn is_ready(&self) -> bool {
         matches!(self, Self::Ready(..))
@@ -40,7 +43,8 @@ impl<T> RawAsyncCell<T> {
 
     /// Returns `true` if the async cell state is [`Invalid`].
     ///
-    /// [`Invalid`]: AsyncCellState::Invalid
+    /// [`Invalid`]: RawAsyncCell::Invalid
+    #[inline]
     #[must_use]
     pub fn is_invalid(&self) -> bool {
         matches!(self, Self::Invalid)
@@ -48,8 +52,9 @@ impl<T> RawAsyncCell<T> {
 
     /// Replace the current value with a new one directly with out wakeup the consumer
     ///
-    /// be different from [`AsyncCellState::write_option`], this method will not
-    /// wake the consumer though the state is [`AsyncCellState::Demand`] and the new value is not [`None`]
+    /// be different from [`RawAsyncCell::write`], this method will not
+    /// wake the consumer though the state is [`RawAsyncCell::Demand`] and the new value is not [`None`]
+    #[inline]
     pub fn repace(&mut self, opt: Option<T>) -> Result<Option<T>, Option<T>> {
         if self.is_invalid() {
             return Err(opt);
@@ -61,6 +66,7 @@ impl<T> RawAsyncCell<T> {
         Ok(previous)
     }
 
+    #[inline]
     pub fn write(&mut self, item: T) -> Result<Option<T>, T> {
         if let RawAsyncCell::Invalid = self {
             return Err(item);
@@ -75,6 +81,7 @@ impl<T> RawAsyncCell<T> {
         }
     }
 
+    #[inline]
     pub fn wtite_if<F>(&mut self, item: T, predicate: F) -> Result<Option<T>, T>
     where
         F: FnOnce(&Option<T>) -> bool,
@@ -96,6 +103,7 @@ impl<T> RawAsyncCell<T> {
         }
     }
 
+    #[inline]
     pub fn take(&mut self) -> Option<T> {
         match std::mem::replace(self, RawAsyncCell::None) {
             RawAsyncCell::None => None,
@@ -111,6 +119,7 @@ impl<T> RawAsyncCell<T> {
         }
     }
 
+    #[inline]
     pub fn poll_wait(&mut self, cx: &mut Context<'_>) -> Poll<&mut Self> {
         match self {
             RawAsyncCell::None | RawAsyncCell::Demand(..) => {
@@ -121,6 +130,7 @@ impl<T> RawAsyncCell<T> {
         }
     }
 
+    #[inline]
     pub fn invalid(&mut self) {
         let previous = std::mem::replace(self, RawAsyncCell::Invalid);
         if let RawAsyncCell::Demand(waker) = previous {
@@ -128,6 +138,7 @@ impl<T> RawAsyncCell<T> {
         }
     }
 
+    #[inline]
     pub fn as_ref(&self) -> Option<&T> {
         match self {
             RawAsyncCell::Ready(item) => Some(item),
@@ -135,6 +146,7 @@ impl<T> RawAsyncCell<T> {
         }
     }
 
+    #[inline]
     pub fn as_mut(&mut self) -> Option<&mut T> {
         match self {
             RawAsyncCell::Ready(item) => Some(item),
@@ -219,12 +231,14 @@ impl<T> AsyncCell<T> {
         self.state.lock().unwrap()
     }
 
+    #[inline]
     pub fn poll_wait(&self, cx: &mut Context<'_>) -> Poll<MutexGuard<'_, RawAsyncCell<T>>> {
         let mut guard = self.state();
         core::task::ready!(guard.poll_wait(cx));
         Poll::Ready(guard)
     }
 
+    #[inline]
     pub fn wait<'a>(self: &'a Arc<Self>) -> Wait<'a, T> {
         Wait { cell: self }
     }
@@ -247,6 +261,7 @@ impl<T> Unpin for Wait<'_, T> {}
 impl<'s, T> Future for Wait<'s, T> {
     type Output = MutexGuard<'s, RawAsyncCell<T>>;
 
+    #[inline]
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.cell.poll_wait(cx)
     }

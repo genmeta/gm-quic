@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use futures::channel::mpsc;
+use futures::{channel::mpsc, FutureExt};
 use qbase::{
     cid::ConnectionId,
     config::Parameters,
@@ -85,7 +85,11 @@ impl RawConnection {
             ],
         );
         let local_cids = ArcLocalCids::new(Self::gen_cid, initial_scid, router_registry);
-        let remote_cids = ArcRemoteCids::new(initial_dcid, 2, reliable_frames.clone());
+        let remote_cids = ArcRemoteCids::new(
+            initial_dcid,
+            local_params.active_connection_id_limit().into(),
+            reliable_frames.clone(),
+        );
         let cid_registry = CidRegistry::new(local_cids, remote_cids);
         let handshake = Handshake::new(role, reliable_frames.clone());
         let flow_ctrl = FlowController::with_initial(65535, 65535);
@@ -175,7 +179,7 @@ impl RawConnection {
 
         let join_hs = hs.build(rcvd_hs_packets, &pathes, &notify, &conn_error);
 
-        let get_params = tls_session.keys_upgrade(
+        let remote_params = tls_session.keys_upgrade(
             [
                 &initial.crypto_stream,
                 &hs.crypto_stream,
@@ -185,6 +189,34 @@ impl RawConnection {
             data.one_rtt_keys.clone(),
             conn_error.clone(),
         );
+
+        tokio::spawn({
+            let remote_params = remote_params.clone();
+            let streams = streams.clone();
+            let datagrams = datagrams.clone();
+            let conn_error = conn_error.clone();
+            let cid_registry = cid_registry.clone();
+            async move {
+                let remote_params = remote_params.wait().map(|r| r.as_ref().cloned()).await;
+                let Some(remote_params) = remote_params else {
+                    return;
+                };
+
+                let max_bidi_sid = remote_params.initial_max_streams_bidi().into();
+                let max_uni_sid = remote_params.initial_max_streams_uni().into();
+                let active_cid_limit = remote_params.active_connection_id_limit().into();
+                let max_size = remote_params.max_datagram_frame_size().into();
+
+                streams.premit_max_sid(qbase::streamid::Dir::Bi, max_uni_sid);
+                streams.premit_max_sid(qbase::streamid::Dir::Uni, max_bidi_sid);
+                if let Err(e) = cid_registry.local.set_limit(active_cid_limit) {
+                    conn_error.on_error(e);
+                }
+                if let Err(e) = datagrams.update_remote_max_datagram_frame_size(max_size) {
+                    conn_error.on_error(e);
+                }
+            }
+        });
 
         let (join_0rtt, join_1rtt) = data.build(
             &pathes,
@@ -199,7 +231,7 @@ impl RawConnection {
             rcvd_1rtt_packets,
             token_registry,
             &local_params,
-            get_params.clone(),
+            remote_params.clone(),
         );
         let join_handles = [join_initial, join_0rtt, join_hs, join_1rtt];
 
@@ -219,7 +251,7 @@ impl RawConnection {
             join_handles,
             error: conn_error,
             local_params: local_params.into(),
-            remote_params: get_params,
+            remote_params,
         }
     }
 

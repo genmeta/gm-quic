@@ -4,7 +4,6 @@ use std::{
 };
 
 use qbase::{
-    config::Parameters,
     error::Error,
     frame::{DatagramFrame, ReceiveFrame},
 };
@@ -66,10 +65,10 @@ impl DatagramFlow {
     }
     /// See [`DatagramWriter::update_remote_max_datagram_frame_size`] for more details.
     #[inline]
-    pub fn apply_transport_parameters(&self, params: &Parameters) -> Result<(), Error> {
-        self.0.writer.update_remote_max_datagram_frame_size(
-            params.max_datagram_frame_size().into_inner() as usize,
-        )
+    pub fn update_remote_max_datagram_frame_size(&self, size: u64) -> Result<(), Error> {
+        self.0
+            .writer
+            .update_remote_max_datagram_frame_size(size as _)
     }
 
     /// See [`DatagramWriter::try_read_datagram`] for more details.
