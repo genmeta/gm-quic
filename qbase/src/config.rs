@@ -412,4 +412,10 @@ mod test {
             .build();
         assert!(build_result.is_err());
     }
+
+    #[test]
+    fn default_params_test() {
+        let params = Parameters::default();
+        params.validate().unwrap();
+    }
 }

@@ -407,13 +407,8 @@ impl RawDataStreams {
         listener.on_conn_error(err);
     }
 
-    pub fn apply_transport_parameters(&self, params: &Parameters) {
-        self.stream_ids
-            .local
-            .permit_max_sid(Dir::Bi, params.initial_max_streams_bidi().into_inner());
-        self.stream_ids
-            .local
-            .permit_max_sid(Dir::Uni, params.initial_max_streams_uni().into_inner());
+    pub fn premit_max_sid(&self, dir: Dir, val: u64) {
+        self.stream_ids.local.permit_max_sid(dir, val);
     }
 }
 

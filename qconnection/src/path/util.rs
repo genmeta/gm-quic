@@ -82,6 +82,7 @@ impl<T> RecvBuffer<T> {
 impl<T> Future for RecvBuffer<T> {
     type Output = Option<T>;
 
+    #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.0.poll_wait(cx).map(|mut cell| cell.take())
     }

@@ -8,7 +8,11 @@ use std::{
 
 use deref_derive::Deref;
 use listener::{AcceptBiStream, AcceptUniStream};
-use qbase::{config::Parameters, error::Error, streamid::Role};
+use qbase::{
+    config::Parameters,
+    error::Error,
+    streamid::{Dir, Role},
+};
 
 use crate::{recv::Reader, reliable::ArcReliableFrameDeque, send::Writer};
 
@@ -66,8 +70,9 @@ impl DataStreams {
         self.0.listener()
     }
 
-    pub fn apply_transport_parameters(&self, params: &Parameters) {
-        self.0.apply_transport_parameters(params);
+    #[inline]
+    pub fn premit_max_sid(&self, dir: Dir, val: u64) {
+        self.0.premit_max_sid(dir, val);
     }
 }
 
