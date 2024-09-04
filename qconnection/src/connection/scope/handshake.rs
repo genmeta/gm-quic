@@ -142,7 +142,7 @@ impl HandshakeScope {
                     let _header = packet.bytes.split_to(body_offset);
                     packet.bytes.truncate(pkt_len);
 
-                    let path = pathes.get(pathway, usc);
+                    let path = pathes.get_or_create(pathway, usc);
                     path.update_recv_time();
 
                     // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)

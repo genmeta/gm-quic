@@ -152,7 +152,7 @@ impl InitialScope {
                     let _header = packet.bytes.split_to(body_offset);
                     packet.bytes.truncate(pkt_len);
 
-                    let path = pathes.get(pathway, usc);
+                    let path = pathes.get_or_create(pathway, usc);
                     path.update_recv_time();
 
                     let remote_scid = match packet.header {

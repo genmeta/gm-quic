@@ -223,7 +223,7 @@ impl DataScope {
                     let _header = packet.bytes.split_to(body_offset);
                     packet.bytes.truncate(pkt_len);
 
-                    let path = pathes.get(pathway, usc.clone());
+                    let path = pathes.get_or_create(pathway, usc.clone());
                     path.update_recv_time();
 
                     match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
@@ -294,7 +294,7 @@ impl DataScope {
                     if !handshake.is_handshake_done() {
                         handshake.done();
                     }
-                    let path = pathes.get(pathway, usc);
+                    let path = pathes.get_or_create(pathway, usc);
                     path.update_recv_time();
 
                     match FrameReader::new(packet.bytes.freeze(), pty).try_fold(

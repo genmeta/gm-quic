@@ -93,7 +93,7 @@ impl ArcConnection {
     pub fn add_initial_path(&self, pathway: Pathway, usc: ArcUsc) {
         let guard = self.0.lock().unwrap();
         if let Raw(ref conn) = *guard {
-            conn.pathes.insert(pathway, usc);
+            _ = conn.pathes.get_or_create(pathway, usc);
         }
     }
 
