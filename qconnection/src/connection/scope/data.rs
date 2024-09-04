@@ -305,7 +305,9 @@ impl DataScope {
                             .unwrap();
                     let _header = packet.bytes.split_to(body_offset);
                     packet.bytes.truncate(pkt_len);
-                    handshake.done();
+                    if !handshake.is_handshake_done() {
+                        handshake.done();
+                    }
                     let path = pathes.get(pathway, usc);
                     path.update_recv_time();
 
