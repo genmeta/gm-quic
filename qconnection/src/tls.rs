@@ -115,10 +115,8 @@ impl ArcTlsSession {
     pub fn new_client(
         server_name: rustls::pki_types::ServerName<'static>,
         tls_config: Arc<rustls::ClientConfig>,
-        parameters: &mut Parameters,
-        scid: ConnectionId,
+        parameters: &Parameters,
     ) -> Self {
-        parameters.set_initial_source_connection_id(Some(scid));
         Self(Arc::new(Mutex::new(Ok(RawTlsSession::new_client(
             server_name,
             tls_config,

@@ -72,9 +72,10 @@ impl ArcConnection {
             panic!("server_name is not valid")
         };
 
+        parameters.set_initial_source_connection_id(Some(scid));
+
         let dcid = ConnectionId::random_gen(8);
-        let tls_session =
-            ArcTlsSession::new_client(server_name, tls_config.clone(), &mut parameters, scid);
+        let tls_session = ArcTlsSession::new_client(server_name, tls_config.clone(), &parameters);
         let raw_conn = RawConnection::new(
             Role::Client,
             parameters,
@@ -97,11 +98,13 @@ impl ArcConnection {
     pub fn new_server(
         initial_scid: ConnectionId,
         initial_dcid: ConnectionId,
-        parameters: Parameters,
+        mut parameters: Parameters,
         initial_keys: rustls::quic::Keys,
         tls_config: Arc<rustls::ServerConfig>,
         token_registry: ArcTokenRegistry,
     ) -> Self {
+        parameters.set_original_destination_connection_id(Some(initial_dcid));
+
         let tls_session = ArcTlsSession::new_server(tls_config.clone(), &parameters);
         let raw_conn = RawConnection::new(
             Role::Server,
