@@ -10,6 +10,7 @@ use qbase::{
         DataPacket, PacketNumber,
     },
 };
+use qcongestion::CongestionControl;
 use qrecovery::{
     reliable::rcvdpkt::ArcRcvdPktRecords,
     space::{Epoch, HandshakeSpace},
@@ -57,7 +58,7 @@ impl HandshakeScope {
             let conn_error = conn_error.clone();
             move |frame: Frame, path: &RawPath| match frame {
                 Frame::Ack(f) => {
-                    path.on_ack(Epoch::Initial, &f);
+                    path.cc.on_ack(Epoch::Initial, &f);
                     _ = ack_frames_entry.unbounded_send(f);
                 }
                 Frame::Close(f) => conn_error.on_ccf_rcvd(&f),
@@ -161,7 +162,7 @@ impl HandshakeScope {
                     ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.on_recv_pkt(Epoch::Handshake, pn, is_ack_packet);
+                            path.cc.on_recv_pkt(Epoch::Handshake, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }

@@ -24,6 +24,7 @@ use rustls::quic::HeaderProtectionKey;
 
 use crate::{connection::DataStreams, path::SendBuffer};
 
+#[derive(Clone)]
 pub struct DataSpaceReader {
     pub(crate) space: DataSpace,
     pub(crate) zero_rtt_keys: ArcKeys,
@@ -298,5 +299,19 @@ impl DataSpaceReader {
 
         // 0RTT包不能发送Ack
         Some((pn, is_ack_eliciting, sent_size, fresh_bytes, in_flight))
+    }
+
+    pub fn may_loss(&self, pns: Vec<u64>) {
+        for pn in pns {
+            let record = self.space.sent_packets();
+            let mut guard = record.receive();
+            for frame in guard.may_loss_pkt(pn) {
+                match frame {
+                    GuaranteedFrame::Stream(f) => self.streams.may_loss_data(&f),
+                    GuaranteedFrame::Crypto(f) => self.crypto_stream_outgoing.may_loss_data(&f),
+                    GuaranteedFrame::Reliable(f) => self.reliable_frames.lock_guard().push_back(f),
+                }
+            }
+        }
     }
 }

@@ -203,7 +203,7 @@ where
         }
     }
 
-    pub fn may_loss_data(&self, stream_frame: StreamFrame) {
+    pub fn may_loss_data(&self, stream_frame: &StreamFrame) {
         if let Some(o) = self
             .output
             .0

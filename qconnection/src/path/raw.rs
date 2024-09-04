@@ -7,7 +7,7 @@ use std::{
 use qbase::{
     cid::{ArcCidCell, ConnectionId},
     flow::FlowController,
-    frame::{AckFrame, PathChallengeFrame, PathResponseFrame},
+    frame::{PathChallengeFrame, PathResponseFrame},
 };
 use qcongestion::{
     congestion::{ArcCC, CongestionAlgorithm},
@@ -31,8 +31,8 @@ use crate::connection::transmit::{
 #[derive(Clone)]
 pub struct RawPath {
     pub anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
+    pub cc: ArcCC,
     pub(super) usc: ArcUsc,
-    pub(super) cc: ArcCC,
     pub(super) dcid: ArcCidCell<ArcReliableFrameDeque>,
     pub(super) scid: ConnectionId,
     pub(super) spin: Arc<AtomicBool>,
@@ -78,7 +78,7 @@ impl RawPath {
         tokio::spawn(async move {
             let challenge = PathChallengeFrame::random();
             for _ in 0..3 {
-                let pto = congestion_ctrl.get_pto_time(Epoch::Data);
+                let pto = congestion_ctrl.pto_time(Epoch::Data);
                 challenge_sndbuf.write(challenge);
                 match timeout(pto, response_rcvbuf.receive()).await {
                     Ok(Some(response)) if *response == *challenge => {
@@ -111,9 +111,9 @@ impl RawPath {
             anti_amplifier: self.anti_amplifier.clone(),
             spin: self.spin.clone(),
             send_flow_ctrl: flow_ctrl.sender(),
-            initial_space_reader: space_readers.0,
-            handshake_space_reader: space_readers.1,
-            data_space_reader: space_readers.2,
+            initial_space_reader: space_readers.0.clone(),
+            handshake_space_reader: space_readers.1.clone(),
+            data_space_reader: space_readers.2.clone(),
         };
 
         tokio::spawn(async move {
@@ -127,18 +127,24 @@ impl RawPath {
                 }
             }
         });
-    }
 
-    pub fn pto_time(&self) -> Duration {
-        self.cc.get_pto_time(Epoch::Data)
-    }
-
-    pub fn on_ack(&self, epoch: Epoch, ack: &AckFrame) {
-        self.cc.on_ack(epoch, ack);
-    }
-
-    pub fn on_recv_pkt(&self, epoch: Epoch, pn: u64, is_ack_eliciting: bool) {
-        self.cc.on_recv_pkt(epoch, pn, is_ack_eliciting);
+        tokio::spawn({
+            let cc = self.cc.clone();
+            let state = self.state.clone();
+            async move {
+                loop {
+                    tokio::select! {
+                        _ = state.has_been_inactivated() => break,
+                        (epoch, pns) = cc.may_loss() =>
+                           match epoch {
+                               Epoch::Initial => space_readers.0.may_loss(pns),
+                               Epoch::Handshake => space_readers.1.may_loss(pns),
+                               Epoch::Data => space_readers.2.may_loss(pns),
+                            },
+                    }
+                }
+            }
+        });
     }
 
     pub fn challenge_sndbuf(&self) -> SendBuffer<PathChallengeFrame> {

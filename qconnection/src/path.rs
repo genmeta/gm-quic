@@ -10,7 +10,7 @@ use dashmap::DashMap;
 use deref_derive::{Deref, DerefMut};
 use qbase::cid::{ArcCidCell, ConnectionId};
 use qcongestion::{congestion::MSS, CongestionControl};
-use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
+use qrecovery::reliable::ArcReliableFrameDeque;
 use qudp::ArcUsc;
 
 mod anti_amplifier;
