@@ -263,10 +263,13 @@ impl ArcConnection {
     /// confirmation, the connection is forcefully terminated.
     fn should_enter_closing_with_error(&self, error: Error) {
         let mut guard = self.0.lock().unwrap();
-
         let ConnState::Raw(raw_conn) = mem::replace(guard.deref_mut(), ConnState::Closed) else {
             unreachable!()
         };
+
+        raw_conn.datagrams.on_conn_error(&error);
+        raw_conn.streams.on_conn_error(&error);
+        raw_conn.tls_session.abort();
 
         let pto = raw_conn
             .pathes

@@ -48,6 +48,7 @@ pub struct RawConnection {
 
     pub local_params: Arc<Parameters>,
     pub remote_params: Arc<AsyncCell<Parameters>>,
+    pub tls_session: ArcTlsSession,
 }
 
 impl RawConnection {
@@ -252,6 +253,7 @@ impl RawConnection {
             error: conn_error,
             local_params: local_params.into(),
             remote_params,
+            tls_session,
         }
     }
 
