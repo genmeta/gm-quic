@@ -153,7 +153,6 @@ where
                     continue;
                 }
                 // reset the cell, and wait for the new cid to be assigned inside
-
                 assert_eq!(guard.seq, seq);
                 guard.seq = next_apply;
                 guard.state.clear();

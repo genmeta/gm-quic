@@ -1,13 +1,16 @@
 use std::{
     future::Future,
-    ops::{Deref, DerefMut},
+    ops::Deref,
     pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
+    task::{Context, Poll},
 };
 
 use bytes::BufMut;
-use qbase::frame::{io::WriteFrame, BeFrame};
+use qbase::{
+    frame::{io::WriteFrame, BeFrame},
+    util::AsyncCell,
+};
 
 #[derive(Default, Clone)]
 pub struct SendBuffer<T>(Arc<Mutex<Option<T>>>);
@@ -37,36 +40,16 @@ where
     }
 }
 
-#[derive(Debug, Default)]
-enum RecvState<T> {
-    #[default]
-    None,
-    Pending(Waker),
-    Rcvd(T),
-    Invalid,
-}
-
 #[derive(Clone, Debug, Default)]
-pub struct RecvBuffer<T>(Arc<Mutex<RecvState<T>>>);
+pub struct RecvBuffer<T>(Arc<AsyncCell<T>>);
 
 impl<T> RecvBuffer<T> {
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(RecvState::None)))
+        Self(Arc::new(AsyncCell::new()))
     }
 
     pub fn write(&self, value: T) {
-        let mut guard = self.0.lock().unwrap();
-        match guard.deref() {
-            RecvState::None => *guard = RecvState::Rcvd(value),
-            RecvState::Pending(waker) => {
-                waker.wake_by_ref();
-                *guard = RecvState::Rcvd(value);
-            }
-            RecvState::Rcvd(_) => {
-                *guard = RecvState::Rcvd(value);
-            }
-            RecvState::Invalid => {}
-        }
+        _ = self.0.write(value);
     }
 
     /// Waiting for a value to be received.
@@ -92,11 +75,7 @@ impl<T> RecvBuffer<T> {
     }
 
     pub fn dismiss(&self) {
-        let mut guard = self.0.lock().unwrap();
-        if let RecvState::Pending(waker) = guard.deref() {
-            waker.wake_by_ref();
-        }
-        *guard = RecvState::Invalid;
+        self.0.invalid();
     }
 }
 
@@ -104,21 +83,7 @@ impl<T> Future for RecvBuffer<T> {
     type Output = Option<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.0.lock().unwrap();
-        match std::mem::take(guard.deref_mut()) {
-            RecvState::None | RecvState::Pending(_) => {
-                *guard = RecvState::Pending(cx.waker().clone());
-                Poll::Pending
-            }
-            RecvState::Rcvd(value) => {
-                *guard = RecvState::None;
-                Poll::Ready(Some(value))
-            }
-            RecvState::Invalid => {
-                *guard = RecvState::Invalid;
-                Poll::Ready(None)
-            }
-        }
+        self.0.poll_take_out(cx)
     }
 }
 
