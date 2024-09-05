@@ -76,7 +76,7 @@ pub trait CongestionControl {
     fn probe_timeout(&self) -> impl Future<Output = Epoch>;
 
     /// 获取当前 path 的 pto time
-    fn get_pto_time(&self, epoch: Epoch) -> Duration;
+    fn pto_time(&self, epoch: Epoch) -> Duration;
 
     /// 更新握手密钥状态
     fn on_get_handshake_keys(&self);

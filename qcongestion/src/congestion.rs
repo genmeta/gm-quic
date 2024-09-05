@@ -534,7 +534,7 @@ impl super::CongestionControl for ArcCC {
         Prober(self.clone())
     }
 
-    fn get_pto_time(&self, epoch: Epoch) -> Duration {
+    fn pto_time(&self, epoch: Epoch) -> Duration {
         self.0.lock().unwrap().get_pto_time(epoch)
     }
 

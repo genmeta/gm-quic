@@ -16,6 +16,7 @@ use qbase::{
 };
 use qrecovery::{space::InitialSpace, streams::crypto::CryptoStreamOutgoing};
 
+#[derive(Clone)]
 pub struct InitialSpaceReader {
     pub(crate) token: Arc<Mutex<Vec<u8>>>,
     pub(crate) keys: ArcKeys,
@@ -148,5 +149,15 @@ impl InitialSpaceReader {
             hdr_len + pn_len + body_len + tag_len,
             is_just_ack,
         ))
+    }
+
+    pub fn may_loss(&self, pns: Vec<u64>) {
+        for pn in pns {
+            let record = self.space.sent_packets();
+            let mut guard = record.receive();
+            for frame in guard.may_loss_pkt(pn) {
+                self.crypto_stream_outgoing.may_loss_data(&frame);
+            }
+        }
     }
 }

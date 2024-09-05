@@ -18,7 +18,10 @@ use qbase::{
     streamid::Role,
     token::ArcTokenRegistry,
 };
-use qrecovery::{recv::Reader, reliable::ArcReliableFrameDeque, send::Writer, streams};
+use qcongestion::CongestionControl;
+use qrecovery::{
+    recv::Reader, reliable::ArcReliableFrameDeque, send::Writer, space::Epoch, streams,
+};
 use qudp::ArcUsc;
 use qunreliable::DatagramFlow;
 use raw::RawConnection;
@@ -93,7 +96,7 @@ impl ArcConnection {
     pub fn add_initial_path(&self, pathway: Pathway, usc: ArcUsc) {
         let guard = self.0.lock().unwrap();
         if let Raw(ref conn) = *guard {
-            conn.pathes.insert(pathway, usc);
+            _ = conn.pathes.get_or_create(pathway, usc);
         }
     }
 
@@ -288,7 +291,7 @@ impl ArcConnection {
         let pto = raw_conn
             .pathes
             .iter()
-            .map(|path| path.pto_time())
+            .map(|path| path.cc.pto_time(Epoch::Data))
             .max()
             .unwrap();
 
@@ -413,7 +416,11 @@ impl From<RawConnection> for ArcConnection {
                 if is_active {
                     conn.should_enter_closing_with_error(err);
                 } else {
-                    let pto = pathes.iter().map(|p| p.pto_time()).max().unwrap();
+                    let pto = pathes
+                        .iter()
+                        .map(|p| p.cc.pto_time(Epoch::Data))
+                        .max()
+                        .unwrap();
                     conn.enter_draining(pto * 3);
                 }
             }

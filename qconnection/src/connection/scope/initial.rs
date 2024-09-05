@@ -10,6 +10,7 @@ use qbase::{
         long, DataHeader,
     },
 };
+use qcongestion::CongestionControl;
 use qrecovery::{
     space::{Epoch, InitialSpace},
     streams::crypto::CryptoStream,
@@ -59,7 +60,7 @@ impl InitialScope {
         let dispatch_frame = move |frame: Frame, path: &RawPath| {
             match frame {
                 Frame::Ack(f) => {
-                    path.on_ack(Epoch::Initial, &f);
+                    path.cc.on_ack(Epoch::Initial, &f);
                     _ = ack_frames_entry.unbounded_send(f)
                 }
                 Frame::Crypto(f, bytes) => _ = crypto_frames_entry.unbounded_send((f, bytes)),
@@ -152,7 +153,7 @@ impl InitialScope {
                     let _header = packet.bytes.split_to(body_offset);
                     packet.bytes.truncate(pkt_len);
 
-                    let path = pathes.get(pathway, usc);
+                    let path = pathes.get_or_create(pathway, usc);
                     path.update_recv_time();
 
                     let remote_scid = match packet.header {
@@ -173,7 +174,7 @@ impl InitialScope {
                     ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.on_recv_pkt(Epoch::Initial, pn, is_ack_packet);
+                            path.cc.on_recv_pkt(Epoch::Initial, pn, is_ack_packet);
                         }
                         Err(e) => {
                             conn_error.on_error(e);

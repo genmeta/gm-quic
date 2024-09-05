@@ -21,6 +21,7 @@ use qbase::{
     },
     token::ArcTokenRegistry,
 };
+use qcongestion::CongestionControl;
 use qrecovery::{
     reliable::{rcvdpkt::ArcRcvdPktRecords, ArcReliableFrameDeque, GuaranteedFrame},
     space::{DataSpace, Epoch},
@@ -92,7 +93,7 @@ impl DataScope {
             let conn_error = conn_error.clone();
             move |frame: Frame, pty: Type, path: &RawPath| match frame {
                 Frame::Ack(f) => {
-                    path.on_ack(Epoch::Data, &f);
+                    path.cc.on_ack(Epoch::Data, &f);
                     _ = ack_frames_entry.unbounded_send(f)
                 }
                 Frame::NewToken(f) => _ = new_token_frames_entry.unbounded_send(f),
@@ -223,7 +224,7 @@ impl DataScope {
                     let _header = packet.bytes.split_to(body_offset);
                     packet.bytes.truncate(pkt_len);
 
-                    let path = pathes.get(pathway, usc.clone());
+                    let path = pathes.get_or_create(pathway, usc.clone());
                     path.update_recv_time();
 
                     match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
@@ -236,7 +237,7 @@ impl DataScope {
                     ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.on_recv_pkt(Epoch::Data, pn, is_ack_packet);
+                            path.cc.on_recv_pkt(Epoch::Data, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
@@ -294,7 +295,7 @@ impl DataScope {
                     if !handshake.is_handshake_done() {
                         handshake.done();
                     }
-                    let path = pathes.get(pathway, usc);
+                    let path = pathes.get_or_create(pathway, usc);
                     path.update_recv_time();
 
                     match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
@@ -307,7 +308,7 @@ impl DataScope {
                     ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.on_recv_pkt(Epoch::Data, pn, is_ack_packet);
+                            path.cc.on_recv_pkt(Epoch::Data, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
