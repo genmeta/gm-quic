@@ -103,7 +103,7 @@ macro_rules! generate_validate {
                 if self.ack_delay_exponent > 20 {
                     return Err("ack_delay_exponent must be at most 20");
                 }
-                if self.max_ack_delay > 2u64.pow(14) {
+                if self.max_ack_delay > 1 << 14 {
                     return Err("max_ack_delay must be at most 2^14");
                 }
                 if self.active_connection_id_limit < 2 {

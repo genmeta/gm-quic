@@ -183,7 +183,7 @@ impl ArcTlsSession {
         handshake_keys: ArcKeys,
         one_rtt_keys: ArcOneRttKeys,
         conn_error: ConnError,
-    ) -> Arc<AsyncCell<Parameters>> {
+    ) -> Arc<AsyncCell<Arc<Parameters>>> {
         let remote_params = Arc::new(AsyncCell::new());
 
         let for_each_epoch = |epoch: Epoch| {
@@ -217,7 +217,7 @@ impl ArcTlsSession {
 
                     if let Some(params) = tls_session.get_transport_parameters() {
                         match params {
-                            Ok(params) => _ = remote_params.write(params),
+                            Ok(params) => _ = remote_params.write(params.into()),
                             Err(error) => conn_error.on_error(error),
                         }
                     }
