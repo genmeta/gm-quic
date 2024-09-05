@@ -251,7 +251,7 @@ struct CidState(RawAsyncCell<ConnectionId>);
 
 impl CidState {
     fn poll_get_cid(&mut self, cx: &mut Context) -> Poll<Option<ConnectionId>> {
-        self.0.poll_wait(cx).map(|cid| cid.as_ref().map(|cid| *cid))
+        self.0.poll_get(cx).map(|cid| cid.as_ref().map(|cid| *cid))
     }
 
     fn revise(&mut self, cid: ConnectionId) {
@@ -260,7 +260,7 @@ impl CidState {
 
     fn assign(&mut self, cid: ConnectionId) {
         // Only allow transition from None or Demand state to Ready state
-        debug_assert!(self.0.is_none() || self.0.is_demand());
+        debug_assert!(self.0.is_pending());
         _ = self.0.write(cid);
     }
 
@@ -371,7 +371,10 @@ mod tests {
         // Will return Pending, because the peer hasn't issue any connection id
         let cid_apply1 = remote_cids.apply_dcid();
         assert_eq!(cid_apply1.get_cid().poll_unpin(&mut cx), Poll::Pending);
-        assert!(cid_apply1.0.lock().unwrap().state.0.is_demand());
+        assert!(matches!(
+            cid_apply1.0.lock().unwrap().state.0,
+            RawAsyncCell::Demand(..)
+        ));
 
         let cid = ConnectionId::random_gen(8);
         let frame = NewConnectionIdFrame {

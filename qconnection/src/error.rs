@@ -55,16 +55,18 @@ impl ConnError {
     }
 
     pub fn on_error(&self, error: Error) {
-        _ = self
-            .0
-            .write_if(ConnErrorKind::Closing(error), Option::is_none);
+        let mut state = self.0.state();
+        if state.is_pending() {
+            _ = state.write(ConnErrorKind::Closing(error));
+        }
     }
 
     /// App actively close the connection with an error
     pub fn set_app_error(&self, error: Error) {
-        _ = self
-            .0
-            .write_if(ConnErrorKind::Application(error), Option::is_none);
+        let mut state = self.0.state();
+        if state.is_pending() {
+            _ = state.write(ConnErrorKind::Application(error));
+        }
     }
 }
 
@@ -88,7 +90,7 @@ impl Future for ConnError {
     /// - If the state is `Closing` or `App`, it returns `Poll::Ready(true)`, indicating that the connection is closing or has been closed due to an application error.
     /// - If the state is `Draining`, it returns `Poll::Ready(false)`, indicating that the connection is draining and will be closed gracefully.
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match core::task::ready!(self.0.poll_wait(cx).map(|cell| cell.as_ref().cloned()))
+        match core::task::ready!(self.0.poll_get(cx).map(|cell| cell.as_ref().cloned()))
             .expect("connection error shound never be retired")
         {
             ConnErrorKind::Application(e) => Poll::Ready((e, true)),

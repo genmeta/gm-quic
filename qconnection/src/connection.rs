@@ -139,6 +139,8 @@ impl ArcConnection {
     // }
 
     pub async fn open_bi_stream(&self) -> io::Result<Option<(Reader, Writer)>> {
+        let connection_closed =
+            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let ConnState::Raw(raw_conn) = &*guard else {
@@ -155,7 +157,12 @@ impl ArcConnection {
             )
         };
 
-        let remote_params = remote_params.state().as_ref().cloned().unwrap();
+        let remote_params = remote_params
+            .get()
+            .await
+            .as_ref()
+            .cloned()
+            .ok_or(connection_closed)?;
 
         let result = data_streams
             .open_bi(remote_params.initial_max_stream_data_bidi_remote().into())
@@ -165,13 +172,12 @@ impl ArcConnection {
     }
 
     pub async fn open_uni_stream(&self) -> io::Result<Option<Writer>> {
+        let connection_closed =
+            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let ConnState::Raw(raw_conn) = &*guard else {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "Connection is closing or closed",
-                ));
+                return Err(connection_closed);
             };
 
             (
@@ -181,7 +187,12 @@ impl ArcConnection {
             )
         };
 
-        let remote_params = remote_params.state().as_ref().cloned().unwrap();
+        let remote_params = remote_params
+            .get()
+            .await
+            .as_ref()
+            .cloned()
+            .ok_or(connection_closed)?;
 
         let result = data_streams
             .open_uni(remote_params.initial_max_stream_data_uni().into())

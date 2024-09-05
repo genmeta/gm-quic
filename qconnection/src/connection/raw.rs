@@ -47,7 +47,7 @@ pub struct RawConnection {
     pub join_handles: [JoinHandle<RcvdPackets>; 4],
 
     pub local_params: Arc<Parameters>,
-    pub remote_params: Arc<AsyncCell<Parameters>>,
+    pub remote_params: Arc<AsyncCell<Arc<Parameters>>>,
     pub tls_session: ArcTlsSession,
 }
 
@@ -198,7 +198,7 @@ impl RawConnection {
             let conn_error = conn_error.clone();
             let cid_registry = cid_registry.clone();
             async move {
-                let remote_params = remote_params.wait().map(|r| r.as_ref().cloned()).await;
+                let remote_params = remote_params.get().map(|r| r.as_ref().cloned()).await;
                 let Some(remote_params) = remote_params else {
                     return;
                 };
