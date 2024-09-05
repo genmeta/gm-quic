@@ -15,15 +15,11 @@ use qbase::{
 use super::recver::{ArcRecver, Recver};
 
 #[derive(Debug, Clone)]
-pub struct Incoming(ArcRecver);
+pub struct Incoming(pub(crate) ArcRecver);
 
 impl Incoming {
-    pub(super) fn new(recver: ArcRecver) -> Self {
-        Self(recver)
-    }
-
     pub fn recv_data(&self, stream_frame: &StreamFrame, body: Bytes) -> Result<usize, QuicError> {
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.recver();
         let inner = recver.deref_mut();
         let mut new_data_size = 0;
         if let Ok(receiving_state) = inner {
@@ -58,7 +54,7 @@ impl Incoming {
 
     pub fn recv_reset(&self, reset_frame: &ResetStreamFrame) -> Result<(), QuicError> {
         // TODO: ResetStream中还有错误信息，比如http3的错误码，看是否能用到
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.recver();
         let inner = recver.deref_mut();
         if let Ok(receiving_state) = inner {
             match receiving_state {
@@ -80,7 +76,7 @@ impl Incoming {
     }
 
     pub fn on_conn_error(&self, err: &QuicError) {
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.recver();
         let inner = recver.deref_mut();
         match inner {
             Ok(receiving_state) => match receiving_state {
@@ -110,7 +106,7 @@ impl Future for UpdateWindow {
     type Output = Option<u64>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.recver();
         let inner = recver.deref_mut();
         match inner {
             Ok(receiving_state) => match receiving_state {
@@ -134,7 +130,7 @@ impl Future for IsStopped {
     type Output = Option<u64>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.recver();
         let inner = recver.deref_mut();
         match inner {
             Ok(receiving_state) => match receiving_state {

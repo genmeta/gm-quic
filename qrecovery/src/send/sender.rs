@@ -1,7 +1,7 @@
 use std::{
     io,
     ops::Range,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
 
@@ -54,6 +54,15 @@ impl ReadySender {
                 Ok(self.sndbuf.write(&buf[..n]))
             } else {
                 Err(io::ErrorKind::WouldBlock.into())
+            }
+        }
+    }
+
+    pub(super) fn update_window(&mut self, max_data_size: u64) {
+        if max_data_size > self.max_data_size {
+            self.max_data_size = max_data_size;
+            if let Some(waker) = self.writable_waker.take() {
+                waker.wake();
             }
         }
     }
@@ -476,10 +485,11 @@ impl DataSentSender {
 }
 
 #[derive(Debug)]
-pub enum Sender {
+pub(super) enum Sender {
     Ready(ReadySender),
     Sending(SendingSender),
     DataSent(DataSentSender),
+    #[allow(unused)] // TODO
     ResetSent(u64),
     DataRcvd,
     ResetRcvd,
@@ -495,4 +505,15 @@ impl Sender {
 /// Writer/Outgoing分别有不同的接口，而且生命周期独立，应用层可以在close、reset后
 /// 直接丢弃不管；然而Outgoing还有DataRcvd、ResetRcvd两个状态，需要等待对端确认。
 /// 所以Writer/Outgoing内部共享同一个Sender。
-pub type ArcSender = Arc<Mutex<io::Result<Sender>>>;
+#[derive(Debug, Clone)]
+pub struct ArcSender(Arc<Mutex<io::Result<Sender>>>);
+
+impl ArcSender {
+    pub fn with_wnd_size(wnd_size: u64) -> Self {
+        ArcSender(Arc::new(Mutex::new(Ok(Sender::with_wnd_size(wnd_size)))))
+    }
+
+    pub(super) fn sender(&self) -> MutexGuard<io::Result<Sender>> {
+        self.0.lock().unwrap()
+    }
+}

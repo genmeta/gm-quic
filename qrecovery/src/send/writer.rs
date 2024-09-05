@@ -10,7 +10,7 @@ use tokio::io::AsyncWrite;
 use super::sender::{ArcSender, Sender};
 
 #[derive(Debug)]
-pub struct Writer(pub(super) ArcSender);
+pub struct Writer(pub(crate) ArcSender);
 
 impl AsyncWrite for Writer {
     /// 往sndbuf里面写数据，直到写满MAX_STREAM_DATA，等通告窗口更新再写
@@ -19,7 +19,7 @@ impl AsyncWrite for Writer {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let mut sender = self.0.lock().unwrap();
+        let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         match inner {
             Ok(sending_state) => match sending_state {
@@ -47,7 +47,7 @@ impl AsyncWrite for Writer {
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let mut sender = self.0.lock().unwrap();
+        let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         match inner {
             Ok(sending_state) => match sending_state {
@@ -75,7 +75,7 @@ impl AsyncWrite for Writer {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let mut sender = self.0.lock().unwrap();
+        let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         match inner {
             Ok(sending_state) => match sending_state {
@@ -122,7 +122,7 @@ impl AsyncWrite for Writer {
 
 impl Writer {
     pub fn cancel(self, err_code: u64) {
-        let mut sender = self.0.lock().unwrap();
+        let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
             match sending_state {
@@ -143,7 +143,7 @@ impl Writer {
 
 impl Drop for Writer {
     fn drop(&mut self) {
-        let mut sender = self.0.lock().unwrap();
+        let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
             match sending_state {

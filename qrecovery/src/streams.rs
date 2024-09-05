@@ -40,7 +40,7 @@ where
     #[inline]
     pub fn open_bi(&self, snd_wnd_size: u64) -> OpenBiStream<T> {
         OpenBiStream {
-            inner: self.0.clone(),
+            inner: self,
             snd_wnd_size,
         }
     }
@@ -48,14 +48,14 @@ where
     #[inline]
     pub fn open_uni(&self, snd_wnd_size: u64) -> OpenUniStream<T> {
         OpenUniStream {
-            inner: self.0.clone(),
+            inner: self,
             snd_wnd_size,
         }
     }
 
     #[inline]
-    pub fn accept_bi(&self) -> AcceptBiStream {
-        self.0.accept_bi()
+    pub fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream {
+        self.0.accept_bi(snd_wnd_size)
     }
 
     #[inline]
@@ -96,15 +96,15 @@ where
     }
 }
 
-pub struct OpenBiStream<T>
+pub struct OpenBiStream<'d, T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    inner: Arc<data::RawDataStreams<T>>,
+    inner: &'d data::RawDataStreams<T>,
     snd_wnd_size: u64,
 }
 
-impl<T> Future for OpenBiStream<T>
+impl<T> Future for OpenBiStream<'_, T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
@@ -115,15 +115,15 @@ where
     }
 }
 
-pub struct OpenUniStream<T>
+pub struct OpenUniStream<'d, T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    inner: Arc<data::RawDataStreams<T>>,
+    inner: &'d data::RawDataStreams<T>,
     snd_wnd_size: u64,
 }
 
-impl<T> Future for OpenUniStream<T>
+impl<T> Future for OpenUniStream<'_, T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
