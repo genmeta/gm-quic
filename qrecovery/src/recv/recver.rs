@@ -1,6 +1,6 @@
 use std::{
     io,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
 
@@ -348,11 +348,22 @@ pub(super) enum Recver {
     ResetRead,
 }
 
-pub(super) type ArcRecver = Arc<Mutex<io::Result<Recver>>>;
-
 impl Recver {
     pub(super) fn new(buf_size: u64) -> Self {
         Self::Recv(Recv::with(buf_size))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ArcRecver(Arc<Mutex<io::Result<Recver>>>);
+
+impl ArcRecver {
+    pub fn new(buf_size: u64) -> Self {
+        ArcRecver(Arc::new(Mutex::new(Ok(Recver::new(buf_size)))))
+    }
+
+    pub(super) fn recver(&self) -> MutexGuard<io::Result<Recver>> {
+        self.0.lock().unwrap()
     }
 }
 

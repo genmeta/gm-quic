@@ -11,18 +11,14 @@ use tokio::io::{AsyncRead, ReadBuf};
 use super::recver::{ArcRecver, Recver};
 
 #[derive(Debug)]
-pub struct Reader(ArcRecver);
+pub struct Reader(pub(crate) ArcRecver);
 
 impl Reader {
-    pub(super) fn new(recver: ArcRecver) -> Self {
-        Self(recver)
-    }
-
     /// Tell peer to stop sending data with the given error code.
     /// It meaning sending a STOP_SENDING frame to peer.
     pub fn stop(self, error_code: u64) {
         debug_assert!(error_code <= VARINT_MAX);
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.recver();
         let inner = recver.deref_mut();
         if let Ok(receiving_state) = inner {
             match receiving_state {
@@ -44,7 +40,7 @@ impl AsyncRead for Reader {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.recver();
         let inner = recver.deref_mut();
         // 能相当清楚地看到应用层读取数据驱动的接收状态演变
         match inner {
@@ -78,7 +74,7 @@ impl AsyncRead for Reader {
 
 impl Drop for Reader {
     fn drop(&mut self) {
-        let mut recver = self.0.lock().unwrap();
+        let mut recver = self.0.recver();
         let inner = recver.deref_mut();
         if let Ok(receiving_state) = inner {
             match receiving_state {

@@ -147,10 +147,7 @@ impl ArcConnection {
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let ConnState::Raw(raw_conn) = &*guard else {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "Connection is closing or closed",
-                ));
+                return Err(connection_closed);
             };
 
             (
@@ -160,12 +157,8 @@ impl ArcConnection {
             )
         };
 
-        let remote_params = remote_params
-            .get()
-            .await
-            .as_ref()
-            .cloned()
-            .ok_or(connection_closed)?;
+        let remote_params = remote_params.get().await.as_ref().cloned();
+        let remote_params = remote_params.ok_or(connection_closed)?;
 
         let result = data_streams
             .open_bi(remote_params.initial_max_stream_data_bidi_remote().into())
@@ -190,12 +183,8 @@ impl ArcConnection {
             )
         };
 
-        let remote_params = remote_params
-            .get()
-            .await
-            .as_ref()
-            .cloned()
-            .ok_or(connection_closed)?;
+        let remote_params = remote_params.get().await.as_ref().cloned();
+        let remote_params = remote_params.ok_or(connection_closed)?;
 
         let result = data_streams
             .open_uni(remote_params.initial_max_stream_data_uni().into())
@@ -205,23 +194,28 @@ impl ArcConnection {
     }
 
     pub async fn accept_bi_stream(&self) -> io::Result<(Reader, Writer)> {
-        let (data_streams, conn_error) = {
+        let connection_closed =
+            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
+        let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let ConnState::Raw(raw_conn) = &*guard else {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "Connection is closing or closed",
-                ));
+                return Err(connection_closed);
             };
 
-            (raw_conn.streams.clone(), raw_conn.error.clone())
+            (
+                raw_conn.remote_params.clone(),
+                raw_conn.streams.clone(),
+                raw_conn.error.clone(),
+            )
         };
 
+        let remote_params = remote_params.get().await.as_ref().cloned();
+        let remote_params = remote_params.ok_or(connection_closed)?;
+
         let result = data_streams
-            .accept_bi()
+            .accept_bi(remote_params.initial_max_stream_data_bidi_local().into())
             .await
             .inspect_err(|e| conn_error.on_error(e.clone()))?;
-        // TODO: writer提供方法，设置初始的发送窗口大小，即remotei.initial_max_stream_data_bidi_local
         Ok(result)
     }
 
@@ -242,7 +236,6 @@ impl ArcConnection {
             .accept_uni()
             .await
             .inspect_err(|e| conn_error.on_error(e.clone()))?;
-        // TODO: writer提供方法，设置初始的发送窗口大小，即remotei.initial_max_stream_data_uni
         Ok(result)
     }
 

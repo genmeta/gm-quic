@@ -18,8 +18,8 @@ use qbase::{
 
 use super::listener::{AcceptBiStream, AcceptUniStream, ArcListener};
 use crate::{
-    recv::{self, Incoming, Reader},
-    send::{self, Outgoing, Writer},
+    recv::{self, ArcRecver, Incoming, Reader},
+    send::{self, ArcSender, Outgoing, Writer},
 };
 
 #[derive(Default, Debug, Clone, Deref, DerefMut)]
@@ -448,11 +448,11 @@ where
             Err(e) => return Poll::Ready(Err(e)),
         };
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Bi)) {
-            let (outgoing, writer) = self.create_sender(sid, snd_wnd_size);
-            let (incoming, reader) = self.create_recver(sid, self.local_bi_stream_rcvbuf_size);
-            output.insert(sid, outgoing);
-            input.insert(sid, incoming);
-            Poll::Ready(Ok(Some((reader, writer))))
+            let arc_sender = self.create_sender(sid, snd_wnd_size);
+            let arc_recver = self.create_recver(sid, self.local_bi_stream_rcvbuf_size);
+            output.insert(sid, Outgoing(arc_sender.clone()));
+            input.insert(sid, Incoming(arc_recver.clone()));
+            Poll::Ready(Ok(Some((Reader(arc_recver), Writer(arc_sender)))))
         } else {
             Poll::Ready(Ok(None))
         }
@@ -468,17 +468,17 @@ where
             Err(e) => return Poll::Ready(Err(e)),
         };
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Uni)) {
-            let (outgoing, writer) = self.create_sender(sid, snd_wnd_size);
-            output.insert(sid, outgoing);
-            Poll::Ready(Ok(Some(writer)))
+            let arc_sender = self.create_sender(sid, snd_wnd_size);
+            output.insert(sid, Outgoing(arc_sender.clone()));
+            Poll::Ready(Ok(Some(Writer(arc_sender))))
         } else {
             Poll::Ready(Ok(None))
         }
     }
 
     #[inline]
-    pub(super) fn accept_bi(&self) -> AcceptBiStream {
-        self.listener.accept_bi_stream()
+    pub(super) fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream {
+        self.listener.accept_bi_stream(snd_wnd_size)
     }
 
     #[inline]
@@ -517,11 +517,11 @@ where
             AcceptSid::New(need_create) => {
                 let rcv_buf_size = self.remote_bi_stream_rcvbuf_size;
                 for sid in need_create {
-                    let (incoming, reader) = self.create_recver(sid, rcv_buf_size);
-                    let (outgoing, writer) = self.create_sender(sid, 0);
-                    input.insert(sid, incoming);
-                    output.insert(sid, outgoing);
-                    listener.push_bi_stream((reader, writer));
+                    let arc_recver = self.create_recver(sid, rcv_buf_size);
+                    let arc_sender = self.create_sender(sid, 0);
+                    input.insert(sid, Incoming(arc_recver.clone()));
+                    output.insert(sid, Outgoing(arc_sender.clone()));
+                    listener.push_bi_stream((arc_recver, arc_sender));
                 }
                 Ok(())
             }
@@ -544,22 +544,22 @@ where
                 let rcv_buf_size = self.uni_stream_rcvbuf_size;
 
                 for sid in need_create {
-                    let (incoming, reader) = self.create_recver(sid, rcv_buf_size);
-                    input.insert(sid, incoming);
-                    listener.push_uni_stream(reader);
+                    let arc_receiver = self.create_recver(sid, rcv_buf_size);
+                    input.insert(sid, Incoming(arc_receiver.clone()));
+                    listener.push_uni_stream(arc_receiver);
                 }
                 Ok(())
             }
         }
     }
 
-    fn create_sender(&self, sid: StreamId, wnd_size: u64) -> (Outgoing, Writer) {
-        let (outgoing, writer) = send::new(wnd_size);
+    fn create_sender(&self, sid: StreamId, wnd_size: u64) -> ArcSender {
+        let arc_sender = send::new(wnd_size);
         // 创建异步轮询子，监听来自应用层的cancel
         // 一旦cancel，直接向对方发送reset_stream
         // 但要等ResetRecved才能真正释放该流
         tokio::spawn({
-            let outgoing = outgoing.clone();
+            let outgoing = Outgoing(arc_sender.clone());
             let ctrl_frames = self.ctrl_frames.clone();
             async move {
                 if let Some((final_size, err_code)) = outgoing.is_cancelled_by_app().await {
@@ -572,14 +572,14 @@ where
                 }
             }
         });
-        (outgoing, writer)
+        arc_sender
     }
 
-    fn create_recver(&self, sid: StreamId, buf_size: u64) -> (Incoming, Reader) {
-        let (incoming, reader) = recv::new(buf_size);
+    fn create_recver(&self, sid: StreamId, buf_size: u64) -> ArcRecver {
+        let arc_recver = recv::new(buf_size);
         // Continuously check whether the MaxStreamData window needs to be updated.
         tokio::spawn({
-            let incoming = incoming.clone();
+            let incoming = Incoming(arc_recver.clone());
             let ctrl_frames = self.ctrl_frames.clone();
             async move {
                 while let Some(max_data) = incoming.need_update_window().await {
@@ -592,7 +592,7 @@ where
         });
         // 监听是否被应用stop了。如果是，则要发送一个StopSendingFrame
         tokio::spawn({
-            let incoming = incoming.clone();
+            let incoming = Incoming(arc_recver.clone());
             let ctrl_frames = self.ctrl_frames.clone();
             async move {
                 if let Some(err_code) = incoming.is_stopped_by_app().await {
@@ -604,6 +604,6 @@ where
                 }
             }
         });
-        (incoming, reader)
+        arc_recver
     }
 }
