@@ -48,12 +48,11 @@ pub struct CongestionController {
     loss_time: [Option<Instant>; Epoch::count()],
     // record sent packets, remove it when receive ack.
     sent_packets: [VecDeque<SentPkt>; Epoch::count()],
-    // record recv packts, remove it when ack frame be ackd;
-    largest_ack_eliciting_packet: [Option<Recved>; Epoch::count()],
     // pacer is used to control the burst rate
     pacer: pacing::Pacer,
     last_sent_time: Instant,
 
+    ack_records: [AckRecord; Epoch::count()],
     loss_pns: Option<(Epoch, Vec<u64>)>,
     newly_ack_pns: Option<(Epoch, Vec<u64>)>,
     pto_space: Option<Epoch>,
@@ -86,7 +85,11 @@ impl CongestionController {
             largest_acked_packet: [None, None, None],
             loss_time: [None, None, None],
             sent_packets: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
-            largest_ack_eliciting_packet: [None, None, None],
+            ack_records: [
+                AckRecord::new(Epoch::Initial),
+                AckRecord::new(Epoch::Handshake),
+                AckRecord::new(Epoch::Data),
+            ],
             pacer: Pacer::new(INITIAL_RTT, INITIAL_CWND, MSS, now, None),
             last_sent_time: now,
             loss_pns: None,
@@ -193,6 +196,12 @@ impl CongestionController {
                     .ok()
                     // 检测ack的包，标记为 is_acked,不能直接remove
                     .map(|idx| {
+                        let retire = self.ack_records[space].ack(pn);
+                        if !retire.is_empty() {
+                            if let Some(waker) = self.ack_waker.take() {
+                                waker.wake();
+                            }
+                        }
                         self.sent_packets[space][idx].is_acked = true;
                         self.sent_packets[space][idx].clone().into()
                     });
@@ -455,8 +464,11 @@ impl super::CongestionControl for ArcCC {
         }
 
         let mut need_ack = false;
-        for epoch in Epoch::iter() {
-            if guard.largest_ack_eliciting_packet[*epoch].is_some() {
+        for &epoch in Epoch::iter() {
+            if guard.ack_records[epoch]
+                .need_ack(guard.max_ack_delay)
+                .is_some()
+            {
                 need_ack = true;
                 break;
             }
@@ -472,10 +484,7 @@ impl super::CongestionControl for ArcCC {
 
     fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)> {
         let guard = self.0.lock().unwrap();
-        if let Some(recved) = &guard.largest_ack_eliciting_packet[space] {
-            return Some((recved.pn, recved.recv_time));
-        }
-        None
+        guard.ack_records[space].need_ack(guard.max_ack_delay)
     }
 
     fn on_pkt_sent(
@@ -492,11 +501,8 @@ impl super::CongestionControl for ArcCC {
         guard.on_packet_sent(pn, epoch, is_ack_eliciting, in_flight, sent_bytes, now);
 
         guard.last_sent_time = now;
-        // 如果已经发送了 largest_ack_eliciting_packet ack, 就不用记录再发送
-        if let (Some(ack_pn), Some(recved)) = (ack, &guard.largest_ack_eliciting_packet[epoch]) {
-            if ack_pn >= recved.pn {
-                guard.largest_ack_eliciting_packet[epoch] = None;
-            }
+        if let Some(largest_acked) = ack {
+            guard.ack_records[epoch].sent_ack(pn, largest_acked);
         }
     }
 
@@ -506,20 +512,12 @@ impl super::CongestionControl for ArcCC {
         guard.on_ack_rcvd(space, ack_frame, now);
     }
 
-    fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_eliciting: bool) {
+    fn on_recv_pkt(&self, epoch: Epoch, pn: u64, is_ack_eliciting: bool) {
         if !is_ack_eliciting {
             return;
         }
-        let now = Instant::now();
-        let recved = Recved { pn, recv_time: now };
         let mut guard = self.0.lock().unwrap();
-        if let Some(r) = &guard.largest_ack_eliciting_packet[space] {
-            if pn > r.pn {
-                guard.largest_ack_eliciting_packet[space] = Some(recved);
-            }
-        } else {
-            guard.largest_ack_eliciting_packet[space] = Some(recved);
-        }
+        guard.ack_records[epoch].recv_pkt(pn);
     }
 
     fn may_loss(&self) -> impl Future<Output = (Epoch, Vec<u64>)> {
@@ -547,6 +545,81 @@ impl super::CongestionControl for ArcCC {
         let mut guard = self.0.lock().unwrap();
         guard.is_handshake_done = true;
         guard.rtt.on_handshake_done();
+    }
+}
+
+struct AckRecord {
+    epoch: Epoch,
+    need_ack: bool,
+    last_ack_sent: Option<(u64, u64)>,
+    largest_recv_time: Option<(u64, Instant)>,
+    rcvd_queue: VecDeque<u64>,
+}
+
+impl AckRecord {
+    fn new(epoch: Epoch) -> Self {
+        Self {
+            epoch,
+            need_ack: false,
+            last_ack_sent: None,
+            largest_recv_time: None,
+            rcvd_queue: VecDeque::new(),
+        }
+    }
+
+    fn recv_pkt(&mut self, pn: u64) {
+        if let Some((largest, _)) = self.largest_recv_time {
+            if self.epoch == Epoch::Initial
+                || self.epoch == Epoch::Handshake
+                || pn < largest
+                || pn - largest > 1
+            {
+                self.need_ack = true;
+            }
+            if pn >= largest {
+                self.largest_recv_time = Some((pn, Instant::now()));
+            }
+        } else {
+            self.largest_recv_time = Some((pn, Instant::now()));
+        };
+
+        let index = self.rcvd_queue.partition_point(|&x| x < pn);
+        if self.rcvd_queue.is_empty() || self.rcvd_queue[index] != pn {
+            self.rcvd_queue.insert(index, pn);
+        }
+    }
+
+    fn need_ack(&self, max_delay: Duration) -> Option<(u64, Instant)> {
+        if self.need_ack {
+            return self.largest_recv_time;
+        }
+        if let Some((largest, recv_time)) = self.largest_recv_time {
+            let now = Instant::now();
+            if now - recv_time >= max_delay {
+                return Some((largest, recv_time));
+            }
+        }
+        None
+    }
+
+    fn sent_ack(&mut self, pn: u64, largest_acked: u64) {
+        self.last_ack_sent = Some((pn, largest_acked));
+        self.need_ack = false;
+    }
+
+    fn ack(&mut self, ack: u64) -> Vec<u64> {
+        let mut retire = Vec::new();
+        if let Some((pn, largest_acked)) = self.last_ack_sent {
+            if ack == pn {
+                retire.extend(
+                    self.rcvd_queue
+                        .iter()
+                        .filter(|&&pn| pn <= largest_acked - 3),
+                );
+                self.rcvd_queue.retain(|&pn| pn > largest_acked);
+            }
+        }
+        retire
     }
 }
 
@@ -594,12 +667,6 @@ impl Future for Prober {
         guard.pto_waker = Some(cx.waker().clone());
         Poll::Pending
     }
-}
-
-#[derive(Clone)]
-pub struct Recved {
-    pn: u64,
-    recv_time: Instant,
 }
 
 #[derive(Clone)]
