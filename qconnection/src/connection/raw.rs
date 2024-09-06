@@ -102,7 +102,7 @@ impl RawConnection {
             &local_params,
             Default::default(),
         );
-        let datagrams = DatagramFlow::new(0, 0);
+        let datagrams = DatagramFlow::new(0, None);
 
         let token = match &*token_registry.lock_guard() {
             TokenRegistry::Client((server_name, client)) => {

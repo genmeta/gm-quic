@@ -14,15 +14,34 @@ use qbase::{
     frame::{BeFrame, DatagramFrame},
 };
 
-/// The unique [`RawDatagramReader`] struct represents a reader for receiving datagrams frame from a connection.
+/// The [`RawDatagramReader`] struct represents a queue for receiving [`DatagramFrame`] frames from a connection.
 ///
-/// the Application can read the received datagrams from the internal queue by calling the [`DatagramReader::recv`] method.
+/// The transport layer will push the received datagrams into the internal FIFO queue or set the internal queue to an error state
+/// when a connection error has occurred. See [`DatagramIncoming`] for more.
+///
+/// The application can create a **unique** [`DatagramReader`] to read the received datagrams.
+/// See [`DatagramReader`] for more.
+///
+/// [`DatagramReader`] is created by [`DatagramIncoming::new_reader`], and they will share the same [`RawDatagramReader`].
+///
 #[derive(Default, Debug)]
 pub(crate) struct RawDatagramReader {
-    /// the maximum size of the datagram that can be received.
+    /// The maximum size of the datagram that can be received.
+    ///
+    /// The value is set by the local transport parameters [`max_datagram_frame_size`](https://www.rfc-editor.org/rfc/rfc9221.html#name-transport-parameter).
+    ///
+    /// If the size of the received datagram exceeds this value, a connection error occurs.
     local_max_size: usize,
+    /// The internal queue for caching the received datagrams.
     queue: VecDeque<Bytes>,
+    /// The waker for waking up the task that is waiting for the data to be read.
+    ///
+    /// When a datagram is received, the waker will be used to wake up the task.
     waker: Option<Waker>,
+    /// The flag indicating whether the [`DatagramReader`] exists or not.
+    ///
+    /// See [`DatagramReader`] for more.
+    reader_exist: bool,
 }
 
 impl RawDatagramReader {
@@ -31,29 +50,60 @@ impl RawDatagramReader {
             local_max_size,
             queue: Default::default(),
             waker: Default::default(),
+            reader_exist: false,
         }
     }
 }
 
-pub(crate) type ArcDatagramReader = Arc<Mutex<io::Result<RawDatagramReader>>>;
-/// The shared [`DatagramReader`] struct represents a reader for receiving datagrams frame from a connection.
-///
-/// the Application can read the received datagrams from the internal queue by calling the [`DatagramReader::recv`] method.
-#[derive(Debug)]
-pub struct DatagramReader(pub(super) ArcDatagramReader);
+/// If a connection error occurs, the internal reader will be set to an error state.
+/// See [`DatagramIncoming::on_conn_error`] for more.
+pub(crate) type ArcDatagramReader = Arc<Mutex<Result<RawDatagramReader, Error>>>;
 
-impl DatagramReader {
-    /// Receives a datagram and push it into internal queue for Application to read.
+/// The [`DatagramIncoming`] struct represents a queue for the transport layer to write the received datagrams.
+///
+/// When the transport layer receives a [`DatagramFrame`], it will push it into the internal FIFO queue.
+/// The application can read the received datagrams from the queue by creating a [`DatagramReader`].
+///
+/// When a connection error occurs, the error state will be set to the reader. See [`DatagramIncoming::on_conn_error`] for more.
+#[derive(Debug, Clone)]
+pub(crate) struct DatagramIncoming(pub ArcDatagramReader);
+
+impl DatagramIncoming {
+    /// Creates a new [`DatagramReader`] for the application to read the received datagrams.
     ///
-    /// # Arguments
+    /// Due to the internal datagram queue being mpsc, the reader (consumer) is unique; only one reader can exist at the same time.
     ///
-    /// * `frame` - The datagram frame.
-    /// * `data` - The data contained in the datagram frame.
+    /// If the reader already exists, the method will return an error.
     ///
-    /// # Returns
+    /// The reader will be released when it is dropped, so that a new reader can be created.
     ///
-    /// Return [`Ok`] if the datagram is successfully received and processed.
-    /// Return an [`Err`] if there is a protocol violation(the datagram size exceeds the maximum size).
+    /// If a connection error occurs, the error will be set to the reader, and subsequent calls to this method will return an error.
+    /// See [`DatagramIncoming::on_conn_error`] for more.
+    pub fn new_reader(&self) -> io::Result<DatagramReader> {
+        let mut guard = self.0.lock().unwrap();
+        match guard.deref_mut() {
+            Ok(raw) => {
+                if raw.reader_exist {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "reader already taken, see DatagramReader's doc for more",
+                    ));
+                }
+                raw.reader_exist = true;
+                Ok(DatagramReader(self.0.clone()))
+            }
+            Err(e) => Err(io::Error::from(e.clone())),
+        }
+    }
+
+    /// Receives a datagram and pushes it into the internal FIFO queue for the application to read.
+    ///
+    /// If the size of the received datagram exceeds the maximum size set by the local transport parameters `max_datagram_frame_size`,
+    /// a connection error occurs. See [`RawDatagramReader::local_max_size`] for more.
+    ///
+    /// If the connection is closing or closed, the new datagram will be ignored.
+    ///
+    /// If there is a task waiting for the data to be read, the task will be woken up when the datagram is received.
     pub(crate) fn recv_datagram(
         &self,
         frame: &DatagramFrame,
@@ -84,17 +134,13 @@ impl DatagramReader {
         Ok(())
     }
 
-    /// Handles a connection error.
+    /// When a connection error occurs, the error will be set to the reader.
     ///
-    /// # Arguments
+    /// Any subsequent calls to [`DatagramIncoming::new_reader`], [`DatagramReader::recv`] and [`DatagramReader::recv_buf`] will return an error.
     ///
-    /// * `error` - The error that occurred.
+    /// If there is a task waiting for the data to be read, the task will be woken up and return an error immediately.
     ///
-    /// # Note
-    ///
-    /// This method will wake up all the wakers that are waiting for the data to be read.
-    ///
-    /// if the connection is already closed, the new error will be ignored.
+    /// All the received datagrams will be discarded, and subsequent calls to [`DatagramIncoming::recv_datagram`] will be ignored.
     pub(super) fn on_conn_error(&self, error: &Error) {
         let reader = &mut self.0.lock().unwrap();
         let inner = reader.deref_mut();
@@ -102,82 +148,77 @@ impl DatagramReader {
             if let Some(waker) = reader.waker.take() {
                 waker.wake();
             }
-            *inner = Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()));
+            *inner = Err(error.clone());
         }
     }
+}
+/// The [`DatagramReader`] struct represents a reader for the application to read the received datagrams.
+///
+/// The reader is created by the [`DatagramIncoming::new_reader`] method. Due to the internal datagram queue being mpsc,
+/// the reader (consumer) is unique; only one reader can exist at the same time.
+/// See [`DatagramIncoming::new_reader`] for more.
+///
+/// The application can read the received datagrams from the reader by calling the [`DatagramReader::recv`] or [`DatagramReader::recv_buf`] method.
+///
+/// These methods are asynchronous, they return a future that resolves to the number of bytes read into the buffer.
+/// If the connection is closing or already closed, the future will yield an error.
+///
+/// Read their docs for more.
+#[derive(Debug)]
+pub struct DatagramReader(ArcDatagramReader);
 
-    /// Read the received data into a mutable slice.
+impl DatagramReader {
+    /// Reads the received data into a mutable slice.
+    ///
+    /// This method is asynchronous and returns a future that resolves to the number of bytes read.
     ///
     /// ``` rust, ignore
     /// pub async fn recv(&self, buf: & mut [u8]) -> io::Result<usize>
     /// ```
     ///
-    /// # Arguments
+    /// The future will yield the size of bytes read from the received datagram as [`Ok`].
     ///
-    /// * `buf` - The mutable slice to receive the data into.
+    /// If the buffer is not large enough to hold the received data, the received data will be truncated.
     ///
-    /// # Returns
-    ///
-    /// Return a future that resolves to the number of bytes read.
-    ///
-    /// Return [`Err`] when the connection is closing or already closed
-    ///
-    /// # Note
-    ///
-    /// if the buffer is not large enough to hold the received data, the remaining data will be discarded.
-    pub fn recv<'b>(&self, buf: &'b mut [u8]) -> ReadIntoSlice<'b> {
-        let reader = self.0.clone();
+    /// If the connection is closing or already closed, the future will yield an error as [`Err`].
+    pub fn recv<'b>(&'b mut self, buf: &'b mut [u8]) -> ReadIntoSlice<'b> {
+        let reader = &mut self.0;
         ReadIntoSlice { reader, buf }
     }
 
-    /// Read the received data into a mutable buffer.
+    /// Reads the received data into a mutable reference to [`bytes::BufMut`].
+    ///
+    /// This method is asynchronous and returns a future that resolves to the number of bytes read.
     ///
     /// ``` rust, ignore
-    /// pub async fn recv_buf(&self, buf: & mut [u8]) -> io::Result<usize>
+    /// pub async fn recv(&self, buf: & mut [u8]) -> io::Result<usize>
     /// ```
     ///
-    /// # Arguments
+    /// The future will yield the size of bytes read from the received datagram as [`Ok`].
     ///
-    /// * `buf` - The mutable buffer to receive the data into.
+    /// If the buffer is not large enough to hold the received data, the behavior is defined by the [`bytes::BufMut::put`] implementation.
     ///
-    /// # Returns
-    ///
-    /// Return a future that resolves to the number of bytes read.
-    ///
-    /// Return [`Err`] when the connection is closing or already closed
-    ///
-    /// # Note
-    ///
-    /// if the buffer is not large enough to hold the received data, the behavior is defined by the implementation of [`BufMut::put`].
-    pub fn recv_buf<'b, B: BufMut>(&self, buf: &'b mut B) -> ReadInfoBuf<'b, B> {
-        let reader = self.0.clone();
+    /// If the connection is closing or already closed, the future will yield an error as [`Err`].
+    pub fn recv_buf<'b, B: BufMut>(&'b mut self, buf: &'b mut B) -> ReadInfoBuf<'b, B> {
+        let reader = &mut self.0;
         ReadInfoBuf { reader, buf }
-    }
-
-    /// return the transport parameters `max_datagram_frame_size` set by local
-    ///
-    /// # Returns
-    ///
-    /// Return [`Err`] when the connection is closing or already closed
-    pub fn get_local_max_datagram_frame_size(&self) -> io::Result<usize> {
-        let reader = self.0.lock().unwrap();
-        match &*reader {
-            Ok(reader) => Ok(reader.local_max_size),
-            Err(error) => Err(io::Error::new(io::ErrorKind::BrokenPipe, error.to_string())),
-        }
-    }
-
-    pub fn into_result(self) -> io::Result<Self> {
-        if let Err(e) = &*self.0.lock().unwrap() {
-            return Err(io::Error::new(e.kind(), e.to_string()));
-        }
-        Ok(self)
     }
 }
 
-/// the [`Future`] created by [`DatagramReader::recv`]
+/// Releases the reader when it is dropped, so that a new reader can be created.
+impl Drop for DatagramReader {
+    fn drop(&mut self) {
+        let reader = &mut self.0.lock().unwrap();
+        let inner = reader.deref_mut();
+        if let Ok(reader) = inner {
+            reader.reader_exist = false;
+        }
+    }
+}
+
+/// the [`Future`] created by [`DatagramReader::recv`], see [`DatagramReader::recv`] for more.
 pub struct ReadIntoSlice<'a> {
-    reader: ArcDatagramReader,
+    reader: &'a mut ArcDatagramReader,
     buf: &'a mut [u8],
 }
 
@@ -200,14 +241,14 @@ impl Future for ReadIntoSlice<'_> {
                     Poll::Pending
                 }
             },
-            Err(e) => Poll::Ready(Err(io::Error::new(e.kind(), e.to_string()))),
+            Err(e) => Poll::Ready(Err(io::Error::from(e.clone()))),
         }
     }
 }
 
-/// the [`Future`] created by [`DatagramReader::recv_buf`]
+/// the [`Future`] created by [`DatagramReader::recv_buf`], see [`DatagramReader::recv_buf`] for more.
 pub struct ReadInfoBuf<'a, B> {
-    reader: ArcDatagramReader,
+    reader: &'a mut ArcDatagramReader,
     buf: &'a mut B,
 }
 
@@ -232,7 +273,7 @@ where
                     Poll::Pending
                 }
             },
-            Err(e) => Poll::Ready(Err(io::Error::new(e.kind(), e.to_string()))),
+            Err(e) => Poll::Ready(Err(io::Error::from(e.clone()))),
         }
     }
 }
@@ -245,19 +286,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_datagram_reader_recv_buf() {
-        let reader = Arc::new(Mutex::new(Ok(RawDatagramReader::new(1024))));
-
-        let reader = DatagramReader(reader);
+        let incoming = DatagramIncoming(Arc::new(Mutex::new(Ok(RawDatagramReader::new(1024)))));
 
         let recv = tokio::spawn({
-            let reader = DatagramReader(reader.0.clone());
+            let mut reader = incoming.new_reader().unwrap();
             async move {
                 let n = reader.recv(&mut [0u8; 1024]).await.unwrap();
                 assert_eq!(n, 11);
             }
         });
 
-        reader
+        incoming
             .recv_datagram(
                 &DatagramFrame::new(None),
                 Bytes::from_static(b"hello world"),
@@ -269,15 +308,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_datagram_reader_on_conn_error() {
-        let reader = Arc::new(Mutex::new(Ok(RawDatagramReader::new(1024))));
-        let reader = DatagramReader(reader);
+        let incoming = DatagramIncoming(Arc::new(Mutex::new(Ok(RawDatagramReader::new(1024)))));
         let error = Error::new(
             ErrorKind::ProtocolViolation,
             FrameType::Datagram(0),
             "protocol violation",
         );
-        reader.on_conn_error(&error);
+        incoming.on_conn_error(&error);
 
+        let mut reader = incoming.new_reader().unwrap();
         let mut buf = [0u8; 1024];
         // let n = tokio::join!(blocking, reader.recv(&mut buf)).1.unwrap_err();
         let n = reader.recv(&mut buf).await.unwrap_err();

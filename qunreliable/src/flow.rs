@@ -1,6 +1,6 @@
 use std::{
     io,
-    sync::{atomic::AtomicBool, Arc, Mutex},
+    sync::{Arc, Mutex},
 };
 
 use qbase::{
@@ -12,111 +12,86 @@ use super::{
     reader::{DatagramReader, RawDatagramReader},
     writer::{DatagramWriter, RawDatagramWriter},
 };
+use crate::{DatagramIncoming, DatagramOutgoing};
 
-/// The unique [`RawDatagramFlow`] struct represents a flow for sending and receiving datagrams frame from a connection.
-#[derive(Debug)]
-pub struct RawDatagramFlow {
-    reader: DatagramReader,
-    writer: DatagramWriter,
-    reader_taken: AtomicBool,
-}
-
+/// Combination of [`DatagramIncoming`] and [`DatagramOutgoing`]
 #[derive(Debug, Clone)]
-pub struct DatagramFlow(Arc<RawDatagramFlow>);
-
-impl RawDatagramFlow {
-    /// Creates a new instance of [`DatagramFlow`].
-    ///
-    /// # Arguments
-    ///
-    /// * `local_max_datagram_frame_size` - The maximum size of the datagram frame that can be received.
-    ///
-    /// * `remote_max_datagram_frame_size` - The maximum size of the datagram frame that can be sent.
-    ///
-    /// # Notes
-    ///
-    /// The arguments chould be the default value, or the value negotiation by last connection.
-    ///
-    /// If the new `remote_max_datagram_frame_size` is smaller than the previous value, a connection error will occur,
-    /// see [`DatagramWriter::update_remote_max_datagram_frame_size`] for more details.
-    fn new(local_max_datagram_frame_size: u64, remote_max_datagram_frame_size: u64) -> Self {
-        let reader = RawDatagramReader::new(remote_max_datagram_frame_size as _);
-        let writer = RawDatagramWriter::new(local_max_datagram_frame_size as _);
-
-        Self {
-            reader: DatagramReader(Arc::new(Mutex::new(Ok(reader)))),
-            writer: DatagramWriter(Arc::new(Mutex::new(Ok(writer)))),
-            reader_taken: AtomicBool::new(false),
-        }
-    }
+pub struct DatagramFlow {
+    /// The incoming datagram frame, see type's doc for more details.
+    incoming: DatagramIncoming,
+    /// The outgoing datagram frame, see type's doc for more details.
+    outgoing: DatagramOutgoing,
 }
-
-/// The shared [`RawDatagramFlow`] struct represents a flow for sending and receiving datagrams frame from a connection.
 
 impl DatagramFlow {
-    /// see [`RawDatagramFlow::new`] for more details.
+    /// Creates a new instance of [`DatagramFlow`].
+    ///
+    /// This method takes two parameters, local and remote's transport parameter [`max_datagram_frame_size`],
+    /// the local's transport parameter [`max_datagram_frame_size`] is used to create the reader, and the remote's transport parameter
+    /// [`max_datagram_frame_size`] is used to create the writer.
+    ///
+    /// Most of the time, the remote's transport parameter [`max_datagram_frame_size`] is unknow when creating the flow, so it's optional.
+    /// But if the connection enabled 0-rtt, the remote's transport parameter [`max_datagram_frame_size`] will be set to the previous value.
+    ///
+    /// In handshake, if the new parameter is smaller than the previous value,a connection error occurs.
+    ///
+    /// [`max_datagram_frame_size`]: https://www.rfc-editor.org/rfc/rfc9221.html#name-transport-parameter
     #[inline]
-    pub fn new(local_max_datagram_frame_size: u64, remote_max_datagram_frame_size: u64) -> Self {
-        let flow = RawDatagramFlow::new(
-            local_max_datagram_frame_size,
-            remote_max_datagram_frame_size,
-        );
-        Self(Arc::new(flow))
+    pub fn new(
+        local_max_datagram_frame_size: u64,
+        remote_max_datagram_frame_size: Option<u64>,
+    ) -> Self {
+        let reader = RawDatagramReader::new(local_max_datagram_frame_size as _);
+        let writer = RawDatagramWriter::new(remote_max_datagram_frame_size.map(|n| n as _));
+
+        Self {
+            incoming: DatagramIncoming(Arc::new(Mutex::new(Ok(reader)))),
+            outgoing: DatagramOutgoing(Arc::new(Mutex::new(Ok(writer)))),
+        }
     }
-    /// See [`DatagramWriter::update_remote_max_datagram_frame_size`] for more details.
+
+    /// See [`DatagramOutgoing::update_remote_max_datagram_frame_size`] for more details.
     #[inline]
     pub fn update_remote_max_datagram_frame_size(&self, size: u64) -> Result<(), Error> {
-        self.0
-            .writer
+        self.outgoing
             .update_remote_max_datagram_frame_size(size as _)
     }
 
-    /// See [`DatagramWriter::try_read_datagram`] for more details.
+    /// See [`DatagramOutgoing::try_read_datagram`] for more details.
     #[inline]
     pub fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        self.0.writer.try_read_datagram(buf)
+        self.outgoing.try_read_datagram(buf)
     }
 
+    /// Create a new **unuiqe** instance of [`DatagramReader`].
+    ///
+    /// Return an error if the connection is closing or already closed, or there is already a reader exist.
+    ///
+    /// See [`DatagramIncoming::new_reader`] for more details.
     #[inline]
     pub fn reader(&self) -> io::Result<DatagramReader> {
-        use std::sync::atomic::Ordering;
-        if self.0.reader_taken.swap(true, Ordering::AcqRel) {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "The reader has been taken once",
-            ));
-        }
-
-        DatagramReader(self.0.reader.0.clone()).into_result()
+        self.incoming.new_reader()
     }
 
+    /// Create a new instance of [`DatagramWriter`].
+    ///
+    /// Return an error if the connection is closing or already closed,
+    ///
+    /// See [`DatagramOutgoing::new_writer`] for more details.
     #[inline]
-    pub fn writer(&self) -> io::Result<DatagramWriter> {
-        DatagramWriter(self.0.writer.0.clone()).into_result()
+    pub async fn writer(&self) -> io::Result<DatagramWriter> {
+        self.outgoing.new_writer().await
     }
 
-    /// Handles a connection error.
-    ///
-    /// # Arguments
-    ///
-    /// * `error` - The error that occurred.
-    ///
-    /// # Note
-    ///
-    /// This method will wake up all the wakers that are waiting for the data to be read.
-    ///
-    /// if the connection is already closed, the new error will be ignored.
-    ///
-    /// See [`DatagramReader::on_conn_error`] and [`DatagramWriter::on_conn_error`] for more details.
+    /// See [`DatagramOutgoing::on_conn_error`] and [`DatagramIncoming::on_conn_error`] for more details.
     #[inline]
     pub fn on_conn_error(&self, error: &Error) {
-        let raw_flow = &self.0;
-        raw_flow.reader.on_conn_error(error);
-        raw_flow.writer.on_conn_error(error);
+        self.incoming.on_conn_error(error);
+        self.outgoing.on_conn_error(error);
     }
 }
 
-/// See [`DatagramReader::recv_datagram`] for more details.
+/// See [`DatagramIncoming::recv_datagram`] for more details.
 impl ReceiveFrame<(DatagramFrame, bytes::Bytes)> for DatagramFlow {
     type Output = ();
 
@@ -125,6 +100,6 @@ impl ReceiveFrame<(DatagramFrame, bytes::Bytes)> for DatagramFlow {
         &self,
         (frame, body): &(DatagramFrame, bytes::Bytes),
     ) -> Result<Self::Output, Error> {
-        self.0.reader.recv_datagram(frame, body.clone())
+        self.incoming.recv_datagram(frame, body.clone())
     }
 }
