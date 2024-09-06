@@ -1,7 +1,6 @@
 use std::{
     cmp::Ordering,
     collections::VecDeque,
-    future::Future,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
@@ -53,14 +52,9 @@ pub struct CongestionController {
     last_sent_time: Instant,
 
     ack_records: [AckRecord; Epoch::count()],
-    loss_pns: Option<(Epoch, Vec<u64>)>,
-    newly_ack_pns: Option<(Epoch, Vec<u64>)>,
-    pto_space: Option<Epoch>,
-    // waker
     send_waker: Option<Waker>,
-    loss_waker: Option<Waker>,
-    ack_waker: Option<Waker>,
-    pto_waker: Option<Waker>,
+    loss: Box<dyn Fn(Epoch, u64) + Send + Sync>,
+    retire: Box<dyn Fn(Epoch, u64) + Send + Sync>,
 
     has_handshake_keys: bool,
     is_handshake_done: bool,
@@ -68,7 +62,12 @@ pub struct CongestionController {
 
 impl CongestionController {
     // A.4. Initialization
-    fn new(algorithm: CongestionAlgorithm, max_ack_delay: Duration) -> Self {
+    fn new(
+        algorithm: CongestionAlgorithm,
+        max_ack_delay: Duration,
+        loss: Box<dyn Fn(Epoch, u64) + Send + Sync>,
+        retire: Box<dyn Fn(Epoch, u64) + Send + Sync>,
+    ) -> Self {
         let algorithm: Box<dyn Algorithm> = match algorithm {
             CongestionAlgorithm::Bbr => Box::new(bbr::Bbr::new()),
             CongestionAlgorithm::NewReno => Box::new(NewReno::new()),
@@ -92,13 +91,9 @@ impl CongestionController {
             ],
             pacer: Pacer::new(INITIAL_RTT, INITIAL_CWND, MSS, now, None),
             last_sent_time: now,
-            loss_pns: None,
-            newly_ack_pns: None,
-            pto_space: None,
             send_waker: None,
-            loss_waker: None,
-            ack_waker: None,
-            pto_waker: None,
+            loss,
+            retire,
             has_handshake_keys: false,
             is_handshake_done: false,
         }
@@ -153,11 +148,6 @@ impl CongestionController {
             return;
         }
 
-        // notify space
-        if let Some(waker) = self.ack_waker.take() {
-            waker.wake();
-        }
-
         let ack_delay = Duration::from_millis(ack_frame.delay.into());
         if let Some(latest_rtt) = latest_rtt {
             self.rtt.update(latest_rtt, ack_delay);
@@ -196,12 +186,7 @@ impl CongestionController {
                     .ok()
                     // 检测ack的包，标记为 is_acked,不能直接remove
                     .map(|idx| {
-                        let retire = self.ack_records[space].ack(pn);
-                        if !retire.is_empty() {
-                            if let Some(waker) = self.ack_waker.take() {
-                                waker.wake();
-                            }
-                        }
+                        self.ack_records[space].ack(pn, &self.retire);
                         self.sent_packets[space][idx].is_acked = true;
                         self.sent_packets[space][idx].clone().into()
                     });
@@ -216,23 +201,15 @@ impl CongestionController {
             }
         }
         self.slide_sent_packets(space);
-        if !newly_acked_pns.is_empty() {
-            self.newly_ack_pns = Some((space, newly_acked_pns));
-        }
-
         (newly_acked_packets, latest_rtt)
     }
 
     // A.8. Setting the Loss Detection Timer
-    fn on_packets_lost(&mut self, packets: Vec<SentPkt>, _: Epoch) {
+    fn on_packets_lost(&mut self, packets: Vec<SentPkt>, epoch: Epoch) {
         let now = Instant::now();
-
-        if let Some(waker) = self.loss_waker.take() {
-            waker.wake();
-        }
-
         for lost in packets {
             self.algorithm.on_congestion_event(&lost, now);
+            (self.loss)(epoch, lost.pn);
         }
     }
 
@@ -266,27 +243,23 @@ impl CongestionController {
         }
 
         // probe timeout
-        if self.no_ack_eliciting_in_flight() {
+        let _ = if self.no_ack_eliciting_in_flight() {
             assert!(!self.server_completed_address_validation());
             // Client sends an anti-deadlock packet: Initial is padded
             // to earn more anti-amplification credit,
             // a Handshake packet proves address ownership.
             if self.has_handshake_keys {
-                self.pto_space = Some(Epoch::Handshake);
+                Some(Epoch::Handshake)
             } else {
-                self.pto_space = Some(Epoch::Initial);
+                Some(Epoch::Initial)
             }
+        } else if self.get_pto_timeout().is_some() {
+            Some(Epoch::Data)
         } else {
-            let timeout = self.get_pto_timeout();
-            if timeout.is_some() {
-                self.pto_space = Some(Epoch::Data);
-            }
-        }
+            None
+        };
         self.pto_count += 1;
 
-        if let Some(waker) = self.pto_waker.take() {
-            waker.wake();
-        }
         self.set_loss_timer();
     }
 
@@ -388,9 +361,6 @@ impl CongestionController {
         }
 
         self.slide_sent_packets(space);
-        if !loss_pn.is_empty() {
-            self.loss_pns = Some((space, loss_pn));
-        }
         loss_packets
     }
 
@@ -426,10 +396,17 @@ impl CongestionController {
 pub struct ArcCC(Arc<Mutex<CongestionController>>);
 
 impl ArcCC {
-    pub fn new(algorithm: CongestionAlgorithm, max_ack_delay: Duration) -> Self {
+    pub fn new(
+        algorithm: CongestionAlgorithm,
+        max_ack_delay: Duration,
+        loss: Box<dyn Fn(Epoch, u64) + Send + Sync>,
+        retire: Box<dyn Fn(Epoch, u64) + Send + Sync>,
+    ) -> Self {
         ArcCC(Arc::new(Mutex::new(CongestionController::new(
             algorithm,
             max_ack_delay,
+            loss,
+            retire,
         ))))
     }
 }
@@ -520,18 +497,6 @@ impl super::CongestionControl for ArcCC {
         guard.ack_records[epoch].recv_pkt(pn);
     }
 
-    fn may_loss(&self) -> impl Future<Output = (Epoch, Vec<u64>)> {
-        MayLoss(self.clone())
-    }
-
-    fn indicate_ack(&self) -> impl Future<Output = (Epoch, Vec<u64>)> {
-        IndicateAck(self.clone())
-    }
-
-    fn probe_timeout(&self) -> impl Future<Output = Epoch> {
-        Prober(self.clone())
-    }
-
     fn pto_time(&self, epoch: Epoch) -> Duration {
         self.0.lock().unwrap().get_pto_time(epoch)
     }
@@ -568,22 +533,26 @@ impl AckRecord {
     }
 
     fn recv_pkt(&mut self, pn: u64) {
+        if self.epoch == Epoch::Initial || self.epoch == Epoch::Handshake {
+            self.need_ack = true;
+        }
         if let Some((largest, _)) = self.largest_recv_time {
-            if self.epoch == Epoch::Initial
-                || self.epoch == Epoch::Handshake
-                || pn < largest
-                || pn - largest > 1
-            {
+            if pn < largest || pn - largest > 1 {
                 self.need_ack = true;
             }
             if pn >= largest {
                 self.largest_recv_time = Some((pn, Instant::now()));
+                if pn > largest {
+                    self.rcvd_queue.push_back(pn);
+                    return;
+                }
             }
         } else {
             self.largest_recv_time = Some((pn, Instant::now()));
         };
 
         let index = self.rcvd_queue.partition_point(|&x| x < pn);
+
         if self.rcvd_queue.is_empty() || self.rcvd_queue[index] != pn {
             self.rcvd_queue.insert(index, pn);
         }
@@ -607,65 +576,18 @@ impl AckRecord {
         self.need_ack = false;
     }
 
-    fn ack(&mut self, ack: u64) -> Vec<u64> {
-        let mut retire = Vec::new();
+    fn ack(&mut self, ack: u64, retrie: &(dyn Fn(Epoch, u64) + Send + Sync)) {
         if let Some((pn, largest_acked)) = self.last_ack_sent {
             if ack == pn {
-                retire.extend(
-                    self.rcvd_queue
-                        .iter()
-                        .filter(|&&pn| pn <= largest_acked - 3),
-                );
+                self.rcvd_queue
+                    .iter()
+                    .filter(|&&pn| pn <= largest_acked)
+                    .for_each(|pn| {
+                        retrie(self.epoch, *pn);
+                    });
                 self.rcvd_queue.retain(|&pn| pn > largest_acked);
             }
         }
-        retire
-    }
-}
-
-struct MayLoss(ArcCC);
-
-impl Future for MayLoss {
-    type Output = (Epoch, Vec<u64>);
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.0 .0.lock().unwrap();
-
-        if let Some(loss) = guard.loss_pns.take() {
-            return Poll::Ready(loss);
-        }
-        guard.loss_waker = Some(cx.waker().clone());
-        Poll::Pending
-    }
-}
-
-struct IndicateAck(ArcCC);
-
-impl Future for IndicateAck {
-    type Output = (Epoch, Vec<u64>);
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.0 .0.lock().unwrap();
-        if let Some(acked) = guard.newly_ack_pns.take() {
-            return Poll::Ready(acked);
-        }
-        guard.ack_waker = Some(cx.waker().clone());
-        Poll::Pending
-    }
-}
-
-struct Prober(ArcCC);
-
-impl Future for Prober {
-    type Output = Epoch;
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.0 .0.lock().unwrap();
-        if let Some(space) = guard.pto_space {
-            return Poll::Ready(space);
-        }
-        guard.pto_waker = Some(cx.waker().clone());
-        Poll::Pending
     }
 }
 
@@ -946,7 +868,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_ack_record() {
+        let max_ack_delay = Duration::from_millis(100);
+        let mut ack_reocrd = AckRecord::new(Epoch::Initial);
+        ack_reocrd.recv_pkt(1);
+        assert!(ack_reocrd.need_ack(max_ack_delay).is_some());
+
+        ack_reocrd.recv_pkt(1);
+        assert_eq!(ack_reocrd.rcvd_queue.len(), 1);
+
+        ack_reocrd.sent_ack(1, 1);
+        assert_eq!(ack_reocrd.last_ack_sent, Some((1, 1)));
+        assert!(ack_reocrd.need_ack(max_ack_delay).is_none());
+
+        ack_reocrd.recv_pkt(3);
+        assert_eq!(ack_reocrd.rcvd_queue, vec![1, 3]);
+
+        ack_reocrd.recv_pkt(0);
+        assert_eq!(ack_reocrd.rcvd_queue, vec![0, 1, 3]);
+        assert_eq!(ack_reocrd.need_ack(max_ack_delay).unwrap().0, 3);
+
+        ack_reocrd.recv_pkt(5);
+        ack_reocrd.recv_pkt(7);
+        assert_eq!(ack_reocrd.rcvd_queue, vec![0, 1, 3, 5, 7]);
+        assert_eq!(ack_reocrd.need_ack(max_ack_delay).unwrap().0, 7);
+
+        // pn 2 ack 0,1,3,5,7
+        ack_reocrd.sent_ack(2, 7);
+        ack_reocrd.recv_pkt(9);
+        assert_eq!(ack_reocrd.rcvd_queue, vec![0, 1, 3, 5, 7, 9]);
+
+        // pn 3 ack 0,1,3,5,7,9
+        ack_reocrd.sent_ack(3, 9);
+
+        // recv pn 2 ack, ingore
+        ack_reocrd.ack(2, &|_, _| {});
+        assert_eq!(ack_reocrd.rcvd_queue, vec![0, 1, 3, 5, 7, 9]);
+
+        ack_reocrd.recv_pkt(11);
+        assert_eq!(ack_reocrd.rcvd_queue, vec![0, 1, 3, 5, 7, 9, 11]);
+        // recv pn 3 ack, ret
+
+        ack_reocrd.ack(3, &|_, _| {});
+        assert_eq!(ack_reocrd.rcvd_queue, vec![11]);
+    }
+
     fn create_congestion_controller_for_test() -> CongestionController {
-        CongestionController::new(CongestionAlgorithm::Bbr, Duration::from_millis(100))
+        let loss = Box::new(|_: Epoch, _: u64| {});
+        let retire = Box::new(|_: Epoch, _: u64| {});
+        CongestionController::new(
+            CongestionAlgorithm::Bbr,
+            Duration::from_millis(100),
+            loss,
+            retire,
+        )
     }
 }

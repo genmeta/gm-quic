@@ -1,5 +1,4 @@
 use std::{
-    future::Future,
     task::{Context, Poll},
     time::{Duration, Instant},
 };
@@ -61,19 +60,6 @@ pub trait CongestionControl {
     /// 每当收到一个数据包，记录下，根据这些记录，决定下次发包时，是否需要带上AckFrame，作用于poll_send的返回值中
     /// 另外，这个记录不是持续增长的，得向前滑动，靠on_acked(pn)及该pn中有AckFrame记录驱动滑动
     fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_elicition: bool);
-
-    /// 当收到AckFrame，largest_acked_pn都被确认了，那往前数3个没被ack的包，可判定为丢失
-    /// 前3个数据包，如果超时时间过长，超过了PTO，也应判定为丢包, 返回 Ready 以及对应丢包的 space 和 pn
-    fn may_loss(&self) -> impl Future<Output = (Epoch, Vec<u64>)>;
-
-    /// 收包记录作为滑动窗口也要向前滑动；当一个Path的收包记录产生的AckFrame被对方收到时，那这个Path过往收到的包
-    /// 都不必记录了，可以淘汰。
-    /// 需知，一个Path收到的包不需要被记录，不代表其他Path的包也不需被记录。只有等各个path过去接收的包都不需要被记录，
-    /// 那么Space级别的包号连续的不被记录的，才可以向前滑动
-    fn indicate_ack(&self) -> impl Future<Output = (Epoch, Vec<u64>)>;
-
-    /// probe timeout 需通知 space 进行发包
-    fn probe_timeout(&self) -> impl Future<Output = Epoch>;
 
     /// 获取当前 path 的 pto time
     fn pto_time(&self, epoch: Epoch) -> Duration;

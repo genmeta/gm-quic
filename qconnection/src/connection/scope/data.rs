@@ -396,6 +396,25 @@ impl DataScope {
             datagrams,
         }
     }
+
+    pub fn may_loss(
+        &self,
+        pn: u64,
+        data_streams: &DataStreams,
+        reliable_frames: &ArcReliableFrameDeque,
+    ) {
+        for frame in self.space.sent_packets().receive().may_loss_pkt(pn) {
+            match frame {
+                GuaranteedFrame::Stream(f) => data_streams.may_loss_data(&f),
+                GuaranteedFrame::Reliable(f) => reliable_frames.lock_guard().push_back(f),
+                GuaranteedFrame::Crypto(f) => self.crypto_stream.outgoing().may_loss_data(&f),
+            }
+        }
+    }
+
+    pub fn retire(&self, pn: u64) {
+        self.space.rcvd_packets().write().retire(pn);
+    }
 }
 
 #[derive(Clone)]

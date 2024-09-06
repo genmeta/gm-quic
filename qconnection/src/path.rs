@@ -10,7 +10,7 @@ use dashmap::DashMap;
 use deref_derive::{Deref, DerefMut};
 use qbase::cid::{ArcCidCell, ConnectionId};
 use qcongestion::{congestion::MSS, CongestionControl};
-use qrecovery::reliable::ArcReliableFrameDeque;
+use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
 use qudp::ArcUsc;
 
 mod anti_amplifier;
@@ -149,8 +149,14 @@ impl<S: ViaPathway + Unpin + ?Sized> Future for SendAllViaPathWay<'_, S> {
 pub struct ArcPath(Arc<RawPath>);
 
 impl ArcPath {
-    pub fn new(usc: ArcUsc, scid: ConnectionId, dcid: ArcCidCell<ArcReliableFrameDeque>) -> Self {
-        Self(Arc::new(RawPath::new(usc, scid, dcid)))
+    pub fn new(
+        usc: ArcUsc,
+        scid: ConnectionId,
+        dcid: ArcCidCell<ArcReliableFrameDeque>,
+        loss: Box<dyn Fn(Epoch, u64) + Send + Sync>,
+        retire: Box<dyn Fn(Epoch, u64) + Send + Sync>,
+    ) -> Self {
+        Self(Arc::new(RawPath::new(usc, scid, dcid, loss, retire)))
     }
 }
 
