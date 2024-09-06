@@ -11,7 +11,7 @@ use qbase::{
     token::{ArcTokenRegistry, TokenRegistry},
     util::AsyncCell,
 };
-use qrecovery::reliable::ArcReliableFrameDeque;
+use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
 use qunreliable::DatagramFlow;
 use rustls::quic::Keys;
 use tokio::{sync::Notify, task::JoinHandle};
@@ -137,10 +137,35 @@ impl RawConnection {
                     )
                 }
             };
+
+            let loss = Box::new({
+                let initial = initial.clone();
+                let hs = hs.clone();
+                let data = data.clone();
+                let data_streams = streams.clone();
+                let reliable_frames = reliable_frames.clone();
+                move |epoch: Epoch, pn: u64| match epoch {
+                    Epoch::Initial => initial.may_loss(pn),
+                    Epoch::Handshake => hs.may_loss(pn),
+                    Epoch::Data => data.may_loss(pn, &data_streams, &reliable_frames),
+                }
+            });
+
+            let retire = Box::new({
+                let initial = initial.clone();
+                let hs = hs.clone();
+                let data = data.clone();
+                move |epoch: Epoch, pn: u64| match epoch {
+                    Epoch::Initial => initial.retire(pn),
+                    Epoch::Handshake => hs.retire(pn),
+                    Epoch::Data => data.retire(pn),
+                }
+            });
+
             move |pathway, usc| {
                 let scid = cid_registry.local.active_cids()[0];
                 let dcid = cid_registry.remote.apply_dcid();
-                let path = ArcPath::new(usc.clone(), scid, dcid);
+                let path = ArcPath::new(usc.clone(), scid, dcid, loss.clone(), retire.clone());
 
                 if !handshake.is_handshake_done() {
                     if role == Role::Client {

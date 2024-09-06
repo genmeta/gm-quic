@@ -179,6 +179,16 @@ impl HandshakeScope {
             crypto_stream_outgoing: self.crypto_stream.outgoing(),
         }
     }
+
+    pub fn may_loss(&self, pn: u64) {
+        for frame in self.space.sent_packets().receive().may_loss_pkt(pn) {
+            self.crypto_stream.outgoing().may_loss_data(&frame);
+        }
+    }
+
+    pub fn retire(&self, pn: u64) {
+        self.space.rcvd_packets().write().retire(pn);
+    }
 }
 
 #[derive(Clone)]

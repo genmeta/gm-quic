@@ -123,14 +123,4 @@ impl HandshakeSpaceReader {
             sent_ack,
         ))
     }
-
-    pub fn may_loss(&self, pns: Vec<u64>) {
-        for pn in pns {
-            let record = self.space.sent_packets();
-            let mut guard = record.receive();
-            for frame in guard.may_loss_pkt(pn) {
-                self.crypto_stream_outgoing.may_loss_data(&frame);
-            }
-        }
-    }
 }

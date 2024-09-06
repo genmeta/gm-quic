@@ -43,12 +43,23 @@ pub struct RawPath {
 }
 
 impl RawPath {
-    pub fn new(usc: ArcUsc, scid: ConnectionId, dcid: ArcCidCell<ArcReliableFrameDeque>) -> Self {
+    pub fn new(
+        usc: ArcUsc,
+        scid: ConnectionId,
+        dcid: ArcCidCell<ArcReliableFrameDeque>,
+        loss: Box<dyn Fn(Epoch, u64) + Send + Sync>,
+        retire: Box<dyn Fn(Epoch, u64) + Send + Sync>,
+    ) -> Self {
         Self {
             usc,
             dcid: dcid.clone(),
             scid,
-            cc: ArcCC::new(CongestionAlgorithm::Bbr, Duration::from_micros(100)),
+            cc: ArcCC::new(
+                CongestionAlgorithm::Bbr,
+                Duration::from_micros(100),
+                loss,
+                retire,
+            ),
             anti_amplifier: ArcAntiAmplifier::<ANTI_FACTOR>::default(),
             spin: Arc::new(AtomicBool::new(false)),
             challenge_sndbuf: SendBuffer::default(),
@@ -124,24 +135,6 @@ impl RawPath {
                 if send_result.is_err() {
                     state.to_inactive(cid);
                     return;
-                }
-            }
-        });
-
-        tokio::spawn({
-            let cc = self.cc.clone();
-            let state = self.state.clone();
-            async move {
-                loop {
-                    tokio::select! {
-                        _ = state.has_been_inactivated() => break,
-                        (epoch, pns) = cc.may_loss() =>
-                           match epoch {
-                               Epoch::Initial => space_readers.0.may_loss(pns),
-                               Epoch::Handshake => space_readers.1.may_loss(pns),
-                               Epoch::Data => space_readers.2.may_loss(pns),
-                            },
-                    }
                 }
             }
         });
