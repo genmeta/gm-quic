@@ -12,14 +12,16 @@ use std::ops::RangeInclusive;
 
 use nom::{combinator::map, sequence::tuple};
 
-use crate::{
-    packet::r#type::Type,
-    varint::{be_varint, VarInt, WriteVarInt},
-};
+use crate::varint::{be_varint, VarInt, WriteVarInt};
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct AckRecord(pub u64);
-
+/// Receivers send ACK frames (types 0x02 and 0x03) to inform senders of packets they have
+/// received and processed. The ACK frame contains one or more ACK Ranges.
+///
+/// See [ack-frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-ack-frames) of QUIC RFC 9000.
+///
+/// The ACK Range Count is not included in the struct because it is an intermediate variable.
+/// It can be obtained from the ranges when writing and is no longer needed after generating
+/// the ranges when parsing.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AckFrame {
     pub largest: VarInt,
@@ -36,20 +38,6 @@ const ECN_OPT: u8 = 0x1;
 impl super::BeFrame for AckFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Ack(if self.ecn.is_some() { 1 } else { 0 })
-    }
-
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        use crate::packet::r#type::{
-            long::{Type::V1, Ver1},
-            short::OneRtt,
-        };
-        // IH_1, except for not belonging to 0-RTT.
-        matches!(
-            packet_type,
-            Type::Long(V1(Ver1::INITIAL))
-                | Type::Long(V1(Ver1::HANDSHAKE))
-                | Type::Short(OneRtt(_))
-        )
     }
 
     fn max_encoding_size(&self) -> usize {
@@ -74,14 +62,18 @@ impl super::BeFrame for AckFrame {
 }
 
 impl AckFrame {
+    /// Set the value of the ECN (Explicit Congestion Notification) counter
     pub fn set_ecn(&mut self, ecn: EcnCounts) {
         self.ecn = Some(ecn);
     }
 
+    /// Take the value of the ECN (Explicit Congestion Notification) counter
     pub fn take_ecn(&mut self) -> Option<EcnCounts> {
         self.ecn.take()
     }
 
+    /// Iterate through the sequence numbers of the packets acknowledged by the iterative ACK frame,
+    /// starting from the largest and going down.
     pub fn iter(&self) -> impl Iterator<Item = RangeInclusive<u64>> + '_ {
         let right = self.largest.into_inner();
         let left = right - self.first_range.into_inner();
@@ -99,12 +91,9 @@ impl AckFrame {
     }
 }
 
-impl std::convert::From<AckFrame> for AckRecord {
-    fn from(frame: AckFrame) -> Self {
-        AckRecord(frame.largest.into_inner())
-    }
-}
-
+/// The counts of Explicit Congestion Notification (ECN) types.
+///
+/// See [ecn-counts](https://www.rfc-editor.org/rfc/rfc9000.html#name-ecn-counts) of QUIC RFC 9000.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct EcnCounts {
     pub ect0: VarInt,
@@ -113,6 +102,7 @@ pub struct EcnCounts {
 }
 
 impl EcnCounts {
+    /// Calculates the encoding size of the [`EcnCounts`] struct.
     fn encoding_size(&self) -> usize {
         self.ect0.encoding_size() + self.ect1.encoding_size() + self.ce.encoding_size()
     }

@@ -1,29 +1,9 @@
-// This folder defines all the frames, including their parsing and packaging processes.
+use bytes::{Buf, BufMut, Bytes};
 use enum_dispatch::enum_dispatch;
 use io::WriteFrame;
 
+use super::varint::VarInt;
 use crate::packet::r#type::Type;
-
-#[enum_dispatch]
-pub trait BeFrame {
-    fn frame_type(&self) -> FrameType;
-
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        self.frame_type().belongs_to(packet_type)
-    }
-
-    fn is_ack_eliciting(&self) -> bool {
-        self.frame_type().is_ack_eliciting()
-    }
-
-    fn max_encoding_size(&self) -> usize {
-        1
-    }
-
-    fn encoding_size(&self) -> usize {
-        1
-    }
-}
 
 mod ack;
 mod connection_close;
@@ -48,9 +28,9 @@ mod stream_data_blocked;
 mod streams_blocked;
 
 pub mod error;
-// re-export for convenience
-pub use ack::{AckFrame, AckRecord, EcnCounts};
-use bytes::{Buf, BufMut, Bytes};
+pub mod io;
+
+pub use ack::{AckFrame, EcnCounts};
 pub use connection_close::ConnectionCloseFrame;
 pub use crypto::CryptoFrame;
 pub use data_blocked::DataBlockedFrame;
@@ -73,8 +53,30 @@ pub use stream::{ShouldCarryLength, StreamFrame};
 pub use stream_data_blocked::StreamDataBlockedFrame;
 pub use streams_blocked::StreamsBlockedFrame;
 
-use super::varint::VarInt;
+#[enum_dispatch]
+pub trait BeFrame {
+    /// The type of frame
+    fn frame_type(&self) -> FrameType;
 
+    /// The max number of bytes needed to encode this value
+    ///
+    /// Calculate the maximum size by summing up the maximum length of each field.
+    /// If a field type has a maximum length, use it, otherwise use the actual length
+    /// of the data in that field.
+    ///
+    /// When packaging data, by pre-estimating this value to effectively avoid spending
+    /// extra resources to calculate the actual encoded size.
+    fn max_encoding_size(&self) -> usize {
+        1
+    }
+
+    /// Compute the number of bytes needed to encode this value
+    fn encoding_size(&self) -> usize {
+        1
+    }
+}
+
+/// Defines all the frame types
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum FrameType {
     Padding,
@@ -101,6 +103,7 @@ pub enum FrameType {
 }
 
 impl FrameType {
+    /// Determine if the current frame type belongs to the given packet_type
     pub fn belongs_to(&self, packet_type: Type) -> bool {
         use crate::packet::r#type::{
             long::{Type::V1, Ver1},
@@ -131,6 +134,13 @@ impl FrameType {
             FrameType::RetireConnectionId => o | l,
             FrameType::PathChallenge => o | l,
             FrameType::PathResponse => l,
+            // The application-specific variant of CONNECTION_CLOSE (type 0x1d) can only be
+            // sent using 0-RTT or 1-RTT packets;
+            // See [Section 12.5](https://www.rfc-editor.org/rfc/rfc9000.html#section-12.5).
+            //
+            // When an application wishes to abandon a connection during the handshake,
+            // an endpoint can send a CONNECTION_CLOSE frame (type 0x1c) with an error code
+            // of APPLICATION_ERROR in an Initial or Handshake packet.
             FrameType::ConnectionClose(bit) => {
                 if *bit == 0 && i || h {
                     true
@@ -143,6 +153,7 @@ impl FrameType {
         }
     }
 
+    /// Determine if the frame type is ack-eliciting
     pub fn is_ack_eliciting(&self) -> bool {
         let is_not_ack_eliciting = matches!(
             self,
@@ -182,6 +193,8 @@ impl TryFrom<u8> for FrameType {
             // The last bit is the layer flag bit, 0 indicates application layer, 1 indicates transport layer.
             ty @ (0x1c | 0x1d) => FrameType::ConnectionClose(ty & 0x1),
             0x1e => FrameType::HandshakeDone,
+            // The last bit is the length flag bit, 0 the length field is absent and the Datagram Data
+            // field extends to the end of the packet, 1 the length field is present.
             ty @ (0x30 | 0x31) => FrameType::Datagram(ty & 1),
             _ => return Err(Self::Error::InvalidType(VarInt::from(frame_type))),
         })
@@ -213,16 +226,6 @@ impl From<FrameType> for u8 {
             FrameType::HandshakeDone => 0x1e,
             FrameType::Datagram(with_len) => 0x30 | with_len,
         }
-    }
-}
-
-pub trait WriteFrameType {
-    fn put_frame_type(&mut self, frame: FrameType);
-}
-
-impl<T: BufMut> WriteFrameType for T {
-    fn put_frame_type(&mut self, frame: FrameType) {
-        self.put_u8(frame.into())
     }
 }
 
@@ -298,8 +301,6 @@ impl FrameReader {
         }
     }
 }
-
-pub mod io;
 
 impl Iterator for FrameReader {
     type Item = Result<(Frame, bool), Error>;

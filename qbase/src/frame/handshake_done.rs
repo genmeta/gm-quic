@@ -2,8 +2,6 @@
 //   Type (i) = 0x1e,
 // }
 
-use crate::packet::r#type::Type;
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HandshakeDoneFrame;
 
@@ -13,15 +11,8 @@ impl super::BeFrame for HandshakeDoneFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::HandshakeDone
     }
-
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        use crate::packet::r#type::short::OneRtt;
-        // ___1
-        matches!(packet_type, Type::Short(OneRtt(_)))
-    }
 }
 
-// nom parser for HANDSHAKE_DONE_FRAME
 #[allow(unused)]
 pub fn be_handshake_done_frame(input: &[u8]) -> nom::IResult<&[u8], HandshakeDoneFrame> {
     Ok((input, HandshakeDoneFrame))

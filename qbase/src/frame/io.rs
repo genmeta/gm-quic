@@ -125,9 +125,11 @@ pub fn be_frame(raw: &Bytes, packet_type: Type) -> Result<(usize, Frame, bool), 
 }
 
 pub trait WriteFrame<F> {
+    /// BufMut write extension for frame.
     fn put_frame(&mut self, frame: &F);
 }
 
 pub trait WriteDataFrame<F, D: DescribeData> {
+    /// BufMut write extension for frame with data.
     fn put_data_frame(&mut self, frame: &F, data: &D);
 }

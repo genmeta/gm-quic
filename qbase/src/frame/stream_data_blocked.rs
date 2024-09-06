@@ -5,7 +5,6 @@
 // }
 
 use crate::{
-    packet::r#type::Type,
     streamid::{be_streamid, StreamId, WriteStreamId},
     varint::{be_varint, VarInt, WriteVarInt},
 };
@@ -27,24 +26,11 @@ impl super::BeFrame for StreamDataBlockedFrame {
         1 + 8 + 8
     }
 
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        use crate::packet::r#type::{
-            long::{Type::V1, Ver1},
-            short::OneRtt,
-        };
-        // __01
-        matches!(
-            packet_type,
-            Type::Long(V1(Ver1::ZERO_RTT)) | Type::Short(OneRtt(_))
-        )
-    }
-
     fn encoding_size(&self) -> usize {
         1 + self.stream_id.encoding_size() + self.maximum_stream_data.encoding_size()
     }
 }
 
-// nom parser for STREAM_DATA_BLOCKED_FRAME
 pub fn be_stream_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], StreamDataBlockedFrame> {
     let (input, stream_id) = be_streamid(input)?;
     let (input, maximum_stream_data) = be_varint(input)?;
