@@ -13,6 +13,21 @@ pub enum RawAsyncCell<T> {
     Invalid,
 }
 
+impl<T> From<Option<T>> for RawAsyncCell<T> {
+    fn from(item: Option<T>) -> Self {
+        match item {
+            Some(item) => RawAsyncCell::Ready(item),
+            None => RawAsyncCell::None,
+        }
+    }
+}
+
+impl<T> From<T> for RawAsyncCell<T> {
+    fn from(item: T) -> Self {
+        RawAsyncCell::Ready(item)
+    }
+}
+
 impl<T> RawAsyncCell<T> {
     /// Returns `true` if the async cell state is not [`Ready`] nor [`Invalid`].
     ///
@@ -116,6 +131,14 @@ pub struct AsyncCell<T> {
     // 现在的实现，包括ConnError等，都是完全靠调用者保证的
 }
 
+impl<T> From<RawAsyncCell<T>> for AsyncCell<T> {
+    fn from(raw: RawAsyncCell<T>) -> Self {
+        Self {
+            state: Mutex::new(raw),
+        }
+    }
+}
+
 impl<T> AsyncCell<T> {
     #[inline]
     pub fn new() -> Self {
@@ -126,6 +149,12 @@ impl<T> AsyncCell<T> {
     pub fn new_with(item: T) -> Self {
         Self {
             state: Mutex::new(RawAsyncCell::Ready(item)),
+        }
+    }
+
+    pub fn from_raw(raw: RawAsyncCell<T>) -> Self {
+        Self {
+            state: Mutex::new(raw),
         }
     }
 
