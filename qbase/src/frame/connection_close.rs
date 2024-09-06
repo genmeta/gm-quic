@@ -9,13 +9,13 @@
 use std::borrow::Cow;
 
 use super::FrameType;
-use crate::{error::ErrorKind, frame::be_frame_type, packet::r#type::Type, varint::VarInt};
+use crate::{error::ErrorKind, frame::be_frame_type, varint::VarInt};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionCloseFrame {
     pub error_kind: ErrorKind,
     pub frame_type: Option<FrameType>,
-    pub reason: Cow<'static, str>, //String,
+    pub reason: Cow<'static, str>,
 }
 
 const CONNECTION_CLOSE_FRAME_TYPE: u8 = 0x1c;
@@ -32,30 +32,15 @@ impl super::BeFrame for ConnectionCloseFrame {
         })
     }
 
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        use crate::packet::r#type::{
-            long::{Type::V1, Ver1},
-            short::OneRtt,
-        };
-        // ih01: Only a CONNECTION_CLOSE frame of type 0x1c can appear in Initial or Handshake packets.
-        match packet_type {
-            Type::Long(V1(Ver1::INITIAL)) => self.frame_type.is_some(),
-            Type::Long(V1(Ver1::HANDSHAKE)) => self.frame_type.is_some(),
-            Type::Long(V1(Ver1::ZERO_RTT)) => true,
-            Type::Short(OneRtt(_)) => true,
-            _ => false,
-        }
-    }
-
     fn max_encoding_size(&self) -> usize {
-        // reason's length could not exceed 16KB
+        // reason's length could not exceed 16KB.
         1 + 8 + if self.frame_type.is_some() { 8 } else { 0 } + 2 + self.reason.len()
     }
 
     fn encoding_size(&self) -> usize {
         1 + VarInt::from(self.error_kind).encoding_size()
             + self.frame_type.is_some()  as usize
-            // reason's length could not exceed 16KB
+            // reason's length could not exceed 16KB.
             + VarInt::try_from(self.reason.len()).unwrap().encoding_size()
             + self.reason.len()
     }
@@ -75,7 +60,6 @@ impl ConnectionCloseFrame {
     }
 }
 
-// nom parser for CONNECTION_CLOSE_FRAME
 pub fn connection_close_frame_at_layer(
     layer: u8,
 ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], ConnectionCloseFrame> {
@@ -87,6 +71,7 @@ pub fn connection_close_frame_at_layer(
         let kind = ErrorKind::try_from(error_code).map_err(|_e| {
             nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Alt))
         })?;
+        // The application-specific variant of CONNECTION_CLOSE (type 0x1d) does not include frame_type field.
         let (remain, frame_type) = if layer == QUIC_LAYER {
             let (remain, frame_type) = be_frame_type(remain).map_err(|_e| {
                 nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Alt))
@@ -111,7 +96,7 @@ pub fn connection_close_frame_at_layer(
 
 impl<T: bytes::BufMut> super::io::WriteFrame<ConnectionCloseFrame> for T {
     fn put_frame(&mut self, frame: &ConnectionCloseFrame) {
-        use crate::{frame::WriteFrameType, varint::WriteVarInt};
+        use crate::varint::WriteVarInt;
         let layer = if frame.frame_type.is_some() {
             QUIC_LAYER
         } else {
@@ -120,7 +105,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<ConnectionCloseFrame> for T {
         self.put_u8(CONNECTION_CLOSE_FRAME_TYPE | layer);
         self.put_varint(&frame.error_kind.into());
         if let Some(frame_type) = frame.frame_type {
-            self.put_frame_type(frame_type);
+            self.put_u8(frame_type.into());
         }
         self.put_varint(&VarInt::from_u32(frame.reason.len() as u32));
         self.put_slice(frame.reason.as_bytes());

@@ -3,10 +3,7 @@
 //   Maximum Data (i),
 // }
 
-use crate::{
-    packet::r#type::Type,
-    varint::{be_varint, VarInt, WriteVarInt},
-};
+use crate::varint::{be_varint, VarInt, WriteVarInt};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MaxDataFrame {
@@ -20,18 +17,6 @@ impl super::BeFrame for MaxDataFrame {
         super::FrameType::MaxData
     }
 
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        use crate::packet::r#type::{
-            long::{Type::V1, Ver1},
-            short::OneRtt,
-        };
-        // __01
-        matches!(
-            packet_type,
-            Type::Long(V1(Ver1::ZERO_RTT)) | Type::Short(OneRtt(_))
-        )
-    }
-
     fn max_encoding_size(&self) -> usize {
         1 + 8
     }
@@ -41,7 +26,6 @@ impl super::BeFrame for MaxDataFrame {
     }
 }
 
-// nom parser for MAX_DATA_FRAME
 pub fn be_max_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxDataFrame> {
     use nom::combinator::map;
     map(be_varint, |max_data| MaxDataFrame { max_data })(input)

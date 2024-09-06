@@ -9,7 +9,6 @@
 
 use crate::{
     cid::{be_connection_id, ConnectionId, UniqueCid, WriteConnectionId},
-    packet::r#type::Type,
     token::{be_reset_token, ResetToken, RESET_TOKEN_SIZE},
     varint::{be_varint, VarInt, WriteVarInt},
 };
@@ -51,18 +50,6 @@ impl NewConnectionIdFrame {
 impl super::BeFrame for NewConnectionIdFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::NewConnectionId
-    }
-
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        use crate::packet::r#type::{
-            long::{Type::V1, Ver1},
-            short::OneRtt,
-        };
-        // __01
-        matches!(
-            packet_type,
-            Type::Long(V1(Ver1::ZERO_RTT)) | Type::Short(OneRtt(_))
-        )
     }
 
     fn max_encoding_size(&self) -> usize {

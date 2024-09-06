@@ -4,10 +4,7 @@
 //   Token (..),
 // }
 
-use crate::{
-    packet::r#type::Type,
-    varint::{be_varint, VarInt, WriteVarInt},
-};
+use crate::varint::{be_varint, VarInt, WriteVarInt};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewTokenFrame {
@@ -21,12 +18,6 @@ impl super::BeFrame for NewTokenFrame {
         super::FrameType::NewToken
     }
 
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        use crate::packet::r#type::short::OneRtt;
-        // ___1
-        matches!(packet_type, Type::Short(OneRtt(_)))
-    }
-
     fn max_encoding_size(&self) -> usize {
         // token's length could not exceed 20
         1 + 1 + self.token.len()
@@ -37,7 +28,6 @@ impl super::BeFrame for NewTokenFrame {
     }
 }
 
-// nom parser for NEW_TOKEN_FRAME
 pub fn be_new_token_frame(input: &[u8]) -> nom::IResult<&[u8], NewTokenFrame> {
     use nom::{
         bytes::streaming::take,

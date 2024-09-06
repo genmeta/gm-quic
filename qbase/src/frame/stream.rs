@@ -13,7 +13,6 @@ use std::ops::Range;
 
 use super::BeFrame;
 use crate::{
-    packet::r#type::Type,
     streamid::{be_streamid, StreamId, WriteStreamId},
     util::{DescribeData, WriteData},
     varint::{be_varint, VarInt, WriteVarInt, VARINT_MAX},
@@ -36,18 +35,6 @@ const FIN_BIT: u8 = 0x01;
 impl BeFrame for StreamFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Stream(self.flag)
-    }
-
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        use crate::packet::r#type::{
-            long::{Type::V1, Ver1},
-            short::OneRtt,
-        };
-        // __01
-        matches!(
-            packet_type,
-            Type::Long(V1(Ver1::ZERO_RTT)) | Type::Short(OneRtt(_))
-        )
     }
 
     fn max_encoding_size(&self) -> usize {

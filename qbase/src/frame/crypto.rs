@@ -10,7 +10,6 @@ use std::ops::Range;
 use nom::sequence::tuple;
 
 use crate::{
-    packet::r#type::Type,
     util::{DescribeData, WriteData},
     varint::{be_varint, VarInt, WriteVarInt, VARINT_MAX},
 };
@@ -26,20 +25,6 @@ const CRYPTO_FRAME_TYPE: u8 = 0x06;
 impl super::BeFrame for CryptoFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Crypto
-    }
-
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        use crate::packet::r#type::{
-            long::{Type::V1, Ver1},
-            short::OneRtt,
-        };
-        // IH_1
-        matches!(
-            packet_type,
-            Type::Long(V1(Ver1::INITIAL))
-                | Type::Long(V1(Ver1::HANDSHAKE))
-                | Type::Short(OneRtt(_))
-        )
     }
 
     fn max_encoding_size(&self) -> usize {
@@ -91,7 +76,6 @@ impl CryptoFrame {
     }
 }
 
-// nom parser for CRYPTO_FRAME
 pub fn be_crypto_frame(input: &[u8]) -> nom::IResult<&[u8], CryptoFrame> {
     let (remain, (offset, length)) = tuple((be_varint, be_varint))(input)?;
     if offset.into_inner() + offset.into_inner() > VARINT_MAX {

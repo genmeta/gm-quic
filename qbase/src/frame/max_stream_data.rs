@@ -5,7 +5,6 @@
 // }
 
 use crate::{
-    packet::r#type::Type,
     streamid::{be_streamid, StreamId, WriteStreamId},
     varint::{be_varint, VarInt, WriteVarInt},
 };
@@ -23,18 +22,6 @@ impl super::BeFrame for MaxStreamDataFrame {
         super::FrameType::MaxStreamData
     }
 
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        use crate::packet::r#type::{
-            long::{Type::V1, Ver1},
-            short::OneRtt,
-        };
-        // __01
-        matches!(
-            packet_type,
-            Type::Long(V1(Ver1::ZERO_RTT)) | Type::Short(OneRtt(_))
-        )
-    }
-
     fn max_encoding_size(&self) -> usize {
         1 + 8 + 8
     }
@@ -44,7 +31,6 @@ impl super::BeFrame for MaxStreamDataFrame {
     }
 }
 
-// nom parser for MAX_STREAM_DATA_FRAME
 pub fn be_max_stream_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxStreamDataFrame> {
     use nom::{combinator::map, sequence::pair};
     map(

@@ -3,10 +3,7 @@
 //   Sequence Number (i),
 // }
 
-use crate::{
-    packet::r#type::Type,
-    varint::{be_varint, VarInt, WriteVarInt},
-};
+use crate::varint::{be_varint, VarInt, WriteVarInt};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetireConnectionIdFrame {
@@ -20,18 +17,6 @@ impl super::BeFrame for RetireConnectionIdFrame {
         super::FrameType::RetireConnectionId
     }
 
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        use crate::packet::r#type::{
-            long::{Type::V1, Ver1},
-            short::OneRtt,
-        };
-        // __01
-        matches!(
-            packet_type,
-            Type::Long(V1(Ver1::ZERO_RTT)) | Type::Short(OneRtt(_))
-        )
-    }
-
     fn max_encoding_size(&self) -> usize {
         1 + 8
     }
@@ -41,7 +26,6 @@ impl super::BeFrame for RetireConnectionIdFrame {
     }
 }
 
-// nom parser for RETIRE_CONNECTION_ID_FRAME
 pub fn be_retire_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], RetireConnectionIdFrame> {
     use nom::combinator::map;
     map(be_varint, |sequence| RetireConnectionIdFrame { sequence })(input)

@@ -7,8 +7,6 @@ use std::ops::Deref;
 
 use deref_derive::Deref;
 
-use crate::packet::r#type::Type;
-
 #[derive(Debug, Clone, Copy, Default, Deref, PartialEq, Eq)]
 pub struct PathResponseFrame {
     #[deref]
@@ -37,12 +35,6 @@ impl super::BeFrame for PathResponseFrame {
         super::FrameType::PathResponse
     }
 
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        use crate::packet::r#type::short::OneRtt;
-        // ___1
-        matches!(packet_type, Type::Short(OneRtt(_)))
-    }
-
     fn max_encoding_size(&self) -> usize {
         1 + self.data.len()
     }
@@ -52,13 +44,11 @@ impl super::BeFrame for PathResponseFrame {
     }
 }
 
-// nom parser for PATH_RESPONSE_FRAME
 pub fn be_path_response_frame(input: &[u8]) -> nom::IResult<&[u8], PathResponseFrame> {
     use nom::{bytes::complete::take, combinator::map};
     map(take(8usize), PathResponseFrame::from_slice)(input)
 }
 
-// BufMut write extension for PATH_RESPONSE_FRAME
 impl<T: bytes::BufMut> super::io::WriteFrame<PathResponseFrame> for T {
     fn put_frame(&mut self, frame: &PathResponseFrame) {
         self.put_u8(PATH_RESPONSE_FRAME_TYPE);

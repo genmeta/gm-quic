@@ -5,7 +5,7 @@ use super::{error::Error, KeyPhaseBit, PacketNumber};
 pub mod long;
 pub mod short;
 
-/// header form bit
+/// Header form bit
 const HEADER_FORM_MASK: u8 = 0x80;
 /// The next bit (0x40) of byte 0 is set to 1, unless the packet is a Version Negotiation packet.
 const FIXED_BIT: u8 = 0x40;

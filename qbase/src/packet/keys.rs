@@ -133,8 +133,8 @@ impl OneRttPacketKeys {
 
     /// Get the remote key to decrypt the incoming packet.
     /// If the key phase is not the current key phase, update the key.
-    /// Returning Arc<PacketKey> is to encrypt and decrypt packets at the same time.
-    /// Compared to &'a PacketKey, Arc<PacketKey> does not occupy mutable borrowing &mut self.
+    /// Returning `Arc<PacketKey>` is to encrypt and decrypt packets at the same time.
+    /// Compared to &'a PacketKey, `Arc<PacketKey>` does not occupy mutable borrowing &mut self.
     pub fn get_remote(&mut self, key_phase: KeyPhaseBit, _pn: u64) -> Arc<dyn PacketKey> {
         if key_phase != self.cur_key_phase && self.remote[key_phase.as_index()].is_none() {
             self.update();
@@ -143,8 +143,8 @@ impl OneRttPacketKeys {
     }
 
     /// Get the local key with the current key phase to encrypt the outgoing packet.
-    /// Returning Arc<PacketKey> is to encrypt and decrypt packets at the same time.
-    /// Compared to &'a PacketKey, Arc<PacketKey> does not occupy mutable borrowing &mut self.
+    /// Returning `Arc<PacketKey>` is to encrypt and decrypt packets at the same time.
+    /// Compared to &'a PacketKey, `Arc<PacketKey>` does not occupy mutable borrowing &mut self.
     pub fn get_local(&self) -> (KeyPhaseBit, Arc<dyn PacketKey>) {
         (self.cur_key_phase, self.local.clone())
     }

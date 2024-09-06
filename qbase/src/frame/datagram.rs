@@ -2,13 +2,12 @@
 //   Type (i) = 0x30..0x31,
 //   [Length (i)],
 //   Datagram Data (..),
-// {
+// }
 
 use nom::IResult;
 
 use super::{BeFrame, FrameType};
 use crate::{
-    packet::r#type::Type,
     util::{DescribeData, WriteData},
     varint::{be_varint, VarInt, WriteVarInt},
 };
@@ -27,18 +26,6 @@ impl DatagramFrame {
 impl BeFrame for DatagramFrame {
     fn frame_type(&self) -> FrameType {
         FrameType::Datagram(self.length.is_some() as _)
-    }
-
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        use crate::packet::r#type::{
-            long::{Type::V1, Ver1},
-            short::OneRtt,
-        };
-        // __01
-        matches!(
-            packet_type,
-            Type::Long(V1(Ver1::ZERO_RTT)) | Type::Short(OneRtt(_))
-        )
     }
 
     fn max_encoding_size(&self) -> usize {

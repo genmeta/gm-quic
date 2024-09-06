@@ -5,8 +5,6 @@
 
 use deref_derive::Deref;
 
-use crate::packet::r#type::Type;
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deref)]
 pub struct PathChallengeFrame {
     #[deref]
@@ -36,18 +34,6 @@ impl super::BeFrame for PathChallengeFrame {
         super::FrameType::PathChallenge
     }
 
-    fn belongs_to(&self, packet_type: Type) -> bool {
-        use crate::packet::r#type::{
-            long::{Type::V1, Ver1},
-            short::OneRtt,
-        };
-        // __01
-        matches!(
-            packet_type,
-            Type::Long(V1(Ver1::ZERO_RTT)) | Type::Short(OneRtt(_))
-        )
-    }
-
     fn max_encoding_size(&self) -> usize {
         1 + self.data.len()
     }
@@ -57,7 +43,6 @@ impl super::BeFrame for PathChallengeFrame {
     }
 }
 
-// nom parser for PATH_CHALLENGE_FRAME
 pub fn be_path_challenge_frame(input: &[u8]) -> nom::IResult<&[u8], PathChallengeFrame> {
     use nom::{bytes::streaming::take, combinator::map};
     map(take(8usize), PathChallengeFrame::from_slice)(input)
