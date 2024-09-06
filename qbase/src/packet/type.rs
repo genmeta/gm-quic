@@ -60,7 +60,7 @@ pub trait GetPacketNumberLength {
     /// PROTOCOL_VIOLATION. Discarding such a packet after only removing header protection
     /// can expose the endpoint to attacks.
     ///
-    /// see [Section 17.2](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.2-8.2) and
+    /// See [Section 17.2](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.2-8.2) and
     /// [Section 17.3.1](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.3.1-4.8) of QUIC.
     fn pn_len(&self) -> Result<u8, Error>;
 }
