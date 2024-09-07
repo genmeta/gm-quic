@@ -1,14 +1,17 @@
 use std::{
+    collections::VecDeque,
     future::Future,
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
 
+use deref_derive::{Deref, DerefMut};
+use futures::task::AtomicWaker;
+
 #[derive(Debug, Default, Clone)]
 pub enum RawAsyncCell<T> {
     #[default]
-    None,
-    Demand(Waker),
+    Pending,
     Ready(T),
     Invalid,
 }
@@ -21,7 +24,7 @@ impl<T> RawAsyncCell<T> {
     #[inline]
     #[must_use]
     pub fn is_pending(&self) -> bool {
-        matches!(self, Self::None | Self::Demand(..))
+        matches!(self, Self::Pending)
     }
 
     /// Returns `true` if the async cell state is [`Ready`].
@@ -47,24 +50,13 @@ impl<T> RawAsyncCell<T> {
         if let RawAsyncCell::Invalid = self {
             return Err(item);
         }
-        if let RawAsyncCell::Demand(waker) = self {
-            waker.wake_by_ref();
-        }
-        let previous = core::mem::replace(self, RawAsyncCell::Ready(item));
-        match previous {
-            RawAsyncCell::Ready(previous) => Ok(Some(previous)),
-            _ => Ok(None),
-        }
+        Ok(core::mem::replace(self, RawAsyncCell::Ready(item)).take())
     }
 
     #[inline]
     pub fn take(&mut self) -> Option<T> {
-        match std::mem::replace(self, RawAsyncCell::None) {
-            RawAsyncCell::None => None,
-            RawAsyncCell::Demand(waker) => {
-                *self = RawAsyncCell::Demand(waker);
-                None
-            }
+        match std::mem::replace(self, RawAsyncCell::Pending) {
+            RawAsyncCell::Pending => None,
             RawAsyncCell::Invalid => {
                 *self = RawAsyncCell::Invalid;
                 None
@@ -74,22 +66,8 @@ impl<T> RawAsyncCell<T> {
     }
 
     #[inline]
-    pub fn poll_get(&mut self, cx: &mut Context<'_>) -> Poll<&mut Self> {
-        match self {
-            RawAsyncCell::None | RawAsyncCell::Demand(..) => {
-                *self = RawAsyncCell::Demand(cx.waker().clone());
-                Poll::Pending
-            }
-            RawAsyncCell::Ready(_) | RawAsyncCell::Invalid => Poll::Ready(self),
-        }
-    }
-
-    #[inline]
     pub fn invalid(&mut self) {
-        let previous = std::mem::replace(self, RawAsyncCell::Invalid);
-        if let RawAsyncCell::Demand(waker) = previous {
-            waker.wake();
-        }
+        *self = Self::Invalid
     }
 
     #[inline]
@@ -110,10 +88,68 @@ impl<T> RawAsyncCell<T> {
 }
 
 #[derive(Debug)]
+struct Wakers(VecDeque<Arc<AtomicWaker>>);
+
+impl Default for Wakers {
+    fn default() -> Self {
+        // in most case, there will only be one waker in deque
+        Self(VecDeque::with_capacity(1))
+    }
+}
+
+impl Wakers {
+    fn wait(&mut self, waker: &Waker) -> Wait {
+        let atomic_waker = AtomicWaker::new();
+        atomic_waker.register(waker);
+        let waker = Arc::new(atomic_waker);
+
+        self.0.push_back(waker.clone());
+        Wait(waker)
+    }
+
+    /// # Safety
+    ///
+    /// This method is not Cancel Safe!
+    ///
+    /// If the future canceled, other tasks will not wake up
+    unsafe fn wait_unsafe(&mut self, waker: &Waker) {
+        let atomic_waker = AtomicWaker::new();
+        atomic_waker.register(waker);
+        let waker = Arc::new(atomic_waker);
+        self.0.push_back(waker.clone());
+    }
+
+    fn wake_one(&mut self) {
+        while let Some(waker) = self.0.pop_front() {
+            if let Some(waker) = waker.take() {
+                waker.wake();
+                break;
+            }
+        }
+    }
+}
+
+struct Wait(Arc<AtomicWaker>);
+
+impl Drop for Wait {
+    fn drop(&mut self) {
+        self.0.take();
+    }
+}
+
+#[derive(Debug)]
 pub struct AsyncCell<T> {
     state: Mutex<RawAsyncCell<T>>,
-    // TODO: 本质上这是一个mpsc，是否需要某些机制强制保证只有一个consumer
-    // 现在的实现，包括ConnError等，都是完全靠调用者保证的
+    wakers: Mutex<Wakers>,
+}
+
+impl<T> Default for AsyncCell<T> {
+    fn default() -> Self {
+        Self {
+            state: Default::default(),
+            wakers: Default::default(),
+        }
+    }
 }
 
 impl<T> AsyncCell<T> {
@@ -126,31 +162,32 @@ impl<T> AsyncCell<T> {
     pub fn new_with(item: T) -> Self {
         Self {
             state: Mutex::new(RawAsyncCell::Ready(item)),
+            ..Default::default()
         }
     }
 
     #[inline]
     pub fn is_pending(&self) -> bool {
-        self.state().is_pending()
+        self.get_inner().is_pending()
     }
 
     #[inline]
     pub fn is_ready(&self) -> bool {
-        self.state().is_ready()
+        self.get_inner().is_ready()
     }
 
     #[inline]
     pub fn is_invalid(&self) -> bool {
-        self.state().is_invalid()
+        self.get_inner().is_invalid()
     }
 
     #[inline]
     pub fn write(&self, item: T) -> Result<Option<T>, T> {
-        self.state().write(item)
+        self.get_inner().write(item)
     }
     #[inline]
     pub fn take(&self) -> Option<T> {
-        self.state().take()
+        self.get_inner().take()
     }
 
     /// Invalid the state
@@ -158,47 +195,91 @@ impl<T> AsyncCell<T> {
     /// return [`true`] if the state is invalided before this method is called
     #[inline]
     pub fn invalid(&self) {
-        self.state().invalid();
+        self.get_inner().invalid();
     }
 
     #[inline]
-    pub fn state(&self) -> MutexGuard<RawAsyncCell<T>> {
-        self.state.lock().unwrap()
+    pub fn get_inner(&self) -> Ref<T> {
+        let raw = self.state.lock().unwrap();
+        Ref { raw, cell: self }
     }
 
     #[inline]
-    pub fn poll_get(&self, cx: &mut Context<'_>) -> Poll<MutexGuard<'_, RawAsyncCell<T>>> {
-        let mut guard = self.state();
-        core::task::ready!(guard.poll_get(cx));
-        Poll::Ready(guard)
+    pub fn get(&self) -> GetRef<'_, T> {
+        GetRef {
+            cell: self,
+            wait: None,
+        }
     }
 
+    /// # Safety
+    ///
+    /// This method is not Cancel Safe.
+    ///
+    /// If the future canceled, other take will not wake anymore.
     #[inline]
-    pub fn get<'a>(self: &'a Arc<Self>) -> Get<'a, T> {
-        Get { cell: self }
+    pub unsafe fn poll_get_unsafe<'a>(&'a self, cx: &mut Context) -> Poll<Ref<'a, T>> {
+        let raw = self.state.lock().unwrap();
+
+        if raw.is_pending() {
+            unsafe { self.wakers.lock().unwrap().wait_unsafe(cx.waker()) };
+            return Poll::Pending;
+        }
+        Poll::Ready(Ref { raw, cell: self })
     }
 }
 
-impl<T> Default for AsyncCell<T> {
-    fn default() -> Self {
-        Self {
-            state: Mutex::new(RawAsyncCell::None),
+#[derive(Debug, Deref, DerefMut)]
+pub struct Ref<'c, T> {
+    #[deref]
+    raw: MutexGuard<'c, RawAsyncCell<T>>,
+    cell: &'c AsyncCell<T>,
+}
+
+impl<T> Drop for Ref<'_, T> {
+    fn drop(&mut self) {
+        if self.raw.is_ready() || self.raw.is_invalid() {
+            // If the inner state is locked in other task, wake the GetRef will only update the waker
+            self.cell.wakers.lock().unwrap().wake_one()
         }
     }
 }
 
-pub struct Get<'s, T> {
-    cell: &'s Arc<AsyncCell<T>>,
+pub struct GetRef<'s, T> {
+    cell: &'s AsyncCell<T>,
+    wait: Option<Wait>,
 }
 
-impl<T> Unpin for Get<'_, T> {}
+impl<'c, T> GetRef<'c, T> {
+    fn register_waker(&mut self, waker: &Waker) {
+        match &self.wait {
+            Some(wait) => wait.0.register(waker),
+            None => self.wait = Some(self.cell.wakers.lock().unwrap().wait(waker)),
+        }
+    }
 
-impl<'s, T> Future for Get<'s, T> {
-    type Output = MutexGuard<'s, RawAsyncCell<T>>;
+    pub fn poll(&mut self, cx: &mut Context) -> Poll<Ref<'c, T>> {
+        let cell = self.cell;
+        let Ok(raw) = cell.state.try_lock() else {
+            self.register_waker(cx.waker());
+            return Poll::Pending;
+        };
+        if raw.is_pending() {
+            self.register_waker(cx.waker());
+            return Poll::Pending;
+        }
+        Poll::Ready(Ref { raw, cell })
+    }
+}
+
+impl<T> Unpin for GetRef<'_, T> {}
+
+impl<'c, T> Future for GetRef<'c, T> {
+    type Output = Ref<'c, T>;
 
     #[inline]
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.cell.poll_get(cx)
+        self.get_mut().poll(cx)
     }
 }
 
@@ -209,17 +290,23 @@ mod tests {
 
     use super::*;
 
+    impl<T> AsyncCell<T> {
+        fn poll_once(&self, cx: &mut Context) -> Poll<Ref<T>> {
+            self.get().poll(cx)
+        }
+    }
+
     #[test]
     fn new() {
         let cell = AsyncCell::new();
         assert!(cell.is_pending());
-        assert_eq!(cell.state().as_ref(), None);
-        assert_eq!(cell.state().as_mut(), None);
+        assert_eq!(cell.get_inner().as_ref(), None);
+        assert_eq!(cell.get_inner().as_mut(), None);
 
         assert_eq!(cell.write("Hello world"), Ok(None));
         assert!(cell.is_ready());
-        assert!(cell.state().as_ref().is_some());
-        *cell.state().as_mut().unwrap() = "Hello World";
+        assert!(cell.get_inner().as_ref().is_some());
+        *cell.get_inner().as_mut().unwrap() = "Hello World";
         assert_eq!(cell.take(), Some("Hello World"));
 
         let cell = AsyncCell::new_with("Hello World");
@@ -235,7 +322,7 @@ mod tests {
             let write = write.clone();
             async move {
                 assert!(matches!(
-                    core::future::poll_fn(|cx| Poll::Ready(cell.poll_get(cx))).await,
+                    core::future::poll_fn(|cx| Poll::Ready(cell.poll_once(cx))).await,
                     Poll::Pending
                 ));
 
@@ -264,7 +351,7 @@ mod tests {
         assert_eq!(cell.write("Hello world"), Err("Hello world"));
         assert_eq!(cell.take(), None);
 
-        let poll = core::future::poll_fn(|cx| Poll::Ready(cell.poll_get(cx))).await;
+        let poll = core::future::poll_fn(|cx| Poll::Ready(cell.poll_once(cx))).await;
         let Poll::Ready(raw_cell) = poll else {
             panic!()
         };
@@ -280,7 +367,7 @@ mod tests {
             let invalid = invalid.clone();
             async move {
                 assert!(matches!(
-                    core::future::poll_fn(|cx| Poll::Ready(cell.poll_get(cx))).await,
+                    core::future::poll_fn(|cx| Poll::Ready(cell.poll_once(cx))).await,
                     Poll::Pending
                 ));
                 invalid.notify_one();

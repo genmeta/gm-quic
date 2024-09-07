@@ -405,7 +405,7 @@ impl From<RawConnection> for ArcConnection {
         tokio::spawn({
             let conn = conn.clone();
             async move {
-                let (err, is_active) = conn_error.did_error_occur().await;
+                let (err, is_active) = conn_error.error_occur().await;
                 if is_active {
                     conn.should_enter_closing_with_error(err);
                 } else {

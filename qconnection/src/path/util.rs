@@ -9,7 +9,7 @@ use std::{
 use bytes::BufMut;
 use qbase::{
     frame::{io::WriteFrame, BeFrame},
-    util::AsyncCell,
+    util::{AsyncCell, GetRef},
 };
 
 #[derive(Default, Clone)]
@@ -70,8 +70,8 @@ impl<T> RecvBuffer<T> {
     /// rcv_buf.write(42u32);
     /// # }
     /// ```
-    pub fn receive(&self) -> Self {
-        Self(self.0.clone())
+    pub fn receive(&self) -> Receive<T> {
+        Receive(self.0.get())
     }
 
     pub fn dismiss(&self) {
@@ -79,12 +79,14 @@ impl<T> RecvBuffer<T> {
     }
 }
 
-impl<T> Future for RecvBuffer<T> {
+pub struct Receive<'b, T>(GetRef<'b, T>);
+
+impl<T> Future for Receive<'_, T> {
     type Output = Option<T>;
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.poll_get(cx).map(|mut cell| cell.take())
+        self.get_mut().0.poll(cx).map(|mut cell| cell.take())
     }
 }
 

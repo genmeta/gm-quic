@@ -2,7 +2,7 @@ mod async_deque;
 pub use async_deque::{ArcAsyncDeque, ArcAsyncDequeWriter};
 
 mod async_cell;
-pub use async_cell::{AsyncCell, Get, RawAsyncCell};
+pub use async_cell::{AsyncCell, GetRef, RawAsyncCell};
 
 mod data;
 pub use data::{DescribeData, WriteData};
