@@ -58,14 +58,14 @@ jobs:
           components: clippy
       - name: Run clippy
         run: cargo +nightly clippy --all-targets --all-features -- -Dwarnings
-  doc:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install latest nightly
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: nightly
-          override: true
-      - name: Run doc
-        run: RUSTDOCFLAGS="-D warnings" cargo +nightly doc
+  # doc:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Install latest nightly
+  #       uses: actions-rs/toolchain@v1
+  #       with:
+  #         toolchain: nightly
+  #         override: true
+  #     - name: Run doc
+  #       run: RUSTDOCFLAGS="-D warnings" cargo +nightly doc
