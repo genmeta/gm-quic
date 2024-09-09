@@ -3,14 +3,12 @@ use std::{
     io,
     ops::DerefMut,
     sync::{Arc, Mutex},
-    task::{ready, Poll},
 };
 
 use bytes::Bytes;
 use qbase::{
-    error::{Error, ErrorKind},
-    frame::{io::WriteDataFrame, BeFrame, DatagramFrame, FrameType},
-    util::RawAsyncCell,
+    error::Error,
+    frame::{io::WriteDataFrame, BeFrame, DatagramFrame},
     varint::VarInt,
 };
 
@@ -21,22 +19,17 @@ use qbase::{
 ///
 /// The application layer can create a [`DatagramWriter`] and push data into the queue by calling [`DatagramWriter::send`] or [`DatagramWriter::send_bytes`].
 /// See [`DatagramWriter`] for more details.
+///
+/// [`DatagramWriter`] is created by [`DatagramOutgoing::new_writer`], and they share the same [`RawDatagramWriter`](wrapped in [`ArcDatagramWriter`]).
 #[derive(Debug)]
 pub(crate) struct RawDatagramWriter {
-    /// The maximum size of the datagram frame that can be sent to the peer.
-    ///
-    /// The value is set by the remote peer, and the transport layer will use this value to limit the size of the datagram frame.
-    ///
-    /// If the size of the datagram frame exceeds this value, the transport layer will return an error.
-    remote_max_size: RawAsyncCell<usize>,
     /// The queue for storing the datagram frame to send.
     queue: VecDeque<Bytes>,
 }
 
 impl RawDatagramWriter {
-    pub(crate) fn new(remote_max_size: Option<usize>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            remote_max_size: remote_max_size.into(),
             queue: Default::default(),
         }
     }
@@ -52,24 +45,21 @@ pub(crate) struct DatagramOutgoing(pub ArcDatagramWriter);
 impl DatagramOutgoing {
     /// Creates a new instance of [`DatagramWriter`].
     ///
+    /// This method takes the remote transport parameters `max_datagram_frame_size`.
+    ///
     /// Returns an error when the connection is closing or already closed.
     ///
     /// Be different from [`DatagramReader`], there can be multiple [`DatagramWriter`]s at the same time.
     ///
-    /// This method is an asynchronous method, because the creation of the [`DatagramWriter`] may need to wait for
-    /// the remote peer's transport parameters `max_datagram_frame_size`.
-    ///
     /// [`DatagramReader`]: crate::reader::DatagramReader
-    pub async fn new_writer(&self) -> io::Result<DatagramWriter> {
-        core::future::poll_fn(|cx| match self.0.lock().unwrap().deref_mut() {
-            Ok(writer) => {
-                // If the AsyncCell is invalid, the task will be woken up and enter another match branch,
-                ready!(writer.remote_max_size.poll_get(cx));
-                Poll::Ready(Ok(DatagramWriter(Arc::clone(&self.0))))
-            }
-            Err(e) => Poll::Ready(Err(io::Error::from(e.clone()))),
-        })
-        .await
+    pub fn new_writer(&self, max_datagram_frame_size: u64) -> io::Result<DatagramWriter> {
+        match self.0.lock().unwrap().deref_mut() {
+            Ok(..) => Ok(DatagramWriter {
+                writer: self.0.clone(),
+                max_datagram_frame_size: max_datagram_frame_size as _,
+            }),
+            Err(e) => Err(io::Error::from(e.clone())),
+        }
     }
 
     /// Attempts to encode the datagram frame into the buffer.
@@ -144,39 +134,20 @@ impl DatagramOutgoing {
             **writer = Err(error.clone());
         }
     }
-
-    /// Update the maximum size of the datagram frame that can be sent to the peer.
-    ///
-    /// Called when the endpoint receives transport parameters from the peer.
-    ///
-    /// If the maximum size of the datagram frame is reduced, the method will return an error.
-    /// See [RFC](https://www.rfc-editor.org/rfc/rfc9221.html#name-transport-parameter) for more details.
-    ///
-    /// When the handshake is not completed, the method will return an error.
-    pub(crate) fn update_remote_max_datagram_frame_size(&self, size: usize) -> Result<(), Error> {
-        let mut writer = self.0.lock().unwrap();
-        let inner = writer.deref_mut();
-
-        if let Ok(writer) = inner {
-            if writer
-                .remote_max_size
-                .as_ref()
-                .is_some_and(|previous| *previous > size)
-            {
-                return Err(Error::new(
-                    ErrorKind::ProtocolViolation,
-                    FrameType::Datagram(0),
-                    "datagram frame size cannot be reduced",
-                ));
-            }
-            _ = writer.remote_max_size.write(size);
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone)]
-pub struct DatagramWriter(pub(super) ArcDatagramWriter);
+pub struct DatagramWriter {
+    writer: ArcDatagramWriter,
+    /// The maximum size of the datagram frame that can be sent to the peer.
+    ///
+    /// The value is set by the remote peer, and the transport layer will use this value to limit the size of the datagram frame.
+    ///
+    /// If the size of the datagram frame exceeds this value, the transport layer will return an error.
+    ///
+    /// See [RFC](https://www.rfc-editor.org/rfc/rfc9221.html#name-transport-parameter) for more details.
+    max_datagram_frame_size: usize,
+}
 
 impl DatagramWriter {
     /// Send bytes to the peer.
@@ -187,11 +158,10 @@ impl DatagramWriter {
     /// Returns [`Ok`] when the data is successfully pushed into the internal queue.
     /// Returns [`Err`] when the connection is closing or already closed.
     pub fn send_bytes(&self, data: Bytes) -> io::Result<()> {
-        match self.0.lock().unwrap().deref_mut() {
+        match self.writer.lock().unwrap().deref_mut() {
             Ok(writer) => {
-                let &remote_max_size = writer.remote_max_size.as_ref().unwrap();
                 // Only consider the smallest encoding method: 1 byte
-                if (1 + data.len()) > remote_max_size {
+                if (1 + data.len()) > self.max_datagram_frame_size {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "datagram frame size exceeds the limit",
@@ -217,29 +187,28 @@ impl DatagramWriter {
 
     /// Returns the maximum size of the datagram frame that can be sent to the peer.
     /// Returns an error when the connection is closing or already closed.
-    pub async fn max_datagram_frame_size(&self) -> io::Result<usize> {
-        core::future::poll_fn(|cx| match self.0.lock().unwrap().deref_mut() {
-            Ok(writer) => {
-                let remote_max_size = ready!(writer.remote_max_size.poll_get(cx));
-                Poll::Ready(Ok(*remote_max_size.as_ref().unwrap()))
-            }
-            Err(e) => Poll::Ready(Err(io::Error::from(e.clone()))),
-        })
-        .await
+    pub fn max_datagram_frame_size(&self) -> io::Result<usize> {
+        match self.writer.lock().unwrap().deref_mut() {
+            Ok(..) => Ok(self.max_datagram_frame_size),
+            Err(e) => Err(io::Error::from(e.clone())),
+        }
     }
 }
 #[cfg(test)]
 mod tests {
 
-    use qbase::frame::{io::WriteFrame, PaddingFrame};
+    use qbase::{
+        error::ErrorKind,
+        frame::{io::WriteFrame, FrameType, PaddingFrame},
+    };
 
     use super::*;
 
-    #[tokio::test]
-    async fn test_datagram_writer_with_length() {
-        let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new(Some(1024)))));
+    #[test]
+    fn test_datagram_writer_with_length() {
+        let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new())));
         let outgoing = DatagramOutgoing(writer);
-        let writer = outgoing.new_writer().await.unwrap();
+        let writer = outgoing.new_writer(1024).unwrap();
 
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
@@ -259,11 +228,11 @@ mod tests {
         assert_eq!(buffer, expected_buffer);
     }
 
-    #[tokio::test]
-    async fn test_datagram_writer_without_length() {
-        let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new(Some(1024)))));
+    #[test]
+    fn test_datagram_writer_without_length() {
+        let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new())));
         let outgoing = DatagramOutgoing(writer);
-        let writer = outgoing.new_writer().await.unwrap();
+        let writer = outgoing.new_writer(1024).unwrap();
 
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
@@ -282,11 +251,11 @@ mod tests {
         assert_eq!(buffer, expected_buffer);
     }
 
-    #[tokio::test]
-    async fn test_datagram_writer_unwritten() {
-        let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new(Some(1024)))));
+    #[test]
+    fn test_datagram_writer_unwritten() {
+        let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new())));
         let outgoing = DatagramOutgoing(writer);
-        let writer = outgoing.new_writer().await.unwrap();
+        let writer = outgoing.new_writer(1024).unwrap();
 
         let data = Bytes::from_static(b"hello world");
         writer.send_bytes(data.clone()).unwrap();
@@ -298,11 +267,11 @@ mod tests {
         assert_eq!(buffer, expected_buffer);
     }
 
-    #[tokio::test]
-    async fn test_datagram_writer_padding_first() {
-        let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new(Some(1024)))));
+    #[test]
+    fn test_datagram_writer_padding_first() {
+        let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new())));
         let outgoing = DatagramOutgoing(writer);
-        let writer = outgoing.new_writer().await.unwrap();
+        let writer = outgoing.new_writer(1024).unwrap();
 
         // Will be encoded to 2 bytes
         let data = Bytes::from_static(&[b'a'; 2usize.pow(8 - 2)]);
@@ -324,53 +293,29 @@ mod tests {
         assert_eq!(buffer, expected_buffer);
     }
 
-    #[tokio::test]
-    async fn test_datagram_writer_exceeds_limit() {
-        let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new(Some(1024)))));
+    #[test]
+    fn test_datagram_writer_exceeds_limit() {
+        let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new())));
         let outgoing = DatagramOutgoing(writer);
-        let writer = outgoing.new_writer().await.unwrap();
+        let writer = outgoing.new_writer(0).unwrap();
 
         let data = Bytes::from_static(b"hello world");
         let result = writer.send_bytes(data);
         assert!(result.is_err());
     }
 
-    #[tokio::test]
-    async fn test_datagram_writer_update_remote_max_datagram_frame_size() {
-        let arc_writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new(None))));
-        let outgoing = DatagramOutgoing(arc_writer);
-        let writer = tokio::spawn({
-            let outgoing = outgoing.clone();
-            async move { outgoing.new_writer().await.unwrap() }
-        });
-
-        outgoing
-            .update_remote_max_datagram_frame_size(2048)
-            .unwrap();
-        writer.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_datagram_writer_reduce_remote_max_datagram_frame_size() {
-        let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new(Some(1024)))));
+    #[test]
+    fn test_datagram_writer_on_conn_error() {
+        let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new())));
         let outgoing = DatagramOutgoing(writer);
-
-        let result = outgoing.update_remote_max_datagram_frame_size(512);
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_datagram_writer_on_conn_error() {
-        let writer = Arc::new(Mutex::new(Ok(RawDatagramWriter::new(Some(1024)))));
-        let outgoing = DatagramOutgoing(writer);
-        let writer = outgoing.new_writer().await.unwrap();
+        let writer = outgoing.new_writer(1024).unwrap();
 
         outgoing.on_conn_error(&Error::new(
             ErrorKind::ProtocolViolation,
             FrameType::Datagram(0),
             "test",
         ));
-        let writer_guard = writer.0.lock().unwrap();
+        let writer_guard = writer.writer.lock().unwrap();
         assert!(writer_guard.as_ref().is_err());
     }
 }

@@ -26,35 +26,19 @@ pub struct DatagramFlow {
 impl DatagramFlow {
     /// Creates a new instance of [`DatagramFlow`].
     ///
-    /// This method takes two parameters, local and remote's transport parameter [`max_datagram_frame_size`],
-    /// the local's transport parameter [`max_datagram_frame_size`] is used to create the reader, and the remote's transport parameter
-    /// [`max_datagram_frame_size`] is used to create the writer.
-    ///
-    /// Most of the time, the remote's transport parameter [`max_datagram_frame_size`] is unknow when creating the flow, so it's optional.
-    /// But if the connection enabled 0-rtt, the remote's transport parameter [`max_datagram_frame_size`] will be set to the previous value.
-    ///
-    /// In handshake, if the new parameter is smaller than the previous value,a connection error occurs.
+    /// This method takes local transport parameter [`max_datagram_frame_size`],
+    /// the local's transport parameter [`max_datagram_frame_size`] is used to create the reader, see [`RawDatagramReader`] for more details.
     ///
     /// [`max_datagram_frame_size`]: https://www.rfc-editor.org/rfc/rfc9221.html#name-transport-parameter
     #[inline]
-    pub fn new(
-        local_max_datagram_frame_size: u64,
-        remote_max_datagram_frame_size: Option<u64>,
-    ) -> Self {
+    pub fn new(local_max_datagram_frame_size: u64) -> Self {
         let reader = RawDatagramReader::new(local_max_datagram_frame_size as _);
-        let writer = RawDatagramWriter::new(remote_max_datagram_frame_size.map(|n| n as _));
+        let writer = RawDatagramWriter::new();
 
         Self {
             incoming: DatagramIncoming(Arc::new(Mutex::new(Ok(reader)))),
             outgoing: DatagramOutgoing(Arc::new(Mutex::new(Ok(writer)))),
         }
-    }
-
-    /// See [`DatagramOutgoing::update_remote_max_datagram_frame_size`] for more details.
-    #[inline]
-    pub fn update_remote_max_datagram_frame_size(&self, size: u64) -> Result<(), Error> {
-        self.outgoing
-            .update_remote_max_datagram_frame_size(size as _)
     }
 
     /// See [`DatagramOutgoing::try_read_datagram`] for more details.
@@ -63,7 +47,7 @@ impl DatagramFlow {
         self.outgoing.try_read_datagram(buf)
     }
 
-    /// Create a new **unuiqe** instance of [`DatagramReader`].
+    /// Create a new **unique** instance of [`DatagramReader`].
     ///
     /// Return an error if the connection is closing or already closed, or there is already a reader exist.
     ///
@@ -79,8 +63,8 @@ impl DatagramFlow {
     ///
     /// See [`DatagramOutgoing::new_writer`] for more details.
     #[inline]
-    pub async fn writer(&self) -> io::Result<DatagramWriter> {
-        self.outgoing.new_writer().await
+    pub fn writer(&self, max_datagram_frame_size: u64) -> io::Result<DatagramWriter> {
+        self.outgoing.new_writer(max_datagram_frame_size)
     }
 
     /// See [`DatagramOutgoing::on_conn_error`] and [`DatagramIncoming::on_conn_error`] for more details.
