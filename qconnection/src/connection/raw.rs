@@ -102,7 +102,7 @@ impl RawConnection {
             &local_params,
             Default::default(),
         );
-        let datagrams = DatagramFlow::new(0, None);
+        let datagrams = DatagramFlow::new(0);
 
         let token = match &*token_registry.lock_guard() {
             TokenRegistry::Client((server_name, client)) => {
@@ -194,7 +194,6 @@ impl RawConnection {
         tokio::spawn({
             let remote_params = remote_params.clone();
             let streams = streams.clone();
-            let datagrams = datagrams.clone();
             let conn_error = conn_error.clone();
             let cid_registry = cid_registry.clone();
             async move {
@@ -206,14 +205,10 @@ impl RawConnection {
                 let max_bidi_sid = remote_params.initial_max_streams_bidi().into();
                 let max_uni_sid = remote_params.initial_max_streams_uni().into();
                 let active_cid_limit = remote_params.active_connection_id_limit().into();
-                let max_size = remote_params.max_datagram_frame_size().into();
 
                 streams.premit_max_sid(qbase::streamid::Dir::Bi, max_uni_sid);
                 streams.premit_max_sid(qbase::streamid::Dir::Uni, max_bidi_sid);
                 if let Err(e) = cid_registry.local.set_limit(active_cid_limit) {
-                    conn_error.on_error(e);
-                }
-                if let Err(e) = datagrams.update_remote_max_datagram_frame_size(max_size) {
                     conn_error.on_error(e);
                 }
             }

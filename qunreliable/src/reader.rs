@@ -14,16 +14,14 @@ use qbase::{
     frame::{BeFrame, DatagramFrame},
 };
 
-/// The [`RawDatagramReader`] struct represents a queue for receiving [`DatagramFrame`] frames from a connection.
+/// The [`RawDatagramReader`] struct represents a queue for receiving [`DatagramFrame`] frames from peer.
 ///
 /// The transport layer will push the received datagrams into the internal FIFO queue or set the internal queue to an error state
 /// when a connection error has occurred. See [`DatagramIncoming`] for more.
 ///
-/// The application can create a **unique** [`DatagramReader`] to read the received datagrams.
-/// See [`DatagramReader`] for more.
+/// The application can create a **unique** [`DatagramReader`] to read the received datagrams. See [`DatagramReader`] for more.
 ///
-/// [`DatagramReader`] is created by [`DatagramIncoming::new_reader`], and they will share the same [`RawDatagramReader`].
-///
+/// [`DatagramReader`] is created by [`DatagramIncoming::new_reader`], and they share the same [`RawDatagramReader`](wraped in [`ArcDatagramReader`]).
 #[derive(Default, Debug)]
 pub(crate) struct RawDatagramReader {
     /// The maximum size of the datagram that can be received.
@@ -71,11 +69,8 @@ pub(crate) struct DatagramIncoming(pub ArcDatagramReader);
 impl DatagramIncoming {
     /// Creates a new [`DatagramReader`] for the application to read the received datagrams.
     ///
-    /// Due to the internal datagram queue being mpsc, the reader (consumer) is unique; only one reader can exist at the same time.
-    ///
-    /// If the reader already exists, the method will return an error.
-    ///
-    /// The reader will be released when it is dropped, so that a new reader can be created.
+    /// Because the internal datagram queue is a mpsc queue, the reader (consumer) is unique, only one reader can exist at the same time.
+    /// If a reader already exists, the method will return an error.
     ///
     /// If a connection error occurs, the error will be set to the reader, and subsequent calls to this method will return an error.
     /// See [`DatagramIncoming::on_conn_error`] for more.
@@ -86,7 +81,7 @@ impl DatagramIncoming {
                 if raw.reader_exist {
                     return Err(io::Error::new(
                         io::ErrorKind::AlreadyExists,
-                        "reader already taken, see DatagramReader's doc for more",
+                        "There has been a `DatagramReader`, see its docs for more",
                     ));
                 }
                 raw.reader_exist = true;
@@ -152,10 +147,11 @@ impl DatagramIncoming {
         }
     }
 }
+
 /// The [`DatagramReader`] struct represents a reader for the application to read the received datagrams.
 ///
-/// The reader is created by the [`DatagramIncoming::new_reader`] method. Due to the internal datagram queue being mpsc,
-/// the reader (consumer) is unique; only one reader can exist at the same time.
+/// The reader is created by the [`DatagramIncoming::new_reader`] method.
+/// Because the internal datagram queue is a mpsc queue, the reader (consumer) is unique, only one reader can exist at the same time.
 /// See [`DatagramIncoming::new_reader`] for more.
 ///
 /// The application can read the received datagrams from the reader by calling the [`DatagramReader::recv`] or [`DatagramReader::recv_buf`] method.
@@ -316,10 +312,8 @@ mod tests {
         );
         incoming.on_conn_error(&error);
 
-        let mut reader = incoming.new_reader().unwrap();
-        let mut buf = [0u8; 1024];
-        // let n = tokio::join!(blocking, reader.recv(&mut buf)).1.unwrap_err();
-        let n = reader.recv(&mut buf).await.unwrap_err();
-        assert_eq!(n.kind(), io::ErrorKind::BrokenPipe);
+        let new_reader = incoming.new_reader();
+        assert!(new_reader.is_err());
+        assert_eq!(new_reader.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
     }
 }
