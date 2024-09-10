@@ -59,7 +59,7 @@ pub trait CongestionControl {
 
     /// 每当收到一个数据包，记录下，根据这些记录，决定下次发包时，是否需要带上AckFrame，作用于poll_send的返回值中
     /// 另外，这个记录不是持续增长的，得向前滑动，靠on_acked(pn)及该pn中有AckFrame记录驱动滑动
-    fn on_recv_pkt(&self, space: Epoch, pn: u64, is_ack_elicition: bool);
+    fn on_pkt_rcvd(&self, space: Epoch, pn: u64, is_ack_elicition: bool);
 
     /// 获取当前 path 的 pto time
     fn pto_time(&self, epoch: Epoch) -> Duration;
@@ -69,4 +69,12 @@ pub trait CongestionControl {
 
     /// 握手完成
     fn on_handshake_done(&self);
+}
+
+pub trait MayLoss: Send + Sync {
+    fn may_loss(&self, pn: u64);
+}
+
+pub trait RetirePktRecord: Send + Sync {
+    fn retire(&self, pn: u64);
 }

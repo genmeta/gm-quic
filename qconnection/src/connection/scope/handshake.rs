@@ -10,7 +10,7 @@ use qbase::{
         DataPacket, PacketNumber,
     },
 };
-use qcongestion::CongestionControl;
+use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{
     reliable::rcvdpkt::ArcRcvdPktRecords,
     space::{Epoch, HandshakeSpace},
@@ -162,7 +162,7 @@ impl HandshakeScope {
                     ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.cc.on_recv_pkt(Epoch::Handshake, pn, is_ack_packet);
+                            path.cc.on_pkt_rcvd(Epoch::Handshake, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
@@ -178,16 +178,6 @@ impl HandshakeScope {
             space: self.space.clone(),
             crypto_stream_outgoing: self.crypto_stream.outgoing(),
         }
-    }
-
-    pub fn may_loss(&self, pn: u64) {
-        for frame in self.space.sent_packets().receive().may_loss_pkt(pn) {
-            self.crypto_stream.outgoing().may_loss_data(&frame);
-        }
-    }
-
-    pub fn retire(&self, pn: u64) {
-        self.space.rcvd_packets().write().retire(pn);
     }
 }
 
@@ -235,5 +225,19 @@ impl super::RecvPacket for ClosingHandshakeScope {
         };
         let body_offset = packet.offset + undecoded_pn.size();
         Self::decrypt_and_parse(self.keys.remote.packet.as_ref(), pn, packet, body_offset)
+    }
+}
+
+impl MayLoss for HandshakeScope {
+    fn may_loss(&self, pn: u64) {
+        for frame in self.space.sent_packets().receive().may_loss_pkt(pn) {
+            self.crypto_stream.outgoing().may_loss_data(&frame);
+        }
+    }
+}
+
+impl RetirePktRecord for HandshakeScope {
+    fn retire(&self, pn: u64) {
+        self.space.rcvd_packets().write().retire(pn);
     }
 }

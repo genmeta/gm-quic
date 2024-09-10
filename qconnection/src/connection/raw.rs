@@ -10,14 +10,19 @@ use qbase::{
     streamid::Role,
     token::{ArcTokenRegistry, TokenRegistry},
 };
-use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
+use qcongestion::{MayLoss, RetirePktRecord};
+use qrecovery::reliable::ArcReliableFrameDeque;
 use qunreliable::DatagramFlow;
 use rustls::quic::Keys;
 use tokio::{sync::Notify, task::JoinHandle};
 
 use super::{
     parameters::ConnParameters,
-    scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope},
+    scope::{
+        data::{DataMayLoss, DataScope},
+        handshake::HandshakeScope,
+        initial::InitialScope,
+    },
     ArcLocalCids, ArcRemoteCids, CidRegistry, DataStreams, RcvdPackets,
 };
 use crate::{
@@ -137,35 +142,31 @@ impl RawConnection {
                 }
             };
 
-            let loss = Box::new({
-                let initial = initial.clone();
-                let hs = hs.clone();
-                let data = data.clone();
-                let data_streams = streams.clone();
-                let reliable_frames = reliable_frames.clone();
-                move |epoch: Epoch, pn: u64| match epoch {
-                    Epoch::Initial => initial.may_loss(pn),
-                    Epoch::Handshake => hs.may_loss(pn),
-                    Epoch::Data => data.may_loss(pn, &data_streams, &reliable_frames),
-                }
-            });
-
-            let retire = Box::new({
-                let initial = initial.clone();
-                let hs = hs.clone();
-                let data = data.clone();
-                move |epoch: Epoch, pn: u64| match epoch {
-                    Epoch::Initial => initial.retire(pn),
-                    Epoch::Handshake => hs.retire(pn),
-                    Epoch::Data => data.retire(pn),
-                }
-            });
+            let initial = initial.clone();
+            let hs = hs.clone();
+            let data = data.clone();
+            let data_may_loss = DataMayLoss::new(
+                data.space.clone(),
+                reliable_frames.clone(),
+                streams.clone(),
+                data.crypto_stream.clone(),
+            );
 
             move |pathway, usc| {
                 let scid = cid_registry.local.active_cids()[0];
                 let dcid = cid_registry.remote.apply_dcid();
-                let path = ArcPath::new(usc.clone(), scid, dcid, loss.clone(), retire.clone());
+                let loss: [Box<dyn MayLoss>; 3] = [
+                    Box::new(initial.clone()),
+                    Box::new(hs.clone()),
+                    Box::new(data_may_loss.clone()),
+                ];
+                let retire: [Box<dyn RetirePktRecord>; 3] = [
+                    Box::new(initial.clone()),
+                    Box::new(hs.clone()),
+                    Box::new(data.clone()),
+                ];
 
+                let path = ArcPath::new(usc.clone(), scid, dcid, loss, retire);
                 if !handshake.is_handshake_done() {
                     if role == Role::Client {
                         path.anti_amplifier.grant();

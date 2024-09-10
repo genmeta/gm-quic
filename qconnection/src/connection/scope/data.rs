@@ -21,7 +21,7 @@ use qbase::{
     },
     token::ArcTokenRegistry,
 };
-use qcongestion::CongestionControl;
+use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{
     reliable::{rcvdpkt::ArcRcvdPktRecords, ArcReliableFrameDeque, GuaranteedFrame},
     space::{DataSpace, Epoch},
@@ -237,7 +237,7 @@ impl DataScope {
                     ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.cc.on_recv_pkt(Epoch::Data, pn, is_ack_packet);
+                            path.cc.on_pkt_rcvd(Epoch::Data, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
@@ -308,7 +308,7 @@ impl DataScope {
                     ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.cc.on_recv_pkt(Epoch::Data, pn, is_ack_packet);
+                            path.cc.on_pkt_rcvd(Epoch::Data, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
@@ -396,24 +396,46 @@ impl DataScope {
             datagrams,
         }
     }
+}
 
-    pub fn may_loss(
-        &self,
-        pn: u64,
-        data_streams: &DataStreams,
-        reliable_frames: &ArcReliableFrameDeque,
-    ) {
+impl RetirePktRecord for DataScope {
+    fn retire(&self, pn: u64) {
+        self.space.rcvd_packets().write().retire(pn);
+    }
+}
+
+#[derive(Clone)]
+pub struct DataMayLoss {
+    space: DataSpace,
+    reliable_frames: ArcReliableFrameDeque,
+    data_streams: DataStreams,
+    crypto_stream: CryptoStream,
+}
+
+impl DataMayLoss {
+    pub fn new(
+        space: DataSpace,
+        reliable_frames: ArcReliableFrameDeque,
+        data_streams: DataStreams,
+        crypto_stream: CryptoStream,
+    ) -> Self {
+        Self {
+            space,
+            reliable_frames,
+            data_streams,
+            crypto_stream,
+        }
+    }
+}
+impl MayLoss for DataMayLoss {
+    fn may_loss(&self, pn: u64) {
         for frame in self.space.sent_packets().receive().may_loss_pkt(pn) {
             match frame {
-                GuaranteedFrame::Stream(f) => data_streams.may_loss_data(&f),
-                GuaranteedFrame::Reliable(f) => reliable_frames.lock_guard().push_back(f),
+                GuaranteedFrame::Stream(f) => self.data_streams.may_loss_data(&f),
+                GuaranteedFrame::Reliable(f) => self.reliable_frames.lock_guard().push_back(f),
                 GuaranteedFrame::Crypto(f) => self.crypto_stream.outgoing().may_loss_data(&f),
             }
         }
-    }
-
-    pub fn retire(&self, pn: u64) {
-        self.space.rcvd_packets().write().retire(pn);
     }
 }
 
