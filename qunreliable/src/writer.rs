@@ -22,7 +22,7 @@ use qbase::{
 ///
 /// [`DatagramWriter`] is created by [`DatagramOutgoing::new_writer`], and they share the same [`RawDatagramWriter`](wrapped in [`ArcDatagramWriter`]).
 #[derive(Debug)]
-pub(crate) struct RawDatagramWriter {
+pub struct RawDatagramWriter {
     /// The queue for storing the datagram frame to send.
     queue: VecDeque<Bytes>,
 }
@@ -37,10 +37,10 @@ impl RawDatagramWriter {
 
 /// If a connection error occurs, the internal writer will be set to an error state.
 /// See [`DatagramOutgoing::on_conn_error`] for more details.
-pub(crate) type ArcDatagramWriter = Arc<Mutex<Result<RawDatagramWriter, Error>>>;
+pub type ArcDatagramWriter = Arc<Mutex<Result<RawDatagramWriter, Error>>>;
 
 #[derive(Debug, Clone)]
-pub(crate) struct DatagramOutgoing(pub ArcDatagramWriter);
+pub struct DatagramOutgoing(pub(crate) ArcDatagramWriter);
 
 impl DatagramOutgoing {
     /// Creates a new instance of [`DatagramWriter`].
@@ -90,7 +90,7 @@ impl DatagramOutgoing {
     /// If the buffer is not enough to encode the length, it will encode the [`DatagramFrame`] without the data's length (frame type `0x30`).
     /// Because no frame can be put after the datagram frame without length, this method will put padding frames before to fill the buffer.
     /// In this case, the buffer will be filled.
-    pub(super) fn try_read_datagram(&self, mut buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
+    pub fn try_read_datagram(&self, mut buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
         let mut guard = self.0.lock().unwrap();
         let writer = guard.as_mut().ok()?;
         let datagram = writer.queue.front()?;
@@ -128,7 +128,7 @@ impl DatagramOutgoing {
     /// Any subsequent calls to [`DatagramWriter::send`] or [`DatagramWriter::send_bytes`] will return an error.
     ///
     /// All datagrams in the internal queue will be dropped.
-    pub(super) fn on_conn_error(&self, error: &Error) {
+    pub fn on_conn_error(&self, error: &Error) {
         let writer = &mut self.0.lock().unwrap();
         if writer.is_ok() {
             **writer = Err(error.clone());

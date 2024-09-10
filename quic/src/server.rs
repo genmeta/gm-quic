@@ -255,6 +255,9 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
     /// 后续接受新的连接，会直接使用这些参数。不过在sni模式下，各个host可以有不同的参数，该函数将失去意义。
     /// 因此，它最好配合[`with_single_cert`]或者[`with_single_cert_with_ocsp`]一起使用
     /// 可以多次调用该函数，会覆盖上一次设置的参数。
+    ///
+    /// [`with_single_cert`]: QuicServerBuilder::with_single_cert
+    /// [`with_single_cert_with_ocsp`]: QuicServerBuilder::with_single_cert_with_ocsp
     pub fn with_parameters(self, parameters: ServerParameters) -> Self {
         self.parameters.insert("*".to_owned(), parameters.into());
         self
