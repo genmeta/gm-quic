@@ -1,5 +1,5 @@
 use std::{
-    future::Future,
+    ops::Deref,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
@@ -12,7 +12,7 @@ use crate::{
     error::Error,
     frame::{BeFrame, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     token::ResetToken,
-    util::{IndexDeque, RawAsyncCell},
+    util::{Future, IndexDeque, RawFuture},
     varint::{VarInt, VARINT_MAX},
 };
 
@@ -187,9 +187,9 @@ where
     fn apply_dcid(&mut self) -> ArcCidCell<RETIRED> {
         let state = if let Some(Some((_, cid, _))) = self.cid_deque.get(self.cursor) {
             self.cursor += 1;
-            CidState(RawAsyncCell::Ready(*cid))
+            CidState(Future::with(Some(*cid)))
         } else {
-            CidState(RawAsyncCell::None)
+            CidState(Future::new())
         };
 
         let seq = self.cid_cells.largest();
@@ -247,35 +247,39 @@ where
 }
 
 #[derive(Default, Debug)]
-struct CidState(RawAsyncCell<ConnectionId>);
+struct CidState(Future<Option<ConnectionId>>);
 
 impl CidState {
     fn poll_get_cid(&mut self, cx: &mut Context) -> Poll<Option<ConnectionId>> {
-        self.0.poll_get(cx).map(|cid| cid.as_ref().map(|cid| *cid))
+        self.0.poll_get(cx)
     }
 
     fn revise(&mut self, cid: ConnectionId) {
-        _ = self.0.write(cid);
+        *self.0.state() = RawFuture::Ready(Some(cid));
     }
 
     fn assign(&mut self, cid: ConnectionId) {
         // Only allow transition from None or Demand state to Ready state
-        debug_assert!(self.0.is_pending());
-        _ = self.0.write(cid);
+        let mut state = self.0.state();
+        debug_assert!(!matches!(state.deref(), RawFuture::Ready(_)));
+        *state = RawFuture::Ready(Some(cid));
     }
 
     fn clear(&mut self) {
         // Allow transition from Ready state to None state, but not from Closed state
         // While meeting Demand state, it will not change && not wake the waker
-        self.0.take();
+        let mut state = self.0.state();
+        if let RawFuture::Ready(_) = state.deref() {
+            *state = RawFuture::None;
+        }
     }
 
     fn is_retired(&mut self) -> bool {
-        self.0.is_invalid()
+        self.0.try_get().is_some_and(|o| o.is_none())
     }
 
     fn retire(&mut self) {
-        self.0.invalid();
+        *self.0.state() = RawFuture::Ready(None);
     }
 }
 
@@ -335,7 +339,7 @@ where
     }
 }
 
-impl<RETIRED> Future for ArcCidCell<RETIRED>
+impl<RETIRED> std::future::Future for ArcCidCell<RETIRED>
 where
     RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
@@ -371,10 +375,6 @@ mod tests {
         // Will return Pending, because the peer hasn't issue any connection id
         let cid_apply1 = remote_cids.apply_dcid();
         assert_eq!(cid_apply1.get_cid().poll_unpin(&mut cx), Poll::Pending);
-        assert!(matches!(
-            cid_apply1.0.lock().unwrap().state.0,
-            RawAsyncCell::Demand(..)
-        ));
 
         let cid = ConnectionId::random_gen(8);
         let frame = NewConnectionIdFrame {

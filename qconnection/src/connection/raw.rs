@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use futures::{channel::mpsc, FutureExt};
+use futures::channel::mpsc;
 use qbase::{
     cid::ConnectionId,
     config::Parameters,
@@ -9,7 +9,6 @@ use qbase::{
     packet::keys::ArcKeys,
     streamid::Role,
     token::{ArcTokenRegistry, TokenRegistry},
-    util::AsyncCell,
 };
 use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
 use qunreliable::DatagramFlow;
@@ -17,6 +16,7 @@ use rustls::quic::Keys;
 use tokio::{sync::Notify, task::JoinHandle};
 
 use super::{
+    parameters::ConnParameters,
     scope::{data::DataScope, handshake::HandshakeScope, initial::InitialScope},
     ArcLocalCids, ArcRemoteCids, CidRegistry, DataStreams, RcvdPackets,
 };
@@ -46,9 +46,8 @@ pub struct RawConnection {
     pub notify: Arc<Notify>, // Notifier for closing the packet receiving task
     pub join_handles: [JoinHandle<RcvdPackets>; 4],
 
-    pub local_params: Arc<Parameters>,
-    pub remote_params: Arc<AsyncCell<Arc<Parameters>>>,
     pub tls_session: ArcTlsSession,
+    pub params: ConnParameters,
 }
 
 impl RawConnection {
@@ -216,14 +215,20 @@ impl RawConnection {
             conn_error.clone(),
         );
 
+        let params = ConnParameters::new(
+            local_params.into(),
+            remote_params.clone(),
+            conn_error.clone(),
+        );
+
         tokio::spawn({
             let remote_params = remote_params.clone();
             let streams = streams.clone();
             let conn_error = conn_error.clone();
             let cid_registry = cid_registry.clone();
             async move {
-                let remote_params = remote_params.get().map(|r| r.as_ref().cloned()).await;
-                let Some(remote_params) = remote_params else {
+                let remote_params = remote_params.get().await;
+                let Ok(remote_params) = remote_params else {
                     return;
                 };
 
@@ -270,8 +275,7 @@ impl RawConnection {
             notify,
             join_handles,
             error: conn_error,
-            local_params: local_params.into(),
-            remote_params,
+            params,
             tls_session,
         }
     }

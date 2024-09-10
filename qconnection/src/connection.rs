@@ -35,6 +35,7 @@ use crate::{
 
 pub mod closing;
 pub mod draining;
+pub mod parameters;
 pub mod raw;
 pub mod scope;
 pub mod transmit;
@@ -151,14 +152,13 @@ impl ArcConnection {
             };
 
             (
-                raw_conn.remote_params.clone(),
+                raw_conn.params.remote.clone(),
                 raw_conn.streams.clone(),
                 raw_conn.error.clone(),
             )
         };
 
-        let remote_params = remote_params.get().await.as_ref().cloned();
-        let remote_params = remote_params.ok_or(connection_closed)?;
+        let remote_params = remote_params.get().await?;
 
         let result = data_streams
             .open_bi(remote_params.initial_max_stream_data_bidi_remote().into())
@@ -177,14 +177,13 @@ impl ArcConnection {
             };
 
             (
-                raw_conn.remote_params.clone(),
+                raw_conn.params.remote.clone(),
                 raw_conn.streams.clone(),
                 raw_conn.error.clone(),
             )
         };
 
-        let remote_params = remote_params.get().await.as_ref().cloned();
-        let remote_params = remote_params.ok_or(connection_closed)?;
+        let remote_params = remote_params.get().await?;
 
         let result = data_streams
             .open_uni(remote_params.initial_max_stream_data_uni().into())
@@ -203,14 +202,13 @@ impl ArcConnection {
             };
 
             (
-                raw_conn.remote_params.clone(),
+                raw_conn.params.remote.clone(),
                 raw_conn.streams.clone(),
                 raw_conn.error.clone(),
             )
         };
 
-        let remote_params = remote_params.get().await.as_ref().cloned();
-        let remote_params = remote_params.ok_or(connection_closed)?;
+        let remote_params = remote_params.get().await?;
 
         let result = data_streams
             .accept_bi(remote_params.initial_max_stream_data_bidi_local().into())

@@ -1,5 +1,4 @@
 use std::{
-    future::Future,
     ops::Deref,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -9,7 +8,7 @@ use std::{
 use bytes::BufMut;
 use qbase::{
     frame::{io::WriteFrame, BeFrame},
-    util::AsyncCell,
+    util::ArcAsyncDeque,
 };
 
 #[derive(Default, Clone)]
@@ -41,15 +40,15 @@ where
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct RecvBuffer<T>(Arc<AsyncCell<T>>);
+pub struct RecvBuffer<T>(ArcAsyncDeque<T>);
 
 impl<T> RecvBuffer<T> {
     pub fn new() -> Self {
-        Self(Arc::new(AsyncCell::new()))
+        Self(ArcAsyncDeque::new())
     }
 
     pub fn write(&self, value: T) {
-        _ = self.0.write(value);
+        self.0.push(value);
     }
 
     /// Waiting for a value to be received.
@@ -75,16 +74,16 @@ impl<T> RecvBuffer<T> {
     }
 
     pub fn dismiss(&self) {
-        self.0.invalid();
+        self.0.close();
     }
 }
 
-impl<T> Future for RecvBuffer<T> {
+impl<T> std::future::Future for RecvBuffer<T> {
     type Output = Option<T>;
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.poll_get(cx).map(|mut cell| cell.take())
+        self.0.poll_pop(cx)
     }
 }
 
