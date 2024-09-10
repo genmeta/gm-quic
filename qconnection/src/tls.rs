@@ -14,14 +14,13 @@ use qbase::{
     },
     error::{Error, ErrorKind},
     packet::keys::{ArcKeys, ArcOneRttKeys},
-    util::AsyncCell,
 };
 use qrecovery::{space::Epoch, streams::crypto::CryptoStream};
 use rustls::{crypto::CryptoProvider, quic::Keys, Side};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::error::ConnError;
+use crate::{connection::parameters::RemoteParameters, error::ConnError};
 
 /// write_tls_msg()，将明文数据写入tls_conn，同步的，可能会唤醒read数据发送
 /// poll_read_tls_msg()，从tls_conn读取数据，异步的，返回(Vec<u8>, Option<KeyChange>)
@@ -183,8 +182,8 @@ impl ArcTlsSession {
         handshake_keys: ArcKeys,
         one_rtt_keys: ArcOneRttKeys,
         conn_error: ConnError,
-    ) -> Arc<AsyncCell<Arc<Parameters>>> {
-        let remote_params = Arc::new(AsyncCell::new());
+    ) -> RemoteParameters {
+        let remote_params = RemoteParameters::new();
 
         let for_each_epoch = |epoch: Epoch| {
             let mut crypto_stream_reader = crypto_streams[epoch].reader();
@@ -217,7 +216,7 @@ impl ArcTlsSession {
 
                     if let Some(params) = tls_session.get_transport_parameters() {
                         match params {
-                            Ok(params) => _ = remote_params.write(params.into()),
+                            Ok(params) => remote_params.on_conn_established(params.into()).await,
                             Err(error) => conn_error.on_error(error),
                         }
                     }

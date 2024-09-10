@@ -1,11 +1,10 @@
 use std::{
-    future::Future,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
 
-use qbase::{error::Error, frame::ConnectionCloseFrame, util::AsyncCell};
+use qbase::{error::Error, frame::ConnectionCloseFrame, util::Future};
 
 #[derive(Debug, Clone)]
 pub enum ConnErrorKind {
@@ -36,7 +35,7 @@ pub enum ConnErrorKind {
 /// # }
 /// ```
 #[derive(Default, Debug, Clone)]
-pub struct ConnError(Arc<AsyncCell<ConnErrorKind>>);
+pub struct ConnError(Arc<Future<ConnErrorKind>>);
 
 impl ConnError {
     /// Returns a `ConnError` instance that can be used to track connection errors.
@@ -51,22 +50,16 @@ impl ConnError {
     pub fn on_ccf_rcvd(&self, ccf: &ConnectionCloseFrame) {
         _ = self
             .0
-            .write(ConnErrorKind::Draining(Error::from(ccf.clone())));
+            .assign(ConnErrorKind::Draining(Error::from(ccf.clone())));
     }
 
     pub fn on_error(&self, error: Error) {
-        let mut state = self.0.state();
-        if state.is_pending() {
-            _ = state.write(ConnErrorKind::Closing(error));
-        }
+        _ = self.0.assign(ConnErrorKind::Closing(error));
     }
 
     /// App actively close the connection with an error
     pub fn set_app_error(&self, error: Error) {
-        let mut state = self.0.state();
-        if state.is_pending() {
-            _ = state.write(ConnErrorKind::Application(error));
-        }
+        _ = self.0.assign(ConnErrorKind::Application(error));
     }
 }
 
@@ -75,7 +68,7 @@ impl ConnError {
 /// This future is used to track the state of a connection and determine whether it is closing
 /// due to an application error or draining gracefully. It implements the `Future` trait, allowing
 /// it to be polled for completion.
-impl Future for ConnError {
+impl std::future::Future for ConnError {
     /// The output of the `ConnError` future.
     ///
     /// `true` indicates that the connection is closing or has been closed due to an application error.
@@ -90,9 +83,7 @@ impl Future for ConnError {
     /// - If the state is `Closing` or `App`, it returns `Poll::Ready(true)`, indicating that the connection is closing or has been closed due to an application error.
     /// - If the state is `Draining`, it returns `Poll::Ready(false)`, indicating that the connection is draining and will be closed gracefully.
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match core::task::ready!(self.0.poll_get(cx).map(|cell| cell.as_ref().cloned()))
-            .expect("connection error shound never be retired")
-        {
+        match core::task::ready!(self.0.poll_get(cx)) {
             ConnErrorKind::Application(e) => Poll::Ready((e, true)),
             ConnErrorKind::Closing(e) => Poll::Ready((e, true)),
             ConnErrorKind::Draining(e) => Poll::Ready((e, false)),

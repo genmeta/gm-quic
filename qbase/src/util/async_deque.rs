@@ -31,7 +31,14 @@ impl<T> AsyncDeque<T> {
             Some(queue) => {
                 if let Some(frame) = queue.pop_front() {
                     Poll::Ready(Some(frame))
+                } else if let Some(ref waker) = self.waker {
+                    if !waker.will_wake(cx.waker()) {
+                        panic!("Multiple tasks are attempting to wait on the same AsyncDeque.");
+                    }
+                    // same waker, no need to update again
+                    Poll::Pending
                 } else {
+                    // no waker, register the current waker
                     self.waker = Some(cx.waker().clone());
                     Poll::Pending
                 }
@@ -94,13 +101,6 @@ impl<T> ArcAsyncDeque<T> {
     pub fn close(&self) {
         self.lock_guard().close();
     }
-
-    // pub fn writer<'a>(&'a self) -> ArcFrameQueueWriter<'a, T> {
-    pub fn writer(&self) -> ArcAsyncDequeWriter<'_, T> {
-        let guard = self.0.lock().unwrap();
-        let old_len = guard.queue.as_ref().map(|q| q.len()).unwrap_or(0);
-        ArcAsyncDequeWriter { guard, old_len }
-    }
 }
 
 impl<T> Default for ArcAsyncDeque<T> {
@@ -127,30 +127,13 @@ impl<T: Unpin> Stream for AsyncDeque<T> {
     type Item = T;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let inner = self.get_mut();
-        match &mut inner.queue {
-            Some(queue) => {
-                if let Some(frame) = queue.pop_front() {
-                    Poll::Ready(Some(frame))
-                } else {
-                    inner.waker = Some(cx.waker().clone());
-                    Poll::Pending
-                }
-            }
-            None => Poll::Ready(None),
-        }
+        self.get_mut().poll_pop(cx)
     }
 }
 
 impl<T> Extend<T> for ArcAsyncDeque<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
-        let mut guard = self.0.lock().unwrap();
-        if let Some(queue) = &mut guard.queue {
-            queue.extend(iter);
-            if let Some(waker) = guard.waker.take() {
-                waker.wake();
-            }
-        }
+        self.send_frame(iter);
     }
 }
 
@@ -161,41 +144,6 @@ impl<F> SendFrame<F> for ArcAsyncDeque<F> {
             queue.extend(iter);
             if let Some(waker) = guard.waker.take() {
                 waker.wake();
-            }
-        }
-    }
-}
-
-pub struct ArcAsyncDequeWriter<'a, T> {
-    guard: MutexGuard<'a, AsyncDeque<T>>,
-    old_len: usize,
-}
-
-impl<T> ArcAsyncDequeWriter<'_, T> {
-    pub fn push(&mut self, value: T) {
-        match &mut self.guard.queue {
-            Some(queue) => queue.push_back(value),
-            None => panic!("queue is closed"),
-        }
-    }
-
-    pub fn rollback(&mut self) {
-        match &mut self.guard.queue {
-            Some(queue) => {
-                queue.truncate(self.old_len);
-            }
-            None => panic!("queue is closed"),
-        }
-    }
-}
-
-impl<T> Drop for ArcAsyncDequeWriter<'_, T> {
-    fn drop(&mut self) {
-        if let Some(queue) = &mut self.guard.queue {
-            if queue.len() > self.old_len {
-                if let Some(waker) = self.guard.waker.take() {
-                    waker.wake();
-                }
             }
         }
     }
