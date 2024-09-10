@@ -21,18 +21,20 @@ const K_GRANULARITY: Duration = Duration::from_millis(1);
 const K_PACKET_THRESHOLD: usize = 3;
 const MAX_SENT_DELAY: Duration = Duration::from_millis(30);
 
-//  default datagram size in bytes.
+///  default datagram size in bytes.
 pub const MSS: usize = 1200;
 
+/// The [`CongestionAlgorithm`] enum represents different congestion control algorithms that can be used.
 pub enum CongestionAlgorithm {
     Bbr,
     NewReno,
 }
 
-// imple RFC 9002 Appendix A. Loss Recovery
+/// Imple RFC 9002 Appendix A. Loss Recovery
+/// See [Appendix A](https://datatracker.ietf.org/doc/html/rfc9002#name-loss-recovery-pseudocode)
 pub struct CongestionController {
-    // congestion controlle algorithm: bbr or cubic
     algorithm: Box<dyn Algorithm + Send>,
+    // The Round-Trip Time (RTT) estimator.
     rtt: ArcRtt,
     loss_timer: LossDetectionTimer,
     // The number of times a PTO has been sent without receiving an acknowledgment.
@@ -50,14 +52,19 @@ pub struct CongestionController {
     sent_packets: [VecDeque<SentPkt>; Epoch::count()],
     // pacer is used to control the burst rate
     pacer: pacing::Pacer,
+    // The time the last packet was sent.
     last_sent_time: Instant,
-
-    ack_records: [RcvdRecords; Epoch::count()],
+    // Records of received packets for each epoch.
+    rcvd_records: [RcvdRecords; Epoch::count()],
+    // The waker to notify when the controller is ready to send.
     send_waker: Option<Waker>,
-    loss: [Box<dyn MayLoss>; Epoch::count()],
-    retire: [Box<dyn RetirePktRecord>; Epoch::count()],
-
+    // Handlers for potential packet losses for each epoch.
+    loss_handlers: [Box<dyn MayLoss>; Epoch::count()],
+    // Handlers for retiring packets for each epoch.
+    retire_handlers: [Box<dyn RetirePktRecord>; Epoch::count()],
+    // Whether the handshake keys have been received.
     has_handshake_keys: bool,
+    // Whether the handshake is complete.
     is_handshake_done: bool,
 }
 
@@ -85,7 +92,7 @@ impl CongestionController {
             largest_acked_packet: [None, None, None],
             loss_time: [None, None, None],
             sent_packets: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
-            ack_records: [
+            rcvd_records: [
                 RcvdRecords::new(Epoch::Initial),
                 RcvdRecords::new(Epoch::Handshake),
                 RcvdRecords::new(Epoch::Data),
@@ -93,8 +100,8 @@ impl CongestionController {
             pacer: Pacer::new(INITIAL_RTT, INITIAL_CWND, MSS, now, None),
             last_sent_time: now,
             send_waker: None,
-            loss,
-            retire,
+            loss_handlers: loss,
+            retire_handlers: retire,
             has_handshake_keys: false,
             is_handshake_done: false,
         }
@@ -110,7 +117,7 @@ impl CongestionController {
         sent_bytes: usize,
         now: Instant,
     ) {
-        let mut sent = SentPkt::new(pn, ack_eliciting, in_flight, sent_bytes, now);
+        let mut sent = SentPkt::new(pn, sent_bytes, now);
         if in_flight {
             if ack_eliciting {
                 self.time_of_last_ack_eliciting_packet[space] = Some(now);
@@ -119,7 +126,7 @@ impl CongestionController {
             self.set_loss_timer();
         }
 
-        // 为了使用二分查找 ack packet，sent_packets 的序号必须是严格升序
+        // Ensure that the packet number is greater than the last sent packet number for the given epoch.
         if let Some(last_pn) = self.sent_packets[space].back() {
             assert!(pn > last_pn.pn);
         }
@@ -173,23 +180,21 @@ impl CongestionController {
 
     pub fn get_newly_acked_packets(
         &mut self,
-        space: Epoch,
+        epoch: Epoch,
         ack_frame: &AckFrame,
     ) -> (VecDeque<AckedPkt>, Option<Duration>) {
         let mut newly_acked_packets: VecDeque<AckedPkt> = VecDeque::new();
-        let mut newly_acked_pns = Vec::new();
         let largest_acked: u64 = ack_frame.largest.into();
         let mut latest_rtt = None;
         for range in ack_frame.iter() {
             for pn in range {
-                let acked: Option<AckedPkt> = self.sent_packets[space]
+                let acked: Option<AckedPkt> = self.sent_packets[epoch]
                     .binary_search_by_key(&pn, |p| p.pn)
                     .ok()
-                    // 检测ack的包，标记为 is_acked,不能直接remove
                     .map(|idx| {
-                        self.ack_records[space].ack(pn, &self.retire);
-                        self.sent_packets[space][idx].is_acked = true;
-                        self.sent_packets[space][idx].clone().into()
+                        self.rcvd_records[epoch].ack(pn, &self.retire_handlers);
+                        self.sent_packets[epoch][idx].is_acked = true;
+                        self.sent_packets[epoch][idx].clone().into()
                     });
                 if let Some(ack) = acked {
                     // largest is newly ackd, update latest_rtt
@@ -197,11 +202,10 @@ impl CongestionController {
                         latest_rtt = Some(ack.rtt);
                     }
                     newly_acked_packets.push_back(ack);
-                    newly_acked_pns.push(pn);
                 }
             }
         }
-        self.slide_sent_packets(space);
+        self.slide_sent_packets(epoch);
         (newly_acked_packets, latest_rtt)
     }
 
@@ -210,7 +214,7 @@ impl CongestionController {
         let now = Instant::now();
         for lost in packets {
             self.algorithm.on_congestion_event(&lost, now);
-            self.loss[epoch].may_loss(lost.pn);
+            self.loss_handlers[epoch].may_loss(lost.pn);
         }
     }
 
@@ -443,7 +447,7 @@ impl super::CongestionControl for ArcCC {
 
         let mut need_ack = false;
         for &epoch in Epoch::iter() {
-            if guard.ack_records[epoch]
+            if guard.rcvd_records[epoch]
                 .need_ack(guard.max_ack_delay)
                 .is_some()
             {
@@ -462,7 +466,7 @@ impl super::CongestionControl for ArcCC {
 
     fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)> {
         let guard = self.0.lock().unwrap();
-        guard.ack_records[space].need_ack(guard.max_ack_delay)
+        guard.rcvd_records[space].need_ack(guard.max_ack_delay)
     }
 
     fn on_pkt_sent(
@@ -480,7 +484,7 @@ impl super::CongestionControl for ArcCC {
 
         guard.last_sent_time = now;
         if let Some(largest_acked) = ack {
-            guard.ack_records[epoch].on_ack_sent(pn, largest_acked);
+            guard.rcvd_records[epoch].on_ack_sent(pn, largest_acked);
         }
     }
 
@@ -495,7 +499,9 @@ impl super::CongestionControl for ArcCC {
             return;
         }
         let mut guard = self.0.lock().unwrap();
-        guard.ack_records[epoch].on_pkt_rcvd(pn);
+        guard.rcvd_records[epoch].on_pkt_rcvd(pn);
+        let now = Instant::now();
+        guard.on_datagram_rcvd(now);
     }
 
     fn pto_time(&self, epoch: Epoch) -> Duration {
@@ -514,6 +520,9 @@ impl super::CongestionControl for ArcCC {
     }
 }
 
+/// The [`RcvdRecords`] struct is used to maintain records of received packets for each epoch.
+/// It tracks acknowledged packets and determines when an ACK frame should be sent.
+/// It also retires packets that have been acknowledged by an ACK frame that has already sent and which has been confirmed by the peer.
 struct RcvdRecords {
     epoch: Epoch,
     need_ack: bool,
@@ -534,9 +543,15 @@ impl RcvdRecords {
     }
 
     fn on_pkt_rcvd(&mut self, pn: u64) {
+        // An endpoint MUST acknowledge all ack-eliciting Initial and Handshake packets immediately
         if self.epoch == Epoch::Initial || self.epoch == Epoch::Handshake {
             self.need_ack = true;
         }
+        // See [Section 13.2.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-sending-ack-frames)
+        // An endpoint SHOULD generate and send an ACK frame without delay when it receives an ack-eliciting packet either:
+        // 1. When the received packet has a packet number less than another ack-eliciting packet that has been received
+        // 2. when the packet has a packet number larger than the highest-numbered ack-eliciting packet that has been
+        // received and there are missing packets between that packet and this packet.
         if let Some((largest, _)) = self.largest_recv_time {
             if pn < largest || pn - largest > 1 {
                 self.need_ack = true;
@@ -559,10 +574,13 @@ impl RcvdRecords {
         }
     }
 
+    /// Checks whether an ACK frame needs to be sent.
+    /// Returns [`Some`] if it's time to send an ACK based on the maximum delay.
     fn need_ack(&self, max_delay: Duration) -> Option<(u64, Instant)> {
         if self.need_ack {
             return self.largest_recv_time;
         }
+        // All ack-eliciting 0-RTT and 1-RTT packets  MUST acknowledge within its advertised max_ack_delay
         if let Some((largest, recv_time)) = self.largest_recv_time {
             let now = Instant::now();
             if now - recv_time >= max_delay {
@@ -572,19 +590,23 @@ impl RcvdRecords {
         None
     }
 
+    /// Called when an ACK is sent.
+    /// Updates the last ACK sent information and resets the `need_ack` flag.
     fn on_ack_sent(&mut self, pn: u64, largest_acked: u64) {
         self.last_ack_sent = Some((pn, largest_acked));
         self.need_ack = false;
     }
 
-    fn ack(&mut self, ack: u64, retire_record: &[Box<dyn RetirePktRecord>; 3]) {
+    /// Processes an acknowledged (ACK) packet.
+    /// If the ACKed packet number matches the last sent ACK number, retires all acknowledged packets.
+    fn ack(&mut self, ack: u64, retire_records: &[Box<dyn RetirePktRecord>; 3]) {
         if let Some((pn, largest_acked)) = self.last_ack_sent {
             if ack == pn {
                 self.rcvd_queue
                     .iter()
                     .filter(|&&pn| pn <= largest_acked)
                     .for_each(|pn| {
-                        retire_record[self.epoch].retire(*pn);
+                        retire_records[self.epoch].retire(*pn);
                     });
                 self.rcvd_queue.retain(|&pn| pn > largest_acked);
             }
@@ -602,8 +624,6 @@ pub struct AckedPkt {
     pub delivered_time: Instant,
     pub first_sent_time: Instant,
     pub is_app_limited: bool,
-    pub tx_in_flight: usize,
-    pub lost: u64,
 }
 
 impl From<SentPkt> for AckedPkt {
@@ -618,8 +638,6 @@ impl From<SentPkt> for AckedPkt {
             delivered_time: sent.delivered_time,
             first_sent_time: sent.first_sent_time,
             is_app_limited: sent.is_app_limited,
-            tx_in_flight: sent.tx_in_flight,
-            lost: sent.lost,
         }
     }
 }
@@ -629,8 +647,6 @@ pub struct SentPkt {
     pub pn: u64,
     pub time_sent: Instant,
     pub size: usize,
-    pub ack_eliciting: bool,
-    pub in_flight: bool,
     pub delivered: usize,
     pub delivered_time: Instant,
     pub first_sent_time: Instant,
@@ -646,8 +662,6 @@ impl Default for SentPkt {
             pn: 0,
             time_sent: Instant::now(),
             size: 0,
-            ack_eliciting: false,
-            in_flight: false,
             delivered: 0,
             delivered_time: Instant::now(),
             first_sent_time: Instant::now(),
@@ -660,13 +674,11 @@ impl Default for SentPkt {
 }
 
 impl SentPkt {
-    fn new(pn: u64, ack_eliciting: bool, in_flight: bool, size: usize, now: Instant) -> Self {
+    fn new(pn: u64, size: usize, now: Instant) -> Self {
         SentPkt {
             pn,
             time_sent: now,
             size,
-            ack_eliciting,
-            in_flight,
             delivered: 0,
             delivered_time: now,
             first_sent_time: now,
@@ -744,8 +756,6 @@ mod tests {
         for (i, sent) in congestion.sent_packets[Epoch::Initial].iter().enumerate() {
             assert_eq!(sent.pn, i as u64 + 1);
             assert_eq!(sent.size, 1000);
-            assert!(sent.ack_eliciting);
-            assert!(sent.in_flight);
             assert_eq!(sent.time_sent, now);
         }
     }
@@ -764,8 +774,6 @@ mod tests {
             let sent = &congestion.sent_packets[*epoch][0];
             assert_eq!(sent.pn, *epoch as u64 + 1);
             assert_eq!(sent.size, 1000);
-            assert!(sent.ack_eliciting);
-            assert!(sent.in_flight);
             assert_eq!(sent.time_sent, now);
         }
     }

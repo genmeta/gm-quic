@@ -125,14 +125,6 @@ impl Rate {
     pub fn sample_is_app_limited(&self) -> bool {
         self.rate_sample.is_app_limited
     }
-
-    pub fn sample_delivered(&self) -> usize {
-        self.rate_sample.delivered
-    }
-
-    pub fn sample_prior_delivered(&self) -> usize {
-        self.rate_sample.prior_delivered
-    }
 }
 
 #[derive(Default, Debug)]
@@ -186,7 +178,5 @@ mod tests {
         assert_eq!(rate.sample_delivery_rate(), 3000);
         assert_eq!(rate.sample_rtt(), delay);
         assert!(!rate.sample_is_app_limited());
-        assert_eq!(rate.sample_delivered(), 300);
-        assert_eq!(rate.sample_prior_delivered(), 0);
     }
 }

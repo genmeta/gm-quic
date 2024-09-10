@@ -9,7 +9,7 @@ use std::{
 use dashmap::DashMap;
 use deref_derive::{Deref, DerefMut};
 use qbase::cid::{ArcCidCell, ConnectionId};
-use qcongestion::{congestion::MSS, CongestionControl, MayLoss, RetirePktRecord};
+use qcongestion::{CongestionControl, MayLoss, RetirePktRecord, MSS};
 use qrecovery::reliable::ArcReliableFrameDeque;
 use qudp::ArcUsc;
 

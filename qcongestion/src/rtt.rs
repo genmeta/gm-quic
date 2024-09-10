@@ -76,10 +76,6 @@ impl RawRtt {
             GRANULARITY,
         )
     }
-
-    fn pto_base_duration(&self, pto_count: u32) -> Duration {
-        (self.smoothed_rtt + std::cmp::max(self.rttvar * 4, GRANULARITY)) * (1 << pto_count)
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -101,10 +97,6 @@ impl ArcRtt {
 
     pub fn on_handshake_done(&self) {
         self.0.lock().unwrap().on_handshake_done();
-    }
-
-    pub fn pto_base_duration(&self, times: u32) -> Duration {
-        self.0.lock().unwrap().pto_base_duration(times)
     }
 
     pub fn smoothed_rtt(&self) -> Duration {

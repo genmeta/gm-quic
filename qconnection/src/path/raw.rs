@@ -9,10 +9,7 @@ use qbase::{
     flow::FlowController,
     frame::{PathChallengeFrame, PathResponseFrame},
 };
-use qcongestion::{
-    congestion::{ArcCC, CongestionAlgorithm},
-    CongestionControl, MayLoss, RetirePktRecord,
-};
+use qcongestion::{ArcCC, CongestionAlgorithm, CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
 use qudp::ArcUsc;
 use tokio::time::timeout;
