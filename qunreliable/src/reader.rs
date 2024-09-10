@@ -23,7 +23,7 @@ use qbase::{
 ///
 /// [`DatagramReader`] is created by [`DatagramIncoming::new_reader`], and they share the same [`RawDatagramReader`](wraped in [`ArcDatagramReader`]).
 #[derive(Default, Debug)]
-pub(crate) struct RawDatagramReader {
+pub struct RawDatagramReader {
     /// The maximum size of the datagram that can be received.
     ///
     /// The value is set by the local transport parameters [`max_datagram_frame_size`](https://www.rfc-editor.org/rfc/rfc9221.html#name-transport-parameter).
@@ -55,7 +55,7 @@ impl RawDatagramReader {
 
 /// If a connection error occurs, the internal reader will be set to an error state.
 /// See [`DatagramIncoming::on_conn_error`] for more.
-pub(crate) type ArcDatagramReader = Arc<Mutex<Result<RawDatagramReader, Error>>>;
+pub type ArcDatagramReader = Arc<Mutex<Result<RawDatagramReader, Error>>>;
 
 /// The [`DatagramIncoming`] struct represents a queue for the transport layer to write the received datagrams.
 ///
@@ -64,7 +64,7 @@ pub(crate) type ArcDatagramReader = Arc<Mutex<Result<RawDatagramReader, Error>>>
 ///
 /// When a connection error occurs, the error state will be set to the reader. See [`DatagramIncoming::on_conn_error`] for more.
 #[derive(Debug, Clone)]
-pub(crate) struct DatagramIncoming(pub ArcDatagramReader);
+pub struct DatagramIncoming(pub(crate) ArcDatagramReader);
 
 impl DatagramIncoming {
     /// Creates a new [`DatagramReader`] for the application to read the received datagrams.
@@ -94,16 +94,12 @@ impl DatagramIncoming {
     /// Receives a datagram and pushes it into the internal FIFO queue for the application to read.
     ///
     /// If the size of the received datagram exceeds the maximum size set by the local transport parameters `max_datagram_frame_size`,
-    /// a connection error occurs. See [`RawDatagramReader::local_max_size`] for more.
+    /// a connection error occurs.
     ///
     /// If the connection is closing or closed, the new datagram will be ignored.
     ///
     /// If there is a task waiting for the data to be read, the task will be woken up when the datagram is received.
-    pub(crate) fn recv_datagram(
-        &self,
-        frame: &DatagramFrame,
-        data: bytes::Bytes,
-    ) -> Result<(), Error> {
+    pub fn recv_datagram(&self, frame: &DatagramFrame, data: bytes::Bytes) -> Result<(), Error> {
         let reader = &mut self.0.lock().unwrap();
         let inner = reader.deref_mut();
         let Ok(reader) = inner else {
@@ -136,7 +132,7 @@ impl DatagramIncoming {
     /// If there is a task waiting for the data to be read, the task will be woken up and return an error immediately.
     ///
     /// All the received datagrams will be discarded, and subsequent calls to [`DatagramIncoming::recv_datagram`] will be ignored.
-    pub(super) fn on_conn_error(&self, error: &Error) {
+    pub fn on_conn_error(&self, error: &Error) {
         let reader = &mut self.0.lock().unwrap();
         let inner = reader.deref_mut();
         if let Ok(reader) = inner {

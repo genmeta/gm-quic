@@ -24,7 +24,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::error::ConnError;
 
 /// write_tls_msg()，将明文数据写入tls_conn，同步的，可能会唤醒read数据发送
-/// poll_read_tls_msg()，从tls_conn读取数据，异步的，返回(Vec<u8>, Option<KeyChange>)
+/// poll_read_tls_msg()，从tls_conn读取数据，异步的，返回([`Vec<u8>`], [`Option<KeyChange>`])
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) struct RawTlsSession {

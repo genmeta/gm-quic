@@ -93,9 +93,11 @@ impl QuicClient {
     /// server_name要填写在ClientHello中，
     /// server_addr是目标地址，虽然可以从server_name域名解析出来，但是指定使用哪一个，仍有开发者自己决定
     /// parameters是连接参数，将使用QuicClient中设置好的。
-    /// token则根据[`with_token_registry`]设置的方法，来决定是否需要填写
+    /// token则根据[`with_token_sink`]设置的方法，来决定是否需要填写
     /// 创建好的连接，应要保存在全局QuicConnection集合中
     /// 那如果开启了reuse_connection选项，则会优先从该全局QuicConnection集合里获取到server_name的
+    ///
+    /// [`with_token_sink`]: QuicClientBuilder::with_token_sink
     pub fn connect(
         &self,
         server_name: impl Into<String>,
