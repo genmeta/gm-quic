@@ -216,19 +216,14 @@ impl RawConnection {
             conn_error.clone(),
         );
 
-        let params = ConnParameters::new(
-            local_params.into(),
-            remote_params.clone(),
-            conn_error.clone(),
-        );
-
+        let params = ConnParameters::new(local_params.into(), remote_params.clone());
         tokio::spawn({
-            let remote_params = remote_params.clone();
+            let remote_params = remote_params.reader;
             let streams = streams.clone();
             let conn_error = conn_error.clone();
             let cid_registry = cid_registry.clone();
             async move {
-                let remote_params = remote_params.get().await;
+                let remote_params = remote_params.read().await;
                 let Ok(remote_params) = remote_params else {
                     return;
                 };

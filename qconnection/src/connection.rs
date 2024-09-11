@@ -152,13 +152,13 @@ impl ArcConnection {
             };
 
             (
-                raw_conn.params.remote.clone(),
+                raw_conn.params.remote().clone(),
                 raw_conn.streams.clone(),
                 raw_conn.error.clone(),
             )
         };
 
-        let remote_params = remote_params.get().await?;
+        let remote_params = remote_params.read().await?;
 
         let result = data_streams
             .open_bi(remote_params.initial_max_stream_data_bidi_remote().into())
@@ -177,13 +177,13 @@ impl ArcConnection {
             };
 
             (
-                raw_conn.params.remote.clone(),
+                raw_conn.params.remote().clone(),
                 raw_conn.streams.clone(),
                 raw_conn.error.clone(),
             )
         };
 
-        let remote_params = remote_params.get().await?;
+        let remote_params = remote_params.read().await?;
 
         let result = data_streams
             .open_uni(remote_params.initial_max_stream_data_uni().into())
@@ -202,13 +202,13 @@ impl ArcConnection {
             };
 
             (
-                raw_conn.params.remote.clone(),
+                raw_conn.params.remote().clone(),
                 raw_conn.streams.clone(),
                 raw_conn.error.clone(),
             )
         };
 
-        let remote_params = remote_params.get().await?;
+        let remote_params = remote_params.read().await?;
 
         let result = data_streams
             .accept_bi(remote_params.initial_max_stream_data_bidi_local().into())
@@ -277,6 +277,7 @@ impl ArcConnection {
 
         raw_conn.datagrams.on_conn_error(&error);
         raw_conn.streams.on_conn_error(&error);
+        raw_conn.params.on_conn_error(&error);
         raw_conn.tls_session.abort();
 
         let pto = raw_conn
