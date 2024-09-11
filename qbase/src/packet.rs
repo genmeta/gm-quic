@@ -1,45 +1,46 @@
-/// A QUIC packet as follows:
-/// The long header has the len field, the short header does not have the len field.
-/// Remember, the len field is not an attribute of the header, but a attribute of the packet.
-/// |--------+-......-+[-------+-------]+--......--+--------+........+--------|
-/// |  pkty  |   hdr  |       len       |    pn    |           body           |
-/// |--------+-......-+[-------+-------]+--......--+--------+........+--------|
-///      ^                              |                                     |
-///      |                              |                                     |
-/// first byte                          |<--------------payload-------------->|
 use bytes::BytesMut;
-
-pub mod error;
-
-pub mod signal;
 use deref_derive::{Deref, DerefMut};
 use enum_dispatch::enum_dispatch;
-use header::GetType;
+
+use crate::cid::ConnectionId;
+
+/// QUIC packet parse error definitions.
+pub mod error;
+
+/// Define signal util, such as key phase bit and spin bit.
+pub mod signal;
 pub use signal::{KeyPhaseBit, SpinBit};
 
+/// Definitions of QUIC packet types.
 pub mod r#type;
-use r#type::Type;
 pub use r#type::{
-    GetPacketNumberLength, LongSpecificBits, ShortSpecificBits, LONG_RESERVED_MASK,
+    GetPacketNumberLength, LongSpecificBits, ShortSpecificBits, Type, LONG_RESERVED_MASK,
     SHORT_RESERVED_MASK,
 };
 
+/// Definitions of QUIC packet headers.
 pub mod header;
 pub use header::{
-    long, EncodeHeader, HandshakeHeader, Header, InitialHeader, LongHeaderBuilder, OneRttHeader,
-    RetryHeader, VersionNegotiationHeader, ZeroRttHeader,
+    long, EncodeHeader, GetDcid, GetType, HandshakeHeader, Header, InitialHeader,
+    LongHeaderBuilder, OneRttHeader, RetryHeader, VersionNegotiationHeader, ZeroRttHeader,
 };
 
+/// Encoding and decoding of packet number
 pub mod number;
 pub use number::{take_pn_len, PacketNumber, WritePacketNumber};
 
-use self::header::GetDcid;
-use crate::cid::ConnectionId;
-
+/// Include operations such as decrypting QUIC packets, removing header protection,
+/// and parsing the first byte of the packet to get the right packet numbers
 pub mod decrypt;
+
+/// Include operations such as encrypting QUIC packets, adding header protection,
+/// and encoding the first byte of the packet with pn_len and key_phase optionally.
 pub mod encrypt;
+
+/// Encapsulate the crypto keys's logic for long headers and 1-RTT headers.
 pub mod keys;
 
+/// The sum type of all QUIC packet headers.
 #[derive(Debug, Clone)]
 #[enum_dispatch(GetDcid, GetType)]
 pub enum DataHeader {
@@ -47,6 +48,20 @@ pub enum DataHeader {
     Short(OneRttHeader),
 }
 
+/// The sum type of all QUIC data packets.
+///
+/// The long header has the len field, the short header does not have the len field.
+/// Remember, the len field is not an attribute of the header, but a attribute of the packet.
+///
+/// ```text
+///                                 +---> payload length in long packet
+///                                 |     |<----------- payload --------->|
+/// +-----------+---+--------+------+-----+-----------+---......--+-------+
+/// |X|1|X X 0 0|0 0| ...hdr | len(0..16) | pn(8..32) | body...   |  tag  |
+/// +---+-------+-+-+--------+------------+-----+-----+---......--+-------+
+///               |                             |
+///               +---> packet number length    +---> actual encoded packet number
+/// ```
 #[derive(Debug, Clone, Deref, DerefMut)]
 pub struct DataPacket {
     #[deref]
@@ -62,6 +77,7 @@ impl GetType for DataPacket {
     }
 }
 
+/// The sum type of all QUIC packets.
 #[derive(Debug, Clone)]
 pub enum Packet {
     VN(VersionNegotiationHeader),
@@ -70,9 +86,14 @@ pub enum Packet {
     Data(DataPacket),
 }
 
-// The parsing here does not involve removing header protection or decrypting the packet. It only parses information such as packet type and connection ID,
-// and prepares for further delivery to the connection by finding the connection ID. The removal of header protection and decryption of the packet is done at the connection layer.
-// The received packet is a BytesMut, in order to make as few copies as possible until it is read by the application layer.
+/// QUIC packet reader, reading packets from the incoming datagrams.
+///
+/// The parsing here does not involve removing header protection or decrypting the packet.
+/// It only parses information such as packet type and connection ID,
+/// and prepares for further delivery to the connection by finding the connection ID.
+///
+/// The received packet is a BytesMut, in order to be decrypted in future, and make as few
+/// copies cheaply until it is read by the application layer.
 #[derive(Debug)]
 pub struct PacketReader {
     raw: BytesMut,
@@ -94,7 +115,7 @@ impl Iterator for PacketReader {
             return None;
         }
 
-        match ext::be_packet(&mut self.raw, self.dcid_len) {
+        match io::be_packet(&mut self.raw, self.dcid_len) {
             Ok(packet) => Some(Ok(packet)),
             Err(e) => {
                 self.raw.clear(); // no longer parsing
@@ -104,7 +125,10 @@ impl Iterator for PacketReader {
     }
 }
 
-pub mod ext {
+/// The io module provides the functions to parse the QUIC packet.
+///
+/// The writing of the QUIC packet is not provided here, they are written in place.
+pub mod io {
     use bytes::BytesMut;
     use nom::multi::length_data;
 
@@ -116,6 +140,10 @@ pub mod ext {
     };
     use crate::varint::be_varint;
 
+    /// Parse the payload of a packet.
+    ///
+    /// - For long packets, the payload is a [`nom::multi::length_data`].
+    /// - For 1-RTT packet, the payload is the remaining content of the datagram.
     fn be_payload(
         pkty: Type,
         datagram: &mut BytesMut,
@@ -137,6 +165,8 @@ pub mod ext {
         Ok((bytes, packet_length - payload_len))
     }
 
+    /// Parse the QUIC packet from the datagram, given the length of the DCID.
+    /// Returns the parsed packet or an error, and the datagram removed the packet's content.
     pub fn be_packet(datagram: &mut BytesMut, dcid_len: usize) -> Result<Packet, Error> {
         let input = datagram.as_ref();
         let (remain, pkty) = be_packet_type(input).map_err(|e| match e {
