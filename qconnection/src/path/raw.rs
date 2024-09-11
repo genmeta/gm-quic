@@ -100,7 +100,7 @@ impl RawPath {
                 }
             }
             anti_amplifier.abort();
-            state.to_inactive(cid);
+            state.to_inactive(cid).await;
         });
     }
 
@@ -130,7 +130,7 @@ impl RawPath {
             while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
                 let send_result = usc.send_all_via_pathway(&iovec, pathway).await;
                 if send_result.is_err() {
-                    state.to_inactive(cid);
+                    state.to_inactive(cid).await;
                     return;
                 }
             }

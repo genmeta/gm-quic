@@ -4,7 +4,7 @@ use std::{
 };
 
 use qbase::{
-    frame::{io::WriteFrame, AckFrame},
+    frame::{io::WriteFrame, AckFrame, BeFrame},
     packet::PacketNumber,
     util::IndexDeque,
     varint::{VarInt, VARINT_MAX},
@@ -179,6 +179,10 @@ impl RcvdPktRecords {
         // TODO: 未来替换成，不用申请Vec先生成AckFrame，从largest往后开始成对生成
         let buf_len = buf.len();
         let ack_frame = self.gen_ack_frame_util((largest, recv_time), buf_len)?;
+
+        if buf_len < ack_frame.encoding_size() {
+            return None;
+        }
         buf.put_frame(&ack_frame);
         Some(buf_len - buf.len())
     }
