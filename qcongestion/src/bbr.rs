@@ -326,7 +326,6 @@ mod tests {
         simulate_round_trip(&mut bbr, now, rtt, 0, 10, MSS);
         assert_eq!(bbr.bytes_in_flight, 0);
         assert_eq!(bbr.delivery_rate.delivered(), 10 * MSS);
-        assert_eq!(bbr.delivery_rate.sample_delivered(), 10 * MSS);
         assert_eq!(
             bbr.delivery_rate.sample_delivery_rate(),
             (10 * 10 * MSS) as u64
@@ -337,7 +336,6 @@ mod tests {
         // generate btlbw
         simulate_round_trip(&mut bbr, now, rtt, 10, 40, MSS);
         assert_eq!(bbr.delivery_rate.delivered(), 40 * MSS);
-        assert_eq!(bbr.delivery_rate.sample_delivered(), 30 * MSS);
         assert_eq!(
             bbr.delivery_rate.sample_delivery_rate(),
             (30 * 10 * MSS) as u64

@@ -9,8 +9,8 @@ use std::{
 use dashmap::DashMap;
 use deref_derive::{Deref, DerefMut};
 use qbase::cid::{ArcCidCell, ConnectionId};
-use qcongestion::{congestion::MSS, CongestionControl};
-use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
+use qcongestion::{CongestionControl, MayLoss, RetirePktRecord, MSS};
+use qrecovery::reliable::ArcReliableFrameDeque;
 use qudp::ArcUsc;
 
 mod anti_amplifier;
@@ -153,8 +153,8 @@ impl ArcPath {
         usc: ArcUsc,
         scid: ConnectionId,
         dcid: ArcCidCell<ArcReliableFrameDeque>,
-        loss: Box<dyn Fn(Epoch, u64) + Send + Sync>,
-        retire: Box<dyn Fn(Epoch, u64) + Send + Sync>,
+        loss: [Box<dyn MayLoss>; 3],
+        retire: [Box<dyn RetirePktRecord>; 3],
     ) -> Self {
         Self(Arc::new(RawPath::new(usc, scid, dcid, loss, retire)))
     }

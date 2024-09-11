@@ -12,10 +12,7 @@ use qbase::{
     flow::ArcSendControler,
     packet::SpinBit,
 };
-use qcongestion::{
-    congestion::{ArcCC, MSS},
-    CongestionControl,
-};
+use qcongestion::{ArcCC, CongestionControl, MSS};
 use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
 
 use super::{

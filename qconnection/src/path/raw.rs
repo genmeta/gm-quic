@@ -9,10 +9,7 @@ use qbase::{
     flow::FlowController,
     frame::{PathChallengeFrame, PathResponseFrame},
 };
-use qcongestion::{
-    congestion::{ArcCC, CongestionAlgorithm},
-    CongestionControl,
-};
+use qcongestion::{ArcCC, CongestionAlgorithm, CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
 use qudp::ArcUsc;
 use tokio::time::timeout;
@@ -47,8 +44,8 @@ impl RawPath {
         usc: ArcUsc,
         scid: ConnectionId,
         dcid: ArcCidCell<ArcReliableFrameDeque>,
-        loss: Box<dyn Fn(Epoch, u64) + Send + Sync>,
-        retire: Box<dyn Fn(Epoch, u64) + Send + Sync>,
+        loss: [Box<dyn MayLoss>; 3],
+        retire: [Box<dyn RetirePktRecord>; 3],
     ) -> Self {
         Self {
             usc,

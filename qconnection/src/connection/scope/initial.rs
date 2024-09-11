@@ -10,7 +10,7 @@ use qbase::{
         long, DataHeader,
     },
 };
-use qcongestion::CongestionControl;
+use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{
     space::{Epoch, InitialSpace},
     streams::crypto::CryptoStream,
@@ -174,7 +174,7 @@ impl InitialScope {
                     ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.cc.on_recv_pkt(Epoch::Initial, pn, is_ack_packet);
+                            path.cc.on_pkt_rcvd(Epoch::Initial, pn, is_ack_packet);
                         }
                         Err(e) => {
                             conn_error.on_error(e);
@@ -205,14 +205,18 @@ impl InitialScope {
             crypto_stream_outgoing: self.crypto_stream.outgoing(),
         }
     }
+}
 
-    pub fn may_loss(&self, pn: u64) {
+impl MayLoss for InitialScope {
+    fn may_loss(&self, pn: u64) {
         for frame in self.space.sent_packets().receive().may_loss_pkt(pn) {
             self.crypto_stream.outgoing().may_loss_data(&frame);
         }
     }
+}
 
-    pub fn retire(&self, pn: u64) {
+impl RetirePktRecord for InitialScope {
+    fn retire(&self, pn: u64) {
         self.space.rcvd_packets().write().retire(pn);
     }
 }
