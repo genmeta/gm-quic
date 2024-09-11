@@ -3,69 +3,26 @@ use deref_derive::{Deref, DerefMut};
 use super::*;
 use crate::{cid::ConnectionId, varint::VarInt};
 
-// The following is the unencrypted header content, which may exist in all future versions
-// of QUIC, so it is placed in this file without distinguishing versions.
-
-#[derive(Debug, Default, Clone)]
-pub struct VersionNegotiation {
-    pub versions: Vec<u32>,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct Retry {
-    pub token: Vec<u8>,
-    pub integrity: [u8; 16],
-}
-
-impl Retry {
-    fn from_slice(token: &[u8], integrity: &[u8]) -> Self {
-        let mut retry = Retry {
-            token: Vec::from(token),
-            integrity: [0; 16],
-        };
-        retry.integrity.copy_from_slice(integrity);
-        retry
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct Initial {
-    pub token: Vec<u8>,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct ZeroRtt;
-
-#[derive(Debug, Default, Clone)]
-pub struct Handshake;
-
-impl Encode for Initial {
-    fn size(&self) -> usize {
-        VarInt::try_from(self.token.len())
-            .expect("token length can not be more than 2^62")
-            .encoding_size()
-            + self.token.len()
-    }
-}
-
-impl Encode for ZeroRtt {}
-impl Encode for Handshake {}
-
-/**
- * Long Header Packet {
- *   Header Form (1) = 1,
- *   Fixed Bit (1) = 1,
- *   Long Packet Type (2),
- *   Type-Specific Bits (4),
- *   Version (32),
- *   Destination Connection ID Length (8),
- *   Destination Connection ID (0..160),
- *   Source Connection ID Length (8),
- *   Source Connection ID (0..160),
- *   // specific
- *   Type-Specific Payload (..),
- * }
- */
+/// The long header structure, whose specific contents are determined by the
+/// concrete packet type, including VN/Retry/Initial/0Rtt/Handshake packet.
+///
+/// Long headers are used for packets that are sent prior to the establishment
+/// of 1-RTT keys. Once 1-RTT keys are available, a sender switches to sending
+/// packets using the short header.
+///
+/// ```text
+/// +---------------+-------------+------+--------------+------+--------------+----------+
+/// |1|1|X X 0 0 0 0| Version(32) | DCIL | DCID(0..160) | SCIL | SCID(0..160) | Specific |
+/// +---+---+---+---+-------------+------+--------------+------+--------------+----------+
+///     |<->|<->|<->|
+///       |   |   |
+///       |   |   +---> packet number length
+///       |   +---> reserved bits, must be zero
+///       +---> long packet type
+/// ```
+///
+/// See [Long Header Packet Format](https://www.rfc-editor.org/rfc/rfc9000.html#name-long-header-packets)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Default, Clone, Deref, DerefMut)]
 pub struct LongHeader<T> {
     pub dcid: ConnectionId,
@@ -86,14 +43,109 @@ impl<T> super::GetScid for LongHeader<T> {
     }
 }
 
+// The following is the header definition, which may exist in all future versions
+// of QUIC, so it is placed in this file without distinguishing versions.
+
+/// The specific contents of the version negotiation packet, which includes all the
+/// version numbers supported by the server.
+///
+/// When the server receives an initial packet or 0-RTT packet with an unsupported
+/// version number, it will respond with a version negotiation packet that contains
+/// all the version numbers supported by the server, each version being 32 bits.
+#[derive(Debug, Default, Clone)]
+pub struct VersionNegotiation {
+    pub versions: Vec<u32>,
+}
+
+/// The specific contents of the retry packet, which includes a retry token and a
+/// 16-byte integrity check value.
+///
+/// After receiving the client's connection, the server may return a retry packet
+/// due to load balancing strategies or simply for address verification,
+/// requiring the client to reconnect to another address.
+#[derive(Debug, Default, Clone)]
+pub struct Retry {
+    pub token: Vec<u8>,
+    pub integrity: [u8; 16],
+}
+
+impl Retry {
+    /// Create a new Retry packet from the token and integrity value.
+    ///
+    /// The token is required to be carried by the Initial packet when the client
+    /// reconnects in the future and will be used by the server for address verification.
+    fn from_slice(token: &[u8], integrity: &[u8]) -> Self {
+        let mut retry = Retry {
+            token: Vec::from(token),
+            integrity: [0; 16],
+        };
+        retry.integrity.copy_from_slice(integrity);
+        retry
+    }
+}
+
+/// The specific contents of the initial packet, which just includes a token.
+///
+/// The token comes from the Retry packet responded by the server, or it is issued to
+/// the client by the server through the NewToken frame in past QUIC connections.
+/// After the server receives this token, it will be used for address verification.
+/// If the client connects to the server for the first time, the token is empty.
+#[derive(Debug, Default, Clone)]
+pub struct Initial {
+    pub token: Vec<u8>,
+}
+
+/// The specific contents of the 0-RTT packet, which is empty.
+#[derive(Debug, Default, Clone)]
+pub struct ZeroRtt;
+
+/// The specific contents of the handshake packet, which is empty.
+#[derive(Debug, Default, Clone)]
+pub struct Handshake;
+
+impl EncodeHeader for Initial {
+    fn size(&self) -> usize {
+        VarInt::try_from(self.token.len())
+            .expect("token length can not be more than 2^62")
+            .encoding_size()
+            + self.token.len()
+    }
+}
+
+impl EncodeHeader for ZeroRtt {}
+impl EncodeHeader for Handshake {}
+
+/// Version negotiation packet, which is a long header packet.
+///
+/// See [version negotiation packet](https://www.rfc-editor.org/rfc/rfc9000.html#name-version-negotiation-packet)
+/// in [RFC9000](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 pub type VersionNegotiationHeader = LongHeader<VersionNegotiation>;
+
+/// Retry packet, which is a long header packet.
+///
+/// See [retry packet](https://www.rfc-editor.org/rfc/rfc9000.html#name-retry-packet)
+/// in [RFC9000](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 pub type RetryHeader = LongHeader<Retry>;
 
+/// Initial packet header, which is a long header packet.
+///
+/// See [initial packet](https://www.rfc-editor.org/rfc/rfc9000.html#name-initial-packet)
+/// in [RFC9000](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 pub type InitialHeader = LongHeader<Initial>;
+
+/// Handshake packet header, which is a long header packet.
+///
+/// See [handshake packet](https://www.rfc-editor.org/rfc/rfc9000.html#name-handshake-packet)
+/// in [RFC9000](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 pub type HandshakeHeader = LongHeader<Handshake>;
+
+/// 0-RTT packet header, which is a long header packet.
+///
+/// See [0-RTT packet](https://www.rfc-editor.org/rfc/rfc9000.html#name-0-rtt-packet)
+/// in [RFC9000](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 pub type ZeroRttHeader = LongHeader<ZeroRtt>;
 
-impl<S: Encode> Encode for LongHeader<S> {
+impl<S: EncodeHeader> EncodeHeader for LongHeader<S> {
     fn size(&self) -> usize {
         1 + 4 +
         1 + self.dcid.len()       // dcid长度最多20字节，长度编码只占1字节，加上cid本身的长度
@@ -122,6 +174,8 @@ bind_type!(
     HandshakeHeader => Type::Long(LongType::V1(Version::<1, _>(v1::Type::Handshake)))
 );
 
+/// The sum type of long packets that carry data,
+/// including Initial, ZeroRtt, and Handshake packets.
 #[derive(Debug, Clone)]
 #[enum_dispatch(Encode, GetType, GetDcid, GetScid)]
 pub enum DataHeader {
@@ -130,7 +184,7 @@ pub enum DataHeader {
     Handshake(HandshakeHeader),
 }
 
-pub(super) mod ext {
+pub mod io {
     use std::ops::Deref;
 
     use bytes::BufMut;
@@ -146,31 +200,21 @@ pub(super) mod ext {
     use crate::{
         cid::WriteConnectionId,
         packet::r#type::{
-            ext::WritePacketType,
+            io::WritePacketType,
             long::{v1::Type as LongV1Type, Type as LongType},
         },
         varint::{be_varint, WriteVarInt},
     };
 
+    /// Parse the version negotiation packet,
+    /// [nom](https://docs.rs/nom/latest/nom/) parser style.
     pub fn be_version_negotiation(input: &[u8]) -> nom::IResult<&[u8], VersionNegotiation> {
         let (remain, (versions, _)) = many_till(be_u32, eof)(input)?;
         Ok((remain, VersionNegotiation { versions }))
     }
 
-    pub fn be_initial(input: &[u8]) -> nom::IResult<&[u8], Initial> {
-        map(length_data(be_varint), |token| Initial {
-            token: Vec::from(token),
-        })(input)
-    }
-
-    pub fn be_zero_rtt(input: &[u8]) -> nom::IResult<&[u8], ZeroRtt> {
-        Ok((input, ZeroRtt))
-    }
-
-    pub fn be_handshake(input: &[u8]) -> nom::IResult<&[u8], Handshake> {
-        Ok((input, Handshake))
-    }
-
+    /// Parse the retry packet,
+    /// [nom](https://docs.rs/nom/latest/nom/) parser style.
     pub fn be_retry(input: &[u8]) -> nom::IResult<&[u8], Retry> {
         if input.len() < 16 {
             return Err(Err::Incomplete(nom::Needed::new(16)));
@@ -180,28 +224,75 @@ pub(super) mod ext {
         Ok((&[][..], Retry::from_slice(token, integrity)))
     }
 
+    /// Parse the initial packet,
+    /// [nom](https://docs.rs/nom/latest/nom/) parser style.
+    pub fn be_initial(input: &[u8]) -> nom::IResult<&[u8], Initial> {
+        map(length_data(be_varint), |token| Initial {
+            token: Vec::from(token),
+        })(input)
+    }
+
+    /// Parse the 0-RTT packet,
+    /// [nom](https://docs.rs/nom/latest/nom/) parser style.
+    pub fn be_zero_rtt(input: &[u8]) -> nom::IResult<&[u8], ZeroRtt> {
+        Ok((input, ZeroRtt))
+    }
+
+    /// Parse the handshake packet,
+    /// [nom](https://docs.rs/nom/latest/nom/) parser style.
+    pub fn be_handshake(input: &[u8]) -> nom::IResult<&[u8], Handshake> {
+        Ok((input, Handshake))
+    }
+
+    /// The builder for the long header, which is used to create a long header.
+    ///
+    /// ## Example
+    /// ```
+    /// use qbase::{cid::ConnectionId, packet::header::long::io::LongHeaderBuilder};
+    ///
+    /// let scid = ConnectionId::from_slice(b"scid");
+    /// let dcid = ConnectionId::from_slice(b"dcid");
+    ///
+    /// let handshake_header = LongHeaderBuilder::with_cid(dcid, scid).handshake();
+    /// ```
     pub struct LongHeaderBuilder {
         pub(crate) dcid: ConnectionId,
         pub(crate) scid: ConnectionId,
     }
 
     impl LongHeaderBuilder {
+        /// Create a new long header builder with the given destination
+        /// and source connection IDs.
         pub fn with_cid(dcid: ConnectionId, scid: ConnectionId) -> Self {
             Self { dcid, scid }
         }
 
+        /// Build into a version negotiation header.
+        pub fn vn(self, versions: Vec<u32>) -> LongHeader<VersionNegotiation> {
+            self.wrap(VersionNegotiation { versions })
+        }
+
+        /// Build into a retry header.
+        pub fn retry(self, token: Vec<u8>, integrity: [u8; 16]) -> LongHeader<Retry> {
+            self.wrap(Retry { token, integrity })
+        }
+
+        /// Build into an initial header.
         pub fn initial(self, token: Vec<u8>) -> LongHeader<Initial> {
             self.wrap(Initial { token })
         }
 
+        /// Build into a 0-RTT header.
         pub fn zero_rtt(self) -> LongHeader<ZeroRtt> {
             self.wrap(ZeroRtt)
         }
 
+        /// Build into a handshake header.
         pub fn handshake(self) -> LongHeader<Handshake> {
             self.wrap(Handshake)
         }
 
+        /// Wrap the specific header into a long header.
         pub fn wrap<T>(self, specific: T) -> LongHeader<T> {
             LongHeader {
                 dcid: self.dcid,
@@ -210,6 +301,9 @@ pub(super) mod ext {
             }
         }
 
+        /// Parse the input buffer into a long header, and the input buffer would be
+        /// the remaining data of a packet body received from peer,
+        /// [nom](https://docs.rs/nom/latest/nom/) parser style.
         pub fn parse(self, ty: LongType, input: &[u8]) -> nom::IResult<&[u8], Header> {
             match ty {
                 LongType::VersionNegotiation => {
@@ -238,14 +332,14 @@ pub(super) mod ext {
         }
     }
 
-    /// If the last Length field of the long packet header is VarInt, it needs to be
-    /// handled separately. The Write trait does not write the Length, and leaves it
-    /// to be filled in when sending.
-    pub trait Write<S> {
+    /// Writing the specific header into the buffer.
+    /// For 0Rtt and Handshake, their headers are empty, so there is nothing to write.
+    pub trait WriteSpecific<S> {
+        /// Write the specific header content.
         fn put_specific(&mut self, _specific: &S) {}
     }
 
-    impl<T: BufMut> Write<VersionNegotiation> for T {
+    impl<T: BufMut> WriteSpecific<VersionNegotiation> for T {
         fn put_specific(&mut self, specific: &VersionNegotiation) {
             for version in &specific.versions {
                 self.put_u32(*version);
@@ -253,14 +347,14 @@ pub(super) mod ext {
         }
     }
 
-    impl<T: BufMut> Write<Retry> for T {
+    impl<T: BufMut> WriteSpecific<Retry> for T {
         fn put_specific(&mut self, specific: &Retry) {
             self.put_slice(&specific.token);
             self.put_slice(&specific.integrity);
         }
     }
 
-    impl<T: BufMut> Write<Initial> for T {
+    impl<T: BufMut> WriteSpecific<Initial> for T {
         fn put_specific(&mut self, specific: &Initial) {
             self.put_varint(
                 &VarInt::try_from(specific.token.len())
@@ -270,16 +364,24 @@ pub(super) mod ext {
         }
     }
 
-    impl<T: BufMut> Write<ZeroRtt> for T {}
-    impl<T: BufMut> Write<Handshake> for T {}
+    impl<T: BufMut> WriteSpecific<ZeroRtt> for T {}
+    impl<T: BufMut> WriteSpecific<Handshake> for T {}
 
+    /// Write the long header content, including the packet type, destination connection ID,
+    /// source connection ID, and specific header content.
+    ///
+    /// ## Note
+    ///
+    /// It does not write the payload Length of the packet, and leaves it to be filled in when
+    /// collecting data to send.
     pub trait WriteLongHeader<S> {
+        /// Write the long header.
         fn put_long_header(&mut self, wrapper: &LongHeader<S>);
     }
 
     impl<T, S> WriteLongHeader<S> for T
     where
-        T: BufMut + Write<S>,
+        T: BufMut + WriteSpecific<S>,
         LongHeader<S>: GetType,
     {
         fn put_long_header(&mut self, long_header: &LongHeader<S>) {
@@ -294,11 +396,11 @@ pub(super) mod ext {
 
 #[cfg(test)]
 mod tests {
-    use crate::packet::header::Write;
+    use crate::packet::header::WriteSpecific;
 
     #[test]
     fn test_be_version_negotiation() {
-        use super::ext::be_version_negotiation;
+        use super::io::be_version_negotiation;
 
         let buf = vec![0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02];
         let (remain, versions) = be_version_negotiation(buf.as_ref()).unwrap();
@@ -308,7 +410,7 @@ mod tests {
 
     #[test]
     fn test_be_retry() {
-        use super::ext::be_retry;
+        use super::io::be_retry;
 
         let buf = vec![
             0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
@@ -336,7 +438,7 @@ mod tests {
 
     #[test]
     fn test_be_initial() {
-        use crate::packet::header::long::ext::be_initial;
+        use crate::packet::header::long::io::be_initial;
         // Note: The length of the last bit is filled in when sending, here set as 0x01
         // Consistent behavior with zero_rtt and handshake
         let buf = vec![0x03, 0x00, 0x00, 0x00];

@@ -7,7 +7,7 @@ use qbase::{
         encrypt::{encode_long_first_byte, encrypt_packet, protect_header},
         header::WriteLongHeader,
         keys::ArcKeys,
-        Encode, LongHeaderBuilder, WritePacketNumber,
+        EncodeHeader, LongHeaderBuilder, WritePacketNumber,
     },
     varint::{EncodeBytes, VarInt, WriteVarInt},
 };

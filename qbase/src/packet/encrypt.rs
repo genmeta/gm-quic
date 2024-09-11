@@ -2,7 +2,7 @@ use std::ops::Deref;
 
 use rustls::quic::{HeaderProtectionKey, PacketKey};
 
-use super::{KeyPhaseBit, LongClearBits, ShortClearBits};
+use super::{KeyPhaseBit, LongSpecificBits, ShortSpecificBits};
 
 /// Encrypt the packet body, applicable to both long and short packets.
 ///
@@ -25,6 +25,8 @@ pub fn encrypt_packet(key: &dyn PacketKey, pn: u64, pkt_buf: &mut [u8], body_off
 }
 
 /// Add header protection, applicable to both long and short packets.
+/// Mainly protects the Reserved Bits and Packet Number Length in the packet header,
+/// as well as the Packet Number.
 ///
 /// Use the header protection key of the corresponding level to protect the header.
 /// For long headers, the last 4 bits of the first byte are protected;
@@ -57,16 +59,16 @@ pub fn protect_header(
 /// Encode the last 4 bits of the first byte of the long packet, i.e.,
 /// two reserved bits of 0 and two bits of packet number encoding length.
 pub fn encode_long_first_byte(first_byte: &mut u8, pn_len: usize) {
-    let clear_bits = LongClearBits::with_pn_len(pn_len);
-    *first_byte |= clear_bits.deref();
+    let specific_bits = LongSpecificBits::with_pn_len(pn_len);
+    *first_byte |= specific_bits.deref();
 }
 
 /// Encode the last 5 bits of the first byte of the short packet, i.e.,
 /// two reserverd bits of 0, one bit of key phase, and two bits of packet number encoding length.
 pub fn encode_short_first_byte(first_byte: &mut u8, pn_len: usize, key_phase: KeyPhaseBit) {
-    let mut clear_bits = ShortClearBits::with_pn_len(pn_len);
-    clear_bits.set_key_phase(key_phase);
-    *first_byte |= clear_bits.deref();
+    let mut specific_bits = ShortSpecificBits::with_pn_len(pn_len);
+    specific_bits.set_key_phase(key_phase);
+    *first_byte |= specific_bits.deref();
 }
 
 #[cfg(test)]

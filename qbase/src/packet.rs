@@ -20,12 +20,13 @@ pub use signal::{KeyPhaseBit, SpinBit};
 pub mod r#type;
 use r#type::Type;
 pub use r#type::{
-    GetPacketNumberLength, LongClearBits, ShortClearBits, LONG_RESERVED_MASK, SHORT_RESERVED_MASK,
+    GetPacketNumberLength, LongSpecificBits, ShortSpecificBits, LONG_RESERVED_MASK,
+    SHORT_RESERVED_MASK,
 };
 
 pub mod header;
 pub use header::{
-    long, Encode, HandshakeHeader, Header, InitialHeader, LongHeaderBuilder, OneRttHeader,
+    long, EncodeHeader, HandshakeHeader, Header, InitialHeader, LongHeaderBuilder, OneRttHeader,
     RetryHeader, VersionNegotiationHeader, ZeroRttHeader,
 };
 
@@ -109,8 +110,8 @@ pub mod ext {
 
     use super::{
         error::Error,
-        header::ext::be_header,
-        r#type::{ext::be_packet_type, Type},
+        header::io::be_header,
+        r#type::{io::be_packet_type, Type},
         *,
     };
     use crate::varint::be_varint;

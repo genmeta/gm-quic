@@ -16,6 +16,8 @@ impl ConnectionId {
     }
 }
 
+/// Parse a connection ID from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_connection_id(input: &[u8]) -> IResult<&[u8], ConnectionId> {
     let (remain, len) = be_u8(input)?;
     if len as usize > MAX_CID_SIZE {
@@ -40,7 +42,8 @@ impl<T: bytes::BufMut> WriteConnectionId for T {
 }
 
 impl ConnectionId {
-    pub(crate) fn from_slice(bytes: &[u8]) -> Self {
+    /// Create a new connection ID from a bytes slice.
+    pub fn from_slice(bytes: &[u8]) -> Self {
         debug_assert!(bytes.len() <= MAX_CID_SIZE);
         let mut res = Self {
             len: bytes.len() as u8,
