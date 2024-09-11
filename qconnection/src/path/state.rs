@@ -1,28 +1,19 @@
 use std::{
-    future::Future,
-    pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
     time,
 };
 
 use deref_derive::Deref;
-use qbase::cid::ArcCidCell;
+use qbase::{cid::ArcCidCell, util};
 use qrecovery::reliable::ArcReliableFrameDeque;
 
-#[derive(Debug, Clone, Default)]
-pub enum PathState {
-    #[default]
-    Active,
-    Pending(Vec<Waker>),
-    InActive,
-}
+type PathStateFuture = Arc<futures::lock::Mutex<Arc<util::Future<()>>>>;
 
 #[derive(Debug, Clone, Deref)]
 pub struct ArcPathState {
     #[deref]
     recv_time: Arc<Mutex<time::Instant>>,
-    state: Arc<Mutex<PathState>>,
+    state: PathStateFuture,
 }
 
 impl ArcPathState {
@@ -45,7 +36,7 @@ impl ArcPathState {
                     let recv_time = *state.lock().unwrap();
                     // TODO: 失活时间暂定30s
                     if now.duration_since(recv_time) >= time::Duration::from_secs(30) {
-                        state.to_inactive(cid);
+                        state.to_inactive(cid).await;
                         break;
                     }
                     tokio::time::sleep_until((recv_time + time::Duration::from_secs(30)).into())
@@ -64,8 +55,8 @@ impl ArcPathState {
     ///
     /// **Note:** This function does not modify the internal state in any way. It simply provides another handle to the
     /// existing shared state.
-    pub fn has_been_inactivated(&self) -> Self {
-        self.clone()
+    pub async fn has_been_inactivated(&self) {
+        self.state.lock().await.get().await;
     }
 
     /// Transitions the internal state of the associated path to `InActive` and wakes up any pending tasks waiting on it.
@@ -77,31 +68,13 @@ impl ArcPathState {
     ///
     /// Regardless of the initial state, the function sets the state to `InActive`, signifying that the path is no longer
     /// actively being processed or monitored.
-    pub fn to_inactive(&self, cid: ArcCidCell<ArcReliableFrameDeque>) {
+    pub async fn to_inactive(&self, cid: ArcCidCell<ArcReliableFrameDeque>) {
         ArcCidCell::retire(&cid);
 
-        let mut guard = self.state.lock().unwrap();
-        if let PathState::Pending(ref mut wakers) = *guard {
-            let wakers = std::mem::take(wakers);
-            *guard = PathState::InActive;
-            for waker in wakers {
-                waker.wake();
-            }
-        }
-    }
-}
-
-impl Future for ArcPathState {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.state.lock().unwrap();
-
-        match *guard {
-            PathState::Active => *guard = PathState::Pending(vec![cx.waker().clone()]),
-            PathState::Pending(ref mut wakers) => wakers.push(cx.waker().clone()),
-            PathState::InActive => return Poll::Ready(()),
-        }
-        Poll::Pending
+        self.state
+            .lock()
+            .await
+            .assign(())
+            .expect("path is already inactive");
     }
 }
