@@ -3,12 +3,18 @@ use deref_derive::Deref;
 /// Supports IQuic version 1, if other versions are supported in the future, add them here.
 pub mod v1;
 
-/// The long packet header contains version information, so the packet type of a certain
-/// version is considered as one type.
+/// The long packet header contains version information, so the 32-bit
+/// version number info is also included as a versioned packet type.
+///
+/// `N`` represents an 32-bit version number, and
+/// `Ty`` represents the specific type of the version.
 #[derive(Debug, Clone, Copy, Deref, PartialEq, Eq)]
 pub struct Version<const N: u32, Ty>(#[deref] pub(crate) Ty);
 
+/// Long packet types all have a Version, so the version number can be obtained
+/// from the long packet type.
 pub trait GetVersion {
+    /// Get the version number from long packet type.
     fn get_version(&self) -> u32;
 }
 
@@ -18,32 +24,42 @@ impl<const N: u32, Ty> GetVersion for Version<N, Ty> {
     }
 }
 
+/// Mainly define the long packet types of the IQuic version 1.
 impl Version<1, v1::Type> {
+    /// Retry packet type of the IQuic version 1.
     pub const RETRY: Self = Self(v1::Type::Retry);
+    /// Initial packet type of the IQuic version 1.
     pub const INITIAL: Self = Self(v1::Type::Initial);
-    pub const HANDSHAKE: Self = Self(v1::Type::Handshake);
+    /// 0-RTT packet type of the IQuic version 1.
     pub const ZERO_RTT: Self = Self(v1::Type::ZeroRtt);
+    /// Handshake packet type of the IQuic version 1.
+    pub const HANDSHAKE: Self = Self(v1::Type::Handshake);
 }
 
+/// Represent the IQuic version 1, including Retry/Initial/0-RTT/Handshake.
 pub type Ver1 = Version<1, v1::Type>;
 
+/// The sum types of the long packets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     VersionNegotiation,
     V1(Version<1, v1::Type>),
+    // in the future, add other versions here
     // V2(v2::HeaderType),
 }
 
-const LONG_HEADER_BIT: u8 = 0x80;
-use super::FIXED_BIT;
-
-pub mod ext {
+/// The io module provides the functions to parse and write the long packet type.
+pub mod io {
     use bytes::BufMut;
     use nom::number::streaming::be_u32;
 
-    use super::*;
+    use super::{super::FIXED_BIT, *};
     use crate::packet::error::Error;
 
+    const LONG_HEADER_BIT: u8 = 0x80;
+
+    /// Parse the long packet type from the input buffer,
+    /// [nom](https://docs.rs/nom/latest/nom/) parser style.
     pub fn parse_long_type(ty: u8) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Type, Error> {
         move |input| {
             let (remain, version) = be_u32(input)?;
@@ -60,7 +76,10 @@ pub mod ext {
         }
     }
 
+    /// Implement this trait for buffer, which can be used to write
+    /// the long packet type into the buffer.
     pub trait WriteLongType {
+        /// Write the long packet type to the buffer.
         fn put_long_type(&mut self, value: &Type);
     }
 
@@ -87,7 +106,7 @@ mod tests {
 
     #[test]
     fn test_read_long_type() {
-        use super::{ext::parse_long_type, Type};
+        use super::{io::parse_long_type, Type};
 
         let buf = vec![0x00, 0x00, 0x00, 0x01];
         let (remain, ty) = parse_long_type(0xc0)(&buf).unwrap();
@@ -103,7 +122,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_read_long_type_with_wrong_version() {
-        use super::{ext::parse_long_type, Type};
+        use super::{io::parse_long_type, Type};
 
         let buf = vec![0x00, 0x00, 0x00, 0x03];
         let (remain, ty) = parse_long_type(0xc0)(&buf).unwrap();
@@ -114,7 +133,7 @@ mod tests {
     #[test]
     fn test_write_long_type() {
         use super::Type;
-        use crate::packet::r#type::long::ext::WriteLongType;
+        use crate::packet::r#type::long::io::WriteLongType;
 
         let mut buf = vec![];
         let ty = Type::V1(Ver1::INITIAL);
@@ -125,7 +144,7 @@ mod tests {
     #[test]
     fn test_write_version_negotiation_long_type() {
         use super::Type;
-        use crate::packet::r#type::long::ext::WriteLongType;
+        use crate::packet::r#type::long::io::WriteLongType;
 
         let mut buf = vec![];
         let ty = Type::VersionNegotiation;

@@ -5,6 +5,8 @@ use crate::packet::SpinBit;
 
 const SHORT_HEADER_BIT: u8 = 0x00;
 
+/// The type of the 1-Rtt packet.
+/// For simplicity, the spin bit is also one part of the 1-Rtt packet type.
 #[derive(Debug, Clone, Copy, Deref, PartialEq, Eq)]
 pub struct OneRtt(#[deref] pub(crate) SpinBit);
 
@@ -20,7 +22,10 @@ impl From<OneRtt> for u8 {
     }
 }
 
+/// Implement this trait for buffer,
+/// which can be used to write the short packet type into the buffer.
 pub trait WriteShortType {
+    /// Write the short packet type to the buffer.
     fn put_short_type(&mut self, ty: &OneRtt);
 }
 

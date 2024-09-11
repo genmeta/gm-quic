@@ -2,9 +2,9 @@ use deref_derive::Deref;
 
 use super::{error::Error, KeyPhaseBit, PacketNumber};
 
-/// Definition of packet types related to long headers
+/// Definitions of packet types related to long headers
 pub mod long;
-/// Definition of packet types related to short headers
+/// Definitions of packet types related to short headers
 pub mod short;
 
 /// Header form bit
@@ -14,7 +14,7 @@ const FIXED_BIT: u8 = 0x40;
 
 /// Reserved bits mask for long headers, for the 5th and 6th bits of the first byte of the long header
 pub const LONG_RESERVED_MASK: u8 = 0x0C;
-/// Reserved bits mask for short headers, for the 5th and 5th bits of the first byte of the short header
+/// Reserved bits mask for short headers, for the 4th and 5th bits of the first byte of the short header
 pub const SHORT_RESERVED_MASK: u8 = 0x18;
 
 /// The lower specific bits of the first byte of the long or short header.
@@ -123,7 +123,7 @@ impl Type {
 pub mod io {
     use bytes::BufMut;
 
-    use super::{long::ext::WriteLongType, short::WriteShortType, *};
+    use super::{long::io::WriteLongType, short::WriteShortType, *};
 
     /// Parse the packet type from the input buffer,
     /// [nom](https://docs.rs/nom/latest/nom/) parser style.
@@ -132,7 +132,7 @@ pub mod io {
         if ty & HEADER_FORM_MASK == 0 {
             Ok((remain, Type::Short(short::OneRtt::from(ty))))
         } else {
-            let (remain, ty) = long::ext::parse_long_type(ty)(remain)?;
+            let (remain, ty) = long::io::parse_long_type(ty)(remain)?;
             Ok((remain, Type::Long(ty)))
         }
     }

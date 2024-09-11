@@ -1,11 +1,20 @@
 use crate::packet::{error::Error, r#type::FIXED_BIT};
 
+/// Long packet types. The 3th and 4th bits of the first byte of the long header
+/// represent the specific packet type.
+///
+/// See [long header packet types](https://www.rfc-editor.org/rfc/rfc9000.html#name-long-header-packet-types)
+/// of [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
-    Retry,
+    /// The Initial packet type, which is 0b00
     Initial,
+    /// The 0-RTT packet type, which is 0b01
     ZeroRtt,
+    /// The Handshake packet type, which is 0b10
     Handshake,
+    /// The Retry packet type, which is 0b11
+    Retry,
 }
 
 /// The next two bits (those with a mask of 0x30) of byte 0 contain a packet type.

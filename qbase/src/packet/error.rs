@@ -3,6 +3,7 @@ use thiserror::Error;
 
 use super::r#type::Type;
 
+/// Parse error of QUIC packet.
 #[derive(Debug, PartialEq, Eq, Error)]
 pub enum Error {
     #[error("Unsupport version {0}")]

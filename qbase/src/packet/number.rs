@@ -1,11 +1,12 @@
 use bytes::BufMut;
 
-/// An encoded packet number
+/// An encoded or undecoded packet number
 ///
-/// The packet number is an integer in the range 0 to 2^62  - 1 and encoded in 1 to 4 bytes.
+/// The actually packet number is an integer in the range 0 to 2^62  - 1 and encoded in 1 to 4 bytes.
 ///
-/// See [Section 12.3](https://www.rfc-editor.org/rfc/rfc9000.html#section-12.3) and
-/// [Section 17.1](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.1)
+/// See [packet numbers](https://www.rfc-editor.org/rfc/rfc9000.html#name-packet-numbers) and
+/// [packet number encoding and decoding](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.1)
+/// of [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum PacketNumber {
     U8(u8),
@@ -14,7 +15,9 @@ pub enum PacketNumber {
     U32(u32),
 }
 
+/// Implement this trait for buffer, which can be used to write the packet number into the buffer.
 pub trait WritePacketNumber {
+    /// Write the encoded packet number to the buffer.
     fn put_packet_number(&mut self, pn: PacketNumber);
 }
 
@@ -33,6 +36,20 @@ impl<T: BufMut> WritePacketNumber for T {
     }
 }
 
+/// Parse the packet number from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
+///
+/// ## Example
+///
+/// ```
+/// use qbase::packet::number::{PacketNumber, take_pn_len};
+///
+/// let buf = [0x01, 0x00];
+/// assert_eq!(
+///     (&[][..], PacketNumber::U16(1 << 8)),
+///     take_pn_len(2)(&buf).unwrap()
+/// );
+/// ```
 pub fn take_pn_len(pn_len: u8) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], PacketNumber> {
     use nom::{
         combinator::map,
@@ -48,11 +65,14 @@ pub fn take_pn_len(pn_len: u8) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Packe
 }
 
 impl PacketNumber {
+    /// Encode the packet number, based on the maximum confirmed packet number.
+    ///
     /// The size of the packet number encoding is at least one bit more than the
     /// base-2 logarithm of the number of contiguous unacknowledged packet numbers
     ///
     /// See [Section 17.1-5](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.1-5) and
-    /// [Section A.2](https://www.rfc-editor.org/rfc/rfc9000.html#section-a.2)
+    /// [Appendix A.2](https://www.rfc-editor.org/rfc/rfc9000.html#section-a.2)
+    /// for more details.
     pub fn encode(pn: u64, largest_acked: u64) -> Self {
         let range = (pn - largest_acked) * 2;
         if range < 1 << 8 {
@@ -68,6 +88,7 @@ impl PacketNumber {
         }
     }
 
+    /// Return the size of the packet number encoding.
     pub fn size(self) -> usize {
         use self::PacketNumber::*;
         match self {
@@ -78,13 +99,15 @@ impl PacketNumber {
         }
     }
 
-    /// For decoding packet numbers after header protection has been removed.
-    /// the packet number is decoded by finding the packet number value that
-    /// is closest to the next expected packet. The next expected packet is
-    /// the highest received packet number plus one.
+    /// Decode the packet number after header protection has been removed.
+    ///
+    /// The packet number is decoded by finding the packet number value that
+    /// is closest to the next expected packet.
+    /// The next expected packet is the largest received packet number plus one.
     ///
     /// See [Section 17.1-7](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.1-7) and
     /// [Section A.3](https://www.rfc-editor.org/rfc/rfc9000.html#section-a.3)
+    /// for more details.
     pub fn decode(self, expected: u64) -> u64 {
         use self::PacketNumber::*;
 

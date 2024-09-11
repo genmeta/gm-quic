@@ -15,7 +15,7 @@ use qbase::{
             decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
         },
         header::GetType,
-        keys::{ArcHeaderProtectionKeys, ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys},
+        keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys, HeaderProtectionKeys},
         r#type::Type,
         DataPacket, PacketNumber,
     },
@@ -441,7 +441,7 @@ impl MayLoss for DataMayLoss {
 
 #[derive(Clone)]
 pub struct ClosingOneRttScope {
-    keys: (ArcHeaderProtectionKeys, ArcOneRttPacketKeys),
+    keys: (HeaderProtectionKeys, ArcOneRttPacketKeys),
     rcvd_pkt_records: ArcRcvdPktRecords,
     // 发包时用得着
     _next_sending_pn: (u64, PacketNumber),
