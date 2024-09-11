@@ -188,7 +188,7 @@ impl ArcTlsSession {
         let for_each_epoch = |epoch: Epoch| {
             let mut crypto_stream_reader = crypto_streams[epoch].reader();
             let tls_session = self.clone();
-            let remote_params = remote_params.clone();
+            let remote_params_writer = remote_params.writer.clone();
             let conn_error = conn_error.clone();
             tokio::spawn(async move {
                 // 不停地从crypto_stream_reader读取数据，读到就送给tls_conn
@@ -216,7 +216,7 @@ impl ArcTlsSession {
 
                     if let Some(params) = tls_session.get_transport_parameters() {
                         match params {
-                            Ok(params) => remote_params.on_conn_established(params.into()).await,
+                            Ok(params) => remote_params_writer.write(params.into()),
                             Err(error) => conn_error.on_error(error),
                         }
                     }

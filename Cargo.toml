@@ -24,7 +24,6 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace.dependencies]
-async-lock = "3"
 futures = "0.3"
 rand = "0.8"
 bytes = "1"
