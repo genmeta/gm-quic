@@ -2,7 +2,23 @@ use super::*;
 use crate::{cid::ConnectionId, packet::SpinBit};
 
 /// A packet with a short header does not include a length,
-/// so it can only be the last packet included in a UDP datagram.
+/// so it can only be the last packet in a UDP datagram.
+
+/// ```text
+///      +---spin bit
+///      |     +---key phase bits
+///      |     |
+/// +----+-----+----+------+--------------+----......---+
+/// |1|1|S 0 0 K 0 0| DCIL | DCID(0..160) | Payload ... |
+/// +-----+---+-+---+------+--------------+----......---+
+///       |<->| |<->|
+///         |     |
+///         |     +---> packet number length
+///         +---> reserved bits, must be 0
+/// ```
+///
+/// See [1-RTT Packet](https://www.rfc-editor.org/rfc/rfc9000.html#name-1-rtt-packet)
+/// in [RFC9000](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Default, Clone)]
 pub struct OneRttHeader {
     // For simplicity, the spin bit is also part of the 1RTT header.
@@ -10,7 +26,7 @@ pub struct OneRttHeader {
     pub dcid: ConnectionId,
 }
 
-impl Encode for OneRttHeader {
+impl EncodeHeader for OneRttHeader {
     fn size(&self) -> usize {
         1 + self.dcid.len()
     }
@@ -28,12 +44,14 @@ impl super::GetDcid for OneRttHeader {
     }
 }
 
-pub mod ext {
+pub mod io {
     use bytes::BufMut;
 
     use super::{GetType, OneRttHeader};
-    use crate::packet::{r#type::ext::WritePacketType, signal::SpinBit};
+    use crate::packet::{r#type::io::WritePacketType, signal::SpinBit};
 
+    /// Parse a 1RTT header from the input buffer,
+    /// [nom](https://docs.rs/nom/latest/nom/) parser style.
     pub fn be_one_rtt_header(
         spin: SpinBit,
         dcid_len: usize,
@@ -45,15 +63,16 @@ pub mod ext {
         Ok((remain, OneRttHeader { spin, dcid }))
     }
 
-    pub trait WriteOneRttHeader {
-        fn put_one_rtt_header(&mut self, header: &OneRttHeader);
+    /// Write a short header to the buffer, including the packet type and dcid.
+    pub trait WriteShortHeader {
+        /// Write a 1RTT header to the buffer.
+        fn put_short_header(&mut self, header: &OneRttHeader);
     }
 
-    impl<T: BufMut> WriteOneRttHeader for T {
-        fn put_one_rtt_header(&mut self, header: &OneRttHeader) {
+    impl<T: BufMut> WriteShortHeader for T {
+        fn put_short_header(&mut self, header: &OneRttHeader) {
             let ty = header.get_type();
             self.put_packet_type(&ty);
-            // Note: Do not write the dcid's length
             self.put_slice(&header.dcid);
         }
     }
@@ -61,11 +80,11 @@ pub mod ext {
 
 #[cfg(test)]
 mod tests {
-    use crate::packet::header::WriteOneRttHeader;
+    use crate::packet::header::WriteShortHeader;
 
     #[test]
     fn test_read_one_rtt_header() {
-        use super::ext::be_one_rtt_header;
+        use super::io::be_one_rtt_header;
         use crate::packet::{header::ConnectionId, SpinBit};
 
         let (remain, header) = be_one_rtt_header(SpinBit::One, 0, &[][..]).unwrap();
@@ -86,7 +105,7 @@ mod tests {
             dcid: ConnectionId::default(),
         };
 
-        buf.put_one_rtt_header(&header);
+        buf.put_short_header(&header);
         // Note: 0x60 == SHORT_HEADER_BIT | FIXED_BIT | Toggle<SPIN_BIT>.value()
         assert_eq!(buf, [0x60]);
     }

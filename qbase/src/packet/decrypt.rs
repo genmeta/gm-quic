@@ -1,8 +1,8 @@
 use rustls::quic::{HeaderProtectionKey, PacketKey};
 
 use super::{
-    error::Error, take_pn_len, GetPacketNumberLength, KeyPhaseBit, LongClearBits, PacketNumber,
-    ShortClearBits,
+    error::Error, take_pn_len, GetPacketNumberLength, KeyPhaseBit, LongSpecificBits, PacketNumber,
+    ShortSpecificBits,
 };
 
 /// Remove the header protection of the long packet to finally obtain the undecoded
@@ -40,8 +40,8 @@ pub fn remove_protection_of_long_packet(
         return Ok(None);
     }
 
-    let clear_bits = LongClearBits::from(*first_byte);
-    let pn_len = clear_bits.pn_len()?;
+    let specific_bits = LongSpecificBits::from(*first_byte);
+    let pn_len = specific_bits.pn_len()?;
     let (_, undecoded_pn) = take_pn_len(pn_len)(max_pn_buf).unwrap();
 
     Ok(Some(undecoded_pn))
@@ -82,7 +82,7 @@ pub fn remove_protection_of_short_packet(
         return Ok(None);
     }
 
-    let clear_bits = ShortClearBits::from(*first_byte);
+    let clear_bits = ShortSpecificBits::from(*first_byte);
     let pn_len = clear_bits.pn_len()?;
     let (_, undecoded_pn) = take_pn_len(pn_len)(max_pn_buf).unwrap();
 

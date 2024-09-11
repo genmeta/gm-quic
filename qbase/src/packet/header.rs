@@ -2,15 +2,17 @@ use enum_dispatch::enum_dispatch;
 
 use crate::cid::ConnectionId;
 
+/// All structure definitions related to long headers.
 pub mod long;
+/// All structure definitions related to short headers.
 pub mod short;
 
 pub use long::{
-    ext::{LongHeaderBuilder, Write, WriteLongHeader},
+    io::{LongHeaderBuilder, WriteLongHeader, WriteSpecific},
     DataHeader, HandshakeHeader, InitialHeader, LongHeader, RetryHeader, VersionNegotiationHeader,
     ZeroRttHeader,
 };
-pub use short::{ext::WriteOneRttHeader, OneRttHeader};
+pub use short::{io::WriteShortHeader, OneRttHeader};
 
 use super::r#type::{
     long::{v1, Type as LongType, Version},
@@ -18,8 +20,10 @@ use super::r#type::{
     Type,
 };
 
+/// Each packet has its type. For more detailed definition on packet types, see [`Type`].
 #[enum_dispatch]
 pub trait GetType {
+    /// Get the packet type.
     fn get_type(&self) -> Type;
 }
 
@@ -29,22 +33,28 @@ pub trait GetType {
 /// However, the length field of the packet header is variable-length encoded and
 /// requires special handling, which is not considered within the scope of Encode::size.
 #[enum_dispatch]
-pub trait Encode {
+pub trait EncodeHeader {
+    /// Returns the length of the encoded packet header.
     fn size(&self) -> usize {
         0
     }
 }
 
+/// Get the Destination Connection ID (DCID) of the packet, each packet must has a DCID.
 #[enum_dispatch]
 pub trait GetDcid {
+    /// Get the Destination Connection ID (DCID) of the packet.
     fn get_dcid(&self) -> &ConnectionId;
 }
 
+/// Get the Source Connection ID (SCID) of the packet, only long packets have SCID.
 #[enum_dispatch]
 pub trait GetScid {
+    /// Get the Source Connection ID (SCID) of the packet.
     fn get_scid(&self) -> &ConnectionId;
 }
 
+/// The sum type of all packet headers.
 #[derive(Debug, Clone)]
 #[enum_dispatch(GetDcid)]
 pub enum Header {
@@ -56,23 +66,29 @@ pub enum Header {
     OneRtt(short::OneRttHeader),
 }
 
-pub mod ext {
+/// The io module for packet headers, including
+/// how to parse the header from a UDP packet and
+/// how to write the header into a UDP packet.
+pub mod io {
     use super::{
         long::{
-            ext::{LongHeaderBuilder, WriteLongHeader},
+            io::{LongHeaderBuilder, WriteLongHeader},
             Handshake, Initial, Retry, VersionNegotiation, ZeroRtt,
         },
-        short::ext::WriteOneRttHeader,
+        short::io::WriteShortHeader,
         Header,
     };
     use crate::{
         cid::be_connection_id,
         packet::{
-            header::short::ext::be_one_rtt_header,
+            header::short::io::be_one_rtt_header,
             r#type::{short::OneRtt, Type},
         },
     };
 
+    /// Parse a packet header from the input buffer,
+    /// returns [`Header`] if successful,
+    /// [nom](https://docs.rs/nom/latest/nom/) parser style.
     pub fn be_header(
         packet_type: Type,
         dcid_len: usize,
@@ -92,7 +108,11 @@ pub mod ext {
         }
     }
 
+    /// When sending packets, it is necessary to organize the data and write
+    /// various types of QUIC packets into an UDP datagram. This trait will
+    /// be used to write the packet header.
     pub trait WriteHeader {
+        /// Write a packet header to the buffer.
         fn put_header(&mut self, header: &Header);
     }
 
@@ -104,7 +124,7 @@ pub mod ext {
             + WriteLongHeader<Initial>
             + WriteLongHeader<ZeroRtt>
             + WriteLongHeader<Handshake>
-            + WriteOneRttHeader,
+            + WriteShortHeader,
     {
         fn put_header(&mut self, header: &Header) {
             match header {
@@ -113,7 +133,7 @@ pub mod ext {
                 Header::Initial(initial) => self.put_long_header(initial),
                 Header::ZeroRtt(zero_rtt) => self.put_long_header(zero_rtt),
                 Header::Handshake(handshake) => self.put_long_header(handshake),
-                Header::OneRtt(one_rtt) => self.put_one_rtt_header(one_rtt),
+                Header::OneRtt(one_rtt) => self.put_short_header(one_rtt),
             }
         }
     }
@@ -124,7 +144,7 @@ mod tests {
 
     #[test]
     fn test_read_header() {
-        use super::{ext::be_header, Header};
+        use super::{io::be_header, Header};
         use crate::{
             cid::ConnectionId,
             packet::{
@@ -243,7 +263,7 @@ mod tests {
         };
         use crate::{
             cid::ConnectionId,
-            packet::{header::ext::WriteHeader, Header, OneRttHeader, SpinBit},
+            packet::{header::io::WriteHeader, Header, OneRttHeader, SpinBit},
         };
 
         // VersionNegotiation Header

@@ -2,7 +2,9 @@ use deref_derive::Deref;
 
 use super::{error::Error, KeyPhaseBit, PacketNumber};
 
+/// Definition of packet types related to long headers
 pub mod long;
+/// Definition of packet types related to short headers
 pub mod short;
 
 /// Header form bit
@@ -10,62 +12,77 @@ const HEADER_FORM_MASK: u8 = 0x80;
 /// The next bit (0x40) of byte 0 is set to 1, unless the packet is a Version Negotiation packet.
 const FIXED_BIT: u8 = 0x40;
 
+/// Reserved bits mask for long headers, for the 5th and 6th bits of the first byte of the long header
 pub const LONG_RESERVED_MASK: u8 = 0x0C;
+/// Reserved bits mask for short headers, for the 5th and 5th bits of the first byte of the short header
 pub const SHORT_RESERVED_MASK: u8 = 0x18;
 
-/// After removing the packet header protection, the clear first byte part,
-/// 'R' represents the reserved bits. The long packet header is 0x0C, and
-/// the short packet header is 0x18.
+/// The lower specific bits of the first byte of the long or short header.
+/// 'R' represents the reserved bits.
+///
+/// - For long packet headers, it is the lower 4 bits of the first byte, and R is 0x0C.
+/// - For the short packet header, it is the lower 5 bits of the first byte, and R is 0x18.
 #[derive(Debug, Clone, Copy, Deref)]
-pub struct ClearBits<const R: u8>(pub(super) u8);
+pub struct SpecificBits<const R: u8>(pub(super) u8);
 
-pub type LongClearBits = ClearBits<LONG_RESERVED_MASK>;
-pub type ShortClearBits = ClearBits<SHORT_RESERVED_MASK>;
+/// The lower 4 bits of the first byte of the long header.
+///
+/// Include 2 reserved bits that must be 0, and 2 bits for the packet number length.
+/// All of them are protected.
+pub type LongSpecificBits = SpecificBits<LONG_RESERVED_MASK>;
+/// The lower 5 bits of the first byte of the short header, i.e., the last 5 bits.
+///
+/// Include 2 reserved bits that must be 0, 1 bit for the key phase,
+/// and 2 bits for the packet number length.
+/// All of them are protected.
+pub type ShortSpecificBits = SpecificBits<SHORT_RESERVED_MASK>;
 
-impl<const R: u8> ClearBits<R> {
+impl<const R: u8> SpecificBits<R> {
+    /// Create a [`SpecificBits`] with the [`PacketNumber`].
     pub fn from_pn(pn: &PacketNumber) -> Self {
         Self(pn.size() as u8 - 1)
     }
 
+    /// Create a [`SpecificBits`] with the packet number length.
     pub fn with_pn_len(pn_size: usize) -> Self {
         debug_assert!(pn_size <= 4 && pn_size > 0);
         Self(pn_size as u8 - 1)
     }
 }
 
-impl ShortClearBits {
+impl ShortSpecificBits {
+    /// Set the Key Phase bit to the specific bits for 1rtt header.
     pub fn set_key_phase(&mut self, key_phase_bit: KeyPhaseBit) {
         key_phase_bit.imply(&mut self.0);
     }
 
+    /// Get the Key Phase bit from the specific bits of 1rtt header.
     pub fn key_phase(&self) -> KeyPhaseBit {
         KeyPhaseBit::from(self.0)
     }
 }
 
-impl<const R: u8> From<u8> for ClearBits<R> {
+impl<const R: u8> From<u8> for SpecificBits<R> {
     fn from(byte: u8) -> Self {
         Self(byte)
     }
 }
 
+/// Get the packet number length from the protected first byte of the long or short header.
+/// The reserved bits must be 0; otherwise, a connection error of type PROTOCOL_VIOLATION
+/// is returned.
+///
+/// See [Section 17.2](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.2-8.2) and
+/// [Section 17.3.1](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.3.1-4.8) of QUIC.
 pub trait GetPacketNumberLength {
-    /// The least significant two bits (those with a mask of 0x03)
-    /// of byte 0 contain the length of the Packet Number field
+    /// The last two bits of first byte contain the length of the Packet Number
     const PN_LEN_MASK: u8 = 0x03;
 
-    /// The value included prior to protection MUST be set to 0.
-    /// An endpoint MUST treat receipt of a packet that has a non-zero value for these bits
-    /// after removing both packet and header protection as a connection error of type
-    /// PROTOCOL_VIOLATION. Discarding such a packet after only removing header protection
-    /// can expose the endpoint to attacks.
-    ///
-    /// See [Section 17.2](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.2-8.2) and
-    /// [Section 17.3.1](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.3.1-4.8) of QUIC.
+    /// Get the encoding length of the Packet Number
     fn pn_len(&self) -> Result<u8, Error>;
 }
 
-impl<const R: u8> GetPacketNumberLength for ClearBits<R> {
+impl<const R: u8> GetPacketNumberLength for SpecificBits<R> {
     fn pn_len(&self) -> Result<u8, Error> {
         let reserved_bit = self.0 & R;
         if reserved_bit == 0 {
@@ -79,13 +96,13 @@ impl<const R: u8> GetPacketNumberLength for ClearBits<R> {
 /// The Type of the packet
 ///
 /// The Type is only extracted from the first 3 or 4 bits of the first byte, these contents
-/// are not protected, there is no distinction between ciphertext and plaintext.
+/// are not protected.
 /// For simplicity and future-oriented considerations, the Version of the long packet header
 /// is also considered part of the Type, such as the Initial packet of V1 version,
 /// That is, the Initial packet only makes sense under the V1 version, and it is uncertain
 /// whether future versions of QUIC will still have Initial packets.
-/// The SpinBit of the short packet header is part of the short packet header Type, but for
-/// simplicity, the SpinBit is also part of the 1RTT header.
+/// The SpinBit of the short packet header should be part of the short packet header, but for
+/// simplicity, the SpinBit is also part of the 1RTT header type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     Long(long::Type),
@@ -102,11 +119,14 @@ impl Type {
     }
 }
 
-pub mod ext {
+/// The io module provides the functions to parse and write the packet type.
+pub mod io {
     use bytes::BufMut;
 
     use super::{long::ext::WriteLongType, short::WriteShortType, *};
 
+    /// Parse the packet type from the input buffer,
+    /// [nom](https://docs.rs/nom/latest/nom/) parser style.
     pub fn be_packet_type(input: &[u8]) -> nom::IResult<&[u8], Type, Error> {
         let (remain, ty) = nom::number::streaming::be_u8(input)?;
         if ty & HEADER_FORM_MASK == 0 {
@@ -117,7 +137,10 @@ pub mod ext {
         }
     }
 
+    /// Implement this trait for buffer types, which can be used to write
+    /// packet types into the buffer.
     pub trait WritePacketType {
+        /// Write the packet type to the buffer.
         fn put_packet_type(&mut self, ty: &Type);
     }
 
@@ -137,69 +160,69 @@ mod tests {
 
     #[test]
     fn test_long_clear_bits() {
-        let clear_bits = ClearBits::<0x0C>(0x0C);
+        let specific_bits = SpecificBits::<0x0C>(0x0C);
         assert_eq!(
-            clear_bits.pn_len(),
+            specific_bits.pn_len(),
             Err(Error::InvalidReservedBits(0x0C, 0x0C))
         );
-        let clear_bits = ClearBits::<0x0C>(0x04);
+        let specific_bits = SpecificBits::<0x0C>(0x04);
         assert_eq!(
-            clear_bits.pn_len(),
+            specific_bits.pn_len(),
             Err(Error::InvalidReservedBits(0x04, 0x0C))
         );
-        let clear_bits = ClearBits::<0x0C>(0x08);
+        let specific_bits = SpecificBits::<0x0C>(0x08);
         assert_eq!(
-            clear_bits.pn_len(),
+            specific_bits.pn_len(),
             Err(Error::InvalidReservedBits(0x08, 0x0C))
         );
 
-        let clear_bits = LongClearBits::with_pn_len(4);
-        assert_eq!(clear_bits.pn_len().unwrap(), 4);
-        let clear_bits = LongClearBits::with_pn_len(3);
-        assert_eq!(clear_bits.pn_len().unwrap(), 3);
-        let clear_bits = LongClearBits::with_pn_len(2);
-        assert_eq!(clear_bits.pn_len().unwrap(), 2);
-        let clear_bits = LongClearBits::with_pn_len(1);
-        assert_eq!(clear_bits.pn_len().unwrap(), 1);
+        let specific_bits = LongSpecificBits::with_pn_len(4);
+        assert_eq!(specific_bits.pn_len().unwrap(), 4);
+        let specific_bits = LongSpecificBits::with_pn_len(3);
+        assert_eq!(specific_bits.pn_len().unwrap(), 3);
+        let specific_bits = LongSpecificBits::with_pn_len(2);
+        assert_eq!(specific_bits.pn_len().unwrap(), 2);
+        let specific_bits = LongSpecificBits::with_pn_len(1);
+        assert_eq!(specific_bits.pn_len().unwrap(), 1);
     }
 
     #[test]
-    fn test_short_clear_bits() {
-        let clear_bits = ClearBits::<0x18>(0x18);
+    fn test_short_specific_bits() {
+        let specific_bits = SpecificBits::<0x18>(0x18);
         assert_eq!(
-            clear_bits.pn_len(),
+            specific_bits.pn_len(),
             Err(Error::InvalidReservedBits(0x18, 0x18))
         );
-        let clear_bits = ClearBits::<0x18>(0x11);
+        let specific_bits = SpecificBits::<0x18>(0x11);
         assert_eq!(
-            clear_bits.pn_len(),
+            specific_bits.pn_len(),
             Err(Error::InvalidReservedBits(0x10, 0x18))
         );
-        let clear_bits = ClearBits::<0x18>(0x0A);
+        let specific_bits = SpecificBits::<0x18>(0x0A);
         assert_eq!(
-            clear_bits.pn_len(),
+            specific_bits.pn_len(),
             Err(Error::InvalidReservedBits(0x08, 0x18))
         );
 
-        let clear_bits = ShortClearBits::with_pn_len(4);
-        assert_eq!(clear_bits.pn_len().unwrap(), 4);
-        let clear_bits = ShortClearBits::with_pn_len(3);
-        assert_eq!(clear_bits.pn_len().unwrap(), 3);
-        let clear_bits = ShortClearBits::with_pn_len(2);
-        assert_eq!(clear_bits.pn_len().unwrap(), 2);
-        let clear_bits = ShortClearBits::with_pn_len(1);
-        assert_eq!(clear_bits.pn_len().unwrap(), 1);
+        let specific_bits = ShortSpecificBits::with_pn_len(4);
+        assert_eq!(specific_bits.pn_len().unwrap(), 4);
+        let specific_bits = ShortSpecificBits::with_pn_len(3);
+        assert_eq!(specific_bits.pn_len().unwrap(), 3);
+        let specific_bits = ShortSpecificBits::with_pn_len(2);
+        assert_eq!(specific_bits.pn_len().unwrap(), 2);
+        let specific_bits = ShortSpecificBits::with_pn_len(1);
+        assert_eq!(specific_bits.pn_len().unwrap(), 1);
     }
 
     #[test]
     fn test_set_key_phase_bit() {
-        let mut clear_bits = ShortClearBits::with_pn_len(4);
-        assert_eq!(clear_bits.0, 0x03);
-        clear_bits.set_key_phase(KeyPhaseBit::One);
-        assert_eq!(clear_bits.0, 0x07);
-        assert_eq!(clear_bits.key_phase(), KeyPhaseBit::One);
-        clear_bits.set_key_phase(KeyPhaseBit::Zero);
-        assert_eq!(clear_bits.0, 0x03);
-        assert_eq!(clear_bits.key_phase(), KeyPhaseBit::Zero);
+        let mut specific_bits = ShortSpecificBits::with_pn_len(4);
+        assert_eq!(specific_bits.0, 0x03);
+        specific_bits.set_key_phase(KeyPhaseBit::One);
+        assert_eq!(specific_bits.0, 0x07);
+        assert_eq!(specific_bits.key_phase(), KeyPhaseBit::One);
+        specific_bits.set_key_phase(KeyPhaseBit::Zero);
+        assert_eq!(specific_bits.0, 0x03);
+        assert_eq!(specific_bits.key_phase(), KeyPhaseBit::Zero);
     }
 }
