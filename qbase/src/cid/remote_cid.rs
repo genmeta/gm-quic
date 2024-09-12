@@ -224,7 +224,6 @@ where
 
 /// Shared remote connection ID manager. Most of the time, you should use this struct.
 ///
-///
 /// These connection IDs will be assigned to the Path.
 /// Every new path needs to apply for a new connection ID from the RemoteCids.
 /// Each path may retire the old connection ID proactively, and apply for a new one.
