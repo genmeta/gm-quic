@@ -6,7 +6,11 @@ use std::{
 
 use socket2::SockAddr;
 
-use crate::{Gso, PacketHeader, UdpSocketController, BATCH_SIZE};
+use crate::{
+    cmsghdr::{decode, Cmsg, CmsgHdr, Iter, MsgHdr},
+    uinx::Gso,
+    PacketHeader, UdpSocketController, BATCH_SIZE,
+};
 
 pub(crate) const CMSG_LEN: usize = 88;
 
@@ -14,7 +18,6 @@ pub(crate) const CMSG_LEN: usize = 88;
 type IpTosTy = libc::c_uchar;
 #[cfg(not(target_os = "freebsd"))]
 type IpTosTy = libc::c_int;
-use std::ptr;
 
 #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios"))]
 type HdrTy = libc::msghdr;
@@ -34,6 +37,10 @@ macro_rules! msg_hdr {
         }
     }};
 }
+
+#[derive(Copy, Clone)]
+#[repr(align(8))] // Conservative bound for align_of<libc::cmsghdr>
+pub(crate) struct Aligned<T>(pub(crate) T);
 
 pub struct Message {
     pub(super) hdrs: [HdrTy; BATCH_SIZE],
@@ -68,19 +75,19 @@ impl Message {
             hdr.msg_control = ctrl.0.as_mut_ptr() as _;
             hdr.msg_controllen = CMSG_LEN as _;
 
-            let mut encoder = unsafe { Encoder::new(hdr) };
+            let mut cmsghdr = unsafe { CmsgHdr::new(hdr) };
             let ecn = pkt_hdr.ecn.unwrap_or(0) as libc::c_int;
 
             if pkt_hdr.dst.is_ipv4() {
-                encoder.push(libc::IPPROTO_IP, libc::IP_TOS, ecn as IpTosTy);
+                cmsghdr.append(libc::IPPROTO_IP, libc::IP_TOS, ecn as IpTosTy);
             } else {
-                encoder.push(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, ecn);
+                cmsghdr.append(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, ecn);
             }
 
             if gso_size > 1 {
-                UdpSocketController::set_segment_size(&mut encoder, pkt_hdr.seg_size);
+                UdpSocketController::set_segment_size(&mut cmsghdr, pkt_hdr.seg_size);
             }
-            encoder.finish();
+            cmsghdr.finish();
         }
     }
 
@@ -122,7 +129,7 @@ impl Message {
             for cmsg in cmsg_iter {
                 match (cmsg.cmsg_level, cmsg.cmsg_type) {
                     (libc::IPPROTO_IP, libc::IP_TOS) | (libc::IPPROTO_IP, libc::IP_RECVTOS) => unsafe {
-                        recv_hdr.ecn = Some(decode::<u8>(cmsg));
+                        recv_hdr.ecn = Some(decode::<u8, libc::cmsghdr>(cmsg));
                     },
                     (libc::IPPROTO_IPV6, libc::IPV6_TCLASS) => unsafe {
                         // Temporary hack around broken macos ABI. Remove once upstream fixes it.
@@ -132,35 +139,35 @@ impl Message {
                             && cmsg.cmsg_len as usize
                                 == libc::CMSG_LEN(mem::size_of::<u8>() as _) as usize
                         {
-                            recv_hdr.ecn = Some(decode::<u8>(cmsg));
+                            recv_hdr.ecn = Some(decode::<u8, libc::cmsghdr>(cmsg));
                         } else {
-                            recv_hdr.ecn = Some(decode::<libc::c_int>(cmsg) as u8);
+                            recv_hdr.ecn = Some(decode::<libc::c_int, libc::cmsghdr>(cmsg) as u8);
                         }
                     },
                     #[cfg(any(target_os = "linux", target_os = "android"))]
                     (libc::IPPROTO_IP, libc::IP_PKTINFO) => {
-                        let pktinfo = unsafe { decode::<libc::in_pktinfo>(cmsg) };
+                        let pktinfo = unsafe { decode::<libc::in_pktinfo, libc::cmsghdr>(cmsg) };
                         let ip = IpAddr::V4(Ipv4Addr::from(pktinfo.ipi_addr.s_addr.to_ne_bytes()));
                         recv_hdr.dst.set_ip(ip);
                     }
                     #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios",))]
                     (libc::IPPROTO_IP, libc::IP_RECVDSTADDR) => {
-                        let in_addr = unsafe { decode::<libc::in_addr>(cmsg) };
+                        let in_addr = unsafe { decode::<libc::in_addr, libc::cmsghdr>(cmsg) };
                         recv_hdr
                             .dst
                             .set_ip(IpAddr::V4(Ipv4Addr::from(in_addr.s_addr.to_ne_bytes())));
                     }
 
                     (libc::IPPROTO_IP, libc::IP_TTL) => unsafe {
-                        recv_hdr.ttl = decode::<u32>(cmsg) as u8;
+                        recv_hdr.ttl = decode::<u32, libc::cmsghdr>(cmsg) as u8;
                     },
                     (libc::IPPROTO_IPV6, libc::IPV6_PKTINFO) => {
-                        let pktinfo = unsafe { decode::<libc::in6_pktinfo>(cmsg) };
+                        let pktinfo = unsafe { decode::<libc::in6_pktinfo, libc::cmsghdr>(cmsg) };
                         let ip = IpAddr::V6(Ipv6Addr::from(pktinfo.ipi6_addr.s6_addr));
                         recv_hdr.dst.set_ip(ip);
                     }
                     (libc::IPPROTO_IP, libc::IP_RECVTTL) => unsafe {
-                        recv_hdr.ttl = decode::<u32>(cmsg) as u8;
+                        recv_hdr.ttl = decode::<u32, libc::cmsghdr>(cmsg) as u8;
                     },
                     _ => {
                         log::warn!(
@@ -198,91 +205,45 @@ impl Message {
     }
 }
 
-#[derive(Copy, Clone)]
-#[repr(align(8))] // Conservative bound for align_of<cmsghdr>
-pub(crate) struct Aligned<T>(pub(crate) T);
+impl MsgHdr for libc::msghdr {
+    type ControlMessage = libc::cmsghdr;
 
-pub(crate) struct Encoder<'a> {
-    hdr: &'a mut libc::msghdr,
-    cmsg: Option<&'a mut libc::cmsghdr>,
-    len: usize,
-}
+    fn first_cmsg(&self) -> *mut Self::ControlMessage {
+        unsafe { libc::CMSG_FIRSTHDR(self) }
+    }
 
-impl<'a> Encoder<'a> {
-    pub(crate) unsafe fn new(hdr: &'a mut libc::msghdr) -> Self {
-        Self {
-            cmsg: libc::CMSG_FIRSTHDR(hdr).as_mut(),
-            hdr,
-            len: 0,
+    fn next(&self, cmsg: &Self::ControlMessage) -> *mut Self::ControlMessage {
+        unsafe { libc::CMSG_NXTHDR(self, cmsg) }
+    }
+
+    fn set_len(&mut self, len: usize) {
+        self.msg_controllen = len as _;
+        if len == 0 {
+            self.msg_control = std::ptr::null_mut();
         }
     }
 
-    /// Append a control message to the buffer.
-    ///
-    /// # Panics
-    /// - If insufficient buffer space remains.
-    /// - If `T` has stricter alignment requirements than `cmsghdr`
-    pub(super) fn push<T: Copy>(&mut self, level: libc::c_int, ty: libc::c_int, value: T) {
-        //  T 的对齐要求不比 libc::cmsghdr 的对齐要求更严格
-        assert!(mem::align_of::<T>() <= mem::align_of::<libc::cmsghdr>());
-        let space = unsafe { libc::CMSG_SPACE(mem::size_of_val(&value) as _) as usize };
-        //  检查空间是否足够
-        #[allow(clippy::unnecessary_cast)]
-        if (self.hdr.msg_controllen as usize) < self.len + space {
-            panic!(
-                "control message buffer too small. Need {}, Availableve {}",
-                space + self.len,
-                self.hdr.msg_controllen
-            );
-        }
-        let cmsg = self.cmsg.take().expect("no control buffer space remaining");
-        cmsg.cmsg_level = level;
-        cmsg.cmsg_type = ty;
-        cmsg.cmsg_len = unsafe { libc::CMSG_LEN(mem::size_of_val(&value) as _) } as _;
-        unsafe {
-            ptr::write(libc::CMSG_DATA(cmsg) as *const T as *mut T, value);
-        }
-        self.len += space;
-        self.cmsg = unsafe { libc::CMSG_NXTHDR(self.hdr, cmsg).as_mut() };
-    }
-
-    fn finish(&mut self) {
-        self.hdr.msg_controllen = self.len as _;
+    fn capacity(&self) -> usize {
+        self.msg_controllen as _
     }
 }
 
-/// # Safety
-///
-/// `cmsg` must refer to a cmsg containing a payload of type `T`
-unsafe fn decode<T: Copy>(cmsg: &libc::cmsghdr) -> T {
-    assert!(mem::align_of::<T>() <= mem::align_of::<libc::cmsghdr>());
-    ptr::read(libc::CMSG_DATA(cmsg) as *const T)
-}
-
-struct Iter<'a> {
-    hdr: &'a libc::msghdr,
-    cmsg: Option<&'a libc::cmsghdr>,
-}
-
-impl<'a> Iter<'a> {
-    /// # Safety
-    ///
-    /// `hdr.msg_control` must point to memory outliving `'a` which can be soundly read for the
-    /// lifetime of the constructed `Iter` and contains a buffer of cmsgs, i.e. is aligned for
-    /// `cmsghdr`, is fully initialized, and has correct internal links.
-    pub(crate) unsafe fn new(hdr: &'a libc::msghdr) -> Self {
-        Self {
-            hdr,
-            cmsg: libc::CMSG_FIRSTHDR(hdr).as_ref(),
-        }
+impl Cmsg for libc::cmsghdr {
+    fn cmsg_len(length: usize) -> usize {
+        unsafe { libc::CMSG_LEN(length as _) as usize }
     }
-}
 
-impl<'a> Iterator for Iter<'a> {
-    type Item = &'a libc::cmsghdr;
-    fn next(&mut self) -> Option<&'a libc::cmsghdr> {
-        let current = self.cmsg.take()?;
-        self.cmsg = unsafe { libc::CMSG_NXTHDR(self.hdr, current).as_ref() };
-        Some(current)
+    fn space(length: usize) -> usize {
+        unsafe { libc::CMSG_SPACE(length as _) as usize }
+    }
+
+    fn data(&self) -> *mut libc::c_uchar {
+        unsafe { libc::CMSG_DATA(self) }
+    }
+
+    fn set(&mut self, level: libc::c_int, ty: libc::c_int, len: usize) {
+        self.cmsg_level = level as _;
+        self.cmsg_type = ty as _;
+        self.cmsg_len = len as _;
     }
 }
