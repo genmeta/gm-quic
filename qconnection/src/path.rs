@@ -134,12 +134,12 @@ impl<S: ViaPathway + Unpin + ?Sized> Future for SendAllViaPathWay<'_, S> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let mut iovecs = this.iovecs;
+        let iovecs = &mut this.iovecs;
         while !iovecs.is_empty() {
             let send_once =
                 Pin::new(&mut *this.sender).poll_send_via_pathway(cx, iovecs, this.pathway);
             let n = ready!(send_once)?;
-            iovecs = &iovecs[n..];
+            *iovecs = &iovecs[n..];
         }
         Poll::Ready(Ok(()))
     }

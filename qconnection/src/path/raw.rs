@@ -126,7 +126,12 @@ impl RawPath {
 
             while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
                 let send_result = usc.send_all_via_pathway(&iovec, pathway).await;
-                if send_result.is_err() {
+                log::trace!(
+                    "send datagrams: {:?}",
+                    iovec.iter().map(|v| v.len()).collect::<Vec<_>>()
+                );
+                if let Err(e) = send_result {
+                    log::error!("send datagrams error: {:?}", e);
                     state.to_inactive();
                     return;
                 }
