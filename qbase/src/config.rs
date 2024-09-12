@@ -344,7 +344,7 @@ mod test {
     use std::net::Ipv4Addr;
 
     use super::{ext::WriteParameters, *};
-    use crate::cid::{be_connection_id, RESET_TOKEN_SIZE};
+    use crate::{cid::be_connection_id, token::RESET_TOKEN_SIZE};
 
     #[test]
     fn coding() {

@@ -1,9 +1,19 @@
 use nom::{bytes::streaming::take, number::streaming::be_u8, IResult};
 use rand::Rng;
 
+/// The connection id length must not exceed 20 bytes. See [`ConnectionId`].
 pub const MAX_CID_SIZE: usize = 20;
-pub const RESET_TOKEN_SIZE: usize = 16;
 
+/// Connection ID in [QUIC RFC 9000](https://tools.ietf.org/html/rfc9000).
+///
+/// In QUIC version 1, this value MUST NOT exceed 20 bytes.
+/// Endpoints that receive a version 1 long header with a value larger than
+/// 20 MUST drop the packet.
+/// See [Connection Id Length](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.2-3.11).
+///
+/// See [connection id](https://tools.ietf.org/html/rfc9000#name-connection-id)
+/// of [QUIC RFC 9000](https://www.rfc-editor.org/rfc/rfc9000.html)
+/// for more details.
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Default, Debug)]
 pub struct ConnectionId {
     pub(crate) len: u8,
@@ -11,6 +21,9 @@ pub struct ConnectionId {
 }
 
 impl ConnectionId {
+    /// Get the encoding size of the connection ID.
+    ///
+    /// Includes 1-byte length encoding and connection ID bytes.
     pub fn encoding_size(&self) -> usize {
         1 + self.len as usize
     }
@@ -18,6 +31,11 @@ impl ConnectionId {
 
 /// Parse a connection ID from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
+///
+/// ## Note:
+///
+/// The connection ID length is limited to 20 bytes, or it will return an error.
+/// See [`ConnectionId`].
 pub fn be_connection_id(input: &[u8]) -> IResult<&[u8], ConnectionId> {
     let (remain, len) = be_u8(input)?;
     if len as usize > MAX_CID_SIZE {
@@ -30,7 +48,9 @@ pub fn be_connection_id(input: &[u8]) -> IResult<&[u8], ConnectionId> {
     Ok((remain, ConnectionId::from_slice(bytes)))
 }
 
-pub trait WriteConnectionId {
+/// A BufMut extension trait, makes buffer more friendly to write connection ID.
+pub trait WriteConnectionId: bytes::BufMut {
+    /// Write a connection ID to the buffer.
     fn put_connection_id(&mut self, cid: &ConnectionId);
 }
 
@@ -42,7 +62,7 @@ impl<T: bytes::BufMut> WriteConnectionId for T {
 }
 
 impl ConnectionId {
-    /// Create a new connection ID from a bytes slice.
+    /// Create a new connection ID from a given bytes slice.
     pub fn from_slice(bytes: &[u8]) -> Self {
         debug_assert!(bytes.len() <= MAX_CID_SIZE);
         let mut res = Self {
@@ -53,8 +73,8 @@ impl ConnectionId {
         res
     }
 
-    /// Generate a random connection ID of the given length.
-    /// The cid maybe not unique, so it should be checked before use.
+    /// Random generate a connection ID of the given length.
+    /// The connection ID maybe not unique, so it should be checked before use.
     pub fn random_gen(len: usize) -> Self {
         debug_assert!(len <= MAX_CID_SIZE);
         let mut bytes = [0; MAX_CID_SIZE];
@@ -65,6 +85,8 @@ impl ConnectionId {
         }
     }
 
+    /// Generates a random connection ID like [`Self::random_gen`].
+    /// Additionally, allows specific bits of the connection ID to be set to the given mark.
     pub fn random_gen_with_mark(len: usize, mark: u8, mask: u8) -> Self {
         debug_assert!(len > 0 && len <= MAX_CID_SIZE);
         let mut bytes = [0; MAX_CID_SIZE];
@@ -85,8 +107,12 @@ impl std::ops::Deref for ConnectionId {
     }
 }
 
-pub trait UniqueCid {
-    fn is_unique_cid(&self, cid: &ConnectionId) -> bool;
+/// When issuing a CID to the peer, be careful not to duplicate
+/// other local connection IDs, as this will cause routing conflicts.
+pub trait GenUniqueCid {
+    /// Generate a unique connection ID.
+    #[must_use]
+    fn gen_unique_cid(&self) -> ConnectionId;
 }
 
 #[cfg(test)]
