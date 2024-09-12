@@ -8,7 +8,7 @@
 // }
 
 use crate::{
-    cid::{be_connection_id, ConnectionId, UniqueCid, WriteConnectionId},
+    cid::{be_connection_id, ConnectionId, WriteConnectionId},
     token::{be_reset_token, ResetToken, RESET_TOKEN_SIZE},
     varint::{be_varint, VarInt, WriteVarInt},
 };
@@ -24,24 +24,12 @@ pub struct NewConnectionIdFrame {
 }
 
 impl NewConnectionIdFrame {
-    pub fn gen<G, U>(
-        generator: G,
-        sequence: VarInt,
-        retire_prior_to: VarInt,
-        uniqueness: &U,
-    ) -> Self
-    where
-        G: Fn() -> ConnectionId,
-        U: UniqueCid,
-    {
-        let id = std::iter::from_fn(|| Some(generator()))
-            .find(|cid| uniqueness.is_unique_cid(cid))
-            .unwrap();
+    pub fn new(cid: ConnectionId, sequence: VarInt, retire_prior_to: VarInt) -> Self {
         let reset_token = ResetToken::random_gen();
         Self {
             sequence,
             retire_prior_to,
-            id,
+            id: cid,
             reset_token,
         }
     }
