@@ -569,6 +569,12 @@ impl RcvdRecords {
 
         let index = self.rcvd_queue.partition_point(|&x| x < pn);
 
+        let index = if index >= self.rcvd_queue.len() {
+            self.rcvd_queue.len().saturating_sub(1)
+        } else {
+            index
+        };
+
         if self.rcvd_queue.is_empty() || self.rcvd_queue[index] != pn {
             self.rcvd_queue.insert(index, pn);
         }
@@ -594,6 +600,7 @@ impl RcvdRecords {
     /// Updates the last ACK sent information and resets the `need_ack` flag.
     fn on_ack_sent(&mut self, pn: u64, largest_acked: u64) {
         self.last_ack_sent = Some((pn, largest_acked));
+        self.largest_recv_time = None;
         self.need_ack = false;
     }
 
