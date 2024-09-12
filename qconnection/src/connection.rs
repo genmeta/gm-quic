@@ -43,8 +43,7 @@ pub mod transmit;
 pub type PacketEntry = mpsc::UnboundedSender<(DataPacket, Pathway, ArcUsc)>;
 pub type RcvdPackets = mpsc::UnboundedReceiver<(DataPacket, Pathway, ArcUsc)>;
 
-pub type ArcLocalCids =
-    cid::ArcLocalCids<fn() -> ConnectionId, RouterRegistry<ArcReliableFrameDeque>>;
+pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
 pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
 pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
 

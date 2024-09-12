@@ -3,7 +3,7 @@ use std::sync::{Arc, LazyLock};
 use dashmap::DashMap;
 use deref_derive::Deref;
 use qbase::{
-    cid::{ConnectionId, UniqueCid},
+    cid::{ConnectionId, GenUniqueCid},
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     packet::{header::GetDcid, long, DataHeader, DataPacket},
@@ -17,12 +17,6 @@ pub static ROUTER: LazyLock<ArcRouter> = LazyLock::new(|| ArcRouter(Arc::new(Das
 
 #[derive(Clone, Deref, Debug)]
 pub struct ArcRouter(Arc<DashMap<ConnectionId, [PacketEntry; 4]>>);
-
-impl UniqueCid for ArcRouter {
-    fn is_unique_cid(&self, cid: &ConnectionId) -> bool {
-        self.0.get(cid).is_none()
-    }
-}
 
 impl ArcRouter {
     pub fn recv_packet_via_pathway(
@@ -83,16 +77,23 @@ where
     T: SendFrame<NewConnectionIdFrame>,
 {
     fn send_frame<I: IntoIterator<Item = NewConnectionIdFrame>>(&self, iter: I) {
-        self.issued_cids
-            .send_frame(iter.into_iter().inspect(|frame| {
-                self.router.insert(frame.id, self.packet_entries.clone());
-            }))
+        self.issued_cids.send_frame(iter);
     }
 }
 
-impl<T> UniqueCid for RouterRegistry<T> {
-    fn is_unique_cid(&self, cid: &ConnectionId) -> bool {
-        self.router.is_unique_cid(cid)
+impl<T> GenUniqueCid for RouterRegistry<T> {
+    fn gen_unique_cid(&self) -> ConnectionId {
+        std::iter::from_fn(|| Some(ConnectionId::random_gen_with_mark(8, 0x80, 0x7F)))
+            .find(|cid| {
+                let entry = self.router.entry(*cid);
+                if matches!(entry, dashmap::Entry::Vacant(_)) {
+                    entry.or_insert(self.packet_entries.clone());
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap()
     }
 }
 
