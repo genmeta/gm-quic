@@ -223,7 +223,7 @@ impl OneRttPacketKeys {
     }
 
     /// Get the remote key to decrypt the incoming 1-RTT packet.
-    /// If the key phase is not the current key phase, update the key, see [`update`].
+    /// If the key phase is not the current key phase, update the key, see [`Self::update`].
     ///
     /// Return `Arc<PacketKey>` to decrypt the incoming 1-RTT packet.
     pub fn get_remote(&mut self, key_phase: KeyPhaseBit, _pn: u64) -> Arc<dyn PacketKey> {
