@@ -552,7 +552,7 @@ impl RcvdRecords {
         // 1. When the received packet has a packet number less than another ack-eliciting packet that has been received
         // 2. when the packet has a packet number larger than the highest-numbered ack-eliciting packet that has been
         // received and there are missing packets between that packet and this packet.
-        if let Some((largest, _)) = self.largest_recv_time {
+        if let Some(&largest) = self.rcvd_queue.back() {
             if pn < largest || pn - largest > 1 {
                 self.need_ack = true;
             }
@@ -568,12 +568,6 @@ impl RcvdRecords {
         };
 
         let index = self.rcvd_queue.partition_point(|&x| x < pn);
-
-        let index = if index >= self.rcvd_queue.len() {
-            self.rcvd_queue.len().saturating_sub(1)
-        } else {
-            index
-        };
 
         if self.rcvd_queue.is_empty() || self.rcvd_queue[index] != pn {
             self.rcvd_queue.insert(index, pn);
