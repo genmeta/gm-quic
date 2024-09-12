@@ -3,13 +3,21 @@ use std::{cmp::Ordering, convert::TryFrom, fmt};
 /// An integer less than 2^62
 ///
 /// Values of this type are suitable for encoding as QUIC variable-length integer.
-// It would be neat if we could express to Rust that the top two bits are available for use as enum
-// discriminants
+/// It would be neat if we could express to Rust that the top two bits are available for use as enum
+/// discriminants
+///
+/// See [variable-length integers](https://www.rfc-editor.org/rfc/rfc9000.html#name-variable-length-integer-enc)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Default, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct VarInt(u64);
 
+/// The maximum value that can be represented by a QUIC variable-length integer.
 pub const VARINT_MAX: u64 = 0x3fff_ffff_ffff_ffff;
 
+/// The number of bytes that a QUIC variable-length integer can be encoded in.
+///
+/// [`VarInt`] doesn't need to be encoded on the minimum number of bytes necessary,
+/// with the sole exception of the Frame Type field.
 pub enum EncodeBytes {
     One = 1,
     Two = 2,
@@ -23,12 +31,13 @@ impl VarInt {
     /// The largest encoded value length
     pub const MAX_SIZE: usize = 8;
 
-    /// Construct a `VarInt` infallibly
+    /// Construct a `VarInt` from a [`u32`].
     pub fn from_u32(x: u32) -> Self {
         Self(x as u64)
     }
 
-    /// Succeeds if `x` < 2^62
+    /// Construct a `VarInt` from a [`u64`].
+    /// Succeeds if `x` < 2^62.
     pub fn from_u64(x: u64) -> Result<Self, err::Overflow> {
         if x < (1 << 62) {
             Ok(Self(x))
@@ -37,7 +46,7 @@ impl VarInt {
         }
     }
 
-    /// Create a VarInt without ensuring it's in range
+    /// Create a VarInt from a [`u64`] without ensuring it's in range
     ///
     /// # Safety
     ///
@@ -134,11 +143,13 @@ impl fmt::Display for VarInt {
     }
 }
 
+/// Error module for VarInt
 pub mod err {
     use std::fmt::Debug;
 
     use thiserror::Error;
 
+    /// Overflow error indicating that a value exceeds 2^62
     #[derive(Debug, Copy, Clone, Eq, PartialEq, Error)]
     #[error("value({0}) too large for varint encoding")]
     pub struct Overflow(pub(super) u64);
@@ -147,7 +158,9 @@ pub mod err {
 use bytes::BufMut;
 use nom::{bits::streaming::take, combinator::flat_map, error::Error, IResult};
 
-/// Parse a variable-length integer, can be used like `be_u8/be_u16/be_u32` etc.
+/// Parse a variable-length integer from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
+///
 /// ## Example
 /// ```
 /// use qbase::varint::be_varint;
@@ -169,33 +182,35 @@ pub fn be_varint(input: &[u8]) -> IResult<&[u8], VarInt> {
     .map(|((buf, _), value)| (buf, VarInt(value)))
 }
 
-/// Write a variable-length integer.
-///
-/// `put_varint` will write the smallest number of bytes needed to represent the value.
-/// `encode_varint` will write the specified number of bytes, and panic if the specified number of bytes
-/// is less than the smallest number of bytes needed to repressent the value.
-///
-/// # Example
-/// ```rust
-/// use bytes::BufMut;
-/// use qbase::varint::{EncodeBytes, VarInt, WriteVarInt};
-///
-/// let val = VarInt::from_u32(1);
-/// let mut encode_buf = [0u8; 8];
-///
-/// let mut buf = &mut encode_buf[..];
-/// buf.put_varint(&val);
-/// assert_eq!(buf.len(), 7);
-/// assert_eq!(encode_buf[0..1], [0x01]);
-///
-/// let mut buf = &mut encode_buf[..];
-/// buf.encode_varint(&val, EncodeBytes::Two);
-/// assert_eq!(buf.len(), 6);
-/// assert_eq!(encode_buf[0..2], [0x40, 0x01]);
-/// ```
-pub trait WriteVarInt {
+/// A BufMut extension trait, makes buffer more friendly to write VarInt.
+pub trait WriteVarInt: BufMut {
+    /// Write a variable-length integer.
+    ///
+    /// `put_varint` will write the smallest number of bytes needed to represent the value.
+    /// `encode_varint` will write the specified number of bytes, and panic if the specified number of bytes
+    /// is less than the smallest number of bytes needed to repressent the value.
+    ///
+    /// # Example
+    /// ```rust
+    /// use bytes::BufMut;
+    /// use qbase::varint::{EncodeBytes, VarInt, WriteVarInt};
+    ///
+    /// let val = VarInt::from_u32(1);
+    /// let mut encode_buf = [0u8; 8];
+    ///
+    /// let mut buf = &mut encode_buf[..];
+    /// buf.put_varint(&val);
+    /// assert_eq!(buf.len(), 7);
+    /// assert_eq!(encode_buf[0..1], [0x01]);
+    ///
+    /// let mut buf = &mut encode_buf[..];
+    /// buf.encode_varint(&val, EncodeBytes::Two);
+    /// assert_eq!(buf.len(), 6);
+    /// assert_eq!(encode_buf[0..2], [0x40, 0x01]);
+    /// ```
     fn put_varint(&mut self, value: &VarInt);
 
+    /// Write a variable-length integer with specified number of bytes.
     fn encode_varint(&mut self, value: &VarInt, nbytes: EncodeBytes);
 }
 
