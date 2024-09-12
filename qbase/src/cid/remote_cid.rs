@@ -16,21 +16,25 @@ use crate::{
     varint::{VarInt, VARINT_MAX},
 };
 
+/// RemoteCids is used to manage the connection IDs issued by the peer,
+/// and to send [`RetireConnectionIdFrame`] to the peer.
 #[derive(Debug)]
-pub struct RawRemoteCids<RETIRED>
+struct RawRemoteCids<RETIRED>
 where
     RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
     // the cid issued by the peer, the sequence number maybe not continuous
-    // since the disordered NewConnectionIdFrame
+    // since the disordered [`NewConnectionIdFrame`]
     cid_deque: IndexDeque<Option<(u64, ConnectionId, ResetToken)>, VARINT_MAX>,
     // The cell of the connection ID, which is in use or waiting to assign or retired
     cid_cells: IndexDeque<ArcCidCell<RETIRED>, VARINT_MAX>,
-    // The maximum number of connection IDs which can be stored in local
+    // The maximum number of connection IDs which is used to check if the
+    // maximum number of connection IDs has been exceeded
+    // when receiving a [`NewConnectionIdFrame`]
     active_cid_limit: u64,
     // The position of the cid to be used, and the position of the cell to be assigned.
     cursor: u64,
-    // The retired cids, each needs send a RetireConnectionIdFrame to peer
+    // The retired cids, each needs send a [`RetireConnectionIdFrame`] to peer
     retired_cids: RETIRED,
 }
 
@@ -38,6 +42,12 @@ impl<RETIRED> RawRemoteCids<RETIRED>
 where
     RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
+    /// Create a new RemoteCids with the initial dcid, the maximum number of active cids,
+    /// and the retired cids.
+    ///
+    /// As mentioned above, the retired cids can be a deque, a channel, or any buffer,
+    /// as long as it can send those [`RetireConnectionIdFrame`] to the peer finally.
+    /// See [`RawRemoteCids`]
     fn new(initial_dcid: ConnectionId, active_cid_limit: u64, retired_cids: RETIRED) -> Self {
         let mut cid_deque = IndexDeque::default();
 
@@ -55,6 +65,9 @@ where
         }
     }
 
+    /// Revise the initial dcid, which is used when the client received the
+    /// response packet from the server, and the initial dcid should be updated
+    /// based on the scid in the response packet.
     fn revise_initial_dcid(&mut self, initial_dcid: ConnectionId) {
         let first_dcid = self.cid_deque.get_mut(0).unwrap();
         *first_dcid = Some((0, initial_dcid, ResetToken::default()));
@@ -64,6 +77,13 @@ where
         }
     }
 
+    /// Receive a [`NewConnectionIdFrame`] from peer.
+    ///
+    /// Add the new connection id to the deque, and retire the old cids before
+    /// the retire_prior_to in the [`NewConnectionIdFrame`].
+    /// Try to arrange the idle cids to the hungry cid applys if exist.
+    ///
+    /// Return the reset token of this [`NewConnectionIdFrame`] if it is valid.
     fn recv_new_cid_frame(
         &mut self,
         frame: &NewConnectionIdFrame,
@@ -113,7 +133,7 @@ where
     }
 
     /// Eliminate the old cids and inform the peer with a
-    /// RetireConnectionIdFrame for each retired cid.
+    /// [`RetireConnectionIdFrame`] for each retired connection ID.
     #[doc(hidden)]
     fn retire_prior_to(&mut self, seq: u64) {
         if seq <= self.cid_cells.offset() {
@@ -158,7 +178,7 @@ where
                 guard.state.clear();
                 drop(guard);
 
-                // retire the old cid and prepare to inform the peer with a RetireConnectionIdFrame
+                // retire the old cid and prepare to inform the peer with a [`RetireConnectionIdFrame`]
                 self.retired_cids.send_frame([RetireConnectionIdFrame {
                     sequence: VarInt::from_u64(seq)
                         .expect("Sequence of connection id is very hard to exceed VARINT_MAX"),
@@ -184,6 +204,7 @@ where
         }
     }
 
+    /// Apply for a new connection ID, and return an [`ArcCidCell`], which may be not ready state.
     fn apply_dcid(&mut self) -> ArcCidCell<RETIRED> {
         let state = if let Some(Some((_, cid, _))) = self.cid_deque.get(self.cursor) {
             self.cursor += 1;
@@ -201,6 +222,16 @@ where
     }
 }
 
+/// Shared remote connection ID manager. Most of the time, you should use this struct.
+///
+///
+/// These connection IDs will be assigned to the Path.
+/// Every new path needs to apply for a new connection ID from the RemoteCids.
+/// Each path may retire the old connection ID proactively, and apply for a new one.
+///
+/// `RETIRED` stores the [`RetireConnectionIdFrame`], which need to be sent to the peer.
+/// It can be a deque, a channel, or any buffer,
+/// as long as it can send those [`RetireConnectionIdFrame`] to the peer finally.
 #[derive(Debug, Clone)]
 pub struct ArcRemoteCids<RETIRED>(Arc<Mutex<RawRemoteCids<RETIRED>>>)
 where
@@ -210,6 +241,11 @@ impl<RETIRED> ArcRemoteCids<RETIRED>
 where
     RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
+    /// Create a new RemoteCids with the initial dcid, the maximum number of active cids,
+    /// and the retired cids.
+    ///
+    /// As mentioned above, the `retired_cids` can be a deque, a channel, or any buffer,
+    /// as long as it can send those [`RetireConnectionIdFrame`] to the peer finally.
     pub fn new(initial_dcid: ConnectionId, active_cid_limit: u64, retired_cids: RETIRED) -> Self {
         Self(Arc::new(Mutex::new(RawRemoteCids::new(
             initial_dcid,
@@ -218,18 +254,16 @@ where
         ))))
     }
 
-    /// Only when the client initially connects to the server, a temporary initial dcid is used;
-    /// When a response packet is received from the server, the initial dcid should be updated
-    /// based on the scid in the response packet.
+    /// Revise the initial dcid, which is used if and only if the client
+    /// received the response packet from the server, and the initial dcid
+    /// should be updated based on the scid in the response packet.
     pub fn revise_initial_dcid(&self, initial_dcid: ConnectionId) {
         self.0.lock().unwrap().revise_initial_dcid(initial_dcid);
     }
 
-    /// Return a ArcCidCell, which holds the state of the connection ID, included:
-    /// - not be allocated yet
-    /// - have been allocated
-    /// - have been allocated again after retirement of last cid
-    /// - have been retired
+    /// Apply for a new connection ID, which is used when the Path is created.
+    ///
+    /// Return an [`ArcCidCell`], which may be not ready state.
     pub fn apply_dcid(&self) -> ArcCidCell<RETIRED> {
         self.0.lock().unwrap().apply_dcid()
     }
@@ -295,6 +329,7 @@ where
     state: CidState,
 }
 
+/// Shared connection ID cell. Most of the time, you should use this struct.
 #[derive(Debug, Clone)]
 pub struct ArcCidCell<RETIRED>(Arc<Mutex<CidCell<RETIRED>>>)
 where
@@ -304,6 +339,11 @@ impl<RETIRED> ArcCidCell<RETIRED>
 where
     RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
+    /// Create a new CidCell with the retired cids, the sequence number of the connection ID,
+    /// and the state of the connection ID.
+    ///
+    /// It can be created only by the [`ArcRemoteCids::apply_dcid`] method.
+    #[doc(hidden)]
     fn new(retired_cids: RETIRED, seq: u64, state: CidState) -> Self {
         Self(Arc::new(Mutex::new(CidCell {
             retired_cids,
@@ -312,6 +352,7 @@ where
         })))
     }
 
+    /// Asynchronously get the connection ID, if it is not ready, return Pending.
     pub fn poll_get_cid(&self, cx: &mut Context<'_>) -> Poll<Option<ConnectionId>> {
         self.0.lock().unwrap().poll_get_cid(cx)
     }
@@ -322,8 +363,8 @@ where
         self.clone()
     }
 
-    /// When the Path is invalid, the connection id needs to be retired, and the Cell
-    /// is marked as no longer in use, with a RetireConnectionIdFrame being sent to peer.
+    /// When the Path is invalid, the connection id needs to be retired, and the Cell state
+    /// is marked as no longer in use, with a [`RetireConnectionIdFrame`] being sent to peer.
     #[inline]
     pub fn retire(&self) {
         let mut guard = self.0.lock().unwrap();
@@ -486,12 +527,7 @@ mod tests {
         for seq in 1..8 {
             let cid = ConnectionId::random_gen(8);
             cids.push(cid);
-            let frame = NewConnectionIdFrame {
-                sequence: VarInt::from_u32(seq),
-                retire_prior_to: VarInt::from_u32(0),
-                id: cid,
-                reset_token: ResetToken::random_gen(),
-            };
+            let frame = NewConnectionIdFrame::new(cid, VarInt::from_u32(seq), VarInt::from_u32(0));
             _ = guard.recv_new_cid_frame(&frame);
         }
 

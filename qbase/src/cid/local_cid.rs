@@ -88,8 +88,8 @@ where
             .expect("it's very very hard to issue a new connection ID whose sequence excceeds VARINT_MAX");
     }
 
-    /// Receive a RetireConnectionIdFrame from the peer,
-    /// retire the connection IDs of the sequence in RetireConnectionIdFrame.
+    /// Receive a [`RetireConnectionIdFrame`] from the peer,
+    /// retire the connection IDs of the sequence in [`RetireConnectionIdFrame`].
     fn recv_retire_cid_frame(
         &mut self,
         frame: &RetireConnectionIdFrame,
@@ -128,7 +128,7 @@ where
 /// - `ISSUED`: is a struct that can generate unique connection id and  finally send the new
 ///    issued connection ID frame to the peer.
 ///    It can be a channel, a queue, or a buffer. Whatever, it must be able to send the
-///    NewConnectionIdFrame to the peer.
+///    [`NewConnectionIdFrame`] to the peer.
 ///
 /// ## Note
 ///
@@ -153,7 +153,7 @@ where
     ///    they both get their early `scid` externally.
     /// - `issued_cids` is responsible for generating CIDs that do not conflict
     ///    in the packet reception routing table and will also be responsible for
-    ///    eventually sending the `NewConnectionIdFrame` to the peer.
+    ///    eventually sending the [`NewConnectionIdFrame`] to the peer.
     pub fn new(scid: ConnectionId, issued_cids: ISSUED) -> Self {
         let raw_local_cids = RawLocalCids::new(scid, issued_cids);
         Self(Arc::new(Mutex::new(raw_local_cids)))
@@ -189,8 +189,8 @@ where
 {
     type Output = Option<ConnectionId>;
 
-    /// Receive a RetireConnectionIdFrame from the peer,
-    /// retire the connection IDs of the sequence in RetireConnectionIdFrame.
+    /// Receive a [`RetireConnectionIdFrame`] from the peer,
+    /// retire the connection IDs of the sequence in [`RetireConnectionIdFrame`].
     fn recv_frame(
         &self,
         frame: &RetireConnectionIdFrame,
