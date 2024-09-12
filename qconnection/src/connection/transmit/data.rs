@@ -103,7 +103,9 @@ impl DataSpaceReader {
         let mut sent_ack = None;
         if let Some((largest, recv_time)) = ack_pkt {
             let rcvd_pkt_records = self.space.rcvd_packets();
-            let n = rcvd_pkt_records.read_ack_frame_util(body_buf, largest, recv_time)?;
+            let n = rcvd_pkt_records
+                .read_ack_frame_util(body_buf, largest, recv_time)
+                .unwrap();
             send_guard.record_trivial();
             sent_ack = Some(largest);
             body_buf = &mut body_buf[n..];
