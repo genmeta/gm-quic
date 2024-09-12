@@ -9,10 +9,12 @@ use qbase::cid::ArcCidCell;
 use qrecovery::reliable::ArcReliableFrameDeque;
 use tokio::sync::Notify;
 
+/// Represents the current state of the path.
 #[derive(Debug, Clone)]
 pub enum PathState {
     Active {
-        inactive: Arc<Notify>,
+        /// A notifier that is notified when the path becomes inactive.
+        notifier: Arc<Notify>,
         cid_cell: ArcCidCell<ArcReliableFrameDeque>,
         recv_time: time::Instant,
     },
@@ -27,14 +29,20 @@ pub struct ArcPathState {
 impl ArcPathState {
     /// Creates a new instance of the struct and spawns a background task to monitor its activity.
     ///
-    /// This function initializes the struct with the current time as the initial receive time and spawns a Tokio task that periodically checks if the path has been inactive for a specified duration (currently 30 seconds).
+    /// This function initializes the struct with the current time as the initial receive time and
+    /// spawns a Tokio task that periodically checks if the path has been inactive for a specified
+    /// duration (currently 30 seconds).
     ///
-    /// The background task runs in a loop, comparing the current time with the last recorded receive time. If the difference exceeds the inactivity threshold, the path is transitioned to the InActive state and the task terminates.
+    /// The background task runs in a loop, comparing the current time with the last recorded
+    /// receive time. If the difference exceeds the inactivity threshold, the path is transitioned
+    /// to the [`InActive`] state and the task terminates.
+    ///
+    /// [`InActive`]: PathState::InActive
     pub fn new(cid: ArcCidCell<ArcReliableFrameDeque>) -> Self {
         let state = Self {
             state: Arc::new(
                 PathState::Active {
-                    inactive: Default::default(),
+                    notifier: Default::default(),
                     cid_cell: cid,
                     recv_time: time::Instant::now(),
                 }
@@ -64,46 +72,47 @@ impl ArcPathState {
 
         state
     }
-    /// Creates a new `ArcPathState` that shares the underlying state with the current instance.
+
+    /// Determines if the path has been inactivated.
     ///
-    /// This function effectively returns a clone of the `ArcPathState`, allowing multiple consumers to monitor the same
-    /// underlying `PathState` without affecting each other. This is useful for scenarios where multiple tasks might be
-    /// interested in knowing if the path has been inactivated.
+    /// If the path is [`InActive`], it returns directly, otherwise, it waits for notification.
     ///
-    /// **Note:** This function does not modify the internal state in any way. It simply provides another handle to the
-    /// existing shared state.
+    /// [`InActive`]: PathState::InActive
     pub async fn has_been_inactivated(&self) {
         let inactive = match self.state.lock().unwrap().deref() {
-            PathState::Active { inactive, .. } => inactive.clone(),
+            PathState::Active { notifier, .. } => notifier.clone(),
             PathState::InActive => return,
         };
 
         inactive.notified().await;
     }
 
-    /// Transitions the internal state of the associated path to `InActive` and wakes up any pending tasks waiting on it.
-    /// and retire the cid.
+    /// If the state is [`Active`] then transitions the internal state of the associated path to
+    /// [`InActive`] and wakes up anynotify all pending tasks waiting on it and retire the cid.
     ///
-    /// This function acquires a lock on the internal mutex protecting the path's state. If the current state is `Pending`,
-    /// it indicates that a task is waiting for the path to become active. In this case, the associated waker is invoked
-    /// to wake up the waiting task.
+    /// If the state is [`InActive`] then does nothing.
     ///
-    /// Regardless of the initial state, the function sets the state to `InActive`, signifying that the path is no longer
-    /// actively being processed or monitored.
+    /// [`Active`]: PathState::Active
+    /// [`InActive`]: PathState::InActive
     pub fn to_inactive(&self) {
         let mut state = self.state.lock().unwrap();
         match state.deref() {
             PathState::Active {
-                inactive, cid_cell, ..
+                notifier, cid_cell, ..
             } => {
                 cid_cell.retire();
-                inactive.notify_waiters();
+                notifier.notify_waiters();
                 *state = PathState::InActive;
             }
             PathState::InActive => {}
         }
     }
 
+    /// Update the receive time
+    ///
+    /// This function is used to update the receive timestamp when the path is active.
+    /// When the path is active, it gets the current time and updates the path's receive time.
+    /// If the path is inactive, no action is taken.
     pub fn update_recv_time(&self) {
         let mut state = self.state.lock().unwrap();
         match state.deref_mut() {
