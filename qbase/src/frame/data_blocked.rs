@@ -1,10 +1,16 @@
-// DATA_BLOCKED Frame {
-//   Type (i) = 0x14,
-//   Maximum Data (i),
-// }
-
 use crate::varint::{be_varint, VarInt, WriteVarInt};
 
+/// DATA_BLOCKED Frame
+///
+/// ```text
+/// DATA_BLOCKED Frame {
+///   Type (i) = 0x14,
+///   Maximum Data (i),
+/// }
+/// ```
+///
+/// See [data-blocked frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-data_blocked-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DataBlockedFrame {
     pub limit: VarInt,
@@ -26,6 +32,8 @@ impl super::BeFrame for DataBlockedFrame {
     }
 }
 
+/// Parse a DATA_BLOCKED frame from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], DataBlockedFrame> {
     use nom::combinator::map;
     map(be_varint, |limit| DataBlockedFrame { limit })(input)

@@ -1,14 +1,20 @@
-// MAX_STREAM_DATA Frame {
-//   Type (i) = 0x11,
-//   Stream ID (i),
-//   Maximum Stream Data (i),
-// }
-
 use crate::{
     streamid::{be_streamid, StreamId, WriteStreamId},
     varint::{be_varint, VarInt, WriteVarInt},
 };
 
+/// MAX_STREAM_DATA frame.
+///
+/// ```text
+/// MAX_STREAM_DATA Frame {
+///   Type (i) = 0x11,
+///   Stream ID (i),
+///   Maximum Stream Data (i),
+/// }
+/// ```
+///
+/// See [MAX_STREAM_DATA Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-max_stream_data-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaxStreamDataFrame {
     pub stream_id: StreamId,
@@ -31,6 +37,8 @@ impl super::BeFrame for MaxStreamDataFrame {
     }
 }
 
+/// Parse a MAX_STREAM_DATA frame from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_max_stream_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxStreamDataFrame> {
     use nom::{combinator::map, sequence::pair};
     map(

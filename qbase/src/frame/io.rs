@@ -14,7 +14,11 @@ use super::{
 };
 use crate::util::DescribeData;
 
-/// Some frames like `STREAM` and `CRYPTO` have a data body, which use `bytes::Bytes` to store.
+/// Return a parser for a complete frame from the raw bytes with the given type,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
+///
+/// Some frames like [`StreamFrame`] and [`CryptoFrame`] have a data body,
+/// which use `bytes::Bytes` to store.
 fn complete_frame(
     frame_type: FrameType,
     raw: Bytes,
@@ -95,6 +99,7 @@ fn complete_frame(
     }
 }
 
+/// Parse a frame type from the raw bytes, [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_frame(raw: &Bytes, packet_type: Type) -> Result<(usize, Frame, bool), Error> {
     let input = raw.as_ref();
     let (remain, frame_type) = be_frame_type(input)?;
@@ -124,12 +129,14 @@ pub fn be_frame(raw: &Bytes, packet_type: Type) -> Result<(usize, Frame, bool), 
     ))
 }
 
-pub trait WriteFrame<F> {
-    /// BufMut write extension for frame.
+/// A [`bytes::BufMut`] extension trait, makes buffer more friendly to write all kinds of frames.
+pub trait WriteFrame<F>: bytes::BufMut {
+    /// Write a frame to the buffer.
     fn put_frame(&mut self, frame: &F);
 }
 
-pub trait WriteDataFrame<F, D: DescribeData> {
-    /// BufMut write extension for frame with data.
+/// A [`bytes::BufMut`] extension trait, makes buffer more friendly to write frame with data.
+pub trait WriteDataFrame<F, D: DescribeData>: bytes::BufMut {
+    /// Write a frame and its data to the buffer.
     fn put_data_frame(&mut self, frame: &F, data: &D);
 }

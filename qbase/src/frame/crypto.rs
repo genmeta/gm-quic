@@ -1,10 +1,3 @@
-// CRYPTO Frame {
-//   Type (i) = 0x06,
-//   Offset (i),
-//   Length (i),
-//   Crypto Data (..),
-// }
-
 use std::ops::Range;
 
 use nom::sequence::tuple;
@@ -14,6 +7,19 @@ use crate::{
     varint::{be_varint, VarInt, WriteVarInt, VARINT_MAX},
 };
 
+/// CRYPTO Frame
+///
+/// ```text
+/// CRYPTO Frame {
+///   Type (i) = 0x06,
+///   Offset (i),
+///   Length (i),
+///   Crypto Data (..),
+/// }
+/// ```
+///
+/// See [crypto frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-crypto-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CryptoFrame {
     pub offset: VarInt,
@@ -69,6 +75,7 @@ impl CryptoFrame {
             })
     }
 
+    /// Return the range of bytes that this frame covers.
     pub fn range(&self) -> Range<u64> {
         let start = self.offset.into_inner();
         let end = start + self.length.into_inner();
@@ -76,6 +83,8 @@ impl CryptoFrame {
     }
 }
 
+/// Parse a CRYPTO frame from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_crypto_frame(input: &[u8]) -> nom::IResult<&[u8], CryptoFrame> {
     let (remain, (offset, length)) = tuple((be_varint, be_varint))(input)?;
     if offset.into_inner() + offset.into_inner() > VARINT_MAX {

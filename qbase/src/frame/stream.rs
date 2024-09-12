@@ -1,14 +1,3 @@
-// STREAM Frame {
-//   Type (i) = 0x08..0x0f,
-//   Stream ID (i),
-//   [Offset (i)],
-//   [Length (i)],
-//   Stream Data (..),
-// }
-// - OFF bit: 0x04
-// - LEN bit: 0x02
-// - FIN bit: 0x01
-
 use std::ops::Range;
 
 use super::BeFrame;
@@ -18,6 +7,25 @@ use crate::{
     varint::{be_varint, VarInt, WriteVarInt, VARINT_MAX},
 };
 
+/// STREAM frame.
+///
+/// ```text
+/// STREAM Frame {
+///   Type (i) = 0x08..0x0f,
+///   Stream ID (i),
+///   [Offset (i)],
+///   [Length (i)],
+///   Stream Data (..),
+/// }
+/// ```
+///
+/// The lower 3 bits of the frame type are used to indicate the presence of the following fields:
+/// - OFF bit: 0x04
+/// - LEN bit: 0x02
+/// - FIN bit: 0x01
+///
+/// See [STREAM Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-stream-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamFrame {
     pub id: StreamId,
@@ -59,6 +67,7 @@ impl BeFrame for StreamFrame {
     }
 }
 
+/// The result of whether the stream frame should carry the length field.
 pub enum ShouldCarryLength {
     NoProblem,
     PaddingFirst(usize),
@@ -66,6 +75,7 @@ pub enum ShouldCarryLength {
 }
 
 impl StreamFrame {
+    /// Create a new stream frame with the given stream id, offset, and length.
     pub fn new(id: StreamId, offset: u64, length: usize) -> Self {
         assert!(offset <= VARINT_MAX);
         Self {
@@ -77,26 +87,32 @@ impl StreamFrame {
         }
     }
 
+    /// Return whether this stream frame is the end of the stream.
     pub fn is_fin(&self) -> bool {
         self.flag & FIN_BIT != 0
     }
 
+    /// Return the offset of this stream frame.
     pub fn offset(&self) -> u64 {
         self.offset.into_inner()
     }
 
+    /// Return the length of this stream frame.
     pub fn len(&self) -> usize {
         self.length
     }
 
+    /// Return whether this stream frame is empty.
     pub fn is_empty(&self) -> bool {
         self.length == 0
     }
 
+    /// Return the range of this stream frame covered.
     pub fn range(&self) -> Range<u64> {
         self.offset.into_inner()..self.offset.into_inner() + self.length as u64
     }
 
+    /// Set the end of stream flag of this stream frame.
     pub fn set_eos_flag(&mut self, is_eos: bool) {
         if is_eos {
             self.flag |= FIN_BIT;
@@ -134,10 +150,13 @@ impl StreamFrame {
         }
     }
 
+    /// Fill the length field when encoding this stream frame.
     pub fn carry_length(&mut self) {
         self.flag |= LEN_BIT;
     }
 
+    /// Estimate the maximum capacity that one stream frame with the given capacity,
+    /// stream id, and offset can carry.
     pub fn estimate_max_capacity(capacity: usize, sid: StreamId, offset: u64) -> Option<usize> {
         assert!(offset <= VARINT_MAX);
         let mut least = 1 + sid.encoding_size();
@@ -152,6 +171,8 @@ impl StreamFrame {
     }
 }
 
+/// Return a parser for a stream frame with the given flag,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn stream_frame_with_flag(flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8], StreamFrame> {
     move |input| {
         let (remain, id) = be_streamid(input)?;

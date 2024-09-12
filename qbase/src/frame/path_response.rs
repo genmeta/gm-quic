@@ -1,12 +1,18 @@
-// PATH_RESPONSE Frame {
-//   Type (i) = 0x1b,
-//   Data (64),
-// }
-
 use std::ops::Deref;
 
 use deref_derive::Deref;
 
+/// PATH_RESPONSE Frame.
+///
+/// ```text
+/// PATH_RESPONSE Frame {
+///   Type (i) = 0x1b,
+///   Data (64),
+/// }
+/// ```
+///
+/// See [PATH_RESPONSE Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-path_response-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, Default, Deref, PartialEq, Eq)]
 pub struct PathResponseFrame {
     #[deref]
@@ -44,6 +50,8 @@ impl super::BeFrame for PathResponseFrame {
     }
 }
 
+/// Parse a PATH_RESPONSE frame from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_path_response_frame(input: &[u8]) -> nom::IResult<&[u8], PathResponseFrame> {
     use nom::{bytes::complete::take, combinator::map};
     map(take(8usize), PathResponseFrame::from_slice)(input)

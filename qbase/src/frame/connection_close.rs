@@ -1,16 +1,22 @@
-// CONNECTION_CLOSE Frame {
-//   Type (i) = 0x1c..0x1d,
-//   Error Code (i),
-//   [Frame Type (i)],
-//   Reason Phrase Length (i),
-//   Reason Phrase (..),
-// }
-
 use std::borrow::Cow;
 
 use super::FrameType;
 use crate::{error::ErrorKind, frame::be_frame_type, varint::VarInt};
 
+/// CONNECTION_CLOSE Frame.
+///
+/// ```text
+/// CONNECTION_CLOSE Frame {
+///   Type (i) = 0x1c..0x1d,
+///   Error Code (i),
+///   [Frame Type (i)],
+///   Reason Phrase Length (i),
+///   Reason Phrase (..),
+/// }
+/// ```
+///
+/// See [connection close frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-connection-close-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionCloseFrame {
     pub error_kind: ErrorKind,
@@ -47,6 +53,7 @@ impl super::BeFrame for ConnectionCloseFrame {
 }
 
 impl ConnectionCloseFrame {
+    /// Create a new `ConnectionCloseFrame`.
     pub fn new(
         error_kind: ErrorKind,
         frame_type: Option<FrameType>,
@@ -60,6 +67,8 @@ impl ConnectionCloseFrame {
     }
 }
 
+/// Return a parse for a CONNECTION_CLOSE frame with the given layer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn connection_close_frame_at_layer(
     layer: u8,
 ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], ConnectionCloseFrame> {

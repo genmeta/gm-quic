@@ -1,23 +1,27 @@
-// ACK Frame {
-//   Type (i) = 0x02..0x03,
-//   Largest Acknowledged (i),
-//   ACK Delay (i),
-//   ACK Range Count (i),
-//   First ACK Range (i),
-//   ACK Range (..) ...,
-//   [ECN Counts (..)],
-// }
-
 use std::ops::RangeInclusive;
 
 use nom::{combinator::map, sequence::tuple};
 
 use crate::varint::{be_varint, VarInt, WriteVarInt};
 
-/// Receivers send ACK frames (types 0x02 and 0x03) to inform senders of packets they have
+/// ACK Frame
+///
+/// ```text
+/// ACK Frame {
+///   Type (i) = 0x02..0x03,
+///   Largest Acknowledged (i),
+///   ACK Delay (i),
+///   ACK Range Count (i),
+///   First ACK Range (i),
+///   ACK Range (..) ...,
+///   [ECN Counts (..)],
+/// }
+/// ```
+///
+/// Receiver sends ACK frames (types 0x02 and 0x03) to inform the sender of packets they have
 /// received and processed. The ACK frame contains one or more ACK Ranges.
 ///
-/// See [ack-frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-ack-frames) of QUIC RFC 9000.
+/// See [ack frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-ack-frames) of QUIC RFC 9000.
 ///
 /// The ACK Range Count is not included in the struct because it is an intermediate variable.
 /// It can be obtained from the ranges when writing and is no longer needed after generating
@@ -111,6 +115,8 @@ impl EcnCounts {
     }
 }
 
+/// Parser for parsing an ACK frame with the given ECN flag,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn ack_frame_with_flag(ecn_flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8], AckFrame> {
     move |input: &[u8]| {
         let (mut input, (largest, delay, count, first_range)) =
@@ -145,6 +151,8 @@ pub fn ack_frame_with_flag(ecn_flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8]
     }
 }
 
+/// Parse the ECN counts from the input bytes,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub(super) fn be_ecn_counts(input: &[u8]) -> nom::IResult<&[u8], EcnCounts> {
     map(
         tuple((be_varint, be_varint, be_varint)),

@@ -182,7 +182,7 @@ pub fn be_varint(input: &[u8]) -> IResult<&[u8], VarInt> {
     .map(|((buf, _), value)| (buf, VarInt(value)))
 }
 
-/// A BufMut extension trait, makes buffer more friendly to write VarInt.
+/// A [`bytes::BufMut`] extension trait, makes buffer more friendly to write VarInt.
 pub trait WriteVarInt: BufMut {
     /// Write a variable-length integer.
     ///

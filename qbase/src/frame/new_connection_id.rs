@@ -1,12 +1,3 @@
-// NEW_CONNECTION_ID Frame {
-//   Type (i) = 0x18,
-//   Sequence Number (i),
-//   Retire Prior To (i),
-//   Length (8),
-//   Connection ID (8..160),
-//   Stateless Reset Token (128),
-// }
-
 use crate::{
     cid::{be_connection_id, ConnectionId, WriteConnectionId},
     token::{be_reset_token, ResetToken, RESET_TOKEN_SIZE},
@@ -15,6 +6,21 @@ use crate::{
 
 const NEW_CONNECTION_ID_FRAME_TYPE: u8 = 0x18;
 
+/// NEW_CONNECTION_ID frame.
+///
+/// ```text
+/// NEW_CONNECTION_ID Frame {
+///   Type (i) = 0x18,
+///   Sequence Number (i),
+///   Retire Prior To (i),
+///   Length (8),
+///   Connection ID (8..160),
+///   Stateless Reset Token (128),
+/// }
+/// ```
+///
+/// See [NEW_CONNECTION_ID Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-new_connection_id-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NewConnectionIdFrame {
     pub sequence: VarInt,
@@ -53,6 +59,8 @@ impl super::BeFrame for NewConnectionIdFrame {
     }
 }
 
+/// Parse a NEW_CONNECTION_ID frame from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnectionIdFrame> {
     let (remain, sequence) = be_varint(input)?;
     let (remain, retire_prior_to) = be_varint(remain)?;

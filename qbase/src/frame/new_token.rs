@@ -1,11 +1,17 @@
-// NEW_TOKEN Frame {
-//   Type (i) = 0x07,
-//   Token Length (i),
-//   Token (..),
-// }
-
 use crate::varint::{be_varint, VarInt, WriteVarInt};
 
+/// NEW_TOKEN frame.
+///
+/// ```text
+/// NEW_TOKEN Frame {
+///   Type (i) = 0x07,
+///   Token Length (i),
+///   Token (..),
+/// }
+/// ```
+///
+/// See [NEW_TOKEN Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-new_token-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewTokenFrame {
     pub token: Vec<u8>,
@@ -28,6 +34,8 @@ impl super::BeFrame for NewTokenFrame {
     }
 }
 
+/// Parse a NEW_TOKEN frame from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_new_token_frame(input: &[u8]) -> nom::IResult<&[u8], NewTokenFrame> {
     use nom::{
         bytes::streaming::take,

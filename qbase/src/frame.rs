@@ -27,7 +27,9 @@ mod stream;
 mod stream_data_blocked;
 mod streams_blocked;
 
+/// Error module for parsing frames
 pub mod error;
+/// IO module for frame encoding and decoding
 pub mod io;
 
 pub use ack::{AckFrame, EcnCounts};
@@ -35,6 +37,7 @@ pub use connection_close::ConnectionCloseFrame;
 pub use crypto::CryptoFrame;
 pub use data_blocked::DataBlockedFrame;
 pub use datagram::DatagramFrame;
+#[doc(hidden)]
 pub use error::Error;
 pub use handshake_done::HandshakeDoneFrame;
 pub use max_data::MaxDataFrame;
@@ -53,12 +56,13 @@ pub use stream::{ShouldCarryLength, StreamFrame};
 pub use stream_data_blocked::StreamDataBlockedFrame;
 pub use streams_blocked::StreamsBlockedFrame;
 
+/// Define the basic behaviors for all kinds of frames
 #[enum_dispatch]
 pub trait BeFrame {
-    /// The type of frame
+    /// Return the type of frame
     fn frame_type(&self) -> FrameType;
 
-    /// The max number of bytes needed to encode this value
+    /// Return the max number of bytes needed to encode this value
     ///
     /// Calculate the maximum size by summing up the maximum length of each field.
     /// If a field type has a maximum length, use it, otherwise use the actual length
@@ -70,13 +74,13 @@ pub trait BeFrame {
         1
     }
 
-    /// Compute the number of bytes needed to encode this value
+    /// Return the exact number of bytes needed to encode this value
     fn encoding_size(&self) -> usize {
         1
     }
 }
 
-/// Defines all the frame types
+/// The sum type of all the frame types.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum FrameType {
     Padding,
@@ -103,7 +107,7 @@ pub enum FrameType {
 }
 
 impl FrameType {
-    /// Determine if the current frame type belongs to the given packet_type
+    /// Determine if a frame type belongs to the given packet_type
     pub fn belongs_to(&self, packet_type: Type) -> bool {
         use crate::packet::r#type::{
             long::{Type::V1, Ver1},
@@ -153,13 +157,12 @@ impl FrameType {
         }
     }
 
-    /// Determine if the frame type is ack-eliciting
+    /// Return if the frame type is ack-eliciting
     pub fn is_ack_eliciting(&self) -> bool {
-        let is_not_ack_eliciting = matches!(
+        !matches!(
             self,
             Self::Padding | Self::Ack(..) | Self::ConnectionClose(..)
-        );
-        !is_not_ack_eliciting
+        )
     }
 }
 
@@ -229,12 +232,15 @@ impl From<FrameType> for u8 {
     }
 }
 
+/// Parse the frame type from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_frame_type(input: &[u8]) -> nom::IResult<&[u8], FrameType, Error> {
     let (remain, frame_type) = nom::number::complete::be_u8(input)?;
     let frame_type = FrameType::try_from(frame_type).map_err(nom::Err::Error)?;
     Ok((remain, frame_type))
 }
 
+/// Sum type of all the stream related frames except [`StreamFrame`].
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
 pub enum StreamCtlFrame {
@@ -246,6 +252,7 @@ pub enum StreamCtlFrame {
     StreamsBlocked(StreamsBlockedFrame),
 }
 
+/// Sum type of all the reliable frames.
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
 pub enum ReliableFrame {
@@ -258,6 +265,9 @@ pub enum ReliableFrame {
     Stream(StreamCtlFrame),
 }
 
+/// Sum type of all the frames.
+///
+/// The data frames' body are stored in the second field.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Frame {
     Padding(PaddingFrame),
@@ -278,22 +288,36 @@ pub enum Frame {
     Datagram(DatagramFrame, Bytes),
 }
 
+/// Some modules that need send specific frames can implement `SendFrame` trait directly.
+///
+/// Alternatively, a temporary buffer that stores certain frames can also implement this trait,
+/// But additional processing is required to ensure that the frames in the buffer are eventually
+/// sent to the peer.
 pub trait SendFrame<T> {
+    /// Need send the frames to the peer
     fn send_frame<I: IntoIterator<Item = T>>(&self, iter: I);
 }
 
+/// Some modules that need receive specific frames can implement `ReceiveFrame` trait directly.
+///
+/// Alternatively, a temporary buffer that stores certain frames can also implement this trait,
+/// But additional processing is required to ensure that the frames in the buffer are eventually
+/// delivered to the corresponding modules.
 pub trait ReceiveFrame<T> {
     type Output;
 
+    /// Receive the frames from the peer
     fn recv_frame(&self, frame: &T) -> Result<Self::Output, crate::error::Error>;
 }
 
+/// Reads frames from a buffer until the packet buffer is empty.
 pub struct FrameReader {
     payload: Bytes,
     packet_type: Type,
 }
 
 impl FrameReader {
+    /// Creates a [`FrameReader`] for a packet of type `packet_type`
     pub fn new(payload: Bytes, packet_type: Type) -> Self {
         Self {
             payload,
@@ -349,6 +373,3 @@ impl<T: BufMut> WriteFrame<ReliableFrame> for T {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {}

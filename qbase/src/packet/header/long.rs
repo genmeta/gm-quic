@@ -335,8 +335,8 @@ pub mod io {
         }
     }
 
-    /// Writing the specific header into the buffer.
-    pub trait WriteSpecific<S> {
+    /// A [`bytes::BufMut`] extension trait, makes buffer more friendly to write long headers.
+    pub trait WriteSpecific<S>: BufMut {
         /// Write the specific header content.
         fn put_specific(&mut self, _specific: &S) {}
     }
@@ -371,6 +371,8 @@ pub mod io {
     /// Handshake headers are empty, so there is nothing to write.
     impl<T: BufMut> WriteSpecific<Handshake> for T {}
 
+    /// A [`bytes::BufMut`] extension trait, makes buffer more friendly to write long headers.
+    ///
     /// Write the long header content, including the packet type, destination connection ID,
     /// source connection ID, and specific header content.
     ///
@@ -378,7 +380,7 @@ pub mod io {
     ///
     /// It does not write the payload Length of the packet, and leaves it to be filled in when
     /// collecting data to send.
-    pub trait WriteLongHeader<S> {
+    pub trait WriteLongHeader<S>: BufMut {
         /// Write the long header.
         fn put_long_header(&mut self, wrapper: &LongHeader<S>);
     }
