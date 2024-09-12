@@ -44,6 +44,7 @@ impl super::GetDcid for OneRttHeader {
     }
 }
 
+/// The io module provides functions for parsing and writing 1RTT headers.
 pub mod io {
     use bytes::BufMut;
 

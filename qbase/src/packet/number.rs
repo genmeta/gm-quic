@@ -2,7 +2,7 @@ use bytes::BufMut;
 
 /// An encoded or undecoded packet number
 ///
-/// The actually packet number is an integer in the range 0 to 2^62  - 1 and encoded in 1 to 4 bytes.
+/// The actual packet number is an integer in the range 0 to 2^62  - 1 and encoded in 1 to 4 bytes.
 ///
 /// See [packet numbers](https://www.rfc-editor.org/rfc/rfc9000.html#name-packet-numbers) and
 /// [packet number encoding and decoding](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.1)
@@ -101,8 +101,7 @@ impl PacketNumber {
 
     /// Decode the packet number after header protection has been removed.
     ///
-    /// The packet number is decoded by finding the packet number value that
-    /// is closest to the next expected packet.
+    /// The packet number is decoded based on the largest received packet number.
     /// The next expected packet is the largest received packet number plus one.
     ///
     /// See [Section 17.1-7](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.1-7) and

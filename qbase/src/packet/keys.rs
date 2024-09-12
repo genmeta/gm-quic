@@ -40,27 +40,29 @@ impl ArcKeys {
 
     /// Create a Pending state [`ArcKeys`].
     ///
-    /// For a new Quic connection, initially only the Initial key is known, and the 0Rtt
+    /// For a new Quic connection, initially only the Initial key is known, and the 0-RTT
     /// and Handshake keys are unknown.
-    /// Therefore, the 0Rtt and Handshake keys can be created in a Pending state, waiting
-    /// for key updates during the TLS handshake process.
+    /// Therefore, the 0-RTT and Handshake keys can be created in a Pending state, waiting
+    /// for updates during the TLS handshake process.
     pub fn new_pending() -> Self {
         Self(Arc::new(KeysState::Pending(None).into()))
     }
 
     /// Create an [`ArcKeys`] with a specified [`rustls::quic::Keys`].
+    ///
+    /// The initial keys are known at first, can use this method to create the [`ArcKeys`].
     pub fn with_keys(keys: Keys) -> Self {
         Self(Arc::new(KeysState::Ready(Arc::new(keys)).into()))
     }
 
     /// Asynchronously obtain the remote keys for removing header protection and packet decryption.
     ///
-    /// Rreturn [`GetRemoteKeys`] implemented Future trait.
+    /// Rreturn [`GetRemoteKeys`], which implemented Future trait.
     ///
     /// ## Example
     ///
     /// The following is only a demonstration.
-    /// Actually, removing header protection and decrypting eht packet are much more complex!
+    /// In fact, removing header protection and decrypting packets are far more complex!
     ///
     /// ```
     /// use qbase::packet::keys::ArcKeys;
@@ -81,13 +83,13 @@ impl ArcKeys {
         GetRemoteKeys(self.clone())
     }
 
-    /// Get the encrypting keys.
-    /// If the keys is not ready, return None.
+    /// Get the local keys for packet encryption and adding header protection.
+    /// If the keys is not ready, just return None immediately.
     ///
     /// ## Example
     ///
     /// The following is only a demonstration.
-    /// Actually, encrypting the packet and adding header protection are much more complex!
+    /// In fact, encrypting packets and adding header protection are far more complex!
     ///
     /// ```
     /// use qbase::packet::keys::ArcKeys;
@@ -114,8 +116,7 @@ impl ArcKeys {
 
     /// Set the keys to the [`ArcKeys`].
     ///
-    /// As the TLS handshake progresses, corresponding key upgrades will be obtained,
-    /// resulting in higher-level keys.
+    /// As the TLS handshake progresses, higher-level keys will be obtained.
     /// These keys are set to the related [`ArcKeys`] through this method, and
     /// its internal waker will be awakened to notify the packet decryption task
     /// to continue, if the internal waker was registered.
@@ -200,7 +201,11 @@ impl OneRttPacketKeys {
         }
     }
 
-    /// Key actively updates occurs when we need to proactively change the key.
+    /// Proactively update the 1-RTT packet key locally.
+    /// Or be informed by the peer to update the key.
+    ///
+    /// The key phase bit will be toggled and sent to the peer,
+    /// informing the peer to update the key to next 1-RTT packet key too.
     pub fn update(&mut self) {
         self.cur_phase.toggle();
         let key_set = self.secrets.next_packet_keys();
@@ -217,10 +222,10 @@ impl OneRttPacketKeys {
         self.remote[(!self.cur_phase).as_index()].take();
     }
 
-    /// Get the remote key to decrypt the incoming packet.
-    /// If the key phase is not the current key phase, update the key.
+    /// Get the remote key to decrypt the incoming 1-RTT packet.
+    /// If the key phase is not the current key phase, update the key, see [`update`].
     ///
-    /// Return `Arc<PacketKey>` to decrypt the incoming packets.
+    /// Return `Arc<PacketKey>` to decrypt the incoming 1-RTT packet.
     pub fn get_remote(&mut self, key_phase: KeyPhaseBit, _pn: u64) -> Arc<dyn PacketKey> {
         if key_phase != self.cur_phase && self.remote[key_phase.as_index()].is_none() {
             self.update();
@@ -228,9 +233,9 @@ impl OneRttPacketKeys {
         self.remote[key_phase.as_index()].clone().unwrap()
     }
 
-    /// Get the local key with the current key phase to encrypt the outgoing packet.
+    /// Get the local current key to encrypt the outgoing packet.
     ///
-    /// Returning `Arc<PacketKey>` is to encrypt and decrypt packets at the same time.
+    /// Return `Arc<PacketKey>` to encrypt the outgoing 1-RTT packet.
     pub fn get_local(&self) -> (KeyPhaseBit, Arc<dyn PacketKey>) {
         (self.cur_phase, self.local.clone())
     }
@@ -241,7 +246,7 @@ impl OneRttPacketKeys {
 /// it proactively locally.
 ///
 /// For performance reasons, the second element of the tuple is the length of the
-/// tag of the local packet key redundantly.
+/// tag of the local packet key's underlying AEAD algorithm redundantly.
 #[derive(Clone)]
 pub struct ArcOneRttPacketKeys(Arc<(Mutex<OneRttPacketKeys>, usize)>);
 
@@ -253,10 +258,10 @@ impl ArcOneRttPacketKeys {
         self.0 .0.lock().unwrap()
     }
 
-    /// Get the length of the tag of the packet key.
+    /// Get the length of the tag of the packet key's underlying AEAD algorithm.
     ///
-    /// For example, when collecting data to send, buffer needs to reserved
-    /// the tag length space to fill in the integrity check code.
+    /// For example, when collecting data to send, buffer needs to reserve
+    /// the tag length space to fill in the integrity checksum codes.
     /// After collecting the data, encryption will be performed, and exclusive
     /// access will be obtained during encryption.
     /// There is no need to acquire the lock at the beginning to get the tag
@@ -354,7 +359,7 @@ impl ArcOneRttKeys {
     }
 
     /// Get the local keys for packet encryption and adding header protection.
-    /// If the keys are not ready, return None.
+    /// If the keys are not ready, just return None immediately.
     ///
     /// Return a tuple of HeaderProtectionKey and OneRttPacketKeys.  
     /// The OneRttPacketKeys need to be locked during the entire packet encryption process.
@@ -368,7 +373,7 @@ impl ArcOneRttKeys {
 
     /// Asynchronously obtain the remote keys for removing header protection and packet decryption.
     ///
-    /// Rreturn [`GetRemoteKeys`] implemented Future trait.
+    /// Rreturn [`GetRemoteKeys`], which implemented the Future trait.
     pub fn get_remote_keys(&self) -> GetRemoteOneRttKeys {
         GetRemoteOneRttKeys(self.clone())
     }

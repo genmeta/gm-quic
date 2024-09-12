@@ -27,11 +27,11 @@ pub trait GetType {
     fn get_type(&self) -> Type;
 }
 
-/// When encoding a packet for sending, we need to know the length of the packet,
+/// When encoding a packet for sending, we need to know the size of the packet encoding,
 /// so this trait needs to be implemented.
 ///
-/// However, the length field of the packet header is variable-length encoded and
-/// requires special handling, which is not considered within the scope of Encode::size.
+/// However, the length field of the packet payload is variable-length encoded and
+/// requires special encoding, which is not considered here.
 #[enum_dispatch]
 pub trait EncodeHeader {
     /// Returns the length of the encoded packet header.
@@ -40,7 +40,7 @@ pub trait EncodeHeader {
     }
 }
 
-/// Get the Destination Connection ID (DCID) of the packet, each packet must has a DCID.
+/// Get the Destination Connection ID (DCID) of the packet, each packet has a DCID.
 #[enum_dispatch]
 pub trait GetDcid {
     /// Get the Destination Connection ID (DCID) of the packet.
@@ -87,7 +87,7 @@ pub mod io {
     };
 
     /// Parse a packet header from the input buffer,
-    /// returns [`Header`] if successful,
+    /// returns [`Header`] if succeed,
     /// [nom](https://docs.rs/nom/latest/nom/) parser style.
     pub fn be_header(
         packet_type: Type,

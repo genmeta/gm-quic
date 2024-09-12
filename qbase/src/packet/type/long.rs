@@ -4,7 +4,7 @@ use deref_derive::Deref;
 pub mod v1;
 
 /// The long packet header contains version information, so the 32-bit
-/// version number info is also included as a versioned packet type.
+/// version number info is also one part of the versioned packet type.
 ///
 /// `N`` represents an 32-bit version number, and
 /// `Ty`` represents the specific type of the version.
@@ -36,7 +36,7 @@ impl Version<1, v1::Type> {
     pub const HANDSHAKE: Self = Self(v1::Type::Handshake);
 }
 
-/// Represent the IQuic version 1, including Retry/Initial/0-RTT/Handshake.
+/// Represent the packet types in the IQuic version 1, including Retry/Initial/0-RTT/Handshake.
 pub type Ver1 = Version<1, v1::Type>;
 
 /// The sum types of the long packets.
