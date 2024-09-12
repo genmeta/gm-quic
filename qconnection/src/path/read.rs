@@ -45,6 +45,7 @@ impl ReadIntoDatagrams {
         dcid: ConnectionId,
     ) -> (usize, usize) {
         let buffer = datagram.apply(constraints);
+        let send_quota = buffer.len();
 
         let ack_pkt = self.cc.need_ack(Epoch::Initial);
         // 按顺序发，先发Initial空间的，到Initial数据包
@@ -60,7 +61,7 @@ impl ReadIntoDatagrams {
                 self.read_other_space(constraints, flow_limit, remain, dcid)
             };
 
-            let padding_len = if wrote == 0 { 1200 } else { 0 };
+            let padding_len = if wrote == 0 { MSS.min(send_quota) } else { 0 };
             let (pn, is_ack_eliciting, is_just_ack, sent_bytes, in_flight, sent_ack) =
                 padding(buffer, padding_len);
             self.cc.on_pkt_sent(

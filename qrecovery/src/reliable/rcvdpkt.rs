@@ -115,8 +115,8 @@ impl RcvdPktRecords {
 
         let largest = VarInt::from_u64(largest).unwrap();
         let delay = VarInt::from_u64(recv_time.elapsed().as_micros() as u64).unwrap();
-        // 最小长度，至少包含ACK帧类型、largest、delay、range count(从0开始至少占1字节)
-        let min_len = 1 + largest.encoding_size() + delay.encoding_size() + 1;
+        // Minimum length with at least ACK frame type, largest, delay, range count, first_range (at least 1 byte for 0)
+        let min_len = 1 + largest.encoding_size() + delay.encoding_size() + 1 + 1;
         if capacity < min_len {
             return None;
         }

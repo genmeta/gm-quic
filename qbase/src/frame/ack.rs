@@ -45,8 +45,11 @@ impl super::BeFrame for AckFrame {
     }
 
     fn encoding_size(&self) -> usize {
+        let ack_range_count = VarInt::try_from(self.ranges.len()).unwrap();
+
         1 + self.largest.encoding_size()
             + self.delay.encoding_size()
+            + ack_range_count.encoding_size()
             + self.first_range.encoding_size()
             + self
                 .ranges
