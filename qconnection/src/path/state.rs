@@ -7,13 +7,47 @@ use deref_derive::Deref;
 use qbase::{cid::ArcCidCell, util};
 use qrecovery::reliable::ArcReliableFrameDeque;
 
-type PathStateFuture = Arc<futures::lock::Mutex<Arc<util::Future<()>>>>;
+type PathStateFuture = util::Future<()>;
+
+#[derive(Debug, Default, Clone)]
+struct PathStateReader(Arc<futures::lock::Mutex<Arc<PathStateFuture>>>);
+
+impl PathStateReader {
+    async fn read(&self) {
+        self.0.lock().await.get().await;
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct PathStateWriter(Arc<PathStateFuture>);
+
+impl PathStateWriter {
+    fn write(&self) {
+        _ = self.0.assign(());
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PathState {
+    reader: PathStateReader,
+    writer: PathStateWriter,
+}
+
+impl Default for PathState {
+    fn default() -> Self {
+        let raw = Arc::<PathStateFuture>::default();
+        let writer = PathStateWriter(raw.clone());
+        let reader = PathStateReader(Arc::new(futures::lock::Mutex::new(raw)));
+        Self { reader, writer }
+    }
+}
 
 #[derive(Debug, Clone, Deref)]
 pub struct ArcPathState {
     #[deref]
     recv_time: Arc<Mutex<time::Instant>>,
-    state: PathStateFuture,
+    cid: ArcCidCell<ArcReliableFrameDeque>,
+    state: PathState,
 }
 
 impl ArcPathState {
@@ -25,6 +59,7 @@ impl ArcPathState {
     pub fn new(cid: ArcCidCell<ArcReliableFrameDeque>) -> Self {
         let state = Self {
             recv_time: Arc::new(Mutex::new(time::Instant::now())),
+            cid,
             state: Default::default(),
         };
 
@@ -36,7 +71,7 @@ impl ArcPathState {
                     let recv_time = *state.lock().unwrap();
                     // TODO: 失活时间暂定30s
                     if now.duration_since(recv_time) >= time::Duration::from_secs(30) {
-                        state.to_inactive(cid).await;
+                        state.to_inactive();
                         break;
                     }
                     tokio::time::sleep_until((recv_time + time::Duration::from_secs(30)).into())
@@ -56,7 +91,7 @@ impl ArcPathState {
     /// **Note:** This function does not modify the internal state in any way. It simply provides another handle to the
     /// existing shared state.
     pub async fn has_been_inactivated(&self) {
-        self.state.lock().await.get().await;
+        self.state.reader.read().await;
     }
 
     /// Transitions the internal state of the associated path to `InActive` and wakes up any pending tasks waiting on it.
@@ -68,13 +103,8 @@ impl ArcPathState {
     ///
     /// Regardless of the initial state, the function sets the state to `InActive`, signifying that the path is no longer
     /// actively being processed or monitored.
-    pub async fn to_inactive(&self, cid: ArcCidCell<ArcReliableFrameDeque>) {
-        ArcCidCell::retire(&cid);
-
-        self.state
-            .lock()
-            .await
-            .assign(())
-            .expect("path is already inactive");
+    pub fn to_inactive(&self) {
+        ArcCidCell::retire(&self.cid);
+        self.state.writer.write();
     }
 }

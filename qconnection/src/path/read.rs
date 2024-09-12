@@ -61,7 +61,7 @@ impl ReadIntoDatagrams {
                 self.read_other_space(constraints, flow_limit, remain, dcid)
             };
 
-            let padding_len = if wrote == 0 { 1200.min(send_quota) } else { 0 };
+            let padding_len = if wrote == 0 { MSS.min(send_quota) } else { 0 };
             let (pn, is_ack_eliciting, is_just_ack, sent_bytes, in_flight, sent_ack) =
                 padding(buffer, padding_len);
             self.cc.on_pkt_sent(

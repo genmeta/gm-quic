@@ -82,7 +82,6 @@ impl RawPath {
         // THINK: 这里应该只需要一个ArcRtt，并不需congestion controller出面
         let congestion_ctrl = self.cc.clone();
         let state = self.state.clone();
-        let cid = self.dcid.get_cid();
         tokio::spawn(async move {
             let challenge = PathChallengeFrame::random();
             for _ in 0..3 {
@@ -100,7 +99,7 @@ impl RawPath {
                 }
             }
             anti_amplifier.abort();
-            state.to_inactive(cid).await;
+            state.to_inactive();
         });
     }
 
@@ -110,7 +109,6 @@ impl RawPath {
     {
         let mut usc = self.usc.clone();
         let state = self.state.clone();
-        let cid = self.dcid.get_cid();
         let space_readers = gen_readers(self);
         let read_into_datagram = ReadIntoDatagrams {
             scid: self.scid,
@@ -130,7 +128,7 @@ impl RawPath {
             while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
                 let send_result = usc.send_all_via_pathway(&iovec, pathway).await;
                 if send_result.is_err() {
-                    state.to_inactive(cid).await;
+                    state.to_inactive();
                     return;
                 }
             }
