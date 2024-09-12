@@ -64,8 +64,8 @@ pub mod io {
         Ok((remain, OneRttHeader { spin, dcid }))
     }
 
-    /// Write a short header to the buffer, including the packet type and dcid.
-    pub trait WriteShortHeader {
+    /// A [`bytes::BufMut`] extension trait, makes buffer more friendly to write 1RTT headers.
+    pub trait WriteShortHeader: BufMut {
         /// Write a 1RTT header to the buffer.
         fn put_short_header(&mut self, header: &OneRttHeader);
     }

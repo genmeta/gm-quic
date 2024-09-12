@@ -1,14 +1,20 @@
-// STREAM_DATA_BLOCKED Frame {
-//   Type (i) = 0x15,
-//   Stream ID (i),
-//   Maximum Stream Data (i),
-// }
-
 use crate::{
     streamid::{be_streamid, StreamId, WriteStreamId},
     varint::{be_varint, VarInt, WriteVarInt},
 };
 
+/// STREAM_DATA_BLOCKED frame.
+///
+/// ```text
+/// STREAM_DATA_BLOCKED Frame {
+///   Type (i) = 0x15,
+///   Stream ID (i),
+///   Maximum Stream Data (i),
+/// }
+/// ```
+///
+/// See [STREAM_DATA_BLOCKED Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-stream_data_blocked-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamDataBlockedFrame {
     pub stream_id: StreamId,
@@ -31,6 +37,8 @@ impl super::BeFrame for StreamDataBlockedFrame {
     }
 }
 
+/// Parse a STREAM_DATA_BLOCKED frame from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_stream_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], StreamDataBlockedFrame> {
     let (input, stream_id) = be_streamid(input)?;
     let (input, maximum_stream_data) = be_varint(input)?;

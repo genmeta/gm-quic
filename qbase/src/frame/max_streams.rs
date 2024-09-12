@@ -1,13 +1,19 @@
-// MAX_STREAMS Frame {
-//   Type (i) = 0x12..0x13,
-//   Maximum Streams (i),
-// }
-
 use crate::{
     streamid::MAX_STREAM_ID,
     varint::{be_varint, VarInt, WriteVarInt},
 };
 
+/// MAX_STREAMS frame.
+///
+/// ```text
+/// MAX_STREAMS Frame {
+///   Type (i) = 0x12..0x13,
+///   Maximum Streams (i),
+/// }
+/// ```
+///
+/// See [MAX_STREAMS Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-max_streams-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaxStreamsFrame {
     Bi(VarInt),
@@ -38,6 +44,8 @@ impl super::BeFrame for MaxStreamsFrame {
     }
 }
 
+/// Returns a parser for MAX_STREAMS frame with the given direction,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn max_streams_frame_with_dir(
     dir: u8,
 ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], MaxStreamsFrame> {

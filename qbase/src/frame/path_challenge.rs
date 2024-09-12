@@ -1,10 +1,16 @@
-// PATH_CHALLENGE Frame {
-//   Type (i) = 0x1a,
-//   Data (64),
-// }
-
 use deref_derive::Deref;
 
+/// PATH_CHALLENGE frame.
+///
+/// ```text
+/// PATH_CHALLENGE Frame {
+///   Type (i) = 0x1a,
+///   Data (64),
+/// }
+/// ```
+///
+/// See [PATH_CHALLENGE Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-path_challenge-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deref)]
 pub struct PathChallengeFrame {
     #[deref]
@@ -43,6 +49,8 @@ impl super::BeFrame for PathChallengeFrame {
     }
 }
 
+/// Parse a PATH_CHALLENGE frame from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_path_challenge_frame(input: &[u8]) -> nom::IResult<&[u8], PathChallengeFrame> {
     use nom::{bytes::streaming::take, combinator::map};
     map(take(8usize), PathChallengeFrame::from_slice)(input)

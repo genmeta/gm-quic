@@ -110,10 +110,12 @@ pub mod io {
         }
     }
 
+    /// A [`bytes::BufMut`] extension trait for writing packet headers.
+    ///
     /// When sending packets, it is necessary to organize the data and write
     /// various types of QUIC packets into an UDP datagram. This trait will
     /// be used to write the packet header.
-    pub trait WriteHeader {
+    pub trait WriteHeader: bytes::BufMut {
         /// Write a packet header to the buffer.
         fn put_header(&mut self, header: &Header);
     }

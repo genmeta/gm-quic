@@ -1,9 +1,3 @@
-// DATAGRAM Frame {
-//   Type (i) = 0x30..0x31,
-//   [Length (i)],
-//   Datagram Data (..),
-// }
-
 use nom::IResult;
 
 use super::{BeFrame, FrameType};
@@ -12,12 +6,26 @@ use crate::{
     varint::{be_varint, VarInt, WriteVarInt},
 };
 
+/// DATAGRAM Frame
+///
+/// ```text
+/// DATAGRAM Frame {
+///   Type (i) = 0x30..0x31,
+///   [Length (i)],
+///   Datagram Data (..),
+/// }
+/// ```
+///
+/// See [datagram frame types](https://www.rfc-editor.org/rfc/rfc9000.html#name-datagram-frame-types)
+/// of [An Unreliable Datagram Extension to QUIC](https://www.rfc-editor.org/rfc/rfc9221.html)
+/// for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DatagramFrame {
     pub length: Option<VarInt>,
 }
 
 impl DatagramFrame {
+    /// Create a new `DatagramFrame` with the given length.
     pub fn new(length: Option<VarInt>) -> Self {
         Self { length }
     }
@@ -37,6 +45,8 @@ impl BeFrame for DatagramFrame {
     }
 }
 
+/// Return a parser for DATAGRAM frames with a flag,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn datagram_frame_with_flag(flag: u8) -> impl FnOnce(&[u8]) -> IResult<&[u8], DatagramFrame> {
     move |input| {
         let (remain, len) = if flag == 1 {

@@ -1,10 +1,16 @@
-// MAX_DATA Frame {
-//   Type (i) = 0x10,
-//   Maximum Data (i),
-// }
-
 use crate::varint::{be_varint, VarInt, WriteVarInt};
 
+/// MAX_DATA Frame
+///
+/// ```text
+/// MAX_DATA Frame {
+///   Type (i) = 0x10,
+///   Maximum Data (i),
+/// }
+/// ```
+///
+/// See [MAX_DATA Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-max_data-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MaxDataFrame {
     pub max_data: VarInt,
@@ -26,6 +32,8 @@ impl super::BeFrame for MaxDataFrame {
     }
 }
 
+/// Parse a MAX_DATA frame from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_max_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxDataFrame> {
     use nom::combinator::map;
     map(be_varint, |max_data| MaxDataFrame { max_data })(input)

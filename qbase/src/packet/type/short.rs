@@ -22,9 +22,8 @@ impl From<OneRtt> for u8 {
     }
 }
 
-/// Implement this trait for buffer,
-/// which can be used to write the short packet type into the buffer.
-pub trait WriteShortType {
+/// A [`bytes::BufMut`] extension trait, makes buffer more friendly to write the short packet type.
+pub trait WriteShortType: BufMut {
     /// Write the short packet type to the buffer.
     fn put_short_type(&mut self, ty: &OneRtt);
 }

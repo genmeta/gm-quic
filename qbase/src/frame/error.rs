@@ -2,8 +2,13 @@ use nom::error::ErrorKind as NomErrorKind;
 use thiserror::Error;
 
 use super::FrameType;
-use crate::{packet::r#type::Type, varint::VarInt};
+use crate::{
+    error::{Error as TransportError, ErrorKind as TransportErrorKind},
+    packet::r#type::Type,
+    varint::VarInt,
+};
 
+/// Parse errors when decoding QUIC frames.
 #[derive(Debug, Clone, Eq, PartialEq, Error)]
 pub enum Error {
     #[error("A packet containing no frames")]
@@ -19,8 +24,6 @@ pub enum Error {
     #[error("Error occurred when parsing frame {0:?}: {1}")]
     ParseError(FrameType, String),
 }
-
-use crate::error::{Error as TransportError, ErrorKind as TransportErrorKind};
 
 impl From<Error> for TransportError {
     fn from(e: Error) -> Self {

@@ -1,7 +1,13 @@
-// PING Frame {
-//   Type (i) = 0x01,
-// }
-
+/// PING Frame.
+///
+/// ```text
+/// PING Frame {
+///   Type (i) = 0x01,
+/// }
+/// ```
+///
+/// See [PING Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-ping-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PingFrame;
 
@@ -13,6 +19,8 @@ impl super::BeFrame for PingFrame {
     }
 }
 
+/// Parse a PING frame from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 #[allow(unused)]
 pub fn be_ping_frame(input: &[u8]) -> nom::IResult<&[u8], PingFrame> {
     Ok((input, PingFrame))

@@ -1,7 +1,13 @@
-// HANDSHAKE_DONE Frame {
-//   Type (i) = 0x1e,
-// }
-
+/// HandshakeDone frame
+///
+/// ```text
+/// HANDSHAKE_DONE Frame {
+///   Type (i) = 0x1e,
+/// }
+/// ```
+///
+/// See [HANDSHAKE_DONE Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-handshake_done-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HandshakeDoneFrame;
 
@@ -13,6 +19,8 @@ impl super::BeFrame for HandshakeDoneFrame {
     }
 }
 
+/// Parse a HANDSHAKE_DONE frame from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 #[allow(unused)]
 pub fn be_handshake_done_frame(input: &[u8]) -> nom::IResult<&[u8], HandshakeDoneFrame> {
     Ok((input, HandshakeDoneFrame))

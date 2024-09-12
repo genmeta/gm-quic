@@ -1,10 +1,16 @@
-// STREAMS_BLOCKED Frame {
-//   Type (i) = 0x16..0x17,
-//   Maximum Streams (i),
-// }
-
 use crate::streamid::{be_streamid, Dir, StreamId, WriteStreamId};
 
+/// STREAMS_BLOCKED frame.
+///
+/// ```text
+/// STREAMS_BLOCKED Frame {
+///   Type (i) = 0x16..0x17,
+///   Maximum Streams (i),
+/// }
+/// ```
+///
+/// See [STREAMS_BLOCKED Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-streams_blocked-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamsBlockedFrame {
     Bi(StreamId),
@@ -35,6 +41,8 @@ impl super::BeFrame for StreamsBlockedFrame {
     }
 }
 
+/// Return a parser for STREAMS_BLOCKED frame with the given direction,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn streams_blocked_frame_with_dir(
     dir: u8,
 ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], StreamsBlockedFrame> {

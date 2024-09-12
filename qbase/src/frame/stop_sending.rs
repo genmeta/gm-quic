@@ -1,14 +1,20 @@
-// STOP_SENDING Frame {
-//   Type (i) = 0x05,
-//   Stream ID (i),
-//   Application Protocol Error Code (i),
-// }
-
 use crate::{
     streamid::{be_streamid, StreamId, WriteStreamId},
     varint::{be_varint, VarInt, WriteVarInt},
 };
 
+/// STOP_SENDING frame.
+///
+/// ```text
+/// STOP_SENDING Frame {
+///   Type (i) = 0x05,
+///   Stream ID (i),
+///   Application Protocol Error Code (i),
+/// }
+/// ```
+///
+/// See [STOP_SENDING Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StopSendingFrame {
     pub stream_id: StreamId,
@@ -31,6 +37,8 @@ impl super::BeFrame for StopSendingFrame {
     }
 }
 
+/// Parse a STOP_SENDING frame from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_stop_sending_frame(input: &[u8]) -> nom::IResult<&[u8], StopSendingFrame> {
     use nom::{combinator::map, sequence::tuple};
     map(

@@ -1,15 +1,21 @@
-// RESET_STREAM Frame {
-//   Type (i) = 0x04,
-//   Stream ID (i),
-//   Application Protocol Error Code (i),
-//   Final Size (i),
-// }
-
 use crate::{
     streamid::{be_streamid, StreamId, WriteStreamId},
     varint::{be_varint, VarInt, WriteVarInt},
 };
 
+/// RESET_STREAM frame.
+///
+/// ```text
+/// RESET_STREAM Frame {
+///   Type (i) = 0x04,
+///   Stream ID (i),
+///   Application Protocol Error Code (i),
+///   Final Size (i),
+/// }
+/// ```
+///
+/// See [RESET_STREAM Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResetStreamFrame {
     pub stream_id: StreamId,
@@ -35,6 +41,8 @@ impl super::BeFrame for ResetStreamFrame {
     }
 }
 
+/// Parse a RESET_STREAM frame from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_reset_stream_frame(input: &[u8]) -> nom::IResult<&[u8], ResetStreamFrame> {
     use nom::{combinator::map, sequence::tuple};
     map(

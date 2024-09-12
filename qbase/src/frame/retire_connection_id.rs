@@ -1,10 +1,16 @@
-// RETIRE_CONNECTION_ID Frame {
-//   Type (i) = 0x19,
-//   Sequence Number (i),
-// }
-
 use crate::varint::{be_varint, VarInt, WriteVarInt};
 
+/// RETIRE_CONNECTION_ID frame.
+///
+/// ```text
+/// RETIRE_CONNECTION_ID Frame {
+///   Type (i) = 0x19,
+///   Sequence Number (i),
+/// }
+/// ```
+///
+/// See [RETIRE_CONNECTION_ID Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-retire_connection_id-frames)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetireConnectionIdFrame {
     pub sequence: VarInt,
@@ -26,6 +32,8 @@ impl super::BeFrame for RetireConnectionIdFrame {
     }
 }
 
+/// Parse a RETIRE_CONNECTION_ID frame from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_retire_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], RetireConnectionIdFrame> {
     use nom::combinator::map;
     map(be_varint, |sequence| RetireConnectionIdFrame { sequence })(input)

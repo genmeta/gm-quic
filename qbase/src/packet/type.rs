@@ -137,9 +137,8 @@ pub mod io {
         }
     }
 
-    /// Implement this trait for buffer types, which can be used to write
-    /// packet types into the buffer.
-    pub trait WritePacketType {
+    /// A [`bytes::BufMut`] extension trait, makes buffer more friendly to write packet type.
+    pub trait WritePacketType: BufMut {
         /// Write the packet type to the buffer.
         fn put_packet_type(&mut self, ty: &Type);
     }

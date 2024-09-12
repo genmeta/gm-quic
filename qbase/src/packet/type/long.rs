@@ -76,9 +76,8 @@ pub mod io {
         }
     }
 
-    /// Implement this trait for buffer, which can be used to write
-    /// the long packet type into the buffer.
-    pub trait WriteLongType {
+    /// A [`bytes::BufMut`] extension trait, makes buffer more friendly to write long packet type.
+    pub trait WriteLongType: BufMut {
         /// Write the long packet type to the buffer.
         fn put_long_type(&mut self, value: &Type);
     }
