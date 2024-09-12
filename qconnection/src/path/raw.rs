@@ -1,7 +1,6 @@
 use std::{
-    ops::Deref,
     sync::{atomic::AtomicBool, Arc},
-    time::{self, Duration},
+    time::Duration,
 };
 
 use qbase::{
@@ -145,6 +144,6 @@ impl RawPath {
 
     /// Sets the receive time to the current instant.
     pub fn update_recv_time(&self) {
-        *self.state.deref().lock().unwrap() = time::Instant::now();
+        self.state.update_recv_time()
     }
 }

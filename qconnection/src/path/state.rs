@@ -1,53 +1,27 @@
 use std::{
+    ops::{Deref, DerefMut},
     sync::{Arc, Mutex},
     time,
 };
 
 use deref_derive::Deref;
-use qbase::{cid::ArcCidCell, util};
+use qbase::cid::ArcCidCell;
 use qrecovery::reliable::ArcReliableFrameDeque;
-
-type PathStateFuture = util::Future<()>;
-
-#[derive(Debug, Default, Clone)]
-struct PathStateReader(Arc<futures::lock::Mutex<Arc<PathStateFuture>>>);
-
-impl PathStateReader {
-    async fn read(&self) {
-        self.0.lock().await.get().await;
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-struct PathStateWriter(Arc<PathStateFuture>);
-
-impl PathStateWriter {
-    fn write(&self) {
-        _ = self.0.assign(());
-    }
-}
+use tokio::sync::Notify;
 
 #[derive(Debug, Clone)]
-pub struct PathState {
-    reader: PathStateReader,
-    writer: PathStateWriter,
-}
-
-impl Default for PathState {
-    fn default() -> Self {
-        let raw = Arc::<PathStateFuture>::default();
-        let writer = PathStateWriter(raw.clone());
-        let reader = PathStateReader(Arc::new(futures::lock::Mutex::new(raw)));
-        Self { reader, writer }
-    }
+pub enum PathState {
+    Active {
+        inactive: Arc<Notify>,
+        cid_cell: ArcCidCell<ArcReliableFrameDeque>,
+        recv_time: time::Instant,
+    },
+    InActive,
 }
 
 #[derive(Debug, Clone, Deref)]
 pub struct ArcPathState {
-    #[deref]
-    recv_time: Arc<Mutex<time::Instant>>,
-    cid: ArcCidCell<ArcReliableFrameDeque>,
-    state: PathState,
+    state: Arc<Mutex<PathState>>,
 }
 
 impl ArcPathState {
@@ -58,9 +32,14 @@ impl ArcPathState {
     /// The background task runs in a loop, comparing the current time with the last recorded receive time. If the difference exceeds the inactivity threshold, the path is transitioned to the InActive state and the task terminates.
     pub fn new(cid: ArcCidCell<ArcReliableFrameDeque>) -> Self {
         let state = Self {
-            recv_time: Arc::new(Mutex::new(time::Instant::now())),
-            cid,
-            state: Default::default(),
+            state: Arc::new(
+                PathState::Active {
+                    inactive: Default::default(),
+                    cid_cell: cid,
+                    recv_time: time::Instant::now(),
+                }
+                .into(),
+            ),
         };
 
         tokio::spawn({
@@ -68,7 +47,10 @@ impl ArcPathState {
             async move {
                 loop {
                     let now = time::Instant::now();
-                    let recv_time = *state.lock().unwrap();
+                    let recv_time = match state.lock().unwrap().deref() {
+                        PathState::Active { recv_time, .. } => *recv_time,
+                        PathState::InActive => break,
+                    };
                     // TODO: 失活时间暂定30s
                     if now.duration_since(recv_time) >= time::Duration::from_secs(30) {
                         state.to_inactive();
@@ -91,7 +73,12 @@ impl ArcPathState {
     /// **Note:** This function does not modify the internal state in any way. It simply provides another handle to the
     /// existing shared state.
     pub async fn has_been_inactivated(&self) {
-        self.state.reader.read().await;
+        let inactive = match self.state.lock().unwrap().deref() {
+            PathState::Active { inactive, .. } => inactive.clone(),
+            PathState::InActive => return,
+        };
+
+        inactive.notified().await;
     }
 
     /// Transitions the internal state of the associated path to `InActive` and wakes up any pending tasks waiting on it.
@@ -104,7 +91,24 @@ impl ArcPathState {
     /// Regardless of the initial state, the function sets the state to `InActive`, signifying that the path is no longer
     /// actively being processed or monitored.
     pub fn to_inactive(&self) {
-        ArcCidCell::retire(&self.cid);
-        self.state.writer.write();
+        let mut state = self.state.lock().unwrap();
+        match state.deref() {
+            PathState::Active {
+                inactive, cid_cell, ..
+            } => {
+                cid_cell.retire();
+                inactive.notify_waiters();
+                *state = PathState::InActive;
+            }
+            PathState::InActive => {}
+        }
+    }
+
+    pub fn update_recv_time(&self) {
+        let mut state = self.state.lock().unwrap();
+        match state.deref_mut() {
+            PathState::Active { recv_time, .. } => *recv_time = time::Instant::now(),
+            PathState::InActive => {}
+        }
     }
 }
