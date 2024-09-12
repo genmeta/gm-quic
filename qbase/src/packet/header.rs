@@ -7,11 +7,13 @@ pub mod long;
 /// All structure definitions related to short headers.
 pub mod short;
 
+#[doc(hidden)]
 pub use long::{
     io::{LongHeaderBuilder, WriteLongHeader, WriteSpecific},
     DataHeader, HandshakeHeader, InitialHeader, LongHeader, RetryHeader, VersionNegotiationHeader,
     ZeroRttHeader,
 };
+#[doc(hidden)]
 pub use short::{io::WriteShortHeader, OneRttHeader};
 
 use super::r#type::{

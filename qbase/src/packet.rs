@@ -9,10 +9,12 @@ pub mod error;
 
 /// Define signal util, such as key phase bit and spin bit.
 pub mod signal;
+#[doc(hidden)]
 pub use signal::{KeyPhaseBit, SpinBit};
 
 /// Definitions of QUIC packet types.
 pub mod r#type;
+#[doc(hidden)]
 pub use r#type::{
     GetPacketNumberLength, LongSpecificBits, ShortSpecificBits, Type, LONG_RESERVED_MASK,
     SHORT_RESERVED_MASK,
@@ -20,6 +22,7 @@ pub use r#type::{
 
 /// Definitions of QUIC packet headers.
 pub mod header;
+#[doc(hidden)]
 pub use header::{
     long, EncodeHeader, GetDcid, GetType, HandshakeHeader, Header, InitialHeader,
     LongHeaderBuilder, OneRttHeader, RetryHeader, VersionNegotiationHeader, ZeroRttHeader,
@@ -27,6 +30,7 @@ pub use header::{
 
 /// Encoding and decoding of packet number
 pub mod number;
+#[doc(hidden)]
 pub use number::{take_pn_len, PacketNumber, WritePacketNumber};
 
 /// Include operations such as decrypting QUIC packets, removing header protection,
