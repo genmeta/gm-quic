@@ -11,10 +11,15 @@ socket2 = { workspace = true }
 libc = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
+cfg-if = { workspace = true }
 
 [dev-dependencies]
 env_logger = "0.11"
 clap.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
 
 [[example]]
 name = "send"

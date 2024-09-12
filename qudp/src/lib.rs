@@ -8,19 +8,30 @@ use std::{
     task::{ready, Context, Poll},
 };
 
-use msg::Encoder;
 use socket2::{Domain, Socket, Type};
 use tokio::io::Interest;
-use unix::DEFAULT_TTL;
-mod msg;
-pub mod unix;
 
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-pub const BATCH_SIZE: usize = 64;
+const DEFAULT_TTL: libc::c_int = 64;
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-pub const BATCH_SIZE: usize = 1;
+cfg_if::cfg_if! {
+    if #[cfg(unix)]{
+        #[path = "unix.rs"]
+        mod uinx;
+        mod msg;
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        pub const BATCH_SIZE: usize = 64;
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        pub const BATCH_SIZE: usize = 1;
+    } else if #[cfg(windows)] {
+        #[path = "windows.rs"]
+        mod windows;
+        pub const BATCH_SIZE: usize = 1;
+    } else {
+        compile_error!("Unsupported platform");
+    }
+}
 
+mod cmsghdr;
 const BUFFER_CAPACITY: usize = 5;
 
 #[derive(Clone, Copy, Debug)]
@@ -28,8 +39,11 @@ pub struct PacketHeader {
     pub src: SocketAddr,
     pub dst: SocketAddr,
     pub ttl: u8,
+    // Explicit congestion notification (ECN)
     pub ecn: Option<u8>,
+    // packet segment size
     pub seg_size: u16,
+    // use gso
     pub gso: bool,
 }
 
@@ -46,7 +60,9 @@ impl Default for PacketHeader {
     }
 }
 
+// [`OffloadStatus`] is an enumeration that represents the status of offload features
 #[derive(PartialEq, Eq, Debug, Default)]
+#[allow(dead_code)]
 enum OffloadStatus {
     #[default]
     Unknown,
@@ -55,6 +71,7 @@ enum OffloadStatus {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct UdpSocketController {
     io: tokio::net::UdpSocket,
     ttl: u8,
@@ -94,20 +111,6 @@ impl UdpSocketController {
     fn local_addr(&self) -> SocketAddr {
         self.io.local_addr().expect("Failed to get local address")
     }
-
-    fn set_ttl(&mut self, ttl: u8) -> io::Result<()> {
-        if self.ttl == ttl {
-            return Ok(());
-        }
-
-        if self.local_addr().is_ipv4() {
-            self.setsockopt(libc::IPPROTO_IP, libc::IP_TTL, ttl as i32);
-        } else {
-            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_UNICAST_HOPS, ttl as i32);
-        }
-        self.ttl = ttl;
-        Ok(())
-    }
 }
 
 trait Io {
@@ -118,16 +121,8 @@ trait Io {
     fn recvmsg(&self, bufs: &mut [IoSliceMut<'_>], hdr: &mut [PacketHeader]) -> io::Result<usize>;
 
     fn setsockopt(&self, level: libc::c_int, name: libc::c_int, value: libc::c_int);
-}
 
-trait Gso: Io {
-    fn max_gso_segments(&self) -> usize;
-
-    fn set_segment_size(encoder: &mut Encoder, segment_size: u16);
-}
-
-trait Gro: Io {
-    fn max_gro_segments(&self) -> usize;
+    fn set_ttl(&mut self, ttl: u8) -> io::Result<()>;
 }
 
 #[derive(Debug, Clone)]

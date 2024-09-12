@@ -3,14 +3,22 @@ use std::{cmp, io::IoSlice, mem, net::SocketAddr, os::fd::AsRawFd};
 use socket2::SockAddr;
 
 use crate::{
-    io,
-    msg::{Encoder, Message},
-    Gro, Gso, Io, OffloadStatus, PacketHeader, UdpSocketController, BATCH_SIZE,
+    cmsghdr::CmsgHdr, io, msg::Message, Io, OffloadStatus, PacketHeader, UdpSocketController,
+    BATCH_SIZE, DEFAULT_TTL,
 };
 
 const OPTION_ON: libc::c_int = 1;
 const OPTION_OFF: libc::c_int = 0;
-pub(super) const DEFAULT_TTL: libc::c_int = 64;
+
+pub trait Gso: Io {
+    fn max_gso_segments(&self) -> usize;
+
+    fn set_segment_size(encoder: &mut CmsgHdr<libc::msghdr>, segment_size: u16);
+}
+
+pub trait Gro: Io {
+    fn max_gro_segments(&self) -> usize;
+}
 
 macro_rules! handle_io_error {
     ($e:expr, $n:expr) => {
@@ -31,12 +39,6 @@ macro_rules! handle_io_error {
     };
 }
 
-#[cfg(any(
-    target_os = "linux",
-    target_os = "freebsd",
-    target_os = "macos",
-    target_os = "ios",
-))]
 impl Io for UdpSocketController {
     fn config(&mut self) -> io::Result<()> {
         let io = socket2::SockRef::from(&self.io);
@@ -174,6 +176,20 @@ impl Io for UdpSocketController {
         msg.decode_recv(recv_hdrs, msg_count, self.local_addr().port());
         Ok(msg_count)
     }
+
+    fn set_ttl(&mut self, ttl: u8) -> io::Result<()> {
+        if self.ttl == ttl {
+            return Ok(());
+        }
+
+        if self.local_addr().is_ipv4() {
+            self.setsockopt(libc::IPPROTO_IP, libc::IP_TTL, ttl as i32);
+        } else {
+            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_UNICAST_HOPS, ttl as i32);
+        }
+        self.ttl = ttl;
+        Ok(())
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
@@ -246,7 +262,6 @@ pub(super) fn sendmsg(
     dst: &SockAddr,
     gso_size: usize,
 ) -> io::Result<usize> {
-    use crate::msg_hdr;
     let mut msg = Message::default();
     msg.prepare_sent(send_hdr, dst, gso_size as u16, 1);
 
@@ -255,7 +270,7 @@ pub(super) fn sendmsg(
         let mut iovec: Vec<IoSlice> = Vec::with_capacity(gso_size);
         iovec.extend(batch.iter().map(|buf| IoSlice::new(buf)));
 
-        let hdr = &mut msg_hdr!(msg.hdrs[0]);
+        let hdr = &mut msg.hdrs[0];
         hdr.msg_iov = iovec.as_ptr() as *mut _;
         hdr.msg_iovlen = iovec.len() as _;
 
@@ -355,8 +370,8 @@ impl Gso for UdpSocketController {
         }
     }
 
-    fn set_segment_size(encoder: &mut Encoder, segment_size: u16) {
-        encoder.push(libc::SOL_UDP, libc::UDP_SEGMENT, segment_size);
+    fn set_segment_size(cmsg: &mut CmsgHdr<libc::msghdr>, segment_size: u16) {
+        cmsg.append(libc::SOL_UDP, libc::UDP_SEGMENT, segment_size);
     }
 }
 
@@ -389,7 +404,7 @@ impl Gso for UdpSocketController {
         1
     }
 
-    fn set_segment_size(_: &mut Encoder, _: u16) {
+    fn set_segment_size(_: &mut CmsgHdr<libc::msghdr>, _: u16) {
         log::error!("set_segment_size is not supported on this platform");
     }
 }

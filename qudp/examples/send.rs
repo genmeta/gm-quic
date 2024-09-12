@@ -6,7 +6,7 @@ use qudp::{ArcUsc, PacketHeader};
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(long, default_value_t = String::from("[::]:0"))]
+    #[arg(long, default_value_t = String::from("127.0.0.1:0"))]
     src: String,
 
     #[arg(long, default_value_t = String::from("127.0.0.1:12345"))]
@@ -15,7 +15,7 @@ struct Args {
     #[arg(long, default_value_t = 1200)]
     msg_size: usize,
 
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 100)]
     msg_count: usize,
 
     #[arg(long, default_value_t = false)]
@@ -24,7 +24,9 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-    env_logger::init();
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Trace)
+        .init();
 
     let args = Args::parse();
     let addr = args.src.parse().unwrap();

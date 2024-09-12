@@ -4,13 +4,15 @@ use qudp::ArcUsc;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(short,long, default_value_t = String::from("[::]:12345"))]
+    #[arg(short,long, default_value_t = String::from("127.0.0.1:12345"))]
     bind: String,
 }
 
 #[tokio::main]
 async fn main() {
-    env_logger::init();
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Trace)
+        .init();
 
     let args = Args::parse();
     let addr = args.bind.parse().unwrap();
