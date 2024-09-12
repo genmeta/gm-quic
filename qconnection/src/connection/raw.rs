@@ -56,10 +56,6 @@ pub struct RawConnection {
 }
 
 impl RawConnection {
-    fn gen_cid() -> ConnectionId {
-        ConnectionId::random_gen_with_mark(8, 0x80, 0x7F)
-    }
-
     pub fn new(
         role: Role,
         local_params: Parameters,
@@ -89,7 +85,7 @@ impl RawConnection {
                 one_rtt_packets_entry.clone(),
             ],
         );
-        let local_cids = ArcLocalCids::new(Self::gen_cid, initial_scid, router_registry);
+        let local_cids = ArcLocalCids::new(initial_scid, router_registry);
         let remote_cids = ArcRemoteCids::new(
             initial_dcid,
             local_params.active_connection_id_limit().into(),
