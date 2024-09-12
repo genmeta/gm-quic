@@ -1,4 +1,4 @@
-/// The latency spin bit in 1-RTT packets
+/// The spin bit in 1-RTT packets
 const SPIN_BIT: u8 = 0x20;
 /// The key phase bit in 1-RTT packets
 const KEY_PHASE_BIT: u8 = 0x04;

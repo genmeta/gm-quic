@@ -7,17 +7,16 @@ use crate::packet::{error::Error, r#type::FIXED_BIT};
 /// of [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
-    /// The Initial packet type, which is 0b00
+    /// Initial packet type, represented by 0b00
     Initial,
-    /// The 0-RTT packet type, which is 0b01
+    /// 0-RTT packet type, represented by 0b01
     ZeroRtt,
-    /// The Handshake packet type, which is 0b10
+    /// Handshake packet type, represented by 0b10
     Handshake,
-    /// The Retry packet type, which is 0b11
+    /// Retry packet type, represented by 0b11
     Retry,
 }
 
-/// The next two bits (those with a mask of 0x30) of byte 0 contain a packet type.
 const LONG_PACKET_TYPE_MASK: u8 = 0x30;
 const INITIAL_PACKET_TYPE: u8 = 0x00;
 const ZERO_RTT_PACKET_TYPE: u8 = 0x10;

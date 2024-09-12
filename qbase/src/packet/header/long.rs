@@ -18,7 +18,7 @@ use crate::{cid::ConnectionId, varint::VarInt};
 ///       |   |   |
 ///       |   |   +---> packet number length
 ///       |   +---> reserved bits, must be zero
-///       +---> long packet type
+///       +---> represent specific long packet type
 /// ```
 ///
 /// See [Long Header Packet Format](https://www.rfc-editor.org/rfc/rfc9000.html#name-long-header-packets)
@@ -58,11 +58,11 @@ pub struct VersionNegotiation {
 }
 
 /// The specific contents of the retry packet, which includes a retry token and a
-/// 16-byte integrity check value.
+/// 16-byte integrity checksum codes.
 ///
-/// After receiving the client's connection, the server may return a retry packet
+/// After accepting the client's new connection, the server may return a retry packet
 /// due to load balancing strategies or simply for address verification,
-/// requiring the client to reconnect to another address.
+/// requiring the client to reconnect to the new address with the token.
 #[derive(Debug, Default, Clone)]
 pub struct Retry {
     pub token: Vec<u8>,
@@ -184,6 +184,7 @@ pub enum DataHeader {
     Handshake(HandshakeHeader),
 }
 
+/// The io module provides functions for parsing and writing long headers.
 pub mod io {
     use std::ops::Deref;
 
@@ -292,7 +293,8 @@ pub mod io {
             self.wrap(Handshake)
         }
 
-        /// Wrap the specific header into a long header.
+        /// Wrap the specific header into the long generic header.
+        /// Return the specific long header.
         pub fn wrap<T>(self, specific: T) -> LongHeader<T> {
             LongHeader {
                 dcid: self.dcid,
@@ -301,9 +303,10 @@ pub mod io {
             }
         }
 
-        /// Parse the input buffer into a long header, and the input buffer would be
-        /// the remaining data of a packet body received from peer,
+        /// Parse a long header from the input buffer,
         /// [nom](https://docs.rs/nom/latest/nom/) parser style.
+        ///
+        /// The input buffer would be the remaining data of the buffer.
         pub fn parse(self, ty: LongType, input: &[u8]) -> nom::IResult<&[u8], Header> {
             match ty {
                 LongType::VersionNegotiation => {
@@ -333,7 +336,6 @@ pub mod io {
     }
 
     /// Writing the specific header into the buffer.
-    /// For 0Rtt and Handshake, their headers are empty, so there is nothing to write.
     pub trait WriteSpecific<S> {
         /// Write the specific header content.
         fn put_specific(&mut self, _specific: &S) {}
@@ -364,7 +366,9 @@ pub mod io {
         }
     }
 
+    /// 0-Rtt headers are empty, so there is nothing to write.
     impl<T: BufMut> WriteSpecific<ZeroRtt> for T {}
+    /// Handshake headers are empty, so there is nothing to write.
     impl<T: BufMut> WriteSpecific<Handshake> for T {}
 
     /// Write the long header content, including the packet type, destination connection ID,
