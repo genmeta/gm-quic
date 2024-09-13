@@ -12,13 +12,16 @@ use futures::{task::AtomicWaker, Future};
 use thiserror::Error;
 
 use crate::{
-    config::Parameters,
     error::Error as QuicError,
     frame::{DataBlockedFrame, MaxDataFrame, ReceiveFrame},
     varint::VarInt,
 };
 
-/// All data sent in STREAM frames counts toward this limit.
+/// Connection-level global Stream Flow Control in the sending direction,
+/// regulated by the peer's `initial_max_data` transport parameter
+/// and updated by the [`MaxDataFrame`] sent by the peer.
+///
+/// Private controler in [`ArcSendControler`].
 #[derive(Debug, Default)]
 struct RawSendControler {
     total_sent: u64,
@@ -76,18 +79,40 @@ impl RawSendControler {
     }
 }
 
+/// Shared connection-level Stream Flow Control in the sending direction,
+/// regulated by the peer's `initial_max_data` transport parameter
+/// and updated by the [`MaxDataFrame`] sent by the peer.
+///
+/// Only the new data sent in [`StreamFrame`](`crate::frame::StreamFrame`) counts toward this limit.
+/// Retransmitted stream data does not count towards this limit.
+///
+/// When flow control is 0,
+/// retransmitted stream data can still be sent,
+/// but new data cannot be sent.
+/// When the stream has no data to retransmit,
+/// meaning all old data has been successfully acknowledged,
+/// it is necessary to wait for the receiver's [`MaxDataFrame`]`
+/// to increase the connection-level flow control limit.
+///
+/// To avoid having to pause sending tasks while waiting for the [`MaxDataFrame`],
+/// the receiver should promptly send the [`MaxDataFrame`]
+/// to increase the flow control limit,
+/// ensuring that the sender always has enough space to send smoothly.
+/// An extreme yet simple strategy is to set the flow control limit to infinity from the start,
+/// causing the connection-level flow control to never reach its limit,
+/// effectively rendering it useless.
 #[derive(Clone, Debug)]
 pub struct ArcSendControler(Arc<Mutex<Result<RawSendControler, QuicError>>>);
 
 impl ArcSendControler {
-    /// Creates a new `SendControler` with the specified initial maximum data.
+    /// Creates a new [`ArcSendControler`] with `initial_max_data`.
     ///
     /// `initial_max_data` should be known to each other after the handshake is
-    /// completed. If sending data in 0RTT space, `initial_max_data` should be
+    /// completed. If sending data in 0-RTT space, `initial_max_data` should be
     /// the value from the previous connection.
     ///
     /// `initial_max_data` is allowed to be 0, which is reasonable when creating a
-    /// connection without knowing the peer's setting.
+    /// connection without knowing the peer's `iniitial_max_data` setting.
     pub fn with_initial(initial_max_data: u64) -> Self {
         Self(Arc::new(Mutex::new(Ok(RawSendControler::with_initial(
             initial_max_data,
@@ -101,13 +126,24 @@ impl ArcSendControler {
         }
     }
 
-    /// For external listening, whether it is blocked.
-    /// If so, a DataBlockedFrame needs to be sent to the other party.
+    /// For external monitoring, whether it is blocked.
+    /// If blocked, a [`DataBlockedFrame`] needs to be sent to the other party.
     pub fn would_block(&self) -> WouldBlock {
         WouldBlock(self.clone())
     }
 
-    /// Apply for sending data. If it has meet error, it will return Err directly.
+    /// Return the available size of new data bytes that can be sent to peer.
+    /// If some QUIC error occured, it would return the error directly.
+    ///
+    /// # Note
+    ///
+    /// After obtaining flow control,
+    /// it is likely that new stream data will be sent subsequently,
+    /// and then updating the flow control.
+    /// During this process,
+    /// other sending tasks must not modify the flow control simultaneously.
+    /// Therefore, the flow controller in the period between obtaining flow control
+    /// and finally updating(or maybe not) the flow control should be exclusive.
     pub fn credit(&self) -> Result<Credit<'_>, QuicError> {
         let guard = self.0.lock().unwrap();
         if let Err(e) = guard.deref() {
@@ -116,10 +152,16 @@ impl ArcSendControler {
         Ok(Credit(guard))
     }
 
-    /// Only when new data needs to be sent but is restricted by flow control, the send
-    /// task will be registered on the flow control. When the flow control is 0, it may
-    /// not require to register the send task on the flow control, as there may still be
-    /// retransmission data that can be sent.
+    /// Register a waker to be woken up when the flow control limit is increased.
+    ///
+    /// When flow control is 0,
+    /// retransmitted stream data can still be sent,
+    /// but new data cannot be sent.
+    /// When the stream has no data to retransmit,
+    /// meaning all old data has been successfully acknowledged.
+    /// Meanwhile, it is necessary to register the waker
+    /// waiting for the receiver's [`MaxDataFrame`]
+    /// to increase the connection-level flow control limit.
     pub fn register_waker(&self, waker: Waker) {
         let mut guard = self.0.lock().unwrap();
         if let Ok(inner) = guard.deref_mut() {
@@ -127,7 +169,8 @@ impl ArcSendControler {
         }
     }
 
-    /// Flow control can only be terminated if the connection encounters an error
+    /// Connection-level Stream Flow Control can only be terminated
+    /// if the connection encounters an error
     pub fn on_error(&self, error: &QuicError) {
         let mut guard = self.0.lock().unwrap();
         if guard.deref().is_err() {
@@ -140,7 +183,8 @@ impl ArcSendControler {
     }
 }
 
-/// Increasing Flow Control Limits by receiving a MAX_DATA frame from peer.
+/// [`ArcSendControler`] need to receive [`MaxDataFrame`] from peer
+/// to increase flow control limit continuely.
 impl ReceiveFrame<MaxDataFrame> for ArcSendControler {
     type Output = ();
 
@@ -150,6 +194,8 @@ impl ReceiveFrame<MaxDataFrame> for ArcSendControler {
     }
 }
 
+/// Represents a future that resolves when the flow control limit is reached.
+/// At that time, a [`DataBlockedFrame`] needs to be sent to the peer.
 pub struct WouldBlock(ArcSendControler);
 
 impl Future for WouldBlock {
@@ -164,11 +210,15 @@ impl Future for WouldBlock {
     }
 }
 
-/// Represents the credit for sending data.
+/// Exclusive access to the flow control limit.
+///
+/// As mentioned in the [`ArcSendControler::credit`] method,
+/// the flow controller in the period between obtaining flow control
+/// and finally updating(or maybe not) the flow control should be exclusive.
 pub struct Credit<'a>(MutexGuard<'a, Result<RawSendControler, QuicError>>);
 
 impl Credit<'_> {
-    /// Return the available amount of data that can be sent.
+    /// Return the available amount of new stream data that can be sent.
     pub fn available(&self) -> usize {
         match self.0.deref() {
             Ok(inner) => (inner.max_data - inner.total_sent) as usize,
@@ -176,7 +226,7 @@ impl Credit<'_> {
         }
     }
 
-    /// Updates the amount of data sent.
+    /// Updates the amount of new data sent.
     pub fn post_sent(mut self, amount: usize) {
         match self.0.deref_mut() {
             Ok(inner) => {
@@ -193,12 +243,13 @@ impl Credit<'_> {
     }
 }
 
-/// Represents an overflow error when the flow control limit is exceeded.
+/// Overflow error, i.e. the flow control limit is exceeded while receiving.
+/// See [`ErrorKind::FlowControl`](`crate::error::ErrorKind::FlowControl`).
 #[derive(Debug, Clone, Copy, Error)]
 #[error("Flow Control exceed {0} bytes on receiving")]
 pub struct Overflow(usize);
 
-/// Receiver flow controller for managing the flow of incoming data packets.
+/// Receiver's flow controller for managing the flow limit of incoming stream data.
 #[derive(Debug, Default)]
 struct RecvController {
     total_rcvd: AtomicU64,
@@ -209,7 +260,7 @@ struct RecvController {
 }
 
 impl RecvController {
-    /// Creates a new `RecvController` with the specified initial maximum data.
+    /// Creates a new [`RecvController`] with the specified `initial_max_data`.
     fn with_initial(initial_max_data: u64) -> Self {
         Self {
             total_rcvd: AtomicU64::new(0),
@@ -262,8 +313,8 @@ impl RecvController {
         }
     }
 
-    /// Closes the receiver.
-    fn on_error(&self) {
+    /// Terminate the receiver's flow control.
+    fn terminate(&self) {
         if !self.is_closed.swap(true, Ordering::Release) {
             // Call wake() precisely once to prevent unnecessary wake-ups caused by multiple close calls.
             self.waker.wake();
@@ -271,31 +322,58 @@ impl RecvController {
     }
 }
 
+/// Shared receiver's flow controller for managing the incoming stream data flow.
+///
+/// Flow control on the receiving end,
+/// primarily used to regulate the data flow sent by the sender.
+/// Since the receive buffer is limited,
+/// if the application layer cannot read the data in time,
+/// the receive buffer will not expand, and the sender must be suspended.
+///
+/// The sender must never send new stream data exceeding
+/// the flow control limit of the receiver advertised,
+/// otherwise it will be considered a [`FlowControl`](`crate::error::ErrorKind::FlowControl`) error.
+///
+/// Additionally, the flow control on the receiving end also needs to
+/// promptly send a [`MaxDataFrame`] to the sender after the application layer reads the data,
+/// to expand the receive window since more receive buffer space is freed up,
+/// and to inform the sender that more data can be sent.
 #[derive(Debug, Default, Clone)]
 pub struct ArcRecvController(Arc<RecvController>);
 
 impl ArcRecvController {
-    /// Creates a new `ArcRecvController` with the specified initial maximum data.
+    /// Creates a new [`ArcRecvController`] with local `initial_max_data` transport parameter.
     pub fn with_initial(initial_max_data: u64) -> Self {
         Self(Arc::new(RecvController::with_initial(initial_max_data)))
     }
 
-    /// Handles the event when new data is received.
+    /// Updates the total received data size and checks if the flow control limit is exceeded
+    /// when new stream data is received.
+    ///
+    /// As mentioned in [`ArcSendControler`], if the flow control limit is exceeded,
+    /// an [`Overflow`] error will be returned.
     pub fn on_new_rcvd(&self, amount: usize) -> Result<usize, Overflow> {
         self.0.on_new_rcvd(amount)
     }
 
-    /// Polls for an increase in the receive window limit.
+    /// Return a future that resolves when the receive window limit is increased.
+    /// At that time, a [`MaxDataFrame`] needs to be sent to the sender.
+    /// And this is a continuous monitoring process until the connection ends.
     pub fn incr_limit(&self) -> IncrLimit {
         IncrLimit(self.0.clone())
     }
 
-    /// Closes the receiver if connection meets error.
-    pub fn on_error(&self) {
-        self.0.on_error();
+    /// Terminate the receiver's flow control if QUIC connection error occurs.
+    pub fn terminate(&self) {
+        self.0.terminate();
     }
 }
 
+/// [`ArcRecvController`] need to receive [`DataBlockedFrame`] from peer.
+///
+/// However, the receiver may also not be able to immediately expand the receive window
+/// and must wait for the application layer to read the data to free up more space
+/// in the receive buffer.
 impl ReceiveFrame<DataBlockedFrame> for ArcRecvController {
     type Output = ();
 
@@ -305,6 +383,11 @@ impl ReceiveFrame<DataBlockedFrame> for ArcRecvController {
     }
 }
 
+/// `IncrLimit` future resolves when the receive window limit is increased,
+/// which is returned by [`ArcRecvController::incr_limit`].
+///
+/// At that time, a [`MaxDataFrame`] needs to be sent to the sender.
+/// And this is a continuous monitoring process until the connection ends.
 pub struct IncrLimit(Arc<RecvController>);
 
 impl Future for IncrLimit {
@@ -315,7 +398,8 @@ impl Future for IncrLimit {
     }
 }
 
-/// Represents a flow controller for managing the flow of data.
+/// Connection-level flow controller, including [`ArcSendControler`] as the sending side
+/// and [`ArcRecvController`] as the receiving side.
 #[derive(Debug, Clone)]
 pub struct FlowController {
     pub sender: ArcSendControler,
@@ -324,28 +408,42 @@ pub struct FlowController {
 
 impl FlowController {
     /// Creates a new `FlowController` with the specified initial send and receive window sizes.
-    pub fn with_initial(peer_initial_max_data: u64, local_initial_max_data: u64) -> Self {
+    ///
+    /// Unfortunately, at the beginning, we do not know the peer's `initial_max_data` setting.
+    /// Therefore, peer's `initial_max_data` can be set to 0 initially,
+    /// and then updated later after obtaining the peer's `initial_max_data` setting.
+    pub fn with_parameter(peer_initial_max_data: u64, local_initial_max_data: u64) -> Self {
         Self {
             sender: ArcSendControler::with_initial(peer_initial_max_data),
             recver: ArcRecvController::with_initial(local_initial_max_data),
         }
     }
 
-    pub fn apply_transport_parameters(&self, params: &Parameters) {
-        let max_data = params.initial_max_data();
-        self.sender.increase_limit(max_data.into_inner());
+    /// Updates the initial send window size,
+    /// which should be the peer's `initial_max_data` transport parameter.
+    /// So once the peer's [`Parameters`](`crate::config::Parameters`) are obtained,
+    /// this method should be called immediately.
+    pub fn reset_send_window(&self, snd_wnd: u64) {
+        self.sender.increase_limit(snd_wnd);
     }
 
+    /// Returns the connection-level flow controller in the sending direction.
     pub fn sender(&self) -> ArcSendControler {
         self.sender.clone()
     }
 
+    /// Returns the connection-level flow controller in the receiving direction.
     pub fn recver(&self) -> ArcRecvController {
         self.recver.clone()
     }
 
+    /// Handles the error event of the QUIC connection.
+    ///
+    /// It will makes
+    /// the connection-level stream flow controller in the sending direction become unavailable,
+    /// and the connection-level stream flow controller in the receiving direction terminate.
     pub fn on_error(&self, error: &QuicError) {
         self.sender.on_error(error);
-        self.recver.on_error();
+        self.recver.terminate();
     }
 }
