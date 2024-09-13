@@ -80,29 +80,54 @@ pub trait BeFrame {
     }
 }
 
-/// The sum type of all the frame types.
+/// The sum type of all the core QUIC frame types.
+///
+/// See [table-3](https://www.rfc-editor.org/rfc/rfc9000.html#table-3)
+/// and [frame types and formats](https://www.rfc-editor.org/rfc/rfc9000.html#name-frame-types-and-formats)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum FrameType {
+    /// PADDED frame, see [`PaddingFrame`].
     Padding,
+    /// PING frame, see [`PingFrame`].
     Ping,
+    /// ACK frame, see [`AckFrame`].
     Ack(u8),
+    /// RESET_STREAM frame, see [`ResetStreamFrame`].
     ResetStream,
+    /// STOP_SENDING frame, see [`StopSendingFrame`].
     StopSending,
+    /// CRYPTO frame, see [`CryptoFrame`].
     Crypto,
+    /// NEW_TOKEN frame, see [`NewTokenFrame`].
     NewToken,
+    /// STREAM frame, see [`StreamFrame`].
     Stream(u8),
+    /// MAX_DATA frame, see [`MaxDataFrame`].
     MaxData,
+    /// MAX_STREAM_DATA frame, see [`MaxStreamDataFrame`].
     MaxStreamData,
+    /// MAX_STREAMS frame, see [`MaxStreamsFrame`].
     MaxStreams(u8),
+    /// DATA_BLOCKED frame, see [`DataBlockedFrame`].
     DataBlocked,
+    /// STREAM_DATA_BLOCKED frame, see [`StreamDataBlockedFrame`].
     StreamDataBlocked,
+    /// STREAMS_BLOCKED frame, see [`StreamsBlockedFrame`].
     StreamsBlocked(u8),
+    /// NEW_CONNECTION_ID frame, see [`NewConnectionIdFrame`].
     NewConnectionId,
+    /// RETIRE_CONNECTION_ID frame, see [`RetireConnectionIdFrame`].
     RetireConnectionId,
+    /// PATH_CHALLENGE frame, see [`PathChallengeFrame`].
     PathChallenge,
+    /// PATH_RESPONSE frame, see [`PathResponseFrame`].
     PathResponse,
+    /// CONNECTION_CLOSE frame, see [`ConnectionCloseFrame`].
     ConnectionClose(u8),
+    /// HANDSHAKE_DONE frame, see [`HandshakeDoneFrame`].
     HandshakeDone,
+    /// DATAGRAM frame, see [`DatagramFrame`].
     Datagram(u8),
 }
 
@@ -244,11 +269,17 @@ pub fn be_frame_type(input: &[u8]) -> nom::IResult<&[u8], FrameType, Error> {
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
 pub enum StreamCtlFrame {
+    /// RESET_STREAM frame, see [`ResetStreamFrame`].
     ResetStream(ResetStreamFrame),
+    /// STOP_SENDING frame, see [`StopSendingFrame`].
     StopSending(StopSendingFrame),
+    /// MAX_STREAM_DATA frame, see [`MaxStreamDataFrame`].
     MaxStreamData(MaxStreamDataFrame),
+    /// MAX_STREAMS frame, see [`MaxStreamsFrame`].
     MaxStreams(MaxStreamsFrame),
+    /// STREAM_DATA_BLOCKED frame, see [`StreamDataBlockedFrame`].
     StreamDataBlocked(StreamDataBlockedFrame),
+    /// STREAMS_BLOCKED frame, see [`StreamsBlockedFrame`].
     StreamsBlocked(StreamsBlockedFrame),
 }
 
@@ -256,12 +287,19 @@ pub enum StreamCtlFrame {
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
 pub enum ReliableFrame {
+    /// NEW_TOKEN frame, see [`NewTokenFrame`].
     NewToken(NewTokenFrame),
+    /// MAX_DATA frame, see [`MaxDataFrame`].
     MaxData(MaxDataFrame),
+    /// DATA_BLOCKED frame, see [`DataBlockedFrame`].
     DataBlocked(DataBlockedFrame),
+    /// NEW_CONNECTION_ID frame, see [`NewConnectionIdFrame`].
     NewConnectionId(NewConnectionIdFrame),
+    /// RETIRE_CONNECTION_ID frame, see [`RetireConnectionIdFrame`].
     RetireConnectionId(RetireConnectionIdFrame),
+    /// HANDSHAKE_DONE frame, see [`HandshakeDoneFrame`].
     HandshakeDone(HandshakeDoneFrame),
+    /// STREAM control frame, see [`StreamCtlFrame`].
     Stream(StreamCtlFrame),
 }
 
@@ -270,21 +308,37 @@ pub enum ReliableFrame {
 /// The data frames' body are stored in the second field.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Frame {
+    /// PADDING frame, see [`PaddingFrame`].
     Padding(PaddingFrame),
+    /// PING frame, see [`PingFrame`].
     Ping(PingFrame),
+    /// ACK frame, see [`AckFrame`].
     Ack(AckFrame),
+    /// CONNECTION_CLOSE frame, see [`ConnectionCloseFrame`].
     Close(ConnectionCloseFrame),
+    /// NEW_TOKEN frame, see [`NewTokenFrame`].
     NewToken(NewTokenFrame),
+    /// MAX_DATA frame, see [`MaxDataFrame`].
     MaxData(MaxDataFrame),
+    /// DATA_BLOCKED frame, see [`DataBlockedFrame`].
     DataBlocked(DataBlockedFrame),
+    /// NEW_CONNECTION_ID frame, see [`NewConnectionIdFrame`].
     NewConnectionId(NewConnectionIdFrame),
+    /// RETIRE_CONNECTION_ID frame, see [`RetireConnectionIdFrame`].
     RetireConnectionId(RetireConnectionIdFrame),
+    /// HANDSHAKE_DONE frame, see [`HandshakeDoneFrame`].
     HandshakeDone(HandshakeDoneFrame),
+    /// PATH_CHALLENGE frame, see [`PathChallengeFrame`].
     Challenge(PathChallengeFrame),
+    /// PATH_RESPONSE frame, see [`PathResponseFrame`].
     Response(PathResponseFrame),
+    /// Stream control frame, see [`StreamCtlFrame`].
     StreamCtl(StreamCtlFrame),
+    /// STREAM frame and its data, see [`StreamFrame`].
     Stream(StreamFrame, Bytes),
+    /// CRYPTO frame and its data, see [`CryptoFrame`].
     Crypto(CryptoFrame, Bytes),
+    /// DATAGRAM frame and its data, see [`DatagramFrame`].
     Datagram(DatagramFrame, Bytes),
 }
 
