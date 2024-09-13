@@ -8,25 +8,27 @@ use thiserror::Error;
 
 use super::varint::{be_varint, VarInt, WriteVarInt};
 
-/**
- * QUIC有4种流类型，对应着4个流ID空间，分别是：
- * | 低2位 | 流类型 ｜
- * | 0x00 | 客户端创建的双向流 |
- * | 0x01 | 服务端创建的双向流 |
- * | 0x02 | 客户端创建的单向流 |
- * | 0x03 | 服务端创建的单向流 |
- *
- * 低2位，恰好构成一个大小为4的数组的索引，所以可以用数组来表示流类型的StreamId状态。
- * 每个QUIC连接都维护着一个这样的状态。
- *
- * 一个QUIC连接，同时只能拥有一个角色，对端对应着另外一个角色。
- * 需要注意的是，同一主机的QUIC连接的角色并非一成不变的，比如客户端可以变成服务端。
- *
- * 一个流ID是一个62比特的整数（0~2^62-1），这是为了便于VarInt编码。
- * 低2位又是类型，所以每一个类型的流ID总共有2^60个。
- */
-
-/// ## Example
+/// Roles in the QUIC protocol, including client and server.
+///
+/// The least significant bit (0x01) of the [`StreamId`] identifies the initiator role of the stream.
+/// Client-initiated streams have even-numbered stream IDs (with the bit set to 0),
+/// and server-initiated streams have odd-numbered stream IDs (with the bit set to 1).
+/// See [section-2.1-3](https://www.rfc-editor.org/rfc/rfc9000.html#section-2.1-3)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html).
+///
+/// # Note
+///
+/// As a protocol capable of multiplexing streams, QUIC is different from traditional
+/// HTTP protocols for clients and servers.
+/// In the QUIC protocol, it is not only the client that can actively open a new stream;
+/// the server can also actively open a new stream to push some data to the client.
+/// In fact, in a new stream, the server can initiate an HTTP3 request to the client,
+/// and the client, upon receiving the request, responds back to the server.
+/// In this case, the client surprisingly plays the role of the traditional "server",
+/// which is quite fascinating.
+///
+/// # Example
+///
 /// ```
 /// use qbase::streamid::Role;
 ///
@@ -62,6 +64,18 @@ impl ops::Not for Role {
     }
 }
 
+/// Sum type for stream directions.
+///
+/// Streams can be unidirectional or bidirectional.
+/// Unidirectional streams carry data in one direction: from the initiator of the stream to its peer.
+/// Bidirectional streams allow for data to be sent in both directions.
+/// See [section-2.1-1](https://www.rfc-editor.org/rfc/rfc9000.html#section-2.1-1)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html).
+///
+/// The second least significant bit (0x02) of the [`StreamId`] distinguishes between
+/// bidirectional streams (with the bit set to 0) and unidirectional streams (with the bit set to 1).
+/// See [section-2.1-4](https://www.rfc-editor.org/rfc/rfc9000.html#section-2.1-4)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html).
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Dir {
     /// Data flows in both directions
@@ -79,19 +93,39 @@ impl fmt::Display for Dir {
     }
 }
 
+/// Streams are identified within a connection by a numeric value,
+/// referred to as the stream ID.
+///
+/// A stream ID is a 62-bit integer (0 to 262-1) that is unique for all streams on a connection.
+/// Stream IDs are encoded as [`VarInt`].
+/// A QUIC endpoint MUST NOT reuse a stream ID within a connection.
+///
+/// There are four types of streams in QUIC, divided according to the role and direction of the stream.
+/// See [Stream ID Types](https://www.rfc-editor.org/rfc/rfc9000.html#name-stream-id-types)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct StreamId(u64);
 
+/// Maximum ID for each type of stream.
+///
+/// [`StreamId`] is encoded with [`VarInt`].
+/// After removing the lowest 2 bits for direction and role,
+/// the remaining 60 bits are used to represent the actual ID for each type of stream,
+/// so its maximum range cannot exceed 2^60.
 pub const MAX_STREAM_ID: u64 = (1 << 60) - 1;
 
 impl StreamId {
-    /// It is prohibited to directly create a StreamId from external sources. StreamId can
-    /// only be allocated incrementally by the StreamId manager or received from the peer.
+    /// Create a new stream ID with the given role, direction, and ID.
+    ///
+    /// It is prohibited to directly create a StreamId from external sources.
+    /// StreamId can only be allocated incrementally by proactively creating new streams locally.
+    /// or accepting new streams opened by peer.
     fn new(role: Role, dir: Dir, id: u64) -> Self {
         assert!(id <= MAX_STREAM_ID);
         Self((((id << 1) | (dir as u64)) << 1) | (role as u64))
     }
 
+    /// Returns the role of this stream ID.
     pub fn role(&self) -> Role {
         if self.0 & 0x1 == 0 {
             Role::Client
@@ -100,6 +134,7 @@ impl StreamId {
         }
     }
 
+    /// Returns the direction of this stream ID.
     pub fn dir(&self) -> Dir {
         if self.0 & 2 == 0 {
             Dir::Bi
@@ -108,6 +143,7 @@ impl StreamId {
         }
     }
 
+    /// Get the actual ID of this stream, removing the lowest 2 bits for direction and role.
     pub fn id(&self) -> u64 {
         self.0 >> 2
     }
@@ -125,6 +161,7 @@ impl StreamId {
         self.0 = (id << 2) | (self.0 & 0x3);
     }
 
+    /// Return the encoding size of this stream ID.
     pub fn encoding_size(&self) -> usize {
         VarInt::from(*self).encoding_size()
     }
@@ -154,13 +191,16 @@ impl From<StreamId> for VarInt {
     }
 }
 
-/// nom parser for stream id
+/// Parse a stream ID from the input bytes,
+/// [nom](https://docs.rs/nom/6.2.1/nom/) parser style.
 pub fn be_streamid(input: &[u8]) -> nom::IResult<&[u8], StreamId> {
     use nom::combinator::map;
     map(be_varint, StreamId::from)(input)
 }
 
-pub trait WriteStreamId {
+/// A BufMut extension trait for writing a stream ID.
+pub trait WriteStreamId: bytes::BufMut {
+    /// Write a stream ID to the buffer.
     fn put_streamid(&mut self, stream_id: &StreamId);
 }
 
@@ -170,16 +210,28 @@ impl<T: bytes::BufMut> WriteStreamId for T {
     }
 }
 
+/// Exceed the maximum stream ID limit error,
+/// similar with [`ErrorKind::StreamLimit`](`crate::error::ErrorKind::StreamLimit`).
+///
+/// This error occurs when the stream ID in the received stream-related frames
+/// exceeds the maximum stream ID limit.
 #[derive(Debug, PartialEq, Error)]
 #[error("{0} exceed limit: {1}")]
 pub struct ExceedLimitError(StreamId, StreamId);
 
+/// Accept the stream ID received from peer,
+/// returned by [`ArcRemoteStreamIds::try_accept_sid`].
 #[derive(Debug, PartialEq)]
 pub enum AcceptSid {
+    /// Indicates that the stream ID is already exist.
     Old,
+    /// Indicates that the stream ID is new and need to create.
+    /// The `NeedCreate` inside indicates the range of stream IDs that need to be created together.
     New(NeedCreate),
 }
 
+/// The range of stream IDs that need to be created,
+/// see [`ArcRemoteStreamIds::try_accept_sid`] and [`AcceptSid::New`].
 #[derive(Debug, PartialEq)]
 pub struct NeedCreate {
     start: StreamId,
@@ -200,6 +252,7 @@ impl Iterator for NeedCreate {
     }
 }
 
+/// Local stream IDs management.
 #[derive(Debug)]
 struct LocalStreamIds {
     role: Role,                 // Our role
@@ -209,6 +262,8 @@ struct LocalStreamIds {
 }
 
 impl LocalStreamIds {
+    /// Create a new [`LocalStreamIds`] with the given role,
+    /// and maximum number of streams that can be created in each [`Dir`].
     fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64) -> Self {
         Self {
             role,
@@ -224,10 +279,12 @@ impl LocalStreamIds {
         }
     }
 
+    /// Returns local role.
     fn role(&self) -> Role {
         self.role
     }
 
+    /// Update the maximum stream ID that can be opened locally in the given direction.
     fn permit_max_sid(&mut self, dir: Dir, val: u64) {
         assert!(val <= MAX_STREAM_ID);
         let sid = &mut self.max[dir as usize];
@@ -259,16 +316,19 @@ impl LocalStreamIds {
     }
 }
 
+/// Remote stream IDs management.
 #[derive(Debug)]
 struct RemoteStreamIds {
     role: Role,                 // The role of the peer
     max: [StreamId; 2],         // The maximum stream ID that peer can create
     unallocated: [StreamId; 2], // The stream ID that peer has not used
     concurrency: [u64; 2],      // The concurrency of streams that peer can create
-    wakers: [Option<Waker>; 2], // When the stream ID created by peer is close to the upper limit, wake us up to update the upper limit in time.
+    wakers: [Option<Waker>; 2], // When the stream ID created by peer is close to the upper limit, wake up to update the upper limit in time.
 }
 
 impl RemoteStreamIds {
+    /// Create a new [`RemoteStreamIds`] with the given role,
+    /// and maximum number of streams that can be created by peer in each [`Dir`].
     fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64) -> Self {
         Self {
             role,
@@ -285,6 +345,7 @@ impl RemoteStreamIds {
         }
     }
 
+    /// Returns the role of the peer.
     fn role(&self) -> Role {
         self.role
     }
@@ -329,12 +390,15 @@ impl RemoteStreamIds {
     }
 }
 
-/// Management of stream IDs created actively by us. The maximum stream ID
-/// that can be created is controlled by the MaxStream frame from the peer.
+/// Management of stream IDs that can ben allowed to use locally.
+/// The maximum stream ID that can be created is limited by the
+/// [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`) from the peer.
 #[derive(Debug, Clone)]
 pub struct ArcLocalStreamIds(Arc<Mutex<LocalStreamIds>>);
 
 impl ArcLocalStreamIds {
+    /// Create a new [`ArcLocalStreamIds`] with the given role,
+    /// and maximum number of streams that can be created in each direction.
     pub fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64) -> Self {
         Self(Arc::new(Mutex::new(LocalStreamIds::new(
             role,
@@ -343,32 +407,72 @@ impl ArcLocalStreamIds {
         ))))
     }
 
+    /// Returns local role
     pub fn role(&self) -> Role {
         self.0.lock().unwrap().role()
     }
 
-    /// The maximum stream ID that we can create is limited by peer. Therefore, it mainly
-    /// depends on the peer's attitude and is subject to the MAX_STREAM_FRAME frame sent by peer.
+    /// Update the maximum stream ID that can be allowed to use locally.
+    ///
+    /// The maximum stream ID that can be allowed to use is limited by peer.
+    /// Therefore, it mainly depends on the peer's attitude
+    /// and is subject to the [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`)
+    /// received from peer.
     pub fn permit_max_sid(&self, dir: Dir, val: u64) {
         self.0.lock().unwrap().permit_max_sid(dir, val);
     }
 
-    /// We are creating a new stream, and it should be incremented based on the previous stream ID. However,
-    /// it should not exceed the maximum stream ID limit set by peer. Returning None indicates
-    /// that it is limited to create a new stream, and we need to send a STREAMS_BLOCKED frame
-    /// to inform peer to increase MAX_STREAMS. It is also possible that we have reached the
-    /// maximum stream ID and cannot increase it further. In this case, we should close the connection
-    /// because sending MAX_STREAMS will not be received and would violate the protocol.
+    /// Asynchronously allocate the next new [`StreamId`] in the `dir` direction.
+    ///
+    /// When the application layer wants to proactively open a new stream,
+    /// it needs to first apply to allocate the next unused [`StreamId`].
+    /// Note that streams on a QUIC connection usually have a maximum concurrency limit,
+    /// so when requesting a [`StreamId`], it may not be possible to obtain one due to
+    /// reaching the maximum concurrency limit.
+    /// However, this is temporary. When the active current streams end,
+    /// the peer will expand the maximum stream ID limit through a
+    /// [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`),
+    /// allowing the allocation of the [`StreamId`] meanwhile.
+    ///
+    /// Return Pending when the stream IDs in the `dir` direction are exhausted,
+    /// until receiving the [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`) from peer.
+    ///
+    /// Return None if the stream IDs in the `dir` direction finally exceed 2^60,
+    /// but it is very very hard to happen.
     pub fn poll_alloc_sid(&self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<StreamId>> {
         self.0.lock().unwrap().poll_alloc_sid(cx, dir)
     }
 }
 
-/// Management of stream IDs used by the peer.
+/// Shared remote stream IDs, mainly controls and monitors the stream IDs
+/// in the received stream-related frames from peer.
+///
+/// Checks whether the stream IDs exceed the limit ,and creates them if necessary.
+/// And sends a [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`)
+/// to the peer to update the maximum stream ID limit in time.
+///
+/// # Note
+///
+/// After receiving the peer's stream-related frames,
+/// due to possible out-of-order reception issues,
+/// the stream IDs in these frames may have gaps,
+/// i.e., they may not be continuous with the previous stream ID of the same type.
+/// So before a stream is created,
+/// all streams of the same type with lower-numbered stream IDs MUST be created.
+/// This ensures that the creation order for streams is consistent on both endpoints
 #[derive(Debug, Clone)]
 pub struct ArcRemoteStreamIds(Arc<Mutex<RemoteStreamIds>>);
 
 impl ArcRemoteStreamIds {
+    /// Create a new [`ArcRemoteStreamIds`] with the given role,
+    /// and maximum number of streams that can be created by peer in each direction.
+    ///
+    /// The maximum number of streams that can be created by peer in each direction
+    /// are `initial_max_streams_bidi` and `initial_max_sterams_uni`
+    /// in local [`Parameters`](`crate::config::Parameters`).
+    /// See [section-18.2-4.21](https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2-4.21)
+    /// and [section-18.2-4.23](https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2-4.23)
+    /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
     pub fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64) -> Self {
         Self(Arc::new(Mutex::new(RemoteStreamIds::new(
             role,
@@ -377,21 +481,50 @@ impl ArcRemoteStreamIds {
         ))))
     }
 
+    /// Returns the role of the peer.
     pub fn role(&self) -> Role {
         self.0.lock().unwrap().role()
     }
 
-    /// RFC9000: Before a stream is created, all streams of the same type
+    /// Try to accept the stream ID received from peer.
+    ///
+    /// Only if this stream ID must be created by peer, this function needs to be called.
+    ///
+    /// This stream ID may belong to an already existing stream or a new stream that does not yet exist.
+    /// If it is the latter, a new stream needs to be created.
+    /// Before a stream is created, all streams of the same type
     /// with lower-numbered stream IDs MUST be created.
+    /// See [section-3.2-6](https://www.rfc-editor.org/rfc/rfc9000.html#section-3.2-6)
+    /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
+    ///
+    /// # Return
+    ///
+    /// - Return [`ExceedLimitError`] if the stream ID exceeds the maximum stream ID limit.
+    /// - Return [`AcceptSid::Old`] if the stream ID is already exist.
+    /// - Return [`AcceptSid::New`] if the stream ID is new and need to create.
+    ///   The `NeedCreate` inside indicates the range of stream IDs that need to be created.
     pub fn try_accept_sid(&self, sid: StreamId) -> Result<AcceptSid, ExceedLimitError> {
         self.0.lock().unwrap().try_accept_sid(sid)
     }
 
+    /// Asynchronously extend the maximum stream ID that peer can create in the `dir` direction.
+    ///
+    /// In fact, when receiving the peer's ResetStreamFrame or sending a ResetStreamFrame,
+    /// it signifies the end of a stream.
+    /// At that point, it is necessary to check whether the stream was created by the peer
+    /// and whether the peer's maximum stream ID needs to be updated.
+    /// There is no need to spawn an asynchronous task to constantly check.
+    ///
+    /// In the future, just update the peer's maximum stream ID limit immediately
+    /// when a stream created by the peer ends, and send a MAX_STREAMS frame to the peer.
+    #[deprecated]
     pub fn poll_extend_sid(&self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<VarInt>> {
         self.0.lock().unwrap().poll_extend_sid(cx, dir)
     }
 }
 
+/// Stream IDs management, including an [`ArcLocalStreamIds`] as local,
+/// and an [`ArcRemoteStreamIds`] as remote.
 #[derive(Debug, Clone)]
 pub struct StreamIds {
     pub local: ArcLocalStreamIds,
@@ -399,6 +532,13 @@ pub struct StreamIds {
 }
 
 impl StreamIds {
+    /// Create a new [`StreamIds`] with the given role, and maximum number of streams of each direction.
+    ///
+    /// The troublesome part is that the maximum number of streams that can be created locally
+    /// is restricted by the peer's `initial_max_streams_uni` and `initial_max_streams_bidi` transport
+    /// parameters, which are unknown at the beginning.
+    /// Therefore, peer's `initial_max_streams_xx` can be set to 0 initially,
+    /// and then updated later after obtaining the peer's `initial_max_streams_xx` setting.
     pub fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64) -> Self {
         // 缺省为0
         let local = ArcLocalStreamIds::new(role, 0, 0);
