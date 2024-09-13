@@ -81,7 +81,7 @@ impl RawSendControler {
 
 /// Shared connection-level Stream Flow Control in the sending direction,
 /// regulated by the peer's `initial_max_data` transport parameter
-/// and updated by the [`MaxDataFrame`] sent by the peer.
+/// and updated by the [`MaxDataFrame`] received from the peer.
 ///
 /// Only the new data sent in [`StreamFrame`](`crate::frame::StreamFrame`) counts toward this limit.
 /// Retransmitted stream data does not count towards this limit.
@@ -398,8 +398,8 @@ impl Future for IncrLimit {
     }
 }
 
-/// Connection-level flow controller, including [`ArcSendControler`] as the sending side
-/// and [`ArcRecvController`] as the receiving side.
+/// Connection-level flow controller, including an [`ArcSendControler`] as the sending side
+/// and an [`ArcRecvController`] as the receiving side.
 #[derive(Debug, Clone)]
 pub struct FlowController {
     pub sender: ArcSendControler,
