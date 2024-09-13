@@ -93,7 +93,7 @@ impl RawConnection {
         );
         let cid_registry = CidRegistry::new(local_cids, remote_cids);
         let handshake = Handshake::new(role, reliable_frames.clone());
-        let flow_ctrl = FlowController::with_initial(65535, 65535);
+        let flow_ctrl = FlowController::with_parameter(65535, 65535);
         let conn_error = ConnError::default();
 
         let streams = DataStreams::new(
