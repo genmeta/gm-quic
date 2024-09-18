@@ -409,7 +409,7 @@ pub struct FlowController {
 impl FlowController {
     /// Creates a new `FlowController` with the specified initial send and receive window sizes.
     ///
-    /// Unfortunately, at the beginning, we do not know the peer's `initial_max_data` setting.
+    /// Unfortunately, at the beginning, the peer's `initial_max_data` is unknown.
     /// Therefore, peer's `initial_max_data` can be set to 0 initially,
     /// and then updated later after obtaining the peer's `initial_max_data` setting.
     pub fn with_parameter(peer_initial_max_data: u64, local_initial_max_data: u64) -> Self {
