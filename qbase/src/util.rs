@@ -9,4 +9,4 @@ pub(crate) use future::RawFuture;
 pub use future::{Future, Get};
 
 mod index_deque;
-pub use index_deque::{Error as IndexError, IndexDeque};
+pub use index_deque::{IndexDeque, IndexError};
