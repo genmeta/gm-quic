@@ -14,7 +14,7 @@ use qbase::{
     },
     varint::{EncodeBytes, VarInt, WriteVarInt},
 };
-use qrecovery::{space::InitialSpace, streams::crypto::CryptoStreamOutgoing};
+use qrecovery::{crypto::CryptoStreamOutgoing, space::InitialSpace};
 
 #[derive(Clone)]
 pub struct InitialSpaceReader {

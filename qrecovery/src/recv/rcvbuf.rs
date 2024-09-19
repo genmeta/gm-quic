@@ -1,10 +1,12 @@
+//！ An implementation of the receiving buffer for stream data.
+
 use std::{collections::VecDeque, fmt};
 
 use bytes::{BufMut, Bytes};
 
 /// 一段连续的数据片段，每个片段都是Bytes
 #[derive(Debug, Default)]
-pub(super) struct Segment {
+struct Segment {
     offset: u64,
     length: u64,
     fragments: VecDeque<Bytes>,
@@ -41,7 +43,7 @@ impl Segment {
     }
 }
 
-/// Received data of a stream is stored in RecvBuf.
+/// Received data of a stream is stored in [`RecvBuf`].
 ///
 /// The receiving buffer is relatively simple, as it receives segmented data
 /// that may not be continuous. It sequentially stores the received data
@@ -64,15 +66,65 @@ impl fmt::Display for RecvBuf {
 }
 
 impl RecvBuf {
+    /// Returns whether the receiving buffer is empty.
     pub fn is_empty(&self) -> bool {
         self.segments.is_empty()
     }
 
-    pub fn offset(&self) -> u64 {
+    /// Returns how many continuous data have been read.
+    ///
+    /// # Example
+    ///
+    /// ``` rust
+    /// # use bytes::{Bytes, BytesMut};
+    /// # use qrecovery::recv::RecvBuf;
+    /// let mut recvbuf = RecvBuf::default();
+    /// assert_eq!(recvbuf.nread(), 0);
+    ///
+    /// recvbuf.recv(0, Bytes::from("hello"));
+    /// assert_eq!(recvbuf.nread(), 0);
+    /// // recvbuf:  hello
+    /// // offset=0  ^
+    ///
+    /// let mut dst = BytesMut::new();
+    /// recvbuf.try_read(&mut dst);
+    /// assert_eq!(recvbuf.nread(), 5);
+    /// // recvbuf:  hello
+    /// // offset=5       ^
+    pub fn nread(&self) -> u64 {
         self.nread
     }
 
-    // Returns the number of newly read bytes
+    /// Receive a fragment of data, return the new data's size.
+    ///
+    /// # Example
+    ///
+    /// The following example demonstrates how [`RecvBuf`] works.
+    ///
+    /// The data "hello, world!" is splitted into four fragments.
+    /// ``` rust
+    /// # use bytes::{Bytes, BytesMut};
+    /// # use qrecovery::recv::RecvBuf;
+    /// let mut recvbuf = RecvBuf::default();
+    /// // data:    "hello, world!"
+    /// assert_eq!(recvbuf.recv(0, Bytes::from("hell")), 4);
+    /// // recvbuf: "hell"
+    /// // new:     "hell"
+    /// assert_eq!(recvbuf.recv(7, Bytes::from("world")), 5);
+    /// // recvbuf: "hell" "world"
+    /// // new:            "world"
+    /// assert_eq!(recvbuf.recv(3, Bytes::from("lo, ")), 3);
+    /// // recvbuf: "hello, world"
+    /// // new:         "o, "
+    /// assert_eq!(recvbuf.recv(7, Bytes::from("world!")), 1);
+    /// // recvbuf: "hello, world!"
+    /// // new:                 "!"
+    ///
+    /// let mut received = BytesMut::new();
+    /// recvbuf.try_read(&mut received);
+    /// assert_eq!(received.as_ref(), b"hello, world!");
+    /// ```
+    ///
     pub fn recv(&mut self, mut offset: u64, mut data: Bytes) -> usize {
         if data.is_empty() {
             return 0;
@@ -245,34 +297,87 @@ impl RecvBuf {
         self.segments.drain(start_idx..idx);
     }
 
-    /// To read continuously starting from self.offset, it means that the offset of
-    /// first segments should also start from self.offset or be smaller than self.offset.
-    /// Otherwise, the data will be discontinuous and cannot be read. At most, buf.len()
-    /// bytes will be read, and if it cannot read that many, it will return the number
-    /// of bytes read.
-    pub fn read(&mut self, buf: &mut impl BufMut) {
-        if let Some(mut seg) = self.segments.pop_front() {
-            if seg.offset != self.nread {
+    /// Try to read continuous data from [`RecvBuf`] into the buffer passed in.
+    ///
+    /// If the following data is not continuous or there is no data, this method returns [`None`]
+    ///
+    /// Otherwise, returns how much data was written to the buffer passed in.
+    ///
+    /// # Example
+    ///
+    /// ``` rust
+    /// # use bytes::{BytesMut, Bytes};
+    /// # use qrecovery::recv::RecvBuf;
+    /// let mut recvbuf = RecvBuf::default();
+    /// recvbuf.recv(0, Bytes::from("012"));
+    /// recvbuf.recv(3, Bytes::from("345"));
+    /// recvbuf.recv(7, Bytes::from("789"));
+    /// // recvbuf:  012345 789
+    /// // readable: ^^^^^^
+    ///
+    /// let mut dst1 = BytesMut::new();
+    /// recvbuf.try_read(&mut dst1);
+    /// assert_eq!(dst1.as_ref(), b"012345");
+    ///
+    /// let mut dst2 = BytesMut::new();
+    /// recvbuf.recv(6, Bytes::from("6"));
+    /// // recvbuf:  0123456789
+    /// // readable:       ^^^^
+    ///
+    /// recvbuf.try_read(&mut dst2);
+    /// assert_eq!(dst2.as_ref(), b"6789");
+    ///
+    /// ```
+    pub fn try_read(&mut self, buf: &mut impl BufMut) -> Option<usize> {
+        let mut seg = self.segments.pop_front()?;
+        if seg.offset != self.nread {
+            self.segments.push_front(seg);
+            return None;
+        }
+        let origin = buf.remaining_mut();
+        while let Some(frag) = seg.fragments.pop_front() {
+            let n = buf.remaining_mut().min(frag.len());
+            buf.put_slice(&frag[..n]);
+            seg.offset += n as u64;
+            self.nread = seg.offset;
+            if n < frag.len() {
+                seg.fragments.push_front(frag.slice(n..));
                 self.segments.push_front(seg);
-                return;
-            }
-
-            while let Some(frag) = seg.fragments.pop_front() {
-                let n = buf.remaining_mut().min(frag.len());
-                buf.put_slice(&frag[..n]);
-                seg.offset += n as u64;
-                self.nread = seg.offset;
-                if n < frag.len() {
-                    seg.fragments.push_front(frag.slice(n..));
-                    self.segments.push_front(seg);
-                    break;
-                }
+                break;
             }
         }
+        Some(origin - buf.remaining_mut())
     }
 
-    /// The maximum length of continuous readable data, which can be compared with the final size
-    /// known as "SizeKnown." If they match, it indicates that all the data has been received.
+    /// The length of continuous data received, which can be compared with the final sizeknown as `SizeKnown`.
+    ///
+    /// If they match, it indicates that all the data has been received.
+    ///
+    /// # Example
+    ///
+    /// ``` rust
+    /// # use bytes::{Bytes, BytesMut};
+    /// # use qrecovery::recv::RecvBuf;
+    /// let mut recvbuf = RecvBuf::default();
+    /// assert_eq!(recvbuf.recv(0, Bytes::from("hello")), 5);
+    /// // recvbuf:  "hello"
+    /// // available: ^^^^^
+    /// assert_eq!(recvbuf.available(), 5);
+    /// assert_eq!(recvbuf.recv(6, Bytes::from("world")), 5);
+    /// // recvbuf:  "hello" "world"
+    /// // available: ^^^^^
+    /// assert_eq!(recvbuf.available(), 5);
+    ///
+    /// let mut dst = BytesMut::new();
+    /// recvbuf.try_read(&mut dst);
+    /// assert_eq!(dst.as_ref(), b"hello");
+    /// assert_eq!(recvbuf.available(), 5);
+    ///
+    /// recvbuf.recv(5, Bytes::from(" "));
+    /// // recvbuf:  "hello world"
+    /// // available: ^^^^^^^^^^^
+    /// assert_eq!(recvbuf.available(), 11);
+    /// ```
     pub fn available(&self) -> u64 {
         if self
             .segments
@@ -439,11 +544,11 @@ mod tests {
 
         let mut dst = [0u8; 20];
         let mut buf = &mut dst[..];
-        rcvbuf.read(&mut buf);
+        rcvbuf.try_read(&mut buf);
         assert_eq!(buf.remaining_mut(), 15);
 
         assert_eq!(rcvbuf.recv(5, Bytes::from(" ")), 1);
-        rcvbuf.read(&mut buf);
+        rcvbuf.try_read(&mut buf);
 
         assert_eq!(buf.remaining_mut(), 9);
         assert_eq!(dst[..11], b"hello world"[..]);

@@ -1,6 +1,5 @@
 use std::{
     future::Future,
-    io::Error,
     ops::{DerefMut, Range},
     pin::Pin,
     task::{Context, Poll},
@@ -18,10 +17,13 @@ use qbase::{
 
 use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
 
+/// An struct for protocol layer to manage the sending part of a stream.
 #[derive(Debug, Clone)]
 pub struct Outgoing(pub(crate) ArcSender);
 
 impl Outgoing {
+    /// When the [`MAX_STREAM_DATA frame`] belonging to the stream is received, the sending window
+    /// (flow control limit) will be updated.
     pub fn update_window(&self, max_data_size: u64) {
         assert!(max_data_size <= VARINT_MAX);
         let mut sender = self.0.sender();
@@ -32,6 +34,19 @@ impl Outgoing {
         }
     }
 
+    /// Read the data that the application layer wants to send into the buffer.
+    ///
+    /// See [`RawDataStreams::try_read_data`] for more about this method.
+    ///
+    /// ## Returns:
+    ///
+    /// If no data is written to the buffer, return [`None`], or a tuple will be returned:
+    /// * [`StreamFrame`]: Stream frame obtained by reading
+    /// * [`usize`]:       The length of the stream data that was read
+    /// * [`bool`]:        Whether the data is fresh(not retransmitted)
+    /// * [`usize`]:       How much data was written to the buffer
+    ///
+    /// [`RawDataStreams::try_read_data`]: crate::streams::RawDataStreams::try_read_data
     pub fn try_read(
         &self,
         sid: StreamId,
@@ -88,7 +103,15 @@ impl Outgoing {
         }
     }
 
-    /// return true if all data has been rcvd
+    /// When the data sent is acknowledged, this method will be called.
+    ///
+    /// * `range` is the range of stream data that has been acknowledged.
+    ///
+    /// * `is_fin` indicates whether the acknowledged stream frame contains the `FIN` flag.
+    ///
+    /// Return `true` if the stream is completely acknowledged, all data has been sent and received.
+    ///
+    /// [`SendBuf`]: crate::send::SendBuf
     pub fn on_data_acked(&self, range: &Range<u64>, is_fin: bool) -> bool {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
@@ -114,6 +137,9 @@ impl Outgoing {
         false
     }
 
+    /// When the data sent may lost, this method will be called.
+    ///
+    /// * `range` is the range of stream data that may lost.
     pub fn may_loss_data(&self, range: &Range<u64>) {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
@@ -134,7 +160,15 @@ impl Outgoing {
         };
     }
 
-    /// 被动stop，返回true说明成功stop了；返回false则表明流没有必要stop，要么已经完成，要么已经reset
+    /// This method will be called when the [`STOP_SENDING frame`] sent by the peer is received.
+    ///
+    /// If the stream has not been closed, the stream will be reset and then a [`RESET_STREAM frame`] will
+    /// be sent to the peer to reset the peer. in this case, the method will return `true`.
+    ///
+    /// If the stream has closed, `false` will be returned, and the method will do nothing.
+    ///
+    /// [`STOP_SENDING frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames
+    /// [`STREAM_RESET frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
     pub fn stop(&self) -> bool {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
@@ -157,6 +191,10 @@ impl Outgoing {
         }
     }
 
+    /// When the [`RESET_STREAM frame`] previously sent to the peer is acknowledged by the peer, this
+    /// method will be called to update `Sender`'s state.
+    ///
+    /// [`RESET_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
     pub fn on_reset_acked(&self) {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
@@ -188,14 +226,34 @@ impl Outgoing {
             },
             Err(_) => return,
         };
-        *inner = Err(Error::new(std::io::ErrorKind::BrokenPipe, err.to_string()));
+        *inner = Err(err.clone());
     }
 
+    /// Create a future, see [`IsCancelled`] for more details.
     pub fn is_cancelled_by_app(&self) -> IsCancelled {
         IsCancelled(&self.0)
     }
 }
 
+/// A future that returns whether the application layer wants to cancel the stream.
+///
+/// This is used to notify the protocol layer to reset the stream, send a [`RESET_STREAM frame`]
+/// to the peer, and then the stream will be reset, neither new data nor lost data will be sent.
+///
+/// Created by [`Outgoing::is_cancelled_by_app`].
+///
+/// This future complete when the application layer wants to cancel the stream, or the stream is
+/// closed duo to other reasons.
+///
+/// If the application called [`cancel`], this future will return:
+/// * `u64`: The final size of the stream data that has been written by the application layer.
+/// * `u64`: The error code that the application layer wants to send to the peer.
+///
+/// If the application layer does not cancel the stream until the stream is closed, this method
+/// returns [`None`].
+///
+/// [`RESET_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
+/// [`cancel`]: crate::send::Writer::cancel
 pub struct IsCancelled<'s>(&'s ArcSender);
 
 impl Future for IsCancelled<'_> {

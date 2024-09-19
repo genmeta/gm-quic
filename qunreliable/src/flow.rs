@@ -26,8 +26,8 @@ pub struct DatagramFlow {
 impl DatagramFlow {
     /// Creates a new instance of [`DatagramFlow`].
     ///
-    /// This method takes local transport parameter [`max_datagram_frame_size`],
-    /// the local's transport parameter [`max_datagram_frame_size`] is used to create the reader, see [`RawDatagramReader`] for more details.
+    /// This method takes local protocol parameter [`max_datagram_frame_size`],
+    /// the local's protocol parameter [`max_datagram_frame_size`] is used to create the reader, see [`RawDatagramReader`] for more details.
     ///
     /// [`max_datagram_frame_size`]: https://www.rfc-editor.org/rfc/rfc9221.html#name-transport-parameter
     #[inline]

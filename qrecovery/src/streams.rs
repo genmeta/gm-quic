@@ -1,3 +1,22 @@
+//! The internal implementation of the QUIC stream.
+//!
+//! If you want to know how to create a stream, see the `QuicConnection` in another crate for more.
+//!
+//! If you want to know how to use a stream, see the [`Reader`] and [`Writer`] for more details.
+//!
+//! The structure in this module does not have the ability to actually send and receive frames, or
+//! sense the loss or confirmation of frames. These functions are implemented by other modules. This
+//! module provides the ability to generate frames, process frames, handle the frame lost and acked,
+//! manage the state of all streams.
+//!
+//! [`DataStreams`] provides a large number of APIs for other blocks to call to achieve the above functions.
+//! It corresponds to all streams on the connection.
+//!
+//! [`Incoming`] and[`Outgoing`] correspond to the input and output of a stream. They manage the sending and
+//! receiving state machines and provide APIs for DataStream to use.
+//!
+//! [`Incoming`]: crate::recv::Incoming
+//! [`Outgoing`]: crate::send::Outgoing
 use std::{
     fmt::Debug,
     future::Future,
@@ -7,8 +26,9 @@ use std::{
 };
 
 use bytes::Bytes;
+pub use data::RawDataStreams;
 use deref_derive::Deref;
-use listener::{AcceptBiStream, AcceptUniStream};
+pub use listener::{AcceptBiStream, AcceptUniStream};
 use qbase::{
     config::Parameters,
     error::Error,
@@ -17,11 +37,12 @@ use qbase::{
 };
 
 use crate::{recv::Reader, send::Writer};
+mod data;
+mod listener;
 
-pub mod crypto;
-pub mod data;
-pub mod listener;
-
+/// The wrapper of [`RawDataStreams`], provides the abality of share between tasks.
+///
+/// See [`RawDataStreams`] for more details.
 #[derive(Debug, Clone, Deref)]
 pub struct DataStreams<T>(Arc<data::RawDataStreams<T>>)
 where
@@ -31,12 +52,20 @@ impl<T> DataStreams<T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
+    /// Creates a new instance of [`DataStreams`].
+    ///
+    /// The `ctrl_frames` is the frame sender, read [`RawDataStreams`] for more details.
     pub fn new(role: Role, local_params: &Parameters, ctrl_frames: T) -> Self {
         let raw = data::RawDataStreams::new(role, local_params, ctrl_frames);
 
         Self(Arc::new(raw))
     }
 
+    /// Create a future that open a bidirectional stream.
+    ///
+    /// Provided to a method of the same name on `QuicConnection`.
+    ///
+    /// If you want to open a bidirectional stream, see `QuicConnection` for more details.
     #[inline]
     pub fn open_bi(&self, snd_wnd_size: u64) -> OpenBiStream<T> {
         OpenBiStream {
@@ -45,6 +74,11 @@ where
         }
     }
 
+    /// Create a future that open a unidirectional stream.
+    ///
+    /// Provided to a method of the same name on `QuicConnection`.
+    ///
+    /// If you want to open a unidirectional stream, see `QuicConnection` for more details.
     #[inline]
     pub fn open_uni(&self, snd_wnd_size: u64) -> OpenUniStream<T> {
         OpenUniStream {
@@ -53,19 +87,24 @@ where
         }
     }
 
+    /// Create a future that accept a bidirectional stream.
+    ///
+    /// Provided to a method of the same name on `QuicConnection`.
+    ///
+    /// If you want to accept a bidirectional stream, see `QuicConnection` for more details.
     #[inline]
     pub fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream {
         self.0.accept_bi(snd_wnd_size)
     }
 
+    /// Create a future that accept a unidirectional stream.
+    ///
+    /// Provided to a method of the same name on `QuicConnection`.
+    ///
+    /// If you want to accept a unidirectional stream, see `QuicConnection` for more details.
     #[inline]
     pub fn accept_uni(&self) -> AcceptUniStream {
         self.0.accept_uni()
-    }
-
-    #[inline]
-    pub fn listener(&self) -> listener::ArcListener {
-        self.0.listener()
     }
 
     #[inline]
@@ -96,6 +135,15 @@ where
     }
 }
 
+/// Future to open a bidirectional stream.
+///
+/// The creation of the stream is limited by the stream id. Once the stream id is available, the
+/// future will complete immediately.
+///
+/// If a connection error occurred, the future will return an error.
+///
+/// Although this is a bidirectional stream, the peer will not be aware of this stream until we send
+/// a frame on this stream.
 pub struct OpenBiStream<'d, T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
@@ -115,6 +163,14 @@ where
     }
 }
 
+/// Future to open a unidirectional stream.
+///
+/// The creation of the stream is limited by the stream id. Once the stream id is available, the
+/// future will complete immediately.
+///
+/// If a connection error occurred, the future will return an error.
+///
+/// Note that the peer will not be aware of this stream until we send a frame on this stream.
 pub struct OpenUniStream<'d, T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,

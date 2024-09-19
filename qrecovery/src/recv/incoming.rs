@@ -1,6 +1,5 @@
 use std::{
     future::Future,
-    io,
     ops::DerefMut,
     pin::Pin,
     task::{Context, Poll},
@@ -14,10 +13,21 @@ use qbase::{
 
 use super::recver::{ArcRecver, Recver};
 
+/// An struct for protocol layer to manage the receiving part of a stream.
 #[derive(Debug, Clone)]
 pub struct Incoming(pub(crate) ArcRecver);
 
 impl Incoming {
+    /// When the stream frame belonging to the stream is received, this method will be called.
+    ///
+    /// The stream frame will be handed over to the receive state machine.
+    ///
+    /// The data in a stream frame is just a fragment of the data on the stream. The data transmitted
+    /// by different stream frames may not continuous. The data will be assembled by [`RecvBuf`] into
+    /// continuous data for the application layer to read through [`Reader`].
+    ///
+    /// [`RecvBuf`]: crate::recv::RecvBuf
+    /// [`Reader`]: crate::recv::Reader
     pub fn recv_data(&self, stream_frame: &StreamFrame, body: Bytes) -> Result<usize, QuicError> {
         let mut recver = self.0.recver();
         let inner = recver.deref_mut();
@@ -52,6 +62,10 @@ impl Incoming {
         Ok(new_data_size)
     }
 
+    /// When the stream reset frame belonging to the stream is received, this method will be called.
+    ///
+    /// If all data sent by the peer has not been received, receiving a stream reset frame will cause
+    /// any read calls to return an error, received data will be discarded.
     pub fn recv_reset(&self, reset_frame: &ResetStreamFrame) -> Result<(), QuicError> {
         // TODO: ResetStream中还有错误信息，比如http3的错误码，看是否能用到
         let mut recver = self.0.recver();
@@ -75,6 +89,7 @@ impl Incoming {
         Ok(())
     }
 
+    /// When a connection error occurs, this method will be called.
     pub fn on_conn_error(&self, err: &QuicError) {
         let mut recver = self.0.recver();
         let inner = recver.deref_mut();
@@ -86,23 +101,36 @@ impl Incoming {
             },
             Err(_) => return,
         };
-        *inner = Err(io::Error::new(io::ErrorKind::BrokenPipe, err.to_string()));
+        *inner = Err(err.clone());
     }
 
-    /// 应用层是否对流写入结束，如果是，那么应要发送STOP_SENDING
+    /// Created a future, see [`IsStopped`]'s doc for more details.
     pub fn is_stopped_by_app(&self) -> IsStopped {
-        IsStopped(self.0.clone())
+        IsStopped(&self.0)
     }
 
-    /// 对流控来说，何时发送窗口更新？当连续确认接收数据一半以上时
+    /// Created a future, see [`UpdateWindow`]'s doc for more details.
     pub fn need_update_window(&self) -> UpdateWindow {
-        UpdateWindow(self.0.clone())
+        UpdateWindow(&self.0)
     }
 }
 
-pub struct UpdateWindow(ArcRecver);
+/// A future that returns whether the receiving buffer(sending window for `Sender`, flow control for
+/// stream) needs to be grown.
+///
+/// This is used to notify the streams controller to update the flow control limit in time, and send
+/// a [`MAX_STREAM_DATA frame`] to the peer.
+///
+/// Created by [`Incoming::need_update_window`].
+///
+/// Return [`None`] if its not necessary to update the window any more.
+///
+/// Reutrn [`Some`] with the new window size if the window needs to be updated.
+///
+/// [`MAX_STREAM_DATA frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-max_stream_data-frame
+pub struct UpdateWindow<'r>(&'r ArcRecver);
 
-impl Future for UpdateWindow {
+impl Future for UpdateWindow<'_> {
     type Output = Option<u64>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -121,12 +149,26 @@ impl Future for UpdateWindow {
     }
 }
 
-pub struct IsStopped(ArcRecver);
+/// A future that returns whether the application layer wants the peer to stop sending data.
+///
+/// This is used to notify the protocol layer to send a [`STOP_SENDING frame`] after the application
+/// layer calls [`stop`].
+///
+/// Created by [`Incoming::is_stopped_by_app`].
+///
+/// This future complete when the application layer calls [`stop`] on the stream, or the stream is
+/// closed duo to other reasons.
+///
+/// If the stream is stopped by the application layer, return the application layer's error code.
+///
+/// If the application layer does not call [`stop`]  until the stream is closed, this method returns
+/// [`None`].
+///
+/// [`stop`]: crate::recv::Reader::stop
+/// [`STOP_SENDING frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames
+pub struct IsStopped<'r>(&'r ArcRecver);
 
-impl Future for IsStopped {
-    // If stopped by the application layer, return the application layer's error code;
-    // If not stopped by the application layer, return Pending
-    // If it is not stopped by the application layer until the stream ends, return None
+impl Future for IsStopped<'_> {
     type Output = Option<u64>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

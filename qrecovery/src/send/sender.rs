@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use qbase::util::DescribeData;
+use qbase::{error::Error, util::DescribeData};
 
 use super::sndbuf::SendBuf;
 
@@ -48,9 +48,9 @@ impl ReadySender {
                 format!("cancelled by app with error code {err_code}"),
             ))
         } else {
-            let range = self.sndbuf.range();
-            if range.end < self.max_data_size {
-                let n = std::cmp::min((self.max_data_size - range.end) as usize, buf.len());
+            let send_buf_len = self.sndbuf.len();
+            if send_buf_len < self.max_data_size {
+                let n = std::cmp::min((self.max_data_size - send_buf_len) as usize, buf.len());
                 Ok(self.sndbuf.write(&buf[..n]))
             } else {
                 Err(io::ErrorKind::WouldBlock.into())
@@ -78,9 +78,9 @@ impl ReadySender {
                 format!("cancelled by app with error code {err_code}"),
             )))
         } else {
-            let range = self.sndbuf.range();
-            if range.end < self.max_data_size {
-                let n = std::cmp::min((self.max_data_size - range.end) as usize, buf.len());
+            let send_buf_len = self.sndbuf.len();
+            if send_buf_len < self.max_data_size {
+                let n = std::cmp::min((self.max_data_size - send_buf_len) as usize, buf.len());
                 Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
             } else {
                 self.writable_waker = Some(cx.waker().clone());
@@ -211,9 +211,9 @@ impl SendingSender {
                 format!("cancelled by app with error code {err_code}"),
             )))
         } else {
-            let range = self.sndbuf.range();
-            if range.end < self.max_data_size {
-                let n = std::cmp::min((self.max_data_size - range.end) as usize, buf.len());
+            let send_buf_len = self.sndbuf.len();
+            if send_buf_len < self.max_data_size {
+                let n = std::cmp::min((self.max_data_size - send_buf_len) as usize, buf.len());
                 Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
             } else {
                 self.writable_waker = Some(cx.waker().clone());
@@ -501,19 +501,26 @@ impl Sender {
     }
 }
 
-/// Sender是典型的一体两用，对应用层而言是Writer，对传输控制层而言是Outgoing。
-/// Writer/Outgoing分别有不同的接口，而且生命周期独立，应用层可以在close、reset后
-/// 直接丢弃不管；然而Outgoing还有DataRcvd、ResetRcvd两个状态，需要等待对端确认。
-/// 所以Writer/Outgoing内部共享同一个Sender。
+/// The internal state representations of [`Outgoing`] and [`Writer`].
+///
+/// For the application layer, this struct is represented as [`Writer`]. The application can use it to
+/// write data to the stream, or reset the stream.
+///
+/// For the protocol layer, this struct is represented as [`Outgoing`]. The protocol layer uses it to
+/// manage the status of the `Sender`, sends data(stream frame),reset frames and other frames to peer.
+///
+/// [`Outgoing`]: super::Outgoing
+/// [`Writer`]: super::Writer
 #[derive(Debug, Clone)]
-pub struct ArcSender(Arc<Mutex<io::Result<Sender>>>);
+pub struct ArcSender(Arc<Mutex<Result<Sender, Error>>>);
 
 impl ArcSender {
+    #[doc(hidden)]
     pub fn with_wnd_size(wnd_size: u64) -> Self {
         ArcSender(Arc::new(Mutex::new(Ok(Sender::with_wnd_size(wnd_size)))))
     }
 
-    pub(super) fn sender(&self) -> MutexGuard<io::Result<Sender>> {
+    pub(super) fn sender(&self) -> MutexGuard<Result<Sender, Error>> {
         self.0.lock().unwrap()
     }
 }

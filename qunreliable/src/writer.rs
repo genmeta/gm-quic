@@ -14,7 +14,7 @@ use qbase::{
 
 /// The [`RawDatagramWriter`] struct represents a queue for sending [`DatagramFrame`].
 ///
-/// The transport layer will read the datagram from the queue and send it to the peer, or set the internal queue to an error state
+/// The protocol layer will read the datagram from the queue and send it to the peer, or set the internal queue to an error state
 /// when the connection is closing or already closed. See [`DatagramOutgoing`] for more details.
 ///
 /// The application layer can create a [`DatagramWriter`] and push data into the queue by calling [`DatagramWriter::send`] or [`DatagramWriter::send_bytes`].
@@ -45,7 +45,7 @@ pub struct DatagramOutgoing(pub(crate) ArcDatagramWriter);
 impl DatagramOutgoing {
     /// Creates a new instance of [`DatagramWriter`].
     ///
-    /// This method takes the remote transport parameters `max_datagram_frame_size`.
+    /// This method takes the remote protocol parameters `max_datagram_frame_size`.
     ///
     /// Returns an error when the connection is closing or already closed.
     ///
@@ -141,9 +141,9 @@ pub struct DatagramWriter {
     writer: ArcDatagramWriter,
     /// The maximum size of the datagram frame that can be sent to the peer.
     ///
-    /// The value is set by the remote peer, and the transport layer will use this value to limit the size of the datagram frame.
+    /// The value is set by the remote peer, and the protocol layer will use this value to limit the size of the datagram frame.
     ///
-    /// If the size of the datagram frame exceeds this value, the transport layer will return an error.
+    /// If the size of the datagram frame exceeds this value, the protocol layer will return an error.
     ///
     /// See [RFC](https://www.rfc-editor.org/rfc/rfc9221.html#name-transport-parameter) for more details.
     max_datagram_frame_size: usize,
@@ -153,7 +153,7 @@ impl DatagramWriter {
     /// Send bytes to the peer.
     ///
     /// The data will not be sent immediately; it will be pushed into the internal queue.
-    /// The transport layer will read the datagram from the queue and send it to the peer.
+    /// The protocol layer will read the datagram from the queue and send it to the peer.
     ///
     /// Returns [`Ok`] when the data is successfully pushed into the internal queue.
     /// Returns [`Err`] when the connection is closing or already closed.
@@ -177,7 +177,7 @@ impl DatagramWriter {
     /// Send bytes to the peer.
     ///
     /// The data will not be sent immediately; it will be pushed into the internal queue.
-    /// The transport layer will read the datagram from the queue and send it to the peer.
+    /// The protocol layer will read the datagram from the queue and send it to the peer.
     ///
     /// Returns [`Ok`] when the data is successfully pushed into the internal queue.
     /// Returns [`Err`] when the connection is closing or already closed.

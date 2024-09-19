@@ -3,7 +3,6 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use deref_derive::{Deref, DerefMut};
 use enum_dispatch::enum_dispatch;
 use qbase::frame::{io::WriteFrame, BeFrame, CryptoFrame, ReliableFrame, SendFrame, StreamFrame};
 
@@ -18,38 +17,11 @@ pub enum GuaranteedFrame {
     Reliable(ReliableFrame),
 }
 
-#[derive(Debug, Default, Deref, DerefMut)]
-pub struct RawReliableFrameDeque(VecDeque<ReliableFrame>);
-
-impl RawReliableFrameDeque {
-    fn with_capacity(capacity: usize) -> Self {
-        Self(VecDeque::with_capacity(capacity))
-    }
-
-    fn try_read(&mut self, mut buf: &mut [u8]) -> Option<(ReliableFrame, usize)> {
-        let frame = self.0.front()?;
-        if frame.max_encoding_size() <= buf.len() || frame.encoding_size() <= buf.len() {
-            let buf_len = buf.len();
-            buf.put_frame(frame);
-            Some((self.0.pop_front().unwrap(), buf_len - buf.len()))
-        } else {
-            None
-        }
-    }
-}
-
-impl<T> Extend<T> for RawReliableFrameDeque
-where
-    T: Into<ReliableFrame>,
-{
-    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
-        self.0.extend(iter.into_iter().map(Into::into));
-    }
-}
-
-/// 对于Initial和Handshake空间，仅需负责CryptoFrame的可靠传输；
-/// 但CryptoFrame的可靠性由CryptoStream保证，因此不需要额外的可靠帧。
-/// 对与Data空间，则需负责上述ReliableFrame的可靠传输
+/// A deque for data space to send reliable frames.
+///
+/// Like its name, it is just a queue. [`DataStreams`] or other components that need to send reliable
+/// frames write frames to this queue by calling [`SendFrame::send_frame`]. The transport layer can
+/// read the frames in the queue and encode them into the send buffer by calling [`try_read`].
 ///
 /// # Example
 /// ```rust
@@ -58,26 +30,39 @@ where
 ///
 /// let mut reliable_frame_deque = ArcReliableFrameDeque::with_capacity(10);
 /// reliable_frame_deque.send_frame([HandshakeDoneFrame]);
-///
-/// let reliable_frame_deque = ArcReliableFrameDeque::with_capacity(10);
-/// reliable_frame_deque.lock_guard().extend([HandshakeDoneFrame]);
 /// ```
+///
+/// [`try_read`]: ArcReliableFrameDeque::try_read
+/// [`DataStreams`]: crate::streams::DataStreams
 #[derive(Debug, Default, Clone)]
-pub struct ArcReliableFrameDeque(Arc<Mutex<RawReliableFrameDeque>>);
+pub struct ArcReliableFrameDeque(Arc<Mutex<VecDeque<ReliableFrame>>>);
 
 impl ArcReliableFrameDeque {
+    /// Create a new empty deque with at least the specified capacity.
     pub fn with_capacity(capacity: usize) -> Self {
-        Self(Arc::new(Mutex::new(RawReliableFrameDeque::with_capacity(
-            capacity,
-        ))))
+        Self(Arc::new(Mutex::new(VecDeque::with_capacity(capacity))))
     }
 
-    pub fn lock_guard(&self) -> MutexGuard<'_, RawReliableFrameDeque> {
+    fn lock_guard(&self) -> MutexGuard<'_, VecDeque<ReliableFrame>> {
         self.0.lock().unwrap()
     }
 
-    pub fn try_read(&self, buf: &mut [u8]) -> Option<(ReliableFrame, usize)> {
-        self.lock_guard().try_read(buf)
+    /// Try to read the frame in deque and encode it into the `buf`.
+    ///
+    /// If the remaining bytes of `buf` is not enough to encode the frame, or there are no frame
+    /// in the deque, this method will return [`None`], the `buf` will not be changed.
+    ///
+    /// If the read success, the frame and the number of bytes written will be return.
+    pub fn try_read(&self, mut buf: &mut [u8]) -> Option<(ReliableFrame, usize)> {
+        let mut deque = self.0.lock().unwrap();
+        let frame = deque.front()?;
+        if frame.max_encoding_size() <= buf.len() || frame.encoding_size() <= buf.len() {
+            let buf_len = buf.len();
+            buf.put_frame(frame);
+            Some((deque.pop_front().unwrap(), buf_len - buf.len()))
+        } else {
+            None
+        }
     }
 }
 
@@ -86,9 +71,6 @@ where
     T: Into<ReliableFrame>,
 {
     fn send_frame<I: IntoIterator<Item = T>>(&self, iter: I) {
-        self.lock_guard().extend(iter);
+        self.lock_guard().extend(iter.into_iter().map(Into::into));
     }
 }
-
-#[cfg(test)]
-mod tests {}

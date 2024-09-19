@@ -99,7 +99,7 @@ impl PartialOrd for State {
  * 即便是大流，其中相同状态的合并起来，各种不同状态的区间也不会很多，相比于链表、跳表、线段树等结构依然很高效。
  */
 #[derive(Default, Debug)]
-pub struct BufMap(VecDeque<State>, u64);
+struct BufMap(VecDeque<State>, u64);
 
 impl BufMap {
     // 追加写数据
@@ -501,6 +501,23 @@ impl BufMap {
     }
 }
 
+/// Data to be reliably sent to the peer will first be cached in [`SendBuf`].
+///
+/// SendBuf will record the status of data that has been or has not been sent.
+///
+/// The transport layer needs to notify that the data it has sent is confirmed([`on_data_acked`]) or lost
+/// ([`may_loss_data`]), to uopate the state of [`SendBuf`].
+///
+/// The transport layer can [`pick_up`] a piece of data that needs to be sent. The data may be new data,
+/// or old data that has been sent but has not been acknowledged.
+///
+/// The data picked up may not continuous, the [`receive buffer`] will assemble the data into continuous before
+/// passing them to the application layer.
+///
+/// [`pick_up`]: SendBuf::pick_up
+/// [`on_data_acked`]: SendBuf::on_data_acked
+/// [`may_loss_data`]: SendBuf::may_loss_data
+/// [`receive buffer`]: crate::recv::RecvBuf
 #[derive(Default, Debug)]
 pub struct SendBuf {
     offset: u64,
@@ -510,6 +527,7 @@ pub struct SendBuf {
 }
 
 impl SendBuf {
+    /// Create a new SendBuf with a pre allocated capacity of n.
     pub fn with_capacity(n: usize) -> Self {
         Self {
             offset: 0,
@@ -518,11 +536,14 @@ impl SendBuf {
         }
     }
 
-    pub fn range(&self) -> Range<u64> {
-        self.offset..self.state.1
-    }
-
-    // invoked by application layer
+    /// write data to the [`SendBuf`].
+    ///
+    /// return the number of bytes written, always equal to the length of the `data`.
+    ///
+    /// For [`DataStreams`], the amount of data that can be written to the [`SendBuf`] is limited
+    /// by the flow control of the stream.
+    ///
+    /// [`DataStreams`]: crate::streams::DataStreams
     pub fn write(&mut self, data: &[u8]) -> usize {
         // 写的数据量受流量控制限制，Crypto流则受Crypto流自身控制
         let n = data.len();
@@ -530,20 +551,22 @@ impl SendBuf {
             self.data.extend(data);
             self.state.extend_to(self.len() + n as u64);
         }
-
         n
     }
 
+    /// Whether the [`SendBuf`] is empty.
     pub fn is_empty(&self) -> bool {
-        self.offset == 0 && self.data.is_empty()
+        self.data.is_empty()
     }
 
-    // invoked by application layer
-    // 发送缓冲区过去曾经累计写入到的数据总长度
+    /// The total length of data that has been cumulatively written to the send buffer in the past.
     pub fn len(&self) -> u64 {
         self.state.1
     }
 
+    /// The remaining capacity of the internal buffer.
+    ///
+    /// Just for optimization, reduce reallocations.
     pub fn remaining_mut(&self) -> usize {
         self.data.capacity() - self.data.len()
     }
@@ -556,9 +579,22 @@ impl SendBuf {
 type Data<'s> = (u64, bool, (&'s [u8], &'s [u8]));
 
 impl SendBuf {
-    // 挑选出可供发送的数据，限制长度不能超过len，以满足一个数据包能容的下一个完整的数据帧。
-    // 返回的是一个切片，该切片的生命周期必须不长于SendBuf的生命周期，该切片可以被缓存至数据包
-    // 被确认或者被判定丢失。
+    /// Pick up data that can be sent.
+    ///
+    /// The selected data is also subject to `predicate`, which accepts the starting position of the
+    /// data, returns whether the data will be sent and the maximum amount sent.
+    ///
+    /// If the data picked up is new (never sent before), how much data can be sent is also subject to
+    /// `flow_limit`.
+    ///
+    /// ### Returns
+    /// `None` if there is no data picked up.
+    ///
+    /// Otherwise, return a tuple:
+    /// * `u64`: the starting position of the data.
+    /// * `bool`: whether the data is new.
+    /// * `(&[u8], &[u8])`: the data picked up, duo to the internal buffer is a ring buffer, the data
+    ///   picked up is in two parts, the begin of the second slice and the end of the first slice
     pub fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Option<Data>
     where
         P: Fn(u64) -> Option<usize>,
@@ -576,6 +612,9 @@ impl SendBuf {
             })
     }
 
+    /// Called when the data has been sent and acknowledged by the peer.
+    ///
+    /// The `range` is the range of data that has been acknowledged.
     // 通过传输层接收到的对方的ack帧，确认某些包已经被接收到，这些包携带的数据即被确认。
     // ack只能确认Flighting/Lost状态的区间；如果确认的是Lost区间，意味着之前的判定丢包是错误的。
     pub fn on_data_acked(&mut self, range: &Range<u64>) {
@@ -588,12 +627,16 @@ impl SendBuf {
         }
     }
 
+    /// Called when the data may be lost.
+    ///
+    /// The `range` is the range of data that may be lost.
     // 通过传输层收到的ack帧，判定有些数据包丢失，因为它之后的数据包都被确认了，
     // 或者距离发送该段数据之后相当长一段时间都没收到它的确认。
     pub fn may_loss_data(&mut self, range: &Range<u64>) {
         self.state.may_loss(range);
     }
 
+    /// Whether all data currently written has been received(acknowledged) by the peer.
     pub fn is_all_rcvd(&self) -> bool {
         self.data.is_empty()
     }

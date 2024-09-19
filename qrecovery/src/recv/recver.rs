@@ -66,10 +66,10 @@ impl Recv {
         buf: &mut impl BufMut,
     ) -> Poll<io::Result<()>> {
         if self.rcvbuf.is_readable() {
-            self.rcvbuf.read(buf);
+            self.rcvbuf.try_read(buf);
 
             let threshold = 1_000_000;
-            if self.rcvbuf.offset() + threshold > self.max_data_size {
+            if self.rcvbuf.nread() + threshold > self.max_data_size {
                 if let Some(waker) = self.buf_exceeds_half_waker.take() {
                     waker.wake()
                 }
@@ -85,8 +85,8 @@ impl Recv {
     pub(super) fn poll_update_window(&mut self, cx: &mut Context<'_>) -> Poll<Option<u64>> {
         assert!(self.buf_exceeds_half_waker.is_none());
         let threshold = 1_000_000;
-        if self.rcvbuf.offset() + threshold > self.max_data_size {
-            self.max_data_size = self.rcvbuf.offset() + threshold * 2;
+        if self.rcvbuf.nread() + threshold > self.max_data_size {
+            self.max_data_size = self.rcvbuf.nread() + threshold * 2;
             Poll::Ready(Some(self.max_data_size))
         } else {
             self.buf_exceeds_half_waker = Some(cx.waker().clone());
@@ -213,7 +213,7 @@ impl SizeKnown {
     pub(super) fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
         if self.rcvbuf.is_readable() {
             let buflen = buf.remaining_mut();
-            self.rcvbuf.read(&mut buf);
+            self.rcvbuf.try_read(&mut buf);
             Ok(buflen - buf.remaining_mut())
         } else {
             Err(io::ErrorKind::WouldBlock.into())
@@ -226,7 +226,7 @@ impl SizeKnown {
         buf: &mut impl BufMut,
     ) -> Poll<io::Result<()>> {
         if self.rcvbuf.is_readable() {
-            self.rcvbuf.read(buf);
+            self.rcvbuf.try_read(buf);
             Poll::Ready(Ok(()))
         } else {
             self.read_waker = Some(cx.waker().clone());
@@ -318,7 +318,7 @@ impl DataRcvd {
     #[allow(dead_code)]
     pub(super) fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
         let buflen = buf.remaining_mut();
-        self.rcvbuf.read(&mut buf);
+        self.rcvbuf.try_read(&mut buf);
         Ok(buflen - buf.remaining_mut())
     }
 
@@ -326,7 +326,7 @@ impl DataRcvd {
     /// "Pending" but instead returns "Ready". However, in reality, nothing has been
     /// read. This kind of result typically indicates the end.
     pub(super) fn poll_read(&mut self, buf: &mut impl BufMut) {
-        self.rcvbuf.read(buf);
+        self.rcvbuf.try_read(buf);
     }
 
     pub(super) fn is_all_read(&self) -> bool {
@@ -354,15 +354,27 @@ impl Recver {
     }
 }
 
+/// The internal representations of [`Incoming`] and [`Reader`].
+///
+/// For the application layer, this structure is represented as [`Reader`]. The application can use it
+/// to read the data sent from the peer on the stream, or ask the peer stop sending.
+///
+/// For the protocol layer, this structure is represented as [`Incoming`]. The protocol layer use it to
+/// manages the status of the `Recver` through it, delivers received data to the application layer and
+/// sends frames to the peer.
+///
+/// [`Incoming`]: super::Incoming
+/// [`Reader`]: super::Reader
 #[derive(Debug, Clone)]
-pub struct ArcRecver(Arc<Mutex<io::Result<Recver>>>);
+pub struct ArcRecver(Arc<Mutex<Result<Recver, Error>>>);
 
 impl ArcRecver {
+    #[doc(hidden)]
     pub fn new(buf_size: u64) -> Self {
         ArcRecver(Arc::new(Mutex::new(Ok(Recver::new(buf_size)))))
     }
 
-    pub(super) fn recver(&self) -> MutexGuard<io::Result<Recver>> {
+    pub(super) fn recver(&self) -> MutexGuard<Result<Recver, Error>> {
         self.0.lock().unwrap()
     }
 }

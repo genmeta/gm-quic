@@ -43,12 +43,12 @@ where
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct RawSpace<T> {
+pub struct Space<T> {
     sent_pkt_records: ArcSentPktRecords<T>,
     rcvd_pkt_records: ArcRcvdPktRecords,
 }
 
-impl<T> RawSpace<T> {
+impl<T> Space<T> {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             sent_pkt_records: ArcSentPktRecords::with_capacity(capacity),
@@ -65,28 +65,21 @@ impl<T> RawSpace<T> {
     }
 }
 
-impl<T> AsRef<ArcSentPktRecords<T>> for RawSpace<T> {
+impl<T> AsRef<ArcSentPktRecords<T>> for Space<T> {
     fn as_ref(&self) -> &ArcSentPktRecords<T> {
         &self.sent_pkt_records
     }
 }
 
-impl<T> AsRef<ArcRcvdPktRecords> for RawSpace<T> {
+impl<T> AsRef<ArcRcvdPktRecords> for Space<T> {
     fn as_ref(&self) -> &ArcRcvdPktRecords {
         &self.rcvd_pkt_records
     }
 }
 
-pub type InitialSpace = RawSpace<CryptoFrame>;
-pub type HandshakeSpace = RawSpace<CryptoFrame>;
-pub type DataSpace = RawSpace<GuaranteedFrame>;
-
-#[derive(Debug, Clone)]
-pub enum Space {
-    Initial(InitialSpace),
-    Handshake(HandshakeSpace),
-    Data(DataSpace),
-}
+pub type InitialSpace = Space<CryptoFrame>;
+pub type HandshakeSpace = Space<CryptoFrame>;
+pub type DataSpace = Space<GuaranteedFrame>;
 
 #[cfg(test)]
 mod tests {

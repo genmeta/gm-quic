@@ -11,7 +11,7 @@ use qbase::{
     },
     varint::{EncodeBytes, VarInt, WriteVarInt},
 };
-use qrecovery::{space::HandshakeSpace, streams::crypto::CryptoStreamOutgoing};
+use qrecovery::{crypto::CryptoStreamOutgoing, space::HandshakeSpace};
 
 #[derive(Clone)]
 pub struct HandshakeSpaceReader {

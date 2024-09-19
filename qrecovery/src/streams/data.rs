@@ -33,7 +33,7 @@ struct RawOutput {
 /// 发生quic error后，其操作将被忽略，不会再抛出QuicError或者panic，因为
 /// 有些异步任务可能还未完成，在置为Err后才会完成。
 #[derive(Debug, Clone)]
-pub struct ArcOutput(Arc<Mutex<Result<RawOutput, QuicError>>>);
+struct ArcOutput(Arc<Mutex<Result<RawOutput, QuicError>>>);
 
 impl Default for ArcOutput {
     fn default() -> Self {
@@ -116,7 +116,78 @@ impl ArcInputGuard<'_> {
     }
 }
 
-/// 专门根据Stream相关帧处理streams相关逻辑
+/// Manage all streams in the connection, send and receive frames, handle frame loss, and acknowledge.
+///
+/// The struct dont truly send and receive frames, this struct provides interfaces to generate frames
+/// will be sent to the peer, receive frames, handle frame loss, and acknowledge.
+///
+/// [`Outgoing`], [`Incoming`] , [`Writer`] and [`Reader`] dont truly send and receive frames, too.
+///
+/// # Send frames
+///
+/// ## Stream frame
+///
+/// When the application wants to send data to the peer, it will call [`write`] method on [`Writer`]
+/// to write data to the [`SendBuf`].
+///
+/// Protocol layer will call [`try_read_data`] to read data from the streams into stream frames and
+/// write the frame into the quic packet.
+///
+/// ## Stream control frame
+///
+/// Be different from the stream frame, the stream control frame is much samller in size.
+///
+/// The struct has a generic type `T`, which must implement the [`SendFrame`] trait. The trait has
+/// a method [`send_frame`], which will be called to send the stream control frame to the peer, see
+/// [`SendFrame`] for more details.
+///
+/// # Receive frames, handle frame loss and acknowledge
+///
+/// Frames received, frames lost or acknowledgmented will be delivered to the corresponding method.
+/// | method on [`RawDataStreams`]                             | corresponding method               |
+/// | -------------------------------------------------------- | ---------------------------------- |
+/// | [`recv_data`]                                            | [`Incoming::recv_data`]            |
+/// | [`recv_stream_control`] ([`RESET_STREAM frame`])         | [`Incoming::recv_reset`]           |
+/// | [`recv_stream_control`] ([`STOP_SENDING frame`])         | [`Outgoing::stop`]                 |
+/// | [`recv_stream_control`] ([`MAX_STREAM_DATA frame`])      | [`Outgoing::update_window`]        |
+/// | [`recv_stream_control`] ([`MAX_STREAMS frame`])          | [`RawDataStreams::premit_max_sid`] |
+/// | [`recv_stream_control`] ([`STREAM_DATA_BLOCKED frame`])  | none(the frame will be ignored)    |
+/// | [`recv_stream_control`] ([`STREAMS_BLOCKED frame`])      | none(the frame will be ignored)    |
+/// | [`on_data_acked`]                                        | [`Outgoing::on_data_acked`]        |
+/// | [`may_loss_data`]                                        | [`Outgoing::may_loss_data`]        |
+/// | [`on_reset_acked`]                                       | [`Outgoing::on_reset_acked`]       |
+///
+/// # Create and accept streams
+///
+/// Stream frames and stream control frames have the function of creating flows. If a steam frame is
+/// received but the corresponding stream has not been created, a stream will be created passively.
+///
+/// [`AcceptBiStream`] and [`AcceptUniStream`] are provided to the application layer to `accept` a
+/// stream (obtain a passively created stream). These future will be resolved when a stream is created
+/// by peer.
+///
+/// Alternatively, sending a stream frame or a stream control frame will create a stream actively.
+/// [`OpenBiStream`] and [`OpenUniStream`] are provided to the application layer to `open` a stream.
+/// These future will be resolved when the connection established.
+///
+/// [`write`]: tokio::io::AsyncWriteExt::write
+/// [`SendBuf`]: crate::send::SendBuf
+/// [`send_frame`]: SendFrame::send_frame
+/// [`try_read_data`]: RawDataStreams::try_read_data
+/// [`recv_data`]: RawDataStreams::recv_data
+/// [`recv_stream_control`]: RawDataStreams::recv_stream_control
+/// [`on_data_acked`]: RawDataStreams::on_data_acked
+/// [`may_loss_data`]: RawDataStreams::may_loss_data
+/// [`on_reset_acked`]: RawDataStreams::on_reset_acked
+/// [`RESET_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frame
+/// [`STOP_SENDING frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames
+/// [`MAX_STREAM_DATA frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-max_stream_data-frame
+/// [`MAX_STREAMS frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-max_streams-frame
+/// [`STREAM_DATA_BLOCKED frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stream_data_blocked-frame
+/// [`STREAMS_BLOCKED frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-streams_blocked-frame
+/// [`OpenBiStream`]: crate::streams::OpenBiStream
+/// [`OpenUniStream`]: crate::streams::OpenUniStream
+///
 #[derive(Debug, Clone)]
 pub struct RawDataStreams<T>
 where
@@ -149,6 +220,39 @@ impl<T> RawDataStreams<T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
+    /// Try to read data from streams into stream frames and write the stream frame into the `buf`.
+    ///
+    /// # Fairness
+    ///
+    /// It's fair between streams. We have implemented a token bucket algorithm, and the [`try_read_data`]
+    /// method will read the data of each stream sequentially. Starting from the first stream, when
+    /// a stream exhausts its tokens (default is 4096, depending on the priority of the stream), or
+    /// there is no data to send, the method will move to the next stream, and so on.
+    ///
+    /// # Flow control
+    ///
+    /// QUIC employs a limit-based flow control scheme where a receiver advertises the limit of total
+    /// bytes it is prepared to receive on a given stream or for the entire connection. This leads to
+    /// two levels of data flow control in QUIC, stream level and connection level.
+    ///
+    /// Stream-level flow control had limited by the [`write`] calls on [`Writer`], if the application
+    /// wants to write more data than the stream's flow control limit , the [`write`] call will be
+    /// blocked until the sending window is updated.
+    ///
+    /// For connection-level flow control, it's limited by the parameter `flow_limit` of this method.
+    /// The amount of new data(never sent) will be read from the stream is less or equal to `flow_limit`.
+    ///
+    /// # Returns
+    ///
+    /// If no data written to the buffer, the method will return [`None`], or a tuple will be
+    /// returned:
+    ///
+    /// * [`StreamFrame`]: The stream frame to be sent.
+    /// * [`usize`]: The number of bytes written to the buffer.
+    /// * [`usize`]: The number of new data writen to the buffer.
+    ///
+    /// [`try_read_data`]: RawDataStreams::try_read_data
+    /// [`write`]: tokio::io::AsyncWriteExt::write
     pub fn try_read_data(
         &self,
         buf: &mut [u8],
@@ -191,6 +295,9 @@ where
         Some((frame, written, if is_fresh { dat_len } else { 0 }))
     }
 
+    /// Called when the stream frame acked.
+    ///
+    /// Actually calls the [`Outgoing::on_data_acked`] method of the corresponding stream.
     pub fn on_data_acked(&self, frame: StreamFrame) {
         if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
             if set
@@ -203,6 +310,9 @@ where
         }
     }
 
+    /// Called when the stream frame may lost.
+    ///
+    /// Actually calls the [`Outgoing::may_loss_data`] method of the corresponding stream.
     pub fn may_loss_data(&self, stream_frame: &StreamFrame) {
         if let Some(o) = self
             .output
@@ -217,6 +327,9 @@ where
         }
     }
 
+    /// Called when the stream reset frame acked.
+    ///
+    /// Actually calls the [`Outgoing::on_reset_acked`] method of the corresponding stream.
     pub fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
         if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
             if let Some(o) = set.remove(&reset_frame.stream_id) {
@@ -226,6 +339,11 @@ where
         }
     }
 
+    /// Called when a stream frame which from peer is received by local.
+    ///
+    /// If the correspoding stream is not exist, `accept` the stream.
+    ///
+    /// Actually calls the [`Incoming::recv_data`] method of the corresponding stream.
     pub fn recv_data(
         &self,
         (stream_frame, body): &(StreamFrame, bytes::Bytes),
@@ -263,6 +381,11 @@ where
         }
     }
 
+    /// Called when a stream control frame which from peer is received by local.
+    ///
+    /// If the correspoding stream is not exist, `accept` the stream first.
+    ///
+    /// Actually calls the corresponding method of the corresponding stream for the corresponding frame type.
     pub fn recv_stream_control(&self, stream_ctl_frame: &StreamCtlFrame) -> Result<(), QuicError> {
         match stream_ctl_frame {
             StreamCtlFrame::ResetStream(reset) => {
@@ -277,7 +400,7 @@ where
                         return Err(QuicError::new(
                             ErrorKind::StreamState,
                             reset.frame_type(),
-                            format!("local {sid} cannot receive RESET_FRAME"),
+                            format!("local {sid} cannot receive RESET_STREAM frame"),
                         ));
                     }
                 }
@@ -388,6 +511,10 @@ where
         Ok(())
     }
 
+    /// Called when a connection error occured.
+    ///
+    /// After the method called, read on [`Reader`] or write on [`Writer`] will return an error,
+    /// the resouces will be released.
     pub fn on_conn_error(&self, err: &QuicError) {
         let mut output = match self.output.guard() {
             Ok(out) => out,
@@ -407,6 +534,16 @@ where
         listener.on_conn_error(err);
     }
 
+    /// Premit the max stream id limit.
+    ///
+    /// Stream control frame and transport parameters can premit the limit.
+    /// 1. Send [`MAX_STREAM frame`]: [`RawDataStreams::recv_stream_control`] will be called when this kind
+    ////   of frame received.
+    ////2. [`Transport parameters`] in handshaking: this method will be called to accpet peer's transport
+    ///    parameters
+    ///
+    /// [`MAX_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-max_streams-frames
+    /// [`Transport parameters`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-definit
     pub fn premit_max_sid(&self, dir: Dir, val: u64) {
         self.stream_ids.local.permit_max_sid(dir, val);
     }
@@ -476,18 +613,12 @@ where
         }
     }
 
-    #[inline]
     pub(super) fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream {
         self.listener.accept_bi_stream(snd_wnd_size)
     }
 
-    #[inline]
     pub(super) fn accept_uni(&self) -> AcceptUniStream {
         self.listener.accept_uni_stream()
-    }
-
-    pub(super) fn listener(&self) -> ArcListener {
-        self.listener.clone()
     }
 
     fn try_accept_sid(&self, sid: StreamId) -> Result<(), ExceedLimitError> {
