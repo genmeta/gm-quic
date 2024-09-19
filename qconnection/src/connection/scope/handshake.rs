@@ -12,9 +12,9 @@ use qbase::{
 };
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{
+    crypto::CryptoStream,
     reliable::rcvdpkt::ArcRcvdPktRecords,
     space::{Epoch, HandshakeSpace},
-    streams::crypto::CryptoStream,
 };
 use tokio::{sync::Notify, task::JoinHandle};
 
@@ -71,7 +71,7 @@ impl HandshakeScope {
             let crypto_stream_outgoing = self.crypto_stream.outgoing();
             let sent_pkt_records = self.space.sent_packets();
             move |ack_frame: &AckFrame| {
-                let mut recv_guard = sent_pkt_records.receive();
+                let mut recv_guard = sent_pkt_records.recv();
                 recv_guard.update_largest(ack_frame.largest.into_inner());
 
                 for pn in ack_frame.iter().flat_map(|r| r.rev()) {
@@ -230,7 +230,7 @@ impl super::RecvPacket for ClosingHandshakeScope {
 
 impl MayLoss for HandshakeScope {
     fn may_loss(&self, pn: u64) {
-        for frame in self.space.sent_packets().receive().may_loss_pkt(pn) {
+        for frame in self.space.sent_packets().recv().may_loss_pkt(pn) {
             self.crypto_stream.outgoing().may_loss_data(&frame);
         }
     }

@@ -145,6 +145,12 @@ impl<'a> ListenerGuard<'a> {
     }
 }
 
+/// Future to accept a bidirectional stream.
+///
+/// This future is created by `accept_bi_stream` method of `QuicConnection`.
+///
+/// When the peer created a new bidirectional stream, the future will resolve with a [`Reader`] and
+/// a [`Writer`] to read and write data on the stream.
 #[derive(Debug, Clone)]
 pub struct AcceptBiStream<'l> {
     inner: &'l ArcListener,
@@ -159,6 +165,12 @@ impl Future for AcceptBiStream<'_> {
     }
 }
 
+/// Future to accept a bidirectional stream.
+///
+/// This future is created by `accept_uni_stream` method of `QuicConnection`.
+///
+/// When the peer created a new bidirectional stream, the future will resolve with a [`Reader`] to
+/// read data on the stream.
 #[derive(Debug, Clone)]
 pub struct AcceptUniStream<'l> {
     inner: &'l ArcListener,

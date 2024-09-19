@@ -16,7 +16,7 @@ use qbase::{
 
 /// The [`RawDatagramReader`] struct represents a queue for receiving [`DatagramFrame`] frames from peer.
 ///
-/// The transport layer will push the received datagrams into the internal FIFO queue or set the internal queue to an error state
+/// The protocol layer will push the received datagrams into the internal FIFO queue or set the internal queue to an error state
 /// when a connection error has occurred. See [`DatagramIncoming`] for more.
 ///
 /// The application can create a **unique** [`DatagramReader`] to read the received datagrams. See [`DatagramReader`] for more.
@@ -26,7 +26,7 @@ use qbase::{
 pub struct RawDatagramReader {
     /// The maximum size of the datagram that can be received.
     ///
-    /// The value is set by the local transport parameters [`max_datagram_frame_size`](https://www.rfc-editor.org/rfc/rfc9221.html#name-transport-parameter).
+    /// The value is set by the local protocol parameters [`max_datagram_frame_size`](https://www.rfc-editor.org/rfc/rfc9221.html#name-transport-parameter).
     ///
     /// If the size of the received datagram exceeds this value, a connection error occurs.
     local_max_size: usize,
@@ -57,9 +57,9 @@ impl RawDatagramReader {
 /// See [`DatagramIncoming::on_conn_error`] for more.
 pub type ArcDatagramReader = Arc<Mutex<Result<RawDatagramReader, Error>>>;
 
-/// The [`DatagramIncoming`] struct represents a queue for the transport layer to write the received datagrams.
+/// The [`DatagramIncoming`] struct represents a queue for the protocol layer to write the received datagrams.
 ///
-/// When the transport layer receives a [`DatagramFrame`], it will push it into the internal FIFO queue.
+/// When the protocol layer receives a [`DatagramFrame`], it will push it into the internal FIFO queue.
 /// The application can read the received datagrams from the queue by creating a [`DatagramReader`].
 ///
 /// When a connection error occurs, the error state will be set to the reader. See [`DatagramIncoming::on_conn_error`] for more.
@@ -93,7 +93,7 @@ impl DatagramIncoming {
 
     /// Receives a datagram and pushes it into the internal FIFO queue for the application to read.
     ///
-    /// If the size of the received datagram exceeds the maximum size set by the local transport parameters `max_datagram_frame_size`,
+    /// If the size of the received datagram exceeds the maximum size set by the local protocol parameters `max_datagram_frame_size`,
     /// a connection error occurs.
     ///
     /// If the connection is closing or closed, the new datagram will be ignored.

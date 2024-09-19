@@ -58,7 +58,7 @@ impl SentPktState {
 /// 发送数据包的时候，往其中写入数据包的帧，
 /// 接收到确认的时候，更新数据包的状态，被确认就什么都不做；丢失的数据包，得重新发送
 #[derive(Debug, Default, Deref, DerefMut)]
-pub struct RawSentPktRecords<T> {
+struct RawSentPktRecords<T> {
     #[deref]
     queue: VecDeque<T>,
     // 记录着每个包的内容，其实是一个数字，该数字对应着queue中的record数量
@@ -120,6 +120,17 @@ impl<T> RawSentPktRecords<T> {
     }
 }
 
+/// Records for sent packets and frames in them.
+///
+/// [`DataStreams`] need to be aware of frame acknowledgment or possible loss, and so does [`CryptoStream`].
+/// This structure records some frames (type T) in each packet sent, and feeds back the frames in these
+/// packets to [`DataStreams`] and [`CryptoStream`] when the packet is acknowledged or may be lost.
+///
+/// The interfaces are on the [`SendGuard`] structure and the [`RecvGuard`] structure, read their
+/// documentation for more. This structure only provide the methods to create them.
+///
+/// [`DataStreams`]: crate::streams::DataStreams
+/// [`CryptoStream`]: crate::crypto::CryptoStream
 #[derive(Debug, Default)]
 pub struct ArcSentPktRecords<T>(Arc<Mutex<RawSentPktRecords<T>>>);
 
@@ -130,18 +141,21 @@ impl<T> Clone for ArcSentPktRecords<T> {
 }
 
 impl<T> ArcSentPktRecords<T> {
+    /// Create a new empty records with preallcated capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self(Arc::new(Mutex::new(RawSentPktRecords::with_capacity(
             capacity,
         ))))
     }
 
-    pub fn receive(&self) -> RecvGuard<'_, T> {
+    /// Create a [`RecvGuard`] to resolve the ack frame from peer.
+    pub fn recv(&self) -> RecvGuard<'_, T> {
         RecvGuard {
             inner: self.0.lock().unwrap(),
         }
     }
 
+    /// Create a [`SendGuard`] to get the next pn and record frames in the packet.
     pub fn send(&self) -> SendGuard<'_, T> {
         let inner = self.0.lock().unwrap();
         let origin_len = inner.queue.len();
@@ -153,30 +167,43 @@ impl<T> ArcSentPktRecords<T> {
     }
 }
 
+/// Handle the peer's ack frame and feed back the frames in the acknowledged or possibly lost packets to other components.
+///
+/// A part of `SentPktRecords`, created by [`ArcSentPktRecords::send`].
 pub struct RecvGuard<'a, T> {
     inner: MutexGuard<'a, RawSentPktRecords<T>>,
 }
 
 impl<T: Clone> RecvGuard<'_, T> {
+    /// Handle the [`Largest Acknowledged`] field of the ack frame from peer.
+    ///
+    /// [`Largest Acknowleged`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-ack-frames
     pub fn update_largest(&mut self, largest: u64) {
         if largest > self.inner.largest_acked_pktno {
             self.inner.largest_acked_pktno = largest;
         }
     }
 
+    /// Called when the packet sent is acked by peer, return the frames in that packet.
     pub fn on_pkt_acked(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ {
         self.inner.on_pkt_acked(pn)
     }
 
+    /// Called when the packet sent may lost, reutrn the frames in that packet.
     pub fn may_loss_pkt(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ {
         self.inner.may_loss_pkt(pn)
     }
 
+    /// The packet number of the last packet sent(the largest packet number).
     pub fn largest_pn(&self) -> u64 {
         self.inner.records.largest()
     }
 }
 
+/// Provide the [encoded] packet number to assemble a packet, and record the frames in packet which
+/// will be send.
+///
+/// [encoded]: https://www.rfc-editor.org/rfc/rfc9000.html#name-sample-packet-number-encodi
 impl<T> Drop for RecvGuard<'_, T> {
     fn drop(&mut self) {
         self.inner.auto_drain();
@@ -191,6 +218,9 @@ pub struct SendGuard<'a, T> {
 }
 
 impl<T> SendGuard<'_, T> {
+    /// Provide a packet number and its [encoded] form to assemble a packet.
+    ///
+    /// [encoded]: https://www.rfc-editor.org/rfc/rfc9000.html#name-sample-packet-number-encodi
     pub fn next_pn(&self) -> (u64, PacketNumber) {
         let pn = self.inner.records.largest();
         let encoded_pn = PacketNumber::encode(pn, self.inner.largest_acked_pktno);
@@ -204,6 +234,10 @@ impl<T> SendGuard<'_, T> {
         self.necessary = true;
     }
 
+    /// Record a frame in the packet being sent.
+    ///
+    /// When the packet is acked, or may loss, the frames in packet will been fed back to the
+    /// components which sent them.
     pub fn record_frame(&mut self, frame: T) {
         self.inner.deref_mut().push_back(frame);
     }

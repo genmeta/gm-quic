@@ -15,7 +15,7 @@ use qbase::{
     error::{Error, ErrorKind},
     packet::keys::{ArcKeys, ArcOneRttKeys},
 };
-use qrecovery::{space::Epoch, streams::crypto::CryptoStream};
+use qrecovery::{crypto::CryptoStream, space::Epoch};
 use rustls::{crypto::CryptoProvider, quic::Keys, Side};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

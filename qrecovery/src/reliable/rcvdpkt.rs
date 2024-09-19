@@ -42,7 +42,7 @@ impl State {
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
-pub enum Error {
+pub enum DecodePnError {
     #[error("packet number too old")]
     TooOld,
     #[error("packet number too large")]
@@ -67,18 +67,18 @@ impl RcvdPktRecords {
         }
     }
 
-    fn decode_pn(&mut self, pkt_number: PacketNumber) -> Result<u64, Error> {
+    fn decode_pn(&mut self, pkt_number: PacketNumber) -> Result<u64, DecodePnError> {
         let expected_pn = self.queue.largest();
         let pn = pkt_number.decode(expected_pn);
         if pn < self.queue.offset() {
-            return Err(Error::TooOld);
+            return Err(DecodePnError::TooOld);
         }
 
         if let Some(&State {
             is_received: true, ..
         }) = self.queue.get(pn)
         {
-            return Err(Error::HasRcvd);
+            return Err(DecodePnError::HasRcvd);
         }
         Ok(pn)
     }
@@ -195,45 +195,56 @@ impl RcvdPktRecords {
     }
 }
 
-/// 接收数据包队列，各处共享的，判断包是否收到以及生成ack frame，只需要读锁；
-/// 记录新收到的数据包，或者失活旧数据包并滑走，才需要写锁。
+/// Records for received packets, decode the packet number and generate ack frames.
+// 接收数据包队列，各处共享的，判断包是否收到以及生成ack frame，只需要读锁；
+// 记录新收到的数据包，或者失活旧数据包并滑走，才需要写锁。
 #[derive(Debug, Clone, Default)]
 pub struct ArcRcvdPktRecords {
     inner: Arc<RwLock<RcvdPktRecords>>,
 }
 
 impl ArcRcvdPktRecords {
+    /// Create a new empty records with preallocated capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             inner: Arc::new(RwLock::new(RcvdPktRecords::with_capacity(capacity))),
         }
     }
 
-    /// 当新收到一个数据包，如果这个包很旧，那么大概率意味着是重复包，直接丢弃。
-    /// 如果这个数据包号是最大的，那么它之前的空档都是尚未收到的，得记为未收到。
-    /// 注意，包号合法，不代表的包内容合法，必须等到包被正确解密且其中帧被正确解出后，才能确认收到。
-    pub fn decode_pn(&self, encoded_pn: PacketNumber) -> Result<u64, Error> {
+    /// Decode the pn from peer's packet to actual packer number.
+    ///
+    /// See [`RFC`](https://www.rfc-editor.org/rfc/rfc9000.html#name-sample-packet-number-decodi)
+    /// for more details about decode packet number.
+    ///
+    /// If the packet is too old or has been received, or the pn is too big, this method will return
+    /// an error.
+    ///
+    /// Note that although the packet number successful decoded, it does not mean that the packet is
+    /// valid, and the frames in it is valid.
+    ///
+    /// The registered packet must be valid, successfully decrypted, and the frames in it must be
+    /// valid.
+    // 当新收到一个数据包，如果这个包很旧，那么大概率意味着是重复包，直接丢弃。
+    // 如果这个数据包号是最大的，那么它之前的空档都是尚未收到的，得记为未收到。
+    // 注意，包号合法，不代表的包内容合法，必须等到包被正确解密且其中帧被正确解出后，才能确认收到。
+    pub fn decode_pn(&self, encoded_pn: PacketNumber) -> Result<u64, DecodePnError> {
         self.inner.write().unwrap().decode_pn(encoded_pn)
     }
 
-    /// 当包号合法，且包被完全解密，且包中的帧都正确之后，记录该包已经收到。
+    /// Register the packet has been recieved.
+    ///
+    /// The registered packet must be valid, successfully decrypted, and the frames in it must be
+    /// valid.
+    // 当包号合法，且包被完全解密，且包中的帧都正确之后，记录该包已经收到。
     pub fn register_pn(&self, pn: u64) {
         self.inner.write().unwrap().on_rcvd_pn(pn);
     }
 
-    /// 生成一个AckFrame，largest是最大的包号，须知largest不一定是收到的最大包号，
-    /// 而是某个Path收到的最大包号，此AckFrame除了确认数据包，还将用于该Path的RTT采样以及拥塞控制。
-    pub fn gen_ack_frame_util(
-        &self,
-        (largest, recv_time): (u64, Instant),
-        capacity: usize,
-    ) -> Option<AckFrame> {
-        self.inner
-            .read()
-            .unwrap()
-            .gen_ack_frame_util((largest, recv_time), capacity)
-    }
-
+    /// Generate an ack frame which ack the received frames until `largest`.
+    ///
+    /// This method will write an ack frame into the `buf`. The `Ack Delay` field of the frame is
+    /// the argument `recv_time` as microsec, the `Largest Acknowledged` field of the frame is the
+    /// `largest` frame, the ranges in ack frame will not exceed `largest`.
     pub fn read_ack_frame_util(
         &self,
         buf: &mut [u8],
@@ -321,7 +332,7 @@ mod tests {
 
         assert_eq!(
             records.decode_pn(PacketNumber::encode(9, 0)),
-            Err(Error::TooOld)
+            Err(DecodePnError::TooOld)
         );
     }
 }

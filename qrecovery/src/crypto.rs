@@ -14,7 +14,7 @@ mod send {
     };
     use tokio::io::AsyncWrite;
 
-    use crate::send::sndbuf::SendBuf;
+    use crate::send::SendBuf;
 
     #[derive(Debug)]
     pub(super) struct Sender {
@@ -88,8 +88,10 @@ mod send {
 
     pub(super) type ArcSender = Arc<Mutex<Sender>>;
 
+    /// Struct for crypto layer to send crypto data to the peer.
     #[derive(Debug, Clone)]
     pub struct CryptoStreamWriter(pub(super) ArcSender);
+    /// Struct for transport layer to send crypto data.
     #[derive(Debug, Clone)]
     pub struct CryptoStreamOutgoing(pub(super) ArcSender);
 
@@ -108,19 +110,32 @@ mod send {
 
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             // 永远不会关闭，直到Connection级别的关闭
-            Poll::Pending
+            log::warn!("entered unreachable code");
+            Poll::Ready(Ok(()))
         }
     }
 
     impl CryptoStreamOutgoing {
+        /// Try to read the crypto data into crypto frame and write into the `buffer`.
+        ///
+        /// If the remaining of `buffer` is not enough to put a crypo frame, or there are no data to
+        /// send, this method will return [`None`] and the `buffer` will be changed.
+        ///
+        /// If the write success, the crypto frame and the number of bytes written to the buffer
+        /// will be written.
         pub fn try_read_data(&self, buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
             self.0.lock().unwrap().try_read_data(buffer)
         }
 
+        /// Called when the crypto frame sent is acked by peer.
+        ///
+        /// Acknowledgment of data may free up a segment in the [`SendBuf`], thus waking up the
+        /// writing task,
         pub fn on_data_acked(&self, crypto_frame: &CryptoFrame) {
             self.0.lock().unwrap().on_data_acked(crypto_frame)
         }
 
+        /// Called when the crypto frame sent may loss.
         pub fn may_loss_data(&self, crypto_frame: &CryptoFrame) {
             self.0.lock().unwrap().may_loss_data(crypto_frame)
         }
@@ -151,7 +166,7 @@ mod recv {
     };
     use tokio::io::{AsyncRead, ReadBuf};
 
-    use crate::recv::rcvbuf::RecvBuf;
+    use crate::recv::RecvBuf;
 
     #[derive(Debug)]
     pub(super) struct Recver {
@@ -177,7 +192,7 @@ mod recv {
         ) -> Poll<io::Result<()>> {
             assert!(self.read_waker.is_none());
             if self.rcvbuf.is_readable() {
-                self.rcvbuf.read(buf);
+                self.rcvbuf.try_read(buf);
                 Poll::Ready(Ok(()))
             } else {
                 self.read_waker = Some(cx.waker().clone());
@@ -188,8 +203,10 @@ mod recv {
 
     pub(super) type ArcRecver = Arc<Mutex<Recver>>;
 
+    /// Struct for crypto layer to read crypto data from the peer.
     #[derive(Debug, Clone)]
     pub struct CryptoStreamReader(pub(super) ArcRecver);
+    /// Struct for transport layer to deliver the received crypto to crypto layer.
     #[derive(Debug, Clone)]
     pub struct CryptoStreamIncoming(pub(super) ArcRecver);
 
@@ -226,7 +243,7 @@ mod recv {
 pub use recv::{CryptoStreamIncoming, CryptoStreamReader};
 pub use send::{CryptoStreamOutgoing, CryptoStreamWriter};
 
-/// Crypto data stream
+/// Crypto data stream.
 #[derive(Debug, Clone)]
 pub struct CryptoStream {
     sender: send::ArcSender,
@@ -234,6 +251,7 @@ pub struct CryptoStream {
 }
 
 impl CryptoStream {
+    /// Create a new instance of [`CryptoStream`] with preallcated buffer.
     pub fn new(sndbuf_size: usize, _rcvbuf_size: usize) -> Self {
         Self {
             sender: send::create(sndbuf_size),
@@ -241,20 +259,24 @@ impl CryptoStream {
         }
     }
 
+    /// Create a [`CryptoStreamWriter`] which belong to this crypto stream.
     pub fn writer(&self) -> CryptoStreamWriter {
         CryptoStreamWriter(self.sender.clone())
     }
 
+    /// Create a [`CryptoStreamReader`] which belong to this crypto stream.
     pub fn reader(&self) -> CryptoStreamReader {
         CryptoStreamReader(self.recver.clone())
     }
 
-    pub fn outgoing(&self) -> send::CryptoStreamOutgoing {
-        send::CryptoStreamOutgoing(self.sender.clone())
+    /// Create a [`CryptoStreamOutgoing`] which belong to this crypto stream.
+    pub fn outgoing(&self) -> CryptoStreamOutgoing {
+        CryptoStreamOutgoing(self.sender.clone())
     }
 
-    pub fn incoming(&self) -> recv::CryptoStreamIncoming {
-        recv::CryptoStreamIncoming(self.recver.clone())
+    /// Create a [`CryptoStreamIncoming`] which belong to this crypto stream.
+    pub fn incoming(&self) -> CryptoStreamIncoming {
+        CryptoStreamIncoming(self.recver.clone())
     }
 }
 

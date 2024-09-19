@@ -384,7 +384,7 @@ impl ArcConnection {
             *conn.token.lock().unwrap() = retry.token.to_vec();
             conn.cid_registry.remote.revise_initial_dcid(retry.scid);
             let sent_record = conn.initial.space.sent_packets();
-            let mut guard = sent_record.receive();
+            let mut guard = sent_record.recv();
             for i in 0..guard.largest_pn() {
                 for frame in guard.may_loss_pkt(i) {
                     conn.initial.crypto_stream.outgoing().may_loss_data(&frame);

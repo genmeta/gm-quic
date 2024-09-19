@@ -7,7 +7,7 @@ use qbase::{
     flow,
     frame::{
         AckFrame, BeFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame, ReceiveFrame,
-        ReliableFrame, StreamFrame,
+        ReliableFrame, SendFrame, StreamCtlFrame, StreamFrame,
     },
     handshake::Handshake,
     packet::{
@@ -23,9 +23,9 @@ use qbase::{
 };
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{
+    crypto::CryptoStream,
     reliable::{rcvdpkt::ArcRcvdPktRecords, ArcReliableFrameDeque, GuaranteedFrame},
     space::{DataSpace, Epoch},
-    streams::crypto::CryptoStream,
 };
 use qunreliable::DatagramFlow;
 use tokio::{sync::Notify, task::JoinHandle};
@@ -117,7 +117,7 @@ impl DataScope {
             let crypto_stream_outgoing = self.crypto_stream.outgoing();
             let sent_pkt_records = self.space.sent_packets();
             move |ack_frame: &AckFrame| {
-                let mut recv_guard = sent_pkt_records.receive();
+                let mut recv_guard = sent_pkt_records.recv();
                 recv_guard.update_largest(ack_frame.largest.into_inner());
 
                 for pn in ack_frame.iter().flat_map(|r| r.rev()) {
@@ -129,6 +129,9 @@ impl DataScope {
                             GuaranteedFrame::Crypto(crypto_frame) => {
                                 crypto_stream_outgoing.on_data_acked(&crypto_frame)
                             }
+                            GuaranteedFrame::Reliable(ReliableFrame::Stream(
+                                StreamCtlFrame::ResetStream(reset_frame),
+                            )) => data_streams.on_reset_acked(reset_frame),
                             _ => { /* nothing to do */ }
                         }
                     }
@@ -332,9 +335,7 @@ impl DataScope {
             let reliable_frames = reliable_frames.clone();
             async move {
                 while let Ok(frame) = flow_ctrl.sender().would_block().await {
-                    reliable_frames
-                        .lock_guard()
-                        .push_back(ReliableFrame::DataBlocked(frame));
+                    reliable_frames.send_frame([frame]);
                 }
             }
         });
@@ -345,9 +346,7 @@ impl DataScope {
             let reliable_frames = reliable_frames.clone();
             async move {
                 while let Some(frame) = flow_ctrl.recver().incr_limit().await {
-                    reliable_frames
-                        .lock_guard()
-                        .push_back(ReliableFrame::MaxData(frame));
+                    reliable_frames.send_frame([frame]);
                 }
             }
         });
@@ -429,10 +428,10 @@ impl DataMayLoss {
 }
 impl MayLoss for DataMayLoss {
     fn may_loss(&self, pn: u64) {
-        for frame in self.space.sent_packets().receive().may_loss_pkt(pn) {
+        for frame in self.space.sent_packets().recv().may_loss_pkt(pn) {
             match frame {
                 GuaranteedFrame::Stream(f) => self.data_streams.may_loss_data(&f),
-                GuaranteedFrame::Reliable(f) => self.reliable_frames.lock_guard().push_back(f),
+                GuaranteedFrame::Reliable(f) => self.reliable_frames.send_frame([f]),
                 GuaranteedFrame::Crypto(f) => self.crypto_stream.outgoing().may_loss_data(&f),
             }
         }

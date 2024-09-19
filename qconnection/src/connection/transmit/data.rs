@@ -15,9 +15,9 @@ use qbase::{
     varint::{EncodeBytes, VarInt, WriteVarInt},
 };
 use qrecovery::{
+    crypto::CryptoStreamOutgoing,
     reliable::{ArcReliableFrameDeque, GuaranteedFrame},
     space::DataSpace,
-    streams::crypto::CryptoStreamOutgoing,
 };
 use qunreliable::DatagramFlow;
 use rustls::quic::HeaderProtectionKey;
