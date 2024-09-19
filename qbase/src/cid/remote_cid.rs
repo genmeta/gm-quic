@@ -12,7 +12,7 @@ use crate::{
     error::Error,
     frame::{BeFrame, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     token::ResetToken,
-    util::{Future, IndexDeque, RawFuture},
+    util::{Future, FutureState, IndexDeque},
     varint::{VarInt, VARINT_MAX},
 };
 
@@ -288,22 +288,22 @@ impl CidState {
     }
 
     fn revise(&mut self, cid: ConnectionId) {
-        *self.0.state() = RawFuture::Ready(Some(cid));
+        *self.0.state() = FutureState::Ready(Some(cid));
     }
 
     fn assign(&mut self, cid: ConnectionId) {
         // Only allow transition from None or Demand state to Ready state
         let mut state = self.0.state();
-        debug_assert!(!matches!(state.deref(), RawFuture::Ready(_)));
-        *state = RawFuture::Ready(Some(cid));
+        debug_assert!(!matches!(state.deref(), FutureState::Ready(_)));
+        *state = FutureState::Ready(Some(cid));
     }
 
     fn clear(&mut self) {
         // Allow transition from Ready state to None state, but not from Closed state
         // While meeting Demand state, it will not change && not wake the waker
         let mut state = self.0.state();
-        if let RawFuture::Ready(_) = state.deref() {
-            *state = RawFuture::None;
+        if let FutureState::Ready(_) = state.deref() {
+            *state = FutureState::None;
         }
     }
 
@@ -312,7 +312,7 @@ impl CidState {
     }
 
     fn retire(&mut self) {
-        *self.0.state() = RawFuture::Ready(None);
+        *self.0.state() = FutureState::Ready(None);
     }
 }
 

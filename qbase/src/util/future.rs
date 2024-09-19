@@ -5,7 +5,7 @@ use std::{
 };
 
 #[derive(Debug, Default, Clone)]
-pub(crate) enum RawFuture<T> {
+pub(crate) enum FutureState<T> {
     #[default]
     None,
     Demand(Waker),
@@ -14,7 +14,7 @@ pub(crate) enum RawFuture<T> {
 
 #[derive(Debug)]
 pub struct Future<T> {
-    state: Mutex<RawFuture<T>>,
+    state: Mutex<FutureState<T>>,
 }
 
 impl<T: Clone> Future<T> {
@@ -26,11 +26,11 @@ impl<T: Clone> Future<T> {
     #[inline]
     pub fn with(item: T) -> Self {
         Self {
-            state: Mutex::new(RawFuture::Ready(item)),
+            state: Mutex::new(FutureState::Ready(item)),
         }
     }
 
-    pub(crate) fn state(&self) -> MutexGuard<RawFuture<T>> {
+    pub(crate) fn state(&self) -> MutexGuard<FutureState<T>> {
         self.state.lock().unwrap()
     }
 
@@ -38,11 +38,11 @@ impl<T: Clone> Future<T> {
     pub fn assign(&self, item: T) -> Result<(), T> {
         let mut state = self.state();
         match state.deref() {
-            RawFuture::None => {}
-            RawFuture::Demand(waker) => waker.wake_by_ref(),
-            RawFuture::Ready(_) => return Err(item),
+            FutureState::None => {}
+            FutureState::Demand(waker) => waker.wake_by_ref(),
+            FutureState::Ready(_) => return Err(item),
         }
-        *state = RawFuture::Ready(item);
+        *state = FutureState::Ready(item);
         Ok(())
     }
 
@@ -50,12 +50,12 @@ impl<T: Clone> Future<T> {
     pub fn poll_get(&self, cx: &mut Context<'_>) -> Poll<T> {
         let mut raw_future = self.state();
         match raw_future.deref() {
-            RawFuture::None => {
-                *raw_future = RawFuture::Demand(cx.waker().clone());
+            FutureState::None => {
+                *raw_future = FutureState::Demand(cx.waker().clone());
                 Poll::Pending
             }
-            RawFuture::Ready(item) => Poll::Ready(item.clone()),
-            RawFuture::Demand(waker) => {
+            FutureState::Ready(item) => Poll::Ready(item.clone()),
+            FutureState::Demand(waker) => {
                 if !waker.will_wake(cx.waker()) {
                     drop(raw_future);
                     panic!("trying to wait on a future from multiple tasks");
@@ -67,7 +67,7 @@ impl<T: Clone> Future<T> {
 
     pub fn try_get(&self) -> Option<T> {
         match self.state().deref() {
-            RawFuture::Ready(item) => Some(item.clone()),
+            FutureState::Ready(item) => Some(item.clone()),
             _ => None,
         }
     }
@@ -81,7 +81,7 @@ impl<T: Clone> Future<T> {
 impl<T> Default for Future<T> {
     fn default() -> Self {
         Self {
-            state: Mutex::new(RawFuture::None),
+            state: Mutex::new(FutureState::None),
         }
     }
 }
@@ -103,11 +103,11 @@ impl<T: Clone> Drop for Get<'_, T> {
     #[inline]
     fn drop(&mut self) {
         let mut raw_future = self.0.state();
-        if let RawFuture::Demand(waker) = raw_future.deref() {
+        if let FutureState::Demand(waker) = raw_future.deref() {
             // If the Value dropped because the task is dropped, wake is noop.
             // If the Value dropped bacause panic(racing), this is wake up another task.
             waker.wake_by_ref();
-            *raw_future = RawFuture::None;
+            *raw_future = FutureState::None;
         }
     }
 }
@@ -144,7 +144,7 @@ mod tests {
                 core::future::poll_fn(|cx| {
                     assert_eq!(future.poll_get(cx), Poll::Pending);
                     write.notify_one();
-                    *future.state() = RawFuture::None;
+                    *future.state() = FutureState::None;
 
                     Poll::Ready(())
                 })

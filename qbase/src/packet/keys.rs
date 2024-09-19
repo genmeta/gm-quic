@@ -80,7 +80,7 @@ impl ArcKeys {
     /// }
     /// ```
     pub fn get_remote_keys(&self) -> GetRemoteKeys {
-        GetRemoteKeys(self.clone())
+        GetRemoteKeys(self)
     }
 
     /// Get the local keys for packet encryption and adding header protection.
@@ -157,16 +157,21 @@ impl ArcKeys {
 
 /// To obtain the remote keys from [`ArcKeys`] for removing long header protection
 /// and packet decryption.
-pub struct GetRemoteKeys(ArcKeys);
+pub struct GetRemoteKeys<'k>(&'k ArcKeys);
 
-impl Future for GetRemoteKeys {
+impl Future for GetRemoteKeys<'_> {
     type Output = Option<Arc<Keys>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut keys = self.0.lock_guard();
         match &mut *keys {
             KeysState::Pending(waker) => {
-                assert!(waker.is_none());
+                if waker
+                    .as_ref()
+                    .is_some_and(|waker| waker.will_wake(cx.waker()))
+                {
+                    panic!("Try to get remote keys from multiple tasks!")
+                }
                 *waker = Some(cx.waker().clone());
                 Poll::Pending
             }
@@ -375,22 +380,27 @@ impl ArcOneRttKeys {
     ///
     /// Rreturn [`GetRemoteKeys`], which implemented the Future trait.
     pub fn get_remote_keys(&self) -> GetRemoteOneRttKeys {
-        GetRemoteOneRttKeys(self.clone())
+        GetRemoteOneRttKeys(self)
     }
 }
 
 /// To obtain the remote key from [`ArcOneRttKeys`]` for removing 1-RTT header
 /// protection and packet decryption.
-pub struct GetRemoteOneRttKeys(ArcOneRttKeys);
+pub struct GetRemoteOneRttKeys<'k>(&'k ArcOneRttKeys);
 
-impl Future for GetRemoteOneRttKeys {
+impl Future for GetRemoteOneRttKeys<'_> {
     type Output = Option<(Arc<dyn HeaderProtectionKey>, ArcOneRttPacketKeys)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut keys = self.0.lock_guard();
         match &mut *keys {
             OneRttKeysState::Pending(waker) => {
-                assert!(waker.is_none());
+                if waker
+                    .as_ref()
+                    .is_some_and(|waker| waker.will_wake(cx.waker()))
+                {
+                    panic!("Try to get remote keys from multiple tasks!")
+                }
                 *waker = Some(cx.waker().clone());
                 Poll::Pending
             }
