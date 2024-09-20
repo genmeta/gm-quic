@@ -151,7 +151,7 @@ impl ArcConnection {
             };
 
             (
-                raw_conn.params.remote().clone(),
+                raw_conn.params.remote.clone(),
                 raw_conn.streams.clone(),
                 raw_conn.error.clone(),
             )
@@ -176,7 +176,7 @@ impl ArcConnection {
             };
 
             (
-                raw_conn.params.remote().clone(),
+                raw_conn.params.remote.clone(),
                 raw_conn.streams.clone(),
                 raw_conn.error.clone(),
             )
@@ -201,7 +201,7 @@ impl ArcConnection {
             };
 
             (
-                raw_conn.params.remote().clone(),
+                raw_conn.params.remote.clone(),
                 raw_conn.streams.clone(),
                 raw_conn.error.clone(),
             )

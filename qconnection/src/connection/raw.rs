@@ -214,7 +214,6 @@ impl RawConnection {
 
         let params = ConnParameters::new(local_params.into(), remote_params.clone());
         tokio::spawn({
-            let remote_params = remote_params.reader;
             let streams = streams.clone();
             let conn_error = conn_error.clone();
             let cid_registry = cid_registry.clone();
