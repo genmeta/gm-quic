@@ -79,12 +79,16 @@ impl ArcPathState {
     ///
     /// [`InActive`]: PathState::InActive
     pub async fn has_been_inactivated(&self) {
-        let inactive = match self.state.lock().unwrap().deref() {
-            PathState::Active { notifier, .. } => notifier.clone(),
+        let notify;
+        let notified = match self.state.lock().unwrap().deref() {
+            PathState::Active { notifier, .. } => {
+                notify = notifier.clone();
+                notify.notified()
+            }
             PathState::InActive => return,
         };
 
-        inactive.notified().await;
+        notified.await;
     }
 
     /// If the state is [`Active`] then transitions the internal state of the associated path to

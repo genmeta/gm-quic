@@ -1,53 +1,82 @@
-use std::{io, sync::Arc};
+use std::{
+    io,
+    ops::Deref,
+    sync::{Arc, Mutex},
+};
 
-use futures::lock::Mutex;
-use qbase::{config::Parameters, error::Error, util::Future};
+use qbase::{config::Parameters, error::Error};
+use tokio::sync::Notify;
 
-type RemoteParametersFuture = Future<Result<Arc<Parameters>, Error>>;
-
-#[derive(Debug, Default, Clone)]
-pub struct RemoteParametersReader(Arc<Mutex<Arc<RemoteParametersFuture>>>);
-
-impl RemoteParametersReader {
-    pub async fn read(&self) -> io::Result<Arc<Parameters>> {
-        Ok(self.0.lock().await.get().await?)
-    }
+#[derive(Debug)]
+enum SharedFutureState<T> {
+    Demand(Arc<Notify>),
+    Ready(T),
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct RemoteParametersWriter(Arc<RemoteParametersFuture>);
+#[derive(Debug)]
+struct SharedFuture<T>(Mutex<SharedFutureState<T>>);
 
-impl RemoteParametersWriter {
-    pub fn write(&self, params: Arc<Parameters>) {
-        _ = self.0.assign(Ok(params));
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct RemoteParameters {
-    pub reader: RemoteParametersReader,
-    pub writer: RemoteParametersWriter,
-}
-
-impl Default for RemoteParameters {
+impl<T> Default for SharedFuture<T> {
     fn default() -> Self {
-        let raw = Arc::<RemoteParametersFuture>::default();
-        let writer = RemoteParametersWriter(raw.clone());
-        let reader = RemoteParametersReader(Arc::new(Mutex::new(raw)));
-        Self { reader, writer }
+        Self(SharedFutureState::Demand(Default::default()).into())
     }
 }
+
+impl<T: Clone> SharedFuture<T> {
+    async fn get(&self) -> T {
+        let notify;
+        let notified = match self.0.lock().unwrap().deref() {
+            SharedFutureState::Demand(ready) => {
+                notify = ready.clone();
+                notify.notified()
+            }
+            SharedFutureState::Ready(ready) => return ready.clone(),
+        };
+
+        notified.await;
+        match self.0.lock().unwrap().deref() {
+            SharedFutureState::Ready(ready) => ready.clone(),
+            SharedFutureState::Demand(_) => unreachable!(),
+        }
+    }
+
+    fn set_with(&self, with: impl FnOnce() -> T) {
+        let mut state = self.0.lock().unwrap();
+        match state.deref() {
+            SharedFutureState::Demand(arc) => {
+                arc.notify_waiters();
+                *state = SharedFutureState::Ready(with());
+            }
+            SharedFutureState::Ready(..) => {}
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct RemoteParameters(Arc<SharedFuture<Result<Arc<Parameters>, Error>>>);
 
 impl RemoteParameters {
     pub fn new() -> Self {
         Self::default()
     }
+
+    pub async fn read(&self) -> io::Result<Arc<Parameters>> {
+        Ok(self.0.get().await?)
+    }
+
+    pub fn write(&self, params: Arc<Parameters>) {
+        self.0.set_with(|| Ok(params));
+    }
+
+    pub fn on_conn_error(&self, error: &Error) {
+        self.0.set_with(|| Err(error.clone()));
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct ConnParameters {
-    local: Arc<Parameters>,
-    remote: RemoteParameters,
+    pub local: Arc<Parameters>,
+    pub remote: RemoteParameters,
 }
 
 impl ConnParameters {
@@ -55,15 +84,7 @@ impl ConnParameters {
         Self { local, remote }
     }
 
-    pub fn remote(&self) -> &RemoteParametersReader {
-        &self.remote.reader
-    }
-
-    pub fn local(&self) -> &Arc<Parameters> {
-        &self.local
-    }
-
     pub fn on_conn_error(&self, error: &Error) {
-        _ = self.remote.writer.0.assign(Err(error.clone()));
+        self.remote.on_conn_error(error);
     }
 }
