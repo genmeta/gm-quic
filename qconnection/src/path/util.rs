@@ -48,7 +48,7 @@ impl<T> RecvBuffer<T> {
     }
 
     pub fn write(&self, value: T) {
-        self.0.push(value);
+        self.0.push_back(value);
     }
 
     /// Waiting for a value to be received.

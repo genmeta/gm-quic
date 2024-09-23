@@ -139,7 +139,8 @@ impl RawQuicServer {
             key: ConnKey::Server(initial_scid),
             inner,
         };
-        self.listener.push((conn.clone(), pathway.remote_addr()));
+        self.listener
+            .push_back((conn.clone(), pathway.remote_addr()));
         if let Some(mut entry) = ROUTER.get_mut(&initial_scid) {
             _ = entry[index].send((packet, pathway, usc.clone()));
         };
