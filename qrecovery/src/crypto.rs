@@ -1,3 +1,4 @@
+//! The reliable transmission of the crypto stream.
 mod send {
     use std::{
         io,
@@ -89,6 +90,11 @@ mod send {
     pub(super) type ArcSender = Arc<Mutex<Sender>>;
 
     /// Struct for crypto layer to send crypto data to the peer.
+    ///
+    /// To reduce the memory reallcation, if the internal buffer is filled, the [`write`] call will
+    /// be blocked until the data sent been acknowledged by peer.
+    ///
+    /// [`write`]: tokio::io::AsyncWriteExt::write
     #[derive(Debug, Clone)]
     pub struct CryptoStreamWriter(pub(super) ArcSender);
     /// Struct for transport layer to send crypto data.
@@ -127,7 +133,7 @@ mod send {
             self.0.lock().unwrap().try_read_data(buffer)
         }
 
-        /// Called when the crypto frame sent is acked by peer.
+        /// Called when the crypto frame sent is acknowledged by peer.
         ///
         /// Acknowledgment of data may free up a segment in the [`SendBuf`], thus waking up the
         /// writing task,
@@ -251,7 +257,7 @@ pub struct CryptoStream {
 }
 
 impl CryptoStream {
-    /// Create a new instance of [`CryptoStream`] with preallcated buffer.
+    /// Create a new instance of [`CryptoStream`] with the given buffer size.
     pub fn new(sndbuf_size: usize, _rcvbuf_size: usize) -> Self {
         Self {
             sender: send::create(sndbuf_size),

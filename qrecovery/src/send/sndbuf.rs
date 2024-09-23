@@ -527,7 +527,7 @@ pub struct SendBuf {
 }
 
 impl SendBuf {
-    /// Create a new SendBuf with a pre allocated capacity of n.
+    /// Create a new [`SendBuf `]with the given size.
     pub fn with_capacity(n: usize) -> Self {
         Self {
             offset: 0,
@@ -536,12 +536,15 @@ impl SendBuf {
         }
     }
 
-    /// write data to the [`SendBuf`].
+    /// Write data to the [`SendBuf`].
     ///
-    /// return the number of bytes written, always equal to the length of the `data`.
+    /// Return the number of bytes written, always equal to the length of the `data`.
     ///
     /// For [`DataStreams`], the amount of data that can be written to the [`SendBuf`] is limited
     /// by the flow control of the stream.
+    ///
+    /// To reduce the memory reallocation, the bytes in [`SendBuf`] should not exceed the return
+    /// value of [`SendBuf::remaining_mut`].
     ///
     /// [`DataStreams`]: crate::streams::DataStreams
     pub fn write(&mut self, data: &[u8]) -> usize {
@@ -554,19 +557,17 @@ impl SendBuf {
         n
     }
 
-    /// Whether the [`SendBuf`] is empty.
+    /// Return whether the [`SendBuf`] is empty.
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 
-    /// The total length of data that has been cumulatively written to the send buffer in the past.
+    /// Return the total length of data that has been cumulatively written to the send buffer in the past.
     pub fn len(&self) -> u64 {
         self.state.1
     }
 
-    /// The remaining capacity of the internal buffer.
-    ///
-    /// Just for optimization, reduce reallocations.
+    /// Return the number of bytes can be written without reallocation.
     pub fn remaining_mut(&self) -> usize {
         self.data.capacity() - self.data.len()
     }
@@ -612,7 +613,7 @@ impl SendBuf {
             })
     }
 
-    /// Called when the data has been sent and acknowledged by the peer.
+    /// Called when the `range` of data sent is acknowledged by the peer.
     ///
     /// The `range` is the range of data that has been acknowledged.
     // 通过传输层接收到的对方的ack帧，确认某些包已经被接收到，这些包携带的数据即被确认。
@@ -627,7 +628,7 @@ impl SendBuf {
         }
     }
 
-    /// Called when the data may be lost.
+    /// Called when the `range` of data sent may be lost.
     ///
     /// The `range` is the range of data that may be lost.
     // 通过传输层收到的ack帧，判定有些数据包丢失，因为它之后的数据包都被确认了，
@@ -636,7 +637,7 @@ impl SendBuf {
         self.state.may_loss(range);
     }
 
-    /// Whether all data currently written has been received(acknowledged) by the peer.
+    /// Return whether all data currently written has been received(acknowledged) by the peer.
     pub fn is_all_rcvd(&self) -> bool {
         self.data.is_empty()
     }

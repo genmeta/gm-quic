@@ -18,7 +18,7 @@ use super::recver::{ArcRecver, Recver};
 pub struct Incoming(pub(crate) ArcRecver);
 
 impl Incoming {
-    /// When the stream frame belonging to the stream is received, this method will be called.
+    /// Receive a stream frame from peer.
     ///
     /// The stream frame will be handed over to the receive state machine.
     ///
@@ -62,7 +62,7 @@ impl Incoming {
         Ok(new_data_size)
     }
 
-    /// When the stream reset frame belonging to the stream is received, this method will be called.
+    /// Celled when the stream reset frame belong to this stream acked by peer.
     ///
     /// If all data sent by the peer has not been received, receiving a stream reset frame will cause
     /// any read calls to return an error, received data will be discarded.
@@ -89,7 +89,12 @@ impl Incoming {
         Ok(())
     }
 
-    /// When a connection error occurs, this method will be called.
+    /// Called when a connecion error occured
+    ///
+    /// After the connection error occured, trying to read the data from [`Reader`] will result an
+    /// Error.
+    ///
+    /// [`Reader`]: crate::recv::Reader
     pub fn on_conn_error(&self, err: &QuicError) {
         let mut recver = self.0.recver();
         let inner = recver.deref_mut();
@@ -104,12 +109,20 @@ impl Incoming {
         *inner = Err(err.clone());
     }
 
-    /// Created a future, see [`IsStopped`]'s doc for more details.
+    /// Wait for the application layer to want to reset the stream.
+    ///
+    /// If the stream closed, this future also will complete.
+    ///
+    /// See [`IsStopped`]'s doc for more details.
     pub fn is_stopped_by_app(&self) -> IsStopped {
         IsStopped(&self.0)
     }
 
-    /// Created a future, see [`UpdateWindow`]'s doc for more details.
+    /// Waiting for the need to expand the other party's sending window.
+    ///
+    /// If the stream closed in other reason, this future will complete too.
+    ///
+    /// See [`UpdateWindow`]'s doc for more details.
     pub fn need_update_window(&self) -> UpdateWindow {
         UpdateWindow(&self.0)
     }

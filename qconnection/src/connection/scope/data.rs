@@ -24,7 +24,7 @@ use qbase::{
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{
     crypto::CryptoStream,
-    reliable::{rcvdpkt::ArcRcvdPktRecords, ArcReliableFrameDeque, GuaranteedFrame},
+    reliable::{ArcRcvdPktRecords, ArcReliableFrameDeque, GuaranteedFrame},
     space::{DataSpace, Epoch},
 };
 use qunreliable::DatagramFlow;

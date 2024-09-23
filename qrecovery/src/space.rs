@@ -1,9 +1,11 @@
+//! The space that reliably transmites frames.
 use std::ops::{Index, IndexMut};
 
 use qbase::frame::CryptoFrame;
 
-use crate::reliable::{rcvdpkt::ArcRcvdPktRecords, sentpkt::ArcSentPktRecords, GuaranteedFrame};
+use crate::reliable::{ArcRcvdPktRecords, ArcSentPktRecords, GuaranteedFrame};
 
+/// The epoch of sending, usually been seen as the index of spaces.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Epoch {
     Initial = 0,
@@ -13,12 +15,16 @@ pub enum Epoch {
 
 impl Epoch {
     pub const EPOCHS: [Epoch; 3] = [Epoch::Initial, Epoch::Handshake, Epoch::Data];
+    /// An iterator for the epoch of each spaces.
+    ///
+    /// Equals to `Epoch::EPOCHES.iter()`
     pub fn iter() -> std::slice::Iter<'static, Epoch> {
         Self::EPOCHS.iter()
     }
 
+    /// The number of epoches.
     pub const fn count() -> usize {
-        3
+        Self::EPOCHS.len()
     }
 }
 
@@ -42,6 +48,11 @@ where
     }
 }
 
+/// The bundle of sent packet records and received packet records.
+///
+/// The generic `T` is the generic on [`ArcSentPktRecords`].
+///
+/// See [`ArcSentPktRecords`] and [`ArcRcvdPktRecords`] for more.
 #[derive(Debug, Default, Clone)]
 pub struct Space<T> {
     sent_pkt_records: ArcSentPktRecords<T>,
@@ -49,6 +60,7 @@ pub struct Space<T> {
 }
 
 impl<T> Space<T> {
+    /// Create a [`Space`] containing records with the given `capacity`.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             sent_pkt_records: ArcSentPktRecords::with_capacity(capacity),
@@ -56,10 +68,12 @@ impl<T> Space<T> {
         }
     }
 
+    /// Get the [`ArcSentPktRecords`] of space.
     pub fn sent_packets(&self) -> ArcSentPktRecords<T> {
         self.sent_pkt_records.clone()
     }
 
+    /// Get the [`ArcRcvdPktRecords`] of space.
     pub fn rcvd_packets(&self) -> ArcRcvdPktRecords {
         self.rcvd_pkt_records.clone()
     }
@@ -77,8 +91,11 @@ impl<T> AsRef<ArcRcvdPktRecords> for Space<T> {
     }
 }
 
+/// For initial space, only reliable transmission of crypto frames is required.
 pub type InitialSpace = Space<CryptoFrame>;
+/// For handshake space, only reliable transmission of crypto frames is required.
 pub type HandshakeSpace = Space<CryptoFrame>;
+/// For handshake space, reliable transmission of [`GuaranteedFrame`] (crypto frames, stream frames and reliable frames) is required.
 pub type DataSpace = Space<GuaranteedFrame>;
 
 #[cfg(test)]

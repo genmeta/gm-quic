@@ -22,7 +22,7 @@ use super::recver::{ArcRecver, Recver};
 ///
 /// # Note
 ///
-/// The stream must be closed when [`Reader`] dropped, or the destructor of the [`Reader`] will panic.
+/// The stream must be closed before [`Reader`] dropped.
 ///
 /// The [`read`] returning `Ok(0)` indicates that all data from peer has been read and the stream has
 /// `closed`, it is okay to drop the [`Reader`] after that.

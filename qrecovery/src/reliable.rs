@@ -1,3 +1,4 @@
+//! The reliable transmission for frames.
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex, MutexGuard},
@@ -6,9 +7,14 @@ use std::{
 use enum_dispatch::enum_dispatch;
 use qbase::frame::{io::WriteFrame, BeFrame, CryptoFrame, ReliableFrame, SendFrame, StreamFrame};
 
-pub mod rcvdpkt;
-pub mod sentpkt;
+mod rcvdpkt;
+pub use rcvdpkt::*;
+mod sentpkt;
+pub use sentpkt::*;
 
+/// The kind of frame which guaratend to be received by peer.
+///
+/// The bundle of [`StreamFrame`], [`CryptoFrame`] and [`ReliableFrame`].
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[enum_dispatch(BeFrame)]
 pub enum GuaranteedFrame {
