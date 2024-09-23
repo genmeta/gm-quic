@@ -18,31 +18,27 @@ use super::sender::{ArcSender, Sender};
 /// The amount of data that can be sent is limited by flow control. The [`write`] call will be blocked
 /// if the amount of data written reaches the flow control limit.
 ///
-/// The [`flush`] and [`shutdown`] calls will be blocked until all data written to [`Writer`] has been
-/// sent and acknowledged by the peer.
+/// The [`flush`] and [`shutdown`] calls will be blocked until all data written to [`Writer`] has
+/// been sent and acknowledged by the peer.
 ///
 /// # Note
 ///
-/// The stream must be closed when the [`Writer`] dropped, or the destructor of the [`Writer`] will
-/// panic.
+/// The stream must be cancelled or shutdowned before the [`Writer`] dropped.
 ///
 /// Call [`shutdown`] means that there are no more new data will been written to the stream. If all
 /// of the data written to the stream has been sent and acknowledged by the peer, the stream will be
 /// `closed`, and the [`shutdown`] call complete with `Ok(())`.
 ///
 /// Alternatively, if the operations on the [`Writer`] result an error, its indicates that the stream
-/// has been `reset`, or closed duo to other reasons. It's also okay to drop the [`Writer`] after that.
+/// has been cancelled in other reason, such as connection closed, the peer acked local to stop sending.
 ///
-/// You can call [`cancel`] to `reset` the stream with the given error code, The [`Writer`] will be
+/// You can call [`cancel`] to `cancel` the stream with the given error code, The [`Writer`] will be
 /// consumed, and neither new data nor lost data will be sent anymore.
-///
-/// It's also possiable that the peer has already sent a [`STOP_SENDING frame`] to `abort` the stream,
-/// in this case, the stream will be reset.
 ///
 /// # Example
 ///
 /// The [`Writer`] is created by the `open_bi_stream`, `open_uni_stream`, or `accept_bi_stream` methods of
-/// `QuicConnection` (in the `quic` crate).
+/// `QuicConnection` (in the `gm-quic` crate).
 ///
 /// The following example demonstrates how to read and write data on a QUIC stream.
 ///

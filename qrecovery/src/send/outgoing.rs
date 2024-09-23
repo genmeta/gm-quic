@@ -22,8 +22,11 @@ use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
 pub struct Outgoing(pub(crate) ArcSender);
 
 impl Outgoing {
-    /// When the [`MAX_STREAM_DATA frame`] belonging to the stream is received, the sending window
-    /// (flow control limit) will be updated.
+    /// Update the sending window to `max_data_size`
+    ///
+    /// Callded when the  [`MAX_STREAM_DATA frame`] belonging to the stream is received.
+    ///
+    /// [`MAX_STREAM_DATA frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-max_stream_data-frames
     pub fn update_window(&self, max_data_size: u64) {
         assert!(max_data_size <= VARINT_MAX);
         let mut sender = self.0.sender();
@@ -34,7 +37,7 @@ impl Outgoing {
         }
     }
 
-    /// Read the data that the application layer wants to send into the buffer.
+    /// Read the data that the application has written into the buffer.
     ///
     /// See [`RawDataStreams::try_read_data`] for more about this method.
     ///
@@ -103,7 +106,7 @@ impl Outgoing {
         }
     }
 
-    /// When the data sent is acknowledged, this method will be called.
+    /// Called when the data sent to peer is acknowlwged.
     ///
     /// * `range` is the range of stream data that has been acknowledged.
     ///
@@ -137,7 +140,7 @@ impl Outgoing {
         false
     }
 
-    /// When the data sent may lost, this method will be called.
+    /// Called when the data sent to peer may lost.
     ///
     /// * `range` is the range of stream data that may lost.
     pub fn may_loss_data(&self, range: &Range<u64>) {
@@ -160,7 +163,7 @@ impl Outgoing {
         };
     }
 
-    /// This method will be called when the [`STOP_SENDING frame`] sent by the peer is received.
+    /// Called when the [`STOP_SENDING frame`] sent by the peer is received.
     ///
     /// If the stream has not been closed, the stream will be reset and then a [`RESET_STREAM frame`] will
     /// be sent to the peer to reset the peer. in this case, the method will return `true`.
@@ -191,8 +194,7 @@ impl Outgoing {
         }
     }
 
-    /// When the [`RESET_STREAM frame`] previously sent to the peer is acknowledged by the peer, this
-    /// method will be called to update `Sender`'s state.
+    /// Called When the [`RESET_STREAM frame`] previously sent to the peer is acknowledged
     ///
     /// [`RESET_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
     pub fn on_reset_acked(&self) {
@@ -229,7 +231,11 @@ impl Outgoing {
         *inner = Err(err.clone());
     }
 
-    /// Create a future, see [`IsCancelled`] for more details.
+    /// Wait for the application layer to cancel(reset) the stream.
+    ///
+    /// If the stream closed, this future will also complete.
+    ///
+    /// See [`IsCancelled`]'s doc for more details.
     pub fn is_cancelled_by_app(&self) -> IsCancelled {
         IsCancelled(&self.0)
     }

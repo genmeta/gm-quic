@@ -33,7 +33,7 @@ use qbase::{
     config::Parameters,
     error::Error,
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
-    streamid::{Dir, Role},
+    streamid::Role,
 };
 
 use crate::{recv::Reader, send::Writer};
@@ -61,11 +61,7 @@ where
         Self(Arc::new(raw))
     }
 
-    /// Create a future that open a bidirectional stream.
-    ///
-    /// Provided to a method of the same name on `QuicConnection`.
-    ///
-    /// If you want to open a bidirectional stream, see `QuicConnection` for more details.
+    /// Create a bidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
     pub fn open_bi(&self, snd_wnd_size: u64) -> OpenBiStream<T> {
         OpenBiStream {
@@ -74,11 +70,7 @@ where
         }
     }
 
-    /// Create a future that open a unidirectional stream.
-    ///
-    /// Provided to a method of the same name on `QuicConnection`.
-    ///
-    /// If you want to open a unidirectional stream, see `QuicConnection` for more details.
+    /// Create a unidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
     pub fn open_uni(&self, snd_wnd_size: u64) -> OpenUniStream<T> {
         OpenUniStream {
@@ -87,29 +79,16 @@ where
         }
     }
 
-    /// Create a future that accept a bidirectional stream.
-    ///
-    /// Provided to a method of the same name on `QuicConnection`.
-    ///
-    /// If you want to accept a bidirectional stream, see `QuicConnection` for more details.
+    /// Accpet a bidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
     pub fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream {
         self.0.accept_bi(snd_wnd_size)
     }
 
-    /// Create a future that accept a unidirectional stream.
-    ///
-    /// Provided to a method of the same name on `QuicConnection`.
-    ///
-    /// If you want to accept a unidirectional stream, see `QuicConnection` for more details.
+    /// Accpet a unidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
     pub fn accept_uni(&self) -> AcceptUniStream {
         self.0.accept_uni()
-    }
-
-    #[inline]
-    pub fn premit_max_sid(&self, dir: Dir, val: u64) {
-        self.0.premit_max_sid(dir, val);
     }
 }
 

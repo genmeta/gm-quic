@@ -42,7 +42,7 @@ impl State {
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
-pub enum DecodePnError {
+pub enum InvalidPacketNumber {
     #[error("packet number too old")]
     TooOld,
     #[error("packet number too large")]
@@ -67,18 +67,18 @@ impl RcvdPktRecords {
         }
     }
 
-    fn decode_pn(&mut self, pkt_number: PacketNumber) -> Result<u64, DecodePnError> {
+    fn decode_pn(&mut self, pkt_number: PacketNumber) -> Result<u64, InvalidPacketNumber> {
         let expected_pn = self.queue.largest();
         let pn = pkt_number.decode(expected_pn);
         if pn < self.queue.offset() {
-            return Err(DecodePnError::TooOld);
+            return Err(InvalidPacketNumber::TooOld);
         }
 
         if let Some(&State {
             is_received: true, ..
         }) = self.queue.get(pn)
         {
-            return Err(DecodePnError::HasRcvd);
+            return Err(InvalidPacketNumber::HasRcvd);
         }
         Ok(pn)
     }
@@ -204,7 +204,10 @@ pub struct ArcRcvdPktRecords {
 }
 
 impl ArcRcvdPktRecords {
-    /// Create a new empty records with preallocated capacity.
+    /// Create a new empty records with the given `capacity`.
+    ///
+    /// The number of records can exceed the `capacity` specified at creation time, but the internel
+    /// implementation strvies to avoid reallocation.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             inner: Arc::new(RwLock::new(RcvdPktRecords::with_capacity(capacity))),
@@ -227,7 +230,7 @@ impl ArcRcvdPktRecords {
     // 当新收到一个数据包，如果这个包很旧，那么大概率意味着是重复包，直接丢弃。
     // 如果这个数据包号是最大的，那么它之前的空档都是尚未收到的，得记为未收到。
     // 注意，包号合法，不代表的包内容合法，必须等到包被正确解密且其中帧被正确解出后，才能确认收到。
-    pub fn decode_pn(&self, encoded_pn: PacketNumber) -> Result<u64, DecodePnError> {
+    pub fn decode_pn(&self, encoded_pn: PacketNumber) -> Result<u64, InvalidPacketNumber> {
         self.inner.write().unwrap().decode_pn(encoded_pn)
     }
 
@@ -332,7 +335,7 @@ mod tests {
 
         assert_eq!(
             records.decode_pn(PacketNumber::encode(9, 0)),
-            Err(DecodePnError::TooOld)
+            Err(InvalidPacketNumber::TooOld)
         );
     }
 }

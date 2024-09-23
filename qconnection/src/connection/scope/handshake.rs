@@ -13,7 +13,7 @@ use qbase::{
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{
     crypto::CryptoStream,
-    reliable::rcvdpkt::ArcRcvdPktRecords,
+    reliable::ArcRcvdPktRecords,
     space::{Epoch, HandshakeSpace},
 };
 use tokio::{sync::Notify, task::JoinHandle};

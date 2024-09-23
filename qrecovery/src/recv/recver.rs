@@ -357,7 +357,7 @@ impl Recver {
 /// The internal representations of [`Incoming`] and [`Reader`].
 ///
 /// For the application layer, this structure is represented as [`Reader`]. The application can use it
-/// to read the data sent from the peer on the stream, or ask the peer stop sending.
+/// to read the data from the peer on the stream, or ask the peer stop sending.
 ///
 /// For the protocol layer, this structure is represented as [`Incoming`]. The protocol layer use it to
 /// manages the status of the `Recver` through it, delivers received data to the application layer and
