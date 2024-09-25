@@ -23,7 +23,7 @@ use qrecovery::{
     recv::Reader, reliable::ArcReliableFrameDeque, send::Writer, space::Epoch, streams,
 };
 use qudp::ArcUsc;
-use qunreliable::DatagramFlow;
+use qunreliable::{DatagramReader, DatagramWriter};
 use raw::RawConnection;
 
 use crate::{
@@ -236,16 +236,31 @@ impl ArcConnection {
         Ok(result)
     }
 
-    pub fn datagrams(&self) -> io::Result<DatagramFlow> {
+    pub fn datagram_reader(&self) -> io::Result<DatagramReader> {
+        let connection_closed =
+            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
         let guard = self.0.lock().unwrap();
         if let ConnState::Raw(ref raw_conn) = *guard {
-            Ok(raw_conn.datagrams.clone())
+            raw_conn.datagrams.reader()
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "Connection is closing or closed",
-            ))
+            Err(connection_closed)
         }
+    }
+
+    pub async fn datagram_writer(&self) -> io::Result<DatagramWriter> {
+        let connection_closed =
+            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
+        let (remote_params, datagram_flow) = {
+            let guard = self.0.lock().unwrap();
+            let ConnState::Raw(raw_conn) = &*guard else {
+                return Err(connection_closed);
+            };
+
+            (raw_conn.params.remote.clone(), raw_conn.datagrams.clone())
+        };
+
+        let remote_params = remote_params.read().await?;
+        datagram_flow.writer(remote_params.max_datagram_frame_size().into())
     }
 
     /// Gracefully closes the connection.

@@ -5,7 +5,7 @@ use std::{
     ops::DerefMut,
     pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
+    task::{ready, Context, Poll, Waker},
 };
 
 use bytes::{BufMut, Bytes};
@@ -127,7 +127,7 @@ impl DatagramIncoming {
 
     /// When a connection error occurs, the error will be set to the reader.
     ///
-    /// Any subsequent calls to [`DatagramIncoming::new_reader`], [`DatagramReader::recv`] and [`DatagramReader::recv_buf`] will return an error.
+    /// Any subsequent calls to [`DatagramIncoming::new_reader`], [`DatagramReader::read`] and [`DatagramReader::read_buf`] will return an error.
     ///
     /// If there is a task waiting for the data to be read, the task will be woken up and return an error immediately.
     ///
@@ -150,7 +150,7 @@ impl DatagramIncoming {
 /// Because the internal datagram queue is a mpsc queue, the reader (consumer) is unique, only one reader can exist at the same time.
 /// See [`DatagramIncoming::new_reader`] for more.
 ///
-/// The application can read the received datagrams from the reader by calling the [`DatagramReader::recv`] or [`DatagramReader::recv_buf`] method.
+/// The application can read the received datagrams from the reader by calling the [`DatagramReader::read`] or [`DatagramReader::read_buf`] method.
 ///
 /// These methods are asynchronous, they return a future that resolves to the number of bytes read into the buffer.
 /// If the connection is closing or already closed, the future will yield an error.
@@ -160,12 +160,52 @@ impl DatagramIncoming {
 pub struct DatagramReader(ArcDatagramReader);
 
 impl DatagramReader {
+    /// The internal implementation of the [`DatagramReader::recv`] method.
+    ///
+    /// If there has a datagram received but unread, this method will return [`Poll::Ready`] with
+    /// the received datagram as [`Ok`]. Once the datagram is read, it will be removed from the queue,
+    /// and the next call to this method will return the next datagram.
+    ///
+    /// If the connection is closing or already closed, this method will return [`Poll::Ready`] with
+    /// an error as [`Err`].
+    ///
+    /// If the datagram is not ready, and the connection is active,the method will return [`Poll::Pending`]
+    /// and set the waker for waking up the task when the datagram is received.
+    pub fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<io::Result<Bytes>> {
+        let mut reader = self.0.lock().unwrap();
+        match reader.deref_mut() {
+            Ok(reader) => match reader.queue.pop_front() {
+                Some(bytes) => Poll::Ready(Ok(bytes)),
+                None => {
+                    reader.waker = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            },
+            Err(e) => Poll::Ready(Err(io::Error::from(e.clone()))),
+        }
+    }
+
+    /// Try to receive a datagram from peer.
+    ///
+    /// This method is asynchronous and returns a future that resolves to the received datagram.
+    ///
+    /// ``` rust, ignore
+    /// pub async fn recv(&self) -> io::Result<Bytes>
+    /// ```
+    ///
+    /// The future will yield the received datagram as [`Ok`].
+    ///
+    /// If the connection is closing or already closed, the future will yield an error as [`Err`].
+    pub fn recv(&mut self) -> RecvDatagram {
+        RecvDatagram { reader: self }
+    }
+
     /// Reads the received data into a mutable slice.
     ///
     /// This method is asynchronous and returns a future that resolves to the number of bytes read.
     ///
     /// ``` rust, ignore
-    /// pub async fn recv(&self, buf: & mut [u8]) -> io::Result<usize>
+    /// pub async fn read(&self, buf: & mut [u8]) -> io::Result<usize>
     /// ```
     ///
     /// The future will yield the size of bytes read from the received datagram as [`Ok`].
@@ -173,9 +213,8 @@ impl DatagramReader {
     /// If the buffer is not large enough to hold the received data, the received data will be truncated.
     ///
     /// If the connection is closing or already closed, the future will yield an error as [`Err`].
-    pub fn recv<'b>(&'b mut self, buf: &'b mut [u8]) -> ReadIntoSlice<'b> {
-        let reader = &mut self.0;
-        ReadIntoSlice { reader, buf }
+    pub fn read<'b>(&'b mut self, buf: &'b mut [u8]) -> ReadIntoSlice<'b> {
+        ReadIntoSlice { reader: self, buf }
     }
 
     /// Reads the received data into a mutable reference to [`bytes::BufMut`].
@@ -183,7 +222,7 @@ impl DatagramReader {
     /// This method is asynchronous and returns a future that resolves to the number of bytes read.
     ///
     /// ``` rust, ignore
-    /// pub async fn recv(&self, buf: & mut [u8]) -> io::Result<usize>
+    /// pub async fn read_buf(&self, buf: & mut [u8]) -> io::Result<usize>
     /// ```
     ///
     /// The future will yield the size of bytes read from the received datagram as [`Ok`].
@@ -191,9 +230,8 @@ impl DatagramReader {
     /// If the buffer is not large enough to hold the received data, the behavior is defined by the [`bytes::BufMut::put`] implementation.
     ///
     /// If the connection is closing or already closed, the future will yield an error as [`Err`].
-    pub fn recv_buf<'b, B: BufMut>(&'b mut self, buf: &'b mut B) -> ReadInfoBuf<'b, B> {
-        let reader = &mut self.0;
-        ReadInfoBuf { reader, buf }
+    pub fn read_buf<'b, B: BufMut>(&'b mut self, buf: &'b mut B) -> ReadIntoBuf<'b, B> {
+        ReadIntoBuf { reader: self, buf }
     }
 }
 
@@ -208,9 +246,22 @@ impl Drop for DatagramReader {
     }
 }
 
-/// the [`Future`] created by [`DatagramReader::recv`], see [`DatagramReader::recv`] for more.
+/// The [`Future`] created by [`DatagramReader::recv`], see [`DatagramReader::recv`] for more.
+pub struct RecvDatagram<'a> {
+    reader: &'a mut DatagramReader,
+}
+
+impl Future for RecvDatagram<'_> {
+    type Output = io::Result<Bytes>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.reader.poll_recv(cx)
+    }
+}
+
+/// the [`Future`] created by [`DatagramReader::read`], see [`DatagramReader::read`] for more.
 pub struct ReadIntoSlice<'a> {
-    reader: &'a mut ArcDatagramReader,
+    reader: &'a mut DatagramReader,
     buf: &'a mut [u8],
 }
 
@@ -219,32 +270,21 @@ impl Future for ReadIntoSlice<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let s = self.get_mut();
+        let bytes = ready!(s.reader.poll_recv(cx)?);
 
-        let mut reader = s.reader.lock().unwrap();
-        match reader.deref_mut() {
-            Ok(reader) => match reader.queue.pop_front() {
-                Some(bytes) => {
-                    let len = bytes.len().min(s.buf.len());
-                    s.buf[..len].copy_from_slice(&bytes[..len]);
-                    Poll::Ready(Ok(len))
-                }
-                None => {
-                    reader.waker = Some(cx.waker().clone());
-                    Poll::Pending
-                }
-            },
-            Err(e) => Poll::Ready(Err(io::Error::from(e.clone()))),
-        }
+        let len = bytes.len().min(s.buf.len());
+        s.buf[..len].copy_from_slice(&bytes[..len]);
+        Poll::Ready(Ok(len))
     }
 }
 
-/// the [`Future`] created by [`DatagramReader::recv_buf`], see [`DatagramReader::recv_buf`] for more.
-pub struct ReadInfoBuf<'a, B> {
-    reader: &'a mut ArcDatagramReader,
+/// the [`Future`] created by [`DatagramReader::read_buf`], see [`DatagramReader::read_buf`] for more.
+pub struct ReadIntoBuf<'a, B> {
+    reader: &'a mut DatagramReader,
     buf: &'a mut B,
 }
 
-impl<B> Future for ReadInfoBuf<'_, B>
+impl<B> Future for ReadIntoBuf<'_, B>
 where
     B: BufMut,
 {
@@ -252,21 +292,11 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let s = self.get_mut();
-        let mut reader = s.reader.lock().unwrap();
-        match reader.deref_mut() {
-            Ok(reader) => match reader.queue.pop_front() {
-                Some(bytes) => {
-                    let len = bytes.len();
-                    s.buf.put(bytes);
-                    Poll::Ready(Ok(len))
-                }
-                None => {
-                    reader.waker = Some(cx.waker().clone());
-                    Poll::Pending
-                }
-            },
-            Err(e) => Poll::Ready(Err(io::Error::from(e.clone()))),
-        }
+        let bytes = ready!(s.reader.poll_recv(cx)?);
+
+        let len = bytes.len();
+        s.buf.put(bytes);
+        Poll::Ready(Ok(len))
     }
 }
 
@@ -283,7 +313,7 @@ mod tests {
         let recv = tokio::spawn({
             let mut reader = incoming.new_reader().unwrap();
             async move {
-                let n = reader.recv(&mut [0u8; 1024]).await.unwrap();
+                let n = reader.read(&mut [0u8; 1024]).await.unwrap();
                 assert_eq!(n, 11);
             }
         });

@@ -1,34 +1,153 @@
-use std::{
+use core::{
     marker::PhantomPinned,
     pin::Pin,
-    sync::Arc,
     task::{ready, Context, Poll},
 };
+extern crate alloc;
+use alloc::sync::Arc;
+use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
 use bytes::{Buf, BufMut};
 use futures::Stream;
 use h3::quic;
 use qrecovery::{recv::Reader, send::Writer, streams::StreamReset};
+use qunreliable::{DatagramReader, DatagramWriter};
 use tokio::io::ReadBuf;
 
+pub struct QuicConnection {
+    connection: ::quic::QuicConnection,
+    accpet_bi: AcceptBiStreams,
+    accpet_uni: AcceptUniStreams,
+    open_bi: OpenBiStreams,
+    open_uni: OpenUniStreams,
+    send_datagram: SendDatagram,
+    recv_datagram: RecvDatagram,
+}
+
+impl QuicConnection {
+    pub async fn new(conn: ::quic::QuicConnection) -> Self {
+        Self {
+            accpet_bi: AcceptBiStreams::new(conn.clone()),
+            accpet_uni: AcceptUniStreams::new(conn.clone()),
+            open_bi: OpenBiStreams::new(conn.clone()),
+            open_uni: OpenUniStreams::new(conn.clone()),
+            send_datagram: SendDatagram(conn.datagram_writer().await.map_err(Into::into)),
+            recv_datagram: RecvDatagram(conn.datagram_reader().map_err(Into::into)),
+            connection: conn,
+        }
+    }
+}
+
+impl<B: bytes::Buf> quic::Connection<B> for QuicConnection {
+    type RecvStream = RecvStream;
+
+    type OpenStreams = OpenStreams;
+
+    type AcceptError = Error;
+
+    #[inline]
+    fn poll_accept_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<Self::RecvStream>, Self::AcceptError>> {
+        self.accpet_uni.poll_accept(cx)
+    }
+
+    #[inline]
+    fn poll_accept_bidi(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<Self::BidiStream>, Self::AcceptError>> {
+        self.accpet_bi.poll_accept(cx)
+    }
+
+    #[inline]
+    fn opener(&self) -> Self::OpenStreams {
+        OpenStreams::new(self.connection.clone())
+    }
+}
+
+impl<B: bytes::Buf> quic::OpenStreams<B> for QuicConnection {
+    type BidiStream = BidiStream<B>;
+
+    type SendStream = SendStream<B>;
+
+    type OpenError = Error;
+
+    #[inline]
+    fn poll_open_bidi(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Self::BidiStream, Self::OpenError>> {
+        self.open_bi.poll_open(cx)
+    }
+
+    #[inline]
+    fn poll_open_send(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Self::SendStream, Self::OpenError>> {
+        self.open_uni.poll_open(cx)
+    }
+
+    #[inline]
+    fn close(&mut self, _code: h3::error::Code, reason: &[u8]) {
+        let reason = unsafe { String::from_utf8_unchecked(reason.to_vec()) };
+        self.connection.close(reason);
+    }
+}
+
+impl<B: bytes::Buf> quic::SendDatagramExt<B> for QuicConnection {
+    type Error = Error;
+
+    #[inline]
+    fn send_datagram(&mut self, data: h3::ext::Datagram<B>) -> Result<(), Self::Error> {
+        self.send_datagram.send_datagram(data)
+    }
+}
+
+impl quic::RecvDatagramExt for QuicConnection {
+    type Buf = bytes::Bytes;
+
+    type Error = Error;
+
+    // [`Poll::Ready(Err(e))`] means the connection is broken.
+    // [`Poll::Ready(Ok(None))`] is meaningless.
+
+    #[inline]
+    fn poll_accept_datagram(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
+        self.recv_datagram.poll_accept_datagram(cx)
+    }
+}
+
 type BoxStream<T> = Pin<Box<dyn Stream<Item = T> + Send + Sync>>;
+
+fn sid_exceed_limit_error() -> IoError {
+    IoError::new(
+        IoErrorKind::Other,
+        "the stream IDs in the `dir` direction exceed 2^60, this is very very hard to happen.",
+    )
+}
 
 struct OpenBiStreams(BoxStream<Result<(Reader, Writer), Error>>);
 
 impl OpenBiStreams {
-    pub fn new(conn: ::quic::QuicConnection) -> Self {
+    fn new(conn: ::quic::QuicConnection) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let bidi = conn
                 .open_bi_stream()
                 .await
-                .and_then(|o| o.ok_or_else(sid_exceed_error))
+                .and_then(|o| o.ok_or_else(sid_exceed_limit_error))
                 .map_err(Into::into);
             Some((bidi, conn))
         });
         Self(Box::pin(stream))
     }
 
-    pub fn poll_open<B>(&mut self, cx: &mut Context<'_>) -> Poll<Result<BidiStream<B>, Error>> {
+    fn poll_open<B>(&mut self, cx: &mut Context<'_>) -> Poll<Result<BidiStream<B>, Error>> {
         self.0
             .as_mut()
             .poll_next(cx)
@@ -40,19 +159,19 @@ impl OpenBiStreams {
 struct OpenUniStreams(BoxStream<Result<Writer, Error>>);
 
 impl OpenUniStreams {
-    pub fn new(conn: ::quic::QuicConnection) -> Self {
+    fn new(conn: ::quic::QuicConnection) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let send = conn
                 .open_uni_stream()
                 .await
-                .and_then(|o| o.ok_or_else(sid_exceed_error))
+                .and_then(|o| o.ok_or_else(sid_exceed_limit_error))
                 .map_err(Into::into);
             Some((send, conn))
         });
         Self(Box::pin(stream))
     }
 
-    pub fn poll_open<B>(&mut self, cx: &mut Context<'_>) -> Poll<Result<SendStream<B>, Error>> {
+    fn poll_open<B>(&mut self, cx: &mut Context<'_>) -> Poll<Result<SendStream<B>, Error>> {
         self.0
             .as_mut()
             .poll_next(cx)
@@ -64,7 +183,7 @@ impl OpenUniStreams {
 struct AcceptBiStreams(BoxStream<Result<(Reader, Writer), Error>>);
 
 impl AcceptBiStreams {
-    pub fn new(conn: ::quic::QuicConnection) -> Self {
+    fn new(conn: ::quic::QuicConnection) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let bidi = conn.accept_bi_stream().await.map_err(Into::into);
             if bidi.is_err() && !conn.is_active() {
@@ -75,7 +194,7 @@ impl AcceptBiStreams {
         Self(Box::pin(stream))
     }
 
-    pub fn poll_accept<B>(
+    fn poll_accept<B>(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<BidiStream<B>>, Error>> {
@@ -90,7 +209,7 @@ impl AcceptBiStreams {
 struct AcceptUniStreams(BoxStream<Result<Reader, Error>>);
 
 impl AcceptUniStreams {
-    pub fn new(conn: ::quic::QuicConnection) -> Self {
+    fn new(conn: ::quic::QuicConnection) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let recv = conn.accept_uni_stream().await.map_err(Into::into);
             if recv.is_err() && !conn.is_active() {
@@ -101,7 +220,7 @@ impl AcceptUniStreams {
         Self(Box::pin(stream))
     }
 
-    pub fn poll_accept(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<RecvStream>, Error>> {
+    fn poll_accept(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<RecvStream>, Error>> {
         self.0
             .as_mut()
             .poll_next(cx)
@@ -110,76 +229,46 @@ impl AcceptUniStreams {
     }
 }
 
-pub struct QuicConnection {
-    connection: ::quic::QuicConnection,
-    accpet_bi: AcceptBiStreams,
-    accpet_uni: AcceptUniStreams,
-    open_bi: OpenBiStreams,
-    open_uni: OpenUniStreams,
-}
+struct SendDatagram(Result<DatagramWriter, Error>);
 
-impl QuicConnection {
-    pub fn new(conn: ::quic::QuicConnection) -> Self {
-        Self {
-            accpet_bi: AcceptBiStreams::new(conn.clone()),
-            accpet_uni: AcceptUniStreams::new(conn.clone()),
-            open_bi: OpenBiStreams::new(conn.clone()),
-            open_uni: OpenUniStreams::new(conn.clone()),
-            connection: conn,
-        }
+impl<B: bytes::Buf> quic::SendDatagramExt<B> for SendDatagram {
+    type Error = Error;
+
+    fn send_datagram(&mut self, data: h3::ext::Datagram<B>) -> Result<(), Self::Error> {
+        let writer = match &mut self.0 {
+            Ok(writer) => writer,
+            Err(e) => return Err(e.clone()),
+        };
+        let mut buf = bytes::BytesMut::new();
+        data.encode(&mut buf);
+        writer
+            .send_bytes(buf.freeze())
+            .map_err(Error::from)
+            .inspect_err(|e| self.0 = Err(e.clone()))
     }
 }
 
-impl<B: bytes::Buf> quic::Connection<B> for QuicConnection {
-    type RecvStream = RecvStream;
+struct RecvDatagram(Result<DatagramReader, Error>);
 
-    type OpenStreams = OpenStreams;
+impl quic::RecvDatagramExt for RecvDatagram {
+    type Buf = bytes::Bytes;
 
-    type AcceptError = Error;
+    type Error = Error;
 
-    fn poll_accept_recv(
+    fn poll_accept_datagram(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Self::RecvStream>, Self::AcceptError>> {
-        self.accpet_uni.poll_accept(cx)
-    }
+    ) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
+        let reader = match &mut self.0 {
+            Ok(reader) => reader,
+            Err(e) => return Poll::Ready(Err(e.clone())),
+        };
 
-    fn poll_accept_bidi(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Self::BidiStream>, Self::AcceptError>> {
-        self.accpet_bi.poll_accept(cx)
-    }
-
-    fn opener(&self) -> Self::OpenStreams {
-        OpenStreams::new(self.connection.clone())
-    }
-}
-
-impl<B: bytes::Buf> quic::OpenStreams<B> for QuicConnection {
-    type BidiStream = BidiStream<B>;
-
-    type SendStream = SendStream<B>;
-
-    type OpenError = Error;
-
-    fn poll_open_bidi(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Self::BidiStream, Self::OpenError>> {
-        self.open_bi.poll_open(cx)
-    }
-
-    fn poll_open_send(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Self::SendStream, Self::OpenError>> {
-        self.open_uni.poll_open(cx)
-    }
-
-    fn close(&mut self, _code: h3::error::Code, reason: &[u8]) {
-        let reason = unsafe { String::from_utf8_unchecked(reason.to_vec()) };
-        self.connection.close(reason);
+        reader.poll_recv(cx).map(|r| {
+            r.map(Some)
+                .map_err(Error::from)
+                .inspect_err(|e| self.0 = Err(e.clone()))
+        })
     }
 }
 
@@ -187,13 +276,6 @@ pub struct OpenStreams {
     connection: ::quic::QuicConnection,
     open_bi: OpenBiStreams,
     open_uni: OpenUniStreams,
-}
-
-fn sid_exceed_error() -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::Other,
-        "the stream IDs in the `dir` direction exceed 2^60, this is very very hard to happen.",
-    )
 }
 
 impl OpenStreams {
@@ -213,6 +295,7 @@ impl<B: bytes::Buf> quic::OpenStreams<B> for OpenStreams {
 
     type OpenError = Error;
 
+    #[inline]
     fn poll_open_bidi(
         &mut self,
         cx: &mut Context<'_>,
@@ -220,6 +303,7 @@ impl<B: bytes::Buf> quic::OpenStreams<B> for OpenStreams {
         self.open_bi.poll_open(cx)
     }
 
+    #[inline]
     fn poll_open_send(
         &mut self,
         cx: &mut Context<'_>,
@@ -227,6 +311,7 @@ impl<B: bytes::Buf> quic::OpenStreams<B> for OpenStreams {
         self.open_uni.poll_open(cx)
     }
 
+    #[inline]
     fn close(&mut self, code: h3::error::Code, reason: &[u8]) {
         let _ignored = code;
         let reason = unsafe { String::from_utf8_unchecked(reason.to_vec()) };
@@ -234,9 +319,91 @@ impl<B: bytes::Buf> quic::OpenStreams<B> for OpenStreams {
     }
 }
 
-// pub struct DatagramReader(qunreliable::DatagramReader);
+pub struct BidiStream<B> {
+    send: SendStream<B>,
+    recv: RecvStream,
+}
 
-// pub struct DatagramWriter(qunreliable::DatagramWriter);
+impl<B> BidiStream<B> {
+    fn new((reader, writer): (Reader, Writer)) -> Self {
+        Self {
+            send: SendStream::new(writer),
+            recv: RecvStream::new(reader),
+        }
+    }
+}
+
+impl<B> quic::RecvStream for BidiStream<B> {
+    type Buf = bytes::Bytes;
+
+    type Error = Error;
+
+    #[inline]
+    fn poll_data(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
+        self.recv.poll_data(cx)
+    }
+
+    #[inline]
+    fn stop_sending(&mut self, error_code: u64) {
+        self.recv.stop_sending(error_code);
+    }
+
+    #[inline]
+    fn recv_id(&self) -> quic::StreamId {
+        self.recv.recv_id()
+    }
+}
+
+impl<B: bytes::Buf> quic::SendStream<B> for BidiStream<B> {
+    type Error = Error;
+
+    #[inline]
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.send.poll_ready(cx)
+    }
+
+    #[inline]
+    fn send_data<T: Into<quic::WriteBuf<B>>>(&mut self, data: T) -> Result<(), Self::Error> {
+        self.send.send_data(data)
+    }
+
+    #[inline]
+    fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.send.poll_finish(cx)
+    }
+
+    #[inline]
+    fn reset(&mut self, reset_code: u64) {
+        self.send.reset(reset_code);
+    }
+
+    #[inline]
+    fn send_id(&self) -> quic::StreamId {
+        self.send.send_id()
+    }
+}
+
+impl<B: bytes::Buf> quic::SendStreamUnframed<B> for BidiStream<B> {
+    #[inline]
+    fn poll_send<D: Buf>(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut D,
+    ) -> Poll<Result<usize, Self::Error>> {
+        self.send.poll_send(cx, buf)
+    }
+}
+
+impl<B: bytes::Buf> quic::BidiStream<B> for BidiStream<B> {
+    type SendStream = SendStream<B>;
+
+    type RecvStream = RecvStream;
+
+    #[inline]
+    fn split(self) -> (Self::SendStream, Self::RecvStream) {
+        (self.send, self.recv)
+    }
+}
 
 pub struct RecvStream(Result<Reader, Error>);
 
@@ -251,6 +418,7 @@ impl quic::RecvStream for RecvStream {
 
     type Error = Error;
 
+    #[inline]
     fn poll_data(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
         let reader = match &mut self.0 {
             Ok(reader) => reader,
@@ -261,17 +429,21 @@ impl quic::RecvStream for RecvStream {
         let mut read_buf = ReadBuf::new(&mut buf);
         let poll = tokio::io::AsyncRead::poll_read(Pin::new(reader), cx, &mut read_buf);
         let data_written = read_buf.remaining_mut() != buf.len();
-        match ready!(poll) {
+        match ready!(poll).map_err(Error::from) {
             Ok(()) => {
                 if !data_written {
                     return Poll::Ready(Ok(None));
                 }
                 Poll::Ready(Ok(Some(bytes::Bytes::from(buf))))
             }
-            Err(e) => Poll::Ready(Err(e.into())),
+            Err(e) => {
+                self.0 = Err(e.clone());
+                Poll::Ready(Err(e))
+            }
         }
     }
 
+    #[inline]
     fn stop_sending(&mut self, error_code: u64) {
         if self.0.is_err() {
             return;
@@ -281,6 +453,7 @@ impl quic::RecvStream for RecvStream {
         reader.stop(error_code);
     }
 
+    #[inline]
     fn recv_id(&self) -> quic::StreamId {
         unimplemented!()
     }
@@ -300,27 +473,10 @@ impl<B> SendStream<B> {
     }
 }
 
-pub struct Frame<B> {
-    _buf: quic::WriteBuf<B>,
-    buf: &'static [u8],
-    _pin: PhantomPinned,
-}
-
-impl<B: bytes::Buf> Frame<B> {
-    fn new(buf: impl Into<quic::WriteBuf<B>>) -> Self {
-        let _buf = buf.into();
-        let buf = unsafe { std::mem::transmute::<&[u8], &[u8]>(_buf.chunk()) };
-        Self {
-            _buf,
-            buf,
-            _pin: PhantomPinned,
-        }
-    }
-}
-
 impl<B: bytes::Buf> quic::SendStream<B> for SendStream<B> {
     type Error = Error;
 
+    #[inline]
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let writer = self.writer.as_mut().map_err(|e| e.clone())?;
         let Some(Frame { buf, .. }) = self.frame.as_mut() else {
@@ -345,6 +501,7 @@ impl<B: bytes::Buf> quic::SendStream<B> for SendStream<B> {
         }
     }
 
+    #[inline]
     fn send_data<T: Into<quic::WriteBuf<B>>>(&mut self, data: T) -> Result<(), Self::Error> {
         if let Err(e) = &self.writer {
             return Err(e.clone());
@@ -354,6 +511,7 @@ impl<B: bytes::Buf> quic::SendStream<B> for SendStream<B> {
         Ok(())
     }
 
+    #[inline]
     fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         assert!(self.frame.is_none());
 
@@ -367,6 +525,7 @@ impl<B: bytes::Buf> quic::SendStream<B> for SendStream<B> {
         }
     }
 
+    #[inline]
     fn reset(&mut self, reset_code: u64) {
         assert!(self.frame.is_none());
         if self.writer.is_err() {
@@ -378,12 +537,14 @@ impl<B: bytes::Buf> quic::SendStream<B> for SendStream<B> {
         writer.cancel(reset_code);
     }
 
+    #[inline]
     fn send_id(&self) -> quic::StreamId {
         unimplemented!()
     }
 }
 
 impl<B: bytes::Buf> quic::SendStreamUnframed<B> for SendStream<B> {
+    #[inline]
     fn poll_send<D: Buf>(
         &mut self,
         cx: &mut Context<'_>,
@@ -402,78 +563,45 @@ impl<B: bytes::Buf> quic::SendStreamUnframed<B> for SendStream<B> {
         }
     }
 }
-pub struct BidiStream<B> {
-    send: SendStream<B>,
-    recv: RecvStream,
+
+pub struct Frame<B> {
+    _buf: quic::WriteBuf<B>,
+    buf: &'static [u8],
+    _pin: PhantomPinned,
 }
 
-impl<B> BidiStream<B> {
-    pub fn new((reader, writer): (Reader, Writer)) -> Self {
+impl<B: bytes::Buf> Frame<B> {
+    fn new(buf: impl Into<quic::WriteBuf<B>>) -> Self {
+        let _buf = buf.into();
+        let buf = unsafe { core::mem::transmute::<&[u8], &[u8]>(_buf.chunk()) };
         Self {
-            send: SendStream::new(writer),
-            recv: RecvStream::new(reader),
+            _buf,
+            buf,
+            _pin: PhantomPinned,
         }
-    }
-}
-impl<B> quic::RecvStream for BidiStream<B> {
-    type Buf = bytes::Bytes;
-
-    type Error = Error;
-
-    fn poll_data(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
-        self.recv.poll_data(cx)
-    }
-
-    fn stop_sending(&mut self, error_code: u64) {
-        self.recv.stop_sending(error_code);
-    }
-
-    fn recv_id(&self) -> quic::StreamId {
-        self.recv.recv_id()
-    }
-}
-
-impl<B: bytes::Buf> quic::SendStream<B> for BidiStream<B> {
-    type Error = Error;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.send.poll_ready(cx)
-    }
-
-    fn send_data<T: Into<quic::WriteBuf<B>>>(&mut self, data: T) -> Result<(), Self::Error> {
-        self.send.send_data(data)
-    }
-
-    fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.send.poll_finish(cx)
-    }
-
-    fn reset(&mut self, reset_code: u64) {
-        self.send.reset(reset_code);
-    }
-
-    fn send_id(&self) -> quic::StreamId {
-        self.send.send_id()
     }
 }
 
 #[derive(Clone)]
-pub struct Error(Arc<std::io::Error>);
+pub struct Error(Arc<IoError>);
 
 impl core::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.0.fmt(f)
     }
 }
 
 impl core::fmt::Debug for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.0.fmt(f)
     }
 }
 
 impl core::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    #[inline]
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         self.0.source()
     }
 }
@@ -490,9 +618,9 @@ impl quic::Error for Error {
     }
 }
 
-impl From<std::io::Error> for Error {
+impl From<IoError> for Error {
     #[inline]
-    fn from(value: std::io::Error) -> Self {
+    fn from(value: IoError) -> Self {
         Self(value.into())
     }
 }
@@ -500,6 +628,6 @@ impl From<std::io::Error> for Error {
 impl From<StreamReset> for Error {
     #[inline]
     fn from(value: StreamReset) -> Self {
-        std::io::Error::new(std::io::ErrorKind::BrokenPipe, value).into()
+        IoError::new(IoErrorKind::BrokenPipe, value).into()
     }
 }
