@@ -433,7 +433,7 @@ where
                     .as_mut()
                     .ok()
                     .and_then(|set| set.get(&sid))
-                    .map(|outgoing| outgoing.stop())
+                    .map(|outgoing| outgoing.stop(stop_sending.app_err_code.into()))
                     .unwrap_or(false)
                 {
                     self.ctrl_frames

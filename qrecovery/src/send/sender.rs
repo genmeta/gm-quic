@@ -323,10 +323,10 @@ impl SendingSender {
     }
 
     /// 传输层使用
-    pub(super) fn stop(&mut self) -> StreamReset {
+    pub(super) fn stop(&mut self) -> u64 {
         self.wake_all();
         // Actually, these remaining data is not acked and will not be acked
-        StreamReset(self.sndbuf.len())
+        self.sndbuf.len()
     }
 }
 
@@ -478,10 +478,10 @@ impl DataSentSender {
         }
     }
 
-    pub(super) fn stop(&mut self) -> StreamReset {
+    pub(super) fn stop(&mut self) -> u64 {
         self.wake_all();
         // Actually, these remaining data is not acked and will not be acked
-        StreamReset(self.sndbuf.len())
+        self.sndbuf.len()
     }
 }
 
@@ -490,7 +490,6 @@ pub(super) enum Sender {
     Ready(ReadySender),
     Sending(SendingSender),
     DataSent(DataSentSender),
-    #[allow(unused)] // TODO
     ResetSent(StreamReset),
     DataRcvd,
     ResetRcvd(StreamReset),
