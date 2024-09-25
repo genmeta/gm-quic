@@ -392,6 +392,11 @@ impl ArcConnection {
             }
         }
     }
+
+    pub fn is_active(&self) -> bool {
+        let guard = self.0.lock().unwrap();
+        !matches!(&*guard, ConnState::Raw(..))
+    }
 }
 
 impl From<RawConnection> for ArcConnection {

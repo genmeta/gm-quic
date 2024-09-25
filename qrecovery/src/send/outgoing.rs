@@ -16,6 +16,7 @@ use qbase::{
 };
 
 use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
+use crate::streams::StreamReset;
 
 /// An struct for protocol layer to manage the sending part of a stream.
 #[derive(Debug, Clone)]
@@ -202,8 +203,8 @@ impl Outgoing {
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
             match sending_state {
-                Sender::ResetSent(_) | Sender::ResetRcvd => {
-                    *sending_state = Sender::ResetRcvd;
+                Sender::ResetSent(r) | Sender::ResetRcvd(r) => {
+                    *sending_state = Sender::ResetRcvd(*r)
                 }
                 _ => {
                     unreachable!(
@@ -273,17 +274,17 @@ impl Future for IsCancelled<'_> {
             Ok(sending_state) => match sending_state {
                 Sender::Ready(s) => {
                     let (final_size, err_code) = ready!(s.poll_cancel(cx));
-                    *sending_state = Sender::ResetSent(final_size);
+                    *sending_state = Sender::ResetSent(StreamReset(final_size));
                     Poll::Ready(Some((final_size, err_code)))
                 }
                 Sender::Sending(s) => {
                     let (final_size, err_code) = ready!(s.poll_cancel(cx));
-                    *sending_state = Sender::ResetSent(final_size);
+                    *sending_state = Sender::ResetSent(StreamReset(final_size));
                     Poll::Ready(Some((final_size, err_code)))
                 }
                 Sender::DataSent(s) => {
                     let (final_size, err_code) = ready!(s.poll_cancel(cx));
-                    *sending_state = Sender::ResetSent(final_size);
+                    *sending_state = Sender::ResetSent(StreamReset(final_size));
                     Poll::Ready(Some((final_size, err_code)))
                 }
                 _ => Poll::Ready(None),

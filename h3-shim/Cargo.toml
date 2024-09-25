@@ -1,0 +1,14 @@
+[package]
+name = "h3-shim"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+h3 = { workspace = true }
+bytes = { workspace = true }
+qbase = { workspace = true }
+quic = { workspace = true }
+qunreliable = { workspace = true }
+qrecovery = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }

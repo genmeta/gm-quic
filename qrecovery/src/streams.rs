@@ -35,6 +35,7 @@ use qbase::{
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
     streamid::Role,
 };
+use thiserror::Error;
 
 use crate::{recv::Reader, send::Writer};
 mod data;
@@ -169,5 +170,6 @@ where
     }
 }
 
-#[cfg(test)]
-mod tests {}
+#[derive(Debug, Error, Clone, Copy)]
+#[error("the stream reset with error code {0}")]
+pub struct StreamReset(pub u64);

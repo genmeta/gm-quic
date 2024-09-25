@@ -12,6 +12,7 @@ use qbase::{
 };
 
 use super::recver::{ArcRecver, Recver};
+use crate::streams::StreamReset;
 
 /// An struct for protocol layer to manage the receiving part of a stream.
 #[derive(Debug, Clone)]
@@ -74,11 +75,11 @@ impl Incoming {
             match receiving_state {
                 Recver::Recv(r) => {
                     let final_size = r.recv_reset(reset_frame)?;
-                    *receiving_state = Recver::ResetRcvd(final_size);
+                    *receiving_state = Recver::ResetRcvd(StreamReset(final_size));
                 }
                 Recver::SizeKnown(r) => {
                     let final_size = r.recv_reset(reset_frame)?;
-                    *receiving_state = Recver::ResetRcvd(final_size);
+                    *receiving_state = Recver::ResetRcvd(StreamReset(final_size));
                 }
                 _ => {
                     log::error!("there is sth wrong, ignored recv_reset");

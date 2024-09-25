@@ -109,17 +109,14 @@ impl AsyncRead for Reader {
                 Poll::Ready(Ok(()))
             }
             Recver::DataRead => Poll::Ready(Ok(())),
-            Recver::ResetRcvd(_final_size) => {
-                *receiving_state = Recver::ResetRead;
-                Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "reset by peer",
-                )))
+            Recver::ResetRcvd(reset) => {
+                let reset = *reset;
+                *receiving_state = Recver::ResetRead(reset);
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, reset)))
             }
-            Recver::ResetRead => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "you know, reset by peer",
-            ))),
+            Recver::ResetRead(reset) => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+            }
         }
     }
 }

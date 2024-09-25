@@ -11,6 +11,7 @@ use qbase::{
 };
 
 use super::rcvbuf;
+use crate::streams::StreamReset;
 
 #[derive(Debug)]
 pub(super) struct Recv {
@@ -343,9 +344,9 @@ pub(super) enum Recver {
     Recv(Recv),
     SizeKnown(SizeKnown),
     DataRcvd(DataRcvd),
-    ResetRcvd(u64),
+    ResetRcvd(StreamReset),
     DataRead,
-    ResetRead,
+    ResetRead(StreamReset),
 }
 
 impl Recver {

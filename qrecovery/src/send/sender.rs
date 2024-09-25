@@ -8,6 +8,7 @@ use std::{
 use qbase::{error::Error, util::DescribeData};
 
 use super::sndbuf::SendBuf;
+use crate::streams::StreamReset;
 
 /// The "Ready" state represents a newly created stream that is able to accept data from the application.
 /// Stream data might be buffered in this state in preparation for sending.
@@ -322,10 +323,10 @@ impl SendingSender {
     }
 
     /// 传输层使用
-    pub(super) fn stop(&mut self) -> u64 {
+    pub(super) fn stop(&mut self) -> StreamReset {
         self.wake_all();
         // Actually, these remaining data is not acked and will not be acked
-        self.sndbuf.len()
+        StreamReset(self.sndbuf.len())
     }
 }
 
@@ -477,10 +478,10 @@ impl DataSentSender {
         }
     }
 
-    pub(super) fn stop(&mut self) -> u64 {
+    pub(super) fn stop(&mut self) -> StreamReset {
         self.wake_all();
         // Actually, these remaining data is not acked and will not be acked
-        self.sndbuf.len()
+        StreamReset(self.sndbuf.len())
     }
 }
 
@@ -490,9 +491,9 @@ pub(super) enum Sender {
     Sending(SendingSender),
     DataSent(DataSentSender),
     #[allow(unused)] // TODO
-    ResetSent(u64),
+    ResetSent(StreamReset),
     DataRcvd,
-    ResetRcvd,
+    ResetRcvd(StreamReset),
 }
 
 impl Sender {
