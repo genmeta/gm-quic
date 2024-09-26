@@ -1,13 +1,15 @@
 use core::{
-    marker::PhantomPinned,
     pin::Pin,
     task::{ready, Context, Poll},
 };
 extern crate alloc;
 use alloc::sync::Arc;
-use std::io::{Error as IoError, ErrorKind as IoErrorKind};
+use std::{
+    io::{Error as IoError, ErrorKind as IoErrorKind},
+    mem::MaybeUninit,
+};
 
-use bytes::{Buf, BufMut};
+use bytes::Buf;
 use futures::Stream;
 use h3::quic;
 use qrecovery::{recv::Reader, send::Writer, streams::StreamReset};
@@ -425,16 +427,16 @@ impl quic::RecvStream for RecvStream {
             Err(e) => return Poll::Ready(Err(e.clone())),
         };
 
-        let mut buf = vec![0; 4096];
-        let mut read_buf = ReadBuf::new(&mut buf);
+        let mut uninit_buf = [MaybeUninit::uninit(); 4096];
+        let mut read_buf = ReadBuf::uninit(&mut uninit_buf);
         let poll = tokio::io::AsyncRead::poll_read(Pin::new(reader), cx, &mut read_buf);
-        let data_written = read_buf.remaining_mut() != buf.len();
         match ready!(poll).map_err(Error::from) {
             Ok(()) => {
-                if !data_written {
+                if read_buf.filled().is_empty() {
                     return Poll::Ready(Ok(None));
                 }
-                Poll::Ready(Ok(Some(bytes::Bytes::from(buf))))
+                let bytes = bytes::Bytes::copy_from_slice(read_buf.filled());
+                Poll::Ready(Ok(Some(bytes)))
             }
             Err(e) => {
                 self.0 = Err(e.clone());
@@ -461,14 +463,14 @@ impl quic::RecvStream for RecvStream {
 
 pub struct SendStream<B> {
     writer: Result<Writer, Error>,
-    frame: Option<Frame<B>>,
+    data: Option<quic::WriteBuf<B>>,
 }
 
 impl<B> SendStream<B> {
     pub fn new(writer: Writer) -> Self {
         Self {
             writer: Ok(writer),
-            frame: None,
+            data: None,
         }
     }
 }
@@ -479,15 +481,16 @@ impl<B: bytes::Buf> quic::SendStream<B> for SendStream<B> {
     #[inline]
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let writer = self.writer.as_mut().map_err(|e| e.clone())?;
-        let Some(Frame { buf, .. }) = self.frame.as_mut() else {
+        let Some(buf) = self.data.as_mut() else {
             return Poll::Ready(Ok(()));
         };
-        let poll = tokio::io::AsyncWrite::poll_write(Pin::new(writer), cx, buf);
+
+        let poll = tokio::io::AsyncWrite::poll_write(Pin::new(writer), cx, buf.chunk());
         match ready!(poll).map_err(Error::from) {
             Ok(written) => {
-                *buf = &buf[written..];
-                if buf.is_empty() {
-                    self.frame = None;
+                buf.advance(written);
+                if buf.remaining() == 0 {
+                    self.data = None;
                     Poll::Ready(Ok(()))
                 } else {
                     Poll::Pending
@@ -495,7 +498,7 @@ impl<B: bytes::Buf> quic::SendStream<B> for SendStream<B> {
             }
             Err(e) => {
                 self.writer = Err(e.clone());
-                self.frame = None;
+                self.data = None;
                 Poll::Ready(Err(e))
             }
         }
@@ -506,14 +509,14 @@ impl<B: bytes::Buf> quic::SendStream<B> for SendStream<B> {
         if let Err(e) = &self.writer {
             return Err(e.clone());
         }
-        assert!(self.frame.is_none());
-        self.frame = Some(Frame::new(data));
+        assert!(self.data.is_none());
+        self.data = Some(data.into());
         Ok(())
     }
 
     #[inline]
     fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        assert!(self.frame.is_none());
+        assert!(self.data.is_none());
 
         match &mut self.writer {
             Ok(writer) => tokio::io::AsyncWrite::poll_shutdown(Pin::new(writer), cx).map(|r| {
@@ -527,7 +530,7 @@ impl<B: bytes::Buf> quic::SendStream<B> for SendStream<B> {
 
     #[inline]
     fn reset(&mut self, reset_code: u64) {
-        assert!(self.frame.is_none());
+        assert!(self.data.is_none());
         if self.writer.is_err() {
             return;
         }
@@ -550,7 +553,7 @@ impl<B: bytes::Buf> quic::SendStreamUnframed<B> for SendStream<B> {
         cx: &mut Context<'_>,
         buf: &mut D,
     ) -> Poll<Result<usize, Self::Error>> {
-        assert!(self.frame.is_none());
+        assert!(self.data.is_none());
 
         match &mut self.writer {
             Ok(writer) => {
@@ -560,24 +563,6 @@ impl<B: bytes::Buf> quic::SendStreamUnframed<B> for SendStream<B> {
                 })
             }
             Err(e) => Poll::Ready(Err(e.clone())),
-        }
-    }
-}
-
-pub struct Frame<B> {
-    _buf: quic::WriteBuf<B>,
-    buf: &'static [u8],
-    _pin: PhantomPinned,
-}
-
-impl<B: bytes::Buf> Frame<B> {
-    fn new(buf: impl Into<quic::WriteBuf<B>>) -> Self {
-        let _buf = buf.into();
-        let buf = unsafe { core::mem::transmute::<&[u8], &[u8]>(_buf.chunk()) };
-        Self {
-            _buf,
-            buf,
-            _pin: PhantomPinned,
         }
     }
 }
