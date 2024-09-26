@@ -12,17 +12,75 @@ pub(crate) enum FutureState<T> {
     Ready(T),
 }
 
+/// A value which will be resolved in the future.
+///
+/// Be different with the [`futures::Future`], this is a value not a computation.
+///
+/// The [`Future`] can only been assigned once, and the value can be get multiple times.(so the T
+/// must be [`Clone`]). If the assign is called multiple times, the old value will not be replaced,
+/// and the new value will be returned as [`Err`].
+///
+/// The task can attempt to get the value synchronously by calling [`try_get`], or asynchronously by
+/// calling [`get`]. There are also a [`poll_get`] method for the task to poll the value. Read their
+/// document for more details about the behavior.
+///
+/// # Examples
+/// ``` rust, no_run
+/// # async fn some_work() -> &'static str { "Hello World" }
+/// # async fn test() {
+/// use qbase::util::Future;
+/// use std::sync::Arc;
+///
+/// let fut = Arc::new(Future::new());
+/// let t1 = tokio::spawn({
+///     let fut = fut.clone();
+///     async move {
+///         assert_eq!(fut.get().await, "Hello world");
+///         // the value can be get multiple times
+///         assert_eq!(fut.get().await, "Hello world");
+///         assert_eq!(fut.get().await, "Hello world");
+///     }
+/// });
+///
+/// let t2 = tokio::spawn({
+///     let fut = fut.clone();
+///     async move {
+///         // do some work to get the value
+///         let value = some_work().await;
+///         fut.assign(value);
+///
+///         // the new value will not replace the old value
+///         assert_eq!(fut.assign("Hi World"), Err("Hi World"));
+///     }
+/// });
+///
+/// _ = tokio::join!(t1, t2);
+/// # }
+///
+/// ```
+///
+///
+/// [`get`]: Future::get
+/// [`try_get`]: Future::try_get
+/// [`poll_get`]: Future::poll_get
 #[derive(Debug)]
 pub struct Future<T> {
     state: Mutex<FutureState<T>>,
 }
 
 impl<T: Clone> Future<T> {
+    /// Create a new empty [`Future`].
     #[inline]
     pub fn new() -> Self {
         Default::default()
     }
 
+    /// Create a new [`Future`] with the given value in it.
+    ///
+    /// Once that the future can only been assigned once, its not a good idea to use this method,
+    /// why dont you use the value directly or share the value with the [`Arc`]?
+    ///
+    /// [`Arc`]: std::sync::Arc
     #[inline]
     pub fn with(item: T) -> Self {
         Self {
@@ -34,6 +92,12 @@ impl<T: Clone> Future<T> {
         self.state.lock().unwrap()
     }
 
+    /// Assign the value to the [`Future`].
+    ///
+    /// If its the first time to assign the value, [`Ok`] will be returned.
+    ///
+    /// If the value has been assigned before, the new value will not replace the old value, and
+    /// the new value will be returned as [`Err`].
     #[inline]
     pub fn assign(&self, item: T) -> Result<(), T> {
         let mut state = self.state();
@@ -46,6 +110,24 @@ impl<T: Clone> Future<T> {
         Ok(())
     }
 
+    /// Poll the value of the [`Future`].
+    ///
+    /// If the value is ready, the value will be returned as [`Poll::Ready`]. If the value is not
+    /// ready, this method will return [`Poll::Pending`] and the waker will be stored.
+    ///
+    /// Note that if there has been a waker stored(there has been a task waiting for the value), and
+    /// the new waker is different from the old waker(tested by [`Waker::will_wake`]), the method will
+    /// panic.
+    ///
+    /// This case is usually caused by the value being waited by multiple tasks, which is not allowed.
+    ///
+    /// # Cancel Safe
+    ///
+    /// If you use this method directly, the future is not cancel safe, when the task is dropped, the
+    /// waker will **not** be dropped. When the method called next time, the method may panic because
+    /// there has been a waker stored(a canceled task).
+    ///
+    /// If you want to make the future cancel safe, you should use the [`Get`] instead of this method.
     #[inline]
     pub fn poll_get(&self, cx: &mut Context<'_>) -> Poll<T> {
         let mut raw_future = self.state();
@@ -65,6 +147,10 @@ impl<T: Clone> Future<T> {
         }
     }
 
+    /// Try to get the value of the [`Future`].
+    ///
+    /// If the value is ready, the value will be returned as [`Some`]. If the value is not ready, this
+    /// method will return [`None`].
     pub fn try_get(&self) -> Option<T> {
         match self.state().deref() {
             FutureState::Ready(item) => Some(item.clone()),
@@ -72,6 +158,22 @@ impl<T: Clone> Future<T> {
         }
     }
 
+    /// Get the value of the [`Future`] asynchronously.
+    ///
+    /// ``` rust, ignore
+    /// async fn get(&self) -> T
+    /// ```
+    ///
+    /// The method will return a [`Get`] future, which will poll the value of the [`Future`] when
+    /// the task is polled.
+    ///
+    /// Note that there can only be one task waiting for the value, if there are multiple tasks
+    /// waiting for the value, the method will panic.
+    ///
+    /// # Cancel Safe
+    ///
+    /// The [`Get`] future is cancel safe, when the task is dropped, the waker will be dropped too,
+    /// a new task can wait for the value again.
     #[inline]
     pub fn get(&self) -> Get<'_, T> {
         Get(self)
@@ -86,6 +188,7 @@ impl<T> Default for Future<T> {
     }
 }
 
+/// A future which will poll the value of the [`Future`] asynchronously.
 pub struct Get<'f, T: Clone>(&'f Future<T>);
 
 impl<T: Clone> Unpin for Get<'_, T> {}
@@ -207,6 +310,6 @@ mod tests {
             Ok((Ok("Hello world"), Err(..))) => {}
             Ok((Err(..), Ok("Hello world"))) => {}
             e => panic!("unexpected result: {e:?}"),
-        }
+        };
     }
 }
