@@ -62,11 +62,11 @@ jobs:
       - name: Install latest nightly
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
           override: true
           components: clippy
       - name: Run clippy
-        run: cargo +nightly clippy --all-targets --all-features -- -Dwarnings
+        run: cargo clippy --all-targets --all-features -- -Dwarnings
   doc:
     runs-on: ubuntu-latest
     steps:
