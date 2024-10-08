@@ -3,7 +3,7 @@ use crate::{cid::ConnectionId, packet::SpinBit};
 
 /// A packet with a short header does not include a length,
 /// so it can only be the last packet in a UDP datagram.
-
+///
 /// ```text
 ///      +---spin bit
 ///      |     +---key phase bits

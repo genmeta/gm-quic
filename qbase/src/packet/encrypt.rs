@@ -11,7 +11,7 @@ use super::{KeyPhaseBit, LongSpecificBits, ShortSpecificBits};
 /// The packet body refers to the packet data located after the packet number,
 /// specifically including the intergrity checksum codes at the end, which usually consist of
 /// 16 bytes depending on the encryption algorithm.
-
+///
 /// # Note
 ///
 /// Before encrypting the packet body, the entire packet content must be fully and

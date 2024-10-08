@@ -64,7 +64,7 @@ impl ConnError {
 }
 
 /// A future that resolves when a connection error occurs.
-
+///
 /// This future is used to track the state of a connection and determine whether it is closing
 /// due to an application error or draining gracefully. It implements the `Future` trait, allowing
 /// it to be polled for completion.
