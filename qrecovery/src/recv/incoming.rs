@@ -12,6 +12,7 @@ use qbase::{
 };
 
 use super::recver::{ArcRecver, Recver};
+use crate::streams::StreamReset;
 
 /// An struct for protocol layer to manage the receiving part of a stream.
 #[derive(Debug, Clone)]
@@ -62,7 +63,7 @@ impl Incoming {
         Ok(new_data_size)
     }
 
-    /// Celled when the stream reset frame belong to this stream acked by peer.
+    /// Receive a stream reset frame from peer.
     ///
     /// If all data sent by the peer has not been received, receiving a stream reset frame will cause
     /// any read calls to return an error, received data will be discarded.
@@ -73,12 +74,14 @@ impl Incoming {
         if let Ok(receiving_state) = inner {
             match receiving_state {
                 Recver::Recv(r) => {
-                    let final_size = r.recv_reset(reset_frame)?;
-                    *receiving_state = Recver::ResetRcvd(final_size);
+                    let _final_size = r.recv_reset(reset_frame)?;
+                    *receiving_state =
+                        Recver::ResetRcvd(StreamReset(reset_frame.app_error_code.into()));
                 }
                 Recver::SizeKnown(r) => {
-                    let final_size = r.recv_reset(reset_frame)?;
-                    *receiving_state = Recver::ResetRcvd(final_size);
+                    let _final_size = r.recv_reset(reset_frame)?;
+                    *receiving_state =
+                        Recver::ResetRcvd(StreamReset(reset_frame.app_error_code.into()));
                 }
                 _ => {
                     log::error!("there is sth wrong, ignored recv_reset");
@@ -111,16 +114,16 @@ impl Incoming {
 
     /// Wait for the application layer to want to reset the stream.
     ///
-    /// If the stream closed, this future also will complete.
+    /// If the stream is closed, this future will complete too.
     ///
     /// See [`IsStopped`]'s doc for more details.
     pub fn is_stopped_by_app(&self) -> IsStopped {
         IsStopped(&self.0)
     }
 
-    /// Waiting for the need to expand the other party's sending window.
+    /// Waiting for the need to update the peer's sending window.
     ///
-    /// If the stream closed in other reason, this future will complete too.
+    /// If the stream is closed, this future will complete too.
     ///
     /// See [`UpdateWindow`]'s doc for more details.
     pub fn need_update_window(&self) -> UpdateWindow {

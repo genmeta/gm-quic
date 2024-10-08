@@ -103,20 +103,18 @@ impl AsyncWrite for Writer {
             Sender::Sending(s) => s.poll_write(cx, buf),
             Sender::DataSent(_) => Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "all data has been written, shutdown was called",
+                "all data has been written",
             ))),
             Sender::DataRcvd => Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "all data has been received by peer",
+                "all data has been received",
             ))),
-            Sender::ResetSent(_) => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "the stream was reset by local",
-            ))),
-            Sender::ResetRcvd => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "reset msg has been received by peer",
-            ))),
+            Sender::ResetSent(reset) => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+            }
+            Sender::ResetRcvd(reset) => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+            }
         }
     }
 
@@ -134,14 +132,12 @@ impl AsyncWrite for Writer {
                 result
             }
             Sender::DataRcvd => Poll::Ready(Ok(())),
-            Sender::ResetSent(_) => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "the stream was reset by local",
-            ))),
-            Sender::ResetRcvd => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "reset msg has been received by peer",
-            ))),
+            Sender::ResetSent(reset) => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+            }
+            Sender::ResetRcvd(reset) => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+            }
         }
     }
 
@@ -176,14 +172,12 @@ impl AsyncWrite for Writer {
                 result
             }
             Sender::DataRcvd => Poll::Ready(Ok(())),
-            Sender::ResetSent(_) => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "the stream was reset by local",
-            ))),
-            Sender::ResetRcvd => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "reset msg has been received by peer",
-            ))),
+            Sender::ResetSent(reset) => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+            }
+            Sender::ResetRcvd(reset) => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+            }
         }
     }
 }

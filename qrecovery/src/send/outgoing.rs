@@ -16,6 +16,7 @@ use qbase::{
 };
 
 use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
+use crate::streams::StreamReset;
 
 /// An struct for protocol layer to manage the sending part of a stream.
 #[derive(Debug, Clone)]
@@ -172,7 +173,7 @@ impl Outgoing {
     ///
     /// [`STOP_SENDING frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames
     /// [`STREAM_RESET frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
-    pub fn stop(&self) -> bool {
+    pub fn stop(&self, error_code: u64) -> bool {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         match inner {
@@ -181,11 +182,13 @@ impl Outgoing {
                     unreachable!("never send data before recv data");
                 }
                 Sender::Sending(s) => {
-                    *sending_state = Sender::ResetSent(s.stop());
+                    let _final_size = s.stop();
+                    *sending_state = Sender::ResetSent(StreamReset(error_code));
                     true
                 }
                 Sender::DataSent(s) => {
-                    *sending_state = Sender::ResetSent(s.stop());
+                    let _final_size = s.stop();
+                    *sending_state = Sender::ResetSent(StreamReset(error_code));
                     true
                 }
                 _ => false,
@@ -202,13 +205,13 @@ impl Outgoing {
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
             match sending_state {
-                Sender::ResetSent(_) | Sender::ResetRcvd => {
-                    *sending_state = Sender::ResetRcvd;
+                Sender::ResetSent(r) | Sender::ResetRcvd(r) => {
+                    *sending_state = Sender::ResetRcvd(*r)
                 }
                 _ => {
                     unreachable!(
                     "If no RESET_STREAM has been sent, how can there be a received acknowledgment?"
-                );
+                    );
                 }
             }
         }
@@ -273,17 +276,17 @@ impl Future for IsCancelled<'_> {
             Ok(sending_state) => match sending_state {
                 Sender::Ready(s) => {
                     let (final_size, err_code) = ready!(s.poll_cancel(cx));
-                    *sending_state = Sender::ResetSent(final_size);
+                    *sending_state = Sender::ResetSent(StreamReset(err_code));
                     Poll::Ready(Some((final_size, err_code)))
                 }
                 Sender::Sending(s) => {
                     let (final_size, err_code) = ready!(s.poll_cancel(cx));
-                    *sending_state = Sender::ResetSent(final_size);
+                    *sending_state = Sender::ResetSent(StreamReset(err_code));
                     Poll::Ready(Some((final_size, err_code)))
                 }
                 Sender::DataSent(s) => {
                     let (final_size, err_code) = ready!(s.poll_cancel(cx));
-                    *sending_state = Sender::ResetSent(final_size);
+                    *sending_state = Sender::ResetSent(StreamReset(err_code));
                     Poll::Ready(Some((final_size, err_code)))
                 }
                 _ => Poll::Ready(None),
