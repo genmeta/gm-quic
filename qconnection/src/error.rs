@@ -6,11 +6,11 @@ use std::{
 
 use qbase::{error::Error, frame::ConnectionCloseFrame, util::Future};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ConnErrorKind {
-    Application(Error),
-    Closing(Error),
-    Draining(Error),
+    Application,
+    Transport,
+    CcfReceived,
 }
 
 /// Connection error, which is None first, and external can poll query whether an error has occurred.
@@ -19,23 +19,22 @@ pub enum ConnErrorKind {
 /// # Example
 /// ```rust
 /// use qbase::error::{Error, ErrorKind};
-/// use qconnection::error::ConnError;
+/// use qconnection::error::{ConnError, ConnErrorKind};
 ///
 /// # async fn demo() {
 /// let conn_err = ConnError::default();
 /// tokio::spawn({
 ///     let conn_err = conn_err.clone();
 ///     async move {
-///        let (_err, is_active) = conn_err.await;
-///        // or you can `let (error, is_active) = conn_err.did_error_occur().await;``
-///         assert!(is_active);
+///        let (_err, kind) = conn_err.await;
+///         assert_eq!(kind, ConnErrorKind::Transport);
 ///    }
 /// });
 /// conn_err.on_error(Error::with_default_fty(ErrorKind::Internal, "Test error"));
 /// # }
 /// ```
 #[derive(Default, Debug, Clone)]
-pub struct ConnError(Arc<Future<ConnErrorKind>>);
+pub struct ConnError(Arc<Future<(Error, ConnErrorKind)>>);
 
 impl ConnError {
     /// Returns a `ConnError` instance that can be used to track connection errors.
@@ -50,16 +49,16 @@ impl ConnError {
     pub fn on_ccf_rcvd(&self, ccf: &ConnectionCloseFrame) {
         _ = self
             .0
-            .assign(ConnErrorKind::Draining(Error::from(ccf.clone())));
+            .assign((Error::from(ccf.clone()), ConnErrorKind::CcfReceived));
     }
 
     pub fn on_error(&self, error: Error) {
-        _ = self.0.assign(ConnErrorKind::Closing(error));
+        _ = self.0.assign((error, ConnErrorKind::Transport));
     }
 
     /// App actively close the connection with an error
     pub fn set_app_error(&self, error: Error) {
-        _ = self.0.assign(ConnErrorKind::Application(error));
+        _ = self.0.assign((error, ConnErrorKind::Application));
     }
 }
 
@@ -70,24 +69,10 @@ impl ConnError {
 /// it to be polled for completion.
 impl std::future::Future for ConnError {
     /// The output of the `ConnError` future.
-    ///
-    /// `true` indicates that the connection is closing or has been closed due to an application error.
-    /// `false` indicates that the connection is draining and will be closed gracefully.
-    type Output = (Error, bool);
+    type Output = (Error, ConnErrorKind);
 
-    /// Polls the `ConnError` future for completion.
-    ///
-    /// This method checks the internal state of the connection error.
-    ///
-    /// - If the state is `None` or `Pending`, it registers the current waker and returns `Poll::Pending`.
-    /// - If the state is `Closing` or `App`, it returns `Poll::Ready(true)`, indicating that the connection is closing or has been closed due to an application error.
-    /// - If the state is `Draining`, it returns `Poll::Ready(false)`, indicating that the connection is draining and will be closed gracefully.
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match core::task::ready!(self.0.poll_get(cx)) {
-            ConnErrorKind::Application(e) => Poll::Ready((e, true)),
-            ConnErrorKind::Closing(e) => Poll::Ready((e, true)),
-            ConnErrorKind::Draining(e) => Poll::Ready((e, false)),
-        }
+        self.0.poll_get(cx)
     }
 }
 
@@ -104,8 +89,8 @@ mod tests {
         let task = tokio::spawn({
             let conn_error = conn_error.clone();
             async move {
-                let (_, is_active) = conn_error.await;
-                assert!(!is_active);
+                let (_, kind) = conn_error.await;
+                assert_eq!(kind, ConnErrorKind::CcfReceived);
             }
         });
 
@@ -122,8 +107,8 @@ mod tests {
         let task = tokio::spawn({
             let conn_error = conn_error.clone();
             async move {
-                let (_, is_active) = conn_error.await;
-                assert!(is_active);
+                let (_, kind) = conn_error.await;
+                assert_eq!(kind, ConnErrorKind::Transport);
             }
         });
 
@@ -140,8 +125,8 @@ mod tests {
         let task = tokio::spawn({
             let conn_error = conn_error.clone();
             async move {
-                let (_, is_active) = conn_error.did_error_occur().await;
-                assert!(is_active);
+                let (_, kind) = conn_error.did_error_occur().await;
+                assert_eq!(kind, ConnErrorKind::Application);
             }
         });
 
