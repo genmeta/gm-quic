@@ -326,6 +326,7 @@ impl ArcConnection {
         let mut state = self.0.lock().unwrap();
         if let Raw(conn) = state.deref_mut() {
             let error = Error::with_default_fty(ErrorKind::Application, msg);
+            log::info!("Connection is closed by application: {}", error);
             conn.error.set_app_error(error.clone());
             drop(state);
             self.should_enter_closing(error);
@@ -470,6 +471,9 @@ impl From<RawConnection> for ArcConnection {
             let conn = conn.clone();
             async move {
                 let (err, kind) = conn_error.did_error_occur().await;
+                if kind != crate::error::ConnErrorKind::Application {
+                    log::error!("Connection is closed unexpectedly: {}", err)
+                };
                 match kind {
                     crate::error::ConnErrorKind::Application => {} // resolved by ArcConnection::close
                     crate::error::ConnErrorKind::Transport => conn.should_enter_closing(err),

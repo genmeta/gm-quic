@@ -108,7 +108,13 @@ impl QuicClient {
             .addresses
             .iter()
             .find(|addr| addr.is_ipv4() == server_addr.is_ipv4())
-            .unwrap();
+            .ok_or(io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                format!(
+                    "No suitable bind address found for host {} whose socket address is {}",
+                    server_name, server_addr
+                ),
+            ))?;
 
         let usc = get_usc_or_create(bind_addr);
 

@@ -120,6 +120,7 @@ impl InitialScope {
             async move {
                 while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
                 {
+                    log::trace!("received a initial packet from {}", pathway.local_addr());
                     let pty = packet.header.get_type();
                     let Some(keys) = any(keys.get_remote_keys(), &notify).await else {
                         break;
@@ -131,8 +132,8 @@ impl InitialScope {
                     ) {
                         Ok(Some(pn)) => pn,
                         Ok(None) => continue,
-                        Err(_e) => {
-                            // conn_error.on_error(e);
+                        Err(e) => {
+                            conn_error.on_error(e.into());
                             break;
                         }
                     };
@@ -150,11 +151,12 @@ impl InitialScope {
                         body_offset,
                     )
                     .unwrap();
-                    let _header = packet.bytes.split_to(body_offset);
-                    packet.bytes.truncate(pkt_len);
 
                     let path = pathes.get_or_create(pathway, usc);
-                    path.update_recv_time();
+                    path.on_rcvd(packet.bytes.len());
+
+                    let _header = packet.bytes.split_to(body_offset);
+                    packet.bytes.truncate(pkt_len);
 
                     let remote_scid = match packet.header {
                         DataHeader::Long(ref long_header) => long_header.get_scid(),

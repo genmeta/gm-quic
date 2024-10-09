@@ -18,15 +18,15 @@ async fn main() {
     let addr = args.bind.parse().unwrap();
 
     let socket = ArcUsc::new(addr).expect("failed to create socket");
+    let mut receiver = socket.receiver();
     loop {
-        let mut receive = socket.receive();
-        match (&mut receive).await {
+        match receiver.recv().await {
             Ok(n) => {
                 log::info!(
                     "received {} packets, dst {}, src {}",
                     n,
-                    receive.headers[0].dst,
-                    receive.headers[0].src
+                    receiver.headers[0].dst,
+                    receiver.headers[0].src
                 );
             }
             Err(e) => {

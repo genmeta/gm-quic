@@ -122,6 +122,11 @@ impl RawPath {
         };
 
         tokio::spawn(async move {
+            log::trace!(
+                "sending task on pathway `{}` to `{}` started",
+                pathway.local_addr(),
+                pathway.dst_addr()
+            );
             let mut datagrams = Vec::with_capacity(4);
 
             while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
@@ -132,6 +137,11 @@ impl RawPath {
                     return;
                 }
             }
+            log::trace!(
+                "sending task on pathway `{}` to `{}` finished: connection closed",
+                pathway.local_addr(),
+                pathway.dst_addr()
+            );
         });
     }
 
@@ -143,7 +153,15 @@ impl RawPath {
         self.response_sndbuf.clone()
     }
 
+    /// Sets the receive time to the current instant, and updates the anti-amplifier limit.
+    #[inline]
+    pub fn on_rcvd(&self, amount: usize) {
+        self.anti_amplifier.on_rcvd(amount);
+        self.update_recv_time();
+    }
+
     /// Sets the receive time to the current instant.
+    #[inline]
     pub fn update_recv_time(&self) {
         self.state.update_recv_time()
     }

@@ -31,7 +31,7 @@ pub(crate) struct RawTlsSession {
     waker: Option<Waker>,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone, Copy)]
 #[error("TLS session is aborted")]
 pub struct Aborted;
 
@@ -90,7 +90,7 @@ impl RawTlsSession {
     fn poll_read_tls_msg(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<(Vec<u8>, Option<rustls::quic::KeyChange>)>> {
+    ) -> Poll<(Vec<u8>, Option<rustls::quic::KeyChange>)> {
         let mut buf = Vec::with_capacity(1200);
         // rusltls::quic::Connection::write_hs()，该函数即将tls_conn内部的数据写入到buf中
         let key_change = self.tls_conn.write_hs(&mut buf);
@@ -99,7 +99,7 @@ impl RawTlsSession {
             return Poll::Pending;
         }
 
-        Poll::Ready(Some((buf, key_change)))
+        Poll::Ready((buf, key_change))
     }
 
     fn alert(&self) -> Option<rustls::AlertDescription> {
@@ -200,6 +200,7 @@ impl ArcTlsSession {
                         // 读取到EOF，即crypto_stream_reader已经关闭，连接都已经关闭
                         Err(_err) => break,
                     };
+                    log::trace!("read {} bytes from crypto stream (epoch {:?})", n, epoch);
                     let tls_write_result = tls_session.write_tls_msg(&buf[..n]);
                     if let Err(e) = tls_write_result {
                         let error_kind = if let Some(alert) = tls_session.alert() {
@@ -241,11 +242,17 @@ impl ArcTlsSession {
                 // 值保证的。因此，其返回了密钥升级，则需要升级到相应密级，然后后续的数据都将在新密级下发送。
                 let mut epoch = Epoch::Initial;
                 loop {
-                    let Some((buf, key_upgrade)) = tls_session.read_tls_msg().await else {
+                    let Ok((buf, key_upgrade)) = tls_session.read_tls_msg().await else {
+                        log::trace!("TLS session aborted");
                         break;
                     };
 
                     if !buf.is_empty() {
+                        log::trace!(
+                            "write {} bytes to crypto stream (epoch {:?})",
+                            buf.len(),
+                            epoch
+                        );
                         let write_result = crypto_stream_writers[epoch].write(&buf).await;
                         if let Err(err) = write_result {
                             conn_error.on_error(Error::with_default_fty(
@@ -254,6 +261,8 @@ impl ArcTlsSession {
                             ));
                             break;
                         }
+                    } else {
+                        log::trace!("no data read from TLS session");
                     }
 
                     if let Some(key_change) = key_upgrade {
@@ -320,14 +329,15 @@ impl ArcTlsSession {
 pub struct ReadTlsMsg(ArcTlsSession);
 
 impl Future for ReadTlsMsg {
-    type Output = Option<(Vec<u8>, Option<rustls::quic::KeyChange>)>;
+    type Output = Result<(Vec<u8>, Option<rustls::quic::KeyChange>), Aborted>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut guard = self.0 .0.lock().unwrap();
-        if let Ok(ref mut tls_session) = guard.deref_mut() {
-            tls_session.poll_read_tls_msg(cx)
-        } else {
-            Poll::Ready(None)
-        }
+        guard
+            .deref_mut()
+            .as_mut()
+            .map_err(|e| *e)?
+            .poll_read_tls_msg(cx)
+            .map(Ok)
     }
 }

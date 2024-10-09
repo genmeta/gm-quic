@@ -224,11 +224,12 @@ impl DataScope {
                         body_offset,
                     )
                     .unwrap();
+
+                    let path = pathes.get_or_create(pathway, usc);
+                    path.on_rcvd(packet.bytes.len());
+
                     let _header = packet.bytes.split_to(body_offset);
                     packet.bytes.truncate(pkt_len);
-
-                    let path = pathes.get_or_create(pathway, usc.clone());
-                    path.update_recv_time();
 
                     match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
                         false,
@@ -293,13 +294,16 @@ impl DataScope {
                     let pkt_len =
                         decrypt_packet(pk.as_ref(), pn, packet.bytes.as_mut(), body_offset)
                             .unwrap();
+
+                    let path = pathes.get_or_create(pathway, usc);
+                    path.on_rcvd(packet.bytes.len());
+
                     let _header = packet.bytes.split_to(body_offset);
                     packet.bytes.truncate(pkt_len);
+
                     if !handshake.is_handshake_done() {
                         handshake.done();
                     }
-                    let path = pathes.get_or_create(pathway, usc);
-                    path.update_recv_time();
 
                     match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
                         false,
