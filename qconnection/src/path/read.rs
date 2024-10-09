@@ -192,12 +192,20 @@ impl ReadIntoDatagrams {
         buffers: &mut Vec<[u8; MSS]>,
     ) -> Poll<Option<(usize, usize)>> {
         let Poll::Ready(Some(dcid)) = self.dcid.poll_get_cid(cx) else {
-            return Poll::Ready(None);
-        };
-        let send_quota = ready!(self.cc.poll_send(cx));
-        let credit_limit = ready!(self.anti_amplifier.poll_balance(cx));
-        let Some(credit_limit) = credit_limit else {
+            log::debug!("dcid not ready");
             return Poll::Pending;
+        };
+        let Poll::Ready(send_quota) = self.cc.poll_send(cx) else {
+            log::debug!("send quota not ready");
+            return Poll::Pending;
+        };
+        let Poll::Ready(cerdit_limit) = self.anti_amplifier.poll_balance(cx) else {
+            log::debug!("credit limit not ready");
+            return Poll::Pending;
+        };
+        let Some(credit_limit) = cerdit_limit else {
+            log::debug!("credit limit is None");
+            return Poll::Ready(None);
         };
         // 流量控制，受控于对方允许的最大数据，不得超过
         // 作用于新数据，Stream帧中的新数据

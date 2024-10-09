@@ -8,17 +8,20 @@ use std::{
 
 use dashmap::DashMap;
 use deref_derive::Deref;
-use futures::SinkExt;
 use qbase::{
     cid::ConnectionId,
     config::{Parameters, ServerParameters},
-    packet::{header::GetScid, long, DataHeader, DataPacket, InitialHeader, RetryHeader},
+    packet::{
+        header::{GetDcid, GetScid},
+        long, DataHeader, DataPacket, InitialHeader, RetryHeader,
+    },
     token::{ArcTokenRegistry, TokenProvider},
     util::ArcAsyncDeque,
 };
 use qconnection::{connection::ArcConnection, path::Pathway, router::ROUTER};
 use qudp::ArcUsc;
 use rustls::{
+    pki_types::{CertificateDer, PrivateKeyDer},
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };
@@ -111,9 +114,11 @@ impl RawQuicServer {
     }
 
     pub fn recv_unmatched_packet(&self, packet: DataPacket, pathway: Pathway, usc: &ArcUsc) {
-        let (index, initial_dcid) = match &packet.header {
-            DataHeader::Long(hdr @ long::DataHeader::Initial(_)) => (0, *hdr.get_scid()),
-            DataHeader::Long(hdr @ long::DataHeader::ZeroRtt(_)) => (1, *hdr.get_scid()),
+        let (index, initial_dcid, client_initial_dcid) = match &packet.header {
+            DataHeader::Long(hdr @ long::DataHeader::Initial(_))
+            | DataHeader::Long(hdr @ long::DataHeader::ZeroRtt(_)) => {
+                (0, *hdr.get_scid(), *hdr.get_dcid())
+            }
             _ => return,
         };
         let initial_scid =
@@ -126,7 +131,7 @@ impl RawQuicServer {
             None => ArcTokenRegistry::default_provider(),
         };
 
-        let initial_keys = self.initial_server_keys(initial_dcid);
+        let initial_keys = self.initial_server_keys(client_initial_dcid);
         let inner = ArcConnection::new_server(
             initial_scid,
             initial_dcid,
@@ -135,29 +140,27 @@ impl RawQuicServer {
             self.tls_config.clone(),
             token_provider,
         );
+        inner.add_initial_path(pathway, usc.clone());
         let conn = QuicConnection {
             key: ConnKey::Server(initial_scid),
             inner,
         };
+        log::info!("incoming connection established");
         self.listener
             .push_back((conn.clone(), pathway.remote_addr()));
-        if let Some(mut entry) = ROUTER.get_mut(&initial_scid) {
-            _ = entry[index].send((packet, pathway, usc.clone()));
-        };
+        if let Some(entries) = ROUTER.get_mut(&initial_scid) {
+            _ = entries[index].unbounded_send((packet, pathway, usc.clone()))
+        }
     }
 
     /// 监听新连接的到来
     /// 新连接可能通过本地的任何一个有效usc来创建
     /// 只有调用该函数，才会有被动创建的Connection存放队列，等待着应用层来处理
     pub async fn accept(&self) -> io::Result<(QuicConnection, SocketAddr)> {
-        let ret = self.listener.pop().await;
-        if let Some((conn, addr)) = ret {
-            return Ok((conn, addr));
-        }
-        Err(io::Error::new(
-            io::ErrorKind::Other,
-            "No connection available",
-        ))
+        self.listener
+            .pop()
+            .await
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No connection available"))
     }
 }
 
@@ -351,23 +354,20 @@ impl QuicServerSniBuilder<TlsServerConfig> {
     /// 可以调用多次，支持多服务器，支持TLS SNI
     /// 若是新连接的server_name没有对应的配置，则会被拒绝
     pub fn add_host(
-        &mut self,
+        self,
         server_name: impl Into<String>,
         cert_file: impl AsRef<Path>,
         key_file: impl AsRef<Path>,
         parameters: Parameters,
-    ) -> &mut Self {
-        let cert_chain = rustls_pemfile::certs(&mut BufReader::new(
-            File::open(cert_file).expect("Failed to open cert file"),
-        ))
-        .collect::<Result<Vec<_>, _>>()
-        .expect("Failed to read and extract cert from the cert file");
+    ) -> Self {
+        let cert_chain = vec![CertificateDer::from(
+            std::fs::read(cert_file).expect("Failed to open cert file"),
+        )];
 
-        let key_der = rustls_pemfile::private_key(&mut BufReader::new(
-            std::fs::File::open(key_file).expect("Failed to open private key file"),
-        ))
-        .expect("Failed to read PEM sections from the private key file")
-        .unwrap();
+        let key_der = PrivateKeyDer::try_from(
+            std::fs::read(key_file).expect("Failed to open private key file"),
+        )
+        .expect("Failed to parse the private key file");
 
         let private_key = self
             .tls_config
@@ -390,6 +390,11 @@ impl QuicServerSniBuilder<TlsServerConfig> {
 }
 
 impl QuicServerBuilder<TlsServerConfig> {
+    pub fn with_alpn(mut self, alpn: impl IntoIterator<Item = Vec<u8>>) -> Self {
+        self.tls_config.alpn_protocols.extend(alpn);
+        self
+    }
+
     pub fn listen(self) -> QuicServer {
         for addr in &self.addresses {
             _ = get_usc_or_create(addr);
@@ -410,6 +415,11 @@ impl QuicServerBuilder<TlsServerConfig> {
 }
 
 impl QuicServerSniBuilder<TlsServerConfig> {
+    pub fn with_alpn(mut self, alpn: impl IntoIterator<Item = Vec<u8>>) -> Self {
+        self.tls_config.alpn_protocols.extend(alpn);
+        self
+    }
+
     pub fn listen(self) -> QuicServer {
         for addr in &self.addresses {
             _ = get_usc_or_create(addr);
