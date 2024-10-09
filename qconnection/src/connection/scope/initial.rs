@@ -120,7 +120,6 @@ impl InitialScope {
             async move {
                 while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
                 {
-                    log::trace!("received a initial packet from {}", pathway.local_addr());
                     let pty = packet.header.get_type();
                     let Some(keys) = any(keys.get_remote_keys(), &notify).await else {
                         break;

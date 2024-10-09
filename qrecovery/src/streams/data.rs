@@ -685,7 +685,7 @@ where
     }
 
     fn create_sender(&self, sid: StreamId, wnd_size: u64) -> ArcSender {
-        let arc_sender = send::new(wnd_size);
+        let arc_sender = send::new(wnd_size, sid);
         // 创建异步轮询子，监听来自应用层的cancel
         // 一旦cancel，直接向对方发送reset_stream
         // 但要等ResetRecved才能真正释放该流
@@ -707,7 +707,7 @@ where
     }
 
     fn create_recver(&self, sid: StreamId, buf_size: u64) -> ArcRecver {
-        let arc_recver = recv::new(buf_size);
+        let arc_recver = recv::new(buf_size, sid);
         // Continuously check whether the MaxStreamData window needs to be updated.
         tokio::spawn({
             let incoming = Incoming(arc_recver.clone());

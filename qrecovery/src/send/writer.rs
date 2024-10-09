@@ -5,6 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
+use qbase::streamid::StreamId;
 use tokio::io::AsyncWrite;
 
 use super::sender::{ArcSender, Sender};
@@ -86,6 +87,11 @@ impl Writer {
                 _ => (),
             }
         };
+    }
+
+    /// Returns the stream ID of the stream.
+    pub fn stream_id(&self) -> StreamId {
+        self.0.sid()
     }
 }
 
