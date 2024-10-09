@@ -4,7 +4,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    task::{ready, Context, Poll},
+    task::{Context, Poll},
 };
 
 use qbase::{

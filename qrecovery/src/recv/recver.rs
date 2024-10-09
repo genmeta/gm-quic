@@ -8,6 +8,7 @@ use bytes::{BufMut, Bytes};
 use qbase::{
     error::{Error, ErrorKind},
     frame::{BeFrame, ResetStreamFrame, StreamFrame},
+    streamid::StreamId,
 };
 
 use super::rcvbuf;
@@ -367,16 +368,24 @@ impl Recver {
 /// [`Incoming`]: super::Incoming
 /// [`Reader`]: super::Reader
 #[derive(Debug, Clone)]
-pub struct ArcRecver(Arc<Mutex<Result<Recver, Error>>>);
+pub struct ArcRecver {
+    recver: Arc<Mutex<Result<Recver, Error>>>,
+    sid: StreamId,
+}
 
 impl ArcRecver {
     #[doc(hidden)]
-    pub fn new(buf_size: u64) -> Self {
-        ArcRecver(Arc::new(Mutex::new(Ok(Recver::new(buf_size)))))
+    pub(crate) fn new(buf_size: u64, sid: StreamId) -> Self {
+        let recver = Arc::new(Mutex::new(Ok(Recver::new(buf_size))));
+        Self { recver, sid }
     }
 
     pub(super) fn recver(&self) -> MutexGuard<Result<Recver, Error>> {
-        self.0.lock().unwrap()
+        self.recver.lock().unwrap()
+    }
+
+    pub(super) fn sid(&self) -> StreamId {
+        self.sid
     }
 }
 

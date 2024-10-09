@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use qbase::{error::Error, util::DescribeData};
+use qbase::{error::Error, streamid::StreamId, util::DescribeData};
 
 use super::sndbuf::SendBuf;
 use crate::streams::StreamReset;
@@ -512,15 +512,23 @@ impl Sender {
 /// [`Outgoing`]: super::Outgoing
 /// [`Writer`]: super::Writer
 #[derive(Debug, Clone)]
-pub struct ArcSender(Arc<Mutex<Result<Sender, Error>>>);
+pub struct ArcSender {
+    sender: Arc<Mutex<Result<Sender, Error>>>,
+    sid: StreamId,
+}
 
 impl ArcSender {
     #[doc(hidden)]
-    pub fn with_wnd_size(wnd_size: u64) -> Self {
-        ArcSender(Arc::new(Mutex::new(Ok(Sender::with_wnd_size(wnd_size)))))
+    pub(crate) fn new(wnd_size: u64, sid: StreamId) -> Self {
+        let sender = Arc::new(Mutex::new(Ok(Sender::with_wnd_size(wnd_size))));
+        ArcSender { sender, sid }
     }
 
     pub(super) fn sender(&self) -> MutexGuard<Result<Sender, Error>> {
-        self.0.lock().unwrap()
+        self.sender.lock().unwrap()
+    }
+
+    pub(super) fn sid(&self) -> StreamId {
+        self.sid
     }
 }
