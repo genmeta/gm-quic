@@ -155,7 +155,7 @@ where
     pub fn done(&self) {
         match self {
             Handshake::Server(h) => h.done(),
-            _ => println!("WARN: it doesn't make sense to call done() on a client handshake"),
+            _ => log::warn!(" it doesn't make sense to call done() on a client handshake"),
         }
     }
 

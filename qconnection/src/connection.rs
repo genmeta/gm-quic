@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     fmt::Debug,
     io, mem,
-    ops::DerefMut,
+    ops::{Deref, DerefMut},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -80,7 +80,8 @@ impl ConnState {
 
         *self = match (hs, one_rtt) {
             (None, None) => {
-                let draining_connection = DrainingConnection::new(raw_conn.cid_registry.local);
+                let local_cids = raw_conn.cid_registry.local;
+                let draining_connection = DrainingConnection::new(local_cids, error);
                 Draining(draining_connection)
             }
             (hs, one_rtt) => {
@@ -98,7 +99,7 @@ impl ConnState {
     fn enter_draining(&mut self) {
         let conn = core::mem::replace(self, Closed);
         let darining = match conn {
-            Closing(closing) => DrainingConnection::new(closing.cid_registry.local),
+            Closing(closing) => DrainingConnection::new(closing.cid_registry.local, closing.error),
             Draining(draining) => draining,
             _ => unreachable!(),
         };
@@ -191,12 +192,13 @@ impl ArcConnection {
     // }
 
     pub async fn open_bi_stream(&self) -> io::Result<Option<(Reader, Writer)>> {
-        let connection_closed =
-            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
-            let ConnState::Raw(raw_conn) = &*guard else {
-                return Err(connection_closed);
+            let raw_conn = match guard.deref() {
+                Raw(raw) => raw,
+                Closing(closing) => return Err(closing.error.clone())?,
+                Draining(draining) => return Err(draining.error.clone())?,
+                Closed => unreachable!(),
             };
 
             (
@@ -216,12 +218,13 @@ impl ArcConnection {
     }
 
     pub async fn open_uni_stream(&self) -> io::Result<Option<Writer>> {
-        let connection_closed =
-            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
-            let ConnState::Raw(raw_conn) = &*guard else {
-                return Err(connection_closed);
+            let raw_conn = match guard.deref() {
+                Raw(raw) => raw,
+                Closing(closing) => return Err(closing.error.clone())?,
+                Draining(draining) => return Err(draining.error.clone())?,
+                Closed => unreachable!(),
             };
 
             (
@@ -241,12 +244,13 @@ impl ArcConnection {
     }
 
     pub async fn accept_bi_stream(&self) -> io::Result<(Reader, Writer)> {
-        let connection_closed =
-            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
-            let ConnState::Raw(raw_conn) = &*guard else {
-                return Err(connection_closed);
+            let raw_conn = match guard.deref() {
+                Raw(raw) => raw,
+                Closing(closing) => return Err(closing.error.clone())?,
+                Draining(draining) => return Err(draining.error.clone())?,
+                Closed => unreachable!(),
             };
 
             (
@@ -268,11 +272,11 @@ impl ArcConnection {
     pub async fn accept_uni_stream(&self) -> io::Result<Reader> {
         let (data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
-            let ConnState::Raw(raw_conn) = &*guard else {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "Connection is closing or closed",
-                ));
+            let raw_conn = match guard.deref() {
+                Raw(raw) => raw,
+                Closing(closing) => return Err(closing.error.clone())?,
+                Draining(draining) => return Err(draining.error.clone())?,
+                Closed => unreachable!(),
             };
 
             (raw_conn.streams.clone(), raw_conn.error.clone())
@@ -286,23 +290,24 @@ impl ArcConnection {
     }
 
     pub fn datagram_reader(&self) -> io::Result<DatagramReader> {
-        let connection_closed =
-            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
         let guard = self.0.lock().unwrap();
-        if let ConnState::Raw(ref raw_conn) = *guard {
-            raw_conn.datagrams.reader()
-        } else {
-            Err(connection_closed)
+
+        match guard.deref() {
+            Raw(raw) => raw.datagrams.reader(),
+            Closing(closing) => Err(closing.error.clone())?,
+            Draining(draining) => Err(draining.error.clone())?,
+            Closed => unreachable!(),
         }
     }
 
     pub async fn datagram_writer(&self) -> io::Result<DatagramWriter> {
-        let connection_closed =
-            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
         let (remote_params, datagram_flow) = {
             let guard = self.0.lock().unwrap();
-            let ConnState::Raw(raw_conn) = &*guard else {
-                return Err(connection_closed);
+            let raw_conn = match guard.deref() {
+                Raw(raw) => raw,
+                Closing(closing) => return Err(closing.error.clone())?,
+                Draining(draining) => return Err(draining.error.clone())?,
+                Closed => unreachable!(),
             };
 
             (raw_conn.params.remote.clone(), raw_conn.datagrams.clone())
@@ -318,9 +323,11 @@ impl ArcConnection {
     /// This function is intended for use by the application layer to signal an
     /// error and initiate the connection closure.
     pub fn close(&self, msg: impl Into<Cow<'static, str>>) {
-        if let Raw(conn) = self.0.lock().unwrap().deref_mut() {
+        let mut state = self.0.lock().unwrap();
+        if let Raw(conn) = state.deref_mut() {
             let error = Error::with_default_fty(ErrorKind::Application, msg);
-            conn.error.on_error(error.clone());
+            conn.error.set_app_error(error.clone());
+            drop(state);
             self.should_enter_closing(error);
         }
     }
@@ -417,7 +424,7 @@ impl ArcConnection {
         let local_cids = match mem::replace(guard.deref_mut(), ConnState::Closed) {
             Raw(conn) => conn.cid_registry.local,
             Closing(conn) => conn.cid_registry.local,
-            Draining(conn) => conn.local_cids().clone(),
+            Draining(conn) => conn.local_cids,
             Closed => unreachable!(),
         };
 

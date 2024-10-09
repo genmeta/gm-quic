@@ -12,7 +12,6 @@ use std::{
 
 use qbase::{
     error::Error,
-    frame::ConnectionCloseFrame,
     packet::{long, DataHeader, DataPacket},
 };
 use qudp::ArcUsc;
@@ -29,7 +28,7 @@ pub struct ClosingConnection {
     pub cid_registry: CidRegistry,
     pub hs: Option<ClosingHandshakeScope>,
     pub one_rtt: Option<ClosingOneRttScope>,
-    pub final_ccf: ConnectionCloseFrame,
+    pub error: Error,
 
     pub rcvd_packets: Arc<AtomicUsize>,
     pub last_send_ccf: Arc<Mutex<Instant>>,
@@ -49,7 +48,7 @@ impl ClosingConnection {
             cid_registry,
             hs,
             one_rtt,
-            final_ccf: ConnectionCloseFrame::from(error),
+            error,
             rcvd_packets: Arc::new(AtomicUsize::new(0)),
             last_send_ccf: Arc::new(Mutex::new(Instant::now())),
             revd_ccf: RcvdCcf::default(),
