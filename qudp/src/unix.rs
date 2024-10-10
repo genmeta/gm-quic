@@ -105,7 +105,6 @@ impl Io for UdpSocketController {
     }
 
     fn sendmsg(&self, bufs: &[IoSlice<'_>], send_hdr: &PacketHeader) -> io::Result<usize> {
-        log::trace!("sendmsg to {}", send_hdr.dst);
         let io = socket2::SockRef::from(&self.io);
 
         let gso_size = if send_hdr.gso {

@@ -30,7 +30,10 @@ impl ClientHandshake {
     /// Once the client receives the HANDSHAKE_DONE frame,
     /// it marks the completion of the client handshake.
     pub fn recv_handshake_done_frame(&self, _frame: &HandshakeDoneFrame) {
-        self.0.store(true, Ordering::Release);
+        let _has_done = self.0.swap(true, Ordering::AcqRel);
+        if !_has_done {
+            log::trace!("Client handshake is done");
+        }
     }
 }
 
@@ -94,6 +97,7 @@ where
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
+            log::trace!("Server handshake is done");
             self.output.send_frame([HandshakeDoneFrame]);
         }
     }
@@ -155,7 +159,7 @@ where
     pub fn done(&self) {
         match self {
             Handshake::Server(h) => h.done(),
-            _ => log::warn!(" it doesn't make sense to call done() on a client handshake"),
+            _ => unreachable!("it doesn't make sense to call done() on a client handshake"),
         }
     }
 

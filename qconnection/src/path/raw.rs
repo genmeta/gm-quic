@@ -122,26 +122,15 @@ impl RawPath {
         };
 
         tokio::spawn(async move {
-            log::trace!(
-                "sending task on pathway `{}` to `{}` started",
-                pathway.local_addr(),
-                pathway.dst_addr()
-            );
             let mut datagrams = Vec::with_capacity(4);
 
             while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
                 let send_result = usc.send_all_via_pathway(&iovec, pathway).await;
-                if let Err(e) = send_result {
-                    log::error!("send datagrams error: {:?}", e);
+                if let Err(_e) = send_result {
                     state.to_inactive();
                     return;
                 }
             }
-            log::trace!(
-                "sending task on pathway `{}` to `{}` finished: connection closed",
-                pathway.local_addr(),
-                pathway.dst_addr()
-            );
         });
     }
 

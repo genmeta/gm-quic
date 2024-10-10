@@ -79,11 +79,6 @@ pub trait ViaPathWayExt: ViaPathway {
     where
         Self: Unpin,
     {
-        log::trace!(
-            "send_via_pathway send packets {:?} to {}",
-            iovecs.iter().map(|i| i.len()).collect::<Vec<_>>(),
-            pathway.dst_addr()
-        );
         SendViaPathWay {
             sender: self,
             iovecs,
@@ -99,11 +94,6 @@ pub trait ViaPathWayExt: ViaPathway {
     where
         Self: Unpin,
     {
-        log::trace!(
-            "send_all_via_pathway send packets {:?} to {}",
-            iovecs.iter().map(|i| i.len()).collect::<Vec<_>>(),
-            pathway.dst_addr()
-        );
         SendAllViaPathWay {
             sender: self,
             iovecs,

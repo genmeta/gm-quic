@@ -66,14 +66,6 @@ pub fn get_usc_or_create(bind_addr: &SocketAddr) -> ArcUsc {
         let mut receiver = usc.receiver();
         tokio::spawn(async move {
             while let Ok(msg_count) = receiver.recv().await {
-                log::trace!(
-                    "received packets {:?}",
-                    receiver
-                        .headers
-                        .iter()
-                        .map(|h| h.seg_size)
-                        .collect::<Vec<_>>()
-                );
                 for (hdr, buf) in
                     core::iter::zip(&receiver.headers, &receiver.iovecs).take(msg_count)
                 {
