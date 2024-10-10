@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, Mutex, MutexGuard},
     task::{ready, Context, Poll},
 };
@@ -10,7 +10,7 @@ use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::{
         BeFrame, FrameType, MaxStreamDataFrame, MaxStreamsFrame, ResetStreamFrame, SendFrame,
-        StopSendingFrame, StreamCtlFrame, StreamFrame,
+        StopSendingFrame, StreamCtlFrame, StreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
     },
     streamid::{AcceptSid, Dir, ExceedLimitError, Role, StreamId, StreamIds},
     varint::VarInt,
@@ -26,7 +26,7 @@ use crate::{
 struct RawOutput {
     #[deref]
     outgoings: BTreeMap<StreamId, Outgoing>,
-    cur_sending_stream: Option<(StreamId, usize)>,
+    last_sent_stream: Option<(StreamId, usize)>,
 }
 
 /// ArcOutput里面包含一个Result类型，一旦发生quic error，就会被替换为Err
@@ -258,41 +258,49 @@ where
         buf: &mut [u8],
         flow_limit: usize,
     ) -> Option<(StreamFrame, usize, usize)> {
+        if buf.len() < STREAM_FRAME_MAX_ENCODING_SIZE + 1 {
+            return None;
+        }
         let guard = &mut self.output.0.lock().unwrap();
         let output = guard.as_mut().ok()?;
 
-        const DEFAULT_TOKENS: usize = 4096;
-
         // 该tokens是令牌桶算法的token，为了多条Stream的公平性，给每个流定期地发放tokens，不累积
         // 各流轮流按令牌桶算法发放的tokens来整理数据去发送
-        let (sid, outgoing, tokens) = output
-            .cur_sending_stream
-            .and_then(|(sid, tokens): (StreamId, usize)| {
-                if tokens == 0 {
-                    // 没有额度：下一个
+        const DEFAULT_TOKENS: usize = 4096;
+        let streams: &mut dyn Iterator<Item = _> = match &output.last_sent_stream {
+            // [sid + 1..] + [..=sid]
+            Some((sid, tokens)) if *tokens == 0 => &mut output
+                .outgoings
+                .range(sid..)
+                .skip(1)
+                .chain(output.outgoings.range(..=sid))
+                .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+            // [sid..] + [..sid]
+            Some((sid, tokens)) => {
+                &mut core::iter::once((*sid, output.outgoings.get(sid)?, *tokens)).chain(
                     output
                         .outgoings
                         .range(sid..)
-                        .nth(1)
-                        .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS))
-                } else {
-                    // 有额度：继续
-                    Some((sid, output.outgoings.get(&sid)?, tokens))
-                }
-            })
-            .or_else(|| {
-                // 还没开始/没有下一个/该sid已经被移除：从头开始
-                output
-                    .outgoings
-                    .first_key_value()
-                    .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS))
-            })?;
-
-        let (frame, dat_len, is_fresh, written) =
-            outgoing.try_read(sid, buf, tokens, flow_limit)?;
-        output.cur_sending_stream = Some((sid, tokens - dat_len));
-
-        Some((frame, written, if is_fresh { dat_len } else { 0 }))
+                        .skip(1)
+                        .chain(output.outgoings.range(..sid))
+                        .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+                )
+            }
+            // [..]
+            None => &mut output
+                .outgoings
+                .range(..)
+                .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+        };
+        for (sid, outgoing, tokens) in streams.into_iter() {
+            if let Some((frame, data_len, is_fresh, written)) =
+                outgoing.try_read(sid, buf, tokens, flow_limit)
+            {
+                output.last_sent_stream = Some((sid, tokens - data_len));
+                return Some((frame, written, if is_fresh { data_len } else { 0 }));
+            }
+        }
+        None
     }
 
     /// Called when the stream frame acked.
