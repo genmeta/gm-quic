@@ -223,8 +223,13 @@ mod tests {
         let handshake = super::Handshake::<ArcAsyncDeque<_>>::new_client();
         assert!(!handshake.is_handshake_done());
 
-        handshake.done();
-        assert!(!handshake.is_handshake_done());
+        match &handshake {
+            crate::handshake::Handshake::Client(client_handshake) => {
+                client_handshake.recv_handshake_done_frame(&HandshakeDoneFrame)
+            }
+            crate::handshake::Handshake::Server(..) => unreachable!(),
+        }
+        assert!(handshake.is_handshake_done());
     }
 
     #[test]
