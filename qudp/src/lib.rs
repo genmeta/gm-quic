@@ -185,7 +185,6 @@ impl ArcUsc {
 
     // Send synchronously, usc saves a small amount of data packets,and USC sends internal asynchronous tasks
     pub fn sync_send(&self, packet: Vec<u8>, hdr: &PacketHeader) -> io::Result<()> {
-        log::trace!("sync send packet: [{}]", packet.len());
         let mut guard = self.0.lock().unwrap();
         if guard.bufs.len() >= BUFFER_CAPACITY {
             return Err(io::Error::new(io::ErrorKind::WouldBlock, "buffer full"));
@@ -204,10 +203,6 @@ impl ArcUsc {
     }
 
     pub fn send<'a>(&'a self, iovecs: &'a [IoSlice<'a>], header: PacketHeader) -> Send<'a> {
-        log::trace!(
-            "async send packets: {:?}",
-            iovecs.iter().map(|i| i.len()).collect::<Vec<_>>()
-        );
         Send {
             usc: self.clone(),
             iovecs,
