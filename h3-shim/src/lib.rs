@@ -494,22 +494,21 @@ impl<B: bytes::Buf> quic::SendStream<B> for SendStream<B> {
         let Some(buf) = self.data.as_mut() else {
             return Poll::Ready(Ok(()));
         };
-
-        let poll = tokio::io::AsyncWrite::poll_write(Pin::new(writer), cx, buf.chunk());
-        match ready!(poll).map_err(Error::from) {
-            Ok(written) => {
-                buf.advance(written);
-                if buf.remaining() == 0 {
-                    self.data = None;
-                    Poll::Ready(Ok(()))
-                } else {
-                    Poll::Pending
+        loop {
+            let poll = tokio::io::AsyncWrite::poll_write(Pin::new(writer), cx, buf.chunk());
+            match ready!(poll).map_err(Error::from) {
+                Ok(written) => {
+                    buf.advance(written);
+                    if buf.remaining() == 0 {
+                        self.data = None;
+                        return Poll::Ready(Ok(()));
+                    }
                 }
-            }
-            Err(e) => {
-                self.writer = Err(e.clone());
-                self.data = None;
-                Poll::Ready(Err(e))
+                Err(e) => {
+                    self.writer = Err(e.clone());
+                    self.data = None;
+                    return Poll::Ready(Err(e));
+                }
             }
         }
     }
