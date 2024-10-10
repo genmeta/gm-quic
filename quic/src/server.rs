@@ -1,6 +1,5 @@
 use std::{
-    fs::File,
-    io::{self, BufReader},
+    io::{self},
     net::SocketAddr,
     path::Path,
     sync::Arc,
@@ -273,17 +272,11 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         cert_file: impl AsRef<Path>,
         key_file: impl AsRef<Path>,
     ) -> QuicServerBuilder<TlsServerConfig> {
-        let cert_chain = rustls_pemfile::certs(&mut BufReader::new(
-            File::open(cert_file).expect("Failed to open cert file"),
-        ))
-        .collect::<Result<Vec<_>, _>>()
-        .expect("Failed to read and extract cert from the cert file");
+        let cert = std::fs::read(cert_file).unwrap();
+        let cert_chain = vec![CertificateDer::from(cert)];
 
-        let key_der = rustls_pemfile::private_key(&mut BufReader::new(
-            File::open(key_file).expect("Failed to open private key file"),
-        ))
-        .expect("Failed to read PEM sections from the private key file")
-        .unwrap();
+        let key = std::fs::read(key_file).unwrap();
+        let key_der = PrivateKeyDer::try_from(key).unwrap();
 
         QuicServerBuilder {
             addresses: self.addresses,
@@ -305,17 +298,11 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         key_file: impl AsRef<Path>,
         ocsp: Vec<u8>,
     ) -> QuicServerBuilder<TlsServerConfig> {
-        let cert_chain = rustls_pemfile::certs(&mut BufReader::new(
-            File::open(cert_file).expect("Failed to open cert file"),
-        ))
-        .collect::<Result<Vec<_>, _>>()
-        .expect("Failed to read and extract cert from the cert file");
+        let cert = std::fs::read(cert_file).unwrap();
+        let cert_chain = vec![CertificateDer::from(cert)];
 
-        let key_der = rustls_pemfile::private_key(&mut BufReader::new(
-            std::fs::File::open(key_file).expect("Failed to open private key file"),
-        ))
-        .expect("Failed to read PEM sections from the private key file")
-        .unwrap();
+        let key = std::fs::read(key_file).unwrap();
+        let key_der = PrivateKeyDer::try_from(key).unwrap();
 
         QuicServerBuilder {
             addresses: self.addresses,
@@ -360,14 +347,11 @@ impl QuicServerSniBuilder<TlsServerConfig> {
         key_file: impl AsRef<Path>,
         parameters: Parameters,
     ) -> Self {
-        let cert_chain = vec![CertificateDer::from(
-            std::fs::read(cert_file).expect("Failed to open cert file"),
-        )];
+        let cert = std::fs::read(cert_file).unwrap();
+        let cert_chain = vec![CertificateDer::from(cert)];
 
-        let key_der = PrivateKeyDer::try_from(
-            std::fs::read(key_file).expect("Failed to open private key file"),
-        )
-        .expect("Failed to parse the private key file");
+        let key = std::fs::read(key_file).unwrap();
+        let key_der = PrivateKeyDer::try_from(key).unwrap();
 
         let private_key = self
             .tls_config

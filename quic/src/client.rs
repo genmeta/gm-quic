@@ -1,6 +1,5 @@
 use std::{
-    fs::File,
-    io::{self, BufReader},
+    io::{self},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::Path,
     sync::Arc,
@@ -13,7 +12,9 @@ use qbase::{
 };
 use qconnection::{connection::ArcConnection, path::Pathway};
 use rustls::{
-    client::WantsClientCert, ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
+    client::WantsClientCert,
+    pki_types::{CertificateDer, PrivateKeyDer},
+    ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
 };
 
 use crate::{get_usc_or_create, ConnKey, QuicConnection, CONNECTIONS};
@@ -240,17 +241,11 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         cert_file: impl AsRef<Path>,
         key_file: impl AsRef<Path>,
     ) -> QuicClientBuilder<TlsClientConfig> {
-        let cert_chain = rustls_pemfile::certs(&mut BufReader::new(
-            File::open(cert_file).expect("Failed to open cert file"),
-        ))
-        .collect::<Result<Vec<_>, _>>()
-        .expect("Failed to read and extract cert from the cert file");
+        let cert = std::fs::read(cert_file).unwrap();
+        let cert_chain = vec![CertificateDer::from(cert)];
 
-        let key_der = rustls_pemfile::private_key(&mut BufReader::new(
-            File::open(key_file).expect("Failed to open private key file"),
-        ))
-        .expect("Failed to read PEM sections from the private key file")
-        .unwrap();
+        let key = std::fs::read(key_file).unwrap();
+        let key_der = PrivateKeyDer::try_from(key).unwrap();
 
         QuicClientBuilder {
             addresses: self.addresses,
