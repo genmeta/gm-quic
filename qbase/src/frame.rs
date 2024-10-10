@@ -52,7 +52,7 @@ pub use ping::PingFrame;
 pub use reset_stream::ResetStreamFrame;
 pub use retire_connection_id::RetireConnectionIdFrame;
 pub use stop_sending::StopSendingFrame;
-pub use stream::{ShouldCarryLength, StreamFrame};
+pub use stream::{ShouldCarryLength, StreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE};
 pub use stream_data_blocked::StreamDataBlockedFrame;
 pub use streams_blocked::StreamsBlockedFrame;
 

@@ -36,6 +36,8 @@ pub struct StreamFrame {
 
 const STREAM_FRAME_TYPE: u8 = 0x08;
 
+pub const STREAM_FRAME_MAX_ENCODING_SIZE: usize = 1 + 8 + 8 + 8;
+
 const OFF_BIT: u8 = 0x04;
 const LEN_BIT: u8 = 0x02;
 const FIN_BIT: u8 = 0x01;
@@ -46,7 +48,7 @@ impl BeFrame for StreamFrame {
     }
 
     fn max_encoding_size(&self) -> usize {
-        1 + 8 + 8 + 8
+        STREAM_FRAME_MAX_ENCODING_SIZE
     }
 
     fn encoding_size(&self) -> usize {
