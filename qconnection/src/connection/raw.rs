@@ -213,6 +213,7 @@ impl RawConnection {
             hs.keys.clone(),
             data.one_rtt_keys.clone(),
             conn_error.clone(),
+            handshake.clone(),
         );
 
         let params = ConnParameters::new(local_params.into(), remote_params.clone());
