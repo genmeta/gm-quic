@@ -12,7 +12,7 @@ use qbase::{
 };
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{
-    crypto::CryptoStream,
+    crypto::{CryptoStream, CryptoStreamOutgoing},
     space::{Epoch, InitialSpace},
 };
 use tokio::{sync::Notify, task::JoinHandle};
@@ -131,8 +131,8 @@ impl InitialScope {
                     ) {
                         Ok(Some(pn)) => pn,
                         Ok(None) => continue,
-                        Err(_e) => {
-                            // conn_error.on_error(e);
+                        Err(e) => {
+                            conn_error.on_error(e.into());
                             break;
                         }
                     };
@@ -150,11 +150,12 @@ impl InitialScope {
                         body_offset,
                     )
                     .unwrap();
-                    let _header = packet.bytes.split_to(body_offset);
-                    packet.bytes.truncate(pkt_len);
 
                     let path = pathes.get_or_create(pathway, usc);
-                    path.update_recv_time();
+                    path.on_rcvd(packet.bytes.len());
+
+                    let _header = packet.bytes.split_to(body_offset);
+                    packet.bytes.truncate(pkt_len);
 
                     let remote_scid = match packet.header {
                         DataHeader::Long(ref long_header) => long_header.get_scid(),
@@ -207,10 +208,22 @@ impl InitialScope {
     }
 }
 
-impl MayLoss for InitialScope {
+#[derive(Debug, Clone)]
+pub struct InitialMayLoss {
+    pub space: InitialSpace,
+    pub outgoing: CryptoStreamOutgoing,
+}
+
+impl InitialMayLoss {
+    pub fn new(space: InitialSpace, outgoing: CryptoStreamOutgoing) -> Self {
+        Self { space, outgoing }
+    }
+}
+
+impl MayLoss for InitialMayLoss {
     fn may_loss(&self, pn: u64) {
         for frame in self.space.sent_packets().recv().may_loss_pkt(pn) {
-            self.crypto_stream.outgoing().may_loss_data(&frame);
+            self.outgoing.may_loss_data(&frame);
         }
     }
 }

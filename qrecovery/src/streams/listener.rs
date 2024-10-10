@@ -114,7 +114,7 @@ pub(crate) struct ListenerGuard<'a> {
     inner: MutexGuard<'a, Result<RawListener, QuicError>>,
 }
 
-impl<'a> ListenerGuard<'a> {
+impl ListenerGuard<'_> {
     pub(crate) fn push_bi_stream(&mut self, stream: (ArcRecver, ArcSender)) {
         match self.inner.as_mut() {
             Ok(set) => set.push_bi_stream(stream),

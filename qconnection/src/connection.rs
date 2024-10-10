@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     fmt::Debug,
     io, mem,
-    ops::DerefMut,
+    ops::{Deref, DerefMut},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -25,6 +25,7 @@ use qrecovery::{
 use qudp::ArcUsc;
 use qunreliable::{DatagramReader, DatagramWriter};
 use raw::RawConnection;
+use tokio::task::JoinHandle;
 
 use crate::{
     connection::ConnState::{Closed, Closing, Draining, Raw},
@@ -48,6 +49,7 @@ pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
 pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
 
 pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
+pub type Handshake = qbase::handshake::Handshake<ArcReliableFrameDeque>;
 
 enum ConnState {
     Raw(RawConnection),
@@ -56,6 +58,55 @@ enum ConnState {
     Closed,
 }
 
+impl ConnState {
+    fn close(&mut self, error: Error) -> Option<([JoinHandle<RcvdPackets>; 4], Duration)> {
+        let conn = core::mem::replace(self, Closed);
+        let Raw(raw_conn) = conn else { return None };
+        raw_conn.datagrams.on_conn_error(&error);
+        raw_conn.streams.on_conn_error(&error);
+        raw_conn.params.on_conn_error(&error);
+        raw_conn.tls_session.abort();
+        raw_conn.notify.notify_waiters();
+
+        let hs = raw_conn.hs.try_into().ok();
+        let one_rtt = raw_conn.data.try_into().ok();
+
+        let recv_packets = raw_conn.join_handles;
+        let pto_time = raw_conn
+            .pathes
+            .iter()
+            .map(|path| path.cc.pto_time(Epoch::Data))
+            .max()
+            .unwrap();
+
+        *self = match (hs, one_rtt) {
+            (None, None) => {
+                let local_cids = raw_conn.cid_registry.local;
+                let draining_connection = DrainingConnection::new(local_cids, error);
+                Draining(draining_connection)
+            }
+            (hs, one_rtt) => {
+                let pathes = raw_conn.pathes;
+                let cid_registry = raw_conn.cid_registry;
+                let closing_connection =
+                    ClosingConnection::new(error, pathes, cid_registry, hs, one_rtt);
+                Closing(closing_connection)
+            }
+        };
+
+        Some((recv_packets, pto_time))
+    }
+
+    fn enter_draining(&mut self) {
+        let conn = core::mem::replace(self, Closed);
+        let darining = match conn {
+            Closing(closing) => DrainingConnection::new(closing.cid_registry.local, closing.error),
+            Draining(draining) => draining,
+            _ => unreachable!(),
+        };
+        *self = Draining(darining);
+    }
+}
 #[derive(Clone)]
 pub struct ArcConnection(Arc<Mutex<ConnState>>);
 
@@ -142,12 +193,13 @@ impl ArcConnection {
     // }
 
     pub async fn open_bi_stream(&self) -> io::Result<Option<(Reader, Writer)>> {
-        let connection_closed =
-            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
-            let ConnState::Raw(raw_conn) = &*guard else {
-                return Err(connection_closed);
+            let raw_conn = match guard.deref() {
+                Raw(raw) => raw,
+                Closing(closing) => return Err(closing.error.clone())?,
+                Draining(draining) => return Err(draining.error.clone())?,
+                Closed => unreachable!(),
             };
 
             (
@@ -167,12 +219,13 @@ impl ArcConnection {
     }
 
     pub async fn open_uni_stream(&self) -> io::Result<Option<Writer>> {
-        let connection_closed =
-            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
-            let ConnState::Raw(raw_conn) = &*guard else {
-                return Err(connection_closed);
+            let raw_conn = match guard.deref() {
+                Raw(raw) => raw,
+                Closing(closing) => return Err(closing.error.clone())?,
+                Draining(draining) => return Err(draining.error.clone())?,
+                Closed => unreachable!(),
             };
 
             (
@@ -192,12 +245,13 @@ impl ArcConnection {
     }
 
     pub async fn accept_bi_stream(&self) -> io::Result<(Reader, Writer)> {
-        let connection_closed =
-            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
-            let ConnState::Raw(raw_conn) = &*guard else {
-                return Err(connection_closed);
+            let raw_conn = match guard.deref() {
+                Raw(raw) => raw,
+                Closing(closing) => return Err(closing.error.clone())?,
+                Draining(draining) => return Err(draining.error.clone())?,
+                Closed => unreachable!(),
             };
 
             (
@@ -219,11 +273,11 @@ impl ArcConnection {
     pub async fn accept_uni_stream(&self) -> io::Result<Reader> {
         let (data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
-            let ConnState::Raw(raw_conn) = &*guard else {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "Connection is closing or closed",
-                ));
+            let raw_conn = match guard.deref() {
+                Raw(raw) => raw,
+                Closing(closing) => return Err(closing.error.clone())?,
+                Draining(draining) => return Err(draining.error.clone())?,
+                Closed => unreachable!(),
             };
 
             (raw_conn.streams.clone(), raw_conn.error.clone())
@@ -237,23 +291,24 @@ impl ArcConnection {
     }
 
     pub fn datagram_reader(&self) -> io::Result<DatagramReader> {
-        let connection_closed =
-            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
         let guard = self.0.lock().unwrap();
-        if let ConnState::Raw(ref raw_conn) = *guard {
-            raw_conn.datagrams.reader()
-        } else {
-            Err(connection_closed)
+
+        match guard.deref() {
+            Raw(raw) => raw.datagrams.reader(),
+            Closing(closing) => Err(closing.error.clone())?,
+            Draining(draining) => Err(draining.error.clone())?,
+            Closed => unreachable!(),
         }
     }
 
     pub async fn datagram_writer(&self) -> io::Result<DatagramWriter> {
-        let connection_closed =
-            io::Error::new(io::ErrorKind::BrokenPipe, "Connection is closing or closed");
         let (remote_params, datagram_flow) = {
             let guard = self.0.lock().unwrap();
-            let ConnState::Raw(raw_conn) = &*guard else {
-                return Err(connection_closed);
+            let raw_conn = match guard.deref() {
+                Raw(raw) => raw,
+                Closing(closing) => return Err(closing.error.clone())?,
+                Draining(draining) => return Err(draining.error.clone())?,
+                Closed => unreachable!(),
             };
 
             (raw_conn.params.remote.clone(), raw_conn.datagrams.clone())
@@ -269,11 +324,13 @@ impl ArcConnection {
     /// This function is intended for use by the application layer to signal an
     /// error and initiate the connection closure.
     pub fn close(&self, msg: impl Into<Cow<'static, str>>) {
-        let guard = self.0.lock().unwrap();
-        if let ConnState::Raw(ref raw_conn) = *guard {
-            raw_conn
-                .error
-                .set_app_error(Error::with_default_fty(ErrorKind::Application, msg));
+        let mut state = self.0.lock().unwrap();
+        if let Raw(conn) = state.deref_mut() {
+            let error = Error::with_default_fty(ErrorKind::Application, msg);
+            log::info!("Connection is closed by application: {}", error);
+            conn.error.set_app_error(error.clone());
+            drop(state);
+            self.should_enter_closing(error);
         }
     }
 
@@ -283,81 +340,75 @@ impl ArcConnection {
     /// from the connection's Path Termination Timeout (PTO).  Upon successful
     /// confirmation, any remaining data is drained.  If the timeout expires without
     /// confirmation, the connection is forcefully terminated.
-    fn should_enter_closing_with_error(&self, error: Error) {
-        let mut guard = self.0.lock().unwrap();
-        let ConnState::Raw(raw_conn) = mem::replace(guard.deref_mut(), ConnState::Closed) else {
-            unreachable!()
-        };
-
-        raw_conn.datagrams.on_conn_error(&error);
-        raw_conn.streams.on_conn_error(&error);
-        raw_conn.params.on_conn_error(&error);
-        raw_conn.tls_session.abort();
-
-        let pto = raw_conn
-            .pathes
-            .iter()
-            .map(|path| path.cc.pto_time(Epoch::Data))
-            .max()
-            .unwrap();
-
-        let hs = raw_conn.hs.try_into();
-        let one_rtt = raw_conn.data.try_into();
-        if hs.is_err() && one_rtt.is_err() {
-            // 没法进入到Closing，则直接进入到Draining
-            self.enter_draining(pto * 3);
+    fn should_enter_closing(&self, error: Error) {
+        let mut state = self.0.lock().unwrap();
+        let state = state.deref_mut();
+        if !matches!(state, Raw(..)) {
             return;
         }
+        let Some((handles, pto)) = state.close(error) else {
+            return;
+        };
 
-        let closing_conn = ClosingConnection::new(
-            error,
-            raw_conn.pathes,
-            raw_conn.cid_registry,
-            hs.ok(),
-            one_rtt.ok(),
-        );
-
-        // Redirect the received packets of this connection to ClosingConnection
-        raw_conn.notify.notify_waiters();
-        for handle in raw_conn.join_handles {
-            let mut closing_conn = closing_conn.clone();
-            tokio::spawn(async move {
-                let mut rcvd_packets = handle.await.unwrap();
-                while let Some((packet, pathway, usc)) = rcvd_packets.next().await {
-                    closing_conn.recv_packet_via_pathway(packet, pathway, usc);
+        match state {
+            Closing(closing) => {
+                for handle in handles {
+                    tokio::spawn({
+                        let mut closing_conn = closing.clone();
+                        async move {
+                            let mut rcvd_packets = handle.await.unwrap();
+                            while let Some((packet, pathway, usc)) = rcvd_packets.next().await {
+                                closing_conn.recv_packet_via_pathway(packet, pathway, usc);
+                            }
+                        }
+                    });
                 }
-            });
-        }
-
-        tokio::spawn({
-            let conn = self.clone();
-            let duration = pto * 3;
-            let rcvd_ccf = closing_conn.get_rcvd_ccf();
-            async move {
-                let time = Instant::now();
-                if tokio::time::timeout(duration, rcvd_ccf.did_recv())
-                    .await
-                    .is_ok()
-                {
-                    conn.enter_draining(duration - time.elapsed());
-                } else {
-                    conn.die();
-                }
+                tokio::spawn({
+                    let conn = self.clone();
+                    let rcvd_ccf = closing.get_rcvd_ccf();
+                    async move {
+                        let start = Instant::now();
+                        let time = pto * 3;
+                        match tokio::time::timeout(time, rcvd_ccf.did_recv()).await {
+                            Ok(_) => conn.draining(pto * 3 - start.elapsed()),
+                            Err(_) => conn.die(),
+                        }
+                    }
+                });
             }
-        });
+            Draining(..) => {
+                tokio::spawn(async move {
+                    // break the channel immediately
+                    let [t1, t2, t3, t4] = handles;
+                    _ = tokio::join!(t1, t2, t3, t4);
+                });
+                self.draining(pto * 3)
+            }
+            _ => unreachable!(),
+        }
+    }
 
-        *guard = Closing(closing_conn);
+    pub fn enter_draining(&self, error: Error) {
+        let mut state = self.0.lock().unwrap();
+        let state = state.deref_mut();
+
+        let Some((handles, pto)) = state.close(error) else {
+            return;
+        };
+        state.enter_draining();
+
+        tokio::spawn(async move {
+            // break the channel immediately
+            let [t1, t2, t3, t4] = handles;
+            _ = tokio::join!(t1, t2, t3, t4);
+        });
+        self.draining(pto * 3);
     }
 
     /// Enter draining state from raw state or closing state.
     /// Can only be called internally, and the app should not care this method.
-    pub(crate) fn enter_draining(&self, remaining: Duration) {
-        let mut guard = self.0.lock().unwrap();
-        let draining_conn = match mem::replace(guard.deref_mut(), ConnState::Closed) {
-            Raw(conn) => DrainingConnection::from(conn),
-            Closing(closing_conn) => DrainingConnection::from(closing_conn),
-            _ => unreachable!(),
-        };
+    pub(crate) fn draining(&self, remaining: Duration) {
+        assert!(matches!(self.0.lock().unwrap().deref_mut(), Draining(..)));
 
         tokio::spawn({
             let conn = self.clone();
@@ -366,8 +417,6 @@ impl ArcConnection {
                 conn.die();
             }
         });
-
-        *guard = Draining(draining_conn);
     }
 
     /// Dismiss the connection, remove it from the global router.
@@ -377,8 +426,8 @@ impl ArcConnection {
         let local_cids = match mem::replace(guard.deref_mut(), ConnState::Closed) {
             Raw(conn) => conn.cid_registry.local,
             Closing(conn) => conn.cid_registry.local,
-            Draining(conn) => conn.local_cids().clone(),
-            Closed => return,
+            Draining(conn) => conn.local_cids,
+            Closed => unreachable!(),
         };
 
         local_cids.active_cids().iter().for_each(|cid| {
@@ -417,22 +466,19 @@ impl ArcConnection {
 impl From<RawConnection> for ArcConnection {
     fn from(raw_conn: RawConnection) -> Self {
         let conn_error = raw_conn.error.clone();
-        let pathes = raw_conn.pathes.clone();
         let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Raw(raw_conn))));
 
         tokio::spawn({
             let conn = conn.clone();
             async move {
-                let (err, is_active) = conn_error.did_error_occur().await;
-                if is_active {
-                    conn.should_enter_closing_with_error(err);
-                } else {
-                    let pto = pathes
-                        .iter()
-                        .map(|p| p.cc.pto_time(Epoch::Data))
-                        .max()
-                        .unwrap();
-                    conn.enter_draining(pto * 3);
+                let (err, kind) = conn_error.did_error_occur().await;
+                if kind != crate::error::ConnErrorKind::Application {
+                    log::error!("Connection is closed unexpectedly: {}", err)
+                };
+                match kind {
+                    crate::error::ConnErrorKind::Application => {} // resolved by ArcConnection::close
+                    crate::error::ConnErrorKind::Transport => conn.should_enter_closing(err),
+                    crate::error::ConnErrorKind::CcfReceived => conn.enter_draining(err),
                 }
             }
         });

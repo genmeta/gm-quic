@@ -407,11 +407,18 @@ impl<B: bytes::Buf> quic::BidiStream<B> for BidiStream<B> {
     }
 }
 
-pub struct RecvStream(Result<Reader, Error>);
+pub struct RecvStream {
+    reader: Result<Reader, Error>,
+    recv_id: quic::StreamId,
+}
 
 impl RecvStream {
     fn new(reader: Reader) -> Self {
-        Self(Ok(reader))
+        let sid = u64::from(reader.stream_id());
+        Self {
+            reader: Ok(reader),
+            recv_id: quic::StreamId::try_from(sid).expect("unreachable"),
+        }
     }
 }
 
@@ -422,7 +429,7 @@ impl quic::RecvStream for RecvStream {
 
     #[inline]
     fn poll_data(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
-        let reader = match &mut self.0 {
+        let reader = match &mut self.reader {
             Ok(reader) => reader,
             Err(e) => return Poll::Ready(Err(e.clone())),
         };
@@ -439,7 +446,7 @@ impl quic::RecvStream for RecvStream {
                 Poll::Ready(Ok(Some(bytes)))
             }
             Err(e) => {
-                self.0 = Err(e.clone());
+                self.reader = Err(e.clone());
                 Poll::Ready(Err(e))
             }
         }
@@ -447,30 +454,33 @@ impl quic::RecvStream for RecvStream {
 
     #[inline]
     fn stop_sending(&mut self, error_code: u64) {
-        if self.0.is_err() {
+        if self.reader.is_err() {
             return;
         }
         let err = Err(Error::from(StreamReset(error_code)));
-        let reader = core::mem::replace(&mut self.0, err).expect("unreachable");
+        let reader = core::mem::replace(&mut self.reader, err).expect("unreachable");
         reader.stop(error_code);
     }
 
     #[inline]
     fn recv_id(&self) -> quic::StreamId {
-        unimplemented!()
+        self.recv_id
     }
 }
 
 pub struct SendStream<B> {
     writer: Result<Writer, Error>,
     data: Option<quic::WriteBuf<B>>,
+    send_id: quic::StreamId,
 }
 
 impl<B> SendStream<B> {
     pub fn new(writer: Writer) -> Self {
+        let sid = u64::from(writer.stream_id());
         Self {
             writer: Ok(writer),
             data: None,
+            send_id: quic::StreamId::try_from(sid).expect("unreachable"),
         }
     }
 }
@@ -484,22 +494,21 @@ impl<B: bytes::Buf> quic::SendStream<B> for SendStream<B> {
         let Some(buf) = self.data.as_mut() else {
             return Poll::Ready(Ok(()));
         };
-
-        let poll = tokio::io::AsyncWrite::poll_write(Pin::new(writer), cx, buf.chunk());
-        match ready!(poll).map_err(Error::from) {
-            Ok(written) => {
-                buf.advance(written);
-                if buf.remaining() == 0 {
-                    self.data = None;
-                    Poll::Ready(Ok(()))
-                } else {
-                    Poll::Pending
+        loop {
+            let poll = tokio::io::AsyncWrite::poll_write(Pin::new(writer), cx, buf.chunk());
+            match ready!(poll).map_err(Error::from) {
+                Ok(written) => {
+                    buf.advance(written);
+                    if buf.remaining() == 0 {
+                        self.data = None;
+                        return Poll::Ready(Ok(()));
+                    }
                 }
-            }
-            Err(e) => {
-                self.writer = Err(e.clone());
-                self.data = None;
-                Poll::Ready(Err(e))
+                Err(e) => {
+                    self.writer = Err(e.clone());
+                    self.data = None;
+                    return Poll::Ready(Err(e));
+                }
             }
         }
     }
@@ -542,7 +551,7 @@ impl<B: bytes::Buf> quic::SendStream<B> for SendStream<B> {
 
     #[inline]
     fn send_id(&self) -> quic::StreamId {
-        unimplemented!()
+        self.send_id
     }
 }
 

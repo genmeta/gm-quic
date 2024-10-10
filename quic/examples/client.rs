@@ -1,7 +1,13 @@
-use std::{fs::File, io::BufReader, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    fs::{self},
+    net::SocketAddr,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use clap::Parser;
 use quic::QuicClient;
+use rustls::pki_types::CertificateDer;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// cargo run --example client -- \
@@ -46,12 +52,9 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
         .expect("Failed to install rustls crypto provider");
 
     let mut root_cert_store = rustls::RootCertStore::empty();
-    root_cert_store.add_parsable_certificates(
-        rustls_pemfile::certs(&mut BufReader::new(
-            File::open(args.root).expect("Failed to open cert file"),
-        ))
-        .map(|cert| cert.expect("Failed to read and extract cert from the cert file")),
-    );
+    root_cert_store.add_parsable_certificates([CertificateDer::from(
+        fs::read(args.root).expect("Failed to open cert file"),
+    )]);
 
     let client = QuicClient::bind([args.bind])
         .reuse_connection()

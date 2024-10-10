@@ -29,7 +29,6 @@ futures = "0.3"
 rand = "0.8"
 bytes = "1"
 rustls = { version = "0.23", features = ["ring"] }
-rustls-pemfile = "2"
 rcgen = "0.13"
 thiserror = "1"
 getset = "0.1"

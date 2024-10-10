@@ -12,7 +12,7 @@ use qbase::{
 };
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{
-    crypto::CryptoStream,
+    crypto::{CryptoStream, CryptoStreamOutgoing},
     reliable::ArcRcvdPktRecords,
     space::{Epoch, HandshakeSpace},
 };
@@ -140,11 +140,12 @@ impl HandshakeScope {
                         body_offset,
                     )
                     .unwrap();
-                    let _header = packet.bytes.split_to(body_offset);
-                    packet.bytes.truncate(pkt_len);
 
                     let path = pathes.get_or_create(pathway, usc);
-                    path.update_recv_time();
+                    path.on_rcvd(packet.bytes.len());
+
+                    let _header = packet.bytes.split_to(body_offset);
+                    packet.bytes.truncate(pkt_len);
 
                     // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
                     // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
@@ -228,10 +229,22 @@ impl super::RecvPacket for ClosingHandshakeScope {
     }
 }
 
-impl MayLoss for HandshakeScope {
+#[derive(Debug, Clone)]
+pub struct HandshakeMayloss {
+    space: HandshakeSpace,
+    outgoing: CryptoStreamOutgoing,
+}
+
+impl HandshakeMayloss {
+    pub fn new(space: HandshakeSpace, outgoing: CryptoStreamOutgoing) -> Self {
+        Self { space, outgoing }
+    }
+}
+
+impl MayLoss for HandshakeMayloss {
     fn may_loss(&self, pn: u64) {
         for frame in self.space.sent_packets().recv().may_loss_pkt(pn) {
-            self.crypto_stream.outgoing().may_loss_data(&frame);
+            self.outgoing.may_loss_data(&frame);
         }
     }
 }

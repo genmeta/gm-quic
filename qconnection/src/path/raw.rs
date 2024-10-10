@@ -126,12 +126,7 @@ impl RawPath {
 
             while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
                 let send_result = usc.send_all_via_pathway(&iovec, pathway).await;
-                log::trace!(
-                    "send datagrams: {:?}",
-                    iovec.iter().map(|v| v.len()).collect::<Vec<_>>()
-                );
-                if let Err(e) = send_result {
-                    log::error!("send datagrams error: {:?}", e);
+                if let Err(_e) = send_result {
                     state.to_inactive();
                     return;
                 }
@@ -147,7 +142,15 @@ impl RawPath {
         self.response_sndbuf.clone()
     }
 
+    /// Sets the receive time to the current instant, and updates the anti-amplifier limit.
+    #[inline]
+    pub fn on_rcvd(&self, amount: usize) {
+        self.anti_amplifier.on_rcvd(amount);
+        self.update_recv_time();
+    }
+
     /// Sets the receive time to the current instant.
+    #[inline]
     pub fn update_recv_time(&self) {
         self.state.update_recv_time()
     }

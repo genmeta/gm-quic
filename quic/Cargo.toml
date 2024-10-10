@@ -17,7 +17,6 @@ qudp = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 rustls = { workspace = true }
-rustls-pemfile = { workspace = true }
 log = { workspace = true }
 deref-derive = { workspace = true }
 dashmap = { workspace = true }

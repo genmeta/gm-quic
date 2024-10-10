@@ -191,6 +191,12 @@ impl From<StreamId> for VarInt {
     }
 }
 
+impl From<StreamId> for u64 {
+    fn from(s: StreamId) -> Self {
+        s.0
+    }
+}
+
 /// Parse a stream ID from the input bytes,
 /// [nom](https://docs.rs/nom/6.2.1/nom/) parser style.
 pub fn be_streamid(input: &[u8]) -> nom::IResult<&[u8], StreamId> {
