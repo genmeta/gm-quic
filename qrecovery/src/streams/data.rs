@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex, MutexGuard},
     task::{ready, Context, Poll},
 };
