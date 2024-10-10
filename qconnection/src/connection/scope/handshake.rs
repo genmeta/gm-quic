@@ -12,7 +12,7 @@ use qbase::{
 };
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{
-    crypto::CryptoStream,
+    crypto::{CryptoStream, CryptoStreamOutgoing},
     reliable::ArcRcvdPktRecords,
     space::{Epoch, HandshakeSpace},
 };
@@ -229,10 +229,22 @@ impl super::RecvPacket for ClosingHandshakeScope {
     }
 }
 
-impl MayLoss for HandshakeScope {
+#[derive(Debug, Clone)]
+pub struct HandshakeMayloss {
+    space: HandshakeSpace,
+    outgoing: CryptoStreamOutgoing,
+}
+
+impl HandshakeMayloss {
+    pub fn new(space: HandshakeSpace, outgoing: CryptoStreamOutgoing) -> Self {
+        Self { space, outgoing }
+    }
+}
+
+impl MayLoss for HandshakeMayloss {
     fn may_loss(&self, pn: u64) {
         for frame in self.space.sent_packets().recv().may_loss_pkt(pn) {
-            self.crypto_stream.outgoing().may_loss_data(&frame);
+            self.outgoing.may_loss_data(&frame);
         }
     }
 }

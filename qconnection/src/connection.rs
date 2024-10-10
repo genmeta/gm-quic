@@ -49,6 +49,7 @@ pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
 pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
 
 pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
+pub type Handshake = qbase::handshake::Handshake<ArcReliableFrameDeque>;
 
 enum ConnState {
     Raw(RawConnection),

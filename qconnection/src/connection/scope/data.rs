@@ -23,7 +23,7 @@ use qbase::{
 };
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{
-    crypto::CryptoStream,
+    crypto::{CryptoStream, CryptoStreamOutgoing},
     reliable::{ArcRcvdPktRecords, ArcReliableFrameDeque, GuaranteedFrame},
     space::{DataSpace, Epoch},
 };
@@ -172,7 +172,6 @@ impl DataScope {
         let join_handler1 = self.parse_rcvd_1rtt_packet_and_dispatch_frames(
             rcvd_1rtt_packets,
             pathes.clone(),
-            handshake,
             dispatch_data_frame,
             notify.clone(),
             conn_error.clone(),
@@ -255,7 +254,6 @@ impl DataScope {
         &self,
         mut rcvd_packets: RcvdPackets,
         pathes: ArcPathes,
-        handshake: &Handshake<ArcReliableFrameDeque>,
         dispatch_frame: impl Fn(Frame, Type, &RawPath) + Send + 'static,
         notify: Arc<Notify>,
         conn_error: ConnError,
@@ -263,7 +261,6 @@ impl DataScope {
         tokio::spawn({
             let rcvd_pkt_records = self.space.rcvd_packets();
             let keys = self.one_rtt_keys.clone();
-            let handshake = handshake.clone();
             async move {
                 while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
                 {
@@ -300,10 +297,6 @@ impl DataScope {
 
                     let _header = packet.bytes.split_to(body_offset);
                     packet.bytes.truncate(pkt_len);
-
-                    if !handshake.is_handshake_done() {
-                        handshake.done();
-                    }
 
                     match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
                         false,
@@ -412,7 +405,7 @@ pub struct DataMayLoss {
     space: DataSpace,
     reliable_frames: ArcReliableFrameDeque,
     data_streams: DataStreams,
-    crypto_stream: CryptoStream,
+    outgoing: CryptoStreamOutgoing,
 }
 
 impl DataMayLoss {
@@ -420,13 +413,13 @@ impl DataMayLoss {
         space: DataSpace,
         reliable_frames: ArcReliableFrameDeque,
         data_streams: DataStreams,
-        crypto_stream: CryptoStream,
+        outgoing: CryptoStreamOutgoing,
     ) -> Self {
         Self {
             space,
             reliable_frames,
             data_streams,
-            crypto_stream,
+            outgoing,
         }
     }
 }
@@ -436,7 +429,7 @@ impl MayLoss for DataMayLoss {
             match frame {
                 GuaranteedFrame::Stream(f) => self.data_streams.may_loss_data(&f),
                 GuaranteedFrame::Reliable(f) => self.reliable_frames.send_frame([f]),
-                GuaranteedFrame::Crypto(f) => self.crypto_stream.outgoing().may_loss_data(&f),
+                GuaranteedFrame::Crypto(f) => self.outgoing.may_loss_data(&f),
             }
         }
     }

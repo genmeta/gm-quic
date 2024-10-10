@@ -5,7 +5,6 @@ use qbase::{
     cid::ConnectionId,
     config::Parameters,
     flow::FlowController,
-    handshake::Handshake,
     packet::keys::ArcKeys,
     streamid::Role,
     token::{ArcTokenRegistry, TokenRegistry},
@@ -20,10 +19,10 @@ use super::{
     parameters::ConnParameters,
     scope::{
         data::{DataMayLoss, DataScope},
-        handshake::HandshakeScope,
-        initial::InitialScope,
+        handshake::{HandshakeMayloss, HandshakeScope},
+        initial::{InitialMayLoss, InitialScope},
     },
-    ArcLocalCids, ArcRemoteCids, CidRegistry, DataStreams, RcvdPackets,
+    ArcLocalCids, ArcRemoteCids, CidRegistry, DataStreams, Handshake, RcvdPackets,
 };
 use crate::{
     error::ConnError,
@@ -37,7 +36,7 @@ pub struct RawConnection {
     pub pathes: ArcPathes,
     pub cid_registry: CidRegistry,
     // handshake done的信号
-    pub handshake: Handshake<ArcReliableFrameDeque>,
+    pub handshake: Handshake,
     pub flow_ctrl: FlowController,
     pub error: ConnError,
 
@@ -141,19 +140,23 @@ impl RawConnection {
             let initial = initial.clone();
             let hs = hs.clone();
             let data = data.clone();
+
+            let initial_may_loss =
+                InitialMayLoss::new(initial.space.clone(), initial.crypto_stream.outgoing());
+            let hs_may_loss = HandshakeMayloss::new(hs.space.clone(), hs.crypto_stream.outgoing());
             let data_may_loss = DataMayLoss::new(
                 data.space.clone(),
                 reliable_frames.clone(),
                 streams.clone(),
-                data.crypto_stream.clone(),
+                data.crypto_stream.outgoing(),
             );
 
             move |pathway, usc| {
                 let scid = cid_registry.local.active_cids()[0];
                 let dcid = cid_registry.remote.apply_dcid();
                 let loss: [Box<dyn MayLoss>; 3] = [
-                    Box::new(initial.clone()),
-                    Box::new(hs.clone()),
+                    Box::new(initial_may_loss.clone()),
+                    Box::new(hs_may_loss.clone()),
                     Box::new(data_may_loss.clone()),
                 ];
                 let retire: [Box<dyn RetirePktRecord>; 3] = [
