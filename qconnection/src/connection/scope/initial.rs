@@ -12,7 +12,7 @@ use qbase::{
 };
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{
-    crypto::CryptoStream,
+    crypto::{CryptoStream, CryptoStreamOutgoing},
     space::{Epoch, InitialSpace},
 };
 use tokio::{sync::Notify, task::JoinHandle};
@@ -208,10 +208,22 @@ impl InitialScope {
     }
 }
 
-impl MayLoss for InitialScope {
+#[derive(Debug, Clone)]
+pub struct InitialMayLoss {
+    pub space: InitialSpace,
+    pub outgoing: CryptoStreamOutgoing,
+}
+
+impl InitialMayLoss {
+    pub fn new(space: InitialSpace, outgoing: CryptoStreamOutgoing) -> Self {
+        Self { space, outgoing }
+    }
+}
+
+impl MayLoss for InitialMayLoss {
     fn may_loss(&self, pn: u64) {
         for frame in self.space.sent_packets().recv().may_loss_pkt(pn) {
-            self.crypto_stream.outgoing().may_loss_data(&frame);
+            self.outgoing.may_loss_data(&frame);
         }
     }
 }
