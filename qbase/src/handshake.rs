@@ -150,19 +150,6 @@ where
         }
     }
 
-    /// Actively set the handshake status to complete.
-    ///
-    /// For the server, it actively sets the handshake status to complete, see [`ServerHandshake::done`].
-    /// However, for the client, there is no active setting operation;
-    /// a client must wait for a HANDSHAKE_DONE frame to be done.
-    /// So as a client, it just print a warning log.
-    pub fn done(&self) {
-        match self {
-            Handshake::Server(h) => h.done(),
-            _ => unreachable!("it doesn't make sense to call done() on a client handshake"),
-        }
-    }
-
     /// Return the role of this handshake signal.
     pub fn role(&self) -> Role {
         match self {
@@ -237,7 +224,10 @@ mod tests {
         let handshake = super::Handshake::new_server(ArcAsyncDeque::new());
         assert!(!handshake.is_handshake_done());
 
-        handshake.done();
+        match &handshake {
+            crate::handshake::Handshake::Client(..) => unreachable!(),
+            crate::handshake::Handshake::Server(server_handshake) => server_handshake.done(),
+        }
         assert!(handshake.is_handshake_done());
     }
 
