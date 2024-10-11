@@ -40,6 +40,10 @@ impl<T: Clone> SharedFuture<T> {
         }
     }
 
+    fn is_ready(&self) -> bool {
+        matches!(self.0.lock().unwrap().deref(), SharedFutureState::Ready(..))
+    }
+
     fn set_with(&self, with: impl FnOnce() -> T) {
         let mut state = self.0.lock().unwrap();
         match state.deref() {
@@ -62,6 +66,10 @@ impl RemoteParameters {
 
     pub async fn read(&self) -> io::Result<Arc<Parameters>> {
         Ok(self.0.get().await?)
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.0.is_ready()
     }
 
     pub fn write(&self, params: Arc<Parameters>) {

@@ -132,13 +132,15 @@ impl ArcConnection {
 
         let dcid = ConnectionId::random_gen(8);
         let tls_session = ArcTlsSession::new_client(server_name, tls_config.clone(), &parameters);
+        let initial_keys =
+            ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Client, dcid);
         let raw_conn = RawConnection::new(
             Role::Client,
             parameters,
             tls_session,
             scid,
             dcid,
-            ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Client, dcid),
+            initial_keys,
             token_registry,
         );
         raw_conn.into()

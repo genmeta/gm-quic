@@ -1,7 +1,8 @@
-use std::{
+use core::{
     ops::DerefMut,
-    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
 };
+use std::sync::{Arc, Mutex};
 
 use qbase::{
     cid::ConnectionId,
@@ -11,15 +12,15 @@ use qbase::{
     },
     error::{Error, ErrorKind},
     packet::keys::{ArcKeys, ArcOneRttKeys},
-    streamid::Role,
 };
 use qrecovery::{crypto::CryptoStream, space::Epoch};
-use rustls::{crypto::CryptoProvider, quic::Keys, Side};
-use thiserror::Error;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::Notify,
+use rustls::{
+    crypto::CryptoProvider,
+    quic::{KeyChange, Keys},
+    Side,
 };
+use thiserror::Error;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{
     connection::{parameters::RemoteParameters, Handshake},
@@ -32,8 +33,117 @@ pub struct Aborted;
 
 type TlsConnection = rustls::quic::Connection;
 
+#[derive(Debug)]
+struct RawTlsSession {
+    tls_conn: TlsConnection,
+    read_waker: Option<Waker>,
+    /// Optimize: avoid reading transport parameters repeatedly, because the rustls willnot consume
+    /// the bytes of transport parameters after reading them.
+    params_read: bool,
+}
+
+impl From<TlsConnection> for RawTlsSession {
+    fn from(tls_conn: TlsConnection) -> Self {
+        Self {
+            tls_conn,
+            read_waker: None,
+            params_read: false,
+        }
+    }
+}
+
+impl RawTlsSession {
+    fn wake_read(&mut self) {
+        if let Some(waker) = self.read_waker.as_ref() {
+            waker.wake_by_ref();
+        }
+    }
+
+    fn write(&mut self, buf: &[u8]) -> Result<(), rustls::Error> {
+        self.tls_conn.read_hs(buf)
+    }
+
+    fn read(&mut self, buf: &mut Vec<u8>) -> Option<KeyChange> {
+        self.tls_conn.write_hs(buf)
+    }
+
+    fn get_transport_parameters(&mut self) -> Option<Result<Parameters, Error>> {
+        if self.params_read {
+            return None;
+        }
+        let raw = self.tls_conn.quic_transport_parameters()?;
+        let params = match be_parameters(raw) {
+            Ok((_, params)) => params,
+            Err(e) => {
+                return Some(Err(Error::with_default_fty(
+                    ErrorKind::Internal,
+                    e.to_string(),
+                )))
+            }
+        };
+        if let Err(reason) = params.validate() {
+            return Some(Err(Error::with_default_fty(
+                ErrorKind::TransportParameter,
+                reason,
+            )));
+        }
+        self.params_read = true;
+        Some(Ok(params))
+    }
+
+    fn alert(&self) -> Option<rustls::AlertDescription> {
+        self.tls_conn.alert()
+    }
+
+    fn is_handshaking(&self) -> bool {
+        self.tls_conn.is_handshaking()
+    }
+
+    fn server_name(&self) -> Option<&str> {
+        match &self.tls_conn {
+            TlsConnection::Server(server_conn) => server_conn.server_name(),
+            TlsConnection::Client(_) => None,
+        }
+    }
+}
+
+struct ReadTls<'r> {
+    tls_conn: &'r Mutex<Result<RawTlsSession, Aborted>>,
+    buffer: &'r mut Vec<u8>,
+    read_params: bool,
+}
+
+impl futures::Future for ReadTls<'_> {
+    type Output = Result<(Option<KeyChange>, Option<Result<Parameters, Error>>, bool), Aborted>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let mut guard = this.tls_conn.lock().unwrap();
+        let tls_conn = match guard.deref_mut() {
+            Ok(tls_conn) => tls_conn,
+            Err(_aborted) => return Poll::Ready(Err(Aborted)),
+        };
+
+        let key_change = tls_conn.read(this.buffer);
+        if key_change.is_none() && this.buffer.is_empty() {
+            tls_conn.read_waker = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+
+        let remote_params = if this.read_params {
+            tls_conn.get_transport_parameters()
+        } else {
+            None
+        };
+
+        let is_handshaking = tls_conn.is_handshaking();
+
+        Poll::Ready(Ok((key_change, remote_params, is_handshaking)))
+    }
+}
+
 #[derive(Debug, Clone)]
-pub struct ArcTlsSession(Arc<Mutex<Result<TlsConnection, Aborted>>>);
+pub struct ArcTlsSession(Arc<Mutex<Result<RawTlsSession, Aborted>>>);
 
 impl ArcTlsSession {
     const QUIC_VERSION: rustls::quic::Version = rustls::quic::Version::V1;
@@ -53,7 +163,7 @@ impl ArcTlsSession {
             params_bytes,
         );
         let connection = rustls::quic::Connection::Client(client_connection.unwrap());
-        Self(Arc::new(Mutex::new(Ok(connection))))
+        Self(Arc::new(Mutex::new(Ok(connection.into()))))
     }
 
     pub fn new_server(tls_config: Arc<rustls::ServerConfig>, parameters: &Parameters) -> Self {
@@ -63,7 +173,7 @@ impl ArcTlsSession {
         let server_connection =
             rustls::quic::ServerConnection::new(tls_config, Self::QUIC_VERSION, params).unwrap();
         let connection = rustls::quic::Connection::Server(server_connection);
-        Self(Arc::new(Mutex::new(Ok(connection))))
+        Self(Arc::new(Mutex::new(Ok(connection.into()))))
     }
 
     pub fn initial_keys(crypto_provider: &CryptoProvider, side: Side, cid: ConnectionId) -> Keys {
@@ -82,7 +192,22 @@ impl ArcTlsSession {
     }
 
     pub fn abort(&self) {
-        *self.0.lock().unwrap() = Err(Aborted);
+        let mut guard = self.0.lock().unwrap();
+        if let Ok(raw_tls) = guard.deref_mut() {
+            if let Some(waker) = raw_tls.read_waker.take() {
+                waker.wake();
+            }
+            *guard = Err(Aborted);
+        }
+    }
+
+    fn read<'r>(&'r self, buf: &'r mut Vec<u8>, read_params: bool) -> ReadTls<'r> {
+        buf.clear();
+        ReadTls {
+            tls_conn: &self.0,
+            buffer: buf,
+            read_params,
+        }
     }
 
     /// 自托管密钥升级
@@ -95,14 +220,11 @@ impl ArcTlsSession {
         handshake: Handshake,
     ) -> RemoteParameters {
         let remote_params = RemoteParameters::new();
-        let tls_wants_read = Arc::new(Notify::new());
-        tls_wants_read.notify_one();
 
         let for_each_epoch = |epoch: Epoch| {
             let mut crypto_stream_reader = crypto_streams[epoch].reader();
             let tls_session = self.clone();
             let conn_error = conn_error.clone();
-            let tls_wants_read = tls_wants_read.clone();
 
             tokio::spawn(async move {
                 let mut read_buf = [0u8; 1500];
@@ -113,8 +235,7 @@ impl ArcTlsSession {
                         Err(_aborted) => break,
                     };
 
-                    log::trace!("read {read} bytes from crypto stream (epoch {epoch:?})");
-                    if let Err(e) = tls_connection.read_hs(&read_buf[..read]) {
+                    if let Err(e) = tls_connection.write(&read_buf[..read]) {
                         let error_kind = match tls_connection.alert() {
                             Some(alert) => ErrorKind::Crypto(alert.into()),
                             None => ErrorKind::ProtocolViolation,
@@ -124,7 +245,7 @@ impl ArcTlsSession {
                         break;
                     }
 
-                    tls_wants_read.notify_one();
+                    tls_connection.wake_read();
                 }
             })
         };
@@ -135,42 +256,33 @@ impl ArcTlsSession {
 
             let mut crypto_stream_writers =
                 Epoch::EPOCHS.map(|epoch| crypto_streams[epoch].writer());
-            let crypto_stream_readers = Epoch::EPOCHS.map(for_each_epoch);
+            let crypto_stream_read_tasks = Epoch::EPOCHS.map(for_each_epoch);
 
             async move {
-                let mut write_buf = Vec::with_capacity(1500);
+                let mut send_buf = Vec::with_capacity(1500);
                 let mut cur_epoch = Epoch::Initial;
                 loop {
-                    tls_wants_read.notified().await;
-
-                    let (transport_parameters, key_upgrade, is_handshaking) = {
-                        let mut guard = tls_session.0.lock().unwrap();
-                        let tls_connection = match guard.deref_mut() {
-                            Ok(tls_session) => tls_session,
-                            Err(_aborted) => break,
-                        };
-                        let transport_parameters = get_transport_parameters(tls_connection);
-                        write_buf.clear();
-                        let key_upgrade = tls_connection.write_hs(&mut write_buf);
-                        let is_handshaking = tls_connection.is_handshaking();
-                        (transport_parameters, key_upgrade, is_handshaking)
+                    let read_params = !remote_params.is_ready();
+                    let read_result = tls_session.read(&mut send_buf, read_params).await;
+                    let (key_upgrade, params, is_handshaking) = match read_result {
+                        Ok(results) => results,
+                        Err(_aborted) => break,
                     };
 
-                    if let Some(params) = transport_parameters {
+                    if let Some(params) = params {
                         match params {
                             Ok(params) => remote_params.write(params.into()),
-                            // when the transport parameters are invalid, the connection has closed.
-                            // Err(error) => conn_error.on_error(error),
-                            Err(_conn_error) => break,
+                            Err(params_error) => {
+                                conn_error.on_error(params_error);
+                                break;
+                            }
                         }
                     }
 
-                    if !write_buf.is_empty() {
-                        log::trace!(
-                            "write {} bytes to tls connection (epoch {cur_epoch:?})",
-                            write_buf.len(),
-                        );
-                        if let Err(e) = crypto_stream_writers[cur_epoch].write(&write_buf).await {
+                    if !send_buf.is_empty() {
+                        let write_result =
+                            crypto_stream_writers[cur_epoch].write_all(&send_buf).await;
+                        if let Err(e) = write_result {
                             let error = Error::with_default_fty(ErrorKind::Internal, e.to_string());
                             conn_error.on_error(error);
                             break;
@@ -180,26 +292,25 @@ impl ArcTlsSession {
                     if let Some(key_change) = key_upgrade {
                         match key_change {
                             rustls::quic::KeyChange::Handshake { keys } => {
-                                log::trace!("handshake keys updated");
                                 handshake_keys.set_keys(keys);
                                 cur_epoch = Epoch::Handshake;
                             }
                             rustls::quic::KeyChange::OneRtt { keys, next } => {
-                                log::trace!("1-RTT keys updated");
                                 one_rtt_keys.set_keys(keys, next);
                                 cur_epoch = Epoch::Data;
                             }
                         }
-                        tls_wants_read.notify_one();
                     }
 
-                    if !is_handshaking && handshake.role() == Role::Server {
-                        handshake.done();
+                    if !is_handshaking {
+                        if let Handshake::Server(server_handshake) = &handshake {
+                            server_handshake.done();
+                        }
                     }
                 }
 
-                for reader in crypto_stream_readers {
-                    reader.abort();
+                for read_task in crypto_stream_read_tasks {
+                    read_task.abort();
                 }
             }
         });
@@ -208,29 +319,12 @@ impl ArcTlsSession {
     }
 
     pub fn server_name(&self) -> Option<String> {
-        match self.0.lock().unwrap().as_ref() {
-            Ok(TlsConnection::Server(server_conn)) => server_conn.server_name().map(Into::into),
-            Ok(TlsConnection::Client(_)) | Err(_) => None,
-        }
+        self.0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .ok()
+            .and_then(RawTlsSession::server_name)
+            .map(ToString::to_string)
     }
-}
-
-fn get_transport_parameters(tls_conn: &TlsConnection) -> Option<Result<Parameters, Error>> {
-    let raw = tls_conn.quic_transport_parameters()?;
-    let params = match be_parameters(raw) {
-        Ok((_, params)) => params,
-        Err(e) => {
-            return Some(Err(Error::with_default_fty(
-                ErrorKind::Internal,
-                e.to_string(),
-            )))
-        }
-    };
-    if let Err(reason) = params.validate() {
-        return Some(Err(Error::with_default_fty(
-            ErrorKind::TransportParameter,
-            reason,
-        )));
-    }
-    Some(Ok(params))
 }
