@@ -126,7 +126,7 @@ impl RawPath {
 
             while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
                 let send_result = usc.send_all_via_pathway(&iovec, pathway).await;
-                if let Err(_e) = send_result {
+                if let Err(_udp_error) = send_result {
                     state.to_inactive();
                     return;
                 }

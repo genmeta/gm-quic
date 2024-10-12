@@ -121,8 +121,8 @@ impl HandshakeScope {
                     ) {
                         Ok(Some(pn)) => pn,
                         Ok(None) => continue,
-                        Err(_e) => {
-                            // conn_error.on_error(e);
+                        Err(invalid_reserved_bits) => {
+                            conn_error.on_error(invalid_reserved_bits.into());
                             break;
                         }
                     };
