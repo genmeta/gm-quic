@@ -131,8 +131,8 @@ impl InitialScope {
                     ) {
                         Ok(Some(pn)) => pn,
                         Ok(None) => continue,
-                        Err(e) => {
-                            conn_error.on_error(e.into());
+                        Err(invalid_reserved_bits) => {
+                            conn_error.on_error(invalid_reserved_bits.into());
                             break;
                         }
                     };
