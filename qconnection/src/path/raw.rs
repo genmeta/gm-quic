@@ -116,9 +116,9 @@ impl RawPath {
             anti_amplifier: self.anti_amplifier.clone(),
             spin: self.spin.clone(),
             send_flow_ctrl: flow_ctrl.sender(),
-            initial_space_reader: space_readers.0.clone(),
-            handshake_space_reader: space_readers.1.clone(),
-            data_space_reader: space_readers.2.clone(),
+            initial_space_reader: space_readers.0,
+            handshake_space_reader: space_readers.1,
+            data_space_reader: space_readers.2,
         };
 
         tokio::spawn(async move {

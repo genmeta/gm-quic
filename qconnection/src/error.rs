@@ -4,13 +4,18 @@ use std::{
     task::{Context, Poll},
 };
 
-use qbase::{error::Error, frame::ConnectionCloseFrame, util::Future};
+use qbase::{
+    error::{Error, ErrorKind},
+    frame::ConnectionCloseFrame,
+    util::Future,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ConnErrorKind {
     Application,
     Transport,
     CcfReceived,
+    NoViablePath,
 }
 
 /// Connection error, which is None first, and external can poll query whether an error has occurred.
@@ -59,6 +64,14 @@ impl ConnError {
     /// App actively close the connection with an error
     pub fn set_app_error(&self, error: Error) {
         _ = self.0.assign((error, ConnErrorKind::Application));
+    }
+
+    pub fn no_viable_path(&self) {
+        _ = self.0.assign((
+            // the error wont been read(
+            Error::with_default_fty(ErrorKind::NoViablePath, "No viable path"),
+            ConnErrorKind::NoViablePath,
+        ));
     }
 }
 

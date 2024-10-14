@@ -109,11 +109,11 @@ impl RawConnection {
             }
             TokenRegistry::Server(_) => Arc::new(Mutex::new(vec![])),
         };
-
-        let pathes = ArcPathes::new(Box::new({
+        let path_creator = Box::new({
             let cid_registry = cid_registry.clone();
             let flow_ctrl = flow_ctrl.clone();
             let handshake = handshake.clone();
+
             let gen_readers = {
                 let initial = initial.clone();
                 let hs = hs.clone();
@@ -165,7 +165,7 @@ impl RawConnection {
                     Box::new(data.clone()),
                 ];
 
-                let path = ArcPath::new(usc.clone(), scid, dcid, loss, retire);
+                let path = ArcPath::new(usc, scid, dcid, loss, retire);
                 if !handshake.is_handshake_done() {
                     if role == Role::Client {
                         path.anti_amplifier.grant();
@@ -176,7 +176,14 @@ impl RawConnection {
                 path.begin_sending(pathway, &flow_ctrl, &gen_readers);
                 path
             }
-        }));
+        });
+        let on_no_path = Arc::new({
+            let conn_error = conn_error.clone();
+            move || {
+                conn_error.no_viable_path();
+            }
+        });
+        let pathes = ArcPathes::new(path_creator, on_no_path);
 
         let validate = {
             let tls_session = tls_session.clone();

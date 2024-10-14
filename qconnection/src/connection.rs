@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     fmt::Debug,
-    io, mem,
+    io,
     ops::{Deref, DerefMut},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -59,9 +59,17 @@ enum ConnState {
 }
 
 impl ConnState {
-    fn close(&mut self, error: Error) -> Option<([JoinHandle<RcvdPackets>; 4], Duration)> {
+    fn should_enter_close(
+        &mut self,
+        error: Error,
+    ) -> Option<([JoinHandle<RcvdPackets>; 4], Duration)> {
         let conn = core::mem::replace(self, Closed);
-        let Raw(raw_conn) = conn else { return None };
+        let Raw(raw_conn) = conn else {
+            // has been closing/draining
+            *self = conn;
+            return None;
+        };
+
         raw_conn.datagrams.on_conn_error(&error);
         raw_conn.streams.on_conn_error(&error);
         raw_conn.params.on_conn_error(&error);
@@ -97,14 +105,61 @@ impl ConnState {
         Some((recv_packets, pto_time))
     }
 
-    fn enter_draining(&mut self) {
+    fn enter_draining(&mut self, error: Error) -> Option<Duration> {
         let conn = core::mem::replace(self, Closed);
-        let darining = match conn {
-            Closing(closing) => DrainingConnection::new(closing.cid_registry.local, closing.error),
-            Draining(draining) => draining,
-            _ => unreachable!(),
+        let Raw(raw_conn) = conn else {
+            // has been closing/draining
+            *self = conn;
+            return None;
         };
-        *self = Draining(darining);
+
+        raw_conn.datagrams.on_conn_error(&error);
+        raw_conn.streams.on_conn_error(&error);
+        raw_conn.params.on_conn_error(&error);
+        raw_conn.tls_session.abort();
+        raw_conn.notify.notify_waiters();
+
+        let local_cids = raw_conn.cid_registry.local;
+        *self = Draining(DrainingConnection::new(local_cids, error));
+
+        let pto_time = raw_conn
+            .pathes
+            .iter()
+            .map(|path| path.cc.pto_time(Epoch::Data))
+            .max()
+            .unwrap();
+        Some(pto_time)
+    }
+
+    fn no_vaiable_path(&mut self) {
+        let conn = core::mem::replace(self, Closed);
+        // no need to reset the state to conn
+        let Raw(raw_conn) = conn else { return };
+        let error = Error::with_default_fty(ErrorKind::NoViablePath, "No viable path");
+
+        raw_conn.datagrams.on_conn_error(&error);
+        raw_conn.streams.on_conn_error(&error);
+        raw_conn.params.on_conn_error(&error);
+        raw_conn.tls_session.abort();
+        raw_conn.notify.notify_waiters();
+
+        let local_cids = &raw_conn.cid_registry.local;
+        local_cids.active_cids().iter().for_each(|cid| {
+            ROUTER.remove(cid);
+        });
+    }
+
+    fn die(&mut self) {
+        let conn = core::mem::replace(self, Closed);
+        let local_cids = match conn {
+            Closing(conn) => conn.cid_registry.local,
+            Draining(conn) => conn.local_cids,
+            Raw(..) | Closed => unreachable!(),
+        };
+
+        local_cids.active_cids().iter().for_each(|cid| {
+            ROUTER.remove(cid);
+        });
     }
 }
 #[derive(Clone)]
@@ -348,7 +403,7 @@ impl ArcConnection {
         if !matches!(state, Raw(..)) {
             return;
         }
-        let Some((handles, pto)) = state.close(error) else {
+        let Some((handles, pto)) = state.should_enter_close(error) else {
             return;
         };
 
@@ -379,11 +434,7 @@ impl ArcConnection {
                 });
             }
             Draining(..) => {
-                tokio::spawn(async move {
-                    // break the channel immediately
-                    let [t1, t2, t3, t4] = handles;
-                    _ = tokio::join!(t1, t2, t3, t4);
-                });
+                drop(handles); // break the channels
                 self.draining(pto * 3)
             }
             _ => unreachable!(),
@@ -393,17 +444,11 @@ impl ArcConnection {
     pub fn enter_draining(&self, error: Error) {
         let mut state = self.0.lock().unwrap();
         let state = state.deref_mut();
-
-        let Some((handles, pto)) = state.close(error) else {
+        let Some(pto) = state.enter_draining(error) else {
+            // has been closed
             return;
         };
-        state.enter_draining();
 
-        tokio::spawn(async move {
-            // break the channel immediately
-            let [t1, t2, t3, t4] = handles;
-            _ = tokio::join!(t1, t2, t3, t4);
-        });
         self.draining(pto * 3);
     }
 
@@ -421,20 +466,14 @@ impl ArcConnection {
         });
     }
 
+    pub(crate) fn no_vaiable_path(self) {
+        self.0.lock().unwrap().no_vaiable_path();
+    }
+
     /// Dismiss the connection, remove it from the global router.
     /// Can only be called internally, and the app should not care this method.
-    pub(crate) fn die(self) {
-        let mut guard = self.0.lock().unwrap();
-        let local_cids = match mem::replace(guard.deref_mut(), ConnState::Closed) {
-            Raw(conn) => conn.cid_registry.local,
-            Closing(conn) => conn.cid_registry.local,
-            Draining(conn) => conn.local_cids,
-            Closed => unreachable!(),
-        };
-
-        local_cids.active_cids().iter().for_each(|cid| {
-            ROUTER.remove(cid);
-        });
+    pub fn die(self) {
+        self.0.lock().unwrap().die();
     }
 
     pub fn update_path_recv_time(&self, pathway: Pathway) {
@@ -481,6 +520,7 @@ impl From<RawConnection> for ArcConnection {
                     crate::error::ConnErrorKind::Application => {} // resolved by ArcConnection::close
                     crate::error::ConnErrorKind::Transport => conn.should_enter_closing(err),
                     crate::error::ConnErrorKind::CcfReceived => conn.enter_draining(err),
+                    crate::error::ConnErrorKind::NoViablePath => conn.no_vaiable_path(),
                 }
             }
         });

@@ -165,18 +165,25 @@ pub struct Pathes {
     #[deref]
     map: DashMap<Pathway, ArcPath>,
     creator: Box<dyn Fn(Pathway, ArcUsc) -> ArcPath + Send + Sync + 'static>,
+    on_no_path: Arc<dyn Fn() + Send + Sync + 'static>,
 }
 
 impl Pathes {
-    fn new(creator: Box<dyn Fn(Pathway, ArcUsc) -> ArcPath + Send + Sync + 'static>) -> Self {
+    fn new(
+        creator: Box<dyn Fn(Pathway, ArcUsc) -> ArcPath + Send + Sync + 'static>,
+        on_no_path: Arc<dyn Fn() + Send + Sync + 'static>,
+    ) -> Self {
         Self {
             map: DashMap::new(),
+            on_no_path,
             creator,
         }
     }
 
     pub fn get_or_create(&self, pathway: Pathway, usc: ArcUsc) -> ArcPath {
-        let map_clone = self.map.clone();
+        let pathes = self.map.clone();
+        let on_no_path = self.on_no_path.clone();
+
         self.map
             .entry(pathway)
             .or_insert_with(|| {
@@ -192,7 +199,10 @@ impl Pathes {
                                 _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => cc.do_tick(),
                             }
                         }
-                        map_clone.remove(&pathway);
+                        pathes.remove(&pathway);
+                        if pathes.is_empty() {
+                            (on_no_path)();
+                        }
                     }
                 });
                 path
@@ -202,11 +212,14 @@ impl Pathes {
     }
 }
 
-#[derive(Clone, Deref, DerefMut)]
+#[derive(Clone, Deref)]
 pub struct ArcPathes(Arc<Pathes>);
 
 impl ArcPathes {
-    pub fn new(creator: Box<dyn Fn(Pathway, ArcUsc) -> ArcPath + Send + Sync + 'static>) -> Self {
-        Self(Arc::new(Pathes::new(creator)))
+    pub fn new(
+        creator: Box<dyn Fn(Pathway, ArcUsc) -> ArcPath + Send + Sync + 'static>,
+        on_no_path: Arc<dyn Fn() + Send + Sync + 'static>,
+    ) -> Self {
+        Self(Arc::new(Pathes::new(creator, on_no_path)))
     }
 }
