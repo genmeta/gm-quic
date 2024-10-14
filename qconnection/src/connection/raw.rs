@@ -78,10 +78,10 @@ impl RawConnection {
             initial_scid,
             reliable_frames.clone(),
             [
-                initial_packets_entry.clone(),
-                zero_rtt_packets_entry.clone(),
-                hs_packets_entry.clone(),
-                one_rtt_packets_entry.clone(),
+                initial_packets_entry,
+                zero_rtt_packets_entry,
+                hs_packets_entry,
+                one_rtt_packets_entry,
             ],
         );
         let local_cids = ArcLocalCids::new(initial_scid, router_registry);

@@ -129,7 +129,7 @@ impl ArcSendControler {
     /// For external monitoring, whether it is blocked.
     /// If blocked, a [`DataBlockedFrame`] needs to be sent to the other party.
     pub fn would_block(&self) -> WouldBlock {
-        WouldBlock(self.clone())
+        WouldBlock(&self.0)
     }
 
     /// Return the available size of new data bytes that can be sent to peer.
@@ -196,13 +196,13 @@ impl ReceiveFrame<MaxDataFrame> for ArcSendControler {
 
 /// Represents a future that resolves when the flow control limit is reached.
 /// At that time, a [`DataBlockedFrame`] needs to be sent to the peer.
-pub struct WouldBlock(ArcSendControler);
+pub struct WouldBlock<'sc>(&'sc Mutex<Result<RawSendControler, QuicError>>);
 
-impl Future for WouldBlock {
+impl Future for WouldBlock<'_> {
     type Output = Result<DataBlockedFrame, QuicError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.0 .0.lock().unwrap();
+        let mut guard = self.0.lock().unwrap();
         match guard.deref_mut() {
             Ok(inner) => inner.poll_would_block(cx),
             Err(e) => Poll::Ready(Err(e.clone())),
@@ -442,7 +442,7 @@ impl FlowController {
     /// It will makes
     /// the connection-level stream flow controller in the sending direction become unavailable,
     /// and the connection-level stream flow controller in the receiving direction terminate.
-    pub fn on_error(&self, error: &QuicError) {
+    pub fn on_conn_error(&self, error: &QuicError) {
         self.sender.on_error(error);
         self.recver.terminate();
     }

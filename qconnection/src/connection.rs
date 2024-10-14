@@ -71,6 +71,7 @@ impl ConnState {
         };
 
         raw_conn.datagrams.on_conn_error(&error);
+        raw_conn.flow_ctrl.on_conn_error(&error);
         raw_conn.streams.on_conn_error(&error);
         raw_conn.params.on_conn_error(&error);
         raw_conn.tls_session.abort();
@@ -114,6 +115,7 @@ impl ConnState {
         };
 
         raw_conn.datagrams.on_conn_error(&error);
+        raw_conn.flow_ctrl.on_conn_error(&error);
         raw_conn.streams.on_conn_error(&error);
         raw_conn.params.on_conn_error(&error);
         raw_conn.tls_session.abort();
@@ -138,6 +140,7 @@ impl ConnState {
         let error = Error::with_default_fty(ErrorKind::NoViablePath, "No viable path");
 
         raw_conn.datagrams.on_conn_error(&error);
+        raw_conn.flow_ctrl.on_conn_error(&error);
         raw_conn.streams.on_conn_error(&error);
         raw_conn.params.on_conn_error(&error);
         raw_conn.tls_session.abort();
