@@ -1,9 +1,8 @@
 use qbase::{
+    cid::ConnectionId,
     error::Error,
     packet::{header::GetType, DataPacket},
 };
-
-use super::ArcLocalCids;
 
 /// Connection in draining state, entered from the raw state or closing state.
 /// It just ignores all packets, and waits for dismissing.
@@ -11,14 +10,14 @@ use super::ArcLocalCids;
 #[derive(Debug)]
 pub struct DrainingConnection {
     /// Local connection IDs, which are used to remove item in the global router
-    pub local_cids: ArcLocalCids,
+    pub local_cids: Vec<ConnectionId>,
     /// The error that causes the connection to close
     pub error: Error,
 }
 
 impl DrainingConnection {
     /// Create a new draining connection
-    pub fn new(local_cids: ArcLocalCids, error: Error) -> Self {
+    pub fn new(local_cids: Vec<ConnectionId>, error: Error) -> Self {
         Self { local_cids, error }
     }
 }

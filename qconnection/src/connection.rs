@@ -90,15 +90,13 @@ impl ConnState {
 
         *self = match (hs, one_rtt) {
             (None, None) => {
-                let local_cids = raw_conn.cid_registry.local;
+                let local_cids = raw_conn.cid_registry.local.active_cids();
                 let draining_connection = DrainingConnection::new(local_cids, error);
                 Draining(draining_connection)
             }
             (hs, one_rtt) => {
-                let pathes = raw_conn.pathes;
-                let cid_registry = raw_conn.cid_registry;
-                let closing_connection =
-                    ClosingConnection::new(error, pathes, cid_registry, hs, one_rtt);
+                let local_cids = raw_conn.cid_registry.local.active_cids();
+                let closing_connection = ClosingConnection::new(error, local_cids, hs, one_rtt);
                 Closing(closing_connection)
             }
         };
@@ -121,7 +119,7 @@ impl ConnState {
         raw_conn.tls_session.abort();
         raw_conn.notify.notify_waiters();
 
-        let local_cids = raw_conn.cid_registry.local;
+        let local_cids = raw_conn.cid_registry.local.active_cids();
         *self = Draining(DrainingConnection::new(local_cids, error));
 
         let pto_time = raw_conn
@@ -155,14 +153,14 @@ impl ConnState {
     fn die(&mut self) {
         let conn = core::mem::replace(self, Closed);
         let local_cids = match conn {
-            Closing(conn) => conn.cid_registry.local,
+            Closing(conn) => conn.local_cids,
             Draining(conn) => conn.local_cids,
             Raw(..) | Closed => unreachable!(),
         };
 
-        local_cids.active_cids().iter().for_each(|cid| {
-            ROUTER.remove(cid);
-        });
+        for cid in local_cids {
+            ROUTER.remove(&cid);
+        }
     }
 }
 #[derive(Clone)]
