@@ -133,6 +133,7 @@ impl AsyncWrite for Writer {
             Sender::DataSent(s) => {
                 let result = s.poll_flush(cx);
                 if result.is_ready() {
+                    s.wake_all();
                     *sending_state = Sender::DataRcvd
                 }
                 result
@@ -173,6 +174,7 @@ impl AsyncWrite for Writer {
                 // reset停止发送，此时状态也轮转到ResetSent中，相当于被动reset，再次唤醒该
                 // poll任务，则会进到ResetSent或者ResetRcvd中poll，得到的将是BrokenPipe错误
                 if result.is_ready() {
+                    s.wake_all();
                     *sending_state = Sender::DataRcvd;
                 }
                 result

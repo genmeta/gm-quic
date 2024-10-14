@@ -130,6 +130,7 @@ impl Outgoing {
                 Sender::DataSent(s) => {
                     s.on_data_acked(range, is_fin);
                     if s.is_all_rcvd() {
+                        s.wake_all();
                         *sending_state = Sender::DataRcvd;
                         return true;
                     }
