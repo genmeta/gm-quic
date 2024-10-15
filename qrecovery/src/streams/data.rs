@@ -278,15 +278,19 @@ where
                 .chain(output.outgoings.range(..=sid))
                 .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
             // [sid] + [sid+1..] + [..sid]
-            Some((sid, tokens)) => {
-                &mut core::iter::once((*sid, output.outgoings.get(sid)?, *tokens)).chain(
-                    output
-                        .outgoings
-                        .range((Excluded(sid), Unbounded))
-                        .chain(output.outgoings.range(..sid))
-                        .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
-                )
-            }
+            Some((sid, tokens)) => &mut Option::into_iter(
+                output
+                    .outgoings
+                    .get(sid)
+                    .map(|outgoing| (*sid, outgoing, *tokens)),
+            )
+            .chain(
+                output
+                    .outgoings
+                    .range((Excluded(sid), Unbounded))
+                    .chain(output.outgoings.range(..sid))
+                    .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+            ),
             // [..]
             None => &mut output
                 .outgoings
