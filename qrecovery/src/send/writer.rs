@@ -9,6 +9,7 @@ use qbase::streamid::StreamId;
 use tokio::io::AsyncWrite;
 
 use super::sender::{ArcSender, Sender};
+use crate::send::sender::DataSentSender;
 
 /// The writer part of a QUIC stream.
 ///
@@ -164,8 +165,15 @@ impl AsyncWrite for Writer {
                 if let Err(e) = s.shutdown(cx) {
                     Poll::Ready(Err(e))
                 } else {
-                    *sending_state = Sender::DataSent(s.into());
-                    Poll::Pending
+                    // it's possible that all data has been sent and received when shutdown called
+                    let mut sent: DataSentSender = s.into();
+                    let shutdown = sent.poll_shutdown(cx);
+                    if shutdown.is_ready() {
+                        *sending_state = Sender::DataRcvd;
+                    } else {
+                        *sending_state = Sender::DataSent(sent);
+                    }
+                    shutdown
                 }
             }
             Sender::DataSent(s) => {

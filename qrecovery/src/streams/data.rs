@@ -258,6 +258,9 @@ where
         buf: &mut [u8],
         flow_limit: usize,
     ) -> Option<(StreamFrame, usize, usize)> {
+        // todo: use core::range instead in rust 2024
+        use core::ops::Bound::*;
+
         if buf.len() < STREAM_FRAME_MAX_ENCODING_SIZE + 1 {
             return None;
         }
@@ -268,20 +271,18 @@ where
         // 各流轮流按令牌桶算法发放的tokens来整理数据去发送
         const DEFAULT_TOKENS: usize = 4096;
         let streams: &mut dyn Iterator<Item = _> = match &output.last_sent_stream {
-            // [sid + 1..] + [..=sid]
+            // [sid+1..] + [..=sid]
             Some((sid, tokens)) if *tokens == 0 => &mut output
                 .outgoings
-                .range(sid..)
-                .skip(1)
+                .range((Excluded(sid), Unbounded))
                 .chain(output.outgoings.range(..=sid))
                 .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
-            // [sid..] + [..sid]
+            // [sid] + [sid+1..] + [..sid]
             Some((sid, tokens)) => {
                 &mut core::iter::once((*sid, output.outgoings.get(sid)?, *tokens)).chain(
                     output
                         .outgoings
-                        .range(sid..)
-                        .skip(1)
+                        .range((Excluded(sid), Unbounded))
                         .chain(output.outgoings.range(..sid))
                         .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
                 )
