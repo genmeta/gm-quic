@@ -53,7 +53,7 @@ impl Default for DataScope {
             zero_rtt_keys: ArcKeys::new_pending(),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
             space: DataSpace::with_capacity(16),
-            crypto_stream: CryptoStream::new(0, 0),
+            crypto_stream: CryptoStream::new(4096, 4096),
         }
     }
 }
