@@ -9,6 +9,7 @@ use qbase::streamid::StreamId;
 use tokio::io::AsyncWrite;
 
 use super::sender::{ArcSender, Sender};
+use crate::send::sender::DataSentSender;
 
 /// The writer part of a QUIC stream.
 ///
@@ -133,6 +134,7 @@ impl AsyncWrite for Writer {
             Sender::DataSent(s) => {
                 let result = s.poll_flush(cx);
                 if result.is_ready() {
+                    s.wake_all();
                     *sending_state = Sender::DataRcvd
                 }
                 result
@@ -163,8 +165,15 @@ impl AsyncWrite for Writer {
                 if let Err(e) = s.shutdown(cx) {
                     Poll::Ready(Err(e))
                 } else {
-                    *sending_state = Sender::DataSent(s.into());
-                    Poll::Pending
+                    // it's possible that all data has been sent and received when shutdown called
+                    let mut sent: DataSentSender = s.into();
+                    let shutdown = sent.poll_shutdown(cx);
+                    if shutdown.is_ready() {
+                        *sending_state = Sender::DataRcvd;
+                    } else {
+                        *sending_state = Sender::DataSent(sent);
+                    }
+                    shutdown
                 }
             }
             Sender::DataSent(s) => {
@@ -173,6 +182,7 @@ impl AsyncWrite for Writer {
                 // reset停止发送，此时状态也轮转到ResetSent中，相当于被动reset，再次唤醒该
                 // poll任务，则会进到ResetSent或者ResetRcvd中poll，得到的将是BrokenPipe错误
                 if result.is_ready() {
+                    s.wake_all();
                     *sending_state = Sender::DataRcvd;
                 }
                 result

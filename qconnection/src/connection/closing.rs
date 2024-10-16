@@ -11,21 +11,18 @@ use std::{
 };
 
 use qbase::{
+    cid::ConnectionId,
     error::Error,
     packet::{long, DataHeader, DataPacket},
 };
 use qudp::ArcUsc;
 
-use super::{
-    scope::{data::ClosingOneRttScope, handshake::ClosingHandshakeScope, RecvPacket},
-    CidRegistry,
-};
-use crate::path::{pathway::Pathway, ArcPathes};
+use super::scope::{data::ClosingOneRttScope, handshake::ClosingHandshakeScope, RecvPacket};
+use crate::path::pathway::Pathway;
 
 #[derive(Clone)]
 pub struct ClosingConnection {
-    pub pathes: ArcPathes,
-    pub cid_registry: CidRegistry,
+    pub local_cids: Vec<ConnectionId>,
     pub hs: Option<ClosingHandshakeScope>,
     pub one_rtt: Option<ClosingOneRttScope>,
     pub error: Error,
@@ -38,14 +35,12 @@ pub struct ClosingConnection {
 impl ClosingConnection {
     pub fn new(
         error: Error,
-        pathes: ArcPathes,
-        cid_registry: CidRegistry,
+        local_cids: Vec<ConnectionId>,
         hs: Option<ClosingHandshakeScope>,
         one_rtt: Option<ClosingOneRttScope>,
     ) -> Self {
         Self {
-            pathes,
-            cid_registry,
+            local_cids,
             hs,
             one_rtt,
             error,

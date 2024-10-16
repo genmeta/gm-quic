@@ -123,12 +123,16 @@ impl RawPath {
 
         tokio::spawn(async move {
             let mut datagrams = Vec::with_capacity(4);
-
-            while let Some(iovec) = read_into_datagram.read(&mut datagrams).await {
-                let send_result = usc.send_all_via_pathway(&iovec, pathway).await;
-                if let Err(_udp_error) = send_result {
+            loop {
+                let io_vecs = tokio::select! {
+                    _ = state.has_been_inactivated() => break,
+                    io_vecs = read_into_datagram.read(&mut datagrams) => io_vecs,
+                };
+                let Some(io_vecs) = io_vecs else { break };
+                let send_all = usc.send_all_via_pathway(&io_vecs, pathway);
+                if let Err(_udp_error) = send_all.await {
                     state.to_inactive();
-                    return;
+                    break;
                 }
             }
         });

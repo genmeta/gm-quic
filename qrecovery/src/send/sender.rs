@@ -251,6 +251,9 @@ impl SendingSender {
             if let Some(waker) = self.flush_waker.take() {
                 waker.wake();
             }
+            if let Some(waker) = self.shutdown_waker.take() {
+                waker.wake();
+            }
         }
     }
 
