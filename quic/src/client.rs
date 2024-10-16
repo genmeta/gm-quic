@@ -17,7 +17,7 @@ use rustls::{
     ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
 };
 
-use crate::{get_usc_or_create, ConnKey, QuicConnection, CONNECTIONS};
+use crate::{get_or_create_usc, ConnKey, QuicConnection, CONNECTIONS};
 
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 
@@ -117,7 +117,7 @@ impl QuicClient {
                 ),
             ))?;
 
-        let usc = get_usc_or_create(bind_addr);
+        let usc = get_or_create_usc(bind_addr)?;
 
         let pathway = Pathway::Direct {
             local: usc.local_addr(),

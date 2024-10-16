@@ -18,24 +18,23 @@ static ROUTER: LazyLock<DashMap<ConnectionId, [PacketEntry; 4]>> = LazyLock::new
 pub struct Router;
 
 impl Router {
-    pub fn recv_packet_via_pathway(
+    pub fn try_to_route_packet_from(
         packet: DataPacket,
         pathway: Pathway,
         usc: &ArcUsc,
-    ) -> Option<DataPacket> {
+    ) -> Result<(), DataPacket> {
         let dcid = packet.header.get_dcid();
-        if let Some(entries) = ROUTER.get(dcid) {
-            let index = match packet.header {
-                DataHeader::Long(long::DataHeader::Initial(_)) => 0,
-                DataHeader::Long(long::DataHeader::ZeroRtt(_)) => 1,
-                DataHeader::Long(long::DataHeader::Handshake(_)) => 2,
-                DataHeader::Short(_) => 3,
-            };
-            _ = entries[index].unbounded_send((packet, pathway, usc.clone()));
-            None
-        } else {
-            Some(packet)
-        }
+        let Some(entries) = ROUTER.get(dcid) else {
+            return Err(packet);
+        };
+        let index = match packet.header {
+            DataHeader::Long(long::DataHeader::Initial(_)) => 0,
+            DataHeader::Long(long::DataHeader::ZeroRtt(_)) => 1,
+            DataHeader::Long(long::DataHeader::Handshake(_)) => 2,
+            DataHeader::Short(_) => 3,
+        };
+        _ = entries[index].unbounded_send((packet, pathway, usc.clone()));
+        Ok(())
     }
 
     pub fn registry<ISSUED>(

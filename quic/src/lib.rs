@@ -1,7 +1,4 @@
-use std::{
-    net::SocketAddr,
-    sync::{LazyLock, RwLock},
-};
+use std::{io, net::SocketAddr, sync::LazyLock};
 
 use bytes::BytesMut;
 use dashmap::DashMap;
@@ -24,9 +21,6 @@ static USC_REGISTRY: LazyLock<DashMap<SocketAddr, ArcUsc>> = LazyLock::new(DashM
 /// 全局的QuicConnection注册管理，用于查找已有的QuicConnection，key是初期的Pathway
 /// 包括被动接收的连接和主动发起的连接
 static CONNECTIONS: LazyLock<DashMap<ConnKey, QuicConnection>> = LazyLock::new(DashMap::new);
-
-/// 理应全局只有一个server
-static SERVER: LazyLock<RwLock<Option<QuicServer>>> = LazyLock::new(|| RwLock::new(None));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ConnKey {
@@ -61,7 +55,7 @@ impl Drop for QuicConnection {
     }
 }
 
-pub fn get_usc_or_create(bind_addr: &SocketAddr) -> ArcUsc {
+pub fn get_or_create_usc(bind_addr: &SocketAddr) -> io::Result<ArcUsc> {
     let recv_task = |usc: ArcUsc, _bind_addr: SocketAddr| {
         let mut receiver = usc.receiver();
         tokio::spawn(async move {
@@ -77,35 +71,7 @@ pub fn get_usc_or_create(bind_addr: &SocketAddr) -> ArcUsc {
 
                     let reader = PacketReader::new(data, 8);
                     for pkt in reader.flatten() {
-                        match pkt {
-                            Packet::VN(vn) => {
-                                let key = ConnKey::Client(*vn.get_dcid());
-                                if let Some(conn) = CONNECTIONS.get(&key) {
-                                    conn.recv_version_negotiation(&vn);
-                                    conn.update_path_recv_time(pathway);
-                                } else {
-                                    log::error!("No connection found for VN packet");
-                                }
-                            }
-                            Packet::Retry(retry) => {
-                                let key = ConnKey::Client(*retry.get_dcid());
-                                if let Some(conn) = CONNECTIONS.get(&key) {
-                                    conn.recv_retry_packet(&retry);
-                                    conn.update_path_recv_time(pathway);
-                                } else {
-                                    log::error!("No connection found for Retry packet");
-                                }
-                            }
-                            Packet::Data(packet) => {
-                                if let Some(packet) =
-                                    Router::recv_packet_via_pathway(packet, pathway, &usc)
-                                {
-                                    if let Some(server) = SERVER.read().unwrap().as_ref() {
-                                        server.recv_unmatched_packet(packet, pathway, &usc);
-                                    }
-                                }
-                            }
-                        }
+                        accpet_packet(pkt, pathway, &usc);
                     }
                 }
             }
@@ -114,12 +80,40 @@ pub fn get_usc_or_create(bind_addr: &SocketAddr) -> ArcUsc {
 
     let usc = USC_REGISTRY
         .entry(*bind_addr)
-        .or_insert_with(|| {
-            let usc = ArcUsc::new(*bind_addr).expect("Failed to create UdpSocket controller");
+        .or_try_insert_with(|| {
+            let usc = ArcUsc::new(*bind_addr)?;
             recv_task(usc.clone(), *bind_addr);
-            usc
-        })
+            io::Result::Ok(usc)
+        })?
         .value()
         .clone();
-    usc
+    Ok(usc)
+}
+
+fn accpet_packet(packet: Packet, pathway: Pathway, usc: &ArcUsc) {
+    match packet {
+        Packet::Data(packet) => {
+            if let Err(packet) = Router::try_to_route_packet_from(packet, pathway, usc) {
+                QuicServer::try_to_accept_conn_from(packet, pathway, usc);
+            }
+        }
+        Packet::VN(vn) => {
+            let key = ConnKey::Server(*vn.get_dcid());
+            if let Some(conn) = CONNECTIONS.get(&key) {
+                conn.recv_version_negotiation(&vn);
+                conn.update_path_recv_time(pathway);
+            } else {
+                log::error!("No connection found for VN packet");
+            }
+        }
+        Packet::Retry(retry) => {
+            let key = ConnKey::Server(*retry.get_dcid());
+            if let Some(conn) = CONNECTIONS.get(&key) {
+                conn.recv_retry_packet(&retry);
+                conn.update_path_recv_time(pathway);
+            } else {
+                log::error!("No connection found for Retry packet");
+            }
+        }
+    }
 }

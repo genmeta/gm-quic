@@ -145,9 +145,7 @@ impl ConnState {
         raw_conn.notify.notify_waiters();
 
         let local_cids = &raw_conn.cid_registry.local;
-        local_cids.active_cids().iter().for_each(|cid| {
-            ROUTER.remove(cid);
-        });
+        local_cids.active_cids().iter().for_each(Router::remove);
     }
 
     fn die(&mut self) {
@@ -159,7 +157,7 @@ impl ConnState {
         };
 
         for cid in local_cids {
-            ROUTER.remove(&cid);
+            Router::remove(&cid);
         }
     }
 }

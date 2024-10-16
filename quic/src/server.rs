@@ -2,11 +2,10 @@ use std::{
     io::{self},
     net::SocketAddr,
     path::Path,
-    sync::Arc,
+    sync::{Arc, LazyLock, RwLock},
 };
 
 use dashmap::DashMap;
-use deref_derive::Deref;
 use qbase::{
     cid::ConnectionId,
     config::{Parameters, ServerParameters},
@@ -25,10 +24,13 @@ use rustls::{
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };
 
-use crate::{get_usc_or_create, ConnKey, QuicConnection, CONNECTIONS, SERVER};
+use crate::{get_or_create_usc, ConnKey, QuicConnection, CONNECTIONS};
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
 type QuicListner = ArcAsyncDeque<(QuicConnection, SocketAddr)>;
+
+/// 理应全局只有一个server
+static SERVER: LazyLock<RwLock<Option<QuicServer>>> = LazyLock::new(RwLock::default);
 
 #[derive(Debug, Default)]
 pub struct VirtualHosts(Arc<DashMap<String, Host>>);
@@ -50,7 +52,7 @@ impl ResolvesServerCert for VirtualHosts {
 /// 实际上服务端的性质，类似于收包。不管包从哪个usc来，都可以根据需要来创建
 /// 要想有服务端的功能，得至少有一个usc可以收包。
 /// 如果不创建QuicServer，那意味着不接收新连接
-pub struct RawQuicServer {
+struct RawQuicServer {
     addresses: Vec<SocketAddr>,
     listener: QuicListner,
     _restrict: bool,
@@ -61,7 +63,7 @@ pub struct RawQuicServer {
     token_provider: Option<Arc<dyn TokenProvider + Send + Sync + 'static>>,
 }
 
-#[derive(Clone, Deref)]
+#[derive(Clone)]
 pub struct QuicServer(Arc<RawQuicServer>);
 
 impl QuicServer {
@@ -87,32 +89,24 @@ impl QuicServer {
             token_provider: None,
         }
     }
-}
 
-impl RawQuicServer {
-    /// 获取所有监听的地址，因为客户端创建的每一个usc都可以成为监听端口
-    pub fn listen_addresses(&self) -> &Vec<SocketAddr> {
-        &self.addresses
+    pub fn addresses(&self) -> &[SocketAddr] {
+        &self.0.addresses
     }
 
-    pub fn initial_server_keys(&self, dcid: ConnectionId) -> rustls::quic::Keys {
-        let suite = self
-            .tls_config
-            .crypto_provider()
-            .cipher_suites
-            .iter()
-            .find_map(|cs| match (cs.suite(), cs.tls13()) {
-                (rustls::CipherSuite::TLS13_AES_128_GCM_SHA256, Some(suite)) => {
-                    Some(suite.quic_suite())
-                }
-                _ => None,
-            })
-            .flatten()
-            .unwrap();
-        suite.keys(&dcid, rustls::Side::Server, rustls::quic::Version::V1)
+    /// 监听新连接的到来
+    /// 新连接可能通过本地的任何一个有效usc来创建
+    /// 只有调用该函数，才会有被动创建的Connection存放队列，等待着应用层来处理
+    pub async fn accept(&self) -> io::Result<(QuicConnection, SocketAddr)> {
+        let listening_stopped = || io::Error::new(io::ErrorKind::Other, "listening stopped");
+        self.0.listener.pop().await.ok_or_else(listening_stopped)
     }
 
-    pub fn recv_unmatched_packet(&self, packet: DataPacket, pathway: Pathway, usc: &ArcUsc) {
+    pub(crate) fn try_to_accept_conn_from(packet: DataPacket, pathway: Pathway, usc: &ArcUsc) {
+        let server = SERVER.read().unwrap();
+        let Some(server) = server.as_ref().map(|s| &s.0) else {
+            return;
+        };
         let (server_initial_dcid, client_initial_dcid) = match &packet.header {
             DataHeader::Long(hdr @ long::DataHeader::Initial(_))
             | DataHeader::Long(hdr @ long::DataHeader::ZeroRtt(_)) => {
@@ -125,18 +119,18 @@ impl RawQuicServer {
                 .find(|cid| !CONNECTIONS.contains_key(&ConnKey::Server(*cid)))
                 .unwrap();
 
-        let token_provider = match &self.token_provider {
+        let token_provider = match &server.token_provider {
             Some(provider) => ArcTokenRegistry::with_provider(provider.clone()),
             None => ArcTokenRegistry::default_provider(),
         };
 
-        let initial_keys = self.initial_server_keys(client_initial_dcid);
+        let initial_keys = server.initial_server_keys(client_initial_dcid);
         let inner = ArcConnection::new_server(
             initial_scid,
             server_initial_dcid,
             Parameters::default(), // &self.parameters,
             initial_keys,
-            self.tls_config.clone(),
+            server.tls_config.clone(),
             token_provider,
         );
         inner.add_initial_path(pathway, usc.clone());
@@ -145,19 +139,27 @@ impl RawQuicServer {
             inner,
         };
         log::info!("incoming connection established");
-        self.listener
+        server
+            .listener
             .push_back((conn.clone(), pathway.remote_addr()));
-        Router::recv_packet_via_pathway(packet, pathway, usc);
+        _ = Router::try_to_route_packet_from(packet, pathway, usc);
     }
+}
 
-    /// 监听新连接的到来
-    /// 新连接可能通过本地的任何一个有效usc来创建
-    /// 只有调用该函数，才会有被动创建的Connection存放队列，等待着应用层来处理
-    pub async fn accept(&self) -> io::Result<(QuicConnection, SocketAddr)> {
-        self.listener
-            .pop()
-            .await
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No connection available"))
+impl RawQuicServer {
+    /// 获取所有监听的地址，因为客户端创建的每一个usc都可以成为监听端口
+    pub fn initial_server_keys(&self, dcid: ConnectionId) -> rustls::quic::Keys {
+        let suite = self
+            .tls_config
+            .crypto_provider()
+            .cipher_suites
+            .iter()
+            .find_map(|cs| match (cs.suite(), cs.tls13()) {
+                (rustls::CipherSuite::TLS13_AES_128_GCM_SHA256, Some(suite)) => suite.quic_suite(),
+                _ => None,
+            })
+            .unwrap();
+        suite.keys(&dcid, rustls::Side::Server, rustls::quic::Version::V1)
     }
 }
 
@@ -379,7 +381,9 @@ impl QuicServerBuilder<TlsServerConfig> {
 
     pub fn listen(self) -> QuicServer {
         for addr in &self.addresses {
-            _ = get_usc_or_create(addr);
+            if let Err(e) = get_or_create_usc(addr) {
+                log::error!("faild to listen on {addr}: {e}");
+            }
         }
         let quic_server = QuicServer(Arc::new(RawQuicServer {
             addresses: self.addresses,
@@ -404,7 +408,9 @@ impl QuicServerSniBuilder<TlsServerConfig> {
 
     pub fn listen(self) -> QuicServer {
         for addr in &self.addresses {
-            _ = get_usc_or_create(addr);
+            if let Err(e) = get_or_create_usc(addr) {
+                log::error!("faild to listen on {addr}: {e}");
+            }
         }
         let quic_server = QuicServer(Arc::new(RawQuicServer {
             addresses: self.addresses,
