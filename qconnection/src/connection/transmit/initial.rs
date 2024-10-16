@@ -25,6 +25,7 @@ pub struct InitialSpaceReader {
 }
 
 impl InitialSpaceReader {
+    #[allow(clippy::type_complexity)]
     pub fn try_read(
         &self,
         buf: &mut [u8],
