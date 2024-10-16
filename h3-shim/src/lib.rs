@@ -93,7 +93,8 @@ impl<B: bytes::Buf> quic::OpenStreams<B> for QuicConnection {
     }
 
     #[inline]
-    fn close(&mut self, _code: h3::error::Code, reason: &[u8]) {
+    fn close(&mut self, code: h3::error::Code, reason: &[u8]) {
+        let _ignored = code;
         let reason = unsafe { String::from_utf8_unchecked(reason.to_vec()) };
         self.connection.close(reason);
     }
