@@ -10,7 +10,7 @@ use qbase::{
     cid::ConnectionId,
     packet::{header::GetDcid, Packet, PacketReader, RetryHeader, VersionNegotiationHeader},
 };
-use qconnection::{connection::ArcConnection, path::Pathway, router::ROUTER};
+use qconnection::{connection::ArcConnection, path::Pathway, router::Router};
 use qudp::ArcUsc;
 
 pub mod client;
@@ -98,7 +98,7 @@ pub fn get_usc_or_create(bind_addr: &SocketAddr) -> ArcUsc {
                             }
                             Packet::Data(packet) => {
                                 if let Some(packet) =
-                                    ROUTER.recv_packet_via_pathway(packet, pathway, &usc)
+                                    Router::recv_packet_via_pathway(packet, pathway, &usc)
                                 {
                                     if let Some(server) = SERVER.read().unwrap().as_ref() {
                                         server.recv_unmatched_packet(packet, pathway, &usc);

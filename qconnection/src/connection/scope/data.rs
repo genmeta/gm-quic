@@ -36,7 +36,7 @@ use crate::{
     error::ConnError,
     path::{ArcPathes, RawPath, SendBuffer},
     pipe,
-    router::ROUTER,
+    router::Router,
 };
 
 #[derive(Clone)]
@@ -141,7 +141,7 @@ impl DataScope {
 
         // Assemble the pipelines of frame processing
         // TODO: pipe rcvd_new_token_frames
-        let local_cids_with_router = ROUTER.revoke(cid_registry.local.clone());
+        let local_cids_with_router = Router::revoke(cid_registry.local.clone());
         pipe!(rcvd_retire_cid_frames |> local_cids_with_router, recv_frame);
         pipe!(@error(conn_error) rcvd_new_cid_frames |> cid_registry.remote, recv_frame);
         pipe!(rcvd_max_data_frames |> flow_ctrl.sender, recv_frame);

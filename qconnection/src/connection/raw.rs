@@ -27,7 +27,7 @@ use super::{
 use crate::{
     error::ConnError,
     path::{pathway::Pathway, ArcPath, ArcPathes, RawPath},
-    router::ROUTER,
+    router::Router,
     tls::ArcTlsSession,
 };
 
@@ -74,7 +74,7 @@ impl RawConnection {
         let hs = HandshakeScope::default();
         let data = DataScope::default();
 
-        let router_registry = ROUTER.registry(
+        let router_registry = Router::registry(
             initial_scid,
             reliable_frames.clone(),
             [

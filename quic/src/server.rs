@@ -17,7 +17,7 @@ use qbase::{
     token::{ArcTokenRegistry, TokenProvider},
     util::ArcAsyncDeque,
 };
-use qconnection::{connection::ArcConnection, path::Pathway, router::ROUTER};
+use qconnection::{connection::ArcConnection, path::Pathway, router::Router};
 use qudp::ArcUsc;
 use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer},
@@ -113,10 +113,10 @@ impl RawQuicServer {
     }
 
     pub fn recv_unmatched_packet(&self, packet: DataPacket, pathway: Pathway, usc: &ArcUsc) {
-        let (index, initial_dcid, client_initial_dcid) = match &packet.header {
+        let (server_initial_dcid, client_initial_dcid) = match &packet.header {
             DataHeader::Long(hdr @ long::DataHeader::Initial(_))
             | DataHeader::Long(hdr @ long::DataHeader::ZeroRtt(_)) => {
-                (0, *hdr.get_scid(), *hdr.get_dcid())
+                (*hdr.get_scid(), *hdr.get_dcid())
             }
             _ => return,
         };
@@ -133,7 +133,7 @@ impl RawQuicServer {
         let initial_keys = self.initial_server_keys(client_initial_dcid);
         let inner = ArcConnection::new_server(
             initial_scid,
-            initial_dcid,
+            server_initial_dcid,
             Parameters::default(), // &self.parameters,
             initial_keys,
             self.tls_config.clone(),
@@ -147,9 +147,7 @@ impl RawQuicServer {
         log::info!("incoming connection established");
         self.listener
             .push_back((conn.clone(), pathway.remote_addr()));
-        if let Some(entries) = ROUTER.get_mut(&initial_scid) {
-            _ = entries[index].unbounded_send((packet, pathway, usc.clone()))
-        }
+        Router::recv_packet_via_pathway(packet, pathway, usc);
     }
 
     /// 监听新连接的到来
