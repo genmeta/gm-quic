@@ -142,7 +142,7 @@ where
 
         _ = self.cid_deque.drain_to(seq);
         // it is possible that the connection id that has not been used is directly retired,
-        // and there is no chance to assign it, this phenomenon is called "jumping retired cid"
+        // and there is no chance to assign it, this phenomenon is called "jumping retire cid"
         self.cursor = self.cursor.max(seq);
 
         // reassign the cid that has been assigned to the Path but is facing retirement

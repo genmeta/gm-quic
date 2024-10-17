@@ -122,10 +122,10 @@ where
 
 /// Shared local connection ID manager. Most times, you should use this struct.
 ///
-/// Responsible for generating and issuing connection IDs to the other party.
-/// The number of active connection IDs will be limited by the other party's active_cid_limit.
+/// Responsible for generating and issuing connection IDs to the peer.
+/// The number of active connection IDs is limited by the peer's active_cid_limit.
 ///
-/// - `ISSUED`: is a struct that can generate unique connection id and  finally send the new
+/// - `ISSUED`: is a struct that can generate unique connection id and finally send the new
 ///    issued connection ID frame to the peer.
 ///    It can be a channel, a queue, or a buffer. Whatever, it must be able to send the
 ///    [`NewConnectionIdFrame`] to the peer.
@@ -134,9 +134,9 @@ where
 ///
 /// The generated connection ID will be added to the packet reception routing table,
 /// which is shared with other QUIC connections.
-/// Therefore, special attention must be paid to ensure that the generated connection
-/// ID does not duplicate other local connection IDs, including connection IDs from
-/// other connections and those I have previously issued that are still active,
+/// Therefore, the generated connection ID must not duplicate other local connection IDs,
+/// including connection IDs of other connections,
+/// and those issued to the peer and have not been retired,
 /// otherwise routing conflicts will occur.
 #[derive(Debug, Clone)]
 pub struct ArcLocalCids<ISSUED>(Arc<Mutex<RawLocalCids<ISSUED>>>)
@@ -162,8 +162,7 @@ where
     /// Get all active connection IDs.
     ///
     /// This method will be useful when finally releasing connection resources,
-    /// as it will remove all routing table entries related to this connection from
-    /// the packet reception routing table.
+    /// as it will remove all routing table entries related to this connection.
     pub fn active_cids(&self) -> Vec<ConnectionId> {
         self.0
             .lock()
