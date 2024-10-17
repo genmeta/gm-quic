@@ -6,12 +6,12 @@ use std::{
 
 use deref_derive::{Deref, DerefMut};
 use qbase::{
-    config::Parameters,
     error::{Error as QuicError, ErrorKind},
     frame::{
         BeFrame, FrameType, MaxStreamDataFrame, MaxStreamsFrame, ResetStreamFrame, SendFrame,
         StopSendingFrame, StreamCtlFrame, StreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
     },
+    param::Parameters,
     streamid::{AcceptSid, Dir, ExceedLimitError, Role, StreamId, StreamIds},
     varint::VarInt,
 };

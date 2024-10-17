@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use qbase::{config::Parameters, error::Error};
+use qbase::{error::Error, param::Parameters};
 use tokio::sync::Notify;
 
 #[derive(Debug)]

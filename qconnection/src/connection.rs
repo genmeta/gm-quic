@@ -12,9 +12,9 @@ use draining::DrainingConnection;
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
     cid::{self, ConnectionId},
-    config::Parameters,
     error::{Error, ErrorKind},
     packet::{DataPacket, RetryHeader},
+    param::Parameters,
     streamid::Role,
     token::ArcTokenRegistry,
 };
