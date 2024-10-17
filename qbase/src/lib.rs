@@ -13,8 +13,6 @@
 
 /// Operations about QUIC connection IDs.
 pub mod cid;
-/// [QUIC transport parameters and their codec](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-encodin).
-pub mod config;
 /// [QUIC errors](https://www.rfc-editor.org/rfc/rfc9000.html#name-error-codes).
 pub mod error;
 /// QUIC connection-level flow control.
@@ -25,6 +23,8 @@ pub mod frame;
 pub mod handshake;
 /// QUIC packets and their codec.
 pub mod packet;
+/// [QUIC transport parameters and their codec](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-encodin).
+pub mod param;
 /// Stream id types and controllers for different roles and different directions.
 pub mod streamid;
 /// Issuing, storing and verifing tokens operations.

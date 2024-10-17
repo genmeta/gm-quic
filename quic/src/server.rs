@@ -8,11 +8,11 @@ use std::{
 use dashmap::DashMap;
 use qbase::{
     cid::ConnectionId,
-    config::{Parameters, ServerParameters},
     packet::{
         header::{GetDcid, GetScid},
         long, DataHeader, DataPacket, InitialHeader, RetryHeader,
     },
+    param::{Parameters, ServerParameters},
     token::{ArcTokenRegistry, TokenProvider},
     util::ArcAsyncDeque,
 };

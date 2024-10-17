@@ -30,9 +30,9 @@ pub use data::RawDataStreams;
 use deref_derive::Deref;
 pub use listener::{AcceptBiStream, AcceptUniStream};
 use qbase::{
-    config::Parameters,
     error::Error,
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
+    param::Parameters,
     streamid::Role,
 };
 use thiserror::Error;

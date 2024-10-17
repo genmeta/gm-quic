@@ -6,12 +6,12 @@ use std::sync::{Arc, Mutex};
 
 use qbase::{
     cid::ConnectionId,
-    config::{
+    error::{Error, ErrorKind},
+    packet::keys::{ArcKeys, ArcOneRttKeys},
+    param::{
         ext::{be_parameters, WriteParameters},
         Parameters,
     },
-    error::{Error, ErrorKind},
-    packet::keys::{ArcKeys, ArcOneRttKeys},
 };
 use qrecovery::{crypto::CryptoStream, space::Epoch};
 use rustls::{

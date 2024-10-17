@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex};
 use futures::channel::mpsc;
 use qbase::{
     cid::ConnectionId,
-    config::Parameters,
     flow::FlowController,
     packet::keys::ArcKeys,
+    param::Parameters,
     streamid::Role,
     token::{ArcTokenRegistry, TokenRegistry},
 };

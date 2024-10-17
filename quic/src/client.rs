@@ -7,7 +7,7 @@ use std::{
 
 use qbase::{
     cid::ConnectionId,
-    config::{ClientParameters, Parameters},
+    param::{ClientParameters, Parameters},
     token::{ArcTokenRegistry, TokenSink},
 };
 use qconnection::{connection::ArcConnection, path::Pathway};
