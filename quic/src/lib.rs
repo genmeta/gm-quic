@@ -10,11 +10,11 @@ use qbase::{
 use qconnection::{connection::ArcConnection, path::Pathway, router::Router};
 use qudp::ArcUsc;
 
-pub mod client;
-pub mod server;
+mod client;
+mod server;
 
-pub use client::QuicClient;
-pub use server::QuicServer;
+pub use client::{QuicClient, QuicClientBuilder};
+pub use server::{Incoming, QuicServer, QuicServerBuilder, QuicServerSniBuilder};
 
 /// 全局的usc注册管理，用于查找已有的usc，key是绑定的本地地址，包括v4和v6的地址
 static USC_REGISTRY: LazyLock<DashMap<SocketAddr, ArcUsc>> = LazyLock::new(DashMap::new);

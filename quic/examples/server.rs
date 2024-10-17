@@ -46,8 +46,8 @@ async fn run(options: Opt) -> Result<(), Box<dyn std::error::Error>> {
         .with_single_cert(options.cert, options.key)
         .listen();
 
-    while let Ok((_conn, addr)) = server.accept().await {
-        log::trace!("New connection from {}", addr);
+    while let Ok(incoming) = server.accpet().await {
+        log::trace!("New connection from {}", incoming.way.local_addr());
     }
     Ok(())
 }
