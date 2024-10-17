@@ -34,7 +34,7 @@ async fn main() {
     let dst = args.dst.parse().unwrap();
 
     let send_hdr = PacketHeader {
-        src: socket.local_addr(),
+        src: socket.local_addr().expect("failed to get local addr"),
         dst,
         ttl: 64,
         ecn: Some(1),
