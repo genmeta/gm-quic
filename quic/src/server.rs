@@ -102,22 +102,28 @@ impl QuicServer {
         self.0.listener.pop().await.ok_or_else(listening_stopped)
     }
 
-    pub(crate) fn try_to_accept_conn_from(packet: DataPacket, pathway: Pathway, usc: &ArcUsc) {
+    pub(crate) fn try_to_accept_conn_from(mut packet: DataPacket, pathway: Pathway, usc: &ArcUsc) {
         let server = SERVER.read().unwrap();
         let Some(server) = server.as_ref().map(|s| &s.0) else {
             return;
-        };
-        let (server_initial_dcid, client_initial_dcid) = match &packet.header {
-            DataHeader::Long(hdr @ long::DataHeader::Initial(_))
-            | DataHeader::Long(hdr @ long::DataHeader::ZeroRtt(_)) => {
-                (*hdr.get_scid(), *hdr.get_dcid())
-            }
-            _ => return,
         };
         let initial_scid =
             std::iter::repeat_with(|| ConnectionId::random_gen_with_mark(8, 0, 0x7F))
                 .find(|cid| !CONNECTIONS.contains_key(&ConnKey::Server(*cid)))
                 .unwrap();
+        let (initial_dcid, client_initial_dcid) = match &mut packet.header {
+            DataHeader::Long(long::DataHeader::Initial(hdr)) => {
+                let client_dcid = *hdr.get_dcid();
+                hdr.dcid = initial_scid;
+                (*hdr.get_scid(), client_dcid)
+            }
+            DataHeader::Long(long::DataHeader::ZeroRtt(hdr)) => {
+                let client_dcid = *hdr.get_dcid();
+                hdr.dcid = initial_scid;
+                (*hdr.get_scid(), client_dcid)
+            }
+            _ => return,
+        };
 
         let token_provider = match &server.token_provider {
             Some(provider) => ArcTokenRegistry::with_provider(provider.clone()),
@@ -127,7 +133,7 @@ impl QuicServer {
         let initial_keys = server.initial_server_keys(client_initial_dcid);
         let inner = ArcConnection::new_server(
             initial_scid,
-            server_initial_dcid,
+            initial_dcid,
             Parameters::default(), // &self.parameters,
             initial_keys,
             server.tls_config.clone(),
