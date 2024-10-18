@@ -421,7 +421,7 @@ impl FlowController {
 
     /// Updates the initial send window size,
     /// which should be the peer's `initial_max_data` transport parameter.
-    /// So once the peer's [`Parameters`](`crate::config::Parameters`) are obtained,
+    /// So once the peer's [`Parameters`](`crate::param::Parameters`) are obtained,
     /// this method should be called immediately.
     pub fn reset_send_window(&self, snd_wnd: u64) {
         self.sender.increase_limit(snd_wnd);
