@@ -60,7 +60,7 @@ struct RawQuicServer {
     _restrict: bool,
     _supported_versions: Vec<u32>,
     _load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
-    _parameters: DashMap<String, Parameters>,
+    parameters: Parameters,
     tls_config: Arc<TlsServerConfig>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
@@ -82,7 +82,7 @@ impl QuicServer {
             restrict,
             supported_versions: Vec::with_capacity(2),
             load_balance: Arc::new(|_| None),
-            parameters: DashMap::new(),
+            parameters: Parameters::default(),
             tls_config: TlsServerConfig::builder_with_provider(
                 rustls::crypto::ring::default_provider().into(),
             )
@@ -136,7 +136,7 @@ impl QuicServer {
         let inner = ArcConnection::new_server(
             initial_scid,
             initial_dcid,
-            Parameters::default(), // &self.parameters,
+            server.parameters,
             initial_keys,
             server.tls_config.clone(),
             token_provider,
@@ -182,7 +182,7 @@ pub struct QuicServerBuilder<T> {
     restrict: bool,
     supported_versions: Vec<u32>,
     load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
-    parameters: DashMap<String, Parameters>,
+    parameters: Parameters,
     tls_config: T,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
@@ -193,7 +193,7 @@ pub struct QuicServerSniBuilder<T> {
     supported_versions: Vec<u32>,
     load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     hosts: Arc<DashMap<String, Host>>,
-    parameters: DashMap<String, Parameters>,
+    parameters: Parameters,
     tls_config: T,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
@@ -269,8 +269,8 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
     ///
     /// [`with_single_cert`]: QuicServerBuilder::with_single_cert
     /// [`with_single_cert_with_ocsp`]: QuicServerBuilder::with_single_cert_with_ocsp
-    pub fn with_parameters(self, parameters: ServerParameters) -> Self {
-        self.parameters.insert("*".to_owned(), parameters.into());
+    pub fn with_parameters(mut self, parameters: ServerParameters) -> Self {
+        self.parameters = parameters.into();
         self
     }
 
@@ -334,7 +334,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
             restrict: self.restrict,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
-            parameters: DashMap::new(),
+            parameters: Default::default(),
             tls_config: self
                 .tls_config
                 .with_cert_resolver(Arc::new(VirtualHosts(hosts.clone()))),
@@ -353,7 +353,6 @@ impl QuicServerSniBuilder<TlsServerConfig> {
         server_name: impl Into<String>,
         cert_file: impl AsRef<Path>,
         key_file: impl AsRef<Path>,
-        parameters: Parameters,
     ) -> Self {
         let cert = std::fs::read(cert_file).unwrap();
         let cert_chain = vec![CertificateDer::from(cert)];
@@ -369,7 +368,6 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             .unwrap();
 
         let server_name = server_name.into();
-        self.parameters.insert(server_name.clone(), parameters);
         self.hosts.insert(
             server_name,
             Host {
@@ -408,7 +406,7 @@ impl QuicServerBuilder<TlsServerConfig> {
             _restrict: self.restrict,
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
-            _parameters: self.parameters,
+            parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
             token_provider: self.token_provider,
         }));
@@ -443,7 +441,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             _restrict: self.restrict,
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
-            _parameters: self.parameters,
+            parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
             token_provider: self.token_provider,
         }));
