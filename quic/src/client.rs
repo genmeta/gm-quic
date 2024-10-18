@@ -120,7 +120,7 @@ impl QuicClient {
         let usc = get_or_create_usc(bind_addr)?;
 
         let pathway = Pathway::Direct {
-            local: usc.local_addr(),
+            local: usc.local_addr()?,
             remote: server_addr,
         };
 

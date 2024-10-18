@@ -111,6 +111,33 @@ impl UdpSocketController {
     fn local_addr(&self) -> SocketAddr {
         self.io.local_addr().expect("Failed to get local address")
     }
+
+    fn poll_send(
+        &self,
+        bufs: &[IoSlice<'_>],
+        hdr: &PacketHeader,
+        cx: &mut Context,
+    ) -> Poll<io::Result<usize>> {
+        ready!(self.io.poll_send_ready(cx)?);
+        let f = || self.sendmsg(bufs, hdr);
+        let ret = self.io.try_io(Interest::WRITABLE, f);
+        Poll::Ready(ret)
+    }
+
+    pub fn poll_recv(
+        &self,
+        bufs: &mut [IoSliceMut<'_>],
+        hdrs: &mut [PacketHeader],
+        cx: &mut Context,
+    ) -> Poll<io::Result<usize>> {
+        ready!(self.io.poll_recv_ready(cx)?);
+        let f = || self.recvmsg(bufs, hdrs);
+        let ret = self.io.try_io(Interest::READABLE, f);
+        if matches!(&ret, Err(e) if e.kind() == io::ErrorKind::WouldBlock) {
+            return Poll::Ready(Ok(0));
+        }
+        Poll::Ready(ret)
+    }
 }
 
 trait Io {
@@ -126,14 +153,16 @@ trait Io {
 }
 
 #[derive(Debug, Clone)]
-pub struct ArcUsc(Arc<Mutex<UdpSocketController>>);
+pub struct ArcUsc(Arc<Mutex<Result<UdpSocketController, io::Error>>>);
 
 impl ArcUsc {
     pub fn new(addr: SocketAddr) -> io::Result<Self> {
-        match UdpSocketController::new(addr) {
-            Ok(usc) => Ok(Self(Arc::new(Mutex::new(usc)))),
-            Err(e) => Err(e),
-        }
+        UdpSocketController::new(addr).map(|io| Self(Arc::new(Mutex::new(Ok(io)))))
+    }
+
+    pub fn close(&self, error: io::Error) {
+        let mut guard = self.0.lock().unwrap();
+        *guard = Err(error);
     }
 
     pub fn poll_send(
@@ -142,13 +171,15 @@ impl ArcUsc {
         hdr: &PacketHeader,
         cx: &mut Context,
     ) -> Poll<io::Result<usize>> {
-        let controller = self.0.lock().unwrap();
-        ready!(controller.io.poll_send_ready(cx))?;
-        let ret = controller
-            .io
-            .try_io(Interest::WRITABLE, || controller.sendmsg(bufs, hdr));
-
-        Poll::Ready(ret)
+        let mut guard = self.0.lock().unwrap();
+        let controller = guard
+            .as_mut()
+            .map_err(|e| io::Error::new(e.kind(), e.to_string()))?;
+        controller.poll_send(bufs, hdr, cx).map_err(|e| {
+            let e_clone = io::Error::new(e.kind(), e.to_string());
+            *guard = Err(e);
+            e_clone
+        })
     }
 
     pub fn poll_recv(
@@ -157,49 +188,50 @@ impl ArcUsc {
         hdrs: &mut [PacketHeader],
         cx: &mut Context,
     ) -> Poll<io::Result<usize>> {
-        let controller = self.0.lock().unwrap();
-        ready!(controller.io.poll_recv_ready(cx))?;
-        let ret = controller
-            .io
-            .try_io(Interest::READABLE, || controller.recvmsg(bufs, hdrs));
-
-        if let Err(e) = &ret {
-            if e.kind() == io::ErrorKind::WouldBlock {
-                return Poll::Ready(Ok(0));
-            }
-        }
-        Poll::Ready(ret)
+        let mut guard = self.0.lock().unwrap();
+        let controller = guard
+            .as_mut()
+            .map_err(|e| io::Error::new(e.kind(), e.to_string()))?;
+        controller.poll_recv(bufs, hdrs, cx).map_err(|e| {
+            let e_clone = io::Error::new(e.kind(), e.to_string());
+            *guard = Err(e);
+            e_clone
+        })
     }
 
-    pub fn ttl(&self) -> u8 {
-        self.0.lock().unwrap().ttl
+    fn map_lock<T>(&self, f: impl FnOnce(&mut UdpSocketController) -> T) -> io::Result<T> {
+        let mut guard = self.0.lock().unwrap();
+        guard
+            .as_mut()
+            .map_err(|e| io::Error::new(e.kind(), e.to_string()))
+            .map(f)
+    }
+    pub fn ttl(&self) -> io::Result<u8> {
+        self.map_lock(|controller| controller.ttl)
     }
 
     pub fn set_ttl(&self, ttl: u8) -> io::Result<()> {
-        self.0.lock().unwrap().set_ttl(ttl)
+        self.map_lock(|controller| controller.set_ttl(ttl))?
     }
 
-    pub fn local_addr(&self) -> SocketAddr {
-        self.0.lock().unwrap().local_addr()
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.map_lock(|controller| controller.local_addr())
     }
 
     // Send synchronously, usc saves a small amount of data packets,and USC sends internal asynchronous tasks
     pub fn sync_send(&self, packet: Vec<u8>, hdr: &PacketHeader) -> io::Result<()> {
-        let mut guard = self.0.lock().unwrap();
-        if guard.bufs.len() >= BUFFER_CAPACITY {
-            return Err(io::Error::new(io::ErrorKind::WouldBlock, "buffer full"));
-        }
-        guard.bufs.push_back((packet, *hdr));
-        if guard.bufs.len() == 1 {
-            tokio::spawn({
-                let usc = self.clone();
-                async move {
-                    let sync_guard = SyncGuard(usc);
-                    while (sync_guard.clone().await).is_ok() {}
-                }
-            });
-        }
-        Ok(())
+        self.map_lock(|controller| {
+            if controller.bufs.len() >= BUFFER_CAPACITY {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, "buffer full"));
+            }
+            controller.bufs.push_back((packet, *hdr));
+            if controller.bufs.len() == 1 {
+                let arc_usc = self.clone();
+                tokio::spawn(SyncSend(arc_usc));
+            }
+
+            Ok(())
+        })?
     }
 
     pub fn send<'a>(&'a self, iovecs: &'a [IoSlice<'a>], header: PacketHeader) -> Send<'a> {
@@ -223,27 +255,34 @@ impl ArcUsc {
     }
 }
 
-#[derive(Clone)]
-struct SyncGuard(ArcUsc);
+impl Drop for ArcUsc {
+    fn drop(&mut self) {
+        // current usc + usc in task
+        if Arc::strong_count(&self.0) == 2 {
+            let mut guard = self.0.lock().unwrap();
+            if guard.is_ok() {
+                *guard = Err(io::Error::new(io::ErrorKind::Other, "usc shutdown"));
+            }
+        }
+    }
+}
 
-impl Future for SyncGuard {
-    type Output = io::Result<usize>;
+#[derive(Clone)]
+struct SyncSend(ArcUsc);
+
+impl Future for SyncSend {
+    type Output = io::Result<()>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut usc = self.0 .0.lock().unwrap();
-        if let Some((pkt, hdr)) = usc.bufs.pop_front() {
-            ready!(usc.io.poll_send_ready(cx))?;
-            let ret = usc.io.try_io(Interest::WRITABLE, || {
-                usc.sendmsg(&[IoSlice::new(&pkt)], &hdr)
-            })?;
-
-            Poll::Ready(Ok(ret))
-        } else {
-            Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "buffer empty",
-            )))
-        }
+        let mut guard = self.0 .0.lock().unwrap();
+        let controller = guard
+            .as_mut()
+            .map_err(|e| io::Error::new(e.kind(), e.to_string()))?;
+        let Some((packet, header)) = controller.bufs.pop_front() else {
+            return Poll::Ready(Ok(()));
+        };
+        ready!(controller.poll_send(&[IoSlice::new(&packet)], &header, cx)?);
+        Poll::Ready(Ok(()))
     }
 }
 

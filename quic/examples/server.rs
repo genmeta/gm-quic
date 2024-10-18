@@ -44,7 +44,7 @@ async fn run(options: Opt) -> Result<(), Box<dyn std::error::Error>> {
         .with_supported_versions([0x00000001u32])
         .without_cert_verifier()
         .with_single_cert(options.cert, options.key)
-        .listen();
+        .listen()?;
 
     while let Ok((_conn, addr)) = server.accept().await {
         log::trace!("New connection from {}", addr);
