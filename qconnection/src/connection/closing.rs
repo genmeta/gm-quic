@@ -15,10 +15,9 @@ use qbase::{
     error::Error,
     packet::{long, DataHeader, DataPacket},
 };
-use qudp::ArcUsc;
 
 use super::scope::{data::ClosingOneRttScope, handshake::ClosingHandshakeScope, RecvPacket};
-use crate::path::pathway::Pathway;
+use crate::{path::pathway::Pathway, usc::ArcUSC};
 
 #[derive(Clone)]
 pub struct ClosingConnection {
@@ -51,7 +50,7 @@ impl ClosingConnection {
     }
 
     // 记录收到的包数量，和收包时间，判断是否需要重发CCF；
-    pub fn recv_packet_via_pathway(&mut self, packet: DataPacket, _pathway: Pathway, _usc: ArcUsc) {
+    pub fn recv_packet_via_pathway(&mut self, packet: DataPacket, _pathway: Pathway, _usc: ArcUSC) {
         self.rcvd_packets.fetch_add(1, Ordering::Release);
         // TODO: 数值从配置中读取, 还是直接固定值?
         let mut last_send_ccf = self.last_send_ccf.lock().unwrap();

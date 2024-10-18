@@ -1,7 +1,7 @@
 use std::io::IoSlice;
 
 use clap::{command, Parser};
-use qudp::{ArcUsc, PacketHeader};
+use qudp::{PacketHeader, UdpSocketController};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -30,11 +30,11 @@ async fn main() {
 
     let args = Args::parse();
     let addr = args.src.parse().unwrap();
-    let socket = ArcUsc::new(addr).expect("failed to create socket");
+    let socket = UdpSocketController::new(addr).expect("failed to create socket");
     let dst = args.dst.parse().unwrap();
 
     let send_hdr = PacketHeader {
-        src: socket.local_addr(),
+        src: socket.local_addr().expect("failed to get local addr"),
         dst,
         ttl: 64,
         ecn: Some(1),

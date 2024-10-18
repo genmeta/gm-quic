@@ -10,7 +10,6 @@ use qbase::{
 };
 use qcongestion::{ArcCC, CongestionAlgorithm, CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
-use qudp::ArcUsc;
 use tokio::time::timeout;
 
 use super::{
@@ -18,17 +17,20 @@ use super::{
     read::ReadIntoDatagrams,
     state::ArcPathState,
     util::{RecvBuffer, SendBuffer},
-    Pathway, ViaPathWayExt,
+    Pathway,
 };
-use crate::connection::transmit::{
-    data::DataSpaceReader, handshake::HandshakeSpaceReader, initial::InitialSpaceReader,
+use crate::{
+    connection::transmit::{
+        data::DataSpaceReader, handshake::HandshakeSpaceReader, initial::InitialSpaceReader,
+    },
+    usc::ArcUSC,
 };
 
 #[derive(Clone)]
 pub struct RawPath {
     pub anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
     pub cc: ArcCC,
-    pub(super) usc: ArcUsc,
+    pub(super) usc: ArcUSC,
     pub(super) dcid: ArcCidCell<ArcReliableFrameDeque>,
     pub(super) scid: ConnectionId,
     pub(super) spin: Arc<AtomicBool>,
@@ -40,7 +42,7 @@ pub struct RawPath {
 
 impl RawPath {
     pub fn new(
-        usc: ArcUsc,
+        usc: ArcUSC,
         scid: ConnectionId,
         dcid: ArcCidCell<ArcReliableFrameDeque>,
         loss: [Box<dyn MayLoss>; 3],
@@ -106,7 +108,7 @@ impl RawPath {
     where
         G: Fn(&RawPath) -> (InitialSpaceReader, HandshakeSpaceReader, DataSpaceReader),
     {
-        let mut usc = self.usc.clone();
+        let usc = self.usc.clone();
         let state = self.state.clone();
         let space_readers = gen_readers(self);
         let read_into_datagram = ReadIntoDatagrams {
