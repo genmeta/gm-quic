@@ -1,5 +1,7 @@
 use std::{
+    collections::HashMap,
     io::{self},
+    iter::FusedIterator,
     net::SocketAddr,
     path::Path,
     sync::{Arc, LazyLock, RwLock},
@@ -53,14 +55,14 @@ impl ResolvesServerCert for VirtualHosts {
 /// 要想有服务端的功能，得至少有一个usc可以收包。
 /// 如果不创建QuicServer，那意味着不接收新连接
 struct RawQuicServer {
-    addresses: Vec<SocketAddr>,
+    uscs: HashMap<SocketAddr, ArcUsc>,
     listener: QuicListner,
     _restrict: bool,
     _supported_versions: Vec<u32>,
     _load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     _parameters: DashMap<String, Parameters>,
     tls_config: Arc<TlsServerConfig>,
-    token_provider: Option<Arc<dyn TokenProvider + Send + Sync + 'static>>,
+    token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
 #[derive(Clone)]
@@ -90,8 +92,8 @@ impl QuicServer {
         }
     }
 
-    pub fn addresses(&self) -> &[SocketAddr] {
-        &self.0.addresses
+    pub fn addresses(&self) -> impl ExactSizeIterator<Item = &SocketAddr> + FusedIterator {
+        self.0.uscs.keys()
     }
 
     /// 监听新连接的到来
@@ -182,7 +184,7 @@ pub struct QuicServerBuilder<T> {
     load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     parameters: DashMap<String, Parameters>,
     tls_config: T,
-    token_provider: Option<Arc<dyn TokenProvider + Send + Sync + 'static>>,
+    token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
 pub struct QuicServerSniBuilder<T> {
@@ -193,7 +195,7 @@ pub struct QuicServerSniBuilder<T> {
     hosts: Arc<DashMap<String, Host>>,
     parameters: DashMap<String, Parameters>,
     tls_config: T,
-    token_provider: Option<Arc<dyn TokenProvider + Send + Sync + 'static>>,
+    token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
 impl<T> QuicServerBuilder<T> {
@@ -385,14 +387,23 @@ impl QuicServerBuilder<TlsServerConfig> {
         self
     }
 
-    pub fn listen(self) -> QuicServer {
-        for addr in &self.addresses {
-            if let Err(e) = get_or_create_usc(addr) {
-                log::error!("faild to listen on {addr}: {e}");
-            }
+    pub fn listen(self) -> io::Result<QuicServer> {
+        let uscs = self
+            .addresses
+            .into_iter()
+            .filter_map(|address| {
+                let arc_usc = get_or_create_usc(&address).map_err(|e| log::error!("{e}"));
+                Some((address, arc_usc.ok()?))
+            })
+            .collect::<HashMap<_, _>>();
+        if uscs.is_empty() {
+            let error = "all addresses are not available";
+            let error = io::Error::new(io::ErrorKind::AddrNotAvailable, error);
+            return Err(error);
         }
+
         let quic_server = QuicServer(Arc::new(RawQuicServer {
-            addresses: self.addresses,
+            uscs,
             listener: Default::default(),
             _restrict: self.restrict,
             _supported_versions: self.supported_versions,
@@ -402,7 +413,7 @@ impl QuicServerBuilder<TlsServerConfig> {
             token_provider: self.token_provider,
         }));
         *SERVER.write().unwrap() = Some(quic_server.clone());
-        quic_server
+        Ok(quic_server)
     }
 }
 
@@ -412,14 +423,22 @@ impl QuicServerSniBuilder<TlsServerConfig> {
         self
     }
 
-    pub fn listen(self) -> QuicServer {
-        for addr in &self.addresses {
-            if let Err(e) = get_or_create_usc(addr) {
-                log::error!("faild to listen on {addr}: {e}");
-            }
+    pub fn listen(self) -> io::Result<QuicServer> {
+        let uscs = self
+            .addresses
+            .into_iter()
+            .filter_map(|address| {
+                let arc_usc = get_or_create_usc(&address).map_err(|e| log::error!("{e}"));
+                Some((address, arc_usc.ok()?))
+            })
+            .collect::<HashMap<_, _>>();
+        if uscs.is_empty() {
+            let error = "all addresses are not available";
+            let error = io::Error::new(io::ErrorKind::AddrNotAvailable, error);
+            return Err(error);
         }
         let quic_server = QuicServer(Arc::new(RawQuicServer {
-            addresses: self.addresses,
+            uscs,
             listener: Default::default(),
             _restrict: self.restrict,
             _supported_versions: self.supported_versions,
@@ -429,6 +448,6 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             token_provider: self.token_provider,
         }));
         *SERVER.write().unwrap() = Some(quic_server.clone());
-        quic_server
+        Ok(quic_server)
     }
 }
