@@ -1,10 +1,9 @@
 use std::{
-    collections::VecDeque,
     future::Future,
     io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::atomic::AtomicU16,
     task::{ready, Context, Poll},
 };
 
@@ -32,7 +31,6 @@ cfg_if::cfg_if! {
 }
 
 mod cmsghdr;
-const BUFFER_CAPACITY: usize = 5;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PacketHeader {
@@ -60,59 +58,48 @@ impl Default for PacketHeader {
     }
 }
 
-// [`OffloadStatus`] is an enumeration that represents the status of offload features
-#[derive(PartialEq, Eq, Debug, Default)]
-#[allow(dead_code)]
-enum OffloadStatus {
-    #[default]
-    Unknown,
-    Unsupported,
-    Supported(u16),
-}
-
 #[derive(Debug)]
 #[allow(dead_code)]
-struct UdpSocketController {
+pub struct UdpSocketController {
     io: tokio::net::UdpSocket,
-    ttl: u8,
-    gso_size: OffloadStatus,
-    gro_size: OffloadStatus,
-    bufs: VecDeque<(Vec<u8>, PacketHeader)>,
+    // TOOD: unread?
+    gso_size: AtomicU16,
+    gro_size: AtomicU16,
 }
 
 impl UdpSocketController {
-    fn new(addr: SocketAddr) -> io::Result<Self> {
+    pub fn new(addr: SocketAddr) -> io::Result<Self> {
         let domain = if addr.is_ipv4() {
             Domain::IPV4
         } else {
             Domain::IPV6
         };
 
-        let socket = Socket::new(domain, Type::DGRAM, None).expect("Failed to create socket");
+        let socket = Socket::new(domain, Type::DGRAM, None)?;
         if let Err(e) = socket.bind(&addr.into()) {
             log::error!("Failed to bind socket: {}", e);
             return Err(io::Error::new(io::ErrorKind::AddrInUse, e));
         }
 
-        let io =
-            tokio::net::UdpSocket::from_std(socket.into()).expect("Failed to create tokio socket");
+        let io = tokio::net::UdpSocket::from_std(socket.into())?;
 
-        let mut socket = Self {
-            ttl: DEFAULT_TTL as u8,
+        // TODO: 会报错
+        // io.set_ttl(DEFAULT_TTL as u32)?;
+
+        let socket = Self {
             io,
-            gso_size: OffloadStatus::Unknown,
-            gro_size: OffloadStatus::Unknown,
-            bufs: VecDeque::with_capacity(BUFFER_CAPACITY),
+            gso_size: AtomicU16::new(1),
+            gro_size: AtomicU16::new(1),
         };
-        socket.config().expect("Failed to config socket");
+        socket.config()?;
         Ok(socket)
     }
 
-    fn local_addr(&self) -> SocketAddr {
-        self.io.local_addr().expect("Failed to get local address")
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.io.local_addr()
     }
 
-    fn poll_send(
+    pub fn poll_send(
         &self,
         bufs: &[IoSlice<'_>],
         hdr: &PacketHeader,
@@ -141,102 +128,19 @@ impl UdpSocketController {
 }
 
 trait Io {
-    fn config(&mut self) -> io::Result<()>;
+    fn config(&self) -> io::Result<()>;
 
     fn sendmsg(&self, bufs: &[IoSlice<'_>], hdr: &PacketHeader) -> io::Result<usize>;
 
     fn recvmsg(&self, bufs: &mut [IoSliceMut<'_>], hdr: &mut [PacketHeader]) -> io::Result<usize>;
 
     fn setsockopt(&self, level: libc::c_int, name: libc::c_int, value: libc::c_int);
-
-    fn set_ttl(&mut self, ttl: u8) -> io::Result<()>;
 }
 
-#[derive(Debug, Clone)]
-pub struct ArcUsc(Arc<Mutex<Result<UdpSocketController, io::Error>>>);
-
-impl ArcUsc {
-    pub fn new(addr: SocketAddr) -> io::Result<Self> {
-        UdpSocketController::new(addr).map(|io| Self(Arc::new(Mutex::new(Ok(io)))))
-    }
-
-    pub fn close(&self, error: io::Error) {
-        let mut guard = self.0.lock().unwrap();
-        *guard = Err(error);
-    }
-
-    pub fn poll_send(
-        &self,
-        bufs: &[IoSlice<'_>],
-        hdr: &PacketHeader,
-        cx: &mut Context,
-    ) -> Poll<io::Result<usize>> {
-        let mut guard = self.0.lock().unwrap();
-        let controller = guard
-            .as_mut()
-            .map_err(|e| io::Error::new(e.kind(), e.to_string()))?;
-        controller.poll_send(bufs, hdr, cx).map_err(|e| {
-            let e_clone = io::Error::new(e.kind(), e.to_string());
-            *guard = Err(e);
-            e_clone
-        })
-    }
-
-    pub fn poll_recv(
-        &self,
-        bufs: &mut [IoSliceMut<'_>],
-        hdrs: &mut [PacketHeader],
-        cx: &mut Context,
-    ) -> Poll<io::Result<usize>> {
-        let mut guard = self.0.lock().unwrap();
-        let controller = guard
-            .as_mut()
-            .map_err(|e| io::Error::new(e.kind(), e.to_string()))?;
-        controller.poll_recv(bufs, hdrs, cx).map_err(|e| {
-            let e_clone = io::Error::new(e.kind(), e.to_string());
-            *guard = Err(e);
-            e_clone
-        })
-    }
-
-    fn map_lock<T>(&self, f: impl FnOnce(&mut UdpSocketController) -> T) -> io::Result<T> {
-        let mut guard = self.0.lock().unwrap();
-        guard
-            .as_mut()
-            .map_err(|e| io::Error::new(e.kind(), e.to_string()))
-            .map(f)
-    }
-    pub fn ttl(&self) -> io::Result<u8> {
-        self.map_lock(|controller| controller.ttl)
-    }
-
-    pub fn set_ttl(&self, ttl: u8) -> io::Result<()> {
-        self.map_lock(|controller| controller.set_ttl(ttl))?
-    }
-
-    pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.map_lock(|controller| controller.local_addr())
-    }
-
-    // Send synchronously, usc saves a small amount of data packets,and USC sends internal asynchronous tasks
-    pub fn sync_send(&self, packet: Vec<u8>, hdr: &PacketHeader) -> io::Result<()> {
-        self.map_lock(|controller| {
-            if controller.bufs.len() >= BUFFER_CAPACITY {
-                return Err(io::Error::new(io::ErrorKind::WouldBlock, "buffer full"));
-            }
-            controller.bufs.push_back((packet, *hdr));
-            if controller.bufs.len() == 1 {
-                let arc_usc = self.clone();
-                tokio::spawn(SyncSend(arc_usc));
-            }
-
-            Ok(())
-        })?
-    }
-
+impl UdpSocketController {
     pub fn send<'a>(&'a self, iovecs: &'a [IoSlice<'a>], header: PacketHeader) -> Send<'a> {
         Send {
-            usc: self.clone(),
+            usc: self,
             iovecs,
             header,
         }
@@ -244,7 +148,7 @@ impl ArcUsc {
 
     pub fn receiver(&self) -> Receiver {
         Receiver {
-            usc: self.clone(),
+            usc: self,
             iovecs: (0..BATCH_SIZE)
                 .map(|_| [0u8; 1500].to_vec())
                 .collect::<Vec<_>>(),
@@ -255,39 +159,8 @@ impl ArcUsc {
     }
 }
 
-impl Drop for ArcUsc {
-    fn drop(&mut self) {
-        // current usc + usc in task
-        if Arc::strong_count(&self.0) == 2 {
-            let mut guard = self.0.lock().unwrap();
-            if guard.is_ok() {
-                *guard = Err(io::Error::new(io::ErrorKind::Other, "usc shutdown"));
-            }
-        }
-    }
-}
-
-#[derive(Clone)]
-struct SyncSend(ArcUsc);
-
-impl Future for SyncSend {
-    type Output = io::Result<()>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut guard = self.0 .0.lock().unwrap();
-        let controller = guard
-            .as_mut()
-            .map_err(|e| io::Error::new(e.kind(), e.to_string()))?;
-        let Some((packet, header)) = controller.bufs.pop_front() else {
-            return Poll::Ready(Ok(()));
-        };
-        ready!(controller.poll_send(&[IoSlice::new(&packet)], &header, cx)?);
-        Poll::Ready(Ok(()))
-    }
-}
-
 pub struct Send<'a> {
-    pub usc: ArcUsc,
+    pub usc: &'a UdpSocketController,
     pub iovecs: &'a [IoSlice<'a>],
     pub header: PacketHeader,
 }
@@ -301,13 +174,13 @@ impl Future for Send<'_> {
     }
 }
 
-pub struct Receiver {
-    pub usc: ArcUsc,
+pub struct Receiver<'u> {
+    pub usc: &'u UdpSocketController,
     pub iovecs: Vec<Vec<u8>>,
     pub headers: Vec<PacketHeader>,
 }
 
-impl Receiver {
+impl Receiver<'_> {
     #[inline]
     pub fn poll_recv(&mut self, cx: &mut Context) -> Poll<io::Result<usize>> {
         let mut bufs = self

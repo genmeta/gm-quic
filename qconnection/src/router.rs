@@ -7,9 +7,8 @@ use qbase::{
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     packet::{header::GetDcid, long, DataHeader, DataPacket},
 };
-use qudp::ArcUsc;
 
-use crate::{connection::PacketEntry, path::pathway::Pathway};
+use crate::{connection::PacketEntry, path::pathway::Pathway, usc::ArcUSC};
 
 /// Global Router for managing connections.
 static ROUTER: LazyLock<DashMap<ConnectionId, [PacketEntry; 4]>> = LazyLock::new(DashMap::new);
@@ -21,7 +20,7 @@ impl Router {
     pub fn try_to_route_packet_from(
         packet: DataPacket,
         pathway: Pathway,
-        usc: &ArcUsc,
+        usc: &ArcUSC,
     ) -> Result<(), DataPacket> {
         let dcid = packet.header.get_dcid();
         let Some(entries) = ROUTER.get(dcid) else {

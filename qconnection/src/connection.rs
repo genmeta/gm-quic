@@ -22,7 +22,6 @@ use qcongestion::CongestionControl;
 use qrecovery::{
     recv::Reader, reliable::ArcReliableFrameDeque, send::Writer, space::Epoch, streams,
 };
-use qudp::ArcUsc;
 use qunreliable::{DatagramReader, DatagramWriter};
 use raw::RawConnection;
 use tokio::task::JoinHandle;
@@ -32,6 +31,7 @@ use crate::{
     path::pathway::Pathway,
     router::{Router, RouterRegistry},
     tls::ArcTlsSession,
+    usc::ArcUSC,
 };
 
 pub mod closing;
@@ -41,8 +41,8 @@ pub mod raw;
 pub mod scope;
 pub mod transmit;
 
-pub type PacketEntry = mpsc::UnboundedSender<(DataPacket, Pathway, ArcUsc)>;
-pub type RcvdPackets = mpsc::UnboundedReceiver<(DataPacket, Pathway, ArcUsc)>;
+pub type PacketEntry = mpsc::UnboundedSender<(DataPacket, Pathway, ArcUSC)>;
+pub type RcvdPackets = mpsc::UnboundedReceiver<(DataPacket, Pathway, ArcUSC)>;
 
 pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
 pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
@@ -200,7 +200,7 @@ impl ArcConnection {
         raw_conn.into()
     }
 
-    pub fn add_initial_path(&self, pathway: Pathway, usc: ArcUsc) {
+    pub fn add_initial_path(&self, pathway: Pathway, usc: ArcUSC) {
         let guard = self.0.lock().unwrap();
         if let Raw(ref conn) = *guard {
             _ = conn.pathes.get_or_create(pathway, usc);

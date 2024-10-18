@@ -3,21 +3,21 @@ use std::{cmp, io::IoSlice, mem, net::SocketAddr, os::fd::AsRawFd};
 use socket2::SockAddr;
 
 use crate::{
-    cmsghdr::CmsgHdr, io, msg::Message, Io, OffloadStatus, PacketHeader, UdpSocketController,
-    BATCH_SIZE, DEFAULT_TTL,
+    cmsghdr::CmsgHdr, io, msg::Message, Io, PacketHeader, UdpSocketController, BATCH_SIZE,
+    DEFAULT_TTL,
 };
 
 const OPTION_ON: libc::c_int = 1;
 const OPTION_OFF: libc::c_int = 0;
 
 pub trait Gso: Io {
-    fn max_gso_segments(&self) -> usize;
+    fn max_gso_segments(&self) -> u16;
 
     fn set_segment_size(encoder: &mut CmsgHdr<libc::msghdr>, segment_size: u16);
 }
 
 pub trait Gro: Io {
-    fn max_gro_segments(&self) -> usize;
+    fn max_gro_segments(&self) -> u16;
 }
 
 macro_rules! handle_io_error {
@@ -40,7 +40,7 @@ macro_rules! handle_io_error {
 }
 
 impl Io for UdpSocketController {
-    fn config(&mut self) -> io::Result<()> {
+    fn config(&self) -> io::Result<()> {
         let io = socket2::SockRef::from(&self.io);
         io.set_nonblocking(true)?;
 
@@ -87,15 +87,14 @@ impl Io for UdpSocketController {
             self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_UNICAST_HOPS, DEFAULT_TTL);
         }
 
-        self.gso_size = match self.max_gso_segments() {
-            1 => OffloadStatus::Unsupported,
-            n => OffloadStatus::Supported(n as u16),
-        };
-
-        self.gro_size = match self.max_gro_segments() {
-            1 => OffloadStatus::Unsupported,
-            n => OffloadStatus::Supported(n as u16),
-        };
+        self.gso_size.store(
+            self.max_gso_segments(),
+            std::sync::atomic::Ordering::Release,
+        );
+        self.gro_size.store(
+            self.max_gro_segments(),
+            std::sync::atomic::Ordering::Release,
+        );
 
         Ok(())
     }
@@ -109,13 +108,13 @@ impl Io for UdpSocketController {
 
         let gso_size = if send_hdr.gso {
             let max_gso = self.max_gso_segments();
-            let max_payloads = (u16::MAX / send_hdr.seg_size) as usize;
+            let max_payloads = u16::MAX / send_hdr.seg_size;
             cmp::min(max_gso, max_payloads)
         } else {
             1
         };
 
-        let dst: SockAddr = if self.local_addr().is_ipv6() && !io.only_v6()? {
+        let dst: SockAddr = if self.local_addr()?.is_ipv6() && !io.only_v6()? {
             match send_hdr.dst.ip() {
                 std::net::IpAddr::V4(ip) => SocketAddr::new(
                     std::net::IpAddr::V6(ip.to_ipv6_mapped()),
@@ -141,7 +140,7 @@ impl Io for UdpSocketController {
         recv_hdrs: &mut [PacketHeader],
     ) -> io::Result<usize> {
         let mut msg = Message::default();
-        let max_msg_count = bufs.len().min(BATCH_SIZE);
+        let max_msg_count = (bufs.len()).min(BATCH_SIZE);
 
         msg.prepare_recv(bufs, max_msg_count);
         let ret: io::Result<Rcvd>;
@@ -173,22 +172,8 @@ impl Io for UdpSocketController {
             }
         };
 
-        msg.decode_recv(recv_hdrs, msg_count, self.local_addr().port());
+        msg.decode_recv(recv_hdrs, msg_count, self.local_addr()?.port());
         Ok(msg_count)
-    }
-
-    fn set_ttl(&mut self, ttl: u8) -> io::Result<()> {
-        if self.ttl == ttl {
-            return Ok(());
-        }
-
-        if self.local_addr().is_ipv4() {
-            self.setsockopt(libc::IPPROTO_IP, libc::IP_TTL, ttl as i32);
-        } else {
-            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_UNICAST_HOPS, ttl as i32);
-        }
-        self.ttl = ttl;
-        Ok(())
     }
 }
 
@@ -198,20 +183,20 @@ pub(super) fn sendmmsg(
     bufs: &[IoSlice<'_>],
     send_hdr: &PacketHeader,
     dst: &SockAddr,
-    gso_size: usize,
+    gso_size: u16,
 ) -> io::Result<usize> {
     use std::iter;
-    let mut iovecs: Vec<Vec<IoSlice>> = iter::repeat_with(|| Vec::with_capacity(gso_size))
+    let mut iovecs: Vec<Vec<IoSlice>> = iter::repeat_with(|| Vec::with_capacity(gso_size as usize))
         .take(BATCH_SIZE)
         .collect();
 
     let mut message = Message::default();
-    message.prepare_sent(send_hdr, dst, gso_size as u16, BATCH_SIZE);
+    message.prepare_sent(send_hdr, dst, gso_size, BATCH_SIZE);
 
     let mut sent_packets = 0;
-    for batch in bufs.chunks(gso_size * BATCH_SIZE) {
+    for batch in bufs.chunks(gso_size as usize * BATCH_SIZE) {
         let mut mmsg_batch_size: usize = 0;
-        for (i, gso_batch) in batch.chunks(gso_size).enumerate() {
+        for (i, gso_batch) in batch.chunks(gso_size as usize).enumerate() {
             mmsg_batch_size += 1;
             let hdr = &mut message.hdrs[i].msg_hdr;
             let iovec = &mut iovecs[i];
@@ -260,14 +245,14 @@ pub(super) fn sendmsg(
     bufs: &[IoSlice<'_>],
     send_hdr: &PacketHeader,
     dst: &SockAddr,
-    gso_size: usize,
+    gso_size: u16,
 ) -> io::Result<usize> {
     let mut msg = Message::default();
-    msg.prepare_sent(send_hdr, dst, gso_size as u16, 1);
+    msg.prepare_sent(send_hdr, dst, gso_size, 1);
 
     let mut sent_packets = 0;
-    for batch in bufs.chunks(gso_size) {
-        let mut iovec: Vec<IoSlice> = Vec::with_capacity(gso_size);
+    for batch in bufs.chunks(gso_size as usize) {
+        let mut iovec: Vec<IoSlice> = Vec::with_capacity(gso_size as usize);
         iovec.extend(batch.iter().map(|buf| IoSlice::new(buf)));
 
         let hdr = &mut msg.hdrs[0];
@@ -349,25 +334,29 @@ fn to_result(code: isize) -> io::Result<usize> {
 }
 
 #[cfg(target_os = "linux")]
+static GSO_GRO_SIZE: std::sync::LazyLock<(u16, u16)> = std::sync::LazyLock::new(|| {
+    const GSO_SIZE: libc::c_int = 1500;
+    let socket = match std::net::UdpSocket::bind("[::]:0")
+        .or_else(|_| std::net::UdpSocket::bind("127.0.0.1:0"))
+    {
+        Ok(socket) => socket,
+        Err(_) => return (1, 1),
+    };
+    let gso_size = match setsockopt(&socket, libc::SOL_UDP, libc::UDP_SEGMENT, GSO_SIZE) {
+        Ok(()) => 64,
+        Err(_) => 1,
+    };
+    let gro_size = match setsockopt(&socket, libc::SOL_UDP, libc::UDP_GRO, OPTION_ON) {
+        Ok(()) => 64,
+        Err(_) => 1,
+    };
+    (gso_size, gro_size)
+});
+
+#[cfg(target_os = "linux")]
 impl Gso for UdpSocketController {
-    fn max_gso_segments(&self) -> usize {
-        match self.gso_size {
-            OffloadStatus::Unsupported => 1,
-            OffloadStatus::Supported(n) => n as usize,
-            OffloadStatus::Unknown => {
-                const GSO_SIZE: libc::c_int = 1500;
-                let socket = match std::net::UdpSocket::bind("[::]:0")
-                    .or_else(|_| std::net::UdpSocket::bind("127.0.0.1:0"))
-                {
-                    Ok(socket) => socket,
-                    Err(_) => return 1,
-                };
-                match setsockopt(&socket, libc::SOL_UDP, libc::UDP_SEGMENT, GSO_SIZE) {
-                    Ok(()) => 64,
-                    Err(_) => 1,
-                }
-            }
-        }
+    fn max_gso_segments(&self) -> u16 {
+        GSO_GRO_SIZE.0
     }
 
     fn set_segment_size(cmsg: &mut CmsgHdr<libc::msghdr>, segment_size: u16) {
@@ -377,30 +366,14 @@ impl Gso for UdpSocketController {
 
 #[cfg(target_os = "linux")]
 impl Gro for UdpSocketController {
-    fn max_gro_segments(&self) -> usize {
-        match self.gro_size {
-            OffloadStatus::Unsupported => 1,
-            OffloadStatus::Supported(n) => n as usize,
-            OffloadStatus::Unknown => {
-                let socket = match std::net::UdpSocket::bind("[::]:0")
-                    .or_else(|_| std::net::UdpSocket::bind("127.0.0.1:0"))
-                {
-                    Ok(socket) => socket,
-                    Err(_) => return 1,
-                };
-
-                match setsockopt(&socket, libc::SOL_UDP, libc::UDP_GRO, OPTION_ON) {
-                    Ok(()) => 64,
-                    Err(_) => 1,
-                }
-            }
-        }
+    fn max_gro_segments(&self) -> u16 {
+        GSO_GRO_SIZE.1
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 impl Gso for UdpSocketController {
-    fn max_gso_segments(&self) -> usize {
+    fn max_gso_segments(&self) -> u16 {
         1
     }
 
@@ -411,7 +384,7 @@ impl Gso for UdpSocketController {
 
 #[cfg(not(target_os = "linux"))]
 impl Gro for UdpSocketController {
-    fn max_gro_segments(&self) -> usize {
+    fn max_gro_segments(&self) -> u16 {
         1
     }
 }

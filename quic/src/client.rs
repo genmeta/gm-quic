@@ -33,7 +33,7 @@ pub struct QuicClient {
 }
 
 impl QuicClient {
-    /// 无论向哪里发起连接，都使用同一个本地的Usc，包括一对v4和v6的，这在P2P场景下很有用
+    /// 无论向哪里发起连接，都使用同一个本地的USC，包括一对v4和v6的，这在P2P场景下很有用
     pub fn solo() -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         QuicClient::bind([
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
@@ -141,7 +141,7 @@ impl QuicClient {
             token_registry,
         );
         let conn = QuicConnection {
-            key: ConnKey::Client(scid),
+            _key: ConnKey::Client(scid),
             inner: inner.clone(),
         };
 

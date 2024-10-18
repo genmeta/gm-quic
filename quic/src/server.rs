@@ -4,7 +4,7 @@ use std::{
     iter::FusedIterator,
     net::SocketAddr,
     path::Path,
-    sync::{Arc, LazyLock, RwLock},
+    sync::{Arc, LazyLock, RwLock, Weak},
 };
 
 use dashmap::DashMap;
@@ -18,8 +18,7 @@ use qbase::{
     token::{ArcTokenRegistry, TokenProvider},
     util::ArcAsyncDeque,
 };
-use qconnection::{connection::ArcConnection, path::Pathway, router::Router};
-use qudp::ArcUsc;
+use qconnection::{connection::ArcConnection, path::Pathway, router::Router, usc::ArcUSC};
 use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer},
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
@@ -32,7 +31,7 @@ type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
 type QuicListner = ArcAsyncDeque<(QuicConnection, SocketAddr)>;
 
 /// 理应全局只有一个server
-static SERVER: LazyLock<RwLock<Option<QuicServer>>> = LazyLock::new(RwLock::default);
+static SERVER: LazyLock<RwLock<Weak<RawQuicServer>>> = LazyLock::new(RwLock::default);
 
 #[derive(Debug, Default)]
 pub struct VirtualHosts(Arc<DashMap<String, Host>>);
@@ -55,7 +54,7 @@ impl ResolvesServerCert for VirtualHosts {
 /// 要想有服务端的功能，得至少有一个usc可以收包。
 /// 如果不创建QuicServer，那意味着不接收新连接
 struct RawQuicServer {
-    uscs: HashMap<SocketAddr, ArcUsc>,
+    uscs: HashMap<SocketAddr, ArcUSC>,
     listener: QuicListner,
     _restrict: bool,
     _supported_versions: Vec<u32>,
@@ -104,9 +103,9 @@ impl QuicServer {
         self.0.listener.pop().await.ok_or_else(listening_stopped)
     }
 
-    pub(crate) fn try_to_accept_conn_from(mut packet: DataPacket, pathway: Pathway, usc: &ArcUsc) {
+    pub(crate) fn try_to_accept_conn_from(mut packet: DataPacket, pathway: Pathway, usc: &ArcUSC) {
         let server = SERVER.read().unwrap();
-        let Some(server) = server.as_ref().map(|s| &s.0) else {
+        let Some(server) = server.upgrade() else {
             return;
         };
         let initial_scid =
@@ -143,13 +142,14 @@ impl QuicServer {
         );
         inner.add_initial_path(pathway, usc.clone());
         let conn = QuicConnection {
-            key: ConnKey::Server(initial_scid),
+            _key: ConnKey::Server(initial_scid),
             inner,
         };
         log::info!("incoming connection established");
         server
             .listener
             .push_back((conn.clone(), pathway.remote_addr()));
+        CONNECTIONS.insert(ConnKey::Server(initial_scid), conn);
         _ = Router::try_to_route_packet_from(packet, pathway, usc);
     }
 }
@@ -410,7 +410,7 @@ impl QuicServerBuilder<TlsServerConfig> {
             tls_config: Arc::new(self.tls_config),
             token_provider: self.token_provider,
         }));
-        *SERVER.write().unwrap() = Some(quic_server.clone());
+        *SERVER.write().unwrap() = Arc::downgrade(&quic_server.0);
         Ok(quic_server)
     }
 }
@@ -445,7 +445,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             tls_config: Arc::new(self.tls_config),
             token_provider: self.token_provider,
         }));
-        *SERVER.write().unwrap() = Some(quic_server.clone());
+        *SERVER.write().unwrap() = Arc::downgrade(&quic_server.0);
         Ok(quic_server)
     }
 }
