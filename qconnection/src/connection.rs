@@ -27,7 +27,7 @@ use raw::RawConnection;
 use tokio::task::JoinHandle;
 
 use crate::{
-    connection::ConnState::{Closed, Closing, Draining, Raw},
+    connection::ConnState::{Closed, Closing, Draining, Invalid, Raw},
     path::pathway::Pathway,
     router::{Router, RouterRegistry},
     tls::ArcTlsSession,
@@ -55,7 +55,8 @@ enum ConnState {
     Raw(RawConnection),
     Closing(ClosingConnection),
     Draining(DrainingConnection),
-    Closed,
+    Closed(Error),
+    Invalid,
 }
 
 impl ConnState {
@@ -63,7 +64,7 @@ impl ConnState {
         &mut self,
         error: Error,
     ) -> Option<([JoinHandle<RcvdPackets>; 4], Duration)> {
-        let conn = core::mem::replace(self, Closed);
+        let conn = core::mem::replace(self, Invalid);
         let Raw(raw_conn) = conn else {
             // has been closing/draining
             *self = conn;
@@ -105,7 +106,7 @@ impl ConnState {
     }
 
     fn enter_draining(&mut self, error: Error) -> Option<Duration> {
-        let conn = core::mem::replace(self, Closed);
+        let conn = core::mem::replace(self, Invalid);
         let Raw(raw_conn) = conn else {
             // has been closing/draining
             *self = conn;
@@ -132,7 +133,7 @@ impl ConnState {
     }
 
     fn no_vaiable_path(&mut self) {
-        let conn = core::mem::replace(self, Closed);
+        let conn = core::mem::replace(self, Invalid);
         // no need to reset the state to conn
         let Raw(raw_conn) = conn else { return };
         let error = Error::with_default_fty(ErrorKind::NoViablePath, "No viable path");
@@ -146,14 +147,16 @@ impl ConnState {
 
         let local_cids = &raw_conn.cid_registry.local;
         local_cids.active_cids().iter().for_each(Router::remove);
+        *self = Closed(error)
     }
 
     fn die(&mut self) {
-        let conn = core::mem::replace(self, Closed);
+        let conn = core::mem::replace(self, Invalid);
         let local_cids = match conn {
             Closing(conn) => conn.local_cids,
             Draining(conn) => conn.local_cids,
-            Raw(..) | Closed => unreachable!(),
+            Closed(..) => return,
+            Raw(..) | Invalid => unreachable!(),
         };
 
         for cid in local_cids {
@@ -255,7 +258,8 @@ impl ArcConnection {
                 Raw(raw) => raw,
                 Closing(closing) => return Err(closing.error.clone())?,
                 Draining(draining) => return Err(draining.error.clone())?,
-                Closed => unreachable!(),
+                Closed(error) => return Err(error.clone())?,
+                Invalid => unreachable!(),
             };
 
             (
@@ -281,7 +285,8 @@ impl ArcConnection {
                 Raw(raw) => raw,
                 Closing(closing) => return Err(closing.error.clone())?,
                 Draining(draining) => return Err(draining.error.clone())?,
-                Closed => unreachable!(),
+                Closed(error) => return Err(error.clone())?,
+                Invalid => unreachable!(),
             };
 
             (
@@ -307,7 +312,8 @@ impl ArcConnection {
                 Raw(raw) => raw,
                 Closing(closing) => return Err(closing.error.clone())?,
                 Draining(draining) => return Err(draining.error.clone())?,
-                Closed => unreachable!(),
+                Closed(error) => return Err(error.clone())?,
+                Invalid => unreachable!(),
             };
 
             (
@@ -333,7 +339,8 @@ impl ArcConnection {
                 Raw(raw) => raw,
                 Closing(closing) => return Err(closing.error.clone())?,
                 Draining(draining) => return Err(draining.error.clone())?,
-                Closed => unreachable!(),
+                Closed(error) => return Err(error.clone())?,
+                Invalid => unreachable!(),
             };
 
             (raw_conn.streams.clone(), raw_conn.error.clone())
@@ -353,7 +360,8 @@ impl ArcConnection {
             Raw(raw) => raw.datagrams.reader(),
             Closing(closing) => Err(closing.error.clone())?,
             Draining(draining) => Err(draining.error.clone())?,
-            Closed => unreachable!(),
+            Closed(error) => Err(error.clone())?,
+            Invalid => unreachable!(),
         }
     }
 
@@ -364,7 +372,8 @@ impl ArcConnection {
                 Raw(raw) => raw,
                 Closing(closing) => return Err(closing.error.clone())?,
                 Draining(draining) => return Err(draining.error.clone())?,
-                Closed => unreachable!(),
+                Closed(error) => return Err(error.clone())?,
+                Invalid => unreachable!(),
             };
 
             (raw_conn.params.remote.clone(), raw_conn.datagrams.clone())
