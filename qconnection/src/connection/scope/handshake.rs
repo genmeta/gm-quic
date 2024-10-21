@@ -1,16 +1,24 @@
 use std::sync::Arc;
 
+use bytes::BufMut;
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
-    frame::{AckFrame, Frame, FrameReader, ReceiveFrame},
+    cid::ConnectionId,
+    frame::{io::WriteFrame, AckFrame, ConnectionCloseFrame, Frame, FrameReader, ReceiveFrame},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
-        header::GetType,
+        encrypt::{encode_long_first_byte, encrypt_packet, protect_header},
+        header::{
+            long::io::{LongHeaderBuilder, WriteLongHeader},
+            EncodeHeader, GetType,
+        },
         keys::ArcKeys,
+        number::WritePacketNumber,
         DataPacket, PacketNumber,
     },
+    varint::{EncodeBytes, VarInt, WriteVarInt},
 };
-use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
+use qcongestion::{CongestionControl, MayLoss, RetirePktRecord, MSS};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     reliable::ArcRcvdPktRecords,
@@ -133,13 +141,14 @@ impl HandshakeScope {
                         Err(_e) => continue,
                     };
                     let body_offset = packet.offset + undecoded_pn.size();
-                    let pkt_len = decrypt_packet(
+                    let Ok(pkt_len) = decrypt_packet(
                         keys.remote.packet.as_ref(),
                         pn,
                         packet.bytes.as_mut(),
                         body_offset,
-                    )
-                    .unwrap();
+                    ) else {
+                        continue;
+                    };
 
                     let path = pathes.get_or_create(pathway, usc);
                     path.on_rcvd(packet.bytes.len());
@@ -187,7 +196,60 @@ pub struct ClosingHandshakeScope {
     keys: Arc<rustls::quic::Keys>,
     rcvd_pkt_records: ArcRcvdPktRecords,
     // 发包时用得着
-    _next_sending_pn: (u64, PacketNumber),
+    next_sending_pn: (u64, PacketNumber),
+}
+
+impl ClosingHandshakeScope {
+    pub fn assemble_ccf_packet(
+        &self,
+        buf: &mut [u8; MSS],
+        ccf: &ConnectionCloseFrame,
+        scid: ConnectionId,
+        dcid: ConnectionId,
+    ) -> usize {
+        let (pk, hk) = (
+            self.keys.local.packet.as_ref(),
+            self.keys.local.header.as_ref(),
+        );
+
+        let hdr = LongHeaderBuilder::with_cid(dcid, scid).handshake();
+        let (mut hdr_buf, payload_tag) = buf.split_at_mut(hdr.size() + 2);
+        let payload_tag_len = payload_tag.len();
+        let tag_len = pk.tag_len();
+        let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
+
+        let (pn, encoded_pn) = self.next_sending_pn;
+        let (mut pn_buf, mut body_buf) = payload_buf.split_at_mut(encoded_pn.size());
+
+        let body_size = body_buf.remaining_mut();
+
+        body_buf.put_frame(ccf);
+
+        let hdr_len = hdr_buf.len();
+        let pn_len = pn_buf.len();
+        let mut body_len = body_size - body_buf.remaining_mut();
+
+        if pn_len + body_len + tag_len < 20 {
+            let padding_len = 20 - pn_len - body_len - tag_len;
+            body_buf.put_bytes(0, padding_len);
+            body_len += padding_len;
+        }
+        let pkt_size = hdr_len + pn_len + body_len + tag_len;
+
+        hdr_buf.put_long_header(&hdr);
+        hdr_buf.encode_varint(
+            &VarInt::try_from(pn_len + body_len + tag_len).unwrap(),
+            EncodeBytes::Two,
+        );
+
+        pn_buf.put_packet_number(encoded_pn);
+
+        encode_long_first_byte(&mut buf[0], pn_len);
+        encrypt_packet(pk, pn, &mut buf[..pkt_size], hdr_len + pn_len);
+        protect_header(hk, &mut buf[..pkt_size], hdr_len, pn_len);
+
+        pkt_size
+    }
 }
 
 impl TryFrom<HandshakeScope> for ClosingHandshakeScope {
@@ -203,7 +265,7 @@ impl TryFrom<HandshakeScope> for ClosingHandshakeScope {
         Ok(Self {
             keys,
             rcvd_pkt_records,
-            _next_sending_pn: next_sending_pn,
+            next_sending_pn,
         })
     }
 }

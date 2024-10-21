@@ -117,7 +117,9 @@ impl<T: bytes::BufMut> super::io::WriteFrame<ConnectionCloseFrame> for T {
             self.put_u8(frame_type.into());
         }
         self.put_varint(&VarInt::from_u32(frame.reason.len() as u32));
-        self.put_slice(frame.reason.as_bytes());
+        let remaining = self.remaining_mut();
+        let reason = frame.reason.as_bytes();
+        self.put_slice(&reason[..reason.len().min(remaining)]);
     }
 }
 

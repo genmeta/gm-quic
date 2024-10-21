@@ -266,6 +266,22 @@ where
     pub fn apply_dcid(&self) -> ArcCidCell<RETIRED> {
         self.0.lock().unwrap().apply_dcid()
     }
+
+    /// Return the latest connection ID issued by the peer.
+    ///
+    /// The cid is used to assemble the packet that contains a connection close frame. When the
+    /// connection is closed, the connection close frame will be sent to the peer.
+    pub fn latest_dcid(&self) -> Option<ConnectionId> {
+        self.0
+            .lock()
+            .unwrap()
+            .cid_deque
+            .iter()
+            .rev()
+            .flatten()
+            .next()
+            .map(|(_, cid, _)| *cid)
+    }
 }
 
 impl<RETIRED> ReceiveFrame<NewConnectionIdFrame> for ArcRemoteCids<RETIRED>

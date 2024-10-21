@@ -160,4 +160,10 @@ impl RawPath {
     pub fn update_recv_time(&self) {
         self.state.update_recv_time()
     }
+
+    /// Get the udp socket controller of the path.
+    #[inline]
+    pub fn usc(&self) -> &ArcUsc {
+        &self.usc
+    }
 }

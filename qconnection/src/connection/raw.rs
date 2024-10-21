@@ -33,6 +33,7 @@ use crate::{
 };
 
 pub struct RawConnection {
+    pub initial_scid: ConnectionId,
     pub token: Arc<Mutex<Vec<u8>>>,
     pub pathes: ArcPathes,
     pub cid_registry: CidRegistry,
@@ -261,6 +262,7 @@ impl RawConnection {
         let join_handles = [join_initial, join_0rtt, join_hs, join_1rtt];
 
         Self {
+            initial_scid,
             token,
             pathes,
             cid_registry,

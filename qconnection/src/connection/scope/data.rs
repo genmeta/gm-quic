@@ -1,27 +1,34 @@
 use std::sync::Arc;
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes};
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
+    cid::ConnectionId,
     error::{Error as QuicError, ErrorKind},
     flow,
     frame::{
-        AckFrame, BeFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame, ReceiveFrame,
-        ReliableFrame, SendFrame, StreamCtlFrame, StreamFrame,
+        io::WriteFrame, AckFrame, BeFrame, ConnectionCloseFrame, Frame, FrameReader,
+        PathChallengeFrame, PathResponseFrame, ReceiveFrame, ReliableFrame, SendFrame,
+        StreamCtlFrame, StreamFrame,
     },
     handshake::Handshake,
     packet::{
         decrypt::{
             decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
         },
-        header::GetType,
+        encrypt::{encode_short_first_byte, encrypt_packet, protect_header},
+        header::{
+            short::{io::WriteShortHeader, OneRttHeader},
+            EncodeHeader, GetType,
+        },
         keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys, HeaderProtectionKeys},
+        number::WritePacketNumber,
         r#type::Type,
         DataPacket, PacketNumber,
     },
     token::ArcTokenRegistry,
 };
-use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
+use qcongestion::{CongestionControl, MayLoss, RetirePktRecord, MSS};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     reliable::{ArcRcvdPktRecords, ArcReliableFrameDeque, GuaranteedFrame},
@@ -288,9 +295,11 @@ impl DataScope {
                     };
                     let body_offset = packet.offset + undecoded_pn.size();
                     let pk = pk.lock_guard().get_remote(key_phase, pn);
-                    let pkt_len =
+                    let Ok(pkt_len) =
                         decrypt_packet(pk.as_ref(), pn, packet.bytes.as_mut(), body_offset)
-                            .unwrap();
+                    else {
+                        continue;
+                    };
 
                     let path = pathes.get_or_create(pathway, usc);
                     path.on_rcvd(packet.bytes.len());
@@ -440,7 +449,53 @@ pub struct ClosingOneRttScope {
     keys: (HeaderProtectionKeys, ArcOneRttPacketKeys),
     rcvd_pkt_records: ArcRcvdPktRecords,
     // 发包时用得着
-    _next_sending_pn: (u64, PacketNumber),
+    next_sending_pn: (u64, PacketNumber),
+}
+
+impl ClosingOneRttScope {
+    pub fn assemble_ccf_packet(
+        &self,
+        buf: &mut [u8; MSS],
+        ccf: &ConnectionCloseFrame,
+        dcid: ConnectionId,
+    ) -> usize {
+        let (hpk, pk) = &self.keys;
+        let hpk = &hpk.local;
+
+        let spin = Default::default();
+        let hdr = OneRttHeader { spin, dcid };
+        let (mut hdr_buf, payload_tag) = buf.split_at_mut(hdr.size());
+        let payload_tag_len = payload_tag.len();
+        let tag_len = pk.tag_len();
+        let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
+
+        let (pn, encoded_pn) = self.next_sending_pn;
+        let (mut pn_buf, mut body_buf) = payload_buf.split_at_mut(encoded_pn.size());
+
+        let body_size = body_buf.remaining_mut();
+
+        body_buf.put_frame(ccf);
+
+        let hdr_len = hdr_buf.len();
+        let pn_len = pn_buf.len();
+        let mut body_len = body_size - body_buf.remaining_mut();
+        if pn_len + body_len + tag_len < 20 {
+            let padding_len = 20 - pn_len - body_len - tag_len;
+            body_buf.put_bytes(0, padding_len);
+            body_len += padding_len;
+        }
+        let sent_size = hdr_len + pn_len + body_len + tag_len;
+
+        hdr_buf.put_short_header(&hdr);
+        pn_buf.put_packet_number(encoded_pn);
+
+        let (key_phase, pk) = pk.lock_guard().get_local();
+        encode_short_first_byte(&mut buf[0], pn_len, key_phase);
+        encrypt_packet(pk.as_ref(), pn, &mut buf[..sent_size], hdr_len + pn_len);
+        protect_header(hpk.as_ref(), &mut buf[..sent_size], hdr_len, pn_len);
+
+        sent_size
+    }
 }
 
 impl TryFrom<DataScope> for ClosingOneRttScope {
@@ -456,7 +511,7 @@ impl TryFrom<DataScope> for ClosingOneRttScope {
         Ok(Self {
             keys,
             rcvd_pkt_records,
-            _next_sending_pn: next_sending_pn,
+            next_sending_pn,
         })
     }
 }
