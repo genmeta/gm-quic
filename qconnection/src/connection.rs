@@ -9,7 +9,7 @@ use std::{
 
 use closing::ClosingConnection;
 use draining::DrainingConnection;
-use futures::{channel::mpsc, StreamExt};
+use futures::channel::mpsc;
 use qbase::{
     cid::{self, ConnectionId},
     error::{Error, ErrorKind},
@@ -96,7 +96,20 @@ impl ConnState {
             }
             (hs, one_rtt) => {
                 let local_cids = raw_conn.cid_registry.local.active_cids();
-                let closing_connection = ClosingConnection::new(error, local_cids, hs, one_rtt);
+                let initial_scid = raw_conn.initial_scid;
+                let last_dcid = raw_conn.cid_registry.remote.latest_dcid();
+                let closing_connection =
+                    ClosingConnection::new(error, local_cids, hs, one_rtt, initial_scid, last_dcid);
+                tokio::spawn({
+                    let pathes = raw_conn.pathes;
+                    let closing_connection = closing_connection.clone();
+                    async move {
+                        for mut path in pathes.iter_mut() {
+                            let (pathway, path) = path.pair_mut();
+                            closing_connection.send_ccf(path.usc(), *pathway).await;
+                        }
+                    }
+                });
                 Closing(closing_connection)
             }
         };
@@ -408,17 +421,20 @@ impl ArcConnection {
 
         match state {
             Closing(closing) => {
-                for handle in handles {
-                    tokio::spawn({
-                        let mut closing_conn = closing.clone();
-                        async move {
-                            let mut rcvd_packets = handle.await.unwrap();
-                            while let Some((packet, pathway, usc)) = rcvd_packets.next().await {
-                                closing_conn.recv_packet_via_pathway(packet, pathway, usc);
-                            }
+                tokio::spawn({
+                    let mut closing = closing.clone();
+                    async move {
+                        use futures::StreamExt;
+                        // initial 0rtt handshake 1rtt
+                        let [h1, h2, h3, h4] = handles;
+                        let (r1, r2, r3, r4) = tokio::try_join!(h1, h2, h3, h4).unwrap();
+                        drop((r1, r2)); // ccf in initial is turstless, 0rtt dont transmit ccf
+                        let mut rcvd_packets = r3.chain(r4);
+                        while let Some((packet, pathway, usc)) = rcvd_packets.next().await {
+                            closing.recv_packet_via_pathway(packet, pathway, usc).await;
                         }
-                    });
-                }
+                    }
+                });
                 tokio::spawn({
                     let conn = self.clone();
                     let rcvd_ccf = closing.get_rcvd_ccf();
