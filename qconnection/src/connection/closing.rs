@@ -15,10 +15,9 @@ use qbase::{
     error::Error,
     packet::{long, DataHeader, DataPacket},
 };
-use qudp::ArcUsc;
 
 use super::scope::{data::ClosingOneRttScope, handshake::ClosingHandshakeScope, RecvPacket};
-use crate::path::pathway::Pathway;
+use crate::{path::pathway::Pathway, usc::ArcUsc};
 
 #[derive(Clone)]
 pub struct ClosingConnection {

@@ -81,7 +81,7 @@ const CMSG_LEN: usize = 128;
 pub(crate) struct Aligned<T>(pub(crate) T);
 
 impl Io for UdpSocketController {
-    fn config(&mut self) -> std::io::Result<()> {
+    fn config(&self) -> std::io::Result<()> {
         let io = socket2::SockRef::from(&self.io);
         io.set_nonblocking(true)?;
 
@@ -277,13 +277,13 @@ impl Io for UdpSocketController {
             }
         }
         let dst = if let Some(ip) = dst_ip {
-            crate::SocketAddr::new(ip, self.local_addr().port())
+            crate::SocketAddr::new(ip, self.local_addr()?.port())
         } else {
-            self.local_addr()
+            self.local_addr()?
         };
         hdr[0] = PacketHeader {
             src: addr.unwrap(),
-            dst: dst,
+            dst,
             ttl: DEFAULT_TTL as u8,
             ecn: Some(ecn_bits as u8),
             seg_size: len as u16,
@@ -303,14 +303,6 @@ impl Io for UdpSocketController {
                 mem::size_of_val(&value) as _,
             )
         };
-    }
-
-    fn set_ttl(&mut self, ttl: u8) -> io::Result<()> {
-        if ttl == self.ttl {
-            return Ok(());
-        }
-        self.setsockopt(WinSock::IPPROTO_IP, WinSock::IP_TTL, ttl as _);
-        Ok(())
     }
 }
 
