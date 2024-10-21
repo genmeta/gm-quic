@@ -23,7 +23,7 @@ pub struct USCRegisty {
 }
 
 impl USCRegisty {
-    /// Create a new [`ArcUSC`] and spawn a task to receive packets or return the existing one.
+    /// Create a new [`ArcUsc`] and spawn a task to receive packets or return the existing one.
     ///
     /// Note that the future returned by `recv_task` must not be complete unless a udp error occurs.
     pub fn get_or_create_usc<Task, F>(addr: SocketAddr, recv_task: F) -> io::Result<ArcUsc>
