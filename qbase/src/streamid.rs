@@ -6,7 +6,11 @@ use std::{
 
 use thiserror::Error;
 
-use super::varint::{be_varint, VarInt, WriteVarInt};
+use super::{
+    frame::MaxStreamsFrame,
+    varint::{be_varint, VarInt, WriteVarInt},
+};
+use crate::frame::{SendFrame, StreamsBlockedFrame};
 
 /// Roles in the QUIC protocol, including client and server.
 ///
@@ -260,17 +264,21 @@ impl Iterator for NeedCreate {
 
 /// Local stream IDs management.
 #[derive(Debug)]
-struct LocalStreamIds {
+struct LocalStreamIds<BLOCKED> {
     role: Role,                 // Our role
     max: [StreamId; 2],         // The maximum stream ID we can create
     unallocated: [StreamId; 2], // The stream ID that we have not used
     wakers: [Option<Waker>; 2], // Used for waiting for the MaxStream frame notification from peer when we have exhausted the creation of stream IDs
+    blocked: BLOCKED,           // The StreamsBlocked frames that will be sent to peer
 }
 
-impl LocalStreamIds {
+impl<BLOCKED> LocalStreamIds<BLOCKED>
+where
+    BLOCKED: SendFrame<StreamsBlockedFrame> + Clone + Send + 'static,
+{
     /// Create a new [`LocalStreamIds`] with the given role,
     /// and maximum number of streams that can be created in each [`Dir`].
-    fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64) -> Self {
+    fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64, blocked: BLOCKED) -> Self {
         Self {
             role,
             max: [
@@ -282,6 +290,7 @@ impl LocalStreamIds {
                 StreamId::new(role, Dir::Uni, 0),
             ],
             wakers: [None, None],
+            blocked,
         }
     }
 
@@ -290,8 +299,13 @@ impl LocalStreamIds {
         self.role
     }
 
-    /// Update the maximum stream ID that can be opened locally in the given direction.
-    fn permit_max_sid(&mut self, dir: Dir, val: u64) {
+    /// Receive the [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`) from peer,
+    /// update the maximum stream ID that can be opened locally in the given direction.
+    fn recv_max_streams_frame(&mut self, frame: &MaxStreamsFrame) {
+        let (dir, val) = match frame {
+            MaxStreamsFrame::Bi(max) => (Dir::Bi, (*max).into_inner()),
+            MaxStreamsFrame::Uni(max) => (Dir::Uni, (*max).into_inner()),
+        };
         assert!(val <= MAX_STREAM_ID);
         let sid = &mut self.max[dir as usize];
         // RFC9000: MAX_STREAMS frames that do not increase the stream limit MUST be ignored.
@@ -317,6 +331,8 @@ impl LocalStreamIds {
             // waiting for MAX_STREAMS frame from peer
             self.wakers[idx] = Some(cx.waker().clone());
             // if Poll::Pending is returned, connection can send a STREAMS_BLOCKED frame to peer
+            self.blocked
+                .send_frame([StreamsBlockedFrame::with(dir, self.max[idx])]);
             Poll::Pending
         }
     }
@@ -397,19 +413,31 @@ impl RemoteStreamIds {
 }
 
 /// Management of stream IDs that can ben allowed to use locally.
+///
 /// The maximum stream ID that can be created is limited by the
 /// [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`) from the peer.
+///
+/// When the stream IDs in the `dir` direction are exhausted,
+/// a [`StreamsBlockedFrame`](`crate::frame::StreamsBlockedFrame`) will be sent to the peer.
+/// The generic parameter `BLOCKED` is the container of the [`StreamsBlockedFrame`]
+/// that will be sent to peer, it can be a channel, a queue, or a buffer,
+/// as long as it can send the [`StreamsBlockedFrame`] to peer.
 #[derive(Debug, Clone)]
-pub struct ArcLocalStreamIds(Arc<Mutex<LocalStreamIds>>);
+pub struct ArcLocalStreamIds<BLOCKED>(Arc<Mutex<LocalStreamIds<BLOCKED>>>);
 
-impl ArcLocalStreamIds {
+impl<BLOCKED> ArcLocalStreamIds<BLOCKED>
+where
+    BLOCKED: SendFrame<StreamsBlockedFrame> + Clone + Send + 'static,
+{
     /// Create a new [`ArcLocalStreamIds`] with the given role,
-    /// and maximum number of streams that can be created in each direction.
-    pub fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64) -> Self {
+    /// and maximum number of streams that can be created in each direction,
+    /// the `blocked` contains the [`StreamsBlockedFrame`] that will be sent to peer.
+    pub fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64, blocked: BLOCKED) -> Self {
         Self(Arc::new(Mutex::new(LocalStreamIds::new(
             role,
             max_bi_streams,
             max_uni_streams,
+            blocked,
         ))))
     }
 
@@ -418,14 +446,15 @@ impl ArcLocalStreamIds {
         self.0.lock().unwrap().role()
     }
 
-    /// Update the maximum stream ID that can be allowed to use locally.
+    /// Receive the [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`) from peer,
+    /// and then update the maximum stream ID that can be allowed to use locally.
     ///
     /// The maximum stream ID that can be allowed to use is limited by peer.
     /// Therefore, it mainly depends on the peer's attitude
     /// and is subject to the [`MaxStreamsFrame`](`crate::frame::MaxStreamsFrame`)
     /// received from peer.
-    pub fn permit_max_sid(&self, dir: Dir, val: u64) {
-        self.0.lock().unwrap().permit_max_sid(dir, val);
+    pub fn recv_max_streams_frame(&self, frame: &MaxStreamsFrame) {
+        self.0.lock().unwrap().recv_max_streams_frame(frame);
     }
 
     /// Asynchronously allocate the next new [`StreamId`] in the `dir` direction.
@@ -532,12 +561,15 @@ impl ArcRemoteStreamIds {
 /// Stream IDs management, including an [`ArcLocalStreamIds`] as local,
 /// and an [`ArcRemoteStreamIds`] as remote.
 #[derive(Debug, Clone)]
-pub struct StreamIds {
-    pub local: ArcLocalStreamIds,
+pub struct StreamIds<BLOCKED> {
+    pub local: ArcLocalStreamIds<BLOCKED>,
     pub remote: ArcRemoteStreamIds,
 }
 
-impl StreamIds {
+impl<BLOCKED> StreamIds<BLOCKED>
+where
+    BLOCKED: SendFrame<StreamsBlockedFrame> + Clone + Send + 'static,
+{
     /// Create a new [`StreamIds`] with the given role, and maximum number of streams of each direction.
     ///
     /// The troublesome part is that the maximum number of streams that can be created locally
@@ -545,9 +577,9 @@ impl StreamIds {
     /// parameters, which are unknown at the beginning.
     /// Therefore, peer's `initial_max_streams_xx` can be set to 0 initially,
     /// and then updated later after obtaining the peer's `initial_max_streams_xx` setting.
-    pub fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64) -> Self {
+    pub fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64, blocked: BLOCKED) -> Self {
         // 缺省为0
-        let local = ArcLocalStreamIds::new(role, 0, 0);
+        let local = ArcLocalStreamIds::new(role, 0, 0, blocked);
         let remote = ArcRemoteStreamIds::new(!role, max_bi_streams, max_uni_streams);
         Self { local, remote }
     }
@@ -555,9 +587,19 @@ impl StreamIds {
 
 #[cfg(test)]
 mod tests {
-    use std::task::{RawWaker, RawWakerVTable, Waker};
+    use deref_derive::Deref;
 
     use super::*;
+    use crate::util::ArcAsyncDeque;
+
+    #[derive(Clone, Deref, Default)]
+    struct StreamsBlockedFrameTx(ArcAsyncDeque<StreamsBlockedFrame>);
+
+    impl SendFrame<StreamsBlockedFrame> for StreamsBlockedFrameTx {
+        fn send_frame<I: IntoIterator<Item = StreamsBlockedFrame>>(&self, iter: I) {
+            (&self.0).extend(iter);
+        }
+    }
 
     #[test]
     fn test_stream_id_new() {
@@ -567,24 +609,12 @@ mod tests {
         assert_eq!(sid.dir(), Dir::Bi);
     }
 
-    fn empty_waker() -> Waker {
-        fn clone(_: *const ()) -> RawWaker {
-            RawWaker::new(std::ptr::null(), &EMPTY_WAKER_VTABLE)
-        }
-        fn wake(_: *const ()) {}
-        fn wake_by_ref(_: *const ()) {}
-        fn drop(_: *const ()) {}
-
-        static EMPTY_WAKER_VTABLE: RawWakerVTable =
-            RawWakerVTable::new(clone, wake, wake_by_ref, drop);
-        unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &EMPTY_WAKER_VTABLE)) }
-    }
-
     #[test]
     fn test_permit_max_sid() {
-        let StreamIds { local, remote: _ } = StreamIds::new(Role::Client, 10, 2);
-        local.permit_max_sid(Dir::Bi, 0);
-        let waker = empty_waker();
+        let StreamIds { local, remote: _ } =
+            StreamIds::new(Role::Client, 10, 2, StreamsBlockedFrameTx::default());
+        local.recv_max_streams_frame(&MaxStreamsFrame::Bi(VarInt::from_u32(0)));
+        let waker = futures::task::noop_waker();
         let mut cx = Context::from_waker(&waker);
         assert_eq!(
             local.poll_alloc_sid(&mut cx, Dir::Bi),
@@ -592,7 +622,7 @@ mod tests {
         );
         assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Bi), Poll::Pending);
         assert!(local.0.lock().unwrap().wakers[0].is_some());
-        local.permit_max_sid(Dir::Bi, 1);
+        local.recv_max_streams_frame(&MaxStreamsFrame::Bi(VarInt::from_u32(1)));
         let _ = local.0.lock().unwrap().wakers[0].take();
         assert_eq!(
             local.poll_alloc_sid(&mut cx, Dir::Bi),
@@ -601,7 +631,7 @@ mod tests {
         assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Bi), Poll::Pending);
         assert!(local.0.lock().unwrap().wakers[0].is_some());
 
-        local.permit_max_sid(Dir::Uni, 2);
+        local.recv_max_streams_frame(&MaxStreamsFrame::Uni(VarInt::from_u32(2)));
         assert_eq!(
             local.poll_alloc_sid(&mut cx, Dir::Uni),
             Poll::Ready(Some(StreamId(2)))
@@ -620,7 +650,8 @@ mod tests {
 
     #[test]
     fn test_try_accept_sid() {
-        let StreamIds { local: _, remote } = StreamIds::new(Role::Client, 10, 5);
+        let StreamIds { local: _, remote } =
+            StreamIds::new(Role::Client, 10, 5, StreamsBlockedFrameTx::default());
         let result = remote.try_accept_sid(StreamId(21));
         assert_eq!(
             result,

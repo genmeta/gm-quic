@@ -392,7 +392,6 @@ where
 
 #[cfg(test)]
 mod tests {
-
     use futures::FutureExt;
 
     use super::*;

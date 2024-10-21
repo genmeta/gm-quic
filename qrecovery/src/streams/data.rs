@@ -8,8 +8,8 @@ use deref_derive::{Deref, DerefMut};
 use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::{
-        BeFrame, FrameType, MaxStreamDataFrame, MaxStreamsFrame, ResetStreamFrame, SendFrame,
-        StopSendingFrame, StreamCtlFrame, StreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
+        BeFrame, FrameType, MaxStreamDataFrame, ResetStreamFrame, SendFrame, StopSendingFrame,
+        StreamCtlFrame, StreamFrame, StreamsBlockedFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
     },
     param::Parameters,
     streamid::{AcceptSid, Dir, ExceedLimitError, Role, StreamId, StreamIds},
@@ -116,6 +116,18 @@ impl ArcInputGuard<'_> {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ConcurrentStreamsController<T: Clone>(T);
+
+impl<T> SendFrame<StreamsBlockedFrame> for ConcurrentStreamsController<T>
+where
+    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+{
+    fn send_frame<I: IntoIterator<Item = StreamsBlockedFrame>>(&self, iter: I) {
+        self.0.send_frame(iter.into_iter().map(Into::into));
+    }
+}
+
 /// Manage all streams in the connection, send and receive frames, handle frame loss, and acknowledge.
 ///
 /// The struct dont truly send and receive frames, this struct provides interfaces to generate frames
@@ -188,7 +200,7 @@ impl ArcInputGuard<'_> {
 /// [`OpenBiStream`]: crate::streams::OpenBiStream
 /// [`OpenUniStream`]: crate::streams::OpenUniStream
 ///
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RawDataStreams<T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
@@ -197,7 +209,7 @@ where
     ctrl_frames: T,
 
     role: Role,
-    stream_ids: StreamIds,
+    stream_ids: StreamIds<ConcurrentStreamsController<T>>,
     // the receive buffer size for the accpeted unidirectional stream created by peer
     uni_stream_rcvbuf_size: u64,
     // the receive buffer size of the bidirectional stream actively created by local
@@ -504,18 +516,7 @@ where
             }
             StreamCtlFrame::MaxStreams(max_streams) => {
                 // 主要更新我方能创建的单双向流
-                match max_streams {
-                    MaxStreamsFrame::Bi(val) => {
-                        self.stream_ids
-                            .local
-                            .permit_max_sid(Dir::Bi, val.into_inner());
-                    }
-                    MaxStreamsFrame::Uni(val) => {
-                        self.stream_ids
-                            .local
-                            .permit_max_sid(Dir::Uni, val.into_inner());
-                    }
-                };
+                self.stream_ids.local.recv_max_streams_frame(max_streams);
             }
             StreamCtlFrame::StreamsBlocked(_streams_blocked) => {
                 // 仅仅起到通知作用?也分主动和被动
@@ -546,20 +547,6 @@ where
         input.on_conn_error(err);
         listener.on_conn_error(err);
     }
-
-    /// Premit the max stream id limit.
-    ///
-    /// Stream control frame and transport parameters can premit the limit.
-    /// 1. Send [`MAX_STREAM frame`]: [`RawDataStreams::recv_stream_control`] will be called when this kind
-    ////   of frame received.
-    ////2. [`Transport parameters`] in handshaking: this method will be called to accpet peer's transport
-    ///    parameters
-    ///
-    /// [`MAX_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-max_streams-frames
-    /// [`Transport parameters`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-definit
-    pub fn premit_max_sid(&self, dir: Dir, val: u64) {
-        self.stream_ids.local.permit_max_sid(dir, val);
-    }
 }
 
 impl<T> RawDataStreams<T>
@@ -573,6 +560,7 @@ where
                 role,
                 local_params.initial_max_streams_bidi().into(),
                 local_params.initial_max_streams_uni().into(),
+                ConcurrentStreamsController(ctrl_frames.clone()),
             ),
             uni_stream_rcvbuf_size: local_params.initial_max_stream_data_uni().into(),
             local_bi_stream_rcvbuf_size: local_params.initial_max_stream_data_bidi_local().into(),
