@@ -4,6 +4,7 @@ use futures::channel::mpsc;
 use qbase::{
     cid::ConnectionId,
     flow::FlowController,
+    frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame},
     packet::keys::ArcKeys,
     param::Parameters,
     streamid::Role,
@@ -95,12 +96,7 @@ impl RawConnection {
         let flow_ctrl = FlowController::with_parameter(65535, 65535);
         let conn_error = ConnError::default();
 
-        let streams = DataStreams::new(
-            role,
-            // 流数量
-            &local_params,
-            Default::default(),
-        );
+        let streams = DataStreams::new(role, &local_params, reliable_frames.clone());
         let datagrams = DatagramFlow::new(0);
 
         let token = match &*token_registry.lock_guard() {
@@ -234,12 +230,14 @@ impl RawConnection {
                     return;
                 };
 
-                let max_bidi_sid = remote_params.initial_max_streams_bidi().into();
-                let max_uni_sid = remote_params.initial_max_streams_uni().into();
-                let active_cid_limit = remote_params.active_connection_id_limit().into();
+                _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
+                    remote_params.initial_max_streams_bidi(),
+                )));
+                _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Uni(
+                    remote_params.initial_max_streams_uni(),
+                )));
 
-                streams.premit_max_sid(qbase::streamid::Dir::Bi, max_uni_sid);
-                streams.premit_max_sid(qbase::streamid::Dir::Uni, max_bidi_sid);
+                let active_cid_limit = remote_params.active_connection_id_limit().into();
                 if let Err(e) = cid_registry.local.set_limit(active_cid_limit) {
                     conn_error.on_error(e);
                 }

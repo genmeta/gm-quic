@@ -188,16 +188,27 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{HandshakeDoneFrame, ServerHandshake};
+    use deref_derive::Deref;
+
+    use super::*;
     use crate::{
         error::{Error, ErrorKind},
-        frame::ReceiveFrame,
+        frame::{ReceiveFrame, SendFrame},
         util::ArcAsyncDeque,
     };
 
+    #[derive(Debug, Default, Clone, Deref)]
+    struct HandshakeDoneFrameTx(ArcAsyncDeque<HandshakeDoneFrame>);
+
+    impl SendFrame<HandshakeDoneFrame> for HandshakeDoneFrameTx {
+        fn send_frame<I: IntoIterator<Item = HandshakeDoneFrame>>(&self, iter: I) {
+            (&self.0).extend(iter);
+        }
+    }
+
     #[test]
     fn test_client_handshake() {
-        let handshake = super::Handshake::<ArcAsyncDeque<_>>::new_client();
+        let handshake = Handshake::<HandshakeDoneFrameTx>::new_client();
         assert!(!handshake.is_handshake_done());
 
         let ret = handshake.recv_frame(&HandshakeDoneFrame);
@@ -207,33 +218,33 @@ mod tests {
 
     #[test]
     fn test_client_handshake_done() {
-        let handshake = super::Handshake::<ArcAsyncDeque<_>>::new_client();
+        let handshake = Handshake::<HandshakeDoneFrameTx>::new_client();
         assert!(!handshake.is_handshake_done());
 
         match &handshake {
-            crate::handshake::Handshake::Client(client_handshake) => {
+            Handshake::Client(client_handshake) => {
                 client_handshake.recv_handshake_done_frame(&HandshakeDoneFrame)
             }
-            crate::handshake::Handshake::Server(..) => unreachable!(),
+            Handshake::Server(..) => unreachable!(),
         }
         assert!(handshake.is_handshake_done());
     }
 
     #[test]
     fn test_server_handshake() {
-        let handshake = super::Handshake::new_server(ArcAsyncDeque::new());
+        let handshake = Handshake::new_server(HandshakeDoneFrameTx::default());
         assert!(!handshake.is_handshake_done());
 
         match &handshake {
-            crate::handshake::Handshake::Client(..) => unreachable!(),
-            crate::handshake::Handshake::Server(server_handshake) => server_handshake.done(),
+            Handshake::Client(..) => unreachable!(),
+            Handshake::Server(server_handshake) => server_handshake.done(),
         }
         assert!(handshake.is_handshake_done());
     }
 
     #[test]
     fn test_server_recv_handshake_done_frame() {
-        let handshake = super::Handshake::new_server(ArcAsyncDeque::new());
+        let handshake = Handshake::new_server(HandshakeDoneFrameTx::default());
         assert!(!handshake.is_handshake_done());
 
         let ret = handshake.recv_frame(&HandshakeDoneFrame);
@@ -248,7 +259,7 @@ mod tests {
 
     #[test]
     fn test_server_send_handshake_done_frame() {
-        let handshake = ServerHandshake::new(ArcAsyncDeque::new());
+        let handshake = ServerHandshake::new(HandshakeDoneFrameTx::default());
         handshake.done();
         assert!(handshake.is_handshake_done());
         assert_eq!(handshake.output.len(), 1);

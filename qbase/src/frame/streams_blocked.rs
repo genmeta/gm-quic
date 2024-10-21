@@ -21,6 +21,15 @@ const STREAMS_BLOCKED_FRAME_TYPE: u8 = 0x16;
 
 const DIR_BIT: u8 = 0x1;
 
+impl StreamsBlockedFrame {
+    pub fn with(dir: Dir, stream_id: StreamId) -> Self {
+        match dir {
+            Dir::Bi => StreamsBlockedFrame::Bi(stream_id),
+            Dir::Uni => StreamsBlockedFrame::Uni(stream_id),
+        }
+    }
+}
+
 impl super::BeFrame for StreamsBlockedFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::StreamsBlocked(match self {

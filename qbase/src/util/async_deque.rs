@@ -99,6 +99,17 @@ impl<T> AsyncDeque<T> {
     }
 }
 
+impl<T> Extend<T> for AsyncDeque<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        if let Some(queue) = &mut self.queue {
+            queue.extend(iter);
+            if let Some(waker) = self.waker.take() {
+                waker.wake();
+            }
+        }
+    }
+}
+
 /// A shared deque that can be used in async context.
 ///
 /// It is a wrapper around VecDeque, with the ability to be popped in async context.
@@ -297,7 +308,7 @@ impl<T: Unpin> Stream for AsyncDeque<T> {
 
 impl<T> Extend<T> for &ArcAsyncDeque<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
-        self.send_frame(iter);
+        self.0.lock().unwrap().extend(iter);
     }
 }
 
