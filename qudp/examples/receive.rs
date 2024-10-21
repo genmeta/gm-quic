@@ -1,5 +1,5 @@
 use clap::Parser;
-use qudp::ArcUsc;
+use qudp::UdpSocketController;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -17,7 +17,7 @@ async fn main() {
     let args = Args::parse();
     let addr = args.bind.parse().unwrap();
 
-    let socket = ArcUsc::new(addr).expect("failed to create socket");
+    let socket = UdpSocketController::new(addr).expect("failed to create socket");
     let mut receiver = socket.receiver();
     loop {
         match receiver.recv().await {

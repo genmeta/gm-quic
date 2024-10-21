@@ -7,9 +7,8 @@ use qbase::{
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     packet::{header::GetDcid, long, DataHeader, DataPacket},
 };
-use qudp::ArcUsc;
 
-use crate::{connection::PacketEntry, path::pathway::Pathway};
+use crate::{connection::PacketEntry, path::pathway::Pathway, usc::ArcUsc};
 
 /// Global Router for managing connections.
 static ROUTER: LazyLock<DashMap<ConnectionId, [PacketEntry; 4]>> = LazyLock::new(DashMap::new);

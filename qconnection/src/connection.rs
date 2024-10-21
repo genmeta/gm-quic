@@ -22,7 +22,6 @@ use qcongestion::CongestionControl;
 use qrecovery::{
     recv::Reader, reliable::ArcReliableFrameDeque, send::Writer, space::Epoch, streams,
 };
-use qudp::ArcUsc;
 use qunreliable::{DatagramReader, DatagramWriter};
 use raw::RawConnection;
 use tokio::task::JoinHandle;
@@ -32,6 +31,7 @@ use crate::{
     path::pathway::Pathway,
     router::{Router, RouterRegistry},
     tls::ArcTlsSession,
+    usc::ArcUsc,
 };
 
 pub mod closing;
