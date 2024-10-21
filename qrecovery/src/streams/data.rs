@@ -162,7 +162,7 @@ where
 /// | [`recv_stream_control`] ([`RESET_STREAM frame`])         | [`Incoming::recv_reset`]           |
 /// | [`recv_stream_control`] ([`STOP_SENDING frame`])         | [`Outgoing::stop`]                 |
 /// | [`recv_stream_control`] ([`MAX_STREAM_DATA frame`])      | [`Outgoing::update_window`]        |
-/// | [`recv_stream_control`] ([`MAX_STREAMS frame`])          | [`RawDataStreams::premit_max_sid`] |
+/// | [`recv_stream_control`] ([`MAX_STREAMS frame`])          | [`ArcLocalStreamIds::recv_max_streams_frame`] |
 /// | [`recv_stream_control`] ([`STREAM_DATA_BLOCKED frame`])  | none(the frame will be ignored)    |
 /// | [`recv_stream_control`] ([`STREAMS_BLOCKED frame`])      | none(the frame will be ignored)    |
 /// | [`on_data_acked`]                                        | [`Outgoing::on_data_acked`]        |
@@ -199,6 +199,7 @@ where
 /// [`STREAMS_BLOCKED frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-streams_blocked-frame
 /// [`OpenBiStream`]: crate::streams::OpenBiStream
 /// [`OpenUniStream`]: crate::streams::OpenUniStream
+/// [`ArcLocalStreamIds::recv_max_streams_frame`]: qbase::streamid::ArcLocalStreamIds::recv_max_streams_frame
 ///
 #[derive(Debug)]
 pub struct RawDataStreams<T>
