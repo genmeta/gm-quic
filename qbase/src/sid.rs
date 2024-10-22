@@ -220,7 +220,7 @@ impl<T: bytes::BufMut> WriteStreamId for T {
 /// See [controlling concurrency](https://www.rfc-editor.org/rfc/rfc9000.html#name-controlling-concurrency).
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 pub trait ControlConcurrency: fmt::Debug + Send {
-    /// Be called back upon accepting a new `dir` direction streams with stream id `sid` from peer,
+    /// Called back upon accepting a new `dir` direction streams with stream id `sid` from peer,
     /// all previous inexistent `dir` direction streams should be opened by peer will also be created.
     ///
     /// Returns whether to increase the maximum stream ID limit,
@@ -230,7 +230,7 @@ pub trait ControlConcurrency: fmt::Debug + Send {
     #[must_use]
     fn on_accept_streams(&mut self, dir: Dir, sid: u64) -> Option<u64>;
 
-    /// Be called back upon a `dir` directional stream is ended,
+    /// Called back upon a `dir` directional stream is ended,
     /// whether it is closed normally or reset abnormally.
     ///
     /// The `sid` is the stream ID of the ended `dir` direction stream.
@@ -241,8 +241,8 @@ pub trait ControlConcurrency: fmt::Debug + Send {
     /// increase the MAX_STREAMS for the time being.
     fn on_end_of_stream(&mut self, dir: Dir, sid: u64) -> Option<u64>;
 
-    /// Be called back upon receiving the StreamsBlocked frame,
-    /// which indicates that the peer is limited to create more `dir` directional streams.
+    /// Called back upon receiving the StreamsBlocked frame,
+    /// which indicates that the peer is limited to create more `dir` direction streams.
     ///
     /// It may optionally return an increased value for the `max_streams`
     /// for the `dir` directional streams.

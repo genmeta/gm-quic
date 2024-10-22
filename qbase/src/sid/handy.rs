@@ -32,3 +32,21 @@ impl ControlConcurrency for ConsistentConcurrency {
         None
     }
 }
+
+/// Demand concurrency strategy increase limits as long as receiving a [`StreamsBlockedFrame`].
+#[derive(Debug)]
+pub struct DemandConcurrency;
+
+impl ControlConcurrency for DemandConcurrency {
+    fn on_accept_streams(&mut self, _dir: Dir, _sid: u64) -> Option<u64> {
+        None
+    }
+
+    fn on_end_of_stream(&mut self, _dir: Dir, _sid: u64) -> Option<u64> {
+        None
+    }
+
+    fn on_streams_blocked(&mut self, _dir: Dir, max_streams: u64) -> Option<u64> {
+        Some(max_streams + 1)
+    }
+}
