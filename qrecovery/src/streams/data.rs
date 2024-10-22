@@ -13,8 +13,10 @@ use qbase::{
         STREAM_FRAME_MAX_ENCODING_SIZE,
     },
     param::Parameters,
-    streamid::{
-        AcceptSid, Dir, ExceedLimitError, Role, SampleConcurrencyController, StreamId, StreamIds,
+    sid::{
+        handy::ConsistentConcurrency,
+        remote_sid::{AcceptSid, ExceedLimitError},
+        Dir, Role, StreamId, StreamIds,
     },
     varint::VarInt,
 };
@@ -576,10 +578,7 @@ where
                 max_bi_streams,
                 max_uni_streams,
                 SidFramesTx(ctrl_frames.clone()),
-                Box::new(SampleConcurrencyController::new(
-                    max_bi_streams,
-                    max_uni_streams,
-                )),
+                Box::new(ConsistentConcurrency::new(max_bi_streams, max_uni_streams)),
             ),
             uni_stream_rcvbuf_size: local_params.initial_max_stream_data_uni().into(),
             local_bi_stream_rcvbuf_size: local_params.initial_max_stream_data_bidi_local().into(),

@@ -15,7 +15,7 @@ use qbase::{
     error::{Error, ErrorKind},
     packet::{DataPacket, RetryHeader},
     param::Parameters,
-    streamid::Role,
+    sid::Role,
     token::ArcTokenRegistry,
 };
 use qcongestion::CongestionControl;

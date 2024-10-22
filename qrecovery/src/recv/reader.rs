@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use qbase::{streamid::StreamId, varint::VARINT_MAX};
+use qbase::{sid::StreamId, varint::VARINT_MAX};
 use tokio::io::{AsyncRead, ReadBuf};
 
 use super::recver::{ArcRecver, Recver};

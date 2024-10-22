@@ -10,7 +10,7 @@ use futures::ready;
 use qbase::{
     error::Error as QuicError,
     frame::{io::WriteDataFrame, ShouldCarryLength, StreamFrame},
-    streamid::StreamId,
+    sid::StreamId,
     util::DescribeData,
     varint::VARINT_MAX,
 };

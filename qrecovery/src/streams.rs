@@ -33,7 +33,7 @@ use qbase::{
     error::Error,
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
     param::Parameters,
-    streamid::Role,
+    sid::Role,
 };
 use thiserror::Error;
 

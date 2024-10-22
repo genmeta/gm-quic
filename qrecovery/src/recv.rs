@@ -5,7 +5,7 @@ mod reader;
 mod recver;
 
 pub use incoming::{Incoming, IsStopped, UpdateWindow};
-use qbase::streamid::StreamId;
+use qbase::sid::StreamId;
 pub use rcvbuf::RecvBuf;
 pub use reader::Reader;
 pub use recver::ArcRecver;

@@ -5,7 +5,7 @@ mod sndbuf;
 mod writer;
 
 pub use outgoing::{IsCancelled, Outgoing};
-use qbase::streamid::StreamId;
+use qbase::sid::StreamId;
 pub use sender::ArcSender;
 pub use sndbuf::SendBuf;
 pub use writer::Writer;

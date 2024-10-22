@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use qbase::{error::Error, streamid::StreamId, util::DescribeData};
+use qbase::{error::Error, sid::StreamId, util::DescribeData};
 
 use super::sndbuf::SendBuf;
 use crate::streams::StreamReset;
