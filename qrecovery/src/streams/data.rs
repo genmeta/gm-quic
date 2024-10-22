@@ -213,7 +213,7 @@ where
 /// [`STREAMS_BLOCKED frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-streams_blocked-frame
 /// [`OpenBiStream`]: crate::streams::OpenBiStream
 /// [`OpenUniStream`]: crate::streams::OpenUniStream
-/// [`ArcLocalStreamIds::recv_max_streams_frame`]: qbase::streamid::ArcLocalStreamIds::recv_max_streams_frame
+/// [`ArcLocalStreamIds::recv_max_streams_frame`]: qbase::sid::ArcLocalStreamIds::recv_max_streams_frame
 ///
 #[derive(Debug)]
 pub struct RawDataStreams<T>

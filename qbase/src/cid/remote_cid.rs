@@ -1,18 +1,15 @@
 use std::{
-    ops::Deref,
-    pin::Pin,
+    collections::VecDeque,
     sync::{Arc, Mutex},
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
-
-use deref_derive::{Deref, DerefMut};
 
 use super::ConnectionId;
 use crate::{
     error::Error,
     frame::{BeFrame, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     token::ResetToken,
-    util::{Future, FutureState, IndexDeque},
+    util::IndexDeque,
     varint::{VarInt, VARINT_MAX},
 };
 
@@ -26,8 +23,11 @@ where
     // the cid issued by the peer, the sequence number maybe not continuous
     // since the disordered [`NewConnectionIdFrame`]
     cid_deque: IndexDeque<Option<(u64, ConnectionId, ResetToken)>, VARINT_MAX>,
-    // The cell of the connection ID, which is in use or waiting to assign or retired
-    cid_cells: IndexDeque<ArcCidCell<RETIRED>, VARINT_MAX>,
+    // The cell of the connection ID, which is ready in use
+    ready_cells: IndexDeque<ArcCidCell<RETIRED>, VARINT_MAX>,
+    // The cell of the connection ID, which needs to be assigned or reassigned
+    // They can be retired before being assigned or reassigned.
+    pending_cells: VecDeque<ArcCidCell<RETIRED>>,
     // The maximum number of connection IDs which is used to check if the
     // maximum number of connection IDs has been exceeded
     // when receiving a [`NewConnectionIdFrame`]
@@ -59,7 +59,8 @@ where
         Self {
             active_cid_limit,
             cid_deque,
-            cid_cells: Default::default(),
+            ready_cells: Default::default(),
+            pending_cells: Default::default(),
             cursor: 0,
             retired_cids,
         }
@@ -72,8 +73,8 @@ where
         let first_dcid = self.cid_deque.get_mut(0).unwrap();
         *first_dcid = Some((0, initial_dcid, ResetToken::default()));
 
-        if let Some(apply) = self.cid_cells.get_mut(0) {
-            apply.0.lock().unwrap().state.revise(initial_dcid);
+        if let Some(apply) = self.ready_cells.get_mut(0) {
+            apply.revise(initial_dcid);
         }
     }
 
@@ -120,11 +121,29 @@ where
     #[doc(hidden)]
     fn arrange_idle_cid(&mut self) {
         loop {
-            let next_unalloced_cell = self.cid_cells.get_mut(self.cursor);
-            let next_unused_cid = self.cid_deque.get(self.cursor);
+            let next_unalloced_cell = self.pending_cells.front();
+            if next_unalloced_cell.is_none() {
+                break;
+            }
 
-            if let (Some(cell), Some(Some((_, cid, _)))) = (next_unalloced_cell, next_unused_cid) {
-                cell.0.lock().unwrap().state.assign(*cid);
+            let next_unalloced_cell = next_unalloced_cell.unwrap();
+            let mut guard = next_unalloced_cell.0.lock().unwrap();
+            if guard.is_retired {
+                drop(guard);
+                self.pending_cells.pop_front();
+                continue;
+            }
+
+            let next_unused_cid = self.cid_deque.get(self.cursor);
+            if let Some(Some((seq, cid, _))) = next_unused_cid {
+                guard.assign(*seq, *cid);
+                // Until an unused CID is allocated, the guard cannot be released early.
+                drop(guard);
+
+                let apply = self.pending_cells.pop_front().unwrap();
+                self.ready_cells
+                    .push_back(apply)
+                    .expect("Sequence of new connection ID should never exceed the limit");
                 self.cursor += 1;
             } else {
                 break;
@@ -135,89 +154,59 @@ where
     /// Eliminate the old cids and inform the peer with a
     /// [`RetireConnectionIdFrame`] for each retired connection ID.
     #[doc(hidden)]
-    fn retire_prior_to(&mut self, seq: u64) {
-        if seq <= self.cid_cells.offset() {
+    fn retire_prior_to(&mut self, tomb_seq: u64) {
+        if tomb_seq <= self.ready_cells.offset() {
             return;
         }
 
-        _ = self.cid_deque.drain_to(seq);
+        _ = self.cid_deque.drain_to(tomb_seq);
         // it is possible that the connection id that has not been used is directly retired,
         // and there is no chance to assign it, this phenomenon is called "jumping retire cid"
-        self.cursor = self.cursor.max(seq);
+        self.cursor = self.cursor.max(tomb_seq);
 
         // reassign the cid that has been assigned to the Path but is facing retirement
-        if self.cid_cells.is_empty() {
+        if self.ready_cells.is_empty() {
             // it is not necessary to resize the deque, because all elements will be drained
             // // self.cid_cells.resize(seq, ArcCidCell::default()).expect("");
             self.retired_cids
-                .send_frame((self.cid_cells.offset()..seq).map(|seq| {
+                .send_frame((self.ready_cells.offset()..tomb_seq).map(|seq| {
                     RetireConnectionIdFrame {
                         sequence: VarInt::from_u64(seq)
                             .expect("Sequence of connection id is very hard to exceed VARINT_MAX"),
                     }
                 }));
-            self.cid_cells.reset_offset(seq);
+            self.ready_cells.reset_offset(tomb_seq);
         } else {
-            let max_applied = self.cid_cells.largest();
-            let (mut next_apply, max_retired) = if max_applied > seq {
-                (max_applied, seq)
-            } else {
-                (seq, max_applied)
-            };
+            let actual_applied = self.ready_cells.largest();
+            let need_reassigned = actual_applied.min(tomb_seq);
             // retire the cids before seq, including the applied and unapplied
-            for seq in self.cid_cells.offset()..max_retired {
-                let (_, cell) = self.cid_cells.pop_front().unwrap();
-                let mut guard = cell.0.lock().unwrap();
-
-                if guard.is_retired() {
+            for _ in self.ready_cells.offset()..need_reassigned {
+                let (_, cell) = self.ready_cells.pop_front().unwrap();
+                if cell.is_retired() {
                     continue;
                 }
-                // reset the cell, and wait for the new cid to be assigned inside
-                assert_eq!(guard.seq, seq);
-                guard.seq = next_apply;
-                guard.state.clear();
-                drop(guard);
-
-                // retire the old cid and prepare to inform the peer with a [`RetireConnectionIdFrame`]
-                self.retired_cids.send_frame([RetireConnectionIdFrame {
-                    sequence: VarInt::from_u64(seq)
-                        .expect("Sequence of connection id is very hard to exceed VARINT_MAX"),
-                }]);
-                // The reason for using insert instead of push_back is to keep the cid and cell consistent,
-                // "jumping retired cid" will lead to "jumping allocation", although it is unlikely to happen.
-                self.cid_cells
-                    .push_back(cell)
-                    .expect("Sequence of new connection ID should never exceed the limit");
-                next_apply += 1;
+                self.pending_cells.push_back(cell);
             }
-            if max_applied < seq {
-                self.cid_cells.reset_offset(seq);
+            if actual_applied < tomb_seq {
+                self.ready_cells.reset_offset(tomb_seq);
                 // even the cid that has not been applied is retired right now
-                self.retired_cids.send_frame((max_applied..seq).map(|seq| {
-                    RetireConnectionIdFrame {
-                        sequence: VarInt::from_u64(seq)
-                            .expect("Sequence of connection id is very hard to exceed VARINT_MAX"),
-                    }
-                }));
+                self.retired_cids
+                    .send_frame(
+                        (actual_applied..tomb_seq).map(|seq| RetireConnectionIdFrame {
+                            sequence: VarInt::from_u64(seq).expect(
+                                "Sequence of connection id is very hard to exceed VARINT_MAX",
+                            ),
+                        }),
+                    );
             }
-            // _ = self.cid_cells.drain_to(seq);
         }
     }
 
     /// Apply for a new connection ID, and return an [`ArcCidCell`], which may be not ready state.
     fn apply_dcid(&mut self) -> ArcCidCell<RETIRED> {
-        let state = if let Some(Some((_, cid, _))) = self.cid_deque.get(self.cursor) {
-            self.cursor += 1;
-            CidState(Future::with(Some(*cid)))
-        } else {
-            CidState(Future::new())
-        };
-
-        let seq = self.cid_cells.largest();
-        let cell = ArcCidCell::new(self.retired_cids.clone(), seq, state);
-        self.cid_cells
-            .push_back(cell.clone())
-            .expect("Sequence of new connection ID should never exceed the limit");
+        let cell = ArcCidCell::new(self.retired_cids.clone());
+        self.pending_cells.push_back(cell.clone());
+        self.arrange_idle_cid();
         cell
     }
 }
@@ -295,53 +284,89 @@ where
     }
 }
 
-#[derive(Default, Debug)]
-struct CidState(Future<Option<ConnectionId>>);
-
-impl CidState {
-    fn poll_get_cid(&mut self, cx: &mut Context) -> Poll<Option<ConnectionId>> {
-        self.0.poll_get(cx)
-    }
-
-    fn revise(&mut self, cid: ConnectionId) {
-        *self.0.state() = FutureState::Ready(Some(cid));
-    }
-
-    fn assign(&mut self, cid: ConnectionId) {
-        // Only allow transition from None or Demand state to Ready state
-        let mut state = self.0.state();
-        debug_assert!(!matches!(state.deref(), FutureState::Ready(_)));
-        *state = FutureState::Ready(Some(cid));
-    }
-
-    fn clear(&mut self) {
-        // Allow transition from Ready state to None state, but not from Closed state
-        // While meeting Demand state, it will not change && not wake the waker
-        let mut state = self.0.state();
-        if let FutureState::Ready(_) = state.deref() {
-            *state = FutureState::None;
-        }
-    }
-
-    fn is_retired(&mut self) -> bool {
-        self.0.try_get().is_some_and(|o| o.is_none())
-    }
-
-    fn retire(&mut self) {
-        *self.0.state() = FutureState::Ready(None);
-    }
-}
-
-#[derive(Debug, Deref, DerefMut)]
+#[derive(Debug)]
 struct CidCell<RETIRED>
 where
     RETIRED: SendFrame<RetireConnectionIdFrame>,
 {
     retired_cids: RETIRED,
-    // The sequence number of the connection ID had beed assigned or to be allocated
-    seq: u64,
-    #[deref]
-    state: CidState,
+    allocated_cids: VecDeque<(u64, ConnectionId)>,
+    waker: Option<Waker>,
+    is_retired: bool,
+    is_using: bool,
+}
+
+impl<RETIRED> CidCell<RETIRED>
+where
+    RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
+{
+    fn assign(&mut self, seq: u64, cid: ConnectionId) {
+        assert!(!self.is_retired);
+        self.allocated_cids.push_front((seq, cid));
+        if !self.is_using {
+            while self.allocated_cids.len() > 1 {
+                let (seq, _) = self.allocated_cids.pop_back().unwrap();
+                let sequence = VarInt::try_from(seq)
+                    .expect("Sequence of connection id is very hard to exceed VARINT_MAX");
+                self.retired_cids
+                    .send_frame([RetireConnectionIdFrame { sequence }]);
+            }
+        }
+
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
+    }
+
+    fn revise(&mut self, dcid: ConnectionId) {
+        assert!(!self.is_retired);
+        assert!(!self.allocated_cids.is_empty());
+        self.allocated_cids[0].1 = dcid;
+    }
+
+    fn poll_borrow_cid(&mut self, cx: &mut Context<'_>) -> Poll<Option<ConnectionId>> {
+        if self.is_retired {
+            return Poll::Ready(None);
+        }
+
+        if self.allocated_cids.is_empty() {
+            self.waker = Some(cx.waker().clone());
+            Poll::Pending
+        } else {
+            let cid = self.allocated_cids[0].1;
+            self.is_using = true;
+            Poll::Ready(Some(cid))
+        }
+    }
+
+    fn return_back(&mut self) {
+        assert!(self.is_using);
+        self.is_using = false;
+        while self.allocated_cids.len() > 1 {
+            let (seq, _) = self.allocated_cids.pop_back().unwrap();
+            let sequence = VarInt::try_from(seq)
+                .expect("Sequence of connection id is very hard to exceed VARINT_MAX");
+            self.retired_cids
+                .send_frame([RetireConnectionIdFrame { sequence }]);
+        }
+    }
+
+    fn retire(&mut self) {
+        if !self.is_retired {
+            self.is_retired = true;
+
+            while let Some((seq, _)) = self.allocated_cids.pop_front() {
+                let sequence = VarInt::try_from(seq)
+                    .expect("Sequence of connection id is very hard to exceed VARINT_MAX");
+                self.retired_cids
+                    .send_frame([RetireConnectionIdFrame { sequence }]);
+            }
+
+            if let Some(waker) = self.waker.take() {
+                waker.wake();
+            }
+        }
+    }
 }
 
 /// Shared connection ID cell. Most of the time, you should use this struct.
@@ -359,57 +384,50 @@ where
     ///
     /// It can be created only by the [`ArcRemoteCids::apply_dcid`] method.
     #[doc(hidden)]
-    fn new(retired_cids: RETIRED, seq: u64, state: CidState) -> Self {
+    fn new(retired_cids: RETIRED) -> Self {
         Self(Arc::new(Mutex::new(CidCell {
             retired_cids,
-            seq,
-            state,
+            allocated_cids: VecDeque::with_capacity(2),
+            waker: None,
+            is_retired: false,
+            is_using: false,
         })))
     }
 
+    fn is_retired(&self) -> bool {
+        self.0.lock().unwrap().is_retired
+    }
+
+    fn revise(&self, dcid: ConnectionId) {
+        self.0.lock().unwrap().revise(dcid);
+    }
+
     /// Asynchronously get the connection ID, if it is not ready, return Pending.
-    pub fn poll_get_cid(&self, cx: &mut Context<'_>) -> Poll<Option<ConnectionId>> {
-        self.0.lock().unwrap().poll_get_cid(cx)
+    ///
+    /// If the corresponding path which applied this cid is inactive,
+    /// then this cid apply is retired.
+    /// In this case, None will be returned.
+    pub fn poll_borrow_cid(&self, cx: &mut Context<'_>) -> Poll<Option<ConnectionId>> {
+        self.0.lock().unwrap().poll_borrow_cid(cx)
     }
 
-    /// Getting the connection ID, if it is not ready, return a future
-    #[inline]
-    pub fn get_cid(&self) -> Self {
-        self.clone()
+    /// Returns the previously borrowed dcid, corresponding to [`ArcCidCell::poll_borrow_cid`]`.
+    ///
+    /// In this process, the old dcid will be truly retired,
+    /// accompanied by sending a [`RetireConnectionIdFrame`] to notify the peer.
+    pub fn return_back(&self) {
+        self.0.lock().unwrap().return_back();
     }
 
-    /// When the Path is invalid, the connection id needs to be retired, and the Cell state
+    /// When the Path is invalid, the connection id needs to be retired, and this Cell
     /// is marked as no longer in use, with a [`RetireConnectionIdFrame`] being sent to peer.
-    #[inline]
     pub fn retire(&self) {
-        let mut guard = self.0.lock().unwrap();
-
-        if !guard.state.is_retired() {
-            guard.state.retire();
-            let sequence = VarInt::try_from(guard.seq)
-                .expect("Sequence of connection id is very hard to exceed VARINT_MAX");
-            guard
-                .retired_cids
-                .send_frame([RetireConnectionIdFrame { sequence }]);
-        }
-    }
-}
-
-impl<RETIRED> std::future::Future for ArcCidCell<RETIRED>
-where
-    RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
-{
-    type Output = Option<ConnectionId>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.lock().unwrap().poll_get_cid(cx)
+        self.0.lock().unwrap().retire();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use futures::FutureExt;
-
     use super::*;
     use crate::util::ArcAsyncDeque;
 
@@ -423,13 +441,13 @@ mod tests {
 
         let cid_apply0 = remote_cids.apply_dcid();
         assert_eq!(
-            cid_apply0.get_cid().poll_unpin(&mut cx),
+            cid_apply0.poll_borrow_cid(&mut cx),
             Poll::Ready(Some(initial_dcid))
         );
 
         // Will return Pending, because the peer hasn't issue any connection id
         let cid_apply1 = remote_cids.apply_dcid();
-        assert_eq!(cid_apply1.get_cid().poll_unpin(&mut cx), Poll::Pending);
+        assert_eq!(cid_apply1.poll_borrow_cid(&mut cx), Poll::Pending);
 
         let cid = ConnectionId::random_gen(8);
         let frame = NewConnectionIdFrame {
@@ -441,15 +459,12 @@ mod tests {
         assert!(remote_cids.recv_new_cid_frame(&frame).is_ok());
         assert_eq!(remote_cids.cid_deque.len(), 2);
 
-        assert_eq!(
-            cid_apply1.get_cid().poll_unpin(&mut cx),
-            Poll::Ready(Some(cid))
-        );
+        assert_eq!(cid_apply1.poll_borrow_cid(&mut cx), Poll::Ready(Some(cid)));
 
         // Additionally, a new request will be made because if the peer-issued CID is
         // insufficient, it will still return Pending.
         let cid_apply2 = remote_cids.apply_dcid();
-        assert_eq!(cid_apply2.get_cid().poll_unpin(&mut cx), Poll::Pending);
+        assert_eq!(cid_apply2.poll_borrow_cid(&mut cx), Poll::Pending);
     }
 
     #[test]
@@ -477,44 +492,56 @@ mod tests {
         let cid_apply1 = guard.apply_dcid();
         let cid_apply2 = guard.apply_dcid();
 
-        assert_eq!(cid_apply1.0.lock().unwrap().seq, 0);
-        assert_eq!(cid_apply2.0.lock().unwrap().seq, 1);
+        assert_eq!(cid_apply1.0.lock().unwrap().allocated_cids[0].0, 0);
+        assert_eq!(cid_apply2.0.lock().unwrap().allocated_cids[0].0, 1);
         assert_eq!(
-            cid_apply1.get_cid().poll_unpin(&mut cx),
+            cid_apply1.poll_borrow_cid(&mut cx),
             Poll::Ready(Some(cids[0]))
         );
         assert_eq!(
-            cid_apply2.get_cid().poll_unpin(&mut cx),
+            cid_apply2.poll_borrow_cid(&mut cx),
             Poll::Ready(Some(cids[1]))
         );
 
         guard.retire_prior_to(4);
         assert_eq!(guard.cid_deque.offset(), 4);
-        assert_eq!(guard.cid_cells.offset(), 4);
+        assert_eq!(guard.ready_cells.offset(), 4);
+        // delay retire cid
+        assert_eq!(guard.retired_cids.len(), 2);
+
+        assert_eq!(cid_apply1.0.lock().unwrap().allocated_cids[0].0, 0);
+        assert_eq!(cid_apply2.0.lock().unwrap().allocated_cids[0].0, 1);
+
+        assert_eq!(
+            cid_apply1.poll_borrow_cid(&mut cx),
+            Poll::Ready(Some(cids[0]))
+        );
+        assert_eq!(
+            cid_apply2.poll_borrow_cid(&mut cx),
+            Poll::Ready(Some(cids[1]))
+        );
+
+        guard.arrange_idle_cid();
+        cid_apply1.return_back();
+        cid_apply2.return_back();
         assert_eq!(guard.retired_cids.len(), 4);
 
-        assert_eq!(cid_apply1.0.lock().unwrap().seq, 4);
-        assert_eq!(cid_apply2.0.lock().unwrap().seq, 5);
-
-        for i in 0..4 {
+        let retired_cids = [2, 3, 0, 1];
+        for seq in retired_cids {
             assert_eq!(
                 guard.retired_cids.poll_pop(&mut cx),
                 Poll::Ready(Some(RetireConnectionIdFrame {
-                    sequence: VarInt::from_u32(i),
+                    sequence: VarInt::from_u32(seq),
                 }))
             );
         }
 
-        assert_eq!(cid_apply1.get_cid().poll_unpin(&mut cx), Poll::Pending);
-        assert_eq!(cid_apply2.get_cid().poll_unpin(&mut cx), Poll::Pending);
-
-        guard.arrange_idle_cid();
         assert_eq!(
-            cid_apply1.get_cid().poll_unpin(&mut cx),
+            cid_apply1.poll_borrow_cid(&mut cx),
             Poll::Ready(Some(cids[4]))
         );
         assert_eq!(
-            cid_apply2.get_cid().poll_unpin(&mut cx),
+            cid_apply2.poll_borrow_cid(&mut cx),
             Poll::Ready(Some(cids[5]))
         );
 
@@ -547,19 +574,19 @@ mod tests {
 
         guard.retire_prior_to(4);
         assert_eq!(guard.cid_deque.offset(), 4);
-        assert_eq!(guard.cid_cells.offset(), 4);
+        assert_eq!(guard.ready_cells.offset(), 4);
         assert_eq!(guard.retired_cids.len(), 4);
 
         let cid_apply1 = guard.apply_dcid();
         let cid_apply2 = guard.apply_dcid();
-        assert_eq!(cid_apply1.0.lock().unwrap().seq, 4);
-        assert_eq!(cid_apply2.0.lock().unwrap().seq, 5);
+        assert_eq!(cid_apply1.0.lock().unwrap().allocated_cids[0].0, 4);
+        assert_eq!(cid_apply2.0.lock().unwrap().allocated_cids[0].0, 5);
         assert_eq!(
-            cid_apply1.get_cid().poll_unpin(&mut cx),
+            cid_apply1.poll_borrow_cid(&mut cx),
             Poll::Ready(Some(cids[4]))
         );
         assert_eq!(
-            cid_apply2.get_cid().poll_unpin(&mut cx),
+            cid_apply2.poll_borrow_cid(&mut cx),
             Poll::Ready(Some(cids[5]))
         );
     }
