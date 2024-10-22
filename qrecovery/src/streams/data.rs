@@ -8,11 +8,14 @@ use deref_derive::{Deref, DerefMut};
 use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::{
-        BeFrame, FrameType, MaxStreamDataFrame, ResetStreamFrame, SendFrame, StopSendingFrame,
-        StreamCtlFrame, StreamFrame, StreamsBlockedFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
+        BeFrame, FrameType, MaxStreamDataFrame, MaxStreamsFrame, ResetStreamFrame, SendFrame,
+        StopSendingFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
+        STREAM_FRAME_MAX_ENCODING_SIZE,
     },
     param::Parameters,
-    streamid::{AcceptSid, Dir, ExceedLimitError, Role, StreamId, StreamIds},
+    streamid::{
+        AcceptSid, Dir, ExceedLimitError, Role, SampleConcurrencyController, StreamId, StreamIds,
+    },
     varint::VarInt,
 };
 
@@ -117,13 +120,22 @@ impl ArcInputGuard<'_> {
 }
 
 #[derive(Debug, Clone)]
-struct ConcurrentStreamsController<T: Clone>(T);
+struct SidFramesTx<T: Clone>(T);
 
-impl<T> SendFrame<StreamsBlockedFrame> for ConcurrentStreamsController<T>
+impl<T> SendFrame<StreamsBlockedFrame> for SidFramesTx<T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
     fn send_frame<I: IntoIterator<Item = StreamsBlockedFrame>>(&self, iter: I) {
+        self.0.send_frame(iter.into_iter().map(Into::into));
+    }
+}
+
+impl<T> SendFrame<MaxStreamsFrame> for SidFramesTx<T>
+where
+    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+{
+    fn send_frame<I: IntoIterator<Item = MaxStreamsFrame>>(&self, iter: I) {
         self.0.send_frame(iter.into_iter().map(Into::into));
     }
 }
@@ -210,7 +222,7 @@ where
     ctrl_frames: T,
 
     role: Role,
-    stream_ids: StreamIds<ConcurrentStreamsController<T>>,
+    stream_ids: StreamIds<SidFramesTx<T>, SidFramesTx<T>>,
     // the receive buffer size for the accpeted unidirectional stream created by peer
     uni_stream_rcvbuf_size: u64,
     // the receive buffer size of the bidirectional stream actively created by local
@@ -555,13 +567,19 @@ where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
     pub(super) fn new(role: Role, local_params: &Parameters, ctrl_frames: T) -> Self {
+        let max_bi_streams = local_params.initial_max_streams_bidi().into();
+        let max_uni_streams = local_params.initial_max_streams_uni().into();
         Self {
             role,
             stream_ids: StreamIds::new(
                 role,
-                local_params.initial_max_streams_bidi().into(),
-                local_params.initial_max_streams_uni().into(),
-                ConcurrentStreamsController(ctrl_frames.clone()),
+                max_bi_streams,
+                max_uni_streams,
+                SidFramesTx(ctrl_frames.clone()),
+                Box::new(SampleConcurrencyController::new(
+                    max_bi_streams,
+                    max_uni_streams,
+                )),
             ),
             uni_stream_rcvbuf_size: local_params.initial_max_stream_data_uni().into(),
             local_bi_stream_rcvbuf_size: local_params.initial_max_stream_data_bidi_local().into(),

@@ -10,7 +10,7 @@ use super::{
     frame::MaxStreamsFrame,
     varint::{be_varint, VarInt, WriteVarInt},
 };
-use crate::frame::{SendFrame, StreamsBlockedFrame};
+use crate::frame::{ReceiveFrame, SendFrame, StreamsBlockedFrame};
 
 /// Roles in the QUIC protocol, including client and server.
 ///
@@ -116,7 +116,7 @@ pub struct StreamId(u64);
 /// After removing the lowest 2 bits for direction and role,
 /// the remaining 60 bits are used to represent the actual ID for each type of stream,
 /// so its maximum range cannot exceed 2^60.
-pub const MAX_STREAM_ID: u64 = (1 << 60) - 1;
+pub const MAX_STREAMS_LIMIT: u64 = (1 << 60) - 1;
 
 impl StreamId {
     /// Create a new stream ID with the given role, direction, and ID.
@@ -125,7 +125,7 @@ impl StreamId {
     /// StreamId can only be allocated incrementally by proactively creating new streams locally.
     /// or accepting new streams opened by peer.
     fn new(role: Role, dir: Dir, id: u64) -> Self {
-        assert!(id <= MAX_STREAM_ID);
+        assert!(id <= MAX_STREAMS_LIMIT);
         Self((((id << 1) | (dir as u64)) << 1) | (role as u64))
     }
 
@@ -154,15 +154,6 @@ impl StreamId {
 
     unsafe fn next_unchecked(&self) -> Self {
         Self(self.0 + 4)
-    }
-
-    /// Safety: If adding self beyond the maximum range, it will stay within the maximum range.
-    fn saturating_add(&mut self, n: u64) {
-        let (mut id, overflow) = self.id().overflowing_add(n);
-        if overflow || id > MAX_STREAM_ID {
-            id = MAX_STREAM_ID;
-        }
-        self.0 = (id << 2) | (self.0 & 0x3);
     }
 
     /// Return the encoding size of this stream ID.
@@ -227,7 +218,7 @@ impl<T: bytes::BufMut> WriteStreamId for T {
 /// exceeds the maximum stream ID limit.
 #[derive(Debug, PartialEq, Error)]
 #[error("{0} exceed limit: {1}")]
-pub struct ExceedLimitError(StreamId, StreamId);
+pub struct ExceedLimitError(StreamId, u64);
 
 /// Accept the stream ID received from peer,
 /// returned by [`ArcRemoteStreamIds::try_accept_sid`].
@@ -266,8 +257,8 @@ impl Iterator for NeedCreate {
 #[derive(Debug)]
 struct LocalStreamIds<BLOCKED> {
     role: Role,                 // Our role
-    max: [StreamId; 2],         // The maximum stream ID we can create
-    unallocated: [StreamId; 2], // The stream ID that we have not used
+    max: [u64; 2],              // The maximum stream ID we can create
+    unallocated: [u64; 2],      // The stream ID that we have not used
     wakers: [Option<Waker>; 2], // Used for waiting for the MaxStream frame notification from peer when we have exhausted the creation of stream IDs
     blocked: BLOCKED,           // The StreamsBlocked frames that will be sent to peer
 }
@@ -281,14 +272,8 @@ where
     fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64, blocked: BLOCKED) -> Self {
         Self {
             role,
-            max: [
-                StreamId::new(role, Dir::Bi, max_bi_streams),
-                StreamId::new(role, Dir::Uni, max_uni_streams),
-            ],
-            unallocated: [
-                StreamId::new(role, Dir::Bi, 0),
-                StreamId::new(role, Dir::Uni, 0),
-            ],
+            max: [max_bi_streams, max_uni_streams],
+            unallocated: [0, 0],
             wakers: [None, None],
             blocked,
         }
@@ -306,11 +291,11 @@ where
             MaxStreamsFrame::Bi(max) => (Dir::Bi, (*max).into_inner()),
             MaxStreamsFrame::Uni(max) => (Dir::Uni, (*max).into_inner()),
         };
-        assert!(val <= MAX_STREAM_ID);
-        let sid = &mut self.max[dir as usize];
+        assert!(val <= MAX_STREAMS_LIMIT);
+        let max_streams = &mut self.max[dir as usize];
         // RFC9000: MAX_STREAMS frames that do not increase the stream limit MUST be ignored.
-        if sid.id() < val {
-            *sid = StreamId::new(self.role, dir, val);
+        if *max_streams < val {
+            *max_streams = val;
             if let Some(waker) = self.wakers[dir as usize].take() {
                 waker.wake();
             }
@@ -320,50 +305,147 @@ where
     fn poll_alloc_sid(&mut self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<StreamId>> {
         let idx = dir as usize;
         let cur = &mut self.unallocated[idx];
-        if cur.id() > MAX_STREAM_ID {
+        if *cur > MAX_STREAMS_LIMIT {
             Poll::Ready(None)
         } else if *cur <= self.max[idx] {
             let id = *cur;
-            *cur = unsafe { cur.next_unchecked() };
-            Poll::Ready(Some(id))
+            *cur += 1;
+            Poll::Ready(Some(StreamId::new(self.role, dir, id)))
         } else {
             assert!(self.wakers[idx].is_none());
             // waiting for MAX_STREAMS frame from peer
             self.wakers[idx] = Some(cx.waker().clone());
             // if Poll::Pending is returned, connection can send a STREAMS_BLOCKED frame to peer
-            self.blocked
-                .send_frame([StreamsBlockedFrame::with(dir, self.max[idx])]);
+            self.blocked.send_frame([StreamsBlockedFrame::with(
+                dir,
+                VarInt::from_u64(self.max[idx])
+                    .expect("max_streams limit must be less than VARINT_MAX"),
+            )]);
             Poll::Pending
         }
     }
 }
 
-/// Remote stream IDs management.
-#[derive(Debug)]
-struct RemoteStreamIds {
-    role: Role,                 // The role of the peer
-    max: [StreamId; 2],         // The maximum stream ID that peer can create
-    unallocated: [StreamId; 2], // The stream ID that peer has not used
-    concurrency: [u64; 2],      // The concurrency of streams that peer can create
-    wakers: [Option<Waker>; 2], // When the stream ID created by peer is close to the upper limit, wake up to update the upper limit in time.
+/// Controls the concurrency of unidirectional and bidirectional streams created by the peer,
+/// primarily through [`StreamsBlockedFrame`] and [`MaxStreamsFrame`].
+///
+/// [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000.html)
+/// leaves implementations to decide when and how many streams should be
+/// advertised to a peer via MAX_STREAMS. Implementations might choose to
+/// increase limits as streams are closed, to keep the number of streams
+/// available to peers roughly consistent.
+///
+/// Implementations might also choose to increase limits as long as the
+/// peer needs to create new streams.
+///
+/// See [controlling concurrency](https://www.rfc-editor.org/rfc/rfc9000.html#name-controlling-concurrency).
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
+pub trait ControlConcurrency: fmt::Debug + Send {
+    /// Being called back upon accepting a new `dir` direction streams with stream id `sid` from peer,
+    /// all previous inexistent `dir` direction streams should be opened by peer will also be created.
+    ///
+    /// Returns whether to increase the maximum stream ID limit,
+    /// which will be communicated to the peer via a MAX_STREAMS frame in the future.
+    /// If None is returned, it means there is no need to
+    /// increase the MAX_STREAMS for the time being.
+    #[must_use]
+    fn on_accept_streams(&mut self, dir: Dir, sid: u64) -> Option<u64>;
+
+    /// Being called back upon a `dir` directional stream is ended,
+    /// whether it is closed normally or reset abnormally.
+    ///
+    /// The `sid` is the stream ID of the ended `dir` direction stream.
+    ///
+    /// Returns whether to increase the maximum stream ID limit,
+    /// which will be communicated to the peer via a MAX_STREAMS frame in the future.
+    /// If None is returned, it means there is no need to
+    /// increase the MAX_STREAMS for the time being.
+    fn on_end_of_stream(&mut self, dir: Dir, sid: u64) -> Option<u64>;
+
+    /// Being called back upon receiving the StreamsBlocked frame,
+    /// which indicates that the peer is limited to create more `dir` directional streams.
+    ///
+    /// It may optionally return an increased value for the `max_streams`
+    /// for the `dir` directional streams.
+    /// If None is returned, it means there is no need to increase
+    /// the MAX_STREAMS for the time being.
+    fn on_streams_blocked(&mut self, dir: Dir, max_streams: u64) -> Option<u64>;
 }
 
-impl RemoteStreamIds {
+#[derive(Debug)]
+pub struct SampleConcurrencyController {
+    max_streams_limit: [u64; 2],
+    cur_streams: [u64; 2],
+    alive_streams: [u64; 2],
+}
+
+impl SampleConcurrencyController {
+    pub fn new(max_bi: u64, max_uni: u64) -> Self {
+        Self {
+            max_streams_limit: [max_bi, max_uni],
+            cur_streams: [0, 0],
+            alive_streams: [0, 0],
+        }
+    }
+}
+
+impl ControlConcurrency for SampleConcurrencyController {
+    fn on_accept_streams(&mut self, dir: Dir, sid: u64) -> Option<u64> {
+        let idx = dir as usize;
+        let n = sid - self.cur_streams[idx];
+        self.alive_streams[idx] += n;
+        self.cur_streams[idx] = sid + 1;
+
+        None
+    }
+
+    fn on_end_of_stream(&mut self, dir: Dir, _sid: u64) -> Option<u64> {
+        let idx = dir as usize;
+        let new_limit = self.alive_streams[idx] + 1;
+
+        self.alive_streams[idx] -= 1;
+        self.max_streams_limit[idx] = new_limit;
+        Some(new_limit)
+    }
+
+    fn on_streams_blocked(&mut self, dir: Dir, max_streams: u64) -> Option<u64> {
+        self.max_streams_limit[dir as usize] = max_streams + 1;
+        Some(max_streams + 1)
+    }
+}
+
+/// Remote stream IDs management.
+#[derive(Debug)]
+struct RemoteStreamIds<MAX> {
+    role: Role,                            // The role of the peer
+    max: [u64; 2],                         // The maximum stream ID that limit peer to create
+    unallocated: [StreamId; 2],            // The stream ID that peer has not used
+    strategy: Box<dyn ControlConcurrency>, // The strategy to control the concurrency of streams
+    max_tx: MAX,                           // The channel to send the MAX_STREAMS frame to peer
+}
+
+impl<MAX> RemoteStreamIds<MAX>
+where
+    MAX: SendFrame<MaxStreamsFrame> + Clone + Send + 'static,
+{
     /// Create a new [`RemoteStreamIds`] with the given role,
     /// and maximum number of streams that can be created by peer in each [`Dir`].
-    fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64) -> Self {
+    fn new(
+        role: Role,
+        max_bi: u64,
+        max_uni: u64,
+        max_tx: MAX,
+        strategy: Box<dyn ControlConcurrency>,
+    ) -> Self {
         Self {
             role,
-            max: [
-                StreamId::new(role, Dir::Bi, max_bi_streams),
-                StreamId::new(role, Dir::Uni, max_uni_streams),
-            ],
+            max: [max_bi, max_uni],
             unallocated: [
                 StreamId::new(role, Dir::Bi, 0),
                 StreamId::new(role, Dir::Uni, 0),
             ],
-            concurrency: [max_bi_streams, max_uni_streams],
-            wakers: [None, None],
+            strategy,
+            max_tx,
         }
     }
 
@@ -375,9 +457,8 @@ impl RemoteStreamIds {
     fn try_accept_sid(&mut self, sid: StreamId) -> Result<AcceptSid, ExceedLimitError> {
         debug_assert_eq!(sid.role(), self.role);
         let idx = sid.dir() as usize;
-        let max = &mut self.max[idx];
-        if sid > *max {
-            return Err(ExceedLimitError(sid, *max));
+        if sid.id() > self.max[idx] {
+            return Err(ExceedLimitError(sid, self.max[idx]));
         }
         let cur = &mut self.unallocated[idx];
         if sid < *cur {
@@ -386,28 +467,41 @@ impl RemoteStreamIds {
             let start = *cur;
             *cur = unsafe { sid.next_unchecked() };
             log::debug!("unallocated: {:?}", self.unallocated[idx]);
-            let step = self.concurrency[idx] >> 1;
-            if sid.id() + step > max.id() {
-                if let Some(waker) = self.wakers[idx].take() {
-                    waker.wake();
-                }
+            if let Some(max_streams) = self.strategy.on_accept_streams(sid.dir(), sid.id()) {
+                self.max[idx] = max_streams;
+                self.max_tx.send_frame([MaxStreamsFrame::with(
+                    sid.dir(),
+                    VarInt::from_u64(max_streams)
+                        .expect("max_streams must be less than VARINT_MAX"),
+                )]);
             }
             Ok(AcceptSid::New(NeedCreate { start, end: sid }))
         }
     }
 
-    fn poll_extend_sid(&mut self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<VarInt>> {
-        let idx = dir as usize;
-        let step = self.concurrency[idx] >> 1;
-        if self.max[idx].id() > MAX_STREAM_ID {
-            Poll::Ready(None)
-        } else if self.unallocated[idx].id() + step >= self.max[idx].id() {
-            self.max[idx].saturating_add(step);
-            Poll::Ready(Some(self.max[idx].into()))
-        } else {
-            assert!(self.wakers[idx].is_none());
-            self.wakers[idx] = Some(cx.waker().clone());
-            Poll::Pending
+    fn on_end_of_stream(&mut self, sid: StreamId) {
+        debug_assert_eq!(sid.role(), self.role);
+        debug_assert!(sid.id() <= MAX_STREAMS_LIMIT);
+        if let Some(max_streams) = self.strategy.on_end_of_stream(sid.dir(), sid.id()) {
+            self.max[sid.dir() as usize] = max_streams;
+            self.max_tx.send_frame([MaxStreamsFrame::with(
+                sid.dir(),
+                VarInt::from_u64(max_streams).expect("max_streams must be less than VARINT_MAX"),
+            )]);
+        }
+    }
+
+    fn recv_streams_blocked_frame(&mut self, frame: &StreamsBlockedFrame) {
+        let (dir, max_streams) = match frame {
+            StreamsBlockedFrame::Bi(max) => (Dir::Bi, (*max).into_inner()),
+            StreamsBlockedFrame::Uni(max) => (Dir::Uni, (*max).into_inner()),
+        };
+        if let Some(max_streams) = self.strategy.on_streams_blocked(dir, max_streams) {
+            self.max[dir as usize] = max_streams;
+            self.max_tx.send_frame([MaxStreamsFrame::with(
+                dir,
+                VarInt::from_u64(max_streams).expect("max_streams must be less than VARINT_MAX"),
+            )]);
         }
     }
 }
@@ -479,6 +573,18 @@ where
     }
 }
 
+impl<BLOCKED> ReceiveFrame<MaxStreamsFrame> for ArcLocalStreamIds<BLOCKED>
+where
+    BLOCKED: SendFrame<StreamsBlockedFrame> + Clone + Send + 'static,
+{
+    type Output = ();
+
+    fn recv_frame(&self, frame: &MaxStreamsFrame) -> Result<Self::Output, crate::error::Error> {
+        self.recv_max_streams_frame(frame);
+        Ok(())
+    }
+}
+
 /// Shared remote stream IDs, mainly controls and monitors the stream IDs
 /// in the received stream-related frames from peer.
 ///
@@ -496,9 +602,12 @@ where
 /// all streams of the same type with lower-numbered stream IDs MUST be created.
 /// This ensures that the creation order for streams is consistent on both endpoints
 #[derive(Debug, Clone)]
-pub struct ArcRemoteStreamIds(Arc<Mutex<RemoteStreamIds>>);
+pub struct ArcRemoteStreamIds<MAX>(Arc<Mutex<RemoteStreamIds<MAX>>>);
 
-impl ArcRemoteStreamIds {
+impl<MAX> ArcRemoteStreamIds<MAX>
+where
+    MAX: SendFrame<MaxStreamsFrame> + Clone + Send + 'static,
+{
     /// Create a new [`ArcRemoteStreamIds`] with the given role,
     /// and maximum number of streams that can be created by peer in each direction.
     ///
@@ -508,11 +617,15 @@ impl ArcRemoteStreamIds {
     /// See [section-18.2-4.21](https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2-4.21)
     /// and [section-18.2-4.23](https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2-4.23)
     /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
-    pub fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64) -> Self {
+    pub fn new(
+        role: Role,
+        max_bi: u64,
+        max_uni: u64,
+        max_tx: MAX,
+        strategy: Box<dyn ControlConcurrency>,
+    ) -> Self {
         Self(Arc::new(Mutex::new(RemoteStreamIds::new(
-            role,
-            max_bi_streams,
-            max_uni_streams,
+            role, max_bi, max_uni, max_tx, strategy,
         ))))
     }
 
@@ -542,33 +655,40 @@ impl ArcRemoteStreamIds {
         self.0.lock().unwrap().try_accept_sid(sid)
     }
 
-    /// Asynchronously extend the maximum stream ID that peer can create in the `dir` direction.
-    ///
-    /// In fact, when receiving the peer's ResetStreamFrame or sending a ResetStreamFrame,
-    /// it signifies the end of a stream.
-    /// At that point, it is necessary to check whether the stream was created by the peer
-    /// and whether the peer's maximum stream ID needs to be updated.
-    /// There is no need to spawn an asynchronous task to constantly check.
-    ///
-    /// In the future, just update the peer's maximum stream ID limit immediately
-    /// when a stream created by the peer ends, and send a MAX_STREAMS frame to the peer.
-    #[deprecated]
-    pub fn poll_extend_sid(&self, cx: &mut Context<'_>, dir: Dir) -> Poll<Option<VarInt>> {
-        self.0.lock().unwrap().poll_extend_sid(cx, dir)
+    #[inline]
+    pub fn on_end_of_stream(&self, sid: StreamId) {
+        self.0.lock().unwrap().on_end_of_stream(sid);
+    }
+
+    #[inline]
+    pub fn recv_streams_blocked_frame(&self, frame: &StreamsBlockedFrame) {
+        self.0.lock().unwrap().recv_streams_blocked_frame(frame);
+    }
+}
+
+impl<MAX> ReceiveFrame<StreamsBlockedFrame> for ArcRemoteStreamIds<MAX>
+where
+    MAX: SendFrame<MaxStreamsFrame> + Clone + Send + 'static,
+{
+    type Output = ();
+
+    fn recv_frame(&self, frame: &StreamsBlockedFrame) -> Result<Self::Output, crate::error::Error> {
+        self.recv_streams_blocked_frame(frame);
+        Ok(())
     }
 }
 
 /// Stream IDs management, including an [`ArcLocalStreamIds`] as local,
 /// and an [`ArcRemoteStreamIds`] as remote.
 #[derive(Debug, Clone)]
-pub struct StreamIds<BLOCKED> {
+pub struct StreamIds<BLOCKED, MAX> {
     pub local: ArcLocalStreamIds<BLOCKED>,
-    pub remote: ArcRemoteStreamIds,
+    pub remote: ArcRemoteStreamIds<MAX>,
 }
 
-impl<BLOCKED> StreamIds<BLOCKED>
+impl<T> StreamIds<T, T>
 where
-    BLOCKED: SendFrame<StreamsBlockedFrame> + Clone + Send + 'static,
+    T: SendFrame<MaxStreamsFrame> + SendFrame<StreamsBlockedFrame> + Clone + Send + 'static,
 {
     /// Create a new [`StreamIds`] with the given role, and maximum number of streams of each direction.
     ///
@@ -577,10 +697,22 @@ where
     /// parameters, which are unknown at the beginning.
     /// Therefore, peer's `initial_max_streams_xx` can be set to 0 initially,
     /// and then updated later after obtaining the peer's `initial_max_streams_xx` setting.
-    pub fn new(role: Role, max_bi_streams: u64, max_uni_streams: u64, blocked: BLOCKED) -> Self {
+    pub fn new(
+        role: Role,
+        max_bi_streams: u64,
+        max_uni_streams: u64,
+        sid_frames_tx: T,
+        strategy: Box<dyn ControlConcurrency>,
+    ) -> Self {
         // 缺省为0
-        let local = ArcLocalStreamIds::new(role, 0, 0, blocked);
-        let remote = ArcRemoteStreamIds::new(!role, max_bi_streams, max_uni_streams);
+        let local = ArcLocalStreamIds::new(role, 0, 0, sid_frames_tx.clone());
+        let remote = ArcRemoteStreamIds::new(
+            !role,
+            max_bi_streams,
+            max_uni_streams,
+            sid_frames_tx,
+            strategy,
+        );
         Self { local, remote }
     }
 }
@@ -610,9 +742,8 @@ mod tests {
     }
 
     #[test]
-    fn test_permit_max_sid() {
-        let StreamIds { local, remote: _ } =
-            StreamIds::new(Role::Client, 10, 2, StreamsBlockedFrameTx::default());
+    fn test_recv_max_stream_frames() {
+        let local = ArcLocalStreamIds::new(Role::Client, 0, 0, StreamsBlockedFrameTx::default());
         local.recv_max_streams_frame(&MaxStreamsFrame::Bi(VarInt::from_u32(0)));
         let waker = futures::task::noop_waker();
         let mut cx = Context::from_waker(&waker);
@@ -648,10 +779,24 @@ mod tests {
         assert!(local.0.lock().unwrap().wakers[1].is_some());
     }
 
+    #[derive(Clone, Deref, Default)]
+    struct MaxStreamsFrameTx(ArcAsyncDeque<MaxStreamsFrame>);
+
+    impl SendFrame<MaxStreamsFrame> for MaxStreamsFrameTx {
+        fn send_frame<I: IntoIterator<Item = MaxStreamsFrame>>(&self, iter: I) {
+            (&self.0).extend(iter);
+        }
+    }
+
     #[test]
     fn test_try_accept_sid() {
-        let StreamIds { local: _, remote } =
-            StreamIds::new(Role::Client, 10, 5, StreamsBlockedFrameTx::default());
+        let remote = ArcRemoteStreamIds::new(
+            Role::Server,
+            10,
+            5,
+            MaxStreamsFrameTx::default(),
+            Box::new(SampleConcurrencyController::new(10, 5)),
+        );
         let result = remote.try_accept_sid(StreamId(21));
         assert_eq!(
             result,
@@ -690,6 +835,6 @@ mod tests {
         }
 
         let result = remote.try_accept_sid(StreamId(65));
-        assert_eq!(result, Err(ExceedLimitError(StreamId(65), StreamId(41))));
+        assert_eq!(result, Err(ExceedLimitError(StreamId(65), 10)));
     }
 }

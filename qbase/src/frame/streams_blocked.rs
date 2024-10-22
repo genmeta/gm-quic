@@ -1,4 +1,7 @@
-use crate::streamid::{be_streamid, Dir, StreamId, WriteStreamId};
+use crate::{
+    streamid::Dir,
+    varint::{be_varint, VarInt, WriteVarInt},
+};
 
 /// STREAMS_BLOCKED frame.
 ///
@@ -13,8 +16,8 @@ use crate::streamid::{be_streamid, Dir, StreamId, WriteStreamId};
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamsBlockedFrame {
-    Bi(StreamId),
-    Uni(StreamId),
+    Bi(VarInt),
+    Uni(VarInt),
 }
 
 const STREAMS_BLOCKED_FRAME_TYPE: u8 = 0x16;
@@ -22,10 +25,10 @@ const STREAMS_BLOCKED_FRAME_TYPE: u8 = 0x16;
 const DIR_BIT: u8 = 0x1;
 
 impl StreamsBlockedFrame {
-    pub fn with(dir: Dir, stream_id: StreamId) -> Self {
+    pub fn with(dir: Dir, max_streams: VarInt) -> Self {
         match dir {
-            Dir::Bi => StreamsBlockedFrame::Bi(stream_id),
-            Dir::Uni => StreamsBlockedFrame::Uni(stream_id),
+            Dir::Bi => StreamsBlockedFrame::Bi(max_streams),
+            Dir::Uni => StreamsBlockedFrame::Uni(max_streams),
         }
     }
 }
@@ -56,13 +59,13 @@ pub fn streams_blocked_frame_with_dir(
     dir: u8,
 ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], StreamsBlockedFrame> {
     move |input: &[u8]| {
-        let (input, stream_id) = be_streamid(input)?;
+        let (input, max_streams) = be_varint(input)?;
         Ok((
             input,
             if dir & DIR_BIT == Dir::Bi as u8 {
-                StreamsBlockedFrame::Bi(stream_id)
+                StreamsBlockedFrame::Bi(max_streams)
             } else {
-                StreamsBlockedFrame::Uni(stream_id)
+                StreamsBlockedFrame::Uni(max_streams)
             },
         ))
     }
@@ -71,13 +74,13 @@ pub fn streams_blocked_frame_with_dir(
 impl<T: bytes::BufMut> super::io::WriteFrame<StreamsBlockedFrame> for T {
     fn put_frame(&mut self, frame: &StreamsBlockedFrame) {
         match frame {
-            StreamsBlockedFrame::Bi(stream_id) => {
+            StreamsBlockedFrame::Bi(max_streams) => {
                 self.put_u8(STREAMS_BLOCKED_FRAME_TYPE);
-                self.put_streamid(stream_id);
+                self.put_varint(max_streams);
             }
-            StreamsBlockedFrame::Uni(stream_id) => {
+            StreamsBlockedFrame::Uni(max_streams) => {
                 self.put_u8(STREAMS_BLOCKED_FRAME_TYPE | 0x1);
-                self.put_streamid(stream_id);
+                self.put_varint(max_streams);
             }
         }
     }
@@ -105,10 +108,7 @@ mod tests {
         })(buf.as_ref())
         .unwrap();
         assert!(input.is_empty());
-        assert_eq!(
-            frame,
-            StreamsBlockedFrame::Bi(VarInt::from_u32(0x1234).into())
-        );
+        assert_eq!(frame, StreamsBlockedFrame::Bi(VarInt::from_u32(0x1234)));
 
         let buf = vec![STREAMS_BLOCKED_FRAME_TYPE | 0x1, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
@@ -120,20 +120,17 @@ mod tests {
         })(buf.as_ref())
         .unwrap();
         assert!(input.is_empty());
-        assert_eq!(
-            frame,
-            StreamsBlockedFrame::Uni(VarInt::from_u32(0x1234).into())
-        );
+        assert_eq!(frame, StreamsBlockedFrame::Uni(VarInt::from_u32(0x1234)));
     }
 
     #[test]
     fn test_write_streams_blocked_frame() {
         let mut buf = Vec::new();
-        buf.put_frame(&StreamsBlockedFrame::Bi(VarInt::from_u32(0x1234).into()));
+        buf.put_frame(&StreamsBlockedFrame::Bi(VarInt::from_u32(0x1234)));
         assert_eq!(buf, vec![STREAMS_BLOCKED_FRAME_TYPE, 0x52, 0x34]);
 
         let mut buf = Vec::new();
-        buf.put_frame(&StreamsBlockedFrame::Uni(VarInt::from_u32(0x1234).into()));
+        buf.put_frame(&StreamsBlockedFrame::Uni(VarInt::from_u32(0x1234)));
         assert_eq!(buf, vec![STREAMS_BLOCKED_FRAME_TYPE + 1, 0x52, 0x34]);
     }
 }

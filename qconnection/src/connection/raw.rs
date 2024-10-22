@@ -234,6 +234,7 @@ impl RawConnection {
                     return;
                 };
 
+                // pretend to receive the MAX_STREAM frames
                 _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
                     remote_params.initial_max_streams_bidi(),
                 )));
