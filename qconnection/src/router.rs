@@ -13,10 +13,16 @@ use crate::{connection::PacketEntry, path::pathway::Pathway, usc::ArcUsc};
 /// Global Router for managing connections.
 static ROUTER: LazyLock<DashMap<ConnectionId, [PacketEntry; 4]>> = LazyLock::new(DashMap::new);
 
-#[derive(Clone, Debug)]
+/// A interface to control the global router, which used to route packets to the corresponding connection.
 pub struct Router;
 
 impl Router {
+    /// Try to route the packet to the corresponding connection.
+    ///
+    /// The argument `packet` is the packet to be routed, `pathway` and `usc` is where the packet
+    /// comes from,you can read the [`Pathway`] and [`ArcUsc`]'s documents for more information.
+    ///
+    /// If the connection does not exist, the packet will be returned with out any modification.
     pub fn try_to_route_packet_from(
         packet: DataPacket,
         pathway: Pathway,
@@ -36,6 +42,10 @@ impl Router {
         Ok(())
     }
 
+    /// Register a new connection to the global router.
+    ///
+    /// Return a [`RouterRegistry`], a wrapper around the connection's local CIDs. it can be used to
+    /// generate a new unique CID and add a router entry to the global router.
     pub fn registry<ISSUED>(
         scid: ConnectionId,
         issued_cids: ISSUED,
@@ -51,10 +61,18 @@ impl Router {
         }
     }
 
+    /// Return a [`RevokeRouter`], a wrapper around the local CIDs of the connection.
+    ///
+    /// It can be used to remove the router entry from the global router when a CID is revoked, read
+    /// the [`RevokeRouter`] for more information.
     pub fn revoke<T>(local_cids: T) -> RevokeRouter<T> {
         RevokeRouter { local_cids }
     }
 
+    /// Remove the router entry from the global router directly.
+    ///
+    /// This is used when the connection is closed, all the remaining router entries of the
+    /// connection should be removed.
     pub fn remove(cid: &ConnectionId) {
         ROUTER.remove(cid);
     }
@@ -91,6 +109,12 @@ impl<T> GenUniqueCid for RouterRegistry<T> {
     }
 }
 
+/// A wrapper around the local CIDs of the connection, used to remove the router entry from the
+/// global router.
+///
+/// The way this structure works is receiving the [`RetireConnectionIdFrame`], and then passed it to
+/// the wrapped struct. The wrapped struct should return whether the CID is revoked as [`Option`].
+/// If the CID revoked, its router entry will be removed from the global router.
 #[derive(Clone)]
 pub struct RevokeRouter<T> {
     local_cids: T,
