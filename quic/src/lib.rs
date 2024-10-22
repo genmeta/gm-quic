@@ -11,7 +11,7 @@ use qconnection::{
     connection::ArcConnection,
     path::Pathway,
     router::Router,
-    usc::{ArcUsc, USCRegisty},
+    usc::{ArcUsc, UscRegistry},
 };
 
 pub mod client;
@@ -78,7 +78,7 @@ pub fn get_or_create_usc(bind_addr: &SocketAddr) -> io::Result<ArcUsc> {
         }
     };
 
-    let usc = USCRegisty::get_or_create_usc(*bind_addr, recv_task)?;
+    let usc = UscRegistry::get_or_create_usc(*bind_addr, recv_task)?;
     Ok(usc)
 }
 

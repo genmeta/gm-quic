@@ -402,12 +402,12 @@ impl ArcConnection {
     /// This function is intended for use by the application layer to signal an
     /// error and initiate the connection closure.
     pub fn close(&self, msg: impl Into<Cow<'static, str>>) {
-        let mut state = self.0.lock().unwrap();
-        if let Raw(conn) = state.deref_mut() {
+        let mut guard = self.0.lock().unwrap();
+        if let Raw(conn) = guard.deref_mut() {
             let error = Error::with_default_fty(ErrorKind::Application, msg);
             log::info!("Connection is closed by application: {}", error);
             conn.error.set_app_error(error.clone());
-            drop(state);
+            drop(guard);
             self.should_enter_closing(error);
         }
     }
@@ -419,8 +419,8 @@ impl ArcConnection {
     /// confirmation, any remaining data is drained.  If the timeout expires without
     /// confirmation, the connection is forcefully terminated.
     fn should_enter_closing(&self, error: Error) {
-        let mut state = self.0.lock().unwrap();
-        let state = state.deref_mut();
+        let mut guard = self.0.lock().unwrap();
+        let state = guard.deref_mut();
         if !matches!(state, Raw(..)) {
             return;
         }
@@ -458,6 +458,7 @@ impl ArcConnection {
                 });
             }
             Draining(..) => {
+                drop(guard);
                 drop(handles); // break the channels
                 self.draining(pto * 3)
             }
@@ -466,9 +467,7 @@ impl ArcConnection {
     }
 
     pub fn enter_draining(&self, error: Error) {
-        let mut state = self.0.lock().unwrap();
-        let state = state.deref_mut();
-        let Some(pto) = state.enter_draining(error) else {
+        let Some(pto) = self.0.lock().unwrap().deref_mut().enter_draining(error) else {
             // has been closed
             return;
         };
@@ -496,7 +495,9 @@ impl ArcConnection {
 
     /// Dismiss the connection, remove it from the global router.
     /// Can only be called internally, and the app should not care this method.
-    pub fn die(self) {
+    ///
+    /// When the connection "die", is must enter the closing state or draining state first.
+    fn die(self) {
         self.0.lock().unwrap().die();
     }
 
