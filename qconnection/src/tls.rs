@@ -142,12 +142,17 @@ impl futures::Future for ReadTls<'_> {
     }
 }
 
+/// The shared TLS session for QUIC's TLS handshake.
+///
+/// This is a wrapper around the [`rustls::quic::Connection`], which is a QUIC-specific TLS connection.
 #[derive(Debug, Clone)]
 pub struct ArcTlsSession(Arc<Mutex<Result<RawTlsSession, Aborted>>>);
 
 impl ArcTlsSession {
+    /// The QUIC version used by the TLS session.
     const QUIC_VERSION: rustls::quic::Version = rustls::quic::Version::V1;
 
+    /// Create a new client-side TLS session.
     pub fn new_client(
         server_name: rustls::pki_types::ServerName<'static>,
         tls_config: Arc<rustls::ClientConfig>,
@@ -166,6 +171,7 @@ impl ArcTlsSession {
         Self(Arc::new(Mutex::new(Ok(connection.into()))))
     }
 
+    /// Create a new server-side TLS session.
     pub fn new_server(tls_config: Arc<rustls::ServerConfig>, parameters: &Parameters) -> Self {
         let mut params = Vec::new();
         params.put_parameters(parameters);
@@ -176,6 +182,7 @@ impl ArcTlsSession {
         Self(Arc::new(Mutex::new(Ok(connection.into()))))
     }
 
+    /// Generate the keys for the initial packet protection.
     pub fn initial_keys(crypto_provider: &CryptoProvider, side: Side, cid: ConnectionId) -> Keys {
         let suite = crypto_provider
             .cipher_suites
@@ -191,6 +198,7 @@ impl ArcTlsSession {
         suite.keys(&cid, side, rustls::quic::Version::V1)
     }
 
+    /// Abort the TLS session, the handshaking will be stopped if it is not completed.
     pub fn abort(&self) {
         let mut guard = self.0.lock().unwrap();
         if let Ok(raw_tls) = guard.deref_mut() {
@@ -210,7 +218,22 @@ impl ArcTlsSession {
         }
     }
 
-    /// 自托管密钥升级
+    /// Start the TLS handshake, automatically upgrade the keys, and transmit tls data.
+    ///
+    /// The [`CryptoStream`]s are provide for TLS connection to transmit the encrypted data.
+    ///
+    /// The [`ArcKeys`] and [`ArcOneRttKeys`] will be set when the keys are upgraded.
+    ///
+    /// The [`ConnError`] is used to notify the other components that a connection error occurred
+    /// in the process of the handshake.
+    ///
+    /// The [`Handshake`] is used to notify the other components that the handshake is completed,
+    /// for server, it should send the [`HandshakeDoneFrame`] to the client.
+    ///
+    /// Return a [`RemoteParameters`] that can be used to asynchronously get the peer's transport
+    /// parameters.
+    ///
+    /// [`HandshakeDoneFrame`]: qbase::frame::HandshakeDoneFrame
     pub fn keys_upgrade(
         &self,
         crypto_streams: [&CryptoStream; 3],
@@ -318,6 +341,11 @@ impl ArcTlsSession {
         remote_params
     }
 
+    /// For server, retrieves the server name, if any, used to select the certificate and private key.
+    ///
+    /// For client, returns [`None`].
+    ///
+    /// read [`rustls::quic::ServerConnection::server_name`] for more.
     pub fn server_name(&self) -> Option<String> {
         self.0
             .lock()
