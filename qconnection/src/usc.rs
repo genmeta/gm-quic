@@ -15,14 +15,14 @@ use tokio::task::JoinHandle;
 use crate::path::Pathway;
 
 /// 全局的usc注册管理，用于查找已有的usc，key是绑定的本地地址，包括v4和v6的地址
-static USC_REGISTRY: LazyLock<DashMap<SocketAddr, USCRegisty>> = LazyLock::new(DashMap::new);
+static USC_REGISTRY: LazyLock<DashMap<SocketAddr, UscRegistry>> = LazyLock::new(DashMap::new);
 
-pub struct USCRegisty {
+pub struct UscRegistry {
     usc: ArcUsc,
     recv_task: JoinHandle<()>,
 }
 
-impl USCRegisty {
+impl UscRegistry {
     /// Create a new [`ArcUsc`] and spawn a task to receive packets or return the existing one.
     ///
     /// Note that the future returned by `recv_task` must not be complete unless a udp error occurs.
@@ -31,7 +31,7 @@ impl USCRegisty {
         Task: Future<Output = ()> + Send + 'static,
         F: FnOnce(ArcUsc) -> Task,
     {
-        if let Some(USCRegisty { usc, .. }) = USC_REGISTRY.get(&addr).as_deref() {
+        if let Some(UscRegistry { usc, .. }) = USC_REGISTRY.get(&addr).as_deref() {
             return Ok(usc.clone());
         }
 
@@ -41,7 +41,7 @@ impl USCRegisty {
         let usc = ArcUsc { usc, addr };
 
         let recv_task = tokio::spawn(recv_task(usc.clone()));
-        let registry = USCRegisty {
+        let registry = UscRegistry {
             usc: usc.clone(),
             recv_task,
         };
