@@ -8,8 +8,8 @@ use deref_derive::{Deref, DerefMut};
 use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::{
-        BeFrame, FrameType, MaxStreamDataFrame, MaxStreamsFrame, ResetStreamFrame, SendFrame,
-        StopSendingFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
+        BeFrame, FrameType, MaxStreamDataFrame, MaxStreamsFrame, ReceiveFrame, ResetStreamFrame,
+        SendFrame, StopSendingFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
         STREAM_FRAME_MAX_ENCODING_SIZE,
     },
     param::Parameters,
@@ -531,10 +531,11 @@ where
             }
             StreamCtlFrame::MaxStreams(max_streams) => {
                 // 主要更新我方能创建的单双向流
-                self.stream_ids.local.recv_max_streams_frame(max_streams);
+                _ = self.stream_ids.local.recv_frame(max_streams);
             }
-            StreamCtlFrame::StreamsBlocked(_streams_blocked) => {
-                // 仅仅起到通知作用?也分主动和被动
+            StreamCtlFrame::StreamsBlocked(streams_blocked) => {
+                // 在某些流并发策略中，收到此帧，可能会更新MaxStreams
+                _ = self.stream_ids.remote.recv_frame(streams_blocked);
             }
         }
         Ok(())
