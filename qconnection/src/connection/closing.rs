@@ -76,7 +76,7 @@ pub struct ClosingConnection {
     pub last_send_ccf: Arc<Mutex<Instant>>,
     pub revd_ccf: RcvdCcf,
 
-    pub ccf_packets: Arc<Option<CcfPackets>>,
+    pub ccf_packets: Option<Arc<CcfPackets>>,
 }
 
 impl ClosingConnection {
@@ -89,13 +89,9 @@ impl ClosingConnection {
         last_dcid: Option<ConnectionId>,
     ) -> Self {
         let ccf_packets = last_dcid.map(|last_dcid| {
-            CcfPackets::new(
-                hs.as_ref(),
-                one_rtt.as_ref(),
-                &error,
-                last_dcid,
-                initial_scid,
-            )
+            let hs = hs.as_ref();
+            let one_rtt = one_rtt.as_ref();
+            CcfPackets::new(hs, one_rtt, &error, last_dcid, initial_scid)
         });
         Self {
             local_cids,
@@ -105,7 +101,7 @@ impl ClosingConnection {
             rcvd_packets: Arc::new(AtomicUsize::new(0)),
             last_send_ccf: Arc::new(Mutex::new(Instant::now())),
             revd_ccf: RcvdCcf::default(),
-            ccf_packets: Arc::new(ccf_packets),
+            ccf_packets: ccf_packets.map(Arc::new),
         }
     }
 
