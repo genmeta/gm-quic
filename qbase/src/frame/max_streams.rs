@@ -1,5 +1,5 @@
 use crate::{
-    streamid::MAX_STREAM_ID,
+    streamid::{Dir, MAX_STREAMS_LIMIT},
     varint::{be_varint, VarInt, WriteVarInt},
 };
 
@@ -24,6 +24,15 @@ const MAX_STREAMS_FRAME_TYPE: u8 = 0x12;
 
 const DIR_BIT: u8 = 0x1;
 
+impl MaxStreamsFrame {
+    pub fn with(dir: Dir, max_streams: VarInt) -> Self {
+        match dir {
+            Dir::Bi => MaxStreamsFrame::Bi(max_streams),
+            Dir::Uni => MaxStreamsFrame::Uni(max_streams),
+        }
+    }
+}
+
 impl super::BeFrame for MaxStreamsFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::MaxStreams(match self {
@@ -38,8 +47,8 @@ impl super::BeFrame for MaxStreamsFrame {
 
     fn encoding_size(&self) -> usize {
         1 + match self {
-            MaxStreamsFrame::Bi(stream_id) => stream_id.encoding_size(),
-            MaxStreamsFrame::Uni(stream_id) => stream_id.encoding_size(),
+            MaxStreamsFrame::Bi(max_streams) => max_streams.encoding_size(),
+            MaxStreamsFrame::Uni(max_streams) => max_streams.encoding_size(),
         }
     }
 }
@@ -52,7 +61,7 @@ pub fn max_streams_frame_with_dir(
     move |input: &[u8]| {
         use crate::streamid::Dir;
         let (remain, max_streams) = be_varint(input)?;
-        if max_streams > MAX_STREAM_ID {
+        if max_streams > MAX_STREAMS_LIMIT {
             Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::TooLarge,
@@ -73,13 +82,13 @@ pub fn max_streams_frame_with_dir(
 impl<T: bytes::BufMut> super::io::WriteFrame<MaxStreamsFrame> for T {
     fn put_frame(&mut self, frame: &MaxStreamsFrame) {
         match frame {
-            MaxStreamsFrame::Bi(stream_id) => {
+            MaxStreamsFrame::Bi(max_streams) => {
                 self.put_u8(MAX_STREAMS_FRAME_TYPE);
-                self.put_varint(stream_id);
+                self.put_varint(max_streams);
             }
-            MaxStreamsFrame::Uni(stream_id) => {
+            MaxStreamsFrame::Uni(max_streams) => {
                 self.put_u8(MAX_STREAMS_FRAME_TYPE | 0x1);
-                self.put_varint(stream_id);
+                self.put_varint(max_streams);
             }
         }
     }
