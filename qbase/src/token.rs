@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::{ops::Deref, sync::Arc};
 
 use bytes::BufMut;
 use nom::{bytes::complete::take, IResult};
@@ -70,37 +70,39 @@ pub trait TokenProvider: Send + Sync {
 }
 
 #[derive(Clone)]
-pub struct ArcTokenRegistry(Arc<Mutex<TokenRegistry>>);
+pub struct ArcTokenRegistry(Arc<TokenRegistry>);
 
 impl ArcTokenRegistry {
     pub fn default_sink(server_name: String) -> Self {
-        Self(Arc::new(Mutex::new(TokenRegistry::Client((
+        Self(Arc::new(TokenRegistry::Client((
             server_name,
             Arc::new(DefaultTokenRegistry),
-        )))))
+        ))))
     }
 
     pub fn default_provider() -> Self {
-        Self(Arc::new(Mutex::new(TokenRegistry::Server(Arc::new(
+        Self(Arc::new(TokenRegistry::Server(Arc::new(
             DefaultTokenRegistry,
-        )))))
+        ))))
     }
 
     pub fn with_sink(server_name: String, client: Arc<dyn TokenSink>) -> Self {
-        Self(Arc::new(Mutex::new(TokenRegistry::Client((
-            server_name,
-            client,
-        )))))
+        Self(Arc::new(TokenRegistry::Client((server_name, client))))
     }
 
     pub fn with_provider(provider: Arc<dyn TokenProvider>) -> Self {
-        Self(Arc::new(Mutex::new(TokenRegistry::Server(provider))))
-    }
-
-    pub fn lock_guard(&self) -> MutexGuard<TokenRegistry> {
-        self.0.lock().unwrap()
+        Self(Arc::new(TokenRegistry::Server(provider)))
     }
 }
+
+impl core::ops::Deref for ArcTokenRegistry {
+    type Target = TokenRegistry;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.deref()
+    }
+}
+
 pub enum TokenRegistry {
     Client((String, Arc<dyn TokenSink>)),
     Server(Arc<dyn TokenProvider>),
@@ -110,8 +112,7 @@ impl ReceiveFrame<NewTokenFrame> for ArcTokenRegistry {
     type Output = ();
 
     fn recv_frame(&self, frame: &NewTokenFrame) -> Result<Self::Output, crate::error::Error> {
-        let guard = self.0.lock().unwrap();
-        match &*guard {
+        match self.deref() {
             TokenRegistry::Client((server_name, client)) => {
                 client.sink(server_name, frame.token.clone());
                 Ok(())
