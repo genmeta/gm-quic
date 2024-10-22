@@ -240,21 +240,10 @@ impl ReadIntoDatagrams {
             buffers_used += 1;
             last_buffer_written = datagram_size;
 
-            let remaining = (&mut datagram[datagram_size..]).apply(&constraints);
-            match remaining.len() {
-                0 => continue,
-                // 如果数据报没有没填满，需要填充padding帧，否则datagram会被之前的数据污染
-                len if len == MSS - datagram_size => {
-                    /* use qbase::frame::io::WriteFrame;
-                    use qbase::frame::PaddingFrame;
-                    for _ in 0..remaining.remaining_mut() {
-                        remaining.put_frame(&PaddingFrame);
-                    } */
-                    remaining.fill(0);
-                    constraints.commit(MSS - datagram_size, false);
-                }
-                // 如果拥塞控制，抗放大限制不允许填充帧，那本次装填就此结结束
-                _ => break,
+            // 本数据报尚未被填满，如果本数据报包含一个1rtt数据包，在“后面填充padding”是不行的，因为那些padding会被认为是1rtt的一部分
+            // 就会导致发送出的数据包无法被对端解析，所以这里直接break掉
+            if datagram_size < MSS {
+                break;
             }
         }
 

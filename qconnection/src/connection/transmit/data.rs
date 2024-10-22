@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Instant};
 use bytes::BufMut;
 use qbase::{
     cid::ConnectionId,
-    frame::{PathChallengeFrame, PathResponseFrame},
+    frame::{PathChallengeFrame, PathResponseFrame, STREAM_FRAME_MAX_ENCODING_SIZE},
     packet::{
         encrypt::{
             encode_long_first_byte, encode_short_first_byte, encrypt_packet, protect_header,
@@ -122,7 +122,7 @@ impl DataSpaceReader {
 
         // 6. 检查NewToken，是否需要发送
 
-        // 7. 象征性地检查一下CryptoStream
+        // 7. 检查一下CryptoStream，服务器可能会发送一些数据
         while let Some((frame, n)) = self.crypto_stream_outgoing.try_read_data(body_buf) {
             send_guard.record_frame(GuaranteedFrame::Crypto(frame));
             body_buf = &mut body_buf[n..];
@@ -131,7 +131,15 @@ impl DataSpaceReader {
             in_flight = true;
         }
 
-        // 8. 检查DataStreams是否需要发送，若有，且符合（constraints + buf）节制，写入，burst、发包记录都记录
+        // 8. 检查Datagrams是否需要发送，若有，且符合(constraints + buf) 节制，写入，burst、发包记录都记录
+        while let Some((_frame, n)) = self.datagrams.try_read_datagram(body_buf) {
+            body_buf = &mut body_buf[n..];
+            is_ack_eliciting = true;
+            is_just_ack = false;
+            in_flight = true;
+        }
+
+        // 9. 检查DataStreams是否需要发送，若有，且符合（constraints + buf）节制，写入，burst、发包记录都记录
         let mut fresh_bytes = 0;
         while let Some((frame, n, m)) = self.streams.try_read_data(body_buf, flow_limit) {
             send_guard.record_frame(GuaranteedFrame::Stream(frame));
@@ -143,13 +151,6 @@ impl DataSpaceReader {
             in_flight = true;
         }
 
-        // 9. 检查Datagrams是否需要发送，若有，且符合(constraints + buf) 节制，写入，burst、发包记录都记录
-        while let Some((_frame, n)) = self.datagrams.try_read_datagram(body_buf) {
-            body_buf = &mut body_buf[n..];
-            is_ack_eliciting = true;
-            is_just_ack = false;
-            in_flight = true;
-        }
         drop(send_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
 
         let hdr_len = hdr_buf.len();
@@ -165,6 +166,14 @@ impl DataSpaceReader {
             body_buf.put_bytes(0, padding_len);
             body_len += padding_len;
         }
+
+        // 优化：如果buf剩下的空间太小，放填充帧使得数据报被完全填满，适配GSO
+        if body_buf.remaining_mut() < STREAM_FRAME_MAX_ENCODING_SIZE + 1 {
+            let padding_len = body_buf.remaining_mut();
+            body_buf.put_bytes(0, padding_len);
+            body_len += padding_len;
+        }
+
         let sent_size = hdr_len + pn_len + body_len + tag_len;
 
         hdr_buf.put_short_header(&hdr);
