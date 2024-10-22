@@ -26,7 +26,7 @@ pub mod packet;
 /// [QUIC transport parameters and their codec](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-encodin).
 pub mod param;
 /// Stream id types and controllers for different roles and different directions.
-pub mod streamid;
+pub mod sid;
 /// Issuing, storing and verifing tokens operations.
 pub mod token;
 /// Utilities for common data structures.

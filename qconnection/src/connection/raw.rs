@@ -10,7 +10,7 @@ use qbase::{
     frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame},
     packet::keys::ArcKeys,
     param::Parameters,
-    streamid::Role,
+    sid::Role,
     token::{ArcTokenRegistry, TokenRegistry},
 };
 use qcongestion::{MayLoss, RetirePktRecord};

@@ -1,5 +1,5 @@
 use crate::{
-    streamid::{be_streamid, StreamId, WriteStreamId},
+    sid::{be_streamid, StreamId, WriteStreamId},
     varint::{be_varint, VarInt, WriteVarInt},
 };
 

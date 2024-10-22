@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use super::BeFrame;
 use crate::{
-    streamid::{be_streamid, StreamId, WriteStreamId},
+    sid::{be_streamid, StreamId, WriteStreamId},
     util::{DescribeData, WriteData},
     varint::{be_varint, VarInt, WriteVarInt, VARINT_MAX},
 };

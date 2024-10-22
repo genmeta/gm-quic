@@ -1,5 +1,5 @@
 use crate::{
-    streamid::Dir,
+    sid::Dir,
     varint::{be_varint, VarInt, WriteVarInt},
 };
 

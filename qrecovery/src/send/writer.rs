@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use qbase::streamid::StreamId;
+use qbase::sid::StreamId;
 use tokio::io::AsyncWrite;
 
 use super::sender::{ArcSender, Sender};

@@ -8,7 +8,7 @@ use bytes::{BufMut, Bytes};
 use qbase::{
     error::{Error, ErrorKind},
     frame::{BeFrame, ResetStreamFrame, StreamFrame},
-    streamid::StreamId,
+    sid::StreamId,
 };
 
 use super::rcvbuf;
