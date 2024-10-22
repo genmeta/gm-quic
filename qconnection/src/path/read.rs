@@ -193,7 +193,7 @@ impl ReadIntoDatagrams {
         buffers: &mut Vec<[u8; MSS]>,
     ) -> Poll<Option<(usize, usize)>> {
         let send_quota = core::task::ready!(self.cc.poll_send(cx));
-        let Some(dcid) = core::task::ready!(self.dcid.poll_get_cid(cx)) else {
+        let Some(dcid) = core::task::ready!(self.dcid.poll_borrow_cid(cx)) else {
             return Poll::Ready(None);
         };
         let Some(credit_limit) = core::task::ready!(self.anti_amplifier.poll_balance(cx)) else {
@@ -252,6 +252,8 @@ impl ReadIntoDatagrams {
             return Poll::Pending;
         }
 
+        // 将dcid的借用归还，可能会触发淘汰dcid
+        self.dcid.return_back();
         // 最终将要发送前，反馈给各个限制条件。除了拥塞控制的，在每个Epoch发包后，都已直接反馈给cc过了
         self.anti_amplifier.on_sent(total_bytes);
         send_flow_credit.post_sent(total_fresh_bytes);

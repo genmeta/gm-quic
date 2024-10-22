@@ -5,7 +5,6 @@ mod data;
 pub use data::{DescribeData, WriteData};
 
 mod future;
-pub(crate) use future::FutureState;
 pub use future::{Future, Get};
 
 mod index_deque;
