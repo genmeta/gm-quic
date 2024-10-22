@@ -223,13 +223,13 @@ impl DataScope {
                         Err(_e) => continue,
                     };
                     let body_offset = packet.offset + undecoded_pn.size();
-                    let pkt_len = decrypt_packet(
+                    let decrypted = decrypt_packet(
                         keys.remote.packet.as_ref(),
                         pn,
                         packet.bytes.as_mut(),
                         body_offset,
-                    )
-                    .unwrap();
+                    );
+                    let Ok(pkt_len) = decrypted else { continue };
 
                     let path = pathes.get_or_create(pathway, usc);
                     path.on_rcvd(packet.bytes.len());
@@ -295,11 +295,9 @@ impl DataScope {
                     };
                     let body_offset = packet.offset + undecoded_pn.size();
                     let pk = pk.lock_guard().get_remote(key_phase, pn);
-                    let Ok(pkt_len) =
-                        decrypt_packet(pk.as_ref(), pn, packet.bytes.as_mut(), body_offset)
-                    else {
-                        continue;
-                    };
+                    let decrypted =
+                        decrypt_packet(pk.as_ref(), pn, packet.bytes.as_mut(), body_offset);
+                    let Ok(pkt_len) = decrypted else { continue };
 
                     let path = pathes.get_or_create(pathway, usc);
                     path.on_rcvd(packet.bytes.len());

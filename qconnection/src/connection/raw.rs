@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    ops::Deref,
+    sync::{Arc, Mutex},
+};
 
 use futures::channel::mpsc;
 use qbase::{
@@ -100,7 +103,7 @@ impl RawConnection {
         let streams = DataStreams::new(role, &local_params, reliable_frames.clone());
         let datagrams = DatagramFlow::new(0);
 
-        let token = match &*token_registry.lock_guard() {
+        let token = match token_registry.deref() {
             TokenRegistry::Client((server_name, client)) => {
                 Arc::new(Mutex::new(client.get_token(server_name)))
             }
@@ -186,7 +189,7 @@ impl RawConnection {
             let tls_session = tls_session.clone();
             let token_registry = token_registry.clone();
             move |initial_token: &[u8], path: ArcPath| {
-                if let TokenRegistry::Server(provider) = &*token_registry.lock_guard() {
+                if let TokenRegistry::Server(provider) = token_registry.deref() {
                     if let Some(server_name) = tls_session.server_name() {
                         if provider.validate_token(server_name, initial_token) {
                             path.anti_amplifier.grant();
