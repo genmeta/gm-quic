@@ -50,7 +50,22 @@ impl<B: bytes::Buf> h3::quic::OpenStreams<B> for QuicConnection {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Self::BidiStream, Self::OpenError>> {
+        // 以下代码的代价是，每次调用open_bi_stream()都是一个新的实现了Future的闭包
+        // 实际上应该是同一个，否则每次poll都会造成open_bi_stream()中的每个await点
+        // 都得重新执行一遍，这是有问题的。
+        // let mut fut = self.connection.open_bi_stream();
+        // let mut task = pin!(fut);
+        // let result = ready!(task.as_mut().poll_unpin(cx));
+        // let bi_stream = result
+        //     .and_then(|o| o.ok_or_else(sid_exceed_limit_error))
+        //     .map(|s| BidiStream::new(s))
+        //     .map_err(Into::into);
+        // Poll::Ready(bi_stream)
+
+        // 以下代码的问题是：不可重入，切忌上个流未成功打开返回前，任何地方不可尝试打开流
         self.open_bi.poll_open(cx)
+
+        // 应该的做法是，与这个poll_open_bidi关联的一个open_bi_stream()返回的固定Future来poll
     }
 
     #[inline]
@@ -94,6 +109,9 @@ impl<B: bytes::Buf> h3::quic::Connection<B> for QuicConnection {
         self.accpet_bi.poll_accept(cx)
     }
 
+    /// 为何要再来个这玩意？多次一举
+    /// 如果这个opener()的返回值只负责打开一条流，不可重用；
+    /// 再打开流，要再次调用opener()来open，那还有点意思
     #[inline]
     fn opener(&self) -> Self::OpenStreams {
         OpenStreams::new(self.connection.clone())
@@ -117,6 +135,7 @@ impl OpenStreams {
     }
 }
 
+/// 跟QuicConnection::poll_open_bidi()的实现一样，重复
 impl<B: bytes::Buf> h3::quic::OpenStreams<B> for OpenStreams {
     type BidiStream = BidiStream<B>;
 
@@ -172,6 +191,9 @@ impl OpenBiStreams {
         Self(Box::pin(stream))
     }
 
+    /// TODO: 以此法实现的`poll_open`方法，不可重入，即A、B同时要打开一个流，
+    /// 实际上只有一个能成功，后一个的waker会取代前一个的waker注册在stream中，导致前一个waker无法被唤醒
+    /// 以下同
     fn poll_open<B>(&mut self, cx: &mut Context<'_>) -> Poll<Result<BidiStream<B>, Error>> {
         self.0
             .as_mut()
