@@ -88,7 +88,7 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
-        let (mut stream_reader, mut stream_writer) = quic_conn
+        let (_sid, (mut stream_reader, mut stream_writer)) = quic_conn
             .open_bi_stream()
             .await?
             .expect("very very hard to exhaust the available stream ids");

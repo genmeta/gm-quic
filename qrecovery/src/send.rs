@@ -5,7 +5,6 @@ mod sndbuf;
 mod writer;
 
 pub use outgoing::{IsCancelled, Outgoing};
-use qbase::sid::StreamId;
 pub use sender::ArcSender;
 pub use sndbuf::SendBuf;
 pub use writer::Writer;
@@ -13,6 +12,6 @@ pub use writer::Writer;
 /// Create the internal representations of [`Outgoing`] and [`Writer`] with the given sending window size.
 ///
 /// The size of the sending window is the default flow control limit of a QUIC Stream.
-pub fn new(wnd_size: u64, sid: StreamId) -> ArcSender {
-    ArcSender::new(wnd_size, sid)
+pub fn new(wnd_size: u64) -> ArcSender {
+    ArcSender::new(wnd_size)
 }

@@ -6,7 +6,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use qbase::error::Error as QuicError;
+use qbase::{error::Error as QuicError, sid::StreamId};
 
 use crate::{
     recv::{ArcRecver, Reader},
@@ -16,45 +16,49 @@ use crate::{
 #[derive(Debug, Default)]
 struct RawListener {
     // 对方主动创建的流
-    bi_streams: VecDeque<(ArcRecver, ArcSender)>,
-    uni_streams: VecDeque<ArcRecver>,
+    bi_streams: VecDeque<(StreamId, (ArcRecver, ArcSender))>,
+    uni_streams: VecDeque<(StreamId, ArcRecver)>,
     bi_waker: Option<Waker>,
     uni_waker: Option<Waker>,
 }
 
 impl RawListener {
-    fn push_bi_stream(&mut self, stream: (ArcRecver, ArcSender)) {
-        self.bi_streams.push_back(stream);
+    fn push_bi_stream(&mut self, sid: StreamId, stream: (ArcRecver, ArcSender)) {
+        self.bi_streams.push_back((sid, stream));
         if let Some(waker) = self.bi_waker.take() {
             waker.wake();
         }
     }
 
-    fn push_recv_stream(&mut self, stream: ArcRecver) {
-        self.uni_streams.push_back(stream);
+    fn push_recv_stream(&mut self, sid: StreamId, stream: ArcRecver) {
+        self.uni_streams.push_back((sid, stream));
         if let Some(waker) = self.uni_waker.take() {
             waker.wake();
         }
     }
 
+    #[allow(clippy::type_complexity)]
     fn poll_accept_bi_stream(
         &mut self,
         cx: &mut Context<'_>,
         send_wnd_size: u64,
-    ) -> Poll<Result<(Reader, Writer), QuicError>> {
-        if let Some((recever, sender)) = self.bi_streams.pop_front() {
+    ) -> Poll<Result<(StreamId, (Reader, Writer)), QuicError>> {
+        if let Some((sid, (recever, sender))) = self.bi_streams.pop_front() {
             let outgoing = Outgoing(sender);
             outgoing.update_window(send_wnd_size);
-            Poll::Ready(Ok((Reader(recever), Writer(outgoing.0))))
+            Poll::Ready(Ok((sid, (Reader(recever), Writer(outgoing.0)))))
         } else {
             self.bi_waker = Some(cx.waker().clone());
             Poll::Pending
         }
     }
 
-    fn poll_accept_recv_stream(&mut self, cx: &mut Context<'_>) -> Poll<Result<Reader, QuicError>> {
-        if let Some(reader) = self.uni_streams.pop_front() {
-            Poll::Ready(Ok(Reader(reader)))
+    fn poll_accept_recv_stream(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(StreamId, Reader), QuicError>> {
+        if let Some((sid, reader)) = self.uni_streams.pop_front() {
+            Poll::Ready(Ok((sid, Reader(reader))))
         } else {
             self.uni_waker = Some(cx.waker().clone());
             Poll::Pending
@@ -91,18 +95,22 @@ impl ArcListener {
         AcceptUniStream { inner: self }
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn poll_accept_bi_stream(
         &self,
         cx: &mut Context<'_>,
         send_wnd_size: u64,
-    ) -> Poll<Result<(Reader, Writer), QuicError>> {
+    ) -> Poll<Result<(StreamId, (Reader, Writer)), QuicError>> {
         match self.0.lock().unwrap().as_mut() {
             Ok(set) => set.poll_accept_bi_stream(cx, send_wnd_size),
             Err(e) => Poll::Ready(Err(e.clone())),
         }
     }
 
-    pub fn poll_accept_uni_stream(&self, cx: &mut Context<'_>) -> Poll<Result<Reader, QuicError>> {
+    pub fn poll_accept_uni_stream(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(StreamId, Reader), QuicError>> {
         match self.0.lock().unwrap().as_mut() {
             Ok(set) => set.poll_accept_recv_stream(cx),
             Err(e) => Poll::Ready(Err(e.clone())),
@@ -115,16 +123,16 @@ pub(crate) struct ListenerGuard<'a> {
 }
 
 impl ListenerGuard<'_> {
-    pub(crate) fn push_bi_stream(&mut self, stream: (ArcRecver, ArcSender)) {
+    pub(crate) fn push_bi_stream(&mut self, sid: StreamId, stream: (ArcRecver, ArcSender)) {
         match self.inner.as_mut() {
-            Ok(set) => set.push_bi_stream(stream),
+            Ok(set) => set.push_bi_stream(sid, stream),
             Err(e) => unreachable!("listener is invalid: {e}"),
         }
     }
 
-    pub(crate) fn push_uni_stream(&mut self, stream: ArcRecver) {
+    pub(crate) fn push_uni_stream(&mut self, sid: StreamId, stream: ArcRecver) {
         match self.inner.as_mut() {
-            Ok(set) => set.push_recv_stream(stream),
+            Ok(set) => set.push_recv_stream(sid, stream),
             Err(e) => unreachable!("listener is invalid: {e}"),
         }
     }
@@ -158,7 +166,7 @@ pub struct AcceptBiStream<'l> {
 }
 
 impl Future for AcceptBiStream<'_> {
-    type Output = Result<(Reader, Writer), QuicError>;
+    type Output = Result<(StreamId, (Reader, Writer)), QuicError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.inner.poll_accept_bi_stream(cx, self.send_wnd_size)
@@ -177,7 +185,7 @@ pub struct AcceptUniStream<'l> {
 }
 
 impl Future for AcceptUniStream<'_> {
-    type Output = Result<Reader, QuicError>;
+    type Output = Result<(StreamId, Reader), QuicError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.inner.poll_accept_uni_stream(cx)

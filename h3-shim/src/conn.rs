@@ -5,6 +5,7 @@ use std::{
 };
 
 use futures::Stream;
+use qbase::sid::StreamId;
 use qrecovery::{recv::Reader, send::Writer};
 
 use crate::{
@@ -176,7 +177,8 @@ fn sid_exceed_limit_error() -> io::Error {
     )
 }
 
-struct OpenBiStreams(BoxStream<Result<(Reader, Writer), Error>>);
+#[allow(clippy::type_complexity)]
+struct OpenBiStreams(BoxStream<Result<(StreamId, (Reader, Writer)), Error>>);
 
 impl OpenBiStreams {
     fn new(conn: quic::QuicConnection) -> Self {
@@ -199,11 +201,11 @@ impl OpenBiStreams {
             .as_mut()
             .poll_next(cx)
             .map(Option::unwrap)
-            .map_ok(BidiStream::new)
+            .map_ok(|(sid, stream)| BidiStream::new(sid, stream))
     }
 }
 
-struct OpenUniStreams(BoxStream<Result<Writer, Error>>);
+struct OpenUniStreams(BoxStream<Result<(StreamId, Writer), Error>>);
 
 impl OpenUniStreams {
     fn new(conn: quic::QuicConnection) -> Self {
@@ -223,11 +225,12 @@ impl OpenUniStreams {
             .as_mut()
             .poll_next(cx)
             .map(Option::unwrap)
-            .map_ok(SendStream::new)
+            .map_ok(|(sid, writer)| SendStream::new(sid, writer))
     }
 }
 
-struct AcceptBiStreams(BoxStream<Result<(Reader, Writer), Error>>);
+#[allow(clippy::type_complexity)]
+struct AcceptBiStreams(BoxStream<Result<(StreamId, (Reader, Writer)), Error>>);
 
 impl AcceptBiStreams {
     fn new(conn: quic::QuicConnection) -> Self {
@@ -249,11 +252,11 @@ impl AcceptBiStreams {
             .as_mut()
             .poll_next(cx)
             .map(Option::transpose)
-            .map_ok(|rw| rw.map(BidiStream::new))
+            .map_ok(|rw| rw.map(|(sid, stream)| BidiStream::new(sid, stream)))
     }
 }
 
-struct AcceptUniStreams(BoxStream<Result<Reader, Error>>);
+struct AcceptUniStreams(BoxStream<Result<(StreamId, Reader), Error>>);
 
 impl AcceptUniStreams {
     fn new(conn: quic::QuicConnection) -> Self {
@@ -272,6 +275,6 @@ impl AcceptUniStreams {
             .as_mut()
             .poll_next(cx)
             .map(Option::transpose)
-            .map_ok(|r| r.map(RecvStream::new))
+            .map_ok(|r| r.map(|(sid, reader)| RecvStream::new(sid, reader)))
     }
 }

@@ -29,7 +29,7 @@ log = { workspace = true }
 http = "1"
 
 [[example]]
-name = "server"
+name = "h3-server"
 
 [[example]]
-name = "client"
+name = "h3-client"
