@@ -26,7 +26,6 @@ use std::{
 };
 
 use bytes::Bytes;
-pub use data::RawDataStreams;
 use deref_derive::Deref;
 pub use listener::{AcceptBiStream, AcceptUniStream};
 use qbase::{
@@ -38,14 +37,15 @@ use qbase::{
 use thiserror::Error;
 
 use crate::{recv::Reader, send::Writer};
-mod data;
+mod io;
 mod listener;
+pub mod raw;
 
-/// The wrapper of [`RawDataStreams`], provides the abality of share between tasks.
+/// The wrapper of [`raw::DataStreams`], provides the abality of share between tasks.
 ///
-/// See [`RawDataStreams`] for more details.
+/// See [`raw::DataStreams`] for more details.
 #[derive(Debug, Clone, Deref)]
-pub struct DataStreams<T>(Arc<data::RawDataStreams<T>>)
+pub struct DataStreams<T>(Arc<raw::DataStreams<T>>)
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static;
 
@@ -55,9 +55,9 @@ where
 {
     /// Creates a new instance of [`DataStreams`].
     ///
-    /// The `ctrl_frames` is the frame sender, read [`RawDataStreams`] for more details.
+    /// The `ctrl_frames` is the frame sender, read [`raw::DataStreams`] for more details.
     pub fn new(role: Role, local_params: &Parameters, ctrl_frames: T) -> Self {
-        let raw = data::RawDataStreams::new(role, local_params, ctrl_frames);
+        let raw = raw::DataStreams::new(role, local_params, ctrl_frames);
 
         Self(Arc::new(raw))
     }
@@ -128,7 +128,7 @@ pub struct OpenBiStream<'d, T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    inner: &'d data::RawDataStreams<T>,
+    inner: &'d raw::DataStreams<T>,
     snd_wnd_size: u64,
 }
 
@@ -155,7 +155,7 @@ pub struct OpenUniStream<'d, T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    inner: &'d data::RawDataStreams<T>,
+    inner: &'d raw::DataStreams<T>,
     snd_wnd_size: u64,
 }
 

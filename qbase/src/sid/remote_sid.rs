@@ -5,7 +5,6 @@ use thiserror::Error;
 use super::{ControlConcurrency, Dir, Role, StreamId};
 use crate::{
     frame::{MaxStreamsFrame, ReceiveFrame, SendFrame, StreamsBlockedFrame},
-    sid::MAX_STREAMS_LIMIT,
     varint::VarInt,
 };
 
@@ -117,8 +116,10 @@ where
     }
 
     fn on_end_of_stream(&mut self, sid: StreamId) {
-        debug_assert_eq!(sid.role(), self.role);
-        debug_assert!(sid.id() <= MAX_STREAMS_LIMIT);
+        if sid.role() != self.role {
+            return;
+        }
+
         if let Some(max_streams) = self.strategy.on_end_of_stream(sid.dir(), sid.id()) {
             self.max[sid.dir() as usize] = max_streams;
             self.max_tx.send_frame([MaxStreamsFrame::with(

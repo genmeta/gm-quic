@@ -1,10 +1,5 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::{Arc, Mutex, MutexGuard},
-    task::{ready, Context, Poll},
-};
+use std::task::{ready, Context, Poll};
 
-use deref_derive::{Deref, DerefMut};
 use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::{
@@ -21,105 +16,14 @@ use qbase::{
     varint::VarInt,
 };
 
-use super::listener::{AcceptBiStream, AcceptUniStream, ArcListener};
+use super::{
+    io::{ArcInput, ArcOutput, IOState},
+    listener::{AcceptBiStream, AcceptUniStream, ArcListener},
+};
 use crate::{
     recv::{self, ArcRecver, Incoming, Reader},
     send::{self, ArcSender, Outgoing, Writer},
 };
-
-#[derive(Default, Debug, Clone, Deref, DerefMut)]
-struct RawOutput {
-    #[deref]
-    outgoings: BTreeMap<StreamId, Outgoing>,
-    last_sent_stream: Option<(StreamId, usize)>,
-}
-
-/// ArcOutput里面包含一个Result类型，一旦发生quic error，就会被替换为Err
-/// 发生quic error后，其操作将被忽略，不会再抛出QuicError或者panic，因为
-/// 有些异步任务可能还未完成，在置为Err后才会完成。
-#[derive(Debug, Clone)]
-struct ArcOutput(Arc<Mutex<Result<RawOutput, QuicError>>>);
-
-impl Default for ArcOutput {
-    fn default() -> Self {
-        Self(Arc::new(Mutex::new(Ok(Default::default()))))
-    }
-}
-
-impl ArcOutput {
-    fn guard(&self) -> Result<ArcOutputGuard, QuicError> {
-        let guard = self.0.lock().unwrap();
-        match guard.as_ref() {
-            Ok(_) => Ok(ArcOutputGuard { inner: guard }),
-            Err(e) => Err(e.clone()),
-        }
-    }
-}
-
-struct ArcOutputGuard<'a> {
-    inner: MutexGuard<'a, Result<RawOutput, QuicError>>,
-}
-
-impl ArcOutputGuard<'_> {
-    fn insert(&mut self, sid: StreamId, outgoing: Outgoing) {
-        match self.inner.as_mut() {
-            Ok(set) => set.insert(sid, outgoing),
-            Err(e) => unreachable!("output is invalid: {e}"),
-        };
-    }
-
-    fn on_conn_error(&mut self, err: &QuicError) {
-        match self.inner.as_ref() {
-            Ok(set) => set.values().for_each(|o| o.on_conn_error(err)),
-            // 已经遇到过conn error了，不需要再次处理。然而guard()时就已经返回了Err，不会再走到这里来
-            Err(e) => unreachable!("output is invalid: {e}"),
-        };
-        *self.inner = Err(err.clone());
-    }
-}
-
-/// ArcInput里面包含一个Result类型，一旦发生quic error，就会被替换为Err
-/// 发生quic error后，其操作将被忽略，不会再抛出QuicError或者panic，因为
-/// 有些异步任务可能还未完成，在置为Err后才会完成。
-#[derive(Debug, Clone)]
-struct ArcInput(Arc<Mutex<Result<HashMap<StreamId, Incoming>, QuicError>>>);
-
-impl Default for ArcInput {
-    fn default() -> Self {
-        Self(Arc::new(Mutex::new(Ok(HashMap::new()))))
-    }
-}
-
-impl ArcInput {
-    fn guard(&self) -> Result<ArcInputGuard, QuicError> {
-        let guard = self.0.lock().unwrap();
-        match guard.as_ref() {
-            Ok(_) => Ok(ArcInputGuard { inner: guard }),
-            Err(e) => Err(e.clone()),
-        }
-    }
-}
-
-struct ArcInputGuard<'a> {
-    inner: MutexGuard<'a, Result<HashMap<StreamId, Incoming>, QuicError>>,
-}
-
-impl ArcInputGuard<'_> {
-    fn insert(&mut self, sid: StreamId, incoming: Incoming) {
-        match self.inner.as_mut() {
-            Ok(set) => set.insert(sid, incoming),
-            Err(e) => unreachable!("input is invalid: {e}"),
-        };
-    }
-
-    fn on_conn_error(&mut self, err: &QuicError) {
-        match self.inner.as_ref() {
-            Ok(set) => set.values().for_each(|o| o.on_conn_error(err)),
-            Err(e) => unreachable!("output is invalid: {e}"),
-        };
-        *self.inner = Err(err.clone());
-    }
-}
 
 #[derive(Debug, Clone)]
 struct SidFramesTx<T: Clone>(T);
@@ -170,7 +74,7 @@ where
 /// # Receive frames, handle frame loss and acknowledge
 ///
 /// Frames received, frames lost or acknowledgmented will be delivered to the corresponding method.
-/// | method on [`RawDataStreams`]                             | corresponding method               |
+/// | method on [`DataStreams`]                             | corresponding method               |
 /// | -------------------------------------------------------- | ---------------------------------- |
 /// | [`recv_data`]                                            | [`Incoming::recv_data`]            |
 /// | [`recv_stream_control`] ([`RESET_STREAM frame`])         | [`Incoming::recv_reset`]           |
@@ -199,12 +103,12 @@ where
 /// [`write`]: tokio::io::AsyncWriteExt::write
 /// [`SendBuf`]: crate::send::SendBuf
 /// [`send_frame`]: SendFrame::send_frame
-/// [`try_read_data`]: RawDataStreams::try_read_data
-/// [`recv_data`]: RawDataStreams::recv_data
-/// [`recv_stream_control`]: RawDataStreams::recv_stream_control
-/// [`on_data_acked`]: RawDataStreams::on_data_acked
-/// [`may_loss_data`]: RawDataStreams::may_loss_data
-/// [`on_reset_acked`]: RawDataStreams::on_reset_acked
+/// [`try_read_data`]: DataStreams::try_read_data
+/// [`recv_data`]: DataStreams::recv_data
+/// [`recv_stream_control`]: DataStreams::recv_stream_control
+/// [`on_data_acked`]: DataStreams::on_data_acked
+/// [`may_loss_data`]: DataStreams::may_loss_data
+/// [`on_reset_acked`]: DataStreams::on_reset_acked
 /// [`RESET_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frame
 /// [`STOP_SENDING frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames
 /// [`MAX_STREAM_DATA frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-max_stream_data-frame
@@ -216,7 +120,7 @@ where
 /// [`ArcLocalStreamIds::recv_max_streams_frame`]: qbase::sid::ArcLocalStreamIds::recv_max_streams_frame
 ///
 #[derive(Debug)]
-pub struct RawDataStreams<T>
+pub struct DataStreams<T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
@@ -243,7 +147,7 @@ fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
     move |e| QuicError::new(ErrorKind::StreamLimit, fty, e.to_string())
 }
 
-impl<T> RawDataStreams<T>
+impl<T> DataStreams<T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
@@ -278,7 +182,7 @@ where
     /// * [`usize`]: The number of bytes written to the buffer.
     /// * [`usize`]: The number of new data writen to the buffer.
     ///
-    /// [`try_read_data`]: RawDataStreams::try_read_data
+    /// [`try_read_data`]: DataStreams::try_read_data
     /// [`write`]: tokio::io::AsyncWriteExt::write
     pub fn try_read_data(
         &self,
@@ -291,7 +195,7 @@ where
         if buf.len() < STREAM_FRAME_MAX_ENCODING_SIZE + 1 {
             return None;
         }
-        let guard = &mut self.output.0.lock().unwrap();
+        let mut guard = self.output.0.lock().unwrap();
         let output = guard.as_mut().ok()?;
 
         // 该tokens是令牌桶算法的token，为了多条Stream的公平性，给每个流定期地发放tokens，不累积
@@ -324,7 +228,7 @@ where
                 .range(..)
                 .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
         };
-        for (sid, outgoing, tokens) in streams.into_iter() {
+        for (sid, (outgoing, _s), tokens) in streams.into_iter() {
             if let Some((frame, data_len, is_fresh, written)) =
                 outgoing.try_read(sid, buf, tokens, flow_limit)
             {
@@ -340,11 +244,18 @@ where
     /// Actually calls the [`Outgoing::on_data_acked`] method of the corresponding stream.
     pub fn on_data_acked(&self, frame: StreamFrame) {
         if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
-            if set
-                .get(&frame.id)
-                .map(|o| o.on_data_acked(&frame.range(), frame.is_fin()))
-                .is_some_and(|all_data_rcvd| all_data_rcvd)
-            {
+            let mut is_all_rcvd = false;
+            if let Some((o, s)) = set.get(&frame.id) {
+                is_all_rcvd = o.on_data_acked(&frame.range(), frame.is_fin());
+                if is_all_rcvd {
+                    s.shutdown_send();
+                    if s.is_terminated() {
+                        self.stream_ids.remote.on_end_of_stream(frame.id);
+                    }
+                }
+            }
+
+            if is_all_rcvd {
                 set.remove(&frame.id);
             }
         }
@@ -354,7 +265,7 @@ where
     ///
     /// Actually calls the [`Outgoing::may_loss_data`] method of the corresponding stream.
     pub fn may_loss_data(&self, stream_frame: &StreamFrame) {
-        if let Some(o) = self
+        if let Some((o, _s)) = self
             .output
             .0
             .lock()
@@ -372,8 +283,14 @@ where
     /// Actually calls the [`Outgoing::on_reset_acked`] method of the corresponding stream.
     pub fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
         if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
-            if let Some(o) = set.remove(&reset_frame.stream_id) {
+            if let Some((o, s)) = set.remove(&reset_frame.stream_id) {
                 o.on_reset_acked();
+                s.shutdown_send();
+                if s.is_terminated() {
+                    self.stream_ids
+                        .remote
+                        .on_end_of_stream(reset_frame.stream_id);
+                }
             }
             // 如果流是双向的，接收部分的流独立地管理结束。其实是上层应用决定接收的部分是否同时结束
         }
@@ -412,7 +329,8 @@ where
             .as_mut()
             .ok()
             .and_then(|set| set.get(&sid))
-            .map(|incoming| incoming.recv_data(stream_frame, body.clone()));
+            .map(|(incoming, _s)| incoming.recv_data(stream_frame, body.clone()));
+        // TODO: 此处应该返回是否接收完，代表着接收结束，可以将该流的接收状态标识为关闭
 
         match ret {
             Some(recv_ret) => recv_ret,
@@ -445,8 +363,12 @@ where
                     }
                 }
                 if let Ok(set) = self.input.0.lock().unwrap().as_mut() {
-                    if let Some(incoming) = set.remove(&sid) {
+                    if let Some((incoming, s)) = set.remove(&sid) {
                         incoming.recv_reset(reset)?;
+                        s.shutdown_receive();
+                        if s.is_terminated() {
+                            self.stream_ids.remote.on_end_of_stream(reset.stream_id);
+                        }
                     }
                 }
             }
@@ -473,7 +395,7 @@ where
                     .as_mut()
                     .ok()
                     .and_then(|set| set.get(&sid))
-                    .map(|outgoing| outgoing.stop(stop_sending.app_err_code.into()))
+                    .map(|(outgoing, _s)| outgoing.stop(stop_sending.app_err_code.into()))
                     .unwrap_or(false)
                 {
                     self.ctrl_frames
@@ -499,7 +421,7 @@ where
                     self.try_accept_sid(sid)
                         .map_err(wrapper_error(max_stream_data.frame_type()))?;
                 }
-                if let Some(outgoing) = self
+                if let Some((outgoing, _s)) = self
                     .output
                     .0
                     .lock()
@@ -565,7 +487,7 @@ where
     }
 }
 
-impl<T> RawDataStreams<T>
+impl<T> DataStreams<T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
@@ -607,8 +529,9 @@ where
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Bi)) {
             let arc_sender = self.create_sender(sid, snd_wnd_size);
             let arc_recver = self.create_recver(sid, self.local_bi_stream_rcvbuf_size);
-            output.insert(sid, Outgoing(arc_sender.clone()));
-            input.insert(sid, Incoming(arc_recver.clone()));
+            let io_state = IOState::bidirection();
+            output.insert(sid, Outgoing(arc_sender.clone()), io_state.clone());
+            input.insert(sid, Incoming(arc_recver.clone()), io_state);
             Poll::Ready(Ok(Some((Reader(arc_recver), Writer(arc_sender)))))
         } else {
             Poll::Ready(Ok(None))
@@ -626,7 +549,8 @@ where
         };
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Uni)) {
             let arc_sender = self.create_sender(sid, snd_wnd_size);
-            output.insert(sid, Outgoing(arc_sender.clone()));
+            let io_state = IOState::send_only();
+            output.insert(sid, Outgoing(arc_sender.clone()), io_state);
             Poll::Ready(Ok(Some(Writer(arc_sender))))
         } else {
             Poll::Ready(Ok(None))
@@ -670,8 +594,9 @@ where
                 for sid in need_create {
                     let arc_recver = self.create_recver(sid, rcv_buf_size);
                     let arc_sender = self.create_sender(sid, 0);
-                    input.insert(sid, Incoming(arc_recver.clone()));
-                    output.insert(sid, Outgoing(arc_sender.clone()));
+                    let io_state = IOState::bidirection();
+                    input.insert(sid, Incoming(arc_recver.clone()), io_state.clone());
+                    output.insert(sid, Outgoing(arc_sender.clone()), io_state);
                     listener.push_bi_stream((arc_recver, arc_sender));
                 }
                 Ok(())
@@ -696,7 +621,8 @@ where
 
                 for sid in need_create {
                     let arc_receiver = self.create_recver(sid, rcv_buf_size);
-                    input.insert(sid, Incoming(arc_receiver.clone()));
+                    let io_state = IOState::receive_only();
+                    input.insert(sid, Incoming(arc_receiver.clone()), io_state);
                     listener.push_uni_stream(arc_receiver);
                 }
                 Ok(())

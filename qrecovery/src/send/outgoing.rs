@@ -50,7 +50,7 @@ impl Outgoing {
     /// * [`bool`]:        Whether the data is fresh(not retransmitted)
     /// * [`usize`]:       How much data was written to the buffer
     ///
-    /// [`RawDataStreams::try_read_data`]: crate::streams::RawDataStreams::try_read_data
+    /// [`RawDataStreams::try_read_data`]: crate::streams::raw::DataStreams::try_read_data
     pub fn try_read(
         &self,
         sid: StreamId,

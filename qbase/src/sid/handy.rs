@@ -33,7 +33,8 @@ impl ControlConcurrency for ConsistentConcurrency {
     }
 }
 
-/// Demand concurrency strategy increase limits as long as receiving a [`StreamsBlockedFrame`].
+/// Demand concurrency strategy increase limits as long as receiving a
+/// [`StreamsBlockedFrame`](crate::frame::StreamsBlockedFrame).
 #[derive(Debug)]
 pub struct DemandConcurrency;
 
