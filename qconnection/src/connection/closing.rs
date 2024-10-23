@@ -19,7 +19,7 @@ use qbase::{
 };
 
 use super::scope::{data::ClosingOneRttScope, handshake::ClosingHandshakeScope, RecvPacket};
-use crate::{path::pathway::Pathway, usc::ArcUsc};
+use crate::{path::Pathway, usc::ArcUsc};
 
 pub struct CcfPackets {
     handshake: Option<([u8; qcongestion::MSS], usize)>,

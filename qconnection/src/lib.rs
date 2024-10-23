@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 pub mod connection;
 pub mod error;
 pub mod path;
-pub mod pipe;
+mod pipe;
 pub mod router;
 pub mod tls;
 pub mod usc;

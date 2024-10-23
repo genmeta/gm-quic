@@ -21,7 +21,7 @@ use super::any;
 use crate::{
     connection::{transmit::initial::InitialSpaceReader, ArcRemoteCids, RcvdPackets},
     error::ConnError,
-    path::{ArcPath, ArcPathes, RawPath},
+    path::{ArcPath, ArcPathes, Path},
     pipe,
 };
 
@@ -57,7 +57,7 @@ impl InitialScope {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
 
-        let dispatch_frame = move |frame: Frame, path: &RawPath| {
+        let dispatch_frame = move |frame: Frame, path: &Path| {
             match frame {
                 Frame::Ack(f) => {
                     path.cc.on_ack(Epoch::Initial, &f);
@@ -104,7 +104,7 @@ impl InitialScope {
         mut rcvd_packets: RcvdPackets,
         pathes: &ArcPathes,
         remote_cids: &ArcRemoteCids,
-        dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
+        dispatch_frame: impl Fn(Frame, &Path) + Send + 'static,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
         validate: impl Fn(&[u8], ArcPath) + Send + 'static,

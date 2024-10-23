@@ -18,21 +18,21 @@ use crate::path::Pathway;
 static USC_REGISTRY: LazyLock<DashMap<SocketAddr, (ArcUsc, JoinHandle<()>)>> =
     LazyLock::new(DashMap::new);
 
-/// A interface to get or create a [`ArcUsc`], the udp socket controller.
+/// A interface to get or create the [`ArcUsc`] that corresponding to local udp socket.
 pub struct UscRegistry;
 
 impl UscRegistry {
-    /// Get the exist [`ArcUsc`] which binded the given [`SocketAddr`], or crate one.
+    /// Get the exist [`ArcUsc`] which bound the given [`SocketAddr`], or crate one.
     ///
     /// The `recv_task` generate a future task to receive and process datagrams from the udp socket,
     /// the task spawned must take the ownership of the [`ArcUsc`], and dont drop it until a udp error
     /// occur.
     ///
-    /// When the [`ArcUsc`] is no longer used, the task spawned will be aborted, and the binded address
+    /// When the [`ArcUsc`] is no longer used, the task spawned will be aborted, and the bound address
     /// will be free automatically.
     ///
     /// For client, when all of the connections which use the address are closed, the [`ArcUsc`] will
-    /// be dropped, the spawned task will be aborted, binded address will be free.
+    /// be dropped, the spawned task will be aborted, bound address will be free.
     ///
     /// For server, the address will not be freed until the address is unbined by server, or the server
     /// is closed.

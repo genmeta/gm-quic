@@ -30,7 +30,7 @@ use super::{
 };
 use crate::{
     error::ConnError,
-    path::{pathway::Pathway, ArcPath, ArcPathes, RawPath},
+    path::{ArcPath, ArcPathes, Path, Pathway},
     router::Router,
     tls::ArcTlsSession,
 };
@@ -122,7 +122,7 @@ impl RawConnection {
                 let streams = streams.clone();
                 let datagrams = datagrams.clone();
                 let token = token.clone();
-                move |path: &RawPath| {
+                move |path: &Path| {
                     (
                         initial.reader(token.clone()),
                         hs.reader(),

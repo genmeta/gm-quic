@@ -26,8 +26,26 @@ use crate::{
     usc::ArcUsc,
 };
 
+/// A single path of a connection.
+///
+/// This is a path in QUIC, it also corresponds to the real network path([`Pathway`]). Each path is
+/// accompanied by a sending task, which will send the data we need to send to the opposite end of
+/// the [`Pathway`], which is peer. Read more about sending tasks in [`Path::begin_sending`].
+///
+/// The path does not have the capability to receive datagrams from the UDP port because multiple
+/// paths for multiple connections may all be using the same [`SocketAddr`]. If you want to know how
+/// packets are accepted, you can check [`UscRegistry`] and [`Router`].
+///
+/// When a path is first established, a path verification will be performed, path frames will be
+/// sent and received to verify the path. If the path verification fails, the path will be marked
+/// as inactive and them automatically removed from the [`Paths`].
+///
+/// [`Paths`]: super::Paths
+/// [`SocketAddr`]: core::net::SocketAddr
+/// [`router`]: crate::router::Router
+/// [`UscRegistry`]: crate::usc::UscRegistry
 #[derive(Clone)]
-pub struct RawPath {
+pub struct Path {
     pub anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
     pub cc: ArcCC,
     pub(super) usc: ArcUsc,
@@ -40,7 +58,22 @@ pub struct RawPath {
     pub(super) state: ArcPathState,
 }
 
-impl RawPath {
+impl Path {
+    /// Create a new path.
+    ///
+    /// The `scid` is the initial source connection id of the connection, the scid is used for
+    /// assmebling long header packets.
+    ///
+    /// The `dcid` is issued by the peer. Correct dcid is needed for the data packets to be received
+    /// correctly by the peer. Since the connection is established, the peer will continue to issue
+    /// and retire connection IDs. At the same time, QUIC requires different paths to use different
+    /// connections id for security reasons. [`ArcCidCell`] is a structure through which the path
+    /// can asynchronously obtain an available connection ID.
+    ///
+    /// `loss` and `retire` are used to feed back the lost packets and the retired packets to the
+    /// space. They are arrays, each element corresponds to a space: intiial space, handshake space,
+    /// and data space.
+    ///
     pub fn new(
         usc: ArcUsc,
         scid: ConnectionId,
@@ -67,15 +100,28 @@ impl RawPath {
         }
     }
 
+    /// Called when a [`PathResponseFrame`] is received.
     pub fn recv_response(&self, frame: PathResponseFrame) {
         self.response_rcvbuf.write(frame);
     }
 
-    /// 收到Challenge，马上响应Response
+    /// Called when a [`PathChallengeFrame`] is received.
     pub fn recv_challenge(&self, frame: PathChallengeFrame) {
         self.response_sndbuf.write(frame.into());
     }
 
+    /// Start the [`path verification`] task.
+    ///
+    /// The path verification task will send a [`PathChallengeFrame`] to the peer, and wait for the
+    /// response. If the response is received, the path is verified and the anti-amplifier limit is
+    /// grant.
+    ///
+    /// The validate task will be executed at most 3 times, each time the task will wait for a PTO.
+    /// If the response is not received within the PTO, the task will be executed again(send the same
+    /// challenge frame). If the response is not received after 3 times, the path verification fails
+    /// and the path will be marked as inactive.
+    ///
+    /// [`path verification`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-path-validation
     pub fn begin_validation(&self) {
         let anti_amplifier = self.anti_amplifier.clone();
         let challenge_sndbuf = self.challenge_sndbuf.clone();
@@ -104,9 +150,22 @@ impl RawPath {
         });
     }
 
+    /// Start the sending task of the path.
+    ///
+    /// The sending task will read data from the space readers and send them to the peer via the
+    /// [`Pathway`]. The sending task will continue to run until the path is marked as inactive or
+    /// connection is closed.
+    ///
+    /// While sending, if a UDP error occurs, the path will be marked as inactive and the sending
+    /// task will be terminated.
+    ///
+    /// To know how datagrams are filled, you can check [`ReadIntoDatagrams`], which is used to
+    /// read data from the space readers and fill the datagrams. You can also check the space readers
+    /// ([`InitialSpaceReader`], [`HandshakeSpaceReader`], [`DataSpaceReader`]) to know how data is
+    /// read from the space.
     pub fn begin_sending<G>(&self, pathway: Pathway, flow_ctrl: &FlowController, gen_readers: G)
     where
-        G: Fn(&RawPath) -> (InitialSpaceReader, HandshakeSpaceReader, DataSpaceReader),
+        G: Fn(&Path) -> (InitialSpaceReader, HandshakeSpaceReader, DataSpaceReader),
     {
         let usc = self.usc.clone();
         let state = self.state.clone();
@@ -140,10 +199,12 @@ impl RawPath {
         });
     }
 
+    /// Get the buffer that can read the [`PathChallengeFrame`] path wants to send.
     pub fn challenge_sndbuf(&self) -> SendBuffer<PathChallengeFrame> {
         self.challenge_sndbuf.clone()
     }
 
+    /// Get the buffer that can read the [PathResponseFrame] path wants to send.
     pub fn response_sndbuf(&self) -> SendBuffer<PathResponseFrame> {
         self.response_sndbuf.clone()
     }
