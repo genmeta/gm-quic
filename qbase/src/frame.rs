@@ -49,7 +49,7 @@ pub use padding::PaddingFrame;
 pub use path_challenge::PathChallengeFrame;
 pub use path_response::PathResponseFrame;
 pub use ping::PingFrame;
-pub use reset_stream::ResetStreamFrame;
+pub use reset_stream::{ResetStreamError, ResetStreamFrame};
 pub use retire_connection_id::RetireConnectionIdFrame;
 pub use stop_sending::StopSendingFrame;
 pub use stream::{ShouldCarryLength, StreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE};

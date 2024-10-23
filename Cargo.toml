@@ -18,6 +18,7 @@ default-members = [
     "qudp",
     "qunreliable",
     "quic",
+    "h3-shim",
 ]
 
 [workspace.package]

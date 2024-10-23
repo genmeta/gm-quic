@@ -34,7 +34,6 @@ use qbase::{
     param::Parameters,
     sid::Role,
 };
-use thiserror::Error;
 
 use crate::{recv::Reader, send::Writer};
 mod io;
@@ -169,7 +168,3 @@ where
         self.inner.poll_open_uni_stream(cx, self.snd_wnd_size)
     }
 }
-
-#[derive(Debug, Error, Clone, Copy)]
-#[error("the stream reset with error code {0}")]
-pub struct StreamReset(pub u64);

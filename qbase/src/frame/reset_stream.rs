@@ -1,3 +1,5 @@
+use thiserror::Error;
+
 use crate::{
     sid::{be_streamid, StreamId, WriteStreamId},
     varint::{be_varint, VarInt, WriteVarInt},
@@ -61,6 +63,43 @@ impl<T: bytes::BufMut> super::io::WriteFrame<ResetStreamFrame> for T {
         self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.app_error_code);
         self.put_varint(&frame.final_size);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Error)]
+#[error("the stream was reset with app error code: {app_error_code}, final size: {final_size}")]
+pub struct ResetStreamError {
+    app_error_code: VarInt,
+    final_size: VarInt,
+}
+
+impl ResetStreamError {
+    pub fn new(app_error_code: VarInt, final_size: VarInt) -> Self {
+        Self {
+            app_error_code,
+            final_size,
+        }
+    }
+
+    pub fn error_code(&self) -> u64 {
+        self.app_error_code.into_inner()
+    }
+
+    pub fn combine(self, sid: StreamId) -> ResetStreamFrame {
+        ResetStreamFrame {
+            stream_id: sid,
+            app_error_code: self.app_error_code,
+            final_size: self.final_size,
+        }
+    }
+}
+
+impl From<&ResetStreamFrame> for ResetStreamError {
+    fn from(frame: &ResetStreamFrame) -> Self {
+        Self {
+            app_error_code: frame.app_error_code,
+            final_size: frame.final_size,
+        }
     }
 }
 

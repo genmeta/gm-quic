@@ -7,12 +7,11 @@ use std::{
 use bytes::{BufMut, Bytes};
 use qbase::{
     error::{Error, ErrorKind},
-    frame::{BeFrame, ResetStreamFrame, StreamFrame},
+    frame::{BeFrame, ResetStreamError, ResetStreamFrame, StreamFrame},
     sid::StreamId,
 };
 
 use super::rcvbuf;
-use crate::streams::StreamReset;
 
 #[derive(Debug)]
 pub(super) struct Recv {
@@ -345,9 +344,9 @@ pub(super) enum Recver {
     Recv(Recv),
     SizeKnown(SizeKnown),
     DataRcvd(DataRcvd),
-    ResetRcvd(StreamReset),
+    ResetRcvd(ResetStreamError),
     DataRead,
-    ResetRead(StreamReset),
+    ResetRead(ResetStreamError),
 }
 
 impl Recver {

@@ -12,33 +12,33 @@ server.rs和client.rs分别是server和client的源代码，cd到h3-shim文件�
 
 ```shell
 # 启动Server
-RUST_LOG=info cargo run --example=server
+RUST_LOG=info cargo run --package=h3-shim --example=server
 # 启动Client
-RUST_LOG=info cargo run --example=client
+RUST_LOG=info cargo run --package=h3-shim --example=client
 ```
 
 client默认会获取server根目录下的`Cargo.toml`文件并打印出来，你可以通过参数指定获取其他文件
 
 ```shell
-RUST_LOG=info cargo run --example=client -- https://localhost:4433/examples/server.rs
+RUST_LOG=info cargo run --package=h3-shim --example=client -- https://localhost:4433/examples/server.rs
 ```
 
 你也可以指定服务的根目录
 ```shell
-RUST_LOG=info cargo run --example=server -- --dir=./examples
+RUST_LOG=info cargo run --package=h3-shim --example=server -- --dir=./examples
 ```
 
 client默认使用ipv6，如果你运行server时发现使用的是ipv4，请指定client也使用ipv4，否则无法连接
 
 ```shell
-RUST_LOG=info cargo run --example=client -- -b=127.0.0.1:0
+RUST_LOG=info cargo run --package=h3-shim --example=client -- -b=127.0.0.1:0
 ```
 
 如果你想使用Wireshark抓包，你需要设置环境变量`SSLKEYLOGFILE`，然后在启动client时加上`--keylog`参数，以获得keylog文件
 
 ```shell
 export SSLKEYLOGFILE= <指定一个地方>
-RUST_LOG=info cargo run --example=client -- --keylog
+RUST_LOG=info cargo run --package=h3-shim --example=client -- --keylog
 ```
 
 然后，打开wireshark，Preferences -> Protocols-> TLS ->

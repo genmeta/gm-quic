@@ -77,7 +77,7 @@ impl Writer {
     /// neither new data nor lost data will be sent.
     ///
     /// [`RESET_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
-    pub fn cancel(self, err_code: u64) {
+    pub fn cancel(&mut self, err_code: u64) {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {

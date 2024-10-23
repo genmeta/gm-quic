@@ -5,10 +5,11 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use qbase::{error::Error, sid::StreamId, util::DescribeData};
+use qbase::{
+    error::Error, frame::ResetStreamError, sid::StreamId, util::DescribeData, varint::VarInt,
+};
 
 use super::sndbuf::SendBuf;
-use crate::streams::StreamReset;
 
 /// The "Ready" state represents a newly created stream that is able to accept data from the application.
 /// Stream data might be buffered in this state in preparation for sending.
@@ -119,9 +120,13 @@ impl ReadySender {
     }
 
     /// 传输层使用，用于发送RST_STREAM帧后，将Sender置为ResetSent状态
-    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<(u64, u64)> {
+    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<ResetStreamError> {
         if let Some(err_code) = self.cancel_state {
-            Poll::Ready((self.sndbuf.len(), err_code))
+            let final_size = self.sndbuf.len();
+            Poll::Ready(ResetStreamError::new(
+                VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
+                VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+            ))
         } else {
             self.cancel_waker = Some(cx.waker().clone());
             Poll::Pending
@@ -288,9 +293,13 @@ impl SendingSender {
     }
 
     /// 传输层使用
-    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<(u64, u64)> {
+    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<ResetStreamError> {
         if let Some(err_code) = self.cancel_state {
-            Poll::Ready((self.sndbuf.len(), err_code))
+            let final_size = self.sndbuf.len();
+            Poll::Ready(ResetStreamError::new(
+                VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
+                VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+            ))
         } else {
             self.cancel_waker = Some(cx.waker().clone());
             Poll::Pending
@@ -447,9 +456,13 @@ impl DataSentSender {
         }
     }
 
-    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<(u64, u64)> {
+    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<ResetStreamError> {
         if let Some(err_code) = self.cancel_state {
-            Poll::Ready((self.sndbuf.len(), err_code))
+            let final_size = self.sndbuf.len();
+            Poll::Ready(ResetStreamError::new(
+                VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
+                VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+            ))
         } else {
             self.cancel_waker = Some(cx.waker().clone());
             Poll::Pending
@@ -493,9 +506,9 @@ pub(super) enum Sender {
     Ready(ReadySender),
     Sending(SendingSender),
     DataSent(DataSentSender),
-    ResetSent(StreamReset),
+    ResetSent(ResetStreamError),
     DataRcvd,
-    ResetRcvd(StreamReset),
+    ResetRcvd(ResetStreamError),
 }
 
 impl Sender {
