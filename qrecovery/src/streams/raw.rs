@@ -513,11 +513,12 @@ where
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub(super) fn poll_open_bi_stream(
         &self,
         cx: &mut Context<'_>,
         snd_wnd_size: u64,
-    ) -> Poll<Result<Option<(Reader, Writer)>, QuicError>> {
+    ) -> Poll<Result<Option<(StreamId, (Reader, Writer))>, QuicError>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(e) => return Poll::Ready(Err(e)),
@@ -532,7 +533,7 @@ where
             let io_state = IOState::bidirection();
             output.insert(sid, Outgoing(arc_sender.clone()), io_state.clone());
             input.insert(sid, Incoming(arc_recver.clone()), io_state);
-            Poll::Ready(Ok(Some((Reader(arc_recver), Writer(arc_sender)))))
+            Poll::Ready(Ok(Some((sid, (Reader(arc_recver), Writer(arc_sender))))))
         } else {
             Poll::Ready(Ok(None))
         }
@@ -542,7 +543,7 @@ where
         &self,
         cx: &mut Context<'_>,
         snd_wnd_size: u64,
-    ) -> Poll<Result<Option<Writer>, QuicError>> {
+    ) -> Poll<Result<Option<(StreamId, Writer)>, QuicError>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(e) => return Poll::Ready(Err(e)),
@@ -551,7 +552,7 @@ where
             let arc_sender = self.create_sender(sid, snd_wnd_size);
             let io_state = IOState::send_only();
             output.insert(sid, Outgoing(arc_sender.clone()), io_state);
-            Poll::Ready(Ok(Some(Writer(arc_sender))))
+            Poll::Ready(Ok(Some((sid, Writer(arc_sender)))))
         } else {
             Poll::Ready(Ok(None))
         }
@@ -597,7 +598,7 @@ where
                     let io_state = IOState::bidirection();
                     input.insert(sid, Incoming(arc_recver.clone()), io_state.clone());
                     output.insert(sid, Outgoing(arc_sender.clone()), io_state);
-                    listener.push_bi_stream((arc_recver, arc_sender));
+                    listener.push_bi_stream(sid, (arc_recver, arc_sender));
                 }
                 Ok(())
             }
@@ -623,7 +624,7 @@ where
                     let arc_receiver = self.create_recver(sid, rcv_buf_size);
                     let io_state = IOState::receive_only();
                     input.insert(sid, Incoming(arc_receiver.clone()), io_state);
-                    listener.push_uni_stream(arc_receiver);
+                    listener.push_uni_stream(sid, arc_receiver);
                 }
                 Ok(())
             }
@@ -631,7 +632,7 @@ where
     }
 
     fn create_sender(&self, sid: StreamId, wnd_size: u64) -> ArcSender {
-        let arc_sender = send::new(wnd_size, sid);
+        let arc_sender = send::new(wnd_size);
         // 创建异步轮询子，监听来自应用层的cancel
         // 一旦cancel，直接向对方发送reset_stream
         // 但要等ResetRecved才能真正释放该流
@@ -648,7 +649,7 @@ where
     }
 
     fn create_recver(&self, sid: StreamId, buf_size: u64) -> ArcRecver {
-        let arc_recver = recv::new(buf_size, sid);
+        let arc_recver = recv::new(buf_size);
         // Continuously check whether the MaxStreamData window needs to be updated.
         tokio::spawn({
             let incoming = Incoming(arc_recver.clone());

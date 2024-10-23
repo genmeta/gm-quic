@@ -15,7 +15,7 @@ use qbase::{
     error::{Error, ErrorKind},
     packet::{DataPacket, RetryHeader},
     param::Parameters,
-    sid::Role,
+    sid::{Role, StreamId},
     token::ArcTokenRegistry,
 };
 use qcongestion::CongestionControl;
@@ -264,7 +264,7 @@ impl ArcConnection {
     //     }
     // }
 
-    pub async fn open_bi_stream(&self) -> io::Result<Option<(Reader, Writer)>> {
+    pub async fn open_bi_stream(&self) -> io::Result<Option<(StreamId, (Reader, Writer))>> {
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let raw_conn = match guard.deref() {
@@ -291,7 +291,7 @@ impl ArcConnection {
         Ok(result?)
     }
 
-    pub async fn open_uni_stream(&self) -> io::Result<Option<Writer>> {
+    pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, Writer)>> {
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let raw_conn = match guard.deref() {
@@ -318,7 +318,7 @@ impl ArcConnection {
         Ok(result?)
     }
 
-    pub async fn accept_bi_stream(&self) -> io::Result<(Reader, Writer)> {
+    pub async fn accept_bi_stream(&self) -> io::Result<(StreamId, (Reader, Writer))> {
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let raw_conn = match guard.deref() {
@@ -345,7 +345,7 @@ impl ArcConnection {
         Ok(result)
     }
 
-    pub async fn accept_uni_stream(&self) -> io::Result<Reader> {
+    pub async fn accept_uni_stream(&self) -> io::Result<(StreamId, Reader)> {
         let (data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let raw_conn = match guard.deref() {

@@ -17,8 +17,8 @@ pub struct SendStream<B> {
 }
 
 impl<B> SendStream<B> {
-    pub fn new(writer: Writer) -> Self {
-        let sid = u64::from(writer.stream_id());
+    pub fn new(sid: qbase::sid::StreamId, writer: Writer) -> Self {
+        let sid = u64::from(sid);
         Self {
             writer,
             data: None,
@@ -101,8 +101,8 @@ pub struct RecvStream {
 }
 
 impl RecvStream {
-    pub(crate) fn new(reader: Reader) -> Self {
-        let sid = u64::from(reader.stream_id());
+    pub(crate) fn new(sid: qbase::sid::StreamId, reader: Reader) -> Self {
+        let sid = u64::from(sid);
         Self {
             reader,
             recv_id: h3::quic::StreamId::try_from(sid).expect("unreachable"),
@@ -148,10 +148,10 @@ pub struct BidiStream<B> {
 }
 
 impl<B> BidiStream<B> {
-    pub(crate) fn new((reader, writer): (Reader, Writer)) -> Self {
+    pub(crate) fn new(sid: qbase::sid::StreamId, (reader, writer): (Reader, Writer)) -> Self {
         Self {
-            send: SendStream::new(writer),
-            recv: RecvStream::new(reader),
+            send: SendStream::new(sid, writer),
+            recv: RecvStream::new(sid, reader),
         }
     }
 }

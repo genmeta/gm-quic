@@ -32,7 +32,7 @@ use qbase::{
     error::Error,
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
     param::Parameters,
-    sid::Role,
+    sid::{Role, StreamId},
 };
 
 use crate::{recv::Reader, send::Writer};
@@ -135,7 +135,7 @@ impl<T> Future for OpenBiStream<'_, T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    type Output = Result<Option<(Reader, Writer)>, Error>;
+    type Output = Result<Option<(StreamId, (Reader, Writer))>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.inner.poll_open_bi_stream(cx, self.snd_wnd_size)
@@ -162,7 +162,7 @@ impl<T> Future for OpenUniStream<'_, T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    type Output = Result<Option<Writer>, Error>;
+    type Output = Result<Option<(StreamId, Writer)>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.inner.poll_open_uni_stream(cx, self.snd_wnd_size)

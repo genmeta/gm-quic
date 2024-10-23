@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use qbase::{sid::StreamId, varint::VARINT_MAX};
+use qbase::varint::VARINT_MAX;
 use tokio::io::{AsyncRead, ReadBuf};
 
 use super::recver::{ArcRecver, Recver};
@@ -86,11 +86,6 @@ impl Reader {
                 _ => (),
             }
         }
-    }
-
-    /// Returns the stream ID of the stream.
-    pub fn stream_id(&self) -> StreamId {
-        self.0.sid()
     }
 }
 
