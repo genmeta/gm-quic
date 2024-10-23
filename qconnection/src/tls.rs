@@ -9,7 +9,7 @@ use qbase::{
     error::{Error, ErrorKind},
     packet::keys::{ArcKeys, ArcOneRttKeys},
     param::{
-        ext::{be_parameters, WriteParameters},
+        codec::{be_parameters, WriteParameters},
         Parameters,
     },
 };
