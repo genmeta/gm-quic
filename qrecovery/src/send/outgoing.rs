@@ -9,14 +9,13 @@ use bytes::BufMut;
 use futures::ready;
 use qbase::{
     error::Error as QuicError,
-    frame::{io::WriteDataFrame, ShouldCarryLength, StreamFrame},
+    frame::{io::WriteDataFrame, ResetStreamError, ShouldCarryLength, StreamFrame},
     sid::StreamId,
     util::DescribeData,
-    varint::VARINT_MAX,
+    varint::{VarInt, VARINT_MAX},
 };
 
 use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
-use crate::streams::StreamReset;
 
 /// An struct for protocol layer to manage the sending part of a stream.
 #[derive(Debug, Clone)]
@@ -183,13 +182,19 @@ impl Outgoing {
                     unreachable!("never send data before recv data");
                 }
                 Sender::Sending(s) => {
-                    let _final_size = s.stop();
-                    *sending_state = Sender::ResetSent(StreamReset(error_code));
+                    let final_size = s.stop();
+                    *sending_state = Sender::ResetSent(ResetStreamError::new(
+                        VarInt::from_u64(error_code).expect("app error code must not exceed 2^62"),
+                        VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+                    ));
                     true
                 }
                 Sender::DataSent(s) => {
-                    let _final_size = s.stop();
-                    *sending_state = Sender::ResetSent(StreamReset(error_code));
+                    let final_size = s.stop();
+                    *sending_state = Sender::ResetSent(ResetStreamError::new(
+                        VarInt::from_u64(error_code).expect("app error code must not exceed 2^62"),
+                        VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+                    ));
                     true
                 }
                 _ => false,
@@ -268,7 +273,7 @@ pub struct IsCancelled<'s>(&'s ArcSender);
 
 impl Future for IsCancelled<'_> {
     // (u64, u64) -> (final_size, err_code)
-    type Output = Option<(u64, u64)>;
+    type Output = Option<ResetStreamError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut sender = self.0.sender();
@@ -276,19 +281,19 @@ impl Future for IsCancelled<'_> {
         match inner {
             Ok(sending_state) => match sending_state {
                 Sender::Ready(s) => {
-                    let (final_size, err_code) = ready!(s.poll_cancel(cx));
-                    *sending_state = Sender::ResetSent(StreamReset(err_code));
-                    Poll::Ready(Some((final_size, err_code)))
+                    let reset_stream_error = ready!(s.poll_cancel(cx));
+                    *sending_state = Sender::ResetSent(reset_stream_error);
+                    Poll::Ready(Some(reset_stream_error))
                 }
                 Sender::Sending(s) => {
-                    let (final_size, err_code) = ready!(s.poll_cancel(cx));
-                    *sending_state = Sender::ResetSent(StreamReset(err_code));
-                    Poll::Ready(Some((final_size, err_code)))
+                    let reset_stream_error = ready!(s.poll_cancel(cx));
+                    *sending_state = Sender::ResetSent(reset_stream_error);
+                    Poll::Ready(Some(reset_stream_error))
                 }
                 Sender::DataSent(s) => {
-                    let (final_size, err_code) = ready!(s.poll_cancel(cx));
-                    *sending_state = Sender::ResetSent(StreamReset(err_code));
-                    Poll::Ready(Some((final_size, err_code)))
+                    let reset_stream_error = ready!(s.poll_cancel(cx));
+                    *sending_state = Sender::ResetSent(reset_stream_error);
+                    Poll::Ready(Some(reset_stream_error))
                 }
                 _ => Poll::Ready(None),
             },

@@ -639,13 +639,8 @@ where
             let outgoing = Outgoing(arc_sender.clone());
             let ctrl_frames = self.ctrl_frames.clone();
             async move {
-                if let Some((final_size, err_code)) = outgoing.is_cancelled_by_app().await {
-                    ctrl_frames.send_frame([StreamCtlFrame::ResetStream(ResetStreamFrame {
-                        stream_id: sid,
-                        app_error_code: VarInt::from_u64(err_code)
-                            .expect("app error code must not exceed VARINT_MAX"),
-                        final_size: unsafe { VarInt::from_u64_unchecked(final_size) },
-                    })]);
+                if let Some(error) = outgoing.is_cancelled_by_app().await {
+                    ctrl_frames.send_frame([StreamCtlFrame::ResetStream(error.combine(sid))]);
                 }
             }
         });

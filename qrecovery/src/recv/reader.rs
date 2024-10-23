@@ -71,7 +71,7 @@ impl Reader {
     /// Otherwise, a [`STOP_SENDING frame`] will be sent to the peer, and then the stream will be reset by peer.
     ///
     /// [`STOP_SENDING frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames
-    pub fn stop(self, error_code: u64) {
+    pub fn stop(&mut self, error_code: u64) {
         debug_assert!(error_code <= VARINT_MAX);
         let mut recver = self.0.recver();
         let inner = recver.deref_mut();
