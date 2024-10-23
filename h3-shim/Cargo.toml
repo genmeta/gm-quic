@@ -12,3 +12,24 @@ qunreliable = { workspace = true }
 qrecovery = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
+
+[dev-dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", no-default-features = false, features = [
+    "fmt",
+    "ansi",
+    "env-filter",
+    "time",
+    "tracing-log",
+] }
+clap = { workspace = true, features = ["derive"] }
+rustls = { workspace = true }
+rustls-native-certs = { version = "0.7" }
+log = { workspace = true }
+http = "1"
+
+[[example]]
+name = "server"
+
+[[example]]
+name = "client"
