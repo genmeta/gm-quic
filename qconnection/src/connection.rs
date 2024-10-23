@@ -28,7 +28,7 @@ use tokio::task::JoinHandle;
 
 use crate::{
     connection::ConnState::{Closed, Closing, Draining, Invalid, Raw},
-    path::pathway::Pathway,
+    path::Pathway,
     router::{Router, RouterRegistry},
     tls::ArcTlsSession,
     usc::ArcUsc,

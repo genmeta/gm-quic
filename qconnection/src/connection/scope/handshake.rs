@@ -30,7 +30,7 @@ use super::any;
 use crate::{
     connection::{transmit::handshake::HandshakeSpaceReader, RcvdPackets},
     error::ConnError,
-    path::{ArcPathes, RawPath},
+    path::{ArcPathes, Path},
     pipe,
 };
 
@@ -64,7 +64,7 @@ impl HandshakeScope {
 
         let dispatch_frame = {
             let conn_error = conn_error.clone();
-            move |frame: Frame, path: &RawPath| match frame {
+            move |frame: Frame, path: &Path| match frame {
                 Frame::Ack(f) => {
                     path.cc.on_ack(Epoch::Initial, &f);
                     _ = ack_frames_entry.unbounded_send(f);
@@ -105,7 +105,7 @@ impl HandshakeScope {
         &self,
         mut rcvd_packets: RcvdPackets,
         pathes: &ArcPathes,
-        dispatch_frame: impl Fn(Frame, &RawPath) + Send + 'static,
+        dispatch_frame: impl Fn(Frame, &Path) + Send + 'static,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
     ) -> JoinHandle<RcvdPackets> {
