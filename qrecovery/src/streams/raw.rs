@@ -22,7 +22,7 @@ use super::{
 };
 use crate::{
     recv::{self, ArcRecver, Incoming, Reader},
-    send::{self, ArcSender, Outgoing, Writer},
+    send::{ArcSender, Outgoing, Writer},
 };
 
 #[derive(Debug, Clone)]
@@ -42,6 +42,18 @@ where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
     fn send_frame<I: IntoIterator<Item = MaxStreamsFrame>>(&self, iter: I) {
+        self.0.send_frame(iter.into_iter().map(Into::into));
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResetFramesTx<T: Clone>(T);
+
+impl<T> SendFrame<ResetStreamFrame> for ResetFramesTx<T>
+where
+    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+{
+    fn send_frame<I: IntoIterator<Item = ResetStreamFrame>>(&self, iter: I) {
         self.0.send_frame(iter.into_iter().map(Into::into));
     }
 }
@@ -136,11 +148,11 @@ where
     // the receive buffer size for the accpeted bidirectional stream created by peer
     remote_bi_stream_rcvbuf_size: u64,
     // 所有流的待写端，要发送数据，就得向这些流索取
-    output: ArcOutput,
+    output: ArcOutput<ResetFramesTx<T>>,
     // 所有流的待读端，收到了数据，交付给这些流
     input: ArcInput,
     // 对方主动创建的流
-    listener: ArcListener,
+    listener: ArcListener<ResetFramesTx<T>>,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
@@ -506,9 +518,9 @@ where
             uni_stream_rcvbuf_size: local_params.initial_max_stream_data_uni().into(),
             local_bi_stream_rcvbuf_size: local_params.initial_max_stream_data_bidi_local().into(),
             remote_bi_stream_rcvbuf_size: local_params.initial_max_stream_data_bidi_remote().into(),
-            output: ArcOutput::default(),
+            output: ArcOutput::new(),
             input: ArcInput::default(),
-            listener: ArcListener::default(),
+            listener: ArcListener::new(),
             ctrl_frames,
         }
     }
@@ -518,7 +530,7 @@ where
         &self,
         cx: &mut Context<'_>,
         snd_wnd_size: u64,
-    ) -> Poll<Result<Option<(StreamId, (Reader, Writer))>, QuicError>> {
+    ) -> Poll<Result<Option<(StreamId, (Reader, Writer<ResetFramesTx<T>>))>, QuicError>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(e) => return Poll::Ready(Err(e)),
@@ -539,11 +551,12 @@ where
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub(super) fn poll_open_uni_stream(
         &self,
         cx: &mut Context<'_>,
         snd_wnd_size: u64,
-    ) -> Poll<Result<Option<(StreamId, Writer)>, QuicError>> {
+    ) -> Poll<Result<Option<(StreamId, Writer<ResetFramesTx<T>>)>, QuicError>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(e) => return Poll::Ready(Err(e)),
@@ -558,11 +571,11 @@ where
         }
     }
 
-    pub(super) fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream {
+    pub(super) fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream<ResetFramesTx<T>> {
         self.listener.accept_bi_stream(snd_wnd_size)
     }
 
-    pub(super) fn accept_uni(&self) -> AcceptUniStream {
+    pub(super) fn accept_uni(&self) -> AcceptUniStream<ResetFramesTx<T>> {
         self.listener.accept_uni_stream()
     }
 
@@ -631,21 +644,8 @@ where
         }
     }
 
-    fn create_sender(&self, sid: StreamId, wnd_size: u64) -> ArcSender {
-        let arc_sender = send::new(wnd_size);
-        // 创建异步轮询子，监听来自应用层的cancel
-        // 一旦cancel，直接向对方发送reset_stream
-        // 但要等ResetRecved才能真正释放该流
-        tokio::spawn({
-            let outgoing = Outgoing(arc_sender.clone());
-            let ctrl_frames = self.ctrl_frames.clone();
-            async move {
-                if let Some(error) = outgoing.is_cancelled_by_app().await {
-                    ctrl_frames.send_frame([StreamCtlFrame::ResetStream(error.combine(sid))]);
-                }
-            }
-        });
-        arc_sender
+    fn create_sender(&self, sid: StreamId, wnd_size: u64) -> ArcSender<ResetFramesTx<T>> {
+        ArcSender::new(sid, wnd_size, ResetFramesTx(self.ctrl_frames.clone()))
     }
 
     fn create_recver(&self, sid: StreamId, buf_size: u64) -> ArcRecver {

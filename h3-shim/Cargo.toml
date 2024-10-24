@@ -10,6 +10,7 @@ qbase = { workspace = true }
 quic = { workspace = true }
 qunreliable = { workspace = true }
 qrecovery = { workspace = true }
+qconnection = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 
