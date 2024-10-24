@@ -79,6 +79,21 @@ impl QuicClient {
         }
     }
 
+    pub fn bind_with(
+        addresses: impl IntoIterator<Item = SocketAddr>,
+        tls_config: TlsClientConfig,
+    ) -> QuicClientBuilder<TlsClientConfig> {
+        QuicClientBuilder {
+            addresses: addresses.into_iter().collect(),
+            reuse_connection: true,
+            enable_happy_eyepballs: false,
+            preferred_versions: vec![1],
+            parameters: Parameters::default(),
+            tls_config,
+            token_sink: None,
+        }
+    }
+
     /// 重新绑定地址，其后创建的连接，会使用新的绑定地址
     pub fn rebind(&mut self, addresses: impl IntoIterator<Item = SocketAddr>) {
         self.addresses.clear();
@@ -200,6 +215,21 @@ impl<T> QuicClientBuilder<T> {
     pub fn with_token_sink(mut self, sink: Arc<dyn TokenSink>) -> Self {
         self.token_sink = Some(sink);
         self
+    }
+
+    pub fn with_tls_config(
+        self,
+        tls_config: TlsClientConfig,
+    ) -> QuicClientBuilder<TlsClientConfig> {
+        QuicClientBuilder {
+            addresses: self.addresses,
+            reuse_connection: self.reuse_connection,
+            enable_happy_eyepballs: self.enable_happy_eyepballs,
+            preferred_versions: self.preferred_versions,
+            parameters: self.parameters,
+            tls_config,
+            token_sink: self.token_sink,
+        }
     }
 }
 
