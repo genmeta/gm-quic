@@ -7,7 +7,11 @@ use std::{
 };
 
 use deref_derive::{Deref, DerefMut};
-use qbase::{error::Error as QuicError, sid::StreamId};
+use qbase::{
+    error::Error as QuicError,
+    frame::{ResetStreamFrame, SendFrame},
+    sid::StreamId,
+};
 
 use crate::{recv::Incoming, send::Outgoing};
 
@@ -43,27 +47,34 @@ impl IOState {
     }
 }
 
-#[derive(Default, Debug, Clone, Deref, DerefMut)]
-pub(super) struct RawOutput {
+#[derive(Debug, Clone, Deref, DerefMut)]
+pub(super) struct RawOutput<RESET> {
     #[deref]
-    pub(super) outgoings: BTreeMap<StreamId, (Outgoing, IOState)>,
+    pub(super) outgoings: BTreeMap<StreamId, (Outgoing<RESET>, IOState)>,
     pub(super) last_sent_stream: Option<(StreamId, usize)>,
+}
+
+impl<RESET> RawOutput<RESET> {
+    fn new() -> Self {
+        Self {
+            outgoings: BTreeMap::default(),
+            last_sent_stream: None,
+        }
+    }
 }
 
 /// ArcOutput里面包含一个Result类型，一旦发生quic error，就会被替换为Err
 /// 发生quic error后，其操作将被忽略，不会再抛出QuicError或者panic，因为
 /// 有些异步任务可能还未完成，在置为Err后才会完成。
 #[derive(Debug, Clone)]
-pub(super) struct ArcOutput(pub(super) Arc<Mutex<Result<RawOutput, QuicError>>>);
+pub(super) struct ArcOutput<RESET>(pub(super) Arc<Mutex<Result<RawOutput<RESET>, QuicError>>>);
 
-impl Default for ArcOutput {
-    fn default() -> Self {
-        Self(Arc::new(Mutex::new(Ok(Default::default()))))
+impl<RESET> ArcOutput<RESET> {
+    pub(super) fn new() -> Self {
+        Self(Arc::new(Mutex::new(Ok(RawOutput::new()))))
     }
-}
 
-impl ArcOutput {
-    pub(super) fn guard(&self) -> Result<ArcOutputGuard, QuicError> {
+    pub(super) fn guard(&self) -> Result<ArcOutputGuard<RESET>, QuicError> {
         let guard = self.0.lock().unwrap();
         match guard.as_ref() {
             Ok(_) => Ok(ArcOutputGuard { inner: guard }),
@@ -72,12 +83,15 @@ impl ArcOutput {
     }
 }
 
-pub(super) struct ArcOutputGuard<'a> {
-    inner: MutexGuard<'a, Result<RawOutput, QuicError>>,
+pub(super) struct ArcOutputGuard<'a, RESET> {
+    inner: MutexGuard<'a, Result<RawOutput<RESET>, QuicError>>,
 }
 
-impl ArcOutputGuard<'_> {
-    pub(super) fn insert(&mut self, sid: StreamId, outgoing: Outgoing, io_state: IOState) {
+impl<RESET> ArcOutputGuard<'_, RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
+    pub(super) fn insert(&mut self, sid: StreamId, outgoing: Outgoing<RESET>, io_state: IOState) {
         match self.inner.as_mut() {
             Ok(set) => set.insert(sid, (outgoing, io_state)),
             Err(e) => unreachable!("output is invalid: {e}"),

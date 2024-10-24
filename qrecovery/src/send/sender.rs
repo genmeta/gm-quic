@@ -5,7 +5,13 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use qbase::{error::Error, frame::ResetStreamError, util::DescribeData, varint::VarInt};
+use qbase::{
+    error::Error,
+    frame::{ResetStreamError, ResetStreamFrame, SendFrame},
+    sid::StreamId,
+    util::DescribeData,
+    varint::VarInt,
+};
 
 use super::sndbuf::SendBuf;
 
@@ -14,24 +20,33 @@ use super::sndbuf::SendBuf;
 /// An implementation might choose to defer allocating a stream ID to a stream until it sends the first
 /// STREAM frame and enters this state, which can allow for better stream prioritization.
 #[derive(Debug)]
-pub struct ReadySender {
+pub struct ReadySender<RESET> {
+    stream_id: StreamId,
     sndbuf: SendBuf,
     cancel_state: Option<u64>,
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
-    cancel_waker: Option<Waker>,
+    reset_frame_tx: RESET,
     writable_waker: Option<Waker>,
     max_data_size: u64,
 }
 
-impl ReadySender {
-    pub(super) fn with_wnd_size(wnd_size: u64) -> ReadySender {
+impl<RESET> ReadySender<RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
+    pub(super) fn with_wnd_size(
+        stream_id: StreamId,
+        wnd_size: u64,
+        reset_frame_tx: RESET,
+    ) -> ReadySender<RESET> {
         ReadySender {
+            stream_id,
             sndbuf: SendBuf::with_capacity(wnd_size as usize),
             cancel_state: None,
             flush_waker: None,
             shutdown_waker: None,
-            cancel_waker: None,
+            reset_frame_tx,
             writable_waker: None,
             max_data_size: wnd_size,
         }
@@ -117,31 +132,16 @@ impl ReadySender {
         self.shutdown_waker.is_some()
     }
 
-    /// 传输层使用，用于发送RST_STREAM帧后，将Sender置为ResetSent状态
-    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<ResetStreamError> {
-        if let Some(err_code) = self.cancel_state {
-            let final_size = self.sndbuf.len();
-            Poll::Ready(ResetStreamError::new(
-                VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
-                VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
-            ))
-        } else {
-            self.cancel_waker = Some(cx.waker().clone());
-            Poll::Pending
-        }
-    }
-
     /// 应用层使用，取消发送流
-    pub(super) fn cancel(&mut self, err_code: u64) {
-        assert!(self.cancel_state.is_none());
-        self.cancel_state = Some(err_code);
-        if let Some(waker) = self.cancel_waker.take() {
-            waker.wake();
-        }
-    }
-
-    pub(super) fn is_cancelled(&self) -> bool {
-        self.cancel_state.is_some()
+    pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
+        let final_size = self.sndbuf.len();
+        let reset_stream_err = ResetStreamError::new(
+            VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
+            VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+        );
+        self.reset_frame_tx
+            .send_frame([reset_stream_err.combine(self.stream_id)]);
+        reset_stream_err
     }
 
     pub(super) fn wake_all(&mut self) {
@@ -154,22 +154,22 @@ impl ReadySender {
         if let Some(waker) = self.shutdown_waker.take() {
             waker.wake();
         }
-        // 让space不再询问流是否被app层cancel
-        if let Some(waker) = self.cancel_waker.take() {
-            waker.wake();
-        }
     }
 }
 
 /// 状态转换，ReaderSender => SendingSender
-impl From<&mut ReadySender> for SendingSender {
-    fn from(value: &mut ReadySender) -> Self {
+impl<RESET> From<&mut ReadySender<RESET>> for SendingSender<RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
+    fn from(value: &mut ReadySender<RESET>) -> Self {
         SendingSender {
+            stream_id: value.stream_id,
             sndbuf: std::mem::take(&mut value.sndbuf),
             cancel_state: value.cancel_state.take(),
             flush_waker: value.flush_waker.take(),
             shutdown_waker: value.shutdown_waker.take(),
-            cancel_waker: value.cancel_waker.take(),
+            reset_frame_tx: value.reset_frame_tx.clone(),
             writable_waker: value.writable_waker.take(),
             max_data_size: value.max_data_size,
         }
@@ -177,33 +177,41 @@ impl From<&mut ReadySender> for SendingSender {
 }
 
 /// 状态转换，ReaderSender => DataSentSender
-impl From<&mut ReadySender> for DataSentSender {
-    fn from(value: &mut ReadySender) -> Self {
+impl<RESET> From<&mut ReadySender<RESET>> for DataSentSender<RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
+    fn from(value: &mut ReadySender<RESET>) -> Self {
         DataSentSender {
+            stream_id: value.stream_id,
             sndbuf: std::mem::take(&mut value.sndbuf),
             cancel_state: value.cancel_state.take(),
             flush_waker: value.flush_waker.take(),
             shutdown_waker: value.shutdown_waker.take(),
-            cancel_waker: value.cancel_waker.take(),
+            reset_frame_tx: value.reset_frame_tx.clone(),
             fin_state: FinState::None,
         }
     }
 }
 
 #[derive(Debug)]
-pub struct SendingSender {
+pub struct SendingSender<RESET> {
+    stream_id: StreamId,
     sndbuf: SendBuf,
     cancel_state: Option<u64>,
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
-    cancel_waker: Option<Waker>,
+    reset_frame_tx: RESET,
     writable_waker: Option<Waker>,
     max_data_size: u64,
 }
 
 type StreamData<'s> = (u64, bool, (&'s [u8], &'s [u8]), bool);
 
-impl SendingSender {
+impl<RESET> SendingSender<RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Send + 'static,
+{
     pub(super) fn poll_write(
         &mut self,
         cx: &mut Context<'_>,
@@ -290,30 +298,15 @@ impl SendingSender {
         }
     }
 
-    /// 传输层使用
-    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<ResetStreamError> {
-        if let Some(err_code) = self.cancel_state {
-            let final_size = self.sndbuf.len();
-            Poll::Ready(ResetStreamError::new(
-                VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
-                VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
-            ))
-        } else {
-            self.cancel_waker = Some(cx.waker().clone());
-            Poll::Pending
-        }
-    }
-
-    pub(super) fn cancel(&mut self, err_code: u64) {
-        assert!(self.cancel_state.is_none());
-        self.cancel_state = Some(err_code);
-        if let Some(waker) = self.cancel_waker.take() {
-            waker.wake();
-        }
-    }
-
-    pub(super) fn is_cancelled(&self) -> bool {
-        self.cancel_state.is_some()
+    pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
+        let final_size = self.sndbuf.len();
+        let reset_stream_err = ResetStreamError::new(
+            VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
+            VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+        );
+        self.reset_frame_tx
+            .send_frame([reset_stream_err.combine(self.stream_id)]);
+        reset_stream_err
     }
 
     pub(super) fn wake_all(&mut self) {
@@ -324,10 +317,6 @@ impl SendingSender {
             waker.wake();
         }
         if let Some(waker) = self.shutdown_waker.take() {
-            waker.wake();
-        }
-        // 让space不再询问流是否被app层cancel
-        if let Some(waker) = self.cancel_waker.take() {
             waker.wake();
         }
     }
@@ -341,14 +330,18 @@ impl SendingSender {
 }
 
 /// 状态转换，SendingSender => DataSentSender
-impl From<&mut SendingSender> for DataSentSender {
-    fn from(value: &mut SendingSender) -> Self {
+impl<RESET> From<&mut SendingSender<RESET>> for DataSentSender<RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
+    fn from(value: &mut SendingSender<RESET>) -> Self {
         DataSentSender {
+            stream_id: value.stream_id,
             sndbuf: std::mem::take(&mut value.sndbuf),
             cancel_state: value.cancel_state.take(),
             flush_waker: value.flush_waker.take(),
             shutdown_waker: value.shutdown_waker.take(),
-            cancel_waker: value.cancel_waker.take(),
+            reset_frame_tx: value.reset_frame_tx.clone(),
             fin_state: FinState::None,
         }
     }
@@ -364,16 +357,20 @@ enum FinState {
 }
 
 #[derive(Debug)]
-pub struct DataSentSender {
+pub struct DataSentSender<RESET> {
+    stream_id: StreamId,
     sndbuf: SendBuf,
     cancel_state: Option<u64>,
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
-    cancel_waker: Option<Waker>,
+    reset_frame_tx: RESET,
     fin_state: FinState,
 }
 
-impl DataSentSender {
+impl<RESET> DataSentSender<RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Send + 'static,
+{
     pub(super) fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Option<StreamData>
     where
         P: Fn(u64) -> Option<usize>,
@@ -454,29 +451,15 @@ impl DataSentSender {
         }
     }
 
-    pub(super) fn poll_cancel(&mut self, cx: &mut Context<'_>) -> Poll<ResetStreamError> {
-        if let Some(err_code) = self.cancel_state {
-            let final_size = self.sndbuf.len();
-            Poll::Ready(ResetStreamError::new(
-                VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
-                VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
-            ))
-        } else {
-            self.cancel_waker = Some(cx.waker().clone());
-            Poll::Pending
-        }
-    }
-
-    pub(super) fn cancel(&mut self, err_code: u64) {
-        assert!(self.cancel_state.is_none());
-        self.cancel_state = Some(err_code);
-        if let Some(waker) = self.cancel_waker.take() {
-            waker.wake();
-        }
-    }
-
-    pub(super) fn is_cancelled(&self) -> bool {
-        self.cancel_state.is_some()
+    pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
+        let final_size = self.sndbuf.len();
+        let reset_stream_err = ResetStreamError::new(
+            VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
+            VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+        );
+        self.reset_frame_tx
+            .send_frame([reset_stream_err.combine(self.stream_id)]);
+        reset_stream_err
     }
 
     pub(super) fn wake_all(&mut self) {
@@ -484,10 +467,6 @@ impl DataSentSender {
             waker.wake();
         }
         if let Some(waker) = self.shutdown_waker.take() {
-            waker.wake();
-        }
-        // 让space不再询问流是否被app层cancel
-        if let Some(waker) = self.cancel_waker.take() {
             waker.wake();
         }
     }
@@ -500,18 +479,25 @@ impl DataSentSender {
 }
 
 #[derive(Debug)]
-pub(super) enum Sender {
-    Ready(ReadySender),
-    Sending(SendingSender),
-    DataSent(DataSentSender),
+pub(super) enum Sender<RESET> {
+    Ready(ReadySender<RESET>),
+    Sending(SendingSender<RESET>),
+    DataSent(DataSentSender<RESET>),
     ResetSent(ResetStreamError),
     DataRcvd,
     ResetRcvd(ResetStreamError),
 }
 
-impl Sender {
-    pub fn with_wnd_size(wnd_size: u64) -> Self {
-        Sender::Ready(ReadySender::with_wnd_size(wnd_size))
+impl<RESET> Sender<RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
+    pub fn with_wnd_size(stream_id: StreamId, wnd_size: u64, reset_frame_tx: RESET) -> Self {
+        Sender::Ready(ReadySender::with_wnd_size(
+            stream_id,
+            wnd_size,
+            reset_frame_tx,
+        ))
     }
 }
 
@@ -526,15 +512,24 @@ impl Sender {
 /// [`Outgoing`]: super::Outgoing
 /// [`Writer`]: super::Writer
 #[derive(Debug, Clone)]
-pub struct ArcSender(Arc<Mutex<Result<Sender, Error>>>);
+pub struct ArcSender<RESET>(Arc<Mutex<Result<Sender<RESET>, Error>>>);
 
-impl ArcSender {
+impl<RESET> ArcSender<RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
     #[doc(hidden)]
-    pub(crate) fn new(wnd_size: u64) -> Self {
-        ArcSender(Arc::new(Mutex::new(Ok(Sender::with_wnd_size(wnd_size)))))
+    pub(crate) fn new(stream_id: StreamId, wnd_size: u64, reset_frame_tx: RESET) -> Self {
+        ArcSender(Arc::new(Mutex::new(Ok(Sender::with_wnd_size(
+            stream_id,
+            wnd_size,
+            reset_frame_tx,
+        )))))
     }
+}
 
-    pub(super) fn sender(&self) -> MutexGuard<Result<Sender, Error>> {
+impl<RESET> ArcSender<RESET> {
+    pub(super) fn sender(&self) -> MutexGuard<Result<Sender<RESET>, Error>> {
         self.0.lock().unwrap()
     }
 }

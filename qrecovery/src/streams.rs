@@ -34,6 +34,7 @@ use qbase::{
     param::Parameters,
     sid::{Role, StreamId},
 };
+use raw::ResetFramesTx;
 
 use crate::{recv::Reader, send::Writer};
 mod io;
@@ -81,13 +82,13 @@ where
 
     /// Accpet a bidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
-    pub fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream {
+    pub fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream<ResetFramesTx<T>> {
         self.0.accept_bi(snd_wnd_size)
     }
 
     /// Accpet a unidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
-    pub fn accept_uni(&self) -> AcceptUniStream {
+    pub fn accept_uni(&self) -> AcceptUniStream<ResetFramesTx<T>> {
         self.0.accept_uni()
     }
 }
@@ -135,7 +136,7 @@ impl<T> Future for OpenBiStream<'_, T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    type Output = Result<Option<(StreamId, (Reader, Writer))>, Error>;
+    type Output = Result<Option<(StreamId, (Reader, Writer<ResetFramesTx<T>>))>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.inner.poll_open_bi_stream(cx, self.snd_wnd_size)
@@ -162,7 +163,7 @@ impl<T> Future for OpenUniStream<'_, T>
 where
     T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    type Output = Result<Option<(StreamId, Writer)>, Error>;
+    type Output = Result<Option<(StreamId, Writer<ResetFramesTx<T>>)>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.inner.poll_open_uni_stream(cx, self.snd_wnd_size)

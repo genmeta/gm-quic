@@ -5,6 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
+use qbase::frame::{ResetStreamFrame, SendFrame};
 use tokio::io::AsyncWrite;
 
 use super::sender::{ArcSender, Sender};
@@ -64,9 +65,12 @@ use crate::send::sender::DataSentSender;
 /// [`cancel`]: Writer::cancel
 /// [`STOP_SENDING frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames
 #[derive(Debug)]
-pub struct Writer(pub(crate) ArcSender);
+pub struct Writer<RESET>(pub(crate) ArcSender<RESET>);
 
-impl Writer {
+impl<RESET> Writer<RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
     /// Cancels the stream with the given error code(reset the stream).
     ///
     /// If all data has been sent and acknowledged by the peer(the stream has closed), or the stream
@@ -81,16 +85,25 @@ impl Writer {
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
             match sending_state {
-                Sender::Ready(s) => s.cancel(err_code),
-                Sender::Sending(s) => s.cancel(err_code),
-                Sender::DataSent(s) => s.cancel(err_code),
+                Sender::Ready(s) => {
+                    *sending_state = Sender::ResetSent(s.cancel(err_code));
+                }
+                Sender::Sending(s) => {
+                    *sending_state = Sender::ResetSent(s.cancel(err_code));
+                }
+                Sender::DataSent(s) => {
+                    *sending_state = Sender::ResetSent(s.cancel(err_code));
+                }
                 _ => (),
             }
         };
     }
 }
 
-impl AsyncWrite for Writer {
+impl<RESET> AsyncWrite for Writer<RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
     /// 往sndbuf里面写数据，直到写满MAX_STREAM_DATA，等通告窗口更新再写
     fn poll_write(
         self: Pin<&mut Self>,
@@ -160,7 +173,7 @@ impl AsyncWrite for Writer {
                     Poll::Ready(Err(e))
                 } else {
                     // it's possible that all data has been sent and received when shutdown called
-                    let mut sent: DataSentSender = s.into();
+                    let mut sent: DataSentSender<RESET> = s.into();
                     let shutdown = sent.poll_shutdown(cx);
                     if shutdown.is_ready() {
                         *sending_state = Sender::DataRcvd;
@@ -192,35 +205,18 @@ impl AsyncWrite for Writer {
     }
 }
 
-impl Drop for Writer {
+impl<RESET> Drop for Writer<RESET> {
     fn drop(&mut self) {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
-            match sending_state {
-                Sender::Ready(s) => {
-                    assert!(
-                        s.is_cancelled(),
-                        "SendingStream in Ready State must be 
-                        cancelled with error code before dropped!"
-                    );
-                }
-                Sender::Sending(s) => {
-                    assert!(
-                        s.is_cancelled(),
-                        "SendingStream in Sending State must be 
-                        cancelled with error code before dropped!"
-                    );
-                }
-                Sender::DataSent(s) => {
-                    assert!(
-                        s.is_cancelled(),
-                        "SendingStream in DataSent State must be 
-                        cancelled with error code before dropped!"
-                    );
-                }
-                _ => (),
-            }
+            debug_assert!(
+                matches!(
+                    sending_state,
+                    Sender::DataRcvd | Sender::ResetSent(_) | Sender::ResetRcvd(_)
+                ),
+                "SendingStream must be shutdowned before dropped!"
+            );
         };
     }
 }

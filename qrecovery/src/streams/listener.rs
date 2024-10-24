@@ -6,24 +6,40 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use qbase::{error::Error as QuicError, sid::StreamId};
+use qbase::{
+    error::Error as QuicError,
+    frame::{ResetStreamFrame, SendFrame},
+    sid::StreamId,
+};
 
 use crate::{
     recv::{ArcRecver, Reader},
     send::{ArcSender, Outgoing, Writer},
 };
 
-#[derive(Debug, Default)]
-struct RawListener {
+#[derive(Debug)]
+struct RawListener<RESET> {
     // 对方主动创建的流
-    bi_streams: VecDeque<(StreamId, (ArcRecver, ArcSender))>,
+    bi_streams: VecDeque<(StreamId, (ArcRecver, ArcSender<RESET>))>,
     uni_streams: VecDeque<(StreamId, ArcRecver)>,
     bi_waker: Option<Waker>,
     uni_waker: Option<Waker>,
 }
 
-impl RawListener {
-    fn push_bi_stream(&mut self, sid: StreamId, stream: (ArcRecver, ArcSender)) {
+impl<RESET> RawListener<RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
+    fn new() -> Self {
+        Self {
+            bi_streams: VecDeque::with_capacity(4),
+            uni_streams: VecDeque::with_capacity(2),
+            bi_waker: None,
+            uni_waker: None,
+        }
+    }
+
+    fn push_bi_stream(&mut self, sid: StreamId, stream: (ArcRecver, ArcSender<RESET>)) {
         self.bi_streams.push_back((sid, stream));
         if let Some(waker) = self.bi_waker.take() {
             waker.wake();
@@ -42,7 +58,7 @@ impl RawListener {
         &mut self,
         cx: &mut Context<'_>,
         send_wnd_size: u64,
-    ) -> Poll<Result<(StreamId, (Reader, Writer)), QuicError>> {
+    ) -> Poll<Result<(StreamId, (Reader, Writer<RESET>)), QuicError>> {
         if let Some((sid, (recever, sender))) = self.bi_streams.pop_front() {
             let outgoing = Outgoing(sender);
             outgoing.update_window(send_wnd_size);
@@ -67,16 +83,17 @@ impl RawListener {
 }
 
 #[derive(Debug, Clone)]
-pub struct ArcListener(Arc<Mutex<Result<RawListener, QuicError>>>);
+pub struct ArcListener<RESET>(Arc<Mutex<Result<RawListener<RESET>, QuicError>>>);
 
-impl Default for ArcListener {
-    fn default() -> Self {
-        ArcListener(Arc::new(Mutex::new(Ok(RawListener::default()))))
+impl<RESET> ArcListener<RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(Mutex::new(Ok(RawListener::new()))))
     }
-}
 
-impl ArcListener {
-    pub(crate) fn guard(&self) -> Result<ListenerGuard, QuicError> {
+    pub(crate) fn guard(&self) -> Result<ListenerGuard<RESET>, QuicError> {
         let guard = self.0.lock().unwrap();
         match guard.as_ref() {
             Ok(_) => Ok(ListenerGuard { inner: guard }),
@@ -84,14 +101,14 @@ impl ArcListener {
         }
     }
 
-    pub fn accept_bi_stream(&self, send_wnd_size: u64) -> AcceptBiStream {
+    pub fn accept_bi_stream(&self, send_wnd_size: u64) -> AcceptBiStream<RESET> {
         AcceptBiStream {
             inner: self,
             send_wnd_size,
         }
     }
 
-    pub fn accept_uni_stream(&self) -> AcceptUniStream {
+    pub fn accept_uni_stream(&self) -> AcceptUniStream<RESET> {
         AcceptUniStream { inner: self }
     }
 
@@ -100,7 +117,7 @@ impl ArcListener {
         &self,
         cx: &mut Context<'_>,
         send_wnd_size: u64,
-    ) -> Poll<Result<(StreamId, (Reader, Writer)), QuicError>> {
+    ) -> Poll<Result<(StreamId, (Reader, Writer<RESET>)), QuicError>> {
         match self.0.lock().unwrap().as_mut() {
             Ok(set) => set.poll_accept_bi_stream(cx, send_wnd_size),
             Err(e) => Poll::Ready(Err(e.clone())),
@@ -118,12 +135,15 @@ impl ArcListener {
     }
 }
 
-pub(crate) struct ListenerGuard<'a> {
-    inner: MutexGuard<'a, Result<RawListener, QuicError>>,
+pub(crate) struct ListenerGuard<'a, RESET> {
+    inner: MutexGuard<'a, Result<RawListener<RESET>, QuicError>>,
 }
 
-impl ListenerGuard<'_> {
-    pub(crate) fn push_bi_stream(&mut self, sid: StreamId, stream: (ArcRecver, ArcSender)) {
+impl<RESET> ListenerGuard<'_, RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
+    pub(crate) fn push_bi_stream(&mut self, sid: StreamId, stream: (ArcRecver, ArcSender<RESET>)) {
         match self.inner.as_mut() {
             Ok(set) => set.push_bi_stream(sid, stream),
             Err(e) => unreachable!("listener is invalid: {e}"),
@@ -160,13 +180,16 @@ impl ListenerGuard<'_> {
 /// When the peer created a new bidirectional stream, the future will resolve with a [`Reader`] and
 /// a [`Writer`] to read and write data on the stream.
 #[derive(Debug, Clone)]
-pub struct AcceptBiStream<'l> {
-    inner: &'l ArcListener,
+pub struct AcceptBiStream<'l, RESET> {
+    inner: &'l ArcListener<RESET>,
     send_wnd_size: u64,
 }
 
-impl Future for AcceptBiStream<'_> {
-    type Output = Result<(StreamId, (Reader, Writer)), QuicError>;
+impl<RESET> Future for AcceptBiStream<'_, RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
+    type Output = Result<(StreamId, (Reader, Writer<RESET>)), QuicError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.inner.poll_accept_bi_stream(cx, self.send_wnd_size)
@@ -180,11 +203,14 @@ impl Future for AcceptBiStream<'_> {
 /// When the peer created a new bidirectional stream, the future will resolve with a [`Reader`] to
 /// read data on the stream.
 #[derive(Debug, Clone)]
-pub struct AcceptUniStream<'l> {
-    inner: &'l ArcListener,
+pub struct AcceptUniStream<'l, RESET> {
+    inner: &'l ArcListener<RESET>,
 }
 
-impl Future for AcceptUniStream<'_> {
+impl<RESET> Future for AcceptUniStream<'_, RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
     type Output = Result<(StreamId, Reader), QuicError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

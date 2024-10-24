@@ -1,15 +1,12 @@
-use std::{
-    future::Future,
-    ops::{DerefMut, Range},
-    pin::Pin,
-    task::{Context, Poll},
-};
+use std::ops::{DerefMut, Range};
 
 use bytes::BufMut;
-use futures::ready;
 use qbase::{
     error::Error as QuicError,
-    frame::{io::WriteDataFrame, ResetStreamError, ShouldCarryLength, StreamFrame},
+    frame::{
+        io::WriteDataFrame, ResetStreamError, ResetStreamFrame, SendFrame, ShouldCarryLength,
+        StreamFrame,
+    },
     sid::StreamId,
     util::DescribeData,
     varint::{VarInt, VARINT_MAX},
@@ -19,9 +16,12 @@ use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
 
 /// An struct for protocol layer to manage the sending part of a stream.
 #[derive(Debug, Clone)]
-pub struct Outgoing(pub(crate) ArcSender);
+pub struct Outgoing<RESET>(pub(crate) ArcSender<RESET>);
 
-impl Outgoing {
+impl<RESET> Outgoing<RESET>
+where
+    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+{
     /// Update the sending window to `max_data_size`
     ///
     /// Callded when the  [`MAX_STREAM_DATA frame`] belonging to the stream is received.
@@ -88,11 +88,11 @@ impl Outgoing {
                 Sender::Ready(s) => {
                     let result;
                     if s.is_shutdown() {
-                        let mut s: DataSentSender = s.into();
+                        let mut s: DataSentSender<RESET> = s.into();
                         result = s.pick_up(predicate, flow_limit).map(write);
                         *sending_state = Sender::DataSent(s);
                     } else {
-                        let mut s: SendingSender = s.into();
+                        let mut s: SendingSender<RESET> = s.into();
                         result = s.pick_up(predicate, flow_limit).map(write);
                         *sending_state = Sender::Sending(s);
                     }
@@ -238,67 +238,5 @@ impl Outgoing {
             Err(_) => return,
         };
         *inner = Err(err.clone());
-    }
-
-    /// Wait for the application layer to cancel(reset) the stream.
-    ///
-    /// If the stream closed, this future will also complete.
-    ///
-    /// See [`IsCancelled`]'s doc for more details.
-    pub fn is_cancelled_by_app(&self) -> IsCancelled {
-        IsCancelled(&self.0)
-    }
-}
-
-/// A future that returns whether the application layer wants to cancel the stream.
-///
-/// This is used to notify the protocol layer to reset the stream, send a [`RESET_STREAM frame`]
-/// to the peer, and then the stream will be reset, neither new data nor lost data will be sent.
-///
-/// Created by [`Outgoing::is_cancelled_by_app`].
-///
-/// This future complete when the application layer wants to cancel the stream, or the stream is
-/// closed duo to other reasons.
-///
-/// If the application called [`cancel`], this future will return:
-/// * `u64`: The final size of the stream data that has been written by the application layer.
-/// * `u64`: The error code that the application layer wants to send to the peer.
-///
-/// If the application layer does not cancel the stream until the stream is closed, this method
-/// returns [`None`].
-///
-/// [`RESET_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
-/// [`cancel`]: crate::send::Writer::cancel
-pub struct IsCancelled<'s>(&'s ArcSender);
-
-impl Future for IsCancelled<'_> {
-    // (u64, u64) -> (final_size, err_code)
-    type Output = Option<ResetStreamError>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut sender = self.0.sender();
-        let inner = sender.deref_mut();
-        match inner {
-            Ok(sending_state) => match sending_state {
-                Sender::Ready(s) => {
-                    let reset_stream_error = ready!(s.poll_cancel(cx));
-                    *sending_state = Sender::ResetSent(reset_stream_error);
-                    Poll::Ready(Some(reset_stream_error))
-                }
-                Sender::Sending(s) => {
-                    let reset_stream_error = ready!(s.poll_cancel(cx));
-                    *sending_state = Sender::ResetSent(reset_stream_error);
-                    Poll::Ready(Some(reset_stream_error))
-                }
-                Sender::DataSent(s) => {
-                    let reset_stream_error = ready!(s.poll_cancel(cx));
-                    *sending_state = Sender::ResetSent(reset_stream_error);
-                    Poll::Ready(Some(reset_stream_error))
-                }
-                _ => Poll::Ready(None),
-            },
-            // 既然发生连接错误了，那也没必要监听应用层的取消了
-            Err(_) => Poll::Ready(None),
-        }
     }
 }

@@ -5,7 +5,8 @@ use std::{
 };
 
 use bytes::Buf;
-use qrecovery::{recv::Reader, send::Writer};
+use qconnection::connection::Writer;
+use qrecovery::recv::Reader;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::Error;
