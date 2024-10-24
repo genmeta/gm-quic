@@ -428,15 +428,25 @@ where
 
 #[cfg(test)]
 mod tests {
+    use deref_derive::Deref;
+
     use super::*;
-    use crate::util::ArcAsyncDeque;
+
+    #[derive(Debug, Clone, Default, Deref)]
+    struct RetiredCids(Arc<Mutex<Vec<RetireConnectionIdFrame>>>);
+
+    impl SendFrame<RetireConnectionIdFrame> for RetiredCids {
+        fn send_frame<I: IntoIterator<Item = RetireConnectionIdFrame>>(&self, iter: I) {
+            self.0.lock().unwrap().extend(iter);
+        }
+    }
 
     #[test]
     fn test_remote_cids() {
         let waker = futures::task::noop_waker();
         let mut cx = std::task::Context::from_waker(&waker);
         let initial_dcid = ConnectionId::random_gen(8);
-        let retired_cids = ArcAsyncDeque::<RetireConnectionIdFrame>::new();
+        let retired_cids = RetiredCids::default();
         let mut remote_cids = RawRemoteCids::new(initial_dcid, 8, retired_cids);
 
         let cid_apply0 = remote_cids.apply_dcid();
@@ -472,7 +482,7 @@ mod tests {
         let waker = futures::task::noop_waker();
         let mut cx = std::task::Context::from_waker(&waker);
         let initial_dcid = ConnectionId::random_gen(8);
-        let retired_cids = ArcAsyncDeque::<RetireConnectionIdFrame>::new();
+        let retired_cids = RetiredCids::default();
         let remote_cids = ArcRemoteCids::new(initial_dcid, 8, retired_cids);
         let mut guard = remote_cids.0.lock().unwrap();
 
@@ -507,7 +517,7 @@ mod tests {
         assert_eq!(guard.cid_deque.offset(), 4);
         assert_eq!(guard.ready_cells.offset(), 4);
         // delay retire cid
-        assert_eq!(guard.retired_cids.len(), 2);
+        assert_eq!(guard.retired_cids.0.lock().unwrap().len(), 2);
 
         assert_eq!(cid_apply1.0.lock().unwrap().allocated_cids[0].0, 0);
         assert_eq!(cid_apply2.0.lock().unwrap().allocated_cids[0].0, 1);
@@ -524,15 +534,16 @@ mod tests {
         guard.arrange_idle_cid();
         cid_apply1.return_back();
         cid_apply2.return_back();
-        assert_eq!(guard.retired_cids.len(), 4);
+        assert_eq!(guard.retired_cids.0.lock().unwrap().len(), 4);
 
-        let retired_cids = [2, 3, 0, 1];
+        let retired_cids = [1, 0, 3, 2];
         for seq in retired_cids {
             assert_eq!(
-                guard.retired_cids.poll_pop(&mut cx),
-                Poll::Ready(Some(RetireConnectionIdFrame {
+                // like a stack, the last in the first out
+                guard.retired_cids.0.lock().unwrap().pop(),
+                Some(RetireConnectionIdFrame {
                     sequence: VarInt::from_u32(seq),
-                }))
+                })
             );
         }
 
@@ -546,12 +557,12 @@ mod tests {
         );
 
         cid_apply2.retire();
-        assert_eq!(guard.retired_cids.len(), 1);
+        assert_eq!(guard.retired_cids.lock().unwrap().len(), 1);
         assert_eq!(
-            guard.retired_cids.poll_pop(&mut cx),
-            Poll::Ready(Some(RetireConnectionIdFrame {
+            guard.retired_cids.0.lock().unwrap().pop(),
+            Some(RetireConnectionIdFrame {
                 sequence: VarInt::from_u32(5),
-            }))
+            })
         );
     }
 
@@ -560,7 +571,7 @@ mod tests {
         let waker = futures::task::noop_waker();
         let mut cx = std::task::Context::from_waker(&waker);
         let initial_dcid = ConnectionId::random_gen(8);
-        let retired_cids = ArcAsyncDeque::<RetireConnectionIdFrame>::new();
+        let retired_cids = RetiredCids::default();
         let remote_cids = ArcRemoteCids::new(initial_dcid, 8, retired_cids);
         let mut guard = remote_cids.0.lock().unwrap();
 
@@ -575,7 +586,7 @@ mod tests {
         guard.retire_prior_to(4);
         assert_eq!(guard.cid_deque.offset(), 4);
         assert_eq!(guard.ready_cells.offset(), 4);
-        assert_eq!(guard.retired_cids.len(), 4);
+        assert_eq!(guard.retired_cids.0.lock().unwrap().len(), 4);
 
         let cid_apply1 = guard.apply_dcid();
         let cid_apply2 = guard.apply_dcid();
