@@ -222,6 +222,33 @@ impl<T> QuicServerBuilder<T> {
         self.token_provider = Some(token_provider);
         self
     }
+
+    /// 设值服务端连接参数。若不设置，则会使用一组默认参数。
+    /// 后续接受新的连接，会直接使用这些参数。不过在sni模式下，各个host可以有不同的参数，该函数将失去意义。
+    /// 因此，它最好配合[`with_single_cert`]或者[`with_single_cert_with_ocsp`]一起使用
+    /// 可以多次调用该函数，会覆盖上一次设置的参数。
+    ///
+    /// [`with_single_cert`]: QuicServerBuilder::with_single_cert
+    /// [`with_single_cert_with_ocsp`]: QuicServerBuilder::with_single_cert_with_ocsp
+    pub fn with_parameters(mut self, parameters: ServerParameters) -> Self {
+        self.parameters = parameters.into();
+        self
+    }
+
+    pub fn with_tls_config(
+        self,
+        tls_config: TlsServerConfig,
+    ) -> QuicServerBuilder<TlsServerConfig> {
+        QuicServerBuilder {
+            addresses: self.addresses,
+            restrict: self.restrict,
+            supported_versions: self.supported_versions,
+            load_balance: self.load_balance,
+            parameters: self.parameters,
+            tls_config,
+            token_provider: self.token_provider,
+        }
+    }
 }
 
 impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
@@ -262,18 +289,6 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
 }
 
 impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
-    /// 设值服务端连接参数。若不设置，则会使用一组默认参数。
-    /// 后续接受新的连接，会直接使用这些参数。不过在sni模式下，各个host可以有不同的参数，该函数将失去意义。
-    /// 因此，它最好配合[`with_single_cert`]或者[`with_single_cert_with_ocsp`]一起使用
-    /// 可以多次调用该函数，会覆盖上一次设置的参数。
-    ///
-    /// [`with_single_cert`]: QuicServerBuilder::with_single_cert
-    /// [`with_single_cert_with_ocsp`]: QuicServerBuilder::with_single_cert_with_ocsp
-    pub fn with_parameters(mut self, parameters: ServerParameters) -> Self {
-        self.parameters = parameters.into();
-        self
-    }
-
     /// 所有的Host都符合泛域名证书的话，可以用该函数
     pub fn with_single_cert(
         self,
