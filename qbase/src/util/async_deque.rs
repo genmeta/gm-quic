@@ -8,8 +8,6 @@ use std::{
 
 use futures::Stream;
 
-use crate::frame::SendFrame;
-
 /// AsyncDeque is a deque that can be used in async context.
 ///
 /// It is a wrapper around VecDeque, with the ability to be popped in async context.
@@ -309,17 +307,5 @@ impl<T: Unpin> Stream for AsyncDeque<T> {
 impl<T> Extend<T> for &ArcAsyncDeque<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         self.0.lock().unwrap().extend(iter);
-    }
-}
-
-impl<F> SendFrame<F> for ArcAsyncDeque<F> {
-    fn send_frame<I: IntoIterator<Item = F>>(&self, iter: I) {
-        let mut guard = self.0.lock().unwrap();
-        if let Some(queue) = &mut guard.queue {
-            queue.extend(iter);
-            if let Some(waker) = guard.waker.take() {
-                waker.wake();
-            }
-        }
     }
 }
