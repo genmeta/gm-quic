@@ -20,7 +20,7 @@ use qbase::{
 };
 use qcongestion::CongestionControl;
 use qrecovery::{
-    recv::Reader,
+    recv,
     reliable::ArcReliableFrameDeque,
     send,
     space::Epoch,
@@ -54,6 +54,7 @@ pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
 
 pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
 pub type Writer = send::Writer<Ext<ArcReliableFrameDeque>>;
+pub type Reader = recv::Reader<Ext<ArcReliableFrameDeque>>;
 
 pub type Handshake = qbase::handshake::Handshake<ArcReliableFrameDeque>;
 

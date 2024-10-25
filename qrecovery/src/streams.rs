@@ -148,7 +148,7 @@ impl<TX> Future for OpenBiStream<'_, TX>
 where
     TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    type Output = Result<Option<(StreamId, (Reader, Writer<Ext<TX>>))>, Error>;
+    type Output = Result<Option<(StreamId, (Reader<Ext<TX>>, Writer<Ext<TX>>))>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.inner.poll_open_bi_stream(cx, self.snd_wnd_size)

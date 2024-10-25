@@ -5,7 +5,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use qbase::varint::VARINT_MAX;
+use qbase::{
+    frame::{MaxStreamDataFrame, SendFrame, StopSendingFrame},
+    varint::VARINT_MAX,
+};
 use tokio::io::{AsyncRead, ReadBuf};
 
 use super::recver::{ArcRecver, Recver};
@@ -60,9 +63,12 @@ use super::recver::{ArcRecver, Recver};
 /// [`stop`]: Reader::stop
 /// [`RESET_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
 #[derive(Debug)]
-pub struct Reader(pub(crate) ArcRecver);
+pub struct Reader<TX>(pub(crate) ArcRecver<TX>);
 
-impl Reader {
+impl<TX> Reader<TX>
+where
+    TX: SendFrame<StopSendingFrame> + SendFrame<MaxStreamDataFrame> + Clone + Send + 'static,
+{
     /// Tell peer to stop sending data with the given error code.
     ///
     /// If all data has been received(the stream has closed), or the stream has been reset, this method will do
@@ -89,7 +95,10 @@ impl Reader {
     }
 }
 
-impl AsyncRead for Reader {
+impl<TX> AsyncRead for Reader<TX>
+where
+    TX: SendFrame<StopSendingFrame> + SendFrame<MaxStreamDataFrame> + Clone + Send + 'static,
+{
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -121,7 +130,7 @@ impl AsyncRead for Reader {
     }
 }
 
-impl Drop for Reader {
+impl<TX> Drop for Reader<TX> {
     fn drop(&mut self) {
         let mut recver = self.0.recver();
         let inner = recver.deref_mut();

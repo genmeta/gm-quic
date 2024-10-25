@@ -6,8 +6,7 @@ use std::{
 
 use futures::Stream;
 use qbase::sid::StreamId;
-use qconnection::connection::Writer;
-use qrecovery::recv::Reader;
+use qconnection::connection::{Reader, Writer};
 
 use crate::{
     ext::{RecvDatagram, SendDatagram},

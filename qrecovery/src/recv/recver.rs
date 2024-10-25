@@ -7,35 +7,94 @@ use std::{
 use bytes::{BufMut, Bytes};
 use qbase::{
     error::{Error, ErrorKind},
-    frame::{BeFrame, ResetStreamError, ResetStreamFrame, StreamFrame},
+    frame::{
+        BeFrame, MaxStreamDataFrame, ResetStreamError, ResetStreamFrame, SendFrame,
+        StopSendingFrame, StreamFrame,
+    },
+    sid::StreamId,
+    varint::{VarInt, VARINT_MAX},
 };
 
 use super::rcvbuf;
 
 #[derive(Debug)]
-pub(super) struct Recv {
+pub(super) struct Recv<TX> {
+    stream_id: StreamId,
     rcvbuf: rcvbuf::RecvBuf,
     read_waker: Option<Waker>,
     stop_state: Option<u64>,
-    stop_waker: Option<Waker>,
+    frames_tx: TX,
     largest_data_offset: u64,
     max_data_size: u64,
-    buf_exceeds_half_waker: Option<Waker>,
 }
 
-impl Recv {
-    pub(super) fn with(buf_size: u64) -> Self {
+impl<TX> Recv<TX>
+where
+    TX: SendFrame<StopSendingFrame> + SendFrame<MaxStreamDataFrame> + Clone + Send + 'static,
+{
+    pub(super) fn with(stream_id: StreamId, buf_size: u64, frames_tx: TX) -> Self {
         Self {
+            stream_id,
             rcvbuf: rcvbuf::RecvBuf::default(),
             read_waker: None,
             stop_state: None,
-            stop_waker: None,
+            frames_tx,
             largest_data_offset: 0,
             max_data_size: buf_size,
-            buf_exceeds_half_waker: None,
         }
     }
 
+    pub(super) fn poll_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut impl BufMut,
+    ) -> Poll<io::Result<()>> {
+        if self.rcvbuf.is_readable() {
+            self.rcvbuf.try_read(buf);
+
+            let threshold = 1_000_000;
+            if self.rcvbuf.nread() + threshold > self.max_data_size {
+                let max_data_size = (self.rcvbuf.nread() + threshold * 2).min(VARINT_MAX);
+                if max_data_size > self.max_data_size {
+                    self.max_data_size = max_data_size;
+                    self.frames_tx.send_frame([MaxStreamDataFrame::new(
+                        self.stream_id,
+                        VarInt::from_u64(max_data_size).unwrap(),
+                    )]);
+                }
+            }
+
+            Poll::Ready(Ok(()))
+        } else {
+            self.read_waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+    pub(super) fn stop(&mut self, err_code: u64) {
+        if self.stop_state.is_none() {
+            self.stop_state = Some(err_code);
+            self.frames_tx.send_frame([StopSendingFrame::new(
+                self.stream_id,
+                VarInt::from_u64(err_code).expect("app error code must not exceed 2^62!"),
+            )]);
+        }
+    }
+    pub(super) fn determin_size(&mut self, total_size: u64) -> SizeKnown<TX> {
+        if let Some(waker) = self.read_waker.take() {
+            waker.wake();
+        }
+        SizeKnown {
+            total_size,
+            stream_id: self.stream_id,
+            rcvbuf: std::mem::take(&mut self.rcvbuf),
+            stop_state: self.stop_state.take(),
+            stop_tx: self.frames_tx.clone(),
+            read_waker: self.read_waker.take(),
+        }
+    }
+}
+
+impl<TX> Recv<TX> {
     pub(super) fn recv(&mut self, stream_frame: &StreamFrame, body: Bytes) -> Result<usize, Error> {
         let begin = stream_frame.offset();
 
@@ -60,89 +119,6 @@ impl Recv {
         Ok(new_data_size)
     }
 
-    pub(super) fn poll_read(
-        &mut self,
-        cx: &mut Context<'_>,
-        buf: &mut impl BufMut,
-    ) -> Poll<io::Result<()>> {
-        if self.rcvbuf.is_readable() {
-            self.rcvbuf.try_read(buf);
-
-            let threshold = 1_000_000;
-            if self.rcvbuf.nread() + threshold > self.max_data_size {
-                if let Some(waker) = self.buf_exceeds_half_waker.take() {
-                    waker.wake()
-                }
-            }
-
-            Poll::Ready(Ok(()))
-        } else {
-            self.read_waker = Some(cx.waker().clone());
-            Poll::Pending
-        }
-    }
-
-    pub(super) fn poll_update_window(&mut self, cx: &mut Context<'_>) -> Poll<Option<u64>> {
-        assert!(self.buf_exceeds_half_waker.is_none());
-        let threshold = 1_000_000;
-        if self.rcvbuf.nread() + threshold > self.max_data_size {
-            self.max_data_size = self.rcvbuf.nread() + threshold * 2;
-            Poll::Ready(Some(self.max_data_size))
-        } else {
-            self.buf_exceeds_half_waker = Some(cx.waker().clone());
-            Poll::Pending
-        }
-    }
-
-    pub(super) fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<Option<u64>> {
-        if let Some(err_code) = self.stop_state {
-            Poll::Ready(Some(err_code))
-        } else {
-            self.stop_waker = Some(cx.waker().clone());
-            Poll::Pending
-        }
-    }
-
-    pub(super) fn stop(&mut self, err_code: u64) {
-        assert!(self.stop_state.is_none());
-        self.stop_state = Some(err_code);
-        if let Some(waker) = self.stop_waker.take() {
-            waker.wake()
-        }
-    }
-
-    pub(super) fn is_stopped(&self) -> bool {
-        self.stop_state.is_some()
-    }
-
-    pub(super) fn determin_size(&mut self, total_size: u64) -> SizeKnown {
-        if let Some(waker) = self.buf_exceeds_half_waker.take() {
-            waker.wake();
-        }
-        if let Some(waker) = self.read_waker.take() {
-            waker.wake();
-        }
-        SizeKnown {
-            total_size,
-            rcvbuf: std::mem::take(&mut self.rcvbuf),
-            stop_state: self.stop_state.take(),
-            read_waker: self.read_waker.take(),
-            stop_waker: self.stop_waker.take(),
-        }
-    }
-
-    pub(super) fn wake_all(&mut self) {
-        if let Some(waker) = self.buf_exceeds_half_waker.take() {
-            waker.wake()
-        }
-        if let Some(waker) = self.stop_waker.take() {
-            waker.wake()
-        }
-        if let Some(waker) = self.read_waker.take() {
-            waker.wake()
-        }
-    }
-
     pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<u64, Error> {
         let final_size = reset_frame.final_size.into_inner();
         if final_size < self.largest_data_offset {
@@ -155,8 +131,17 @@ impl Recv {
                 ),
             ));
         }
-        self.wake_all();
+        self.wake_reader();
         Ok(final_size)
+    }
+
+    pub(super) fn is_stopped(&self) -> bool {
+        self.stop_state.is_some()
+    }
+    pub(super) fn wake_reader(&mut self) {
+        if let Some(waker) = self.read_waker.take() {
+            waker.wake()
+        }
     }
 }
 
@@ -164,15 +149,34 @@ impl Recv {
 /// be updated. Receiving data on this stream is meaningless. At this point, it is
 /// also meaningless for the application layer to continue receiving data.
 #[derive(Debug)]
-pub struct SizeKnown {
+pub struct SizeKnown<TX> {
+    stream_id: StreamId,
     rcvbuf: rcvbuf::RecvBuf,
     read_waker: Option<Waker>,
     stop_state: Option<u64>,
-    stop_waker: Option<Waker>,
+    stop_tx: TX,
     total_size: u64,
 }
 
-impl SizeKnown {
+impl<TX> SizeKnown<TX>
+where
+    TX: SendFrame<StopSendingFrame> + Clone + Send + 'static,
+{
+    /// Abort can be called multiple times at the application level,
+    /// but only the first call is effective.
+    pub(super) fn stop(&mut self, err_code: u64) -> u64 {
+        if self.stop_state.is_none() {
+            self.stop_state = Some(err_code);
+            self.stop_tx.send_frame([StopSendingFrame::new(
+                self.stream_id,
+                VarInt::from_u64(err_code).expect("app error code must not exceed 2^62!"),
+            )]);
+        }
+        self.total_size
+    }
+}
+
+impl<TX> SizeKnown<TX> {
     pub(super) fn recv(&mut self, stream_frame: &StreamFrame, buf: Bytes) -> Result<usize, Error> {
         let offset = stream_frame.offset();
         let data_size = offset + buf.len() as u64;
@@ -234,39 +238,6 @@ impl SizeKnown {
         }
     }
 
-    pub(super) fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<Option<u64>> {
-        if let Some(err_code) = self.stop_state {
-            Poll::Ready(Some(err_code))
-        } else {
-            self.stop_waker = Some(cx.waker().clone());
-            Poll::Pending
-        }
-    }
-
-    /// Abort can be called multiple times at the application level,
-    /// but only the first call is effective.
-    pub(super) fn stop(&mut self, err_code: u64) -> u64 {
-        assert!(self.stop_state.is_none());
-        self.stop_state = Some(err_code);
-        if let Some(waker) = self.stop_waker.take() {
-            waker.wake()
-        }
-        self.total_size
-    }
-
-    pub(super) fn is_stopped(&self) -> bool {
-        self.stop_state.is_some()
-    }
-
-    pub(super) fn wake_all(&mut self) {
-        if let Some(waker) = self.stop_waker.take() {
-            waker.wake()
-        }
-        if let Some(waker) = self.read_waker.take() {
-            waker.wake()
-        }
-    }
-
     pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<u64, Error> {
         let final_size = reset_frame.final_size.into_inner();
         if final_size != self.total_size {
@@ -279,23 +250,38 @@ impl SizeKnown {
                 ),
             ));
         }
-        self.wake_all();
+        self.wake_reader();
         Ok(final_size)
+    }
+
+    pub(super) fn is_stopped(&self) -> bool {
+        self.stop_state.is_some()
+    }
+    pub(super) fn wake_reader(&mut self) {
+        if let Some(waker) = self.read_waker.take() {
+            waker.wake()
+        }
     }
 }
 
-impl From<&mut SizeKnown> for DataRcvd {
-    fn from(size_known: &mut SizeKnown) -> Self {
-        size_known.wake_all();
+impl<TX> From<&mut SizeKnown<TX>> for DataRcvd
+where
+    TX: SendFrame<StopSendingFrame> + Clone + Send + 'static,
+{
+    fn from(size_known: &mut SizeKnown<TX>) -> Self {
+        size_known.wake_reader();
         DataRcvd {
             rcvbuf: std::mem::take(&mut size_known.rcvbuf),
         }
     }
 }
 
-impl From<SizeKnown> for DataRcvd {
-    fn from(mut size_known: SizeKnown) -> Self {
-        size_known.wake_all();
+impl<TX> From<SizeKnown<TX>> for DataRcvd
+where
+    TX: SendFrame<StopSendingFrame> + Clone + Send + 'static,
+{
+    fn from(mut size_known: SizeKnown<TX>) -> Self {
+        size_known.wake_reader();
         DataRcvd {
             rcvbuf: size_known.rcvbuf,
         }
@@ -339,18 +325,21 @@ impl DataRcvd {
 /// clearer semantics and aligns with the QUIC RFC specification but also
 /// allows the compiler to help us check if the state transitions are correct
 #[derive(Debug)]
-pub(super) enum Recver {
-    Recv(Recv),
-    SizeKnown(SizeKnown),
+pub(super) enum Recver<TX> {
+    Recv(Recv<TX>),
+    SizeKnown(SizeKnown<TX>),
     DataRcvd(DataRcvd),
     ResetRcvd(ResetStreamError),
     DataRead,
     ResetRead(ResetStreamError),
 }
 
-impl Recver {
-    pub(super) fn new(buf_size: u64) -> Self {
-        Self::Recv(Recv::with(buf_size))
+impl<TX> Recver<TX>
+where
+    TX: SendFrame<StopSendingFrame> + SendFrame<MaxStreamDataFrame> + Clone + Send + 'static,
+{
+    pub(super) fn new(stream_id: StreamId, buf_size: u64, frames_tx: TX) -> Self {
+        Self::Recv(Recv::with(stream_id, buf_size, frames_tx))
     }
 }
 
@@ -366,18 +355,22 @@ impl Recver {
 /// [`Incoming`]: super::Incoming
 /// [`Reader`]: super::Reader
 #[derive(Debug, Clone)]
-pub struct ArcRecver(Arc<Mutex<Result<Recver, Error>>>);
+pub struct ArcRecver<TX>(Arc<Mutex<Result<Recver<TX>, Error>>>);
 
-impl ArcRecver {
+impl<TX> ArcRecver<TX>
+where
+    TX: SendFrame<StopSendingFrame> + SendFrame<MaxStreamDataFrame> + Clone + Send + 'static,
+{
     #[doc(hidden)]
-    pub(crate) fn new(buf_size: u64) -> Self {
-        ArcRecver(Arc::new(Mutex::new(Ok(Recver::new(buf_size)))))
-    }
-
-    pub(super) fn recver(&self) -> MutexGuard<Result<Recver, Error>> {
-        self.0.lock().unwrap()
+    pub(crate) fn new(stream_id: StreamId, buf_size: u64, frames_tx: TX) -> Self {
+        ArcRecver(Arc::new(Mutex::new(Ok(Recver::new(
+            stream_id, buf_size, frames_tx,
+        )))))
     }
 }
 
-#[cfg(test)]
-mod tests {}
+impl<TX> ArcRecver<TX> {
+    pub(super) fn recver(&self) -> MutexGuard<Result<Recver<TX>, Error>> {
+        self.0.lock().unwrap()
+    }
+}
