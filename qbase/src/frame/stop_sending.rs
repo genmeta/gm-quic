@@ -23,6 +23,15 @@ pub struct StopSendingFrame {
 
 const STOP_SENDING_FRAME_TYPE: u8 = 0x05;
 
+impl StopSendingFrame {
+    pub fn new(stream_id: StreamId, app_err_code: VarInt) -> Self {
+        Self {
+            stream_id,
+            app_err_code,
+        }
+    }
+}
+
 impl super::BeFrame for StopSendingFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::StopSending

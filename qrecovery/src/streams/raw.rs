@@ -3,8 +3,8 @@ use std::task::{ready, Context, Poll};
 use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::{
-        BeFrame, FrameType, MaxStreamDataFrame, ReceiveFrame, ResetStreamFrame, SendFrame,
-        StopSendingFrame, StreamCtlFrame, StreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
+        BeFrame, FrameType, ReceiveFrame, ResetStreamFrame, SendFrame, StreamCtlFrame, StreamFrame,
+        STREAM_FRAME_MAX_ENCODING_SIZE,
     },
     param::Parameters,
     sid::{
@@ -21,7 +21,7 @@ use super::{
     Ext,
 };
 use crate::{
-    recv::{self, ArcRecver, Incoming, Reader},
+    recv::{ArcRecver, Incoming, Reader},
     send::{ArcSender, Outgoing, Writer},
 };
 
@@ -117,7 +117,7 @@ where
     // 所有流的待写端，要发送数据，就得向这些流索取
     output: ArcOutput<Ext<TX>>,
     // 所有流的待读端，收到了数据，交付给这些流
-    input: ArcInput,
+    input: ArcInput<Ext<TX>>,
     // 对方主动创建的流
     listener: ArcListener<Ext<TX>>,
 }
@@ -497,7 +497,7 @@ where
         &self,
         cx: &mut Context<'_>,
         snd_wnd_size: u64,
-    ) -> Poll<Result<Option<(StreamId, (Reader, Writer<Ext<TX>>))>, QuicError>> {
+    ) -> Poll<Result<Option<(StreamId, (Reader<Ext<TX>>, Writer<Ext<TX>>))>, QuicError>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(e) => return Poll::Ready(Err(e)),
@@ -615,35 +615,7 @@ where
         ArcSender::new(sid, wnd_size, Ext(self.ctrl_frames.clone()))
     }
 
-    fn create_recver(&self, sid: StreamId, buf_size: u64) -> ArcRecver {
-        let arc_recver = recv::new(buf_size);
-        // Continuously check whether the MaxStreamData window needs to be updated.
-        tokio::spawn({
-            let incoming = Incoming(arc_recver.clone());
-            let ctrl_frames = self.ctrl_frames.clone();
-            async move {
-                while let Some(max_data) = incoming.need_update_window().await {
-                    ctrl_frames.send_frame([StreamCtlFrame::MaxStreamData(MaxStreamDataFrame {
-                        stream_id: sid,
-                        max_stream_data: unsafe { VarInt::from_u64_unchecked(max_data) },
-                    })]);
-                }
-            }
-        });
-        // 监听是否被应用stop了。如果是，则要发送一个StopSendingFrame
-        tokio::spawn({
-            let incoming = Incoming(arc_recver.clone());
-            let ctrl_frames = self.ctrl_frames.clone();
-            async move {
-                if let Some(err_code) = incoming.is_stopped_by_app().await {
-                    ctrl_frames.send_frame([StreamCtlFrame::StopSending(StopSendingFrame {
-                        stream_id: sid,
-                        app_err_code: VarInt::from_u64(err_code)
-                            .expect("app error code must not exceed VARINT_MAX"),
-                    })]);
-                }
-            }
-        });
-        arc_recver
+    fn create_recver(&self, sid: StreamId, buf_size: u64) -> ArcRecver<Ext<TX>> {
+        ArcRecver::new(sid, buf_size, Ext(self.ctrl_frames.clone()))
     }
 }

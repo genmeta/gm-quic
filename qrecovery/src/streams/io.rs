@@ -113,18 +113,18 @@ where
 /// 有些异步任务可能还未完成，在置为Err后才会完成。
 #[allow(clippy::type_complexity)]
 #[derive(Debug, Clone)]
-pub(super) struct ArcInput(
-    pub(super) Arc<Mutex<Result<HashMap<StreamId, (Incoming, IOState)>, QuicError>>>,
+pub(super) struct ArcInput<TX>(
+    pub(super) Arc<Mutex<Result<HashMap<StreamId, (Incoming<TX>, IOState)>, QuicError>>>,
 );
 
-impl Default for ArcInput {
+impl<TX> Default for ArcInput<TX> {
     fn default() -> Self {
         Self(Arc::new(Mutex::new(Ok(HashMap::new()))))
     }
 }
 
-impl ArcInput {
-    pub(super) fn guard(&self) -> Result<ArcInputGuard, QuicError> {
+impl<TX> ArcInput<TX> {
+    pub(super) fn guard(&self) -> Result<ArcInputGuard<'_, TX>, QuicError> {
         let guard = self.0.lock().unwrap();
         match guard.as_ref() {
             Ok(_) => Ok(ArcInputGuard { inner: guard }),
@@ -134,12 +134,12 @@ impl ArcInput {
 }
 
 #[allow(clippy::type_complexity)]
-pub(super) struct ArcInputGuard<'a> {
-    inner: MutexGuard<'a, Result<HashMap<StreamId, (Incoming, IOState)>, QuicError>>,
+pub(super) struct ArcInputGuard<'a, TX> {
+    inner: MutexGuard<'a, Result<HashMap<StreamId, (Incoming<TX>, IOState)>, QuicError>>,
 }
 
-impl ArcInputGuard<'_> {
-    pub(super) fn insert(&mut self, sid: StreamId, incoming: Incoming, io_state: IOState) {
+impl<TX> ArcInputGuard<'_, TX> {
+    pub(super) fn insert(&mut self, sid: StreamId, incoming: Incoming<TX>, io_state: IOState) {
         match self.inner.as_mut() {
             Ok(set) => set.insert(sid, (incoming, io_state)),
             Err(e) => unreachable!("input is invalid: {e}"),
