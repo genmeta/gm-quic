@@ -65,11 +65,11 @@ use crate::send::sender::DataSentSender;
 /// [`cancel`]: Writer::cancel
 /// [`STOP_SENDING frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames
 #[derive(Debug)]
-pub struct Writer<RESET>(pub(crate) ArcSender<RESET>);
+pub struct Writer<TX>(pub(crate) ArcSender<TX>);
 
-impl<RESET> Writer<RESET>
+impl<TX> Writer<TX>
 where
-    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
 {
     /// Cancels the stream with the given error code(reset the stream).
     ///
@@ -100,9 +100,9 @@ where
     }
 }
 
-impl<RESET> AsyncWrite for Writer<RESET>
+impl<TX> AsyncWrite for Writer<TX>
 where
-    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
 {
     /// 往sndbuf里面写数据，直到写满MAX_STREAM_DATA，等通告窗口更新再写
     fn poll_write(
@@ -173,7 +173,7 @@ where
                     Poll::Ready(Err(e))
                 } else {
                     // it's possible that all data has been sent and received when shutdown called
-                    let mut sent: DataSentSender<RESET> = s.into();
+                    let mut sent: DataSentSender<TX> = s.into();
                     let shutdown = sent.poll_shutdown(cx);
                     if shutdown.is_ready() {
                         *sending_state = Sender::DataRcvd;
@@ -205,7 +205,7 @@ where
     }
 }
 
-impl<RESET> Drop for Writer<RESET> {
+impl<TX> Drop for Writer<TX> {
     fn drop(&mut self) {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();

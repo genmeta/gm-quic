@@ -16,11 +16,11 @@ use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
 
 /// An struct for protocol layer to manage the sending part of a stream.
 #[derive(Debug, Clone)]
-pub struct Outgoing<RESET>(pub(crate) ArcSender<RESET>);
+pub struct Outgoing<TX>(pub(crate) ArcSender<TX>);
 
-impl<RESET> Outgoing<RESET>
+impl<TX> Outgoing<TX>
 where
-    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
 {
     /// Update the sending window to `max_data_size`
     ///
@@ -88,11 +88,11 @@ where
                 Sender::Ready(s) => {
                     let result;
                     if s.is_shutdown() {
-                        let mut s: DataSentSender<RESET> = s.into();
+                        let mut s: DataSentSender<TX> = s.into();
                         result = s.pick_up(predicate, flow_limit).map(write);
                         *sending_state = Sender::DataSent(s);
                     } else {
-                        let mut s: SendingSender<RESET> = s.into();
+                        let mut s: SendingSender<TX> = s.into();
                         result = s.pick_up(predicate, flow_limit).map(write);
                         *sending_state = Sender::Sending(s);
                     }

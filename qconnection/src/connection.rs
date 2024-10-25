@@ -24,7 +24,7 @@ use qrecovery::{
     reliable::ArcReliableFrameDeque,
     send,
     space::Epoch,
-    streams::{self, raw::ResetFramesTx},
+    streams::{self, Ext},
 };
 use qunreliable::{DatagramReader, DatagramWriter};
 use raw::RawConnection;
@@ -53,7 +53,7 @@ pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
 pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
 
 pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
-pub type Writer = send::Writer<ResetFramesTx<ArcReliableFrameDeque>>;
+pub type Writer = send::Writer<Ext<ArcReliableFrameDeque>>;
 
 pub type Handshake = qbase::handshake::Handshake<ArcReliableFrameDeque>;
 

@@ -20,26 +20,26 @@ use super::sndbuf::SendBuf;
 /// An implementation might choose to defer allocating a stream ID to a stream until it sends the first
 /// STREAM frame and enters this state, which can allow for better stream prioritization.
 #[derive(Debug)]
-pub struct ReadySender<RESET> {
+pub struct ReadySender<TX> {
     stream_id: StreamId,
     sndbuf: SendBuf,
     cancel_state: Option<u64>,
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
-    reset_frame_tx: RESET,
+    reset_frame_tx: TX,
     writable_waker: Option<Waker>,
     max_data_size: u64,
 }
 
-impl<RESET> ReadySender<RESET>
+impl<TX> ReadySender<TX>
 where
-    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
 {
     pub(super) fn with_wnd_size(
         stream_id: StreamId,
         wnd_size: u64,
-        reset_frame_tx: RESET,
-    ) -> ReadySender<RESET> {
+        reset_frame_tx: TX,
+    ) -> ReadySender<TX> {
         ReadySender {
             stream_id,
             sndbuf: SendBuf::with_capacity(wnd_size as usize),
@@ -158,11 +158,11 @@ where
 }
 
 /// 状态转换，ReaderSender => SendingSender
-impl<RESET> From<&mut ReadySender<RESET>> for SendingSender<RESET>
+impl<TX> From<&mut ReadySender<TX>> for SendingSender<TX>
 where
-    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
 {
-    fn from(value: &mut ReadySender<RESET>) -> Self {
+    fn from(value: &mut ReadySender<TX>) -> Self {
         SendingSender {
             stream_id: value.stream_id,
             sndbuf: std::mem::take(&mut value.sndbuf),
@@ -177,11 +177,11 @@ where
 }
 
 /// 状态转换，ReaderSender => DataSentSender
-impl<RESET> From<&mut ReadySender<RESET>> for DataSentSender<RESET>
+impl<TX> From<&mut ReadySender<TX>> for DataSentSender<TX>
 where
-    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
 {
-    fn from(value: &mut ReadySender<RESET>) -> Self {
+    fn from(value: &mut ReadySender<TX>) -> Self {
         DataSentSender {
             stream_id: value.stream_id,
             sndbuf: std::mem::take(&mut value.sndbuf),
@@ -195,22 +195,22 @@ where
 }
 
 #[derive(Debug)]
-pub struct SendingSender<RESET> {
+pub struct SendingSender<TX> {
     stream_id: StreamId,
     sndbuf: SendBuf,
     cancel_state: Option<u64>,
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
-    reset_frame_tx: RESET,
+    reset_frame_tx: TX,
     writable_waker: Option<Waker>,
     max_data_size: u64,
 }
 
 type StreamData<'s> = (u64, bool, (&'s [u8], &'s [u8]), bool);
 
-impl<RESET> SendingSender<RESET>
+impl<TX> SendingSender<TX>
 where
-    RESET: SendFrame<ResetStreamFrame> + Send + 'static,
+    TX: SendFrame<ResetStreamFrame> + Send + 'static,
 {
     pub(super) fn poll_write(
         &mut self,
@@ -330,11 +330,11 @@ where
 }
 
 /// 状态转换，SendingSender => DataSentSender
-impl<RESET> From<&mut SendingSender<RESET>> for DataSentSender<RESET>
+impl<TX> From<&mut SendingSender<TX>> for DataSentSender<TX>
 where
-    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
 {
-    fn from(value: &mut SendingSender<RESET>) -> Self {
+    fn from(value: &mut SendingSender<TX>) -> Self {
         DataSentSender {
             stream_id: value.stream_id,
             sndbuf: std::mem::take(&mut value.sndbuf),
@@ -357,19 +357,19 @@ enum FinState {
 }
 
 #[derive(Debug)]
-pub struct DataSentSender<RESET> {
+pub struct DataSentSender<TX> {
     stream_id: StreamId,
     sndbuf: SendBuf,
     cancel_state: Option<u64>,
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
-    reset_frame_tx: RESET,
+    reset_frame_tx: TX,
     fin_state: FinState,
 }
 
-impl<RESET> DataSentSender<RESET>
+impl<TX> DataSentSender<TX>
 where
-    RESET: SendFrame<ResetStreamFrame> + Send + 'static,
+    TX: SendFrame<ResetStreamFrame> + Send + 'static,
 {
     pub(super) fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Option<StreamData>
     where
@@ -488,11 +488,11 @@ pub(super) enum Sender<RESET> {
     ResetRcvd(ResetStreamError),
 }
 
-impl<RESET> Sender<RESET>
+impl<TX> Sender<TX>
 where
-    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
 {
-    pub fn with_wnd_size(stream_id: StreamId, wnd_size: u64, reset_frame_tx: RESET) -> Self {
+    pub fn with_wnd_size(stream_id: StreamId, wnd_size: u64, reset_frame_tx: TX) -> Self {
         Sender::Ready(ReadySender::with_wnd_size(
             stream_id,
             wnd_size,
@@ -512,14 +512,14 @@ where
 /// [`Outgoing`]: super::Outgoing
 /// [`Writer`]: super::Writer
 #[derive(Debug, Clone)]
-pub struct ArcSender<RESET>(Arc<Mutex<Result<Sender<RESET>, Error>>>);
+pub struct ArcSender<TX>(Arc<Mutex<Result<Sender<TX>, Error>>>);
 
-impl<RESET> ArcSender<RESET>
+impl<TX> ArcSender<TX>
 where
-    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
 {
     #[doc(hidden)]
-    pub(crate) fn new(stream_id: StreamId, wnd_size: u64, reset_frame_tx: RESET) -> Self {
+    pub(crate) fn new(stream_id: StreamId, wnd_size: u64, reset_frame_tx: TX) -> Self {
         ArcSender(Arc::new(Mutex::new(Ok(Sender::with_wnd_size(
             stream_id,
             wnd_size,
@@ -528,8 +528,8 @@ where
     }
 }
 
-impl<RESET> ArcSender<RESET> {
-    pub(super) fn sender(&self) -> MutexGuard<Result<Sender<RESET>, Error>> {
+impl<TX> ArcSender<TX> {
+    pub(super) fn sender(&self) -> MutexGuard<Result<Sender<TX>, Error>> {
         self.0.lock().unwrap()
     }
 }

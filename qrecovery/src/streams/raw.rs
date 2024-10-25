@@ -3,9 +3,8 @@ use std::task::{ready, Context, Poll};
 use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::{
-        BeFrame, FrameType, MaxStreamDataFrame, MaxStreamsFrame, ReceiveFrame, ResetStreamFrame,
-        SendFrame, StopSendingFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
-        STREAM_FRAME_MAX_ENCODING_SIZE,
+        BeFrame, FrameType, MaxStreamDataFrame, ReceiveFrame, ResetStreamFrame, SendFrame,
+        StopSendingFrame, StreamCtlFrame, StreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
     },
     param::Parameters,
     sid::{
@@ -19,44 +18,12 @@ use qbase::{
 use super::{
     io::{ArcInput, ArcOutput, IOState},
     listener::{AcceptBiStream, AcceptUniStream, ArcListener},
+    Ext,
 };
 use crate::{
     recv::{self, ArcRecver, Incoming, Reader},
     send::{ArcSender, Outgoing, Writer},
 };
-
-#[derive(Debug, Clone)]
-struct SidFramesTx<T: Clone>(T);
-
-impl<T> SendFrame<StreamsBlockedFrame> for SidFramesTx<T>
-where
-    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
-{
-    fn send_frame<I: IntoIterator<Item = StreamsBlockedFrame>>(&self, iter: I) {
-        self.0.send_frame(iter.into_iter().map(Into::into));
-    }
-}
-
-impl<T> SendFrame<MaxStreamsFrame> for SidFramesTx<T>
-where
-    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
-{
-    fn send_frame<I: IntoIterator<Item = MaxStreamsFrame>>(&self, iter: I) {
-        self.0.send_frame(iter.into_iter().map(Into::into));
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ResetFramesTx<T: Clone>(T);
-
-impl<T> SendFrame<ResetStreamFrame> for ResetFramesTx<T>
-where
-    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
-{
-    fn send_frame<I: IntoIterator<Item = ResetStreamFrame>>(&self, iter: I) {
-        self.0.send_frame(iter.into_iter().map(Into::into));
-    }
-}
 
 /// Manage all streams in the connection, send and receive frames, handle frame loss, and acknowledge.
 ///
@@ -132,15 +99,15 @@ where
 /// [`ArcLocalStreamIds::recv_max_streams_frame`]: qbase::sid::ArcLocalStreamIds::recv_max_streams_frame
 ///
 #[derive(Debug)]
-pub struct DataStreams<T>
+pub struct DataStreams<TX>
 where
-    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+    TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
     // 该queue与space中的transmitter中的frame_queue共享，为了方便向transmitter中写入帧
-    ctrl_frames: T,
+    ctrl_frames: TX,
 
     role: Role,
-    stream_ids: StreamIds<SidFramesTx<T>, SidFramesTx<T>>,
+    stream_ids: StreamIds<Ext<TX>, Ext<TX>>,
     // the receive buffer size for the accpeted unidirectional stream created by peer
     uni_stream_rcvbuf_size: u64,
     // the receive buffer size of the bidirectional stream actively created by local
@@ -148,20 +115,20 @@ where
     // the receive buffer size for the accpeted bidirectional stream created by peer
     remote_bi_stream_rcvbuf_size: u64,
     // 所有流的待写端，要发送数据，就得向这些流索取
-    output: ArcOutput<ResetFramesTx<T>>,
+    output: ArcOutput<Ext<TX>>,
     // 所有流的待读端，收到了数据，交付给这些流
     input: ArcInput,
     // 对方主动创建的流
-    listener: ArcListener<ResetFramesTx<T>>,
+    listener: ArcListener<Ext<TX>>,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
     move |e| QuicError::new(ErrorKind::StreamLimit, fty, e.to_string())
 }
 
-impl<T> DataStreams<T>
+impl<TX> DataStreams<TX>
 where
-    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+    TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
     /// Try to read data from streams into stream frames and write the stream frame into the `buf`.
     ///
@@ -499,11 +466,11 @@ where
     }
 }
 
-impl<T> DataStreams<T>
+impl<TX> DataStreams<TX>
 where
-    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+    TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    pub(super) fn new(role: Role, local_params: &Parameters, ctrl_frames: T) -> Self {
+    pub(super) fn new(role: Role, local_params: &Parameters, ctrl_frames: TX) -> Self {
         let max_bi_streams = local_params.initial_max_streams_bidi().into();
         let max_uni_streams = local_params.initial_max_streams_uni().into();
         Self {
@@ -512,7 +479,7 @@ where
                 role,
                 max_bi_streams,
                 max_uni_streams,
-                SidFramesTx(ctrl_frames.clone()),
+                Ext(ctrl_frames.clone()),
                 Box::new(ConsistentConcurrency::new(max_bi_streams, max_uni_streams)),
             ),
             uni_stream_rcvbuf_size: local_params.initial_max_stream_data_uni().into(),
@@ -530,7 +497,7 @@ where
         &self,
         cx: &mut Context<'_>,
         snd_wnd_size: u64,
-    ) -> Poll<Result<Option<(StreamId, (Reader, Writer<ResetFramesTx<T>>))>, QuicError>> {
+    ) -> Poll<Result<Option<(StreamId, (Reader, Writer<Ext<TX>>))>, QuicError>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(e) => return Poll::Ready(Err(e)),
@@ -556,7 +523,7 @@ where
         &self,
         cx: &mut Context<'_>,
         snd_wnd_size: u64,
-    ) -> Poll<Result<Option<(StreamId, Writer<ResetFramesTx<T>>)>, QuicError>> {
+    ) -> Poll<Result<Option<(StreamId, Writer<Ext<TX>>)>, QuicError>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(e) => return Poll::Ready(Err(e)),
@@ -571,11 +538,11 @@ where
         }
     }
 
-    pub(super) fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream<ResetFramesTx<T>> {
+    pub(super) fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream<Ext<TX>> {
         self.listener.accept_bi_stream(snd_wnd_size)
     }
 
-    pub(super) fn accept_uni(&self) -> AcceptUniStream<ResetFramesTx<T>> {
+    pub(super) fn accept_uni(&self) -> AcceptUniStream<Ext<TX>> {
         self.listener.accept_uni_stream()
     }
 
@@ -644,8 +611,8 @@ where
         }
     }
 
-    fn create_sender(&self, sid: StreamId, wnd_size: u64) -> ArcSender<ResetFramesTx<T>> {
-        ArcSender::new(sid, wnd_size, ResetFramesTx(self.ctrl_frames.clone()))
+    fn create_sender(&self, sid: StreamId, wnd_size: u64) -> ArcSender<Ext<TX>> {
+        ArcSender::new(sid, wnd_size, Ext(self.ctrl_frames.clone()))
     }
 
     fn create_recver(&self, sid: StreamId, buf_size: u64) -> ArcRecver {

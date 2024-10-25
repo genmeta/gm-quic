@@ -16,7 +16,7 @@ futures = { workspace = true }
 
 [dev-dependencies]
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", no-default-features = false, features = [
+tracing-subscriber = { version = "0.3", features = [
     "fmt",
     "ansi",
     "env-filter",
