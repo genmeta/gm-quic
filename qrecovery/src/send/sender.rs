@@ -479,10 +479,10 @@ where
 }
 
 #[derive(Debug)]
-pub(super) enum Sender<RESET> {
-    Ready(ReadySender<RESET>),
-    Sending(SendingSender<RESET>),
-    DataSent(DataSentSender<RESET>),
+pub(super) enum Sender<TX> {
+    Ready(ReadySender<TX>),
+    Sending(SendingSender<TX>),
+    DataSent(DataSentSender<TX>),
     ResetSent(ResetStreamError),
     DataRcvd,
     ResetRcvd(ResetStreamError),

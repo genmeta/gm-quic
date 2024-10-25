@@ -86,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // tls_config.max_early_data_size = u32::MAX;
     // tls_config.alpn_protocols = vec![ALPN.into()];
 
-    let quic_server = ::quic::QuicServer::bind([opt.listen], true)
+    let quic_server = ::quic::ArcQuicServer::bind([opt.listen], true)
         .with_supported_versions([1u32])
         .without_cert_verifier()
         .enable_sni()

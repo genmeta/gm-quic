@@ -18,7 +18,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-struct RawListener<TX> {
+struct Listener<TX> {
     // 对方主动创建的流
     bi_streams: VecDeque<(StreamId, (ArcRecver, ArcSender<TX>))>,
     uni_streams: VecDeque<(StreamId, ArcRecver)>,
@@ -26,7 +26,7 @@ struct RawListener<TX> {
     uni_waker: Option<Waker>,
 }
 
-impl<TX> RawListener<TX>
+impl<TX> Listener<TX>
 where
     TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
 {
@@ -83,14 +83,14 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct ArcListener<TX>(Arc<Mutex<Result<RawListener<TX>, QuicError>>>);
+pub struct ArcListener<TX>(Arc<Mutex<Result<Listener<TX>, QuicError>>>);
 
 impl<TX> ArcListener<TX>
 where
     TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
 {
     pub(crate) fn new() -> Self {
-        Self(Arc::new(Mutex::new(Ok(RawListener::new()))))
+        Self(Arc::new(Mutex::new(Ok(Listener::new()))))
     }
 
     pub(crate) fn guard(&self) -> Result<ListenerGuard<TX>, QuicError> {
@@ -136,7 +136,7 @@ where
 }
 
 pub(crate) struct ListenerGuard<'a, TX> {
-    inner: MutexGuard<'a, Result<RawListener<TX>, QuicError>>,
+    inner: MutexGuard<'a, Result<Listener<TX>, QuicError>>,
 }
 
 impl<TX> ListenerGuard<'_, TX>

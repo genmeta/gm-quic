@@ -39,7 +39,7 @@ where
 
     /// Read the data that the application has written into the buffer.
     ///
-    /// See [`RawDataStreams::try_read_data`] for more about this method.
+    /// See [`DataStreams::try_read_data`] for more about this method.
     ///
     /// ## Returns:
     ///
@@ -49,7 +49,7 @@ where
     /// * [`bool`]:        Whether the data is fresh(not retransmitted)
     /// * [`usize`]:       How much data was written to the buffer
     ///
-    /// [`RawDataStreams::try_read_data`]: crate::streams::raw::DataStreams::try_read_data
+    /// [`DataStreams::try_read_data`]: crate::streams::raw::DataStreams::try_read_data
     pub fn try_read(
         &self,
         sid: StreamId,
