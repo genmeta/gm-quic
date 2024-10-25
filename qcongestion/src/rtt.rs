@@ -8,7 +8,7 @@ const GRANULARITY: Duration = Duration::from_millis(1);
 const TIME_THRESHOLD: f32 = 1.125;
 
 #[derive(Debug, Clone)]
-pub struct RawRtt {
+pub struct Rtt {
     max_ack_delay: Duration,
     first_rtt_sample: Option<Instant>,
     latest_rtt: Duration,
@@ -18,7 +18,7 @@ pub struct RawRtt {
     is_handshake_confirmed: bool,
 }
 
-impl Default for RawRtt {
+impl Default for Rtt {
     fn default() -> Self {
         Self {
             max_ack_delay: Duration::from_millis(0),
@@ -32,7 +32,7 @@ impl Default for RawRtt {
     }
 }
 
-impl RawRtt {
+impl Rtt {
     fn update(&mut self, latest_rtt: Duration, mut ack_delay: Duration) {
         self.latest_rtt = latest_rtt;
         if self.first_rtt_sample.is_none() {
@@ -79,12 +79,12 @@ impl RawRtt {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ArcRtt(Arc<Mutex<RawRtt>>);
+pub struct ArcRtt(Arc<Mutex<Rtt>>);
 
-/// 对外只需暴露ArcRtt，RawRtt成为内部实现
+/// 对外只需暴露ArcRtt，Rtt成为内部实现
 impl ArcRtt {
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(RawRtt::default())))
+        Self(Arc::new(Mutex::new(Rtt::default())))
     }
 
     pub fn update(&self, latest_rtt: Duration, ack_delay: Duration) {

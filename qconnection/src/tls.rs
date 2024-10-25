@@ -34,7 +34,7 @@ pub struct Aborted;
 type TlsConnection = rustls::quic::Connection;
 
 #[derive(Debug)]
-struct RawTlsSession {
+struct TlsSession {
     tls_conn: TlsConnection,
     read_waker: Option<Waker>,
     /// Optimize: avoid reading transport parameters repeatedly, because the rustls willnot consume
@@ -42,7 +42,7 @@ struct RawTlsSession {
     params_read: bool,
 }
 
-impl From<TlsConnection> for RawTlsSession {
+impl From<TlsConnection> for TlsSession {
     fn from(tls_conn: TlsConnection) -> Self {
         Self {
             tls_conn,
@@ -52,7 +52,7 @@ impl From<TlsConnection> for RawTlsSession {
     }
 }
 
-impl RawTlsSession {
+impl TlsSession {
     fn wake_read(&mut self) {
         if let Some(waker) = self.read_waker.as_ref() {
             waker.wake_by_ref();
@@ -108,7 +108,7 @@ impl RawTlsSession {
 }
 
 struct ReadTls<'r> {
-    tls_conn: &'r Mutex<Result<RawTlsSession, Aborted>>,
+    tls_conn: &'r Mutex<Result<TlsSession, Aborted>>,
     buffer: &'r mut Vec<u8>,
     read_params: bool,
 }
@@ -146,7 +146,7 @@ impl futures::Future for ReadTls<'_> {
 ///
 /// This is a wrapper around the [`rustls::quic::Connection`], which is a QUIC-specific TLS connection.
 #[derive(Debug, Clone)]
-pub struct ArcTlsSession(Arc<Mutex<Result<RawTlsSession, Aborted>>>);
+pub struct ArcTlsSession(Arc<Mutex<Result<TlsSession, Aborted>>>);
 
 impl ArcTlsSession {
     /// The QUIC version used by the TLS session.
@@ -352,7 +352,7 @@ impl ArcTlsSession {
             .unwrap()
             .as_ref()
             .ok()
-            .and_then(RawTlsSession::server_name)
+            .and_then(TlsSession::server_name)
             .map(ToString::to_string)
     }
 }

@@ -13,7 +13,7 @@ use crate::{
 
 /// Local connection ID management.
 #[derive(Debug)]
-struct RawLocalCids<ISSUED>
+struct LocalCids<ISSUED>
 where
     ISSUED: GenUniqueCid + SendFrame<NewConnectionIdFrame>,
 {
@@ -31,7 +31,7 @@ where
     active_cid_limit: Option<u64>,
 }
 
-impl<ISSUED> RawLocalCids<ISSUED>
+impl<ISSUED> LocalCids<ISSUED>
 where
     ISSUED: GenUniqueCid + SendFrame<NewConnectionIdFrame>,
 {
@@ -139,7 +139,7 @@ where
 /// and those issued to the peer and have not been retired,
 /// otherwise routing conflicts will occur.
 #[derive(Debug, Clone)]
-pub struct ArcLocalCids<ISSUED>(Arc<Mutex<RawLocalCids<ISSUED>>>)
+pub struct ArcLocalCids<ISSUED>(Arc<Mutex<LocalCids<ISSUED>>>)
 where
     ISSUED: GenUniqueCid + SendFrame<NewConnectionIdFrame>;
 
@@ -155,7 +155,7 @@ where
     ///    in the packet reception routing table and will also be responsible for
     ///    eventually sending the [`NewConnectionIdFrame`] to the peer.
     pub fn new(scid: ConnectionId, issued_cids: ISSUED) -> Self {
-        let raw_local_cids = RawLocalCids::new(scid, issued_cids);
+        let raw_local_cids = LocalCids::new(scid, issued_cids);
         Self(Arc::new(Mutex::new(raw_local_cids)))
     }
 
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn test_recv_retire_cid_frame() {
         let initial_scid = ConnectionId::random_gen(8);
-        let mut local_cids = RawLocalCids::new(initial_scid, IssuedCids::default());
+        let mut local_cids = LocalCids::new(initial_scid, IssuedCids::default());
 
         assert_eq!(local_cids.cid_deque.len(), 2);
         assert_eq!(local_cids.issued_cids.lock_guard().len(), 1);

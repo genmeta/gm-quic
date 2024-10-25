@@ -23,14 +23,14 @@ use crate::{
 ///
 /// Private controler in [`ArcSendControler`].
 #[derive(Debug, Default)]
-struct RawSendControler {
+struct SendControler {
     total_sent: u64,
     max_data: u64,
     blocked_waker: Option<Waker>,
     wakers: Vec<Waker>,
 }
 
-impl RawSendControler {
+impl SendControler {
     fn with_initial(initial_max_data: u64) -> Self {
         Self {
             total_sent: 0,
@@ -102,7 +102,7 @@ impl RawSendControler {
 /// causing the connection-level flow control to never reach its limit,
 /// effectively rendering it useless.
 #[derive(Clone, Debug)]
-pub struct ArcSendControler(Arc<Mutex<Result<RawSendControler, QuicError>>>);
+pub struct ArcSendControler(Arc<Mutex<Result<SendControler, QuicError>>>);
 
 impl ArcSendControler {
     /// Creates a new [`ArcSendControler`] with `initial_max_data`.
@@ -114,7 +114,7 @@ impl ArcSendControler {
     /// `initial_max_data` is allowed to be 0, which is reasonable when creating a
     /// connection without knowing the peer's `iniitial_max_data` setting.
     pub fn with_initial(initial_max_data: u64) -> Self {
-        Self(Arc::new(Mutex::new(Ok(RawSendControler::with_initial(
+        Self(Arc::new(Mutex::new(Ok(SendControler::with_initial(
             initial_max_data,
         )))))
     }
@@ -196,7 +196,7 @@ impl ReceiveFrame<MaxDataFrame> for ArcSendControler {
 
 /// Represents a future that resolves when the flow control limit is reached.
 /// At that time, a [`DataBlockedFrame`] needs to be sent to the peer.
-pub struct WouldBlock<'sc>(&'sc Mutex<Result<RawSendControler, QuicError>>);
+pub struct WouldBlock<'sc>(&'sc Mutex<Result<SendControler, QuicError>>);
 
 impl Future for WouldBlock<'_> {
     type Output = Result<DataBlockedFrame, QuicError>;
@@ -215,7 +215,7 @@ impl Future for WouldBlock<'_> {
 /// As mentioned in the [`ArcSendControler::credit`] method,
 /// the flow controller in the period between obtaining flow control
 /// and finally updating(or maybe not) the flow control should be exclusive.
-pub struct Credit<'a>(MutexGuard<'a, Result<RawSendControler, QuicError>>);
+pub struct Credit<'a>(MutexGuard<'a, Result<SendControler, QuicError>>);
 
 impl Credit<'_> {
     /// Return the available amount of new stream data that can be sent.

@@ -35,7 +35,7 @@ use crate::{
     tls::ArcTlsSession,
 };
 
-pub struct RawConnection {
+pub struct Connection {
     pub initial_scid: ConnectionId,
     pub token: Arc<Mutex<Vec<u8>>>,
     pub pathes: ArcPathes,
@@ -59,7 +59,7 @@ pub struct RawConnection {
     pub params: ConnParameters,
 }
 
-impl RawConnection {
+impl Connection {
     pub fn new(
         role: Role,
         local_params: Parameters,

@@ -48,13 +48,13 @@ impl IOState {
 }
 
 #[derive(Debug, Clone, Deref, DerefMut)]
-pub(super) struct RawOutput<TX> {
+pub(super) struct Output<TX> {
     #[deref]
     pub(super) outgoings: BTreeMap<StreamId, (Outgoing<TX>, IOState)>,
     pub(super) last_sent_stream: Option<(StreamId, usize)>,
 }
 
-impl<TX> RawOutput<TX> {
+impl<TX> Output<TX> {
     fn new() -> Self {
         Self {
             outgoings: BTreeMap::default(),
@@ -67,11 +67,11 @@ impl<TX> RawOutput<TX> {
 /// 发生quic error后，其操作将被忽略，不会再抛出QuicError或者panic，因为
 /// 有些异步任务可能还未完成，在置为Err后才会完成。
 #[derive(Debug, Clone)]
-pub(super) struct ArcOutput<TX>(pub(super) Arc<Mutex<Result<RawOutput<TX>, QuicError>>>);
+pub(super) struct ArcOutput<TX>(pub(super) Arc<Mutex<Result<Output<TX>, QuicError>>>);
 
 impl<TX> ArcOutput<TX> {
     pub(super) fn new() -> Self {
-        Self(Arc::new(Mutex::new(Ok(RawOutput::new()))))
+        Self(Arc::new(Mutex::new(Ok(Output::new()))))
     }
 
     pub(super) fn guard(&self) -> Result<ArcOutputGuard<TX>, QuicError> {
@@ -84,7 +84,7 @@ impl<TX> ArcOutput<TX> {
 }
 
 pub(super) struct ArcOutputGuard<'a, TX> {
-    inner: MutexGuard<'a, Result<RawOutput<TX>, QuicError>>,
+    inner: MutexGuard<'a, Result<Output<TX>, QuicError>>,
 }
 
 impl<TX> ArcOutputGuard<'_, TX>

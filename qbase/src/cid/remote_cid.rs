@@ -16,7 +16,7 @@ use crate::{
 /// RemoteCids is used to manage the connection IDs issued by the peer,
 /// and to send [`RetireConnectionIdFrame`] to the peer.
 #[derive(Debug)]
-struct RawRemoteCids<RETIRED>
+struct RemoteCids<RETIRED>
 where
     RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
@@ -38,7 +38,7 @@ where
     retired_cids: RETIRED,
 }
 
-impl<RETIRED> RawRemoteCids<RETIRED>
+impl<RETIRED> RemoteCids<RETIRED>
 where
     RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
@@ -47,7 +47,7 @@ where
     ///
     /// As mentioned above, the retired cids can be a deque, a channel, or any buffer,
     /// as long as it can send those [`RetireConnectionIdFrame`] to the peer finally.
-    /// See [`RawRemoteCids`]
+    /// See [`RemoteCids`]
     fn new(initial_dcid: ConnectionId, active_cid_limit: u64, retired_cids: RETIRED) -> Self {
         let mut cid_deque = IndexDeque::default();
 
@@ -221,7 +221,7 @@ where
 /// It can be a deque, a channel, or any buffer,
 /// as long as it can send those [`RetireConnectionIdFrame`] to the peer finally.
 #[derive(Debug, Clone)]
-pub struct ArcRemoteCids<RETIRED>(Arc<Mutex<RawRemoteCids<RETIRED>>>)
+pub struct ArcRemoteCids<RETIRED>(Arc<Mutex<RemoteCids<RETIRED>>>)
 where
     RETIRED: SendFrame<RetireConnectionIdFrame> + Clone;
 
@@ -235,7 +235,7 @@ where
     /// As mentioned above, the `retired_cids` can be a deque, a channel, or any buffer,
     /// as long as it can send those [`RetireConnectionIdFrame`] to the peer finally.
     pub fn new(initial_dcid: ConnectionId, active_cid_limit: u64, retired_cids: RETIRED) -> Self {
-        Self(Arc::new(Mutex::new(RawRemoteCids::new(
+        Self(Arc::new(Mutex::new(RemoteCids::new(
             initial_dcid,
             active_cid_limit,
             retired_cids,
@@ -447,7 +447,7 @@ mod tests {
         let mut cx = std::task::Context::from_waker(&waker);
         let initial_dcid = ConnectionId::random_gen(8);
         let retired_cids = RetiredCids::default();
-        let mut remote_cids = RawRemoteCids::new(initial_dcid, 8, retired_cids);
+        let mut remote_cids = RemoteCids::new(initial_dcid, 8, retired_cids);
 
         let cid_apply0 = remote_cids.apply_dcid();
         assert_eq!(

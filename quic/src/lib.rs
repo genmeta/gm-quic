@@ -18,7 +18,7 @@ pub mod client;
 pub mod server;
 
 pub use client::QuicClient;
-pub use server::QuicServer;
+pub use server::{ArcQuicServer, QuicServer};
 
 /// 全局的QuicConnection注册管理，用于查找已有的QuicConnection，key是初期的Pathway
 /// 包括被动接收的连接和主动发起的连接
@@ -86,7 +86,7 @@ fn accpet_packet(packet: Packet, pathway: Pathway, usc: &ArcUsc) {
     match packet {
         Packet::Data(packet) => {
             if let Err(packet) = Router::try_to_route_packet_from(packet, pathway, usc) {
-                QuicServer::try_to_accept_conn_from(packet, pathway, usc);
+                ArcQuicServer::try_to_accept_conn_from(packet, pathway, usc);
             }
         }
         Packet::VN(vn) => {

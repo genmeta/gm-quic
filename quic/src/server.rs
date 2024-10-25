@@ -31,7 +31,7 @@ type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
 type QuicListner = ArcAsyncDeque<(QuicConnection, SocketAddr)>;
 
 /// 理应全局只有一个server
-static SERVER: LazyLock<RwLock<Weak<RawQuicServer>>> = LazyLock::new(RwLock::default);
+static SERVER: LazyLock<RwLock<Weak<QuicServer>>> = LazyLock::new(RwLock::default);
 
 #[derive(Debug, Default)]
 pub struct VirtualHosts(Arc<DashMap<String, Host>>);
@@ -53,7 +53,7 @@ impl ResolvesServerCert for VirtualHosts {
 /// 实际上服务端的性质，类似于收包。不管包从哪个usc来，都可以根据需要来创建
 /// 要想有服务端的功能，得至少有一个usc可以收包。
 /// 如果不创建QuicServer，那意味着不接收新连接
-struct RawQuicServer {
+pub struct QuicServer {
     uscs: HashMap<SocketAddr, ArcUsc>,
     listener: QuicListner,
     _restrict: bool,
@@ -65,9 +65,9 @@ struct RawQuicServer {
 }
 
 #[derive(Clone)]
-pub struct QuicServer(Arc<RawQuicServer>);
+pub struct ArcQuicServer(Arc<QuicServer>);
 
-impl QuicServer {
+impl ArcQuicServer {
     /// 指定绑定的地址，即服务端的usc的监听地址
     /// 监听地址可以有多个，但必须都得是本地能绑定成功的，否则会panic
     /// 监听地址若为空，则会默认创建一个
@@ -154,7 +154,7 @@ impl QuicServer {
     }
 }
 
-impl RawQuicServer {
+impl QuicServer {
     /// 获取所有监听的地址，因为客户端创建的每一个usc都可以成为监听端口
     pub fn initial_server_keys(&self, dcid: ConnectionId) -> rustls::quic::Keys {
         let suite = self
@@ -400,7 +400,7 @@ impl QuicServerBuilder<TlsServerConfig> {
         self
     }
 
-    pub fn listen(self) -> io::Result<QuicServer> {
+    pub fn listen(self) -> io::Result<ArcQuicServer> {
         let uscs = self
             .addresses
             .into_iter()
@@ -415,7 +415,7 @@ impl QuicServerBuilder<TlsServerConfig> {
             return Err(error);
         }
 
-        let quic_server = QuicServer(Arc::new(RawQuicServer {
+        let quic_server = ArcQuicServer(Arc::new(QuicServer {
             uscs,
             listener: Default::default(),
             _restrict: self.restrict,
@@ -436,7 +436,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
         self
     }
 
-    pub fn listen(self) -> io::Result<QuicServer> {
+    pub fn listen(self) -> io::Result<ArcQuicServer> {
         let uscs = self
             .addresses
             .into_iter()
@@ -450,7 +450,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             let error = io::Error::new(io::ErrorKind::AddrNotAvailable, error);
             return Err(error);
         }
-        let quic_server = QuicServer(Arc::new(RawQuicServer {
+        let quic_server = ArcQuicServer(Arc::new(QuicServer {
             uscs,
             listener: Default::default(),
             _restrict: self.restrict,

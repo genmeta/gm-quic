@@ -27,7 +27,7 @@ use qrecovery::{
     streams::{self, Ext},
 };
 use qunreliable::{DatagramReader, DatagramWriter};
-use raw::RawConnection;
+use raw::Connection;
 use tokio::task::JoinHandle;
 
 use crate::{
@@ -58,7 +58,7 @@ pub type Writer = send::Writer<Ext<ArcReliableFrameDeque>>;
 pub type Handshake = qbase::handshake::Handshake<ArcReliableFrameDeque>;
 
 enum ConnState {
-    Raw(RawConnection),
+    Raw(Connection),
     Closing(ClosingConnection),
     Draining(DrainingConnection),
     Closed(Error),
@@ -210,7 +210,7 @@ impl ArcConnection {
         let tls_session = ArcTlsSession::new_client(server_name, tls_config.clone(), &parameters);
         let initial_keys =
             ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Client, dcid);
-        let raw_conn = RawConnection::new(
+        let raw_conn = Connection::new(
             Role::Client,
             parameters,
             tls_session,
@@ -240,7 +240,7 @@ impl ArcConnection {
         parameters.set_original_destination_connection_id(Some(initial_dcid));
 
         let tls_session = ArcTlsSession::new_server(tls_config.clone(), &parameters);
-        let raw_conn = RawConnection::new(
+        let raw_conn = Connection::new(
             Role::Server,
             parameters,
             tls_session,
@@ -535,8 +535,8 @@ impl ArcConnection {
     }
 }
 
-impl From<RawConnection> for ArcConnection {
-    fn from(raw_conn: RawConnection) -> Self {
+impl From<Connection> for ArcConnection {
+    fn from(raw_conn: Connection) -> Self {
         let conn_error = raw_conn.error.clone();
         let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Raw(raw_conn))));
 
