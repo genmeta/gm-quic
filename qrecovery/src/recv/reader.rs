@@ -67,7 +67,7 @@ pub struct Reader<TX>(pub(crate) ArcRecver<TX>);
 
 impl<TX> Reader<TX>
 where
-    TX: SendFrame<StopSendingFrame> + SendFrame<MaxStreamDataFrame> + Clone + Send + 'static,
+    TX: SendFrame<StopSendingFrame>,
 {
     /// Tell peer to stop sending data with the given error code.
     ///
@@ -97,7 +97,7 @@ where
 
 impl<TX> AsyncRead for Reader<TX>
 where
-    TX: SendFrame<StopSendingFrame> + SendFrame<MaxStreamDataFrame> + Clone + Send + 'static,
+    TX: SendFrame<MaxStreamDataFrame>,
 {
     fn poll_read(
         self: Pin<&mut Self>,

@@ -53,18 +53,18 @@ use crate::{
 /// # Receive frames, handle frame loss and acknowledge
 ///
 /// Frames received, frames lost or acknowledgmented will be delivered to the corresponding method.
-/// | method on [`DataStreams`]                             | corresponding method               |
-/// | -------------------------------------------------------- | ---------------------------------- |
-/// | [`recv_data`]                                            | [`Incoming::recv_data`]            |
-/// | [`recv_stream_control`] ([`RESET_STREAM frame`])         | [`Incoming::recv_reset`]           |
-/// | [`recv_stream_control`] ([`STOP_SENDING frame`])         | [`Outgoing::stop`]                 |
-/// | [`recv_stream_control`] ([`MAX_STREAM_DATA frame`])      | [`Outgoing::update_window`]        |
+/// | method on [`DataStreams`]                                | corresponding method                          |
+/// | -------------------------------------------------------- | --------------------------------------------- |
+/// | [`recv_data`]                                            | [`Incoming::recv_data`]                       |
+/// | [`recv_stream_control`] ([`RESET_STREAM frame`])         | [`Incoming::recv_reset`]                      |
+/// | [`recv_stream_control`] ([`STOP_SENDING frame`])         | [`Outgoing::on_stopped`]                      |
+/// | [`recv_stream_control`] ([`MAX_STREAM_DATA frame`])      | [`Outgoing::update_window`]                   |
 /// | [`recv_stream_control`] ([`MAX_STREAMS frame`])          | [`ArcLocalStreamIds::recv_max_streams_frame`] |
-/// | [`recv_stream_control`] ([`STREAM_DATA_BLOCKED frame`])  | none(the frame will be ignored)    |
-/// | [`recv_stream_control`] ([`STREAMS_BLOCKED frame`])      | none(the frame will be ignored)    |
-/// | [`on_data_acked`]                                        | [`Outgoing::on_data_acked`]        |
-/// | [`may_loss_data`]                                        | [`Outgoing::may_loss_data`]        |
-/// | [`on_reset_acked`]                                       | [`Outgoing::on_reset_acked`]       |
+/// | [`recv_stream_control`] ([`STREAM_DATA_BLOCKED frame`])  | none(the frame will be ignored)               |
+/// | [`recv_stream_control`] ([`STREAMS_BLOCKED frame`])      | none(the frame will be ignored)               |
+/// | [`on_data_acked`]                                        | [`Outgoing::on_data_acked`]                   |
+/// | [`may_loss_data`]                                        | [`Outgoing::may_loss_data`]                   |
+/// | [`on_reset_acked`]                                       | [`Outgoing::on_reset_acked`]                  |
 ///
 /// # Create and accept streams
 ///
@@ -374,7 +374,7 @@ where
                     .as_mut()
                     .ok()
                     .and_then(|set| set.get(&sid))
-                    .map(|(outgoing, _s)| outgoing.stop(stop_sending.app_err_code.into()))
+                    .map(|(outgoing, _s)| outgoing.on_stopped(stop_sending.app_err_code.into()))
                     .unwrap_or(false)
                 {
                     self.ctrl_frames

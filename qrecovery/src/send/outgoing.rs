@@ -3,10 +3,7 @@ use std::ops::{DerefMut, Range};
 use bytes::BufMut;
 use qbase::{
     error::Error as QuicError,
-    frame::{
-        io::WriteDataFrame, ResetStreamError, ResetStreamFrame, SendFrame, ShouldCarryLength,
-        StreamFrame,
-    },
+    frame::{io::WriteDataFrame, ResetStreamError, ShouldCarryLength, StreamFrame},
     sid::StreamId,
     util::DescribeData,
     varint::{VarInt, VARINT_MAX},
@@ -18,25 +15,7 @@ use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
 #[derive(Debug, Clone)]
 pub struct Outgoing<TX>(pub(crate) ArcSender<TX>);
 
-impl<TX> Outgoing<TX>
-where
-    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
-{
-    /// Update the sending window to `max_data_size`
-    ///
-    /// Callded when the  [`MAX_STREAM_DATA frame`] belonging to the stream is received.
-    ///
-    /// [`MAX_STREAM_DATA frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-max_stream_data-frames
-    pub fn update_window(&self, max_data_size: u64) {
-        assert!(max_data_size <= VARINT_MAX);
-        let mut sender = self.0.sender();
-        match sender.deref_mut() {
-            Ok(Sender::Ready(s)) => s.update_window(max_data_size),
-            Ok(Sender::Sending(s)) => s.update_window(max_data_size),
-            _ => {}
-        }
-    }
-
+impl<TX: Clone> Outgoing<TX> {
     /// Read the data that the application has written into the buffer.
     ///
     /// See [`DataStreams::try_read_data`] for more about this method.
@@ -105,7 +84,23 @@ where
             Err(_) => None,
         }
     }
+}
 
+impl<TX> Outgoing<TX> {
+    /// Update the sending window to `max_data_size`
+    ///
+    /// Callded when the  [`MAX_STREAM_DATA frame`] belonging to the stream is received.
+    ///
+    /// [`MAX_STREAM_DATA frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-max_stream_data-frames
+    pub fn update_window(&self, max_data_size: u64) {
+        assert!(max_data_size <= VARINT_MAX);
+        let mut sender = self.0.sender();
+        match sender.deref_mut() {
+            Ok(Sender::Ready(s)) => s.update_window(max_data_size),
+            Ok(Sender::Sending(s)) => s.update_window(max_data_size),
+            _ => {}
+        }
+    }
     /// Called when the data sent to peer is acknowlwged.
     ///
     /// * `range` is the range of stream data that has been acknowledged.
@@ -173,7 +168,7 @@ where
     ///
     /// [`STOP_SENDING frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames
     /// [`STREAM_RESET frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
-    pub fn stop(&self, error_code: u64) -> bool {
+    pub fn on_stopped(&self, error_code: u64) -> bool {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         match inner {

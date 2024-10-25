@@ -27,10 +27,7 @@ struct Listener<TX> {
     uni_waker: Option<Waker>,
 }
 
-impl<TX> Listener<TX>
-where
-    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
-{
+impl<TX> Listener<TX> {
     fn new() -> Self {
         Self {
             bi_streams: VecDeque::with_capacity(4),
@@ -86,10 +83,7 @@ where
 #[derive(Debug, Clone)]
 pub struct ArcListener<TX>(Arc<Mutex<Result<Listener<TX>, QuicError>>>);
 
-impl<TX> ArcListener<TX>
-where
-    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
-{
+impl<TX> ArcListener<TX> {
     pub(crate) fn new() -> Self {
         Self(Arc::new(Mutex::new(Ok(Listener::new()))))
     }

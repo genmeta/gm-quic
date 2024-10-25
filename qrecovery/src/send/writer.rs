@@ -69,7 +69,7 @@ pub struct Writer<TX>(pub(crate) ArcSender<TX>);
 
 impl<TX> Writer<TX>
 where
-    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+    TX: SendFrame<ResetStreamFrame>,
 {
     /// Cancels the stream with the given error code(reset the stream).
     ///
@@ -100,10 +100,7 @@ where
     }
 }
 
-impl<TX> AsyncWrite for Writer<TX>
-where
-    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
-{
+impl<TX: Clone> AsyncWrite for Writer<TX> {
     /// 往sndbuf里面写数据，直到写满MAX_STREAM_DATA，等通告窗口更新再写
     fn poll_write(
         self: Pin<&mut Self>,
@@ -220,6 +217,3 @@ impl<TX> Drop for Writer<TX> {
         };
     }
 }
-
-#[cfg(test)]
-mod tests {}
