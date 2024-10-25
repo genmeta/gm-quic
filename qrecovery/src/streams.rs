@@ -34,29 +34,41 @@ use qbase::{
     param::Parameters,
     sid::{Role, StreamId},
 };
-use raw::ResetFramesTx;
 
 use crate::{recv::Reader, send::Writer};
 mod io;
 mod listener;
 pub mod raw;
 
+#[derive(Debug, Clone)]
+pub struct Ext<T: Clone>(T);
+
+impl<TX, F> SendFrame<F> for Ext<TX>
+where
+    TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+    F: Into<StreamCtlFrame>,
+{
+    fn send_frame<I: IntoIterator<Item = F>>(&self, iter: I) {
+        self.0.send_frame(iter.into_iter().map(Into::into));
+    }
+}
+
 /// The wrapper of [`raw::DataStreams`], provides the abality of share between tasks.
 ///
 /// See [`raw::DataStreams`] for more details.
 #[derive(Debug, Clone, Deref)]
-pub struct DataStreams<T>(Arc<raw::DataStreams<T>>)
+pub struct DataStreams<TX>(Arc<raw::DataStreams<TX>>)
 where
-    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static;
+    TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static;
 
-impl<T> DataStreams<T>
+impl<TX> DataStreams<TX>
 where
-    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+    TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
     /// Creates a new instance of [`DataStreams`].
     ///
     /// The `ctrl_frames` is the frame sender, read [`raw::DataStreams`] for more details.
-    pub fn new(role: Role, local_params: &Parameters, ctrl_frames: T) -> Self {
+    pub fn new(role: Role, local_params: &Parameters, ctrl_frames: TX) -> Self {
         let raw = raw::DataStreams::new(role, local_params, ctrl_frames);
 
         Self(Arc::new(raw))
@@ -64,7 +76,7 @@ where
 
     /// Create a bidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
-    pub fn open_bi(&self, snd_wnd_size: u64) -> OpenBiStream<T> {
+    pub fn open_bi(&self, snd_wnd_size: u64) -> OpenBiStream<TX> {
         OpenBiStream {
             inner: self,
             snd_wnd_size,
@@ -73,7 +85,7 @@ where
 
     /// Create a unidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
-    pub fn open_uni(&self, snd_wnd_size: u64) -> OpenUniStream<T> {
+    pub fn open_uni(&self, snd_wnd_size: u64) -> OpenUniStream<TX> {
         OpenUniStream {
             inner: self,
             snd_wnd_size,
@@ -82,20 +94,20 @@ where
 
     /// Accpet a bidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
-    pub fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream<ResetFramesTx<T>> {
+    pub fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream<Ext<TX>> {
         self.0.accept_bi(snd_wnd_size)
     }
 
     /// Accpet a unidirectional stream, see the method of the same name on `QuicConnection` for more.
     #[inline]
-    pub fn accept_uni(&self) -> AcceptUniStream<ResetFramesTx<T>> {
+    pub fn accept_uni(&self) -> AcceptUniStream<Ext<TX>> {
         self.0.accept_uni()
     }
 }
 
-impl<T> ReceiveFrame<StreamCtlFrame> for DataStreams<T>
+impl<TX> ReceiveFrame<StreamCtlFrame> for DataStreams<TX>
 where
-    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+    TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
     type Output = ();
 
@@ -104,9 +116,9 @@ where
     }
 }
 
-impl<T> ReceiveFrame<(StreamFrame, Bytes)> for DataStreams<T>
+impl<TX> ReceiveFrame<(StreamFrame, Bytes)> for DataStreams<TX>
 where
-    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+    TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
     type Output = usize;
 
@@ -124,19 +136,19 @@ where
 ///
 /// Although this is a bidirectional stream, the peer will not be aware of this stream until we send
 /// a frame on this stream.
-pub struct OpenBiStream<'d, T>
+pub struct OpenBiStream<'d, TX>
 where
-    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+    TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    inner: &'d raw::DataStreams<T>,
+    inner: &'d raw::DataStreams<TX>,
     snd_wnd_size: u64,
 }
 
-impl<T> Future for OpenBiStream<'_, T>
+impl<TX> Future for OpenBiStream<'_, TX>
 where
-    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+    TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    type Output = Result<Option<(StreamId, (Reader, Writer<ResetFramesTx<T>>))>, Error>;
+    type Output = Result<Option<(StreamId, (Reader, Writer<Ext<TX>>))>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.inner.poll_open_bi_stream(cx, self.snd_wnd_size)
@@ -151,19 +163,19 @@ where
 /// If a connection error occurred, the future will return an error.
 ///
 /// Note that the peer will not be aware of this stream until we send a frame on this stream.
-pub struct OpenUniStream<'d, T>
+pub struct OpenUniStream<'d, TX>
 where
-    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+    TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    inner: &'d raw::DataStreams<T>,
+    inner: &'d raw::DataStreams<TX>,
     snd_wnd_size: u64,
 }
 
-impl<T> Future for OpenUniStream<'_, T>
+impl<TX> Future for OpenUniStream<'_, TX>
 where
-    T: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
+    TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    type Output = Result<Option<(StreamId, Writer<ResetFramesTx<T>>)>, Error>;
+    type Output = Result<Option<(StreamId, Writer<Ext<TX>>)>, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.inner.poll_open_uni_stream(cx, self.snd_wnd_size)

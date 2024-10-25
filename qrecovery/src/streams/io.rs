@@ -48,13 +48,13 @@ impl IOState {
 }
 
 #[derive(Debug, Clone, Deref, DerefMut)]
-pub(super) struct RawOutput<RESET> {
+pub(super) struct RawOutput<TX> {
     #[deref]
-    pub(super) outgoings: BTreeMap<StreamId, (Outgoing<RESET>, IOState)>,
+    pub(super) outgoings: BTreeMap<StreamId, (Outgoing<TX>, IOState)>,
     pub(super) last_sent_stream: Option<(StreamId, usize)>,
 }
 
-impl<RESET> RawOutput<RESET> {
+impl<TX> RawOutput<TX> {
     fn new() -> Self {
         Self {
             outgoings: BTreeMap::default(),
@@ -67,14 +67,14 @@ impl<RESET> RawOutput<RESET> {
 /// 发生quic error后，其操作将被忽略，不会再抛出QuicError或者panic，因为
 /// 有些异步任务可能还未完成，在置为Err后才会完成。
 #[derive(Debug, Clone)]
-pub(super) struct ArcOutput<RESET>(pub(super) Arc<Mutex<Result<RawOutput<RESET>, QuicError>>>);
+pub(super) struct ArcOutput<TX>(pub(super) Arc<Mutex<Result<RawOutput<TX>, QuicError>>>);
 
-impl<RESET> ArcOutput<RESET> {
+impl<TX> ArcOutput<TX> {
     pub(super) fn new() -> Self {
         Self(Arc::new(Mutex::new(Ok(RawOutput::new()))))
     }
 
-    pub(super) fn guard(&self) -> Result<ArcOutputGuard<RESET>, QuicError> {
+    pub(super) fn guard(&self) -> Result<ArcOutputGuard<TX>, QuicError> {
         let guard = self.0.lock().unwrap();
         match guard.as_ref() {
             Ok(_) => Ok(ArcOutputGuard { inner: guard }),
@@ -83,15 +83,15 @@ impl<RESET> ArcOutput<RESET> {
     }
 }
 
-pub(super) struct ArcOutputGuard<'a, RESET> {
-    inner: MutexGuard<'a, Result<RawOutput<RESET>, QuicError>>,
+pub(super) struct ArcOutputGuard<'a, TX> {
+    inner: MutexGuard<'a, Result<RawOutput<TX>, QuicError>>,
 }
 
-impl<RESET> ArcOutputGuard<'_, RESET>
+impl<TX> ArcOutputGuard<'_, TX>
 where
-    RESET: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
 {
-    pub(super) fn insert(&mut self, sid: StreamId, outgoing: Outgoing<RESET>, io_state: IOState) {
+    pub(super) fn insert(&mut self, sid: StreamId, outgoing: Outgoing<TX>, io_state: IOState) {
         match self.inner.as_mut() {
             Ok(set) => set.insert(sid, (outgoing, io_state)),
             Err(e) => unreachable!("output is invalid: {e}"),
