@@ -30,20 +30,8 @@ pub(super) struct Recv<TX> {
 
 impl<TX> Recv<TX>
 where
-    TX: SendFrame<StopSendingFrame> + SendFrame<MaxStreamDataFrame> + Clone + Send + 'static,
+    TX: SendFrame<MaxStreamDataFrame>,
 {
-    pub(super) fn with(stream_id: StreamId, buf_size: u64, frames_tx: TX) -> Self {
-        Self {
-            stream_id,
-            rcvbuf: rcvbuf::RecvBuf::default(),
-            read_waker: None,
-            stop_state: None,
-            frames_tx,
-            largest_data_offset: 0,
-            max_data_size: buf_size,
-        }
-    }
-
     pub(super) fn poll_read(
         &mut self,
         cx: &mut Context<'_>,
@@ -70,6 +58,12 @@ where
             Poll::Pending
         }
     }
+}
+
+impl<TX> Recv<TX>
+where
+    TX: SendFrame<StopSendingFrame>,
+{
     pub(super) fn stop(&mut self, err_code: u64) {
         if self.stop_state.is_none() {
             self.stop_state = Some(err_code);
@@ -79,6 +73,9 @@ where
             )]);
         }
     }
+}
+
+impl<TX: Clone> Recv<TX> {
     pub(super) fn determin_size(&mut self, total_size: u64) -> SizeKnown<TX> {
         if let Some(waker) = self.read_waker.take() {
             waker.wake();
@@ -95,6 +92,18 @@ where
 }
 
 impl<TX> Recv<TX> {
+    pub(super) fn with(stream_id: StreamId, buf_size: u64, frames_tx: TX) -> Self {
+        Self {
+            stream_id,
+            rcvbuf: rcvbuf::RecvBuf::default(),
+            read_waker: None,
+            stop_state: None,
+            frames_tx,
+            largest_data_offset: 0,
+            max_data_size: buf_size,
+        }
+    }
+
     pub(super) fn recv(&mut self, stream_frame: &StreamFrame, body: Bytes) -> Result<usize, Error> {
         let begin = stream_frame.offset();
 
@@ -160,7 +169,7 @@ pub struct SizeKnown<TX> {
 
 impl<TX> SizeKnown<TX>
 where
-    TX: SendFrame<StopSendingFrame> + Clone + Send + 'static,
+    TX: SendFrame<StopSendingFrame>,
 {
     /// Abort can be called multiple times at the application level,
     /// but only the first call is effective.
@@ -334,10 +343,7 @@ pub(super) enum Recver<TX> {
     ResetRead(ResetStreamError),
 }
 
-impl<TX> Recver<TX>
-where
-    TX: SendFrame<StopSendingFrame> + SendFrame<MaxStreamDataFrame> + Clone + Send + 'static,
-{
+impl<TX> Recver<TX> {
     pub(super) fn new(stream_id: StreamId, buf_size: u64, frames_tx: TX) -> Self {
         Self::Recv(Recv::with(stream_id, buf_size, frames_tx))
     }

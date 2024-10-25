@@ -33,8 +33,22 @@ pub struct ReadySender<TX> {
 
 impl<TX> ReadySender<TX>
 where
-    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
+    TX: SendFrame<ResetStreamFrame>,
 {
+    /// 应用层使用，取消发送流
+    pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
+        let final_size = self.sndbuf.len();
+        let reset_stream_err = ResetStreamError::new(
+            VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
+            VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+        );
+        self.reset_frame_tx
+            .send_frame([reset_stream_err.combine(self.stream_id)]);
+        reset_stream_err
+    }
+}
+
+impl<TX> ReadySender<TX> {
     pub(super) fn with_wnd_size(
         stream_id: StreamId,
         wnd_size: u64,
@@ -132,18 +146,6 @@ where
         self.shutdown_waker.is_some()
     }
 
-    /// 应用层使用，取消发送流
-    pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
-        let final_size = self.sndbuf.len();
-        let reset_stream_err = ResetStreamError::new(
-            VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
-            VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
-        );
-        self.reset_frame_tx
-            .send_frame([reset_stream_err.combine(self.stream_id)]);
-        reset_stream_err
-    }
-
     pub(super) fn wake_all(&mut self) {
         if let Some(waker) = self.writable_waker.take() {
             waker.wake();
@@ -158,10 +160,7 @@ where
 }
 
 /// 状态转换，ReaderSender => SendingSender
-impl<TX> From<&mut ReadySender<TX>> for SendingSender<TX>
-where
-    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
-{
+impl<TX: Clone> From<&mut ReadySender<TX>> for SendingSender<TX> {
     fn from(value: &mut ReadySender<TX>) -> Self {
         SendingSender {
             stream_id: value.stream_id,
@@ -177,10 +176,7 @@ where
 }
 
 /// 状态转换，ReaderSender => DataSentSender
-impl<TX> From<&mut ReadySender<TX>> for DataSentSender<TX>
-where
-    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
-{
+impl<TX: Clone> From<&mut ReadySender<TX>> for DataSentSender<TX> {
     fn from(value: &mut ReadySender<TX>) -> Self {
         DataSentSender {
             stream_id: value.stream_id,
@@ -210,8 +206,21 @@ type StreamData<'s> = (u64, bool, (&'s [u8], &'s [u8]), bool);
 
 impl<TX> SendingSender<TX>
 where
-    TX: SendFrame<ResetStreamFrame> + Send + 'static,
+    TX: SendFrame<ResetStreamFrame>,
 {
+    pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
+        let final_size = self.sndbuf.len();
+        let reset_stream_err = ResetStreamError::new(
+            VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
+            VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+        );
+        self.reset_frame_tx
+            .send_frame([reset_stream_err.combine(self.stream_id)]);
+        reset_stream_err
+    }
+}
+
+impl<TX> SendingSender<TX> {
     pub(super) fn poll_write(
         &mut self,
         cx: &mut Context<'_>,
@@ -298,17 +307,6 @@ where
         }
     }
 
-    pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
-        let final_size = self.sndbuf.len();
-        let reset_stream_err = ResetStreamError::new(
-            VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
-            VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
-        );
-        self.reset_frame_tx
-            .send_frame([reset_stream_err.combine(self.stream_id)]);
-        reset_stream_err
-    }
-
     pub(super) fn wake_all(&mut self) {
         if let Some(waker) = self.writable_waker.take() {
             waker.wake();
@@ -330,10 +328,7 @@ where
 }
 
 /// 状态转换，SendingSender => DataSentSender
-impl<TX> From<&mut SendingSender<TX>> for DataSentSender<TX>
-where
-    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
-{
+impl<TX: Clone> From<&mut SendingSender<TX>> for DataSentSender<TX> {
     fn from(value: &mut SendingSender<TX>) -> Self {
         DataSentSender {
             stream_id: value.stream_id,
@@ -369,8 +364,21 @@ pub struct DataSentSender<TX> {
 
 impl<TX> DataSentSender<TX>
 where
-    TX: SendFrame<ResetStreamFrame> + Send + 'static,
+    TX: SendFrame<ResetStreamFrame>,
 {
+    pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
+        let final_size = self.sndbuf.len();
+        let reset_stream_err = ResetStreamError::new(
+            VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
+            VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+        );
+        self.reset_frame_tx
+            .send_frame([reset_stream_err.combine(self.stream_id)]);
+        reset_stream_err
+    }
+}
+
+impl<TX> DataSentSender<TX> {
     pub(super) fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Option<StreamData>
     where
         P: Fn(u64) -> Option<usize>,
@@ -451,17 +459,6 @@ where
         }
     }
 
-    pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
-        let final_size = self.sndbuf.len();
-        let reset_stream_err = ResetStreamError::new(
-            VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
-            VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
-        );
-        self.reset_frame_tx
-            .send_frame([reset_stream_err.combine(self.stream_id)]);
-        reset_stream_err
-    }
-
     pub(super) fn wake_all(&mut self) {
         if let Some(waker) = self.flush_waker.take() {
             waker.wake();
@@ -488,10 +485,7 @@ pub(super) enum Sender<TX> {
     ResetRcvd(ResetStreamError),
 }
 
-impl<TX> Sender<TX>
-where
-    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
-{
+impl<TX> Sender<TX> {
     pub fn with_wnd_size(stream_id: StreamId, wnd_size: u64, reset_frame_tx: TX) -> Self {
         Sender::Ready(ReadySender::with_wnd_size(
             stream_id,
@@ -514,10 +508,7 @@ where
 #[derive(Debug, Clone)]
 pub struct ArcSender<TX>(Arc<Mutex<Result<Sender<TX>, Error>>>);
 
-impl<TX> ArcSender<TX>
-where
-    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
-{
+impl<TX> ArcSender<TX> {
     #[doc(hidden)]
     pub(crate) fn new(stream_id: StreamId, wnd_size: u64, reset_frame_tx: TX) -> Self {
         ArcSender(Arc::new(Mutex::new(Ok(Sender::with_wnd_size(

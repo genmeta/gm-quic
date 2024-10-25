@@ -7,11 +7,7 @@ use std::{
 };
 
 use deref_derive::{Deref, DerefMut};
-use qbase::{
-    error::Error as QuicError,
-    frame::{ResetStreamFrame, SendFrame},
-    sid::StreamId,
-};
+use qbase::{error::Error as QuicError, sid::StreamId};
 
 use crate::{recv::Incoming, send::Outgoing};
 
@@ -87,10 +83,7 @@ pub(super) struct ArcOutputGuard<'a, TX> {
     inner: MutexGuard<'a, Result<Output<TX>, QuicError>>,
 }
 
-impl<TX> ArcOutputGuard<'_, TX>
-where
-    TX: SendFrame<ResetStreamFrame> + Clone + Send + 'static,
-{
+impl<TX> ArcOutputGuard<'_, TX> {
     pub(super) fn insert(&mut self, sid: StreamId, outgoing: Outgoing<TX>, io_state: IOState) {
         match self.inner.as_mut() {
             Ok(set) => set.insert(sid, (outgoing, io_state)),
