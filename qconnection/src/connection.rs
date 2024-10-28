@@ -195,9 +195,10 @@ impl Debug for ArcConnection {
 
 impl ArcConnection {
     pub fn new_client(
-        scid: ConnectionId,
+        initial_scid: ConnectionId,
         server_name: String,
         mut parameters: Parameters,
+        streams_ctrl: Box<dyn qbase::sid::ControlConcurrency>,
         tls_config: Arc<rustls::ClientConfig>,
         token_registry: ArcTokenRegistry,
     ) -> Self {
@@ -205,19 +206,23 @@ impl ArcConnection {
             panic!("server_name is not valid")
         };
 
-        parameters.set_initial_source_connection_id(Some(scid));
+        parameters.set_initial_source_connection_id(Some(initial_scid));
 
-        let dcid = ConnectionId::random_gen(8);
+        let initial_dcid = ConnectionId::random_gen(8);
         let tls_session = ArcTlsSession::new_client(server_name, tls_config.clone(), &parameters);
-        let initial_keys =
-            ArcTlsSession::initial_keys(tls_config.crypto_provider(), rustls::Side::Client, dcid);
+        let initial_keys = ArcTlsSession::initial_keys(
+            tls_config.crypto_provider(),
+            rustls::Side::Client,
+            initial_dcid,
+        );
         let raw_conn = Connection::new(
             Role::Client,
             parameters,
             tls_session,
-            scid,
-            dcid,
+            initial_scid,
+            initial_dcid,
             initial_keys,
+            streams_ctrl,
             token_registry,
         );
         raw_conn.into()
@@ -233,8 +238,9 @@ impl ArcConnection {
     pub fn new_server(
         initial_scid: ConnectionId,
         initial_dcid: ConnectionId,
-        mut parameters: Parameters,
         initial_keys: rustls::quic::Keys,
+        mut parameters: Parameters,
+        streams_ctrl: Box<dyn qbase::sid::ControlConcurrency>,
         tls_config: Arc<rustls::ServerConfig>,
         token_registry: ArcTokenRegistry,
     ) -> Self {
@@ -248,6 +254,7 @@ impl ArcConnection {
             initial_scid,
             initial_dcid,
             initial_keys,
+            streams_ctrl,
             token_registry,
         );
         raw_conn.into()
