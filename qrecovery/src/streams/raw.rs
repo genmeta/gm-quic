@@ -174,7 +174,7 @@ where
         if buf.len() < STREAM_FRAME_MAX_ENCODING_SIZE + 1 {
             return None;
         }
-        let mut guard = self.output.0.lock().unwrap();
+        let mut guard = self.output.streams();
         let output = guard.as_mut().ok()?;
 
         // 该tokens是令牌桶算法的token，为了多条Stream的公平性，给每个流定期地发放tokens，不累积
@@ -222,7 +222,7 @@ where
     ///
     /// Actually calls the [`Outgoing::on_data_acked`] method of the corresponding stream.
     pub fn on_data_acked(&self, frame: StreamFrame) {
-        if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
+        if let Ok(set) = self.output.streams().as_mut() {
             let mut is_all_rcvd = false;
             if let Some((o, s)) = set.get(&frame.id) {
                 is_all_rcvd = o.on_data_acked(&frame.range(), frame.is_fin());
@@ -246,9 +246,7 @@ where
     pub fn may_loss_data(&self, stream_frame: &StreamFrame) {
         if let Some((o, _s)) = self
             .output
-            .0
-            .lock()
-            .unwrap()
+            .streams()
             .as_mut()
             .ok()
             .and_then(|set| set.get(&stream_frame.id))
@@ -261,7 +259,7 @@ where
     ///
     /// Actually calls the [`Outgoing::on_reset_acked`] method of the corresponding stream.
     pub fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
-        if let Ok(set) = self.output.0.lock().unwrap().as_mut() {
+        if let Ok(set) = self.output.streams().as_mut() {
             if let Some((o, s)) = set.remove(&reset_frame.stream_id) {
                 o.on_reset_acked();
                 s.shutdown_send();
@@ -300,22 +298,22 @@ where
                 ));
             }
         }
-        let ret = self
-            .input
-            .0
-            .lock()
-            .unwrap()
-            .as_mut()
-            .ok()
-            .and_then(|set| set.get(&sid))
-            .map(|(incoming, _s)| incoming.recv_data(stream_frame, body.clone()));
-        // TODO: 此处应该返回是否接收完，代表着接收结束，可以将该流的接收状态标识为关闭
 
-        match ret {
-            Some(recv_ret) => recv_ret,
-            // 该流已结束，收到的数据将被忽略
-            None => Ok(0),
+        if let Ok(set) = self.input.streams().as_mut() {
+            if let Some((incoming, s)) = set.get(&sid) {
+                let (is_into_rcvd, fresh_data) = incoming.recv_data(stream_frame, body.clone())?;
+                if is_into_rcvd {
+                    // 数据被接收完的，忽略后续的ResetStreamFrame
+                    s.shutdown_receive();
+                    if s.is_terminated() {
+                        self.stream_ids.remote.on_end_of_stream(sid);
+                    }
+                    set.remove(&sid);
+                }
+                return Ok(fresh_data);
+            }
         }
+        Ok(0)
     }
 
     /// Called when a stream control frame which from peer is received by local.
@@ -341,7 +339,7 @@ where
                         ));
                     }
                 }
-                if let Ok(set) = self.input.0.lock().unwrap().as_mut() {
+                if let Ok(set) = self.input.streams().as_mut() {
                     if let Some((incoming, s)) = set.remove(&sid) {
                         incoming.recv_reset(reset)?;
                         s.shutdown_receive();
@@ -368,9 +366,7 @@ where
                 }
                 if self
                     .output
-                    .0
-                    .lock()
-                    .unwrap()
+                    .streams()
                     .as_mut()
                     .ok()
                     .and_then(|set| set.get(&sid))
@@ -402,9 +398,7 @@ where
                 }
                 if let Some((outgoing, _s)) = self
                     .output
-                    .0
-                    .lock()
-                    .unwrap()
+                    .streams()
                     .as_ref()
                     .ok()
                     .and_then(|set| set.get(&sid))
@@ -515,8 +509,8 @@ where
             let arc_sender = self.create_sender(sid, snd_buf_size);
             let arc_recver = self.create_recver(sid, self.local_bi_stream_rcvbuf_size);
             let io_state = IOState::bidirection();
-            output.insert(sid, Outgoing(arc_sender.clone()), io_state.clone());
-            input.insert(sid, Incoming(arc_recver.clone()), io_state);
+            output.insert(sid, Outgoing::new(arc_sender.clone()), io_state.clone());
+            input.insert(sid, Incoming::new(arc_recver.clone()), io_state);
             Poll::Ready(Ok(Some((sid, (Reader(arc_recver), Writer(arc_sender))))))
         } else {
             Poll::Ready(Ok(None))
@@ -536,7 +530,7 @@ where
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Uni)) {
             let arc_sender = self.create_sender(sid, snd_buf_size);
             let io_state = IOState::send_only();
-            output.insert(sid, Outgoing(arc_sender.clone()), io_state);
+            output.insert(sid, Outgoing::new(arc_sender.clone()), io_state);
             Poll::Ready(Ok(Some((sid, Writer(arc_sender)))))
         } else {
             Poll::Ready(Ok(None))
@@ -581,8 +575,8 @@ where
                     let arc_recver = self.create_recver(sid, rcv_buf_size);
                     let arc_sender = self.create_sender(sid, 0);
                     let io_state = IOState::bidirection();
-                    input.insert(sid, Incoming(arc_recver.clone()), io_state.clone());
-                    output.insert(sid, Outgoing(arc_sender.clone()), io_state);
+                    input.insert(sid, Incoming::new(arc_recver.clone()), io_state.clone());
+                    output.insert(sid, Outgoing::new(arc_sender.clone()), io_state);
                     listener.push_bi_stream(sid, (arc_recver, arc_sender));
                 }
                 Ok(())
@@ -608,7 +602,7 @@ where
                 for sid in need_create {
                     let arc_receiver = self.create_recver(sid, rcv_buf_size);
                     let io_state = IOState::receive_only();
-                    input.insert(sid, Incoming(arc_receiver.clone()), io_state);
+                    input.insert(sid, Incoming::new(arc_receiver.clone()), io_state);
                     listener.push_uni_stream(sid, arc_receiver);
                 }
                 Ok(())

@@ -10,7 +10,7 @@ use super::recver::{ArcRecver, Recver};
 
 /// An struct for protocol layer to manage the receiving part of a stream.
 #[derive(Debug, Clone)]
-pub struct Incoming<TX>(pub(crate) ArcRecver<TX>);
+pub struct Incoming<TX>(ArcRecver<TX>);
 
 impl<TX> Incoming<TX>
 where
@@ -26,9 +26,14 @@ where
     ///
     /// [`RecvBuf`]: crate::recv::RecvBuf
     /// [`Reader`]: crate::recv::Reader
-    pub fn recv_data(&self, stream_frame: &StreamFrame, body: Bytes) -> Result<usize, QuicError> {
+    pub fn recv_data(
+        &self,
+        stream_frame: &StreamFrame,
+        body: Bytes,
+    ) -> Result<(bool, usize), QuicError> {
         let mut recver = self.0.recver();
         let inner = recver.deref_mut();
+        let mut is_into_rcvd = false;
         let mut fresh_data = 0;
         if let Ok(receiving_state) = inner {
             match receiving_state {
@@ -38,6 +43,7 @@ where
                         let mut size_known = r.determin_size(final_size);
                         fresh_data = size_known.recv(stream_frame, body)?;
                         if size_known.is_all_rcvd() {
+                            is_into_rcvd = true;
                             *receiving_state = Recver::DataRcvd(size_known.into());
                         } else {
                             *receiving_state = Recver::SizeKnown(size_known);
@@ -49,6 +55,7 @@ where
                 Recver::SizeKnown(r) => {
                     fresh_data = r.recv(stream_frame, body)?;
                     if r.is_all_rcvd() {
+                        is_into_rcvd = true;
                         *receiving_state = Recver::DataRcvd(r.into());
                     }
                 }
@@ -57,7 +64,7 @@ where
                 }
             }
         }
-        Ok(fresh_data)
+        Ok((is_into_rcvd, fresh_data))
     }
 
     /// Receive a stream reset frame from peer.
@@ -89,6 +96,10 @@ where
 }
 
 impl<TX> Incoming<TX> {
+    pub fn new(recver: ArcRecver<TX>) -> Self {
+        Self(recver)
+    }
+
     /// Called when a connecion error occured
     ///
     /// After the connection error occured, trying to read the data from [`Reader`] will result an

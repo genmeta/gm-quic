@@ -14,7 +14,7 @@ use qbase::{
 
 use crate::{
     recv::{ArcRecver, Reader},
-    send::{ArcSender, Outgoing, Writer},
+    send::{ArcSender, Writer},
 };
 
 #[derive(Debug)]
@@ -58,9 +58,8 @@ impl<TX> Listener<TX> {
         snd_buf_size: u64,
     ) -> Poll<Result<(StreamId, (Reader<TX>, Writer<TX>)), QuicError>> {
         if let Some((sid, (recever, sender))) = self.bi_streams.pop_front() {
-            let outgoing = Outgoing(sender);
-            outgoing.update_window(snd_buf_size);
-            Poll::Ready(Ok((sid, (Reader(recever), Writer(outgoing.0)))))
+            sender.revise_buffer_size(snd_buf_size);
+            Poll::Ready(Ok((sid, (Reader(recever), Writer(sender)))))
         } else {
             self.bi_waker = Some(cx.waker().clone());
             Poll::Pending

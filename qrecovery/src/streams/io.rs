@@ -63,41 +63,44 @@ impl<TX> Output<TX> {
 /// 发生quic error后，其操作将被忽略，不会再抛出QuicError或者panic，因为
 /// 有些异步任务可能还未完成，在置为Err后才会完成。
 #[derive(Debug, Clone)]
-pub(super) struct ArcOutput<TX>(pub(super) Arc<Mutex<Result<Output<TX>, QuicError>>>);
+pub(super) struct ArcOutput<TX>(Arc<Mutex<Result<Output<TX>, QuicError>>>);
 
 impl<TX> ArcOutput<TX> {
     pub(super) fn new() -> Self {
         Self(Arc::new(Mutex::new(Ok(Output::new()))))
     }
 
+    pub(super) fn streams(&self) -> MutexGuard<'_, Result<Output<TX>, QuicError>> {
+        self.0.lock().unwrap()
+    }
+
     pub(super) fn guard(&self) -> Result<ArcOutputGuard<TX>, QuicError> {
         let guard = self.0.lock().unwrap();
         match guard.as_ref() {
-            Ok(_) => Ok(ArcOutputGuard { inner: guard }),
+            Ok(_) => Ok(ArcOutputGuard(guard)),
             Err(e) => Err(e.clone()),
         }
     }
 }
 
-pub(super) struct ArcOutputGuard<'a, TX> {
-    inner: MutexGuard<'a, Result<Output<TX>, QuicError>>,
-}
+#[derive(Deref, DerefMut)]
+pub(super) struct ArcOutputGuard<'a, TX>(MutexGuard<'a, Result<Output<TX>, QuicError>>);
 
 impl<TX> ArcOutputGuard<'_, TX> {
     pub(super) fn insert(&mut self, sid: StreamId, outgoing: Outgoing<TX>, io_state: IOState) {
-        match self.inner.as_mut() {
+        match self.0.as_mut() {
             Ok(set) => set.insert(sid, (outgoing, io_state)),
             Err(e) => unreachable!("output is invalid: {e}"),
         };
     }
 
     pub(super) fn on_conn_error(&mut self, err: &QuicError) {
-        match self.inner.as_ref() {
+        match self.0.as_ref() {
             Ok(set) => set.values().for_each(|(o, _)| o.on_conn_error(err)),
             // 已经遇到过conn error了，不需要再次处理。然而guard()时就已经返回了Err，不会再走到这里来
             Err(e) => unreachable!("output is invalid: {e}"),
         };
-        *self.inner = Err(err.clone());
+        *self.0 = Err(err.clone());
     }
 }
 
@@ -107,7 +110,7 @@ impl<TX> ArcOutputGuard<'_, TX> {
 #[allow(clippy::type_complexity)]
 #[derive(Debug, Clone)]
 pub(super) struct ArcInput<TX>(
-    pub(super) Arc<Mutex<Result<HashMap<StreamId, (Incoming<TX>, IOState)>, QuicError>>>,
+    Arc<Mutex<Result<HashMap<StreamId, (Incoming<TX>, IOState)>, QuicError>>>,
 );
 
 impl<TX> Default for ArcInput<TX> {
@@ -117,6 +120,13 @@ impl<TX> Default for ArcInput<TX> {
 }
 
 impl<TX> ArcInput<TX> {
+    #[allow(clippy::type_complexity)]
+    pub(super) fn streams(
+        &self,
+    ) -> MutexGuard<'_, Result<HashMap<StreamId, (Incoming<TX>, IOState)>, QuicError>> {
+        self.0.lock().unwrap()
+    }
+
     pub(super) fn guard(&self) -> Result<ArcInputGuard<'_, TX>, QuicError> {
         let guard = self.0.lock().unwrap();
         match guard.as_ref() {
