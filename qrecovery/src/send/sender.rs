@@ -1,6 +1,6 @@
 use std::{
     io,
-    ops::Range,
+    ops::{DerefMut, Range},
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
@@ -441,6 +441,13 @@ impl<TX> ArcSender<TX> {
 }
 
 impl<TX> ArcSender<TX> {
+    pub(crate) fn revise_buffer_size(&self, snd_buf_size: u64) {
+        let mut sender = self.sender();
+        if let Ok(Sender::Ready(s)) = sender.deref_mut() {
+            s.update_window(snd_buf_size);
+        }
+    }
+
     pub(super) fn sender(&self) -> MutexGuard<Result<Sender<TX>, Error>> {
         self.0.lock().unwrap()
     }

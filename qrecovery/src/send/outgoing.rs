@@ -13,7 +13,7 @@ use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
 
 /// An struct for protocol layer to manage the sending part of a stream.
 #[derive(Debug, Clone)]
-pub struct Outgoing<TX>(pub(crate) ArcSender<TX>);
+pub struct Outgoing<TX>(ArcSender<TX>);
 
 impl<TX: Clone> Outgoing<TX> {
     /// Read the data that the application has written into the buffer.
@@ -87,6 +87,11 @@ impl<TX: Clone> Outgoing<TX> {
 }
 
 impl<TX> Outgoing<TX> {
+    /// Create a new instance of [`Outgoing`]
+    pub fn new(sender: ArcSender<TX>) -> Self {
+        Self(sender)
+    }
+
     /// Update the sending window to `max_data_size`
     ///
     /// Callded when the  [`MAX_STREAM_DATA frame`] belonging to the stream is received.
