@@ -59,7 +59,7 @@ mod send {
         fn poll_write(&mut self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
             assert!(self.writable_waker.is_none());
             assert!(self.flush_waker.is_none());
-            if self.sndbuf.len() + buf.len() as u64 > VARINT_MAX {
+            if self.sndbuf.written() + buf.len() as u64 > VARINT_MAX {
                 return Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
                     "The largest offset delivered on the crypto stream cannot exceed 2^62-1",

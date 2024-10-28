@@ -66,7 +66,7 @@ impl<TX: Clone> Outgoing<TX> {
             Ok(sending_state) => match sending_state {
                 Sender::Ready(s) => {
                     let result;
-                    if s.is_shutdown() {
+                    if s.is_finished() {
                         let mut s: DataSentSender<TX> = s.into();
                         result = s.pick_up(predicate, flow_limit).map(write);
                         *sending_state = Sender::DataSent(s);
@@ -92,15 +92,16 @@ impl<TX> Outgoing<TX> {
     /// Callded when the  [`MAX_STREAM_DATA frame`] belonging to the stream is received.
     ///
     /// [`MAX_STREAM_DATA frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-max_stream_data-frames
-    pub fn update_window(&self, max_data_size: u64) {
-        assert!(max_data_size <= VARINT_MAX);
+    pub fn update_window(&self, max_stream_data: u64) {
+        assert!(max_stream_data <= VARINT_MAX);
         let mut sender = self.0.sender();
         match sender.deref_mut() {
-            Ok(Sender::Ready(s)) => s.update_window(max_data_size),
-            Ok(Sender::Sending(s)) => s.update_window(max_data_size),
+            Ok(Sender::Ready(s)) => s.update_window(max_stream_data),
+            Ok(Sender::Sending(s)) => s.update_window(max_stream_data),
             _ => {}
         }
     }
+
     /// Called when the data sent to peer is acknowlwged.
     ///
     /// * `range` is the range of stream data that has been acknowledged.

@@ -155,6 +155,3 @@ impl<TX> Drop for Reader<TX> {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {}
