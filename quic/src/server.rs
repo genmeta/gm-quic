@@ -19,7 +19,7 @@ use qbase::{
     token::{ArcTokenRegistry, TokenProvider},
     util::ArcAsyncDeque,
 };
-use qconnection::{connection::ArcConnection, path::Pathway, router::Router, usc::ArcUsc};
+use qconnection::{conn::ArcConnection, path::Pathway, router::Router, usc::ArcUsc};
 use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer},
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},

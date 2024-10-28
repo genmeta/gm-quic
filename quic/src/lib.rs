@@ -8,7 +8,7 @@ use qbase::{
     packet::{header::GetDcid, Packet, PacketReader, RetryHeader, VersionNegotiationHeader},
 };
 use qconnection::{
-    connection::ArcConnection,
+    conn::ArcConnection,
     path::Pathway,
     router::Router,
     usc::{ArcUsc, UscRegistry},

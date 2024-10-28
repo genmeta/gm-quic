@@ -20,7 +20,7 @@ use super::{
     util::{ApplyConstraints, Constraints},
     ArcAntiAmplifier,
 };
-use crate::connection::transmit::{
+use crate::conn::transmit::{
     data::DataSpaceReader, handshake::HandshakeSpaceReader, initial::InitialSpaceReader,
 };
 

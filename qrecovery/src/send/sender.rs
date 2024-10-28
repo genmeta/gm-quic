@@ -48,15 +48,15 @@ where
 }
 
 impl<TX> ReadySender<TX> {
-    pub(super) fn new(stream_id: StreamId, wnd_size: u64, reset_frame_tx: TX) -> ReadySender<TX> {
+    pub(super) fn new(stream_id: StreamId, buf_size: u64, reset_frame_tx: TX) -> ReadySender<TX> {
         ReadySender {
             stream_id,
-            sndbuf: SendBuf::with_capacity(wnd_size as usize),
+            sndbuf: SendBuf::with_capacity(buf_size as usize),
             flush_waker: None,
             shutdown_waker: None,
             reset_frame_tx,
             writable_waker: None,
-            max_stream_data: wnd_size,
+            max_stream_data: buf_size,
         }
     }
 
@@ -79,9 +79,9 @@ impl<TX> ReadySender<TX> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let send_buf_len = self.sndbuf.written();
-        if send_buf_len < self.max_stream_data {
-            let n = std::cmp::min((self.max_stream_data - send_buf_len) as usize, buf.len());
+        let stream_data = self.sndbuf.written();
+        if stream_data < self.max_stream_data {
+            let n = std::cmp::min((self.max_stream_data - stream_data) as usize, buf.len());
             Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
         } else {
             self.writable_waker = Some(cx.waker().clone());
@@ -411,8 +411,8 @@ pub(super) enum Sender<TX> {
 }
 
 impl<TX> Sender<TX> {
-    pub fn new(stream_id: StreamId, wnd_size: u64, reset_frame_tx: TX) -> Self {
-        Sender::Ready(ReadySender::new(stream_id, wnd_size, reset_frame_tx))
+    pub fn new(stream_id: StreamId, buf_size: u64, reset_frame_tx: TX) -> Self {
+        Sender::Ready(ReadySender::new(stream_id, buf_size, reset_frame_tx))
     }
 }
 
@@ -431,10 +431,10 @@ pub struct ArcSender<TX>(Arc<Mutex<Result<Sender<TX>, Error>>>);
 
 impl<TX> ArcSender<TX> {
     #[doc(hidden)]
-    pub(crate) fn new(stream_id: StreamId, wnd_size: u64, reset_frame_tx: TX) -> Self {
+    pub(crate) fn new(stream_id: StreamId, buf_size: u64, reset_frame_tx: TX) -> Self {
         ArcSender(Arc::new(Mutex::new(Ok(Sender::new(
             stream_id,
-            wnd_size,
+            buf_size,
             reset_frame_tx,
         )))))
     }

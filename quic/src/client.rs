@@ -11,7 +11,7 @@ use qbase::{
     sid::{handy::ConsistentConcurrency, ControlConcurrency},
     token::{ArcTokenRegistry, TokenSink},
 };
-use qconnection::{connection::ArcConnection, path::Pathway};
+use qconnection::{conn::ArcConnection, path::Pathway};
 use rustls::{
     client::WantsClientCert,
     pki_types::{CertificateDer, PrivateKeyDer},
@@ -218,6 +218,14 @@ impl<T> QuicClientBuilder<T> {
     /// 可以多次调用该函数，覆盖上一次设置的参数。
     pub fn with_parameters(mut self, parameters: ClientParameters) -> Self {
         self.parameters = parameters.into();
+        self
+    }
+
+    pub fn with_streams_controller(
+        mut self,
+        controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency>>,
+    ) -> Self {
+        self.streams_controller = controller;
         self
     }
 

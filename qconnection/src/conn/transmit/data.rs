@@ -22,7 +22,7 @@ use qrecovery::{
 use qunreliable::DatagramFlow;
 use rustls::quic::HeaderProtectionKey;
 
-use crate::{connection::DataStreams, path::SendBuffer};
+use crate::{conn::DataStreams, path::SendBuffer};
 
 #[derive(Clone)]
 pub struct DataSpaceReader {

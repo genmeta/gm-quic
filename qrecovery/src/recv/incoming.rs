@@ -29,25 +29,25 @@ where
     pub fn recv_data(&self, stream_frame: &StreamFrame, body: Bytes) -> Result<usize, QuicError> {
         let mut recver = self.0.recver();
         let inner = recver.deref_mut();
-        let mut new_data_size = 0;
+        let mut fresh_data = 0;
         if let Ok(receiving_state) = inner {
             match receiving_state {
                 Recver::Recv(r) => {
                     if stream_frame.is_fin() {
                         let final_size = stream_frame.offset() + stream_frame.len() as u64;
                         let mut size_known = r.determin_size(final_size);
-                        new_data_size = size_known.recv(stream_frame, body)?;
+                        fresh_data = size_known.recv(stream_frame, body)?;
                         if size_known.is_all_rcvd() {
                             *receiving_state = Recver::DataRcvd(size_known.into());
                         } else {
                             *receiving_state = Recver::SizeKnown(size_known);
                         }
                     } else {
-                        new_data_size = r.recv(stream_frame, body)?;
+                        fresh_data = r.recv(stream_frame, body)?;
                     }
                 }
                 Recver::SizeKnown(r) => {
-                    new_data_size = r.recv(stream_frame, body)?;
+                    fresh_data = r.recv(stream_frame, body)?;
                     if r.is_all_rcvd() {
                         *receiving_state = Recver::DataRcvd(r.into());
                     }
@@ -57,7 +57,7 @@ where
                 }
             }
         }
-        Ok(new_data_size)
+        Ok(fresh_data)
     }
 
     /// Receive a stream reset frame from peer.

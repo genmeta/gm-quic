@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-pub mod connection;
+pub mod conn;
 pub mod error;
 pub mod path;
 mod pipe;
