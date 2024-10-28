@@ -47,14 +47,14 @@ impl IOState {
 pub(super) struct Output<TX> {
     #[deref]
     pub(super) outgoings: BTreeMap<StreamId, (Outgoing<TX>, IOState)>,
-    pub(super) last_sent_stream: Option<(StreamId, usize)>,
+    pub(super) cursor: Option<(StreamId, usize)>,
 }
 
 impl<TX> Output<TX> {
     fn new() -> Self {
         Self {
             outgoings: BTreeMap::default(),
-            last_sent_stream: None,
+            cursor: None,
         }
     }
 }

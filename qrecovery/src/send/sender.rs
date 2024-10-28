@@ -23,12 +23,11 @@ use super::sndbuf::SendBuf;
 pub struct ReadySender<TX> {
     stream_id: StreamId,
     sndbuf: SendBuf,
-    cancel_state: Option<u64>,
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
     reset_frame_tx: TX,
     writable_waker: Option<Waker>,
-    max_data_size: u64,
+    max_stream_data: u64,
 }
 
 impl<TX> ReadySender<TX>
@@ -37,7 +36,7 @@ where
 {
     /// 应用层使用，取消发送流
     pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
-        let final_size = self.sndbuf.len();
+        let final_size = self.sndbuf.written();
         let reset_stream_err = ResetStreamError::new(
             VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
             VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
@@ -49,20 +48,15 @@ where
 }
 
 impl<TX> ReadySender<TX> {
-    pub(super) fn with_wnd_size(
-        stream_id: StreamId,
-        wnd_size: u64,
-        reset_frame_tx: TX,
-    ) -> ReadySender<TX> {
+    pub(super) fn new(stream_id: StreamId, wnd_size: u64, reset_frame_tx: TX) -> ReadySender<TX> {
         ReadySender {
             stream_id,
             sndbuf: SendBuf::with_capacity(wnd_size as usize),
-            cancel_state: None,
             flush_waker: None,
             shutdown_waker: None,
             reset_frame_tx,
             writable_waker: None,
-            max_data_size: wnd_size,
+            max_stream_data: wnd_size,
         }
     }
 
@@ -71,28 +65,12 @@ impl<TX> ReadySender<TX> {
     /// 仅供展示学习
     #[allow(dead_code)]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if let Some(err_code) = self.cancel_state {
-            Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                format!("cancelled by app with error code {err_code}"),
-            ))
+        let written = self.sndbuf.written();
+        if written < self.max_stream_data {
+            let n = std::cmp::min((self.max_stream_data - written) as usize, buf.len());
+            Ok(self.sndbuf.write(&buf[..n]))
         } else {
-            let send_buf_len = self.sndbuf.len();
-            if send_buf_len < self.max_data_size {
-                let n = std::cmp::min((self.max_data_size - send_buf_len) as usize, buf.len());
-                Ok(self.sndbuf.write(&buf[..n]))
-            } else {
-                Err(io::ErrorKind::WouldBlock.into())
-            }
-        }
-    }
-
-    pub(super) fn update_window(&mut self, max_data_size: u64) {
-        if max_data_size > self.max_data_size {
-            self.max_data_size = max_data_size;
-            if let Some(waker) = self.writable_waker.take() {
-                waker.wake();
-            }
+            Err(io::ErrorKind::WouldBlock.into())
         }
     }
 
@@ -101,48 +79,36 @@ impl<TX> ReadySender<TX> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        if let Some(err_code) = self.cancel_state {
-            Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                format!("cancelled by app with error code {err_code}"),
-            )))
+        let send_buf_len = self.sndbuf.written();
+        if send_buf_len < self.max_stream_data {
+            let n = std::cmp::min((self.max_stream_data - send_buf_len) as usize, buf.len());
+            Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
         } else {
-            let send_buf_len = self.sndbuf.len();
-            if send_buf_len < self.max_data_size {
-                let n = std::cmp::min((self.max_data_size - send_buf_len) as usize, buf.len());
-                Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
-            } else {
-                self.writable_waker = Some(cx.waker().clone());
-                Poll::Pending
+            self.writable_waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+
+    pub(super) fn update_window(&mut self, max_stream_data: u64) {
+        if max_stream_data > self.max_stream_data {
+            self.max_stream_data = max_stream_data;
+            if let Some(waker) = self.writable_waker.take() {
+                waker.wake();
             }
         }
     }
 
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Some(err_code) = self.cancel_state {
-            Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                format!("cancelled by app with error code {err_code}"),
-            )))
-        } else {
-            self.flush_waker = Some(cx.waker().clone());
-            Poll::Pending
-        }
+        self.flush_waker = Some(cx.waker().clone());
+        Poll::Pending
     }
 
     pub(super) fn shutdown(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
-        if let Some(err_code) = self.cancel_state {
-            Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                format!("cancelled by app with error code {err_code}"),
-            ))
-        } else {
-            self.shutdown_waker = Some(cx.waker().clone());
-            Ok(())
-        }
+        self.shutdown_waker = Some(cx.waker().clone());
+        Ok(())
     }
 
-    pub(super) fn is_shutdown(&self) -> bool {
+    pub(super) fn is_finished(&self) -> bool {
         self.shutdown_waker.is_some()
     }
 
@@ -165,12 +131,11 @@ impl<TX: Clone> From<&mut ReadySender<TX>> for SendingSender<TX> {
         SendingSender {
             stream_id: value.stream_id,
             sndbuf: std::mem::take(&mut value.sndbuf),
-            cancel_state: value.cancel_state.take(),
             flush_waker: value.flush_waker.take(),
             shutdown_waker: value.shutdown_waker.take(),
             reset_frame_tx: value.reset_frame_tx.clone(),
             writable_waker: value.writable_waker.take(),
-            max_data_size: value.max_data_size,
+            max_stream_data: value.max_stream_data,
         }
     }
 }
@@ -181,7 +146,6 @@ impl<TX: Clone> From<&mut ReadySender<TX>> for DataSentSender<TX> {
         DataSentSender {
             stream_id: value.stream_id,
             sndbuf: std::mem::take(&mut value.sndbuf),
-            cancel_state: value.cancel_state.take(),
             flush_waker: value.flush_waker.take(),
             shutdown_waker: value.shutdown_waker.take(),
             reset_frame_tx: value.reset_frame_tx.clone(),
@@ -194,12 +158,11 @@ impl<TX: Clone> From<&mut ReadySender<TX>> for DataSentSender<TX> {
 pub struct SendingSender<TX> {
     stream_id: StreamId,
     sndbuf: SendBuf,
-    cancel_state: Option<u64>,
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
     reset_frame_tx: TX,
     writable_waker: Option<Waker>,
-    max_data_size: u64,
+    max_stream_data: u64,
 }
 
 type StreamData<'s> = (u64, bool, (&'s [u8], &'s [u8]), bool);
@@ -209,7 +172,7 @@ where
     TX: SendFrame<ResetStreamFrame>,
 {
     pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
-        let final_size = self.sndbuf.len();
+        let final_size = self.sndbuf.written();
         let reset_stream_err = ResetStreamError::new(
             VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
             VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
@@ -226,27 +189,20 @@ impl<TX> SendingSender<TX> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        if let Some(err_code) = self.cancel_state {
-            Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                format!("cancelled by app with error code {err_code}"),
-            )))
+        let written = self.sndbuf.written();
+        if written < self.max_stream_data {
+            let n = std::cmp::min((self.max_stream_data - written) as usize, buf.len());
+            Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
         } else {
-            let send_buf_len = self.sndbuf.len();
-            if send_buf_len < self.max_data_size {
-                let n = std::cmp::min((self.max_data_size - send_buf_len) as usize, buf.len());
-                Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
-            } else {
-                self.writable_waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
+            self.writable_waker = Some(cx.waker().clone());
+            Poll::Pending
         }
     }
 
     /// 传输层使用
-    pub(super) fn update_window(&mut self, max_data_size: u64) {
-        if max_data_size > self.max_data_size {
-            self.max_data_size = max_data_size;
+    pub(super) fn update_window(&mut self, max_stream_data: u64) {
+        if max_stream_data > self.max_stream_data {
+            self.max_stream_data = max_stream_data;
             if let Some(waker) = self.writable_waker.take() {
                 waker.wake();
             }
@@ -257,9 +213,6 @@ impl<TX> SendingSender<TX> {
     where
         P: Fn(u64) -> Option<usize>,
     {
-        if self.cancel_state.is_some() {
-            return None;
-        }
         self.sndbuf
             .pick_up(predicate, flow_limit)
             .map(|(offset, is_fresh, data)| (offset, is_fresh, data, false))
@@ -282,12 +235,7 @@ impl<TX> SendingSender<TX> {
     }
 
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Some(err_code) = self.cancel_state {
-            Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                format!("cancelled by app with error code {err_code}"),
-            )))
-        } else if self.sndbuf.is_all_rcvd() {
+        if self.sndbuf.is_all_rcvd() {
             Poll::Ready(Ok(()))
         } else {
             self.flush_waker = Some(cx.waker().clone());
@@ -296,15 +244,8 @@ impl<TX> SendingSender<TX> {
     }
 
     pub(super) fn shutdown(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
-        if let Some(err_code) = self.cancel_state {
-            Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                format!("cancelled by app with error code {err_code}"),
-            ))
-        } else {
-            self.shutdown_waker = Some(cx.waker().clone());
-            Ok(())
-        }
+        self.shutdown_waker = Some(cx.waker().clone());
+        Ok(())
     }
 
     pub(super) fn wake_all(&mut self) {
@@ -323,7 +264,7 @@ impl<TX> SendingSender<TX> {
     pub(super) fn stop(&mut self) -> u64 {
         self.wake_all();
         // Actually, these remaining data is not acked and will not be acked
-        self.sndbuf.len()
+        self.sndbuf.written()
     }
 }
 
@@ -333,7 +274,6 @@ impl<TX: Clone> From<&mut SendingSender<TX>> for DataSentSender<TX> {
         DataSentSender {
             stream_id: value.stream_id,
             sndbuf: std::mem::take(&mut value.sndbuf),
-            cancel_state: value.cancel_state.take(),
             flush_waker: value.flush_waker.take(),
             shutdown_waker: value.shutdown_waker.take(),
             reset_frame_tx: value.reset_frame_tx.clone(),
@@ -355,7 +295,6 @@ enum FinState {
 pub struct DataSentSender<TX> {
     stream_id: StreamId,
     sndbuf: SendBuf,
-    cancel_state: Option<u64>,
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
     reset_frame_tx: TX,
@@ -367,7 +306,7 @@ where
     TX: SendFrame<ResetStreamFrame>,
 {
     pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
-        let final_size = self.sndbuf.len();
+        let final_size = self.sndbuf.written();
         let reset_stream_err = ResetStreamError::new(
             VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
             VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
@@ -383,11 +322,7 @@ impl<TX> DataSentSender<TX> {
     where
         P: Fn(u64) -> Option<usize>,
     {
-        if self.cancel_state.is_some() {
-            return None;
-        }
-
-        let final_size = self.sndbuf.len();
+        let final_size = self.sndbuf.written();
         self.sndbuf
             .pick_up(&predicate, flow_limit)
             .map(|(offset, is_fresh, data)| {
@@ -432,12 +367,7 @@ impl<TX> DataSentSender<TX> {
     }
 
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Some(err_code) = self.cancel_state {
-            Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                format!("cancelled by app with error code {err_code}"),
-            )))
-        } else if self.is_all_rcvd() {
+        if self.is_all_rcvd() {
             Poll::Ready(Ok(()))
         } else {
             self.flush_waker = Some(cx.waker().clone());
@@ -446,12 +376,7 @@ impl<TX> DataSentSender<TX> {
     }
 
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Some(err_code) = self.cancel_state {
-            Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                format!("cancelled by app with error code {err_code}"),
-            )))
-        } else if self.is_all_rcvd() {
+        if self.is_all_rcvd() {
             Poll::Ready(Ok(()))
         } else {
             self.shutdown_waker = Some(cx.waker().clone());
@@ -471,7 +396,7 @@ impl<TX> DataSentSender<TX> {
     pub(super) fn stop(&mut self) -> u64 {
         self.wake_all();
         // Actually, these remaining data is not acked and will not be acked
-        self.sndbuf.len()
+        self.sndbuf.written()
     }
 }
 
@@ -486,12 +411,8 @@ pub(super) enum Sender<TX> {
 }
 
 impl<TX> Sender<TX> {
-    pub fn with_wnd_size(stream_id: StreamId, wnd_size: u64, reset_frame_tx: TX) -> Self {
-        Sender::Ready(ReadySender::with_wnd_size(
-            stream_id,
-            wnd_size,
-            reset_frame_tx,
-        ))
+    pub fn new(stream_id: StreamId, wnd_size: u64, reset_frame_tx: TX) -> Self {
+        Sender::Ready(ReadySender::new(stream_id, wnd_size, reset_frame_tx))
     }
 }
 
@@ -511,7 +432,7 @@ pub struct ArcSender<TX>(Arc<Mutex<Result<Sender<TX>, Error>>>);
 impl<TX> ArcSender<TX> {
     #[doc(hidden)]
     pub(crate) fn new(stream_id: StreamId, wnd_size: u64, reset_frame_tx: TX) -> Self {
-        ArcSender(Arc::new(Mutex::new(Ok(Sender::with_wnd_size(
+        ArcSender(Arc::new(Mutex::new(Ok(Sender::new(
             stream_id,
             wnd_size,
             reset_frame_tx,

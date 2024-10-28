@@ -552,7 +552,7 @@ impl SendBuf {
         let n = data.len();
         if n > 0 {
             self.data.extend(data);
-            self.state.extend_to(self.len() + n as u64);
+            self.state.extend_to(self.written() + n as u64);
         }
         n
     }
@@ -563,7 +563,7 @@ impl SendBuf {
     }
 
     /// Return the total length of data that has been cumulatively written to the send buffer in the past.
-    pub fn len(&self) -> u64 {
+    pub fn written(&self) -> u64 {
         self.state.1
     }
 

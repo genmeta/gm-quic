@@ -53,18 +53,18 @@ use crate::{
 /// # Receive frames, handle frame loss and acknowledge
 ///
 /// Frames received, frames lost or acknowledgmented will be delivered to the corresponding method.
-/// | method on [`DataStreams`]                                | corresponding method                          |
-/// | -------------------------------------------------------- | --------------------------------------------- |
-/// | [`recv_data`]                                            | [`Incoming::recv_data`]                       |
-/// | [`recv_stream_control`] ([`RESET_STREAM frame`])         | [`Incoming::recv_reset`]                      |
-/// | [`recv_stream_control`] ([`STOP_SENDING frame`])         | [`Outgoing::on_stopped`]                      |
-/// | [`recv_stream_control`] ([`MAX_STREAM_DATA frame`])      | [`Outgoing::update_window`]                   |
-/// | [`recv_stream_control`] ([`MAX_STREAMS frame`])          | [`ArcLocalStreamIds::recv_max_streams_frame`] |
-/// | [`recv_stream_control`] ([`STREAM_DATA_BLOCKED frame`])  | none(the frame will be ignored)               |
-/// | [`recv_stream_control`] ([`STREAMS_BLOCKED frame`])      | none(the frame will be ignored)               |
-/// | [`on_data_acked`]                                        | [`Outgoing::on_data_acked`]                   |
-/// | [`may_loss_data`]                                        | [`Outgoing::may_loss_data`]                   |
-/// | [`on_reset_acked`]                                       | [`Outgoing::on_reset_acked`]                  |
+/// | method on [`DataStreams`]                                | corresponding method                               |
+/// | -------------------------------------------------------- | -------------------------------------------------- |
+/// | [`recv_data`]                                            | [`Incoming::recv_data`]                            |
+/// | [`recv_stream_control`] ([`RESET_STREAM frame`])         | [`Incoming::recv_reset`]                           |
+/// | [`recv_stream_control`] ([`STOP_SENDING frame`])         | [`Outgoing::on_stopped`]                           |
+/// | [`recv_stream_control`] ([`MAX_STREAM_DATA frame`])      | [`Outgoing::update_window`]                        |
+/// | [`recv_stream_control`] ([`STREAM_DATA_BLOCKED frame`])  | none(the frame will be ignored)                    |
+/// | [`recv_stream_control`] ([`MAX_STREAMS frame`])          | [`ArcLocalStreamIds::recv_max_streams_frame`]      |
+/// | [`recv_stream_control`] ([`STREAMS_BLOCKED frame`])      | [`ArcRemoteStreamIds::recv_streams_blocked_frame`] |
+/// | [`on_data_acked`]                                        | [`Outgoing::on_data_acked`]                        |
+/// | [`may_loss_data`]                                        | [`Outgoing::may_loss_data`]                        |
+/// | [`on_reset_acked`]                                       | [`Outgoing::on_reset_acked`]                       |
 ///
 /// # Create and accept streams
 ///
@@ -97,6 +97,7 @@ use crate::{
 /// [`OpenBiStream`]: crate::streams::OpenBiStream
 /// [`OpenUniStream`]: crate::streams::OpenUniStream
 /// [`ArcLocalStreamIds::recv_max_streams_frame`]: qbase::sid::ArcLocalStreamIds::recv_max_streams_frame
+/// [`ArcRemoteStreamIds::recv_streams_blocked_frame`]: qbase::sid::ArcRemoteStreamIds::recv_streams_blocked_frame
 ///
 #[derive(Debug)]
 pub struct DataStreams<TX>
@@ -180,7 +181,7 @@ where
         // 该tokens是令牌桶算法的token，为了多条Stream的公平性，给每个流定期地发放tokens，不累积
         // 各流轮流按令牌桶算法发放的tokens来整理数据去发送
         const DEFAULT_TOKENS: usize = 4096;
-        let streams: &mut dyn Iterator<Item = _> = match &output.last_sent_stream {
+        let streams: &mut dyn Iterator<Item = _> = match &output.cursor {
             // [sid+1..] + [..=sid]
             Some((sid, tokens)) if *tokens == 0 => &mut output
                 .outgoings
@@ -211,7 +212,7 @@ where
             if let Some((frame, data_len, is_fresh, written)) =
                 outgoing.try_read(sid, buf, tokens, flow_limit)
             {
-                output.last_sent_stream = Some((sid, tokens - data_len));
+                output.cursor = Some((sid, tokens - data_len));
                 return Some((frame, written, if is_fresh { data_len } else { 0 }));
             }
         }
@@ -496,7 +497,7 @@ where
     pub(super) fn poll_open_bi_stream(
         &self,
         cx: &mut Context<'_>,
-        snd_wnd_size: u64,
+        snd_buf_size: u64,
     ) -> Poll<Result<Option<(StreamId, (Reader<Ext<TX>>, Writer<Ext<TX>>))>, QuicError>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
@@ -507,7 +508,7 @@ where
             Err(e) => return Poll::Ready(Err(e)),
         };
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Bi)) {
-            let arc_sender = self.create_sender(sid, snd_wnd_size);
+            let arc_sender = self.create_sender(sid, snd_buf_size);
             let arc_recver = self.create_recver(sid, self.local_bi_stream_rcvbuf_size);
             let io_state = IOState::bidirection();
             output.insert(sid, Outgoing(arc_sender.clone()), io_state.clone());
@@ -522,14 +523,14 @@ where
     pub(super) fn poll_open_uni_stream(
         &self,
         cx: &mut Context<'_>,
-        snd_wnd_size: u64,
+        snd_buf_size: u64,
     ) -> Poll<Result<Option<(StreamId, Writer<Ext<TX>>)>, QuicError>> {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(e) => return Poll::Ready(Err(e)),
         };
         if let Some(sid) = ready!(self.stream_ids.local.poll_alloc_sid(cx, Dir::Uni)) {
-            let arc_sender = self.create_sender(sid, snd_wnd_size);
+            let arc_sender = self.create_sender(sid, snd_buf_size);
             let io_state = IOState::send_only();
             output.insert(sid, Outgoing(arc_sender.clone()), io_state);
             Poll::Ready(Ok(Some((sid, Writer(arc_sender)))))
@@ -538,8 +539,8 @@ where
         }
     }
 
-    pub(super) fn accept_bi(&self, snd_wnd_size: u64) -> AcceptBiStream<Ext<TX>> {
-        self.listener.accept_bi_stream(snd_wnd_size)
+    pub(super) fn accept_bi(&self, snd_buf_size: u64) -> AcceptBiStream<Ext<TX>> {
+        self.listener.accept_bi_stream(snd_buf_size)
     }
 
     pub(super) fn accept_uni(&self) -> AcceptUniStream<Ext<TX>> {
@@ -611,8 +612,8 @@ where
         }
     }
 
-    fn create_sender(&self, sid: StreamId, wnd_size: u64) -> ArcSender<Ext<TX>> {
-        ArcSender::new(sid, wnd_size, Ext(self.ctrl_frames.clone()))
+    fn create_sender(&self, sid: StreamId, buf_size: u64) -> ArcSender<Ext<TX>> {
+        ArcSender::new(sid, buf_size, Ext(self.ctrl_frames.clone()))
     }
 
     fn create_recver(&self, sid: StreamId, buf_size: u64) -> ArcRecver<Ext<TX>> {

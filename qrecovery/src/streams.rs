@@ -53,7 +53,19 @@ where
     }
 }
 
-/// The wrapper of [`raw::DataStreams`], provides the abality of share between tasks.
+/// Shared data streams, one for each connection.
+///
+/// App layer can use it to create and accept bidirectional or unidirectional streams.
+/// QUIC layer will read frames and data from the streams and send them to peer,
+/// and also write the frames and data received from peer to this data streams.
+///
+/// The `TX` is the frame sender, it should be able to send the [`StreamCtlFrame`], including:
+/// - [`StreamCtlFrame::MaxStreamData`]
+/// - [`StreamCtlFrame::MaxStreams`]
+/// - [`StreamCtlFrame::StreamDataBlocked`]
+/// - [`StreamCtlFrame::StreamsBlocked`]
+/// - [`StreamCtlFrame::StopSending`]
+/// - [`StreamCtlFrame::ResetStream`]
 ///
 /// See [`raw::DataStreams`] for more details.
 #[derive(Debug, Clone, Deref)]
