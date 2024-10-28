@@ -23,7 +23,7 @@ use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{
-    connection::{parameters::RemoteParameters, Handshake},
+    conn::{parameters::RemoteParameters, Handshake},
     error::ConnError,
 };
 

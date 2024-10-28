@@ -20,7 +20,7 @@ use super::{
     Pathway,
 };
 use crate::{
-    connection::transmit::{
+    conn::transmit::{
         data::DataSpaceReader, handshake::HandshakeSpaceReader, initial::InitialSpaceReader,
     },
     usc::ArcUsc,
