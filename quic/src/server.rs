@@ -15,6 +15,7 @@ use qbase::{
         long, DataHeader, DataPacket, InitialHeader, RetryHeader,
     },
     param::{Parameters, ServerParameters},
+    sid::{handy::ConsistentConcurrency, ControlConcurrency},
     token::{ArcTokenRegistry, TokenProvider},
     util::ArcAsyncDeque,
 };
@@ -61,6 +62,8 @@ pub struct QuicServer {
     _load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     parameters: Parameters,
     tls_config: Arc<TlsServerConfig>,
+    streams_controller:
+        Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
@@ -87,6 +90,7 @@ impl ArcQuicServer {
             )
             .with_protocol_versions(&[&rustls::version::TLS13])
             .unwrap(),
+            streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
             token_provider: None,
         }
     }
@@ -126,6 +130,11 @@ impl ArcQuicServer {
             _ => return,
         };
 
+        let streams_ctrl = (server.streams_controller)(
+            server.parameters.initial_max_streams_bidi().into_inner(),
+            server.parameters.initial_max_streams_uni().into_inner(),
+        );
+
         let token_provider = match &server.token_provider {
             Some(provider) => ArcTokenRegistry::with_provider(provider.clone()),
             None => ArcTokenRegistry::default_provider(),
@@ -135,8 +144,9 @@ impl ArcQuicServer {
         let inner = ArcConnection::new_server(
             initial_scid,
             initial_dcid,
-            server.parameters,
             initial_keys,
+            server.parameters,
+            streams_ctrl,
             server.tls_config.clone(),
             token_provider,
         );
@@ -184,6 +194,8 @@ pub struct QuicServerBuilder<T> {
     load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     parameters: Parameters,
     tls_config: T,
+    streams_controller:
+        Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
@@ -195,6 +207,8 @@ pub struct QuicServerSniBuilder<T> {
     hosts: Arc<DashMap<String, Host>>,
     parameters: Parameters,
     tls_config: T,
+    streams_controller:
+        Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
@@ -246,6 +260,7 @@ impl<T> QuicServerBuilder<T> {
             load_balance: self.load_balance,
             parameters: self.parameters,
             tls_config,
+            streams_controller: self.streams_controller,
             token_provider: self.token_provider,
         }
     }
@@ -266,6 +281,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             tls_config: self
                 .tls_config
                 .with_client_cert_verifier(client_cert_verifier),
+            streams_controller: self.streams_controller,
             token_provider: self.token_provider,
         }
     }
@@ -283,6 +299,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             tls_config: self
                 .tls_config
                 .with_client_cert_verifier(Arc::new(NoClientAuth)),
+            streams_controller: self.streams_controller,
             token_provider: self.token_provider,
         }
     }
@@ -311,6 +328,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
                 .tls_config
                 .with_single_cert(cert_chain, key_der)
                 .expect("The private key was wrong encoded or failed validation"),
+            streams_controller: self.streams_controller,
             token_provider: self.token_provider,
         }
     }
@@ -337,6 +355,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
                 .tls_config
                 .with_single_cert_with_ocsp(cert_chain, key_der, ocsp)
                 .expect("The private key was wrong encoded or failed validation"),
+            streams_controller: self.streams_controller,
             token_provider: self.token_provider,
         }
     }
@@ -354,6 +373,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
                 .tls_config
                 .with_cert_resolver(Arc::new(VirtualHosts(hosts.clone()))),
             hosts,
+            streams_controller: self.streams_controller,
             token_provider: self.token_provider,
         }
     }
@@ -423,6 +443,7 @@ impl QuicServerBuilder<TlsServerConfig> {
             _load_balance: self.load_balance,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
+            streams_controller: self.streams_controller,
             token_provider: self.token_provider,
         }));
         *SERVER.write().unwrap() = Arc::downgrade(&quic_server.0);
@@ -458,6 +479,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             _load_balance: self.load_balance,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
+            streams_controller: self.streams_controller,
             token_provider: self.token_provider,
         }));
         *SERVER.write().unwrap() = Arc::downgrade(&quic_server.0);

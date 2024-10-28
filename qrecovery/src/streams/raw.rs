@@ -8,9 +8,8 @@ use qbase::{
     },
     param::Parameters,
     sid::{
-        handy::ConsistentConcurrency,
         remote_sid::{AcceptSid, ExceedLimitError},
-        Dir, Role, StreamId, StreamIds,
+        ControlConcurrency, Dir, Role, StreamId, StreamIds,
     },
     varint::VarInt,
 };
@@ -471,7 +470,12 @@ impl<TX> DataStreams<TX>
 where
     TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    pub(super) fn new(role: Role, local_params: &Parameters, ctrl_frames: TX) -> Self {
+    pub(super) fn new(
+        role: Role,
+        local_params: &Parameters,
+        strategy: Box<dyn ControlConcurrency>,
+        ctrl_frames: TX,
+    ) -> Self {
         let max_bi_streams = local_params.initial_max_streams_bidi().into();
         let max_uni_streams = local_params.initial_max_streams_uni().into();
         Self {
@@ -481,7 +485,7 @@ where
                 max_bi_streams,
                 max_uni_streams,
                 Ext(ctrl_frames.clone()),
-                Box::new(ConsistentConcurrency::new(max_bi_streams, max_uni_streams)),
+                strategy,
             ),
             uni_stream_rcvbuf_size: local_params.initial_max_stream_data_uni().into(),
             local_bi_stream_rcvbuf_size: local_params.initial_max_stream_data_bidi_local().into(),

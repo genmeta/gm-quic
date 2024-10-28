@@ -32,7 +32,7 @@ use qbase::{
     error::Error,
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
     param::Parameters,
-    sid::{Role, StreamId},
+    sid::{ControlConcurrency, Role, StreamId},
 };
 
 use crate::{recv::Reader, send::Writer};
@@ -80,8 +80,13 @@ where
     /// Creates a new instance of [`DataStreams`].
     ///
     /// The `ctrl_frames` is the frame sender, read [`raw::DataStreams`] for more details.
-    pub fn new(role: Role, local_params: &Parameters, ctrl_frames: TX) -> Self {
-        let raw = raw::DataStreams::new(role, local_params, ctrl_frames);
+    pub fn new(
+        role: Role,
+        local_params: &Parameters,
+        strategy: Box<dyn ControlConcurrency>,
+        ctrl_frames: TX,
+    ) -> Self {
+        let raw = raw::DataStreams::new(role, local_params, strategy, ctrl_frames);
 
         Self(Arc::new(raw))
     }

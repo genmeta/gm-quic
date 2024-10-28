@@ -8,6 +8,7 @@ use std::{
 use qbase::{
     cid::ConnectionId,
     param::{ClientParameters, Parameters},
+    sid::{handy::ConsistentConcurrency, ControlConcurrency},
     token::{ArcTokenRegistry, TokenSink},
 };
 use qconnection::{connection::ArcConnection, path::Pathway};
@@ -29,6 +30,7 @@ pub struct QuicClient {
     _prefered_versions: Vec<u32>,
     parameters: Parameters,
     tls_config: Arc<TlsClientConfig>,
+    streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency>>,
     token_sink: Option<Arc<dyn TokenSink>>,
 }
 
@@ -75,6 +77,7 @@ impl QuicClient {
             preferred_versions: vec![1],
             parameters: Parameters::default(),
             tls_config: TlsClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
+            streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
             token_sink: None,
         }
     }
@@ -90,6 +93,7 @@ impl QuicClient {
             preferred_versions: vec![1],
             parameters: Parameters::default(),
             tls_config,
+            streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
             token_sink: None,
         }
     }
@@ -139,9 +143,18 @@ impl QuicClient {
             remote: server_addr,
         };
 
-        let scid = std::iter::repeat_with(Self::gen_cid)
+        // 创建initial_scid，不能重复
+        // 倒不是与路由表中的重复，而是与全局的QuicConnection集合中的key重复
+        // 有可能，连向同一个服务器的，四元组一样，连接id不一样而已？
+        // 这是个问题，得解决下！
+        let initial_scid = std::iter::repeat_with(Self::gen_cid)
             .find(|cid| !CONNECTIONS.contains_key(&ConnKey::Client(*cid)))
             .unwrap();
+
+        let streams_ctrl = (self.streams_controller)(
+            self.parameters.initial_max_streams_bidi().into_inner(),
+            self.parameters.initial_max_streams_uni().into_inner(),
+        );
 
         let token_registry = match &self.token_sink {
             Some(sink) => ArcTokenRegistry::with_sink(server_name.clone(), sink.clone()),
@@ -149,18 +162,19 @@ impl QuicClient {
         };
 
         let inner = ArcConnection::new_client(
-            scid,
+            initial_scid,
             server_name,
             self.parameters,
+            streams_ctrl,
             self.tls_config.clone(),
             token_registry,
         );
         let conn = QuicConnection {
-            _key: ConnKey::Client(scid),
+            _key: ConnKey::Client(initial_scid),
             inner: inner.clone(),
         };
 
-        CONNECTIONS.insert(ConnKey::Client(scid), conn.clone());
+        CONNECTIONS.insert(ConnKey::Client(initial_scid), conn.clone());
         inner.add_initial_path(pathway, usc);
         Ok(conn)
     }
@@ -173,6 +187,7 @@ pub struct QuicClientBuilder<T> {
     preferred_versions: Vec<u32>,
     parameters: Parameters,
     tls_config: T,
+    streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency>>,
     token_sink: Option<Arc<dyn TokenSink>>,
 }
 
@@ -228,6 +243,7 @@ impl<T> QuicClientBuilder<T> {
             preferred_versions: self.preferred_versions,
             parameters: self.parameters,
             tls_config,
+            streams_controller: self.streams_controller,
             token_sink: self.token_sink,
         }
     }
@@ -246,6 +262,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
             preferred_versions: self.preferred_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_root_certificates(root_store),
+            streams_controller: self.streams_controller,
             token_sink: self.token_sink,
         }
     }
@@ -260,6 +277,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
             preferred_versions: self.preferred_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_webpki_verifier(verifier),
+            streams_controller: self.streams_controller,
             token_sink: self.token_sink,
         }
     }
@@ -287,6 +305,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
                 .tls_config
                 .with_client_auth_cert(cert_chain, key_der)
                 .expect("The private key was wrong encoded or failed validation"),
+            streams_controller: self.streams_controller,
             token_sink: self.token_sink,
         }
     }
@@ -299,6 +318,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
             preferred_versions: self.preferred_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_no_client_auth(),
+            streams_controller: self.streams_controller,
             token_sink: self.token_sink,
         }
     }
@@ -314,6 +334,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
             preferred_versions: self.preferred_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_client_cert_resolver(cert_resolver),
+            streams_controller: self.streams_controller,
             token_sink: self.token_sink,
         }
     }
@@ -342,6 +363,7 @@ impl QuicClientBuilder<TlsClientConfig> {
             _prefered_versions: self.preferred_versions,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
+            streams_controller: self.streams_controller,
             token_sink: self.token_sink,
         }
     }

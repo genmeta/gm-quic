@@ -10,7 +10,7 @@ use qbase::{
     frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame},
     packet::keys::ArcKeys,
     param::Parameters,
-    sid::Role,
+    sid::{ControlConcurrency, Role},
     token::{ArcTokenRegistry, TokenRegistry},
 };
 use qcongestion::{MayLoss, RetirePktRecord};
@@ -60,6 +60,7 @@ pub struct Connection {
 }
 
 impl Connection {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         role: Role,
         local_params: Parameters,
@@ -67,6 +68,7 @@ impl Connection {
         initial_scid: ConnectionId,
         initial_dcid: ConnectionId,
         initial_keys: Keys,
+        streams_ctrl: Box<dyn ControlConcurrency>,
         token_registry: ArcTokenRegistry,
     ) -> Self {
         let (initial_packets_entry, rcvd_initial_packets) = mpsc::unbounded();
@@ -100,7 +102,7 @@ impl Connection {
         let flow_ctrl = FlowController::with_parameter(65535, 65535);
         let conn_error = ConnError::default();
 
-        let streams = DataStreams::new(role, &local_params, reliable_frames.clone());
+        let streams = DataStreams::new(role, &local_params, streams_ctrl, reliable_frames.clone());
         let datagrams = DatagramFlow::new(0);
 
         let token = match token_registry.deref() {

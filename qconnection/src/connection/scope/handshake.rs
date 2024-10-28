@@ -221,13 +221,11 @@ impl ClosingHandshakeScope {
         let (mut pn_buf, mut body_buf) = payload_buf.split_at_mut(encoded_pn.size());
 
         let body_size = body_buf.remaining_mut();
-
         body_buf.put_frame(ccf);
+        let mut body_len = body_size - body_buf.remaining_mut();
 
         let hdr_len = hdr_buf.len();
         let pn_len = pn_buf.len();
-        let mut body_len = body_size - body_buf.remaining_mut();
-
         if pn_len + body_len + tag_len < 20 {
             let padding_len = 20 - pn_len - body_len - tag_len;
             body_buf.put_bytes(0, padding_len);
@@ -240,7 +238,6 @@ impl ClosingHandshakeScope {
             &VarInt::try_from(pn_len + body_len + tag_len).unwrap(),
             EncodeBytes::Two,
         );
-
         pn_buf.put_packet_number(encoded_pn);
 
         encode_long_first_byte(&mut buf[0], pn_len);
