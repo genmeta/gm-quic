@@ -390,10 +390,10 @@ impl QuicServerSniBuilder<TlsServerConfig> {
         cert_file: impl AsRef<Path>,
         key_file: impl AsRef<Path>,
     ) -> Self {
-        let cert = std::fs::read(cert_file).unwrap();
+        let cert = std::fs::read(cert_file).expect("failed to read certificate file");
         let cert_chain = vec![CertificateDer::from(cert)];
 
-        let key = std::fs::read(key_file).unwrap();
+        let key = std::fs::read(key_file).expect("failed to read private key file");
         let key_der = PrivateKeyDer::try_from(key).unwrap();
 
         let private_key = self
