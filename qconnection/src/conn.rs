@@ -70,34 +70,34 @@ impl ConnState {
         error: Error,
     ) -> Option<([JoinHandle<RcvdPackets>; 4], Duration)> {
         let conn = core::mem::replace(self, Invalid);
-        let Normal(raw_conn) = conn else {
+        let Normal(connection) = conn else {
             // has been closing/draining
             *self = conn;
             return None;
         };
-        raw_conn.abort_with_error(&error);
+        connection.abort_with_error(&error);
 
-        let pto_time = raw_conn.max_pto_duration().unwrap();
+        let pto_time = connection.max_pto_duration().unwrap();
         // 尝试进入Closing状态
-        let hs = raw_conn.hs.try_into().ok();
-        let one_rtt = raw_conn.data.try_into().ok();
+        let hs = connection.hs.try_into().ok();
+        let one_rtt = connection.data.try_into().ok();
 
-        let recv_packets = raw_conn.join_handles;
+        let recv_packets = connection.join_handles;
 
         *self = match (hs, one_rtt) {
             (None, None) => {
-                let local_cids = raw_conn.cid_registry.local.active_cids();
+                let local_cids = connection.cid_registry.local.active_cids();
                 let draining_connection = DrainingConnection::new(local_cids, error);
                 Draining(draining_connection)
             }
             (hs, one_rtt) => {
-                let local_cids = raw_conn.cid_registry.local.active_cids();
-                let initial_scid = raw_conn.initial_scid;
-                let last_dcid = raw_conn.cid_registry.remote.latest_dcid();
+                let local_cids = connection.cid_registry.local.active_cids();
+                let initial_scid = connection.initial_scid;
+                let last_dcid = connection.cid_registry.remote.latest_dcid();
                 let closing_connection =
                     ClosingConnection::new(error, local_cids, hs, one_rtt, initial_scid, last_dcid);
                 tokio::spawn({
-                    let pathes = raw_conn.pathes;
+                    let pathes = connection.pathes;
                     let closing_connection = closing_connection.clone();
                     async move {
                         for mut path in pathes.iter_mut() {
@@ -115,27 +115,27 @@ impl ConnState {
 
     fn enter_draining(&mut self, error: Error) -> Option<Duration> {
         let conn = core::mem::replace(self, Invalid);
-        let Normal(raw_conn) = conn else {
+        let Normal(connection) = conn else {
             // has been closing/draining
             *self = conn;
             return None;
         };
-        raw_conn.abort_with_error(&error);
+        connection.abort_with_error(&error);
 
-        let local_cids = raw_conn.cid_registry.local.active_cids();
+        let local_cids = connection.cid_registry.local.active_cids();
         *self = Draining(DrainingConnection::new(local_cids, error));
 
-        raw_conn.max_pto_duration()
+        connection.max_pto_duration()
     }
 
     fn no_vaiable_path(&mut self) {
         let conn = core::mem::replace(self, Invalid);
         // no need to reset the state to conn
-        let Normal(raw_conn) = conn else { return };
+        let Normal(connection) = conn else { return };
         let error = Error::with_default_fty(ErrorKind::NoViablePath, "No viable path");
-        raw_conn.abort_with_error(&error);
+        connection.abort_with_error(&error);
 
-        let local_cids = &raw_conn.cid_registry.local;
+        let local_cids = &connection.cid_registry.local;
         local_cids.active_cids().iter().for_each(Router::remove);
         *self = Closed(error)
     }
@@ -185,7 +185,7 @@ impl ArcConnection {
             rustls::Side::Client,
             initial_dcid,
         );
-        let raw_conn = Connection::new(
+        let connection = Connection::new(
             Role::Client,
             parameters,
             tls_session,
@@ -195,7 +195,7 @@ impl ArcConnection {
             streams_ctrl,
             token_registry,
         );
-        raw_conn.into()
+        connection.into()
     }
 
     pub fn add_initial_path(&self, pathway: Pathway, usc: ArcUsc) {
@@ -217,7 +217,7 @@ impl ArcConnection {
         parameters.set_original_destination_connection_id(Some(initial_dcid));
 
         let tls_session = ArcTlsSession::new_server(tls_config.clone(), &parameters);
-        let raw_conn = Connection::new(
+        let connection = Connection::new(
             Role::Server,
             parameters,
             tls_session,
@@ -227,34 +227,16 @@ impl ArcConnection {
             streams_ctrl,
             token_registry,
         );
-        raw_conn.into()
+        connection.into()
     }
-
-    // /// Get the streams of the connection, return error if the connection is in closing state or
-    // /// draining state. Even if the connection will enter closing state in future, the returned
-    // /// data streams are still available. It doesn't matter, because the returned DataStreams will
-    // /// be synced into Error state, and do anything about this DataStreams will return an Error.
-    // pub fn streams(&self) -> io::Result<DataStreams> {
-    //     // TODO: ArcConnection不再暴露赤裸的streams接口，而是根据双方Parameters使用
-    //     //      raw_conn.streams().open_bi(...)去异步地创建
-    //     let guard = self.0.lock().unwrap();
-    //     if let ConnState::Raw(ref raw_conn) = *guard {
-    //         Ok(raw_conn.streams.clone())
-    //     } else {
-    //         Err(io::Error::new(
-    //             io::ErrorKind::BrokenPipe,
-    //             "Connection is closing or closed",
-    //         ))
-    //     }
-    // }
 
     pub async fn open_bi_stream(
         &self,
     ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
-            let raw_conn = match guard.deref() {
-                Normal(raw) => raw,
+            let connection = match guard.deref() {
+                Normal(connection) => connection,
                 Closing(closing) => return Err(closing.error.clone())?,
                 Draining(draining) => return Err(draining.error.clone())?,
                 Closed(error) => return Err(error.clone())?,
@@ -262,9 +244,9 @@ impl ArcConnection {
             };
 
             (
-                raw_conn.params.remote.clone(),
-                raw_conn.streams.clone(),
-                raw_conn.error.clone(),
+                connection.params.remote.clone(),
+                connection.streams.clone(),
+                connection.error.clone(),
             )
         };
 
@@ -280,8 +262,8 @@ impl ArcConnection {
     pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, StreamWriter)>> {
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
-            let raw_conn = match guard.deref() {
-                Normal(raw) => raw,
+            let connection = match guard.deref() {
+                Normal(connection) => connection,
                 Closing(closing) => return Err(closing.error.clone())?,
                 Draining(draining) => return Err(draining.error.clone())?,
                 Closed(error) => return Err(error.clone())?,
@@ -289,9 +271,9 @@ impl ArcConnection {
             };
 
             (
-                raw_conn.params.remote.clone(),
-                raw_conn.streams.clone(),
-                raw_conn.error.clone(),
+                connection.params.remote.clone(),
+                connection.streams.clone(),
+                connection.error.clone(),
             )
         };
 
@@ -307,8 +289,8 @@ impl ArcConnection {
     pub async fn accept_bi_stream(&self) -> io::Result<(StreamId, (StreamReader, StreamWriter))> {
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
-            let raw_conn = match guard.deref() {
-                Normal(raw) => raw,
+            let connection = match guard.deref() {
+                Normal(connection) => connection,
                 Closing(closing) => return Err(closing.error.clone())?,
                 Draining(draining) => return Err(draining.error.clone())?,
                 Closed(error) => return Err(error.clone())?,
@@ -316,9 +298,9 @@ impl ArcConnection {
             };
 
             (
-                raw_conn.params.remote.clone(),
-                raw_conn.streams.clone(),
-                raw_conn.error.clone(),
+                connection.params.remote.clone(),
+                connection.streams.clone(),
+                connection.error.clone(),
             )
         };
 
@@ -334,15 +316,15 @@ impl ArcConnection {
     pub async fn accept_uni_stream(&self) -> io::Result<(StreamId, StreamReader)> {
         let (data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
-            let raw_conn = match guard.deref() {
-                Normal(raw) => raw,
+            let connection = match guard.deref() {
+                Normal(connection) => connection,
                 Closing(closing) => return Err(closing.error.clone())?,
                 Draining(draining) => return Err(draining.error.clone())?,
                 Closed(error) => return Err(error.clone())?,
                 Invalid => unreachable!(),
             };
 
-            (raw_conn.streams.clone(), raw_conn.error.clone())
+            (connection.streams.clone(), connection.error.clone())
         };
 
         let result = data_streams
@@ -367,15 +349,18 @@ impl ArcConnection {
     pub async fn datagram_writer(&self) -> io::Result<DatagramWriter> {
         let (remote_params, datagram_flow) = {
             let guard = self.0.lock().unwrap();
-            let raw_conn = match guard.deref() {
-                Normal(raw) => raw,
+            let connection = match guard.deref() {
+                Normal(connection) => connection,
                 Closing(closing) => return Err(closing.error.clone())?,
                 Draining(draining) => return Err(draining.error.clone())?,
                 Closed(error) => return Err(error.clone())?,
                 Invalid => unreachable!(),
             };
 
-            (raw_conn.params.remote.clone(), raw_conn.datagrams.clone())
+            (
+                connection.params.remote.clone(),
+                connection.datagrams.clone(),
+            )
         };
 
         let remote_params = remote_params.read().await?;
@@ -389,10 +374,10 @@ impl ArcConnection {
     /// error and initiate the connection closure.
     pub fn close(&self, msg: impl Into<Cow<'static, str>>) {
         let mut guard = self.0.lock().unwrap();
-        if let Normal(conn) = guard.deref_mut() {
+        if let Normal(connection) = guard.deref_mut() {
             let error = Error::with_default_fty(ErrorKind::Application, msg);
             log::info!("Connection is closed by application: {}", error);
-            conn.error.set_app_error(error.clone());
+            connection.error.set_app_error(error.clone());
             drop(guard);
             self.should_enter_closing(error);
         }
@@ -489,21 +474,28 @@ impl ArcConnection {
 
     pub fn update_path_recv_time(&self, pathway: Pathway) {
         let guard = self.0.lock().unwrap();
-        if let ConnState::Normal(ref raw_conn) = *guard {
-            raw_conn.update_path_recv_time(pathway);
+        if let ConnState::Normal(ref connection) = *guard {
+            connection.update_path_recv_time(pathway);
         }
     }
 
     pub fn recv_retry_packet(&self, retry: &RetryHeader) {
         let guard = self.0.lock().unwrap();
-        if let Normal(ref conn) = *guard {
-            *conn.token.lock().unwrap() = retry.token.to_vec();
-            conn.cid_registry.remote.revise_initial_dcid(retry.scid);
-            let sent_record = conn.initial.space.sent_packets();
+        if let Normal(ref connection) = *guard {
+            *connection.token.lock().unwrap() = retry.token.to_vec();
+            connection
+                .cid_registry
+                .remote
+                .revise_initial_dcid(retry.scid);
+            let sent_record = connection.initial.space.sent_packets();
             let mut guard = sent_record.recv();
             for i in 0..guard.largest_pn() {
                 for frame in guard.may_loss_pkt(i) {
-                    conn.initial.crypto_stream.outgoing().may_loss_data(&frame);
+                    connection
+                        .initial
+                        .crypto_stream
+                        .outgoing()
+                        .may_loss_data(&frame);
                 }
             }
         }
@@ -516,12 +508,12 @@ impl ArcConnection {
 }
 
 impl From<Connection> for ArcConnection {
-    fn from(raw_conn: Connection) -> Self {
-        let conn_error = raw_conn.error.clone();
-        let conn = ArcConnection(Arc::new(Mutex::new(ConnState::Normal(raw_conn))));
+    fn from(normal_conn: Connection) -> Self {
+        let conn_error = normal_conn.error.clone();
+        let connection = ArcConnection(Arc::new(Mutex::new(ConnState::Normal(normal_conn))));
 
         tokio::spawn({
-            let conn = conn.clone();
+            let conn = connection.clone();
             async move {
                 let (err, kind) = conn_error.did_error_occur().await;
                 if kind != crate::error::ConnErrorKind::Application {
@@ -536,7 +528,7 @@ impl From<Connection> for ArcConnection {
             }
         });
 
-        conn
+        connection
     }
 }
 #[cfg(test)]
