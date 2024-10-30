@@ -5,19 +5,19 @@ use std::{
 };
 
 use bytes::Buf;
-use qconnection::conn::{Reader, Writer};
+use qconnection::conn::{StreamReader, StreamWriter};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::Error;
 
 pub struct SendStream<B> {
-    writer: Writer,
+    writer: StreamWriter,
     data: Option<h3::quic::WriteBuf<B>>,
     send_id: h3::quic::StreamId,
 }
 
 impl<B> SendStream<B> {
-    pub fn new(sid: qbase::sid::StreamId, writer: Writer) -> Self {
+    pub fn new(sid: qbase::sid::StreamId, writer: StreamWriter) -> Self {
         let sid = u64::from(sid);
         Self {
             writer,
@@ -96,12 +96,12 @@ impl<B: bytes::Buf> h3::quic::SendStreamUnframed<B> for SendStream<B> {
 }
 
 pub struct RecvStream {
-    reader: Reader,
+    reader: StreamReader,
     recv_id: h3::quic::StreamId,
 }
 
 impl RecvStream {
-    pub(crate) fn new(sid: qbase::sid::StreamId, reader: Reader) -> Self {
+    pub(crate) fn new(sid: qbase::sid::StreamId, reader: StreamReader) -> Self {
         let sid = u64::from(sid);
         Self {
             reader,
@@ -148,7 +148,7 @@ pub struct BidiStream<B> {
 }
 
 impl<B> BidiStream<B> {
-    pub(crate) fn new(sid: qbase::sid::StreamId, (reader, writer): (Reader, Writer)) -> Self {
+    pub(crate) fn new(sid: qbase::sid::StreamId, (reader, writer): (StreamReader, StreamWriter)) -> Self {
         Self {
             send: SendStream::new(sid, writer),
             recv: RecvStream::new(sid, reader),

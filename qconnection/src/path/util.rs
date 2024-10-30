@@ -44,7 +44,7 @@ pub struct RecvBuffer<T>(ArcAsyncDeque<T>);
 
 impl<T> RecvBuffer<T> {
     pub fn new() -> Self {
-        Self(ArcAsyncDeque::new())
+        Self(ArcAsyncDeque::with_capacity(2))
     }
 
     pub fn write(&self, value: T) {

@@ -119,9 +119,18 @@ impl<T> Extend<T> for AsyncDeque<T> {
 pub struct ArcAsyncDeque<T>(Arc<Mutex<AsyncDeque<T>>>);
 
 impl<T> ArcAsyncDeque<T> {
+    /// Create a new [`ArcAsyncDeque`] with 8 as the default capacity.
     pub fn new() -> Self {
         Self(Arc::new(Mutex::new(AsyncDeque {
             queue: Some(VecDeque::with_capacity(8)),
+            waker: None,
+        })))
+    }
+
+    /// Create a new [`ArcAsyncDeque`] with a given capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self(Arc::new(Mutex::new(AsyncDeque {
+            queue: Some(VecDeque::with_capacity(capacity)),
             waker: None,
         })))
     }
