@@ -53,8 +53,8 @@ pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
 pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
 
 pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
-pub type Writer = send::Writer<Ext<ArcReliableFrameDeque>>;
-pub type Reader = recv::Reader<Ext<ArcReliableFrameDeque>>;
+pub type StreamWriter = send::Writer<Ext<ArcReliableFrameDeque>>;
+pub type StreamReader = recv::Reader<Ext<ArcReliableFrameDeque>>;
 
 pub type Handshake = qbase::handshake::Handshake<ArcReliableFrameDeque>;
 
@@ -278,7 +278,9 @@ impl ArcConnection {
     //     }
     // }
 
-    pub async fn open_bi_stream(&self) -> io::Result<Option<(StreamId, (Reader, Writer))>> {
+    pub async fn open_bi_stream(
+        &self,
+    ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let raw_conn = match guard.deref() {
@@ -305,7 +307,7 @@ impl ArcConnection {
         Ok(result?)
     }
 
-    pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, Writer)>> {
+    pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, StreamWriter)>> {
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let raw_conn = match guard.deref() {
@@ -332,7 +334,7 @@ impl ArcConnection {
         Ok(result?)
     }
 
-    pub async fn accept_bi_stream(&self) -> io::Result<(StreamId, (Reader, Writer))> {
+    pub async fn accept_bi_stream(&self) -> io::Result<(StreamId, (StreamReader, StreamWriter))> {
         let (remote_params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let raw_conn = match guard.deref() {
@@ -359,7 +361,7 @@ impl ArcConnection {
         Ok(result)
     }
 
-    pub async fn accept_uni_stream(&self) -> io::Result<(StreamId, Reader)> {
+    pub async fn accept_uni_stream(&self) -> io::Result<(StreamId, StreamReader)> {
         let (data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let raw_conn = match guard.deref() {

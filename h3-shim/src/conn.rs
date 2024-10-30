@@ -6,7 +6,7 @@ use std::{
 
 use futures::Stream;
 use qbase::sid::StreamId;
-use qconnection::conn::{Reader, Writer};
+use qconnection::conn::{StreamReader, StreamWriter};
 
 use crate::{
     ext::{RecvDatagram, SendDatagram},
@@ -178,7 +178,7 @@ fn sid_exceed_limit_error() -> io::Error {
 }
 
 #[allow(clippy::type_complexity)]
-struct OpenBiStreams(BoxStream<Result<(StreamId, (Reader, Writer)), Error>>);
+struct OpenBiStreams(BoxStream<Result<(StreamId, (StreamReader, StreamWriter)), Error>>);
 
 impl OpenBiStreams {
     fn new(conn: quic::QuicConnection) -> Self {
@@ -205,7 +205,7 @@ impl OpenBiStreams {
     }
 }
 
-struct OpenUniStreams(BoxStream<Result<(StreamId, Writer), Error>>);
+struct OpenUniStreams(BoxStream<Result<(StreamId, StreamWriter), Error>>);
 
 impl OpenUniStreams {
     fn new(conn: quic::QuicConnection) -> Self {
@@ -230,7 +230,7 @@ impl OpenUniStreams {
 }
 
 #[allow(clippy::type_complexity)]
-struct AcceptBiStreams(BoxStream<Result<(StreamId, (Reader, Writer)), Error>>);
+struct AcceptBiStreams(BoxStream<Result<(StreamId, (StreamReader, StreamWriter)), Error>>);
 
 impl AcceptBiStreams {
     fn new(conn: quic::QuicConnection) -> Self {
@@ -256,7 +256,7 @@ impl AcceptBiStreams {
     }
 }
 
-struct AcceptUniStreams(BoxStream<Result<(StreamId, Reader), Error>>);
+struct AcceptUniStreams(BoxStream<Result<(StreamId, StreamReader), Error>>);
 
 impl AcceptUniStreams {
     fn new(conn: quic::QuicConnection) -> Self {
