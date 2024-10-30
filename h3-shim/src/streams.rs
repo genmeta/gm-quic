@@ -148,7 +148,10 @@ pub struct BidiStream<B> {
 }
 
 impl<B> BidiStream<B> {
-    pub(crate) fn new(sid: qbase::sid::StreamId, (reader, writer): (StreamReader, StreamWriter)) -> Self {
+    pub(crate) fn new(
+        sid: qbase::sid::StreamId,
+        (reader, writer): (StreamReader, StreamWriter),
+    ) -> Self {
         Self {
             send: SendStream::new(sid, writer),
             recv: RecvStream::new(sid, reader),

@@ -1,11 +1,13 @@
 use std::{
     ops::Deref,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use futures::channel::mpsc;
 use qbase::{
     cid::ConnectionId,
+    error::Error,
     flow::FlowController,
     frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame},
     packet::keys::ArcKeys,
@@ -13,8 +15,8 @@ use qbase::{
     sid::{ControlConcurrency, Role},
     token::{ArcTokenRegistry, TokenRegistry},
 };
-use qcongestion::{MayLoss, RetirePktRecord};
-use qrecovery::reliable::ArcReliableFrameDeque;
+use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
+use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
 use qunreliable::DatagramFlow;
 use rustls::quic::Keys;
 use tokio::{sync::Notify, task::JoinHandle};
@@ -286,6 +288,22 @@ impl Connection {
             params,
             tls_session,
         }
+    }
+
+    pub fn max_pto_duration(&self) -> Option<Duration> {
+        self.pathes
+            .iter()
+            .map(|path| path.cc.pto_time(Epoch::Data))
+            .max()
+    }
+
+    pub fn abort_with_error(&self, error: &Error) {
+        self.datagrams.on_conn_error(error);
+        self.flow_ctrl.on_conn_error(error);
+        self.streams.on_conn_error(error);
+        self.params.on_conn_error(error);
+        self.tls_session.abort();
+        self.notify.notify_waiters();
     }
 
     pub fn update_path_recv_time(&self, pathway: Pathway) {
