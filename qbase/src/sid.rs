@@ -219,7 +219,7 @@ impl<T: bytes::BufMut> WriteStreamId for T {
 ///
 /// See [controlling concurrency](https://www.rfc-editor.org/rfc/rfc9000.html#name-controlling-concurrency).
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
-pub trait ControlConcurrency: fmt::Debug + Send {
+pub trait ControlConcurrency: fmt::Debug + Send + Sync {
     /// Called back upon accepting a new `dir` direction streams with stream id `sid` from peer,
     /// all previous inexistent `dir` direction streams should be opened by peer will also be created.
     ///

@@ -95,6 +95,23 @@ impl ArcQuicServer {
         }
     }
 
+    pub fn bind_with_tls(
+        addresses: impl IntoIterator<Item = SocketAddr>,
+        strict: bool,
+        tls_config: TlsServerConfig,
+    ) -> QuicServerBuilder<TlsServerConfig> {
+        QuicServerBuilder {
+            addresses: addresses.into_iter().collect(),
+            restrict: strict,
+            supported_versions: Vec::with_capacity(2),
+            load_balance: Arc::new(|_| None),
+            parameters: Parameters::default(),
+            tls_config,
+            streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            token_provider: None,
+        }
+    }
+
     pub fn addresses(&self) -> impl ExactSizeIterator<Item = &SocketAddr> + FusedIterator {
         self.0.uscs.keys()
     }
@@ -247,22 +264,6 @@ impl<T> QuicServerBuilder<T> {
     pub fn with_parameters(mut self, parameters: ServerParameters) -> Self {
         self.parameters = parameters.into();
         self
-    }
-
-    pub fn with_tls_config(
-        self,
-        tls_config: TlsServerConfig,
-    ) -> QuicServerBuilder<TlsServerConfig> {
-        QuicServerBuilder {
-            addresses: self.addresses,
-            restrict: self.restrict,
-            supported_versions: self.supported_versions,
-            load_balance: self.load_balance,
-            parameters: self.parameters,
-            tls_config,
-            streams_controller: self.streams_controller,
-            token_provider: self.token_provider,
-        }
     }
 }
 

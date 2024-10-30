@@ -18,6 +18,11 @@ pub mod client;
 pub mod server;
 
 pub use client::QuicClient;
+pub use qbase;
+pub use qconnection;
+pub use qrecovery;
+pub use qunreliable;
+pub use rustls;
 pub use server::{ArcQuicServer, QuicServer};
 
 /// 全局的QuicConnection注册管理，用于查找已有的QuicConnection，key是初期的Pathway

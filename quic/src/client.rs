@@ -30,7 +30,7 @@ pub struct QuicClient {
     _prefered_versions: Vec<u32>,
     parameters: Parameters,
     tls_config: Arc<TlsClientConfig>,
-    streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency>>,
+    streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
     token_sink: Option<Arc<dyn TokenSink>>,
 }
 
@@ -82,7 +82,7 @@ impl QuicClient {
         }
     }
 
-    pub fn bind_with(
+    pub fn bind_with_tls(
         addresses: impl IntoIterator<Item = SocketAddr>,
         tls_config: TlsClientConfig,
     ) -> QuicClientBuilder<TlsClientConfig> {
@@ -187,7 +187,7 @@ pub struct QuicClientBuilder<T> {
     preferred_versions: Vec<u32>,
     parameters: Parameters,
     tls_config: T,
-    streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency>>,
+    streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
     token_sink: Option<Arc<dyn TokenSink>>,
 }
 
@@ -223,7 +223,7 @@ impl<T> QuicClientBuilder<T> {
 
     pub fn with_streams_controller(
         mut self,
-        controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency>>,
+        controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
     ) -> Self {
         self.streams_controller = controller;
         self
@@ -238,22 +238,6 @@ impl<T> QuicClientBuilder<T> {
     pub fn with_token_sink(mut self, sink: Arc<dyn TokenSink>) -> Self {
         self.token_sink = Some(sink);
         self
-    }
-
-    pub fn with_tls_config(
-        self,
-        tls_config: TlsClientConfig,
-    ) -> QuicClientBuilder<TlsClientConfig> {
-        QuicClientBuilder {
-            addresses: self.addresses,
-            reuse_connection: self.reuse_connection,
-            enable_happy_eyepballs: self.enable_happy_eyepballs,
-            preferred_versions: self.preferred_versions,
-            parameters: self.parameters,
-            tls_config,
-            streams_controller: self.streams_controller,
-            token_sink: self.token_sink,
-        }
     }
 }
 
