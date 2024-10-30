@@ -14,6 +14,7 @@ use crate::{
     Error,
 };
 
+// 由于数据报的特性，接收流的特征，QuicConnection不允许被Clone
 pub struct QuicConnection {
     connection: quic::QuicConnection,
     accpet_bi: AcceptBiStreams,
@@ -132,6 +133,16 @@ impl OpenStreams {
             open_bi: OpenBiStreams::new(conn.clone()),
             open_uni: OpenUniStreams::new(conn.clone()),
             connection: conn,
+        }
+    }
+}
+
+impl Clone for OpenStreams {
+    fn clone(&self) -> Self {
+        Self {
+            open_bi: OpenBiStreams::new(self.connection.clone()),
+            open_uni: OpenUniStreams::new(self.connection.clone()),
+            connection: self.connection.clone(),
         }
     }
 }
