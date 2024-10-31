@@ -20,10 +20,9 @@ use super::{
     util::{ApplyConstraints, Constraints},
     ArcAntiAmplifier,
 };
-use crate::conn::transmit::{
-    data::DataSpaceReader, handshake::HandshakeSpaceReader, initial::InitialSpaceReader,
-};
+use crate::conn::transmit::*;
 
+/// The structure that reads data to be sent into datagrams.
 pub struct ReadIntoDatagrams {
     pub(super) scid: ConnectionId,
     pub(super) dcid: ArcCidCell<ArcReliableFrameDeque>,
@@ -261,6 +260,32 @@ impl ReadIntoDatagrams {
         Poll::Ready(Some((buffers_used, last_buffer_written)))
     }
 
+    /// Read data into the given buffers, and return the UDP datagrams that will be sent.
+    ///
+    /// `buffers` is a vector of buffers, each buffer is a fixed-size([`MSS`]) array of bytes. Each time this function
+    /// is called, it will try to read data into these `buffers`, the old data in the buffers will be overwritten.
+    ///
+    /// This method will read the frame to be sent and assemble the data packet in the order of initial, 0-rtt, handshake,
+    /// 1-rtt. It will try to read as much data as possible in one call. If the `buffers` are not enough to hold all the
+    /// data, the `buffers` will be automatically extended.     
+    ///
+    /// Although the data packet to be sent is actually read into the given `buffers`, you should not sent them. You should
+    /// sent the returned [`Vec<IoSlice>`], it borrows the `buffers`. The reason for returning a vector is to take advantage
+    /// of GSO features. Each [`IoSlice`] in it is a complete datagram contains quic packet(s).
+    ///
+    /// Returned [`IoSlice`]s can be sent separately, but it is best to use the method provided by [`qudp`] to send in
+    /// batches using GSO(if supported).[`ArcUsc`] is a wrapper around the [`qudp::UdpSocketController`]. It also provides
+    /// a [`method`] to send all the datagrams.
+    ///
+    /// In order to take advantage of GSO, the return value is a vector of [`IoSlice`], except for the last [`IoSlice`],
+    /// the length of other [`IoSlice`]s must be [`MSS`].
+    ///
+    /// This is a async method, if there are no data to be sent, the call will be blocked.
+    ///
+    /// Once the path become inactive, [`None`] will be returned, this means the path will not be used to send data anymore.
+    ///
+    /// [`ArcUsc`]: crate::usc::ArcUsc
+    /// [`method`]: crate::usc::ArcUsc::send_all_via_pathway
     pub async fn read<'ds>(&self, buffers: &'ds mut Vec<[u8; MSS]>) -> Option<Vec<IoSlice<'ds>>> {
         let (buffers_used, last_buffer_written) =
             core::future::poll_fn(|cx| self.poll_read_inner(cx, buffers)).await?;

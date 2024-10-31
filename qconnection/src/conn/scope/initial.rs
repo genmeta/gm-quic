@@ -19,7 +19,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::any;
 use crate::{
-    conn::{transmit::initial::InitialSpaceReader, ArcRemoteCids, RcvdPackets},
+    conn::{transmit::InitialSpaceReader, ArcRemoteCids, RcvdPackets},
     error::ConnError,
     path::{ArcPath, ArcPathes, Path},
     pipe,

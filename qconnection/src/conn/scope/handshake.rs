@@ -28,7 +28,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::any;
 use crate::{
-    conn::{transmit::handshake::HandshakeSpaceReader, RcvdPackets},
+    conn::{transmit::HandshakeSpaceReader, RcvdPackets},
     error::ConnError,
     path::{ArcPathes, Path},
     pipe,

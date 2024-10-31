@@ -1,17 +1,15 @@
 # h3-shim测试
 
-本测试所使用的密钥来自https://github.com/hyperium/h3/tree/master/examples，`h3-server.rs`源代码亦是在其基础上修改而来
+本测试所使用的密钥来自<https://github.com/hyperium/h3/tree/master/examples>，`h3-server.rs`和`h3-client.rs`的源代码亦是在其基础上修改而来
 
-你也可以自己签名密钥，并通过server/client的参数指定自己的密钥
+你也可以自己签名密钥，并在运行server/client时通过命令行参数指定自己的密钥
 
-`h3-client.rs`使用的是对reqwest`v0.12.8`的fork，其quic实现被替换为为gm-quic
+> 我们还有一个对reqwest的[fork](https://github.com/genmeta/reqwest/tree/gm-quic)，其quic实现被替换为为gm-quic。基于reqwest的client用例可以参考[此gist](https://gist.github.com/ealinmen/ed79f3bf95fa91e9475484560fb2744e)
 
-由于`http3`是reqwest的不稳定特性，需要指定`RUSTFLAGS="--cfg=reqwest_unstable"`，否则无法编译examples
-
+运行之前，推荐设置环境变量`RUST_LOG=info`，以便查看更多的日志信息
 ``` shell
-# 运行之前，设置环境变量
-export RUSTFLAGS="--cfg=reqwest_unstable"
-export RUST_LOG=info # 非必需，但是建议
+# 非必需，但是建议
+export RUST_LOG=info 
 ```
 
 ## 运行
