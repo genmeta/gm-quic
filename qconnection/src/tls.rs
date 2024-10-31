@@ -22,10 +22,7 @@ use rustls::{
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::{
-    conn::{parameters::RemoteParameters, Handshake},
-    error::ConnError,
-};
+use crate::{conn::Handshake, error::ConnError, parameters::RemoteParameters};
 
 #[derive(Debug, Error, Clone, Copy)]
 #[error("TLS session is aborted")]

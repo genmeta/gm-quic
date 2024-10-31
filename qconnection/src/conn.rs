@@ -38,10 +38,7 @@ use crate::{
 
 pub mod closing;
 pub mod draining;
-pub mod parameters;
 pub mod raw;
-pub mod scope;
-pub mod transmit;
 
 pub type PacketEntry = mpsc::UnboundedSender<(DataPacket, Pathway, ArcUsc)>;
 pub type RcvdPackets = mpsc::UnboundedReceiver<(DataPacket, Pathway, ArcUsc)>;

@@ -28,10 +28,11 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::any;
 use crate::{
-    conn::{transmit::HandshakeSpaceReader, RcvdPackets},
+    conn::RcvdPackets,
     error::ConnError,
     path::{ArcPathes, Path},
     pipe,
+    transmit::HandshakeSpaceReader,
 };
 
 #[derive(Clone)]

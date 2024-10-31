@@ -39,11 +39,12 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::any;
 use crate::{
-    conn::{transmit::DataSpaceReader, CidRegistry, DataStreams, RcvdPackets},
+    conn::{CidRegistry, DataStreams, RcvdPackets},
     error::ConnError,
     path::{ArcPathes, Path, SendBuffer},
     pipe,
     router::Router,
+    transmit::DataSpaceReader,
 };
 
 #[derive(Clone)]

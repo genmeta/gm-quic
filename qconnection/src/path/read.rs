@@ -20,7 +20,7 @@ use super::{
     util::{ApplyConstraints, Constraints},
     ArcAntiAmplifier,
 };
-use crate::conn::transmit::*;
+use crate::transmit::*;
 
 /// The structure that reads data to be sent into datagrams.
 pub struct ReadIntoDatagrams {

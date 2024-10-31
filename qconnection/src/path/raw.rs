@@ -19,7 +19,7 @@ use super::{
     util::{RecvBuffer, SendBuffer},
     Pathway,
 };
-use crate::{conn::transmit::*, usc::ArcUsc};
+use crate::{transmit::*, usc::ArcUsc};
 
 /// A single path of a connection.
 ///

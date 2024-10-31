@@ -18,8 +18,11 @@ use qbase::{
     packet::{long, DataHeader, DataPacket},
 };
 
-use super::scope::{data::ClosingOneRttScope, handshake::ClosingHandshakeScope, RecvPacket};
-use crate::{path::Pathway, usc::ArcUsc};
+use crate::{
+    path::Pathway,
+    scope::{ClosingHandshakeScope, ClosingOneRttScope, RecvPacket},
+    usc::ArcUsc,
+};
 
 pub struct CcfPackets {
     handshake: Option<([u8; qcongestion::MSS], usize)>,

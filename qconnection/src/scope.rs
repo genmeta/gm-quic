@@ -1,12 +1,12 @@
-pub mod data;
-pub mod handshake;
-pub mod initial;
+mod data;
+mod handshake;
+mod initial;
 
 use std::future::Future;
 
-pub use data::{ClosingOneRttScope, DataScope};
-pub use handshake::{ClosingHandshakeScope, HandshakeScope};
-pub use initial::InitialScope;
+pub use data::{ClosingOneRttScope, DataMayLoss, DataScope};
+pub use handshake::{ClosingHandshakeScope, HandshakeMayloss, HandshakeScope};
+pub use initial::{InitialMayLoss, InitialScope};
 use qbase::{
     frame::{Frame, FrameReader},
     packet::{decrypt::decrypt_packet, header::GetType, DataPacket},
