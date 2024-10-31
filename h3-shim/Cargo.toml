@@ -25,11 +25,6 @@ http = "1"
 version = "0.3"
 features = ["fmt", "ansi", "env-filter", "time", "tracing-log"]
 
-[dev-dependencies.reqwest]
-git = "https://github.com/genmeta/reqwest.git"
-features = ["http3"]
-branch = "gm-quic"
-
 [[example]]
 name = "h3-server"
 

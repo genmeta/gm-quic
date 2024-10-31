@@ -19,12 +19,7 @@ use super::{
     util::{RecvBuffer, SendBuffer},
     Pathway,
 };
-use crate::{
-    conn::transmit::{
-        data::DataSpaceReader, handshake::HandshakeSpaceReader, initial::InitialSpaceReader,
-    },
-    usc::ArcUsc,
-};
+use crate::{conn::transmit::*, usc::ArcUsc};
 
 /// A single path of a connection.
 ///

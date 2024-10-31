@@ -39,7 +39,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::any;
 use crate::{
-    conn::{transmit::data::DataSpaceReader, CidRegistry, DataStreams, RcvdPackets},
+    conn::{transmit::DataSpaceReader, CidRegistry, DataStreams, RcvdPackets},
     error::ConnError,
     path::{ArcPathes, Path, SendBuffer},
     pipe,
