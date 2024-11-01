@@ -1,6 +1,7 @@
 use std::{
     io,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -16,7 +17,7 @@ use crate::{
 
 // 由于数据报的特性，接收流的特征，QuicConnection不允许被Clone
 pub struct QuicConnection {
-    connection: quic::QuicConnection,
+    connection: Arc<quic::QuicConnection>,
     accpet_bi: AcceptBiStreams,
     accpet_uni: AcceptUniStreams,
     open_bi: OpenBiStreams,
@@ -26,7 +27,7 @@ pub struct QuicConnection {
 }
 
 impl QuicConnection {
-    pub async fn new(conn: quic::QuicConnection) -> Self {
+    pub async fn new(conn: Arc<quic::QuicConnection>) -> Self {
         Self {
             accpet_bi: AcceptBiStreams::new(conn.clone()),
             accpet_uni: AcceptUniStreams::new(conn.clone()),
@@ -122,13 +123,13 @@ impl<B: bytes::Buf> h3::quic::Connection<B> for QuicConnection {
 
 /// 多此一举，实在是多此一举
 pub struct OpenStreams {
-    connection: quic::QuicConnection,
+    connection: Arc<quic::QuicConnection>,
     open_bi: OpenBiStreams,
     open_uni: OpenUniStreams,
 }
 
 impl OpenStreams {
-    fn new(conn: quic::QuicConnection) -> Self {
+    fn new(conn: Arc<quic::QuicConnection>) -> Self {
         Self {
             open_bi: OpenBiStreams::new(conn.clone()),
             open_uni: OpenUniStreams::new(conn.clone()),
@@ -192,7 +193,7 @@ fn sid_exceed_limit_error() -> io::Error {
 struct OpenBiStreams(BoxStream<Result<(StreamId, (StreamReader, StreamWriter)), Error>>);
 
 impl OpenBiStreams {
-    fn new(conn: quic::QuicConnection) -> Self {
+    fn new(conn: Arc<quic::QuicConnection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let bidi = conn
                 .open_bi_stream()
@@ -219,7 +220,7 @@ impl OpenBiStreams {
 struct OpenUniStreams(BoxStream<Result<(StreamId, StreamWriter), Error>>);
 
 impl OpenUniStreams {
-    fn new(conn: quic::QuicConnection) -> Self {
+    fn new(conn: Arc<quic::QuicConnection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let send = conn
                 .open_uni_stream()
@@ -244,7 +245,7 @@ impl OpenUniStreams {
 struct AcceptBiStreams(BoxStream<Result<(StreamId, (StreamReader, StreamWriter)), Error>>);
 
 impl AcceptBiStreams {
-    fn new(conn: quic::QuicConnection) -> Self {
+    fn new(conn: Arc<quic::QuicConnection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let bidi = conn.accept_bi_stream().await.map_err(Into::into);
             if bidi.is_err() && !conn.is_active() {
@@ -270,7 +271,7 @@ impl AcceptBiStreams {
 struct AcceptUniStreams(BoxStream<Result<(StreamId, StreamReader), Error>>);
 
 impl AcceptUniStreams {
-    fn new(conn: quic::QuicConnection) -> Self {
+    fn new(conn: Arc<quic::QuicConnection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let recv = conn.accept_uni_stream().await.map_err(Into::into);
             if recv.is_err() && !conn.is_active() {

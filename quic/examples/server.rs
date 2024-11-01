@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
-use quic::ArcQuicServer;
+use quic::QuicServer;
 
 // cargo run --example server -- \
 //      --cert quic/examples/keychain/quic.test.net/quic-test-net-ECC.crt \
@@ -40,14 +40,14 @@ async fn run(options: Opt) -> Result<(), Box<dyn std::error::Error>> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    let server = ArcQuicServer::bind([options.bind], true)
+    let server = QuicServer::buidler()
         .with_supported_versions([0x00000001u32])
         .without_cert_verifier()
         .with_single_cert(options.cert, options.key)
-        .listen()?;
+        .listen([options.bind])?;
 
-    while let Ok((_conn, addr)) = server.accept().await {
-        log::trace!("New connection from {}", addr);
+    while let Ok((_conn, pathway)) = server.accept().await {
+        log::trace!("New connection from {}", pathway.local_addr());
     }
     Ok(())
 }

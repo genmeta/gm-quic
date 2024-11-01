@@ -40,6 +40,19 @@ impl Pathway {
             Pathway::Relay { remote, .. } => remote.agent,
         }
     }
+
+    pub fn filp(self) -> Self {
+        match self {
+            Pathway::Direct { local, remote } => Pathway::Direct {
+                local: remote,
+                remote: local,
+            },
+            Pathway::Relay { local, remote } => Pathway::Relay {
+                local: remote,
+                remote: local,
+            },
+        }
+    }
 }
 
 impl PartialEq for Pathway {

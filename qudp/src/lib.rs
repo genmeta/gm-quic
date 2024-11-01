@@ -59,7 +59,6 @@ impl Default for PacketHeader {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct UdpSocketController {
     io: tokio::net::UdpSocket,
     // TOOD: unread?

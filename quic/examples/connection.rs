@@ -20,16 +20,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .unwrap();
 
-    let client = QuicClient::bind([
-        "[2001:db8::1]:8080".parse().unwrap(),
-        "127.0.0.1:8080".parse().unwrap(),
-    ])
-    .reuse_connection()
-    .enable_happy_eyeballs()
-    .prefer_versions([0x00000001u32])
-    .with_webpki_verifier(verifier)
-    .without_cert()
-    .build();
+    let client = QuicClient::builder()
+        .reuse_addresses([
+            "[2001:db8::1]:8080".parse().unwrap(),
+            "127.0.0.1:8080".parse().unwrap(),
+        ])
+        .reuse_connection()
+        .enable_happy_eyeballs()
+        .prefer_versions([0x00000001u32])
+        .with_webpki_verifier(verifier)
+        .without_cert()
+        .build();
 
     let _conn = client
         .connect("localhost", "127.0.0.1:5000".parse().unwrap())

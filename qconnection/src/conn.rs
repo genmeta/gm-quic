@@ -154,6 +154,7 @@ impl ConnState {
         }
     }
 }
+
 #[derive(Clone)]
 pub struct ArcConnection(Arc<Mutex<ConnState>>);
 
@@ -437,7 +438,7 @@ impl ArcConnection {
         }
     }
 
-    pub fn enter_draining(&self, error: Error) {
+    fn enter_draining(&self, error: Error) {
         let Some(pto) = self.0.lock().unwrap().deref_mut().enter_draining(error) else {
             // has been closed
             return;
@@ -448,7 +449,7 @@ impl ArcConnection {
 
     /// Enter draining state from raw state or closing state.
     /// Can only be called internally, and the app should not care this method.
-    pub(crate) fn draining(&self, remaining: Duration) {
+    fn draining(&self, remaining: Duration) {
         assert!(matches!(self.0.lock().unwrap().deref_mut(), Draining(..)));
 
         tokio::spawn({
