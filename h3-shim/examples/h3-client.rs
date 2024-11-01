@@ -95,11 +95,11 @@ async fn run() -> Result<(), Box<dyn core::error::Error>> {
         error!("failed to parse trust anchor: {}", e);
     }
 
-    let quic_client = ::quic::QuicClient::bind(opt.binds)
+    let quic_client = ::quic::QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()
         .with_keylog(opt.key_log_file)
-        .with_alpn([ALPN.into()])
+        .with_alpns([ALPN.into()])
         .build();
 
     let conn = quic_client.connect(auth.host(), addr)?;

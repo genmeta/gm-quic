@@ -86,19 +86,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // tls_config.max_early_data_size = u32::MAX;
     // tls_config.alpn_protocols = vec![ALPN.into()];
 
-    let quic_server = ::quic::ArcQuicServer::bind([opt.listen], true)
+    let quic_server = ::quic::QuicServer::buidler()
         .with_supported_versions([1u32])
         .without_cert_verifier()
         .enable_sni()
         .add_host("localhost", cert, key)
-        .with_alpn([ALPN.to_vec()])
-        .listen()?;
+        .with_alpns([ALPN.to_vec()])
+        .listen([opt.listen])?;
 
     info!("listening on {}", opt.listen);
 
     // handle incoming connections and requests
 
-    while let Ok((new_conn, _from)) = quic_server.accept().await {
+    while let Ok((new_conn, _pathway)) = quic_server.accept().await {
         trace_span!("New connection being attempted");
 
         let root = root.clone();

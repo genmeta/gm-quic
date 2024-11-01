@@ -1,7 +1,5 @@
 use std::{
-    collections::HashMap,
     io::{self},
-    iter::FusedIterator,
     net::SocketAddr,
     path::Path,
     sync::{Arc, LazyLock, RwLock, Weak},
@@ -29,7 +27,7 @@ use rustls::{
 use crate::{get_or_create_usc, ConnKey, QuicConnection, CONNECTIONS};
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
-type QuicListner = ArcAsyncDeque<(QuicConnection, SocketAddr)>;
+type QuicListner = ArcAsyncDeque<(Arc<QuicConnection>, Pathway)>;
 
 /// 理应全局只有一个server
 static SERVER: LazyLock<RwLock<Weak<QuicServer>>> = LazyLock::new(RwLock::default);
@@ -55,9 +53,9 @@ impl ResolvesServerCert for VirtualHosts {
 /// 要想有服务端的功能，得至少有一个usc可以收包。
 /// 如果不创建QuicServer，那意味着不接收新连接
 pub struct QuicServer {
-    uscs: HashMap<SocketAddr, ArcUsc>,
+    sockets: DashMap<SocketAddr, ArcUsc>,
     listener: QuicListner,
-    _restrict: bool,
+    strict_mode: bool,
     _supported_versions: Vec<u32>,
     _load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     parameters: Parameters,
@@ -67,21 +65,13 @@ pub struct QuicServer {
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
-#[derive(Clone)]
-pub struct ArcQuicServer(Arc<QuicServer>);
-
-impl ArcQuicServer {
+impl QuicServer {
     /// 指定绑定的地址，即服务端的usc的监听地址
     /// 监听地址可以有多个，但必须都得是本地能绑定成功的，否则会panic
     /// 监听地址若为空，则会默认创建一个
-    /// 严格模式是指，只有在这些地址上收到并创建的新连接，才会被接受
-    pub fn bind(
-        addresses: impl IntoIterator<Item = SocketAddr>,
-        restrict: bool,
-    ) -> QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
+    pub fn buidler() -> QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
         QuicServerBuilder {
-            addresses: addresses.into_iter().collect(),
-            restrict,
+            passive_listening: false,
             supported_versions: Vec::with_capacity(2),
             load_balance: Arc::new(|_| None),
             parameters: Parameters::default(),
@@ -95,14 +85,9 @@ impl ArcQuicServer {
         }
     }
 
-    pub fn bind_with_tls(
-        addresses: impl IntoIterator<Item = SocketAddr>,
-        strict: bool,
-        tls_config: TlsServerConfig,
-    ) -> QuicServerBuilder<TlsServerConfig> {
+    pub fn builder_with_tls(tls_config: TlsServerConfig) -> QuicServerBuilder<TlsServerConfig> {
         QuicServerBuilder {
-            addresses: addresses.into_iter().collect(),
-            restrict: strict,
+            passive_listening: false,
             supported_versions: Vec::with_capacity(2),
             load_balance: Arc::new(|_| None),
             parameters: Parameters::default(),
@@ -112,16 +97,16 @@ impl ArcQuicServer {
         }
     }
 
-    pub fn addresses(&self) -> impl ExactSizeIterator<Item = &SocketAddr> + FusedIterator {
-        self.0.uscs.keys()
+    pub fn addresses(&self) -> impl Iterator<Item = SocketAddr> + '_ {
+        self.sockets.iter().map(|entry| *entry.key())
     }
 
     /// 监听新连接的到来
     /// 新连接可能通过本地的任何一个有效usc来创建
     /// 只有调用该函数，才会有被动创建的Connection存放队列，等待着应用层来处理
-    pub async fn accept(&self) -> io::Result<(QuicConnection, SocketAddr)> {
+    pub async fn accept(&self) -> io::Result<(Arc<QuicConnection>, Pathway)> {
         let listening_stopped = || io::Error::new(io::ErrorKind::Other, "listening stopped");
-        self.0.listener.pop().await.ok_or_else(listening_stopped)
+        self.listener.pop().await.ok_or_else(listening_stopped)
     }
 
     pub(crate) fn try_to_accept_conn_from(mut packet: DataPacket, pathway: Pathway, usc: &ArcUsc) {
@@ -129,6 +114,11 @@ impl ArcQuicServer {
         let Some(server) = server.upgrade() else {
             return;
         };
+
+        if server.strict_mode && !server.sockets.contains_key(&pathway.dst_addr()) {
+            return;
+        }
+
         let initial_scid =
             std::iter::repeat_with(|| ConnectionId::random_gen_with_mark(8, 0, 0x7F))
                 .find(|cid| !CONNECTIONS.contains_key(&ConnKey::Server(*cid)))
@@ -169,14 +159,12 @@ impl ArcQuicServer {
         );
         inner.add_initial_path(pathway, usc.clone());
         let conn = QuicConnection {
-            _key: ConnKey::Server(initial_scid),
-            inner,
+            key: ConnKey::Server(initial_scid),
+            inner: inner.clone(), // emm...
         };
         log::info!("incoming connection established");
-        server
-            .listener
-            .push_back((conn.clone(), pathway.remote_addr()));
-        CONNECTIONS.insert(ConnKey::Server(initial_scid), conn);
+        server.listener.push_back((Arc::new(conn), pathway.filp()));
+        CONNECTIONS.insert(ConnKey::Server(initial_scid), inner);
         _ = Router::try_to_route_packet_from(packet, pathway, usc);
     }
 }
@@ -205,9 +193,8 @@ struct Host {
 }
 
 pub struct QuicServerBuilder<T> {
-    addresses: Vec<SocketAddr>,
-    restrict: bool,
     supported_versions: Vec<u32>,
+    passive_listening: bool,
     load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     parameters: Parameters,
     tls_config: T,
@@ -217,9 +204,8 @@ pub struct QuicServerBuilder<T> {
 }
 
 pub struct QuicServerSniBuilder<T> {
-    addresses: Vec<SocketAddr>,
-    restrict: bool,
     supported_versions: Vec<u32>,
+    passive_listening: bool,
     load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     hosts: Arc<DashMap<String, Host>>,
     parameters: Parameters,
@@ -265,6 +251,12 @@ impl<T> QuicServerBuilder<T> {
         self.parameters = parameters.into();
         self
     }
+
+    /// Accept connections from addresses that are not listened to.
+    pub fn allow_passive_listening(mut self) -> Self {
+        self.passive_listening = true;
+        self
+    }
 }
 
 impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
@@ -274,8 +266,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
         client_cert_verifier: Arc<dyn ClientCertVerifier>,
     ) -> QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerBuilder {
-            addresses: self.addresses,
-            restrict: self.restrict,
+            passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
             parameters: self.parameters,
@@ -292,8 +283,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
         self,
     ) -> QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerBuilder {
-            addresses: self.addresses,
-            restrict: self.restrict,
+            passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
             parameters: self.parameters,
@@ -320,8 +310,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         let key_der = PrivateKeyDer::try_from(key).unwrap();
 
         QuicServerBuilder {
-            addresses: self.addresses,
-            restrict: self.restrict,
+            passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
             parameters: self.parameters,
@@ -347,8 +336,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         let key_der = PrivateKeyDer::try_from(key).unwrap();
 
         QuicServerBuilder {
-            addresses: self.addresses,
-            restrict: self.restrict,
+            passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
             parameters: self.parameters,
@@ -365,8 +353,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
     pub fn enable_sni(self) -> QuicServerSniBuilder<TlsServerConfig> {
         let hosts = Arc::new(DashMap::new());
         QuicServerSniBuilder {
-            addresses: self.addresses,
-            restrict: self.restrict,
+            passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
             parameters: Default::default(),
@@ -421,69 +408,73 @@ impl QuicServerBuilder<TlsServerConfig> {
         self
     }
 
-    pub fn listen(self) -> io::Result<ArcQuicServer> {
-        let uscs = self
-            .addresses
+    pub fn listen(
+        self,
+        addresses: impl IntoIterator<Item = SocketAddr>,
+    ) -> io::Result<Arc<QuicServer>> {
+        let uscs = addresses
             .into_iter()
             .filter_map(|address| {
                 let arc_usc = get_or_create_usc(&address).map_err(|e| log::error!("{e}"));
                 Some((address, arc_usc.ok()?))
             })
-            .collect::<HashMap<_, _>>();
+            .collect::<DashMap<_, _>>();
         if uscs.is_empty() {
             let error = "all addresses are not available";
             let error = io::Error::new(io::ErrorKind::AddrNotAvailable, error);
             return Err(error);
         }
 
-        let quic_server = ArcQuicServer(Arc::new(QuicServer {
-            uscs,
+        let quic_server = Arc::new(QuicServer {
+            sockets: uscs,
+            strict_mode: self.passive_listening,
             listener: Default::default(),
-            _restrict: self.restrict,
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
             streams_controller: self.streams_controller,
             token_provider: self.token_provider,
-        }));
-        *SERVER.write().unwrap() = Arc::downgrade(&quic_server.0);
+        });
+        *SERVER.write().unwrap() = Arc::downgrade(&quic_server);
         Ok(quic_server)
     }
 }
 
 impl QuicServerSniBuilder<TlsServerConfig> {
-    pub fn with_alpn(mut self, alpn: impl IntoIterator<Item = Vec<u8>>) -> Self {
+    pub fn with_alpns(mut self, alpn: impl IntoIterator<Item = Vec<u8>>) -> Self {
         self.tls_config.alpn_protocols.extend(alpn);
         self
     }
 
-    pub fn listen(self) -> io::Result<ArcQuicServer> {
-        let uscs = self
-            .addresses
+    pub fn listen(
+        self,
+        addresses: impl IntoIterator<Item = SocketAddr>,
+    ) -> io::Result<Arc<QuicServer>> {
+        let uscs = addresses
             .into_iter()
             .filter_map(|address| {
                 let arc_usc = get_or_create_usc(&address).map_err(|e| log::error!("{e}"));
                 Some((address, arc_usc.ok()?))
             })
-            .collect::<HashMap<_, _>>();
+            .collect::<DashMap<_, _>>();
         if uscs.is_empty() {
             let error = "all addresses are not available";
             let error = io::Error::new(io::ErrorKind::AddrNotAvailable, error);
             return Err(error);
         }
-        let quic_server = ArcQuicServer(Arc::new(QuicServer {
-            uscs,
+        let quic_server = Arc::new(QuicServer {
+            sockets: uscs,
+            strict_mode: self.passive_listening,
             listener: Default::default(),
-            _restrict: self.restrict,
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
             streams_controller: self.streams_controller,
             token_provider: self.token_provider,
-        }));
-        *SERVER.write().unwrap() = Arc::downgrade(&quic_server.0);
+        });
+        *SERVER.write().unwrap() = Arc::downgrade(&quic_server);
         Ok(quic_server)
     }
 }

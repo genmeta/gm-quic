@@ -2,13 +2,13 @@ use std::{io, net::SocketAddr, sync::LazyLock};
 
 use bytes::BytesMut;
 use dashmap::DashMap;
-use deref_derive::Deref;
 use qbase::{
     cid::ConnectionId,
-    packet::{header::GetDcid, Packet, PacketReader, RetryHeader, VersionNegotiationHeader},
+    packet::{header::GetDcid, Packet, PacketReader},
+    sid::StreamId,
 };
 use qconnection::{
-    conn::ArcConnection,
+    conn::{ArcConnection, StreamReader, StreamWriter},
     path::Pathway,
     router::Router,
     usc::{ArcUsc, UscRegistry},
@@ -23,44 +23,74 @@ pub use qconnection;
 pub use qrecovery;
 pub use qunreliable;
 pub use rustls;
-pub use server::{ArcQuicServer, QuicServer};
+pub use server::QuicServer;
 
 /// 全局的QuicConnection注册管理，用于查找已有的QuicConnection，key是初期的Pathway
 /// 包括被动接收的连接和主动发起的连接
-static CONNECTIONS: LazyLock<DashMap<ConnKey, QuicConnection>> = LazyLock::new(DashMap::new);
+static CONNECTIONS: LazyLock<DashMap<ConnKey, ArcConnection>> = LazyLock::new(DashMap::new);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ConnKey {
     Client(ConnectionId),
     Server(ConnectionId),
 }
 
-#[derive(Debug, Clone, Deref)]
+#[derive(Debug)]
 pub struct QuicConnection {
-    _key: ConnKey,
-    #[deref]
+    key: ConnKey,
     inner: ArcConnection,
 }
 
 impl QuicConnection {
-    pub fn recv_version_negotiation(&self, _vn: &VersionNegotiationHeader) {
-        // self.inner.recv_version_negotiation(vn);
+    #[inline]
+    pub async fn accept_bi_stream(&self) -> io::Result<(StreamId, (StreamReader, StreamWriter))> {
+        self.inner.accept_bi_stream().await
     }
 
-    pub fn recv_retry_packet(&self, retry: &RetryHeader) {
-        self.inner.recv_retry_packet(retry);
+    #[inline]
+    pub async fn accept_uni_stream(&self) -> io::Result<(StreamId, StreamReader)> {
+        self.inner.accept_uni_stream().await
     }
 
-    pub fn update_path_recv_time(&self, pathway: Pathway) {
-        self.inner.update_path_recv_time(pathway);
+    /// Gracefully closes the connection.
+    ///
+    /// Same as [`ArcConnection::close`]
+    #[inline]
+    pub fn close(&self, msg: impl Into<std::borrow::Cow<'static, str>>) {
+        self.inner.close(msg)
+    }
+
+    #[inline]
+    pub fn datagram_reader(&self) -> io::Result<qunreliable::DatagramReader> {
+        self.inner.datagram_reader()
+    }
+
+    #[inline]
+    pub async fn datagram_writer(&self) -> io::Result<qunreliable::DatagramWriter> {
+        self.inner.datagram_writer().await
+    }
+
+    #[inline]
+    pub fn is_active(&self) -> bool {
+        self.inner.is_active()
+    }
+
+    #[inline]
+    pub async fn open_bi_stream(
+        &self,
+    ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
+        self.inner.open_bi_stream().await
+    }
+
+    #[inline]
+    pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, StreamWriter)>> {
+        self.inner.open_uni_stream().await
     }
 }
 
 impl Drop for QuicConnection {
     fn drop(&mut self) {
-        // TODO: remove global connection entry
-        // QuicConnection: Clone，only the last clone can remove the entry
-        // CONNECTIONS.remove(&self.key);
+        CONNECTIONS.remove(&self.key);
     }
 }
 
@@ -91,13 +121,13 @@ fn accpet_packet(packet: Packet, pathway: Pathway, usc: &ArcUsc) {
     match packet {
         Packet::Data(packet) => {
             if let Err(packet) = Router::try_to_route_packet_from(packet, pathway, usc) {
-                ArcQuicServer::try_to_accept_conn_from(packet, pathway, usc);
+                QuicServer::try_to_accept_conn_from(packet, pathway, usc);
             }
         }
         Packet::VN(vn) => {
             let key = ConnKey::Server(*vn.get_dcid());
             if let Some(conn) = CONNECTIONS.get(&key) {
-                conn.recv_version_negotiation(&vn);
+                // conn.recv_version_negotiation(&vn); unimpl
                 conn.update_path_recv_time(pathway);
             } else {
                 log::error!("No connection found for VN packet");

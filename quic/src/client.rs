@@ -24,8 +24,8 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 
 /// 其实是一个Builder，最终得到一个ArcConnection
 pub struct QuicClient {
-    addresses: Vec<SocketAddr>,
-    _reuse_connection: bool,
+    reuse_addresses: Vec<SocketAddr>,
+    _reuse_connection: bool, // TODO
     _enable_happy_eyepballs: bool,
     _prefered_versions: Vec<u32>,
     parameters: Parameters,
@@ -37,7 +37,7 @@ pub struct QuicClient {
 impl QuicClient {
     /// 无论向哪里发起连接，都使用同一个本地的USC，包括一对v4和v6的，这在P2P场景下很有用
     pub fn solo() -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
-        QuicClient::bind([
+        QuicClient::builder().reuse_addresses([
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
         ])
@@ -59,19 +59,14 @@ impl QuicClient {
     ///     .install_default()
     ///     .expect("Failed to install rustls crypto provider");
     ///
-    /// let client_builder = QuicClient::bind([
-    ///         "[2001:db8::1]:8080".parse().unwrap(),
-    ///         "127.0.0.1:8080".parse().unwrap(),
-    ///     ])
+    /// let client_builder = QuicClient::builder()
     ///     .reuse_connection()
     ///     .enable_happy_eyeballs()
     ///     .prefer_versions([0x00000001u32]);
     /// ```
-    pub fn bind(
-        addresses: impl IntoIterator<Item = SocketAddr>,
-    ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
+    pub fn builder() -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         QuicClientBuilder {
-            addresses: addresses.into_iter().collect(),
+            reuse_addresses: vec![],
             reuse_connection: true,
             enable_happy_eyepballs: false,
             preferred_versions: vec![1],
@@ -82,12 +77,9 @@ impl QuicClient {
         }
     }
 
-    pub fn bind_with_tls(
-        addresses: impl IntoIterator<Item = SocketAddr>,
-        tls_config: TlsClientConfig,
-    ) -> QuicClientBuilder<TlsClientConfig> {
+    pub fn builder_with_tls(tls_config: TlsClientConfig) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
-            addresses: addresses.into_iter().collect(),
+            reuse_addresses: vec![],
             reuse_connection: true,
             enable_happy_eyepballs: false,
             preferred_versions: vec![1],
@@ -99,9 +91,9 @@ impl QuicClient {
     }
 
     /// 重新绑定地址，其后创建的连接，会使用新的绑定地址
-    pub fn rebind(&mut self, addresses: impl IntoIterator<Item = SocketAddr>) {
-        self.addresses.clear();
-        self.addresses.extend(addresses);
+    pub fn set_reuse_addresses(&mut self, addresses: impl IntoIterator<Item = SocketAddr>) {
+        self.reuse_addresses.clear();
+        self.reuse_addresses.extend(addresses);
     }
 
     fn gen_cid() -> ConnectionId {
@@ -122,21 +114,31 @@ impl QuicClient {
         &self,
         server_name: impl Into<String>,
         server_addr: SocketAddr,
-    ) -> io::Result<QuicConnection> {
+    ) -> io::Result<Arc<QuicConnection>> {
         let server_name = server_name.into();
-        let bind_addr = self
-            .addresses
-            .iter()
-            .find(|addr| addr.is_ipv4() == server_addr.is_ipv4())
-            .ok_or(io::Error::new(
-                io::ErrorKind::AddrNotAvailable,
-                format!(
-                    "No suitable bind address found for host {} whose socket address is {}",
-                    server_name, server_addr
-                ),
-            ))?;
 
-        let usc = get_or_create_usc(bind_addr)?;
+        let bind_addr = if self.reuse_addresses.is_empty() {
+            if server_addr.is_ipv4() {
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+            } else {
+                SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
+            }
+        } else {
+            let no_suitable_address = || {
+                let message = format!(
+                    "No suitable given address found for host {} whose socket address is {}",
+                    server_name, server_addr
+                );
+                io::Error::new(io::ErrorKind::AddrNotAvailable, message)
+            };
+            self.reuse_addresses
+                .iter()
+                .find(|addr| addr.is_ipv4() == server_addr.is_ipv4())
+                .ok_or_else(no_suitable_address)
+                .copied()?
+        };
+
+        let usc = get_or_create_usc(&bind_addr)?;
 
         let pathway = Pathway::Direct {
             local: usc.local_addr()?,
@@ -161,27 +163,27 @@ impl QuicClient {
             None => ArcTokenRegistry::default_sink(server_name.clone()),
         };
 
+        let tls_config = self.tls_config.clone();
+        let key = ConnKey::Client(initial_scid);
         let inner = ArcConnection::new_client(
             initial_scid,
             server_name,
             self.parameters,
             streams_ctrl,
-            self.tls_config.clone(),
+            tls_config,
             token_registry,
         );
-        let conn = QuicConnection {
-            _key: ConnKey::Client(initial_scid),
-            inner: inner.clone(),
-        };
-
-        CONNECTIONS.insert(ConnKey::Client(initial_scid), conn.clone());
         inner.add_initial_path(pathway, usc);
-        Ok(conn)
+
+        CONNECTIONS.insert(key.clone(), inner.clone());
+        let conn = QuicConnection { key, inner };
+
+        Ok(Arc::new(conn))
     }
 }
 
 pub struct QuicClientBuilder<T> {
-    addresses: Vec<SocketAddr>,
+    reuse_addresses: Vec<SocketAddr>,
     reuse_connection: bool,
     enable_happy_eyepballs: bool,
     preferred_versions: Vec<u32>,
@@ -202,6 +204,11 @@ impl<T> QuicClientBuilder<T> {
     /// 是否高效复用连接，假如已经有了一个到server_name的连接，那再去连的话，就直接复用
     pub fn reuse_connection(mut self) -> Self {
         self.reuse_connection = true;
+        self
+    }
+
+    pub fn reuse_addresses(mut self, addresses: impl IntoIterator<Item = SocketAddr>) -> Self {
+        self.reuse_addresses.extend(addresses);
         self
     }
 
@@ -248,7 +255,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         root_store: impl Into<Arc<rustls::RootCertStore>>,
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
-            addresses: self.addresses,
+            reuse_addresses: self.reuse_addresses,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             preferred_versions: self.preferred_versions,
@@ -263,7 +270,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         verifier: Arc<rustls::client::WebPkiServerVerifier>,
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
-            addresses: self.addresses,
+            reuse_addresses: self.reuse_addresses,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             preferred_versions: self.preferred_versions,
@@ -288,7 +295,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         let key_der = PrivateKeyDer::try_from(key).unwrap();
 
         QuicClientBuilder {
-            addresses: self.addresses,
+            reuse_addresses: self.reuse_addresses,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             preferred_versions: self.preferred_versions,
@@ -304,7 +311,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
 
     pub fn without_cert(self) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
-            addresses: self.addresses,
+            reuse_addresses: self.reuse_addresses,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             preferred_versions: self.preferred_versions,
@@ -320,7 +327,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         cert_resolver: Arc<dyn rustls::client::ResolvesClientCert>,
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
-            addresses: self.addresses,
+            reuse_addresses: self.reuse_addresses,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             preferred_versions: self.preferred_versions,
@@ -335,8 +342,8 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
 impl QuicClientBuilder<TlsClientConfig> {
     /// Ref. [alpn-protocol-ids](https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml#alpn-protocol-ids)
     /// client_builder.with_alpn(["http/0.9", "http/1.0", "http/1.1", "h3"]);
-    pub fn with_alpn(mut self, alpn: impl IntoIterator<Item = Vec<u8>>) -> Self {
-        self.tls_config.alpn_protocols.extend(alpn);
+    pub fn with_alpns(mut self, alpns: impl IntoIterator<Item = Vec<u8>>) -> Self {
+        self.tls_config.alpn_protocols.extend(alpns);
         self
     }
 
@@ -349,7 +356,7 @@ impl QuicClientBuilder<TlsClientConfig> {
 
     pub fn build(self) -> QuicClient {
         QuicClient {
-            addresses: self.addresses,
+            reuse_addresses: self.reuse_addresses,
             _reuse_connection: self.reuse_connection,
             _enable_happy_eyepballs: self.enable_happy_eyepballs,
             _prefered_versions: self.preferred_versions,
