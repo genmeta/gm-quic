@@ -16,13 +16,16 @@ export RUST_LOG=info
 
 所需命令行参数均已预设，你也可以通过`--help`查看帮助，自己指定参数
 
-cd到`h3-shim`目录下，运行以下命令即可
+cd到`gm-quic`目录下，运行以下命令即可
 
 ```shell
-# 启动Server
-cargo run --example=h3-server
+cd path/to/gm-quic
+# 启动Server，默认会加载localhost的自签名证书，因此必须通过localhost来请求
+# server会默认监听[127.0.0.1:4433, [::1]:4433]两个地址，请确保您的机器支持IPv6
+# 如果不支持，请使用-b参数手动绑定监听地址
+cargo run --example=h3-server --package=h3-shim -- --dir=./h3-shim
 # 启动Client
-cargo run --example=h3-client
+cargo run --example=h3-client --package=h3-shim -- https://localhost:4433/examples/h3-server.rs --keylog
 ```
 
 client默认会向`https://localhost:4433/Cargo.toml`发送一个Get请求，你可以通过命令行参数改变请求的url
@@ -30,15 +33,15 @@ client默认会向`https://localhost:4433/Cargo.toml`发送一个Get请求，你
 如下，client会向`https://localhost:4433/examples/server.rs`发送一个Get请求
 
 ```shell
-cargo run --example=h3-client -- https://localhost:4433/examples/server.rs
+cargo run --example=h3-client --package=h3-shim -- https://localhost:4433/examples/server.rs
 ```
 
 你也可以指定服务的根目录，或者更改绑定端口
 ```shell
 # 设置服务根目录
-cargo run --example=h3-server -- --dir=./examples
+cargo run --example=h3-server --package=h3-shim -- --dir=/path/to/www
 # 更改绑定端口
-cargo run --example=h3-server -- -b=127.0.0.1:123456
+cargo run --example=h3-server --package=h3-shim -- -b=127.0.0.1:123456
 ```
 
 ## 问题排查
@@ -60,8 +63,8 @@ failed to read certificate file: Os { code: 2, kind: NotFound, message: "No such
 client和server默认使用ipv6。如果在你的设备上localhost被解析为ipv4，你需要通过`-b`参数指定客户端和服务端使用ipv4地址
 
 ```shell
-cargo run --example=h3-server -- -b=127.0.0.1:0
-cargo run --example=h3-client -- -b=127.0.0.1
+cargo run --example=h3-server --package=h3-shim -- -b=127.0.0.1:0
+cargo run --example=h3-client --package=h3-shim -- -b=127.0.0.1
 ```
 
 ## 抓包
@@ -70,7 +73,7 @@ cargo run --example=h3-client -- -b=127.0.0.1
 
 ```shell
 export SSLKEYLOGFILE= <指定一个地方>
-cargo run --example=h3-client -- --keylog
+cargo run --example=h3-client --package=h3-shim -- --keylog
 ```
 
 然后，打开wireshark，Preferences -> Protocols-> TLS ->

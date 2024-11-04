@@ -16,17 +16,17 @@ struct Opt {
         long,
         help = "Root directory of the files to serve. \
                 If omitted, server will respond OK.",
-        default_value = "."
+        default_value = "./"
     )]
     pub root: PathBuf,
 
     #[structopt(
         short,
         long,
-        default_value = "[::1]:4433",
+        default_values = ["127.0.0.1:4433", "[::1]:4433"],
         help = "What address:port to listen for new connections"
     )]
-    pub listen: SocketAddr,
+    pub listen: Vec<SocketAddr>,
 
     #[structopt(flatten)]
     pub certs: Certs,
@@ -37,7 +37,7 @@ pub struct Certs {
     #[structopt(
         long,
         short,
-        default_value = "examples/server.cert",
+        default_value = "h3-shim/examples/server.cert",
         help = "Certificate for TLS. If present, `--key` is mandatory."
     )]
     pub cert: PathBuf,
@@ -45,7 +45,7 @@ pub struct Certs {
     #[structopt(
         long,
         short,
-        default_value = "examples/server.key",
+        default_value = "h3-shim/examples/server.key",
         help = "Private key for the certificate."
     )]
     pub key: PathBuf,
@@ -89,15 +89,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // tls_config.max_early_data_size = u32::MAX;
     // tls_config.alpn_protocols = vec![ALPN.into()];
 
+    info!("listening on {:?}", opt.listen);
     let quic_server = ::quic::QuicServer::buidler()
         .with_supported_versions([1u32])
         .without_cert_verifier()
         .enable_sni()
         .add_host("localhost", cert, key)
         .with_alpns([ALPN.to_vec()])
-        .listen([opt.listen])?;
-
-    info!("listening on {}", opt.listen);
+        .listen(opt.listen)?;
 
     // handle incoming connections and requests
 
@@ -105,13 +104,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         trace_span!("New connection being attempted");
 
         let root = root.clone();
-
         let mut h3_conn = h3::server::Connection::new(h3_shim::QuicConnection::new(new_conn).await)
             .await
             .unwrap();
         tokio::spawn(async move {
             info!("new connection established");
-
             loop {
                 match h3_conn.accept().await {
                     Ok(Some((req, stream))) => {
@@ -147,7 +144,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // shut down gracefully
     // wait for connections to be closed before exiting
     // endpoint.wait_idle().await;
-
     Ok(())
 }
 
@@ -174,7 +170,6 @@ where
     };
 
     let resp = http::Response::builder().status(status).body(()).unwrap();
-
     match stream.send_response(resp).await {
         Ok(_) => info!("successfully respond to connection"),
         Err(err) => error!("unable to send response to connection peer: {:?}", err),
@@ -193,6 +188,5 @@ where
     }
 
     stream.finish().await?;
-
     Ok(())
 }

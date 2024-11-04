@@ -15,7 +15,7 @@ struct Opt {
     #[structopt(
         long,
         short,
-        default_value = "examples/ca.cert",
+        default_value = "h3-shim/examples/ca.cert",
         help = "Certificate of CA who issues the server certificate"
     )]
     pub ca: PathBuf,
@@ -24,7 +24,7 @@ struct Opt {
     pub key_log_file: bool,
 
     #[structopt(long, short = 'b', default_value = "[::]:0")]
-    pub binds: Vec<SocketAddr>,
+    pub bind: Vec<SocketAddr>,
 
     #[structopt(default_value = "https://localhost:4433/Cargo.toml")]
     pub uri: String,
@@ -75,18 +75,15 @@ async fn run() -> Result<(), Box<dyn core::error::Error>> {
 
     // load CA certificates stored in the system
     let mut roots = rustls::RootCertStore::empty();
-    match rustls_native_certs::load_native_certs() {
-        Ok(certs) => {
-            for cert in certs {
-                if let Err(e) = roots.add(cert) {
-                    error!("failed to parse trust anchor: {}", e);
-                }
-            }
+    let cert_result = rustls_native_certs::load_native_certs();
+    for err in cert_result.errors {
+        error!("failed to load trust anchor: {}", err);
+    }
+    for cert in cert_result.certs {
+        if let Err(e) = roots.add(cert) {
+            error!("failed to parse trust anchor: {}", e);
         }
-        Err(e) => {
-            error!("couldn't load any default trust roots: {}", e);
-        }
-    };
+    }
 
     // load certificate of CA who issues the server certificate
     // NOTE that this should be used for dev only
