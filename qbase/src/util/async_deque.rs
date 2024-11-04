@@ -186,8 +186,8 @@ impl<T> ArcAsyncDeque<T> {
     /// ```
     /// use qbase::util::ArcAsyncDeque;
     ///
-    /// #[tokio::main]
-    /// async fn main() {
+    /// #[tokio::test]
+    /// async fn test() {
     ///    let mut deque = ArcAsyncDeque::new();
     ///
     ///     tokio::spawn({
@@ -264,8 +264,8 @@ impl<T> ArcAsyncDeque<T> {
     /// ```
     /// use qbase::util::ArcAsyncDeque;
     ///
-    /// #[tokio::main]
-    /// async fn main() {
+    /// #[tokio::test]
+    /// async fn test() {
     ///    let mut deque = ArcAsyncDeque::new();
     ///
     ///     tokio::spawn({

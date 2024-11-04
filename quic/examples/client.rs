@@ -42,7 +42,7 @@ fn main() {
     ::std::process::exit(code);
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
     env_logger::builder()
         .filter_level(log::LevelFilter::Trace)

@@ -6,17 +6,17 @@ edition.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-nom = { workspace = true }
 bytes = { workspace = true }
-rand = { workspace = true }
+deref-derive = { workspace = true }
+derive_builder = { workspace = true }
+enum_dispatch = { workspace = true }
 futures = { workspace = true }
 getset = { workspace = true }
-thiserror = { workspace = true }
-enum_dispatch = { workspace = true }
-deref-derive = { workspace = true }
-rustls = { workspace = true }
 log = { workspace = true }
-derive_builder = { workspace = true }
+nom = { workspace = true }
+rand = { workspace = true }
+rustls = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -7,7 +7,7 @@ edition.workspace = true
 
 [dependencies]
 futures = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
 qbase = { workspace = true }
 rustls = { workspace = true }
 bytes = { workspace = true }

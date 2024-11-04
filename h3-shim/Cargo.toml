@@ -4,25 +4,26 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-h3 = { workspace = true }
+h3 = "0.0.6"
 bytes = { workspace = true }
+futures = { workspace = true }
 qbase = { workspace = true }
+qconnection = { workspace = true }
+qrecovery = { workspace = true }
 quic = { workspace = true }
 qunreliable = { workspace = true }
-qrecovery = { workspace = true }
-qconnection = { workspace = true }
 tokio = { workspace = true }
-futures = { workspace = true }
 
 [dev-dependencies]
-tracing = "0.1"
 clap = { workspace = true, features = ["derive"] }
-rustls-native-certs = { version = "0.7" }
+http = { workspace = true }
 log = { workspace = true }
-http = "1"
+rustls-native-certs = { workspace = true }
+tokio = { workspace = true, features = ["io-std", "fs"] }
+tracing = { workspace = true }
 
 [dev-dependencies.tracing-subscriber]
-version = "0.3"
+workspace = true
 features = ["fmt", "ansi", "env-filter", "time", "tracing-log"]
 
 [[example]]
