@@ -84,7 +84,6 @@ async fn run() -> Result<(), Box<dyn core::error::Error>> {
             error!("failed to parse trust anchor: {}", e);
         }
     }
-
     // load certificate of CA who issues the server certificate
     // NOTE that this should be used for dev only
     let ca = std::fs::read(opt.ca).expect("failed to read CA certificate");
