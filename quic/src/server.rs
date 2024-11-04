@@ -19,7 +19,7 @@ use qbase::{
 };
 use qconnection::{conn::ArcConnection, path::Pathway, router::Router, usc::ArcUsc};
 use rustls::{
-    pki_types::{CertificateDer, PrivateKeyDer},
+    pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer},
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };
@@ -299,11 +299,18 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         cert_file: impl AsRef<Path>,
         key_file: impl AsRef<Path>,
     ) -> QuicServerBuilder<TlsServerConfig> {
-        let cert = std::fs::read(cert_file).unwrap();
-        let cert_chain = vec![CertificateDer::from(cert)];
+        let cert = std::fs::read(cert_file).expect("failed to read certificate file");
+        let key = std::fs::read(key_file).expect("failed to read private key file");
 
-        let key = std::fs::read(key_file).unwrap();
-        let key_der = PrivateKeyDer::try_from(key).unwrap();
+        let cert_chain = match CertificateDer::from_pem_slice(&cert) {
+            Ok(cert_chain) => vec![cert_chain],
+            Err(_) => vec![CertificateDer::from(cert)],
+        };
+
+        let key_der = match PrivateKeyDer::from_pem_slice(&key) {
+            Ok(key_der) => key_der,
+            Err(_) => PrivateKeyDer::try_from(key).expect("Failed to parse private key"),
+        };
 
         QuicServerBuilder {
             passive_listening: self.passive_listening,
@@ -325,11 +332,18 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         key_file: impl AsRef<Path>,
         ocsp: Vec<u8>,
     ) -> QuicServerBuilder<TlsServerConfig> {
-        let cert = std::fs::read(cert_file).unwrap();
-        let cert_chain = vec![CertificateDer::from(cert)];
+        let cert = std::fs::read(cert_file).expect("failed to read certificate file");
+        let key = std::fs::read(key_file).expect("failed to read private key file");
 
-        let key = std::fs::read(key_file).unwrap();
-        let key_der = PrivateKeyDer::try_from(key).unwrap();
+        let cert_chain = match CertificateDer::from_pem_slice(&cert) {
+            Ok(cert_chain) => vec![cert_chain],
+            Err(_) => vec![CertificateDer::from(cert)],
+        };
+
+        let key_der = match PrivateKeyDer::from_pem_slice(&key) {
+            Ok(key_der) => key_der,
+            Err(_) => PrivateKeyDer::try_from(key).expect("Failed to parse private key"),
+        };
 
         QuicServerBuilder {
             passive_listening: self.passive_listening,
@@ -374,10 +388,17 @@ impl QuicServerSniBuilder<TlsServerConfig> {
         key_file: impl AsRef<Path>,
     ) -> Self {
         let cert = std::fs::read(cert_file).expect("failed to read certificate file");
-        let cert_chain = vec![CertificateDer::from(cert)];
-
         let key = std::fs::read(key_file).expect("failed to read private key file");
-        let key_der = PrivateKeyDer::try_from(key).unwrap();
+
+        let cert_chain = match CertificateDer::from_pem_slice(&cert) {
+            Ok(cert_chain) => vec![cert_chain],
+            Err(_) => vec![CertificateDer::from(cert)],
+        };
+
+        let key_der = match PrivateKeyDer::from_pem_slice(&key) {
+            Ok(key_der) => key_der,
+            Err(_) => PrivateKeyDer::try_from(key).expect("Failed to parse private key"),
+        };
 
         let private_key = self
             .tls_config
