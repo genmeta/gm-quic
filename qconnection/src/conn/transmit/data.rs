@@ -26,16 +26,16 @@ use crate::{conn::DataStreams, path::SendBuffer};
 
 #[derive(Clone)]
 pub struct DataSpaceReader {
-    pub(crate) space: DataSpace,
-    pub(crate) zero_rtt_keys: ArcKeys,
-    pub(crate) one_rtt_keys: ArcOneRttKeys,
+    pub space: DataSpace,
+    pub zero_rtt_keys: ArcKeys,
+    pub one_rtt_keys: ArcOneRttKeys,
     // 数据源
-    pub(crate) challenge_sndbuf: SendBuffer<PathChallengeFrame>,
-    pub(crate) response_sndbuf: SendBuffer<PathResponseFrame>,
-    pub(crate) crypto_stream_outgoing: CryptoStreamOutgoing,
-    pub(crate) reliable_frames: ArcReliableFrameDeque,
-    pub(crate) streams: DataStreams,
-    pub(crate) datagrams: DatagramFlow,
+    pub challenge_sndbuf: SendBuffer<PathChallengeFrame>,
+    pub response_sndbuf: SendBuffer<PathResponseFrame>,
+    pub crypto_stream_outgoing: CryptoStreamOutgoing,
+    pub reliable_frames: ArcReliableFrameDeque,
+    pub streams: DataStreams,
+    pub datagrams: DatagramFlow,
     // 为了各个流的公平性，包括不可靠数据帧，需要额外维护一些信息
 }
 

@@ -56,6 +56,7 @@ pub type StreamReader = recv::Reader<Ext<ArcReliableFrameDeque>>;
 
 pub type Handshake = qbase::handshake::Handshake<ArcReliableFrameDeque>;
 
+// TODO: 巨大提升空间
 enum ConnState {
     Normal(Connection),
     Closing(ClosingConnection),
@@ -97,7 +98,7 @@ impl ConnState {
                 let closing_connection =
                     ClosingConnection::new(error, local_cids, hs, one_rtt, initial_scid, last_dcid);
                 tokio::spawn({
-                    let pathes = connection.pathes;
+                    let pathes = connection.paths;
                     let closing_connection = closing_connection.clone();
                     async move {
                         for mut path in pathes.iter_mut() {
@@ -142,15 +143,15 @@ impl ConnState {
 
     fn die(&mut self) {
         let conn = core::mem::replace(self, Invalid);
-        let local_cids = match conn {
-            Closing(conn) => conn.local_cids,
-            Draining(conn) => conn.local_cids,
+        let local_cids = match &conn {
+            Closing(conn) => conn.local_cids(),
+            Draining(conn) => conn.local_cids(),
             Closed(..) => return,
             Normal(..) | Invalid => unreachable!(),
         };
 
         for cid in local_cids {
-            Router::remove(&cid);
+            Router::remove(cid);
         }
     }
 }
@@ -202,7 +203,7 @@ impl ArcConnection {
     pub fn add_initial_path(&self, pathway: Pathway, usc: ArcUsc) {
         let guard = self.0.lock().unwrap();
         if let Normal(ref conn) = *guard {
-            _ = conn.pathes.get_or_create(pathway, usc);
+            _ = conn.paths.get_or_create(pathway, usc);
         }
     }
 
@@ -238,8 +239,8 @@ impl ArcConnection {
             let guard = self.0.lock().unwrap();
             let connection = match guard.deref() {
                 Normal(connection) => connection,
-                Closing(closing) => return Err(closing.error.clone())?,
-                Draining(draining) => return Err(draining.error.clone())?,
+                Closing(closing) => return Err(closing.error().clone())?,
+                Draining(draining) => return Err(draining.error().clone())?,
                 Closed(error) => return Err(error.clone())?,
                 Invalid => unreachable!(),
             };
@@ -265,8 +266,8 @@ impl ArcConnection {
             let guard = self.0.lock().unwrap();
             let connection = match guard.deref() {
                 Normal(connection) => connection,
-                Closing(closing) => return Err(closing.error.clone())?,
-                Draining(draining) => return Err(draining.error.clone())?,
+                Closing(closing) => return Err(closing.error().clone())?,
+                Draining(draining) => return Err(draining.error().clone())?,
                 Closed(error) => return Err(error.clone())?,
                 Invalid => unreachable!(),
             };
@@ -292,8 +293,8 @@ impl ArcConnection {
             let guard = self.0.lock().unwrap();
             let connection = match guard.deref() {
                 Normal(connection) => connection,
-                Closing(closing) => return Err(closing.error.clone())?,
-                Draining(draining) => return Err(draining.error.clone())?,
+                Closing(closing) => return Err(closing.error().clone())?,
+                Draining(draining) => return Err(draining.error().clone())?,
                 Closed(error) => return Err(error.clone())?,
                 Invalid => unreachable!(),
             };
@@ -319,8 +320,8 @@ impl ArcConnection {
             let guard = self.0.lock().unwrap();
             let connection = match guard.deref() {
                 Normal(connection) => connection,
-                Closing(closing) => return Err(closing.error.clone())?,
-                Draining(draining) => return Err(draining.error.clone())?,
+                Closing(closing) => return Err(closing.error().clone())?,
+                Draining(draining) => return Err(draining.error().clone())?,
                 Closed(error) => return Err(error.clone())?,
                 Invalid => unreachable!(),
             };
@@ -340,8 +341,8 @@ impl ArcConnection {
 
         match guard.deref() {
             Normal(raw) => raw.datagrams.reader(),
-            Closing(closing) => Err(closing.error.clone())?,
-            Draining(draining) => Err(draining.error.clone())?,
+            Closing(closing) => Err(closing.error().clone())?,
+            Draining(draining) => Err(draining.error().clone())?,
             Closed(error) => Err(error.clone())?,
             Invalid => unreachable!(),
         }
@@ -352,8 +353,8 @@ impl ArcConnection {
             let guard = self.0.lock().unwrap();
             let connection = match guard.deref() {
                 Normal(connection) => connection,
-                Closing(closing) => return Err(closing.error.clone())?,
-                Draining(draining) => return Err(draining.error.clone())?,
+                Closing(closing) => return Err(closing.error().clone())?,
+                Draining(draining) => return Err(draining.error().clone())?,
                 Closed(error) => return Err(error.clone())?,
                 Invalid => unreachable!(),
             };

@@ -10,15 +10,27 @@ use qbase::{
 #[derive(Debug)]
 pub struct DrainingConnection {
     /// Local connection IDs, which are used to remove item in the global router
-    pub local_cids: Vec<ConnectionId>,
+    local_cids: Vec<ConnectionId>,
     /// The error that causes the connection to close
-    pub error: Error,
+    error: Error,
 }
 
 impl DrainingConnection {
     /// Create a new draining connection
     pub fn new(local_cids: Vec<ConnectionId>, error: Error) -> Self {
         Self { local_cids, error }
+    }
+
+    /// Return the [`Error`] that causes the connection to drain.
+    pub fn error(&self) -> &Error {
+        &self.error
+    }
+
+    /// Return the local connection IDs.
+    ///
+    /// Used to remove item in the global router
+    pub fn local_cids(&self) -> &[ConnectionId] {
+        &self.local_cids
     }
 }
 

@@ -67,16 +67,16 @@ impl CcfPackets {
 
 #[derive(Clone)]
 pub struct ClosingConnection {
-    pub local_cids: Vec<ConnectionId>,
-    pub hs: Option<ClosingHandshakeScope>,
-    pub one_rtt: Option<ClosingOneRttScope>,
-    pub error: Error,
+    local_cids: Vec<ConnectionId>,
+    hs: Option<ClosingHandshakeScope>,
+    one_rtt: Option<ClosingOneRttScope>,
+    error: Error,
 
-    pub rcvd_packets: Arc<AtomicUsize>,
-    pub last_send_ccf: Arc<Mutex<Instant>>,
-    pub revd_ccf: RcvdCcf,
+    rcvd_packets: Arc<AtomicUsize>,
+    last_send_ccf: Arc<Mutex<Instant>>,
+    revd_ccf: RcvdCcf,
 
-    pub ccf_packets: Option<Arc<CcfPackets>>,
+    ccf_packets: Option<Arc<CcfPackets>>,
 }
 
 impl ClosingConnection {
@@ -170,6 +170,18 @@ impl ClosingConnection {
 
     pub fn get_rcvd_ccf(&self) -> RcvdCcf {
         self.revd_ccf.clone()
+    }
+
+    /// Return the [`Error`] that causes the connection to close
+    pub fn error(&self) -> &Error {
+        &self.error
+    }
+
+    /// Return the local connection IDs.
+    ///
+    /// Used to remove item in the global router
+    pub fn local_cids(&self) -> &[ConnectionId] {
+        &self.local_cids
     }
 }
 

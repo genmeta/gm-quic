@@ -27,7 +27,7 @@ use super::any;
 use crate::{
     conn::{transmit::HandshakeSpaceReader, RcvdPackets},
     error::ConnError,
-    path::{ArcPathes, Path},
+    path::{ArcPaths, Path},
     pipe,
 };
 
@@ -52,7 +52,7 @@ impl HandshakeScope {
     pub fn build(
         &self,
         rcvd_packets: RcvdPackets,
-        pathes: &ArcPathes,
+        pathes: &ArcPaths,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
     ) -> JoinHandle<RcvdPackets> {
@@ -63,7 +63,7 @@ impl HandshakeScope {
             let conn_error = conn_error.clone();
             move |frame: Frame, path: &Path| match frame {
                 Frame::Ack(f) => {
-                    path.cc.on_ack(Epoch::Initial, &f);
+                    path.cc().on_ack(Epoch::Initial, &f);
                     _ = ack_frames_entry.unbounded_send(f);
                 }
                 Frame::Close(f) => conn_error.on_ccf_rcvd(&f),
@@ -101,7 +101,7 @@ impl HandshakeScope {
     fn parse_rcvd_packets_and_dispatch_frames(
         &self,
         mut rcvd_packets: RcvdPackets,
-        pathes: &ArcPathes,
+        pathes: &ArcPaths,
         dispatch_frame: impl Fn(Frame, &Path) + Send + 'static,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
@@ -156,7 +156,7 @@ impl HandshakeScope {
                     // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
                     // address to have been validated.
                     // It may have already been verified using tokens in the Initial space
-                    path.anti_amplifier.grant();
+                    path.grant_anti_amplifier();
 
                     match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
                         false,
@@ -168,7 +168,7 @@ impl HandshakeScope {
                     ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.cc.on_pkt_rcvd(Epoch::Handshake, pn, is_ack_packet);
+                            path.cc().on_pkt_rcvd(Epoch::Handshake, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
