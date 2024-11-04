@@ -18,6 +18,7 @@ tokio = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 http = { workspace = true }
 log = { workspace = true }
+rustls = { workspace = true, features = ["ring"] }
 rustls-native-certs = { workspace = true }
 tokio = { workspace = true, features = ["io-std", "fs"] }
 tracing = { workspace = true }
