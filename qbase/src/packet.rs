@@ -1,8 +1,13 @@
-use bytes::BytesMut;
+use bytes::{buf::UninitSlice, BufMut, BytesMut};
 use deref_derive::{Deref, DerefMut};
+use encrypt::{encode_long_first_byte, encode_short_first_byte, encrypt_packet, protect_header};
 use enum_dispatch::enum_dispatch;
+use header::io::WriteHeader;
 
-use crate::cid::ConnectionId;
+use crate::{
+    cid::ConnectionId,
+    varint::{EncodeBytes, VarInt, WriteVarInt},
+};
 
 /// QUIC packet parse error definitions.
 pub mod error;
@@ -27,6 +32,11 @@ pub use header::{
     long, EncodeHeader, GetDcid, GetType, HandshakeHeader, Header, InitialHeader,
     LongHeaderBuilder, OneRttHeader, RetryHeader, VersionNegotiationHeader, ZeroRttHeader,
 };
+
+/// The io module provides the functions to parse the QUIC packet.
+///
+/// The writing of the QUIC packet is not provided here, they are written in place.
+pub mod io;
 
 /// Encoding and decoding of packet number
 pub mod number;
@@ -129,103 +139,126 @@ impl Iterator for PacketReader {
     }
 }
 
-/// The io module provides the functions to parse the QUIC packet.
-///
-/// The writing of the QUIC packet is not provided here, they are written in place.
-pub mod io {
-    use bytes::BytesMut;
-    use nom::multi::length_data;
+pub struct PacketWriter<'b> {
+    buffer: &'b mut [u8],
+    hdr_len: usize,
+    len_encoding: usize,
+    pn: (u64, PacketNumber),
+    cursor: usize,
+    end: usize,
+    tag_len: usize,
+}
 
-    use super::{
-        error::Error,
-        header::io::be_header,
-        r#type::{io::be_packet_type, Type},
-        *,
-    };
-    use crate::varint::be_varint;
-
-    /// Parse the payload of a packet.
-    ///
-    /// - For long packets, the payload is a [`nom::multi::length_data`].
-    /// - For 1-RTT packet, the payload is the remaining content of the datagram.
-    fn be_payload(
-        pkty: Type,
-        datagram: &mut BytesMut,
-        remain_len: usize,
-    ) -> Result<(BytesMut, usize), Error> {
-        let offset = datagram.len() - remain_len;
-        let input = &datagram[offset..];
-        let (remain, payload) = length_data(be_varint)(input).map_err(|e| match e {
-            ne @ nom::Err::Incomplete(_) => Error::IncompleteHeader(pkty, ne.to_string()),
-            _ => unreachable!("parsing packet header never generates error or failure"),
-        })?;
-        let payload_len = payload.len();
-        if payload_len < 20 {
-            // The payload needs at least 20 bytes to have enough samples to remove the packet header protection.
-            return Err(Error::UnderSampling(payload.len()));
+impl<'b> PacketWriter<'b> {
+    pub fn new<H>(
+        header: &H,
+        buffer: &'b mut [u8],
+        pn: (u64, PacketNumber),
+        tag_len: usize,
+    ) -> Option<Self>
+    where
+        H: EncodeHeader,
+        for<'a> &'a mut [u8]: WriteHeader<H>,
+    {
+        let hdr_len = header.size();
+        let len_encoding = header.length_encoding();
+        if buffer.len() < hdr_len + len_encoding + 20 {
+            return None;
         }
-        let packet_length = datagram.len() - remain.len();
-        let bytes = datagram.split_to(packet_length);
-        Ok((bytes, packet_length - payload_len))
+
+        let (mut hdr_buf, mut payload_buf) = buffer.split_at_mut(hdr_len + len_encoding);
+        let encoded_pn = pn.1;
+        hdr_buf.put_header(header);
+        payload_buf.put_packet_number(encoded_pn);
+
+        let end = buffer.len() - tag_len;
+        Some(Self {
+            buffer,
+            hdr_len,
+            len_encoding,
+            pn,
+            cursor: hdr_len + len_encoding + encoded_pn.size(),
+            end,
+            tag_len,
+        })
     }
 
-    /// Parse the QUIC packet from the datagram, given the length of the DCID.
-    /// Returns the parsed packet or an error, and the datagram removed the packet's content.
-    pub fn be_packet(datagram: &mut BytesMut, dcid_len: usize) -> Result<Packet, Error> {
-        let input = datagram.as_ref();
-        let (remain, pkty) = be_packet_type(input).map_err(|e| match e {
-            ne @ nom::Err::Incomplete(_) => Error::IncompleteType(ne.to_string()),
-            nom::Err::Error(e) => e,
-            _ => unreachable!("parsing packet type never generates failure"),
-        })?;
-        let (remain, header) = be_header(pkty, dcid_len, remain).map_err(|e| match e {
-            ne @ nom::Err::Incomplete(_) => Error::IncompleteHeader(pkty, ne.to_string()),
-            _ => unreachable!("parsing packet header never generates error or failure"),
-        })?;
-        match header {
-            Header::VN(header) => Ok(Packet::VN(header)),
-            Header::Retry(header) => Ok(Packet::Retry(header)),
-            Header::Initial(header) => {
-                let (bytes, offset) = be_payload(pkty, datagram, remain.len())?;
-                Ok(Packet::Data(DataPacket {
-                    header: DataHeader::Long(long::DataHeader::Initial(header)),
-                    bytes,
-                    offset,
-                }))
-            }
-            Header::ZeroRtt(header) => {
-                let (bytes, offset) = be_payload(pkty, datagram, remain.len())?;
-                Ok(Packet::Data(DataPacket {
-                    header: DataHeader::Long(long::DataHeader::ZeroRtt(header)),
-                    bytes,
-                    offset,
-                }))
-            }
-            Header::Handshake(header) => {
-                let (bytes, offset) = be_payload(pkty, datagram, remain.len())?;
-                Ok(Packet::Data(DataPacket {
-                    header: DataHeader::Long(long::DataHeader::Handshake(header)),
-                    bytes,
-                    offset,
-                }))
-            }
-            Header::OneRtt(header) => {
-                if remain.len() < 20 {
-                    // The payload needs at least 20 bytes to have enough samples to remove the packet header protection.
-                    return Err(Error::UnderSampling(remain.len()));
-                }
-                let bytes = datagram.clone();
-                let offset = bytes.len() - remain.len();
-                datagram.clear();
-                Ok(Packet::Data(DataPacket {
-                    header: DataHeader::Short(header),
-                    bytes,
-                    offset,
-                }))
-            }
-        }
+    pub fn pad(&mut self, cnt: usize) {
+        self.put_bytes(0, cnt);
+    }
+
+    pub fn encrypt_long_packet(
+        &mut self,
+        hpk: &dyn rustls::quic::HeaderProtectionKey,
+        pk: &dyn rustls::quic::PacketKey,
+    ) -> usize {
+        let (actual_pn, encoded_pn) = self.pn;
+        encode_long_first_byte(&mut self.buffer[0], encoded_pn.size());
+
+        let pkt_size = self.cursor + self.tag_len;
+        let payload_len = pkt_size - self.hdr_len - self.len_encoding;
+        let mut pn_buf = &mut self.buffer[self.hdr_len..self.hdr_len + self.len_encoding];
+        pn_buf.encode_varint(&VarInt::try_from(payload_len).unwrap(), EncodeBytes::Two);
+
+        encrypt_packet(
+            pk,
+            actual_pn,
+            &mut self.buffer[..pkt_size],
+            self.hdr_len + self.len_encoding + encoded_pn.size(),
+        );
+        protect_header(
+            hpk,
+            &mut self.buffer[..pkt_size],
+            self.hdr_len,
+            encoded_pn.size(),
+        );
+        pkt_size
+    }
+
+    pub fn encrypt_short_packet(
+        &mut self,
+        key_phase: KeyPhaseBit,
+        hpk: &dyn rustls::quic::HeaderProtectionKey,
+        pk: &dyn rustls::quic::PacketKey,
+    ) -> usize {
+        let (actual_pn, encoded_pn) = self.pn;
+        encode_short_first_byte(&mut self.buffer[0], encoded_pn.size(), key_phase);
+
+        let pkt_size = self.cursor + self.tag_len;
+        encrypt_packet(
+            pk,
+            actual_pn,
+            &mut self.buffer[..pkt_size],
+            self.hdr_len + self.len_encoding + encoded_pn.size(),
+        );
+        protect_header(
+            hpk,
+            &mut self.buffer[..pkt_size],
+            self.hdr_len,
+            encoded_pn.size(),
+        );
+        pkt_size
     }
 }
 
-#[cfg(test)]
-mod tests {}
+unsafe impl BufMut for PacketWriter<'_> {
+    fn remaining_mut(&self) -> usize {
+        self.end - self.cursor
+    }
+
+    unsafe fn advance_mut(&mut self, cnt: usize) {
+        if self.remaining_mut() < cnt {
+            panic!(
+                "advance out of bounds: the len is {} but advancing by {}",
+                cnt,
+                self.remaining_mut()
+            );
+        }
+
+        self.cursor += cnt;
+    }
+
+    fn chunk_mut(&mut self) -> &mut UninitSlice {
+        UninitSlice::new(&mut self.buffer[self.cursor..self.end])
+    }
+}

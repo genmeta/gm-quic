@@ -8,7 +8,7 @@ use qbase::{
         encrypt::{
             encode_long_first_byte, encode_short_first_byte, encrypt_packet, protect_header,
         },
-        header::{WriteLongHeader, WriteShortHeader},
+        header::io::WriteHeader,
         keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys},
         EncodeHeader, LongHeaderBuilder, OneRttHeader, SpinBit, WritePacketNumber,
     },
@@ -176,7 +176,7 @@ impl DataSpaceReader {
 
         let sent_size = hdr_len + pn_len + body_len + tag_len;
 
-        hdr_buf.put_short_header(&hdr);
+        hdr_buf.put_header(&hdr);
         pn_buf.put_packet_number(encoded_pn);
 
         // 11 保护包头，加密数据
@@ -287,7 +287,7 @@ impl DataSpaceReader {
         }
         let sent_size = hdr_len + pn_len + body_len + tag_len;
 
-        hdr_buf.put_long_header(&hdr);
+        hdr_buf.put_header(&hdr);
         hdr_buf.encode_varint(
             &VarInt::try_from(pn_len + body_len + tag_len).unwrap(),
             EncodeBytes::Two,

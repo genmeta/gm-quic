@@ -49,7 +49,7 @@ pub mod io {
     use bytes::BufMut;
 
     use super::{GetType, OneRttHeader};
-    use crate::packet::{r#type::io::WritePacketType, signal::SpinBit};
+    use crate::packet::{header::io::WriteHeader, r#type::io::WritePacketType, signal::SpinBit};
 
     /// Parse a 1RTT header from the input buffer,
     /// [nom](https://docs.rs/nom/latest/nom/) parser style.
@@ -64,14 +64,8 @@ pub mod io {
         Ok((remain, OneRttHeader { spin, dcid }))
     }
 
-    /// A [`bytes::BufMut`] extension trait, makes buffer more friendly to write 1RTT headers.
-    pub trait WriteShortHeader: BufMut {
-        /// Write a 1RTT header to the buffer.
-        fn put_short_header(&mut self, header: &OneRttHeader);
-    }
-
-    impl<T: BufMut> WriteShortHeader for T {
-        fn put_short_header(&mut self, header: &OneRttHeader) {
+    impl<T: BufMut> WriteHeader<OneRttHeader> for T {
+        fn put_header(&mut self, header: &OneRttHeader) {
             let ty = header.get_type();
             self.put_packet_type(&ty);
             self.put_slice(&header.dcid);
@@ -81,7 +75,7 @@ pub mod io {
 
 #[cfg(test)]
 mod tests {
-    use crate::packet::header::WriteShortHeader;
+    use crate::packet::header::io::WriteHeader;
 
     #[test]
     fn test_read_one_rtt_header() {
@@ -106,7 +100,7 @@ mod tests {
             dcid: ConnectionId::default(),
         };
 
-        buf.put_short_header(&header);
+        buf.put_header(&header);
         // Note: 0x60 == SHORT_HEADER_BIT | FIXED_BIT | Toggle<SPIN_BIT>.value()
         assert_eq!(buf, [0x60]);
     }

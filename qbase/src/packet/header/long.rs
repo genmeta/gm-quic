@@ -152,6 +152,10 @@ impl<S: EncodeHeader> EncodeHeader for LongHeader<S> {
             + 1 + self.scid.len() // scid一样
             + self.specific.size()
     }
+
+    fn length_encoding(&self) -> usize {
+        2 // 长包头都带有length字段，统一2字节，能表达1～16KB的长度的包
+    }
 }
 
 macro_rules! bind_type {
@@ -200,9 +204,12 @@ pub mod io {
     use super::*;
     use crate::{
         cid::WriteConnectionId,
-        packet::r#type::{
-            io::WritePacketType,
-            long::{v1::Type as LongV1Type, Type as LongType},
+        packet::{
+            header::io::WriteHeader,
+            r#type::{
+                io::WritePacketType,
+                long::{v1::Type as LongV1Type, Type as LongType},
+            },
         },
         varint::{be_varint, WriteVarInt},
     };
@@ -371,31 +378,17 @@ pub mod io {
     /// Handshake headers are empty, so there is nothing to write.
     impl<T: BufMut> WriteSpecific<Handshake> for T {}
 
-    /// A [`bytes::BufMut`] extension trait, makes buffer more friendly to write long headers.
-    ///
-    /// Write the long header content, including the packet type, destination connection ID,
-    /// source connection ID, and specific header content.
-    ///
-    /// ## Note
-    ///
-    /// It does not write the payload Length of the packet, and leaves it to be filled in when
-    /// collecting data to send.
-    pub trait WriteLongHeader<S>: BufMut {
-        /// Write the long header.
-        fn put_long_header(&mut self, wrapper: &LongHeader<S>);
-    }
-
-    impl<T, S> WriteLongHeader<S> for T
+    impl<T, S> WriteHeader<LongHeader<S>> for T
     where
         T: BufMut + WriteSpecific<S>,
         LongHeader<S>: GetType,
     {
-        fn put_long_header(&mut self, long_header: &LongHeader<S>) {
-            let ty = long_header.get_type();
+        fn put_header(&mut self, header: &LongHeader<S>) {
+            let ty = header.get_type();
             self.put_packet_type(&ty);
-            self.put_connection_id(&long_header.dcid);
-            self.put_connection_id(&long_header.scid);
-            self.put_specific(&long_header.specific);
+            self.put_connection_id(&header.dcid);
+            self.put_connection_id(&header.scid);
+            self.put_specific(&header.specific);
         }
     }
 }

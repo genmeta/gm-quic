@@ -8,10 +8,7 @@ use qbase::{
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         encrypt::{encode_long_first_byte, encrypt_packet, protect_header},
-        header::{
-            long::io::{LongHeaderBuilder, WriteLongHeader},
-            EncodeHeader, GetType,
-        },
+        header::{io::WriteHeader, long::io::LongHeaderBuilder, EncodeHeader, GetType},
         keys::ArcKeys,
         number::WritePacketNumber,
         DataPacket, PacketNumber,
@@ -233,7 +230,7 @@ impl ClosingHandshakeScope {
         }
         let pkt_size = hdr_len + pn_len + body_len + tag_len;
 
-        hdr_buf.put_long_header(&hdr);
+        hdr_buf.put_header(&hdr);
         hdr_buf.encode_varint(
             &VarInt::try_from(pn_len + body_len + tag_len).unwrap(),
             EncodeBytes::Two,
