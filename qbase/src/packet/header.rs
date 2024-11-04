@@ -9,12 +9,12 @@ pub mod short;
 
 #[doc(hidden)]
 pub use long::{
-    io::{LongHeaderBuilder, WriteLongHeader, WriteSpecific},
+    io::{LongHeaderBuilder, WriteSpecific},
     DataHeader, HandshakeHeader, InitialHeader, LongHeader, RetryHeader, VersionNegotiationHeader,
     ZeroRttHeader,
 };
 #[doc(hidden)]
-pub use short::{io::WriteShortHeader, OneRttHeader};
+pub use short::OneRttHeader;
 
 use super::r#type::{
     long::{v1, Type as LongType, Version},
@@ -38,6 +38,10 @@ pub trait GetType {
 pub trait EncodeHeader {
     /// Returns the length of the encoded packet header.
     fn size(&self) -> usize {
+        0
+    }
+
+    fn length_encoding(&self) -> usize {
         0
     }
 }
@@ -73,12 +77,8 @@ pub enum Header {
 /// how to write the header into a UDP packet.
 pub mod io {
     use super::{
-        long::{
-            io::{LongHeaderBuilder, WriteLongHeader},
-            Handshake, Initial, Retry, VersionNegotiation, ZeroRtt,
-        },
-        short::io::WriteShortHeader,
-        Header,
+        long::{io::LongHeaderBuilder, Handshake, Initial, Retry, VersionNegotiation, ZeroRtt},
+        Header, LongHeader, OneRttHeader,
     };
     use crate::{
         cid::be_connection_id,
@@ -115,29 +115,29 @@ pub mod io {
     /// When sending packets, it is necessary to organize the data and write
     /// various types of QUIC packets into an UDP datagram. This trait will
     /// be used to write the packet header.
-    pub trait WriteHeader: bytes::BufMut {
+    pub trait WriteHeader<H>: bytes::BufMut {
         /// Write a packet header to the buffer.
-        fn put_header(&mut self, header: &Header);
+        fn put_header(&mut self, header: &H);
     }
 
-    impl<T> WriteHeader for T
+    impl<T> WriteHeader<Header> for T
     where
         T: bytes::BufMut
-            + WriteLongHeader<VersionNegotiation>
-            + WriteLongHeader<Retry>
-            + WriteLongHeader<Initial>
-            + WriteLongHeader<ZeroRtt>
-            + WriteLongHeader<Handshake>
-            + WriteShortHeader,
+            + WriteHeader<LongHeader<VersionNegotiation>>
+            + WriteHeader<LongHeader<Retry>>
+            + WriteHeader<LongHeader<Initial>>
+            + WriteHeader<LongHeader<ZeroRtt>>
+            + WriteHeader<LongHeader<Handshake>>
+            + WriteHeader<OneRttHeader>,
     {
         fn put_header(&mut self, header: &Header) {
             match header {
-                Header::VN(vn) => self.put_long_header(vn),
-                Header::Retry(retry) => self.put_long_header(retry),
-                Header::Initial(initial) => self.put_long_header(initial),
-                Header::ZeroRtt(zero_rtt) => self.put_long_header(zero_rtt),
-                Header::Handshake(handshake) => self.put_long_header(handshake),
-                Header::OneRtt(one_rtt) => self.put_short_header(one_rtt),
+                Header::VN(vn) => self.put_header(vn),
+                Header::Retry(retry) => self.put_header(retry),
+                Header::Initial(initial) => self.put_header(initial),
+                Header::ZeroRtt(zero_rtt) => self.put_header(zero_rtt),
+                Header::Handshake(handshake) => self.put_header(handshake),
+                Header::OneRtt(one_rtt) => self.put_header(one_rtt),
             }
         }
     }

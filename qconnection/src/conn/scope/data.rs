@@ -17,10 +17,7 @@ use qbase::{
             decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
         },
         encrypt::{encode_short_first_byte, encrypt_packet, protect_header},
-        header::{
-            short::{io::WriteShortHeader, OneRttHeader},
-            EncodeHeader, GetType,
-        },
+        header::{io::WriteHeader, EncodeHeader, GetType, OneRttHeader},
         keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys, HeaderProtectionKeys},
         number::WritePacketNumber,
         r#type::Type,
@@ -484,7 +481,7 @@ impl ClosingOneRttScope {
         }
         let sent_size = hdr_len + pn_len + body_len + tag_len;
 
-        hdr_buf.put_short_header(&hdr);
+        hdr_buf.put_header(&hdr);
         pn_buf.put_packet_number(encoded_pn);
 
         let (key_phase, pk) = pk.lock_guard().get_local();

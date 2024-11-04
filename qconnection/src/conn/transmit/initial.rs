@@ -8,7 +8,7 @@ use qbase::{
     cid::ConnectionId,
     packet::{
         encrypt::{encode_long_first_byte, encrypt_packet, protect_header},
-        header::WriteLongHeader,
+        header::io::WriteHeader,
         keys::ArcKeys,
         EncodeHeader, LongHeaderBuilder, WritePacketNumber,
     },
@@ -96,7 +96,7 @@ impl InitialSpaceReader {
         }
         let mut pkt_size = hdr_len + pn_len + body_len + tag_len;
 
-        hdr_buf.put_long_header(&hdr);
+        hdr_buf.put_header(&hdr);
         pn_buf.put_packet_number(encoded_pn);
 
         Some((

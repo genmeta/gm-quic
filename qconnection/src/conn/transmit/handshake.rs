@@ -5,7 +5,7 @@ use qbase::{
     cid::ConnectionId,
     packet::{
         encrypt::{encode_long_first_byte, encrypt_packet, protect_header},
-        header::WriteLongHeader,
+        header::io::WriteHeader,
         keys::ArcKeys,
         EncodeHeader, LongHeaderBuilder, WritePacketNumber,
     },
@@ -94,7 +94,7 @@ impl HandshakeSpaceReader {
         }
         let pkt_size = hdr_len + pn_len + body_len + tag_len;
 
-        hdr_buf.put_long_header(&hdr);
+        hdr_buf.put_header(&hdr);
         hdr_buf.encode_varint(
             &VarInt::try_from(pn_len + body_len + tag_len).unwrap(),
             EncodeBytes::Two,
