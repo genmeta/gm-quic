@@ -21,7 +21,7 @@ use super::any;
 use crate::{
     conn::{transmit::InitialSpaceReader, ArcRemoteCids, RcvdPackets},
     error::ConnError,
-    path::{ArcPath, ArcPathes, Path},
+    path::{ArcPath, ArcPaths, Path},
     pipe,
 };
 
@@ -48,7 +48,7 @@ impl InitialScope {
     pub fn build(
         &self,
         rcvd_packets: RcvdPackets,
-        pathes: &ArcPathes,
+        pathes: &ArcPaths,
         remote_cids: &ArcRemoteCids,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
@@ -60,7 +60,7 @@ impl InitialScope {
         let dispatch_frame = move |frame: Frame, path: &Path| {
             match frame {
                 Frame::Ack(f) => {
-                    path.cc.on_ack(Epoch::Initial, &f);
+                    path.cc().on_ack(Epoch::Initial, &f);
                     _ = ack_frames_entry.unbounded_send(f)
                 }
                 Frame::Crypto(f, bytes) => _ = crypto_frames_entry.unbounded_send((f, bytes)),
@@ -102,7 +102,7 @@ impl InitialScope {
     fn parse_rcvd_packets_and_dispatch_frames(
         &self,
         mut rcvd_packets: RcvdPackets,
-        pathes: &ArcPathes,
+        pathes: &ArcPaths,
         remote_cids: &ArcRemoteCids,
         dispatch_frame: impl Fn(Frame, &Path) + Send + 'static,
         notify: &Arc<Notify>,
@@ -175,7 +175,7 @@ impl InitialScope {
                     ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.cc.on_pkt_rcvd(Epoch::Initial, pn, is_ack_packet);
+                            path.cc().on_pkt_rcvd(Epoch::Initial, pn, is_ack_packet);
                         }
                         Err(e) => {
                             conn_error.on_error(e);

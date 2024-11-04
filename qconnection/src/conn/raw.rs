@@ -32,33 +32,32 @@ use super::{
 };
 use crate::{
     error::ConnError,
-    path::{ArcPath, ArcPathes, Path, Pathway},
+    path::{ArcPath, ArcPaths, Path, Paths, Pathway},
     router::Router,
     tls::ArcTlsSession,
 };
 
 pub struct Connection {
-    pub initial_scid: ConnectionId,
-    pub token: Arc<Mutex<Vec<u8>>>,
-    pub pathes: ArcPathes,
-    pub cid_registry: CidRegistry,
+    // TOOD?: hide these fields
+    pub(super) initial_scid: ConnectionId,
+    pub(super) token: Arc<Mutex<Vec<u8>>>,
+    pub(super) paths: ArcPaths,
+    pub(super) cid_registry: CidRegistry,
     // handshake done的信号
-    pub handshake: Handshake,
-    pub flow_ctrl: FlowController,
-    pub error: ConnError,
+    pub(super) flow_ctrl: FlowController,
+    pub(super) error: ConnError,
 
-    pub reliable_frames: ArcReliableFrameDeque,
-    pub streams: DataStreams,
-    pub datagrams: DatagramFlow,
+    pub(super) streams: DataStreams,
+    pub(super) datagrams: DatagramFlow,
 
-    pub initial: InitialScope,
-    pub hs: HandshakeScope,
-    pub data: DataScope,
-    pub notify: Arc<Notify>, // Notifier for closing the packet receiving task
-    pub join_handles: [JoinHandle<RcvdPackets>; 4],
+    pub(super) initial: InitialScope,
+    pub(super) hs: HandshakeScope,
+    pub(super) data: DataScope,
+    pub(super) notify: Arc<Notify>, // Notifier for closing the packet receiving task
+    pub(super) join_handles: [JoinHandle<RcvdPackets>; 4],
 
-    pub tls_session: ArcTlsSession,
-    pub params: ConnParameters,
+    pub(super) tls_session: ArcTlsSession,
+    pub(super) params: ConnParameters,
 }
 
 impl Connection {
@@ -169,16 +168,16 @@ impl Connection {
                     Box::new(data.clone()),
                 ];
 
-                let path = ArcPath::new(usc, scid, dcid, loss, retire);
+                let path = Path::new(usc, scid, dcid, loss, retire);
                 if !handshake.is_handshake_done() {
                     if role == Role::Client {
-                        path.anti_amplifier.grant();
+                        path.grant_anti_amplifier();
                     }
                 } else {
                     path.begin_validation();
                 }
                 path.begin_sending(pathway, &flow_ctrl, &gen_readers);
-                path
+                Arc::new(path)
             }
         });
         let on_no_path = Arc::new({
@@ -187,7 +186,7 @@ impl Connection {
                 conn_error.no_viable_path();
             }
         });
-        let pathes = ArcPathes::new(path_creator, on_no_path);
+        let pathes = Paths::new(path_creator, on_no_path).into();
 
         let validate = {
             let tls_session = tls_session.clone();
@@ -196,7 +195,7 @@ impl Connection {
                 if let TokenRegistry::Server(provider) = token_registry.deref() {
                     if let Some(server_name) = tls_session.server_name() {
                         if provider.validate_token(server_name, initial_token) {
-                            path.anti_amplifier.grant();
+                            path.grant_anti_amplifier();
                         }
                     }
                 }
@@ -272,12 +271,10 @@ impl Connection {
         Self {
             initial_scid,
             token,
-            pathes,
+            paths: pathes,
             cid_registry,
-            handshake,
             flow_ctrl,
             streams,
-            reliable_frames,
             datagrams,
             initial,
             hs,
@@ -291,9 +288,9 @@ impl Connection {
     }
 
     pub fn max_pto_duration(&self) -> Option<Duration> {
-        self.pathes
+        self.paths
             .iter()
-            .map(|path| path.cc.pto_time(Epoch::Data))
+            .map(|path| path.cc().pto_time(Epoch::Data))
             .max()
     }
 
@@ -307,7 +304,7 @@ impl Connection {
     }
 
     pub fn update_path_recv_time(&self, pathway: Pathway) {
-        if let Some(path) = self.pathes.try_get(&pathway).try_unwrap() {
+        if let Some(path) = self.paths.try_get(&pathway).try_unwrap() {
             path.update_recv_time();
         }
     }

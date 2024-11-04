@@ -38,7 +38,7 @@ use super::any;
 use crate::{
     conn::{transmit::DataSpaceReader, CidRegistry, DataStreams, RcvdPackets},
     error::ConnError,
-    path::{ArcPathes, Path, SendBuffer},
+    path::{ArcPaths, Path, SendBuffer},
     pipe,
     router::Router,
 };
@@ -66,7 +66,7 @@ impl DataScope {
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
-        pathes: &ArcPathes,
+        pathes: &ArcPaths,
         handshake: &Handshake<ArcReliableFrameDeque>,
         reliable_frames: &ArcReliableFrameDeque,
         streams: &DataStreams,
@@ -97,7 +97,7 @@ impl DataScope {
             let conn_error = conn_error.clone();
             move |frame: Frame, pty: Type, path: &Path| match frame {
                 Frame::Ack(f) => {
-                    path.cc.on_ack(Epoch::Data, &f);
+                    path.cc().on_ack(Epoch::Data, &f);
                     _ = ack_frames_entry.unbounded_send(f)
                 }
                 Frame::NewToken(f) => _ = new_token_frames_entry.unbounded_send(f),
@@ -186,7 +186,7 @@ impl DataScope {
     fn parse_rcvd_0rtt_packet_and_dispatch_frames(
         &self,
         mut rcvd_packets: RcvdPackets,
-        pathes: ArcPathes,
+        pathes: ArcPaths,
         dispatch_frame: impl Fn(Frame, Type, &Path) + Send + 'static,
         notify: Arc<Notify>,
         conn_error: ConnError,
@@ -244,7 +244,7 @@ impl DataScope {
                     ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.cc.on_pkt_rcvd(Epoch::Data, pn, is_ack_packet);
+                            path.cc().on_pkt_rcvd(Epoch::Data, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
@@ -257,7 +257,7 @@ impl DataScope {
     fn parse_rcvd_1rtt_packet_and_dispatch_frames(
         &self,
         mut rcvd_packets: RcvdPackets,
-        pathes: ArcPathes,
+        pathes: ArcPaths,
         dispatch_frame: impl Fn(Frame, Type, &Path) + Send + 'static,
         notify: Arc<Notify>,
         conn_error: ConnError,
@@ -312,7 +312,7 @@ impl DataScope {
                     ) {
                         Ok(is_ack_packet) => {
                             rcvd_pkt_records.register_pn(pn);
-                            path.cc.on_pkt_rcvd(Epoch::Data, pn, is_ack_packet);
+                            path.cc().on_pkt_rcvd(Epoch::Data, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
                     }
