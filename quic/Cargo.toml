@@ -6,26 +6,26 @@ edition.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-futures = { workspace = true }
-tokio = { workspace = true }
-qbase = { workspace = true }
-qrecovery = { workspace = true }
-qcongestion = { workspace = true }
-qunreliable = { workspace = true }
-qconnection = { workspace = true }
-qudp = { workspace = true }
 bytes = { workspace = true }
-thiserror = { workspace = true }
-rustls = { workspace = true }
-log = { workspace = true }
-deref-derive = { workspace = true }
 dashmap = { workspace = true }
+deref-derive = { workspace = true }
+futures = { workspace = true }
+log = { workspace = true }
+qbase = { workspace = true }
+qcongestion = { workspace = true }
+qconnection = { workspace = true }
+qrecovery = { workspace = true }
+qudp = { workspace = true }
+qunreliable = { workspace = true }
+rustls = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
-env_logger = { workspace = true }
 clap = { workspace = true }
+env_logger = { workspace = true }
+rustls = { workspace = true, features = ["ring"] }
 url = { workspace = true }
-rcgen = { workspace = true }
 
 [[example]]
 name = "client"

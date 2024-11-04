@@ -4,7 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-tokio = { workspace = true }
 bytes = { workspace = true }
-qbase = { workspace = true }
 futures = { workspace = true }
+qbase = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

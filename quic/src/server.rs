@@ -75,11 +75,7 @@ impl QuicServer {
             supported_versions: Vec::with_capacity(2),
             load_balance: Arc::new(|_| None),
             parameters: Parameters::default(),
-            tls_config: TlsServerConfig::builder_with_provider(
-                rustls::crypto::ring::default_provider().into(),
-            )
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .unwrap(),
+            tls_config: TlsServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
             token_provider: None,
         }

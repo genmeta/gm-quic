@@ -8,7 +8,7 @@ struct Args {
     bind: String,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     env_logger::builder()
         .filter_level(log::LevelFilter::Trace)
