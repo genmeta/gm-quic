@@ -41,8 +41,10 @@ impl UscRegistry {
         Task: Future<Output = ()> + Send + 'static,
         F: FnOnce(ArcUsc) -> Task,
     {
-        if let Some((usc, ..)) = USC_REGISTRY.get(&addr).as_deref() {
-            return Ok(usc.clone());
+        // lock the entry, avoid the racing condition
+        let entry = USC_REGISTRY.entry(addr);
+        if let dashmap::Entry::Occupied(entry) = entry {
+            return Ok(entry.get().0.clone());
         }
 
         let usc = Arc::new(qudp::UdpSocketController::new(addr)?);
@@ -51,7 +53,34 @@ impl UscRegistry {
         let usc = ArcUsc { usc, addr };
 
         let recv_task = tokio::spawn(recv_task(usc.clone()));
-        USC_REGISTRY.insert(addr, (usc.clone(), recv_task));
+        entry.insert((usc.clone(), recv_task));
+
+        Ok(usc)
+    }
+
+    /// Create a *new* [`ArcUsc`] that bound the given [`SocketAddr`].
+    ///
+    /// This is similar to [`UscRegistry::get_or_create_usc`], but it will return an error if the
+    /// address is already bound.
+    pub fn create_new_usc<Task, F>(addr: SocketAddr, recv_task: F) -> io::Result<ArcUsc>
+    where
+        Task: Future<Output = ()> + Send + 'static,
+        F: FnOnce(ArcUsc) -> Task,
+    {
+        // lock the entry, avoid the racing condition
+        let entry = USC_REGISTRY.entry(addr);
+        if let dashmap::Entry::Occupied(_exist_usc) = entry {
+            let error = io::Error::new(io::ErrorKind::AddrInUse, "address already in use");
+            return Err(error);
+        }
+
+        let usc = Arc::new(qudp::UdpSocketController::new(addr)?);
+        let addr = usc.local_addr()?;
+
+        let usc = ArcUsc { usc, addr };
+
+        let recv_task = tokio::spawn(recv_task(usc.clone()));
+        entry.insert((usc.clone(), recv_task));
 
         Ok(usc)
     }

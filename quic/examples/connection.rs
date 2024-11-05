@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use quic::QuicClient;
 use rustls::{client::WebPkiServerVerifier, pki_types::CertificateDer};
@@ -20,11 +20,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .unwrap();
 
+    let v4 = "127.0.0.1:8080".parse().unwrap();
+    let v6 = "[2001:db8::1]:8080".parse::<SocketAddr>().unwrap();
     let client = QuicClient::builder()
-        .reuse_addresses([
-            "[2001:db8::1]:8080".parse().unwrap(),
-            "127.0.0.1:8080".parse().unwrap(),
-        ])
+        .bind(&[v4, v6][..])?
         .reuse_connection()
         .enable_happy_eyeballs()
         .prefer_versions([0x00000001u32])

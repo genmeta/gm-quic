@@ -57,7 +57,7 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
     )]);
 
     let client = QuicClient::builder()
-        .reuse_addresses([args.bind])
+        .bind(args.bind)?
         .reuse_connection()
         .enable_happy_eyeballs()
         .prefer_versions([0x00000001u32])
