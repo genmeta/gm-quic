@@ -6,6 +6,11 @@ use header::io::WriteHeader;
 
 use crate::{
     cid::ConnectionId,
+    frame::{
+        io::{WriteDataFrame, WriteFrame},
+        BeFrame, ContainSpec, Spec,
+    },
+    util::DescribeData,
     varint::{EncodeBytes, VarInt, WriteVarInt},
 };
 
@@ -147,6 +152,21 @@ pub struct PacketWriter<'b> {
     cursor: usize,
     end: usize,
     tag_len: usize,
+
+    // Packets containing only frames with [`Spec::N`] are not ack-eliciting;
+    // otherwise, they are ack-eliciting.
+    ack_eliciting: bool,
+    // A Boolean that indicates whether the packet counts toward bytes in flight.
+    // See [Section 2](https://www.rfc-editor.org/rfc/rfc9002#section-2)
+    // and [Appendix A.1](https://www.rfc-editor.org/rfc/rfc9002#section-a.1)
+    // of [QUIC Recovery](https://www.rfc-editor.org/rfc/rfc9002).
+    //
+    // Packets containing only frames with [`Spec::C`] do not
+    // count toward bytes in flight for congestion control purposes.
+    in_flight: bool,
+    // Packets containing only frames with [`Spec::P`] can be used to
+    // probe new network paths during connection migration.
+    _probe_new_path: bool,
 }
 
 impl<'b> PacketWriter<'b> {
@@ -180,11 +200,47 @@ impl<'b> PacketWriter<'b> {
             cursor: hdr_len + len_encoding + encoded_pn.size(),
             end,
             tag_len,
+            ack_eliciting: false,
+            in_flight: false,
+            _probe_new_path: false,
         })
     }
 
     pub fn pad(&mut self, cnt: usize) {
         self.put_bytes(0, cnt);
+    }
+
+    pub fn write_frame<F>(&mut self, frame: &F)
+    where
+        F: BeFrame,
+        Self: WriteFrame<F>,
+    {
+        let specs = frame.frame_type().specs();
+        self.ack_eliciting |= !specs.contain(Spec::N);
+        self.in_flight |= !specs.contain(Spec::C);
+
+        self.put_frame(frame);
+    }
+
+    pub fn write_data_frame<F, D>(&mut self, frame: &F, data: &D)
+    where
+        F: BeFrame,
+        D: DescribeData,
+        Self: WriteDataFrame<F, D>,
+    {
+        self.ack_eliciting = true;
+        self.in_flight = true;
+        self.put_data_frame(frame, data);
+    }
+
+    #[inline]
+    pub fn is_ack_eliciting(&self) -> bool {
+        self.ack_eliciting
+    }
+
+    #[inline]
+    pub fn in_flight(&self) -> bool {
+        self.in_flight
     }
 
     pub fn encrypt_long_packet(

@@ -178,6 +178,10 @@ impl Constraints {
     ///
     /// The `len` is how much data was written to the constrained buffer, `is_just_ack` instruct whether the send quota
     /// should be consume.
+    ///
+    /// See [section-12.4-14.4.1](https//rfc-editor.org/rfc/rfc9000.html#section-12.4-14.4.1)
+    /// and [table 3](https//rfc-editor.org/rfc/rfc9000.html#table-3)
+    /// of [RFC9000](https//rfc-editor.org/rfc/rfc9000.html) for more details.
     pub fn commit(&mut self, len: usize, is_just_ack: bool) {
         self.credit_limit = self.credit_limit.saturating_sub(len);
         if !is_just_ack {
