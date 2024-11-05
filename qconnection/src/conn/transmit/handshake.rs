@@ -27,7 +27,7 @@ impl HandshakeSpaceReader {
         scid: ConnectionId,
         dcid: ConnectionId,
         ack_pkt: Option<(u64, Instant)>,
-    ) -> Option<(u64, bool, bool, usize, bool, Option<u64>)> {
+    ) -> Option<(u64, bool, usize, bool, Option<u64>)> {
         // 1. 判定keys是否有效，无效或者尚未拿到，直接返回
         let k = self.keys.get_local_keys()?;
 
@@ -52,7 +52,6 @@ impl HandshakeSpaceReader {
         let (mut pn_buf, mut body_buf) = payload_buf.split_at_mut(encoded_pn.size());
 
         let mut is_ack_eliciting = false;
-        let mut is_just_ack = true;
         let mut in_flight = false;
         let body_size = body_buf.remaining_mut();
 
@@ -73,7 +72,6 @@ impl HandshakeSpaceReader {
             send_guard.record_frame(frame);
             body_buf = &mut body_buf[n..];
             is_ack_eliciting = true;
-            is_just_ack = false;
             in_flight = true;
         }
         drop(send_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
@@ -116,13 +114,6 @@ impl HandshakeSpaceReader {
             pn_len,
         );
 
-        Some((
-            pn,
-            is_ack_eliciting,
-            is_just_ack,
-            pkt_size,
-            in_flight,
-            sent_ack,
-        ))
+        Some((pn, is_ack_eliciting, pkt_size, in_flight, sent_ack))
     }
 }
