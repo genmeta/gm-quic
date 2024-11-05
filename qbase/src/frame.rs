@@ -80,6 +80,51 @@ pub trait BeFrame {
     }
 }
 
+/// The `Spec` summarizes any special rules governing the processing
+/// or generation of the frame type, as indicated by the following characters.
+///
+/// See [table-3](https://www.rfc-editor.org/rfc/rfc9000.html#table-3)
+/// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
+pub enum Spec {
+    /// Packets containing only frames with this marking are not ack-eliciting.
+    ///
+    /// See [Section 13.2](https://www.rfc-editor.org/rfc/rfc9000.html#generating-acks)
+    /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
+    N = 1,
+    /// Packets containing only frames with this marking do not count toward bytes
+    /// in flight for congestion control purposes.
+    /// See [section-12.4-14.4](https://www.rfc-editor.org/rfc/rfc9000.html#section-12.4-14.4)
+    /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html).
+    ///
+    /// Similar to TCP, packets containing only ACK frames do not count toward bytes
+    /// in flight and are not congestion controlled.
+    /// See [Section 7.4](https://www.rfc-editor.org/rfc/rfc9002#section-7-4)
+    /// of [QUIC-RECOVERY](https://www.rfc-editor.org/rfc/rfc9002).
+    C = 2,
+    /// Packets containing only frames with this marking can be used to probe
+    /// new network paths during connection migration.
+    ///
+    /// See [Section 9.1](https://www.rfc-editor.org/rfc/rfc9000.html#probing)
+    /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html).
+    P = 4,
+    /// The contents of frames with this marking are flow controlled.
+    ///
+    /// See [Section 4](https://www.rfc-editor.org/rfc/rfc9000.html#flow-control)
+    /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
+    F = 8,
+}
+
+pub trait ContainSpec {
+    fn contain(&self, spec: Spec) -> bool;
+}
+
+impl ContainSpec for u8 {
+    #[inline]
+    fn contain(&self, spec: Spec) -> bool {
+        *self & spec as u8 != 0
+    }
+}
+
 /// The sum type of all the core QUIC frame types.
 ///
 /// See [table-3](https://www.rfc-editor.org/rfc/rfc9000.html#table-3)
@@ -132,7 +177,7 @@ pub enum FrameType {
 }
 
 impl FrameType {
-    /// Determine if a frame type belongs to the given packet_type
+    /// Return whether a frame type belongs to the given packet_type
     pub fn belongs_to(&self, packet_type: Type) -> bool {
         use crate::packet::r#type::{
             long::{Type::V1, Ver1},
@@ -179,6 +224,23 @@ impl FrameType {
             }
             FrameType::HandshakeDone => l,
             FrameType::Datagram(_) => o | l,
+        }
+    }
+
+    /// Return the specs of the frame type
+    pub fn specs(&self) -> u8 {
+        let (n, c, p, f) = (1, 2, 4, 8);
+        match self {
+            FrameType::Padding => n | p,
+            FrameType::Ack(_) => n | c,
+            FrameType::Stream(_) => f,
+            FrameType::NewConnectionId => p,
+            FrameType::PathChallenge => p,
+            FrameType::PathResponse => p,
+            // different from [table 3](https://www.rfc-editor.org/rfc/rfc9000.html#table-3),
+            // add the [`Spec::C`] for the CONNECTION_CLOSE frame
+            FrameType::ConnectionClose(_) => n | c,
+            _ => 0,
         }
     }
 

@@ -55,20 +55,16 @@ async fn run() -> Result<(), Box<dyn core::error::Error>> {
     // DNS lookup
 
     let uri = opt.uri.parse::<http::Uri>()?;
-
     if uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
         Err("uri scheme must be 'https'")?;
     }
 
     let auth = uri.authority().ok_or("uri must have a host")?.clone();
-
     let port = auth.port_u16().unwrap_or(443);
-
     let addr = tokio::net::lookup_host((auth.host(), port))
         .await?
         .next()
         .ok_or("dns found no addresses")?;
-
     info!("DNS lookup for {:?}: {:?}", uri, addr);
 
     // create quinn client endpoint
@@ -97,7 +93,6 @@ async fn run() -> Result<(), Box<dyn core::error::Error>> {
         .with_keylog(opt.key_log_file)
         .with_alpns([ALPN.into()])
         .build();
-
     let conn = quic_client.connect(auth.host(), addr)?;
 
     // create h3 client
@@ -105,12 +100,8 @@ async fn run() -> Result<(), Box<dyn core::error::Error>> {
     // h3 is designed to work with different QUIC implementations via
     // a generic interface, that is, the [`quic::Connection`] trait.
     // h3_quinn implements the trait w/ quinn to make it work with h3.
-    info!("Handshaking");
     let gm_quic_conn = h3_shim::QuicConnection::new(conn).await;
-    info!("QUIC connection established");
-
     let (mut conn, mut send_request) = h3::client::new(gm_quic_conn).await?;
-
     let driver = async move {
         future::poll_fn(|cx| conn.poll_close(cx)).await?;
         // tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -137,9 +128,7 @@ async fn run() -> Result<(), Box<dyn core::error::Error>> {
         stream.finish().await?;
 
         info!("receiving response ...");
-
         let resp = stream.recv_response().await?;
-
         info!("response: {:?} {}", resp.version(), resp.status());
         info!("headers: {:#?}", resp.headers());
 
@@ -152,13 +141,11 @@ async fn run() -> Result<(), Box<dyn core::error::Error>> {
         }
 
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
         Ok::<_, Box<dyn std::error::Error + 'static + Send + Sync>>(())
     };
 
     let derive = tokio::spawn(driver);
     let request = tokio::spawn(request);
-
     #[allow(clippy::question_mark)]
     if let Err(e) = derive.await? {
         return Err(e);
