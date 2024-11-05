@@ -1,6 +1,6 @@
 use std::{
     io::{self},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
     path::Path,
     sync::Arc,
 };
@@ -18,13 +18,14 @@ use rustls::{
     ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
 };
 
-use crate::{get_or_create_usc, ConnKey, QuicConnection, CONNECTIONS};
+use crate::{create_new_usc, get_or_create_usc, ConnKey, QuicConnection, CONNECTIONS};
 
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 
 /// 其实是一个Builder，最终得到一个ArcConnection
 pub struct QuicClient {
-    reuse_addresses: Vec<SocketAddr>,
+    bind_addresseses: Vec<SocketAddr>,
+    reuse_udp_sockets: bool,
     _reuse_connection: bool, // TODO
     _enable_happy_eyepballs: bool,
     _prefered_versions: Vec<u32>,
@@ -35,14 +36,6 @@ pub struct QuicClient {
 }
 
 impl QuicClient {
-    /// 无论向哪里发起连接，都使用同一个本地的USC，包括一对v4和v6的，这在P2P场景下很有用
-    pub fn solo() -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
-        QuicClient::builder().reuse_addresses([
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
-        ])
-    }
-
     /// 绑定一个地址，若该地址
     /// - 已经有了usc(UdpSocket controller)，且已在注册管理中，那就查找即可
     /// - 要是没有查到，那就新建一个usc，然后注册管理起来
@@ -66,7 +59,8 @@ impl QuicClient {
     /// ```
     pub fn builder() -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         QuicClientBuilder {
-            reuse_addresses: vec![],
+            bind_addresses: vec![],
+            reuse_udp_sockets: false,
             reuse_connection: true,
             enable_happy_eyepballs: false,
             preferred_versions: vec![1],
@@ -79,7 +73,8 @@ impl QuicClient {
 
     pub fn builder_with_tls(tls_config: TlsClientConfig) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
-            reuse_addresses: vec![],
+            bind_addresses: vec![],
+            reuse_udp_sockets: false,
             reuse_connection: true,
             enable_happy_eyepballs: false,
             preferred_versions: vec![1],
@@ -91,9 +86,10 @@ impl QuicClient {
     }
 
     /// 重新绑定地址，其后创建的连接，会使用新的绑定地址
-    pub fn set_reuse_addresses(&mut self, addresses: impl IntoIterator<Item = SocketAddr>) {
-        self.reuse_addresses.clear();
-        self.reuse_addresses.extend(addresses);
+    pub fn rebind(&mut self, addrs: impl ToSocketAddrs) -> io::Result<()> {
+        self.bind_addresseses.clear();
+        self.bind_addresseses.extend(addrs.to_socket_addrs()?);
+        Ok(())
     }
 
     fn gen_cid() -> ConnectionId {
@@ -117,28 +113,36 @@ impl QuicClient {
     ) -> io::Result<Arc<QuicConnection>> {
         let server_name = server_name.into();
 
-        let bind_addr = if self.reuse_addresses.is_empty() {
-            if server_addr.is_ipv4() {
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
-            } else {
-                SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
-            }
+        let usc_creator = if self.reuse_udp_sockets {
+            get_or_create_usc
         } else {
-            let no_suitable_address = || {
-                let message = format!(
-                    "No suitable given address found for host {} whose socket address is {}",
-                    server_name, server_addr
-                );
-                io::Error::new(io::ErrorKind::AddrNotAvailable, message)
-            };
-            self.reuse_addresses
-                .iter()
-                .find(|addr| addr.is_ipv4() == server_addr.is_ipv4())
-                .ok_or_else(no_suitable_address)
-                .copied()?
+            create_new_usc
         };
 
-        let usc = get_or_create_usc(&bind_addr)?;
+        let usc = if self.bind_addresseses.is_empty() {
+            if server_addr.is_ipv4() {
+                (usc_creator)(&SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+            } else {
+                (usc_creator)(&SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
+            }
+        } else {
+            // similar to std::net::UdpSocket::bind
+            let mut last_error = None;
+
+            let no_suite_address =
+                || io::Error::new(io::ErrorKind::AddrNotAvailable, "No available address");
+            self.bind_addresseses
+                .iter()
+                .filter(|addr| addr.is_ipv4() == server_addr.is_ipv4())
+                .find_map(|suite_addr| {
+                    match (usc_creator)(suite_addr) {
+                        Ok(usc) => return Some(usc),
+                        Err(err) => last_error = Some(err),
+                    }
+                    None
+                })
+                .ok_or(last_error.ok_or_else(no_suite_address)?)
+        }?;
 
         let pathway = Pathway::Direct {
             local: usc.local_addr()?,
@@ -183,7 +187,8 @@ impl QuicClient {
 }
 
 pub struct QuicClientBuilder<T> {
-    reuse_addresses: Vec<SocketAddr>,
+    bind_addresses: Vec<SocketAddr>,
+    reuse_udp_sockets: bool,
     reuse_connection: bool,
     enable_happy_eyepballs: bool,
     preferred_versions: Vec<u32>,
@@ -201,14 +206,20 @@ impl<T> QuicClientBuilder<T> {
         self
     }
 
+    pub fn bind(mut self, addrs: impl ToSocketAddrs) -> io::Result<Self> {
+        self.bind_addresses.clear();
+        self.bind_addresses.extend(addrs.to_socket_addrs()?);
+        Ok(self)
+    }
+
     /// 是否高效复用连接，假如已经有了一个到server_name的连接，那再去连的话，就直接复用
     pub fn reuse_connection(mut self) -> Self {
         self.reuse_connection = true;
         self
     }
 
-    pub fn reuse_addresses(mut self, addresses: impl IntoIterator<Item = SocketAddr>) -> Self {
-        self.reuse_addresses.extend(addresses);
+    pub fn reuse_udp_sockets(mut self) -> Self {
+        self.reuse_udp_sockets = true;
         self
     }
 
@@ -255,7 +266,8 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         root_store: impl Into<Arc<rustls::RootCertStore>>,
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
-            reuse_addresses: self.reuse_addresses,
+            bind_addresses: self.bind_addresses,
+            reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             preferred_versions: self.preferred_versions,
@@ -270,7 +282,8 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         verifier: Arc<rustls::client::WebPkiServerVerifier>,
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
-            reuse_addresses: self.reuse_addresses,
+            bind_addresses: self.bind_addresses,
+            reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             preferred_versions: self.preferred_versions,
@@ -295,7 +308,8 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         let key_der = PrivateKeyDer::try_from(key).unwrap();
 
         QuicClientBuilder {
-            reuse_addresses: self.reuse_addresses,
+            bind_addresses: self.bind_addresses,
+            reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             preferred_versions: self.preferred_versions,
@@ -311,7 +325,8 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
 
     pub fn without_cert(self) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
-            reuse_addresses: self.reuse_addresses,
+            bind_addresses: self.bind_addresses,
+            reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             preferred_versions: self.preferred_versions,
@@ -327,7 +342,8 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         cert_resolver: Arc<dyn rustls::client::ResolvesClientCert>,
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
-            reuse_addresses: self.reuse_addresses,
+            bind_addresses: self.bind_addresses,
+            reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             preferred_versions: self.preferred_versions,
@@ -356,7 +372,8 @@ impl QuicClientBuilder<TlsClientConfig> {
 
     pub fn build(self) -> QuicClient {
         QuicClient {
-            reuse_addresses: self.reuse_addresses,
+            bind_addresseses: self.bind_addresses,
+            reuse_udp_sockets: self.reuse_udp_sockets,
             _reuse_connection: self.reuse_connection,
             _enable_happy_eyepballs: self.enable_happy_eyepballs,
             _prefered_versions: self.preferred_versions,
