@@ -54,7 +54,7 @@ impl DataSpaceReader {
         spin: SpinBit,
         ack_pkt: Option<(u64, Instant)>,
         (hpk, pk): (Arc<dyn HeaderProtectionKey>, ArcOneRttPacketKeys),
-    ) -> Option<(u64, bool, bool, usize, usize, bool, Option<u64>)> {
+    ) -> Option<(u64, bool, usize, usize, bool, Option<u64>)> {
         // 0. 检查1rtt keys是否有效，没有则回退到0rtt包
         // 1. 生成包头，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
         let hdr = OneRttHeader { spin, dcid };
@@ -77,7 +77,6 @@ impl DataSpaceReader {
         let (mut pn_buf, mut body_buf) = payload_buf.split_at_mut(encoded_pn.size());
 
         let mut is_ack_eliciting = false;
-        let mut is_just_ack = true;
         let mut in_flight = false;
         let body_size = body_buf.remaining_mut();
 
@@ -86,7 +85,6 @@ impl DataSpaceReader {
         if n > 0 {
             send_guard.record_trivial();
             is_ack_eliciting = true;
-            is_just_ack = false;
             in_flight = true;
             body_buf = &mut body_buf[n..];
         }
@@ -94,7 +92,6 @@ impl DataSpaceReader {
         if n > 0 {
             send_guard.record_trivial();
             is_ack_eliciting = true;
-            is_just_ack = false;
             in_flight = true;
             body_buf = &mut body_buf[n..];
         }
@@ -116,7 +113,6 @@ impl DataSpaceReader {
             send_guard.record_frame(GuaranteedFrame::Reliable(frame));
             body_buf = &mut body_buf[n..];
             is_ack_eliciting = true;
-            is_just_ack = false;
             in_flight = true;
         }
 
@@ -127,7 +123,6 @@ impl DataSpaceReader {
             send_guard.record_frame(GuaranteedFrame::Crypto(frame));
             body_buf = &mut body_buf[n..];
             is_ack_eliciting = true;
-            is_just_ack = false;
             in_flight = true;
         }
 
@@ -135,7 +130,6 @@ impl DataSpaceReader {
         while let Some((_frame, n)) = self.datagrams.try_read_datagram(body_buf) {
             body_buf = &mut body_buf[n..];
             is_ack_eliciting = true;
-            is_just_ack = false;
             in_flight = true;
         }
 
@@ -147,7 +141,6 @@ impl DataSpaceReader {
             fresh_bytes += m;
             body_buf = &mut body_buf[n..];
             is_ack_eliciting = true;
-            is_just_ack = false;
             in_flight = true;
         }
 
@@ -189,7 +182,6 @@ impl DataSpaceReader {
         Some((
             pn,
             is_ack_eliciting,
-            is_just_ack,
             sent_size,
             fresh_bytes,
             in_flight,

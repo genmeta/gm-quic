@@ -48,12 +48,12 @@ impl ReadIntoDatagrams {
 
         let ack_pkt = self.cc.need_ack(Epoch::Initial);
         // 按顺序发，先发Initial空间的，到Initial数据包
-        if let Some((padding, len, is_just_ack)) = self
+        if let Some((padding, len, in_flight)) = self
             .initial_space_reader
             .try_read(buffer, self.scid, dcid, ack_pkt)
         {
             // 若真的只包含ack， 后续只会追加padding，追加的padding也可以看成是新的InitialPacket数据包
-            constraints.commit(len, is_just_ack);
+            constraints.commit(len, in_flight);
 
             let (wrote, fresh_bytes) = {
                 let remain = &mut buffer[len..];
@@ -61,7 +61,7 @@ impl ReadIntoDatagrams {
             };
 
             let padding_len = if wrote == 0 { MSS.min(send_quota) } else { 0 };
-            let (pn, is_ack_eliciting, is_just_ack, sent_bytes, in_flight, sent_ack) =
+            let (pn, is_ack_eliciting, sent_bytes, in_flight, sent_ack) =
                 padding(buffer, padding_len);
             self.cc.on_pkt_sent(
                 Epoch::Initial,
@@ -72,7 +72,7 @@ impl ReadIntoDatagrams {
                 sent_ack,
             );
             // 减除initial数据包已经commit的
-            constraints.commit(sent_bytes - len, is_just_ack);
+            constraints.commit(sent_bytes - len, in_flight);
             (wrote + sent_bytes, fresh_bytes)
         } else {
             self.read_other_space(constraints, flow_limit, buffer, dcid)
@@ -131,15 +131,7 @@ impl ReadIntoDatagrams {
             let ack_pkt = self.cc.need_ack(Epoch::Data);
             let spin = self.spin.load(Ordering::Relaxed);
             let spin = SpinBit::from(spin);
-            if let Some((
-                pn,
-                is_ack_eliciting,
-                is_just_ack,
-                sent_bytes,
-                fresh_len,
-                in_flight,
-                sent_ack,
-            )) = self
+            if let Some((pn, is_ack_eliciting, sent_bytes, fresh_len, in_flight, sent_ack)) = self
                 .data_space_reader
                 .try_read_1rtt(buffer, flow_limit, dcid, spin, ack_pkt, keys)
             {
@@ -151,7 +143,7 @@ impl ReadIntoDatagrams {
                     in_flight,
                     sent_ack,
                 );
-                constraints.commit(sent_bytes, is_just_ack);
+                constraints.commit(sent_bytes, in_flight);
                 written += sent_bytes;
                 fresh_bytes += fresh_len;
             }
@@ -168,7 +160,7 @@ impl ReadIntoDatagrams {
     ) -> usize {
         // 再尝试写handshake空间的
         let ack_pkt = self.cc.need_ack(Epoch::Handshake);
-        if let Some((pn, is_ack_eliciting, is_just_ack, sent_bytes, in_flight, sent_ack)) = self
+        if let Some((pn, is_ack_eliciting, sent_bytes, in_flight, sent_ack)) = self
             .handshake_space_reader
             .try_read(buffer, self.scid, dcid, ack_pkt)
         {
@@ -180,7 +172,7 @@ impl ReadIntoDatagrams {
                 in_flight,
                 sent_ack,
             );
-            constraints.commit(sent_bytes, is_just_ack);
+            constraints.commit(sent_bytes, in_flight);
             return sent_bytes;
         }
         0

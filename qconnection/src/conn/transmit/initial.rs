@@ -33,7 +33,7 @@ impl InitialSpaceReader {
         dcid: ConnectionId,
         ack_pkt: Option<(u64, Instant)>,
     ) -> Option<(
-        impl FnOnce(&mut [u8], usize) -> (u64, bool, bool, usize, bool, Option<u64>),
+        impl FnOnce(&mut [u8], usize) -> (u64, bool, usize, bool, Option<u64>),
         usize,
         bool,
     )> {
@@ -62,7 +62,6 @@ impl InitialSpaceReader {
         let (mut pn_buf, mut body_buf) = payload_buf.split_at_mut(encoded_pn.size());
 
         let mut is_ack_eliciting = false;
-        let mut is_just_ack = true;
         let mut in_flight = false;
         let body_size = body_buf.remaining_mut();
 
@@ -82,7 +81,6 @@ impl InitialSpaceReader {
         while let Some((frame, n)) = self.crypto_stream_outgoing.try_read_data(body_buf) {
             send_guard.record_frame(frame);
             body_buf = &mut body_buf[n..];
-            is_just_ack = false;
             is_ack_eliciting = true;
             in_flight = true;
         }
@@ -100,7 +98,7 @@ impl InitialSpaceReader {
         pn_buf.put_packet_number(encoded_pn);
 
         Some((
-            move |buf: &mut [u8], len: usize| -> (u64, bool, bool, usize, bool, Option<u64>) {
+            move |buf: &mut [u8], len: usize| -> (u64, bool, usize, bool, Option<u64>) {
                 // 6. 填充，保护头部，加密
                 let (_hdr_buf, remain) = buf.split_at_mut(hdr_len - 2);
                 let (mut length_buf, remain) = remain.split_at_mut(2);
@@ -110,7 +108,7 @@ impl InitialSpaceReader {
                 // 追加padding
                 if len > pkt_size {
                     remain.put_bytes(0, len - pkt_size);
-                    is_just_ack = false;
+                    in_flight = true;
                     body_len += len - pkt_size;
                     pkt_size = len;
                 }
@@ -140,17 +138,10 @@ impl InitialSpaceReader {
                     hdr_len,
                     pn_len,
                 );
-                (
-                    pn,
-                    is_ack_eliciting,
-                    is_just_ack,
-                    pkt_size,
-                    in_flight,
-                    sent_ack,
-                )
+                (pn, is_ack_eliciting, pkt_size, in_flight, sent_ack)
             },
             hdr_len + pn_len + body_len + tag_len,
-            is_just_ack,
+            in_flight,
         ))
     }
 }

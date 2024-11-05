@@ -182,9 +182,9 @@ impl Constraints {
     /// See [section-12.4-14.4.1](https//rfc-editor.org/rfc/rfc9000.html#section-12.4-14.4.1)
     /// and [table 3](https//rfc-editor.org/rfc/rfc9000.html#table-3)
     /// of [RFC9000](https//rfc-editor.org/rfc/rfc9000.html) for more details.
-    pub fn commit(&mut self, len: usize, is_just_ack: bool) {
+    pub fn commit(&mut self, len: usize, in_flight: bool) {
         self.credit_limit = self.credit_limit.saturating_sub(len);
-        if !is_just_ack {
+        if in_flight {
             self.send_quota = self.send_quota.saturating_sub(len);
         }
     }
