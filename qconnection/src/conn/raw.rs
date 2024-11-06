@@ -14,9 +14,10 @@ use qbase::{
     param::Parameters,
     sid::{ControlConcurrency, Role},
     token::{ArcTokenRegistry, TokenRegistry},
+    Epoch,
 };
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
-use qrecovery::{journal::Epoch, reliable::ArcReliableFrameDeque};
+use qrecovery::reliable::ArcReliableFrameDeque;
 use qunreliable::DatagramFlow;
 use rustls::quic::Keys;
 use tokio::{sync::Notify, task::JoinHandle};

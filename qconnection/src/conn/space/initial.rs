@@ -9,11 +9,12 @@ use qbase::{
         keys::ArcKeys,
         long, DataHeader,
     },
+    Epoch,
 };
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
-    journal::{Epoch, InitialJournal},
+    journal::InitialJournal,
 };
 use tokio::{sync::Notify, task::JoinHandle};
 
