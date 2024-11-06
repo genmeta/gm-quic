@@ -96,7 +96,17 @@ impl Drop for QuicConnection {
 
 async fn usc_recv_task(usc: ArcUsc) {
     let mut receiver = usc.receiver();
-    while let Ok(msg_count) = receiver.recv().await {
+    loop {
+        let msg_count = match receiver.recv().await {
+            Ok(msg_count) => msg_count,
+            Err(err) => {
+                let addr = usc.local_addr();
+                log::error!("Error while receiving datagrams from {} : {:?}", addr, err);
+                QuicServer::on_socket_close(addr);
+                break;
+            }
+        };
+
         for (hdr, buf) in core::iter::zip(&receiver.headers, &receiver.iovecs).take(msg_count) {
             let data: BytesMut = buf[0..hdr.seg_size as usize].into();
             let pathway = Pathway::Direct {

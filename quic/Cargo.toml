@@ -26,6 +26,7 @@ clap = { workspace = true }
 env_logger = { workspace = true }
 rustls = { workspace = true, features = ["ring"] }
 url = { workspace = true }
+tokio = { features = ["fs"], workspace = true }
 
 [[example]]
 name = "client"

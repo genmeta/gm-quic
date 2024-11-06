@@ -99,6 +99,11 @@ pub struct ArcUsc {
 }
 
 impl ArcUsc {
+    /// Get the local address that the udp socket bound.
+    pub fn local_addr(&self) -> SocketAddr {
+        self.addr
+    }
+
     /// Poll send the datagrams via the given pathway.
     pub fn poll_send_via(
         &self,
