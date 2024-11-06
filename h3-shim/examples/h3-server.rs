@@ -94,9 +94,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_supported_versions([1u32])
         .without_cert_verifier()
         .enable_sni()
-        .add_host("localhost", cert, key)
+        .add_host_with_cert_files("localhost", cert, key)?
         .with_alpns([ALPN.to_vec()])
-        .listen(opt.listen)?;
+        .listen(&opt.listen[..])?;
 
     // handle incoming connections and requests
 

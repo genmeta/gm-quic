@@ -145,7 +145,7 @@ impl QuicClient {
         }?;
 
         let pathway = Pathway::Direct {
-            local: usc.local_addr()?,
+            local: usc.local_addr(),
             remote: server_addr,
         };
 
