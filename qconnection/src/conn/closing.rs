@@ -18,7 +18,7 @@ use qbase::{
     packet::{long, DataHeader, DataPacket},
 };
 
-use super::scope::{data::ClosingOneRttScope, handshake::ClosingHandshakeScope, RecvPacket};
+use super::space::{data::ClosingOneRttScope, handshake::ClosingHandshakeScope, RecvPacket};
 use crate::{path::Pathway, usc::ArcUsc};
 
 pub struct CcfPackets {

@@ -40,7 +40,7 @@ pub mod closing;
 pub mod draining;
 pub mod parameters;
 pub mod raw;
-pub mod scope;
+pub mod space;
 pub mod transmit;
 
 pub type PacketEntry = mpsc::UnboundedSender<(DataPacket, Pathway, ArcUsc)>;
@@ -489,7 +489,7 @@ impl ArcConnection {
                 .cid_registry
                 .remote
                 .revise_initial_dcid(retry.scid);
-            let sent_record = connection.initial.space.sent_packets();
+            let sent_record = connection.initial.journal.sent();
             let mut guard = sent_record.recv();
             for i in 0..guard.largest_pn() {
                 for frame in guard.may_loss_pkt(i) {

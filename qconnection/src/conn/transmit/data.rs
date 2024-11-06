@@ -16,8 +16,8 @@ use qbase::{
 };
 use qrecovery::{
     crypto::CryptoStreamOutgoing,
+    journal::DataJournal,
     reliable::{ArcReliableFrameDeque, GuaranteedFrame},
-    space::DataSpace,
 };
 use qunreliable::DatagramFlow;
 use rustls::quic::HeaderProtectionKey;
@@ -26,7 +26,7 @@ use crate::{conn::DataStreams, path::SendBuffer};
 
 #[derive(Clone)]
 pub struct DataSpaceReader {
-    pub space: DataSpace,
+    pub journal: DataJournal,
     pub zero_rtt_keys: ArcKeys,
     pub one_rtt_keys: ArcOneRttKeys,
     // 数据源
@@ -68,9 +68,9 @@ impl DataSpaceReader {
         let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
 
         // 2. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
-        let sent_pkt_records = self.space.sent_packets();
-        let mut send_guard = sent_pkt_records.send();
-        let (pn, encoded_pn) = send_guard.next_pn();
+        let sent_journal = self.journal.sent();
+        let mut journal_guard = sent_journal.send();
+        let (pn, encoded_pn) = journal_guard.next_pn();
         if payload_buf.remaining_mut() <= encoded_pn.size() {
             return None;
         }
@@ -83,14 +83,14 @@ impl DataSpaceReader {
         // 3. 检查PathFrameBuffer，尝试写，但发送记录并不记录，若写入，则constraints开始记录
         let n = self.challenge_sndbuf.try_read(body_buf);
         if n > 0 {
-            send_guard.record_trivial();
+            journal_guard.record_trivial();
             is_ack_eliciting = true;
             in_flight = true;
             body_buf = &mut body_buf[n..];
         }
         let n = self.response_sndbuf.try_read(body_buf);
         if n > 0 {
-            send_guard.record_trivial();
+            journal_guard.record_trivial();
             is_ack_eliciting = true;
             in_flight = true;
             body_buf = &mut body_buf[n..];
@@ -99,18 +99,18 @@ impl DataSpaceReader {
         // 4. 检查是否需要发送Ack，若是，且符合（constraints + buf）节制，生成ack并写入，但发送记录并不记录
         let mut sent_ack = None;
         if let Some((largest, recv_time)) = ack_pkt {
-            let rcvd_pkt_records = self.space.rcvd_packets();
+            let rcvd_pkt_records = self.journal.rcvd();
             let n = rcvd_pkt_records
                 .read_ack_frame_util(body_buf, largest, recv_time)
                 .unwrap();
-            send_guard.record_trivial();
+            journal_guard.record_trivial();
             sent_ack = Some(largest);
             body_buf = &mut body_buf[n..];
         }
 
         // 5. 检查可靠帧，若有且符合（constraints + buf）节制，写入，burst、发包记录都记录
         while let Some((frame, n)) = self.reliable_frames.try_read(body_buf) {
-            send_guard.record_frame(GuaranteedFrame::Reliable(frame));
+            journal_guard.record_frame(GuaranteedFrame::Reliable(frame));
             body_buf = &mut body_buf[n..];
             is_ack_eliciting = true;
             in_flight = true;
@@ -120,7 +120,7 @@ impl DataSpaceReader {
 
         // 7. 检查一下CryptoStream，服务器可能会发送一些数据
         while let Some((frame, n)) = self.crypto_stream_outgoing.try_read_data(body_buf) {
-            send_guard.record_frame(GuaranteedFrame::Crypto(frame));
+            journal_guard.record_frame(GuaranteedFrame::Crypto(frame));
             body_buf = &mut body_buf[n..];
             is_ack_eliciting = true;
             in_flight = true;
@@ -136,7 +136,7 @@ impl DataSpaceReader {
         // 9. 检查DataStreams是否需要发送，若有，且符合（constraints + buf）节制，写入，burst、发包记录都记录
         let mut fresh_bytes = 0;
         while let Some((frame, n, m)) = self.streams.try_read_data(body_buf, flow_limit) {
-            send_guard.record_frame(GuaranteedFrame::Stream(frame));
+            journal_guard.record_frame(GuaranteedFrame::Stream(frame));
             flow_limit -= m;
             fresh_bytes += m;
             body_buf = &mut body_buf[n..];
@@ -144,7 +144,7 @@ impl DataSpaceReader {
             in_flight = true;
         }
 
-        drop(send_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
+        drop(journal_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
 
         let hdr_len = hdr_buf.len();
         let pn_len = pn_buf.len();
@@ -213,7 +213,7 @@ impl DataSpaceReader {
         let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
 
         // 3. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
-        let sent_pkt_records = self.space.sent_packets();
+        let sent_pkt_records = self.journal.sent();
         let mut send_guard = sent_pkt_records.send();
         let (pn, encoded_pn) = send_guard.next_pn();
         if payload_buf.remaining_mut() <= encoded_pn.size() {

@@ -4,9 +4,9 @@ pub mod initial;
 
 use std::future::Future;
 
-pub use data::{ClosingOneRttScope, DataScope};
-pub use handshake::{ClosingHandshakeScope, HandshakeScope};
-pub use initial::InitialScope;
+pub use data::{ClosingOneRttScope, DataSpace};
+pub use handshake::{ClosingHandshakeScope, HandshakeSpace};
+pub use initial::InitialSpace;
 use qbase::{
     frame::{Frame, FrameReader},
     packet::{decrypt::decrypt_packet, header::GetType, DataPacket},

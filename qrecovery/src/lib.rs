@@ -28,8 +28,8 @@
 //! [`CryptoStreamOutgoing`]: crate::crypto::CryptoStreamOutgoing
 //! [`CryptoStream`]: crate::crypto::CryptoStream
 pub mod crypto;
+pub mod journal;
 pub mod recv;
 pub mod reliable;
 pub mod send;
-pub mod space;
 pub mod streams;

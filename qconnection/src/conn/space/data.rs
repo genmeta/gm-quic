@@ -28,8 +28,8 @@ use qbase::{
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord, MSS};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
-    reliable::{ArcRcvdPktRecords, ArcReliableFrameDeque, GuaranteedFrame},
-    space::{DataSpace, Epoch},
+    journal::{ArcRcvdJournal, DataJournal, Epoch},
+    reliable::{ArcReliableFrameDeque, GuaranteedFrame},
 };
 use qunreliable::DatagramFlow;
 use tokio::{sync::Notify, task::JoinHandle};
@@ -44,25 +44,25 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct DataScope {
+pub struct DataSpace {
     pub zero_rtt_keys: ArcKeys,
     pub one_rtt_keys: ArcOneRttKeys,
-    pub space: DataSpace,
+    pub journal: DataJournal,
     pub crypto_stream: CryptoStream,
 }
 
-impl Default for DataScope {
+impl Default for DataSpace {
     fn default() -> Self {
         Self {
             zero_rtt_keys: ArcKeys::new_pending(),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
-            space: DataSpace::with_capacity(16),
+            journal: DataJournal::with_capacity(16),
             crypto_stream: CryptoStream::new(4096, 4096),
         }
     }
 }
 
-impl DataScope {
+impl DataSpace {
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
@@ -119,7 +119,7 @@ impl DataScope {
         let on_data_acked = {
             let data_streams = streams.clone();
             let crypto_stream_outgoing = self.crypto_stream.outgoing();
-            let sent_pkt_records = self.space.sent_packets();
+            let sent_pkt_records = self.journal.sent();
             move |ack_frame: &AckFrame| {
                 let mut recv_guard = sent_pkt_records.recv();
                 recv_guard.update_largest(ack_frame.largest.into_inner());
@@ -192,7 +192,7 @@ impl DataScope {
         conn_error: ConnError,
     ) -> JoinHandle<RcvdPackets> {
         tokio::spawn({
-            let rcvd_pkt_records = self.space.rcvd_packets();
+            let rcvd_pkt_records = self.journal.rcvd();
             let keys = self.zero_rtt_keys.clone();
             async move {
                 while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
@@ -263,7 +263,7 @@ impl DataScope {
         conn_error: ConnError,
     ) -> JoinHandle<RcvdPackets> {
         tokio::spawn({
-            let rcvd_pkt_records = self.space.rcvd_packets();
+            let rcvd_pkt_records = self.journal.rcvd();
             let keys = self.one_rtt_keys.clone();
             async move {
                 while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
@@ -385,7 +385,7 @@ impl DataScope {
         datagrams: DatagramFlow,
     ) -> DataSpaceReader {
         DataSpaceReader {
-            space: self.space.clone(),
+            journal: self.journal.clone(),
             zero_rtt_keys: self.zero_rtt_keys.clone(),
             one_rtt_keys: self.one_rtt_keys.clone(),
             challenge_sndbuf,
@@ -398,15 +398,15 @@ impl DataScope {
     }
 }
 
-impl RetirePktRecord for DataScope {
+impl RetirePktRecord for DataSpace {
     fn retire(&self, pn: u64) {
-        self.space.rcvd_packets().write().retire(pn);
+        self.journal.rcvd().write().retire(pn);
     }
 }
 
 #[derive(Clone)]
 pub struct DataMayLoss {
-    space: DataSpace,
+    space: DataJournal,
     reliable_frames: ArcReliableFrameDeque,
     data_streams: DataStreams,
     outgoing: CryptoStreamOutgoing,
@@ -414,7 +414,7 @@ pub struct DataMayLoss {
 
 impl DataMayLoss {
     pub fn new(
-        space: DataSpace,
+        space: DataJournal,
         reliable_frames: ArcReliableFrameDeque,
         data_streams: DataStreams,
         outgoing: CryptoStreamOutgoing,
@@ -429,7 +429,7 @@ impl DataMayLoss {
 }
 impl MayLoss for DataMayLoss {
     fn may_loss(&self, pn: u64) {
-        for frame in self.space.sent_packets().recv().may_loss_pkt(pn) {
+        for frame in self.space.sent().recv().may_loss_pkt(pn) {
             match frame {
                 GuaranteedFrame::Stream(f) => self.data_streams.may_loss_data(&f),
                 GuaranteedFrame::Reliable(f) => self.reliable_frames.send_frame([f]),
@@ -442,7 +442,7 @@ impl MayLoss for DataMayLoss {
 #[derive(Clone)]
 pub struct ClosingOneRttScope {
     keys: (HeaderProtectionKeys, ArcOneRttPacketKeys),
-    rcvd_pkt_records: ArcRcvdPktRecords,
+    rcvd_pkt_records: ArcRcvdJournal,
     // 发包时用得着
     next_sending_pn: (u64, PacketNumber),
 }
@@ -493,15 +493,15 @@ impl ClosingOneRttScope {
     }
 }
 
-impl TryFrom<DataScope> for ClosingOneRttScope {
+impl TryFrom<DataSpace> for ClosingOneRttScope {
     type Error = ();
 
-    fn try_from(data: DataScope) -> Result<Self, Self::Error> {
+    fn try_from(data: DataSpace) -> Result<Self, Self::Error> {
         let Some(keys) = data.one_rtt_keys.invalid() else {
             return Err(());
         };
-        let rcvd_pkt_records = data.space.rcvd_packets();
-        let next_sending_pn = data.space.sent_packets().send().next_pn();
+        let rcvd_pkt_records = data.journal.rcvd();
+        let next_sending_pn = data.journal.sent().send().next_pn();
 
         Ok(Self {
             keys,

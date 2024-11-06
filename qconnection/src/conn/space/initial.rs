@@ -13,7 +13,7 @@ use qbase::{
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
-    space::{Epoch, InitialSpace},
+    journal::{Epoch, InitialJournal},
 };
 use tokio::{sync::Notify, task::JoinHandle};
 
@@ -26,21 +26,21 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct InitialScope {
+pub struct InitialSpace {
     pub keys: ArcKeys,
-    pub space: InitialSpace,
+    pub journal: InitialJournal,
     pub crypto_stream: CryptoStream,
 }
 
-impl InitialScope {
+impl InitialSpace {
     // Initial keys应该是预先知道的，或者传入dcid，可以构造出来
     pub fn new(keys: ArcKeys) -> Self {
-        let space = InitialSpace::with_capacity(16);
+        let journal = InitialJournal::with_capacity(16);
         let crypto_stream = CryptoStream::new(4096, 4096);
 
         Self {
             keys,
-            space,
+            journal,
             crypto_stream,
         }
     }
@@ -71,7 +71,7 @@ impl InitialScope {
         };
         let on_data_acked = {
             let crypto_stream_outgoing = self.crypto_stream.outgoing();
-            let sent_pkt_records = self.space.sent_packets();
+            let sent_pkt_records = self.journal.sent();
             move |ack_frame: &AckFrame| {
                 let mut recv_guard = sent_pkt_records.recv();
                 recv_guard.update_largest(ack_frame.largest.into_inner());
@@ -112,7 +112,7 @@ impl InitialScope {
         let pathes = pathes.clone();
         let conn_error = conn_error.clone();
         tokio::spawn({
-            let rcvd_pkt_records = self.space.rcvd_packets();
+            let rcvd_pkt_records = self.journal.rcvd();
             let keys = self.keys.clone();
             let remote_cids = remote_cids.clone();
             let notify = notify.clone();
@@ -202,7 +202,7 @@ impl InitialScope {
         InitialSpaceReader {
             token,
             keys: self.keys.clone(),
-            space: self.space.clone(),
+            journal: self.journal.clone(),
             crypto_stream_outgoing: self.crypto_stream.outgoing(),
         }
     }
@@ -210,26 +210,26 @@ impl InitialScope {
 
 #[derive(Debug, Clone)]
 pub struct InitialMayLoss {
-    pub space: InitialSpace,
+    pub space: InitialJournal,
     pub outgoing: CryptoStreamOutgoing,
 }
 
 impl InitialMayLoss {
-    pub fn new(space: InitialSpace, outgoing: CryptoStreamOutgoing) -> Self {
+    pub fn new(space: InitialJournal, outgoing: CryptoStreamOutgoing) -> Self {
         Self { space, outgoing }
     }
 }
 
 impl MayLoss for InitialMayLoss {
     fn may_loss(&self, pn: u64) {
-        for frame in self.space.sent_packets().recv().may_loss_pkt(pn) {
+        for frame in self.space.sent().recv().may_loss_pkt(pn) {
             self.outgoing.may_loss_data(&frame);
         }
     }
 }
 
-impl RetirePktRecord for InitialScope {
+impl RetirePktRecord for InitialSpace {
     fn retire(&self, pn: u64) {
-        self.space.rcvd_packets().write().retire(pn);
+        self.journal.rcvd().write().retire(pn);
     }
 }
