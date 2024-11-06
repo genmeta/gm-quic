@@ -13,7 +13,7 @@ use qbase::{
     packet::SpinBit,
 };
 use qcongestion::{ArcCC, CongestionControl, MSS};
-use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
+use qrecovery::{journal::Epoch, reliable::ArcReliableFrameDeque};
 
 use super::{
     anti_amplifier::ANTI_FACTOR,

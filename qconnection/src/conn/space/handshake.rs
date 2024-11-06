@@ -18,8 +18,7 @@ use qbase::{
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord, MSS};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
-    reliable::ArcRcvdPktRecords,
-    space::{Epoch, HandshakeSpace},
+    journal::{ArcRcvdJournal, Epoch, HandshakeJournal},
 };
 use tokio::{sync::Notify, task::JoinHandle};
 
@@ -32,23 +31,23 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct HandshakeScope {
+pub struct HandshakeSpace {
     pub keys: ArcKeys,
-    pub space: HandshakeSpace,
+    pub journal: HandshakeJournal,
     pub crypto_stream: CryptoStream,
 }
 
-impl Default for HandshakeScope {
+impl Default for HandshakeSpace {
     fn default() -> Self {
         Self {
             keys: ArcKeys::new_pending(),
-            space: HandshakeSpace::with_capacity(16),
+            journal: HandshakeJournal::with_capacity(16),
             crypto_stream: CryptoStream::new(4096, 4096),
         }
     }
 }
 
-impl HandshakeScope {
+impl HandshakeSpace {
     pub fn build(
         &self,
         rcvd_packets: RcvdPackets,
@@ -74,7 +73,7 @@ impl HandshakeScope {
         };
         let on_data_acked = {
             let crypto_stream_outgoing = self.crypto_stream.outgoing();
-            let sent_pkt_records = self.space.sent_packets();
+            let sent_pkt_records = self.journal.sent();
             move |ack_frame: &AckFrame| {
                 let mut recv_guard = sent_pkt_records.recv();
                 recv_guard.update_largest(ack_frame.largest.into_inner());
@@ -110,7 +109,7 @@ impl HandshakeScope {
         let conn_error = conn_error.clone();
         let notify = notify.clone();
         tokio::spawn({
-            let rcvd_pkt_records = self.space.rcvd_packets();
+            let rcvd_pkt_records = self.journal.rcvd();
             let keys = self.keys.clone();
             async move {
                 while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
@@ -181,7 +180,7 @@ impl HandshakeScope {
     pub fn reader(&self) -> HandshakeSpaceReader {
         HandshakeSpaceReader {
             keys: self.keys.clone(),
-            space: self.space.clone(),
+            journal: self.journal.clone(),
             crypto_stream_outgoing: self.crypto_stream.outgoing(),
         }
     }
@@ -190,7 +189,7 @@ impl HandshakeScope {
 #[derive(Clone)]
 pub struct ClosingHandshakeScope {
     keys: Arc<rustls::quic::Keys>,
-    rcvd_pkt_records: ArcRcvdPktRecords,
+    rcvd_pkt_records: ArcRcvdJournal,
     // 发包时用得着
     next_sending_pn: (u64, PacketNumber),
 }
@@ -245,15 +244,15 @@ impl ClosingHandshakeScope {
     }
 }
 
-impl TryFrom<HandshakeScope> for ClosingHandshakeScope {
+impl TryFrom<HandshakeSpace> for ClosingHandshakeScope {
     type Error = ();
 
-    fn try_from(hs: HandshakeScope) -> Result<Self, Self::Error> {
+    fn try_from(hs: HandshakeSpace) -> Result<Self, Self::Error> {
         let Some(keys) = hs.keys.invalid() else {
             return Err(());
         };
-        let rcvd_pkt_records = hs.space.rcvd_packets();
-        let next_sending_pn = hs.space.sent_packets().send().next_pn();
+        let rcvd_pkt_records = hs.journal.rcvd();
+        let next_sending_pn = hs.journal.sent().send().next_pn();
 
         Ok(Self {
             keys,
@@ -286,26 +285,26 @@ impl super::RecvPacket for ClosingHandshakeScope {
 
 #[derive(Debug, Clone)]
 pub struct HandshakeMayloss {
-    space: HandshakeSpace,
+    space: HandshakeJournal,
     outgoing: CryptoStreamOutgoing,
 }
 
 impl HandshakeMayloss {
-    pub fn new(space: HandshakeSpace, outgoing: CryptoStreamOutgoing) -> Self {
+    pub fn new(space: HandshakeJournal, outgoing: CryptoStreamOutgoing) -> Self {
         Self { space, outgoing }
     }
 }
 
 impl MayLoss for HandshakeMayloss {
     fn may_loss(&self, pn: u64) {
-        for frame in self.space.sent_packets().recv().may_loss_pkt(pn) {
+        for frame in self.space.sent().recv().may_loss_pkt(pn) {
             self.outgoing.may_loss_data(&frame);
         }
     }
 }
 
-impl RetirePktRecord for HandshakeScope {
+impl RetirePktRecord for HandshakeSpace {
     fn retire(&self, pn: u64) {
-        self.space.rcvd_packets().write().retire(pn);
+        self.journal.rcvd().write().retire(pn);
     }
 }

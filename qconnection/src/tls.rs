@@ -13,7 +13,7 @@ use qbase::{
         Parameters,
     },
 };
-use qrecovery::{crypto::CryptoStream, space::Epoch};
+use qrecovery::{crypto::CryptoStream, journal::Epoch};
 use rustls::{
     crypto::CryptoProvider,
     quic::{KeyChange, Keys},

@@ -56,11 +56,11 @@ pub enum InvalidPacketNumber {
 /// - 根据某个largest pktno，生成ack frame（ack frame不能超过buf大小）
 /// - 确定记录不再需要，可以被丢弃，滑走
 #[derive(Debug, Default)]
-struct RcvdPktRecords {
+struct RcvdJournal {
     queue: IndexDeque<State, VARINT_MAX>,
 }
 
-impl RcvdPktRecords {
+impl RcvdJournal {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             queue: IndexDeque::with_capacity(capacity),
@@ -199,18 +199,18 @@ impl RcvdPktRecords {
 // 接收数据包队列，各处共享的，判断包是否收到以及生成ack frame，只需要读锁；
 // 记录新收到的数据包，或者失活旧数据包并滑走，才需要写锁。
 #[derive(Debug, Clone, Default)]
-pub struct ArcRcvdPktRecords {
-    inner: Arc<RwLock<RcvdPktRecords>>,
+pub struct ArcRcvdJournal {
+    inner: Arc<RwLock<RcvdJournal>>,
 }
 
-impl ArcRcvdPktRecords {
+impl ArcRcvdJournal {
     /// Create a new empty records with the given `capacity`.
     ///
     /// The number of records can exceed the `capacity` specified at creation time, but the internel
     /// implementation strvies to avoid reallocation.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(RcvdPktRecords::with_capacity(capacity))),
+            inner: Arc::new(RwLock::new(RcvdJournal::with_capacity(capacity))),
         }
     }
 
@@ -270,7 +270,7 @@ impl ArcRcvdPktRecords {
 /// 适合一个Path认为它的ack都被处理了之后，哪些收到的包的状态没用了，
 /// 将其失活，最终再看是否可以将收包队列向前滑动。
 pub struct ArcRcvdPktRecordsWriter<'a> {
-    guard: RwLockWriteGuard<'a, RcvdPktRecords>,
+    guard: RwLockWriteGuard<'a, RcvdJournal>,
 }
 
 impl ArcRcvdPktRecordsWriter<'_> {
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_rcvd_pkt_records() {
-        let records = ArcRcvdPktRecords::default();
+        let records = ArcRcvdJournal::default();
         assert_eq!(records.decode_pn(PacketNumber::encode(1, 0)), Ok(1));
         assert_eq!(records.inner.read().unwrap().queue.len(), 0);
 

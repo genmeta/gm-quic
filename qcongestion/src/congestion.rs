@@ -7,7 +7,7 @@ use std::{
 };
 
 use qbase::frame::{AckFrame, EcnCounts};
-use qrecovery::space::Epoch;
+use qrecovery::journal::Epoch;
 
 use crate::{
     bbr::{self, INITIAL_CWND},

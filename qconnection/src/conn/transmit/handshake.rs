@@ -11,12 +11,12 @@ use qbase::{
     },
     varint::{EncodeBytes, VarInt, WriteVarInt},
 };
-use qrecovery::{crypto::CryptoStreamOutgoing, space::HandshakeSpace};
+use qrecovery::{crypto::CryptoStreamOutgoing, journal::HandshakeJournal};
 
 #[derive(Clone)]
 pub struct HandshakeSpaceReader {
     pub(crate) keys: ArcKeys,
-    pub(crate) space: HandshakeSpace,
+    pub(crate) journal: HandshakeJournal,
     pub(crate) crypto_stream_outgoing: CryptoStreamOutgoing,
 }
 
@@ -43,9 +43,9 @@ impl HandshakeSpaceReader {
         let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
 
         // 3. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
-        let sent_pkt_records = self.space.sent_packets();
-        let mut send_guard = sent_pkt_records.send();
-        let (pn, encoded_pn) = send_guard.next_pn();
+        let sent_journal = self.journal.sent();
+        let mut journal_guard = sent_journal.send();
+        let (pn, encoded_pn) = journal_guard.next_pn();
         if payload_buf.remaining_mut() <= encoded_pn.size() {
             return None;
         }
@@ -58,23 +58,23 @@ impl HandshakeSpaceReader {
         // 4. 检查是否需要发送Ack，若是，生成ack
         let mut sent_ack = None;
         if let Some((largest, recv_time)) = ack_pkt {
-            let rcvd_pkt_records = self.space.rcvd_packets();
+            let rcvd_pkt_records = self.journal.rcvd();
             let n = rcvd_pkt_records
                 .read_ack_frame_util(body_buf, largest, recv_time)
                 .unwrap();
-            send_guard.record_trivial();
+            journal_guard.record_trivial();
             sent_ack = Some(largest);
             body_buf = &mut body_buf[n..];
         }
 
         // 5. 从CryptoStream提取数据，当前无流控，仅最大努力，提取限制之内的最大数据量
         while let Some((frame, n)) = self.crypto_stream_outgoing.try_read_data(body_buf) {
-            send_guard.record_frame(frame);
+            journal_guard.record_frame(frame);
             body_buf = &mut body_buf[n..];
             is_ack_eliciting = true;
             in_flight = true;
         }
-        drop(send_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
+        drop(journal_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
 
         // 7. 填充，保护头部，加密
         let hdr_len = hdr_buf.len();

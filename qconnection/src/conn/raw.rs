@@ -16,17 +16,17 @@ use qbase::{
     token::{ArcTokenRegistry, TokenRegistry},
 };
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
-use qrecovery::{reliable::ArcReliableFrameDeque, space::Epoch};
+use qrecovery::{journal::Epoch, reliable::ArcReliableFrameDeque};
 use qunreliable::DatagramFlow;
 use rustls::quic::Keys;
 use tokio::{sync::Notify, task::JoinHandle};
 
 use super::{
     parameters::ConnParameters,
-    scope::{
-        data::{DataMayLoss, DataScope},
-        handshake::{HandshakeMayloss, HandshakeScope},
-        initial::{InitialMayLoss, InitialScope},
+    space::{
+        data::{DataMayLoss, DataSpace},
+        handshake::{HandshakeMayloss, HandshakeSpace},
+        initial::{InitialMayLoss, InitialSpace},
     },
     ArcLocalCids, ArcRemoteCids, CidRegistry, DataStreams, Handshake, RcvdPackets,
 };
@@ -50,9 +50,9 @@ pub struct Connection {
     pub(super) streams: DataStreams,
     pub(super) datagrams: DatagramFlow,
 
-    pub(super) initial: InitialScope,
-    pub(super) hs: HandshakeScope,
-    pub(super) data: DataScope,
+    pub(super) initial: InitialSpace,
+    pub(super) hs: HandshakeSpace,
+    pub(super) data: DataSpace,
     pub(super) notify: Arc<Notify>, // Notifier for closing the packet receiving task
     pub(super) join_handles: [JoinHandle<RcvdPackets>; 4],
 
@@ -78,9 +78,9 @@ impl Connection {
         let (one_rtt_packets_entry, rcvd_1rtt_packets) = mpsc::unbounded();
 
         let reliable_frames = ArcReliableFrameDeque::with_capacity(0);
-        let initial = InitialScope::new(ArcKeys::with_keys(initial_keys));
-        let hs = HandshakeScope::default();
-        let data = DataScope::default();
+        let initial = InitialSpace::new(ArcKeys::with_keys(initial_keys));
+        let hs = HandshakeSpace::default();
+        let data = DataSpace::default();
 
         let router_registry = Router::registry(
             initial_scid,
@@ -145,10 +145,11 @@ impl Connection {
             let data = data.clone();
 
             let initial_may_loss =
-                InitialMayLoss::new(initial.space.clone(), initial.crypto_stream.outgoing());
-            let hs_may_loss = HandshakeMayloss::new(hs.space.clone(), hs.crypto_stream.outgoing());
+                InitialMayLoss::new(initial.journal.clone(), initial.crypto_stream.outgoing());
+            let hs_may_loss =
+                HandshakeMayloss::new(hs.journal.clone(), hs.crypto_stream.outgoing());
             let data_may_loss = DataMayLoss::new(
-                data.space.clone(),
+                data.journal.clone(),
                 reliable_frames.clone(),
                 streams.clone(),
                 data.crypto_stream.outgoing(),

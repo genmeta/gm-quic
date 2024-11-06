@@ -58,7 +58,7 @@ impl SentPktState {
 /// 发送数据包的时候，往其中写入数据包的帧，
 /// 接收到确认的时候，更新数据包的状态，被确认就什么都不做；丢失的数据包，得重新发送
 #[derive(Debug, Default, Deref, DerefMut)]
-struct SentPktRecords<T> {
+struct SentJournal<T> {
     #[deref]
     queue: VecDeque<T>,
     // 记录着每个包的内容，其实是一个数字，该数字对应着queue中的record数量
@@ -66,7 +66,7 @@ struct SentPktRecords<T> {
     largest_acked_pktno: u64,
 }
 
-impl<T: Clone> SentPktRecords<T> {
+impl<T: Clone> SentJournal<T> {
     fn on_pkt_acked(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ {
         let mut len = 0;
         let offset = self
@@ -100,7 +100,7 @@ impl<T: Clone> SentPktRecords<T> {
     }
 }
 
-impl<T> SentPktRecords<T> {
+impl<T> SentJournal<T> {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             queue: VecDeque::with_capacity(capacity * 4),
@@ -138,23 +138,21 @@ impl<T> SentPktRecords<T> {
 /// [`DataStreams`]: crate::streams::DataStreams
 /// [`CryptoStream`]: crate::crypto::CryptoStream
 #[derive(Debug, Default)]
-pub struct ArcSentPktRecords<T>(Arc<Mutex<SentPktRecords<T>>>);
+pub struct ArcSentJournal<T>(Arc<Mutex<SentJournal<T>>>);
 
-impl<T> Clone for ArcSentPktRecords<T> {
+impl<T> Clone for ArcSentJournal<T> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl<T> ArcSentPktRecords<T> {
+impl<T> ArcSentJournal<T> {
     /// Create a new empty records with the given `capatity`.
     ///
     /// The number of records can exceed the `capacity` specified at creation time, but the internel
     /// implementation strvies to avoid reallocation.
     pub fn with_capacity(capacity: usize) -> Self {
-        Self(Arc::new(Mutex::new(SentPktRecords::with_capacity(
-            capacity,
-        ))))
+        Self(Arc::new(Mutex::new(SentJournal::with_capacity(capacity))))
     }
 
     /// Return a [`RecvGuard`] to resolve the ack frame from peer.
@@ -178,7 +176,7 @@ impl<T> ArcSentPktRecords<T> {
 
 /// Handle the peer's ack frame and feed back the frames in the acknowledged or possibly lost packets to other components.
 pub struct RecvGuard<'a, T> {
-    inner: MutexGuard<'a, SentPktRecords<T>>,
+    inner: MutexGuard<'a, SentJournal<T>>,
 }
 
 impl<T: Clone> RecvGuard<'_, T> {
@@ -230,7 +228,7 @@ impl<T> Drop for RecvGuard<'_, T> {
 pub struct SendGuard<'a, T> {
     necessary: bool,
     origin_len: usize,
-    inner: MutexGuard<'a, SentPktRecords<T>>,
+    inner: MutexGuard<'a, SentJournal<T>>,
 }
 
 impl<T> SendGuard<'_, T> {

@@ -3,7 +3,12 @@ use std::ops::{Index, IndexMut};
 
 use qbase::frame::CryptoFrame;
 
-use crate::reliable::{ArcRcvdPktRecords, ArcSentPktRecords, GuaranteedFrame};
+use crate::reliable::GuaranteedFrame;
+
+mod rcvd;
+pub use rcvd::*;
+mod sent;
+pub use sent::*;
 
 /// The epoch of sending, usually been seen as the index of spaces.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -50,53 +55,53 @@ where
 
 /// The bundle of sent packet records and received packet records.
 ///
-/// The generic `T` is the generic on [`ArcSentPktRecords`].
+/// The generic `T` is the generic on [`ArcSentJournal`].
 ///
-/// See [`ArcSentPktRecords`] and [`ArcRcvdPktRecords`] for more.
+/// See [`ArcSentJournal`] and [`ArcRcvdJournal`] for more.
 #[derive(Debug, Default, Clone)]
-pub struct Space<T> {
-    sent_pkt_records: ArcSentPktRecords<T>,
-    rcvd_pkt_records: ArcRcvdPktRecords,
+pub struct Journal<T> {
+    sent: ArcSentJournal<T>,
+    rcvd: ArcRcvdJournal,
 }
 
-impl<T> Space<T> {
-    /// Create a [`Space`] containing records with the given `capacity`.
+impl<T> Journal<T> {
+    /// Create a [`Journal`] containing records with the given `capacity`.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            sent_pkt_records: ArcSentPktRecords::with_capacity(capacity),
-            rcvd_pkt_records: ArcRcvdPktRecords::with_capacity(capacity),
+            sent: ArcSentJournal::with_capacity(capacity),
+            rcvd: ArcRcvdJournal::with_capacity(capacity),
         }
     }
 
-    /// Get the [`ArcSentPktRecords`] of space.
-    pub fn sent_packets(&self) -> ArcSentPktRecords<T> {
-        self.sent_pkt_records.clone()
+    /// Get the [`ArcSentJournal`] of space.
+    pub fn sent(&self) -> ArcSentJournal<T> {
+        self.sent.clone()
     }
 
-    /// Get the [`ArcRcvdPktRecords`] of space.
-    pub fn rcvd_packets(&self) -> ArcRcvdPktRecords {
-        self.rcvd_pkt_records.clone()
-    }
-}
-
-impl<T> AsRef<ArcSentPktRecords<T>> for Space<T> {
-    fn as_ref(&self) -> &ArcSentPktRecords<T> {
-        &self.sent_pkt_records
+    /// Get the [`ArcRcvdJournal`] of space.
+    pub fn rcvd(&self) -> ArcRcvdJournal {
+        self.rcvd.clone()
     }
 }
 
-impl<T> AsRef<ArcRcvdPktRecords> for Space<T> {
-    fn as_ref(&self) -> &ArcRcvdPktRecords {
-        &self.rcvd_pkt_records
+impl<T> AsRef<ArcSentJournal<T>> for Journal<T> {
+    fn as_ref(&self) -> &ArcSentJournal<T> {
+        &self.sent
+    }
+}
+
+impl<T> AsRef<ArcRcvdJournal> for Journal<T> {
+    fn as_ref(&self) -> &ArcRcvdJournal {
+        &self.rcvd
     }
 }
 
 /// For initial space, only reliable transmission of crypto frames is required.
-pub type InitialSpace = Space<CryptoFrame>;
+pub type InitialJournal = Journal<CryptoFrame>;
 /// For handshake space, only reliable transmission of crypto frames is required.
-pub type HandshakeSpace = Space<CryptoFrame>;
+pub type HandshakeJournal = Journal<CryptoFrame>;
 /// For handshake space, reliable transmission of [`GuaranteedFrame`] (crypto frames, stream frames and reliable frames) is required.
-pub type DataSpace = Space<GuaranteedFrame>;
+pub type DataJournal = Journal<GuaranteedFrame>;
 
 #[cfg(test)]
 mod tests {
@@ -105,10 +110,10 @@ mod tests {
     #[test]
     fn test_initial_space() {
         use super::*;
-        let space = InitialSpace::with_capacity(10);
-        // assert_eq!(AsRef::<ArcSentPktRecords<_>>::as_ref(&space).lock_guard().len(), 0);
+        let space = InitialJournal::with_capacity(10);
+        // assert_eq!(AsRef::<ArcSentJournal<_>>::as_ref(&space).lock_guard().len(), 0);
         assert_eq!(
-            AsRef::<ArcRcvdPktRecords>::as_ref(&space).decode_pn(PacketNumber::encode(0, 0)),
+            AsRef::<ArcRcvdJournal>::as_ref(&space).decode_pn(PacketNumber::encode(0, 0)),
             Ok(0)
         );
     }
