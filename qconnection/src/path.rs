@@ -7,9 +7,10 @@ use qbase::{
     cid::{ArcCidCell, ConnectionId},
     flow::FlowController,
     frame::{PathChallengeFrame, PathResponseFrame},
+    Epoch,
 };
 use qcongestion::{ArcCC, CongestionAlgorithm, CongestionControl, MayLoss, RetirePktRecord};
-use qrecovery::{journal::Epoch, reliable::ArcReliableFrameDeque};
+use qrecovery::reliable::ArcReliableFrameDeque;
 use state::ArcPathState;
 use tokio::time::timeout;
 

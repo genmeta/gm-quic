@@ -11,9 +11,10 @@ use qbase::{
     cid::{ArcCidCell, ConnectionId},
     flow::ArcSendControler,
     packet::SpinBit,
+    Epoch,
 };
 use qcongestion::{ArcCC, CongestionControl, MSS};
-use qrecovery::{journal::Epoch, reliable::ArcReliableFrameDeque};
+use qrecovery::reliable::ArcReliableFrameDeque;
 
 use super::{
     anti_amplifier::ANTI_FACTOR,

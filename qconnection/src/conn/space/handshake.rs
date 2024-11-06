@@ -14,11 +14,12 @@ use qbase::{
         DataPacket, PacketNumber,
     },
     varint::{EncodeBytes, VarInt, WriteVarInt},
+    Epoch,
 };
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord, MSS};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
-    journal::{ArcRcvdJournal, Epoch, HandshakeJournal},
+    journal::{ArcRcvdJournal, HandshakeJournal},
 };
 use tokio::{sync::Notify, task::JoinHandle};
 

@@ -24,11 +24,12 @@ use qbase::{
         DataPacket, PacketNumber,
     },
     token::ArcTokenRegistry,
+    Epoch,
 };
 use qcongestion::{CongestionControl, MayLoss, RetirePktRecord, MSS};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
-    journal::{ArcRcvdJournal, DataJournal, Epoch},
+    journal::{ArcRcvdJournal, DataJournal},
     reliable::{ArcReliableFrameDeque, GuaranteedFrame},
 };
 use qunreliable::DatagramFlow;

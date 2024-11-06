@@ -12,8 +12,9 @@ use qbase::{
         codec::{be_parameters, WriteParameters},
         Parameters,
     },
+    Epoch,
 };
-use qrecovery::{crypto::CryptoStream, journal::Epoch};
+use qrecovery::crypto::CryptoStream;
 use rustls::{
     crypto::CryptoProvider,
     quic::{KeyChange, Keys},

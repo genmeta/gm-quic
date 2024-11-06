@@ -6,8 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use qbase::frame::{AckFrame, EcnCounts};
-use qrecovery::journal::Epoch;
+use qbase::{
+    frame::{AckFrame, EcnCounts},
+    Epoch,
+};
 
 use crate::{
     bbr::{self, INITIAL_CWND},

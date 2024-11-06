@@ -4,8 +4,7 @@ use std::{
 };
 
 pub use congestion::{ArcCC, CongestionAlgorithm, MSS};
-use qbase::frame::AckFrame;
-use qrecovery::journal::Epoch;
+use qbase::{frame::AckFrame, Epoch};
 
 mod bbr;
 mod congestion;
