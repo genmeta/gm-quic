@@ -25,7 +25,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = QuicClient::builder()
         .bind(&[v4, v6][..])?
         .reuse_connection()
-        .enable_happy_eyeballs()
         .prefer_versions([0x00000001u32])
         .with_webpki_verifier(verifier)
         .without_cert()

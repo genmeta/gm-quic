@@ -84,7 +84,7 @@ impl QuicServer {
         }
     }
 
-    /// Build a QuicServer with the given TLS configuration.
+    /// Start to build a QuicServer with the given TLS configuration.
     ///
     /// This is useful when you want to customize the TLS configuration, or integrate qm-quic with other crates.
     pub fn builder_with_tls(tls_config: TlsServerConfig) -> QuicServerBuilder<TlsServerConfig> {
@@ -94,6 +94,23 @@ impl QuicServer {
             load_balance: Arc::new(|_| None),
             parameters: Parameters::default(),
             tls_config,
+            streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            token_provider: None,
+        }
+    }
+
+    /// Start to build a QuicServer with the given tls crypto provider.
+    pub fn builder_with_crypto_provieder(
+        provider: Arc<rustls::crypto::CryptoProvider>,
+    ) -> QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
+        QuicServerBuilder {
+            passive_listening: false,
+            supported_versions: Vec::with_capacity(2),
+            load_balance: Arc::new(|_| None),
+            parameters: Parameters::default(),
+            tls_config: TlsServerConfig::builder_with_provider(provider)
+                .with_protocol_versions(&[&rustls::version::TLS13])
+                .unwrap(),
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
             token_provider: None,
         }
@@ -110,8 +127,8 @@ impl QuicServer {
 
     /// Accept the next incoming connection.
     ///
-    /// The connection accepted may still in the progress of handshake, but you can still use it to open streams or do
-    /// any other operations you want.
+    /// The connection accepted may still in the progress of handshake, but you can use it to do anything you want, such
+    /// as sending data, receiving data... operations will be pending until the connection is connected or closed.
     ///
     /// If all listening udp sockets are closed, this method will return an error.
     pub async fn accept(&self) -> io::Result<(Arc<QuicConnection>, Pathway)> {
@@ -264,8 +281,6 @@ impl<T> QuicServerBuilder<T> {
     /// (WIP)Specify the supported quic versions.
     ///
     /// If you call this multiple times, only the last call will take effect.
-    ///
-    /// This will be included in the Version Negotiation packet.
     pub fn with_supported_versions(mut self, versions: impl IntoIterator<Item = u32>) -> Self {
         self.supported_versions.clear();
         self.supported_versions.extend(versions);
@@ -540,17 +555,22 @@ impl QuicServerSniBuilder<TlsServerConfig> {
 }
 
 impl QuicServerBuilder<TlsServerConfig> {
-    /// Specify the `alpn_protocol` that the server supports.
+    /// Specify the [alpn-protocol-ids] that the server supports.
     ///
     /// If you call this multiple times, all the `alpn_protocol` will be used.
     ///
-    /// If you never call this method, we will not do ALPN negotiation with the client.
+    /// If you never call this method, we will not do ALPN with the client.
+    ///
+    /// [alpn-protocol-ids](https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml#alpn-protocol-ids)
     pub fn with_alpns(mut self, alpn: impl IntoIterator<Item = Vec<u8>>) -> Self {
         self.tls_config.alpn_protocols.extend(alpn);
         self
     }
 
     /// Start to listen for incoming connections.
+    ///
+    /// Once listen is called, the server will start to accept incoming connections, do the handshake automatically, and
+    /// you can get the incoming connection by calling the [`QuicServer::accept`] method.
     ///
     /// Note that there can be only one server running at the same time, so this method will return an error if there is
     /// already a server running.
@@ -614,6 +634,9 @@ impl QuicServerSniBuilder<TlsServerConfig> {
     }
 
     /// Start to listen for incoming connections.
+    ///
+    /// Once listen is called, the server will start to accept incoming connections, do the handshake automatically, and
+    /// you can get the incoming connection by calling the [`QuicServer::accept`] method.
     ///
     /// Note that there can be only one server running at the same time, so this method will return an error if there is
     /// already a server running.
