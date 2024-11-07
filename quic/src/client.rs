@@ -13,8 +13,8 @@ use qbase::{
 };
 use qconnection::{conn::ArcConnection, path::Pathway};
 use rustls::{
-    client::WantsClientCert,
-    pki_types::{CertificateDer, PrivateKeyDer},
+    client::{ResolvesClientCert, WantsClientCert},
+    pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer},
     ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
 };
 
@@ -22,13 +22,13 @@ use crate::{create_new_usc, get_or_create_usc, ConnKey, QuicConnection, CONNECTI
 
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 
-/// 其实是一个Builder，最终得到一个ArcConnection
+/// A quic client that can initiates connections to servers.
 pub struct QuicClient {
     bind_addresseses: Vec<SocketAddr>,
     reuse_udp_sockets: bool,
     _reuse_connection: bool, // TODO
     _enable_happy_eyepballs: bool,
-    _prefered_versions: Vec<u32>,
+    _prefer_versions: Vec<u32>,
     parameters: Parameters,
     tls_config: Arc<TlsClientConfig>,
     streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
@@ -36,12 +36,12 @@ pub struct QuicClient {
 }
 
 impl QuicClient {
-    /// 绑定一个地址，若该地址
-    /// - 已经有了usc(UdpSocket controller)，且已在注册管理中，那就查找即可
-    /// - 要是没有查到，那就新建一个usc，然后注册管理起来
+    /// Start to build a QuicClient.
     ///
-    /// 为何是绑定一系列地址，因为QUIC本身就是支持多路径的。
-    /// 况且，为了推广IPv6，通常都是IPv6、IPv4双栈的的Happly Eyeballs策略。
+    /// Make sure that you have installed the rustls crypto provider before calling this method. If you dont want to use
+    /// the default crypto provider, you can use [`QuicClient::builder_with_crypto_provieder`] to specify the crypto provider.
+    ///
+    /// You can also use [`QuicClient::builder_with_tls`] to specify the TLS configuration.
     ///
     /// # Examples
     /// ```
@@ -54,7 +54,6 @@ impl QuicClient {
     ///
     /// let client_builder = QuicClient::builder()
     ///     .reuse_connection()
-    ///     .enable_happy_eyeballs()
     ///     .prefer_versions([0x00000001u32]);
     /// ```
     pub fn builder() -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
@@ -63,7 +62,7 @@ impl QuicClient {
             reuse_udp_sockets: false,
             reuse_connection: true,
             enable_happy_eyepballs: false,
-            preferred_versions: vec![1],
+            prefer_versions: vec![1],
             parameters: Parameters::default(),
             tls_config: TlsClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
@@ -71,13 +70,35 @@ impl QuicClient {
         }
     }
 
+    /// Start to build a QuicClient with the given tls crypto provider.
+    pub fn builder_with_crypto_provieder(
+        provider: Arc<rustls::crypto::CryptoProvider>,
+    ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
+        QuicClientBuilder {
+            bind_addresses: vec![],
+            reuse_udp_sockets: false,
+            reuse_connection: true,
+            enable_happy_eyepballs: false,
+            prefer_versions: vec![1],
+            parameters: Parameters::default(),
+            tls_config: TlsClientConfig::builder_with_provider(provider)
+                .with_protocol_versions(&[&rustls::version::TLS13])
+                .unwrap(),
+            streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            token_sink: None,
+        }
+    }
+
+    /// Start to build a QuicClient with the given TLS configuration.
+    ///
+    /// This is useful when you want to customize the TLS configuration, or integrate qm-quic with other crates.
     pub fn builder_with_tls(tls_config: TlsClientConfig) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_addresses: vec![],
             reuse_udp_sockets: false,
             reuse_connection: true,
             enable_happy_eyepballs: false,
-            preferred_versions: vec![1],
+            prefer_versions: vec![1],
             parameters: Parameters::default(),
             tls_config,
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
@@ -85,7 +106,15 @@ impl QuicClient {
         }
     }
 
-    /// 重新绑定地址，其后创建的连接，会使用新的绑定地址
+    /// Rebind the client to the given addresses.
+    ///
+    /// New connections will be initiates with the new boudn addresses, previously created connections will not be affected.
+    ///
+    /// If you call this multiple times, only the last `addrs` will be used. You can pass a empty slice to clear the
+    /// bound addresses, then each time the client initiates a new connection, the client will use the address and port
+    /// that dynamic assigned by the system.
+    ///
+    /// To know more about how the client selects the socket address, read [`QuicClient::connect`].
     pub fn rebind(&mut self, addrs: impl ToSocketAddrs) -> io::Result<()> {
         self.bind_addresseses.clear();
         self.bind_addresseses.extend(addrs.to_socket_addrs()?);
@@ -96,16 +125,40 @@ impl QuicClient {
         ConnectionId::random_gen_with_mark(8, 0, 0x7F)
     }
 
-    /// 使用QuicClient的usc，去创建一个QuicConnection
-    /// 需要注意，usc的地址是v4还是v6的，要跟server_addr保持一致
-    /// server_name要填写在ClientHello中，
-    /// server_addr是目标地址，虽然可以从server_name域名解析出来，但是指定使用哪一个，仍有开发者自己决定
-    /// parameters是连接参数，将使用QuicClient中设置好的。
-    /// token则根据[`with_token_sink`]设置的方法，来决定是否需要填写
-    /// 创建好的连接，应要保存在全局QuicConnection集合中
-    /// 那如果开启了reuse_connection选项，则会优先从该全局QuicConnection集合里获取到server_name的
+    /// Returns the connection to the specified server.
     ///
-    /// [`with_token_sink`]: QuicClientBuilder::with_token_sink
+    /// `server_name` is the name of the server, it will be included in the `ClientHello` message.
+    ///
+    /// `server_addr` is the address of the server, packets will be sent to this address.
+    ///
+    /// Note that the returned connection may not yet be connected to the server, but you can use it to do anything you
+    /// want, such as sending data, receiving data... operations will be pending until the connection is connected or
+    /// failed to connect.
+    ///
+    /// ### (WIP)Reuse connection
+    ///
+    /// If `reuse connection` is enabled, the client will try to reuse the connection that has already connected to the
+    /// server, this means that the client will not initiates a new connection, but return the existing connection.
+    /// Otherwise, the client will initiates a new connection to the server.
+    ///
+    /// If `reuse connection` is not enabled or there is no connection that can be reused, the client will bind a UDP Socket
+    /// and initiates a new connection to the server.
+    ///
+    /// If the client does not bind any address, Each time the client initiates a new connection, the client will use
+    /// the address and port that dynamic assigned by the system.
+    ///
+    /// If the client has already bound a set of addresses, The client will successively try to bind to an address that
+    /// matches the server's address family, until an address is successfully bound. If none of the given addresses are
+    /// successfully bound, the last error will be returned (similar to `UdpSocket::bind`). Its also possiable that all
+    /// of the bound addresses dont match the server's address family, an error will be returned in this case.
+    ///
+    /// How the client binds the address depends on whether `reuse udp sockets` is enabled.
+    ///
+    /// If `reuse udp sockets` is enabled, the client may share the same address with other connections. If `reuse udp
+    /// sockets` is disabled (default), The client will not bind to addresses that is already used by another connection.
+    ///
+    /// Note that although `reuse udp sockets` is not enabled, the socket bound by the client may still be reused, because
+    /// this option can only determine the behavior of this client when initiates a new connection.
     pub fn connect(
         &self,
         server_name: impl Into<String>,
@@ -129,7 +182,7 @@ impl QuicClient {
             // similar to std::net::UdpSocket::bind
             let mut last_error = None;
 
-            let no_suite_address =
+            let no_available_address =
                 || io::Error::new(io::ErrorKind::AddrNotAvailable, "No available address");
             self.bind_addresseses
                 .iter()
@@ -141,7 +194,7 @@ impl QuicClient {
                     }
                     None
                 })
-                .ok_or(last_error.ok_or_else(no_suite_address)?)
+                .ok_or(last_error.ok_or_else(no_available_address)?)
         }?;
 
         let pathway = Pathway::Direct {
@@ -186,12 +239,13 @@ impl QuicClient {
     }
 }
 
+/// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
     bind_addresses: Vec<SocketAddr>,
     reuse_udp_sockets: bool,
     reuse_connection: bool,
     enable_happy_eyepballs: bool,
-    preferred_versions: Vec<u32>,
+    prefer_versions: Vec<u32>,
     parameters: Parameters,
     tls_config: T,
     streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
@@ -199,46 +253,75 @@ pub struct QuicClientBuilder<T> {
 }
 
 impl<T> QuicClientBuilder<T> {
-    /// 在优先使用IPv6的情况下，可以设置一个IPv4的地址，以备IPv6无法使用时的备用
-    /// 必须bind的地址中一个是v4，一个是v6，才有意义
-    pub fn enable_happy_eyeballs(mut self) -> Self {
-        self.enable_happy_eyepballs = true;
-        self
-    }
-
+    /// Bind the client to the given addresses.
+    ///
+    /// If you call this multiple times, only the last `addrs` will be used.
+    ///
+    /// Although you dont bind any address, each time the client initiates a new connection, the client will use the
+    /// address and port that dynamic assigned by the system.
+    ///
+    /// To know more about how the client selects the socket address, read [`QuicClient::connect`].
     pub fn bind(mut self, addrs: impl ToSocketAddrs) -> io::Result<Self> {
         self.bind_addresses.clear();
         self.bind_addresses.extend(addrs.to_socket_addrs()?);
         Ok(self)
     }
 
-    /// 是否高效复用连接，假如已经有了一个到server_name的连接，那再去连的话，就直接复用
+    /// (WIP)Enable efficiently reuse connections.
+    ///
+    /// If you enable this option, the client will try to reuse the connection that has already connected to the server,
+    /// this means that the client will not initiates a new connection, but return the existing connection when you call
+    /// [`QuicClient::connect`].
     pub fn reuse_connection(mut self) -> Self {
         self.reuse_connection = true;
         self
     }
 
+    /// Enable reuse UDP sockets.
+    ///
+    ///
+    /// By default, the client will not use the same address as other connections, which means that the client must bind
+    /// to a new address every time it initiates a connection. If you enable this option, the client cloud share the same
+    /// address with other connections. This option can only determine the behavior of this client when establishing a
+    /// new connection.
+    ///
+    /// If you dont bind any address, this option will not take effect because the client will use the address and port
+    /// that dynamic assigned by the system each time it initiates a new connection.
     pub fn reuse_udp_sockets(mut self) -> Self {
         self.reuse_udp_sockets = true;
         self
     }
 
-    /// 当服务端发来版本协商包，其中包含了支持的版本号，那么客户端可以选择使用哪个版本
-    /// 将按照客户端设定的versions的顺序优先选择
+    /// (WIP)Specify the quic versions that the client prefers.
+    ///
+    /// If you call this multiple times, only the last call will take effect.
     pub fn prefer_versions(mut self, versions: impl IntoIterator<Item = u32>) -> Self {
-        self.preferred_versions.clear();
-        self.preferred_versions.extend(versions);
+        self.prefer_versions.clear();
+        self.prefer_versions.extend(versions);
         self
     }
 
-    /// 设值客户端连接参数。若不设置，则会使用一组默认参数。
-    /// 后续使用该QuicClient创建新连接，会直接使用这些参数。
-    /// 可以多次调用该函数，覆盖上一次设置的参数。
+    /// Specify the [transport parameters] for the client.
+    ///
+    /// If you call this multiple times, only the last `parameters` will be used.
+    ///
+    /// Usually, you don't need to call this method, because the client will use a set of default parameters.
+    ///
+    /// [transport parameters](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-definit)
     pub fn with_parameters(mut self, parameters: ClientParameters) -> Self {
         self.parameters = parameters.into();
         self
     }
 
+    /// Specify the streams controller for the client.
+    ///
+    /// The streams controller is used to control the concurrency of data streams. `controller` is a closure that accept
+    /// (initial maximum number of bidirectional streams, initial maximum number of unidirectional streams) configured in
+    /// [transport parameters] and return a `ControlConcurrency` object.
+    ///
+    /// If you call this multiple times, only the last `controller` will be used.
+    ///
+    /// [transport parameters](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-definit)
     pub fn with_streams_controller(
         mut self,
         controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
@@ -247,12 +330,13 @@ impl<T> QuicClientBuilder<T> {
         self
     }
 
-    /// 设置客户端的证书，用于传输给服务端验证客户端身份
-    /// 一般情况下，客户端都无需设置证书，只有特别的安全需求，才需要客户端提交证书
-    /// 设置TokenRegisty的方法，当收到服务端的NewToken，客户端自行决定如何保存。
-    /// 如不设置，则会丢弃这些NewToken
-    /// TokenSink会在创建新连接时，尝试根据server_name获取可用Token
-    /// TokenSink还需保存服务端颁发的关联Token，以便未来连接时使用
+    /// Specify the token sink for the client.
+    ///
+    /// The token sink is used to storage the tokens that the client received from the server. The client will use the
+    /// tokens to prove it self to the server when it reconnects to the server. read [address verification] in quic rfc
+    /// for more information.
+    ///
+    /// [address verification](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation)
     pub fn with_token_sink(mut self, sink: Arc<dyn TokenSink>) -> Self {
         self.token_sink = Some(sink);
         self
@@ -260,7 +344,9 @@ impl<T> QuicClientBuilder<T> {
 }
 
 impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
-    /// 验证服务端证书，是否正常的方法
+    /// Choose how to verify server certificates.
+    ///
+    /// Read [TlsClientConfigBuilder::with_root_certificates] for more information.
     pub fn with_root_certificates(
         self,
         root_store: impl Into<Arc<rustls::RootCertStore>>,
@@ -270,13 +356,17 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
             reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
-            preferred_versions: self.preferred_versions,
+            prefer_versions: self.prefer_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_root_certificates(root_store),
             streams_controller: self.streams_controller,
             token_sink: self.token_sink,
         }
     }
+
+    /// Choose how to verify server certificates using a webpki verifier.
+    ///
+    /// Read [TlsClientConfigBuilder::with_webpki_verifier] for more information.
     pub fn with_webpki_verifier(
         self,
         verifier: Arc<rustls::client::WebPkiServerVerifier>,
@@ -286,7 +376,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
             reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
-            preferred_versions: self.preferred_versions,
+            prefer_versions: self.prefer_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_webpki_verifier(verifier),
             streams_controller: self.streams_controller,
@@ -296,23 +386,21 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
 }
 
 impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
+    /// Sets a single certificate chain and matching private key for use
+    /// in client authentication.
+    ///
+    /// Read [TlsClientConfigBuilder::with_single_cert] for more information.
     pub fn with_cert(
         self,
-        cert_file: impl AsRef<Path>,
-        key_file: impl AsRef<Path>,
+        cert_chain: Vec<CertificateDer<'static>>,
+        key_der: PrivateKeyDer<'static>,
     ) -> QuicClientBuilder<TlsClientConfig> {
-        let cert = std::fs::read(cert_file).unwrap();
-        let cert_chain = vec![CertificateDer::from(cert)];
-
-        let key = std::fs::read(key_file).unwrap();
-        let key_der = PrivateKeyDer::try_from(key).unwrap();
-
         QuicClientBuilder {
             bind_addresses: self.bind_addresses,
             reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
-            preferred_versions: self.preferred_versions,
+            prefer_versions: self.prefer_versions,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
@@ -323,13 +411,36 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         }
     }
 
+    /// Sets a single certificate chain and matching private key for use
+    /// in client authentication.
+    ///
+    /// This is a useful wapper of [`QuicClientBuilder::with_cert`], we do the file decoding(by using [`PemObject`] trait)
+    /// and error handling for you.
+    pub fn with_cert_files(
+        self,
+        cert_chain_file: impl AsRef<Path>,
+        key_file: impl AsRef<Path>,
+    ) -> io::Result<QuicClientBuilder<TlsClientConfig>> {
+        let cast_pem_error = |e| match e {
+            rustls::pki_types::pem::Error::Io(error) => error,
+            other => io::Error::new(io::ErrorKind::InvalidData, other),
+        };
+        let cert_chain = CertificateDer::pem_file_iter(cert_chain_file)
+            .map_err(cast_pem_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(cast_pem_error)?;
+        let key_der = PrivateKeyDer::from_pem_file(key_file).map_err(cast_pem_error)?;
+        Ok(self.with_cert(cert_chain, key_der))
+    }
+
+    /// Do not support client auth.
     pub fn without_cert(self) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_addresses: self.bind_addresses,
             reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
-            preferred_versions: self.preferred_versions,
+            prefer_versions: self.prefer_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_no_client_auth(),
             streams_controller: self.streams_controller,
@@ -337,16 +448,17 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         }
     }
 
+    /// Sets a custom [`ResolvesClientCert`].
     pub fn with_cert_resolver(
         self,
-        cert_resolver: Arc<dyn rustls::client::ResolvesClientCert>,
+        cert_resolver: Arc<dyn ResolvesClientCert>,
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_addresses: self.bind_addresses,
             reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
-            preferred_versions: self.preferred_versions,
+            prefer_versions: self.prefer_versions,
             parameters: self.parameters,
             tls_config: self.tls_config.with_client_cert_resolver(cert_resolver),
             streams_controller: self.streams_controller,
@@ -356,13 +468,25 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
 }
 
 impl QuicClientBuilder<TlsClientConfig> {
-    /// Ref. [alpn-protocol-ids](https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml#alpn-protocol-ids)
-    /// client_builder.with_alpn(["http/0.9", "http/1.0", "http/1.1", "h3"]);
+    /// Specify the [alpn-protocol-ids] that will be sent in `ClientHello`.
+    ///
+    /// By default, its empty and the APLN extension wont be sent.
+    ///
+    /// If you call this multiple times, all the `alpn_protocol` will be used.
+    ///
+    /// [alpn-protocol-ids](https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml#alpn-protocol-ids)
     pub fn with_alpns(mut self, alpns: impl IntoIterator<Item = Vec<u8>>) -> Self {
         self.tls_config.alpn_protocols.extend(alpns);
         self
     }
 
+    /// Enable the `keylog` feature.
+    ///
+    /// This is useful when you want to debug the TLS connection.
+    ///
+    /// The keylog file will be in the file that environment veriable `SSLKEYLOGFILE` pointed to.
+    ///
+    /// Read [`rustls::KeyLogFile`] for more information.
     pub fn with_keylog(mut self, flag: bool) -> Self {
         if flag {
             self.tls_config.key_log = Arc::new(rustls::KeyLogFile::new());
@@ -370,13 +494,14 @@ impl QuicClientBuilder<TlsClientConfig> {
         self
     }
 
+    /// Build the QuicClient, ready to initiates connect to the servers.
     pub fn build(self) -> QuicClient {
         QuicClient {
             bind_addresseses: self.bind_addresses,
             reuse_udp_sockets: self.reuse_udp_sockets,
             _reuse_connection: self.reuse_connection,
             _enable_happy_eyepballs: self.enable_happy_eyepballs,
-            _prefered_versions: self.preferred_versions,
+            _prefer_versions: self.prefer_versions,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
             streams_controller: self.streams_controller,
