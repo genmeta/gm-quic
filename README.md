@@ -76,12 +76,8 @@ sent 1200000000 bytes
 The QUIC client not only offers configuration options specified by the QUIC protocol's Parameters but also includes additional options such as `reuse_connection` and `enable_happy_eyeballs` enabling the IPv6-preferred Happy Eyeballs algorithm. More advanced features allow the QUIC client to set its own certificates as its ID for server verification and manage the Tokens issued by servers for future connections with these servers.
 
 ```rust
-let quic_client = QuicClient::bind([
-        "[2001:db8::1]:8080".parse().unwrap(),
-        "127.0.0.1:8080".parse().unwrap(),
-    ])
+let quic_client = QuicClient::builder()
     .reuse_connection()
-    .enable_happy_eyeballs()
     // The QUIC version negotiation mechanism prioritizes using the earlier versions, 
     // currently only supporting V1.
     .prefer_versions([1u32])                
@@ -100,19 +96,20 @@ let quic_client_conn = quic_client
 The QUIC server provides SNI(Server Name Indication) support in TLS, allowing the configuration of multiple server names and certificates. Additionally, `gm-quic` provides a custom load balancing interface that let developers determine how to return Retry packets based on the Initial packet of a new connection. This interface leverages the inherent features of QUIC to schedule across multiple hosts balancely.
 
 ```rust
-let quic_server = QuicServer::bind([
-        "[2001:db8::1]:8080".parse().unwrap(),
-        "127.0.0.1:8080".parse().unwrap(),
-    ])
+let quic_server = QuicServer::builder()
     .with_supported_versions([1u32])
-    .with_load_balance(move |initial_packet: &InitialPacket| -> Option<RetryPacket> {
-      ...
-    })
+    // for load balancing
+    // .with_load_balance(move |initial_packet: &InitialPacket| -> Option<RetryPacket> {
+    //   ...
+    // })
     .without_cert_verifier()      // Generally, client identity is not verified
     .enable_sni()
-    .add_host("www.genmeta.net", www_cert, www_key, www_server_paramester)
-    .add_host("developer.genmeta.net", dev_cert, dev_key, dev_server_parameters)
-    .listen();
+    .add_host("www.genmeta.net", www_cert, www_key)
+    .add_host("developer.genmeta.net", dev_cert, dev_key)
+    .listen(&[
+        "[2001:db8::1]:8080".parse().unwrap(),
+        "127.0.0.1:8080".parse().unwrap(),
+    ][..]);
 
 while let Ok(quic_server_conn) = quic_server.accept().await? {
     // The following is a demonstration
@@ -121,6 +118,8 @@ while let Ok(quic_server_conn) = quic_server.accept().await? {
 ```
 
 There is an asynchronous interface for creating unidirectional or bidirectional QUIC streams from a QUIC Connection, or for listening to incoming streams from the other side of a QUIC Connection. This interface is almost identical to the one in [`hyperium/h3`](https://github.com/hyperium/h3/blob/master/docs/PROPOSAL.md#5-quic-transport).
+
+We also implement the interface defined by [`hyperium/h3`](https://github.com/hyperium/h3/blob/master/docs/PROPOSAL.md#5-quic-transport) in `h3-shim` crate to facilitate with other crates integrated. We have a frok of `reqwest` that use `gm-quic` as the transport layer, you can find it [here](https://github.com/genmeta/reqwest/tree/gm-quic).
 
 As for reading and writing data from a QUIC stream, the tokio's `AsyncRead` and `AsyncWrite` interfaces are implemented for QUIC streams, making it very convenient to use.
 

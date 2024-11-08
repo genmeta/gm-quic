@@ -66,10 +66,7 @@ sent 1200000000 bytes
 QUIC客户端不仅提供了QUIC协议所规定的Parameters选项配置，也有一些额外选项比如复用连接、启用IPv6优先的Happy Eyeballs算法等。更高级地，QUIC客户端可设置自己的证书以供服务端验证，也可设置自己的Token管理器，管理着各服务器颁发的Token，以便未来和这些服务器再次连接时用的上。
 
 ```rust
-let quic_client = QuicClient::bind([
-        "[2001:db8::1]:8080".parse().unwrap(),
-        "127.0.0.1:8080".parse().unwrap(),
-    ])
+let quic_client = QuicClient::builder()
     .reuse_connection()
     .enable_happy_eyeballs()
     .prefer_versions([1u32])                // QUIC的版本协商机制，会优先使用靠前的版本，目前仅支持V1
@@ -88,19 +85,20 @@ let quic_client_conn = quic_client
 QUIC服务端支持SNI（Server Name Indication），可以设置多台Server的名字、证书等信息，同时`gm-quic`开放了根据新连接的Initial数据包，如何返回Retry数据包的自定义负载均衡接口，该接口可利用QUIC本身的特性让多台主机间的负载均衡地调度。
 
 ```rust
-let quic_server = QuicServer::bind([
-        "[2001:db8::1]:8080".parse().unwrap(),
-        "127.0.0.1:8080".parse().unwrap(),
-    ])
+let quic_server = QuicServer::builder()
     .with_supported_versions([1u32])
-    .with_load_balance(move |initial_packet: &InitialPacket| -> Option<RetryPacket> {
-      ...
-    })
+    // 通过重试包进行负载均衡
+    // .with_load_balance(move |initial_packet: &InitialPacket| -> Option<RetryPacket> {
+    //   ...
+    // })
     .without_cert_verifier()  // 一般不验证客户端身份
     .enable_sni()
-    .add_host("www.genmeta.net", www_cert, www_key, www_server_paramester)
-    .add_host("developer.genmeta.net", dev_cert, dev_key, dev_server_parameters)
-    .listen();
+    .add_host("www.genmeta.net", www_cert, www_key)
+    .add_host("developer.genmeta.net", dev_cert, dev_key)
+    .listen(&[
+        "[2001:db8::1]:8080".parse().unwrap(),
+        "127.0.0.1:8080".parse().unwrap(),
+    ][..]);
 
 while let Ok(quic_server_conn) = quic_server.accept().await? {
     // 以下为演示
