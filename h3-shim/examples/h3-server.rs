@@ -76,20 +76,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let Certs { cert, key } = opt.certs;
 
-    // create quinn server endpoint and bind UDP socket
-
-    // // both cert and key must be DER-encoded
-    // let cert = CertificateDer::from(std::fs::read(cert)?);
-    // let key = PrivateKeyDer::try_from(std::fs::read(key)?)?;
-
-    // let mut tls_config = rustls::ServerConfig::builder()
-    //     .with_no_client_auth()
-    //     .with_single_cert(vec![cert], key)?;
-
-    // tls_config.max_early_data_size = u32::MAX;
-    // tls_config.alpn_protocols = vec![ALPN.into()];
-
-    info!("listening on {:?}", opt.listen);
     let quic_server = ::quic::QuicServer::buidler()
         .with_supported_versions([1u32])
         .without_cert_verifier()
@@ -97,6 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_host_with_cert_files("localhost", cert, key)?
         .with_alpns([ALPN.to_vec()])
         .listen(&opt.listen[..])?;
+    info!("listening on {:?}", opt.listen);
 
     // handle incoming connections and requests
 

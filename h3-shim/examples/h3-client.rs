@@ -3,7 +3,7 @@ use std::{net::SocketAddr, path::PathBuf};
 use clap::Parser;
 use futures::future;
 use h3_shim::quic::rustls;
-use rustls::pki_types::CertificateDer;
+use rustls::pki_types::{pem::PemObject, CertificateDer};
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
 
@@ -82,9 +82,8 @@ async fn run() -> Result<(), Box<dyn core::error::Error>> {
     }
     // load certificate of CA who issues the server certificate
     // NOTE that this should be used for dev only
-    let ca = std::fs::read(opt.ca).expect("failed to read CA certificate");
-    if let Err(e) = roots.add(CertificateDer::from(ca)) {
-        error!("failed to parse trust anchor: {}", e);
+    if let Err(e) = roots.add(CertificateDer::from_pem_file(opt.ca).unwrap()) {
+        panic!("failed to parse trust anchor: {}", e);
     }
 
     let quic_client = ::quic::QuicClient::builder()

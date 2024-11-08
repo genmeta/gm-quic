@@ -18,12 +18,12 @@ use qbase::{
 };
 use qconnection::{conn::ArcConnection, path::Pathway, router::Router, usc::ArcUsc};
 use rustls::{
-    pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer},
+    pki_types::{CertificateDer, PrivateKeyDer},
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };
 
-use crate::{get_or_create_usc, ConnKey, QuicConnection, CONNECTIONS};
+use crate::{get_or_create_usc, util, ConnKey, QuicConnection, CONNECTIONS};
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
 type QuicListner = ArcAsyncDeque<(Arc<QuicConnection>, Pathway)>;
@@ -405,22 +405,14 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
 
     /// Add a host with a certificate chain and a private key from cert files.
     ///
-    /// This is a useful wapper of [`QuicServerBuilder::with_single_cert_files`], we do the file decoding(by using
-    /// [`PemObject`] trait) and error handling for you.
+    /// This is a useful wapper of [`QuicServerBuilder::with_single_cert_files`], we do the *pem* file decoding and error
+    /// handling for you.
     pub fn with_single_cert_files(
         self,
         cert_chain_file: impl AsRef<std::path::Path>,
         key_file: impl AsRef<std::path::Path>,
     ) -> io::Result<QuicServerBuilder<TlsServerConfig>> {
-        let cast_pem_error = |e| match e {
-            rustls::pki_types::pem::Error::Io(error) => error,
-            other => io::Error::new(io::ErrorKind::InvalidData, other),
-        };
-        let cert_chain = CertificateDer::pem_file_iter(cert_chain_file)
-            .map_err(cast_pem_error)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(cast_pem_error)?;
-        let key_der = PrivateKeyDer::from_pem_file(key_file).map_err(cast_pem_error)?;
+        let (cert_chain, key_der) = util::parse_cert_files(cert_chain_file, key_file)?;
         Ok(self.with_single_cert(cert_chain, key_der))
     }
 
@@ -451,23 +443,15 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
 
     /// Add a host with a certificate chain and a private key from cert files.
     ///
-    /// This is a useful wapper of [`QuicServerBuilder::with_single_cert_files_with_ocsp`], we do the file decoding(by
-    /// using [`PemObject`] trait) and error handling for you.
+    /// This is a useful wapper of [`QuicServerBuilder::with_single_cert_files_with_ocsp`], we do the *pem* file decoding
+    /// and error handling for you.
     pub fn with_single_cert_files_with_ocsp(
         self,
         cert_chain_file: impl AsRef<std::path::Path>,
         key_file: impl AsRef<std::path::Path>,
         ocsp: Vec<u8>,
     ) -> io::Result<QuicServerBuilder<TlsServerConfig>> {
-        let cast_pem_error = |e| match e {
-            rustls::pki_types::pem::Error::Io(error) => error,
-            other => io::Error::new(io::ErrorKind::InvalidData, other),
-        };
-        let cert_chain = CertificateDer::pem_file_iter(cert_chain_file)
-            .map_err(cast_pem_error)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(cast_pem_error)?;
-        let key_der = PrivateKeyDer::from_pem_file(key_file).map_err(cast_pem_error)?;
+        let (cert_chain, key_der) = util::parse_cert_files(cert_chain_file, key_file)?;
         Ok(QuicServerBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
@@ -533,23 +517,15 @@ impl QuicServerSniBuilder<TlsServerConfig> {
 
     /// Add a host with a certificate chain and a private key decoded from cert files.
     ///
-    /// This is a useful wapper of [`QuicServerSniBuilder::add_host`], we do the file decoding(by using [`PemObject`]
-    /// trait) and error handling for you.
+    /// This is a useful wapper of [`QuicServerSniBuilder::add_host`], we do the *pem* file decoding and error handling
+    /// for you.
     pub fn add_host_with_cert_files(
         self,
         server_name: impl Into<String>,
         cert_chain_file: impl AsRef<std::path::Path>,
         key_file: impl AsRef<std::path::Path>,
     ) -> io::Result<Self> {
-        let cast_pem_error = |e| match e {
-            rustls::pki_types::pem::Error::Io(error) => error,
-            other => io::Error::new(io::ErrorKind::InvalidData, other),
-        };
-        let cert_chain = CertificateDer::pem_file_iter(cert_chain_file)
-            .map_err(cast_pem_error)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(cast_pem_error)?;
-        let key_der = PrivateKeyDer::from_pem_file(key_file).map_err(cast_pem_error)?;
+        let (cert_chain, key_der) = util::parse_cert_files(cert_chain_file, key_file)?;
         Ok(self.add_host(server_name, cert_chain, key_der))
     }
 }
