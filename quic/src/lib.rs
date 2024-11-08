@@ -16,6 +16,7 @@ use qconnection::{
 
 pub mod client;
 pub mod server;
+mod util;
 
 pub use client::QuicClient;
 pub use qbase;
