@@ -6,8 +6,6 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use futures::Stream;
-
 /// AsyncDeque is a deque that can be used in async context.
 ///
 /// It is a wrapper around VecDeque, with the ability to be popped in async context.
@@ -200,8 +198,8 @@ impl<T> ArcAsyncDeque<T> {
     ///     deque.push_back(1);
     /// }
     /// ```
-    pub fn pop(&self) -> Self {
-        self.clone()
+    pub fn pop(&self) -> Pop<T> {
+        Pop(&self.0)
     }
 
     /// Poll pop the next element in the queue.
@@ -297,19 +295,24 @@ impl<T> Clone for ArcAsyncDeque<T> {
     }
 }
 
-impl<T> Future for ArcAsyncDeque<T> {
+#[derive(Debug, Clone)]
+pub struct Pop<'a, T>(&'a Mutex<AsyncDeque<T>>);
+
+impl<T> Unpin for Pop<'_, T> {}
+
+impl<T> Future for Pop<'_, T> {
     type Output = Option<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.poll_pop(cx)
+        self.0.lock().unwrap().poll_pop(cx)
     }
 }
 
-impl<T: Unpin> Stream for AsyncDeque<T> {
-    type Item = T;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.get_mut().poll_pop(cx)
+impl<T> Drop for Pop<'_, T> {
+    fn drop(&mut self) {
+        if let Some(waker) = self.0.lock().unwrap().waker.take() {
+            waker.wake();
+        }
     }
 }
 
