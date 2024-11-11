@@ -11,7 +11,7 @@ static ALPN: &[u8] = b"h3";
 
 #[derive(Parser, Debug)]
 #[structopt(name = "server")]
-struct Opt {
+pub struct Opt {
     #[structopt(
         long,
         short,
@@ -30,16 +30,9 @@ struct Opt {
     pub uri: String,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .enable_io()
-        .build()?;
-
-    rt.block_on(run())
-}
-
-async fn run() -> Result<(), Box<dyn core::error::Error>> {
+#[cfg(not(test))]
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
@@ -52,6 +45,10 @@ async fn run() -> Result<(), Box<dyn core::error::Error>> {
 
     let opt = Opt::parse();
 
+    run(opt).await
+}
+
+pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
     // DNS lookup
 
     let uri = opt.uri.parse::<http::Uri>()?;
@@ -93,6 +90,7 @@ async fn run() -> Result<(), Box<dyn core::error::Error>> {
         .with_alpns([ALPN.into()])
         .bind(&opt.bind[..])?
         .build();
+    info!("connecting to {:?}", addr);
     let conn = quic_client.connect(auth.host(), addr)?;
 
     // create h3 client
@@ -146,17 +144,9 @@ async fn run() -> Result<(), Box<dyn core::error::Error>> {
 
     let derive = tokio::spawn(driver);
     let request = tokio::spawn(request);
-    #[allow(clippy::question_mark)]
-    if let Err(e) = derive.await? {
-        return Err(e);
-    }
-    #[allow(clippy::question_mark)]
-    if let Err(e) = request.await? {
-        return Err(e);
-    }
 
-    // _ = request.await?;
+    derive.await??;
+    request.await??;
 
-    // wait for the connection to be closed before exiting
     Ok(())
 }

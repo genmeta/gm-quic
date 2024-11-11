@@ -3,7 +3,6 @@ use std::{
     io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
     pin::Pin,
-    sync::atomic::AtomicU16,
     task::{ready, Context, Poll},
 };
 
@@ -61,9 +60,6 @@ impl Default for PacketHeader {
 #[derive(Debug)]
 pub struct UdpSocketController {
     io: tokio::net::UdpSocket,
-    // TOOD: unread?
-    gso_size: AtomicU16,
-    gro_size: AtomicU16,
 }
 
 impl UdpSocketController {
@@ -85,11 +81,7 @@ impl UdpSocketController {
         // TODO: 会报错
         // io.set_ttl(DEFAULT_TTL as u32)?;
 
-        let socket = Self {
-            io,
-            gso_size: AtomicU16::new(1),
-            gro_size: AtomicU16::new(1),
-        };
+        let socket = Self { io };
         socket.config()?;
         Ok(socket)
     }

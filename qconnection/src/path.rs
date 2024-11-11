@@ -196,7 +196,13 @@ impl Path {
                 };
                 let Some(io_vecs) = io_vecs else { break };
                 let send_all = usc.send_all_via_pathway(&io_vecs, pathway);
-                if let Err(_udp_error) = send_all.await {
+                if let Err(udp_error) = send_all.await {
+                    log::warn!(
+                        "faild to send datagrams from `{}` to `{}`: {:?}",
+                        pathway.local_addr(),
+                        pathway.dst_addr(),
+                        udp_error
+                    );
                     state.to_inactive();
                     break;
                 }

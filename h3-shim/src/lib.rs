@@ -7,3 +7,6 @@ pub use ext::{RecvDatagram, SendDatagram};
 pub mod streams;
 pub use quic;
 pub use streams::{BidiStream, RecvStream, SendStream};
+
+#[cfg(test)]
+mod tests;
