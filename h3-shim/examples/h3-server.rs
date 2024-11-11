@@ -9,7 +9,7 @@ use tracing::{error, info, trace_span};
 
 #[derive(Parser, Debug)]
 #[structopt(name = "server")]
-struct Opt {
+pub struct Opt {
     #[structopt(
         name = "dir",
         short,
@@ -53,8 +53,9 @@ pub struct Certs {
 
 static ALPN: &[u8] = b"h3";
 
+#[cfg(not(test))]
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
@@ -65,10 +66,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");
-
     // process cli arguments
     let opt = Opt::parse();
 
+    run(opt).await
+}
+
+pub async fn run(opt: Opt) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("serving {}", opt.root.display());
     let root = Arc::new(opt.root);
     if !root.is_dir() {

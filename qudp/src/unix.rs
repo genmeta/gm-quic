@@ -17,6 +17,7 @@ pub trait Gso: Io {
 }
 
 pub trait Gro: Io {
+    #[allow(unused)] // TODO: use GRO
     fn max_gro_segments(&self) -> u16;
 }
 
@@ -86,15 +87,6 @@ impl Io for UdpSocketController {
             self.setsockopt(libc::IPPROTO_IP, libc::IP_RECVTTL, OPTION_ON);
             self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_UNICAST_HOPS, DEFAULT_TTL);
         }
-
-        self.gso_size.store(
-            self.max_gso_segments(),
-            std::sync::atomic::Ordering::Release,
-        );
-        self.gro_size.store(
-            self.max_gro_segments(),
-            std::sync::atomic::Ordering::Release,
-        );
 
         Ok(())
     }
