@@ -91,6 +91,7 @@ async fn run() -> Result<(), Box<dyn core::error::Error>> {
         .without_cert()
         .with_keylog(opt.key_log_file)
         .with_alpns([ALPN.into()])
+        .bind(&opt.bind[..])?
         .build();
     let conn = quic_client.connect(auth.host(), addr)?;
 

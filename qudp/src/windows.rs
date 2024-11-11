@@ -138,27 +138,30 @@ impl Io for UdpSocketController {
 
             let mut cmsghdr = unsafe { cmsghdr::CmsgHdr::new(&mut wsa_msg) };
 
-            let src = socket2::SockAddr::from(hdr.src);
-
-            match src.family() {
-                WinSock::AF_INET => {
-                    let src_ip = unsafe { ptr::read(src.as_ptr() as *const WinSock::SOCKADDR_IN) };
-                    let pktinfo = WinSock::IN_PKTINFO {
-                        ipi_addr: src_ip.sin_addr,
-                        ipi_ifindex: 0,
-                    };
-                    cmsghdr.append(WinSock::IPPROTO_IP, WinSock::IP_PKTINFO, pktinfo);
-                }
-                WinSock::AF_INET6 => {
-                    let src_ip = unsafe { ptr::read(src.as_ptr() as *const WinSock::SOCKADDR_IN6) };
-                    let pktinfo = WinSock::IN6_PKTINFO {
-                        ipi6_addr: src_ip.sin6_addr,
-                        ipi6_ifindex: unsafe { src_ip.Anonymous.sin6_scope_id },
-                    };
-                    cmsghdr.append(WinSock::IPPROTO_IPV6, WinSock::IPV6_PKTINFO, pktinfo);
-                }
-                _ => {
-                    return Err(io::Error::from(io::ErrorKind::InvalidInput));
+            if !hdr.src.ip().is_unspecified() {
+                let src = socket2::SockAddr::from(hdr.src);
+                match src.family() {
+                    WinSock::AF_INET => {
+                        let src_ip =
+                            unsafe { ptr::read(src.as_ptr() as *const WinSock::SOCKADDR_IN) };
+                        let pktinfo = WinSock::IN_PKTINFO {
+                            ipi_addr: src_ip.sin_addr,
+                            ipi_ifindex: 0,
+                        };
+                        cmsghdr.append(WinSock::IPPROTO_IP, WinSock::IP_PKTINFO, pktinfo);
+                    }
+                    WinSock::AF_INET6 => {
+                        let src_ip =
+                            unsafe { ptr::read(src.as_ptr() as *const WinSock::SOCKADDR_IN6) };
+                        let pktinfo = WinSock::IN6_PKTINFO {
+                            ipi6_addr: src_ip.sin6_addr,
+                            ipi6_ifindex: unsafe { src_ip.Anonymous.sin6_scope_id },
+                        };
+                        cmsghdr.append(WinSock::IPPROTO_IPV6, WinSock::IPV6_PKTINFO, pktinfo);
+                    }
+                    _ => {
+                        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+                    }
                 }
             }
 

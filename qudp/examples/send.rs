@@ -6,10 +6,10 @@ use qudp::{PacketHeader, UdpSocketController};
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(long, default_value_t = String::from("127.0.0.1:0"))]
+    #[arg(long, default_value_t = String::from("[::]:0"))]
     src: String,
 
-    #[arg(long, default_value_t = String::from("127.0.0.1:12345"))]
+    #[arg(long, default_value_t = String::from("[::1]:12345"))]
     dst: String,
 
     #[arg(long, default_value_t = 1200)]
