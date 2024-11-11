@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    ops::Deref,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
@@ -407,22 +408,51 @@ where
     /// If the corresponding path which applied this cid is inactive,
     /// then this cid apply is retired.
     /// In this case, None will be returned.
-    pub fn poll_borrow_cid(&self, cx: &mut Context<'_>) -> Poll<Option<ConnectionId>> {
-        self.0.lock().unwrap().poll_borrow_cid(cx)
-    }
-
-    /// Returns the previously borrowed dcid, corresponding to [`ArcCidCell::poll_borrow_cid`]`.
-    ///
-    /// In this process, the old dcid will be truly retired,
-    /// accompanied by sending a [`RetireConnectionIdFrame`] to notify the peer.
-    pub fn return_back(&self) {
-        self.0.lock().unwrap().return_back();
+    pub fn poll_borrow_cid(&self, cx: &mut Context<'_>) -> Poll<Option<CidRef<RETIRED>>> {
+        self.0.lock().unwrap().poll_borrow_cid(cx).map(|opt| {
+            opt.map(|cid| CidRef {
+                cid_cell: &self.0,
+                cid,
+            })
+        })
     }
 
     /// When the Path is invalid, the connection id needs to be retired, and this Cell
     /// is marked as no longer in use, with a [`RetireConnectionIdFrame`] being sent to peer.
     pub fn retire(&self) {
         self.0.lock().unwrap().retire();
+    }
+}
+
+/// A borrowed connection ID, which will be returned back when it is dropped.
+///
+/// While the connection ID is borrowed, the retired cids will not be truly retired. The retire will be delayed until
+/// the [`CidRef`] is dropped, a [`RetireConnectionIdFrame`] will be sent to the peer.
+pub struct CidRef<'a, RETIRED>
+where
+    RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
+{
+    cid: ConnectionId,
+    cid_cell: &'a Mutex<CidCell<RETIRED>>,
+}
+
+impl<RETIRED> Deref for CidRef<'_, RETIRED>
+where
+    RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
+{
+    type Target = ConnectionId;
+
+    fn deref(&self) -> &Self::Target {
+        &self.cid
+    }
+}
+
+impl<RETIRED> Drop for CidRef<'_, RETIRED>
+where
+    RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
+{
+    fn drop(&mut self) {
+        self.cid_cell.lock().unwrap().return_back();
     }
 }
 
@@ -450,14 +480,14 @@ mod tests {
         let mut remote_cids = RemoteCids::new(initial_dcid, 8, retired_cids);
 
         let cid_apply0 = remote_cids.apply_dcid();
-        assert_eq!(
-            cid_apply0.poll_borrow_cid(&mut cx),
-            Poll::Ready(Some(initial_dcid))
-        );
+        assert!(matches!(
+         cid_apply0.poll_borrow_cid(&mut cx),
+            Poll::Ready(Some(cid)) if *cid == initial_dcid
+        ));
 
         // Will return Pending, because the peer hasn't issue any connection id
         let cid_apply1 = remote_cids.apply_dcid();
-        assert_eq!(cid_apply1.poll_borrow_cid(&mut cx), Poll::Pending);
+        assert!(cid_apply1.poll_borrow_cid(&mut cx).is_pending());
 
         let cid = ConnectionId::random_gen(8);
         let frame = NewConnectionIdFrame {
@@ -469,12 +499,15 @@ mod tests {
         assert!(remote_cids.recv_new_cid_frame(&frame).is_ok());
         assert_eq!(remote_cids.cid_deque.len(), 2);
 
-        assert_eq!(cid_apply1.poll_borrow_cid(&mut cx), Poll::Ready(Some(cid)));
+        assert!(matches!(
+            cid_apply1.poll_borrow_cid(&mut cx),
+            Poll::Ready(Some(r#ref)) if *r#ref == cid
+        ));
 
         // Additionally, a new request will be made because if the peer-issued CID is
         // insufficient, it will still return Pending.
         let cid_apply2 = remote_cids.apply_dcid();
-        assert_eq!(cid_apply2.poll_borrow_cid(&mut cx), Poll::Pending);
+        assert!(cid_apply2.poll_borrow_cid(&mut cx).is_pending());
     }
 
     #[test]
@@ -504,14 +537,14 @@ mod tests {
 
         assert_eq!(cid_apply1.0.lock().unwrap().allocated_cids[0].0, 0);
         assert_eq!(cid_apply2.0.lock().unwrap().allocated_cids[0].0, 1);
-        assert_eq!(
+        assert!(matches!(
             cid_apply1.poll_borrow_cid(&mut cx),
-            Poll::Ready(Some(cids[0]))
-        );
-        assert_eq!(
+            Poll::Ready(Some(r#ref)) if *r#ref == cids[0]
+        ));
+        assert!(matches!(
             cid_apply2.poll_borrow_cid(&mut cx),
-            Poll::Ready(Some(cids[1]))
-        );
+            Poll::Ready(Some(r#ref)) if *r#ref == cids[1]
+        ));
 
         guard.retire_prior_to(4);
         assert_eq!(guard.cid_deque.offset(), 4);
@@ -522,18 +555,16 @@ mod tests {
         assert_eq!(cid_apply1.0.lock().unwrap().allocated_cids[0].0, 0);
         assert_eq!(cid_apply2.0.lock().unwrap().allocated_cids[0].0, 1);
 
-        assert_eq!(
+        assert!(matches!(
             cid_apply1.poll_borrow_cid(&mut cx),
-            Poll::Ready(Some(cids[0]))
-        );
-        assert_eq!(
+            Poll::Ready(Some(r#ref)) if *r#ref == cids[0]
+        ));
+        assert!(matches!(
             cid_apply2.poll_borrow_cid(&mut cx),
-            Poll::Ready(Some(cids[1]))
-        );
+            Poll::Ready(Some(r#ref)) if *r#ref == cids[1]
+        ));
 
         guard.arrange_idle_cid();
-        cid_apply1.return_back();
-        cid_apply2.return_back();
         assert_eq!(guard.retired_cids.0.lock().unwrap().len(), 4);
 
         let retired_cids = [1, 0, 3, 2];
@@ -547,14 +578,14 @@ mod tests {
             );
         }
 
-        assert_eq!(
+        assert!(matches!(
             cid_apply1.poll_borrow_cid(&mut cx),
-            Poll::Ready(Some(cids[4]))
-        );
-        assert_eq!(
+            Poll::Ready(Some(r#ref)) if *r#ref == cids[4]
+        ));
+        assert!(matches!(
             cid_apply2.poll_borrow_cid(&mut cx),
-            Poll::Ready(Some(cids[5]))
-        );
+            Poll::Ready(Some(r#ref)) if *r#ref == cids[5]
+        ));
 
         cid_apply2.retire();
         assert_eq!(guard.retired_cids.lock().unwrap().len(), 1);
@@ -592,13 +623,13 @@ mod tests {
         let cid_apply2 = guard.apply_dcid();
         assert_eq!(cid_apply1.0.lock().unwrap().allocated_cids[0].0, 4);
         assert_eq!(cid_apply2.0.lock().unwrap().allocated_cids[0].0, 5);
-        assert_eq!(
+        assert!(matches!(
             cid_apply1.poll_borrow_cid(&mut cx),
-            Poll::Ready(Some(cids[4]))
-        );
-        assert_eq!(
+            Poll::Ready(Some(r#ref)) if *r#ref == cids[4]
+        ));
+        assert!(matches!(
             cid_apply2.poll_borrow_cid(&mut cx),
-            Poll::Ready(Some(cids[5]))
-        );
+            Poll::Ready(Some(r#ref)) if *r#ref == cids[5]
+        ));
     }
 }

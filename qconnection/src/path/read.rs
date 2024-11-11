@@ -220,7 +220,7 @@ impl ReadIntoDatagrams {
             };
 
             let (datagram_size, fresh_bytes) =
-                self.read_into_datagram(&mut constraints, flow_limit, datagram, dcid);
+                self.read_into_datagram(&mut constraints, flow_limit, datagram, *dcid);
             // 啥也没读到，就结束吧
             // TODO: 若因没有数据可发，将waker挂载到数据控制器上一份，包括帧数据、流数据，
             //       一旦有任何数据发送，唤醒该任务发一次
@@ -244,8 +244,8 @@ impl ReadIntoDatagrams {
             return Poll::Pending;
         }
 
-        // 将dcid的借用归还，可能会触发淘汰dcid
-        self.dcid.return_back();
+        // dcid被Drop时自动将dcid的借用归还，可能会触发淘汰dcid
+        // self.dcid.return_back();
         // 最终将要发送前，反馈给各个限制条件。除了拥塞控制的，在每个Epoch发包后，都已直接反馈给cc过了
         self.anti_amplifier.on_sent(total_bytes);
         send_flow_credit.post_sent(total_fresh_bytes);
