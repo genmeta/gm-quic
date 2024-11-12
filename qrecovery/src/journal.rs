@@ -55,7 +55,7 @@ impl<T> AsRef<ArcRcvdJournal> for Journal<T> {
 pub type InitialJournal = Journal<CryptoFrame>;
 /// For handshake space, only reliable transmission of crypto frames is required.
 pub type HandshakeJournal = Journal<CryptoFrame>;
-/// For handshake space, reliable transmission of [`GuaranteedFrame`] (crypto frames, stream frames and reliable frames) is required.
+/// For data space, reliable transmission of [`GuaranteedFrame`] (crypto frames, stream frames and reliable frames) is required.
 pub type DataJournal = Journal<GuaranteedFrame>;
 
 #[cfg(test)]

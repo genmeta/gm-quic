@@ -11,7 +11,7 @@ use qbase::{
     },
     Epoch,
 };
-use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
+use qcongestion::{CongestionControl, TrackPackets};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::InitialJournal,
@@ -209,27 +209,25 @@ impl InitialSpace {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct InitialMayLoss {
-    pub space: InitialJournal,
-    pub outgoing: CryptoStreamOutgoing,
+#[derive(Clone)]
+pub struct InitialTracker {
+    journal: InitialJournal,
+    outgoing: CryptoStreamOutgoing,
 }
 
-impl InitialMayLoss {
-    pub fn new(space: InitialJournal, outgoing: CryptoStreamOutgoing) -> Self {
-        Self { space, outgoing }
+impl InitialTracker {
+    pub fn new(journal: InitialJournal, outgoing: CryptoStreamOutgoing) -> Self {
+        Self { journal, outgoing }
     }
 }
 
-impl MayLoss for InitialMayLoss {
+impl TrackPackets for InitialTracker {
     fn may_loss(&self, pn: u64) {
-        for frame in self.space.sent().recv().may_loss_pkt(pn) {
+        for frame in self.journal.sent().recv().may_loss_pkt(pn) {
             self.outgoing.may_loss_data(&frame);
         }
     }
-}
 
-impl RetirePktRecord for InitialSpace {
     fn retire(&self, pn: u64) {
         self.journal.rcvd().write().retire(pn);
     }

@@ -17,22 +17,36 @@ use crate::{
 /// require waiting for the client handshake to complete.
 /// Instead, it simply queries the handshake status.
 #[derive(Debug, Default, Clone)]
-pub struct ClientHandshake(Arc<AtomicBool>);
+pub struct ClientHandshake {
+    has_keys: Arc<AtomicBool>,
+    done: Arc<AtomicBool>,
+}
 
 impl ClientHandshake {
     /// Check if the client handshake is complete.
     pub fn is_handshake_done(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.done.load(Ordering::Acquire)
     }
 
+    pub fn has_keys(&self) -> bool {
+        self.has_keys.load(Ordering::Acquire)
+    }
     /// Receive the HANDSHAKE_DONE frame.
     ///
     /// Once the client receives the HANDSHAKE_DONE frame,
     /// it marks the completion of the client handshake.
     pub fn recv_handshake_done_frame(&self, _frame: &HandshakeDoneFrame) {
-        let _has_done = self.0.swap(true, Ordering::AcqRel);
+        let _has_done = self.done.swap(true, Ordering::AcqRel);
         if !_has_done {
             log::trace!("Client handshake is done");
+        }
+    }
+
+    /// TLS upgrade the handshake keys.
+    pub fn on_key_upgrade(&self) {
+        let has_keys = self.has_keys.swap(true, Ordering::AcqRel);
+        if !has_keys {
+            log::trace!("Client is getting handshake keys");
         }
     }
 }
@@ -57,6 +71,7 @@ where
     T: SendFrame<HandshakeDoneFrame> + Clone,
 {
     is_done: Arc<AtomicBool>,
+    has_keys: Arc<AtomicBool>,
     output: T,
 }
 
@@ -71,6 +86,7 @@ where
     pub fn new(output: T) -> Self {
         ServerHandshake {
             is_done: Arc::new(AtomicBool::new(false)),
+            has_keys: Arc::new(AtomicBool::new(false)),
             output,
         }
     }
@@ -78,6 +94,11 @@ where
     /// Check if the server handshake is complete.
     pub fn is_handshake_done(&self) -> bool {
         self.is_done.load(Ordering::Acquire)
+    }
+
+    /// Check if the server is getting handshake keys.
+    pub fn has_keys(&self) -> bool {
+        self.has_keys.load(Ordering::Acquire)
     }
 
     /// Actively set the server's handshake status to complete.
@@ -99,6 +120,14 @@ where
         {
             log::trace!("Server handshake is done");
             self.output.send_frame([HandshakeDoneFrame]);
+        }
+    }
+
+    /// TLS upgrade the handshake keys.
+    pub fn on_key_upgrade(&self) {
+        let has_keys = self.has_keys.swap(true, Ordering::AcqRel);
+        if !has_keys {
+            log::trace!("Server is getting handshake keys");
         }
     }
 }
@@ -147,6 +176,22 @@ where
         match self {
             Handshake::Client(h) => h.is_handshake_done(),
             Handshake::Server(h) => h.is_handshake_done(),
+        }
+    }
+
+    /// Check if the getting handshake keys.
+    pub fn is_getting_keys(&self) -> bool {
+        match self {
+            Handshake::Client(h) => h.has_keys(),
+            Handshake::Server(h) => h.has_keys(),
+        }
+    }
+
+    /// TLS upgrade the handshake keys.
+    pub fn on_key_upgrade(&self) {
+        match self {
+            Handshake::Client(h) => h.on_key_upgrade(),
+            Handshake::Server(h) => h.on_key_upgrade(),
         }
     }
 

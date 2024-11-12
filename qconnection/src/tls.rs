@@ -317,6 +317,7 @@ impl ArcTlsSession {
                         match key_change {
                             rustls::quic::KeyChange::Handshake { keys } => {
                                 handshake_keys.set_keys(keys);
+                                handshake.on_key_upgrade();
                                 cur_epoch = Epoch::Handshake;
                             }
                             rustls::quic::KeyChange::OneRtt { keys, next } => {

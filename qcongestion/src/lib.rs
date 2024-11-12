@@ -59,24 +59,15 @@ pub trait CongestionControl {
     /// # Returns
     /// The current PTO duration for the given epoch.
     fn pto_time(&self, epoch: Epoch) -> Duration;
-
-    /// Handles the update of the handshake key state.
-    fn on_get_handshake_keys(&self);
-
-    /// Indicates that the handshake process has been completed.
-    fn on_handshake_done(&self);
 }
 
-/// The [`MayLoss`] trait is used to handle potential packet losses.
-pub trait MayLoss: Send + Sync {
+/// The [`TrackPackets`] trait defines the interface for packet tracking
+pub trait TrackPackets: Send + Sync {
     /// Indicates that a packet with the specified packet number may have been lost.
     /// # Parameters
     /// - `pn`: The packet number of the potentially lost packet.
     fn may_loss(&self, pn: u64);
-}
 
-/// The [`RetirePktRecord`] trait is used to retire packet records that are no longer needed.
-pub trait RetirePktRecord: Send + Sync {
     /// Retires a packet record with the specified packet number in recv buffer.
     /// # Parameters
     /// - `pn`: The packet number of the packet record to retire.

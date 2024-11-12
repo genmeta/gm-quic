@@ -8,15 +8,18 @@ use std::{
 
 use qbase::{
     frame::{AckFrame, EcnCounts},
+    handshake::Handshake,
+    sid::Role,
     Epoch,
 };
+use qrecovery::reliable::ArcReliableFrameDeque;
 
 use crate::{
     bbr::{self, INITIAL_CWND},
     new_reno::NewReno,
     pacing::{self, Pacer},
     rtt::{ArcRtt, INITIAL_RTT},
-    MayLoss, RetirePktRecord,
+    TrackPackets,
 };
 
 const K_GRANULARITY: Duration = Duration::from_millis(1);
@@ -60,14 +63,10 @@ pub struct CongestionController {
     rcvd_records: [RcvdRecords; Epoch::count()],
     // The waker to notify when the controller is ready to send.
     send_waker: Option<Waker>,
-    // Handlers for potential packet losses for each epoch.
-    loss_handlers: [Box<dyn MayLoss>; Epoch::count()],
-    // Handlers for retiring packets for each epoch.
-    retire_handlers: [Box<dyn RetirePktRecord>; Epoch::count()],
-    // Whether the handshake keys have been received.
-    has_handshake_keys: bool,
-    // Whether the handshake is complete.
-    is_handshake_done: bool,
+    // Space packet trackers
+    trackers: [Box<dyn TrackPackets>; 3],
+    // Handshake state
+    handshake: Handshake<ArcReliableFrameDeque>,
 }
 
 impl CongestionController {
@@ -75,8 +74,8 @@ impl CongestionController {
     fn new(
         algorithm: CongestionAlgorithm,
         max_ack_delay: Duration,
-        loss: [Box<dyn MayLoss>; 3],
-        retire: [Box<dyn RetirePktRecord>; 3],
+        trackers: [Box<dyn TrackPackets>; 3],
+        handshake: Handshake<ArcReliableFrameDeque>,
     ) -> Self {
         let algorithm: Box<dyn Algorithm> = match algorithm {
             CongestionAlgorithm::Bbr => Box::new(bbr::Bbr::new()),
@@ -102,10 +101,8 @@ impl CongestionController {
             pacer: Pacer::new(INITIAL_RTT, INITIAL_CWND, MSS, now, None),
             last_sent_time: now,
             send_waker: None,
-            loss_handlers: loss,
-            retire_handlers: retire,
-            has_handshake_keys: false,
-            is_handshake_done: false,
+            trackers,
+            handshake,
         }
     }
 
@@ -160,7 +157,9 @@ impl CongestionController {
 
         let ack_delay = Duration::from_millis(ack_frame.delay.into());
         if let Some(latest_rtt) = latest_rtt {
-            self.rtt.update(latest_rtt, ack_delay);
+            let is_handshake_confirmed = self.handshake.is_handshake_done();
+            self.rtt
+                .update(latest_rtt, ack_delay, is_handshake_confirmed);
         }
 
         // Process ECN information if present.
@@ -194,7 +193,7 @@ impl CongestionController {
                     .binary_search_by_key(&pn, |p| p.pn)
                     .ok()
                     .map(|idx| {
-                        self.rcvd_records[epoch].ack(pn, &self.retire_handlers);
+                        self.rcvd_records[epoch].ack(pn, &self.trackers);
                         self.sent_packets[epoch][idx].is_acked = true;
                         self.sent_packets[epoch][idx].clone().into()
                     });
@@ -216,7 +215,7 @@ impl CongestionController {
         let now = Instant::now();
         for lost in packets {
             self.algorithm.on_congestion_event(&lost, now);
-            self.loss_handlers[epoch].may_loss(lost.pn);
+            self.trackers[epoch].may_loss(lost.pn);
         }
     }
 
@@ -232,8 +231,8 @@ impl CongestionController {
             return;
         }
 
-        if let Some(t) = self.get_pto_timeout() {
-            self.loss_timer.update(t);
+        if let Some((pto_time, _)) = self.get_pto_timeout() {
+            self.loss_timer.update(pto_time);
         }
     }
 
@@ -250,22 +249,39 @@ impl CongestionController {
         }
 
         // probe timeout
-        let _ = if self.no_ack_eliciting_in_flight() {
-            assert!(!self.server_completed_address_validation());
-            // Client sends an anti-deadlock packet: Initial is padded
-            // to earn more anti-amplification credit,
-            // a Handshake packet proves address ownership.
-            if self.has_handshake_keys {
-                Some(Epoch::Handshake)
+        let pto_epoch =
+            if self.no_ack_eliciting_in_flight() && !self.server_completed_address_validation() {
+                // Client sends an anti-deadlock packet: Initial is padded
+                // to earn more anti-amplification credit,
+                // a Handshake packet proves address ownership.
+                if self.handshake.is_getting_keys() {
+                    Epoch::Handshake
+                } else {
+                    Epoch::Initial
+                }
+            } else if let Some((_, epoch)) = self.get_pto_timeout() {
+                epoch
             } else {
-                Some(Epoch::Initial)
-            }
-        } else if self.get_pto_timeout().is_some() {
-            Some(Epoch::Data)
-        } else {
-            None
-        };
+                self.set_loss_timer();
+                return;
+            };
+
         self.pto_count += 1;
+        log::warn!(
+            "PTO timeout, epoch: {:?}, pto_count: {}",
+            pto_epoch,
+            self.pto_count
+        );
+        // Retransmit frames from the oldest sent packet. However
+        // these packets are not actually declared lost, so have no effect on
+        // congestion control, we just retransmit the data they carry.
+        let retransmit = self.sent_packets[pto_epoch]
+            .iter()
+            .take(self.pto_count as usize);
+
+        retransmit.for_each(|pkt| {
+            self.trackers[pto_epoch].may_loss(pkt.pn);
+        });
 
         self.set_loss_timer();
     }
@@ -289,16 +305,16 @@ impl CongestionController {
         let rttvar = self.rtt.rttvar();
         let mut duration = smoothed_rtt + std::cmp::max(K_GRANULARITY, rttvar * 4);
         // 握手已完成, 则应该考虑 max_ack_delay
-        if epoch == Epoch::Data && self.is_handshake_done {
+        if epoch == Epoch::Data && self.handshake.is_handshake_done() {
             duration += self.max_ack_delay
         }
         duration * 2_u32.pow(self.pto_count)
     }
 
-    fn get_pto_timeout(&self) -> Option<Instant> {
+    fn get_pto_timeout(&self) -> Option<(Instant, Epoch)> {
         let mut duration = self.get_pto_time(Epoch::Initial);
         if self.no_ack_eliciting_in_flight() {
-            return Some(Instant::now() + duration);
+            return Some((Instant::now() + duration, Epoch::Initial));
         }
 
         let mut pto_time = None;
@@ -309,14 +325,14 @@ impl CongestionController {
             if space == Epoch::Data {
                 // An endpoint MUST NOT set its PTO timer for the Application Data
                 // packet number space until the handshake is confirmed
-                if !self.is_handshake_done {
+                if !self.handshake.is_handshake_done() {
                     return pto_time;
                 }
                 duration += self.max_ack_delay * 2_u32.pow(self.pto_count);
             }
             let new_time = self.time_of_last_ack_eliciting_packet[space].unwrap() + duration;
-            if pto_time.is_none() || new_time < pto_time.unwrap() {
-                pto_time = Some(new_time);
+            if pto_time.is_none() || new_time < pto_time.unwrap().0 {
+                pto_time = Some((new_time, space));
             }
         }
         pto_time
@@ -390,7 +406,7 @@ impl CongestionController {
     }
 
     fn server_completed_address_validation(&mut self) -> bool {
-        self.has_handshake_keys || self.is_handshake_done
+        self.handshake.role() == Role::Server || self.handshake.is_handshake_done()
     }
 
     fn process_ecn(&mut self, _: Epoch, _: EcnCounts) {
@@ -406,14 +422,14 @@ impl ArcCC {
     pub fn new(
         algorithm: CongestionAlgorithm,
         max_ack_delay: Duration,
-        loss: [Box<dyn MayLoss>; 3],
-        retire: [Box<dyn RetirePktRecord>; 3],
+        trackers: [Box<dyn TrackPackets>; 3],
+        handshake: Handshake<ArcReliableFrameDeque>,
     ) -> Self {
         ArcCC(Arc::new(Mutex::new(CongestionController::new(
             algorithm,
             max_ack_delay,
-            loss,
-            retire,
+            trackers,
+            handshake,
         ))))
     }
 }
@@ -509,17 +525,6 @@ impl super::CongestionControl for ArcCC {
     fn pto_time(&self, epoch: Epoch) -> Duration {
         self.0.lock().unwrap().get_pto_time(epoch)
     }
-
-    fn on_get_handshake_keys(&self) {
-        let mut gurad = self.0.lock().unwrap();
-        gurad.has_handshake_keys = true;
-    }
-
-    fn on_handshake_done(&self) {
-        let mut guard = self.0.lock().unwrap();
-        guard.is_handshake_done = true;
-        guard.rtt.on_handshake_done();
-    }
 }
 
 /// The [`RcvdRecords`] struct is used to maintain records of received packets for each epoch.
@@ -602,14 +607,14 @@ impl RcvdRecords {
 
     /// Processes an acknowledged (ACK) packet.
     /// If the ACKed packet number matches the last sent ACK number, retires all acknowledged packets.
-    fn ack(&mut self, ack: u64, retire_records: &[Box<dyn RetirePktRecord>; 3]) {
+    fn ack(&mut self, ack: u64, trackers: &[Box<dyn TrackPackets>; 3]) {
         if let Some((pn, largest_acked)) = self.last_ack_sent {
             if ack == pn {
                 self.rcvd_queue
                     .iter()
                     .filter(|&&pn| pn <= largest_acked)
                     .for_each(|pn| {
-                        retire_records[self.epoch].retire(*pn);
+                        trackers[self.epoch].retire(*pn);
                     });
                 self.rcvd_queue.retain(|&pn| pn > largest_acked);
             }
@@ -927,20 +932,18 @@ mod tests {
     }
 
     struct Mock;
-    impl MayLoss for Mock {
+    impl TrackPackets for Mock {
         fn may_loss(&self, _: u64) {}
-    }
-
-    impl RetirePktRecord for Mock {
         fn retire(&self, _: u64) {}
     }
 
     fn create_congestion_controller_for_test() -> CongestionController {
+        let output = ArcReliableFrameDeque::with_capacity(10);
         CongestionController::new(
             CongestionAlgorithm::Bbr,
             Duration::from_millis(100),
             [Box::new(Mock), Box::new(Mock), Box::new(Mock)],
-            [Box::new(Mock), Box::new(Mock), Box::new(Mock)],
+            Handshake::new(qbase::sid::Role::Client, output),
         )
     }
 }
