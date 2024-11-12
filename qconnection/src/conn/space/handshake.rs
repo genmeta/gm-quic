@@ -16,7 +16,7 @@ use qbase::{
     varint::{EncodeBytes, VarInt, WriteVarInt},
     Epoch,
 };
-use qcongestion::{CongestionControl, MayLoss, RetirePktRecord, MSS};
+use qcongestion::{CongestionControl, TrackPackets, MSS};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcRcvdJournal, HandshakeJournal},
@@ -284,27 +284,25 @@ impl super::RecvPacket for ClosingHandshakeScope {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct HandshakeMayloss {
-    space: HandshakeJournal,
+#[derive(Clone)]
+pub struct HandshakeTracker {
+    journal: HandshakeJournal,
     outgoing: CryptoStreamOutgoing,
 }
 
-impl HandshakeMayloss {
-    pub fn new(space: HandshakeJournal, outgoing: CryptoStreamOutgoing) -> Self {
-        Self { space, outgoing }
+impl HandshakeTracker {
+    pub fn new(journal: HandshakeJournal, outgoing: CryptoStreamOutgoing) -> Self {
+        Self { journal, outgoing }
     }
 }
 
-impl MayLoss for HandshakeMayloss {
+impl TrackPackets for HandshakeTracker {
     fn may_loss(&self, pn: u64) {
-        for frame in self.space.sent().recv().may_loss_pkt(pn) {
+        for frame in self.journal.sent().recv().may_loss_pkt(pn) {
             self.outgoing.may_loss_data(&frame);
         }
     }
-}
 
-impl RetirePktRecord for HandshakeSpace {
     fn retire(&self, pn: u64) {
         self.journal.rcvd().write().retire(pn);
     }

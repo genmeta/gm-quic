@@ -26,7 +26,7 @@ use qbase::{
     token::ArcTokenRegistry,
     Epoch,
 };
-use qcongestion::{CongestionControl, MayLoss, RetirePktRecord, MSS};
+use qcongestion::{CongestionControl, TrackPackets, MSS};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcRcvdJournal, DataJournal},
@@ -399,44 +399,43 @@ impl DataSpace {
     }
 }
 
-impl RetirePktRecord for DataSpace {
-    fn retire(&self, pn: u64) {
-        self.journal.rcvd().write().retire(pn);
-    }
-}
-
 #[derive(Clone)]
-pub struct DataMayLoss {
-    space: DataJournal,
+pub struct DataTracker {
+    journal: DataJournal,
     reliable_frames: ArcReliableFrameDeque,
-    data_streams: DataStreams,
+    streams: DataStreams,
     outgoing: CryptoStreamOutgoing,
 }
 
-impl DataMayLoss {
+impl DataTracker {
     pub fn new(
-        space: DataJournal,
+        journal: DataJournal,
         reliable_frames: ArcReliableFrameDeque,
-        data_streams: DataStreams,
+        streams: DataStreams,
         outgoing: CryptoStreamOutgoing,
     ) -> Self {
         Self {
-            space,
+            journal,
             reliable_frames,
-            data_streams,
+            streams,
             outgoing,
         }
     }
 }
-impl MayLoss for DataMayLoss {
+
+impl TrackPackets for DataTracker {
     fn may_loss(&self, pn: u64) {
-        for frame in self.space.sent().recv().may_loss_pkt(pn) {
+        for frame in self.journal.sent().recv().may_loss_pkt(pn) {
             match frame {
-                GuaranteedFrame::Stream(f) => self.data_streams.may_loss_data(&f),
+                GuaranteedFrame::Stream(f) => self.streams.may_loss_data(&f),
                 GuaranteedFrame::Reliable(f) => self.reliable_frames.send_frame([f]),
                 GuaranteedFrame::Crypto(f) => self.outgoing.may_loss_data(&f),
             }
         }
+    }
+
+    fn retire(&self, pn: u64) {
+        self.journal.rcvd().write().retire(pn);
     }
 }
 

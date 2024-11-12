@@ -16,7 +16,7 @@ use qbase::{
     token::{ArcTokenRegistry, TokenRegistry},
     Epoch,
 };
-use qcongestion::{CongestionControl, MayLoss, RetirePktRecord};
+use qcongestion::{ArcCC, CongestionAlgorithm, CongestionControl};
 use qrecovery::reliable::ArcReliableFrameDeque;
 use qunreliable::DatagramFlow;
 use rustls::quic::Keys;
@@ -25,9 +25,9 @@ use tokio::{sync::Notify, task::JoinHandle};
 use super::{
     parameters::ConnParameters,
     space::{
-        data::{DataMayLoss, DataSpace},
-        handshake::{HandshakeMayloss, HandshakeSpace},
-        initial::{InitialMayLoss, InitialSpace},
+        data::{DataSpace, DataTracker},
+        handshake::{HandshakeSpace, HandshakeTracker},
+        initial::{InitialSpace, InitialTracker},
     },
     ArcLocalCids, ArcRemoteCids, CidRegistry, DataStreams, Handshake, RcvdPackets,
 };
@@ -145,11 +145,10 @@ impl Connection {
             let hs = hs.clone();
             let data = data.clone();
 
-            let initial_may_loss =
-                InitialMayLoss::new(initial.journal.clone(), initial.crypto_stream.outgoing());
-            let hs_may_loss =
-                HandshakeMayloss::new(hs.journal.clone(), hs.crypto_stream.outgoing());
-            let data_may_loss = DataMayLoss::new(
+            let initial_tracker =
+                InitialTracker::new(initial.journal.clone(), initial.crypto_stream.outgoing());
+            let hs_tracker = HandshakeTracker::new(hs.journal.clone(), hs.crypto_stream.outgoing());
+            let data_tracker = DataTracker::new(
                 data.journal.clone(),
                 reliable_frames.clone(),
                 streams.clone(),
@@ -159,18 +158,19 @@ impl Connection {
             move |pathway, usc| {
                 let scid = cid_registry.local.active_cids()[0];
                 let dcid = cid_registry.remote.apply_dcid();
-                let loss: [Box<dyn MayLoss>; 3] = [
-                    Box::new(initial_may_loss.clone()),
-                    Box::new(hs_may_loss.clone()),
-                    Box::new(data_may_loss.clone()),
-                ];
-                let retire: [Box<dyn RetirePktRecord>; 3] = [
-                    Box::new(initial.clone()),
-                    Box::new(hs.clone()),
-                    Box::new(data.clone()),
-                ];
 
-                let path = Path::new(usc, scid, dcid, loss, retire);
+                let cc = ArcCC::new(
+                    CongestionAlgorithm::Bbr,
+                    Duration::from_millis(100),
+                    [
+                        Box::new(initial_tracker.clone()),
+                        Box::new(hs_tracker.clone()),
+                        Box::new(data_tracker.clone()),
+                    ],
+                    handshake.clone(),
+                );
+
+                let path = Path::new(usc, scid, dcid, cc);
                 if !handshake.is_handshake_done() {
                     if role == Role::Client {
                         path.grant_anti_amplifier();

@@ -9,7 +9,7 @@ use qbase::{
     frame::{PathChallengeFrame, PathResponseFrame},
     Epoch,
 };
-use qcongestion::{ArcCC, CongestionAlgorithm, CongestionControl, MayLoss, RetirePktRecord};
+use qcongestion::{ArcCC, CongestionControl};
 use qrecovery::reliable::ArcReliableFrameDeque;
 use state::ArcPathState;
 use tokio::time::timeout;
@@ -20,7 +20,7 @@ mod read;
 mod state;
 mod util;
 
-use std::{sync::atomic::AtomicBool, time::Duration};
+use std::sync::atomic::AtomicBool;
 
 pub use anti_amplifier::ArcAntiAmplifier;
 pub use pathway::{Pathway, RelayAddr};
@@ -83,19 +83,13 @@ impl Path {
         usc: ArcUsc,
         scid: ConnectionId,
         dcid: ArcCidCell<ArcReliableFrameDeque>,
-        loss: [Box<dyn MayLoss>; 3],
-        retire: [Box<dyn RetirePktRecord>; 3],
+        cc: ArcCC,
     ) -> Self {
         Self {
             usc,
             dcid: dcid.clone(),
             scid,
-            cc: ArcCC::new(
-                CongestionAlgorithm::Bbr,
-                Duration::from_micros(100),
-                loss,
-                retire,
-            ),
+            cc,
             anti_amplifier: ArcAntiAmplifier::<ANTI_FACTOR>::default(),
             spin: Arc::new(AtomicBool::new(false)),
             challenge_sndbuf: SendBuffer::default(),
