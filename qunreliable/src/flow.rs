@@ -9,65 +9,66 @@ use qbase::{
 };
 
 use super::{
-    reader::{DatagramReader, RawDatagramReader},
-    writer::{DatagramWriter, RawDatagramWriter},
+    reader::{ReceivedDatagramFrames, UnreliableReader},
+    writer::{DatagramFrameSink, UnreliableWriter},
 };
-use crate::{DatagramIncoming, DatagramOutgoing};
+use crate::{UnreliableIncoming, UnreliableOutgoing};
 
-/// Combination of [`DatagramIncoming`] and [`DatagramOutgoing`]
+/// Combination of [`UnreliableIncoming`] and [`UnreliableOutgoing`]
 #[derive(Debug, Clone)]
 pub struct DatagramFlow {
     /// The incoming datagram frame, see type's doc for more details.
-    incoming: DatagramIncoming,
+    incoming: UnreliableIncoming,
     /// The outgoing datagram frame, see type's doc for more details.
-    outgoing: DatagramOutgoing,
+    outgoing: UnreliableOutgoing,
 }
 
 impl DatagramFlow {
     /// Creates a new instance of [`DatagramFlow`].
     ///
     /// This method takes local protocol parameter [`max_datagram_frame_size`],
-    /// the local's protocol parameter [`max_datagram_frame_size`] is used to create the reader, see [`RawDatagramReader`] for more details.
+    /// the local's transport parameter [`max_datagram_frame_size`] limits the size of the datagram frames that peer
+    /// can send.
     ///
     /// [`max_datagram_frame_size`]: https://www.rfc-editor.org/rfc/rfc9221.html#name-transport-parameter
     #[inline]
     pub fn new(local_max_datagram_frame_size: u64) -> Self {
-        let reader = RawDatagramReader::new(local_max_datagram_frame_size as _);
-        let writer = RawDatagramWriter::new();
+        let reader = ReceivedDatagramFrames::new(local_max_datagram_frame_size as _);
+        let writer = DatagramFrameSink::new();
 
         Self {
-            incoming: DatagramIncoming(Arc::new(Mutex::new(Ok(reader)))),
-            outgoing: DatagramOutgoing(Arc::new(Mutex::new(Ok(writer)))),
+            incoming: UnreliableIncoming(Arc::new(Mutex::new(Ok(reader)))),
+            outgoing: UnreliableOutgoing(Arc::new(Mutex::new(Ok(writer)))),
         }
     }
 
-    /// See [`DatagramOutgoing::try_read_datagram`] for more details.
+    /// See [`UnreliableOutgoing::try_read_datagram`] for more details.
     #[inline]
     pub fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
         self.outgoing.try_read_datagram(buf)
     }
 
-    /// Create a new **unique** instance of [`DatagramReader`].
+    /// Create a new **unique** instance of [`UnreliableReader`].
     ///
     /// Return an error if the connection is closing or already closed, or there is already a reader exist.
     ///
-    /// See [`DatagramIncoming::new_reader`] for more details.
+    /// See [`UnreliableIncoming::new_reader`] for more details.
     #[inline]
-    pub fn reader(&self) -> io::Result<DatagramReader> {
+    pub fn reader(&self) -> io::Result<UnreliableReader> {
         self.incoming.new_reader()
     }
 
-    /// Create a new instance of [`DatagramWriter`].
+    /// Create a new instance of [`UnreliableWriter`].
     ///
     /// Return an error if the connection is closing or already closed,
     ///
-    /// See [`DatagramOutgoing::new_writer`] for more details.
+    /// See [`UnreliableOutgoing::new_writer`] for more details.
     #[inline]
-    pub fn writer(&self, max_datagram_frame_size: u64) -> io::Result<DatagramWriter> {
+    pub fn writer(&self, max_datagram_frame_size: u64) -> io::Result<UnreliableWriter> {
         self.outgoing.new_writer(max_datagram_frame_size)
     }
 
-    /// See [`DatagramOutgoing::on_conn_error`] and [`DatagramIncoming::on_conn_error`] for more details.
+    /// See [`UnreliableOutgoing::on_conn_error`] and [`UnreliableIncoming::on_conn_error`] for more details.
     #[inline]
     pub fn on_conn_error(&self, error: &Error) {
         self.incoming.on_conn_error(error);
@@ -75,7 +76,7 @@ impl DatagramFlow {
     }
 }
 
-/// See [`DatagramIncoming::recv_datagram`] for more details.
+/// See [`UnreliableIncoming::recv_datagram`] for more details.
 impl ReceiveFrame<(DatagramFrame, bytes::Bytes)> for DatagramFlow {
     type Output = ();
 

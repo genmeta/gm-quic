@@ -62,12 +62,12 @@ impl QuicConnection {
     }
 
     #[inline]
-    pub fn datagram_reader(&self) -> io::Result<qunreliable::DatagramReader> {
+    pub fn datagram_reader(&self) -> io::Result<qunreliable::UnreliableReader> {
         self.inner.datagram_reader()
     }
 
     #[inline]
-    pub async fn datagram_writer(&self) -> io::Result<qunreliable::DatagramWriter> {
+    pub async fn datagram_writer(&self) -> io::Result<qunreliable::UnreliableWriter> {
         self.inner.datagram_writer().await
     }
 

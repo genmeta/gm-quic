@@ -24,7 +24,7 @@ use qrecovery::{
     send,
     streams::{self, Ext},
 };
-use qunreliable::{DatagramReader, DatagramWriter};
+use qunreliable::{UnreliableReader, UnreliableWriter};
 use raw::Connection;
 use tokio::task::JoinHandle;
 
@@ -336,7 +336,7 @@ impl ArcConnection {
         Ok(result)
     }
 
-    pub fn datagram_reader(&self) -> io::Result<DatagramReader> {
+    pub fn datagram_reader(&self) -> io::Result<UnreliableReader> {
         let guard = self.0.lock().unwrap();
 
         match guard.deref() {
@@ -348,7 +348,7 @@ impl ArcConnection {
         }
     }
 
-    pub async fn datagram_writer(&self) -> io::Result<DatagramWriter> {
+    pub async fn datagram_writer(&self) -> io::Result<UnreliableWriter> {
         let (remote_params, datagram_flow) = {
             let guard = self.0.lock().unwrap();
             let connection = match guard.deref() {
