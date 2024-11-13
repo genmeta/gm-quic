@@ -243,6 +243,10 @@ impl ArcRcvdJournal {
         self.inner.write().unwrap().on_rcvd_pn(pn);
     }
 
+    pub fn gen_ack_frame_util(&self, ack: (u64, Instant), capacity: usize) -> Option<AckFrame> {
+        self.inner.read().unwrap().gen_ack_frame_util(ack, capacity)
+    }
+
     /// Generate an ack frame which ack the received frames until `largest`.
     ///
     /// This method will write an ack frame into the `buf`. The `Ack Delay` field of the frame is

@@ -432,6 +432,10 @@ impl FlowController {
         self.sender.clone()
     }
 
+    pub fn sender_ref(&self) -> &ArcSendControler {
+        &self.sender
+    }
+
     /// Returns the connection-level flow controller in the receiving direction.
     pub fn recver(&self) -> ArcRecvController {
         self.recver.clone()

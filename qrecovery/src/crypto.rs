@@ -10,6 +10,7 @@ mod send {
     use bytes::BufMut;
     use qbase::{
         frame::{io::WriteDataFrame, CryptoFrame},
+        packet::MarshalDataFrame,
         util::DescribeData,
         varint::{VarInt, VARINT_MAX},
     };
@@ -38,6 +39,26 @@ mod send {
                 Some((frame, written))
             } else {
                 None
+            }
+        }
+
+        /// 不再长的像write，因为rust可以多返回值，因此在返回的结果里面将读到的数据返回.
+        /// 调用者一定要自行将其写入到buffer中发送。
+        /// 一旦这种函数成功使用，try_read_data就可以淘汰了
+        fn try_load_data<P>(&mut self, max_size: usize, packet: &mut P) -> bool
+        where
+            P: for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])>,
+        {
+            let predicate = |offset: u64| CryptoFrame::estimate_max_capacity(max_size, offset);
+            if let Some((offset, _is_fresh, data)) = self.sndbuf.pick_up(predicate, usize::MAX) {
+                let frame = CryptoFrame {
+                    offset: VarInt::from_u64(offset).unwrap(),
+                    length: VarInt::try_from(data.len()).unwrap(),
+                };
+                packet.dump_frame_with_data(frame, data);
+                true
+            } else {
+                false
             }
         }
 
@@ -131,6 +152,13 @@ mod send {
         /// will be written.
         pub fn try_read_data(&self, buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
             self.0.lock().unwrap().try_read_data(buffer)
+        }
+
+        pub fn try_load_data<P>(&self, max_size: usize, packet: &mut P) -> bool
+        where
+            P: for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])>,
+        {
+            self.0.lock().unwrap().try_load_data(max_size, packet)
         }
 
         /// Called when the crypto frame sent is acknowledged by peer.

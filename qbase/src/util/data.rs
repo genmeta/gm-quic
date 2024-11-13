@@ -54,7 +54,7 @@ impl DescribeData for Bytes {
     }
 }
 
-pub trait WriteData<D: DescribeData> {
+pub trait WriteData<D: DescribeData>: BufMut {
     fn put_data(&mut self, data: &D);
 }
 

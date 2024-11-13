@@ -10,7 +10,7 @@ use crate::{
         io::{WriteDataFrame, WriteFrame},
         BeFrame, ContainSpec, Spec,
     },
-    util::DescribeData,
+    util::{DescribeData, WriteData},
     varint::{EncodeBytes, VarInt, WriteVarInt},
 };
 
@@ -144,6 +144,15 @@ impl Iterator for PacketReader {
     }
 }
 
+/// 在形成一个数据包的过程中，编排各种合适的帧到数据包中
+pub trait MarshalFrame<F> {
+    fn dump_frame(&mut self, frame: F) -> Option<F>;
+}
+
+pub trait MarshalDataFrame<F, D> {
+    fn dump_frame_with_data(&mut self, frame: F, data: D) -> Option<F>;
+}
+
 pub struct PacketWriter<'b> {
     buffer: &'b mut [u8],
     hdr_len: usize,
@@ -210,29 +219,6 @@ impl<'b> PacketWriter<'b> {
         self.put_bytes(0, cnt);
     }
 
-    pub fn write_frame<F>(&mut self, frame: &F)
-    where
-        F: BeFrame,
-        Self: WriteFrame<F>,
-    {
-        let specs = frame.frame_type().specs();
-        self.ack_eliciting |= !specs.contain(Spec::N);
-        self.in_flight |= !specs.contain(Spec::C);
-
-        self.put_frame(frame);
-    }
-
-    pub fn write_data_frame<F, D>(&mut self, frame: &F, data: &D)
-    where
-        F: BeFrame,
-        D: DescribeData,
-        Self: WriteDataFrame<F, D>,
-    {
-        self.ack_eliciting = true;
-        self.in_flight = true;
-        self.put_data_frame(frame, data);
-    }
-
     #[inline]
     pub fn is_ack_eliciting(&self) -> bool {
         self.ack_eliciting
@@ -294,6 +280,35 @@ impl<'b> PacketWriter<'b> {
             encoded_pn.size(),
         );
         pkt_size
+    }
+}
+
+impl<F> MarshalFrame<F> for PacketWriter<'_>
+where
+    F: BeFrame,
+    Self: WriteFrame<F>,
+{
+    fn dump_frame(&mut self, frame: F) -> Option<F> {
+        let specs = frame.frame_type().specs();
+        self.ack_eliciting |= !specs.contain(Spec::NonAckEliciting);
+        self.in_flight |= !specs.contain(Spec::CongestionControlFree);
+
+        self.put_frame(&frame);
+        Some(frame)
+    }
+}
+
+impl<F, D> MarshalDataFrame<F, D> for PacketWriter<'_>
+where
+    F: BeFrame,
+    D: DescribeData,
+    Self: WriteData<D> + WriteDataFrame<F, D>,
+{
+    fn dump_frame_with_data(&mut self, frame: F, data: D) -> Option<F> {
+        self.ack_eliciting = true;
+        self.in_flight = true;
+        self.put_data_frame(&frame, &data);
+        Some(frame)
     }
 }
 

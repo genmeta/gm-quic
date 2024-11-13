@@ -17,7 +17,7 @@ use qcongestion::{ArcCC, CongestionControl, MSS};
 use qrecovery::reliable::ArcReliableFrameDeque;
 
 use super::{
-    anti_amplifier::ANTI_FACTOR,
+    anti_amplifier::DEFAULT_ANTI_FACTOR,
     util::{ApplyConstraints, Constraints},
     ArcAntiAmplifier,
 };
@@ -29,7 +29,7 @@ pub struct ReadIntoDatagrams {
     pub(super) dcid: ArcCidCell<ArcReliableFrameDeque>,
     pub(super) spin: Arc<AtomicBool>,
     pub(super) cc: ArcCC,
-    pub(super) anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
+    pub(super) anti_amplifier: ArcAntiAmplifier<DEFAULT_ANTI_FACTOR>,
     pub(super) send_flow_ctrl: ArcSendControler,
     pub(super) initial_space_reader: InitialSpaceReader,
     pub(super) handshake_space_reader: HandshakeSpaceReader,
@@ -87,7 +87,7 @@ impl ReadIntoDatagrams {
         mut buffer: &mut [u8],
         dcid: ConnectionId,
     ) -> (usize, usize) {
-        // 在发0Rtt数据包，但是0Rtt数据包要看有没有获取到1rtt的密钥o
+        // 在发0Rtt数据包，但是0Rtt数据包要看有没有获取到1rtt的密钥
         let mut written = 0;
         let mut fresh_bytes = 0;
         let one_rtt_keys = self.data_space_reader.one_rtt_keys();
