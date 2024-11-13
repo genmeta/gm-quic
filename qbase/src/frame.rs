@@ -90,7 +90,7 @@ pub enum Spec {
     ///
     /// See [Section 13.2](https://www.rfc-editor.org/rfc/rfc9000.html#generating-acks)
     /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
-    N = 1,
+    NonAckEliciting = 1,
     /// Packets containing only frames with this marking do not count toward bytes
     /// in flight for congestion control purposes.
     /// See [section-12.4-14.4](https://www.rfc-editor.org/rfc/rfc9000.html#section-12.4-14.4)
@@ -100,18 +100,18 @@ pub enum Spec {
     /// in flight and are not congestion controlled.
     /// See [Section 7.4](https://www.rfc-editor.org/rfc/rfc9002#section-7-4)
     /// of [QUIC-RECOVERY](https://www.rfc-editor.org/rfc/rfc9002).
-    C = 2,
+    CongestionControlFree = 2,
     /// Packets containing only frames with this marking can be used to probe
     /// new network paths during connection migration.
     ///
     /// See [Section 9.1](https://www.rfc-editor.org/rfc/rfc9000.html#probing)
     /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html).
-    P = 4,
+    Probe = 4,
     /// The contents of frames with this marking are flow controlled.
     ///
     /// See [Section 4](https://www.rfc-editor.org/rfc/rfc9000.html#flow-control)
     /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
-    F = 8,
+    FlowControlled = 8,
 }
 
 pub trait ContainSpec {
@@ -229,7 +229,12 @@ impl FrameType {
 
     /// Return the specs of the frame type
     pub fn specs(&self) -> u8 {
-        let (n, c, p, f) = (1, 2, 4, 8);
+        let (n, c, p, f) = (
+            Spec::NonAckEliciting as u8,
+            Spec::CongestionControlFree as u8,
+            Spec::Probe as u8,
+            Spec::FlowControlled as u8,
+        );
         match self {
             FrameType::Padding => n | p,
             FrameType::Ack(_) => n | c,
@@ -238,7 +243,7 @@ impl FrameType {
             FrameType::PathChallenge => p,
             FrameType::PathResponse => p,
             // different from [table 3](https://www.rfc-editor.org/rfc/rfc9000.html#table-3),
-            // add the [`Spec::C`] for the CONNECTION_CLOSE frame
+            // add the [`Spec::Con`] for the CONNECTION_CLOSE frame
             FrameType::ConnectionClose(_) => n | c,
             _ => 0,
         }

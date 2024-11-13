@@ -340,7 +340,7 @@ where
         }
     }
 
-    fn return_back(&mut self) {
+    fn renew(&mut self) {
         assert!(self.is_using);
         self.is_using = false;
         while self.allocated_cids.len() > 1 {
@@ -408,9 +408,9 @@ where
     /// If the corresponding path which applied this cid is inactive,
     /// then this cid apply is retired.
     /// In this case, None will be returned.
-    pub fn poll_borrow_cid(&self, cx: &mut Context<'_>) -> Poll<Option<CidRef<RETIRED>>> {
+    pub fn poll_borrow_cid(&self, cx: &mut Context<'_>) -> Poll<Option<BorrowedCid<RETIRED>>> {
         self.0.lock().unwrap().poll_borrow_cid(cx).map(|opt| {
-            opt.map(|cid| CidRef {
+            opt.map(|cid| BorrowedCid {
                 cid_cell: &self.0,
                 cid,
             })
@@ -427,8 +427,8 @@ where
 /// A borrowed connection ID, which will be returned back when it is dropped.
 ///
 /// While the connection ID is borrowed, the retired cids will not be truly retired. The retire will be delayed until
-/// the [`CidRef`] is dropped, a [`RetireConnectionIdFrame`] will be sent to the peer.
-pub struct CidRef<'a, RETIRED>
+/// the [`BorrowedCid`] is dropped, a [`RetireConnectionIdFrame`] will be sent to the peer.
+pub struct BorrowedCid<'a, RETIRED>
 where
     RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
@@ -436,7 +436,7 @@ where
     cid_cell: &'a Mutex<CidCell<RETIRED>>,
 }
 
-impl<RETIRED> Deref for CidRef<'_, RETIRED>
+impl<RETIRED> Deref for BorrowedCid<'_, RETIRED>
 where
     RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
@@ -447,12 +447,12 @@ where
     }
 }
 
-impl<RETIRED> Drop for CidRef<'_, RETIRED>
+impl<RETIRED> Drop for BorrowedCid<'_, RETIRED>
 where
     RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
 {
     fn drop(&mut self) {
-        self.cid_cell.lock().unwrap().return_back();
+        self.cid_cell.lock().unwrap().renew();
     }
 }
 

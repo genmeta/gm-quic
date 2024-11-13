@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use anti_amplifier::ANTI_FACTOR;
 use dashmap::DashMap;
 use deref_derive::{Deref, DerefMut};
 use qbase::{
@@ -22,10 +21,10 @@ mod util;
 
 use std::sync::atomic::AtomicBool;
 
-pub use anti_amplifier::ArcAntiAmplifier;
+pub use anti_amplifier::{ArcAntiAmplifier, DEFAULT_ANTI_FACTOR};
 pub use pathway::{Pathway, RelayAddr};
 pub use read::ReadIntoDatagrams;
-pub use util::{RecvBuffer, SendBuffer};
+pub use util::{Constraints, RecvBuffer, SendBuffer};
 
 use crate::{conn::transmit::*, usc::ArcUsc};
 
@@ -51,7 +50,7 @@ pub type ArcPaths = Arc<Paths>;
 /// [`UscRegistry`]: crate::usc::UscRegistry
 #[derive(Clone)]
 pub struct Path {
-    anti_amplifier: ArcAntiAmplifier<ANTI_FACTOR>,
+    anti_amplifier: ArcAntiAmplifier<DEFAULT_ANTI_FACTOR>,
     cc: ArcCC,
     usc: ArcUsc,
     dcid: ArcCidCell<ArcReliableFrameDeque>,
@@ -90,7 +89,7 @@ impl Path {
             dcid: dcid.clone(),
             scid,
             cc,
-            anti_amplifier: ArcAntiAmplifier::<ANTI_FACTOR>::default(),
+            anti_amplifier: ArcAntiAmplifier::<DEFAULT_ANTI_FACTOR>::default(),
             spin: Arc::new(AtomicBool::new(false)),
             challenge_sndbuf: SendBuffer::default(),
             response_sndbuf: SendBuffer::default(),

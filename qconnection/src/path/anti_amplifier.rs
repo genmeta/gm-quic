@@ -11,7 +11,7 @@ use std::{
 use deref_derive::Deref;
 use futures::task::AtomicWaker;
 
-pub const ANTI_FACTOR: usize = 3;
+pub const DEFAULT_ANTI_FACTOR: usize = 3;
 /// Therefore, after receiving packets from an address that is not yet validated,
 /// an endpoint MUST limit the amount of data it sends to the unvalidated address
 /// to N(three) times the amount of data received from that address.

@@ -1,11 +1,13 @@
 use std::sync::{Arc, Mutex};
 
+use bytes::BufMut;
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
+    cid::ConnectionId,
     frame::{AckFrame, Frame, FrameReader, ReceiveFrame},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
-        header::{GetScid, GetType},
+        header::{long::io::LongHeaderBuilder, GetScid, GetType},
         keys::ArcKeys,
         long, DataHeader,
     },
@@ -24,6 +26,7 @@ use crate::{
     error::ConnError,
     path::{ArcPath, ArcPaths, Path},
     pipe,
+    tx::{JournalAssembly, Transaction},
 };
 
 #[derive(Clone)]
@@ -197,6 +200,31 @@ impl InitialSpace {
                 rcvd_packets
             }
         })
+    }
+
+    pub fn try_assemble(&self, tx: &mut Transaction<'_>, buf: &mut [u8]) -> Option<usize> {
+        let keys = self.keys.get_local_keys()?;
+        let sent_journal = self.journal.sent();
+        let mut packet = JournalAssembly::new(
+            LongHeaderBuilder::with_cid(tx.dcid(), ConnectionId::default()).initial(vec![0]),
+            buf,
+            keys.local.packet.tag_len(),
+            &sent_journal,
+        )?;
+
+        if let Some(ack) = tx.need_ack(Epoch::Initial) {
+            let rcvd_pkt_records = self.journal.rcvd();
+            if let Some(ack_frame) =
+                rcvd_pkt_records.gen_ack_frame_util(ack, packet.remaining_mut())
+            {
+                packet.dump_ack_frame(ack_frame);
+            }
+        }
+
+        let crypto_stream_outgoing = self.crypto_stream.outgoing();
+        while crypto_stream_outgoing.try_load_data(packet.remaining_mut(), &mut packet) {}
+
+        None
     }
 
     pub fn reader(&self, token: Arc<Mutex<Vec<u8>>>) -> InitialSpaceReader {
