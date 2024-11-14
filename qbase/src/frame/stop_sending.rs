@@ -59,8 +59,9 @@ pub fn be_stop_sending_frame(input: &[u8]) -> nom::IResult<&[u8], StopSendingFra
     )(input)
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<StopSendingFrame> for T {
+impl super::io::WriteFrame<StopSendingFrame> for &mut [u8] {
     fn put_frame(&mut self, frame: &StopSendingFrame) {
+        use bytes::BufMut;
         self.put_u8(STOP_SENDING_FRAME_TYPE);
         self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.app_err_code);
@@ -82,8 +83,8 @@ mod tests {
             stream_id: VarInt::from_u32(0x1234).into(),
             app_err_code: VarInt::from_u32(0x5678),
         };
-        let mut buf = Vec::new();
-        buf.put_frame(&frame);
+        let mut buf = [0; 7];
+        buf.as_mut().put_frame(&frame);
         let (input, parsed) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() == STOP_SENDING_FRAME_TYPE as u64 {
                 be_stop_sending_frame
@@ -98,15 +99,15 @@ mod tests {
 
     #[test]
     fn test_write_stop_sending_frame() {
-        let mut buf = Vec::new();
+        let mut buf = [0; 7];
         let frame = StopSendingFrame {
             stream_id: VarInt::from_u32(0x1234).into(),
             app_err_code: VarInt::from_u32(0x5678),
         };
-        buf.put_frame(&frame);
+        buf.as_mut().put_frame(&frame);
         assert_eq!(
             buf,
-            vec![STOP_SENDING_FRAME_TYPE, 0x52, 0x34, 0x80, 0, 0x56, 0x78]
+            [STOP_SENDING_FRAME_TYPE, 0x52, 0x34, 0x80, 0, 0x56, 0x78]
         );
     }
 }

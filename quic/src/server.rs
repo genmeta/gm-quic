@@ -403,7 +403,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         }
     }
 
-    /// Add a host with a certificate chain and a private key from cert files.
+    /// Add a host with a certificate chain and a private key from cert files in pem format.
     ///
     /// This is a useful wapper of [`QuicServerBuilder::with_single_cert_files`], we do the *pem* file decoding and error
     /// handling for you.
@@ -412,7 +412,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         cert_chain_file: impl AsRef<std::path::Path>,
         key_file: impl AsRef<std::path::Path>,
     ) -> io::Result<QuicServerBuilder<TlsServerConfig>> {
-        let (cert_chain, key_der) = util::parse_cert_files(cert_chain_file, key_file)?;
+        let (cert_chain, key_der) = util::parse_pem_files(cert_chain_file, key_file)?;
         Ok(self.with_single_cert(cert_chain, key_der))
     }
 
@@ -451,7 +451,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         key_file: impl AsRef<std::path::Path>,
         ocsp: Vec<u8>,
     ) -> io::Result<QuicServerBuilder<TlsServerConfig>> {
-        let (cert_chain, key_der) = util::parse_cert_files(cert_chain_file, key_file)?;
+        let (cert_chain, key_der) = util::parse_pem_files(cert_chain_file, key_file)?;
         Ok(QuicServerBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
@@ -525,7 +525,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
         cert_chain_file: impl AsRef<std::path::Path>,
         key_file: impl AsRef<std::path::Path>,
     ) -> io::Result<Self> {
-        let (cert_chain, key_der) = util::parse_cert_files(cert_chain_file, key_file)?;
+        let (cert_chain, key_der) = util::parse_pem_files(cert_chain_file, key_file)?;
         Ok(self.add_host(server_name, cert_chain, key_der))
     }
 }

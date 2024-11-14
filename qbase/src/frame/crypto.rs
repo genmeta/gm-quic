@@ -96,12 +96,13 @@ pub fn be_crypto_frame(input: &[u8]) -> nom::IResult<&[u8], CryptoFrame> {
     Ok((remain, CryptoFrame { offset, length }))
 }
 
-impl<T, D> super::io::WriteDataFrame<CryptoFrame, D> for T
+impl<D> super::io::WriteDataFrame<CryptoFrame, D> for &mut [u8]
 where
-    T: bytes::BufMut + WriteData<D>,
     D: DescribeData,
+    for<'a> &'a mut [u8]: WriteData<D>,
 {
     fn put_data_frame(&mut self, frame: &CryptoFrame, data: &D) {
+        use bytes::BufMut;
         assert_eq!(frame.length.into_inner(), data.len() as u64);
         self.put_u8(CRYPTO_FRAME_TYPE);
         self.put_varint(&frame.offset);
@@ -132,15 +133,15 @@ mod tests {
 
     #[test]
     fn test_write_crypto_frame() {
-        let mut buf = bytes::BytesMut::new();
+        let mut buf = [0; 9];
         let frame = CryptoFrame {
             offset: VarInt::from_u32(0x1234),
             length: VarInt::from_u32(0x5),
         };
-        buf.put_data_frame(&frame, b"hello");
+        buf.as_mut().put_data_frame(&frame, b"hello");
         assert_eq!(
             buf,
-            bytes::Bytes::from_static(&[
+            [
                 CRYPTO_FRAME_TYPE,
                 0x52,
                 0x34,
@@ -150,7 +151,7 @@ mod tests {
                 b'l',
                 b'l',
                 b'o'
-            ])
+            ]
         );
     }
 

@@ -1,4 +1,4 @@
-use bytes::{Buf, BufMut, Bytes};
+use bytes::{Buf, Bytes};
 use enum_dispatch::enum_dispatch;
 use io::WriteFrame;
 
@@ -463,7 +463,7 @@ impl Iterator for FrameReader {
     }
 }
 
-impl<T: BufMut> WriteFrame<StreamCtlFrame> for T {
+impl WriteFrame<StreamCtlFrame> for &mut [u8] {
     fn put_frame(&mut self, frame: &StreamCtlFrame) {
         match frame {
             StreamCtlFrame::ResetStream(frame) => self.put_frame(frame),
@@ -476,7 +476,7 @@ impl<T: BufMut> WriteFrame<StreamCtlFrame> for T {
     }
 }
 
-impl<T: BufMut> WriteFrame<ReliableFrame> for T {
+impl WriteFrame<ReliableFrame> for &mut [u8] {
     fn put_frame(&mut self, frame: &ReliableFrame) {
         match frame {
             ReliableFrame::NewToken(frame) => self.put_frame(frame),

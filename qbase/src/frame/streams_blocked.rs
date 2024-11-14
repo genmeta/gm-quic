@@ -71,8 +71,9 @@ pub fn streams_blocked_frame_with_dir(
     }
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<StreamsBlockedFrame> for T {
+impl super::io::WriteFrame<StreamsBlockedFrame> for &mut [u8] {
     fn put_frame(&mut self, frame: &StreamsBlockedFrame) {
+        use bytes::BufMut;
         match frame {
             StreamsBlockedFrame::Bi(max_streams) => {
                 self.put_u8(STREAMS_BLOCKED_FRAME_TYPE);
@@ -125,12 +126,14 @@ mod tests {
 
     #[test]
     fn test_write_streams_blocked_frame() {
-        let mut buf = Vec::new();
-        buf.put_frame(&StreamsBlockedFrame::Bi(VarInt::from_u32(0x1234)));
-        assert_eq!(buf, vec![STREAMS_BLOCKED_FRAME_TYPE, 0x52, 0x34]);
+        let mut buf = [0; 3];
+        buf.as_mut()
+            .put_frame(&StreamsBlockedFrame::Bi(VarInt::from_u32(0x1234)));
+        assert_eq!(buf, [STREAMS_BLOCKED_FRAME_TYPE, 0x52, 0x34]);
 
-        let mut buf = Vec::new();
-        buf.put_frame(&StreamsBlockedFrame::Uni(VarInt::from_u32(0x1234)));
-        assert_eq!(buf, vec![STREAMS_BLOCKED_FRAME_TYPE + 1, 0x52, 0x34]);
+        let mut buf = [0; 3];
+        buf.as_mut()
+            .put_frame(&StreamsBlockedFrame::Uni(VarInt::from_u32(0x1234)));
+        assert_eq!(buf, [STREAMS_BLOCKED_FRAME_TYPE + 1, 0x52, 0x34]);
     }
 }

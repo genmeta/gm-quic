@@ -207,12 +207,13 @@ pub fn stream_frame_with_flag(flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8],
     }
 }
 
-impl<T, D> super::io::WriteDataFrame<StreamFrame, D> for T
+impl<D> super::io::WriteDataFrame<StreamFrame, D> for &mut [u8]
 where
-    T: bytes::BufMut + WriteData<D>,
     D: DescribeData,
+    for<'a> &'a mut [u8]: WriteData<D>,
 {
     fn put_data_frame(&mut self, frame: &StreamFrame, data: &D) {
+        use bytes::BufMut;
         let mut stream_type = STREAM_FRAME_TYPE;
         if frame.offset.into_inner() != 0 {
             stream_type |= 0x04;
@@ -306,17 +307,17 @@ mod tests {
 
     #[test]
     fn test_write_initial_stream_frame() {
-        let mut buf = Vec::new();
+        let mut buf = [0; 15];
         let frame = StreamFrame {
             id: VarInt::from_u32(0x1234).into(),
             offset: VarInt::from_u32(0),
             length: 11,
             flag: 0b011,
         };
-        buf.put_data_frame(&frame, b"hello world");
+        buf.as_mut().put_data_frame(&frame, b"hello world");
         assert_eq!(
             buf,
-            vec![
+            [
                 0xb, 0x52, 0x34, 0x0b, b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o', b'r', b'l',
                 b'd'
             ]
@@ -325,33 +326,33 @@ mod tests {
 
     #[test]
     fn test_write_last_stream_frame() {
-        let mut buf = Vec::new();
+        let mut buf = [0; 14];
         let frame = StreamFrame {
             id: VarInt::from_u32(0x1234).into(),
             offset: VarInt::from_u32(0),
             length: 11,
             flag: 0b001,
         };
-        buf.put_data_frame(&frame, b"hello world");
+        buf.as_mut().put_data_frame(&frame, b"hello world");
         assert_eq!(
             buf,
-            vec![0x9, 0x52, 0x34, b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o', b'r', b'l', b'd']
+            [0x9, 0x52, 0x34, b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o', b'r', b'l', b'd']
         );
     }
 
     #[test]
     fn test_write_eos_frame() {
-        let mut buf = Vec::new();
+        let mut buf = [0; 17];
         let frame = StreamFrame {
             id: VarInt::from_u32(0x1234).into(),
             offset: VarInt::from_u32(0x1234),
             length: 11,
             flag: 0b111,
         };
-        buf.put_data_frame(&frame, b"hello world");
+        buf.as_mut().put_data_frame(&frame, b"hello world");
         assert_eq!(
             buf,
-            vec![
+            [
                 0x0f, 0x52, 0x34, 0x52, 0x34, 0x0b, b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o',
                 b'r', b'l', b'd'
             ]
@@ -360,17 +361,17 @@ mod tests {
 
     #[test]
     fn test_write_unfinished_stream_frame() {
-        let mut buf = Vec::new();
+        let mut buf = [0; 17];
         let frame = StreamFrame {
             id: VarInt::from_u32(0x1234).into(),
             offset: VarInt::from_u32(0x1234),
             length: 11,
             flag: 0b110,
         };
-        buf.put_data_frame(&frame, b"hello world");
+        buf.as_mut().put_data_frame(&frame, b"hello world");
         assert_eq!(
             buf,
-            vec![
+            [
                 0x0e, 0x52, 0x34, 0x52, 0x34, 0x0b, b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o',
                 b'r', b'l', b'd'
             ]

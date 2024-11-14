@@ -160,8 +160,9 @@ pub(super) fn be_ecn_counts(input: &[u8]) -> nom::IResult<&[u8], EcnCounts> {
     )(input)
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<AckFrame> for T {
+impl super::io::WriteFrame<AckFrame> for &mut [u8] {
     fn put_frame(&mut self, frame: &AckFrame) {
+        use bytes::BufMut;
         let mut frame_type = ACK_FRAME_TYPE;
         if frame.ecn.is_some() {
             frame_type |= ECN_OPT;
@@ -236,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_write_ack_frame() {
-        let mut buf = Vec::new();
+        let mut buf = [0u8; 16];
         let frame = AckFrame {
             largest: VarInt::from_u32(0x1234),
             delay: VarInt::from_u32(0x1234),
@@ -249,10 +250,10 @@ mod tests {
             }),
         };
 
-        buf.put_frame(&frame);
+        buf.as_mut().put_frame(&frame);
         assert_eq!(
             buf,
-            vec![
+            [
                 0x03, 0x52, 0x34, 0x52, 0x34, 0x01, 0x52, 0x34, 3, 20, // frame
                 0x52, 0x34, 0x52, 0x34, 0x52, 0x34 // ecn
             ]

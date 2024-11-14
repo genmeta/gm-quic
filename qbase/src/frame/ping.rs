@@ -26,8 +26,9 @@ pub fn be_ping_frame(input: &[u8]) -> nom::IResult<&[u8], PingFrame> {
     Ok((input, PingFrame))
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<PingFrame> for T {
+impl super::io::WriteFrame<PingFrame> for &mut [u8] {
     fn put_frame(&mut self, _: &PingFrame) {
+        use bytes::BufMut;
         self.put_u8(PING_FRAME_TYPE);
     }
 }
@@ -57,8 +58,8 @@ mod tests {
 
     #[test]
     fn test_write_ping_frame() {
-        let mut buf = Vec::new();
-        buf.put_frame(&PingFrame);
-        assert_eq!(buf, vec![PING_FRAME_TYPE]);
+        let mut buf = [0; 1];
+        buf.as_mut().put_frame(&PingFrame);
+        assert_eq!(buf, [PING_FRAME_TYPE]);
     }
 }

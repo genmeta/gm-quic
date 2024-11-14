@@ -39,8 +39,9 @@ pub fn be_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], DataBlockedFra
     map(be_varint, |limit| DataBlockedFrame { limit })(input)
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<DataBlockedFrame> for T {
+impl super::io::WriteFrame<DataBlockedFrame> for &mut [u8] {
     fn put_frame(&mut self, frame: &DataBlockedFrame) {
+        use bytes::BufMut;
         self.put_u8(DATA_BLOCKED_FRAME_TYPE);
         self.put_varint(&frame.limit);
     }
@@ -66,8 +67,8 @@ mod tests {
 
     #[test]
     fn test_write_data_blocked_frame() {
-        let mut buf = Vec::new();
-        buf.put_frame(&DataBlockedFrame {
+        let mut buf = vec![0; 3];
+        buf.as_mut_slice().put_frame(&DataBlockedFrame {
             limit: crate::varint::VarInt::from_u32(0x1234),
         });
         assert_eq!(buf, vec![DATA_BLOCKED_FRAME_TYPE, 0x52, 0x34]);

@@ -279,7 +279,6 @@ impl<T> QuicClientBuilder<T> {
 
     /// Enable reuse UDP sockets.
     ///
-    ///
     /// By default, the client will not use the same address as other connections, which means that the client must bind
     /// to a new address every time it initiates a connection. If you enable this option, the client cloud share the same
     /// address with other connections. This option can only determine the behavior of this client when establishing a
@@ -421,7 +420,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         cert_chain_file: impl AsRef<Path>,
         key_file: impl AsRef<Path>,
     ) -> io::Result<QuicClientBuilder<TlsClientConfig>> {
-        let (cert_chain, key_der) = util::parse_cert_files(cert_chain_file, key_file)?;
+        let (cert_chain, key_der) = util::parse_pem_files(cert_chain_file, key_file)?;
         Ok(self.with_cert(cert_chain, key_der))
     }
 

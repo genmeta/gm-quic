@@ -26,8 +26,9 @@ pub fn be_handshake_done_frame(input: &[u8]) -> nom::IResult<&[u8], HandshakeDon
     Ok((input, HandshakeDoneFrame))
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<HandshakeDoneFrame> for T {
+impl super::io::WriteFrame<HandshakeDoneFrame> for &mut [u8] {
     fn put_frame(&mut self, _: &HandshakeDoneFrame) {
+        use bytes::BufMut;
         self.put_u8(HANDSHAKE_DONE_FRAME_TYPE);
     }
 }
@@ -57,8 +58,8 @@ mod tests {
 
     #[test]
     fn test_write_handshake_done_frame() {
-        let mut buf = Vec::new();
-        buf.put_frame(&HandshakeDoneFrame);
-        assert_eq!(buf, vec![super::HANDSHAKE_DONE_FRAME_TYPE]);
+        let mut buf = [0u8; 1];
+        buf.as_mut().put_frame(&HandshakeDoneFrame);
+        assert_eq!(buf, [super::HANDSHAKE_DONE_FRAME_TYPE]);
     }
 }
