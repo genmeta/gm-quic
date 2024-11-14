@@ -57,8 +57,9 @@ pub fn be_reset_stream_frame(input: &[u8]) -> nom::IResult<&[u8], ResetStreamFra
     )(input)
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<ResetStreamFrame> for T {
+impl super::io::WriteFrame<ResetStreamFrame> for &mut [u8] {
     fn put_frame(&mut self, frame: &ResetStreamFrame) {
+        use bytes::BufMut;
         self.put_u8(RESET_STREAM_FRAME_TYPE);
         self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.app_error_code);
@@ -149,8 +150,9 @@ mod tests {
 
     #[test]
     fn test_write_reset_stream_frame() {
-        let mut buf = Vec::new();
-        buf.put_frame(&ResetStreamFrame {
+        let mut buf = [0; 11];
+
+        buf.as_mut().put_frame(&ResetStreamFrame {
             stream_id: VarInt::from_u32(0x1234).into(),
             // 0x5678 = 0b01010110 01111000 => 0b10000000 0x00 0x56 0x78
             app_error_code: VarInt::from_u32(0x5678),
@@ -159,7 +161,7 @@ mod tests {
         });
         assert_eq!(
             buf,
-            vec![
+            [
                 RESET_STREAM_FRAME_TYPE,
                 0x52,
                 0x34,

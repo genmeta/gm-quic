@@ -2,7 +2,7 @@ use std::{io, path::Path};
 
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 
-pub fn parse_cert_files(
+pub fn parse_pem_files(
     cert_chain_file: impl AsRef<Path>,
     key_file: impl AsRef<Path>,
 ) -> io::Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {

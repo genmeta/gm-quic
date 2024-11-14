@@ -79,8 +79,9 @@ pub fn max_streams_frame_with_dir(
     }
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<MaxStreamsFrame> for T {
+impl super::io::WriteFrame<MaxStreamsFrame> for &mut [u8] {
     fn put_frame(&mut self, frame: &MaxStreamsFrame) {
+        use bytes::BufMut;
         match frame {
             MaxStreamsFrame::Bi(max_streams) => {
                 self.put_u8(MAX_STREAMS_FRAME_TYPE);
@@ -165,11 +166,14 @@ mod tests {
 
     #[test]
     fn test_write_max_streams_frame() {
-        let mut buf = Vec::new();
-        buf.put_frame(&MaxStreamsFrame::Bi(VarInt::from_u32(0x1234)));
-        assert_eq!(buf, vec![MAX_STREAMS_FRAME_TYPE, 0x52, 0x34]);
-        buf.clear();
-        buf.put_frame(&MaxStreamsFrame::Uni(VarInt::from_u32(0x1236)));
-        assert_eq!(buf, vec![0x13, 0x52, 0x36]);
+        let mut buf = [0; 3];
+        buf.as_mut()
+            .put_frame(&MaxStreamsFrame::Bi(VarInt::from_u32(0x1234)));
+        assert_eq!(buf, [MAX_STREAMS_FRAME_TYPE, 0x52, 0x34]);
+
+        let mut buf = [0; 3];
+        buf.as_mut()
+            .put_frame(&MaxStreamsFrame::Uni(VarInt::from_u32(0x1236)));
+        assert_eq!(buf, [0x13, 0x52, 0x36]);
     }
 }

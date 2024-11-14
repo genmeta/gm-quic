@@ -39,8 +39,9 @@ pub fn be_retire_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], Retire
     map(be_varint, |sequence| RetireConnectionIdFrame { sequence })(input)
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<RetireConnectionIdFrame> for T {
+impl super::io::WriteFrame<RetireConnectionIdFrame> for &mut [u8] {
     fn put_frame(&mut self, frame: &RetireConnectionIdFrame) {
+        use bytes::BufMut;
         self.put_u8(RETIRE_CONNECTION_ID_FRAME_TYPE);
         self.put_varint(&frame.sequence);
     }
@@ -66,11 +67,11 @@ mod tests {
 
     #[test]
     fn test_write_retire_connection_id_frame() {
-        let mut buf = Vec::new();
+        let mut buf = [0; 3];
         let frame = RetireConnectionIdFrame {
             sequence: VarInt::from_u32(0x1234),
         };
-        buf.put_frame(&frame);
-        assert_eq!(buf, vec![0x19, 0x52, 0x34]);
+        buf.as_mut().put_frame(&frame);
+        assert_eq!(buf, [0x19, 0x52, 0x34]);
     }
 }

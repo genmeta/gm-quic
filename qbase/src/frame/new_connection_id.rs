@@ -94,8 +94,9 @@ pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnec
     ))
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<NewConnectionIdFrame> for T {
+impl super::io::WriteFrame<NewConnectionIdFrame> for &mut [u8] {
     fn put_frame(&mut self, frame: &NewConnectionIdFrame) {
+        use bytes::BufMut;
         self.put_u8(NEW_CONNECTION_ID_FRAME_TYPE);
         self.put_varint(&frame.sequence);
         self.put_varint(&frame.retire_prior_to);

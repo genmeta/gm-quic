@@ -60,8 +60,9 @@ pub fn be_max_stream_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxStreamDa
     )(input)
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<MaxStreamDataFrame> for T {
+impl super::io::WriteFrame<MaxStreamDataFrame> for &mut [u8] {
     fn put_frame(&mut self, frame: &MaxStreamDataFrame) {
+        use bytes::BufMut;
         self.put_u8(MAX_STREAM_DATA_FRAME_TYPE);
         self.put_streamid(&frame.stream_id);
         self.put_varint(&frame.max_stream_data);
@@ -84,14 +85,14 @@ mod tests {
 
     #[test]
     fn test_write_max_stream_data_frame() {
-        let mut buf = Vec::new();
-        buf.put_frame(&MaxStreamDataFrame {
+        let mut buf = [0; 7];
+        buf.as_mut().put_frame(&MaxStreamDataFrame {
             stream_id: VarInt::from_u32(0x1234).into(),
             max_stream_data: VarInt::from_u32(0x5678),
         });
         assert_eq!(
             buf,
-            vec![MAX_STREAM_DATA_FRAME_TYPE, 0x52, 0x34, 0x80, 0, 0x56, 0x78]
+            [MAX_STREAM_DATA_FRAME_TYPE, 0x52, 0x34, 0x80, 0, 0x56, 0x78]
         );
     }
 }

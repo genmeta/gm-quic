@@ -26,8 +26,9 @@ pub fn be_padding_frame(input: &[u8]) -> nom::IResult<&[u8], PaddingFrame> {
     Ok((input, PaddingFrame))
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<PaddingFrame> for T {
+impl super::io::WriteFrame<PaddingFrame> for &mut [u8] {
     fn put_frame(&mut self, _: &PaddingFrame) {
+        use bytes::BufMut;
         self.put_u8(PADDING_FRAME_TYPE);
     }
 }
@@ -58,8 +59,8 @@ mod tests {
 
     #[test]
     fn test_write_padding_frame() {
-        let mut buf = Vec::new();
-        buf.put_frame(&PaddingFrame);
-        assert_eq!(buf, vec![PADDING_FRAME_TYPE]);
+        let mut buf = [0; 1];
+        buf.as_mut().put_frame(&PaddingFrame);
+        assert_eq!(buf, [PADDING_FRAME_TYPE]);
     }
 }

@@ -39,8 +39,9 @@ pub fn be_max_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxDataFrame> {
     map(be_varint, |max_data| MaxDataFrame { max_data })(input)
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<MaxDataFrame> for T {
+impl super::io::WriteFrame<MaxDataFrame> for &mut [u8] {
     fn put_frame(&mut self, frame: &MaxDataFrame) {
+        use bytes::BufMut;
         self.put_u8(MAX_DATA_FRAME_TYPE);
         self.put_varint(&frame.max_data);
     }
@@ -77,10 +78,10 @@ mod tests {
 
     #[test]
     fn test_write_max_data_frame() {
-        let mut buf = Vec::new();
-        buf.put_frame(&MaxDataFrame {
+        let mut buf = [0; 3];
+        buf.as_mut().put_frame(&MaxDataFrame {
             max_data: VarInt::from_u32(0x1234),
         });
-        assert_eq!(buf, vec![MAX_DATA_FRAME_TYPE, 0x52, 0x34]);
+        assert_eq!(buf, [MAX_DATA_FRAME_TYPE, 0x52, 0x34]);
     }
 }

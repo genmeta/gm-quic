@@ -103,8 +103,10 @@ pub fn connection_close_frame_at_layer(
     }
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<ConnectionCloseFrame> for T {
+impl super::io::WriteFrame<ConnectionCloseFrame> for &mut [u8] {
     fn put_frame(&mut self, frame: &ConnectionCloseFrame) {
+        use bytes::BufMut;
+
         use crate::varint::WriteVarInt;
         let layer = if frame.frame_type.is_some() {
             QUIC_LAYER
@@ -165,16 +167,16 @@ mod tests {
     #[test]
     fn test_write_connection_close_frame() {
         use super::FrameType;
-        let mut buf = Vec::<u8>::new();
+        let mut buf = [0u8; 9];
         let frame = super::ConnectionCloseFrame {
             error_kind: ErrorKind::FlowControl,
             frame_type: Some(FrameType::Stream(0b110)),
             reason: "wrong".into(),
         };
-        buf.put_frame(&frame);
+        buf.as_mut().put_frame(&frame);
         assert_eq!(
             buf,
-            vec![
+            [
                 super::CONNECTION_CLOSE_FRAME_TYPE | super::QUIC_LAYER,
                 0x03,
                 0xe,

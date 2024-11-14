@@ -58,12 +58,13 @@ pub fn datagram_frame_with_flag(flag: u8) -> impl FnOnce(&[u8]) -> IResult<&[u8]
     }
 }
 
-impl<T, D> super::io::WriteDataFrame<DatagramFrame, D> for T
+impl<D> super::io::WriteDataFrame<DatagramFrame, D> for &mut [u8]
 where
-    T: bytes::BufMut + WriteData<D>,
     D: DescribeData,
+    for<'a> &'a mut [u8]: WriteData<D>,
 {
     fn put_data_frame(&mut self, frame: &DatagramFrame, data: &D) {
+        use bytes::BufMut;
         self.put_u8(frame.frame_type().into());
         if let Some(len) = frame.length {
             self.put_varint(&len);
@@ -102,16 +103,16 @@ mod tests {
         let frame = DatagramFrame {
             length: Some(VarInt::from_u32(3)),
         };
-        let mut buf = Vec::new();
-        buf.put_data_frame(&frame, &[0x01, 0x02, 0x03]);
+        let mut buf = [0; 5];
+        buf.as_mut().put_data_frame(&frame, &[0x01, 0x02, 0x03]);
         assert_eq!(&buf, &[0x31, 0x03, 0x01, 0x02, 0x03]);
     }
 
     #[test]
     fn test_put_datagram_frame_no_length() {
         let frame = DatagramFrame { length: None };
-        let mut buf = Vec::new();
-        buf.put_data_frame(&frame, &[0x01, 0x02, 0x03]);
+        let mut buf = [0; 4];
+        buf.as_mut().put_data_frame(&frame, &[0x01, 0x02, 0x03]);
         assert_eq!(&buf, &[0x30, 0x01, 0x02, 0x03]);
     }
 }

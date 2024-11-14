@@ -57,8 +57,9 @@ pub fn be_path_response_frame(input: &[u8]) -> nom::IResult<&[u8], PathResponseF
     map(take(8usize), PathResponseFrame::from_slice)(input)
 }
 
-impl<T: bytes::BufMut> super::io::WriteFrame<PathResponseFrame> for T {
+impl super::io::WriteFrame<PathResponseFrame> for &mut [u8] {
     fn put_frame(&mut self, frame: &PathResponseFrame) {
+        use bytes::BufMut;
         self.put_u8(PATH_RESPONSE_FRAME_TYPE);
         self.put_slice(&frame.data);
     }
@@ -103,14 +104,14 @@ mod tests {
     #[test]
     fn test_write_path_response_frame() {
         use crate::frame::io::WriteFrame;
-        let mut buf = Vec::<u8>::new();
+        let mut buf = [0; 9];
         let frame = super::PathResponseFrame {
             data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
         };
-        buf.put_frame(&frame);
+        buf.as_mut().put_frame(&frame);
         assert_eq!(
             buf,
-            vec![
+            [
                 super::PATH_RESPONSE_FRAME_TYPE,
                 0x01,
                 0x02,
