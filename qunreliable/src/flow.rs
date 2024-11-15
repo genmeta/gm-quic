@@ -3,9 +3,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use bytes::Bytes;
 use qbase::{
     error::Error,
-    frame::{DatagramFrame, ReceiveFrame},
+    frame::{io::WriteDataFrame, DatagramFrame, ReceiveFrame},
 };
 
 use super::{
@@ -44,7 +45,10 @@ impl DatagramFlow {
 
     /// See [`UnreliableOutgoing::try_read_datagram`] for more details.
     #[inline]
-    pub fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
+    pub fn try_read_datagram<B>(&self, buf: &mut B) -> Option<DatagramFrame>
+    where
+        B: WriteDataFrame<DatagramFrame, Bytes>,
+    {
         self.outgoing.try_read_datagram(buf)
     }
 

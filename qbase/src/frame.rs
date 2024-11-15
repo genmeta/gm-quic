@@ -463,7 +463,15 @@ impl Iterator for FrameReader {
     }
 }
 
-impl WriteFrame<StreamCtlFrame> for &mut [u8] {
+impl<T> WriteFrame<StreamCtlFrame> for T
+where
+    T: WriteFrame<ResetStreamFrame>
+        + WriteFrame<StopSendingFrame>
+        + WriteFrame<MaxStreamDataFrame>
+        + WriteFrame<MaxStreamsFrame>
+        + WriteFrame<StreamDataBlockedFrame>
+        + WriteFrame<StreamsBlockedFrame>,
+{
     fn put_frame(&mut self, frame: &StreamCtlFrame) {
         match frame {
             StreamCtlFrame::ResetStream(frame) => self.put_frame(frame),
@@ -476,7 +484,16 @@ impl WriteFrame<StreamCtlFrame> for &mut [u8] {
     }
 }
 
-impl WriteFrame<ReliableFrame> for &mut [u8] {
+impl<T> WriteFrame<ReliableFrame> for T
+where
+    T: WriteFrame<NewTokenFrame>
+        + WriteFrame<MaxDataFrame>
+        + WriteFrame<DataBlockedFrame>
+        + WriteFrame<NewConnectionIdFrame>
+        + WriteFrame<RetireConnectionIdFrame>
+        + WriteFrame<HandshakeDoneFrame>
+        + WriteFrame<StreamCtlFrame>,
+{
     fn put_frame(&mut self, frame: &ReliableFrame) {
         match frame {
             ReliableFrame::NewToken(frame) => self.put_frame(frame),

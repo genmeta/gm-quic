@@ -172,15 +172,17 @@ impl RcvdJournal {
 
     fn read_ack_frame_util(
         &self,
-        mut buf: &mut [u8],
+        buf: &mut impl WriteFrame<AckFrame>,
         largest: u64,
         recv_time: Instant,
-    ) -> Option<usize> {
+    ) -> Option<()> {
         // TODO: 未来替换成，不用申请Vec先生成AckFrame，从largest往后开始成对生成
-        let buf_len = buf.len();
+        let buf_len = buf.remaining_mut();
+        // TODO: 这个Ack帧很有可能是一个“空的Ack帧”，即只有一个largest和delay字段，没有任何range
+        // 只有在缓冲区太小时gen_ack_frame_util会返回None
         let ack_frame = self.gen_ack_frame_util((largest, recv_time), buf_len)?;
         buf.put_frame(&ack_frame);
-        Some(buf_len - buf.len())
+        Some(())
     }
 
     fn retire(&mut self, pn: u64) {
@@ -250,10 +252,10 @@ impl ArcRcvdJournal {
     /// `largest` frame, the ranges in ack frame will not exceed `largest`.
     pub fn read_ack_frame_util(
         &self,
-        buf: &mut [u8],
+        buf: &mut impl WriteFrame<AckFrame>,
         largest: u64,
         recv_time: Instant,
-    ) -> Option<usize> {
+    ) -> Option<()> {
         self.inner
             .read()
             .unwrap()

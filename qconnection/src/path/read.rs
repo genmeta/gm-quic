@@ -45,86 +45,77 @@ impl ReadIntoDatagrams {
         dcid: ConnectionId,
     ) -> (usize, usize) {
         let buffer = datagram.apply(constraints);
-        let send_quota = buffer.len();
-
         let ack_pkt = self.cc.need_ack(Epoch::Initial);
+
         // 按顺序发，先发Initial空间的，到Initial数据包
-        if let Some((padding, len, in_flight)) = self
+        let Some((remain, complete_initial)) = self
             .initial_space_reader
             .try_read(buffer, self.scid, dcid, ack_pkt)
-        {
-            // 若真的只包含ack， 后续只会追加padding，追加的padding也可以看成是新的InitialPacket数据包
-            constraints.commit(len, in_flight);
+        else {
+            return self.read_other_space(constraints, flow_limit, buffer, dcid);
+        };
 
-            let (wrote, fresh_bytes) = {
-                let remain = &mut buffer[len..];
-                self.read_other_space(constraints, flow_limit, remain, dcid)
-            };
+        // 读完initial时图读别的空间
+        let (other_sent_bytes, fresh_bytes) =
+            self.read_other_space(constraints, flow_limit, remain, dcid);
 
-            let padding_len = if wrote == 0 { MSS.min(send_quota) } else { 0 };
-            let (pn, is_ack_eliciting, sent_bytes, in_flight, sent_ack) =
-                padding(buffer, padding_len);
-            self.cc.on_pkt_sent(
-                Epoch::Initial,
-                pn,
-                is_ack_eliciting,
-                sent_bytes,
-                in_flight,
-                sent_ack,
-            );
-            // 减除initial数据包已经commit的
-            constraints.commit(sent_bytes - len, in_flight);
-            (wrote + sent_bytes, fresh_bytes)
+        // 根据有没有从别的空间读到数据，决定是否延长Initial空间的数据包
+        let extend_inital = if other_sent_bytes == 0 {
+            Some(remain)
         } else {
-            self.read_other_space(constraints, flow_limit, buffer, dcid)
-        }
+            None
+        };
+        let (packet, sent_ack) = complete_initial(extend_inital);
+        println!("{constraints:?}");
+        println!("{packet:?}");
+        let initial_sent_bytes = packet.size();
+        self.cc.on_pkt_sent(
+            Epoch::Initial,
+            packet.packet_number(),
+            packet.is_ack_eliciting(),
+            initial_sent_bytes,
+            packet.is_in_flight(),
+            sent_ack,
+        );
+        constraints.commit(initial_sent_bytes, packet.is_in_flight());
+        (initial_sent_bytes + other_sent_bytes, fresh_bytes)
     }
 
     fn read_other_space(
         &self,
         constraints: &mut Constraints,
         flow_limit: usize,
-        mut buffer: &mut [u8],
+        buffer: &mut [u8],
         dcid: ConnectionId,
     ) -> (usize, usize) {
+        let origin_size = buffer.len();
         // 在发0Rtt数据包，但是0Rtt数据包要看有没有获取到1rtt的密钥o
-        let mut written = 0;
         let mut fresh_bytes = 0;
         let one_rtt_keys = self.data_space_reader.one_rtt_keys();
 
         if one_rtt_keys.is_none() {
-            if let Some((pn, is_ack_eliciting, sent_bytes, fresh_len, in_flight)) = self
+            if let Some((packet, fresh_len)) = self
                 .data_space_reader
                 .try_read_0rtt(buffer, flow_limit, self.scid, dcid)
             {
                 self.cc.on_pkt_sent(
                     Epoch::Data,
-                    pn,
-                    is_ack_eliciting,
-                    sent_bytes,
-                    in_flight,
+                    packet.packet_number(),
+                    packet.is_ack_eliciting(),
+                    packet.size(),
+                    packet.is_in_flight(),
                     None,
                 );
-                buffer = &mut buffer[sent_bytes..];
                 // 0Rtt数据包不会发送Ack
-                constraints.commit(sent_bytes, false);
+                constraints.commit(packet.size(), false);
                 fresh_bytes += fresh_len;
-                written += sent_bytes;
             }
         }
 
-        buffer = buffer.apply(constraints);
-        if buffer.is_empty() {
-            return (written, fresh_bytes);
-        }
-
         // 再尝试写handshake空间的
-        let n = self.read_handshake_space(constraints, buffer, dcid);
-        written += n;
-        buffer = &mut buffer[n..];
-        buffer = buffer.apply(constraints);
+        let buffer = self.read_handshake_space(constraints, buffer, dcid);
         if buffer.is_empty() {
-            return (written, fresh_bytes);
+            return (origin_size - buffer.len(), fresh_bytes);
         }
 
         // 最后尝试写1rtt数据包
@@ -132,51 +123,50 @@ impl ReadIntoDatagrams {
             let ack_pkt = self.cc.need_ack(Epoch::Data);
             let spin = self.spin.load(Ordering::Relaxed);
             let spin = SpinBit::from(spin);
-            if let Some((pn, is_ack_eliciting, sent_bytes, fresh_len, in_flight, sent_ack)) = self
+            if let Some((packet, fresh_len, sent_ack)) = self
                 .data_space_reader
                 .try_read_1rtt(buffer, flow_limit, dcid, spin, ack_pkt, keys)
             {
                 self.cc.on_pkt_sent(
                     Epoch::Data,
-                    pn,
-                    is_ack_eliciting,
-                    sent_bytes,
-                    in_flight,
+                    packet.packet_number(),
+                    packet.is_ack_eliciting(),
+                    packet.size(),
+                    packet.is_in_flight(),
                     sent_ack,
                 );
-                constraints.commit(sent_bytes, in_flight);
-                written += sent_bytes;
+                constraints.commit(packet.size(), packet.is_in_flight());
                 fresh_bytes += fresh_len;
             }
         }
 
-        (written, fresh_bytes)
+        (origin_size - buffer.len(), fresh_bytes)
     }
 
-    fn read_handshake_space(
+    fn read_handshake_space<'b>(
         &self,
         constraints: &mut Constraints,
-        buffer: &mut [u8],
+        buffer: &'b mut [u8],
         dcid: ConnectionId,
-    ) -> usize {
-        // 再尝试写handshake空间的
+    ) -> &'b mut [u8] {
         let ack_pkt = self.cc.need_ack(Epoch::Handshake);
-        if let Some((pn, is_ack_eliciting, sent_bytes, in_flight, sent_ack)) = self
+        let Some((packet, sent_ack)) = self
             .handshake_space_reader
             .try_read(buffer, self.scid, dcid, ack_pkt)
-        {
-            self.cc.on_pkt_sent(
-                Epoch::Handshake,
-                pn,
-                is_ack_eliciting,
-                sent_bytes,
-                in_flight,
-                sent_ack,
-            );
-            constraints.commit(sent_bytes, in_flight);
-            return sent_bytes;
-        }
-        0
+        else {
+            return buffer;
+        };
+
+        self.cc.on_pkt_sent(
+            Epoch::Handshake,
+            packet.packet_number(),
+            packet.is_ack_eliciting(),
+            packet.size(),
+            packet.is_in_flight(),
+            sent_ack,
+        );
+        constraints.commit(packet.size(), packet.is_in_flight());
+        &mut buffer[packet.size()..]
     }
 
     fn poll_read_inner(

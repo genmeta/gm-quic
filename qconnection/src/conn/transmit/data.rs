@@ -1,18 +1,13 @@
 use std::{sync::Arc, time::Instant};
 
-use bytes::BufMut;
 use qbase::{
     cid::ConnectionId,
-    frame::{PathChallengeFrame, PathResponseFrame, STREAM_FRAME_MAX_ENCODING_SIZE},
+    frame::{PathChallengeFrame, PathResponseFrame},
     packet::{
-        encrypt::{
-            encode_long_first_byte, encode_short_first_byte, encrypt_packet, protect_header,
-        },
-        header::io::WriteHeader,
         keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys},
-        EncodeHeader, LongHeaderBuilder, OneRttHeader, SpinBit, WritePacketNumber,
+        writer::{CompletePacket, OneRttPacketWriter, ZeroRttPacketWriter},
+        LongHeaderBuilder, OneRttHeader, SpinBit,
     },
-    varint::{EncodeBytes, VarInt, WriteVarInt},
 };
 use qrecovery::{
     crypto::CryptoStreamOutgoing,
@@ -54,139 +49,75 @@ impl DataSpaceReader {
         spin: SpinBit,
         ack_pkt: Option<(u64, Instant)>,
         (hpk, pk): (Arc<dyn HeaderProtectionKey>, ArcOneRttPacketKeys),
-    ) -> Option<(u64, bool, usize, usize, bool, Option<u64>)> {
+    ) -> Option<(CompletePacket, usize, Option<u64>)> {
+        let (key_phase, hpk, pk) = {
+            let pk_guard = pk.lock_guard();
+            let (key_phase, pk) = pk_guard.get_local();
+            (key_phase, hpk, pk)
+        };
+
         // 0. 检查1rtt keys是否有效，没有则回退到0rtt包
         // 1. 生成包头，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
         let hdr = OneRttHeader { spin, dcid };
-        // 20字节为最小Payload长度，为了保护包头的Sample至少16字节
-        if buf.len() < hdr.size() + 20 {
-            return None;
-        }
-        let (mut hdr_buf, payload_tag) = buf.split_at_mut(hdr.size());
-        let payload_tag_len = payload_tag.len();
-        let tag_len = pk.tag_len();
-        let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
-
         // 2. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
         let sent_journal = self.journal.sent();
         let mut journal_guard = sent_journal.send();
-        let (pn, encoded_pn) = journal_guard.next_pn();
-        if payload_buf.remaining_mut() <= encoded_pn.size() {
-            return None;
-        }
-        let (mut pn_buf, mut body_buf) = payload_buf.split_at_mut(encoded_pn.size());
+        let pn = journal_guard.next_pn();
 
-        let mut is_ack_eliciting = false;
-        let mut in_flight = false;
-        let body_size = body_buf.remaining_mut();
+        let mut writer = OneRttPacketWriter::new(&hdr, buf, pn, pk.tag_len())?;
 
         // 3. 检查PathFrameBuffer，尝试写，但发送记录并不记录，若写入，则constraints开始记录
-        let n = self.challenge_sndbuf.try_read(body_buf);
-        if n > 0 {
+        if self.challenge_sndbuf.try_read(&mut writer) > 0 {
             journal_guard.record_trivial();
-            is_ack_eliciting = true;
-            in_flight = true;
-            body_buf = &mut body_buf[n..];
         }
-        let n = self.response_sndbuf.try_read(body_buf);
-        if n > 0 {
+        if self.response_sndbuf.try_read(&mut writer) > 0 {
             journal_guard.record_trivial();
-            is_ack_eliciting = true;
-            in_flight = true;
-            body_buf = &mut body_buf[n..];
         }
 
         // 4. 检查是否需要发送Ack，若是，且符合（constraints + buf）节制，生成ack并写入，但发送记录并不记录
         let mut sent_ack = None;
         if let Some((largest, recv_time)) = ack_pkt {
             let rcvd_pkt_records = self.journal.rcvd();
-            let n = rcvd_pkt_records
-                .read_ack_frame_util(body_buf, largest, recv_time)
-                .unwrap();
+            rcvd_pkt_records
+                .read_ack_frame_util(&mut writer, largest, recv_time)
+                .expect("its always have enough space to put a ack frame");
             journal_guard.record_trivial();
             sent_ack = Some(largest);
-            body_buf = &mut body_buf[n..];
         }
 
         // 5. 检查可靠帧，若有且符合（constraints + buf）节制，写入，burst、发包记录都记录
-        while let Some((frame, n)) = self.reliable_frames.try_read(body_buf) {
+        while let Some(frame) = self.reliable_frames.try_read(&mut writer) {
             journal_guard.record_frame(GuaranteedFrame::Reliable(frame));
-            body_buf = &mut body_buf[n..];
-            is_ack_eliciting = true;
-            in_flight = true;
         }
 
         // 6. 检查NewToken，是否需要发送
 
         // 7. 检查一下CryptoStream，服务器可能会发送一些数据
-        while let Some((frame, n)) = self.crypto_stream_outgoing.try_read_data(body_buf) {
+        while let Some(frame) = self.crypto_stream_outgoing.try_read_data(&mut writer) {
             journal_guard.record_frame(GuaranteedFrame::Crypto(frame));
-            body_buf = &mut body_buf[n..];
-            is_ack_eliciting = true;
-            in_flight = true;
         }
 
         // 8. 检查Datagrams是否需要发送，若有，且符合(constraints + buf) 节制，写入，burst、发包记录都记录
-        while let Some((_frame, n)) = self.datagrams.try_read_datagram(body_buf) {
-            body_buf = &mut body_buf[n..];
-            is_ack_eliciting = true;
-            in_flight = true;
+        while let Some(_frame) = self.datagrams.try_read_datagram(&mut writer) {
+            journal_guard.record_trivial();
         }
 
         // 9. 检查DataStreams是否需要发送，若有，且符合（constraints + buf）节制，写入，burst、发包记录都记录
         let mut fresh_bytes = 0;
-        while let Some((frame, n, m)) = self.streams.try_read_data(body_buf, flow_limit) {
+        while let Some((frame, m)) = self.streams.try_read_data(&mut writer, flow_limit) {
             journal_guard.record_frame(GuaranteedFrame::Stream(frame));
             flow_limit -= m;
             fresh_bytes += m;
-            body_buf = &mut body_buf[n..];
-            is_ack_eliciting = true;
-            in_flight = true;
         }
 
         drop(journal_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
 
-        let hdr_len = hdr_buf.len();
-        let pn_len = pn_buf.len();
-        let mut body_len = body_size - body_buf.remaining_mut();
-        if body_len == 0 {
-            // 无有效数据，那就不打包1Rtt包发送了
+        if writer.is_empty() {
             return None;
         }
-        // payload(pn + body)长度不足20字节，填充之
-        if pn_len + body_len + tag_len < 20 {
-            let padding_len = 20 - pn_len - body_len - tag_len;
-            body_buf.put_bytes(0, padding_len);
-            body_len += padding_len;
-        }
 
-        // 优化：如果buf剩下的空间太小，放填充帧使得数据报被完全填满，适配GSO
-        if body_buf.remaining_mut() < STREAM_FRAME_MAX_ENCODING_SIZE + 1 {
-            let padding_len = body_buf.remaining_mut();
-            body_buf.put_bytes(0, padding_len);
-            body_len += padding_len;
-        }
-
-        let sent_size = hdr_len + pn_len + body_len + tag_len;
-
-        hdr_buf.put_header(&hdr);
-        pn_buf.put_packet_number(encoded_pn);
-
-        // 11 保护包头，加密数据
-        let pk_guard = pk.lock_guard();
-        let (key_phase, pk) = pk_guard.get_local();
-        encode_short_first_byte(&mut buf[0], pn_len, key_phase);
-        encrypt_packet(pk.as_ref(), pn, &mut buf[..sent_size], hdr_len + pn_len);
-        protect_header(hpk.as_ref(), &mut buf[..sent_size], hdr_len, pn_len);
-
-        Some((
-            pn,
-            is_ack_eliciting,
-            sent_size,
-            fresh_bytes,
-            in_flight,
-            sent_ack,
-        ))
+        let packet = writer.encrypt(key_phase, hpk.as_ref(), pk.as_ref());
+        Some((packet, fresh_bytes, sent_ack))
     }
 
     /// Returns (pn, is_ack_eliciting, sent_size, fresh_bytes, in_flight) or None
@@ -196,111 +127,57 @@ impl DataSpaceReader {
         mut flow_limit: usize,
         scid: ConnectionId,
         dcid: ConnectionId,
-    ) -> Option<(u64, bool, usize, usize, bool)> {
+    ) -> Option<(CompletePacket, usize)> {
         // 1. 检查0rtt keys是否有效，没有则结束
         let k = self.zero_rtt_keys.get_local_keys()?;
+        let pk = k.local.packet.as_ref();
+        let hpk = k.local.header.as_ref();
 
         // 2. 生成包头，预留2字节len，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
         let hdr = LongHeaderBuilder::with_cid(dcid, scid).zero_rtt();
-        // length字段预留2字节, 20字节为最小Payload长度，为了保护包头的Sample至少16字节
-        if buf.len() < hdr.size() + 2 + 20 {
-            return None;
-        }
-        let (mut hdr_buf, payload_tag) = buf.split_at_mut(hdr.size() + 2);
-        // 至少预留tag空间，加密时足够填充加密的部分
-        let payload_tag_len = payload_tag.len();
-        let tag_len = k.local.packet.as_ref().tag_len();
-        let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
 
         // 3. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
         let sent_pkt_records = self.journal.sent();
         let mut send_guard = sent_pkt_records.send();
-        let (pn, encoded_pn) = send_guard.next_pn();
-        if payload_buf.remaining_mut() <= encoded_pn.size() {
-            return None;
-        }
-        let (mut pn_buf, mut body_buf) = payload_buf.split_at_mut(encoded_pn.size());
+        let pn = send_guard.next_pn();
 
-        let mut is_ack_eliciting = false;
-        let mut in_flight = false;
-        let body_size = body_buf.remaining_mut();
+        let mut writer = ZeroRttPacketWriter::new(&hdr, buf, pn, pk.tag_len())?;
 
         // 4. 只检查PathChallengeBuffer，尝试写，但发送记录并不记录，若写入一个帧，则constraints开始记录
         //    可能没有Challenge帧，所以仍要继续
-        let n = self.challenge_sndbuf.try_read(body_buf);
-        if n > 0 {
+        if self.challenge_sndbuf.try_read(&mut writer) > 0 {
             send_guard.record_trivial();
-            is_ack_eliciting = true;
-            in_flight = true;
-            body_buf = &mut body_buf[n..];
         }
 
         // 5. 检查可靠帧，若有且符合（constraints + buf）节制，写入，burst、发包记录都记录
-        while let Some((frame, n)) = self.reliable_frames.try_read(body_buf) {
-            send_guard.record_frame(GuaranteedFrame::Reliable(frame));
-            body_buf = &mut body_buf[n..];
-            is_ack_eliciting = true;
-            in_flight = true;
-        }
+        // TODO: 可靠帧包括握手完成帧，但是0rtt包不能发送握手完成帧
+        // while let Some(frame) = self.reliable_frames.try_read(&mut writer) {
+        //     send_guard.record_frame(GuaranteedFrame::Reliable(frame));
+        // }
 
         // 6. 检查DataStreams是否需要发送，若有，且符合（constraints + buf）节制，写入，burst、发包记录都记录
         // TODO: 要注意和Datagrams的公平了
         let mut fresh_bytes = 0;
-        while let Some((frame, n, m)) = self.streams.try_read_data(body_buf, flow_limit) {
+        while let Some((frame, m)) = self.streams.try_read_data(&mut writer, flow_limit) {
             send_guard.record_frame(GuaranteedFrame::Stream(frame));
-            body_buf = &mut body_buf[n..];
             flow_limit -= m;
             fresh_bytes += m;
-            is_ack_eliciting = true;
-            in_flight = true;
         }
 
         // 7. 检查Datagrams是否需要发送，若有，且符合(constraints + buf) 节制，写入，burst、发包记录都记录
-        while let Some((_frame, n)) = self.datagrams.try_read_datagram(body_buf) {
-            body_buf = &mut body_buf[n..];
-            is_ack_eliciting = true;
-            in_flight = true;
+        while let Some(_frame) = self.datagrams.try_read_datagram(&mut writer) {
+            send_guard.record_trivial();
         }
         drop(send_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
 
-        // 8. 填充，保护头部，加密
-        let hdr_len = hdr_buf.len();
-        let pn_len = pn_buf.len();
-        let mut body_len = body_size - body_buf.remaining_mut();
-        if body_len == 0 {
-            // 无有效数据，那就不打包0Rtt包发送了
+        if writer.is_empty() {
             return None;
         }
-        // payload(pn + body)长度不足20字节，填充之
-        if pn_len + body_len + tag_len < 20 {
-            let padding_len = 20 - pn_len - body_len - tag_len;
-            body_buf.put_bytes(0, padding_len);
-            body_len += padding_len;
-        }
-        let sent_size = hdr_len + pn_len + body_len + tag_len;
 
-        hdr_buf.put_header(&hdr);
-        hdr_buf.encode_varint(
-            &VarInt::try_from(pn_len + body_len + tag_len).unwrap(),
-            EncodeBytes::Two,
-        );
-        pn_buf.put_packet_number(encoded_pn);
-
-        encode_long_first_byte(&mut buf[0], pn_len);
-        encrypt_packet(
-            k.local.packet.as_ref(),
-            pn,
-            &mut buf[..sent_size],
-            hdr_len + pn_len,
-        );
-        protect_header(
-            k.local.header.as_ref(),
-            &mut buf[..sent_size],
-            hdr_len,
-            pn_len,
-        );
+        // 8. 填充，保护头部，加密
+        let _remain = writer.seal_packet();
 
         // 0RTT包不能发送Ack
-        Some((pn, is_ack_eliciting, sent_size, fresh_bytes, in_flight))
+        Some((writer.encrypt(hpk, pk), fresh_bytes))
     }
 }

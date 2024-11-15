@@ -1,15 +1,12 @@
 use std::time::Instant;
 
-use bytes::BufMut;
 use qbase::{
     cid::ConnectionId,
     packet::{
-        encrypt::{encode_long_first_byte, encrypt_packet, protect_header},
-        header::io::WriteHeader,
         keys::ArcKeys,
-        EncodeHeader, LongHeaderBuilder, WritePacketNumber,
+        writer::{CompletePacket, HandshakePacketWriter},
+        LongHeaderBuilder,
     },
-    varint::{EncodeBytes, VarInt, WriteVarInt},
 };
 use qrecovery::{crypto::CryptoStreamOutgoing, journal::HandshakeJournal};
 
@@ -27,93 +24,46 @@ impl HandshakeSpaceReader {
         scid: ConnectionId,
         dcid: ConnectionId,
         ack_pkt: Option<(u64, Instant)>,
-    ) -> Option<(u64, bool, usize, bool, Option<u64>)> {
+    ) -> Option<(CompletePacket, Option<u64>)> {
         // 1. 判定keys是否有效，无效或者尚未拿到，直接返回
         let k = self.keys.get_local_keys()?;
+        let pk = k.local.packet.as_ref();
+        let hpk = k.local.header.as_ref();
 
         // 2. 生成包头，预留2字节len，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
         let hdr = LongHeaderBuilder::with_cid(dcid, scid).handshake();
-        // length字段预留2字节, 20字节为最小Payload长度，为了保护包头的Sample至少16字节
-        if buf.len() < hdr.size() + 2 + 20 {
-            return None;
-        }
-        let (mut hdr_buf, payload_tag) = buf.split_at_mut(hdr.size() + 2);
-        let payload_tag_len = payload_tag.len();
-        let tag_len = k.local.packet.as_ref().tag_len();
-        let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
 
         // 3. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
         let sent_journal = self.journal.sent();
         let mut journal_guard = sent_journal.send();
-        let (pn, encoded_pn) = journal_guard.next_pn();
-        if payload_buf.remaining_mut() <= encoded_pn.size() {
-            return None;
-        }
-        let (mut pn_buf, mut body_buf) = payload_buf.split_at_mut(encoded_pn.size());
-
-        let mut is_ack_eliciting = false;
-        let mut in_flight = false;
-        let body_size = body_buf.remaining_mut();
+        let pn = journal_guard.next_pn();
+        let mut writer = HandshakePacketWriter::new(&hdr, buf, pn, pk.tag_len())?;
 
         // 4. 检查是否需要发送Ack，若是，生成ack
         let mut sent_ack = None;
         if let Some((largest, recv_time)) = ack_pkt {
             let rcvd_pkt_records = self.journal.rcvd();
-            let n = rcvd_pkt_records
-                .read_ack_frame_util(body_buf, largest, recv_time)
-                .unwrap();
+            rcvd_pkt_records
+                .read_ack_frame_util(&mut writer, largest, recv_time)
+                .expect("its always have enough space to put a ack frame");
             journal_guard.record_trivial();
             sent_ack = Some(largest);
-            body_buf = &mut body_buf[n..];
         }
 
-        // 5. 从CryptoStream提取数据，当前无流控，仅最大努力，提取限制之内的最大数据量
-        while let Some((frame, n)) = self.crypto_stream_outgoing.try_read_data(body_buf) {
+        // 5. 从CryptoStream提取数据，当前无流控，尽最大努力，提取限制之内的最大数据量
+        while let Some(frame) = self.crypto_stream_outgoing.try_read_data(&mut writer) {
             journal_guard.record_frame(frame);
-            body_buf = &mut body_buf[n..];
-            is_ack_eliciting = true;
-            in_flight = true;
         }
-        drop(journal_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
 
-        // 7. 填充，保护头部，加密
-        let hdr_len = hdr_buf.len();
-        let pn_len = pn_buf.len();
-        let mut body_len = body_size - body_buf.remaining_mut();
-        if body_len == 0 {
-            // 无有效数据，那就不打包Handshake包发送了
+        if writer.is_empty() {
             return None;
         }
-        // payload(pn + body)长度不足20字节，填充之
-        if pn_len + body_len + tag_len < 20 {
-            let padding_len = 20 - pn_len - body_len - tag_len;
-            body_buf.put_bytes(0, padding_len);
-            body_len += padding_len;
-        }
-        let pkt_size = hdr_len + pn_len + body_len + tag_len;
 
-        hdr_buf.put_header(&hdr);
-        hdr_buf.encode_varint(
-            &VarInt::try_from(pn_len + body_len + tag_len).unwrap(),
-            EncodeBytes::Two,
-        );
+        drop(journal_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
 
-        pn_buf.put_packet_number(encoded_pn);
+        let _remain = writer.seal_packet();
+        let packet = writer.encrypt(hpk, pk);
 
-        encode_long_first_byte(&mut buf[0], pn_len);
-        encrypt_packet(
-            k.local.packet.as_ref(),
-            pn,
-            &mut buf[..pkt_size],
-            hdr_len + pn_len,
-        );
-        protect_header(
-            k.local.header.as_ref(),
-            &mut buf[..pkt_size],
-            hdr_len,
-            pn_len,
-        );
-
-        Some((pn, is_ack_eliciting, pkt_size, in_flight, sent_ack))
+        Some((packet, sent_ack))
     }
 }

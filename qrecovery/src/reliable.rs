@@ -53,14 +53,14 @@ impl ArcReliableFrameDeque {
     /// If the remaining bytes of `buf` is not enough to encode the frame, or there are no frame
     /// in the deque, this method will return [`None`], the `buf` will not be changed.
     ///
-    /// If the read success, the frame and the number of bytes written will be return.
-    pub fn try_read(&self, mut buf: &mut [u8]) -> Option<(ReliableFrame, usize)> {
+    /// If the read success, the frame read be return.
+    pub fn try_read(&self, buf: &mut impl WriteFrame<ReliableFrame>) -> Option<ReliableFrame> {
         let mut deque = self.0.lock().unwrap();
         let frame = deque.front()?;
-        if frame.max_encoding_size() <= buf.len() || frame.encoding_size() <= buf.len() {
-            let buf_len = buf.len();
+        let buf_size = buf.remaining_mut();
+        if frame.max_encoding_size() <= buf_size || frame.encoding_size() <= buf_size {
             buf.put_frame(frame);
-            Some((deque.pop_front().unwrap(), buf_len - buf.len()))
+            Some(deque.pop_front().unwrap())
         } else {
             None
         }

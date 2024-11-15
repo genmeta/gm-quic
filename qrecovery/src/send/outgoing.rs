@@ -26,17 +26,19 @@ impl<TX: Clone> Outgoing<TX> {
     /// * [`StreamFrame`]: Stream frame obtained by reading
     /// * [`usize`]:       The length of the stream data that was read
     /// * [`bool`]:        Whether the data is fresh(not retransmitted)
-    /// * [`usize`]:       How much data was written to the buffer
     ///
     /// [`DataStreams::try_read_data`]: crate::streams::raw::DataStreams::try_read_data
-    pub fn try_read(
+    pub fn try_read<B>(
         &self,
         sid: StreamId,
-        mut buf: &mut [u8],
+        buf: &mut B,
         tokens: usize,
         flow_limit: usize,
-    ) -> Option<(StreamFrame, usize, bool, usize)> {
-        let capacity = buf.len();
+    ) -> Option<(StreamFrame, usize, bool)>
+    where
+        for<'a> B: WriteDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+    {
+        let capacity = buf.remaining_mut();
         let write = |(offset, is_fresh, data, is_eos): (u64, bool, (&[u8], &[u8]), bool)| {
             let mut frame = StreamFrame::new(sid, offset, data.len());
 
@@ -46,14 +48,15 @@ impl<TX: Clone> Outgoing<TX> {
                     buf.put_data_frame(&frame, &data);
                 }
                 ShouldCarryLength::PaddingFirst(n) => {
-                    (&mut buf[n..]).put_data_frame(&frame, &data);
+                    buf.put_bytes(0, n);
+                    buf.put_data_frame(&frame, &data);
                 }
                 ShouldCarryLength::ShouldAfter(_not_carry_len, _carry_len) => {
                     frame.carry_length();
                     buf.put_data_frame(&frame, &data);
                 }
             }
-            (frame, data.len(), is_fresh, capacity - buf.remaining_mut())
+            (frame, data.len(), is_fresh)
         };
 
         let predicate = |offset| {

@@ -25,8 +25,11 @@ mod send {
     }
 
     impl Sender {
-        fn try_read_data(&mut self, mut buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
-            let buf_len = buffer.len();
+        fn try_read_data<B>(&mut self, buffer: &mut B) -> Option<CryptoFrame>
+        where
+            for<'d> B: WriteDataFrame<CryptoFrame, (&'d [u8], &'d [u8])>,
+        {
+            let buf_len = buffer.remaining_mut();
             let predicate = |offset: u64| CryptoFrame::estimate_max_capacity(buf_len, offset);
             if let Some((offset, _is_fresh, data)) = self.sndbuf.pick_up(predicate, usize::MAX) {
                 let frame = CryptoFrame {
@@ -34,8 +37,7 @@ mod send {
                     length: VarInt::try_from(data.len()).unwrap(),
                 };
                 buffer.put_data_frame(&frame, &data);
-                let written = buf_len - buffer.remaining_mut();
-                Some((frame, written))
+                Some(frame)
             } else {
                 None
             }
@@ -127,9 +129,11 @@ mod send {
         /// If the remaining of `buffer` is not enough to put a crypo frame, or there are no data to
         /// send, this method will return [`None`] and the `buffer` will be changed.
         ///
-        /// If the write success, the crypto frame and the number of bytes written to the buffer
-        /// will be written.
-        pub fn try_read_data(&self, buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
+        /// If the write success, the crypto frame written will be returned.
+        pub fn try_read_data<B>(&self, buffer: &mut B) -> Option<CryptoFrame>
+        where
+            for<'d> B: WriteDataFrame<CryptoFrame, (&'d [u8], &'d [u8])>,
+        {
             self.0.lock().unwrap().try_read_data(buffer)
         }
 

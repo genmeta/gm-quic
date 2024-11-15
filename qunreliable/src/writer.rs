@@ -74,8 +74,8 @@ impl UnreliableOutgoing {
 
     /// Attempts to encode the datagram frame into the buffer.
     ///
-    /// If the datagram frame is successfully encoded, the method will return the datagram frame and the number of bytes
-    /// written to the buffer. Otherwise, the method will return [`None`], and the buffer will not be modified.
+    /// If the datagram frame is successfully encoded, the method will return the datagram frame that written to the buffer.
+    /// Otherwise, the method will return [`None`], and the buffer will not be modified.
     ///
     /// If the connection is closing or already closed, the method will return [`None`].
     /// See [`UnreliableOutgoing::on_conn_error`] for more details.
@@ -102,12 +102,15 @@ impl UnreliableOutgoing {
     /// If the buffer is not enough to encode the length, it will encode the [`DatagramFrame`] without the data's length
     /// (frame type `0x30`). Because no frame can be put after the datagram frame without length, this method will put
     /// padding frames before to fill the buffer. In this case, the buffer will be filled.
-    pub fn try_read_datagram(&self, mut buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
+    pub fn try_read_datagram<B>(&self, buf: &mut B) -> Option<DatagramFrame>
+    where
+        B: WriteDataFrame<DatagramFrame, Bytes>,
+    {
         let mut guard = self.0.lock().unwrap();
         let writer = guard.as_mut().ok()?;
         let datagram = writer.queue.front()?;
 
-        let available = buf.len();
+        let available = buf.remaining_mut();
 
         let max_encoding_size = available.saturating_sub(datagram.len());
         if max_encoding_size == 0 {
@@ -121,16 +124,14 @@ impl UnreliableOutgoing {
             // Encode length
             n if n >= frame_with_len.encoding_size() => {
                 buf.put_data_frame(&frame_with_len, &datagram);
-                let written = frame_with_len.encoding_size() + datagram.len();
-                Some((frame_with_len, written))
+                Some(frame_with_len)
             }
             // Do not encode length, may need padding
             n => {
                 debug_assert_eq!(frame_without_len.encoding_size(), 1);
-                buf = &mut buf[n - frame_without_len.encoding_size()..];
+                buf.put_bytes(0, n - 1);
                 buf.put_data_frame(&frame_without_len, &datagram);
-                let written = n + datagram.len();
-                Some((frame_without_len, written))
+                Some(frame_without_len)
             }
         }
     }
@@ -271,8 +272,8 @@ mod tests {
         let mut buffer = [0; 1024];
         let expected_frame = DatagramFrame::new(Some(VarInt::try_from(data.len()).unwrap()));
         assert_eq!(
-            outgoing.try_read_datagram(&mut buffer),
-            Some((expected_frame, 1 + 1 + data.len()))
+            outgoing.try_read_datagram(&mut buffer.as_mut()),
+            Some(expected_frame)
         );
 
         let mut expected_buffer = [0; 1024];
@@ -294,8 +295,8 @@ mod tests {
 
         let mut buffer = [0; 1024];
         assert_eq!(
-            outgoing.try_read_datagram(&mut buffer[0..12]),
-            Some((DatagramFrame::new(None), 12))
+            outgoing.try_read_datagram(&mut buffer[0..12].as_mut()),
+            Some(DatagramFrame::new(None))
         );
 
         let mut expected_buffer = [0; 1024];
@@ -316,7 +317,9 @@ mod tests {
         writer.send_bytes(data.clone()).unwrap();
 
         let mut buffer = [0; 1024];
-        assert!(outgoing.try_read_datagram(&mut buffer[0..1]).is_none());
+        assert!(outgoing
+            .try_read_datagram(&mut buffer[0..1].as_mut())
+            .is_none());
 
         let expected_buffer = [0; 1024];
         assert_eq!(buffer, expected_buffer);
@@ -334,8 +337,8 @@ mod tests {
 
         let mut buffer = [0; 1024];
         assert_eq!(
-            outgoing.try_read_datagram(&mut buffer[..data.len() + 2]),
-            Some((DatagramFrame::new(None), data.len() + 2))
+            outgoing.try_read_datagram(&mut buffer[..data.len() + 2].as_mut()),
+            Some(DatagramFrame::new(None))
         );
 
         let mut expected_buffer = [0; 1024];

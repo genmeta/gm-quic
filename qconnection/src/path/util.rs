@@ -19,27 +19,27 @@ use qbase::{
 ///
 /// This struct impl [`Default`], and the `new` method is not provided.
 #[derive(Default, Clone)]
-pub struct SendBuffer<T>(Arc<Mutex<Option<T>>>);
+pub struct SendBuffer<F>(Arc<Mutex<Option<F>>>);
 
-impl<T> SendBuffer<T> {
+impl<F> SendBuffer<F> {
     /// Write a frame to the buffer.
     ///
     /// [`SendBuffer`] can only buffer one frame at a time. If you write a new frame to the buffer before the previous
     /// frame is sent, the previous frame will be overwritten.
-    pub fn write(&self, frame: T) {
+    pub fn write(&self, frame: F) {
         *self.0.lock().unwrap() = Some(frame);
     }
 }
 
-impl<T> SendBuffer<T>
+impl<F> SendBuffer<F>
 where
-    T: BeFrame,
-    for<'a> &'a mut [u8]: WriteFrame<T>,
+    F: BeFrame,
+    for<'a> &'a mut [u8]: WriteFrame<F>,
 {
-    /// Try read the frame to be sent from the buffer, and write it to the given `buf`.
+    /// Try read the frame to be sent from the send buffer, and write it to the given `buf`.
     ///
     /// Return how many bytes was written.
-    pub fn try_read(&self, mut buf: &mut [u8]) -> usize {
+    pub fn try_read(&self, buf: &mut impl WriteFrame<F>) -> usize {
         let mut guard = self.0.lock().unwrap();
         if let Some(frame) = guard.deref() {
             let size = frame.encoding_size();

@@ -3,8 +3,8 @@ use std::task::{ready, Context, Poll};
 use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::{
-        BeFrame, FrameType, ReceiveFrame, ResetStreamFrame, SendFrame, StreamCtlFrame, StreamFrame,
-        STREAM_FRAME_MAX_ENCODING_SIZE,
+        io::WriteDataFrame, BeFrame, FrameType, ReceiveFrame, ResetStreamFrame, SendFrame,
+        StreamCtlFrame, StreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
     },
     param::Parameters,
     sid::{
@@ -158,20 +158,18 @@ where
     /// returned:
     ///
     /// * [`StreamFrame`]: The stream frame to be sent.
-    /// * [`usize`]: The number of bytes written to the buffer.
     /// * [`usize`]: The number of new data writen to the buffer.
     ///
     /// [`try_read_data`]: DataStreams::try_read_data
     /// [`write`]: tokio::io::AsyncWriteExt::write
-    pub fn try_read_data(
-        &self,
-        buf: &mut [u8],
-        flow_limit: usize,
-    ) -> Option<(StreamFrame, usize, usize)> {
+    pub fn try_read_data<B>(&self, buf: &mut B, flow_limit: usize) -> Option<(StreamFrame, usize)>
+    where
+        for<'a> B: WriteDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+    {
         // todo: use core::range instead in rust 2024
         use core::ops::Bound::*;
 
-        if buf.len() < STREAM_FRAME_MAX_ENCODING_SIZE + 1 {
+        if buf.remaining_mut() < STREAM_FRAME_MAX_ENCODING_SIZE + 1 {
             return None;
         }
         let mut guard = self.output.streams();
@@ -208,11 +206,11 @@ where
                 .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
         };
         for (sid, (outgoing, _s), tokens) in streams.into_iter() {
-            if let Some((frame, data_len, is_fresh, written)) =
+            if let Some((frame, data_len, is_fresh)) =
                 outgoing.try_read(sid, buf, tokens, flow_limit)
             {
                 output.cursor = Some((sid, tokens - data_len));
-                return Some((frame, written, if is_fresh { data_len } else { 0 }));
+                return Some((frame, if is_fresh { data_len } else { 0 }));
             }
         }
         None
