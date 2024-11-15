@@ -106,7 +106,7 @@ pub enum Spec {
     ///
     /// See [Section 9.1](https://www.rfc-editor.org/rfc/rfc9000.html#probing)
     /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html).
-    Probe = 4,
+    ProbeNewPath = 4,
     /// The contents of frames with this marking are flow controlled.
     ///
     /// See [Section 4](https://www.rfc-editor.org/rfc/rfc9000.html#flow-control)
@@ -232,7 +232,7 @@ impl FrameType {
         let (n, c, p, f) = (
             Spec::NonAckEliciting as u8,
             Spec::CongestionControlFree as u8,
-            Spec::Probe as u8,
+            Spec::ProbeNewPath as u8,
             Spec::FlowControlled as u8,
         );
         match self {
