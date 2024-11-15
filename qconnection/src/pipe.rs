@@ -74,7 +74,7 @@ mod tests {
     use futures::{channel::mpsc, SinkExt};
     use qbase::error::{Error, ErrorKind};
 
-    use crate::error::{ConnError, ConnErrorKind};
+    use crate::error::{ConnError, ConnErrorSource};
 
     #[derive(Clone, Copy)]
     struct Consumer;
@@ -150,7 +150,7 @@ mod tests {
 
         assert!(tx1.send(()).await.is_ok());
         let (_, kind) = error.await;
-        assert_eq!(kind, ConnErrorKind::Transport);
+        assert_eq!(kind, ConnErrorSource::Transport);
         assert!(tx1.send(()).await.is_err());
     }
 }

@@ -46,7 +46,8 @@ async fn h3_test() {
     };
 
     let server = async move {
-        let test_time = std::time::Duration::from_secs(1);
+        // give it a litte time to enter draining state...
+        let test_time = std::time::Duration::from_secs(2);
         let run = server_example::run(server_opt);
         match tokio::time::timeout(test_time, run).await {
             Ok(result) => result.expect("server failed"),

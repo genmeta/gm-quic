@@ -377,8 +377,9 @@ impl ArcConnection {
     pub fn close(&self, msg: impl Into<Cow<'static, str>>) {
         let mut guard = self.0.lock().unwrap();
         if let Normal(connection) = guard.deref_mut() {
+            let msg = msg.into();
+            log::info!("Connection is closed by application: {}", msg);
             let error = Error::with_default_fty(ErrorKind::Application, msg);
-            log::info!("Connection is closed by application: {}", error);
             connection.error.set_app_error(error.clone());
             drop(guard);
             self.should_enter_closing(error);
@@ -518,14 +519,14 @@ impl From<Connection> for ArcConnection {
             let conn = connection.clone();
             async move {
                 let (err, kind) = conn_error.did_error_occur().await;
-                if kind != crate::error::ConnErrorKind::Application {
+                if kind != crate::error::ConnErrorSource::Application {
                     log::error!("Connection is closed unexpectedly: {}", err)
                 };
                 match kind {
-                    crate::error::ConnErrorKind::Application => {} // resolved by ArcConnection::close
-                    crate::error::ConnErrorKind::Transport => conn.should_enter_closing(err),
-                    crate::error::ConnErrorKind::CcfReceived => conn.enter_draining(err),
-                    crate::error::ConnErrorKind::NoViablePath => conn.no_vaiable_path(),
+                    crate::error::ConnErrorSource::Application => {} // resolved by ArcConnection::close
+                    crate::error::ConnErrorSource::Transport => conn.should_enter_closing(err),
+                    crate::error::ConnErrorSource::ReceivedCcf => conn.enter_draining(err),
+                    crate::error::ConnErrorSource::NoViablePath => conn.no_vaiable_path(),
                 }
             }
         });
