@@ -150,25 +150,32 @@ impl<'b, F> TryFrom<PacketMemory<'b, '_, F>> for PacketWriter<'b> {
 type DcidCell = ArcCidCell<ArcReliableFrameDeque>;
 
 pub struct Transaction<'a> {
+    scid: ConnectionId,
     borrowed_dcid: BorrowedCid<'a, ArcReliableFrameDeque>,
     cc: &'a ArcCC,
     flow_limit: Credit<'a>,
-    _constraints: Constraints,
+    constraints: Constraints,
 }
 
 impl<'a> Transaction<'a> {
     pub fn prepare(
+        scid: ConnectionId,
         dcid: &'a DcidCell,
         cc: &'a ArcCC,
         anti_amplifier: &'a ArcAntiAmplifier<DEFAULT_ANTI_FACTOR>,
         flow_ctrl: &'a FlowController,
     ) -> PrepareTransaction<'a> {
         PrepareTransaction {
+            scid,
             dcid,
             cc,
             anti_amplifier,
             flow_ctrl,
         }
+    }
+
+    pub fn scid(&self) -> ConnectionId {
+        self.scid
     }
 
     pub fn dcid(&self) -> ConnectionId {
@@ -186,9 +193,10 @@ impl<'a> Transaction<'a> {
     pub fn load_initial_space<'b>(
         &mut self,
         buf: &'b mut [u8],
+        token: Vec<u8>,
         initial_space: &InitialSpace,
     ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
-        initial_space.try_assemble(self, buf)
+        initial_space.try_assemble(self, token, self.constraints.constrain(buf))
     }
 
     pub fn load_0rtt_data<'b>(
@@ -196,7 +204,7 @@ impl<'a> Transaction<'a> {
         buf: &'b mut [u8],
         data_space: &DataSpace,
     ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
-        data_space.try_assemble_0rtt(self, buf)
+        data_space.try_assemble_0rtt(self, self.constraints.constrain(buf))
     }
 
     pub fn load_handshake_space<'b>(
@@ -204,7 +212,7 @@ impl<'a> Transaction<'a> {
         buf: &'b mut [u8],
         hs_space: &HandshakeSpace,
     ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
-        hs_space.try_assemble(self, buf)
+        hs_space.try_assemble(self, self.constraints.constrain(buf))
     }
 
     pub fn load_1rtt_data<'b>(
@@ -214,15 +222,24 @@ impl<'a> Transaction<'a> {
         data_space: &DataSpace,
     ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
         let spin = SpinBit::from(spin.load(Ordering::Relaxed));
-        data_space.try_assemble_1rtt(self, spin, buf)
+        data_space.try_assemble_1rtt(self, spin, self.constraints.constrain(buf))
     }
 
-    pub fn commit(&mut self, _packet: PacketWriter<'a>) {
-        // commit
+    pub fn commit(&mut self, epoch: Epoch, packet: &AssembledPacket<'_>, ack: Option<u64>) {
+        self.constraints.commit(packet.size(), packet.in_flight());
+        self.cc.on_pkt_sent(
+            epoch,
+            packet.pn(),
+            packet.is_ack_eliciting(),
+            packet.size(),
+            packet.in_flight(),
+            ack,
+        );
     }
 }
 
 pub struct PrepareTransaction<'a> {
+    scid: ConnectionId,
     dcid: &'a DcidCell,
     cc: &'a ArcCC,
     anti_amplifier: &'a ArcAntiAmplifier<DEFAULT_ANTI_FACTOR>,
@@ -246,10 +263,11 @@ impl<'a> Future for PrepareTransaction<'a> {
         };
 
         Poll::Ready(Some(Transaction {
+            scid: self.scid,
             borrowed_dcid,
             cc: self.cc,
             flow_limit,
-            _constraints: Constraints::new(send_quota, credit_limit),
+            constraints: Constraints::new(send_quota, credit_limit),
         }))
     }
 }

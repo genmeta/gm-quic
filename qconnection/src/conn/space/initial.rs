@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex};
 use bytes::BufMut;
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
-    cid::ConnectionId,
     frame::{AckFrame, Frame, FrameReader, ReceiveFrame},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
@@ -207,12 +206,13 @@ impl InitialSpace {
     pub fn try_assemble<'b>(
         &self,
         tx: &mut Transaction<'_>,
+        token: Vec<u8>,
         buf: &'b mut [u8],
     ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
         let keys = self.keys.get_local_keys()?;
         let sent_journal = self.journal.sent();
         let mut packet = PacketMemory::new(
-            LongHeaderBuilder::with_cid(tx.dcid(), ConnectionId::default()).initial(vec![0]),
+            LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).initial(token),
             buf,
             keys.local.packet.tag_len(),
             &sent_journal,

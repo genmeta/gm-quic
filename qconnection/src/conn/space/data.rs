@@ -393,7 +393,7 @@ impl DataSpace {
         let keys = self.zero_rtt_keys.get_local_keys()?;
         let sent_journal = self.journal.sent();
         let mut packet = PacketMemory::new(
-            LongHeaderBuilder::with_cid(tx.dcid(), ConnectionId::default()).zero_rtt(),
+            LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).zero_rtt(),
             buf,
             keys.local.packet.tag_len(),
             &sent_journal,
