@@ -6,8 +6,6 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use futures::Stream;
-
 /// AsyncDeque is a deque that can be used in async context.
 ///
 /// It is a wrapper around VecDeque, with the ability to be popped in async context.
@@ -58,7 +56,7 @@ impl<T> AsyncDeque<T> {
                     Poll::Ready(Some(frame))
                 } else if let Some(ref waker) = self.waker {
                     if !waker.will_wake(cx.waker()) {
-                        panic!("Multiple tasks are attempting to wait on the same AsyncDeque.");
+                        panic!("Multiple tasks are attempting to wait on the same AsyncDeque. This is a bug, place report it.");
                     }
                     // same waker, no need to update again
                     Poll::Pending
@@ -305,7 +303,7 @@ impl<T> Future for ArcAsyncDeque<T> {
     }
 }
 
-impl<T: Unpin> Stream for AsyncDeque<T> {
+impl<T: Unpin> futures::Stream for AsyncDeque<T> {
     type Item = T;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -316,5 +314,108 @@ impl<T: Unpin> Stream for AsyncDeque<T> {
 impl<T> Extend<T> for &ArcAsyncDeque<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         self.0.lock().unwrap().extend(iter);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::FutureExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn push_pop() {
+        let deque = ArcAsyncDeque::new();
+        assert!(deque.is_empty());
+
+        deque.push_back(1);
+        deque.push_back(2);
+        assert_eq!(deque.len(), 2);
+        assert_eq!(deque.pop().await, Some(1));
+        assert_eq!(deque.pop().await, Some(2));
+
+        let deque = ArcAsyncDeque::with_capacity(2);
+        deque.push_back(1);
+        deque.push_front(2);
+        assert_eq!(deque.len(), 2);
+        assert_eq!(deque.pop().await, Some(2));
+        assert_eq!(deque.pop().await, Some(1));
+    }
+
+    #[tokio::test]
+    async fn close() {
+        let deque = ArcAsyncDeque::new();
+        assert!(deque.is_empty());
+
+        deque.push_back(1);
+        deque.push_back(2);
+        assert_eq!(deque.len(), 2);
+
+        deque.close();
+        assert!(deque.is_empty());
+        assert_eq!(deque.pop().await, None);
+    }
+
+    #[tokio::test]
+    async fn wake() {
+        let deque = ArcAsyncDeque::new();
+        tokio::select! {
+            item = deque.pop() => {
+                assert_eq!(item, Some(1));
+            }
+            _ = async {
+                deque.push_back(1);
+                std::future::pending::<()>().await;
+            } => unreachable!()
+        }
+
+        let deque = ArcAsyncDeque::new();
+        tokio::select! {
+            item = deque.pop() => {
+                assert_eq!(item, Some(1));
+            }
+            _ = async {
+                deque.push_back(1);
+                std::future::pending::<()>().await;
+            } => unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel() {
+        let deque = ArcAsyncDeque::new();
+
+        // register Waker
+        let poll = core::future::poll_fn(|cx| Poll::Ready(deque.pop().poll_unpin(cx))).await;
+        assert_eq!(poll, Poll::Pending);
+
+        // pop directly
+        (&deque).extend([654]);
+        let poll = core::future::poll_fn(|cx| Poll::Ready(deque.pop().poll_unpin(cx))).await;
+        assert_eq!(poll, Poll::Ready(Some(654)));
+
+        // register new Waker
+        let poll = core::future::poll_fn(|cx| Poll::Ready(deque.pop().poll_unpin(cx))).await;
+        assert_eq!(poll, Poll::Pending);
+
+        // replace cancelled Waker: same task, so its ok
+        let poll = core::future::poll_fn(|cx| Poll::Ready(deque.pop().poll_unpin(cx))).await;
+        assert_eq!(poll, Poll::Pending);
+    }
+
+    #[tokio::test]
+    async fn racing() {
+        let deque: ArcAsyncDeque<()> = ArcAsyncDeque::new();
+
+        let consumer = tokio::spawn(deque.pop());
+        tokio::task::yield_now().await;
+
+        let abuse = tokio::spawn(deque.pop());
+        tokio::task::yield_now().await;
+
+        // willnot be waked up
+        _ = consumer;
+        // should panic
+        assert!(abuse.await.is_err());
     }
 }

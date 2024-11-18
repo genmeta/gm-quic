@@ -218,9 +218,9 @@ impl Algorithm for Bbr {
 
         self.delivery_rate.generate_rate_sample();
         if self.in_recovery
-            && !self
+            && self
                 .recovery_epoch_start
-                .map_or(false, |t| self.last_ack_packet_sent_time <= t)
+                .is_none_or(|t| self.last_ack_packet_sent_time > t)
         {
             // exit_recovery
             self.recovery_epoch_start = None;
