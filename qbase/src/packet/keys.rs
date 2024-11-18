@@ -170,7 +170,7 @@ impl Future for GetRemoteKeys<'_> {
                     .as_ref()
                     .is_some_and(|waker| waker.will_wake(cx.waker()))
                 {
-                    panic!("Try to get remote keys from multiple tasks!")
+                    unreachable!("Try to get remote keys from multiple tasks! This is a bug, please report it.")
                 }
                 *waker = Some(cx.waker().clone());
                 Poll::Pending
@@ -399,7 +399,7 @@ impl Future for GetRemoteOneRttKeys<'_> {
                     .as_ref()
                     .is_some_and(|waker| waker.will_wake(cx.waker()))
                 {
-                    panic!("Try to get remote keys from multiple tasks!")
+                    unreachable!("Try to get remote keys from multiple tasks! This is a bug, please report it.")
                 }
                 *waker = Some(cx.waker().clone());
                 Poll::Pending
