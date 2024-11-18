@@ -140,6 +140,7 @@ impl PacketNumber {
 
 #[cfg(test)]
 mod tests {
+    use super::{PacketNumber, WritePacketNumber};
 
     #[test]
     fn test_read_packet_number() {
@@ -177,9 +178,6 @@ mod tests {
 
     #[test]
     fn test_write_packet_number() {
-        use super::WritePacketNumber;
-        use crate::packet::PacketNumber;
-
         let mut buf = vec![];
         buf.put_packet_number(PacketNumber::encode(0, 0));
         assert_eq!(buf, [0x00]);
@@ -209,6 +207,6 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_encode_packet_number_overflow() {
-        super::PacketNumber::encode(1 << 31, 0);
+        PacketNumber::encode(1 << 31, 0);
     }
 }

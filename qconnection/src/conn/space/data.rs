@@ -17,11 +17,14 @@ use qbase::{
             decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
         },
         encrypt::{encode_short_first_byte, encrypt_packet, protect_header},
-        header::{io::WriteHeader, EncodeHeader, GetType, OneRttHeader},
+        header::{
+            io::WriteHeader, long::io::LongHeaderBuilder, EncodeHeader, GetType, OneRttHeader,
+        },
         keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys, HeaderProtectionKeys},
         number::WritePacketNumber,
         r#type::Type,
-        DataPacket, PacketNumber,
+        signal::SpinBit,
+        AssembledPacket, DataPacket, PacketNumber, PacketWriter,
     },
     token::ArcTokenRegistry,
     Epoch,
@@ -42,6 +45,7 @@ use crate::{
     path::{ArcPaths, Path, SendBuffer},
     pipe,
     router::Router,
+    tx::{PacketMemory, Transaction},
 };
 
 #[derive(Clone)]
@@ -377,6 +381,87 @@ impl DataSpace {
         });
     }
 
+    pub fn try_assemble_0rtt<'b>(
+        &self,
+        tx: &mut Transaction<'_>,
+        buf: &'b mut [u8],
+    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
+        if self.one_rtt_keys.get_local_keys().is_some() {
+            return None;
+        }
+
+        let keys = self.zero_rtt_keys.get_local_keys()?;
+        let sent_journal = self.journal.sent();
+        let mut packet = PacketMemory::new(
+            LongHeaderBuilder::with_cid(tx.dcid(), ConnectionId::default()).zero_rtt(),
+            buf,
+            keys.local.packet.tag_len(),
+            &sent_journal,
+        )?;
+
+        let mut ack = None;
+        if let Some((largest, rcvd_time)) = tx.need_ack(Epoch::Handshake) {
+            let rcvd_pkt_records = self.journal.rcvd();
+            if let Some(ack_frame) =
+                rcvd_pkt_records.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
+            {
+                packet.dump_ack_frame(ack_frame);
+                ack = Some(largest);
+            }
+        }
+
+        // TODO: 可以封装在CryptoStream中，当成一个函数
+        //      crypto_stream.try_load_data_into(&mut packet);
+        let crypto_stream_outgoing = self.crypto_stream.outgoing();
+        crypto_stream_outgoing.try_load_data_into(&mut packet);
+
+        let packet: PacketWriter<'b> = packet.try_into().ok()?;
+        Some((
+            packet.encrypt_long_packet(keys.local.header.as_ref(), keys.local.packet.as_ref()),
+            ack,
+        ))
+    }
+
+    pub fn try_assemble_1rtt<'b>(
+        &self,
+        tx: &mut Transaction<'_>,
+        spin: SpinBit,
+        buf: &'b mut [u8],
+    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
+        let (hpk, pk) = self.one_rtt_keys.get_local_keys()?;
+        let sent_journal = self.journal.sent();
+        let mut packet = PacketMemory::new(
+            OneRttHeader::new(spin, tx.dcid()),
+            buf,
+            pk.tag_len(),
+            &sent_journal,
+        )?;
+
+        let mut ack = None;
+        if let Some((largest, rcvd_time)) = tx.need_ack(Epoch::Handshake) {
+            let rcvd_pkt_records = self.journal.rcvd();
+            if let Some(ack_frame) =
+                rcvd_pkt_records.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
+            {
+                packet.dump_ack_frame(ack_frame);
+                ack = Some(largest);
+            }
+        }
+
+        // TODO: 可以封装在CryptoStream中，当成一个函数
+        //      crypto_stream.try_load_data_into(&mut packet);
+        let crypto_stream_outgoing = self.crypto_stream.outgoing();
+        crypto_stream_outgoing.try_load_data_into(&mut packet);
+
+        let packet: PacketWriter<'b> = packet.try_into().ok()?;
+        let pk_guard = pk.lock_guard();
+        let (key_phase, pk) = pk_guard.get_local();
+        Some((
+            packet.encrypt_short_packet(key_phase, hpk.as_ref(), pk.as_ref()),
+            ack,
+        ))
+    }
+
     pub fn reader(
         &self,
         challenge_sndbuf: SendBuffer<PathChallengeFrame>,
@@ -458,7 +543,7 @@ impl ClosingOneRttScope {
         let hpk = &hpk.local;
 
         let spin = Default::default();
-        let hdr = OneRttHeader { spin, dcid };
+        let hdr = OneRttHeader::new(spin, dcid);
         let (mut hdr_buf, payload_tag) = buf.split_at_mut(hdr.size());
         let payload_tag_len = payload_tag.len();
         let tag_len = pk.tag_len();

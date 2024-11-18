@@ -145,18 +145,22 @@ pub mod io {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        io::be_header,
+        long::{Handshake, Initial, Retry, VersionNegotiation, ZeroRtt},
+        Header, LongHeaderBuilder,
+    };
+    use crate::{
+        cid::ConnectionId,
+        packet::{
+            header::io::WriteHeader,
+            r#type::{long, long::Ver1, short::OneRtt, Type},
+            OneRttHeader, SpinBit,
+        },
+    };
 
     #[test]
     fn test_read_header() {
-        use super::{io::be_header, Header};
-        use crate::{
-            cid::ConnectionId,
-            packet::{
-                r#type::{long, long::Ver1, short::OneRtt, Type},
-                SpinBit,
-            },
-        };
-
         // VersionNegotiation Header
         let buf = vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02];
         let (remain, vn_long_header) =
@@ -252,8 +256,10 @@ mod tests {
         assert_eq!(remain.len(), 0);
         match one_rtt_header {
             Header::OneRtt(one_rtt) => {
-                assert_eq!(one_rtt.dcid, ConnectionId::default());
-                assert_eq!(one_rtt.spin, SpinBit::One);
+                assert_eq!(
+                    one_rtt,
+                    OneRttHeader::new(SpinBit::One, ConnectionId::default())
+                );
             }
             _ => panic!("unexpected header type"),
         }
@@ -261,15 +267,6 @@ mod tests {
 
     #[test]
     fn test_write_header() {
-        use super::{
-            long::{Handshake, Initial, Retry, VersionNegotiation, ZeroRtt},
-            LongHeaderBuilder,
-        };
-        use crate::{
-            cid::ConnectionId,
-            packet::{header::io::WriteHeader, Header, OneRttHeader, SpinBit},
-        };
-
         // VersionNegotiation Header
         let mut buf = vec![];
         let vn_long_header = Header::VN(
@@ -345,19 +342,15 @@ mod tests {
 
         // OneRtt Header with SpinBit::On
         let mut buf = vec![];
-        let one_rtt_header = Header::OneRtt(OneRttHeader {
-            spin: SpinBit::One,
-            dcid: ConnectionId::default(),
-        });
+        let one_rtt_header =
+            Header::OneRtt(OneRttHeader::new(SpinBit::One, ConnectionId::default()));
         buf.put_header(&one_rtt_header);
         assert_eq!(buf, [0x60]);
 
         // OneRtt Header with SpinBit::Off
         let mut buf = vec![];
-        let one_rtt_header = Header::OneRtt(OneRttHeader {
-            spin: SpinBit::Zero,
-            dcid: ConnectionId::default(),
-        });
+        let one_rtt_header =
+            Header::OneRtt(OneRttHeader::new(SpinBit::Zero, ConnectionId::default()));
         buf.put_header(&one_rtt_header);
         assert_eq!(buf, [0x40]);
     }
