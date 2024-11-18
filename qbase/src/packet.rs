@@ -1,8 +1,10 @@
+use std::ops::Deref;
+
 use bytes::{buf::UninitSlice, BufMut, BytesMut};
 use deref_derive::{Deref, DerefMut};
 use encrypt::{encode_long_first_byte, encode_short_first_byte, encrypt_packet, protect_header};
 use enum_dispatch::enum_dispatch;
-use getset::Getters;
+use getset::CopyGetters;
 use header::io::WriteHeader;
 
 use crate::{
@@ -266,6 +268,7 @@ impl<'b> PacketWriter<'b> {
         );
         AssembledPacket {
             buffer: self.buffer,
+            pn: actual_pn,
             size: pkt_size,
             is_ack_eliciting: self.ack_eliciting,
             in_flight: self.in_flight,
@@ -302,6 +305,7 @@ impl<'b> PacketWriter<'b> {
         );
         AssembledPacket {
             buffer: self.buffer,
+            pn: actual_pn,
             size: pkt_size,
             is_ack_eliciting: self.ack_eliciting,
             in_flight: self.in_flight,
@@ -309,16 +313,25 @@ impl<'b> PacketWriter<'b> {
     }
 }
 
-#[derive(Debug, Getters)]
+#[derive(Debug, CopyGetters)]
 pub struct AssembledPacket<'b> {
-    #[getset(get = "pub")]
     buffer: &'b mut [u8],
-    #[getset(get = "pub")]
+    #[getset(get_copy = "pub")]
+    pn: u64,
+    #[getset(get_copy = "pub")]
     size: usize,
-    #[getset(get = "pub")]
+    #[getset(get_copy = "pub")]
     is_ack_eliciting: bool,
-    #[getset(get = "pub")]
+    #[getset(get_copy = "pub")]
     in_flight: bool,
+}
+
+impl Deref for AssembledPacket<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.buffer[..self.size]
+    }
 }
 
 impl<F> MarshalFrame<F> for PacketWriter<'_>

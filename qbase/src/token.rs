@@ -56,17 +56,22 @@ impl std::ops::Deref for ResetToken {
 pub trait TokenSink: Send + Sync {
     fn sink(&self, server_name: &str, token: Vec<u8>);
 
-    fn get_token(&self, server_name: &str) -> Vec<u8>;
+    fn fetch_token(&self, server_name: &str) -> Vec<u8>;
 }
 
 pub trait TokenProvider: Send + Sync {
-    fn provide_new_token(&self, server_name: &str) -> Vec<u8>;
+    fn gen_new_token(&self, server_name: &str) -> Vec<u8>;
 
-    fn provide_retry_token(&self, server_name: &str) -> Vec<u8>;
+    fn gen_retry_token(&self, server_name: &str) -> Vec<u8>;
 
     // A token sent in a NEW_TOKEN frame or a Retry packet MUST be constructed in
     // a way that allows the server to identify how it was provided to a client
-    fn validate_token(&self, server_name: String, token: &[u8]) -> bool;
+    fn verify_token(&self, server_name: String, token: &[u8]) -> bool;
+}
+
+pub enum TokenRegistry {
+    Client((String, Arc<dyn TokenSink>)),
+    Server(Arc<dyn TokenProvider>),
 }
 
 #[derive(Clone)]
@@ -95,17 +100,12 @@ impl ArcTokenRegistry {
     }
 }
 
-impl core::ops::Deref for ArcTokenRegistry {
+impl Deref for ArcTokenRegistry {
     type Target = TokenRegistry;
 
     fn deref(&self) -> &Self::Target {
         self.0.deref()
     }
-}
-
-pub enum TokenRegistry {
-    Client((String, Arc<dyn TokenSink>)),
-    Server(Arc<dyn TokenProvider>),
 }
 
 impl ReceiveFrame<NewTokenFrame> for ArcTokenRegistry {
@@ -131,21 +131,21 @@ struct DefaultTokenRegistry;
 impl TokenSink for DefaultTokenRegistry {
     fn sink(&self, _: &str, _: Vec<u8>) {}
 
-    fn get_token(&self, _: &str) -> Vec<u8> {
-        Vec::new()
+    fn fetch_token(&self, _: &str) -> Vec<u8> {
+        Vec::with_capacity(0)
     }
 }
 
 impl TokenProvider for DefaultTokenRegistry {
-    fn provide_new_token(&self, _: &str) -> Vec<u8> {
+    fn gen_new_token(&self, _: &str) -> Vec<u8> {
         Vec::new()
     }
 
-    fn provide_retry_token(&self, _: &str) -> Vec<u8> {
+    fn gen_retry_token(&self, _: &str) -> Vec<u8> {
         Vec::new()
     }
 
-    fn validate_token(&self, _: String, _: &[u8]) -> bool {
+    fn verify_token(&self, _: String, _: &[u8]) -> bool {
         false
     }
 }

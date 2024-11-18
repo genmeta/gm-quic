@@ -109,7 +109,7 @@ impl Connection {
 
         let token = match token_registry.deref() {
             TokenRegistry::Client((server_name, client)) => {
-                Arc::new(Mutex::new(client.get_token(server_name)))
+                Arc::new(Mutex::new(client.fetch_token(server_name)))
             }
             TokenRegistry::Server(_) => Arc::new(Mutex::new(vec![])),
         };
@@ -196,7 +196,7 @@ impl Connection {
             move |initial_token: &[u8], path: ArcPath| {
                 if let TokenRegistry::Server(provider) = token_registry.deref() {
                     if let Some(server_name) = tls_session.server_name() {
-                        if provider.validate_token(server_name, initial_token) {
+                        if provider.verify_token(server_name, initial_token) {
                             path.grant_anti_amplifier();
                         }
                     }

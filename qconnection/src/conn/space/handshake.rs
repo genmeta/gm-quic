@@ -187,7 +187,7 @@ impl HandshakeSpace {
         let keys = self.keys.get_local_keys()?;
         let sent_journal = self.journal.sent();
         let mut packet = PacketMemory::new(
-            LongHeaderBuilder::with_cid(tx.dcid(), ConnectionId::default()).handshake(),
+            LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).handshake(),
             buf,
             keys.local.packet.tag_len(),
             &sent_journal,
