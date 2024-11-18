@@ -2,6 +2,7 @@ use bytes::{buf::UninitSlice, BufMut, BytesMut};
 use deref_derive::{Deref, DerefMut};
 use encrypt::{encode_long_first_byte, encode_short_first_byte, encrypt_packet, protect_header};
 use enum_dispatch::enum_dispatch;
+use getset::Getters;
 use header::io::WriteHeader;
 
 use crate::{
@@ -229,19 +230,28 @@ impl<'b> PacketWriter<'b> {
         self.in_flight
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.cursor == self.hdr_len + self.len_encoding
+    }
+
     pub fn encrypt_long_packet(
-        &mut self,
+        mut self,
         hpk: &dyn rustls::quic::HeaderProtectionKey,
         pk: &dyn rustls::quic::PacketKey,
-    ) -> usize {
+    ) -> AssembledPacket<'b> {
+        let mut payload_len = self.cursor - self.hdr_len - self.len_encoding;
+        debug_assert!(payload_len > 0);
+        if payload_len + self.tag_len < 20 {
+            let padding_len = 20 - payload_len - self.tag_len;
+            self.pad(padding_len);
+            payload_len += padding_len;
+        }
+
+        let mut len_buf = &mut self.buffer[self.hdr_len..self.hdr_len + self.len_encoding];
         let (actual_pn, encoded_pn) = self.pn;
-        encode_long_first_byte(&mut self.buffer[0], encoded_pn.size());
-
         let pkt_size = self.cursor + self.tag_len;
-        let payload_len = pkt_size - self.hdr_len - self.len_encoding;
-        let mut pn_buf = &mut self.buffer[self.hdr_len..self.hdr_len + self.len_encoding];
-        pn_buf.encode_varint(&VarInt::try_from(payload_len).unwrap(), EncodeBytes::Two);
-
+        len_buf.encode_varint(&VarInt::try_from(payload_len).unwrap(), EncodeBytes::Two);
+        encode_long_first_byte(&mut self.buffer[0], encoded_pn.size());
         encrypt_packet(
             pk,
             actual_pn,
@@ -254,19 +264,30 @@ impl<'b> PacketWriter<'b> {
             self.hdr_len,
             encoded_pn.size(),
         );
-        pkt_size
+        AssembledPacket {
+            buffer: self.buffer,
+            size: pkt_size,
+            is_ack_eliciting: self.ack_eliciting,
+            in_flight: self.in_flight,
+        }
     }
 
     pub fn encrypt_short_packet(
-        &mut self,
+        mut self,
         key_phase: KeyPhaseBit,
         hpk: &dyn rustls::quic::HeaderProtectionKey,
         pk: &dyn rustls::quic::PacketKey,
-    ) -> usize {
-        let (actual_pn, encoded_pn) = self.pn;
-        encode_short_first_byte(&mut self.buffer[0], encoded_pn.size(), key_phase);
+    ) -> AssembledPacket<'b> {
+        let payload_len = self.cursor - self.hdr_len - self.len_encoding;
+        debug_assert!(payload_len > 0);
+        if payload_len + self.tag_len < 20 {
+            let padding_len = 20 - payload_len - self.tag_len;
+            self.pad(padding_len);
+        }
 
         let pkt_size = self.cursor + self.tag_len;
+        let (actual_pn, encoded_pn) = self.pn;
+        encode_short_first_byte(&mut self.buffer[0], encoded_pn.size(), key_phase);
         encrypt_packet(
             pk,
             actual_pn,
@@ -279,8 +300,25 @@ impl<'b> PacketWriter<'b> {
             self.hdr_len,
             encoded_pn.size(),
         );
-        pkt_size
+        AssembledPacket {
+            buffer: self.buffer,
+            size: pkt_size,
+            is_ack_eliciting: self.ack_eliciting,
+            in_flight: self.in_flight,
+        }
     }
+}
+
+#[derive(Debug, Getters)]
+pub struct AssembledPacket<'b> {
+    #[getset(get = "pub")]
+    buffer: &'b mut [u8],
+    #[getset(get = "pub")]
+    size: usize,
+    #[getset(get = "pub")]
+    is_ack_eliciting: bool,
+    #[getset(get = "pub")]
+    in_flight: bool,
 }
 
 impl<F> MarshalFrame<F> for PacketWriter<'_>

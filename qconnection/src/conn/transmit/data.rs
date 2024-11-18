@@ -57,7 +57,7 @@ impl DataSpaceReader {
     ) -> Option<(u64, bool, usize, usize, bool, Option<u64>)> {
         // 0. 检查1rtt keys是否有效，没有则回退到0rtt包
         // 1. 生成包头，根据包头大小，配合constraints、剩余空间，检查是否能发送，不能的话，直接返回
-        let hdr = OneRttHeader { spin, dcid };
+        let hdr = OneRttHeader::new(spin, dcid);
         // 20字节为最小Payload长度，为了保护包头的Sample至少16字节
         if buf.len() < hdr.size() + 20 {
             return None;

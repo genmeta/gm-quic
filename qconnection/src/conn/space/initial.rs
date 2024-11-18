@@ -9,7 +9,7 @@ use qbase::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::{long::io::LongHeaderBuilder, GetScid, GetType},
         keys::ArcKeys,
-        long, DataHeader,
+        long, AssembledPacket, DataHeader, PacketWriter,
     },
     Epoch,
 };
@@ -26,7 +26,7 @@ use crate::{
     error::ConnError,
     path::{ArcPath, ArcPaths, Path},
     pipe,
-    tx::{JournalAssembly, Transaction},
+    tx::{PacketMemory, Transaction},
 };
 
 #[derive(Clone)]
@@ -202,29 +202,41 @@ impl InitialSpace {
         })
     }
 
-    pub fn try_assemble(&self, tx: &mut Transaction<'_>, buf: &mut [u8]) -> Option<usize> {
+    /// TODO: 还要padding、加密等功能，理应返回一个PacketWriter+密钥，以防后续还要padding
+    ///     或者提供一个不需外部计算padding的接口，比如先填充Initial之外的包，最后再填充Initial，提供最小长度
+    pub fn try_assemble<'b>(
+        &self,
+        tx: &mut Transaction<'_>,
+        buf: &'b mut [u8],
+    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
         let keys = self.keys.get_local_keys()?;
         let sent_journal = self.journal.sent();
-        let mut packet = JournalAssembly::new(
+        let mut packet = PacketMemory::new(
             LongHeaderBuilder::with_cid(tx.dcid(), ConnectionId::default()).initial(vec![0]),
             buf,
             keys.local.packet.tag_len(),
             &sent_journal,
         )?;
 
-        if let Some(ack) = tx.need_ack(Epoch::Initial) {
+        let mut ack = None;
+        if let Some((largest, rcvd_time)) = tx.need_ack(Epoch::Initial) {
             let rcvd_pkt_records = self.journal.rcvd();
             if let Some(ack_frame) =
-                rcvd_pkt_records.gen_ack_frame_util(ack, packet.remaining_mut())
+                rcvd_pkt_records.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
             {
                 packet.dump_ack_frame(ack_frame);
+                ack = Some(largest);
             }
         }
 
         let crypto_stream_outgoing = self.crypto_stream.outgoing();
-        while crypto_stream_outgoing.try_load_data(packet.remaining_mut(), &mut packet) {}
+        crypto_stream_outgoing.try_load_data_into(&mut packet);
 
-        None
+        let packet: PacketWriter<'b> = packet.try_into().ok()?;
+        Some((
+            packet.encrypt_long_packet(keys.local.header.as_ref(), keys.local.packet.as_ref()),
+            ack,
+        ))
     }
 
     pub fn reader(&self, token: Arc<Mutex<Vec<u8>>>) -> InitialSpaceReader {

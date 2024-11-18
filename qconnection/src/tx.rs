@@ -1,6 +1,10 @@
 use std::{
     future::Future,
     pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     task::{ready, Context, Poll},
     time::Instant,
 };
@@ -15,7 +19,8 @@ use qbase::{
     },
     packet::{
         header::{io::WriteHeader, EncodeHeader},
-        MarshalDataFrame, MarshalFrame, PacketWriter,
+        signal::SpinBit,
+        AssembledPacket, MarshalDataFrame, MarshalFrame, PacketWriter,
     },
     util::{DescribeData, WriteData},
     Epoch,
@@ -27,25 +32,25 @@ use qrecovery::{
 };
 
 use crate::{
-    conn::space::InitialSpace,
+    conn::space::{DataSpace, HandshakeSpace, InitialSpace},
     path::{ArcAntiAmplifier, Constraints, DEFAULT_ANTI_FACTOR},
 };
 
 /// 发送一个数据包，
 #[derive(Deref, DerefMut)]
-pub struct JournalAssembly<'b, F> {
+pub struct PacketMemory<'b, 's, F> {
     #[deref]
     writer: PacketWriter<'b>,
     // 不同空间的send guard类型不一样
-    guard: SendGuard<'b, F>,
+    guard: SendGuard<'s, F>,
 }
 
-impl<'b, F> JournalAssembly<'b, F> {
+impl<'b, 's, F> PacketMemory<'b, 's, F> {
     pub fn new<H>(
         header: H,
         buf: &'b mut [u8],
         tag_len: usize,
-        journal: &'b ArcSentJournal<F>,
+        journal: &'s ArcSentJournal<F>,
     ) -> Option<Self>
     where
         H: EncodeHeader,
@@ -58,7 +63,7 @@ impl<'b, F> JournalAssembly<'b, F> {
     }
 }
 
-impl<F> JournalAssembly<'_, F> {
+impl<F> PacketMemory<'_, '_, F> {
     pub fn dump_ack_frame(&mut self, frame: AckFrame) {
         self.writer.dump_frame(frame);
         self.guard.record_trivial();
@@ -71,7 +76,7 @@ impl<F> JournalAssembly<'_, F> {
 }
 
 /// 对IH空间有效
-impl<'b, D> MarshalDataFrame<CryptoFrame, D> for JournalAssembly<'b, CryptoFrame>
+impl<'b, D> MarshalDataFrame<CryptoFrame, D> for PacketMemory<'b, '_, CryptoFrame>
 where
     D: DescribeData,
     PacketWriter<'b>: WriteData<D> + WriteDataFrame<CryptoFrame, D>,
@@ -86,7 +91,7 @@ where
     }
 }
 
-impl<'b, F> MarshalFrame<F> for JournalAssembly<'b, GuaranteedFrame>
+impl<'b, F> MarshalFrame<F> for PacketMemory<'b, '_, GuaranteedFrame>
 where
     F: BeFrame + Into<ReliableFrame>,
     PacketWriter<'b>: WriteFrame<F>,
@@ -100,7 +105,7 @@ where
     }
 }
 
-impl<'b, D> MarshalDataFrame<CryptoFrame, D> for JournalAssembly<'b, GuaranteedFrame>
+impl<'b, D> MarshalDataFrame<CryptoFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
 where
     D: DescribeData,
     PacketWriter<'b>: WriteData<D> + WriteDataFrame<CryptoFrame, D>,
@@ -115,7 +120,7 @@ where
     }
 }
 
-impl<'b, D> MarshalDataFrame<StreamFrame, D> for JournalAssembly<'b, GuaranteedFrame>
+impl<'b, D> MarshalDataFrame<StreamFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
 where
     D: DescribeData,
     PacketWriter<'b>: WriteData<D> + WriteDataFrame<StreamFrame, D>,
@@ -127,6 +132,18 @@ where
                 self.guard.record_frame(GuaranteedFrame::Stream(frame));
                 None
             })
+    }
+}
+
+impl<'b, F> TryFrom<PacketMemory<'b, '_, F>> for PacketWriter<'b> {
+    type Error = ();
+
+    fn try_from(packet: PacketMemory<'b, '_, F>) -> Result<Self, Self::Error> {
+        if packet.writer.is_empty() {
+            Err(())
+        } else {
+            Ok(packet.writer)
+        }
     }
 }
 
@@ -166,27 +183,39 @@ impl<'a> Transaction<'a> {
         self.flow_limit.available()
     }
 
-    pub fn load_initial_space(&mut self, buf: &mut [u8], initial_space: &InitialSpace) -> usize {
-        initial_space.try_assemble(self, buf);
-        0
+    pub fn load_initial_space<'b>(
+        &mut self,
+        buf: &'b mut [u8],
+        initial_space: &InitialSpace,
+    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
+        initial_space.try_assemble(self, buf)
     }
 
-    /*
-    pub fn load_0rtt_data_space(&mut self, buf: &mut [u8], data_space: &DataSpace) -> usize {
-        data_space.try_collect_0rtt(&mut self, buf);
-        0
+    pub fn load_0rtt_data<'b>(
+        &mut self,
+        buf: &'b mut [u8],
+        data_space: &DataSpace,
+    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
+        data_space.try_assemble_0rtt(self, buf)
     }
 
-    pub fn load_handshake_space(&mut self, buf: &mut [u8], hs_space: &HandshakeSpace) -> usize {
-        hs_space.try_collect(&mut self, buf);
-        0
+    pub fn load_handshake_space<'b>(
+        &mut self,
+        buf: &'b mut [u8],
+        hs_space: &HandshakeSpace,
+    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
+        hs_space.try_assemble(self, buf)
     }
 
-    pub fn load_1rtt_data_space(&mut self, buf: &mut [u8], data_space: &DataSpace) -> usize {
-        data_space.try_collect_1rtt(&mut self, buf);
-        0
+    pub fn load_1rtt_data<'b>(
+        &mut self,
+        buf: &'b mut [u8],
+        spin: &Arc<AtomicBool>,
+        data_space: &DataSpace,
+    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
+        let spin = SpinBit::from(spin.load(Ordering::Relaxed));
+        data_space.try_assemble_1rtt(self, spin, buf)
     }
-    */
 
     pub fn commit(&mut self, _packet: PacketWriter<'a>) {
         // commit

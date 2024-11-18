@@ -19,11 +19,18 @@ use crate::{cid::ConnectionId, packet::SpinBit};
 ///
 /// See [1-RTT Packet](https://www.rfc-editor.org/rfc/rfc9000.html#name-1-rtt-packet)
 /// in [RFC9000](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OneRttHeader {
     // For simplicity, the spin bit is also part of the 1RTT header.
-    pub spin: SpinBit,
-    pub dcid: ConnectionId,
+    spin: SpinBit,
+    dcid: ConnectionId,
+}
+
+impl OneRttHeader {
+    /// Create a new 1RTT header.
+    pub fn new(spin: SpinBit, dcid: ConnectionId) -> Self {
+        Self { spin, dcid }
+    }
 }
 
 impl EncodeHeader for OneRttHeader {

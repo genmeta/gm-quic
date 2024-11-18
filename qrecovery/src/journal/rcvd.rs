@@ -95,7 +95,8 @@ impl RcvdJournal {
 
     fn gen_ack_frame_util(
         &self,
-        (largest, recv_time): (u64, Instant),
+        largest: u64,
+        rcvd_time: Instant,
         mut capacity: usize,
     ) -> Option<AckFrame> {
         let mut iter = self
@@ -114,7 +115,7 @@ impl RcvdJournal {
         );
 
         let largest = VarInt::from_u64(largest).unwrap();
-        let delay = VarInt::from_u64(recv_time.elapsed().as_micros() as u64).unwrap();
+        let delay = VarInt::from_u64(rcvd_time.elapsed().as_micros() as u64).unwrap();
         // Minimum length with at least ACK frame type, largest, delay, range count, first_range (at least 1 byte for 0)
         let min_len = 1 + largest.encoding_size() + delay.encoding_size() + 1 + 1;
         if capacity < min_len {
@@ -178,7 +179,7 @@ impl RcvdJournal {
     ) -> Option<usize> {
         // TODO: 未来替换成，不用申请Vec先生成AckFrame，从largest往后开始成对生成
         let buf_len = buf.len();
-        let ack_frame = self.gen_ack_frame_util((largest, recv_time), buf_len)?;
+        let ack_frame = self.gen_ack_frame_util(largest, recv_time, buf_len)?;
         buf.put_frame(&ack_frame);
         Some(buf_len - buf.len())
     }
@@ -243,8 +244,16 @@ impl ArcRcvdJournal {
         self.inner.write().unwrap().on_rcvd_pn(pn);
     }
 
-    pub fn gen_ack_frame_util(&self, ack: (u64, Instant), capacity: usize) -> Option<AckFrame> {
-        self.inner.read().unwrap().gen_ack_frame_util(ack, capacity)
+    pub fn gen_ack_frame_util(
+        &self,
+        largest: u64,
+        rcvd_time: Instant,
+        capacity: usize,
+    ) -> Option<AckFrame> {
+        self.inner
+            .read()
+            .unwrap()
+            .gen_ack_frame_util(largest, rcvd_time, capacity)
     }
 
     /// Generate an ack frame which ack the received frames until `largest`.
