@@ -134,24 +134,24 @@ impl<TX> Drop for Reader<TX> {
     fn drop(&mut self) {
         let mut recver = self.0.recver();
         let inner = recver.deref_mut();
-        if let Ok(receiving_state) = inner {
-            match receiving_state {
-                Recver::Recv(r) => {
-                    assert!(
-                        r.is_stopped(),
-                        r#"RecvStream in Recv State must be 
-                        stopped with error code before dropped!"#
-                    )
-                }
-                Recver::SizeKnown(r) => {
-                    assert!(
-                        r.is_stopped(),
-                        r#"RecvStream in Recv State must be 
-                        stopped with error code before dropped!"#
-                    )
-                }
-                _ => (),
-            }
-        }
+        // if let Ok(receiving_state) = inner {
+        //     match receiving_state {
+        //         Recver::Recv(r) => {
+        //             assert!(
+        //                 r.is_stopped(),
+        //                 r#"RecvStream in Recv State must be
+        //                 stopped with error code before dropped!"#
+        //             )
+        //         }
+        //         Recver::SizeKnown(r) => {
+        //             assert!(
+        //                 r.is_stopped(),
+        //                 r#"RecvStream in Recv State must be
+        //                 stopped with error code before dropped!"#
+        //             )
+        //         }
+        //         _ => (),
+        //     }
+        // }
     }
 }

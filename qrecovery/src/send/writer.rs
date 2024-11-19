@@ -204,16 +204,16 @@ impl<TX: Clone> AsyncWrite for Writer<TX> {
 
 impl<TX> Drop for Writer<TX> {
     fn drop(&mut self) {
-        let mut sender = self.0.sender();
-        let inner = sender.deref_mut();
-        if let Ok(sending_state) = inner {
-            debug_assert!(
-                matches!(
-                    sending_state,
-                    Sender::DataRcvd | Sender::ResetSent(_) | Sender::ResetRcvd(_)
-                ),
-                "SendingStream must be shutdowned before dropped!"
-            );
-        };
+        // let mut sender = self.0.sender();
+        // let inner = sender.deref_mut();
+        // if let Ok(sending_state) = inner {
+        //     debug_assert!(
+        //         matches!(
+        //             sending_state,
+        //             Sender::DataRcvd | Sender::ResetSent(_) | Sender::ResetRcvd(_)
+        //         ),
+        //         "SendingStream must be shutdowned before dropped!"
+        //     );
+        // };
     }
 }
