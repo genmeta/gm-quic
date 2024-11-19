@@ -4,7 +4,6 @@ use dashmap::DashMap;
 use deref_derive::{Deref, DerefMut};
 use qbase::{
     cid::{ArcCidCell, ConnectionId},
-    flow::FlowController,
     frame::{PathChallengeFrame, PathResponseFrame},
     Epoch,
 };
@@ -26,7 +25,10 @@ pub use pathway::{Pathway, RelayAddr};
 pub use read::ReadIntoDatagrams;
 pub use util::{Constraints, RecvBuffer, SendBuffer};
 
-use crate::{conn::transmit::*, usc::ArcUsc};
+use crate::{
+    conn::{transmit::*, FlowController},
+    usc::ArcUsc,
+};
 
 pub type ArcPath = Arc<Path>;
 pub type ArcPaths = Arc<Paths>;
@@ -174,7 +176,7 @@ impl Path {
             cc: self.cc.clone(),
             anti_amplifier: self.anti_amplifier.clone(),
             spin: self.spin.clone(),
-            send_flow_ctrl: flow_ctrl.sender(),
+            flow_ctrl: flow_ctrl.clone(),
             initial_space_reader: space_readers.0,
             handshake_space_reader: space_readers.1,
             data_space_reader: space_readers.2,
