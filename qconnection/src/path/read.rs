@@ -194,7 +194,7 @@ impl ReadIntoDatagrams {
         // 作用于新数据，Stream帧中的新数据
         // 当流量限制为0的时候，仍然可以发送Stream中的旧数据，以及其他帧
         // WARN: 流量控制提供指引到最终反馈时，不可解锁，否则其他发送任务会共享流量限制，导致流量限制失效
-        let Ok(send_flow_credit) = self.flow_ctrl.send_limit() else {
+        let Ok(mut send_flow_credit) = self.flow_ctrl.send_limit() else {
             // 返回None，表示结束
             return Poll::Ready(None);
         };

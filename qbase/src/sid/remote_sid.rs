@@ -53,11 +53,11 @@ impl Iterator for NeedCreate {
 /// Remote stream IDs management.
 #[derive(Debug)]
 struct RemoteStreamIds<MAX> {
-    role: Role,                            // The role of the peer
-    max: [u64; 2],                         // The maximum stream ID that limit peer to create
-    unallocated: [StreamId; 2],            // The stream ID that peer has not used
-    strategy: Box<dyn ControlConcurrency>, // The strategy to control the concurrency of streams
-    max_tx: MAX,                           // The channel to send the MAX_STREAMS frame to peer
+    role: Role,                        // The role of the peer
+    max: [u64; 2],                     // The maximum stream ID that limit peer to create
+    unallocated: [StreamId; 2],        // The stream ID that peer has not used
+    ctrl: Box<dyn ControlConcurrency>, // The strategy to control the concurrency of streams
+    max_tx: MAX,                       // The channel to send the MAX_STREAMS frame to peer
 }
 
 impl<MAX> RemoteStreamIds<MAX>
@@ -71,7 +71,7 @@ where
         max_bi: u64,
         max_uni: u64,
         max_tx: MAX,
-        strategy: Box<dyn ControlConcurrency>,
+        ctrl: Box<dyn ControlConcurrency>,
     ) -> Self {
         Self {
             role,
@@ -80,7 +80,7 @@ where
                 StreamId::new(role, Dir::Bi, 0),
                 StreamId::new(role, Dir::Uni, 0),
             ],
-            strategy,
+            ctrl,
             max_tx,
         }
     }
@@ -103,7 +103,7 @@ where
             let start = *cur;
             *cur = unsafe { sid.next_unchecked() };
             log::debug!("unallocated: {:?}", self.unallocated[idx]);
-            if let Some(max_streams) = self.strategy.on_accept_streams(sid.dir(), sid.id()) {
+            if let Some(max_streams) = self.ctrl.on_accept_streams(sid.dir(), sid.id()) {
                 self.max[idx] = max_streams;
                 self.max_tx.send_frame([MaxStreamsFrame::with(
                     sid.dir(),
@@ -120,7 +120,7 @@ where
             return;
         }
 
-        if let Some(max_streams) = self.strategy.on_end_of_stream(sid.dir(), sid.id()) {
+        if let Some(max_streams) = self.ctrl.on_end_of_stream(sid.dir(), sid.id()) {
             self.max[sid.dir() as usize] = max_streams;
             self.max_tx.send_frame([MaxStreamsFrame::with(
                 sid.dir(),
@@ -134,7 +134,7 @@ where
             StreamsBlockedFrame::Bi(max) => (Dir::Bi, (*max).into_inner()),
             StreamsBlockedFrame::Uni(max) => (Dir::Uni, (*max).into_inner()),
         };
-        if let Some(max_streams) = self.strategy.on_streams_blocked(dir, max_streams) {
+        if let Some(max_streams) = self.ctrl.on_streams_blocked(dir, max_streams) {
             self.max[dir as usize] = max_streams;
             self.max_tx.send_frame([MaxStreamsFrame::with(
                 dir,
@@ -181,10 +181,10 @@ where
         max_bi: u64,
         max_uni: u64,
         max_tx: MAX,
-        strategy: Box<dyn ControlConcurrency>,
+        ctrl: Box<dyn ControlConcurrency>,
     ) -> Self {
         Self(Arc::new(Mutex::new(RemoteStreamIds::new(
-            role, max_bi, max_uni, max_tx, strategy,
+            role, max_bi, max_uni, max_tx, ctrl,
         ))))
     }
 

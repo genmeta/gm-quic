@@ -9,6 +9,7 @@ use bytes::Bytes;
 use qbase::{
     error::Error,
     frame::{io::WriteDataFrame, BeFrame, DatagramFrame},
+    packet::PacketWriter,
     varint::VarInt,
 };
 
@@ -133,6 +134,14 @@ impl UnreliableOutgoing {
                 Some((frame_without_len, written))
             }
         }
+    }
+
+    pub fn try_load_data_into(&self, _packet: &mut PacketWriter<'_>) {
+        let mut guard = self.0.lock().unwrap();
+        let Ok(_writer) = guard.as_mut() else {
+            return;
+        };
+        todo!()
     }
 
     /// When a connection error occurs, set the internal state to an error state.

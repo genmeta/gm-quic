@@ -14,7 +14,8 @@ use qbase::{
     cid::{ArcCidCell, BorrowedCid, ConnectionId},
     frame::{
         io::{WriteDataFrame, WriteFrame},
-        AckFrame, BeFrame, CryptoFrame, PingFrame, ReliableFrame, StreamFrame,
+        AckFrame, BeFrame, CryptoFrame, PathChallengeFrame, PathResponseFrame, PingFrame,
+        ReliableFrame, StreamFrame,
     },
     packet::{
         header::{io::WriteHeader, EncodeHeader},
@@ -35,7 +36,7 @@ use crate::{
         space::{DataSpace, HandshakeSpace, InitialSpace},
         Credit, FlowController,
     },
-    path::{ArcAntiAmplifier, Constraints, DEFAULT_ANTI_FACTOR},
+    path::{ArcAntiAmplifier, Constraints, SendBuffer, DEFAULT_ANTI_FACTOR},
 };
 
 /// 发送一个数据包，
@@ -204,9 +205,10 @@ impl<'a> Transaction<'a> {
     pub fn load_0rtt_data<'b>(
         &mut self,
         buf: &'b mut [u8],
+        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         data_space: &DataSpace,
-    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
-        data_space.try_assemble_0rtt(self, self.constraints.constrain(buf))
+    ) -> Option<(AssembledPacket<'b>, usize)> {
+        data_space.try_assemble_0rtt(self, path_challenge_frames, self.constraints.constrain(buf))
     }
 
     pub fn load_handshake_space<'b>(
@@ -221,14 +223,29 @@ impl<'a> Transaction<'a> {
         &mut self,
         buf: &'b mut [u8],
         spin: &Arc<AtomicBool>,
+        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
+        path_response_frames: &SendBuffer<PathResponseFrame>,
         data_space: &DataSpace,
-    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
+    ) -> Option<(AssembledPacket<'b>, Option<u64>, usize)> {
         let spin = SpinBit::from(spin.load(Ordering::Relaxed));
-        data_space.try_assemble_1rtt(self, spin, self.constraints.constrain(buf))
+        data_space.try_assemble_1rtt(
+            self,
+            spin,
+            path_challenge_frames,
+            path_response_frames,
+            self.constraints.constrain(buf),
+        )
     }
 
-    pub fn commit(&mut self, epoch: Epoch, packet: &AssembledPacket<'_>, ack: Option<u64>) {
+    pub fn commit(
+        &mut self,
+        epoch: Epoch,
+        packet: &AssembledPacket<'_>,
+        fresh_data: usize,
+        ack: Option<u64>,
+    ) {
         self.constraints.commit(packet.size(), packet.in_flight());
+        self.flow_limit.post_sent(fresh_data);
         self.cc.on_pkt_sent(
             epoch,
             packet.pn(),

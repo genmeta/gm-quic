@@ -190,7 +190,7 @@ where
     TX: SendFrame<DataBlockedFrame>,
 {
     /// Updates the amount of new data sent.
-    pub fn post_sent(mut self, amount: usize) {
+    pub fn post_sent(&mut self, amount: usize) {
         match self.0.deref_mut() {
             Ok(inner) => {
                 debug_assert!(inner.sent_data + amount as u64 <= inner.max_data);

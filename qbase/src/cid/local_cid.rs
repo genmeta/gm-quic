@@ -56,6 +56,10 @@ where
         }
     }
 
+    fn initial_scid(&self) -> Option<ConnectionId> {
+        self.cid_deque.get(0)?.map(|(cid, _)| cid)
+    }
+
     /// Set the maximum number of active connection IDs.
     ///
     /// The value of the active_connection_id_limit parameter MUST be at least 2.
@@ -157,6 +161,47 @@ where
     pub fn new(scid: ConnectionId, issued_cids: ISSUED) -> Self {
         let raw_local_cids = LocalCids::new(scid, issued_cids);
         Self(Arc::new(Mutex::new(raw_local_cids)))
+    }
+
+    /// Get the initial source connection ID.
+    ///
+    /// 0-RTT packets in the first flight use the same Destination Connection ID
+    /// and Source Connection ID values as the client's first Initial packet.
+    /// see [Section 7.2.6](https://datatracker.ietf.org/doc/html/rfc9000#section-7.2-6)
+    /// of [RFC9000](https://datatracker.ietf.org/doc/html/rfc9000).
+    ///
+    /// Once a client has received a valid Initial packet from the server,
+    /// it MUST discard any subsequent packet it receives on that connection
+    /// with a different Source Connection ID,
+    /// see [Section 7.2.7](https://datatracker.ietf.org/doc/html/rfc9000#section-7.2-7)
+    /// of [RFC9000](https://datatracker.ietf.org/doc/html/rfc9000).
+    ///
+    /// Any further changes to the Destination Connection ID are only permitted
+    /// if the values are taken from NEW_CONNECTION_ID frames;
+    /// if subsequent Initial packets include a different Source Connection ID,
+    /// they MUST be discarded,
+    /// see [Section 7.2.8](https://datatracker.ietf.org/doc/html/rfc9000#section-7.2-8)
+    /// of [RFC9000](https://datatracker.ietf.org/doc/html/rfc9000) for more details.
+    ///
+    /// It means that the initial source connection ID is the only one that can be used
+    /// to send the Initial, 0Rtt and handshake packets.
+    /// Changing the scid is like issuing a new connection ID to the other party,
+    /// without specifying a sequence number or Stateless Reset Token.
+    /// Changing the scid during the Handshake phase is meaningless and harmful.
+    ///
+    /// For the server, even though the server provides the preferred address
+    /// as the first connection ID, and even though the server can use this
+    /// connection ID as the scid in the Handshake packet, it is not necessary.
+    /// The client does not eliminate the zero connection ID.
+    /// When the client actually eliminates the zero connection ID,
+    /// it means that 1RTT packets have already started to be transmitted,
+    /// and all subsequent transmissions should be through 1RTT packets.
+    ///
+    /// Return None if the initial source connection ID has been retired,
+    /// which indicates that the connection has been established,
+    /// and only the short header packet should be used.
+    pub fn initial_scid(&self) -> Option<ConnectionId> {
+        self.0.lock().unwrap().initial_scid()
     }
 
     /// Get all active connection IDs.

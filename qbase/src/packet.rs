@@ -82,7 +82,7 @@ pub enum DataHeader {
 /// |X|1|X X 0 0|0 0| ...hdr | len(0..16) | pn(8..32) | body...   |  tag  |
 /// +---+-------+-+-+--------+------------+-----+-----+---......--+-------+
 ///               |                             |
-///               +---> packet number length    +---> actual encoded packet number
+///               +---> encoded pn length       +---> encoded packet number
 /// ```
 #[derive(Debug, Clone, Deref, DerefMut)]
 pub struct DataPacket {
@@ -233,7 +233,7 @@ impl<'b> PacketWriter<'b> {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.cursor == self.hdr_len + self.len_encoding
+        self.cursor == self.hdr_len + self.len_encoding + self.pn.1.size()
     }
 
     pub fn encrypt_long_packet(

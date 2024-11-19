@@ -283,17 +283,12 @@ where
         max_bi_streams: u64,
         max_uni_streams: u64,
         sid_frames_tx: T,
-        strategy: Box<dyn ControlConcurrency>,
+        ctrl: Box<dyn ControlConcurrency>,
     ) -> Self {
         // 缺省为0
         let local = ArcLocalStreamIds::new(role, 0, 0, sid_frames_tx.clone());
-        let remote = ArcRemoteStreamIds::new(
-            !role,
-            max_bi_streams,
-            max_uni_streams,
-            sid_frames_tx,
-            strategy,
-        );
+        let remote =
+            ArcRemoteStreamIds::new(!role, max_bi_streams, max_uni_streams, sid_frames_tx, ctrl);
         Self { local, remote }
     }
 }

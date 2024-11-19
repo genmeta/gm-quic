@@ -83,10 +83,10 @@ where
     pub fn new(
         role: Role,
         local_params: &Parameters,
-        strategy: Box<dyn ControlConcurrency>,
+        ctrl: Box<dyn ControlConcurrency>,
         ctrl_frames: TX,
     ) -> Self {
-        let raw = raw::DataStreams::new(role, local_params, strategy, ctrl_frames);
+        let raw = raw::DataStreams::new(role, local_params, ctrl, ctrl_frames);
 
         Self(Arc::new(raw))
     }

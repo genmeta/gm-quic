@@ -94,13 +94,13 @@ impl<TX> ArcOutputGuard<'_, TX> {
         };
     }
 
-    pub(super) fn on_conn_error(&mut self, err: &QuicError) {
+    pub(super) fn on_conn_error(&mut self, error: &QuicError) {
         match self.0.as_ref() {
-            Ok(set) => set.values().for_each(|(o, _)| o.on_conn_error(err)),
+            Ok(set) => set.values().for_each(|(o, _)| o.on_conn_error(error)),
             // 已经遇到过conn error了，不需要再次处理。然而guard()时就已经返回了Err，不会再走到这里来
             Err(e) => unreachable!("output is invalid: {e}"),
         };
-        *self.0 = Err(err.clone());
+        *self.0 = Err(error.clone());
     }
 }
 
@@ -149,11 +149,11 @@ impl<TX> ArcInputGuard<'_, TX> {
         };
     }
 
-    pub(super) fn on_conn_error(&mut self, err: &QuicError) {
+    pub(super) fn on_conn_error(&mut self, error: &QuicError) {
         match self.inner.as_ref() {
-            Ok(set) => set.values().for_each(|(o, _)| o.on_conn_error(err)),
+            Ok(set) => set.values().for_each(|(o, _)| o.on_conn_error(error)),
             Err(e) => unreachable!("output is invalid: {e}"),
         };
-        *self.inner = Err(err.clone());
+        *self.inner = Err(error.clone());
     }
 }
