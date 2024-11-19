@@ -8,7 +8,6 @@ use futures::channel::mpsc;
 use qbase::{
     cid::ConnectionId,
     error::Error,
-    flow::FlowController,
     frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame},
     packet::keys::ArcKeys,
     param::Parameters,
@@ -29,7 +28,7 @@ use super::{
         handshake::{HandshakeSpace, HandshakeTracker},
         initial::{InitialSpace, InitialTracker},
     },
-    ArcLocalCids, ArcRemoteCids, CidRegistry, DataStreams, Handshake, RcvdPackets,
+    ArcLocalCids, ArcRemoteCids, CidRegistry, DataStreams, FlowController, Handshake, RcvdPackets,
 };
 use crate::{
     error::ConnError,
@@ -101,7 +100,7 @@ impl Connection {
         );
         let cid_registry = CidRegistry::new(local_cids, remote_cids);
         let handshake = Handshake::new(role, reliable_frames.clone());
-        let flow_ctrl = FlowController::with_parameter(65535, 65535);
+        let flow_ctrl = FlowController::new(65535, 65535, reliable_frames.clone());
         let conn_error = ConnError::default();
 
         let streams = DataStreams::new(role, &local_params, streams_ctrl, reliable_frames.clone());
@@ -257,7 +256,6 @@ impl Connection {
         let (join_0rtt, join_1rtt) = data.build(
             &pathes,
             &handshake,
-            &reliable_frames,
             &streams,
             &datagrams,
             &cid_registry,

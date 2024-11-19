@@ -12,7 +12,6 @@ use std::{
 use deref_derive::{Deref, DerefMut};
 use qbase::{
     cid::{ArcCidCell, BorrowedCid, ConnectionId},
-    flow::{Credit, FlowController},
     frame::{
         io::{WriteDataFrame, WriteFrame},
         AckFrame, BeFrame, CryptoFrame, PingFrame, ReliableFrame, StreamFrame,
@@ -32,7 +31,10 @@ use qrecovery::{
 };
 
 use crate::{
-    conn::space::{DataSpace, HandshakeSpace, InitialSpace},
+    conn::{
+        space::{DataSpace, HandshakeSpace, InitialSpace},
+        Credit, FlowController,
+    },
     path::{ArcAntiAmplifier, Constraints, DEFAULT_ANTI_FACTOR},
 };
 
@@ -254,8 +256,7 @@ impl<'a> Future for PrepareTransaction<'a> {
         let Some(credit_limit) = ready!(self.anti_amplifier.poll_balance(cx)) else {
             return Poll::Ready(None);
         };
-        // TODO: self.flow_ctrl.send_limit() 这样更易读一些
-        let Ok(flow_limit) = self.flow_ctrl.sender_ref().credit() else {
+        let Ok(flow_limit) = self.flow_ctrl.send_limit() else {
             return Poll::Ready(None);
         };
         let Some(borrowed_dcid) = ready!(self.dcid.poll_borrow_cid(cx)) else {

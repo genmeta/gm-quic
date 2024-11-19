@@ -5,7 +5,6 @@ use futures::{channel::mpsc, StreamExt};
 use qbase::{
     cid::ConnectionId,
     error::{Error as QuicError, ErrorKind},
-    flow,
     frame::{
         io::WriteFrame, AckFrame, BeFrame, ConnectionCloseFrame, Frame, FrameReader,
         PathChallengeFrame, PathResponseFrame, ReceiveFrame, ReliableFrame, SendFrame,
@@ -40,7 +39,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::any;
 use crate::{
-    conn::{transmit::DataSpaceReader, CidRegistry, DataStreams, RcvdPackets},
+    conn::{transmit::DataSpaceReader, CidRegistry, DataStreams, FlowController, RcvdPackets},
     error::ConnError,
     path::{ArcPaths, Path, SendBuffer},
     pipe,
@@ -73,11 +72,10 @@ impl DataSpace {
         &self,
         pathes: &ArcPaths,
         handshake: &Handshake<ArcReliableFrameDeque>,
-        reliable_frames: &ArcReliableFrameDeque,
         streams: &DataStreams,
         datagrams: &DatagramFlow,
         cid_registry: &CidRegistry,
-        flow_ctrl: &flow::FlowController,
+        flow_ctrl: &FlowController,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
         rcvd_0rtt_packets: RcvdPackets,
@@ -164,7 +162,6 @@ impl DataSpace {
         pipe!(rcvd_new_token_frames |> recv_new_token,recv_frame);
 
         self.handle_stream_frame_with_flow_ctrl(
-            reliable_frames,
             streams,
             flow_ctrl,
             conn_error.clone(),
@@ -329,34 +326,11 @@ impl DataSpace {
 
     pub fn handle_stream_frame_with_flow_ctrl(
         &self,
-        reliable_frames: &ArcReliableFrameDeque,
         streams: &DataStreams,
-        flow_ctrl: &flow::FlowController,
+        flow_ctrl: &FlowController,
         conn_error: ConnError,
         mut rcvd_stream_frames: mpsc::UnboundedReceiver<(StreamFrame, Bytes)>,
     ) {
-        // Sender Would Block
-        tokio::spawn({
-            let flow_ctrl = flow_ctrl.clone();
-            let reliable_frames = reliable_frames.clone();
-            async move {
-                while let Ok(frame) = flow_ctrl.sender().would_block().await {
-                    reliable_frames.send_frame([frame]);
-                }
-            }
-        });
-
-        //  Recver Increasing Flow Control Limits
-        tokio::spawn({
-            let flow_ctrl = flow_ctrl.clone();
-            let reliable_frames = reliable_frames.clone();
-            async move {
-                while let Some(frame) = flow_ctrl.recver().incr_limit().await {
-                    reliable_frames.send_frame([frame]);
-                }
-            }
-        });
-
         // Handling Stream Frames
         tokio::spawn({
             let streams = streams.clone();
@@ -366,7 +340,7 @@ impl DataSpace {
                 while let Some(data_frame) = rcvd_stream_frames.next().await {
                     match streams.recv_data(&data_frame) {
                         Ok(new_data_size) => {
-                            if let Err(e) = flow_ctrl.recver().on_new_rcvd(new_data_size) {
+                            if let Err(e) = flow_ctrl.on_new_rcvd(new_data_size) {
                                 conn_error.on_error(QuicError::new(
                                     ErrorKind::FlowControl,
                                     data_frame.0.frame_type(),
