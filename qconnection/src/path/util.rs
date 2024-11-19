@@ -9,6 +9,7 @@ use bytes::BufMut;
 use futures::StreamExt;
 use qbase::{
     frame::{io::WriteFrame, BeFrame},
+    packet::{MarshalFrame, PacketWriter},
     util::ArcAsyncDeque,
 };
 
@@ -31,10 +32,10 @@ impl<T> SendBuffer<T> {
     }
 }
 
-impl<T> SendBuffer<T>
+impl<F> SendBuffer<F>
 where
-    T: BeFrame,
-    for<'a> &'a mut [u8]: WriteFrame<T>,
+    F: BeFrame,
+    for<'a> &'a mut [u8]: WriteFrame<F>,
 {
     /// Try read the frame to be sent from the buffer, and write it to the given `buf`.
     ///
@@ -50,6 +51,18 @@ where
             }
         }
         0
+    }
+
+    pub fn try_load_frames_into(&self, packet: &mut PacketWriter<'_>)
+    where
+        for<'b> PacketWriter<'b>: MarshalFrame<F>,
+    {
+        let mut guard = self.0.lock().unwrap();
+        if let Some(frame) = guard.deref() {
+            if packet.remaining_mut() >= frame.encoding_size() {
+                packet.dump_frame(guard.take().unwrap());
+            }
+        }
     }
 }
 

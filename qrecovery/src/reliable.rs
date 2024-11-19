@@ -1,11 +1,16 @@
 //! The reliable transmission for frames.
 use std::{
     collections::VecDeque,
+    ops::Deref,
     sync::{Arc, Mutex, MutexGuard},
 };
 
+use bytes::BufMut;
 use enum_dispatch::enum_dispatch;
-use qbase::frame::{io::WriteFrame, BeFrame, CryptoFrame, ReliableFrame, SendFrame, StreamFrame};
+use qbase::{
+    frame::{io::WriteFrame, BeFrame, CryptoFrame, ReliableFrame, SendFrame, StreamFrame},
+    packet::MarshalFrame,
+};
 
 /// The kind of frame which guaratend to be received by peer.
 ///
@@ -63,6 +68,21 @@ impl ArcReliableFrameDeque {
             Some((deque.pop_front().unwrap(), buf_len - buf.len()))
         } else {
             None
+        }
+    }
+
+    pub fn try_load_frames_into<B, P>(&self, packet: &mut P)
+    where
+        B: BufMut,
+        P: Deref<Target = B> + MarshalFrame<ReliableFrame>,
+    {
+        let mut deque = self.0.lock().unwrap();
+        while let Some(frame) = deque.front() {
+            if frame.max_encoding_size() <= packet.remaining_mut()
+                || frame.encoding_size() <= packet.remaining_mut()
+            {
+                packet.dump_frame(deque.pop_front().unwrap());
+            }
         }
     }
 }

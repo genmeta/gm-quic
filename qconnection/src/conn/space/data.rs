@@ -4,13 +4,12 @@ use bytes::{BufMut, Bytes};
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
     cid::ConnectionId,
-    error::{Error as QuicError, ErrorKind},
+    error::{Error, ErrorKind},
     frame::{
         io::WriteFrame, AckFrame, BeFrame, ConnectionCloseFrame, Frame, FrameReader,
         PathChallengeFrame, PathResponseFrame, ReceiveFrame, ReliableFrame, SendFrame,
         StreamCtlFrame, StreamFrame,
     },
-    handshake::Handshake,
     packet::{
         decrypt::{
             decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
@@ -25,6 +24,8 @@ use qbase::{
         signal::SpinBit,
         AssembledPacket, DataPacket, PacketNumber, PacketWriter,
     },
+    param::Parameters,
+    sid::{ControlConcurrency, Role},
     token::ArcTokenRegistry,
     Epoch,
 };
@@ -39,7 +40,9 @@ use tokio::{sync::Notify, task::JoinHandle};
 
 use super::any;
 use crate::{
-    conn::{transmit::DataSpaceReader, CidRegistry, DataStreams, FlowController, RcvdPackets},
+    conn::{
+        transmit::DataSpaceReader, CidRegistry, DataStreams, FlowController, Handshake, RcvdPackets,
+    },
     error::ConnError,
     path::{ArcPaths, Path, SendBuffer},
     pipe,
@@ -53,27 +56,35 @@ pub struct DataSpace {
     pub one_rtt_keys: ArcOneRttKeys,
     pub journal: DataJournal,
     pub crypto_stream: CryptoStream,
+    pub reliable_frames: ArcReliableFrameDeque,
+    pub streams: DataStreams,
+    pub datagrams: DatagramFlow,
 }
 
-impl Default for DataSpace {
-    fn default() -> Self {
+impl DataSpace {
+    pub fn new(
+        role: Role,
+        local_params: &Parameters,
+        streams_ctrl: Box<dyn ControlConcurrency>,
+    ) -> Self {
+        let reliable_frames = ArcReliableFrameDeque::with_capacity(8);
+        let streams = DataStreams::new(role, local_params, streams_ctrl, reliable_frames.clone());
         Self {
             zero_rtt_keys: ArcKeys::new_pending(),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
             journal: DataJournal::with_capacity(16),
             crypto_stream: CryptoStream::new(4096, 4096),
+            reliable_frames,
+            streams,
+            datagrams: DatagramFlow::new(1024),
         }
     }
-}
 
-impl DataSpace {
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
         pathes: &ArcPaths,
-        handshake: &Handshake<ArcReliableFrameDeque>,
-        streams: &DataStreams,
-        datagrams: &DatagramFlow,
+        handshake: &Handshake,
         cid_registry: &CidRegistry,
         flow_ctrl: &FlowController,
         notify: &Arc<Notify>,
@@ -120,7 +131,7 @@ impl DataSpace {
             }
         };
         let on_data_acked = {
-            let data_streams = streams.clone();
+            let data_streams = self.streams.clone();
             let crypto_stream_outgoing = self.crypto_stream.outgoing();
             let sent_pkt_records = self.journal.sent();
             move |ack_frame: &AckFrame| {
@@ -155,18 +166,13 @@ impl DataSpace {
         pipe!(rcvd_data_blocked_frames |> flow_ctrl.recver, recv_frame);
         pipe!(@error(conn_error) rcvd_handshake_done_frames |> *handshake, recv_frame);
         pipe!(@error(conn_error) rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_frame);
-        pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> *streams, recv_frame);
+        pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> self.streams, recv_frame);
         // pipe!(@error(conn_error) rcvd_stream_frames |> receive_stream_frame);
-        pipe!(@error(conn_error) rcvd_datagram_frames |> *datagrams, recv_frame);
+        pipe!(@error(conn_error) rcvd_datagram_frames |> self.datagrams, recv_frame);
         pipe!(rcvd_ack_frames |> on_data_acked);
         pipe!(rcvd_new_token_frames |> recv_new_token,recv_frame);
 
-        self.handle_stream_frame_with_flow_ctrl(
-            streams,
-            flow_ctrl,
-            conn_error.clone(),
-            rcvd_stream_frames,
-        );
+        self.handle_stream_frame_with_flow_ctrl(flow_ctrl, conn_error.clone(), rcvd_stream_frames);
 
         let join_handler0 = self.parse_rcvd_0rtt_packet_and_dispatch_frames(
             rcvd_0rtt_packets,
@@ -326,14 +332,13 @@ impl DataSpace {
 
     pub fn handle_stream_frame_with_flow_ctrl(
         &self,
-        streams: &DataStreams,
         flow_ctrl: &FlowController,
         conn_error: ConnError,
         mut rcvd_stream_frames: mpsc::UnboundedReceiver<(StreamFrame, Bytes)>,
     ) {
         // Handling Stream Frames
         tokio::spawn({
-            let streams = streams.clone();
+            let streams = self.streams.clone();
             let flow_ctrl = flow_ctrl.clone();
             let conn_error = conn_error.clone();
             async move {
@@ -341,7 +346,7 @@ impl DataSpace {
                     match streams.recv_data(&data_frame) {
                         Ok(new_data_size) => {
                             if let Err(e) = flow_ctrl.on_new_rcvd(new_data_size) {
-                                conn_error.on_error(QuicError::new(
+                                conn_error.on_error(Error::new(
                                     ErrorKind::FlowControl,
                                     data_frame.0.frame_type(),
                                     format!("{} flow control overflow: {}", data_frame.0.id, e),
@@ -358,8 +363,9 @@ impl DataSpace {
     pub fn try_assemble_0rtt<'b>(
         &self,
         tx: &mut Transaction<'_>,
+        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         buf: &'b mut [u8],
-    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
+    ) -> Option<(AssembledPacket<'b>, usize)> {
         if self.one_rtt_keys.get_local_keys().is_some() {
             return None;
         }
@@ -373,26 +379,23 @@ impl DataSpace {
             &sent_journal,
         )?;
 
-        let mut ack = None;
-        if let Some((largest, rcvd_time)) = tx.need_ack(Epoch::Handshake) {
-            let rcvd_pkt_records = self.journal.rcvd();
-            if let Some(ack_frame) =
-                rcvd_pkt_records.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
-            {
-                packet.dump_ack_frame(ack_frame);
-                ack = Some(largest);
-            }
-        }
-
+        path_challenge_frames.try_load_frames_into(&mut packet);
         // TODO: 可以封装在CryptoStream中，当成一个函数
         //      crypto_stream.try_load_data_into(&mut packet);
         let crypto_stream_outgoing = self.crypto_stream.outgoing();
         crypto_stream_outgoing.try_load_data_into(&mut packet);
+        // try to load reliable frames into this 0RTT packet to send
+        self.reliable_frames.try_load_frames_into(&mut packet);
+        // try to load stream frames into this 0RTT packet to send
+        let fresh_data = self
+            .streams
+            .try_load_data_into(&mut packet, tx.flow_limit());
+        self.datagrams.try_load_data_into(&mut packet);
 
         let packet: PacketWriter<'b> = packet.try_into().ok()?;
         Some((
             packet.encrypt_long_packet(keys.local.header.as_ref(), keys.local.packet.as_ref()),
-            ack,
+            fresh_data,
         ))
     }
 
@@ -400,8 +403,10 @@ impl DataSpace {
         &self,
         tx: &mut Transaction<'_>,
         spin: SpinBit,
+        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
+        path_response_frames: &SendBuffer<PathResponseFrame>,
         buf: &'b mut [u8],
-    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
+    ) -> Option<(AssembledPacket<'b>, Option<u64>, usize)> {
         let (hpk, pk) = self.one_rtt_keys.get_local_keys()?;
         let sent_journal = self.journal.sent();
         let mut packet = PacketMemory::new(
@@ -422,10 +427,19 @@ impl DataSpace {
             }
         }
 
+        path_challenge_frames.try_load_frames_into(&mut packet);
+        path_response_frames.try_load_frames_into(&mut packet);
         // TODO: 可以封装在CryptoStream中，当成一个函数
         //      crypto_stream.try_load_data_into(&mut packet);
         let crypto_stream_outgoing = self.crypto_stream.outgoing();
         crypto_stream_outgoing.try_load_data_into(&mut packet);
+        // try to load reliable frames into this 0RTT packet to send
+        self.reliable_frames.try_load_frames_into(&mut packet);
+        // try to load stream frames into this 0RTT packet to send
+        let fresh_data = self
+            .streams
+            .try_load_data_into(&mut packet, tx.flow_limit());
+        self.datagrams.try_load_data_into(&mut packet);
 
         let packet: PacketWriter<'b> = packet.try_into().ok()?;
         let pk_guard = pk.lock_guard();
@@ -433,7 +447,13 @@ impl DataSpace {
         Some((
             packet.encrypt_short_packet(key_phase, hpk.as_ref(), pk.as_ref()),
             ack,
+            fresh_data,
         ))
+    }
+
+    pub fn on_conn_error(&self, error: &Error) {
+        self.streams.on_conn_error(error);
+        self.datagrams.on_conn_error(error);
     }
 
     pub fn reader(

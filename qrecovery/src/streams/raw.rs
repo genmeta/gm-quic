@@ -1,11 +1,16 @@
-use std::task::{ready, Context, Poll};
+use std::{
+    ops::Deref,
+    task::{ready, Context, Poll},
+};
 
+use bytes::BufMut;
 use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::{
         BeFrame, FrameType, ReceiveFrame, ResetStreamFrame, SendFrame, StreamCtlFrame, StreamFrame,
         STREAM_FRAME_MAX_ENCODING_SIZE,
     },
+    packet::MarshalDataFrame,
     param::Parameters,
     sid::{
         remote_sid::{AcceptSid, ExceedLimitError},
@@ -216,6 +221,17 @@ where
             }
         }
         None
+    }
+
+    /// Try to load data from streams into the `packet`,
+    /// with a `flow_limit` which limits the max size of fresh data.
+    /// Returns the size of fresh data.
+    pub fn try_load_data_into<B, P>(&self, _packet: &mut P, _flow_limit: usize) -> usize
+    where
+        B: BufMut,
+        P: Deref<Target = B> + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+    {
+        todo!("try load as much data as possible into the packet, return the fresh data size")
     }
 
     /// Called when the stream frame acked.
@@ -440,7 +456,7 @@ where
     ///
     /// After the method called, read on [`Reader`] or write on [`Writer`] will return an error,
     /// the resouces will be released.
-    pub fn on_conn_error(&self, err: &QuicError) {
+    pub fn on_conn_error(&self, error: &QuicError) {
         let mut output = match self.output.guard() {
             Ok(out) => out,
             Err(_) => return,
@@ -454,9 +470,9 @@ where
             Err(_) => return,
         };
 
-        output.on_conn_error(err);
-        input.on_conn_error(err);
-        listener.on_conn_error(err);
+        output.on_conn_error(error);
+        input.on_conn_error(error);
+        listener.on_conn_error(error);
     }
 }
 
@@ -467,7 +483,7 @@ where
     pub(super) fn new(
         role: Role,
         local_params: &Parameters,
-        strategy: Box<dyn ControlConcurrency>,
+        ctrl: Box<dyn ControlConcurrency>,
         ctrl_frames: TX,
     ) -> Self {
         let max_bi_streams = local_params.initial_max_streams_bidi().into();
@@ -479,7 +495,7 @@ where
                 max_bi_streams,
                 max_uni_streams,
                 Ext(ctrl_frames.clone()),
-                strategy,
+                ctrl,
             ),
             uni_stream_rcvbuf_size: local_params.initial_max_stream_data_uni().into(),
             local_bi_stream_rcvbuf_size: local_params.initial_max_stream_data_bidi_local().into(),

@@ -16,8 +16,6 @@ use qbase::{
     Epoch,
 };
 use qcongestion::{ArcCC, CongestionAlgorithm, CongestionControl};
-use qrecovery::reliable::ArcReliableFrameDeque;
-use qunreliable::DatagramFlow;
 use rustls::quic::Keys;
 use tokio::{sync::Notify, task::JoinHandle};
 
@@ -28,7 +26,7 @@ use super::{
         handshake::{HandshakeSpace, HandshakeTracker},
         initial::{InitialSpace, InitialTracker},
     },
-    ArcLocalCids, ArcRemoteCids, CidRegistry, DataStreams, FlowController, Handshake, RcvdPackets,
+    ArcLocalCids, ArcRemoteCids, CidRegistry, FlowController, Handshake, RcvdPackets,
 };
 use crate::{
     error::ConnError,
@@ -46,9 +44,6 @@ pub struct Connection {
     // handshake done的信号
     pub(super) flow_ctrl: FlowController,
     pub(super) error: ConnError,
-
-    pub(super) streams: DataStreams,
-    pub(super) datagrams: DatagramFlow,
 
     pub(super) initial: InitialSpace,
     pub(super) hs: HandshakeSpace,
@@ -77,10 +72,12 @@ impl Connection {
         let (hs_packets_entry, rcvd_hs_packets) = mpsc::unbounded();
         let (one_rtt_packets_entry, rcvd_1rtt_packets) = mpsc::unbounded();
 
-        let reliable_frames = ArcReliableFrameDeque::with_capacity(0);
         let initial = InitialSpace::new(ArcKeys::with_keys(initial_keys));
         let hs = HandshakeSpace::default();
-        let data = DataSpace::default();
+        let data = DataSpace::new(role, &local_params, streams_ctrl);
+        let reliable_frames = &data.reliable_frames;
+        let streams = &data.streams;
+        let datagrams = &data.datagrams;
 
         let router_registry = Router::registry(
             initial_scid,
@@ -102,9 +99,6 @@ impl Connection {
         let handshake = Handshake::new(role, reliable_frames.clone());
         let flow_ctrl = FlowController::new(65535, 65535, reliable_frames.clone());
         let conn_error = ConnError::default();
-
-        let streams = DataStreams::new(role, &local_params, streams_ctrl, reliable_frames.clone());
-        let datagrams = DatagramFlow::new(0);
 
         let token = match token_registry.deref() {
             TokenRegistry::Client((server_name, client)) => {
@@ -256,8 +250,6 @@ impl Connection {
         let (join_0rtt, join_1rtt) = data.build(
             &pathes,
             &handshake,
-            &streams,
-            &datagrams,
             &cid_registry,
             &flow_ctrl,
             &notify,
@@ -274,8 +266,6 @@ impl Connection {
             paths: pathes,
             cid_registry,
             flow_ctrl,
-            streams,
-            datagrams,
             initial,
             hs,
             data,
@@ -295,9 +285,8 @@ impl Connection {
     }
 
     pub fn abort_with_error(&self, error: &Error) {
-        self.datagrams.on_conn_error(error);
+        self.data.on_conn_error(error);
         self.flow_ctrl.on_conn_error(error);
-        self.streams.on_conn_error(error);
         self.params.on_conn_error(error);
         self.tls_session.abort();
         self.notify.notify_waiters();

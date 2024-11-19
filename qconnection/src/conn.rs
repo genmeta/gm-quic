@@ -251,7 +251,7 @@ impl ArcConnection {
 
             (
                 connection.params.remote.clone(),
-                connection.streams.clone(),
+                connection.data.streams.clone(),
                 connection.error.clone(),
             )
         };
@@ -278,7 +278,7 @@ impl ArcConnection {
 
             (
                 connection.params.remote.clone(),
-                connection.streams.clone(),
+                connection.data.streams.clone(),
                 connection.error.clone(),
             )
         };
@@ -305,7 +305,7 @@ impl ArcConnection {
 
             (
                 connection.params.remote.clone(),
-                connection.streams.clone(),
+                connection.data.streams.clone(),
                 connection.error.clone(),
             )
         };
@@ -330,7 +330,7 @@ impl ArcConnection {
                 Invalid => unreachable!(),
             };
 
-            (connection.streams.clone(), connection.error.clone())
+            (connection.data.streams.clone(), connection.error.clone())
         };
 
         let result = data_streams
@@ -344,7 +344,7 @@ impl ArcConnection {
         let guard = self.0.lock().unwrap();
 
         match guard.deref() {
-            Normal(raw) => raw.datagrams.reader(),
+            Normal(raw) => raw.data.datagrams.reader(),
             Closing(closing) => Err(closing.error().clone())?,
             Draining(draining) => Err(draining.error().clone())?,
             Closed(error) => Err(error.clone())?,
@@ -365,7 +365,7 @@ impl ArcConnection {
 
             (
                 connection.params.remote.clone(),
-                connection.datagrams.clone(),
+                connection.data.datagrams.clone(),
             )
         };
 

@@ -6,6 +6,7 @@ use std::{
 use qbase::{
     error::Error,
     frame::{DatagramFrame, ReceiveFrame},
+    packet::PacketWriter,
 };
 
 use super::{
@@ -46,6 +47,10 @@ impl DatagramFlow {
     #[inline]
     pub fn try_read_datagram(&self, buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
         self.outgoing.try_read_datagram(buf)
+    }
+
+    pub fn try_load_data_into(&self, packet: &mut PacketWriter<'_>) {
+        self.outgoing.try_load_data_into(packet)
     }
 
     /// Create a new **unique** instance of [`UnreliableReader`].
