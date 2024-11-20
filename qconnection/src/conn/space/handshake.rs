@@ -8,7 +8,11 @@ use qbase::{
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         encrypt::{encode_long_first_byte, encrypt_packet, protect_header},
-        header::{io::WriteHeader, long::io::LongHeaderBuilder, EncodeHeader, GetType},
+        header::{
+            io::WriteHeader,
+            long::{io::LongHeaderBuilder, HandshakeHeader},
+            EncodeHeader, GetType,
+        },
         keys::ArcKeys,
         number::WritePacketNumber,
         AssembledPacket, DataPacket, PacketNumber, PacketWriter,
@@ -21,9 +25,10 @@ use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcRcvdJournal, HandshakeJournal},
 };
+use rustls::quic::Keys;
 use tokio::{sync::Notify, task::JoinHandle};
 
-use super::any;
+use super::{any, util::parse_long_header_packet, RcvdBundle};
 use crate::{
     conn::{transmit::HandshakeSpaceReader, RcvdPackets},
     error::ConnError,
@@ -53,7 +58,7 @@ impl HandshakeSpace {
     pub fn build(
         &self,
         rcvd_packets: RcvdPackets,
-        pathes: &ArcPaths,
+        paths: &ArcPaths,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
     ) -> JoinHandle<RcvdPackets> {
@@ -92,7 +97,7 @@ impl HandshakeSpace {
         pipe!(rcvd_ack_frames |> on_data_acked);
         self.parse_rcvd_packets_and_dispatch_frames(
             rcvd_packets,
-            pathes,
+            paths,
             dispatch_frame,
             notify,
             conn_error,
@@ -102,12 +107,12 @@ impl HandshakeSpace {
     fn parse_rcvd_packets_and_dispatch_frames(
         &self,
         mut rcvd_packets: RcvdPackets,
-        pathes: &ArcPaths,
+        paths: &ArcPaths,
         dispatch_frame: impl Fn(Frame, &Path) + Send + 'static,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
     ) -> JoinHandle<RcvdPackets> {
-        let pathes = pathes.clone();
+        let paths = paths.clone();
         let conn_error = conn_error.clone();
         let notify = notify.clone();
         tokio::spawn({
@@ -147,7 +152,7 @@ impl HandshakeSpace {
                     );
                     let Ok(pkt_len) = decrypted else { continue };
 
-                    let path = pathes.get_or_create(pathway, usc);
+                    let path = paths.get_or_create(pathway, usc);
                     path.on_rcvd(packet.bytes.len());
 
                     let _header = packet.bytes.split_to(body_offset);
@@ -221,6 +226,83 @@ impl HandshakeSpace {
             keys: self.keys.clone(),
             journal: self.journal.clone(),
             crypto_stream_outgoing: self.crypto_stream.outgoing(),
+        }
+    }
+}
+
+impl HandshakeSpace {
+    pub fn frame_entry(&self, error_tracker: &ConnError) -> impl Fn(Frame, &Path) {
+        let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
+        let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
+
+        let on_data_acked = {
+            let crypto_stream_outgoing = self.crypto_stream.outgoing();
+            let sent_pkt_records = self.journal.sent();
+            move |ack_frame: &AckFrame| {
+                let mut recv_guard = sent_pkt_records.recv();
+                recv_guard.update_largest(ack_frame.largest.into_inner());
+
+                for pn in ack_frame.iter().flat_map(|r| r.rev()) {
+                    for frame in recv_guard.on_pkt_acked(pn) {
+                        crypto_stream_outgoing.on_data_acked(&frame);
+                    }
+                }
+            }
+        };
+
+        pipe!(@error(error_tracker) rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_frame);
+        pipe!(rcvd_ack_frames |> on_data_acked);
+
+        let error_tracker = error_tracker.clone();
+        move |frame: Frame, path: &Path| match frame {
+            Frame::Ack(f) => {
+                path.cc().on_ack(Epoch::Initial, &f);
+                _ = ack_frames_entry.unbounded_send(f);
+            }
+            Frame::Close(f) => error_tracker.on_ccf_rcvd(&f),
+            Frame::Crypto(f, bytes) => _ = crypto_frames_entry.unbounded_send((f, bytes)),
+            Frame::Padding(_) | Frame::Ping(_) => {}
+            _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
+        }
+    }
+
+    pub fn packet_entry<D>(
+        &self,
+        paths: ArcPaths,
+        error_tracker: ConnError,
+        dispatch_frame: D,
+    ) -> impl Fn(RcvdBundle<HandshakeHeader>, &Keys) + 'static
+    where
+        D: Fn(Frame, &Path) + Send + 'static,
+    {
+        let rcvd_pkt_records = self.journal.rcvd();
+        move |((header, pkt_buf, payload_offset), pathway, usc), key| {
+            let rcvd_size = pkt_buf.len();
+            let (hpk, pk) = (key.local.header.as_ref(), key.local.packet.as_ref());
+            let parsed =
+                parse_long_header_packet(pkt_buf, payload_offset, hpk, pk, &rcvd_pkt_records);
+            let Some((pn, body_buf)) = parsed else { return };
+
+            let path = paths.get_or_create(pathway, usc);
+            path.on_rcvd(rcvd_size);
+            // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
+            // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
+            // address to have been validated.
+            // It may have already been verified using tokens in the Initial space
+            path.grant_anti_amplifier();
+
+            let f = |is_ack_packet, frame| {
+                let (frame, is_ack_eliciting) = frame?;
+                dispatch_frame(frame, &path);
+                Ok(is_ack_packet || is_ack_eliciting)
+            };
+            match FrameReader::new(body_buf, header.get_type()).try_fold(false, f) {
+                Ok(is_ack_packet) => {
+                    rcvd_pkt_records.register_pn(pn);
+                    path.cc().on_pkt_rcvd(Epoch::Handshake, pn, is_ack_packet);
+                }
+                Err(e) => error_tracker.on_error(e),
+            }
         }
     }
 }

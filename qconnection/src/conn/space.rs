@@ -1,6 +1,7 @@
 pub mod data;
 pub mod handshake;
 pub mod initial;
+mod util;
 
 use std::future::Future;
 
@@ -39,3 +40,9 @@ where
         v = fut => v,
     }
 }
+
+pub type RcvdBundle<H> = (
+    (H, bytes::BytesMut, usize),
+    crate::path::Pathway,
+    crate::usc::ArcUsc,
+);

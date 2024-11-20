@@ -11,12 +11,15 @@ use qbase::{
         StreamCtlFrame, StreamFrame,
     },
     packet::{
+        self,
         decrypt::{
             decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
         },
         encrypt::{encode_short_first_byte, encrypt_packet, protect_header},
         header::{
-            io::WriteHeader, long::io::LongHeaderBuilder, EncodeHeader, GetType, OneRttHeader,
+            io::WriteHeader,
+            long::{io::LongHeaderBuilder, ZeroRttHeader},
+            EncodeHeader, GetType, OneRttHeader,
         },
         keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys, HeaderProtectionKeys},
         number::WritePacketNumber,
@@ -36,9 +39,14 @@ use qrecovery::{
     reliable::{ArcReliableFrameDeque, GuaranteedFrame},
 };
 use qunreliable::DatagramFlow;
+use rustls::quic::HeaderProtectionKey;
 use tokio::{sync::Notify, task::JoinHandle};
 
-use super::any;
+use super::{
+    any,
+    util::{parse_long_header_packet, parse_short_header_packet},
+    RcvdBundle,
+};
 use crate::{
     conn::{
         transmit::DataSpaceReader, CidRegistry, DataStreams, FlowController, Handshake, RcvdPackets,
@@ -83,7 +91,7 @@ impl DataSpace {
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
-        pathes: &ArcPaths,
+        paths: &ArcPaths,
         handshake: &Handshake,
         cid_registry: &CidRegistry,
         flow_ctrl: &FlowController,
@@ -176,14 +184,14 @@ impl DataSpace {
 
         let join_handler0 = self.parse_rcvd_0rtt_packet_and_dispatch_frames(
             rcvd_0rtt_packets,
-            pathes.clone(),
+            paths.clone(),
             dispatch_data_frame.clone(),
             notify.clone(),
             conn_error.clone(),
         );
         let join_handler1 = self.parse_rcvd_1rtt_packet_and_dispatch_frames(
             rcvd_1rtt_packets,
-            pathes.clone(),
+            paths.clone(),
             dispatch_data_frame,
             notify.clone(),
             conn_error.clone(),
@@ -194,7 +202,7 @@ impl DataSpace {
     fn parse_rcvd_0rtt_packet_and_dispatch_frames(
         &self,
         mut rcvd_packets: RcvdPackets,
-        pathes: ArcPaths,
+        paths: ArcPaths,
         dispatch_frame: impl Fn(Frame, Type, &Path) + Send + 'static,
         notify: Arc<Notify>,
         conn_error: ConnError,
@@ -236,7 +244,7 @@ impl DataSpace {
                     );
                     let Ok(pkt_len) = decrypted else { continue };
 
-                    let path = pathes.get_or_create(pathway, usc);
+                    let path = paths.get_or_create(pathway, usc);
                     path.on_rcvd(packet.bytes.len());
 
                     let _header = packet.bytes.split_to(body_offset);
@@ -265,7 +273,7 @@ impl DataSpace {
     fn parse_rcvd_1rtt_packet_and_dispatch_frames(
         &self,
         mut rcvd_packets: RcvdPackets,
-        pathes: ArcPaths,
+        paths: ArcPaths,
         dispatch_frame: impl Fn(Frame, Type, &Path) + Send + 'static,
         notify: Arc<Notify>,
         conn_error: ConnError,
@@ -304,7 +312,7 @@ impl DataSpace {
                         decrypt_packet(pk.as_ref(), pn, packet.bytes.as_mut(), body_offset);
                     let Ok(pkt_len) = decrypted else { continue };
 
-                    let path = pathes.get_or_create(pathway, usc);
+                    let path = paths.get_or_create(pathway, usc);
                     path.on_rcvd(packet.bytes.len());
 
                     let _header = packet.bytes.split_to(body_offset);
@@ -474,6 +482,171 @@ impl DataSpace {
             reliable_frames,
             streams,
             datagrams,
+        }
+    }
+}
+
+impl DataSpace {
+    #[allow(clippy::too_many_arguments)]
+    pub fn frame_entry(
+        &self,
+        error_tracker: &ConnError,
+        handshake: &Handshake,
+        cid_registry: &CidRegistry,
+        flow_ctrl: &FlowController,
+        recv_new_token: &ArcTokenRegistry,
+    ) -> impl Fn(Frame, packet::Type, &Path) + Send + Clone + 'static {
+        let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
+        // 连接级的
+        let (max_data_frames_entry, rcvd_max_data_frames) = mpsc::unbounded();
+        let (data_blocked_frames_entry, rcvd_data_blocked_frames) = mpsc::unbounded();
+        let (new_cid_frames_entry, rcvd_new_cid_frames) = mpsc::unbounded();
+        let (retire_cid_frames_entry, rcvd_retire_cid_frames) = mpsc::unbounded();
+        let (handshake_done_frames_entry, rcvd_handshake_done_frames) = mpsc::unbounded();
+        let (new_token_frames_entry, rcvd_new_token_frames) = mpsc::unbounded();
+        // 数据级的
+        let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
+        let (stream_ctrl_frames_entry, rcvd_stream_ctrl_frames) = mpsc::unbounded();
+        let (stream_frames_entry, rcvd_stream_frames) = mpsc::unbounded();
+        let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded();
+
+        let on_data_acked = {
+            let data_streams = self.streams.clone();
+            let crypto_stream_outgoing = self.crypto_stream.outgoing();
+            let sent_pkt_records = self.journal.sent();
+            move |ack_frame: &AckFrame| {
+                let mut recv_guard = sent_pkt_records.recv();
+                recv_guard.update_largest(ack_frame.largest.into_inner());
+
+                for pn in ack_frame.iter().flat_map(|r| r.rev()) {
+                    for frame in recv_guard.on_pkt_acked(pn) {
+                        match frame {
+                            GuaranteedFrame::Stream(stream_frame) => {
+                                data_streams.on_data_acked(stream_frame)
+                            }
+                            GuaranteedFrame::Crypto(crypto_frame) => {
+                                crypto_stream_outgoing.on_data_acked(&crypto_frame)
+                            }
+                            GuaranteedFrame::Reliable(ReliableFrame::Stream(
+                                StreamCtlFrame::ResetStream(reset_frame),
+                            )) => data_streams.on_reset_acked(reset_frame),
+                            _ => { /* nothing to do */ }
+                        }
+                    }
+                }
+            }
+        };
+
+        // Assemble the pipelines of frame processing
+        // TODO: pipe rcvd_new_token_frames
+        let local_cids_with_router = Router::revoke(cid_registry.local.clone());
+        pipe!(rcvd_retire_cid_frames |> local_cids_with_router, recv_frame);
+        pipe!(@error(error_tracker) rcvd_new_cid_frames |> cid_registry.remote, recv_frame);
+        pipe!(rcvd_max_data_frames |> flow_ctrl.sender, recv_frame);
+        pipe!(rcvd_data_blocked_frames |> flow_ctrl.recver, recv_frame);
+        pipe!(@error(error_tracker) rcvd_handshake_done_frames |> *handshake, recv_frame);
+        pipe!(@error(error_tracker) rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_frame);
+        pipe!(@error(error_tracker) rcvd_stream_ctrl_frames |> self.streams, recv_frame);
+        // pipe!(@error(error_tracker) rcvd_stream_frames |> receive_stream_frame);
+        pipe!(@error(error_tracker) rcvd_datagram_frames |> self.datagrams, recv_frame);
+        pipe!(rcvd_ack_frames |> on_data_acked);
+        pipe!(rcvd_new_token_frames |> *recv_new_token,recv_frame);
+
+        self.handle_stream_frame_with_flow_ctrl(
+            flow_ctrl,
+            error_tracker.clone(),
+            rcvd_stream_frames,
+        );
+
+        let error_tracker = error_tracker.clone();
+        move |frame: Frame, pty, path: &Path| match frame {
+            Frame::Ack(f) => {
+                path.cc().on_ack(Epoch::Data, &f);
+                _ = ack_frames_entry.unbounded_send(f)
+            }
+            Frame::NewToken(f) => _ = new_token_frames_entry.unbounded_send(f),
+            Frame::MaxData(f) => _ = max_data_frames_entry.unbounded_send(f),
+            Frame::NewConnectionId(f) => _ = new_cid_frames_entry.unbounded_send(f),
+            Frame::RetireConnectionId(f) => _ = retire_cid_frames_entry.unbounded_send(f),
+            Frame::HandshakeDone(f) => _ = handshake_done_frames_entry.unbounded_send(f),
+            Frame::DataBlocked(f) => _ = data_blocked_frames_entry.unbounded_send(f),
+            Frame::Challenge(f) => path.recv_challenge(f),
+            Frame::Response(f) => path.recv_response(f),
+            Frame::StreamCtl(f) => _ = stream_ctrl_frames_entry.unbounded_send(f),
+            Frame::Stream(f, data) => _ = stream_frames_entry.unbounded_send((f, data)),
+            Frame::Crypto(f, bytes) => _ = crypto_frames_entry.unbounded_send((f, bytes)),
+            Frame::Datagram(f, data) => _ = datagram_frames_entry.unbounded_send((f, data)),
+            Frame::Close(f) if matches!(pty, Type::Short(_)) => error_tracker.on_ccf_rcvd(&f),
+            _ => {}
+        }
+    }
+
+    pub fn zero_rtt_packets_entry<D>(
+        &self,
+        paths: ArcPaths,
+        error_tracker: ConnError,
+        dispatch_frame: D,
+    ) -> impl Fn(RcvdBundle<ZeroRttHeader>, &rustls::quic::Keys) + 'static
+    where
+        D: Fn(Frame, Type, &Path) + Send + 'static,
+    {
+        let rcvd_pkt_records = self.journal.rcvd();
+        move |((header, pkt_buf, payload_offset), pathway, usc), keys| {
+            let rcvd_size = pkt_buf.len();
+            let (hpk, pk) = (keys.local.header.as_ref(), keys.local.packet.as_ref());
+            let parsed =
+                parse_long_header_packet(pkt_buf, payload_offset, hpk, pk, &rcvd_pkt_records);
+            let Some((pn, pkt_buf)) = parsed else { return };
+
+            let path = paths.get_or_create(pathway, usc);
+            path.on_rcvd(rcvd_size);
+
+            let f = |is_ack_packet, frame| {
+                let (frame, is_ack_eliciting) = frame?;
+                dispatch_frame(frame, header.get_type(), &path);
+                Ok(is_ack_packet || is_ack_eliciting)
+            };
+            match FrameReader::new(pkt_buf, header.get_type()).try_fold(false, f) {
+                Ok(is_ack_packet) => {
+                    rcvd_pkt_records.register_pn(pn);
+                    path.cc().on_pkt_rcvd(Epoch::Data, pn, is_ack_packet);
+                }
+                Err(e) => error_tracker.on_error(e),
+            }
+        }
+    }
+
+    pub fn one_rtt_packets_entry<D>(
+        &self,
+        paths: ArcPaths,
+        error_tracker: ConnError,
+        dispatch_frame: D,
+    ) -> impl Fn(RcvdBundle<OneRttHeader>, (&dyn HeaderProtectionKey, &ArcOneRttPacketKeys)) + 'static
+    where
+        D: Fn(Frame, Type, &Path) + Send + 'static,
+    {
+        let rcvd_pkt_records = self.journal.rcvd();
+        move |((header, pkt_buf, payload_offset), pathway, usc), (hpk, pk)| {
+            let rcvd_size = pkt_buf.len();
+            let parsed =
+                parse_short_header_packet(pkt_buf, payload_offset, hpk, pk, &rcvd_pkt_records);
+            let Some((pn, pkt_buf)) = parsed else { return };
+
+            let path = paths.get_or_create(pathway, usc);
+            path.on_rcvd(rcvd_size);
+
+            let f = |is_ack_packet, frame| {
+                let (frame, is_ack_eliciting) = frame?;
+                dispatch_frame(frame, header.get_type(), &path);
+                Ok(is_ack_packet || is_ack_eliciting)
+            };
+            match FrameReader::new(pkt_buf, header.get_type()).try_fold(false, f) {
+                Ok(is_ack_packet) => {
+                    rcvd_pkt_records.register_pn(pn);
+                    path.cc().on_pkt_rcvd(Epoch::Data, pn, is_ack_packet);
+                }
+                Err(e) => error_tracker.on_error(e),
+            }
         }
     }
 }

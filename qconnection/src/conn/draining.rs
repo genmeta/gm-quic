@@ -1,7 +1,7 @@
 use qbase::{
     cid::ConnectionId,
     error::Error,
-    packet::{header::GetType, DataPacket},
+    packet::{header::GetType, DataPacket, Packet},
 };
 
 /// Connection in draining state, entered from the raw state or closing state.
@@ -31,6 +31,13 @@ impl DrainingConnection {
     /// Used to remove item in the global router
     pub fn local_cids(&self) -> &[ConnectionId] {
         &self.local_cids
+    }
+
+    pub const fn packet_entry(
+        &self,
+    ) -> impl Fn(Packet, crate::path::Pathway, crate::usc::ArcUsc) + Send + Sync + 'static {
+        // ignore all rcvd packets
+        |_, _, _| {}
     }
 }
 

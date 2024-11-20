@@ -298,7 +298,7 @@ impl Paths {
     /// the path will be removed from the set. If there are no paths in the set, the function specified
     /// by `on_no_path`(read [`Paths::new`]) will be called.
     pub fn get_or_create(&self, pathway: Pathway, usc: ArcUsc) -> ArcPath {
-        let pathes = self.map.clone();
+        let paths = self.map.clone();
         let on_no_path = self.on_no_path.clone();
 
         self.map
@@ -317,8 +317,8 @@ impl Paths {
                                 _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => cc.do_tick(),
                             }
                         }
-                        pathes.remove(&pathway);
-                        if pathes.is_empty() {
+                        paths.remove(&pathway);
+                        if paths.is_empty() {
                             (on_no_path)();
                         }
                     }
@@ -327,5 +327,18 @@ impl Paths {
             })
             .value()
             .clone()
+    }
+
+    pub fn update_path_recv_time(&self, pathway: Pathway) {
+        if let Some(path) = self.map.get(&pathway) {
+            path.update_recv_time();
+        }
+    }
+
+    pub fn max_pto_duration(&self) -> Option<std::time::Duration> {
+        self.map
+            .iter()
+            .map(|entry| entry.value().cc().pto_time(Epoch::Data))
+            .max()
     }
 }

@@ -5,40 +5,16 @@ use qbase::{
     cid::{ConnectionId, GenUniqueCid},
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
-    packet::{header::GetDcid, long, DataHeader, DataPacket, Packet},
+    packet::{header::GetDcid, Packet},
 };
 
-use crate::{conn::PacketEntry, path::Pathway, usc::ArcUsc};
+use crate::{path::Pathway, usc::ArcUsc};
 
-/// Global Router for managing connections.
-static ROUTER: LazyLock<DashMap<ConnectionId, [PacketEntry; 4]>> = LazyLock::new(DashMap::new);
+type PacketEntry = Box<dyn Fn(Packet, Pathway, ArcUsc) + Send + Sync + 'static>;
 
-type PacketEntry2 = dyn Fn(Packet, Pathway, ArcUsc) + Send + Sync + 'static;
+type ArcPacketEntry = Arc<RwLock<PacketEntry>>;
 
-type ArcPacketEntry2 = Arc<RwLock<PacketEntry2>>;
-
-static ROUTER2: LazyLock<DashMap<ConnectionId, ArcPacketEntry2>> = LazyLock::new(DashMap::new);
-
-pub struct Router2;
-
-impl Router2 {
-    pub fn try_to_route_packet_from(
-        packet: Packet,
-        pathway: Pathway,
-        usc: &ArcUsc,
-    ) -> Result<(), Packet> {
-        let dcid = match &packet {
-            Packet::VN(hdr) => hdr.get_dcid(),
-            Packet::Retry(hdr) => hdr.get_dcid(),
-            Packet::Data(pkt) => pkt.header.get_dcid(),
-        };
-        let Some(entry) = ROUTER2.get(dcid) else {
-            return Err(packet);
-        };
-        entry.read().unwrap()(packet, pathway, usc.clone());
-        Ok(())
-    }
-}
+static ROUTER: LazyLock<DashMap<ConnectionId, ArcPacketEntry>> = LazyLock::new(DashMap::new);
 
 /// A interface to control the global router, which used to route packets to the corresponding connection.
 pub struct Router;
@@ -51,21 +27,19 @@ impl Router {
     ///
     /// If the connection does not exist, the packet will be returned with out any modification.
     pub fn try_to_route_packet_from(
-        packet: DataPacket,
+        packet: Packet,
         pathway: Pathway,
         usc: &ArcUsc,
-    ) -> Result<(), DataPacket> {
-        let dcid = packet.header.get_dcid();
-        let Some(entries) = ROUTER.get(dcid) else {
+    ) -> Result<(), Packet> {
+        let dcid = match &packet {
+            Packet::VN(hdr) => hdr.get_dcid(),
+            Packet::Retry(hdr) => hdr.get_dcid(),
+            Packet::Data(pkt) => pkt.header.get_dcid(),
+        };
+        let Some(entry) = ROUTER.get(dcid) else {
             return Err(packet);
         };
-        let index = match packet.header {
-            DataHeader::Long(long::DataHeader::Initial(_)) => 0,
-            DataHeader::Long(long::DataHeader::ZeroRtt(_)) => 1,
-            DataHeader::Long(long::DataHeader::Handshake(_)) => 2,
-            DataHeader::Short(_) => 3,
-        };
-        _ = entries[index].unbounded_send((packet, pathway, usc.clone()));
+        entry.read().unwrap()(packet, pathway, usc.clone());
         Ok(())
     }
 
@@ -76,15 +50,15 @@ impl Router {
     pub fn registry<ISSUED>(
         scid: ConnectionId,
         issued_cids: ISSUED,
-        packet_entries: [PacketEntry; 4],
+        packet_entry: ArcPacketEntry,
     ) -> RouterRegistry<ISSUED>
     where
         ISSUED: SendFrame<NewConnectionIdFrame>,
     {
-        ROUTER.insert(scid, packet_entries.clone());
+        ROUTER.insert(scid, packet_entry.clone());
         RouterRegistry {
             issued_cids,
-            packet_entries,
+            packet_entry,
         }
     }
 
@@ -105,10 +79,10 @@ impl Router {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RouterRegistry<ISSUED> {
     issued_cids: ISSUED,
-    packet_entries: [PacketEntry; 4],
+    packet_entry: ArcPacketEntry,
 }
 
 impl<T> SendFrame<NewConnectionIdFrame> for RouterRegistry<T>
@@ -126,13 +100,22 @@ impl<T> GenUniqueCid for RouterRegistry<T> {
             .find(|cid| {
                 let entry = ROUTER.entry(*cid);
                 if matches!(entry, dashmap::Entry::Vacant(_)) {
-                    entry.or_insert(self.packet_entries.clone());
+                    entry.or_insert(self.packet_entry.clone());
                     true
                 } else {
                     false
                 }
             })
             .unwrap()
+    }
+}
+
+impl<T> RouterRegistry<T> {
+    /// Update the packet entry of the connection.
+    ///
+    /// This is used when the connection enter the closing state, the packet entry should be updated.
+    pub fn update_packet_entry(&self, packet_entry: PacketEntry) {
+        *self.packet_entry.write().unwrap() = packet_entry;
     }
 }
 

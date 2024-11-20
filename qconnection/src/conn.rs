@@ -102,10 +102,10 @@ impl ConnState {
                 let closing_connection =
                     ClosingConnection::new(error, local_cids, hs, one_rtt, initial_scid, last_dcid);
                 tokio::spawn({
-                    let pathes = connection.paths;
+                    let paths = connection.paths;
                     let closing_connection = closing_connection.clone();
                     async move {
-                        for mut path in pathes.iter_mut() {
+                        for mut path in paths.iter_mut() {
                             let (pathway, path) = path.pair_mut();
                             closing_connection.send_ccf(path.usc(), *pathway).await;
                         }

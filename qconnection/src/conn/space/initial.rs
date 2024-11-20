@@ -6,7 +6,10 @@ use qbase::{
     frame::{AckFrame, Frame, FrameReader, ReceiveFrame},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
-        header::{long::io::LongHeaderBuilder, GetScid, GetType},
+        header::{
+            long::{io::LongHeaderBuilder, InitialHeader},
+            GetScid, GetType,
+        },
         keys::ArcKeys,
         long, AssembledPacket, DataHeader, PacketWriter,
     },
@@ -17,9 +20,10 @@ use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::InitialJournal,
 };
+use rustls::quic::Keys;
 use tokio::{sync::Notify, task::JoinHandle};
 
-use super::any;
+use super::{any, util::parse_long_header_packet, RcvdBundle};
 use crate::{
     conn::{transmit::InitialSpaceReader, ArcRemoteCids, RcvdPackets},
     error::ConnError,
@@ -51,7 +55,7 @@ impl InitialSpace {
     pub fn build(
         &self,
         rcvd_packets: RcvdPackets,
-        pathes: &ArcPaths,
+        paths: &ArcPaths,
         remote_cids: &ArcRemoteCids,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
@@ -92,7 +96,7 @@ impl InitialSpace {
 
         self.parse_rcvd_packets_and_dispatch_frames(
             rcvd_packets,
-            pathes,
+            paths,
             remote_cids,
             dispatch_frame,
             notify,
@@ -105,14 +109,14 @@ impl InitialSpace {
     fn parse_rcvd_packets_and_dispatch_frames(
         &self,
         mut rcvd_packets: RcvdPackets,
-        pathes: &ArcPaths,
+        paths: &ArcPaths,
         remote_cids: &ArcRemoteCids,
         dispatch_frame: impl Fn(Frame, &Path) + Send + 'static,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
         validate: impl Fn(&[u8], ArcPath) + Send + 'static,
     ) -> JoinHandle<RcvdPackets> {
-        let pathes = pathes.clone();
+        let paths = paths.clone();
         let conn_error = conn_error.clone();
         tokio::spawn({
             let rcvd_pkt_records = self.journal.rcvd();
@@ -154,7 +158,7 @@ impl InitialSpace {
                     );
                     let Ok(pkt_len) = decrypted else { continue };
 
-                    let path = pathes.get_or_create(pathway, usc);
+                    let path = paths.get_or_create(pathway, usc);
                     path.on_rcvd(packet.bytes.len());
 
                     let _header = packet.bytes.split_to(body_offset);
@@ -245,6 +249,94 @@ impl InitialSpace {
             keys: self.keys.clone(),
             journal: self.journal.clone(),
             crypto_stream_outgoing: self.crypto_stream.outgoing(),
+        }
+    }
+}
+
+impl InitialSpace {
+    pub fn frame_entry(&self, error_tracker: &ConnError) -> impl Fn(Frame, &Path) {
+        let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
+        let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
+
+        let on_data_acked = {
+            let crypto_stream_outgoing = self.crypto_stream.outgoing();
+            let sent_pkt_records = self.journal.sent();
+            move |ack_frame: &AckFrame| {
+                let mut recv_guard = sent_pkt_records.recv();
+                recv_guard.update_largest(ack_frame.largest.into_inner());
+
+                for pn in ack_frame.iter().flat_map(|r| r.rev()) {
+                    for frame in recv_guard.on_pkt_acked(pn) {
+                        crypto_stream_outgoing.on_data_acked(&frame);
+                    }
+                }
+            }
+        };
+
+        pipe!(@error(error_tracker) rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_frame);
+        pipe!(rcvd_ack_frames |> on_data_acked);
+
+        move |frame: Frame, path: &Path| {
+            match frame {
+                Frame::Ack(f) => {
+                    path.cc().on_ack(Epoch::Initial, &f);
+                    _ = ack_frames_entry.unbounded_send(f)
+                }
+                Frame::Crypto(f, bytes) => _ = crypto_frames_entry.unbounded_send((f, bytes)),
+                Frame::Close(_) => { /* trustless */ }
+                Frame::Padding(_) | Frame::Ping(_) => {}
+                _ => unreachable!("unexpected frame: {:?} in initial packet", frame),
+            }
+        }
+    }
+
+    pub fn packet_entry<V, D>(
+        &self,
+        paths: ArcPaths,
+        remote_cids: ArcRemoteCids,
+        error_tracker: ConnError,
+        validate: V,
+        dispatch_frame: D,
+    ) -> impl Fn(RcvdBundle<InitialHeader>, &Keys) + 'static
+    where
+        V: Fn(&[u8], ArcPath) + Send + 'static,
+        D: Fn(Frame, &Path) + Send + 'static,
+    {
+        let rcvd_pkt_records = self.journal.rcvd();
+        move |((header, pkt_buf, payload_offset), pathway, usc), key| {
+            let rcvd_size = pkt_buf.len();
+            let (hpk, pk) = (key.local.header.as_ref(), key.local.packet.as_ref());
+            let parsed =
+                parse_long_header_packet(pkt_buf, payload_offset, hpk, pk, &rcvd_pkt_records);
+            let Some((pn, body_buf)) = parsed else { return };
+
+            // When receiving the initial packet, change the DCID of the
+            // path to the SCID carried in the received packet.
+            remote_cids.revise_initial_dcid(*header.get_scid());
+            let path = paths.get_or_create(pathway, usc);
+            path.on_rcvd(rcvd_size);
+
+            let f = |is_ack_packet, frame| {
+                let (frame, is_ack_eliciting) = frame?;
+                dispatch_frame(frame, &path);
+                Ok(is_ack_packet || is_ack_eliciting)
+            };
+            match FrameReader::new(body_buf, header.get_type()).try_fold(false, f) {
+                Ok(is_ack_packet) => {
+                    rcvd_pkt_records.register_pn(pn);
+                    path.cc().on_pkt_rcvd(Epoch::Initial, pn, is_ack_packet);
+                }
+                Err(e) => error_tracker.on_error(e),
+            }
+
+            // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
+            // A server might wish to validate the client address before starting the cryptographic handshake.
+            // QUIC uses a token in the Initial packet to provide address validation prior to completing the handshake.
+            // This token is delivered to the client during connection establishment with a Retry packet (see Section 8.1.2)
+            // or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
+            if !header.token.is_empty() {
+                validate(&header.token, path);
+            }
         }
     }
 }

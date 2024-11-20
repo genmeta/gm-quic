@@ -9,7 +9,10 @@ use qbase::{
     cid::ConnectionId,
     error::Error,
     frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame},
-    packet::keys::ArcKeys,
+    packet::{
+        header::long::{RetryHeader, VersionNegotiationHeader},
+        keys::{ArcKeys, ArcOneRttKeys},
+    },
     param::Parameters,
     sid::{ControlConcurrency, Role},
     token::{ArcTokenRegistry, TokenRegistry},
@@ -41,7 +44,6 @@ pub struct Connection {
     pub(super) token: Arc<Mutex<Vec<u8>>>,
     pub(super) paths: ArcPaths,
     pub(super) cid_registry: CidRegistry,
-    // handshake done的信号
     pub(super) flow_ctrl: FlowController,
     pub(super) error: ConnError,
 
@@ -181,7 +183,7 @@ impl Connection {
                 conn_error.no_viable_path();
             }
         });
-        let pathes = Paths::new(path_creator, on_no_path).into();
+        let paths = Paths::new(path_creator, on_no_path).into();
 
         let validate = {
             let tls_session = tls_session.clone();
@@ -200,14 +202,14 @@ impl Connection {
         let notify = Arc::new(Notify::new());
         let join_initial = initial.build(
             rcvd_initial_packets,
-            &pathes,
+            &paths,
             &cid_registry.remote,
             &notify,
             &conn_error,
             validate,
         );
 
-        let join_hs = hs.build(rcvd_hs_packets, &pathes, &notify, &conn_error);
+        let join_hs = hs.build(rcvd_hs_packets, &paths, &notify, &conn_error);
 
         let remote_params = tls_session.keys_upgrade(
             [
@@ -248,7 +250,7 @@ impl Connection {
         });
 
         let (join_0rtt, join_1rtt) = data.build(
-            &pathes,
+            &paths,
             &handshake,
             &cid_registry,
             &flow_ctrl,
@@ -263,7 +265,7 @@ impl Connection {
         Self {
             initial_scid,
             token,
-            paths: pathes,
+            paths,
             cid_registry,
             flow_ctrl,
             initial,
@@ -276,7 +278,6 @@ impl Connection {
             tls_session,
         }
     }
-
     pub fn max_pto_duration(&self) -> Option<Duration> {
         self.paths
             .iter()
@@ -295,6 +296,165 @@ impl Connection {
     pub fn update_path_recv_time(&self, pathway: Pathway) {
         if let Some(path) = self.paths.try_get(&pathway).try_unwrap() {
             path.update_recv_time();
+        }
+    }
+}
+
+/// Try to join two futures, return `None` if any of them is `None`.
+///
+// While Try trait is unstable, tokio&futures dont provide such a function
+pub async fn try_join<T, U>(
+    a: impl core::future::Future<Output = Option<T>> + Unpin,
+    b: impl core::future::Future<Output = Option<U>> + Unpin,
+) -> Option<(T, U)> {
+    use futures::future::Either;
+    match futures::future::select(a, b).await {
+        Either::Left((a, b)) => Some((a?, b.await?)),
+        Either::Right((b, a)) => Some((a.await?, b?)),
+    }
+}
+
+impl Connection {
+    pub fn packet_entry(
+        &self,
+    ) -> impl Fn(qbase::packet::Packet, Pathway, crate::usc::ArcUsc) + Send + Sync + 'static {
+        use futures::StreamExt;
+        let error_tracker = self.error.clone();
+
+        // retry and version negotiation
+        let retry_entry = self.retry_packet_entry();
+        let vn_entry = self.vn_packet_entry();
+
+        // initial space
+        let (initial_entry, mut rcvd_initial) = mpsc::unbounded();
+        let dispatch_frame = self.initial.frame_entry(&error_tracker);
+        let packet_entry = self.initial.packet_entry(
+            self.paths.clone(),
+            self.cid_registry.remote.clone(),
+            error_tracker.clone(),
+            |_, _| unimplemented!(), // can only be accessed in `new`
+            dispatch_frame,
+        );
+
+        let key: ArcKeys = ArcKeys::new_pending(); // can only be accessed in `new`
+        tokio::spawn(async move {
+            while let Some((bundle, keys)) =
+                try_join(rcvd_initial.next(), key.get_remote_keys()).await
+            {
+                packet_entry(bundle, keys.as_ref());
+            }
+        });
+
+        // handshake space
+        let (handshake_entry, mut rcvd_handshake) = mpsc::unbounded();
+        let dispatch_frame = self.hs.frame_entry(&error_tracker);
+        let packet_entry =
+            self.hs
+                .packet_entry(self.paths.clone(), error_tracker.clone(), dispatch_frame);
+
+        let key: ArcKeys = ArcKeys::new_pending(); // can only be accessed in `new`
+        tokio::spawn(async move {
+            while let Some((bundle, keys)) =
+                try_join(rcvd_handshake.next(), key.get_remote_keys()).await
+            {
+                packet_entry(bundle, keys.as_ref());
+            }
+        });
+
+        // data space
+        let dispatch_frame = self.data.frame_entry(
+            &error_tracker,
+            &Handshake::new_client(), // can only be accessed in `new`
+            &self.cid_registry,
+            &self.flow_ctrl,
+            &ArcTokenRegistry::default_provider(), // can only be accessed in `new`
+        );
+
+        // zero rtt
+        let (zero_rtt_entry, mut rcvd_zero_rtt) = mpsc::unbounded();
+        let zero_rtt_packet_entry = self.data.zero_rtt_packets_entry(
+            self.paths.clone(),
+            error_tracker.clone(),
+            dispatch_frame.clone(),
+        );
+
+        let key: ArcKeys = ArcKeys::new_pending(); // can only be accessed in `new`
+        tokio::spawn(async move {
+            while let Some((bundle, keys)) =
+                try_join(rcvd_zero_rtt.next(), key.get_remote_keys()).await
+            {
+                zero_rtt_packet_entry(bundle, keys.as_ref());
+            }
+        });
+
+        // one rtt
+        let (one_rtt_entry, mut rcvd_one_rtt) = mpsc::unbounded();
+        let one_rtt_packet_entry = self.data.one_rtt_packets_entry(
+            self.paths.clone(),
+            error_tracker.clone(),
+            dispatch_frame,
+        );
+
+        let key: ArcOneRttKeys = ArcOneRttKeys::new_pending(); // can only be accessed in `new`
+        tokio::spawn(async move {
+            while let Some((bundle, (hpk, pk))) =
+                try_join(rcvd_one_rtt.next(), key.get_remote_keys()).await
+            {
+                one_rtt_packet_entry(bundle, (&*hpk, &pk));
+            }
+        });
+
+        use qbase::packet::{header, DataHeader, Packet};
+        move |packet, pathway, usc| match packet {
+            Packet::VN(vn) => vn_entry(vn, pathway),
+            Packet::Retry(retry) => retry_entry(retry, pathway),
+            Packet::Data(data_packet) => match data_packet.header {
+                DataHeader::Long(header::DataHeader::Initial(initial)) => {
+                    let packet = (initial, data_packet.bytes, data_packet.offset);
+                    _ = initial_entry.unbounded_send((packet, pathway, usc))
+                }
+                DataHeader::Long(header::DataHeader::Handshake(handshake)) => {
+                    let packet = (handshake, data_packet.bytes, data_packet.offset);
+                    _ = handshake_entry.unbounded_send((packet, pathway, usc))
+                }
+                DataHeader::Long(header::DataHeader::ZeroRtt(zero_rtt)) => {
+                    let packet = (zero_rtt, data_packet.bytes, data_packet.offset);
+                    _ = zero_rtt_entry.unbounded_send((packet, pathway, usc))
+                }
+                DataHeader::Short(one_rtt) => {
+                    let packet = (one_rtt, data_packet.bytes, data_packet.offset);
+                    _ = one_rtt_entry.unbounded_send((packet, pathway, usc))
+                }
+            },
+        }
+    }
+
+    pub fn retry_packet_entry(&self) -> impl Fn(RetryHeader, Pathway) + Send + 'static {
+        let paths = self.paths.clone();
+        let token = self.token.clone();
+        let remote_cids = self.cid_registry.remote.clone();
+        let initial = self.initial.clone();
+        move |retry, pathway| {
+            paths.update_path_recv_time(pathway);
+
+            *token.lock().unwrap() = retry.token.to_vec();
+            remote_cids.revise_initial_dcid(retry.scid);
+            let sent_record = initial.journal.sent();
+            let mut guard = sent_record.recv();
+            for i in 0..guard.largest_pn() {
+                for frame in guard.may_loss_pkt(i) {
+                    initial.crypto_stream.outgoing().may_loss_data(&frame);
+                }
+            }
+        }
+    }
+
+    pub fn vn_packet_entry(&self) -> impl Fn(VersionNegotiationHeader, Pathway) + Send + 'static {
+        let paths = self.paths.clone();
+        move |_vn, pathway| {
+            paths.update_path_recv_time(pathway);
+
+            // TODO: actually handle the VN packet
         }
     }
 }

@@ -185,6 +185,29 @@ impl ClosingConnection {
     }
 }
 
+impl ClosingConnection {
+    pub fn packet_entry(
+        &self,
+    ) -> impl Fn(qbase::packet::Packet, Pathway, crate::usc::ArcUsc) + Send + Sync + 'static {
+        use futures::StreamExt;
+
+        let (data_packet_entry, mut rcvd_data_packets) = futures::channel::mpsc::unbounded();
+        let mut closing_connecton = self.clone();
+        tokio::spawn(async move {
+            while let Some((packet, pathway, usc)) = rcvd_data_packets.next().await {
+                closing_connecton
+                    .recv_packet_via_pathway(packet, pathway, usc)
+                    .await;
+            }
+        });
+        move |packet, pathway, usc| {
+            if let qbase::packet::Packet::Data(data_packet) = packet {
+                let _ = data_packet_entry.unbounded_send((data_packet, pathway, usc));
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 enum RcvdCcfState {
     #[default]
