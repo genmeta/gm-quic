@@ -91,7 +91,7 @@ impl UscRegistry {
 /// This struct also provide useful methods to send datagrams via a given [`Pathway`].
 ///
 /// [`UdpSocketController`]: qudp::UdpSocketController
-#[derive(Clone, Deref)]
+#[derive(Debug, Clone, Deref)]
 pub struct ArcUsc {
     #[deref]
     usc: Arc<qudp::UdpSocketController>,

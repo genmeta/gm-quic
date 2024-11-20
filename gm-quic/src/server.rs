@@ -7,14 +7,10 @@ use std::{
 use dashmap::DashMap;
 use qbase::{
     cid::ConnectionId,
-    packet::{
-        header::{GetDcid, GetScid},
-        long, DataHeader, DataPacket, InitialHeader, RetryHeader,
-    },
+    packet::{header::GetScid, long, DataHeader, DataPacket, InitialHeader, RetryHeader},
     param::{Parameters, ServerParameters},
     sid::{handy::ConsistentConcurrency, ControlConcurrency},
     token::{ArcTokenRegistry, TokenProvider},
-    util::ArcAsyncDeque,
 };
 use qconnection::{conn::ArcConnection, path::Pathway, router::Router, usc::ArcUsc};
 use rustls::{
@@ -26,7 +22,7 @@ use rustls::{
 use crate::{get_or_create_usc, util, ConnKey, QuicConnection, CONNECTIONS};
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
-type QuicListner = ArcAsyncDeque<(Arc<QuicConnection>, Pathway)>;
+type QuicListner = Arc<util::Channel<(Arc<QuicConnection>, Pathway)>>;
 
 /// 理应全局只有一个server
 static SERVER: LazyLock<RwLock<Weak<QuicServer>>> = LazyLock::new(RwLock::default);
@@ -132,20 +128,18 @@ impl QuicServer {
     ///
     /// If all listening udp sockets are closed, this method will return an error.
     pub async fn accept(&self) -> io::Result<(Arc<QuicConnection>, Pathway)> {
-        // TODO: 错误
-        let error = || {
-            // let msg = "All listening udp sockets are closed";
-            // io::Error::new(io::ErrorKind::AddrNotAvailable, msg)
-            unreachable!()
+        let no_address_listening = || {
+            let error = "all listening udp sockets are closed";
+            io::Error::new(io::ErrorKind::AddrNotAvailable, error)
         };
-        // 这个VecDeque永远不会被close，所以这里不会是None
-        self.listener.pop().await.ok_or_else(error)
+        self.listener.recv().await.ok_or_else(no_address_listening)
     }
 }
 
 // internal methods
 impl QuicServer {
     pub(crate) fn try_to_accept_conn_from(mut packet: DataPacket, pathway: Pathway, usc: &ArcUsc) {
+        log::info!("try to accept connection from {}", pathway.dst_addr());
         let Some(server) = SERVER.read().unwrap().upgrade() else {
             return;
         };
@@ -161,13 +155,11 @@ impl QuicServer {
                 .unwrap();
         let (initial_dcid, client_initial_dcid) = match &mut packet.header {
             DataHeader::Long(long::DataHeader::Initial(hdr)) => {
-                let client_dcid = *hdr.get_dcid();
-                hdr.dcid = initial_scid;
+                let client_dcid = core::mem::replace(&mut hdr.dcid, initial_scid);
                 (*hdr.get_scid(), client_dcid)
             }
             DataHeader::Long(long::DataHeader::ZeroRtt(hdr)) => {
-                let client_dcid = *hdr.get_dcid();
-                hdr.dcid = initial_scid;
+                let client_dcid = core::mem::replace(&mut hdr.dcid, initial_scid);
                 (*hdr.get_scid(), client_dcid)
             }
             _ => return,
@@ -195,25 +187,25 @@ impl QuicServer {
             token_registry,
         );
         inner.add_initial_path(pathway, usc.clone());
-        let conn = QuicConnection {
+        let conn = Arc::new(QuicConnection {
             key: ConnKey::Server(initial_scid),
             inner: inner.clone(), // emm...
-        };
-        log::info!("incoming connection established");
-        server.listener.push_back((Arc::new(conn), pathway.filp()));
-        CONNECTIONS.insert(ConnKey::Server(initial_scid), inner);
-        _ = Router::try_to_route_packet_from(packet, pathway, usc);
+        });
+
+        if server.listener.send((conn, pathway.filp())).is_ok() {
+            CONNECTIONS.insert(ConnKey::Server(initial_scid), inner);
+            _ = Router::try_to_route_packet_from(packet, pathway, usc);
+        }
     }
 
     pub(crate) fn on_socket_close(addr: SocketAddr) {
         if let Some(server) = SERVER.read().unwrap().upgrade() {
             let bind_address_removed = server.sockets.remove(&addr).is_some();
-            // 所有已经绑定的地址都被关闭了，并且被动监听没有开启，那么就关闭server的监听...
-            // THINK: 不可能再接收新连接的情况下，Listener应该被立刻关闭？否
-            // if bind_address_removed && !server.passive_listening && server.sockets.is_empty() {
-            //     server.listener.close();
-            // }
-            _ = bind_address_removed;
+            // when: add listening sockets are removed, and passive listening is not enabled, it's not possiable
+            // to accept new connections anymore, so close the server's listener...
+            if bind_address_removed && !server.passive_listening && server.sockets.is_empty() {
+                server.listener.close();
+            }
         }
     }
 
