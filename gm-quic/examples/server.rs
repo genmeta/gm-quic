@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
-use quic::QuicServer;
+use gm_quic::QuicServer;
 
 // cargo run --example server -- \
 //      --cert quic/examples/keychain/quic.test.net/quic-test-net-ECC.crt \

@@ -33,7 +33,7 @@ With these layers in place, it becomes clear that the `Accept Functor` and the `
 - **qrecovery**: The reliable transport part of QUIC, encompassing the state machine evolution of the sender/receiver, and the internal logic interaction between the application layer and the transport layer.
 - **qcongestion**: Congestion control in QUIC, which abstracts a unified congestion control interface and implements BBRv1. In the future, it will also implement more transport control algorithms such as Cubic and others.
 - **qconnection**: Encapsulation of QUIC connections, linking the necessary components and tasks within a QUIC connection to ensure smooth operation.
-- **quic**: The top-level encapsulation of the QUIC protocol, including interfaces for both the QUIC client and server.
+- **gm-quic**: The top-level encapsulation of the QUIC protocol, including interfaces for both the QUIC client and server.
 - **qudp**: High-performance UDP encapsulation for QUIC. Ordinary UDP incurs a system call for each packet sent or received, resulting in poor performance. 
 qudp optimizes UDP performance to the extreme using techniques like GSO (Generic Segmentation Offload) and GRO (Generic Receive Offload). The performance test results for sending are as follows:
 

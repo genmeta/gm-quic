@@ -45,7 +45,7 @@ impl QuicClient {
     ///
     /// # Examples
     /// ```
-    /// use quic::QuicClient;
+    /// use gm_quic::QuicClient;
     /// use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
     ///
     /// rustls::crypto::ring::default_provider()

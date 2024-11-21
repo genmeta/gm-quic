@@ -1,7 +1,13 @@
 [package]
 name = "qunreliable"
-version.workspace = true
+version = "0.0.1"
 edition.workspace = true
+description = "Unreliable transmission of gm-quic"
+readme.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 bytes = { workspace = true }
