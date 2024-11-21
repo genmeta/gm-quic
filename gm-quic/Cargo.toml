@@ -1,7 +1,13 @@
 [package]
-name = "quic"
-version.workspace = true
+name = "gm-quic"
+version = "0.0.1"
 edition.workspace = true
+description = "An IETF quic transport protocol implemented natively using async Rust"
+readme.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

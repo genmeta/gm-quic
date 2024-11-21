@@ -7,7 +7,7 @@ members = [
     "qcongestion",
     "qudp",
     "qunreliable",
-    "quic",
+    "gm-quic",
     "h3-shim",
 ]
 default-members = [
@@ -16,12 +16,17 @@ default-members = [
     "qconnection",
     "qcongestion",
     "qunreliable",
-    "quic",
+    "gm-quic",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
+readme = "README.md"
+repository = "https://github.com/genmeta/gm-quic"
+license = "GPL-3.0"
+keywords = ["async", "quic", "http3"]
+categories = ["network-programming", "asynchronous"]
 
 [workspace.dependencies]
 bytes = "1"
@@ -56,13 +61,13 @@ tracing-subscriber = "0.3"
 url = "2"
 
 # members
-qbase = { path = "./qbase", version = "0.1.0" }
-qrecovery = { path = "./qrecovery", version = "0.1.0" }
-qconnection = { path = "./qconnection", version = "0.1.0" }
-qcongestion = { path = "./qcongestion", version = "0.1.0" }
-qudp = { path = "./qudp", version = "0.1.0" }
-qunreliable = { path = "./qunreliable", version = "0.1.0" }
-quic = { path = "./quic", version = "0.1.0" }
+qbase = { path = "./qbase", version = "0.0.1" }
+qrecovery = { path = "./qrecovery", version = "0.0.1" }
+qconnection = { path = "./qconnection", version = "0.0.1" }
+qcongestion = { path = "./qcongestion", version = "0.0.1" }
+qudp = { path = "./qudp", version = "0.0.1" }
+qunreliable = { path = "./qunreliable", version = "0.0.1" }
+gm-quic = { path = "./gm-quic", version = "0.0.1" }
 
 [profile.bench]
 debug = true

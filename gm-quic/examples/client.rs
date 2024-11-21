@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
-use quic::QuicClient;
+use gm_quic::QuicClient;
 use rustls::pki_types::{pem::PemObject, CertificateDer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

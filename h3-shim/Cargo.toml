@@ -1,7 +1,13 @@
 [package]
 name = "h3-shim"
-version.workspace = true
+version = "0.0.1"
 edition.workspace = true
+description = "Shim libray between gm-quic and h3"
+readme.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 h3 = "0.0.6"
@@ -10,7 +16,7 @@ futures = { workspace = true }
 qbase = { workspace = true }
 qconnection = { workspace = true }
 qrecovery = { workspace = true }
-quic = { workspace = true }
+gm-quic = { workspace = true }
 qunreliable = { workspace = true }
 tokio = { workspace = true }
 

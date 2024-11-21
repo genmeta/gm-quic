@@ -1,7 +1,13 @@
 [package]
 name = "qbase"
-version.workspace = true
+version = "0.0.1"
 edition.workspace = true
+description = "Core structure of the QUIC protocol, a part of gm-quic"
+readme.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

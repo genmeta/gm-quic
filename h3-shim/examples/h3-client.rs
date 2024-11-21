@@ -2,7 +2,7 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
 use futures::future;
-use h3_shim::quic::rustls;
+use h3_shim::rustls;
 use rustls::pki_types::{pem::PemObject, CertificateDer};
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
@@ -83,7 +83,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
         panic!("failed to parse trust anchor: {}", e);
     }
 
-    let quic_client = ::quic::QuicClient::builder()
+    let quic_client = ::gm_quic::QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()
         .with_keylog(opt.key_log_file)

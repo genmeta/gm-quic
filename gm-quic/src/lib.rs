@@ -20,6 +20,7 @@ mod util;
 
 pub use client::QuicClient;
 pub use qbase;
+pub use qcongestion;
 pub use qconnection;
 pub use qrecovery;
 pub use qunreliable;

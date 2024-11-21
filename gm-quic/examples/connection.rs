@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use quic::QuicClient;
+use gm_quic::QuicClient;
 use rustls::{client::WebPkiServerVerifier, pki_types::CertificateDer};
 
 #[tokio::main(flavor = "current_thread")]
