@@ -212,7 +212,7 @@ impl<TX> Drop for Writer<TX> {
                     sending_state,
                     Sender::DataRcvd | Sender::ResetSent(_) | Sender::ResetRcvd(_)
                 ),
-                "SendingStream must be shutdowned before dropped!"
+                "SendingStream must be shutdowned or cancelled before dropped!"
             );
         };
     }
