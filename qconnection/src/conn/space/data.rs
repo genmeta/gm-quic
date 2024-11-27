@@ -133,13 +133,13 @@ impl DataSpace {
         let on_data_acked = {
             let data_streams = self.streams.clone();
             let crypto_stream_outgoing = self.crypto_stream.outgoing();
-            let sent_pkt_records = self.journal.sent();
+            let sent_journal = self.journal.of_sent_packets();
             move |ack_frame: &AckFrame| {
-                let mut recv_guard = sent_pkt_records.recv();
-                recv_guard.update_largest(ack_frame.largest.into_inner());
+                let mut ack_guard = sent_journal.for_ack();
+                ack_guard.update_largest(ack_frame.largest.into_inner());
 
                 for pn in ack_frame.iter().flat_map(|r| r.rev()) {
-                    for frame in recv_guard.on_pkt_acked(pn) {
+                    for frame in ack_guard.on_pkt_acked(pn) {
                         match frame {
                             GuaranteedFrame::Stream(stream_frame) => {
                                 data_streams.on_data_acked(stream_frame)
@@ -200,7 +200,7 @@ impl DataSpace {
         conn_error: ConnError,
     ) -> JoinHandle<RcvdPackets> {
         tokio::spawn({
-            let rcvd_pkt_records = self.journal.rcvd();
+            let rcvd_journal = self.journal.of_rcvd_packets();
             let keys = self.zero_rtt_keys.clone();
             async move {
                 while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
@@ -222,7 +222,7 @@ impl DataSpace {
                         }
                     };
 
-                    let pn = match rcvd_pkt_records.decode_pn(undecoded_pn) {
+                    let pn = match rcvd_journal.decode_pn(undecoded_pn) {
                         Ok(pn) => pn,
                         // TooOld/TooLarge/HasRcvd
                         Err(_e) => continue,
@@ -251,7 +251,7 @@ impl DataSpace {
                         },
                     ) {
                         Ok(is_ack_packet) => {
-                            rcvd_pkt_records.register_pn(pn);
+                            rcvd_journal.register_pn(pn);
                             path.cc().on_pkt_rcvd(Epoch::Data, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
@@ -271,7 +271,7 @@ impl DataSpace {
         conn_error: ConnError,
     ) -> JoinHandle<RcvdPackets> {
         tokio::spawn({
-            let rcvd_pkt_records = self.journal.rcvd();
+            let rcvd_journal = self.journal.of_rcvd_packets();
             let keys = self.one_rtt_keys.clone();
             async move {
                 while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
@@ -293,7 +293,7 @@ impl DataSpace {
                         }
                     };
 
-                    let pn = match rcvd_pkt_records.decode_pn(undecoded_pn) {
+                    let pn = match rcvd_journal.decode_pn(undecoded_pn) {
                         Ok(pn) => pn,
                         // TooOld/TooLarge/HasRcvd
                         Err(_e) => continue,
@@ -319,7 +319,7 @@ impl DataSpace {
                         },
                     ) {
                         Ok(is_ack_packet) => {
-                            rcvd_pkt_records.register_pn(pn);
+                            rcvd_journal.register_pn(pn);
                             path.cc().on_pkt_rcvd(Epoch::Data, pn, is_ack_packet);
                         }
                         Err(e) => conn_error.on_error(e),
@@ -371,7 +371,7 @@ impl DataSpace {
         }
 
         let keys = self.zero_rtt_keys.get_local_keys()?;
-        let sent_journal = self.journal.sent();
+        let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketMemory::new(
             LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).zero_rtt(),
             buf,
@@ -408,7 +408,7 @@ impl DataSpace {
         buf: &'b mut [u8],
     ) -> Option<(AssembledPacket<'b>, Option<u64>, usize)> {
         let (hpk, pk) = self.one_rtt_keys.get_local_keys()?;
-        let sent_journal = self.journal.sent();
+        let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketMemory::new(
             OneRttHeader::new(spin, tx.dcid()),
             buf,
@@ -418,9 +418,9 @@ impl DataSpace {
 
         let mut ack = None;
         if let Some((largest, rcvd_time)) = tx.need_ack(Epoch::Handshake) {
-            let rcvd_pkt_records = self.journal.rcvd();
+            let rcvd_journal = self.journal.of_rcvd_packets();
             if let Some(ack_frame) =
-                rcvd_pkt_records.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
+                rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
             {
                 packet.dump_ack_frame(ack_frame);
                 ack = Some(largest);
@@ -504,7 +504,7 @@ impl DataTracker {
 
 impl TrackPackets for DataTracker {
     fn may_loss(&self, pn: u64) {
-        for frame in self.journal.sent().recv().may_loss_pkt(pn) {
+        for frame in self.journal.of_sent_packets().for_ack().may_loss_pkt(pn) {
             match frame {
                 GuaranteedFrame::Stream(f) => self.streams.may_loss_data(&f),
                 GuaranteedFrame::Reliable(f) => self.reliable_frames.send_frame([f]),
@@ -514,14 +514,14 @@ impl TrackPackets for DataTracker {
     }
 
     fn retire(&self, pn: u64) {
-        self.journal.rcvd().write().retire(pn);
+        self.journal.of_rcvd_packets().write().retire(pn);
     }
 }
 
 #[derive(Clone)]
 pub struct ClosingOneRttScope {
     keys: (HeaderProtectionKeys, ArcOneRttPacketKeys),
-    rcvd_pkt_records: ArcRcvdJournal,
+    rcvd_journal: ArcRcvdJournal,
     // 发包时用得着
     next_sending_pn: (u64, PacketNumber),
 }
@@ -579,12 +579,12 @@ impl TryFrom<DataSpace> for ClosingOneRttScope {
         let Some(keys) = data.one_rtt_keys.invalid() else {
             return Err(());
         };
-        let rcvd_pkt_records = data.journal.rcvd();
-        let next_sending_pn = data.journal.sent().send().next_pn();
+        let rcvd_journal = data.journal.of_rcvd_packets();
+        let next_sending_pn = data.journal.of_sent_packets().new_packet().pn();
 
         Ok(Self {
             keys,
-            rcvd_pkt_records,
+            rcvd_journal,
             next_sending_pn,
         })
     }
@@ -601,7 +601,7 @@ impl super::RecvPacket for ClosingOneRttScope {
             _ => return false,
         };
 
-        let pn = match self.rcvd_pkt_records.decode_pn(undecoded_pn) {
+        let pn = match self.rcvd_journal.decode_pn(undecoded_pn) {
             Ok(pn) => pn,
             // TooOld/TooLarge/HasRcvd
             Err(_e) => return false,

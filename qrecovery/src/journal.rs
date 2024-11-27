@@ -29,12 +29,12 @@ impl<T> Journal<T> {
     }
 
     /// Get the [`ArcSentJournal`] of space.
-    pub fn sent(&self) -> ArcSentJournal<T> {
+    pub fn of_sent_packets(&self) -> ArcSentJournal<T> {
         self.sent.clone()
     }
 
     /// Get the [`ArcRcvdJournal`] of space.
-    pub fn rcvd(&self) -> ArcRcvdJournal {
+    pub fn of_rcvd_packets(&self) -> ArcRcvdJournal {
         self.rcvd.clone()
     }
 }

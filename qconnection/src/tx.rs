@@ -27,7 +27,7 @@ use qbase::{
 };
 use qcongestion::{ArcCC, CongestionControl};
 use qrecovery::{
-    journal::{ArcSentJournal, SendGuard},
+    journal::{ArcSentJournal, NewPacketGuard},
     reliable::{ArcReliableFrameDeque, GuaranteedFrame},
 };
 
@@ -45,7 +45,7 @@ pub struct PacketMemory<'b, 's, F> {
     #[deref]
     writer: PacketWriter<'b>,
     // 不同空间的send guard类型不一样
-    guard: SendGuard<'s, F>,
+    guard: NewPacketGuard<'s, F>,
 }
 
 impl<'b, 's, F> PacketMemory<'b, 's, F> {
@@ -59,8 +59,8 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
         H: EncodeHeader,
         for<'a> &'a mut [u8]: WriteHeader<H>,
     {
-        let guard = journal.send();
-        let pn = guard.next_pn();
+        let guard = journal.new_packet();
+        let pn = guard.pn();
         let writer = PacketWriter::new(&header, buf, pn, tag_len)?;
         Some(Self { writer, guard })
     }

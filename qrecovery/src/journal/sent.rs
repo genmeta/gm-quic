@@ -127,11 +127,11 @@ impl<T> SentJournal<T> {
 /// these packets to [`DataStreams`] and [`CryptoStream`] when the packet is acknowledged or may be
 /// lost.
 ///
-/// The interfaces are on the [`SendGuard`] structure and the [`RecvGuard`] structure, read their
+/// The interfaces are on the [`NewPacketGuard`] structure and the [`AckGuard`] structure, read their
 /// documentation for more. This structure only provide the methods to create them.
 ///
 /// If multiple tasks are recording at the same time, the recording will become confusing, so the
-/// [`SendGuard`] and the [`RecvGuard`] are designed to be `Guard`, which means that they hold a
+/// [`NewPacketGuard`] and the [`AckGuard`] are designed to be `Guard`, which means that they hold a
 /// [`MutexGuard`].
 ///
 ///
@@ -155,18 +155,18 @@ impl<T> ArcSentJournal<T> {
         Self(Arc::new(Mutex::new(SentJournal::with_capacity(capacity))))
     }
 
-    /// Return a [`RecvGuard`] to resolve the ack frame from peer.
-    pub fn recv(&self) -> RecvGuard<'_, T> {
-        RecvGuard {
+    /// Return a [`AckGuard`] to resolve the ack frame from peer.
+    pub fn for_ack(&self) -> AckGuard<'_, T> {
+        AckGuard {
             inner: self.0.lock().unwrap(),
         }
     }
 
-    /// Return a [`SendGuard`] to get the next pn and record frames in the packet.
-    pub fn send(&self) -> SendGuard<'_, T> {
+    /// Return a [`NewPacketGuard`] to get the next pn and record frames in the packet.
+    pub fn new_packet(&self) -> NewPacketGuard<'_, T> {
         let inner = self.0.lock().unwrap();
         let origin_len = inner.queue.len();
-        SendGuard {
+        NewPacketGuard {
             necessary: false,
             origin_len,
             inner,
@@ -175,11 +175,11 @@ impl<T> ArcSentJournal<T> {
 }
 
 /// Handle the peer's ack frame and feed back the frames in the acknowledged or possibly lost packets to other components.
-pub struct RecvGuard<'a, T> {
+pub struct AckGuard<'a, T> {
     inner: MutexGuard<'a, SentJournal<T>>,
 }
 
-impl<T: Clone> RecvGuard<'_, T> {
+impl<T: Clone> AckGuard<'_, T> {
     /// Handle the [`Largest Acknowledged`] field of the ack frame from peer.
     ///
     /// [`Largest Acknowleged`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-ack-frames
@@ -205,7 +205,7 @@ impl<T: Clone> RecvGuard<'_, T> {
     }
 }
 
-impl<T> Drop for RecvGuard<'_, T> {
+impl<T> Drop for AckGuard<'_, T> {
     fn drop(&mut self) {
         self.inner.auto_drain();
     }
@@ -214,30 +214,30 @@ impl<T> Drop for RecvGuard<'_, T> {
 /// Provide the [encoded] packet number to assemble a packet, and record the frames in packet which
 /// will be send.
 ///
-/// One [`SendGuard`] correspond to a packet.
+/// One [`NewPacketGuard`] correspond to a packet.
 ///
 /// Even if the next packet number is obtained, the packet may not be sent out. If the packet is not
 /// sent out, the packet number will not be consumed.
 ///
-/// Call [`SendGuard::record_trivial`] or [`SendGuard::record_frame`] means that the packet will be
-/// correspond to this [`SendGuard`] will be sent, and the packet number will be consumed when the
-/// [`SendGuard`] dropped.
+/// Call [`NewPacketGuard::record_trivial`] or [`NewPacketGuard::record_frame`] means that the packet will be
+/// correspond to this [`NewPacketGuard`] will be sent, and the packet number will be consumed when the
+/// [`NewPacketGuard`] dropped.
 ///
 /// [encoded]: https://www.rfc-editor.org/rfc/rfc9000.html#name-sample-packet-number-encodi
 #[derive(Debug)]
-pub struct SendGuard<'a, T> {
+pub struct NewPacketGuard<'a, T> {
     necessary: bool,
     origin_len: usize,
     inner: MutexGuard<'a, SentJournal<T>>,
 }
 
-impl<T> SendGuard<'_, T> {
+impl<T> NewPacketGuard<'_, T> {
     /// Provide a packet number and its [encoded] form to assemble a packet.
     ///
-    /// Call this method multipes on the same [`SendGuard`] will result the same pn.
+    /// Call this method multipes on the same [`NewPacketGuard`] will result the same pn.
     ///
     /// [encoded]: https://www.rfc-editor.org/rfc/rfc9000.html#name-sample-packet-number-encodi
-    pub fn next_pn(&self) -> (u64, PacketNumber) {
+    pub fn pn(&self) -> (u64, PacketNumber) {
         let pn = self.inner.records.largest();
         let encoded_pn = PacketNumber::encode(pn, self.inner.largest_acked_pktno);
         (pn, encoded_pn)
@@ -252,7 +252,7 @@ impl<T> SendGuard<'_, T> {
 
     /// Records a frame in the packet being sent.
     ///
-    /// Once this method or [`SendGuard::record_trivial`] called, the packet number will be consumed.
+    /// Once this method or [`NewPacketGuard::record_trivial`] called, the packet number will be consumed.
     ///
     /// When the packet is acked, or may loss, the frames in packet will been fed back to the
     /// components which sent them.
@@ -261,7 +261,7 @@ impl<T> SendGuard<'_, T> {
     }
 }
 
-impl<T> Drop for SendGuard<'_, T> {
+impl<T> Drop for NewPacketGuard<'_, T> {
     fn drop(&mut self) {
         let nframes = self.inner.queue.len() - self.origin_len;
         if self.necessary || nframes > 0 {

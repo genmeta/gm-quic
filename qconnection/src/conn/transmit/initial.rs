@@ -53,9 +53,9 @@ impl InitialSpaceReader {
         let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
 
         // 3. 锁定发送记录器，生成pn，如果pn大小不够，直接返回
-        let sent_journal = self.journal.sent();
-        let mut journal_guard = sent_journal.send();
-        let (pn, encoded_pn) = journal_guard.next_pn();
+        let sent_journal = self.journal.of_sent_packets();
+        let mut new_pkt_guard = sent_journal.new_packet();
+        let (pn, encoded_pn) = new_pkt_guard.pn();
         if payload_buf.remaining_mut() <= encoded_pn.size() {
             return None;
         }
@@ -68,23 +68,23 @@ impl InitialSpaceReader {
         // 4. 检查是否需要发送Ack，若是，生成ack
         let mut sent_ack = None;
         if let Some((largest, recv_time)) = ack_pkt {
-            let rcvd_pkt_records = self.journal.rcvd();
-            let n = rcvd_pkt_records
+            let rcvd_journal = self.journal.of_rcvd_packets();
+            let n = rcvd_journal
                 .read_ack_frame_util(body_buf, largest, recv_time)
                 .unwrap();
-            journal_guard.record_trivial();
+            new_pkt_guard.record_trivial();
             sent_ack = Some(largest);
             body_buf = &mut body_buf[n..];
         }
 
         // 5. 从CryptoStream提取数据，当前无流控，仅最大努力，提取限制之内的最大数据量
         while let Some((frame, n)) = self.crypto_stream_outgoing.try_read_data(body_buf) {
-            journal_guard.record_frame(frame);
+            new_pkt_guard.record_frame(frame);
             body_buf = &mut body_buf[n..];
             is_ack_eliciting = true;
             in_flight = true;
         }
-        drop(journal_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
+        drop(new_pkt_guard); // 持有这把锁的时间越短越好，毕竟下面的加密可能会有点耗时
 
         let hdr_len = hdr_buf.len();
         let pn_len = pn_buf.len();
