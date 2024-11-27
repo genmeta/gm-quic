@@ -26,3 +26,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
+rustls = { workspace = true, features = ["ring"] }

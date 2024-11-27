@@ -391,3 +391,154 @@ unsafe impl BufMut for PacketWriter<'_> {
         UninitSlice::new(&mut self.buffer[self.cursor..self.end])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame::CryptoFrame;
+
+    struct TransparentKeys(rustls::quic::DirectionalKeys);
+
+    impl TransparentKeys {
+        pub fn new() -> Self {
+            rustls::crypto::ring::default_provider()
+                .install_default()
+                .expect("Failed to install ring crypto provider");
+            let suite = rustls::crypto::ring::default_provider()
+                .cipher_suites
+                .iter()
+                .find_map(|cs| match (cs.suite(), cs.tls13()) {
+                    (rustls::CipherSuite::TLS13_AES_128_GCM_SHA256, Some(suite)) => {
+                        Some(suite.quic_suite())
+                    }
+                    _ => None,
+                })
+                .flatten()
+                .unwrap();
+
+            let pk = suite.keys(
+                "meanless".as_bytes(),
+                rustls::Side::Client,
+                rustls::quic::Version::V1,
+            );
+            TransparentKeys(pk.local)
+        }
+    }
+
+    impl rustls::quic::PacketKey for TransparentKeys {
+        fn decrypt_in_place<'a>(
+            &self,
+            _packet_number: u64,
+            _header: &[u8],
+            payload: &'a mut [u8],
+        ) -> Result<&'a [u8], rustls::Error> {
+            Ok(&payload[..payload.len() - self.tag_len()])
+        }
+
+        fn encrypt_in_place(
+            &self,
+            _packet_number: u64,
+            _header: &[u8],
+            _payload: &mut [u8],
+        ) -> Result<rustls::quic::Tag, rustls::Error> {
+            Ok(rustls::quic::Tag::from("transparent_keys".as_bytes()))
+        }
+
+        fn confidentiality_limit(&self) -> u64 {
+            self.0.packet.confidentiality_limit()
+        }
+
+        fn integrity_limit(&self) -> u64 {
+            self.0.packet.integrity_limit()
+        }
+
+        fn tag_len(&self) -> usize {
+            self.0.packet.tag_len()
+        }
+    }
+
+    impl rustls::quic::HeaderProtectionKey for TransparentKeys {
+        fn decrypt_in_place(
+            &self,
+            _sample: &[u8],
+            _first_byte: &mut u8,
+            _payload: &mut [u8],
+        ) -> Result<(), rustls::Error> {
+            Ok(())
+        }
+
+        fn encrypt_in_place(
+            &self,
+            _sample: &[u8],
+            _first_byte: &mut u8,
+            _payload: &mut [u8],
+        ) -> Result<(), rustls::Error> {
+            Ok(())
+        }
+
+        fn sample_len(&self) -> usize {
+            self.0.header.sample_len()
+        }
+    }
+
+    #[test]
+    fn test_initial_packet_writer() {
+        let mut buffer = vec![0u8; 128];
+        let header = LongHeaderBuilder::with_cid(
+            ConnectionId::from_slice("testdcid".as_bytes()),
+            ConnectionId::from_slice("testscid".as_bytes()),
+        )
+        .initial(Vec::with_capacity(0));
+
+        let pn = (0, PacketNumber::encode(0, 0));
+        let tag_len = 16;
+
+        let mut writer = PacketWriter::new(&header, &mut buffer, pn, tag_len).unwrap();
+        let frame = CryptoFrame {
+            length: VarInt::from_u32(12),
+            offset: VarInt::from_u32(0),
+        };
+        writer.dump_frame_with_data(frame, "client_hello".as_bytes());
+
+        assert!(writer.is_ack_eliciting());
+        assert!(writer.in_flight());
+
+        let transparent_keys = TransparentKeys::new();
+        let packet = writer.encrypt_long_packet(&transparent_keys, &transparent_keys);
+        assert!(packet.is_ack_eliciting());
+        assert!(packet.in_flight());
+        assert_eq!(packet.len(), 58);
+        assert_eq!(
+            packet.deref(),
+            [
+                // initial packet:
+                // header form (1) = 1,, long header
+                // fixed bit (1) = 1,
+                // long packet type (2) = 0, initial packet
+                // reserved bits (2) = 0,
+                // packet number length (2) = 0, 1 byte
+                192, // first byte
+                0, 0, 0, 1, // quic version
+                // destination connection id, "testdcid"
+                8, // dcid length
+                b't', b'e', b's', b't', b'd', b'c', b'i', b'd', // dcid bytes
+                // source connection id, "testscid"
+                8, // scid length
+                b't', b'e', b's', b't', b's', b'c', b'i', b'd', // scid bytes
+                0,    // token length, no token
+                64, 16, // payload length, 2 bytes encoded varint
+                0,  // encoded packet number
+                // crypto frame header
+                6,  // crypto frame type
+                0,  // crypto frame offset
+                12, // crypto frame length
+                // crypto frame data, "client hello"
+                b'c', b'l', b'i', b'e', b'n', b't', b'_', b'h', b'e', b'l', b'l', b'o',
+                // tag, "transparent_keys"
+                b't', b'r', b'a', b'n', b's', b'p', b'a', b'r', b'e', b'n', b't', b'_', b'k', b'e',
+                b'y', b's',
+            ]
+            .as_slice()
+        );
+    }
+}
