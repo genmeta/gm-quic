@@ -138,7 +138,7 @@ impl<TX> Drop for Reader<TX> {
             debug_assert!(
                 !(matches!(receiving_state, Recver::Recv(state) if !state.is_stopped())
                     || matches!(receiving_state, Recver::SizeKnown(state) if !state.is_stopped())),
-                "RecvStream must tell peer to stop sending or be done before dropped!"
+                "The receiving stream must be stopped with error before dropped!"
             );
         }
     }

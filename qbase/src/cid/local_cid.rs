@@ -184,15 +184,15 @@ where
     /// of [RFC9000](https://datatracker.ietf.org/doc/html/rfc9000) for more details.
     ///
     /// It means that the initial source connection ID is the only one that can be used
-    /// to send the Initial, 0Rtt and handshake packets.
-    /// Changing the scid is like issuing a new connection ID to the other party,
+    /// to send the Initial, 0Rtt and Handshake packets.
+    /// Changing the scid is like issuing a new connection ID to the peer,
     /// without specifying a sequence number or Stateless Reset Token.
     /// Changing the scid during the Handshake phase is meaningless and harmful.
     ///
     /// For the server, even though the server provides the preferred address
     /// as the first connection ID, and even though the server can use this
     /// connection ID as the scid in the Handshake packet, it is not necessary.
-    /// The client does not eliminate the zero connection ID.
+    /// The client could not eliminate the zero connection ID before entering 1RTT.
     /// When the client actually eliminates the zero connection ID,
     /// it means that 1RTT packets have already started to be transmitted,
     /// and all subsequent transmissions should be through 1RTT packets.

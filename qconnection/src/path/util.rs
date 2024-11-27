@@ -9,7 +9,7 @@ use bytes::BufMut;
 use futures::StreamExt;
 use qbase::{
     frame::{io::WriteFrame, BeFrame},
-    packet::{MarshalFrame, PacketWriter},
+    packet::MarshalPathFrame,
     util::ArcAsyncDeque,
 };
 
@@ -53,14 +53,15 @@ where
         0
     }
 
-    pub fn try_load_frames_into(&self, packet: &mut PacketWriter<'_>)
+    pub fn try_load_frames_into<B, P>(&self, packet: &mut P)
     where
-        for<'b> PacketWriter<'b>: MarshalFrame<F>,
+        B: BufMut,
+        P: Deref<Target = B> + MarshalPathFrame<F>,
     {
         let mut guard = self.0.lock().unwrap();
         if let Some(frame) = guard.deref() {
             if packet.remaining_mut() >= frame.encoding_size() {
-                packet.dump_frame(guard.take().unwrap());
+                packet.dump_path_frame(guard.take().unwrap());
             }
         }
     }
