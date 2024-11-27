@@ -20,7 +20,7 @@ use qbase::{
     packet::{
         header::{io::WriteHeader, EncodeHeader},
         signal::SpinBit,
-        AssembledPacket, MarshalDataFrame, MarshalFrame, PacketWriter,
+        AssembledPacket, MarshalDataFrame, MarshalFrame, MarshalPathFrame, PacketWriter,
     },
     util::{DescribeData, WriteData},
     Epoch,
@@ -91,6 +91,26 @@ where
                 self.guard.record_frame(frame);
                 None
             })
+    }
+}
+
+impl<'b> MarshalPathFrame<PathChallengeFrame> for PacketMemory<'b, '_, GuaranteedFrame>
+where
+    PacketWriter<'b>: WriteFrame<PathChallengeFrame>,
+{
+    fn dump_path_frame(&mut self, frame: PathChallengeFrame) {
+        self.writer.dump_frame(frame);
+        self.guard.record_trivial();
+    }
+}
+
+impl<'b> MarshalPathFrame<PathResponseFrame> for PacketMemory<'b, '_, GuaranteedFrame>
+where
+    PacketWriter<'b>: WriteFrame<PathResponseFrame>,
+{
+    fn dump_path_frame(&mut self, frame: PathResponseFrame) {
+        self.writer.dump_frame(frame);
+        self.guard.record_trivial();
     }
 }
 

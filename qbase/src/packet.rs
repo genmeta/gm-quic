@@ -147,13 +147,20 @@ impl Iterator for PacketReader {
     }
 }
 
-/// 在形成一个数据包的过程中，编排各种合适的帧到数据包中
+/// During the formation of a packet, various frames are arranged into the packet.
 pub trait MarshalFrame<F> {
     fn dump_frame(&mut self, frame: F) -> Option<F>;
 }
 
 pub trait MarshalDataFrame<F, D> {
     fn dump_frame_with_data(&mut self, frame: F, data: D) -> Option<F>;
+}
+
+/// Mainly customized for PathChallengeFrame and PathResponseFrame.
+/// These frames are sent in the data space but do not need to be
+/// reliably guaranteed in the data space.
+pub trait MarshalPathFrame<F> {
+    fn dump_path_frame(&mut self, frame: F);
 }
 
 pub struct PacketWriter<'b> {
