@@ -74,13 +74,13 @@ impl InitialSpace {
         };
         let on_data_acked = {
             let crypto_stream_outgoing = self.crypto_stream.outgoing();
-            let sent_pkt_records = self.journal.sent();
+            let sent_journal = self.journal.of_sent_packets();
             move |ack_frame: &AckFrame| {
-                let mut recv_guard = sent_pkt_records.recv();
-                recv_guard.update_largest(ack_frame.largest.into_inner());
+                let mut ack_guard = sent_journal.for_ack();
+                ack_guard.update_largest(ack_frame.largest.into_inner());
 
                 for pn in ack_frame.iter().flat_map(|r| r.rev()) {
-                    for frame in recv_guard.on_pkt_acked(pn) {
+                    for frame in ack_guard.on_pkt_acked(pn) {
                         crypto_stream_outgoing.on_data_acked(&frame);
                     }
                 }
@@ -115,7 +115,7 @@ impl InitialSpace {
         let pathes = pathes.clone();
         let conn_error = conn_error.clone();
         tokio::spawn({
-            let rcvd_pkt_records = self.journal.rcvd();
+            let rcvd_journal = self.journal.of_rcvd_packets();
             let keys = self.keys.clone();
             let remote_cids = remote_cids.clone();
             let notify = notify.clone();
@@ -140,7 +140,7 @@ impl InitialSpace {
                         }
                     };
 
-                    let pn = match rcvd_pkt_records.decode_pn(undecoded_pn) {
+                    let pn = match rcvd_journal.decode_pn(undecoded_pn) {
                         Ok(pn) => pn,
                         // TooOld/TooLarge/HasRcvd
                         Err(_e) => continue,
@@ -177,7 +177,7 @@ impl InitialSpace {
                         },
                     ) {
                         Ok(is_ack_packet) => {
-                            rcvd_pkt_records.register_pn(pn);
+                            rcvd_journal.register_pn(pn);
                             path.cc().on_pkt_rcvd(Epoch::Initial, pn, is_ack_packet);
                         }
                         Err(e) => {
@@ -210,7 +210,7 @@ impl InitialSpace {
         buf: &'b mut [u8],
     ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
         let keys = self.keys.get_local_keys()?;
-        let sent_journal = self.journal.sent();
+        let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketMemory::new(
             LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).initial(token),
             buf,
@@ -220,9 +220,9 @@ impl InitialSpace {
 
         let mut ack = None;
         if let Some((largest, rcvd_time)) = tx.need_ack(Epoch::Initial) {
-            let rcvd_pkt_records = self.journal.rcvd();
+            let rcvd_journal = self.journal.of_rcvd_packets();
             if let Some(ack_frame) =
-                rcvd_pkt_records.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
+                rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
             {
                 packet.dump_ack_frame(ack_frame);
                 ack = Some(largest);
@@ -263,12 +263,12 @@ impl InitialTracker {
 
 impl TrackPackets for InitialTracker {
     fn may_loss(&self, pn: u64) {
-        for frame in self.journal.sent().recv().may_loss_pkt(pn) {
+        for frame in self.journal.of_sent_packets().for_ack().may_loss_pkt(pn) {
             self.outgoing.may_loss_data(&frame);
         }
     }
 
     fn retire(&self, pn: u64) {
-        self.journal.rcvd().write().retire(pn);
+        self.journal.of_rcvd_packets().write().retire(pn);
     }
 }
