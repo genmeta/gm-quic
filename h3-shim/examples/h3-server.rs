@@ -80,7 +80,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn std::error::Error + Send + Sync
     }
     let Certs { cert, key } = opt.certs;
 
-    let quic_server = ::gm_quic::QuicServer::buidler()
+    let quic_server = ::gm_quic::QuicServer::builder()
         .with_supported_versions([1u32])
         .without_cert_verifier()
         .enable_sni()

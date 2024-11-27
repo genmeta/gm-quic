@@ -68,7 +68,7 @@ pub struct QuicServer {
 
 impl QuicServer {
     /// Start to build a QuicServer.
-    pub fn buidler() -> QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
+    pub fn builder() -> QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
         QuicServerBuilder {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
