@@ -29,21 +29,15 @@ impl From<Error> for TransportError {
     fn from(e: Error) -> Self {
         match e {
             // An endpoint MUST treat receipt of a packet containing no frames as a connection error of type PROTOCOL_VIOLATION.
-            Error::NoFrames => Self::new(
-                TransportErrorKind::ProtocolViolation,
-                FrameType::Padding,
-                e.to_string(),
-            ),
-            Error::IncompleteType(_) => Self::new(
-                TransportErrorKind::FrameEncoding,
-                FrameType::Padding,
-                e.to_string(),
-            ),
-            Error::InvalidType(_) => Self::new(
-                TransportErrorKind::FrameEncoding,
-                FrameType::Padding,
-                e.to_string(),
-            ),
+            Error::NoFrames => {
+                Self::with_default_fty(TransportErrorKind::ProtocolViolation, e.to_string())
+            }
+            Error::IncompleteType(_) => {
+                Self::with_default_fty(TransportErrorKind::FrameEncoding, e.to_string())
+            }
+            Error::InvalidType(_) => {
+                Self::with_default_fty(TransportErrorKind::FrameEncoding, e.to_string())
+            }
             Error::WrongType(fty, _) => {
                 Self::new(TransportErrorKind::FrameEncoding, fty, e.to_string())
             }

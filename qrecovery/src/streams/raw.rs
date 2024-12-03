@@ -11,7 +11,7 @@ use qbase::{
         STREAM_FRAME_MAX_ENCODING_SIZE,
     },
     packet::MarshalDataFrame,
-    param::Parameters,
+    param::CommonParameters,
     sid::{
         remote_sid::{AcceptSid, ExceedLimitError},
         ControlConcurrency, Dir, Role, StreamId, StreamIds,
@@ -482,7 +482,7 @@ where
 {
     pub(super) fn new(
         role: Role,
-        local_params: &Parameters,
+        local_params: &CommonParameters,
         ctrl: Box<dyn ControlConcurrency>,
         ctrl_frames: TX,
     ) -> Self {

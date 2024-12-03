@@ -33,7 +33,12 @@ impl QuicConnection {
             accpet_uni: AcceptUniStreams::new(conn.clone()),
             open_bi: OpenBiStreams::new(conn.clone()),
             open_uni: OpenUniStreams::new(conn.clone()),
-            send_datagram: SendDatagram(conn.datagram_writer().await.map_err(Into::into)),
+            send_datagram: SendDatagram(
+                conn.datagram_writer()
+                    .await
+                    .map(Option::unwrap)
+                    .map_err(Into::into),
+            ),
             recv_datagram: RecvDatagram(conn.datagram_reader().map_err(Into::into)),
             connection: conn,
         }
@@ -247,7 +252,11 @@ struct AcceptBiStreams(BoxStream<Result<(StreamId, (StreamReader, StreamWriter))
 impl AcceptBiStreams {
     fn new(conn: Arc<gm_quic::QuicConnection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
-            let bidi = conn.accept_bi_stream().await.map_err(Into::into);
+            let bidi = conn
+                .accept_bi_stream()
+                .await
+                .map(Option::unwrap)
+                .map_err(Into::into);
             if bidi.is_err() && !conn.is_active() {
                 return None;
             }

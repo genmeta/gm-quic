@@ -10,7 +10,7 @@ use qbase::{
     error::Error,
     frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame},
     packet::keys::ArcKeys,
-    param::Parameters,
+    param::{ArcParameters, Pair},
     sid::{ControlConcurrency, Role},
     token::{ArcTokenRegistry, TokenRegistry},
     Epoch,
@@ -20,7 +20,6 @@ use rustls::quic::Keys;
 use tokio::{sync::Notify, task::JoinHandle};
 
 use super::{
-    parameters::ConnParameters,
     space::{
         data::{DataSpace, DataTracker},
         handshake::{HandshakeSpace, HandshakeTracker},
@@ -52,14 +51,14 @@ pub struct Connection {
     pub(super) join_handles: [JoinHandle<RcvdPackets>; 4],
 
     pub(super) tls_session: ArcTlsSession,
-    pub(super) params: ConnParameters,
+    pub(super) params: ArcParameters,
 }
 
 impl Connection {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         role: Role,
-        local_params: Parameters,
+        params: ArcParameters,
         tls_session: ArcTlsSession,
         initial_scid: ConnectionId,
         initial_dcid: ConnectionId,
@@ -74,7 +73,7 @@ impl Connection {
 
         let initial = InitialSpace::new(ArcKeys::with_keys(initial_keys));
         let hs = HandshakeSpace::default();
-        let data = DataSpace::new(role, &local_params, streams_ctrl);
+        let data = DataSpace::new(role, &params.local().unwrap(), streams_ctrl);
         let reliable_frames = &data.reliable_frames;
         let streams = &data.streams;
         let datagrams = &data.datagrams;
@@ -92,7 +91,7 @@ impl Connection {
         let local_cids = ArcLocalCids::new(initial_scid, router_registry);
         let remote_cids = ArcRemoteCids::new(
             initial_dcid,
-            local_params.active_connection_id_limit().into(),
+            params.local().unwrap().active_connection_id_limit().into(),
             reliable_frames.clone(),
         );
         let cid_registry = CidRegistry::new(local_cids, remote_cids);
@@ -209,7 +208,7 @@ impl Connection {
 
         let join_hs = hs.build(rcvd_hs_packets, &pathes, &notify, &conn_error);
 
-        let remote_params = tls_session.keys_upgrade(
+        tls_session.keys_upgrade(
             [
                 &initial.crypto_stream,
                 &hs.crypto_stream,
@@ -217,32 +216,30 @@ impl Connection {
             ],
             hs.keys.clone(),
             data.one_rtt_keys.clone(),
-            conn_error.clone(),
             handshake.clone(),
+            params.clone(),
+            conn_error.clone(),
         );
 
-        let params = ConnParameters::new(local_params.into(), remote_params.clone());
         tokio::spawn({
+            let params = params.clone();
             let streams = streams.clone();
             let conn_error = conn_error.clone();
             let cid_registry = cid_registry.clone();
             async move {
-                let remote_params = remote_params.read().await;
-                let Ok(remote_params) = remote_params else {
-                    return;
-                };
+                if let Some(Pair { local: _, remote }) = params.await {
+                    // pretend to receive the MAX_STREAM frames
+                    _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
+                        remote.initial_max_streams_bidi(),
+                    )));
+                    _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Uni(
+                        remote.initial_max_streams_uni(),
+                    )));
 
-                // pretend to receive the MAX_STREAM frames
-                _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
-                    remote_params.initial_max_streams_bidi(),
-                )));
-                _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Uni(
-                    remote_params.initial_max_streams_uni(),
-                )));
-
-                let active_cid_limit = remote_params.active_connection_id_limit().into();
-                if let Err(e) = cid_registry.local.set_limit(active_cid_limit) {
-                    conn_error.on_error(e);
+                    let active_cid_limit = remote.active_connection_id_limit().into();
+                    if let Err(e) = cid_registry.local.set_limit(active_cid_limit) {
+                        conn_error.on_error(e);
+                    }
                 }
             }
         });
@@ -288,7 +285,7 @@ impl Connection {
         self.data.on_conn_error(error);
         self.flow_ctrl.on_conn_error(error);
         self.params.on_conn_error(error);
-        self.tls_session.abort();
+        self.tls_session.on_conn_error(error);
         self.notify.notify_waiters();
     }
 

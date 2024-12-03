@@ -38,13 +38,23 @@ impl ConnectionId {
 /// See [`ConnectionId`].
 pub fn be_connection_id(input: &[u8]) -> IResult<&[u8], ConnectionId> {
     let (remain, len) = be_u8(input)?;
-    if len as usize > MAX_CID_SIZE {
+    be_connection_id_with_len(remain, len as usize)
+}
+
+/// Parse a given `len` connection ID from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
+///
+/// ## Note:
+///
+/// The connection ID length is limited to 20 bytes, or it will return an error.
+pub fn be_connection_id_with_len(input: &[u8], len: usize) -> IResult<&[u8], ConnectionId> {
+    if len > MAX_CID_SIZE {
         return Err(nom::Err::Error(nom::error::make_error(
-            remain,
+            input,
             nom::error::ErrorKind::TooLarge,
         )));
     }
-    let (remain, bytes) = take(len as usize)(remain)?;
+    let (remain, bytes) = take(len)(input)?;
     Ok((remain, ConnectionId::from_slice(bytes)))
 }
 

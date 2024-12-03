@@ -15,7 +15,7 @@ use qbase::{
     error::{Error, ErrorKind},
     flow,
     packet::{DataPacket, RetryHeader},
-    param::Parameters,
+    param::{ArcParameters, ClientParameters, CommonParameters, Pair, ServerParameters},
     sid::{Role, StreamId},
     token::ArcTokenRegistry,
 };
@@ -37,9 +37,10 @@ use crate::{
     usc::ArcUsc,
 };
 
+// pub mod core;
+
 pub mod closing;
 pub mod draining;
-pub mod parameters;
 pub mod raw;
 pub mod space;
 pub mod transmit;
@@ -74,7 +75,7 @@ impl ConnState {
         &mut self,
         error: Error,
     ) -> Option<([JoinHandle<RcvdPackets>; 4], Duration)> {
-        let conn = core::mem::replace(self, Invalid);
+        let conn = std::mem::replace(self, Invalid);
         let Normal(connection) = conn else {
             // has been closing/draining
             *self = conn;
@@ -119,7 +120,7 @@ impl ConnState {
     }
 
     fn enter_draining(&mut self, error: Error) -> Option<Duration> {
-        let conn = core::mem::replace(self, Invalid);
+        let conn = std::mem::replace(self, Invalid);
         let Normal(connection) = conn else {
             // has been closing/draining
             *self = conn;
@@ -134,7 +135,7 @@ impl ConnState {
     }
 
     fn no_vaiable_path(&mut self) {
-        let conn = core::mem::replace(self, Invalid);
+        let conn = std::mem::replace(self, Invalid);
         // no need to reset the state to conn
         let Normal(connection) = conn else { return };
         let error = Error::with_default_fty(ErrorKind::NoViablePath, "No viable path");
@@ -146,7 +147,7 @@ impl ConnState {
     }
 
     fn die(&mut self) {
-        let conn = core::mem::replace(self, Invalid);
+        let conn = std::mem::replace(self, Invalid);
         let local_cids = match &conn {
             Closing(conn) => conn.local_cids(),
             Draining(conn) => conn.local_cids(),
@@ -173,7 +174,8 @@ impl ArcConnection {
     pub fn new_client(
         initial_scid: ConnectionId,
         server_name: String,
-        mut parameters: Parameters,
+        parameters: ClientParameters,
+        remembered: Option<CommonParameters>,
         streams_ctrl: Box<dyn qbase::sid::ControlConcurrency>,
         tls_config: Arc<rustls::ClientConfig>,
         token_registry: ArcTokenRegistry,
@@ -182,9 +184,11 @@ impl ArcConnection {
             panic!("server_name is not valid")
         };
 
-        parameters.set_initial_source_connection_id(Some(initial_scid));
-
         let initial_dcid = ConnectionId::random_gen(8);
+        let parameters = ArcParameters::new_client(parameters, remembered);
+        parameters.set_initial_scid(initial_scid);
+        parameters.original_dcid_from_server_need_equal(initial_dcid);
+
         let tls_session = ArcTlsSession::new_client(server_name, tls_config.clone(), &parameters);
         let initial_keys = ArcTlsSession::initial_keys(
             tls_config.crypto_provider(),
@@ -215,12 +219,13 @@ impl ArcConnection {
         initial_scid: ConnectionId,
         initial_dcid: ConnectionId,
         initial_keys: rustls::quic::Keys,
-        mut parameters: Parameters,
+        parameters: ServerParameters,
         streams_ctrl: Box<dyn qbase::sid::ControlConcurrency>,
         tls_config: Arc<rustls::ServerConfig>,
         token_registry: ArcTokenRegistry,
     ) -> Self {
-        parameters.set_original_destination_connection_id(Some(initial_dcid));
+        let parameters = ArcParameters::new_server(parameters);
+        parameters.set_original_dcid(initial_dcid);
 
         let tls_session = ArcTlsSession::new_server(tls_config.clone(), &parameters);
         let connection = Connection::new(
@@ -239,7 +244,7 @@ impl ArcConnection {
     pub async fn open_bi_stream(
         &self,
     ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
-        let (remote_params, data_streams, conn_error) = {
+        let (params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let connection = match guard.deref() {
                 Normal(connection) => connection,
@@ -250,23 +255,25 @@ impl ArcConnection {
             };
 
             (
-                connection.params.remote.clone(),
+                connection.params.clone(),
                 connection.data.streams.clone(),
                 connection.error.clone(),
             )
         };
 
-        let remote_params = remote_params.read().await?;
-
-        let result = data_streams
-            .open_bi(remote_params.initial_max_stream_data_bidi_remote().into())
-            .await
-            .inspect_err(|e| conn_error.on_error(e.clone()));
-        Ok(result?)
+        if let Some(Pair { local: _, remote }) = params.await {
+            let result = data_streams
+                .open_bi(remote.initial_max_stream_data_bidi_remote().into())
+                .await
+                .inspect_err(|e| conn_error.on_error(e.clone()));
+            Ok(result?)
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, StreamWriter)>> {
-        let (remote_params, data_streams, conn_error) = {
+        let (params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let connection = match guard.deref() {
                 Normal(connection) => connection,
@@ -277,23 +284,27 @@ impl ArcConnection {
             };
 
             (
-                connection.params.remote.clone(),
+                connection.params.clone(),
                 connection.data.streams.clone(),
                 connection.error.clone(),
             )
         };
 
-        let remote_params = remote_params.read().await?;
-
-        let result = data_streams
-            .open_uni(remote_params.initial_max_stream_data_uni().into())
-            .await
-            .inspect_err(|e| conn_error.on_error(e.clone()));
-        Ok(result?)
+        if let Some(Pair { local: _, remote }) = params.await {
+            let result = data_streams
+                .open_uni(remote.initial_max_stream_data_uni().into())
+                .await
+                .inspect_err(|e| conn_error.on_error(e.clone()));
+            Ok(result?)
+        } else {
+            Ok(None)
+        }
     }
 
-    pub async fn accept_bi_stream(&self) -> io::Result<(StreamId, (StreamReader, StreamWriter))> {
-        let (remote_params, data_streams, conn_error) = {
+    pub async fn accept_bi_stream(
+        &self,
+    ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
+        let (params, data_streams, conn_error) = {
             let guard = self.0.lock().unwrap();
             let connection = match guard.deref() {
                 Normal(connection) => connection,
@@ -304,19 +315,21 @@ impl ArcConnection {
             };
 
             (
-                connection.params.remote.clone(),
+                connection.params.clone(),
                 connection.data.streams.clone(),
                 connection.error.clone(),
             )
         };
 
-        let remote_params = remote_params.read().await?;
-
-        let result = data_streams
-            .accept_bi(remote_params.initial_max_stream_data_bidi_local().into())
-            .await
-            .inspect_err(|e| conn_error.on_error(e.clone()))?;
-        Ok(result)
+        if let Some(Pair { local: _, remote }) = params.await {
+            let result = data_streams
+                .accept_bi(remote.initial_max_stream_data_bidi_local().into())
+                .await
+                .inspect_err(|e| conn_error.on_error(e.clone()))?;
+            Ok(Some(result))
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn accept_uni_stream(&self) -> io::Result<(StreamId, StreamReader)> {
@@ -352,8 +365,8 @@ impl ArcConnection {
         }
     }
 
-    pub async fn datagram_writer(&self) -> io::Result<UnreliableWriter> {
-        let (remote_params, datagram_flow) = {
+    pub async fn datagram_writer(&self) -> io::Result<Option<UnreliableWriter>> {
+        let (params, datagram_flow) = {
             let guard = self.0.lock().unwrap();
             let connection = match guard.deref() {
                 Normal(connection) => connection,
@@ -363,14 +376,16 @@ impl ArcConnection {
                 Invalid => unreachable!(),
             };
 
-            (
-                connection.params.remote.clone(),
-                connection.data.datagrams.clone(),
-            )
+            (connection.params.clone(), connection.data.datagrams.clone())
         };
 
-        let remote_params = remote_params.read().await?;
-        datagram_flow.writer(remote_params.max_datagram_frame_size().into())
+        if let Some(Pair { local: _, remote }) = params.await {
+            datagram_flow
+                .writer(remote.max_datagram_frame_size().into())
+                .map(Option::Some)
+        } else {
+            Ok(None)
+        }
     }
 
     /// Gracefully closes the connection.

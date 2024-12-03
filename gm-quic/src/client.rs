@@ -7,7 +7,7 @@ use std::{
 
 use qbase::{
     cid::ConnectionId,
-    param::{ClientParameters, Parameters},
+    param::{ClientParameters, CommonParameters},
     sid::{handy::ConsistentConcurrency, ControlConcurrency},
     token::{ArcTokenRegistry, TokenSink},
 };
@@ -29,7 +29,8 @@ pub struct QuicClient {
     _reuse_connection: bool, // TODO
     _enable_happy_eyepballs: bool,
     _prefer_versions: Vec<u32>,
-    parameters: Parameters,
+    parameters: ClientParameters,
+    remembered: Option<CommonParameters>,
     tls_config: Arc<TlsClientConfig>,
     streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
     token_sink: Option<Arc<dyn TokenSink>>,
@@ -63,7 +64,7 @@ impl QuicClient {
             reuse_connection: true,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
-            parameters: Parameters::default(),
+            parameters: ClientParameters::default(),
             tls_config: TlsClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
             token_sink: None,
@@ -80,7 +81,7 @@ impl QuicClient {
             reuse_connection: true,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
-            parameters: Parameters::default(),
+            parameters: ClientParameters::default(),
             tls_config: TlsClientConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
                 .unwrap(),
@@ -99,7 +100,7 @@ impl QuicClient {
             reuse_connection: true,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
-            parameters: Parameters::default(),
+            parameters: ClientParameters::default(),
             tls_config,
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
             token_sink: None,
@@ -226,6 +227,7 @@ impl QuicClient {
             initial_scid,
             server_name,
             self.parameters,
+            self.remembered,
             streams_ctrl,
             tls_config,
             token_registry,
@@ -246,7 +248,7 @@ pub struct QuicClientBuilder<T> {
     reuse_connection: bool,
     enable_happy_eyepballs: bool,
     prefer_versions: Vec<u32>,
-    parameters: Parameters,
+    parameters: ClientParameters,
     tls_config: T,
     streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
     token_sink: Option<Arc<dyn TokenSink>>,
@@ -309,7 +311,7 @@ impl<T> QuicClientBuilder<T> {
     ///
     /// [transport parameters](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-definit)
     pub fn with_parameters(mut self, parameters: ClientParameters) -> Self {
-        self.parameters = parameters.into();
+        self.parameters = parameters;
         self
     }
 
@@ -495,6 +497,8 @@ impl QuicClientBuilder<TlsClientConfig> {
             _enable_happy_eyepballs: self.enable_happy_eyepballs,
             _prefer_versions: self.prefer_versions,
             parameters: self.parameters,
+            // TODO: 要能加载上次连接的parameters
+            remembered: None,
             tls_config: Arc::new(self.tls_config),
             streams_controller: self.streams_controller,
             token_sink: self.token_sink,
