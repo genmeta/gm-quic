@@ -135,11 +135,11 @@ impl DataSpace {
             let crypto_stream_outgoing = self.crypto_stream.outgoing();
             let sent_journal = self.journal.of_sent_packets();
             move |ack_frame: &AckFrame| {
-                let mut ack_guard = sent_journal.for_ack();
-                ack_guard.update_largest(ack_frame.largest.into_inner());
+                let mut rotate_guard = sent_journal.rotate();
+                rotate_guard.update_largest(ack_frame.largest.into_inner());
 
                 for pn in ack_frame.iter().flat_map(|r| r.rev()) {
-                    for frame in ack_guard.on_pkt_acked(pn) {
+                    for frame in rotate_guard.on_pkt_acked(pn) {
                         match frame {
                             GuaranteedFrame::Stream(stream_frame) => {
                                 data_streams.on_data_acked(stream_frame)
@@ -504,7 +504,7 @@ impl DataTracker {
 
 impl TrackPackets for DataTracker {
     fn may_loss(&self, pn: u64) {
-        for frame in self.journal.of_sent_packets().for_ack().may_loss_pkt(pn) {
+        for frame in self.journal.of_sent_packets().rotate().may_loss_pkt(pn) {
             match frame {
                 GuaranteedFrame::Stream(f) => self.streams.may_loss_data(&f),
                 GuaranteedFrame::Reliable(f) => self.reliable_frames.send_frame([f]),

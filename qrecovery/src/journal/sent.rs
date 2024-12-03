@@ -156,7 +156,7 @@ impl<T> ArcSentJournal<T> {
     }
 
     /// Return a [`AckGuard`] to resolve the ack frame from peer.
-    pub fn for_ack(&self) -> AckGuard<'_, T> {
+    pub fn rotate(&self) -> AckGuard<'_, T> {
         AckGuard {
             inner: self.0.lock().unwrap(),
         }

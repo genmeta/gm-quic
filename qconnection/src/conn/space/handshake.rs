@@ -77,11 +77,11 @@ impl HandshakeSpace {
             let crypto_stream_outgoing = self.crypto_stream.outgoing();
             let sent_journal = self.journal.of_sent_packets();
             move |ack_frame: &AckFrame| {
-                let mut ack_guard = sent_journal.for_ack();
-                ack_guard.update_largest(ack_frame.largest.into_inner());
+                let mut rotate_guard = sent_journal.rotate();
+                rotate_guard.update_largest(ack_frame.largest.into_inner());
 
                 for pn in ack_frame.iter().flat_map(|r| r.rev()) {
-                    for frame in ack_guard.on_pkt_acked(pn) {
+                    for frame in rotate_guard.on_pkt_acked(pn) {
                         crypto_stream_outgoing.on_data_acked(&frame);
                     }
                 }
@@ -336,7 +336,7 @@ impl HandshakeTracker {
 
 impl TrackPackets for HandshakeTracker {
     fn may_loss(&self, pn: u64) {
-        for frame in self.journal.of_sent_packets().for_ack().may_loss_pkt(pn) {
+        for frame in self.journal.of_sent_packets().rotate().may_loss_pkt(pn) {
             self.outgoing.may_loss_data(&frame);
         }
     }
