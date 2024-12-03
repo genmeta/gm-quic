@@ -397,33 +397,7 @@ mod tests {
     use super::*;
     use crate::frame::CryptoFrame;
 
-    struct TransparentKeys(rustls::quic::DirectionalKeys);
-
-    impl TransparentKeys {
-        pub fn new() -> Self {
-            rustls::crypto::ring::default_provider()
-                .install_default()
-                .expect("Failed to install ring crypto provider");
-            let suite = rustls::crypto::ring::default_provider()
-                .cipher_suites
-                .iter()
-                .find_map(|cs| match (cs.suite(), cs.tls13()) {
-                    (rustls::CipherSuite::TLS13_AES_128_GCM_SHA256, Some(suite)) => {
-                        Some(suite.quic_suite())
-                    }
-                    _ => None,
-                })
-                .flatten()
-                .unwrap();
-
-            let pk = suite.keys(
-                "meanless".as_bytes(),
-                rustls::Side::Client,
-                rustls::quic::Version::V1,
-            );
-            TransparentKeys(pk.local)
-        }
-    }
+    struct TransparentKeys;
 
     impl rustls::quic::PacketKey for TransparentKeys {
         fn decrypt_in_place<'a>(
@@ -445,15 +419,15 @@ mod tests {
         }
 
         fn confidentiality_limit(&self) -> u64 {
-            self.0.packet.confidentiality_limit()
+            0
         }
 
         fn integrity_limit(&self) -> u64 {
-            self.0.packet.integrity_limit()
+            0
         }
 
         fn tag_len(&self) -> usize {
-            self.0.packet.tag_len()
+            16
         }
     }
 
@@ -477,7 +451,7 @@ mod tests {
         }
 
         fn sample_len(&self) -> usize {
-            self.0.header.sample_len()
+            20
         }
     }
 
@@ -488,7 +462,7 @@ mod tests {
             ConnectionId::from_slice("testdcid".as_bytes()),
             ConnectionId::from_slice("testscid".as_bytes()),
         )
-        .initial(Vec::with_capacity(0));
+        .initial(b"test_token".to_vec());
 
         let pn = (0, PacketNumber::encode(0, 0));
         let tag_len = 16;
@@ -503,11 +477,10 @@ mod tests {
         assert!(writer.is_ack_eliciting());
         assert!(writer.in_flight());
 
-        let transparent_keys = TransparentKeys::new();
-        let packet = writer.encrypt_long_packet(&transparent_keys, &transparent_keys);
+        let packet = writer.encrypt_long_packet(&TransparentKeys, &TransparentKeys);
         assert!(packet.is_ack_eliciting());
         assert!(packet.in_flight());
-        assert_eq!(packet.len(), 58);
+        assert_eq!(packet.len(), 68);
         assert_eq!(
             packet.deref(),
             [
@@ -525,7 +498,8 @@ mod tests {
                 // source connection id, "testscid"
                 8, // scid length
                 b't', b'e', b's', b't', b's', b'c', b'i', b'd', // scid bytes
-                0,    // token length, no token
+                10,   // token length, no token
+                b't', b'e', b's', b't', b'_', b't', b'o', b'k', b'e', b'n', // token bytes
                 64, 16, // payload length, 2 bytes encoded varint
                 0,  // encoded packet number
                 // crypto frame header

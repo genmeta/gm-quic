@@ -195,6 +195,13 @@ where
         }
     }
 
+    pub fn done(&self) {
+        match self {
+            Handshake::Client(..) => (), /* for client, do nothing */
+            Handshake::Server(h) => h.done(),
+        }
+    }
+
     /// Return the role of this handshake signal.
     pub fn role(&self) -> Role {
         match self {

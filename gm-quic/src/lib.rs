@@ -45,7 +45,9 @@ pub struct QuicConnection {
 
 impl QuicConnection {
     #[inline]
-    pub async fn accept_bi_stream(&self) -> io::Result<(StreamId, (StreamReader, StreamWriter))> {
+    pub async fn accept_bi_stream(
+        &self,
+    ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
         self.inner.accept_bi_stream().await
     }
 
@@ -68,7 +70,7 @@ impl QuicConnection {
     }
 
     #[inline]
-    pub async fn datagram_writer(&self) -> io::Result<qunreliable::UnreliableWriter> {
+    pub async fn datagram_writer(&self) -> io::Result<Option<qunreliable::UnreliableWriter>> {
         self.inner.datagram_writer().await
     }
 

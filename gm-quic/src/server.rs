@@ -8,7 +8,7 @@ use dashmap::DashMap;
 use qbase::{
     cid::ConnectionId,
     packet::{header::GetScid, long, DataHeader, DataPacket, InitialHeader, RetryHeader},
-    param::{Parameters, ServerParameters},
+    param::ServerParameters,
     sid::{handy::ConsistentConcurrency, ControlConcurrency},
     token::{ArcTokenRegistry, TokenProvider},
 };
@@ -59,7 +59,7 @@ pub struct QuicServer {
     passive_listening: bool,
     _supported_versions: Vec<u32>,
     _load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
-    parameters: Parameters,
+    parameters: ServerParameters,
     tls_config: Arc<TlsServerConfig>,
     streams_controller:
         Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
@@ -73,7 +73,7 @@ impl QuicServer {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
             load_balance: Arc::new(|_| None),
-            parameters: Parameters::default(),
+            parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
             token_provider: None,
@@ -88,7 +88,7 @@ impl QuicServer {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
             load_balance: Arc::new(|_| None),
-            parameters: Parameters::default(),
+            parameters: ServerParameters::default(),
             tls_config,
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
             token_provider: None,
@@ -103,7 +103,7 @@ impl QuicServer {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
             load_balance: Arc::new(|_| None),
-            parameters: Parameters::default(),
+            parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
                 .unwrap(),
@@ -249,7 +249,7 @@ pub struct QuicServerBuilder<T> {
     supported_versions: Vec<u32>,
     passive_listening: bool,
     load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
-    parameters: Parameters,
+    parameters: ServerParameters,
     tls_config: T,
     streams_controller:
         Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
@@ -262,7 +262,7 @@ pub struct QuicServerSniBuilder<T> {
     passive_listening: bool,
     load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     hosts: Arc<DashMap<String, Host>>,
-    parameters: Parameters,
+    parameters: ServerParameters,
     tls_config: T,
     streams_controller:
         Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
@@ -315,7 +315,7 @@ impl<T> QuicServerBuilder<T> {
     ///
     /// [transport parameters](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-definit)
     pub fn with_parameters(mut self, parameters: ServerParameters) -> Self {
-        self.parameters = parameters.into();
+        self.parameters = parameters;
         self
     }
 

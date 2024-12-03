@@ -31,7 +31,7 @@ pub use listener::{AcceptBiStream, AcceptUniStream};
 use qbase::{
     error::Error,
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
-    param::Parameters,
+    param::CommonParameters,
     sid::{ControlConcurrency, Role, StreamId},
 };
 
@@ -82,7 +82,7 @@ where
     /// The `ctrl_frames` is the frame sender, read [`raw::DataStreams`] for more details.
     pub fn new(
         role: Role,
-        local_params: &Parameters,
+        local_params: &CommonParameters,
         ctrl: Box<dyn ControlConcurrency>,
         ctrl_frames: TX,
     ) -> Self {

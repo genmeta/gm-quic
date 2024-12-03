@@ -24,7 +24,7 @@ use qbase::{
         signal::SpinBit,
         AssembledPacket, DataPacket, PacketNumber, PacketWriter,
     },
-    param::Parameters,
+    param::CommonParameters,
     sid::{ControlConcurrency, Role},
     token::ArcTokenRegistry,
     Epoch,
@@ -64,7 +64,7 @@ pub struct DataSpace {
 impl DataSpace {
     pub fn new(
         role: Role,
-        local_params: &Parameters,
+        local_params: &CommonParameters,
         streams_ctrl: Box<dyn ControlConcurrency>,
     ) -> Self {
         let reliable_frames = ArcReliableFrameDeque::with_capacity(8);

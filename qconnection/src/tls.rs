@@ -8,10 +8,7 @@ use qbase::{
     cid::ConnectionId,
     error::{Error, ErrorKind},
     packet::keys::{ArcKeys, ArcOneRttKeys},
-    param::{
-        codec::{be_parameters, WriteParameters},
-        Parameters,
-    },
+    param::ArcParameters,
     Epoch,
 };
 use qrecovery::crypto::CryptoStream;
@@ -20,17 +17,9 @@ use rustls::{
     quic::{KeyChange, Keys},
     Side,
 };
-use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::{
-    conn::{parameters::RemoteParameters, Handshake},
-    error::ConnError,
-};
-
-#[derive(Debug, Error, Clone, Copy)]
-#[error("TLS session is aborted")]
-pub struct Aborted;
+use crate::{conn::Handshake, error::ConnError};
 
 type TlsConnection = rustls::quic::Connection;
 
@@ -38,9 +27,6 @@ type TlsConnection = rustls::quic::Connection;
 struct TlsSession {
     tls_conn: TlsConnection,
     read_waker: Option<Waker>,
-    /// Optimize: avoid reading transport parameters repeatedly, because the rustls willnot consume
-    /// the bytes of transport parameters after reading them.
-    params_read: bool,
 }
 
 impl From<TlsConnection> for TlsSession {
@@ -48,7 +34,6 @@ impl From<TlsConnection> for TlsSession {
         Self {
             tls_conn,
             read_waker: None,
-            params_read: false,
         }
     }
 }
@@ -68,28 +53,13 @@ impl TlsSession {
         self.tls_conn.write_hs(buf)
     }
 
-    fn get_transport_parameters(&mut self) -> Option<Result<Parameters, Error>> {
-        if self.params_read {
-            return None;
-        }
-        let raw = self.tls_conn.quic_transport_parameters()?;
-        let params = match be_parameters(raw) {
-            Ok((_, params)) => params,
-            Err(e) => {
-                return Some(Err(Error::with_default_fty(
-                    ErrorKind::Internal,
-                    e.to_string(),
-                )))
+    fn try_get_parameters(&mut self, params: &ArcParameters) -> Result<(), Error> {
+        if !params.has_rcvd_remote_params() {
+            if let Some(raw) = self.tls_conn.quic_transport_parameters() {
+                params.recv_remote_params(raw)?;
             }
-        };
-        if let Err(reason) = params.validate() {
-            return Some(Err(Error::with_default_fty(
-                ErrorKind::TransportParameter,
-                reason,
-            )));
         }
-        self.params_read = true;
-        Some(Ok(params))
+        Ok(())
     }
 
     fn alert(&self) -> Option<rustls::AlertDescription> {
@@ -108,38 +78,38 @@ impl TlsSession {
     }
 }
 
-struct ReadTls<'r> {
-    tls_conn: &'r Mutex<Result<TlsSession, Aborted>>,
-    buffer: &'r mut Vec<u8>,
-    read_params: bool,
+struct ReadAndProcess<'r> {
+    tls_conn: &'r Mutex<Result<TlsSession, Error>>,
+    messages: &'r mut Vec<u8>,
+    parameters: &'r ArcParameters,
+    handshake: &'r Handshake,
 }
 
-impl futures::Future for ReadTls<'_> {
-    type Output = Result<(Option<KeyChange>, Option<Result<Parameters, Error>>, bool), Aborted>;
+impl futures::Future for ReadAndProcess<'_> {
+    type Output = Result<Option<KeyChange>, Error>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let mut guard = this.tls_conn.lock().unwrap();
         let tls_conn = match guard.deref_mut() {
             Ok(tls_conn) => tls_conn,
-            Err(_aborted) => return Poll::Ready(Err(Aborted)),
+            Err(e) => return Poll::Ready(Err(e.clone())),
         };
 
-        let key_change = tls_conn.read(this.buffer);
-        if key_change.is_none() && this.buffer.is_empty() {
+        let key_change = tls_conn.read(this.messages);
+        if key_change.is_none() && this.messages.is_empty() {
             tls_conn.read_waker = Some(cx.waker().clone());
             return Poll::Pending;
         }
 
-        let remote_params = if this.read_params {
-            tls_conn.get_transport_parameters()
-        } else {
-            None
-        };
+        if !tls_conn.is_handshaking() {
+            this.handshake.done();
+        }
 
-        let is_handshaking = tls_conn.is_handshaking();
-
-        Poll::Ready(Ok((key_change, remote_params, is_handshaking)))
+        Poll::Ready(match tls_conn.try_get_parameters(this.parameters) {
+            Ok(()) => Ok(key_change),
+            Err(e) => Err(e),
+        })
     }
 }
 
@@ -147,7 +117,7 @@ impl futures::Future for ReadTls<'_> {
 ///
 /// This is a wrapper around the [`rustls::quic::Connection`], which is a QUIC-specific TLS connection.
 #[derive(Debug, Clone)]
-pub struct ArcTlsSession(Arc<Mutex<Result<TlsSession, Aborted>>>);
+pub struct ArcTlsSession(Arc<Mutex<Result<TlsSession, Error>>>);
 
 impl ArcTlsSession {
     /// The QUIC version used by the TLS session.
@@ -157,25 +127,25 @@ impl ArcTlsSession {
     pub fn new_client(
         server_name: rustls::pki_types::ServerName<'static>,
         tls_config: Arc<rustls::ClientConfig>,
-        parameters: &Parameters,
+        parameters: &ArcParameters,
     ) -> Self {
-        let mut params_bytes = Vec::new();
-        params_bytes.put_parameters(parameters);
+        let mut params = Vec::with_capacity(1024);
+        parameters.load_local_params_into(&mut params);
 
         let client_connection = rustls::quic::ClientConnection::new(
             tls_config,
             Self::QUIC_VERSION,
             server_name,
-            params_bytes,
+            params,
         );
         let connection = rustls::quic::Connection::Client(client_connection.unwrap());
         Self(Arc::new(Mutex::new(Ok(connection.into()))))
     }
 
     /// Create a new server-side TLS session.
-    pub fn new_server(tls_config: Arc<rustls::ServerConfig>, parameters: &Parameters) -> Self {
-        let mut params = Vec::new();
-        params.put_parameters(parameters);
+    pub fn new_server(tls_config: Arc<rustls::ServerConfig>, parameters: &ArcParameters) -> Self {
+        let mut params = Vec::with_capacity(1024);
+        parameters.load_local_params_into(&mut params);
 
         let server_connection =
             rustls::quic::ServerConnection::new(tls_config, Self::QUIC_VERSION, params).unwrap();
@@ -200,22 +170,28 @@ impl ArcTlsSession {
     }
 
     /// Abort the TLS session, the handshaking will be stopped if it is not completed.
-    pub fn abort(&self) {
+    pub fn on_conn_error(&self, error: &Error) {
         let mut guard = self.0.lock().unwrap();
         if let Ok(raw_tls) = guard.deref_mut() {
             if let Some(waker) = raw_tls.read_waker.take() {
                 waker.wake();
             }
-            *guard = Err(Aborted);
+            *guard = Err(error.clone());
         }
     }
 
-    fn read<'r>(&'r self, buf: &'r mut Vec<u8>, read_params: bool) -> ReadTls<'r> {
+    fn read_and_process<'r>(
+        &'r self,
+        buf: &'r mut Vec<u8>,
+        parameters: &'r ArcParameters,
+        handshake: &'r Handshake,
+    ) -> ReadAndProcess<'r> {
         buf.clear();
-        ReadTls {
+        ReadAndProcess {
             tls_conn: &self.0,
-            buffer: buf,
-            read_params,
+            messages: buf,
+            parameters,
+            handshake,
         }
     }
 
@@ -231,20 +207,16 @@ impl ArcTlsSession {
     /// The [`Handshake`] is used to notify the other components that the handshake is completed,
     /// for server, it should send the [`HandshakeDoneFrame`] to the client.
     ///
-    /// Return a [`RemoteParameters`] that can be used to asynchronously get the peer's transport
-    /// parameters.
-    ///
     /// [`HandshakeDoneFrame`]: qbase::frame::HandshakeDoneFrame
     pub fn keys_upgrade(
         &self,
         crypto_streams: [&CryptoStream; 3],
         handshake_keys: ArcKeys,
         one_rtt_keys: ArcOneRttKeys,
-        conn_error: ConnError,
         handshake: Handshake,
-    ) -> RemoteParameters {
-        let remote_params = RemoteParameters::new();
-
+        parameters: ArcParameters,
+        conn_error: ConnError,
+    ) {
         let for_each_epoch = |epoch: Epoch| {
             let mut crypto_stream_reader = crypto_streams[epoch].reader();
             let tls_session = self.clone();
@@ -276,36 +248,29 @@ impl ArcTlsSession {
 
         tokio::spawn({
             let tls_session = self.clone();
-            let remote_params = remote_params.clone();
 
             let mut crypto_stream_writers =
                 Epoch::EPOCHS.map(|epoch| crypto_streams[epoch].writer());
             let crypto_stream_read_tasks = Epoch::EPOCHS.map(for_each_epoch);
 
             async move {
-                let mut send_buf = Vec::with_capacity(1500);
+                let mut messages = Vec::with_capacity(1500);
                 let mut cur_epoch = Epoch::Initial;
                 loop {
-                    let read_params = !remote_params.is_ready();
-                    let read_result = tls_session.read(&mut send_buf, read_params).await;
-                    let (key_upgrade, params, is_handshaking) = match read_result {
+                    let key_upgrade = match tls_session
+                        .read_and_process(&mut messages, &parameters, &handshake)
+                        .await
+                    {
                         Ok(results) => results,
-                        Err(_aborted) => break,
+                        Err(e) => {
+                            conn_error.on_error(e);
+                            break;
+                        }
                     };
 
-                    if let Some(params) = params {
-                        match params {
-                            Ok(params) => remote_params.write(params.into()),
-                            Err(params_error) => {
-                                conn_error.on_error(params_error);
-                                break;
-                            }
-                        }
-                    }
-
-                    if !send_buf.is_empty() {
+                    if !messages.is_empty() {
                         let write_result =
-                            crypto_stream_writers[cur_epoch].write_all(&send_buf).await;
+                            crypto_stream_writers[cur_epoch].write_all(&messages).await;
                         if let Err(e) = write_result {
                             let error = Error::with_default_fty(ErrorKind::Internal, e.to_string());
                             conn_error.on_error(error);
@@ -326,12 +291,6 @@ impl ArcTlsSession {
                             }
                         }
                     }
-
-                    if !is_handshaking {
-                        if let Handshake::Server(server_handshake) = &handshake {
-                            server_handshake.done();
-                        }
-                    }
                 }
 
                 for read_task in crypto_stream_read_tasks {
@@ -339,8 +298,6 @@ impl ArcTlsSession {
                 }
             }
         });
-
-        remote_params
     }
 
     /// For server, retrieves the server name, if any, used to select the certificate and private key.
