@@ -15,7 +15,7 @@ use crate::{
     varint::{be_varint, VarInt, WriteVarInt},
 };
 
-#[derive(CopyGetters, Setters, Debug, Default, Clone, Copy, PartialEq)]
+#[derive(CopyGetters, Setters, Debug, Clone, Copy, PartialEq)]
 pub struct CommonParameters {
     #[getset(get_copy = "pub", set = "pub")]
     pub(super) max_idle_timeout: Duration,
@@ -50,6 +50,37 @@ pub struct CommonParameters {
     pub(super) grease_quic_bit: bool,
 }
 
+impl Default for CommonParameters {
+    fn default() -> Self {
+        Self {
+            // Idle timeout is disabled when both endpoints
+            // omit this transport parameter or specify a value of 0.
+            max_idle_timeout: Duration::ZERO,
+            // The default for this parameter is the maximum permitted UDP payload of 65527.
+            max_udp_payload_size: VarInt::from_u32(65527),
+            // For most uses of DATAGRAM frames, it is RECOMMENDED to send a value of 65535
+            // in the max_datagram_frame_size transport parameter to indicate that this
+            // endpoint will accept any DATAGRAM frame that fits inside a QUIC packet.
+            max_datagram_frame_size: VarInt::from_u32(65535),
+            // If this value is absent, a default value of 3 is assumed (indicating a multiplier of 8).
+            ack_delay_exponent: VarInt::from_u32(3),
+            // If this value is absent, a default of 25 milliseconds is assumed.
+            max_ack_delay: VarInt::from_u32(25),
+            disable_active_migration: false,
+            // If this transport parameter is absent, a default of 2 is assumed.
+            active_connection_id_limit: VarInt::from_u32(2),
+            initial_max_data: VarInt::default(),
+            initial_max_stream_data_bidi_local: VarInt::default(),
+            initial_max_stream_data_bidi_remote: VarInt::default(),
+            initial_max_stream_data_uni: VarInt::default(),
+            initial_max_streams_bidi: VarInt::default(),
+            initial_max_streams_uni: VarInt::default(),
+            initial_source_connection_id: ConnectionId::default(),
+            grease_quic_bit: false,
+        }
+    }
+}
+
 impl CommonParameters {
     pub fn set_max_udp_payload_size(&mut self, size: u32) -> &mut Self {
         assert!(
@@ -69,12 +100,12 @@ impl CommonParameters {
         self
     }
 
-    pub fn set_max_ack_delay(&mut self, delay: u32) -> &mut Self {
+    pub fn set_max_ack_delay(&mut self, delay: u16) -> &mut Self {
         assert!(
             delay <= 1 << 14,
             "Values of 2^14 or greater are invalid for max_ack_delay"
         );
-        self.max_ack_delay = VarInt::from_u32(delay);
+        self.max_ack_delay = VarInt::from_u32(delay as u32);
         self
     }
 
@@ -255,14 +286,36 @@ impl<T: bytes::BufMut> WriteClientParameters for T {
 pub struct ServerParameters {
     #[deref]
     common_params: CommonParameters,
-    #[getset(get = "pub", set = "pub")]
+    #[getset(get = "pub")]
     pub(super) original_destination_connection_id: ConnectionId,
-    #[getset(get_copy = "pub", set = "pub")]
+    #[getset(get_copy = "pub")]
     pub(super) retry_source_connection_id: Option<ConnectionId>,
-    #[getset(get = "pub", set = "pub")]
+    #[getset(get = "pub")]
     pub(super) preferred_address: Option<PreferredAddress>,
-    #[getset(get = "pub", set = "pub")]
+    #[getset(get = "pub")]
     pub(super) statelss_reset_token: Option<ResetToken>,
+}
+
+impl ServerParameters {
+    pub fn set_original_destination_connection_id(&mut self, cid: ConnectionId) -> &mut Self {
+        self.original_destination_connection_id = cid;
+        self
+    }
+
+    pub fn set_retry_source_connection_id(&mut self, cid: ConnectionId) -> &mut Self {
+        self.retry_source_connection_id = Some(cid);
+        self
+    }
+
+    pub fn set_preferred_address(&mut self, addr: PreferredAddress) -> &mut Self {
+        self.preferred_address = Some(addr);
+        self
+    }
+
+    pub fn set_statelss_reset_token(&mut self, token: ResetToken) -> &mut Self {
+        self.statelss_reset_token = Some(token);
+        self
+    }
 }
 
 pub(super) fn be_server_parameters<'b>(

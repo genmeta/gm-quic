@@ -119,7 +119,7 @@ impl Parameters {
 
     fn set_retry_scid(&mut self, cid: ConnectionId) {
         assert_eq!(self.role, Role::Server);
-        self.server.set_retry_source_connection_id(Some(cid));
+        self.server.set_retry_source_connection_id(cid);
     }
 
     fn set_original_dcid(&mut self, cid: ConnectionId) {
