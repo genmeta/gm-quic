@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
@@ -13,11 +14,11 @@ use crate::{
 /// Local stream IDs management.
 #[derive(Debug)]
 struct LocalStreamIds<BLOCKED> {
-    role: Role,                 // Our role
-    max: [u64; 2],              // The maximum stream ID we can create
-    unallocated: [u64; 2],      // The stream ID that we have not used
-    wakers: [Option<Waker>; 2], // Used for waiting for the MaxStream frame notification from peer when we have exhausted the creation of stream IDs
-    blocked: BLOCKED,           // The StreamsBlocked frames that will be sent to peer
+    role: Role,                   // Our role
+    max: [u64; 2],                // The maximum stream ID we can create
+    unallocated: [u64; 2],        // The stream ID that we have not used
+    wakers: [VecDeque<Waker>; 2], // Used for waiting for the MaxStream frame notification from peer when we have exhausted the creation of stream IDs
+    blocked: BLOCKED,             // The StreamsBlocked frames that will be sent to peer
 }
 
 impl<BLOCKED> LocalStreamIds<BLOCKED>
@@ -31,7 +32,7 @@ where
             role,
             max: [max_bi_streams, max_uni_streams],
             unallocated: [0, 0],
-            wakers: [None, None],
+            wakers: [VecDeque::with_capacity(2), VecDeque::with_capacity(2)],
             blocked,
         }
     }
@@ -53,7 +54,7 @@ where
         // RFC9000: MAX_STREAMS frames that do not increase the stream limit MUST be ignored.
         if *max_streams < val {
             *max_streams = val;
-            if let Some(waker) = self.wakers[dir as usize].take() {
+            for waker in self.wakers[dir as usize].drain(..) {
                 waker.wake();
             }
         }
@@ -69,9 +70,8 @@ where
             *cur += 1;
             Poll::Ready(Some(StreamId::new(self.role, dir, id)))
         } else {
-            assert!(self.wakers[idx].is_none());
             // waiting for MAX_STREAMS frame from peer
-            self.wakers[idx] = Some(cx.waker().clone());
+            self.wakers[idx].push_back(cx.waker().clone());
             // if Poll::Pending is returned, connection can send a STREAMS_BLOCKED frame to peer
             self.blocked.send_frame([StreamsBlockedFrame::with(
                 dir,
@@ -197,15 +197,15 @@ mod tests {
             Poll::Ready(Some(StreamId(0)))
         );
         assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Bi), Poll::Pending);
-        assert!(local.0.lock().unwrap().wakers[0].is_some());
+        assert!(!local.0.lock().unwrap().wakers[0].is_empty());
         local.recv_max_streams_frame(&MaxStreamsFrame::Bi(VarInt::from_u32(1)));
-        let _ = local.0.lock().unwrap().wakers[0].take();
+        let _ = local.0.lock().unwrap().wakers[0].pop_front();
         assert_eq!(
             local.poll_alloc_sid(&mut cx, Dir::Bi),
             Poll::Ready(Some(StreamId(4)))
         );
         assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Bi), Poll::Pending);
-        assert!(local.0.lock().unwrap().wakers[0].is_some());
+        assert!(!local.0.lock().unwrap().wakers[0].is_empty());
 
         local.recv_max_streams_frame(&MaxStreamsFrame::Uni(VarInt::from_u32(2)));
         assert_eq!(
@@ -221,6 +221,6 @@ mod tests {
             Poll::Ready(Some(StreamId(10)))
         );
         assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Uni), Poll::Pending);
-        assert!(local.0.lock().unwrap().wakers[1].is_some());
+        assert!(!local.0.lock().unwrap().wakers[1].is_empty());
     }
 }

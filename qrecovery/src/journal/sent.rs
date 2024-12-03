@@ -127,11 +127,11 @@ impl<T> SentJournal<T> {
 /// these packets to [`DataStreams`] and [`CryptoStream`] when the packet is acknowledged or may be
 /// lost.
 ///
-/// The interfaces are on the [`NewPacketGuard`] structure and the [`AckGuard`] structure, read their
+/// The interfaces are on the [`NewPacketGuard`] structure and the [`RotateGuard`] structure, read their
 /// documentation for more. This structure only provide the methods to create them.
 ///
 /// If multiple tasks are recording at the same time, the recording will become confusing, so the
-/// [`NewPacketGuard`] and the [`AckGuard`] are designed to be `Guard`, which means that they hold a
+/// [`NewPacketGuard`] and the [`RotateGuard`] are designed to be `Guard`, which means that they hold a
 /// [`MutexGuard`].
 ///
 ///
@@ -155,9 +155,9 @@ impl<T> ArcSentJournal<T> {
         Self(Arc::new(Mutex::new(SentJournal::with_capacity(capacity))))
     }
 
-    /// Return a [`AckGuard`] to resolve the ack frame from peer.
-    pub fn rotate(&self) -> AckGuard<'_, T> {
-        AckGuard {
+    /// Return a [`RotateGuard`] to resolve the ack frame from peer.
+    pub fn rotate(&self) -> RotateGuard<'_, T> {
+        RotateGuard {
             inner: self.0.lock().unwrap(),
         }
     }
@@ -175,11 +175,11 @@ impl<T> ArcSentJournal<T> {
 }
 
 /// Handle the peer's ack frame and feed back the frames in the acknowledged or possibly lost packets to other components.
-pub struct AckGuard<'a, T> {
+pub struct RotateGuard<'a, T> {
     inner: MutexGuard<'a, SentJournal<T>>,
 }
 
-impl<T: Clone> AckGuard<'_, T> {
+impl<T: Clone> RotateGuard<'_, T> {
     /// Handle the [`Largest Acknowledged`] field of the ack frame from peer.
     ///
     /// [`Largest Acknowleged`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-ack-frames
@@ -205,7 +205,7 @@ impl<T: Clone> AckGuard<'_, T> {
     }
 }
 
-impl<T> Drop for AckGuard<'_, T> {
+impl<T> Drop for RotateGuard<'_, T> {
     fn drop(&mut self) {
         self.inner.auto_drain();
     }
