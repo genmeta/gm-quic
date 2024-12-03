@@ -510,7 +510,7 @@ impl ArcConnection {
                 .remote
                 .revise_initial_dcid(retry.scid);
             let sent_journal = connection.initial.journal.of_sent_packets();
-            let mut guard = sent_journal.for_ack();
+            let mut guard = sent_journal.rotate();
             for i in 0..guard.largest_pn() {
                 for frame in guard.may_loss_pkt(i) {
                     connection
