@@ -54,11 +54,7 @@ impl Parameters {
             client,
             server: ServerParameters::default(),
             remembered,
-            requirements: Requirements {
-                initial_source_connection_id: ConnectionId::default(),
-                retry_source_connection_id: None,
-                original_destination_connection_id: None,
-            },
+            requirements: Requirements::default(),
             wakers: Vec::with_capacity(2),
         }
     }
@@ -70,11 +66,7 @@ impl Parameters {
             client: ClientParameters::default(),
             server,
             remembered: None,
-            requirements: Requirements {
-                initial_source_connection_id: ConnectionId::default(),
-                retry_source_connection_id: None,
-                original_destination_connection_id: None,
-            },
+            requirements: Requirements::default(),
             wakers: Vec::with_capacity(2),
         }
     }
@@ -87,21 +79,12 @@ impl Parameters {
     }
 
     fn remote(&self) -> Option<&CommonParameters> {
-        match self.role {
-            Role::Client => {
-                if self.state & Self::SERVER_READY != 0 {
-                    Some(self.server.deref())
-                } else {
-                    None
-                }
-            }
-            Role::Server => {
-                if self.state & Self::CLIENT_READY != 0 {
-                    Some(self.client.deref())
-                } else {
-                    None
-                }
-            }
+        if self.role == Role::Client && self.state & Self::SERVER_READY != 0 {
+            Some(self.server.deref())
+        } else if self.role == Role::Server && self.state & Self::CLIENT_READY != 0 {
+            Some(self.client.deref())
+        } else {
+            None
         }
     }
 
@@ -188,98 +171,65 @@ impl Parameters {
     }
 
     fn authenticate_cids(&self) -> Result<(), Error> {
+        let mut reason = None;
         if self.role == Role::Client {
             if self.server.initial_source_connection_id
                 != self.requirements.initial_source_connection_id
             {
-                return Err(Error::new(
-                    ErrorKind::TransportParameter,
-                    FrameType::Crypto,
-                    "Initial Source Connection ID mismatch",
-                ));
-            }
-
-            if self.server.retry_source_connection_id
+                reason = Some("Initial Source Connection ID mismatch");
+            } else if self.server.retry_source_connection_id
                 != self.requirements.retry_source_connection_id
             {
-                return Err(Error::new(
-                    ErrorKind::TransportParameter,
-                    FrameType::Crypto,
-                    "Retry Source Connection ID mismatch",
-                ));
-            }
-
-            if self.server.original_destination_connection_id
+                reason = Some("Retry Source Connection ID mismatch");
+            } else if self.server.original_destination_connection_id
                 != self
                     .requirements
                     .original_destination_connection_id
                     .expect("The original_destination_connection_id transport parameter MUST be present in the Initial packet from the server")
             {
-                return Err(Error::new(
-                    ErrorKind::TransportParameter,
-                    FrameType::Crypto,
-                    "Original Destination Connection ID mismatch",
-                ));
+                reason = Some("Original Destination Connection ID mismatch");
             }
         } else if self.client.initial_source_connection_id
             != self.requirements.initial_source_connection_id
         {
-            return Err(Error::new(
-                ErrorKind::TransportParameter,
-                FrameType::Crypto,
-                "Initial Source Connection ID mismatch",
-            ));
+            reason = Some("Initial Source Connection ID mismatch");
         }
 
-        Ok(())
+        match reason {
+            Some(reason) => Err(Error::new(
+                ErrorKind::TransportParameter,
+                FrameType::Crypto,
+                reason,
+            )),
+            None => Ok(()),
+        }
     }
 
     fn validate_remote_params(&self) -> Result<(), Error> {
         let remote_params = self.remote().unwrap();
-        if remote_params.max_udp_payload_size.into_inner() < 1200 {
-            return Err(Error::new(
+        let reason = if remote_params.max_udp_payload_size.into_inner() < 1200 {
+            Some("max_udp_payload_size from peer must be at least 1200")
+        } else if remote_params.ack_delay_exponent.into_inner() > 20 {
+            Some("ack_delay_exponent from peer must be at most 20")
+        } else if remote_params.max_ack_delay.into_inner() > 1 << 14 {
+            Some("max_ack_delay from peer must be at most 2^14")
+        } else if remote_params.active_connection_id_limit.into_inner() < 2 {
+            Some("active_connection_id_limit from peer must be at least 2")
+        } else if remote_params.initial_max_streams_bidi.into_inner() > MAX_STREAMS_LIMIT {
+            Some("initial_max_streams_bidi from peer must be at most 2^60 - 1")
+        } else if remote_params.initial_max_streams_uni.into_inner() > MAX_STREAMS_LIMIT {
+            Some("initial_max_streams_uni from peer must be at most 2^60 - 1")
+        } else {
+            None
+        };
+        match reason {
+            Some(reason) => Err(Error::new(
                 ErrorKind::TransportParameter,
                 FrameType::Crypto,
-                "ack_delay_exponent must be at most 20",
-            ));
+                reason,
+            )),
+            None => Ok(()),
         }
-        if remote_params.ack_delay_exponent.into_inner() > 20 {
-            return Err(Error::new(
-                ErrorKind::TransportParameter,
-                FrameType::Crypto,
-                "ack_delay_exponent must be at most 20",
-            ));
-        }
-        if remote_params.max_ack_delay.into_inner() > 1 << 14 {
-            return Err(Error::new(
-                ErrorKind::TransportParameter,
-                FrameType::Crypto,
-                "max_ack_delay must be at most 2^14",
-            ));
-        }
-        if remote_params.active_connection_id_limit.into_inner() < 2 {
-            return Err(Error::new(
-                ErrorKind::TransportParameter,
-                FrameType::Crypto,
-                "active_connection_id_limit must be at least 2",
-            ));
-        }
-        if remote_params.initial_max_streams_bidi.into_inner() > MAX_STREAMS_LIMIT {
-            return Err(Error::new(
-                ErrorKind::TransportParameter,
-                FrameType::Crypto,
-                "active_connection_id_limit must be at least 2",
-            ));
-        }
-        if remote_params.initial_max_streams_uni.into_inner() > MAX_STREAMS_LIMIT {
-            return Err(Error::new(
-                ErrorKind::TransportParameter,
-                FrameType::Crypto,
-                "active_connection_id_limit must be at least 2",
-            ));
-        }
-
-        Ok(())
     }
 }
 

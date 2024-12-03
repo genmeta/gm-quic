@@ -266,7 +266,12 @@ pub(super) fn be_client_parameters<'b>(
                 (input, params.max_datagram_frame_size) = be_varint(remain)?
             }
             ParameterId::GreaseQuicBit => (input, params.grease_quic_bit) = (remain, true),
-            _ => (),
+            _ => {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::IsNot,
+                )))
+            }
         }
     }
     Ok((input, ()))
