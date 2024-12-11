@@ -70,12 +70,12 @@ where
     /// Revise the initial dcid, which is used when the client received the
     /// response packet from the server, and the initial dcid should be updated
     /// based on the scid in the response packet.
-    fn revise_initial_dcid(&mut self, initial_dcid: ConnectionId) {
+    fn revise_initial_dcid(&mut self, responsed_dcid: ConnectionId) {
         let first_dcid = self.cid_deque.get_mut(0).unwrap();
-        *first_dcid = Some((0, initial_dcid, ResetToken::default()));
+        *first_dcid = Some((0, responsed_dcid, ResetToken::default()));
 
         if let Some(apply) = self.ready_cells.get_mut(0) {
-            apply.revise(initial_dcid);
+            apply.revise(responsed_dcid);
         }
     }
 
