@@ -216,10 +216,9 @@ impl<'a> Transaction<'a> {
     pub fn load_initial_space<'b>(
         &mut self,
         buf: &'b mut [u8],
-        token: Vec<u8>,
         initial_space: &InitialSpace,
     ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
-        initial_space.try_assemble(self, token, self.constraints.constrain(buf))
+        initial_space.try_assemble(self, self.constraints.constrain(buf))
     }
 
     pub fn load_0rtt_data<'b>(

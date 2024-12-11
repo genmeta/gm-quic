@@ -24,16 +24,16 @@ use crate::{
 struct SendControler<TX> {
     sent_data: u64,
     max_data: u64,
-    block_tx: TX,
+    broker: TX,
     wakers: Vec<Waker>,
 }
 
 impl<TX> SendControler<TX> {
-    fn new(initial_max_data: u64, block_tx: TX) -> Self {
+    fn new(initial_max_data: u64, broker: TX) -> Self {
         Self {
             sent_data: 0,
             max_data: initial_max_data,
-            block_tx,
+            broker,
             wakers: Vec::with_capacity(4),
         }
     }
@@ -92,10 +92,10 @@ impl<TX> ArcSendControler<TX> {
     ///
     /// `initial_max_data` is allowed to be 0, which is reasonable when creating a
     /// connection without knowing the peer's `iniitial_max_data` setting.
-    pub fn new(initial_max_data: u64, block_tx: TX) -> Self {
+    pub fn new(initial_max_data: u64, broker: TX) -> Self {
         Self(Arc::new(Mutex::new(Ok(SendControler::new(
             initial_max_data,
-            block_tx,
+            broker,
         )))))
     }
 
@@ -196,7 +196,7 @@ where
                 debug_assert!(inner.sent_data + amount as u64 <= inner.max_data);
                 inner.sent_data += amount as u64;
                 if inner.sent_data == inner.max_data {
-                    inner.block_tx.send_frame([DataBlockedFrame {
+                    inner.broker.send_frame([DataBlockedFrame {
                         limit: VarInt::from_u64(inner.max_data).expect(
                             "max_data of flow controller is very very hard to exceed 2^62 - 1",
                         ),
@@ -221,18 +221,18 @@ struct RecvController<TX> {
     max_data: AtomicU64,
     step: u64,
     is_closed: AtomicBool,
-    max_data_tx: TX,
+    broker: TX,
 }
 
 impl<TX> RecvController<TX> {
     /// Creates a new [`RecvController`] with the specified `initial_max_data`.
-    fn new(initial_max_data: u64, max_data_tx: TX) -> Self {
+    fn new(initial_max_data: u64, broker: TX) -> Self {
         Self {
             rcvd_data: AtomicU64::new(0),
             max_data: AtomicU64::new(initial_max_data),
             step: initial_max_data / 2,
             is_closed: AtomicBool::new(false),
-            max_data_tx,
+            broker,
         }
     }
 
@@ -260,7 +260,7 @@ where
         if rcvd_data <= max_data {
             if rcvd_data + self.step >= max_data {
                 self.max_data.fetch_add(self.step, Ordering::Release);
-                self.max_data_tx.send_frame([MaxDataFrame {
+                self.broker.send_frame([MaxDataFrame {
                     max_data: VarInt::from_u64(self.max_data.load(Ordering::Acquire))
                         .expect("max_data of flow controller is very very hard to exceed 2^62 - 1"),
                 }])
@@ -293,8 +293,8 @@ pub struct ArcRecvController<TX>(Arc<RecvController<TX>>);
 
 impl<TX> ArcRecvController<TX> {
     /// Creates a new [`ArcRecvController`] with local `initial_max_data` transport parameter.
-    pub fn new(initial_max_data: u64, max_data_tx: TX) -> Self {
-        Self(Arc::new(RecvController::new(initial_max_data, max_data_tx)))
+    pub fn new(initial_max_data: u64, broker: TX) -> Self {
+        Self(Arc::new(RecvController::new(initial_max_data, broker)))
     }
 
     /// Terminate the receiver's flow control if QUIC connection error occurs.
@@ -345,10 +345,10 @@ impl<TX: Clone> FlowController<TX> {
     /// Unfortunately, at the beginning, the peer's `initial_max_data` is unknown.
     /// Therefore, peer's `initial_max_data` can be set to 0 initially,
     /// and then updated later after obtaining the peer's `initial_max_data` setting.
-    pub fn new(peer_initial_max_data: u64, local_initial_max_data: u64, frames_tx: TX) -> Self {
+    pub fn new(peer_initial_max_data: u64, local_initial_max_data: u64, frames_broker: TX) -> Self {
         Self {
-            sender: ArcSendControler::new(peer_initial_max_data, frames_tx.clone()),
-            recver: ArcRecvController::new(local_initial_max_data, frames_tx),
+            sender: ArcSendControler::new(peer_initial_max_data, frames_broker.clone()),
+            recver: ArcRecvController::new(local_initial_max_data, frames_broker),
         }
     }
 

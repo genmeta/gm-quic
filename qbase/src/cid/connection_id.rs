@@ -1,3 +1,8 @@
+use std::{
+    hash::{Hash, Hasher},
+    ops::Deref,
+};
+
 use nom::{bytes::streaming::take, number::streaming::be_u8, IResult};
 use rand::Rng;
 
@@ -14,20 +19,13 @@ pub const MAX_CID_SIZE: usize = 20;
 /// See [connection id](https://tools.ietf.org/html/rfc9000#name-connection-id)
 /// of [QUIC RFC 9000](https://www.rfc-editor.org/rfc/rfc9000.html)
 /// for more details.
-#[derive(Clone, Copy, Eq, PartialEq, Hash, Default, Debug)]
+#[derive(Clone, Copy, Eq, Default, Debug)]
 pub struct ConnectionId {
     pub(crate) len: u8,
     pub(crate) bytes: [u8; MAX_CID_SIZE],
 }
 
-impl ConnectionId {
-    /// Get the encoding size of the connection ID.
-    ///
-    /// Includes 1-byte length encoding and connection ID bytes.
-    pub fn encoding_size(&self) -> usize {
-        1 + self.len as usize
-    }
-}
+impl ConnectionId {}
 
 /// Parse a connection ID from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
@@ -107,13 +105,33 @@ impl ConnectionId {
             bytes,
         }
     }
+
+    /// Get the encoding size of the connection ID.
+    ///
+    /// Includes 1-byte length encoding and connection ID bytes.
+    pub fn encoding_size(&self) -> usize {
+        1 + self.len as usize
+    }
 }
 
-impl std::ops::Deref for ConnectionId {
+impl Deref for ConnectionId {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
         &self.bytes[0..self.len as usize]
+    }
+}
+
+impl PartialEq<ConnectionId> for ConnectionId {
+    fn eq(&self, other: &ConnectionId) -> bool {
+        self.len == other.len && self.bytes[..self.len as usize] == other.bytes[..self.len as usize]
+    }
+}
+
+impl Hash for ConnectionId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.len.hash(state);
+        self.bytes[..self.len as usize].hash(state);
     }
 }
 
