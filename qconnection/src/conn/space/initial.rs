@@ -8,7 +8,7 @@ use qbase::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::{long::io::LongHeaderBuilder, GetScid, GetType},
         keys::ArcKeys,
-        long, AssembledPacket, DataHeader, PacketWriter,
+        long, AssembledPacket, DataHeader, DataPacket, PacketWriter,
     },
     param::ArcParameters,
     Epoch,
@@ -24,13 +24,15 @@ use super::any;
 use crate::{
     conn::{transmit::InitialSpaceReader, ArcRemoteCids, RcvdPackets},
     error::ConnError,
-    path::{ArcPath, ArcPaths, Path},
+    path::{ArcPath, ArcPaths, Path, Pathway},
     pipe,
     tx::{PacketMemory, Transaction},
+    usc::ArcUsc,
 };
 
 #[derive(Clone)]
 pub struct InitialSpace {
+    pub token: Arc<Mutex<Vec<u8>>>,
     pub keys: ArcKeys,
     pub journal: InitialJournal,
     pub crypto_stream: CryptoStream,
@@ -38,12 +40,13 @@ pub struct InitialSpace {
 
 impl InitialSpace {
     // Initial keys应该是预先知道的，或者传入dcid，可以构造出来
-    pub fn new(keys: ArcKeys) -> Self {
+    pub fn new(keys: rustls::quic::Keys, token: Vec<u8>) -> Self {
         let journal = InitialJournal::with_capacity(16);
         let crypto_stream = CryptoStream::new(4096, 4096);
 
         Self {
-            keys,
+            token: Arc::new(Mutex::new(token)),
+            keys: ArcKeys::with_keys(keys),
             journal,
             crypto_stream,
         }
@@ -214,13 +217,13 @@ impl InitialSpace {
     pub fn try_assemble<'b>(
         &self,
         tx: &mut Transaction<'_>,
-        token: Vec<u8>,
         buf: &'b mut [u8],
     ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
         let keys = self.keys.get_local_keys()?;
         let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketMemory::new(
-            LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).initial(token),
+            LongHeaderBuilder::with_cid(tx.dcid(), tx.scid())
+                .initial(self.token.lock().unwrap().clone()),
             buf,
             keys.local.packet.tag_len(),
             &sent_journal,
