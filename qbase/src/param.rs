@@ -47,24 +47,24 @@ impl Parameters {
     const CLIENT_READY: u8 = 1;
     const SERVER_READY: u8 = 2;
 
-    fn new_client(client: ClientParameters, remembered: Option<CommonParameters>) -> Self {
+    fn new_client(client: &ClientParameters, remembered: &Option<CommonParameters>) -> Self {
         Self {
             role: Role::Client,
             state: Self::CLIENT_READY,
-            client,
+            client: *client,
             server: ServerParameters::default(),
-            remembered,
+            remembered: *remembered,
             requirements: Requirements::default(),
             wakers: Vec::with_capacity(2),
         }
     }
 
-    fn new_server(server: ServerParameters) -> Self {
+    fn new_server(server: &ServerParameters) -> Self {
         Self {
             role: Role::Server,
             state: Self::SERVER_READY,
             client: ClientParameters::default(),
-            server,
+            server: *server,
             remembered: None,
             requirements: Requirements::default(),
             wakers: Vec::with_capacity(2),
@@ -134,10 +134,10 @@ impl Parameters {
                 ne.to_string(),
             )
         })?;
+        self.state = Self::CLIENT_READY | Self::SERVER_READY;
         self.validate_remote_params()?;
         self.authenticate_cids()?;
 
-        self.state = Self::CLIENT_READY | Self::SERVER_READY;
         self.wake_all();
         Ok(())
     }
@@ -251,13 +251,13 @@ impl<T: BufMut> WriteParameters for T {
 pub struct ArcParameters(Arc<Mutex<Result<Parameters, Error>>>);
 
 impl ArcParameters {
-    pub fn new_client(client: ClientParameters, remembered: Option<CommonParameters>) -> Self {
+    pub fn new_client(client: &ClientParameters, remembered: &Option<CommonParameters>) -> Self {
         Self(Arc::new(Mutex::new(Ok(Parameters::new_client(
             client, remembered,
         )))))
     }
 
-    pub fn new_server(server: ServerParameters) -> Self {
+    pub fn new_server(server: &ServerParameters) -> Self {
         Self(Arc::new(Mutex::new(Ok(Parameters::new_server(server)))))
     }
 
