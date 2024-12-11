@@ -9,7 +9,6 @@ use qbase::{
     cid::ConnectionId,
     error::Error,
     frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame},
-    packet::keys::ArcKeys,
     param::{ArcParameters, Pair},
     sid::{ControlConcurrency, Role},
     token::{ArcTokenRegistry, TokenRegistry},
@@ -29,7 +28,7 @@ use super::{
 };
 use crate::{
     error::ConnError,
-    path::{ArcPath, ArcPaths, Path, Paths, Pathway},
+    path::{ArcPath, ArcPaths, OldPaths, Path, Pathway},
     router::Router,
     tls::ArcTlsSession,
 };
@@ -71,7 +70,13 @@ impl Connection {
         let (hs_packets_entry, rcvd_hs_packets) = mpsc::unbounded();
         let (one_rtt_packets_entry, rcvd_1rtt_packets) = mpsc::unbounded();
 
-        let initial = InitialSpace::new(ArcKeys::with_keys(initial_keys));
+        let token = match token_registry.deref() {
+            TokenRegistry::Client((server_name, client)) => {
+                Arc::new(Mutex::new(client.fetch_token(server_name)))
+            }
+            TokenRegistry::Server(_) => Arc::new(Mutex::new(vec![])),
+        };
+        let initial = InitialSpace::new(initial_keys, Vec::new());
         let hs = HandshakeSpace::default();
         let data = DataSpace::new(role, &params.local().unwrap(), streams_ctrl);
         let reliable_frames = &data.reliable_frames;
@@ -99,12 +104,6 @@ impl Connection {
         let flow_ctrl = FlowController::new(65535, 65535, reliable_frames.clone());
         let conn_error = ConnError::default();
 
-        let token = match token_registry.deref() {
-            TokenRegistry::Client((server_name, client)) => {
-                Arc::new(Mutex::new(client.fetch_token(server_name)))
-            }
-            TokenRegistry::Server(_) => Arc::new(Mutex::new(vec![])),
-        };
         let path_creator = Box::new({
             let cid_registry = cid_registry.clone();
             let flow_ctrl = flow_ctrl.clone();
@@ -180,7 +179,7 @@ impl Connection {
                 conn_error.no_viable_path();
             }
         });
-        let pathes = Paths::new(path_creator, on_no_path).into();
+        let pathes = OldPaths::new(path_creator, on_no_path).into();
 
         let validate = {
             let tls_session = tls_session.clone();

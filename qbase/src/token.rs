@@ -91,8 +91,8 @@ impl ArcTokenRegistry {
         ))))
     }
 
-    pub fn with_sink(server_name: String, client: Arc<dyn TokenSink>) -> Self {
-        Self(Arc::new(TokenRegistry::Client((server_name, client))))
+    pub fn with_sink(server_name: String, sink: Arc<dyn TokenSink>) -> Self {
+        Self(Arc::new(TokenRegistry::Client((server_name, sink))))
     }
 
     pub fn with_provider(provider: Arc<dyn TokenProvider>) -> Self {
