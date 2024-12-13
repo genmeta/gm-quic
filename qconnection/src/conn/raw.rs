@@ -203,6 +203,7 @@ impl Connection {
             &cid_registry.remote,
             &notify,
             &conn_error,
+            params.clone(),
             validate,
         );
 

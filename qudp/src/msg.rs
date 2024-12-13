@@ -170,7 +170,7 @@ impl Message {
                         recv_hdr.ttl = decode::<u32, libc::cmsghdr>(cmsg) as u8;
                     },
                     _ => {
-                        log::warn!(
+                        log::debug!(
                             "read unkown level {} cmsg {}",
                             cmsg.cmsg_level,
                             cmsg.cmsg_type

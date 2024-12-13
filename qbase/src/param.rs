@@ -22,7 +22,7 @@ pub use core::*;
 
 #[derive(Debug, Default, Clone, Copy)]
 struct Requirements {
-    initial_source_connection_id: ConnectionId,
+    initial_source_connection_id: Option<ConnectionId>,
     retry_source_connection_id: Option<ConnectionId>,
     original_destination_connection_id: Option<ConnectionId>,
 }
@@ -127,6 +127,7 @@ impl Parameters {
     }
 
     fn recv_remote_params(&mut self, params: &[u8]) -> Result<(), Error> {
+        self.state = Self::CLIENT_READY | Self::SERVER_READY;
         self.parse_remote_params(params).map_err(|ne| {
             Error::new(
                 ErrorKind::TransportParameter,
@@ -137,7 +138,6 @@ impl Parameters {
         self.validate_remote_params()?;
         self.authenticate_cids()?;
 
-        self.state = Self::CLIENT_READY | Self::SERVER_READY;
         self.wake_all();
         Ok(())
     }
@@ -157,7 +157,10 @@ impl Parameters {
     }
 
     fn initial_scid_from_peer_need_equal(&mut self, cid: ConnectionId) {
-        self.requirements.initial_source_connection_id = cid
+        // TODO: 暂时这样实现
+        if self.requirements.initial_source_connection_id.is_none() {
+            self.requirements.initial_source_connection_id = Some(cid)
+        }
     }
 
     fn retry_scid_from_server_need_equal(&mut self, cid: ConnectionId) {
@@ -171,38 +174,45 @@ impl Parameters {
     }
 
     fn authenticate_cids(&self) -> Result<(), Error> {
-        let mut reason = None;
-        if self.role == Role::Client {
-            if self.server.initial_source_connection_id
-                != self.requirements.initial_source_connection_id
-            {
-                reason = Some("Initial Source Connection ID mismatch");
-            } else if self.server.retry_source_connection_id
-                != self.requirements.retry_source_connection_id
-            {
-                reason = Some("Retry Source Connection ID mismatch");
-            } else if self.server.original_destination_connection_id
-                != self
-                    .requirements
-                    .original_destination_connection_id
-                    .expect("The original_destination_connection_id transport parameter MUST be present in the Initial packet from the server")
-            {
-                reason = Some("Original Destination Connection ID mismatch");
-            }
-        } else if self.client.initial_source_connection_id
-            != self.requirements.initial_source_connection_id
-        {
-            reason = Some("Initial Source Connection ID mismatch");
+        fn param_error(reason: &'static str) -> Error {
+            Error::new(ErrorKind::TransportParameter, FrameType::Crypto, reason)
         }
 
-        match reason {
-            Some(reason) => Err(Error::new(
-                ErrorKind::TransportParameter,
-                FrameType::Crypto,
-                reason,
-            )),
-            None => Ok(()),
+        match self.role {
+            Role::Client => {
+                if self.server.initial_source_connection_id
+                    != self
+                        .requirements
+                        .initial_source_connection_id
+                        .expect("The initial_source_connection_id transport parameter MUST be present in the Initial packet from the server")
+                {
+                    return Err(param_error("Initial Source Connection ID from server mismatch"));
+                }
+                if self.server.retry_source_connection_id
+                    != self.requirements.retry_source_connection_id
+                {
+                    return Err(param_error("Retry Source Connection ID mismatch"));
+                }
+                if self.server.original_destination_connection_id != self.requirements
+                        .original_destination_connection_id
+                        .expect("The original_destination_connection_id transport parameter MUST be present in the Initial packet from the server")
+                {
+                    return Err(param_error("Original Destination Connection ID mismatch"));
+                }
+            }
+            Role::Server => {
+                if self.client.initial_source_connection_id
+                    != self
+                        .requirements
+                        .initial_source_connection_id
+                        .expect("The initial_source_connection_id transport parameter MUST be present in the Initial packet from the client")
+                {
+                    return Err(param_error("Initial Source Connection ID from client mismatch"));
+                }
+            }
         }
+
+        Ok(())
     }
 
     fn validate_remote_params(&self) -> Result<(), Error> {
@@ -336,10 +346,14 @@ impl ArcParameters {
 
     pub fn recv_remote_params(&self, bytes: &[u8]) -> Result<(), Error> {
         let mut guard = self.0.lock().unwrap();
-        match guard.deref_mut() {
-            Err(e) => Err(e.clone()),
-            Ok(params) => params.recv_remote_params(bytes),
+        let params = guard.as_mut().map_err(|e| e.clone())?;
+        // 避免外界拿到错误的参数
+        if let Err(e) = params.recv_remote_params(bytes) {
+            params.wake_all();
+            *guard = Err(e.clone());
+            return Err(e);
         }
+        Ok(())
     }
 
     pub fn has_rcvd_remote_params(&self) -> bool {

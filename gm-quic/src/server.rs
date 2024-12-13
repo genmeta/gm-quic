@@ -153,7 +153,7 @@ impl QuicServer {
             std::iter::repeat_with(|| ConnectionId::random_gen_with_mark(8, 0, 0x7F))
                 .find(|cid| !CONNECTIONS.contains_key(&ConnKey::Server(*cid)))
                 .unwrap();
-        let (initial_dcid, client_initial_dcid) = match &mut packet.header {
+        let (initial_dcid, origin_dcid) = match &mut packet.header {
             DataHeader::Long(long::DataHeader::Initial(hdr)) => {
                 let client_dcid = core::mem::replace(&mut hdr.dcid, initial_scid);
                 (*hdr.get_scid(), client_dcid)
@@ -175,11 +175,12 @@ impl QuicServer {
             None => ArcTokenRegistry::default_provider(),
         };
 
-        let initial_keys = server.initial_server_keys(client_initial_dcid);
+        let initial_keys = server.initial_server_keys(origin_dcid);
         let tls_config = server.tls_config.clone();
         let inner = ArcConnection::new_server(
             initial_scid,
             initial_dcid,
+            origin_dcid,
             initial_keys,
             server.parameters,
             streams_ctrl,
@@ -304,6 +305,23 @@ impl<T> QuicServerBuilder<T> {
     /// [address verification](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation)
     pub fn with_token_provider(mut self, token_provider: Arc<dyn TokenProvider>) -> Self {
         self.token_provider = Some(token_provider);
+        self
+    }
+
+    /// Specify the streams controller for the client.
+    ///
+    /// The streams controller is used to control the concurrency of data streams. `controller` is a closure that accept
+    /// (initial maximum number of bidirectional streams, initial maximum number of unidirectional streams) configured in
+    /// [transport parameters] and return a `ControlConcurrency` object.
+    ///
+    /// If you call this multiple times, only the last `controller` will be used.
+    ///
+    /// [transport parameters](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-definit)
+    pub fn with_streams_controller(
+        mut self,
+        controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
+    ) -> Self {
+        self.streams_controller = controller;
         self
     }
 
@@ -465,7 +483,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
-            parameters: Default::default(),
+            parameters: self.parameters,
             tls_config: self
                 .tls_config
                 .with_cert_resolver(Arc::new(VirtualHosts(hosts.clone()))),

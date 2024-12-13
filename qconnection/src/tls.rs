@@ -106,10 +106,9 @@ impl futures::Future for ReadAndProcess<'_> {
             this.handshake.done();
         }
 
-        Poll::Ready(match tls_conn.try_get_parameters(this.parameters) {
-            Ok(()) => Ok(key_change),
-            Err(e) => Err(e),
-        })
+        tls_conn.try_get_parameters(this.parameters)?;
+
+        Poll::Ready(Ok(key_change))
     }
 }
 

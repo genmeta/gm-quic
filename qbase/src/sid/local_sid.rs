@@ -65,7 +65,7 @@ where
         let cur = &mut self.unallocated[idx];
         if *cur > MAX_STREAMS_LIMIT {
             Poll::Ready(None)
-        } else if *cur <= self.max[idx] {
+        } else if *cur < self.max[idx] {
             let id = *cur;
             *cur += 1;
             Poll::Ready(Some(StreamId::new(self.role, dir, id)))
@@ -192,17 +192,14 @@ mod tests {
         local.recv_max_streams_frame(&MaxStreamsFrame::Bi(VarInt::from_u32(0)));
         let waker = futures::task::noop_waker();
         let mut cx = Context::from_waker(&waker);
-        assert_eq!(
-            local.poll_alloc_sid(&mut cx, Dir::Bi),
-            Poll::Ready(Some(StreamId(0)))
-        );
-        assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Bi), Poll::Pending);
+        assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Bi), Poll::Pending,);
         assert!(!local.0.lock().unwrap().wakers[0].is_empty());
+
         local.recv_max_streams_frame(&MaxStreamsFrame::Bi(VarInt::from_u32(1)));
         let _ = local.0.lock().unwrap().wakers[0].pop_front();
         assert_eq!(
             local.poll_alloc_sid(&mut cx, Dir::Bi),
-            Poll::Ready(Some(StreamId(4)))
+            Poll::Ready(Some(StreamId(0)))
         );
         assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Bi), Poll::Pending);
         assert!(!local.0.lock().unwrap().wakers[0].is_empty());
@@ -215,10 +212,6 @@ mod tests {
         assert_eq!(
             local.poll_alloc_sid(&mut cx, Dir::Uni),
             Poll::Ready(Some(StreamId(6)))
-        );
-        assert_eq!(
-            local.poll_alloc_sid(&mut cx, Dir::Uni),
-            Poll::Ready(Some(StreamId(10)))
         );
         assert_eq!(local.poll_alloc_sid(&mut cx, Dir::Uni), Poll::Pending);
         assert!(!local.0.lock().unwrap().wakers[1].is_empty());

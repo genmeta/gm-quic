@@ -4,8 +4,9 @@ use bytes::{Bytes, BytesMut};
 use clap::Parser;
 use h3::{error::ErrorLevel, quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
+use qbase::param::ServerParameters;
 use tokio::{fs::File, io::AsyncReadExt};
-use tracing::{error, info, trace_span};
+use tracing::{error, info};
 
 #[derive(Parser, Debug)]
 #[structopt(name = "server")]
@@ -53,7 +54,7 @@ pub struct Certs {
 
 static ALPN: &[u8] = b"h3";
 
-#[cfg(not(test))]
+#[cfg_attr(test, allow(unused))]
 #[tokio::main(flavor = "current_thread")]
 pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt()
@@ -80,9 +81,19 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn std::error::Error + Send + Sync
     }
     let Certs { cert, key } = opt.certs;
 
+    let mut params = ServerParameters::default();
+
+    params.set_initial_max_streams_bidi(100);
+    params.set_initial_max_streams_uni(100);
+    params.set_initial_max_data((1u32 << 20).into());
+    params.set_initial_max_stream_data_uni((1u32 << 20).into());
+    params.set_initial_max_stream_data_bidi_local((1u32 << 20).into());
+    params.set_initial_max_stream_data_bidi_remote((1u32 << 20).into());
+
     let quic_server = ::gm_quic::QuicServer::builder()
         .with_supported_versions([1u32])
         .without_cert_verifier()
+        .with_parameters(params)
         .enable_sni()
         .add_host_with_cert_files("localhost", cert, key)?
         .with_alpns([ALPN.to_vec()])
@@ -92,8 +103,6 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn std::error::Error + Send + Sync
     // handle incoming connections and requests
 
     while let Ok((new_conn, _pathway)) = quic_server.accept().await {
-        trace_span!("New connection being attempted");
-
         let root = root.clone();
         let mut h3_conn = h3::server::Connection::new(h3_shim::QuicConnection::new(new_conn).await)
             .await

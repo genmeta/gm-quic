@@ -267,7 +267,7 @@ impl CongestionController {
             };
 
         self.pto_count += 1;
-        log::warn!(
+        log::debug!(
             "PTO timeout, epoch: {:?}, pto_count: {}",
             pto_epoch,
             self.pto_count

@@ -44,7 +44,6 @@ impl<T> Channel<T> {
     ///
     /// If the channel is closed, the item is returned as [`Err`].
     pub fn send(&self, item: T) -> Result<(), T> {
-        log::info!("send {} to channel", core::any::type_name_of_val(&item));
         let mut deque_guard = self.deque.lock().unwrap();
 
         match deque_guard.as_mut() {

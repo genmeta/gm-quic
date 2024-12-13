@@ -10,6 +10,7 @@ use qbase::{
         keys::ArcKeys,
         long, AssembledPacket, DataHeader, PacketWriter,
     },
+    param::ArcParameters,
     Epoch,
 };
 use qcongestion::{CongestionControl, TrackPackets};
@@ -48,6 +49,7 @@ impl InitialSpace {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
         rcvd_packets: RcvdPackets,
@@ -55,6 +57,7 @@ impl InitialSpace {
         remote_cids: &ArcRemoteCids,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
+        parameters: ArcParameters,
         validate: impl Fn(&[u8], ArcPath) + Send + 'static,
     ) -> JoinHandle<RcvdPackets> {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
@@ -97,6 +100,7 @@ impl InitialSpace {
             dispatch_frame,
             notify,
             conn_error,
+            parameters,
             validate,
         )
     }
@@ -110,6 +114,7 @@ impl InitialSpace {
         dispatch_frame: impl Fn(Frame, &Path) + Send + 'static,
         notify: &Arc<Notify>,
         conn_error: &ConnError,
+        parameters: ArcParameters,
         validate: impl Fn(&[u8], ArcPath) + Send + 'static,
     ) -> JoinHandle<RcvdPackets> {
         let pathes = pathes.clone();
@@ -191,6 +196,9 @@ impl InitialSpace {
                     // This token is delivered to the client during connection establishment with a Retry packet (see Section 8.1.2)
                     // or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
                     if let DataHeader::Long(long::DataHeader::Initial(initial)) = &packet.header {
+                        // only the first cid will be set
+                        parameters.initial_scid_from_peer_need_equal(initial.scid);
+
                         if !initial.token.is_empty() {
                             validate(&initial.token, path);
                         }

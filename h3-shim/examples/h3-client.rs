@@ -3,6 +3,7 @@ use std::{net::SocketAddr, path::PathBuf};
 use clap::Parser;
 use futures::future;
 use h3_shim::rustls;
+use qbase::param::ClientParameters;
 use rustls::pki_types::{pem::PemObject, CertificateDer};
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
@@ -30,7 +31,7 @@ pub struct Opt {
     pub uri: String,
 }
 
-#[cfg(not(test))]
+#[cfg_attr(test, allow(unused))]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
     tracing_subscriber::fmt()
@@ -53,7 +54,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
 
     let uri = opt.uri.parse::<http::Uri>()?;
     if uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
-        Err("uri scheme must be 'https'")?;
+        return Err("uri scheme must be 'https'")?;
     }
 
     let auth = uri.authority().ok_or("uri must have a host")?.clone();
@@ -83,11 +84,20 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
         panic!("failed to parse trust anchor: {}", e);
     }
 
+    let mut params = ClientParameters::default();
+    params.set_initial_max_streams_bidi(100);
+    params.set_initial_max_streams_uni(100);
+    params.set_initial_max_data((1u32 << 20).into());
+    params.set_initial_max_stream_data_uni((1u32 << 20).into());
+    params.set_initial_max_stream_data_bidi_local((1u32 << 20).into());
+    params.set_initial_max_stream_data_bidi_remote((1u32 << 20).into());
+
     let quic_client = ::gm_quic::QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()
         .with_keylog(opt.key_log_file)
         .with_alpns([ALPN.into()])
+        .with_parameters(params)
         .bind(&opt.bind[..])?
         .build();
     info!("connecting to {:?}", addr);
@@ -95,9 +105,6 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
 
     // create h3 client
 
-    // h3 is designed to work with different QUIC implementations via
-    // a generic interface, that is, the [`quic::Connection`] trait.
-    // h3_quinn implements the trait w/ quinn to make it work with h3.
     let gm_quic_conn = h3_shim::QuicConnection::new(conn).await;
     let (mut conn, mut send_request) = h3::client::new(gm_quic_conn).await?;
     let driver = async move {

@@ -215,9 +215,11 @@ impl ArcConnection {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_server(
         initial_scid: ConnectionId,
         initial_dcid: ConnectionId,
+        origin_dcid: ConnectionId,
         initial_keys: rustls::quic::Keys,
         parameters: ServerParameters,
         streams_ctrl: Box<dyn qbase::sid::ControlConcurrency>,
@@ -225,7 +227,8 @@ impl ArcConnection {
         token_registry: ArcTokenRegistry,
     ) -> Self {
         let parameters = ArcParameters::new_server(parameters);
-        parameters.set_original_dcid(initial_dcid);
+        parameters.set_initial_scid(initial_scid);
+        parameters.set_original_dcid(origin_dcid);
 
         let tls_session = ArcTlsSession::new_server(tls_config.clone(), &parameters);
         let connection = Connection::new(

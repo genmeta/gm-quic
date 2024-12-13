@@ -60,7 +60,7 @@ impl ArcPathState {
                         PathState::InActive => break,
                     };
                     // TODO: 失活时间暂定30s
-                    let time = time::Duration::from_secs(6); // TODO: 30s
+                    let time = time::Duration::from_secs(30);
                     if now.duration_since(recv_time) >= time {
                         state.to_inactive();
                         break;
