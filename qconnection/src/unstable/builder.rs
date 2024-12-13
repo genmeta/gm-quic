@@ -10,11 +10,13 @@ use qbase::{
 use rustls::crypto::CryptoProvider;
 use tokio::{sync::Notify, task::JoinHandle};
 
-use crate::{path::Paths, router::Router, tls::ArcTlsSession};
-
 use super::{
+    conn::{ArcLocalCids, ArcRemoteCids, CidRegistry, FlowController, Handshake, RcvdPackets},
+    event::ConnEventBroker,
+    path::Paths,
+    router::Router,
     space::{DataSpace, HandshakeSpace, InitialSpace},
-    ArcLocalCids, ArcRemoteCids, CidRegistry, FlowController, Handshake, RcvdPackets,
+    tls::ArcTlsSession,
 };
 
 /// 一个连接的核心，客户端、服务端通用
@@ -133,13 +135,13 @@ fn initial_keys_with(
         })
         .flatten()
         .unwrap()
-        .keys(&client_dcid, side, version)
+        .keys(client_dcid, side, version)
 }
 
 impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
     pub fn with_streams_ctrl(
         self,
-        gen_streams_ctrl: &Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
+        gen_streams_ctrl: impl FnOnce(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync,
     ) -> Self {
         let client_params = &self.foundation.client_params;
         let max_bidi_streams = client_params.initial_max_streams_bidi().into_inner();
@@ -201,7 +203,7 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
 impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
     pub fn with_streams_ctrl(
         self,
-        gen_streams_ctrl: &Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
+        gen_streams_ctrl: impl FnOnce(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync,
     ) -> Self {
         let server_params = &self.foundation.server_params;
         let max_bidi_streams = server_params.initial_max_streams_bidi().into_inner();
@@ -268,7 +270,7 @@ pub struct SpaceReady {
 }
 
 impl SpaceReady {
-    pub fn run_with(self) -> CoreConnection {
+    pub fn run_with(self, event_broker: ConnEventBroker) -> CoreConnection {
         let (initial_packets_entry, rcvd_initial_packets) = mpsc::unbounded();
         let (zero_rtt_packets_entry, rcvd_0rtt_packets) = mpsc::unbounded();
         let (hs_packets_entry, rcvd_hs_packets) = mpsc::unbounded();
@@ -296,6 +298,19 @@ impl SpaceReady {
         let cid_registry = CidRegistry::new(local_cids, remote_cids);
 
         let notify = Arc::new(Notify::new());
+
+        let components = Components {
+            parameters: self.parameters,
+            tls_session: self.tls_session,
+            handshake: self.handshake,
+            token_registry: self.token_registry,
+            cid_registry,
+            flow_ctrl: self.flow_ctrl,
+            paths: self.paths,
+            initial_space: self.initial_space,
+            hs_space: self.hs_space,
+            data_space: self.data_space,
+        };
 
         todo!()
         /*
