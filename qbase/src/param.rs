@@ -550,12 +550,12 @@ mod tests {
     #[test]
     fn test_parameters_new() {
         let client_params = create_test_client_params();
-        let params = Parameters::new_client(client_params, None);
+        let params = Parameters::new_client(&client_params, &None);
         assert_eq!(params.role, Role::Client);
         assert_eq!(params.state, Parameters::CLIENT_READY);
 
         let server_params = create_test_server_params();
-        let params = Parameters::new_server(server_params);
+        let params = Parameters::new_server(&server_params);
         assert_eq!(params.role, Role::Server);
         assert_eq!(params.state, Parameters::SERVER_READY);
     }
@@ -563,7 +563,7 @@ mod tests {
     #[test]
     fn test_authenticate_cids() {
         let client_params = create_test_client_params();
-        let mut params = Parameters::new_client(client_params, None);
+        let mut params = Parameters::new_client(&client_params, &None);
 
         let server_cid = ConnectionId::from_slice(b"server_test");
         params.initial_scid_from_peer_need_equal(server_cid);
@@ -583,7 +583,7 @@ mod tests {
     #[test]
     fn test_parameters_as_client() {
         let client_params = create_test_client_params();
-        let arc_params = ArcParameters::new_client(client_params, None);
+        let arc_params = ArcParameters::new_client(&client_params, &None);
 
         // Test local params
         let local = arc_params.local().unwrap();
@@ -604,7 +604,7 @@ mod tests {
     #[test]
     fn test_validate_remote_params() {
         // Test invalid max_udp_payload_size
-        let mut params = Parameters::new_server(create_test_server_params());
+        let mut params = Parameters::new_server(&create_test_server_params());
         let result = params.recv_remote_params(&[
             1, 1, 0, // max_idle_timeout
             3, 2, 0x43, 0xE8, // max_udp_payload_size: 1000
@@ -633,7 +633,7 @@ mod tests {
     #[test]
     fn test_write_parameters() {
         let client_params = create_test_client_params();
-        let params = Parameters::new_client(client_params, None);
+        let params = Parameters::new_client(&client_params, &None);
         let mut buf = Vec::new();
         buf.put_parameters(&params);
         assert!(!buf.is_empty());
@@ -641,7 +641,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_arc_parameters_error_handling() {
-        let arc_params = ArcParameters::new_client(create_test_client_params(), None);
+        let arc_params = ArcParameters::new_client(&create_test_client_params(), &None);
 
         // Simulate connection error
         let error = Error::new(

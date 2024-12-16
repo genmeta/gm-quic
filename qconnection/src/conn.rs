@@ -37,8 +37,6 @@ use crate::{
     usc::ArcUsc,
 };
 
-pub mod builder;
-
 pub mod closing;
 pub mod draining;
 pub mod raw;
