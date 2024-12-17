@@ -22,3 +22,6 @@ deref-derive = { workspace = true }
 rand = { workspace = true }
 log = { workspace = true }
 enum_dispatch = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

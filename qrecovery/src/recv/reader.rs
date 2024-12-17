@@ -1,5 +1,5 @@
 use std::{
-    io,
+    io::{self},
     ops::DerefMut,
     pin::Pin,
     task::{Context, Poll},
@@ -94,6 +94,8 @@ where
         }
     }
 }
+
+impl<TX: Unpin> Unpin for Reader<TX> {}
 
 impl<TX> AsyncRead for Reader<TX>
 where

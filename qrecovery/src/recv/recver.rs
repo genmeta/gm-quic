@@ -125,7 +125,7 @@ impl<TX> Recv<TX> {
                 waker.wake()
             }
         }
-        Ok(fresh_data)
+        Ok(fresh_data as _)
     }
 
     pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<u64, Error> {
@@ -215,7 +215,7 @@ impl<TX> SizeKnown<TX> {
                 waker.wake()
             }
         }
-        Ok(fresh_data)
+        Ok(fresh_data as _)
     }
 
     pub(super) fn is_all_rcvd(&self) -> bool {

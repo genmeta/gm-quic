@@ -100,6 +100,8 @@ where
     }
 }
 
+impl<TX: Unpin> Unpin for Writer<TX> {}
+
 impl<TX: Clone> AsyncWrite for Writer<TX> {
     /// 往sndbuf里面写数据，直到写满MAX_STREAM_DATA，等通告窗口更新再写
     fn poll_write(
