@@ -24,16 +24,16 @@ use crate::{
 struct SendControler<TX> {
     sent_data: u64,
     max_data: u64,
-    block_tx: TX,
+    broker: TX,
     wakers: Vec<Waker>,
 }
 
 impl<TX> SendControler<TX> {
-    fn new(initial_max_data: u64, block_tx: TX) -> Self {
+    fn new(initial_max_data: u64, broker: TX) -> Self {
         Self {
             sent_data: 0,
             max_data: initial_max_data,
-            block_tx,
+            broker,
             wakers: Vec::with_capacity(4),
         }
     }
@@ -92,10 +92,10 @@ impl<TX> ArcSendControler<TX> {
     ///
     /// `initial_max_data` is allowed to be 0, which is reasonable when creating a
     /// connection without knowing the peer's `iniitial_max_data` setting.
-    pub fn new(initial_max_data: u64, block_tx: TX) -> Self {
+    pub fn new(initial_max_data: u64, broker: TX) -> Self {
         Self(Arc::new(Mutex::new(Ok(SendControler::new(
             initial_max_data,
-            block_tx,
+            broker,
         )))))
     }
 
@@ -196,7 +196,7 @@ where
                 debug_assert!(inner.sent_data + amount as u64 <= inner.max_data);
                 inner.sent_data += amount as u64;
                 if inner.sent_data == inner.max_data {
-                    inner.block_tx.send_frame([DataBlockedFrame {
+                    inner.broker.send_frame([DataBlockedFrame {
                         limit: VarInt::from_u64(inner.max_data).expect(
                             "max_data of flow controller is very very hard to exceed 2^62 - 1",
                         ),
@@ -210,7 +210,7 @@ where
 
 /// Overflow error, i.e. the flow control limit is exceeded while receiving.
 /// See [`ErrorKind::FlowControl`](`crate::error::ErrorKind::FlowControl`).
-#[derive(Debug, Clone, Copy, Error)]
+#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
 #[error("Flow Control exceed {0} bytes on receiving")]
 pub struct Overflow(usize);
 
@@ -221,18 +221,18 @@ struct RecvController<TX> {
     max_data: AtomicU64,
     step: u64,
     is_closed: AtomicBool,
-    max_data_tx: TX,
+    broker: TX,
 }
 
 impl<TX> RecvController<TX> {
     /// Creates a new [`RecvController`] with the specified `initial_max_data`.
-    fn new(initial_max_data: u64, max_data_tx: TX) -> Self {
+    fn new(initial_max_data: u64, broker: TX) -> Self {
         Self {
             rcvd_data: AtomicU64::new(0),
             max_data: AtomicU64::new(initial_max_data),
             step: initial_max_data / 2,
             is_closed: AtomicBool::new(false),
-            max_data_tx,
+            broker,
         }
     }
 
@@ -260,7 +260,7 @@ where
         if rcvd_data <= max_data {
             if rcvd_data + self.step >= max_data {
                 self.max_data.fetch_add(self.step, Ordering::Release);
-                self.max_data_tx.send_frame([MaxDataFrame {
+                self.broker.send_frame([MaxDataFrame {
                     max_data: VarInt::from_u64(self.max_data.load(Ordering::Acquire))
                         .expect("max_data of flow controller is very very hard to exceed 2^62 - 1"),
                 }])
@@ -293,8 +293,8 @@ pub struct ArcRecvController<TX>(Arc<RecvController<TX>>);
 
 impl<TX> ArcRecvController<TX> {
     /// Creates a new [`ArcRecvController`] with local `initial_max_data` transport parameter.
-    pub fn new(initial_max_data: u64, max_data_tx: TX) -> Self {
-        Self(Arc::new(RecvController::new(initial_max_data, max_data_tx)))
+    pub fn new(initial_max_data: u64, broker: TX) -> Self {
+        Self(Arc::new(RecvController::new(initial_max_data, broker)))
     }
 
     /// Terminate the receiver's flow control if QUIC connection error occurs.
@@ -345,10 +345,10 @@ impl<TX: Clone> FlowController<TX> {
     /// Unfortunately, at the beginning, the peer's `initial_max_data` is unknown.
     /// Therefore, peer's `initial_max_data` can be set to 0 initially,
     /// and then updated later after obtaining the peer's `initial_max_data` setting.
-    pub fn new(peer_initial_max_data: u64, local_initial_max_data: u64, frames_tx: TX) -> Self {
+    pub fn new(peer_initial_max_data: u64, local_initial_max_data: u64, broker: TX) -> Self {
         Self {
-            sender: ArcSendControler::new(peer_initial_max_data, frames_tx.clone()),
-            recver: ArcRecvController::new(local_initial_max_data, frames_tx),
+            sender: ArcSendControler::new(peer_initial_max_data, broker.clone()),
+            recver: ArcRecvController::new(local_initial_max_data, broker),
         }
     }
 
@@ -389,5 +389,103 @@ where
     /// to expand the receive window if necessary.
     pub fn on_new_rcvd(&self, amount: usize) -> Result<usize, Overflow> {
         self.recver.on_new_rcvd(amount)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use deref_derive::{Deref, DerefMut};
+
+    use super::*;
+
+    #[derive(Clone, Debug, Default, Deref, DerefMut)]
+    struct SendControllerBroker(Arc<Mutex<Vec<DataBlockedFrame>>>);
+
+    impl SendFrame<DataBlockedFrame> for SendControllerBroker {
+        fn send_frame<I: IntoIterator<Item = DataBlockedFrame>>(&self, iter: I) {
+            self.0.lock().unwrap().extend(iter);
+        }
+    }
+
+    #[test]
+    fn test_send_controler() {
+        let broker = SendControllerBroker::default();
+        let controler = ArcSendControler::new(100, broker.clone());
+        let mut credit = controler.credit().unwrap();
+        assert_eq!(credit.available(), 100);
+        credit.post_sent(50);
+        assert_eq!(credit.available(), 50);
+        credit.post_sent(50);
+        assert_eq!(credit.available(), 0);
+        drop(credit);
+
+        // broker should have a DataBlockedFrame
+        assert_eq!(broker.lock().unwrap().len(), 1);
+        assert_eq!(broker.lock().unwrap()[0].limit.into_inner(), 100);
+
+        let credit = controler.credit().unwrap();
+        assert_eq!(credit.available(), 0);
+        drop(credit);
+
+        let waker = futures::task::noop_waker();
+        controler.register_waker(waker.clone());
+        assert!(!controler
+            .0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .wakers
+            .is_empty());
+
+        controler.increase_limit(200);
+        assert!(controler
+            .0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .wakers
+            .is_empty());
+
+        let mut credit = controler.credit().unwrap();
+        assert_eq!(credit.available(), 100);
+        credit.post_sent(50);
+        assert_eq!(credit.available(), 50);
+        credit.post_sent(50);
+        assert_eq!(credit.available(), 0);
+        drop(credit);
+
+        // broker should have a DataBlockedFrame
+        assert_eq!(broker.lock().unwrap().len(), 2);
+        assert_eq!(broker.lock().unwrap()[1].limit.into_inner(), 200);
+    }
+
+    #[derive(Clone, Debug, Default, Deref, DerefMut)]
+    struct RecvControllerBroker(Arc<Mutex<Vec<MaxDataFrame>>>);
+
+    impl SendFrame<MaxDataFrame> for RecvControllerBroker {
+        fn send_frame<I: IntoIterator<Item = MaxDataFrame>>(&self, iter: I) {
+            self.0.lock().unwrap().extend(iter);
+        }
+    }
+
+    #[test]
+    fn test_recv_controller() {
+        let broker = RecvControllerBroker::default();
+        let controler = ArcRecvController::new(100, broker.clone());
+        let amount = controler.on_new_rcvd(20).unwrap();
+        assert_eq!(amount, 20);
+        assert_eq!(broker.lock().unwrap().len(), 0);
+
+        let amount = controler.on_new_rcvd(30).unwrap();
+        assert_eq!(amount, 30);
+        // broker should have a MaxDataFrame
+        assert_eq!(broker.lock().unwrap().len(), 1);
+        assert_eq!(broker.lock().unwrap()[0].max_data.into_inner(), 150);
+
+        // test overflow
+        let result = controler.on_new_rcvd(101);
+        assert_eq!(result, Err(Overflow(1)));
     }
 }
