@@ -103,3 +103,73 @@ impl<T: bytes::BufMut> super::io::WriteFrame<NewConnectionIdFrame> for T {
         self.put_slice(&frame.reset_token);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bytes::{BufMut, BytesMut};
+
+    use super::*;
+    use crate::frame::{io::WriteFrame, BeFrame, FrameType};
+
+    #[test]
+    fn test_new_connection_id_frame() {
+        let new_cid_frame = NewConnectionIdFrame::new(
+            ConnectionId::from_slice(&[1, 2, 3, 4][..]),
+            VarInt::from_u32(1),
+            VarInt::from_u32(0),
+        );
+        assert_eq!(new_cid_frame.sequence, VarInt::from_u32(1));
+        assert_eq!(new_cid_frame.retire_prior_to, VarInt::from_u32(0));
+        assert_eq!(
+            new_cid_frame.id,
+            ConnectionId::from_slice(&[1, 2, 3, 4][..])
+        );
+
+        assert_eq!(new_cid_frame.frame_type(), FrameType::NewConnectionId);
+        assert_eq!(
+            new_cid_frame.max_encoding_size(),
+            1 + 8 + 8 + 21 + RESET_TOKEN_SIZE
+        );
+        assert_eq!(new_cid_frame.encoding_size(), 1 + 1 + 1 + 1 + 4 + 16);
+    }
+
+    #[test]
+    fn test_frame_parsing() {
+        let mut buf = BytesMut::new();
+        let original_cid = ConnectionId::from_slice(&[1, 2, 3, 4][..]);
+        let original_frame =
+            NewConnectionIdFrame::new(original_cid, VarInt::from_u32(1), VarInt::from_u32(0));
+
+        // Write frame to buffer
+        buf.put_frame(&original_frame);
+
+        // Skip frame type byte
+        let (_, parsed_frame) = be_new_connection_id_frame(&buf[1..]).unwrap();
+
+        assert_eq!(parsed_frame.sequence, original_frame.sequence);
+        assert_eq!(parsed_frame.retire_prior_to, original_frame.retire_prior_to);
+        assert_eq!(parsed_frame.id, original_frame.id);
+        assert_eq!(parsed_frame.reset_token, original_frame.reset_token);
+    }
+
+    #[test]
+    fn test_invalid_retire_prior_to() {
+        let mut buf = BytesMut::new();
+        buf.put_u8(NEW_CONNECTION_ID_FRAME_TYPE);
+        buf.put_varint(&VarInt::from_u32(1)); // sequence
+        buf.put_varint(&VarInt::from_u32(2)); // retire_prior_to > sequence
+
+        assert!(be_new_connection_id_frame(&buf[1..]).is_err());
+    }
+
+    #[test]
+    fn test_zero_length_connection_id() {
+        let mut buf = BytesMut::new();
+        buf.put_u8(NEW_CONNECTION_ID_FRAME_TYPE);
+        buf.put_varint(&VarInt::from_u32(1));
+        buf.put_varint(&VarInt::from_u32(0));
+        buf.put_u8(0); // zero length CID
+
+        assert!(be_new_connection_id_frame(&buf[1..]).is_err());
+    }
+}

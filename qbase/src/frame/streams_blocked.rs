@@ -89,7 +89,23 @@ impl<T: bytes::BufMut> super::io::WriteFrame<StreamsBlockedFrame> for T {
 #[cfg(test)]
 mod tests {
     use super::{StreamsBlockedFrame, STREAMS_BLOCKED_FRAME_TYPE};
-    use crate::{frame::io::WriteFrame, varint::VarInt};
+    use crate::{
+        frame::{io::WriteFrame, BeFrame, FrameType},
+        varint::VarInt,
+    };
+
+    #[test]
+    fn test_stream_data_blocked_frame() {
+        let frame = StreamsBlockedFrame::Bi(VarInt::from_u32(0x1234));
+        assert_eq!(frame.frame_type(), FrameType::StreamsBlocked(0));
+        assert_eq!(frame.max_encoding_size(), 1 + 8);
+        assert_eq!(frame.encoding_size(), 1 + 2);
+
+        let frame = StreamsBlockedFrame::Uni(VarInt::from_u32(0x1234));
+        assert_eq!(frame.frame_type(), FrameType::StreamsBlocked(1));
+        assert_eq!(frame.max_encoding_size(), 1 + 8);
+        assert_eq!(frame.encoding_size(), 1 + 2);
+    }
 
     #[test]
     fn test_read_streams_blocked_frame() {

@@ -70,7 +70,21 @@ impl<T: bytes::BufMut> super::io::WriteFrame<StopSendingFrame> for T {
 #[cfg(test)]
 mod tests {
     use super::{StopSendingFrame, STOP_SENDING_FRAME_TYPE};
-    use crate::{frame::io::WriteFrame, varint::VarInt};
+    use crate::{
+        frame::{io::WriteFrame, BeFrame, FrameType},
+        varint::VarInt,
+    };
+
+    #[test]
+    fn test_stop_sending_frame() {
+        let frame =
+            StopSendingFrame::new(VarInt::from_u32(0x1234).into(), VarInt::from_u32(0x5678));
+        assert_eq!(frame.stream_id, VarInt::from_u32(0x1234).into());
+        assert_eq!(frame.app_err_code, VarInt::from_u32(0x5678));
+        assert_eq!(frame.frame_type(), FrameType::StopSending);
+        assert_eq!(frame.max_encoding_size(), 1 + 8 + 8);
+        assert_eq!(frame.encoding_size(), 1 + 2 + 4);
+    }
 
     #[test]
     fn test_parse_stop_sending_frame() {

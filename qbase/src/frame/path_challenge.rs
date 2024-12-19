@@ -67,6 +67,17 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PathChallengeFrame> for T {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn test_path_challenge_frame() {
+        use crate::frame::{BeFrame, FrameType};
+        let frame = super::PathChallengeFrame {
+            data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+        };
+        assert_eq!(frame.frame_type(), FrameType::PathChallenge);
+        assert_eq!(frame.max_encoding_size(), 1 + 8);
+        assert_eq!(frame.encoding_size(), 1 + 8);
+    }
+
+    #[test]
     fn test_read_path_challenge_frame() {
         use nom::combinator::flat_map;
 

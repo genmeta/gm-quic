@@ -34,7 +34,14 @@ impl<T: bytes::BufMut> super::io::WriteFrame<HandshakeDoneFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use crate::frame::{io::WriteFrame, HandshakeDoneFrame};
+    use crate::frame::{io::WriteFrame, BeFrame, FrameType, HandshakeDoneFrame};
+
+    #[test]
+    fn test_handshake_done_frame() {
+        assert_eq!(HandshakeDoneFrame.frame_type(), FrameType::HandshakeDone);
+        assert_eq!(HandshakeDoneFrame.max_encoding_size(), 1);
+        assert_eq!(HandshakeDoneFrame.encoding_size(), 1);
+    }
 
     #[test]
     fn test_read_handshake_done_frame() {
