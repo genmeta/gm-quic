@@ -65,7 +65,6 @@ impl BeFrame for StreamFrame {
             } else {
                 0
             }
-            + self.length
     }
 }
 
@@ -129,7 +128,7 @@ impl StreamFrame {
     /// in the packet, other data frames can be carried after it. In this case, the
     /// frame is designated as carrying length.
     pub fn should_carry_length(&self, capacity: usize) -> ShouldCarryLength {
-        let frame_encoding_size = self.encoding_size();
+        let frame_encoding_size = self.encoding_size() + self.length;
         assert!(frame_encoding_size <= capacity);
         if frame_encoding_size == capacity {
             ShouldCarryLength::NoProblem
@@ -238,9 +237,22 @@ mod tests {
 
     use super::{stream_frame_with_flag, StreamFrame, STREAM_FRAME_TYPE};
     use crate::{
-        frame::io::WriteDataFrame,
+        frame::{io::WriteDataFrame, BeFrame, FrameType},
         varint::{be_varint, VarInt},
     };
+
+    #[test]
+    fn test_stream_frame() {
+        let stream_frame = StreamFrame {
+            id: VarInt::from_u32(0x1234).into(),
+            offset: VarInt::from_u32(0x1234),
+            length: 11,
+            flag: 0b110,
+        };
+        assert_eq!(stream_frame.frame_type(), FrameType::Stream(0b110));
+        assert_eq!(stream_frame.max_encoding_size(), 1 + 8 + 8 + 8);
+        assert_eq!(stream_frame.encoding_size(), 1 + 2 + 2 + 1);
+    }
 
     #[test]
     fn test_read_stream_frame() {

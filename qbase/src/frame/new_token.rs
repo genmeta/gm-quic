@@ -59,7 +59,17 @@ impl<T: bytes::BufMut> super::io::WriteFrame<NewTokenFrame> for T {
 }
 #[cfg(test)]
 mod tests {
-    use crate::frame::io::WriteFrame;
+    use crate::frame::{io::WriteFrame, BeFrame, FrameType};
+
+    #[test]
+    fn test_new_token_frame() {
+        let frame = super::NewTokenFrame {
+            token: vec![0x01, 0x02],
+        };
+        assert_eq!(frame.frame_type(), FrameType::NewToken);
+        assert_eq!(frame.max_encoding_size(), 1 + 1 + 2);
+        assert_eq!(frame.encoding_size(), 1 + 1 + 2);
+    }
 
     #[test]
     fn test_read_new_token_frame() {

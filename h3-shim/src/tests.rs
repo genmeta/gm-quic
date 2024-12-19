@@ -22,8 +22,8 @@ async fn h3_test() {
 
     let client_opt = client_example::Opt {
         ca: PathBuf::from("examples/ca.cert"),
-        key_log_file: false,
-        bind: vec!["[::]:0".parse().unwrap()],
+        key_log_file: true,
+        bind: vec!["127.0.0.1:0".parse().unwrap(), "[::1]:0".parse().unwrap()],
         uri: "https://localhost:4433/Cargo.toml".to_string(),
     };
 
@@ -40,7 +40,7 @@ async fn h3_test() {
     };
 
     let client = async move {
-        client_example::run(client_opt)
+        _ = client_example::run(client_opt)
             .await
             .expect("client failed");
     };
@@ -54,5 +54,5 @@ async fn h3_test() {
             Err(_finish) => { /* ok */ }
         }
     };
-    tokio::join!(client, server);
+    tokio::join!(server, client);
 }

@@ -78,6 +78,16 @@ mod tests {
     use crate::frame::io::WriteDataFrame;
 
     #[test]
+    fn test_datagram_frame() {
+        let frame = DatagramFrame {
+            length: Some(VarInt::from_u32(3)),
+        };
+        assert_eq!(frame.frame_type(), FrameType::Datagram(1));
+        assert_eq!(frame.max_encoding_size(), 1 + 8);
+        assert_eq!(frame.encoding_size(), 1 + 1);
+    }
+
+    #[test]
     fn test_datagram_frame_with_flag() {
         let input = [0x05, 0x00, 0x00, 0x00, 0x00, 0x00];
         let expected_output = DatagramFrame {

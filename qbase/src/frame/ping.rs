@@ -34,7 +34,14 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PingFrame> for T {
 #[cfg(test)]
 mod tests {
     use super::{PingFrame, PING_FRAME_TYPE};
-    use crate::frame::io::WriteFrame;
+    use crate::frame::{io::WriteFrame, BeFrame, FrameType};
+
+    #[test]
+    fn test_ping_frame() {
+        assert_eq!(PingFrame.frame_type(), FrameType::Ping);
+        assert_eq!(PingFrame.max_encoding_size(), 1);
+        assert_eq!(PingFrame.encoding_size(), 1);
+    }
 
     #[test]
     fn test_read_ping_frame() {

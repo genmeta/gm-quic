@@ -49,7 +49,20 @@ impl<T: bytes::BufMut> super::io::WriteFrame<RetireConnectionIdFrame> for T {
 #[cfg(test)]
 mod tests {
     use super::{be_retire_connection_id_frame, RetireConnectionIdFrame};
-    use crate::{frame::io::WriteFrame, varint::VarInt};
+    use crate::{
+        frame::{io::WriteFrame, BeFrame, FrameType},
+        varint::VarInt,
+    };
+
+    #[test]
+    fn test_retire_connection_id_frame() {
+        let frame = RetireConnectionIdFrame {
+            sequence: VarInt::from_u32(0x1234),
+        };
+        assert_eq!(frame.frame_type(), FrameType::RetireConnectionId);
+        assert_eq!(frame.max_encoding_size(), 1 + 8);
+        assert_eq!(frame.encoding_size(), 1 + 2);
+    }
 
     #[test]
     fn test_read_retire_connection_id_frame() {

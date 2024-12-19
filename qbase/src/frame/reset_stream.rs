@@ -66,7 +66,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<ResetStreamFrame> for T {
     }
 }
 
-#[derive(Clone, Copy, Debug, Error)]
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 #[error("the stream was reset with app error code: {app_error_code}, final size: {final_size}")]
 pub struct ResetStreamError {
     app_error_code: VarInt,
@@ -107,11 +107,29 @@ impl From<&ResetStreamFrame> for ResetStreamError {
 mod tests {
     use nom::combinator::flat_map;
 
-    use super::{ResetStreamFrame, RESET_STREAM_FRAME_TYPE};
+    use super::{ResetStreamError, ResetStreamFrame, RESET_STREAM_FRAME_TYPE};
     use crate::{
-        frame::io::WriteFrame,
+        frame::{io::WriteFrame, BeFrame, FrameType},
         varint::{be_varint, VarInt},
     };
+
+    #[test]
+    fn test_reset_stream_frame() {
+        let frame = ResetStreamFrame {
+            stream_id: VarInt::from_u32(0x1234).into(),
+            app_error_code: VarInt::from_u32(0x5678),
+            final_size: VarInt::from_u32(0x9abc),
+        };
+        assert_eq!(frame.frame_type(), FrameType::ResetStream);
+        assert_eq!(frame.max_encoding_size(), 1 + 8 + 8 + 8);
+        assert_eq!(frame.encoding_size(), 1 + 2 + 4 + 4);
+
+        let reset_stream_error: ResetStreamError = (&frame).into();
+        assert_eq!(
+            reset_stream_error,
+            ResetStreamError::new(VarInt::from_u32(0x5678), VarInt::from_u32(0x9abc))
+        );
+    }
 
     #[test]
     fn test_read_reset_stream_frame() {

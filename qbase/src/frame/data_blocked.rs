@@ -49,7 +49,17 @@ impl<T: bytes::BufMut> super::io::WriteFrame<DataBlockedFrame> for T {
 #[cfg(test)]
 mod tests {
     use super::{DataBlockedFrame, DATA_BLOCKED_FRAME_TYPE};
-    use crate::frame::io::WriteFrame;
+    use crate::frame::{io::WriteFrame, BeFrame};
+
+    #[test]
+    fn test_data_blocked_frame() {
+        let frame = DataBlockedFrame {
+            limit: crate::varint::VarInt::from_u32(0x1234),
+        };
+        assert_eq!(frame.frame_type(), super::super::FrameType::Crypto);
+        assert_eq!(frame.max_encoding_size(), 1 + 8);
+        assert_eq!(frame.encoding_size(), 1 + 2);
+    }
 
     #[test]
     fn test_read_data_blocked_frame() {

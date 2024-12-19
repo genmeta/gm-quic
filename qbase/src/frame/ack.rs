@@ -45,7 +45,7 @@ impl super::BeFrame for AckFrame {
     }
 
     fn max_encoding_size(&self) -> usize {
-        1 + 8 + 8 + 8 + self.ranges.len() * 16 + if self.ecn.is_some() { 24 } else { 0 }
+        1 + 8 + 8 + 8 + 8 + self.ranges.len() * 16 + if self.ecn.is_some() { 24 } else { 0 }
     }
 
     fn encoding_size(&self) -> usize {
@@ -191,9 +191,34 @@ mod tests {
 
     use super::{ack_frame_with_flag, be_ecn_counts, AckFrame, EcnCounts, ACK_FRAME_TYPE};
     use crate::{
-        frame::io::WriteFrame,
+        frame::{io::WriteFrame, BeFrame, FrameType},
         varint::{be_varint, VarInt},
     };
+
+    #[test]
+    fn test_ack_frame() {
+        // test frame type, encoding size, and max encoding size
+        let mut frame = AckFrame {
+            largest: VarInt::from_u32(0x1234),
+            delay: VarInt::from_u32(0x1234),
+            first_range: VarInt::from_u32(0x1234),
+            ranges: vec![(VarInt::from_u32(3), VarInt::from_u32(20))],
+            ecn: None,
+        };
+        assert_eq!(frame.frame_type(), FrameType::Ack(0));
+        assert_eq!(frame.encoding_size(), 1 + 2 * 3 + 1 + 2);
+        assert_eq!(frame.max_encoding_size(), 1 + 4 * 8 + 2 * 8);
+
+        // test set_ecn and take_ecn
+        let ecn = EcnCounts {
+            ect0: VarInt::from_u32(0x1234),
+            ect1: VarInt::from_u32(0x1234),
+            ce: VarInt::from_u32(0x1234),
+        };
+        frame.set_ecn(ecn);
+        assert!(frame.ecn.is_some());
+        assert_eq!(frame.take_ecn(), Some(ecn));
+    }
 
     #[test]
     fn test_read_ecn_count() {

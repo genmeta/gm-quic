@@ -38,9 +38,7 @@ impl super::BeFrame for CryptoFrame {
     }
 
     fn encoding_size(&self) -> usize {
-        1 + self.offset.encoding_size()
-            + self.length.encoding_size()
-            + self.length.into_inner() as usize
+        1 + self.offset.encoding_size() + self.length.encoding_size()
     }
 }
 
@@ -113,7 +111,22 @@ where
 #[cfg(test)]
 mod tests {
     use super::{CryptoFrame, CRYPTO_FRAME_TYPE};
-    use crate::{frame::io::WriteDataFrame, varint::VarInt};
+    use crate::{
+        frame::{io::WriteDataFrame, BeFrame},
+        varint::VarInt,
+    };
+
+    #[test]
+    fn test_crypto_frame() {
+        let frame = CryptoFrame {
+            offset: VarInt::from_u32(0),
+            length: VarInt::from_u32(500),
+        };
+        assert_eq!(frame.frame_type(), super::super::FrameType::Crypto);
+        assert_eq!(frame.max_encoding_size(), 1 + 8 + 8);
+        assert_eq!(frame.encoding_size(), 1 + 1 + 2);
+        assert_eq!(frame.range(), 0..500);
+    }
 
     #[test]
     fn test_read_crypto_frame() {

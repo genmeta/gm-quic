@@ -97,9 +97,22 @@ impl<T: bytes::BufMut> super::io::WriteFrame<MaxStreamsFrame> for T {
 mod tests {
     use super::{MaxStreamsFrame, MAX_STREAMS_FRAME_TYPE};
     use crate::{
-        frame::io::WriteFrame,
+        frame::{io::WriteFrame, BeFrame, FrameType},
         varint::{be_varint, VarInt},
     };
+
+    #[test]
+    fn test_max_streams_frame() {
+        let frame = MaxStreamsFrame::Bi(VarInt::from_u32(0x1234));
+        assert_eq!(frame.frame_type(), FrameType::MaxStreams(0));
+        assert_eq!(frame.max_encoding_size(), 1 + 8);
+        assert_eq!(frame.encoding_size(), 1 + 2);
+
+        let frame = MaxStreamsFrame::Uni(VarInt::from_u32(0x1236));
+        assert_eq!(frame.frame_type(), FrameType::MaxStreams(1));
+        assert_eq!(frame.max_encoding_size(), 1 + 8);
+        assert_eq!(frame.encoding_size(), 1 + 2);
+    }
 
     #[test]
     fn test_read_max_streams_frame() {

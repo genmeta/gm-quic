@@ -35,7 +35,14 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PaddingFrame> for T {
 #[cfg(test)]
 mod tests {
     use super::{PaddingFrame, PADDING_FRAME_TYPE};
-    use crate::frame::io::WriteFrame;
+    use crate::frame::{io::WriteFrame, BeFrame, FrameType};
+
+    #[test]
+    fn test_padding_frame() {
+        assert_eq!(PaddingFrame.frame_type(), FrameType::Padding);
+        assert_eq!(PaddingFrame.max_encoding_size(), 1);
+        assert_eq!(PaddingFrame.encoding_size(), 1);
+    }
 
     #[test]
     fn test_read_padding_frame() {
@@ -48,7 +55,7 @@ mod tests {
             if frame_type.into_inner() == PADDING_FRAME_TYPE as u64 {
                 be_padding_frame
             } else {
-                panic!("wrong frame type: {}", frame_type)
+                unreachable!("wrong frame type: {}", frame_type)
             }
         })(buf.as_ref())
         .unwrap();

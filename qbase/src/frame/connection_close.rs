@@ -125,7 +125,25 @@ impl<T: bytes::BufMut> super::io::WriteFrame<ConnectionCloseFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use crate::{error::ErrorKind, frame::io::WriteFrame};
+    use crate::{
+        error::ErrorKind,
+        frame::{io::WriteFrame, BeFrame, FrameType},
+    };
+
+    #[test]
+    fn test_connection_close_frame() {
+        let frame = super::ConnectionCloseFrame {
+            error_kind: ErrorKind::Application,
+            frame_type: None,
+            reason: "wrong".into(),
+        };
+        assert_eq!(
+            frame.frame_type(),
+            FrameType::ConnectionClose(super::APP_LAYER)
+        );
+        assert_eq!(frame.max_encoding_size(), 1 + 8 + 2 + 5);
+        assert_eq!(frame.encoding_size(), 1 + 1 + 1 + 5);
+    }
 
     #[test]
     fn test_read_connection_close_frame() {
