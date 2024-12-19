@@ -494,3 +494,78 @@ impl<T: BufMut> WriteFrame<ReliableFrame> for T {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::packet::r#type::{
+        long::{Type::V1, Ver1},
+        Type,
+    };
+
+    #[test]
+    fn test_frame_type_conversion() {
+        let frame_types = vec![
+            FrameType::Padding,
+            FrameType::Ping,
+            FrameType::Ack(0),
+            FrameType::Stream(0),
+            FrameType::MaxData,
+            FrameType::ConnectionClose(0),
+            FrameType::HandshakeDone,
+            FrameType::Datagram(0),
+        ];
+
+        for frame_type in frame_types {
+            let byte: u8 = frame_type.into();
+            assert_eq!(FrameType::try_from(byte).unwrap(), frame_type);
+        }
+    }
+
+    #[test]
+    fn test_frame_type_specs() {
+        assert!(FrameType::Padding.specs().contain(Spec::NonAckEliciting));
+        assert!(FrameType::Ack(0)
+            .specs()
+            .contain(Spec::CongestionControlFree));
+        assert!(FrameType::Stream(0).specs().contain(Spec::FlowControlled));
+        assert!(FrameType::PathChallenge.specs().contain(Spec::ProbeNewPath));
+    }
+
+    #[test]
+    fn test_frame_type_belongs_to() {
+        let initial = Type::Long(V1(Ver1::INITIAL));
+        assert!(FrameType::Padding.belongs_to(initial));
+        assert!(FrameType::Ping.belongs_to(initial));
+        assert!(FrameType::Ack(0).belongs_to(initial));
+        assert!(!FrameType::Stream(0).belongs_to(initial));
+    }
+
+    #[test]
+    fn test_frame_reader() {
+        let mut buf = bytes::BytesMut::new();
+        buf.put_u8(0x00); // PADDING
+        buf.put_u8(0x01); // PING
+
+        let packet_type = Type::Long(V1(Ver1::INITIAL));
+        let mut reader = FrameReader::new(buf.freeze(), packet_type);
+
+        // Read PADDING frame
+        let (frame, is_ack) = reader.next().unwrap().unwrap();
+        assert!(matches!(frame, Frame::Padding(_)));
+        assert!(!is_ack);
+
+        // Read PING frame
+        let (frame, is_ack) = reader.next().unwrap().unwrap();
+        assert!(matches!(frame, Frame::Ping(_)));
+        assert!(is_ack);
+
+        // No more frames
+        assert!(reader.next().is_none());
+    }
+
+    #[test]
+    fn test_invalid_frame_type() {
+        assert!(FrameType::try_from(0xFF).is_err());
+    }
+}
