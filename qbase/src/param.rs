@@ -20,6 +20,32 @@ pub use util::*;
 mod core;
 pub use core::*;
 
+/// Requires that the connection IDs in the transport parameters of
+/// the received Initial packet must match those used during the
+/// connection establishment process.
+///
+/// For the Initial packet received by the server from the client,
+/// the initial_source_connection_id in the client's Transport
+/// parameters must match the source connection id in that Initial packet.
+/// For the Initial packet received by the client from the server,
+/// not only must the server's Transport parameter
+/// initial_source_connection_id match the source connection id
+/// in that Initial packet,
+/// but also requires that the original_destination_connection_id matches the
+/// destination connection id in the first packet sent by the client.
+/// Specifically, if the server has responded with a Retry packet,
+/// then the server's Transport parameter retry_source_connection_id
+/// must match the source connection id in that Retry packet.
+///
+/// See [Authenticating Connection IDs](https://datatracker.ietf.org/doc/html/rfc9000#name-authenticating-connection-i)
+/// of [RFC9000](https://datatracker.ietf.org/doc/html/rfc9000)
+/// for more details.
+///
+/// Whether client or server, after receiving the Initial packet from
+/// the peer, these requirements must be set;
+/// then after parsing the peer's Transport parameters, verify that
+/// all these requirements are met.
+/// If not met, it is considered a TransportParameters error.
 #[derive(Debug, Default, Clone, Copy)]
 struct Requirements {
     initial_source_connection_id: Option<ConnectionId>,
@@ -32,6 +58,27 @@ pub struct Pair {
     pub remote: CommonParameters,
 }
 
+/// Transport parameters for QUIC.
+/// The transport parameters are used to negotiate the initial
+/// settings of a QUIC connection.
+///
+/// They are exchanged in the Initial packets of the handshake,
+/// including client and server transport parameters.
+/// Client transport parameters and server transport parameters
+/// exist independently and are not merged.
+/// They each constrain the behavior of the remote peer.
+///
+/// For different roles, local transport parameters and remote
+/// transport parameters differ.
+/// For example, as a client, the local transport parameters
+/// are client parameters, while remote transport parameters
+/// are server parameters. The same applies to the server.
+///
+/// Note that client transport parameters and server transport
+/// parameters are different, as some transport parameters can
+/// only appear in server transport parameters.
+/// Therefore, for a QUIC connection, the transport parameter
+/// sets for both ends are defined as follows.
 #[derive(Debug)]
 pub struct Parameters {
     role: Role,
@@ -47,6 +94,11 @@ impl Parameters {
     const CLIENT_READY: u8 = 1;
     const SERVER_READY: u8 = 2;
 
+    /// Creates a new client transport parameters, with the client
+    /// parameters and remembered server parameters if exist.
+    ///
+    /// It will wait for the server transport parameters to be
+    /// received and parsed.
     fn new_client(client: ClientParameters, remembered: Option<CommonParameters>) -> Self {
         Self {
             role: Role::Client,
@@ -59,6 +111,11 @@ impl Parameters {
         }
     }
 
+    /// Creates a new server transport parameters, with the server
+    /// parameters.
+    ///
+    /// It will wait for the client transport parameters to be
+    /// received and parsed.
     fn new_server(server: ServerParameters) -> Self {
         Self {
             role: Role::Server,
@@ -243,7 +300,14 @@ impl Parameters {
     }
 }
 
+/// A [`bytes::BufMut`] extension trait for writing transport parameters.
 pub trait WriteParameters: WriteServerParameters {
+    /// Writes the local transport parameters to the buffer.
+    ///
+    /// - For the client, the transport parameters sent to the peer
+    ///   must be client transport parameters;
+    /// - For the server, the transport parameters sent to the peer
+    ///   must be server transport parameters.
     fn put_parameters(&mut self, parameters: &Parameters);
 }
 
@@ -257,20 +321,50 @@ impl<T: BufMut> WriteParameters for T {
     }
 }
 
+/// Shared transport parameter sets for both endpoints.
+///
+/// The local transport parameters are set initially, while
+/// the remote transport parameters must wait until they are
+/// received through network transmission and can be parsed.
+/// After parsing, the peer parameters must be immediately
+/// verified to ensure they meet the requirements and validity
+/// checks.
+///
+/// Note that a connection error may occur before receiving
+/// the remote transport parameters, such as network unreachable.
+/// In such cases, the entire connection parameters will be
+/// converted into an error state.
 #[derive(Debug, Clone)]
 pub struct ArcParameters(Arc<Mutex<Result<Parameters, Error>>>);
 
 impl ArcParameters {
+    /// Creates a new client transport parameters, with the client
+    /// parameters and remembered server parameters if exist.
+    ///
+    /// It will wait for the server transport parameters to be
+    /// received and parsed.
     pub fn new_client(client: ClientParameters, remembered: Option<CommonParameters>) -> Self {
         Self(Arc::new(Mutex::new(Ok(Parameters::new_client(
             client, remembered,
         )))))
     }
 
+    /// Creates a new server transport parameters, with the server
+    /// parameters.
+    ///
+    /// It will wait for the client transport parameters to be
+    /// received and parsed.
     pub fn new_server(server: ServerParameters) -> Self {
         Self(Arc::new(Mutex::new(Ok(Parameters::new_server(server)))))
     }
 
+    /// Returns the local transport parameters.
+    /// Returns None if some connection error occurred.
+    ///
+    /// - For the client, the local transport parameters are client
+    ///   transport parameters;
+    /// - For the server, the local transport parameters are server
+    ///   transport parameters.
     pub fn local(&self) -> Option<CommonParameters> {
         let guard = self.0.lock().unwrap();
         match guard.deref() {
@@ -279,6 +373,14 @@ impl ArcParameters {
         }
     }
 
+    /// Returns the remote transport parameters.
+    /// Returns None if the remote transport parameters have not
+    /// been received or some connection error occurred.
+    ///
+    /// - For the client, the local transport parameters are server
+    ///   transport parameters;
+    /// - For the server, the local transport parameters are client
+    ///   transport parameters.
     pub fn remote(&self) -> Option<CommonParameters> {
         let guard = self.0.lock().unwrap();
         match guard.deref() {
@@ -287,6 +389,12 @@ impl ArcParameters {
         }
     }
 
+    /// Returns the remembered server transport parameters if exist,
+    /// which means the client connected the server, and stored the
+    /// server transport parameters.
+    ///
+    /// It is meaningful only for the client, to send early data
+    /// with 0Rtt packets before receving the server transport params.
     pub fn remembered(&self) -> Option<CommonParameters> {
         let guard = self.0.lock().unwrap();
         match guard.deref() {
@@ -295,6 +403,7 @@ impl ArcParameters {
         }
     }
 
+    /// Sets the initial source connection ID in local transport parameters.
     pub fn set_initial_scid(&self, cid: ConnectionId) {
         let mut guard = self.0.lock().unwrap();
         if let Ok(params) = guard.deref_mut() {
@@ -302,6 +411,11 @@ impl ArcParameters {
         }
     }
 
+    /// Sets the retry source connection ID in the server
+    /// transport parameters.
+    ///
+    /// It is meaningful only for the client, because only
+    /// server can send the Retry packet.
     pub fn set_retry_scid(&self, cid: ConnectionId) {
         let mut guard = self.0.lock().unwrap();
         if let Ok(params) = guard.deref_mut() {
@@ -309,6 +423,13 @@ impl ArcParameters {
         }
     }
 
+    /// Sets the original destination connection ID in the server
+    /// transport parameters.
+    ///
+    /// It is meaningful only for the server, because only server
+    /// need extract the original destination connection ID from
+    /// the first packet sent by the client, and echo it back to
+    /// the client.
     pub fn set_original_dcid(&self, cid: ConnectionId) {
         let mut guard = self.0.lock().unwrap();
         if let Ok(params) = guard.deref_mut() {
@@ -316,6 +437,8 @@ impl ArcParameters {
         }
     }
 
+    /// Load the local transport parameters into the buffer, which
+    /// will be send to the peer soon.
     pub fn load_local_params_into(&self, buf: &mut Vec<u8>) {
         let guard = self.0.lock().unwrap();
         if let Ok(params) = guard.deref() {
@@ -323,6 +446,10 @@ impl ArcParameters {
         }
     }
 
+    /// No matter the client or server, after receiving the Initial
+    /// packet from the peer, the initial_source_connection_id in
+    /// the remote transport parameters must equal the source connection
+    /// id in the received Initial packet.
     pub fn initial_scid_from_peer_need_equal(&self, cid: ConnectionId) {
         let mut guard = self.0.lock().unwrap();
         if let Ok(params) = guard.deref_mut() {
@@ -330,6 +457,9 @@ impl ArcParameters {
         }
     }
 
+    /// After receiving the Retry packet from the server, the
+    /// retry_source_connection_id in the server transport parameters
+    /// must equal the source connection id in the Retry packet.
     pub fn retry_scid_from_server_need_equal(&self, cid: ConnectionId) {
         let mut guard = self.0.lock().unwrap();
         if let Ok(params) = guard.deref_mut() {
@@ -337,6 +467,10 @@ impl ArcParameters {
         }
     }
 
+    /// After receiving the Initial packet from the server, the
+    /// original_destination_connection_id in the server transport
+    /// parameters must equal the destination connection id in the
+    /// first packet sent by the client.
     pub fn original_dcid_from_server_need_equal(&self, cid: ConnectionId) {
         let mut guard = self.0.lock().unwrap();
         if let Ok(params) = guard.deref_mut() {
@@ -344,6 +478,10 @@ impl ArcParameters {
         }
     }
 
+    /// Being called when the remote transport parameters are received.
+    /// It will parse and check the remote transport parameters,
+    /// and wake all the wakers waiting for the remote transport parameters
+    /// if the remote transport parameters are valid.
     pub fn recv_remote_params(&self, bytes: &[u8]) -> Result<(), Error> {
         let mut guard = self.0.lock().unwrap();
         let params = guard.as_mut().map_err(|e| e.clone())?;
@@ -356,6 +494,10 @@ impl ArcParameters {
         Ok(())
     }
 
+    /// Returns true if the remote transport parameters have been received.
+    ///
+    /// It is usually used to avoid processing remote transport parameters
+    /// more than once.
     pub fn has_rcvd_remote_params(&self) -> bool {
         let guard = self.0.lock().unwrap();
         match guard.deref() {
@@ -364,6 +506,8 @@ impl ArcParameters {
         }
     }
 
+    /// When some connection error occurred, convert this parameters
+    /// into error state.
     pub fn on_conn_error(&self, error: &Error) {
         let mut guard = self.0.lock().unwrap();
         if let Ok(params) = guard.deref_mut() {

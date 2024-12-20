@@ -8,6 +8,7 @@ use crate::{
     varint::{be_varint, VarInt, WriteVarInt},
 };
 
+/// The parameter id in the transport parameters.
 #[derive(Debug, PartialEq, Clone, Copy, Eq)]
 pub enum ParameterId {
     OriginalDestinationConnectionId,
