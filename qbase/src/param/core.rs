@@ -15,6 +15,15 @@ use crate::{
     varint::{be_varint, VarInt, WriteVarInt},
 };
 
+/// Common parameters shared between client and server.
+///
+/// All transport parameters owned by the client are also owned by the server.
+/// However, not all server transport parameters are available to the client,
+/// including:
+/// - `original_destination_connection_id`
+/// - `retry_source_connection_id`
+/// - `preferred_address`
+/// - `stateless_reset_token`.
 #[derive(CopyGetters, Setters, Debug, Clone, Copy, PartialEq)]
 pub struct CommonParameters {
     #[getset(get_copy = "pub", set = "pub")]
@@ -82,6 +91,13 @@ impl Default for CommonParameters {
 }
 
 impl CommonParameters {
+    /// Set tht `max_udp_payload_size` transport parameter.
+    ///
+    /// The default for this parameter is the maximum permitted
+    /// UDP payload of 65527. Values below 1200 are invalid.
+    ///
+    /// See [section-18.2-4.7](https://datatracker.ietf.org/doc/html/rfc9000#section-18.2-4.7)
+    /// for more information.
     pub fn set_max_udp_payload_size(&mut self, size: u32) -> &mut Self {
         assert!(
             size >= 1200,
@@ -91,6 +107,13 @@ impl CommonParameters {
         self
     }
 
+    /// Set the `max_datagram_frame_size` transport parameter.
+    ///
+    /// If this value is absent, a default value of 3 is assumed
+    /// (indicating a multiplier of 8). Values above 20 are invalid.
+    ///
+    /// See [section-18.2-4.25](https://datatracker.ietf.org/doc/html/rfc9000#section-18.2-4.25)
+    /// for more information.
     pub fn set_ack_delay_exponent(&mut self, exponent: u8) -> &mut Self {
         assert!(
             exponent <= 20,
@@ -100,6 +123,13 @@ impl CommonParameters {
         self
     }
 
+    /// Set the `max_ack_delay` transport parameter.
+    ///
+    /// If this value is absent, a default of 25 milliseconds is assumed.
+    /// Values of 214 or greater are invalid.
+    ///
+    /// See [section-18.2-4.27](https://datatracker.ietf.org/doc/html/rfc9000#section-18.2-4.27)
+    /// for more information.
     pub fn set_max_ack_delay(&mut self, delay: u16) -> &mut Self {
         assert!(
             delay <= 1 << 14,
@@ -109,6 +139,15 @@ impl CommonParameters {
         self
     }
 
+    /// Set the `active_connection_id_limit` transport parameter.
+    ///
+    /// The value of the active_connection_id_limit parameter MUST be at least 2.
+    /// An endpoint that receives a value less than 2 MUST close the connection
+    /// with an error of type TRANSPORT_PARAMETER_ERROR.
+    /// If this transport parameter is absent, a default of 2 is assumed.
+    ///
+    /// See [section-18.2-6.1](https://datatracker.ietf.org/doc/html/rfc9000#section-18.2-6.1)
+    /// for more information.
     pub fn set_active_connection_id_limit(&mut self, limit: u64) -> &mut Self {
         assert!(
             limit >= 2,
@@ -119,6 +158,8 @@ impl CommonParameters {
         self
     }
 
+    /// Set the `initial_max_data` transport parameter,
+    /// which can not exceed 2^60-1.
     pub fn set_initial_max_streams_bidi(&mut self, streams: u64) -> &mut Self {
         assert!(
             streams <= MAX_STREAMS_LIMIT,
@@ -128,6 +169,8 @@ impl CommonParameters {
         self
     }
 
+    /// Set the `initial_max_streams_uni` transport parameter,
+    /// which can not exceed 2^60-1.
     pub fn set_initial_max_streams_uni(&mut self, streams: u64) -> &mut Self {
         assert!(
             streams <= MAX_STREAMS_LIMIT,
@@ -138,11 +181,23 @@ impl CommonParameters {
     }
 }
 
+/// A [`bytes::BufMut`] extension trait, makes buffer more friendly
+/// to write common parameters.
 pub trait WriteCommonParameters: bytes::BufMut {
+    /// Write a varint parameter with its patameter id.
     fn put_varint_parameter(&mut self, id: ParameterId, varint: VarInt);
 
+    /// Write a connection id parameter with its patameter id.
+    ///
+    /// Note that the length of the connection id is encoded
+    /// in the Transport Parameter Length.
     fn put_cid_parameter(&mut self, id: ParameterId, cid: &ConnectionId);
 
+    /// Write all common parameters to the buffer.
+    ///
+    /// Each transport parameter is encoded as an (identifier, length, value) tuple,
+    /// see [Figure 21](https://datatracker.ietf.org/doc/html/rfc9000#transport-parameter-encoding-fig)
+    /// for more information.
     fn put_common_parameters(&mut self, params: &CommonParameters);
 }
 
@@ -214,9 +269,15 @@ impl<T: bytes::BufMut> WriteCommonParameters for T {
     }
 }
 
+/// Client transport parameters, which are similar to CommonParameters.
 #[derive(Debug, Default, Clone, Copy, Deref, DerefMut)]
 pub struct ClientParameters(CommonParameters);
 
+/// Parse client transport parameters from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
+///
+/// As a server, it will parse the client transport parameters
+/// upon receiving the Initial packet from the client.
 pub(super) fn be_client_parameters<'b>(
     mut input: &'b [u8],
     params: &mut ClientParameters,
@@ -277,7 +338,10 @@ pub(super) fn be_client_parameters<'b>(
     Ok((input, ()))
 }
 
+/// A [`bytes::BufMut`] extension trait, makes buffer more friendly
+/// to write client parameters.
 pub trait WriteClientParameters: WriteCommonParameters {
+    /// Write all client parameters to the buffer.
     fn put_client_parameters(&mut self, params: &ClientParameters);
 }
 
@@ -287,6 +351,12 @@ impl<T: bytes::BufMut> WriteClientParameters for T {
     }
 }
 
+/// Server transport parameters, which are not only include CommonParameters,
+/// but also include some additional parameters, such as
+/// - `original_destination_connection_id`
+/// - `retry_source_connection_id`
+/// - `preferred_address`
+/// - `stateless_reset_token`.
 #[derive(Debug, Default, CopyGetters, Setters, Clone, Copy, Deref, DerefMut)]
 pub struct ServerParameters {
     #[deref]
@@ -302,21 +372,38 @@ pub struct ServerParameters {
 }
 
 impl ServerParameters {
+    /// Set the `original_destination_connection_id` transport parameter,
+    /// which is the destination connection ID in the first Initial packet
+    /// sent by the client.
     pub fn set_original_destination_connection_id(&mut self, cid: ConnectionId) -> &mut Self {
         self.original_destination_connection_id = cid;
         self
     }
 
+    /// Set the `retry_source_connection_id` transport parameter,
+    /// which is the srouce connection ID in the Retry packet,
+    /// if the server decides to send a Retry packet to the client.
     pub fn set_retry_source_connection_id(&mut self, cid: ConnectionId) -> &mut Self {
         self.retry_source_connection_id = Some(cid);
         self
     }
 
+    /// Set the `preferred_address` transport parameter,
+    /// if the server wants the client to migrate to a new server address
+    ///  at the end of the handshake.
+    ///
+    /// See [prefered-address](https://datatracker.ietf.org/doc/html/rfc9000#preferred-address)
+    /// for more information.
     pub fn set_preferred_address(&mut self, addr: PreferredAddress) -> &mut Self {
         self.preferred_address = Some(addr);
         self
     }
 
+    /// Set the `stateless_reset_token` transport parameter,
+    /// which is used in verifying a stateless reset.
+    ///
+    /// See [stateless-reset](https://datatracker.ietf.org/doc/html/rfc9000#stateless-reset)
+    /// for more information.
     pub fn set_statelss_reset_token(&mut self, token: ResetToken) -> &mut Self {
         self.statelss_reset_token = Some(token);
         self
