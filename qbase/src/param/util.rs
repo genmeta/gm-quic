@@ -58,6 +58,8 @@ impl From<ParameterId> for VarInt {
     }
 }
 
+/// Parse the parameter id from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub(super) fn be_parameter_id(input: &[u8]) -> nom::IResult<&[u8], ParameterId> {
     let (remain, id) = be_varint(input)?;
     let id = match id.into_inner() {
@@ -90,7 +92,10 @@ pub(super) fn be_parameter_id(input: &[u8]) -> nom::IResult<&[u8], ParameterId> 
     Ok((remain, id))
 }
 
+/// A [`bytes::BufMut`] extension trait, makes buffer more friendly
+/// to write the parameter id.
 pub trait WriteParameterId: bytes::BufMut {
+    /// Write the parameter id to the buffer.
     fn put_parameter_id(&mut self, param_id: ParameterId);
 }
 
@@ -100,6 +105,12 @@ impl<T: bytes::BufMut> WriteParameterId for T {
     }
 }
 
+/// The server's preferred address, which is used to effect
+/// a change in server address at the end of the handshake.
+///
+/// See [section-18.2-4.31](https://datatracker.ietf.org/doc/html/rfc9000#section-18.2-4.32)
+/// and [figure-22](https://datatracker.ietf.org/doc/html/rfc9000#figure-22)
+/// for more details.
 #[derive(Getters, Setters, MutGetters, Debug, PartialEq, Clone, Copy)]
 pub struct PreferredAddress {
     #[getset(get_copy = "pub", set = "pub")]
@@ -113,11 +124,29 @@ pub struct PreferredAddress {
 }
 
 impl PreferredAddress {
+    /// Create a new preferred address.
+    pub fn new(
+        address_v4: SocketAddrV4,
+        address_v6: SocketAddrV6,
+        connection_id: ConnectionId,
+        stateless_reset_token: ResetToken,
+    ) -> Self {
+        Self {
+            address_v4,
+            address_v6,
+            connection_id,
+            stateless_reset_token,
+        }
+    }
+
+    /// Returns the encoding size of the preferred address.
     pub fn encoding_size(&self) -> usize {
         6 + 18 + self.connection_id.encoding_size() + self.stateless_reset_token.encoding_size()
     }
 }
 
+/// Parse the preferred address from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_preferred_address(input: &[u8]) -> nom::IResult<&[u8], PreferredAddress> {
     use nom::{bytes::streaming::take, combinator::map};
 
@@ -149,7 +178,10 @@ pub fn be_preferred_address(input: &[u8]) -> nom::IResult<&[u8], PreferredAddres
     ))
 }
 
+/// A [`bytes::BufMut`] extension trait, makes buffer more friendly
+/// to write the preferred address.
 pub trait WirtePreferredAddress: bytes::BufMut {
+    /// Write the preferred address to the buffer.
     fn put_preferred_address(&mut self, addr: &PreferredAddress);
 }
 
@@ -163,5 +195,96 @@ impl<T: bytes::BufMut> WirtePreferredAddress for T {
 
         self.put_connection_id(&addr.connection_id);
         self.put_reset_token(&addr.stateless_reset_token);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parameter_id_conversion() {
+        assert_eq!(VarInt::from(ParameterId::MaxIdleTimeout).into_inner(), 0x01);
+        assert_eq!(
+            VarInt::from(ParameterId::MaxUdpPayloadSize).into_inner(),
+            0x03
+        );
+        assert_eq!(
+            VarInt::from(ParameterId::GreaseQuicBit).into_inner(),
+            0x2ab2
+        );
+    }
+
+    #[test]
+    fn test_parameter_id_encoding() {
+        let mut buf = Vec::new();
+        buf.put_parameter_id(ParameterId::MaxIdleTimeout);
+        assert_eq!(buf, vec![0x01]);
+    }
+
+    #[test]
+    fn test_parameter_id_parsing() {
+        let input = [0x01];
+        let (_, param_id) = be_parameter_id(&input).unwrap();
+        assert_eq!(param_id, ParameterId::MaxIdleTimeout);
+    }
+
+    #[test]
+    fn test_preferred_address() {
+        let addr = PreferredAddress {
+            address_v4: "127.0.0.1:8080".parse().unwrap(),
+            address_v6: "[::1]:8081".parse().unwrap(),
+            connection_id: ConnectionId::from_slice(&[1, 2, 3, 4]),
+            stateless_reset_token: ResetToken::new(&[0; 16]),
+        };
+
+        let mut buf = Vec::new();
+        buf.put_preferred_address(&addr);
+
+        let (_, decoded) = be_preferred_address(&buf).unwrap();
+        assert_eq!(decoded, addr);
+    }
+
+    #[test]
+    fn test_preferred_address_encoding() {
+        let prefered_addr = PreferredAddress {
+            address_v4: "127.0.0.1:8080".parse().unwrap(),
+            address_v6: "[::1]:8081".parse().unwrap(),
+            connection_id: ConnectionId::from_slice(&[1, 2, 3, 4]),
+            stateless_reset_token: ResetToken::new(&[0; 16]),
+        };
+
+        let mut buf = Vec::new();
+        buf.put_preferred_address(&prefered_addr);
+        assert_eq!(buf.len(), prefered_addr.encoding_size());
+        assert_eq!(
+            buf,
+            vec![
+                127, 0, 0, 1, 31, 144, // v4 address
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 31, 145, // v6 address
+                4, 1, 2, 3, 4, // connection id
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 // stateless reset token
+            ]
+        );
+    }
+
+    #[test]
+    fn test_preferred_address_parsing() {
+        let input = vec![
+            127, 0, 0, 1, 31, 144, // v4 address
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 31, 145, // v6 address
+            4, 1, 2, 3, 4, // connection id
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // stateless reset token
+        ];
+        let (_, prefered_address) = be_preferred_address(&input).unwrap();
+        assert_eq!(
+            prefered_address,
+            PreferredAddress {
+                address_v4: "127.0.0.1:8080".parse().unwrap(),
+                address_v6: "[::1]:8081".parse().unwrap(),
+                connection_id: ConnectionId::from_slice(&[1, 2, 3, 4]),
+                stateless_reset_token: ResetToken::new(&[0; 16]),
+            }
+        );
     }
 }
