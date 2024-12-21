@@ -361,13 +361,13 @@ impl<T: bytes::BufMut> WriteClientParameters for T {
 pub struct ServerParameters {
     #[deref]
     common_params: CommonParameters,
-    #[getset(get = "pub")]
+    #[getset(get_copy = "pub")]
     pub(super) original_destination_connection_id: ConnectionId,
     #[getset(get_copy = "pub")]
     pub(super) retry_source_connection_id: Option<ConnectionId>,
-    #[getset(get = "pub")]
+    #[getset(get_copy = "pub")]
     pub(super) preferred_address: Option<PreferredAddress>,
-    #[getset(get = "pub")]
+    #[getset(get_copy = "pub")]
     pub(super) statelss_reset_token: Option<ResetToken>,
 }
 
@@ -410,6 +410,11 @@ impl ServerParameters {
     }
 }
 
+/// Parse server transport parameters from the input buffer,
+/// [nom](https://docs.rs/nom/latest/nom/) parser style.
+///
+/// As a client, it will parse the server parameters
+/// upon receiving the response Initial packet.
 pub(super) fn be_server_parameters<'b>(
     mut input: &'b [u8],
     params: &mut ServerParameters,
@@ -481,9 +486,16 @@ pub(super) fn be_server_parameters<'b>(
     Ok((input, ()))
 }
 
+/// A [`bytes::BufMut`] extension trait, make buffer more friendly
+/// to write server parameters.
 pub trait WriteServerParameters: WriteCommonParameters {
+    /// Write a reset token parameter with its patameter id.
     fn put_reset_token_parameter(&mut self, id: ParameterId, token: &ResetToken);
+
+    /// Write a preferred address parameter with its patameter id.
     fn put_preferred_address_parameter(&mut self, id: ParameterId, addr: &PreferredAddress);
+
+    /// Write all server parameters to the buffer.
     fn put_server_parameters(&mut self, params: &ServerParameters);
 }
 
@@ -515,5 +527,206 @@ impl<T: bytes::BufMut> WriteServerParameters for T {
         if let Some(cid) = &parameters.retry_source_connection_id {
             self.put_cid_parameter(ParameterId::RetrySourceConnectionId, cid);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::vec;
+
+    use super::*;
+
+    #[test]
+    fn test_common_parameters_default() {
+        let params = CommonParameters::default();
+        assert_eq!(params.max_idle_timeout(), Duration::ZERO);
+        assert_eq!(params.max_udp_payload_size().into_inner(), 65527);
+        assert_eq!(params.max_datagram_frame_size().into_inner(), 65535);
+        assert_eq!(params.ack_delay_exponent().into_inner(), 3);
+        assert_eq!(params.max_ack_delay().into_inner(), 25);
+        assert!(!params.disable_active_migration());
+        assert_eq!(params.active_connection_id_limit().into_inner(), 2);
+    }
+
+    #[test]
+    fn test_common_parameters_setters() {
+        let mut params = CommonParameters::default();
+        params.set_max_udp_payload_size(1500);
+        params.set_ack_delay_exponent(10);
+        params.set_max_ack_delay(100);
+        params.set_active_connection_id_limit(4);
+        params.set_initial_max_streams_bidi(100);
+        params.set_initial_max_streams_uni(50);
+
+        assert_eq!(params.max_udp_payload_size().into_inner(), 1500);
+        assert_eq!(params.ack_delay_exponent().into_inner(), 10);
+        assert_eq!(params.max_ack_delay().into_inner(), 100);
+        assert_eq!(params.active_connection_id_limit().into_inner(), 4);
+        assert_eq!(params.initial_max_streams_bidi().into_inner(), 100);
+        assert_eq!(params.initial_max_streams_uni().into_inner(), 50);
+    }
+
+    #[test]
+    #[should_panic(expected = "Values below 1200 are invalid")]
+    fn test_invalid_max_udp_payload_size() {
+        let mut params = CommonParameters::default();
+        params.set_max_udp_payload_size(1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "Values above 20 are invalid")]
+    fn test_invalid_ack_delay_exponent() {
+        let mut params = CommonParameters::default();
+        params.set_ack_delay_exponent(21);
+    }
+
+    #[test]
+    fn test_write_common_parameters() {
+        let mut buf = Vec::new();
+        let params = CommonParameters::default();
+        buf.put_common_parameters(&params);
+        assert!(!buf.is_empty());
+        assert_eq!(
+            buf,
+            vec![
+                1, 1, 0, // max_idle_timeout
+                3, 4, 128, 0, 255, 247, // max_udp_payload_size
+                4, 1, 0, // initial_max_data
+                5, 1, 0, // initial_max_stream_data_bidi_local
+                6, 1, 0, // initial_max_stream_data_bidi_remote
+                7, 1, 0, // initial_max_stream_data_uni
+                8, 1, 0, // initial_max_streams_bidi
+                9, 1, 0, // initial_max_streams_uni
+                10, 1, 3, // ack_delay_exponent
+                11, 1, 25, // max_ack_delay
+                14, 1, 2, // active_connection_id_limit
+                15, 0, // initial_source_connection_id
+                32, 4, 128, 0, 255, 255 // max_datagram_frame_size
+            ]
+        );
+    }
+
+    #[test]
+    fn test_server_parameters() {
+        let mut params = ServerParameters::default();
+        let initial_scid = ConnectionId::from_slice("test_scid".as_bytes());
+        let retry_scid = ConnectionId::from_slice("retry_scid".as_bytes());
+        let token = ResetToken::default();
+        let prefered_addr = PreferredAddress::new(
+            "127.0.0.1:8080".parse().unwrap(),
+            "[::1]:8081".parse().unwrap(),
+            ConnectionId::from_slice(&[1, 2, 3, 4]),
+            ResetToken::new(&[0; 16]),
+        );
+
+        params.set_original_destination_connection_id(initial_scid);
+        params.set_retry_source_connection_id(retry_scid);
+        params.set_statelss_reset_token(token);
+        params.set_preferred_address(prefered_addr);
+
+        assert_eq!(params.original_destination_connection_id, initial_scid);
+        assert_eq!(params.retry_source_connection_id(), Some(retry_scid));
+        assert_eq!(params.statelss_reset_token(), Some(token));
+        assert_eq!(params.preferred_address(), Some(prefered_addr));
+    }
+
+    #[test]
+    fn test_write_server_parameters() {
+        let mut buf = Vec::new();
+        let params = ServerParameters::default();
+        buf.put_server_parameters(&params);
+        assert_eq!(
+            buf,
+            vec![
+                1, 1, 0, // max_idle_timeout
+                3, 4, 128, 0, 255, 247, // max_udp_payload_size
+                4, 1, 0, // initial_max_data
+                5, 1, 0, // initial_max_stream_data_bidi_local
+                6, 1, 0, // initial_max_stream_data_bidi_remote
+                7, 1, 0, // initial_max_stream_data_uni
+                8, 1, 0, // initial_max_streams_bidi
+                9, 1, 0, // initial_max_streams_uni
+                10, 1, 3, // ack_delay_exponent
+                11, 1, 25, // max_ack_delay
+                14, 1, 2, // active_connection_id_limit
+                15, 0, // initial_source_connection_id
+                32, 4, 128, 0, 255, 255, // max_datagram_frame_size
+                0, 0 // original_destination_connection_id
+            ]
+        );
+    }
+
+    #[test]
+    fn test_client_parameters() {
+        let mut buf = Vec::new();
+        let params = ClientParameters::default();
+        buf.put_client_parameters(&params);
+        assert_eq!(
+            buf,
+            vec![
+                1, 1, 0, // max_idle_timeout
+                3, 4, 128, 0, 255, 247, // max_udp_payload_size
+                4, 1, 0, // initial_max_data
+                5, 1, 0, // initial_max_stream_data_bidi_local
+                6, 1, 0, // initial_max_stream_data_bidi_remote
+                7, 1, 0, // initial_max_stream_data_uni
+                8, 1, 0, // initial_max_streams_bidi
+                9, 1, 0, // initial_max_streams_uni
+                10, 1, 3, // ack_delay_exponent
+                11, 1, 25, // max_ack_delay
+                14, 1, 2, // active_connection_id_limit
+                15, 0, // initial_source_connection_id
+                32, 4, 128, 0, 255, 255 // max_datagram_frame_size
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_server_parameters() {
+        let mut params = ServerParameters::default();
+        let empty_input = &[
+            1, 1, 0, // max_idle_timeout
+            3, 4, 128, 0, 255, 247, // max_udp_payload_size
+            4, 1, 0, // initial_max_data
+            5, 1, 0, // initial_max_stream_data_bidi_local
+            6, 1, 0, // initial_max_stream_data_bidi_remote
+            7, 1, 0, // initial_max_stream_data_uni
+            8, 1, 8, // initial_max_streams_bidi
+            9, 1, 2, // initial_max_streams_uni
+            10, 1, 3, // ack_delay_exponent
+            11, 1, 25, // max_ack_delay
+            14, 1, 2, // active_connection_id_limit
+            15, 0, // initial_source_connection_id
+            32, 4, 128, 0, 255, 255, // max_datagram_frame_size
+            0, 0, // original_destination_connection_id
+        ];
+        let result = be_server_parameters(empty_input, &mut params);
+        assert!(result.is_ok());
+        assert_eq!(params.initial_max_streams_bidi().into_inner(), 8);
+        assert_eq!(params.initial_max_streams_uni().into_inner(), 2);
+    }
+
+    #[test]
+    fn test_parse_client_parameters() {
+        let mut params = ClientParameters::default();
+        let empty_input = &[
+            1, 1, 0, // max_idle_timeout
+            3, 4, 128, 0, 255, 247, // max_udp_payload_size
+            4, 1, 0, // initial_max_data
+            5, 1, 0, // initial_max_stream_data_bidi_local
+            6, 1, 0, // initial_max_stream_data_bidi_remote
+            7, 1, 0, // initial_max_stream_data_uni
+            8, 1, 0, // initial_max_streams_bidi
+            9, 1, 0, // initial_max_streams_uni
+            10, 1, 3, // ack_delay_exponent
+            11, 1, 60, // max_ack_delay
+            14, 1, 10, // active_connection_id_limit
+            15, 0, // initial_source_connection_id
+            32, 4, 128, 0, 255, 255, // max_datagram_frame_size
+        ];
+        let result = be_client_parameters(empty_input, &mut params);
+        assert!(result.is_ok());
+        assert_eq!(params.max_ack_delay().into_inner(), 60);
+        assert_eq!(params.active_connection_id_limit().into_inner(), 10);
     }
 }

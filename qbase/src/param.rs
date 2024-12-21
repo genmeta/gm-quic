@@ -530,14 +530,127 @@ impl Future for ArcParameters {
 }
 
 #[cfg(test)]
-mod test {
-    use super::ClientParameters;
+mod tests {
+    use super::*;
+
+    fn create_test_client_params() -> ClientParameters {
+        let mut params = ClientParameters::default();
+        params.set_initial_source_connection_id(ConnectionId::from_slice(b"client_test"));
+        params
+    }
+
+    fn create_test_server_params() -> ServerParameters {
+        let mut params = ServerParameters::default();
+        params.set_initial_source_connection_id(ConnectionId::from_slice(b"server_test"));
+        params.set_original_destination_connection_id(ConnectionId::from_slice(b"original"));
+        params
+    }
 
     #[test]
-    fn test_common_parameters() {
-        let mut client_params = ClientParameters::default();
-        client_params.set_ack_delay_exponent(0x12);
+    fn test_parameters_new() {
+        let client_params = create_test_client_params();
+        let params = Parameters::new_client(client_params, None);
+        assert_eq!(params.role, Role::Client);
+        assert_eq!(params.state, Parameters::CLIENT_READY);
 
-        println!("{:?}", client_params);
+        let server_params = create_test_server_params();
+        let params = Parameters::new_server(server_params);
+        assert_eq!(params.role, Role::Server);
+        assert_eq!(params.state, Parameters::SERVER_READY);
+    }
+
+    #[test]
+    fn test_authenticate_cids() {
+        let client_params = create_test_client_params();
+        let mut params = Parameters::new_client(client_params, None);
+
+        let server_cid = ConnectionId::from_slice(b"server_test");
+        params.initial_scid_from_peer_need_equal(server_cid);
+
+        let original_cid = ConnectionId::from_slice(b"original");
+        params.original_dcid_from_server_need_equal(original_cid);
+
+        // Setup server parameters to match requirements
+        params.server.set_initial_source_connection_id(server_cid);
+        params
+            .server
+            .set_original_destination_connection_id(original_cid);
+
+        assert!(params.authenticate_cids().is_ok());
+    }
+
+    #[test]
+    fn test_parameters_as_client() {
+        let client_params = create_test_client_params();
+        let arc_params = ArcParameters::new_client(client_params, None);
+
+        // Test local params
+        let local = arc_params.local().unwrap();
+        assert!(local.max_udp_payload_size.into_inner() >= 1200);
+
+        // Test remote params before receiving
+        assert!(arc_params.remote().is_none());
+
+        // Test remembered params
+        assert!(arc_params.remembered().is_none());
+
+        // Test loading local params
+        let mut buf = Vec::new();
+        arc_params.load_local_params_into(&mut buf);
+        assert!(!buf.is_empty());
+    }
+
+    #[test]
+    fn test_validate_remote_params() {
+        // Test invalid max_udp_payload_size
+        let mut params = Parameters::new_server(create_test_server_params());
+        let result = params.recv_remote_params(&[
+            1, 1, 0, // max_idle_timeout
+            3, 2, 0x43, 0xE8, // max_udp_payload_size: 1000
+            4, 1, 0, // initial_max_data
+            5, 1, 0, // initial_max_stream_data_bidi_local
+            6, 1, 0, // initial_max_stream_data_bidi_remote
+            7, 1, 0, // initial_max_stream_data_uni
+            8, 1, 0, // initial_max_streams_bidi
+            9, 1, 0, // initial_max_streams_uni
+            10, 1, 3, // ack_delay_exponent
+            11, 1, 25, // max_ack_delay
+            14, 1, 2, // active_connection_id_limit
+            15, 0, // initial_source_connection_id
+            32, 4, 128, 0, 255, 255, // max_datagram_frame_size
+        ]);
+        assert_eq!(
+            result,
+            Err(Error::new(
+                ErrorKind::TransportParameter,
+                FrameType::Crypto,
+                "max_udp_payload_size from peer must be at least 1200",
+            ))
+        );
+    }
+
+    #[test]
+    fn test_write_parameters() {
+        let client_params = create_test_client_params();
+        let params = Parameters::new_client(client_params, None);
+        let mut buf = Vec::new();
+        buf.put_parameters(&params);
+        assert!(!buf.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_arc_parameters_error_handling() {
+        let arc_params = ArcParameters::new_client(create_test_client_params(), None);
+
+        // Simulate connection error
+        let error = Error::new(
+            ErrorKind::TransportParameter,
+            FrameType::Crypto,
+            "test error",
+        );
+        arc_params.on_conn_error(&error);
+
+        assert!(arc_params.local().is_none());
+        assert!(arc_params.remote().is_none());
     }
 }

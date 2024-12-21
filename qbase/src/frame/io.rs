@@ -129,13 +129,15 @@ pub fn be_frame(raw: &Bytes, packet_type: Type) -> Result<(usize, Frame, bool), 
     ))
 }
 
-/// A [`bytes::BufMut`] extension trait, makes buffer more friendly to write all kinds of frames.
+/// A [`bytes::BufMut`] extension trait, makes buffer more friendly
+/// to write all kinds of frames.
 pub trait WriteFrame<F>: bytes::BufMut {
     /// Write a frame to the buffer.
     fn put_frame(&mut self, frame: &F);
 }
 
-/// A [`bytes::BufMut`] extension trait, makes buffer more friendly to write frame with data.
+/// A [`bytes::BufMut`] extension trait, makes buffer more friendly
+/// to write frame with data.
 pub trait WriteDataFrame<F, D: DescribeData>: bytes::BufMut {
     /// Write a frame and its data to the buffer.
     fn put_data_frame(&mut self, frame: &F, data: &D);
