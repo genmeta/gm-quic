@@ -37,8 +37,6 @@ use crate::{
     usc::ArcUsc,
 };
 
-pub mod builder;
-
 pub mod closing;
 pub mod draining;
 pub mod raw;
@@ -185,7 +183,7 @@ impl ArcConnection {
         };
 
         let initial_dcid = ConnectionId::random_gen(8);
-        let parameters = ArcParameters::new_client(&parameters, &remembered);
+        let parameters = ArcParameters::new_client(parameters, remembered);
         parameters.set_initial_scid(initial_scid);
         parameters.original_dcid_from_server_need_equal(initial_dcid);
 
@@ -226,7 +224,7 @@ impl ArcConnection {
         tls_config: Arc<rustls::ServerConfig>,
         token_registry: ArcTokenRegistry,
     ) -> Self {
-        let parameters = ArcParameters::new_server(&parameters);
+        let parameters = ArcParameters::new_server(parameters);
         parameters.set_initial_scid(initial_scid);
         parameters.set_original_dcid(origin_dcid);
 

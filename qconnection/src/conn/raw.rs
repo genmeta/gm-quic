@@ -28,7 +28,7 @@ use super::{
 };
 use crate::{
     error::ConnError,
-    path::{ArcPath, ArcPaths, OldPaths, Path, Pathway},
+    path::{ArcPath, ArcPaths, Path, Paths, Pathway},
     router::Router,
     tls::ArcTlsSession,
 };
@@ -179,7 +179,7 @@ impl Connection {
                 conn_error.no_viable_path();
             }
         });
-        let pathes = OldPaths::new(path_creator, on_no_path).into();
+        let pathes = Paths::new(path_creator, on_no_path).into();
 
         let validate = {
             let tls_session = tls_session.clone();
