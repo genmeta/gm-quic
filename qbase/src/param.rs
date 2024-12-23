@@ -103,9 +103,9 @@ impl Parameters {
         Self {
             role: Role::Client,
             state: Self::CLIENT_READY,
-            client: *client,
+            client,
             server: ServerParameters::default(),
-            remembered: *remembered,
+            remembered,
             requirements: Requirements::default(),
             wakers: Vec::with_capacity(2),
         }
@@ -121,7 +121,7 @@ impl Parameters {
             role: Role::Server,
             state: Self::SERVER_READY,
             client: ClientParameters::default(),
-            server: *server,
+            server,
             remembered: None,
             requirements: Requirements::default(),
             wakers: Vec::with_capacity(2),
