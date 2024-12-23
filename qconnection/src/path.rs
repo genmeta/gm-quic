@@ -31,7 +31,7 @@ use crate::{
 };
 
 pub type ArcPath = Arc<Path>;
-pub type ArcPaths = Arc<OldPaths>;
+pub type ArcPaths = Arc<Paths>;
 
 /// A single path of a connection.
 ///
@@ -250,9 +250,6 @@ impl Path {
     }
 }
 
-#[derive(Default, Deref, DerefMut)]
-pub struct Paths(Arc<DashMap<Pathway, ArcPath>>);
-
 /// The set of all paths of a connection.
 ///
 /// GM-QUIC supports multiple paths for a connection, each path corresponds to a [`Pathway`].
@@ -264,14 +261,14 @@ pub struct Paths(Arc<DashMap<Pathway, ArcPath>>);
 /// This structure is also responsible for automatically removing a path from the set when it becomes
 /// inactive and terminating a connection when no path is available.
 #[derive(Deref, DerefMut)]
-pub struct OldPaths {
+pub struct Paths {
     #[deref]
     map: DashMap<Pathway, ArcPath>,
     creator: Box<dyn Fn(Pathway, ArcUsc) -> ArcPath + Send + Sync + 'static>,
     on_no_path: Arc<dyn Fn() + Send + Sync + 'static>,
 }
 
-impl OldPaths {
+impl Paths {
     /// Create a new [`Paths`].
     ///
     /// There are two parameters:
