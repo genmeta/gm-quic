@@ -4,6 +4,7 @@ members = [
     "qbase",
     "qrecovery",
     "qconnection",
+    "qconnection2",
     "qcongestion",
     "qudp",
     "qunreliable",
