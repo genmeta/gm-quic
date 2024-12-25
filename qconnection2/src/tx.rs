@@ -170,7 +170,7 @@ pub type DcidCell = cid::ArcCidCell<reliable::ArcReliableFrameDeque>;
 
 pub struct Transaction<'a> {
     scid: cid::ConnectionId,
-    borrowed_dcid: cid::BorrowedCid<'a, reliable::ArcReliableFrameDeque>,
+    dcid: cid::BorrowedCid<'a, reliable::ArcReliableFrameDeque>,
     cc: &'a qcongestion::ArcCC,
     flow_limit: conn::Credit<'a>,
     constraints: path::Constraints,
@@ -198,7 +198,7 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn dcid(&self) -> cid::ConnectionId {
-        *self.borrowed_dcid
+        *self.dcid
     }
 
     pub fn need_ack(&self, epoch: Epoch) -> Option<(u64, Instant)> {
@@ -306,11 +306,11 @@ impl<'a> Future for PrepareTransaction<'a> {
         let Some(borrowed_dcid) = ready!(self.dcid.poll_borrow_cid(cx)) else {
             return Poll::Ready(None);
         };
-        let constraints = path::Constraints::new(send_quota, credit_limit);
+        let constraints = path::Constraints::new(credit_limit, send_quota);
 
         Poll::Ready(Some(Transaction {
             scid: self.scid,
-            borrowed_dcid,
+            dcid: borrowed_dcid,
             cc: self.cc,
             flow_limit,
             constraints,

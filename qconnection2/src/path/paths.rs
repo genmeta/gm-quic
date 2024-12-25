@@ -1,20 +1,11 @@
-use std::{
-    convert::Infallible,
-    io, net,
-    sync::Arc,
-    task::{Context, Poll},
-};
+use std::{net, sync::Arc};
 
 use dashmap::DashMap;
-use qbase::{cid, packet::Packet, util::ArcAsyncDeque};
+use qbase::cid;
 
 use super::entry;
-use crate::{
-    builder, event, router,
-    util::{publish, subscribe},
-};
+use crate::{builder, event, router, util::subscribe};
 
-#[derive(Clone)]
 struct PathWithTasks {
     path: Arc<super::Path>,
     send_task: tokio::task::AbortHandle,
@@ -34,83 +25,6 @@ impl Drop for PathWithTasks {
     }
 }
 
-// packet_subscriber(paths <- create_entry <- components(data_space) <- cid_registry) <- router_revoke/registry <- paths, cycle on paths, fk
-// packet_subscriber = ConnInterface(distinguish with Paths)
-// how to discovery new path passively?
-// when receive a packet from new way, deliver the packway
-pub struct ConnInterface {
-    router_if: Arc<router::QuicProto>,
-    new_path: Box<dyn subscribe::Subscribe<super::Pathway, Error = Infallible> + Send + Sync>,
-    deques: DashMap<net::SocketAddr, ArcAsyncDeque<Packet>>,
-}
-
-impl ConnInterface {
-    pub fn new(
-        router_if: Arc<router::QuicProto>,
-        new_path: Box<dyn subscribe::Subscribe<super::Pathway, Error = Infallible> + Send + Sync>,
-    ) -> Self {
-        Self {
-            router_if,
-            new_path,
-            deques: DashMap::default(),
-        }
-    }
-}
-
-impl ConnInterface {
-    pub(super) fn new_packet(&self, way: super::Pathway) -> Option<bytes::BytesMut> {
-        self.router_if.new_packet(way)
-    }
-
-    pub(super) async fn send_packet(
-        &self,
-        pkt: &[u8],
-        way: super::Pathway,
-        dst: net::SocketAddr,
-    ) -> io::Result<()> {
-        self.router_if.send(pkt, way, dst).await
-    }
-}
-
-impl publish::Publish<super::Pathway> for Arc<ConnInterface> {
-    type Resource = Packet;
-
-    fn subscribe(&self, pathway: &super::Pathway) {
-        self.deques.entry(pathway.src()).or_default();
-    }
-
-    fn poll_acquire(
-        &self,
-        cx: &mut Context,
-        pathway: &super::Pathway,
-    ) -> Poll<Option<Self::Resource>> {
-        let Some(deque) = self.deques.get(&pathway.src()) else {
-            return Poll::Ready(None);
-        };
-        deque.poll_pop(cx)
-    }
-
-    fn unsubscribe(&self, pathway: &super::Pathway) {
-        if let Some(deque) = self.deques.get(&pathway.src()) {
-            deque.close();
-        }
-    }
-}
-
-impl subscribe::Subscribe<(super::Pathway, Packet)> for ConnInterface {
-    type Error = Infallible;
-
-    fn deliver(&self, (pathway, pkt): (super::Pathway, Packet)) -> Result<(), Self::Error> {
-        let deque = self.deques.entry(pathway.src()).or_insert_with(|| {
-            // Passive path discovery
-            _ = self.new_path.deliver(pathway);
-            ArcAsyncDeque::new()
-        });
-        deque.push_back(pkt);
-        Ok(())
-    }
-}
-
 type PathCreator = Box<dyn Fn(&Arc<Paths>, super::Pathway) -> PathWithTasks + Send + Sync>;
 
 pub struct Paths {
@@ -123,7 +37,7 @@ pub struct Paths {
 
 impl Paths {
     pub fn new_with(
-        conn_if: Arc<ConnInterface>,
+        conn_if: Arc<router::ConnInterface>,
         initial_scid: cid::ConnectionId,
         spaces: builder::Spaces,
         components: builder::Components,
@@ -132,18 +46,18 @@ impl Paths {
         let create_packet_entry =
             entry::generator(spaces.clone(), components.clone(), event_broker.clone());
         let create_cc = {
-            let initial_tracker = spaces.initial.tracker();
-            let handshake_tracker = spaces.handshake.tracker();
-            let data_tracker = spaces.data.tracker();
+            let initial_tracker = Box::new(spaces.initial.tracker());
+            let handshake_tracker = Box::new(spaces.handshake.tracker());
+            let data_tracker = Box::new(spaces.data.tracker());
             let handshake = components.handshake.clone();
             move || {
                 qcongestion::ArcCC::new(
                     qcongestion::CongestionAlgorithm::Bbr,
                     core::time::Duration::from_millis(100),
                     [
-                        Box::new(initial_tracker.clone()),
-                        Box::new(handshake_tracker.clone()),
-                        Box::new(data_tracker.clone()),
+                        initial_tracker.clone(),
+                        handshake_tracker.clone(),
+                        data_tracker.clone(),
                     ],
                     handshake.clone(),
                 )
@@ -162,7 +76,7 @@ impl Paths {
                 way: pathway,
                 cc: (create_cc)(),
                 anti_amplifier: super::aa::AntiAmplifier::default(),
-                last_recv_time: super::alive::LastReceiveTime::new(),
+                last_recv_time: super::alive::LastReceiveTime::now(),
                 challenge_sndbuf: Default::default(),
                 response_sndbuf: Default::default(),
                 response_rcvbuf: Default::default(),
@@ -221,5 +135,10 @@ impl Paths {
             let event = event::ConnEvent::TransportError(error);
             _ = self.event_broker.deliver(event)
         }
+    }
+
+    pub fn on_conn_error(&self, error: &qbase::error::Error) {
+        _ = error;
+        self.paths.clear();
     }
 }

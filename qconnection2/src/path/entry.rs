@@ -6,12 +6,9 @@ use qbase::packet::{self, Packet};
 use crate::{
     builder, event,
     path::Path,
+    router,
     space::{data, handshake, initial},
-    util::{
-        adapter,
-        publish::{self, Publish},
-        subscribe::{self, Subscribe},
-    },
+    util::{adapter, subscribe},
 };
 
 pub type PacketEntry =
@@ -22,6 +19,7 @@ pub(super) fn generator(
     components: builder::Components,
     event_broker: Arc<event::EventBroker>,
 ) -> impl Fn() -> PacketEntry {
+    use subscribe::Subscribe;
     // A future that yield the packet entry
     let get_entry = initial::PacketEntry::new(spaces.initial, components.clone());
     // pin it to the heap or rustc will complain
@@ -54,7 +52,7 @@ pub(super) fn generator(
             let event_broker = event_broker.clone();
             let get_entry = get_initial_entry.clone();
             async move {
-                let Some(entry) = get_entry.get().await.clone() else {
+                let Some(entry) = get_entry.poll().await.clone() else {
                     return;
                 };
                 while let Some((pkt, path)) = packets.next().await {
@@ -70,7 +68,7 @@ pub(super) fn generator(
             let event_broker = event_broker.clone();
             let get_entry = get_handshake_entry.clone();
             async move {
-                let Some(entry) = get_entry.get().await.clone() else {
+                let Some(entry) = get_entry.poll().await.clone() else {
                     return;
                 };
                 while let Some((pkt, path)) = packets.next().await {
@@ -86,7 +84,7 @@ pub(super) fn generator(
             let event_broker = event_broker.clone();
             let get_entry = get_zero_rtt_entry.clone();
             async move {
-                let Some(entry) = get_entry.get().await.clone() else {
+                let Some(entry) = get_entry.poll().await.clone() else {
                     return;
                 };
                 while let Some((pkt, path)) = packets.next().await {
@@ -102,7 +100,7 @@ pub(super) fn generator(
             let event_broker = event_broker.clone();
             let get_entry = get_one_rtt_entry.clone();
             async move {
-                let Some(entry) = get_entry.get().await.clone() else {
+                let Some(entry) = get_entry.poll().await.clone() else {
                     return;
                 };
                 while let Some((pkt, path)) = packets.next().await {
@@ -148,12 +146,13 @@ pub(super) fn generator(
 
 pub struct ReceivingPipeline {
     path: Arc<Path>,
-    packets: publish::Subscription<Arc<super::ConnInterface>, super::Pathway>,
+    packets: subscribe::Subscription<Arc<router::ConnInterface>, super::Pathway>,
     entry: PacketEntry,
 }
 
 impl super::Path {
     pub fn new_receiving_pipeline(self: &Arc<Self>, entry: PacketEntry) -> ReceivingPipeline {
+        use subscribe::Publish;
         ReceivingPipeline {
             path: self.clone(),
             packets: self.conn_if.subscription(self.way),

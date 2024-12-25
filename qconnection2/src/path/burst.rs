@@ -129,3 +129,9 @@ impl Burst {
         })
     }
 }
+
+impl Drop for Burst {
+    fn drop(&mut self) {
+        self.dcid.retire();
+    }
+}

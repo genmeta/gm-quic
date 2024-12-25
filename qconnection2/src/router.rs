@@ -14,12 +14,11 @@ use qbase::{
 };
 use tokio::task;
 
-use super::{
-    interface, path,
-    util::{publish, subscribe},
-};
+use super::{interface, path, util::subscribe};
 
+mod conn_if;
 mod signpost;
+pub use conn_if::ConnInterface;
 pub use signpost::Signpost;
 
 pub type QuicListener = Box<
@@ -115,7 +114,7 @@ impl QuicProto {
         Some(self.interfaces.get(&way.src())?.new_packet(way))
     }
 
-    pub(crate) async fn send(
+    pub(crate) async fn send_packet(
         &self,
         pkt: &[u8],
         way: path::Pathway,
@@ -133,7 +132,7 @@ impl QuicProto {
     }
 }
 
-impl publish::Publish<Signpost> for QuicProto {
+impl subscribe::Publish<Signpost> for QuicProto {
     type Resource = (path::Pathway, Packet);
 
     fn subscribe(&self, key: &Signpost) {
@@ -155,14 +154,14 @@ impl publish::Publish<Signpost> for QuicProto {
 #[derive(Clone)]
 pub struct RouterRegistry<ISSUED> {
     proto: Arc<QuicProto>,
-    conn_if: Arc<path::ConnInterface>,
+    conn_if: Arc<ConnInterface>,
     local_cids: ISSUED,
 }
 
 impl QuicProto {
     pub fn registry<ISSUED>(
         self: &Arc<Self>,
-        conn_if: Arc<path::ConnInterface>,
+        conn_if: Arc<ConnInterface>,
         local_cids: ISSUED,
     ) -> RouterRegistry<ISSUED> {
         RouterRegistry {
@@ -190,8 +189,7 @@ where
         core::iter::from_fn(|| Some(cid::ConnectionId::random_gen_with_mark(8, 0x80, 0x7F)))
             .find(|cid| {
                 use futures::StreamExt;
-                use publish::Publish;
-                use subscribe::Subscribe;
+                use subscribe::{Publish, Subscribe};
 
                 let signpost = signpost::Signpost::from(*cid);
                 let entry = self.proto.entries.entry(signpost);
