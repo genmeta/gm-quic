@@ -1,16 +1,17 @@
-use std::sync::Arc;
+use std::{convert::Infallible, sync::Arc};
 
 use bytes::BufMut as _;
 use qbase::{
+    cid,
     error::Error,
     frame::{
-        AckFrame, BeFrame as _, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
-        ReceiveFrame as _, ReliableFrame, StreamCtlFrame,
+        AckFrame, BeFrame as _, ConnectionCloseFrame, Frame, FrameReader, PathChallengeFrame,
+        PathResponseFrame, ReceiveFrame as _, ReliableFrame, StreamCtlFrame,
     },
     packet::{
         self,
         header::{long::ZeroRttHeader, short::OneRttHeader, GetType as _},
-        keys, signal,
+        keys, signal, MarshalFrame as _,
     },
     param, sid, token,
 };
@@ -162,6 +163,27 @@ impl Space {
             ack,
             fresh_data,
         ))
+    }
+
+    pub fn try_assemble_ccf_packet<'b>(
+        &self,
+        dcid: cid::ConnectionId,
+        ccf: &ConnectionCloseFrame,
+        buf: &'b mut [u8],
+    ) -> Option<packet::AssembledPacket<'b>> {
+        let (hpk, pk) = self.one_rtt_keys.get_local_keys()?;
+        let header = OneRttHeader::new(Default::default(), dcid);
+        let sent_journal = self.journal.of_sent_packets();
+        let new_packet_guard = sent_journal.new_packet();
+        let pn = new_packet_guard.pn();
+        let tag_len = pk.tag_len();
+        let mut packet_writer = packet::PacketWriter::new(&header, buf, pn, tag_len)?;
+
+        packet_writer.dump_frame(ccf.clone());
+
+        let pk_guard = pk.lock_guard();
+        let (key_phase, pk) = pk_guard.get_local();
+        Some(packet_writer.encrypt_short_packet(key_phase, hpk.as_ref(), pk.as_ref()))
     }
 
     pub fn tracker(&self) -> Tracker {
@@ -513,6 +535,66 @@ impl subscribe::Subscribe<(OneRttPacket, &path::Path)> for OneRttPacketEntry {
         path.cc()
             .on_pkt_rcvd(qbase::Epoch::Initial, pn, is_ack_packet);
         self.rcvd_journal.register_pn(pn);
+
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct ClosingSpace {
+    ccf_packet: bytes::Bytes,
+    rcvd_journal: journal::ArcRcvdJournal,
+    keys: Option<(keys::HeaderProtectionKeys, keys::ArcOneRttPacketKeys)>,
+    event_broker: Arc<event::EventBroker>,
+}
+
+impl Space {
+    pub fn close(
+        self,
+        ccf_packet: bytes::Bytes,
+        event_broker: Arc<event::EventBroker>,
+    ) -> ClosingSpace {
+        let keys = self.one_rtt_keys.invalid();
+        ClosingSpace {
+            ccf_packet,
+            rcvd_journal: self.journal.of_rcvd_packets(),
+            keys,
+            event_broker,
+        }
+    }
+}
+
+impl ClosingSpace {
+    pub fn ccf_packet(&self) -> bytes::Bytes {
+        self.ccf_packet.clone()
+    }
+}
+
+impl subscribe::Subscribe<OneRttPacket> for ClosingSpace {
+    type Error = Infallible;
+
+    fn deliver(&self, (hdr, pkt, offset): OneRttPacket) -> Result<(), Self::Error> {
+        let Some(keys) = self.keys.as_ref() else {
+            return Ok(());
+        };
+        let (hpk, pk) = (keys.0.remote.as_ref(), &keys.1);
+        let parsed =
+            super::util::parse_short_header_packet(pkt, offset, hpk, pk, &self.rcvd_journal);
+        let Some((_pn, body_buf)) = parsed else {
+            return Ok(());
+        };
+
+        let ccf = FrameReader::new(body_buf, hdr.get_type())
+            .filter_map(Result::ok)
+            .find_map(|(frame, _)| match frame {
+                Frame::Close(ccf) => Some(ccf),
+                _ => None,
+            });
+        if let Some(ccf) = ccf {
+            _ = self
+                .event_broker
+                .deliver(event::ConnEvent::ReceivedCcf(ccf));
+        }
 
         Ok(())
     }

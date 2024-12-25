@@ -1,12 +1,13 @@
-use std::sync::Arc;
+use std::{convert::Infallible, sync::Arc};
 
 use bytes::BufMut as _;
 use qbase::{
-    frame::{CryptoFrame, Frame, FrameReader, ReceiveFrame as _},
+    cid,
+    frame::{ConnectionCloseFrame, CryptoFrame, Frame, FrameReader, ReceiveFrame as _},
     packet::{
         self,
         header::{long::HandshakeHeader, GetType as _},
-        keys,
+        keys, MarshalFrame,
     },
 };
 use qcongestion::CongestionControl as _;
@@ -82,6 +83,29 @@ impl Space {
             packet.encrypt_long_packet(keys.local.header.as_ref(), keys.local.packet.as_ref()),
             ack,
         ))
+    }
+
+    pub fn try_assemble_ccf_packet<'b>(
+        &self,
+        scid: cid::ConnectionId,
+        dcid: cid::ConnectionId,
+        ccf: &ConnectionCloseFrame,
+        buf: &'b mut [u8],
+    ) -> Option<packet::AssembledPacket<'b>> {
+        let keys = self.keys.get_local_keys()?;
+        let header = packet::header::LongHeaderBuilder::with_cid(scid, dcid).handshake();
+        let sent_journal = self.journal.of_sent_packets();
+        let new_packet_guard = sent_journal.new_packet();
+        let pn = new_packet_guard.pn();
+        let tag_len = keys.local.packet.tag_len();
+        let mut packet_writer = packet::PacketWriter::new(&header, buf, pn, tag_len)?;
+
+        packet_writer.dump_frame(ccf.clone());
+
+        Some(
+            packet_writer
+                .encrypt_long_packet(keys.local.header.as_ref(), keys.local.packet.as_ref()),
+        )
     }
 
     pub fn tracker(&self) -> Tracker {
@@ -204,6 +228,68 @@ impl subscribe::Subscribe<(HandshakePacket, &path::Path)> for PacketEntry {
         path.cc()
             .on_pkt_rcvd(qbase::Epoch::Initial, pn, is_ack_packet);
         self.rcvd_journal.register_pn(pn);
+
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct ClosingSpace {
+    ccf_packet: bytes::Bytes,
+    rcvd_journal: journal::ArcRcvdJournal,
+    keys: Option<Arc<rustls::quic::Keys>>,
+    event_broker: Arc<event::EventBroker>,
+}
+
+impl Space {
+    pub fn close(
+        self,
+        ccf_packet: bytes::Bytes,
+        event_broker: Arc<event::EventBroker>,
+    ) -> ClosingSpace {
+        // TOOD：此方案其实不需要invalid
+        let keys = self.keys.invalid();
+        let rcvd_journal = self.journal.of_rcvd_packets();
+        ClosingSpace {
+            ccf_packet,
+            rcvd_journal,
+            keys,
+            event_broker,
+        }
+    }
+}
+
+impl ClosingSpace {
+    pub fn ccf_packet(&self) -> bytes::Bytes {
+        self.ccf_packet.clone()
+    }
+}
+
+impl subscribe::Subscribe<HandshakePacket> for ClosingSpace {
+    type Error = Infallible;
+
+    fn deliver(&self, (hdr, pkt, offset): HandshakePacket) -> Result<(), Self::Error> {
+        let Some(keys) = self.keys.as_ref() else {
+            return Ok(());
+        };
+        let (hpk, pk) = (keys.remote.header.as_ref(), keys.remote.packet.as_ref());
+        let parsed =
+            super::util::parse_long_header_packet(pkt, offset, hpk, pk, &self.rcvd_journal);
+        let Some((_pn, body_buf)) = parsed else {
+            return Ok(());
+        };
+
+        let ccf = FrameReader::new(body_buf, hdr.get_type())
+            .filter_map(Result::ok)
+            .find_map(|(frame, _)| match frame {
+                Frame::Close(ccf) => Some(ccf),
+                _ => None,
+            });
+        if let Some(ccf) = ccf {
+            _ = self
+                .event_broker
+                .deliver(event::ConnEvent::ReceivedCcf(ccf));
+        }
 
         Ok(())
     }

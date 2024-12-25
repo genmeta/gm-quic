@@ -150,9 +150,7 @@ impl PacketEntry {
             parameters,
         })
     }
-}
 
-impl PacketEntry {
     fn dispatch_frame(&self, frame: Frame, path: &path::Path) {
         match frame {
             Frame::Ack(ack_frame) => {

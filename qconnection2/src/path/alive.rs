@@ -9,7 +9,7 @@ pub struct LastReceiveTime {
 }
 
 impl LastReceiveTime {
-    pub fn new() -> Self {
+    pub fn now() -> Self {
         Self {
             last: Mutex::new(tokio::time::Instant::now()),
             wake: AtomicWaker::new(),
