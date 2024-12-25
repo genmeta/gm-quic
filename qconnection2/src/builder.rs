@@ -14,6 +14,7 @@ use super::{
     tls::ArcTlsSession,
 };
 use crate::{
+    dying::{closing, draining},
     event, path, router,
     space::{data, handshake, initial},
 };
@@ -21,9 +22,10 @@ use crate::{
 /// 一个连接的核心，客户端、服务端通用
 /// 能够处理收到的包，能够发送数据包，能够打开流、接受流
 pub struct CoreConnection {
-    components: Components,
     spaces: Spaces,
+    components: Components,
     paths: Arc<path::Paths>,
+    conn_if: Arc<router::ConnInterface>,
 }
 
 #[derive(Clone)]
@@ -316,7 +318,7 @@ impl SpaceReady {
             Ok(())
         });
 
-        let conn_if = Arc::new(path::ConnInterface::new(proto.clone(), new_path as _));
+        let conn_if = Arc::new(router::ConnInterface::new(proto.clone(), new_path as _));
 
         let router_registry = proto.registry(conn_if.clone(), self.reliable_frames.clone());
         let local_cids = ArcLocalCids::new(initial_scid, router_registry);
@@ -356,8 +358,79 @@ impl SpaceReady {
 
         CoreConnection {
             spaces: self.spaces,
+            conn_if,
             components,
             paths,
         }
+    }
+}
+
+impl CoreConnection {
+    pub fn entry_closing(
+        self,
+        error: &qbase::error::Error,
+        event_broker: Arc<event::EventBroker>,
+    ) -> closing::Connection {
+        self.spaces.data.streams().on_conn_error(error);
+        self.spaces.data.datagrams().on_conn_error(error);
+        self.components.flow_ctrl.on_conn_error(error);
+        self.components.parameters.on_conn_error(error);
+        self.components.tls_session.on_conn_error(error);
+        self.paths.on_conn_error(error);
+
+        let ccf = error.clone().into();
+        let handshake_space = {
+            // try { $tt } (the unstable try block feature) ≈ (||{ $tt })()
+            let ccf_packet = (|| {
+                let scid = self.components.cid_registry.local.initial_scid()?;
+                let dcid = self.components.cid_registry.remote.latest_dcid()?;
+                let mut buf = [0; qcongestion::MSS];
+                let pkt = self
+                    .spaces
+                    .handshake
+                    .try_assemble_ccf_packet(scid, dcid, &ccf, &mut buf)?;
+                Some(bytes::Bytes::copy_from_slice(&pkt))
+            })();
+            let ccf_packet = ccf_packet.unwrap_or_default();
+            let event_broker = event_broker.clone();
+            self.spaces.handshake.close(ccf_packet, event_broker)
+        };
+        let data_space = {
+            let ccf_packet = (|| {
+                let dcid = self.components.cid_registry.remote.latest_dcid()?;
+                let mut buf = [0; qcongestion::MSS];
+                let pkt = self
+                    .spaces
+                    .data
+                    .try_assemble_ccf_packet(dcid, &ccf, &mut buf)?;
+                Some(bytes::Bytes::copy_from_slice(&pkt))
+            })();
+            let ccf_packet = ccf_packet.unwrap_or_default();
+            let event_broker = event_broker.clone();
+            self.spaces.data.close(ccf_packet, event_broker)
+        };
+        let closing_spaces = closing::Spaces {
+            handshake: handshake_space,
+            data: data_space,
+        };
+
+        let router_if = self.conn_if.router_if();
+        closing::Connection::new(
+            router_if.clone(),
+            self.components.cid_registry,
+            closing_spaces,
+        )
+    }
+
+    pub fn enter_draining(self, error: &qbase::error::Error) -> draining::Connection {
+        self.spaces.data.streams().on_conn_error(error);
+        self.spaces.data.datagrams().on_conn_error(error);
+        self.components.flow_ctrl.on_conn_error(error);
+        self.components.parameters.on_conn_error(error);
+        self.components.tls_session.on_conn_error(error);
+        self.paths.on_conn_error(error);
+
+        let router_if = self.conn_if.router_if();
+        draining::Connection::new(router_if.clone(), self.components.cid_registry)
     }
 }

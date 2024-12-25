@@ -15,7 +15,7 @@ impl<F: Future> Concurrent<F> {
         Self(Mutex::new(ConcurrentInner::Pending { future }))
     }
 
-    pub async fn get(&self) -> MappedMutexGuard<'_, F::Output>
+    pub async fn poll(&self) -> MappedMutexGuard<'_, F::Output>
     where
         F: Unpin,
     {

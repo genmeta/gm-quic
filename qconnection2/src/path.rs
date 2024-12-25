@@ -9,9 +9,12 @@ use core::net;
 use std::{io, sync::Arc};
 
 pub use aa::*;
+pub use alive::*;
 pub use paths::*;
 use qbase::frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame};
 pub use util::*;
+
+use crate::router;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Endpoint {
@@ -62,7 +65,7 @@ pub struct Path {
     response_sndbuf: util::SendBuffer<PathResponseFrame>,
     response_rcvbuf: util::RecvBuffer<PathResponseFrame>,
 
-    conn_if: Arc<ConnInterface>,
+    conn_if: Arc<router::ConnInterface>,
 }
 
 impl Path {
