@@ -1,9 +1,4 @@
-use std::{
-    convert::Infallible,
-    io, net,
-    sync::Arc,
-    task::{Context, Poll},
-};
+use std::{convert::Infallible, io, net, sync::Arc};
 
 use dashmap::DashMap;
 use qbase::{packet::Packet, util::ArcAsyncDeque};
@@ -53,19 +48,10 @@ impl ConnInterface {
 impl subscribe::Publish<path::Pathway> for Arc<ConnInterface> {
     type Resource = Packet;
 
-    fn subscribe(&self, pathway: &path::Pathway) {
-        self.deques.entry(pathway.src()).or_default();
-    }
+    type Subscription = ArcAsyncDeque<Self::Resource>;
 
-    fn poll_acquire(
-        &self,
-        cx: &mut Context,
-        pathway: &path::Pathway,
-    ) -> Poll<Option<Self::Resource>> {
-        let Some(deque) = self.deques.get(&pathway.src()) else {
-            return Poll::Ready(None);
-        };
-        deque.poll_pop(cx)
+    fn subscribe(&self, pathway: path::Pathway) -> Self::Subscription {
+        self.deques.entry(pathway.src()).or_default().clone()
     }
 
     fn unsubscribe(&self, pathway: &path::Pathway) {

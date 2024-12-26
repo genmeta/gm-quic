@@ -146,16 +146,17 @@ pub(super) fn generator(
 
 pub struct ReceivingPipeline {
     path: Arc<Path>,
-    packets: subscribe::Subscription<Arc<router::ConnInterface>, super::Pathway>,
+    packets: subscribe::ResourceLease<Arc<router::ConnInterface>, super::Pathway>,
     entry: PacketEntry,
 }
 
 impl super::Path {
     pub fn new_receiving_pipeline(self: &Arc<Self>, entry: PacketEntry) -> ReceivingPipeline {
         use subscribe::Publish;
+        let packets = self.conn_if.resources_viewer(self.way).into_lease();
         ReceivingPipeline {
             path: self.clone(),
-            packets: self.conn_if.subscription(self.way),
+            packets,
             entry,
         }
     }

@@ -47,7 +47,7 @@ impl Connection {
         let streams = local_cids.into_iter().map(|local_cid| {
             // resubscribe to redirect packets to the closing connection interface
             router_if.unsubscribe(&local_cid.into());
-            router_if.subscription(local_cid.into())
+            router_if.resources_viewer(local_cid.into())
         });
         let mut packets = futures::stream::select_all(streams);
 
