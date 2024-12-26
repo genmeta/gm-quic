@@ -34,6 +34,10 @@ pub struct Pathway {
 }
 
 impl Pathway {
+    pub fn new(local: Endpoint, remote: Endpoint) -> Self {
+        Self { local, remote }
+    }
+
     pub fn flip(self) -> Self {
         Self {
             local: self.remote,

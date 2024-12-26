@@ -4,38 +4,34 @@ use core::{
 };
 use std::{ops::Deref, sync::Arc};
 
-pub trait Publish<Key> {
+pub(crate) trait Publish<Key: Copy> {
     type Resource;
 
-    fn subscribe(&self, key: &Key);
+    type Subscription: futures::Stream<Item = Self::Resource>;
+
+    fn subscribe(&self, key: Key) -> Self::Subscription;
 
     fn unsubscribe(&self, key: &Key);
 
-    fn poll_acquire(&self, cx: &mut Context, key: &Key) -> Poll<Option<Self::Resource>>;
-
-    fn subscription(&self, key: Key) -> Subscription<Self, Key>
+    fn resources_viewer(&self, key: Key) -> ResourceViewer<Self, Key>
     where
         Self: Clone,
     {
-        self.subscribe(&key);
-        Subscription {
+        ResourceViewer {
             subscribe: key,
+            subscription: self.subscribe(key),
             publisher: self.clone(),
         }
     }
 }
 
-impl<P: Publish<Key>, Key> Publish<Key> for Arc<P> {
+impl<P: Publish<Key>, Key: Copy> Publish<Key> for Arc<P> {
     type Resource = P::Resource;
+    type Subscription = P::Subscription;
 
     #[inline]
-    fn subscribe(&self, key: &Key) {
-        self.deref().subscribe(key);
-    }
-
-    #[inline]
-    fn poll_acquire(&self, cx: &mut Context, key: &Key) -> Poll<Option<Self::Resource>> {
-        self.deref().poll_acquire(cx, key)
+    fn subscribe(&self, key: Key) -> Self::Subscription {
+        self.deref().subscribe(key)
     }
 
     #[inline]
@@ -44,21 +40,58 @@ impl<P: Publish<Key>, Key> Publish<Key> for Arc<P> {
     }
 }
 
-pub struct Subscription<P: Publish<Key>, Key> {
+#[derive(Clone)]
+pub(crate) struct ResourceViewer<P: Publish<Key>, Key: Copy> {
     subscribe: Key,
     publisher: P,
+    subscription: P::Subscription,
 }
 
-impl<Key, P: Publish<Key>> futures::Stream for Subscription<P, Key> {
+impl<P: Publish<Key>, Key: Copy> ResourceViewer<P, Key> {
+    pub fn into_lease(self) -> ResourceLease<P, Key> {
+        ResourceLease {
+            subscribe: self.subscribe,
+            publisher: self.publisher,
+            subscription: self.subscription,
+        }
+    }
+}
+
+impl<Key: Copy, P: Publish<Key>> futures::Stream for ResourceViewer<P, Key>
+where
+    P: Unpin,
+    Key: Unpin,
+    P::Subscription: Unpin,
+{
     type Item = P::Resource;
 
     #[inline]
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.publisher.poll_acquire(cx, &self.subscribe)
+        core::pin::Pin::new(&mut self.get_mut().subscription).poll_next(cx)
     }
 }
 
-impl<Key, P: Publish<Key>> Drop for Subscription<P, Key> {
+pub(crate) struct ResourceLease<P: Publish<Key>, Key: Copy> {
+    subscribe: Key,
+    publisher: P,
+    subscription: P::Subscription,
+}
+
+impl<Key: Copy, P: Publish<Key>> futures::Stream for ResourceLease<P, Key>
+where
+    P: Unpin,
+    Key: Unpin,
+    P::Subscription: Unpin,
+{
+    type Item = P::Resource;
+
+    #[inline]
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        core::pin::Pin::new(&mut self.get_mut().subscription).poll_next(cx)
+    }
+}
+
+impl<Key: Copy, P: Publish<Key>> Drop for ResourceLease<P, Key> {
     fn drop(&mut self) {
         self.publisher.unsubscribe(&self.subscribe);
     }

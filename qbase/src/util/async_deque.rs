@@ -303,11 +303,11 @@ impl<T> Future for ArcAsyncDeque<T> {
     }
 }
 
-impl<T: Unpin> futures::Stream for AsyncDeque<T> {
+impl<T: Unpin> futures::Stream for ArcAsyncDeque<T> {
     type Item = T;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.get_mut().poll_pop(cx)
+        self.poll_pop(cx)
     }
 }
 

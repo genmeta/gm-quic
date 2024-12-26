@@ -367,7 +367,7 @@ impl SpaceReady {
 }
 
 impl CoreConnection {
-    pub fn entry_closing(
+    pub(crate) fn entry_closing(
         self,
         error: &qbase::error::Error,
         event_broker: event::EventBroker,
@@ -423,7 +423,7 @@ impl CoreConnection {
         )
     }
 
-    pub fn enter_draining(self, error: &qbase::error::Error) -> draining::Connection {
+    pub(crate) fn enter_draining(self, error: &qbase::error::Error) -> draining::Connection {
         self.spaces.data.streams().on_conn_error(error);
         self.spaces.data.datagrams().on_conn_error(error);
         self.components.flow_ctrl.on_conn_error(error);
