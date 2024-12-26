@@ -8,7 +8,7 @@ use qbase::{cid, flow, param, sid};
 use qrecovery::{recv, reliable, send, streams};
 
 use super::router::RouterRegistry;
-use crate::{builder, dying, event, util::subscribe};
+use crate::{builder, dying, event, path, util::subscribe};
 
 pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry<reliable::ArcReliableFrameDeque>>;
 pub type ArcRemoteCids = cid::ArcRemoteCids<reliable::ArcReliableFrameDeque>;
@@ -38,7 +38,10 @@ impl Connection {
         #[allow(clippy::uninit_assumed_init, invalid_value)]
         let invalid_state = unsafe { ::core::mem::MaybeUninit::uninit().assume_init() };
         let old_state = ::core::mem::replace(write_guard.deref_mut(), invalid_state);
-        *write_guard = migrate(old_state);
+        // Safety: use ptr::write to skip the Drop implementation of the invalid_state
+        unsafe {
+            ::core::ptr::write(write_guard.deref_mut(), migrate(old_state));
+        }
     }
 
     fn enter_closing(self: &Arc<Self>, error: qbase::error::Error) {
@@ -230,5 +233,13 @@ impl Connection {
         })?;
         let param::Pair { remote, .. } = params.await?;
         datagrams.writer(remote.max_datagram_frame_size().into())
+    }
+
+    pub fn add_path(&self, pathway: path::Pathway) -> io::Result<()> {
+        self.map_core_conn(|core_conn| _ = core_conn.paths.add_path(pathway))
+    }
+
+    pub fn del_path(&self, pathway: path::Pathway) -> io::Result<()> {
+        self.map_core_conn(|core_conn| core_conn.paths.del_path(pathway))
     }
 }

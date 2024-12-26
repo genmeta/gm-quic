@@ -1,10 +1,5 @@
 use core::net;
-use std::{
-    convert::Infallible,
-    io,
-    sync::Arc,
-    task::{Context, Poll},
-};
+use std::{convert::Infallible, io, sync::Arc};
 
 use dashmap::DashMap;
 use qbase::{
@@ -28,6 +23,7 @@ pub type QuicListener = Box<
 >;
 
 #[doc(alias = "RouterInterface")]
+#[derive(Default)]
 pub struct QuicProto {
     interfaces: DashMap<net::SocketAddr, Arc<dyn interface::QuicInteraface>>,
     entries: DashMap<Signpost, ArcAsyncDeque<(path::Pathway, Packet)>>,
@@ -35,11 +31,15 @@ pub struct QuicProto {
 }
 
 impl QuicProto {
-    pub fn new(listener: impl Into<Option<QuicListener>>) -> Self {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn new_with_listener(listener: QuicListener) -> Self {
         Self {
             interfaces: DashMap::new(),
             entries: DashMap::new(),
-            listener: listener.into(),
+            listener: Some(listener),
         }
     }
 
@@ -61,6 +61,7 @@ impl QuicProto {
 
         let this = self.clone();
         tokio::spawn(async move {
+            this.interfaces.insert(local, qi.clone());
             let _guard = Guard {
                 addr: local,
                 map: this.interfaces.clone(),
@@ -135,15 +136,10 @@ impl QuicProto {
 impl subscribe::Publish<Signpost> for QuicProto {
     type Resource = (path::Pathway, Packet);
 
-    fn subscribe(&self, key: &Signpost) {
-        self.entries.insert(*key, ArcAsyncDeque::new());
-    }
+    type Subscription = ArcAsyncDeque<Self::Resource>;
 
-    fn poll_acquire(&self, cx: &mut Context, key: &Signpost) -> Poll<Option<Self::Resource>> {
-        let Some(deque) = self.entries.get(key) else {
-            return Poll::Ready(None);
-        };
-        deque.poll_pop(cx)
+    fn subscribe(&self, key: Signpost) -> Self::Subscription {
+        self.entries.entry(key).insert(ArcAsyncDeque::new()).clone()
     }
 
     fn unsubscribe(&self, key: &Signpost) {
@@ -186,28 +182,35 @@ where
     T: Send + Sync + 'static,
 {
     fn gen_unique_cid(&self) -> cid::ConnectionId {
-        core::iter::from_fn(|| Some(cid::ConnectionId::random_gen_with_mark(8, 0x80, 0x7F)))
-            .find(|cid| {
-                use futures::StreamExt;
-                use subscribe::{Publish, Subscribe};
+        // generate a unique cid
+        let unique_cid =
+            core::iter::from_fn(|| Some(cid::ConnectionId::random_gen_with_mark(8, 0x80, 0x7F)))
+                .find(|cid| {
+                    let signpost = signpost::Signpost::from(*cid);
+                    let entry = self.proto.entries.entry(signpost);
 
-                let signpost = signpost::Signpost::from(*cid);
-                let entry = self.proto.entries.entry(signpost);
-                if !matches!(entry, dashmap::Entry::Vacant(_)) {
-                    return false;
-                }
-
-                let conn_if = self.conn_if.clone();
-                let mut packets = self.proto.subscription(signpost);
-                tokio::spawn(async move {
-                    while let Some((way, pkt)) = packets.next().await {
-                        _ = conn_if.deliver((way, pkt))
+                    if matches!(entry, dashmap::Entry::Occupied(..)) {
+                        return false;
                     }
-                });
 
-                true
-            })
-            .unwrap()
+                    // same as `self.proto.subscribe(&signpost)`
+                    entry.insert(ArcAsyncDeque::new());
+                    true
+                })
+                .unwrap();
+
+        // spawn a task to deliver packets
+        use futures::StreamExt;
+        use subscribe::{Publish, Subscribe};
+        let conn_if = self.conn_if.clone();
+        let mut packets = self.proto.resources_viewer(unique_cid.into());
+        tokio::spawn(async move {
+            while let Some((way, pkt)) = packets.next().await {
+                _ = conn_if.deliver((way, pkt))
+            }
+        });
+
+        unique_cid
     }
 }
 

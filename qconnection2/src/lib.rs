@@ -16,6 +16,7 @@ pub mod prelude {
     pub use crate::{
         conn::{Connection, StreamReader},
         interface::QuicInteraface,
+        path::{Endpoint, Pathway},
         router::{QuicListener, QuicProto},
     };
 }
