@@ -400,14 +400,14 @@ pub struct OneRttPacketEntry {
     token_registry: token::ArcTokenRegistry,
 
     // EventBroker
-    event_broker: Arc<event::EventBroker>,
+    event_broker: event::EventBroker,
 }
 
 impl OneRttPacketEntry {
     pub async fn new(
         space: Space,
         components: builder::Components,
-        event_broker: Arc<event::EventBroker>,
+        event_broker: event::EventBroker,
     ) -> Option<Self> {
         let keys = space.one_rtt_keys.get_remote_keys().await?;
         let crypto_stream_incoming = space.crypto_stream.incoming();
@@ -545,15 +545,11 @@ pub struct ClosingSpace {
     ccf_packet: bytes::Bytes,
     rcvd_journal: journal::ArcRcvdJournal,
     keys: Option<(keys::HeaderProtectionKeys, keys::ArcOneRttPacketKeys)>,
-    event_broker: Arc<event::EventBroker>,
+    event_broker: event::EventBroker,
 }
 
 impl Space {
-    pub fn close(
-        self,
-        ccf_packet: bytes::Bytes,
-        event_broker: Arc<event::EventBroker>,
-    ) -> ClosingSpace {
+    pub fn close(self, ccf_packet: bytes::Bytes, event_broker: event::EventBroker) -> ClosingSpace {
         let keys = self.one_rtt_keys.invalid();
         ClosingSpace {
             ccf_packet,

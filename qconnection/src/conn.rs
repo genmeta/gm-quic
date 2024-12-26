@@ -262,15 +262,12 @@ impl ArcConnection {
             )
         };
 
-        if let Some(Pair { local: _, remote }) = params.await {
-            let result = data_streams
-                .open_bi(remote.initial_max_stream_data_bidi_remote().into())
-                .await
-                .inspect_err(|e| conn_error.on_error(e.clone()));
-            Ok(result?)
-        } else {
-            Ok(None)
-        }
+        let Pair { local: _, remote } = params.await?;
+        let result = data_streams
+            .open_bi(remote.initial_max_stream_data_bidi_remote().into())
+            .await
+            .inspect_err(|e| conn_error.on_error(e.clone()));
+        Ok(result?)
     }
 
     pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, StreamWriter)>> {
@@ -291,15 +288,12 @@ impl ArcConnection {
             )
         };
 
-        if let Some(Pair { local: _, remote }) = params.await {
-            let result = data_streams
-                .open_uni(remote.initial_max_stream_data_uni().into())
-                .await
-                .inspect_err(|e| conn_error.on_error(e.clone()));
-            Ok(result?)
-        } else {
-            Ok(None)
-        }
+        let Pair { local: _, remote } = params.await?;
+        let result = data_streams
+            .open_uni(remote.initial_max_stream_data_uni().into())
+            .await
+            .inspect_err(|e| conn_error.on_error(e.clone()));
+        Ok(result?)
     }
 
     pub async fn accept_bi_stream(
@@ -322,15 +316,12 @@ impl ArcConnection {
             )
         };
 
-        if let Some(Pair { local: _, remote }) = params.await {
-            let result = data_streams
-                .accept_bi(remote.initial_max_stream_data_bidi_local().into())
-                .await
-                .inspect_err(|e| conn_error.on_error(e.clone()))?;
-            Ok(Some(result))
-        } else {
-            Ok(None)
-        }
+        let Pair { local: _, remote } = params.await?;
+        let result = data_streams
+            .accept_bi(remote.initial_max_stream_data_bidi_local().into())
+            .await
+            .inspect_err(|e| conn_error.on_error(e.clone()))?;
+        Ok(Some(result))
     }
 
     pub async fn accept_uni_stream(&self) -> io::Result<(StreamId, StreamReader)> {
@@ -380,13 +371,10 @@ impl ArcConnection {
             (connection.params.clone(), connection.data.datagrams.clone())
         };
 
-        if let Some(Pair { local: _, remote }) = params.await {
-            datagram_flow
-                .writer(remote.max_datagram_frame_size().into())
-                .map(Option::Some)
-        } else {
-            Ok(None)
-        }
+        let Pair { local: _, remote } = params.await?;
+        datagram_flow
+            .writer(remote.max_datagram_frame_size().into())
+            .map(Option::Some)
     }
 
     /// Gracefully closes the connection.
