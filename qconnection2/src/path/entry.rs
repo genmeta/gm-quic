@@ -17,7 +17,7 @@ pub type PacketEntry =
 pub(super) fn generator(
     spaces: builder::Spaces,
     components: builder::Components,
-    event_broker: Arc<event::EventBroker>,
+    event_broker: event::EventBroker,
 ) -> impl Fn() -> PacketEntry {
     use subscribe::Subscribe;
     // A future that yield the packet entry

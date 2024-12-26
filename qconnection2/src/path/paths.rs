@@ -32,7 +32,7 @@ pub struct Paths {
     // the logic is complex enough to be a closure
     create_new_path: PathCreator,
     // terminate the connection when all paths are inactive
-    event_broker: Arc<event::EventBroker>,
+    event_broker: event::EventBroker,
 }
 
 impl Paths {
@@ -41,7 +41,7 @@ impl Paths {
         initial_scid: cid::ConnectionId,
         spaces: builder::Spaces,
         components: builder::Components,
-        event_broker: Arc<event::EventBroker>,
+        event_broker: event::EventBroker,
     ) -> Self {
         let create_packet_entry =
             entry::generator(spaces.clone(), components.clone(), event_broker.clone());
@@ -53,7 +53,7 @@ impl Paths {
             move || {
                 qcongestion::ArcCC::new(
                     qcongestion::CongestionAlgorithm::Bbr,
-                    core::time::Duration::from_millis(100),
+                    ::core::time::Duration::from_millis(100),
                     [
                         initial_tracker.clone(),
                         handshake_tracker.clone(),
@@ -140,5 +140,14 @@ impl Paths {
     pub fn on_conn_error(&self, error: &qbase::error::Error) {
         _ = error;
         self.paths.clear();
+    }
+
+    pub fn max_pto_time(&self) -> tokio::time::Duration {
+        use qcongestion::CongestionControl;
+        self.paths
+            .iter()
+            .map(|entry| entry.value().path.cc.pto_time(qbase::Epoch::Data))
+            .max()
+            .unwrap_or_default()
     }
 }

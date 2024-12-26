@@ -6,7 +6,7 @@ use std::{
 
 use qbase::packet::{self, Packet};
 
-use super::closed;
+use super::{closed, draining};
 use crate::{
     conn, path, router,
     space::{data, handshake},
@@ -71,6 +71,10 @@ impl Connection {
         });
 
         conn
+    }
+
+    pub fn enter_draining(self) -> draining::Connection {
+        draining::Connection::new(self.router_if, self.cid_registry)
     }
 
     pub fn enter_closed(self) -> closed::Connection {

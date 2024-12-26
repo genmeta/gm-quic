@@ -167,12 +167,12 @@ impl Parameters {
         self.server.set_original_destination_connection_id(cid);
     }
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Option<Pair>> {
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Pair> {
         if self.state == Self::CLIENT_READY | Self::SERVER_READY {
-            Poll::Ready(Some(Pair {
+            Poll::Ready(Pair {
                 local: *self.local(),
                 remote: *self.remote().unwrap(),
-            }))
+            })
         } else {
             self.wakers.push(cx.waker().clone());
             Poll::Pending
@@ -519,13 +519,13 @@ impl ArcParameters {
 }
 
 impl Future for ArcParameters {
-    type Output = Option<Pair>;
+    type Output = Result<Pair, Error>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut guard = self.0.lock().unwrap();
         match guard.deref_mut() {
-            Err(_) => Poll::Ready(None),
-            Ok(params) => params.poll_ready(cx),
+            Err(err) => Poll::Ready(Err(err.clone())),
+            Ok(params) => params.poll_ready(cx).map(Ok),
         }
     }
 }

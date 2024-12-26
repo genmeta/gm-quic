@@ -1,41 +1,40 @@
 use std::sync::Arc;
 
-use qbase::{
+pub use qbase::{
     cid::ConnectionId,
-    param::{ArcParameters, ClientParameters, CommonParameters, ServerParameters},
-    sid::{handy, ControlConcurrency, Role},
-    token::{ArcTokenRegistry, TokenProvider, TokenSink},
+    param::{ClientParameters, CommonParameters, ServerParameters},
+    sid::ControlConcurrency,
+    token::{TokenProvider, TokenSink},
 };
-use qrecovery::reliable::{self};
-use rustls::crypto::CryptoProvider;
+use qbase::{param, sid, token};
+use qrecovery::reliable;
+pub use rustls::{self, crypto::CryptoProvider};
 
-use super::{
-    conn::{ArcLocalCids, ArcRemoteCids, CidRegistry, FlowController, Handshake},
-    tls::ArcTlsSession,
-};
 use crate::{
+    conn,
     dying::{closing, draining},
     event, path, router,
     space::{data, handshake, initial},
+    tls,
 };
 
 /// 一个连接的核心，客户端、服务端通用
 /// 能够处理收到的包，能够发送数据包，能够打开流、接受流
 pub struct CoreConnection {
-    spaces: Spaces,
-    components: Components,
-    paths: Arc<path::Paths>,
-    conn_if: Arc<router::ConnInterface>,
+    pub(crate) spaces: Spaces,
+    pub(crate) components: Components,
+    pub(crate) paths: Arc<path::Paths>,
+    pub(crate) conn_if: Arc<router::ConnInterface>,
 }
 
 #[derive(Clone)]
 pub struct Components {
-    pub(crate) parameters: ArcParameters,
-    pub(crate) tls_session: ArcTlsSession,
-    pub(crate) handshake: Handshake,
-    pub(crate) token_registry: ArcTokenRegistry,
-    pub(crate) cid_registry: CidRegistry,
-    pub(crate) flow_ctrl: FlowController,
+    pub(crate) parameters: param::ArcParameters,
+    pub(crate) tls_session: tls::ArcTlsSession,
+    pub(crate) handshake: conn::Handshake,
+    pub(crate) token_registry: token::ArcTokenRegistry,
+    pub(crate) cid_registry: conn::CidRegistry,
+    pub(crate) flow_ctrl: conn::FlowController,
 }
 
 #[derive(Clone)]
@@ -58,7 +57,7 @@ impl CoreConnection {
         ClientFoundation {
             server,
             token,
-            token_registry: ArcTokenRegistry::with_sink(server_name, token_sink),
+            token_registry: token::ArcTokenRegistry::with_sink(server_name, token_sink),
             client_params: ClientParameters::default(),
             remembered: None,
         }
@@ -66,7 +65,7 @@ impl CoreConnection {
 
     pub fn with_token_provider(token_provider: Arc<dyn TokenProvider>) -> ServerFoundation {
         ServerFoundation {
-            token_registry: ArcTokenRegistry::with_provider(token_provider),
+            token_registry: token::ArcTokenRegistry::with_provider(token_provider),
             server_params: ServerParameters::default(),
         }
     }
@@ -75,7 +74,7 @@ impl CoreConnection {
 pub struct ClientFoundation {
     server: rustls::pki_types::ServerName<'static>,
     token: Vec<u8>,
-    token_registry: ArcTokenRegistry,
+    token_registry: token::ArcTokenRegistry,
     client_params: ClientParameters,
     remembered: Option<CommonParameters>,
 }
@@ -100,13 +99,13 @@ impl ClientFoundation {
         TlsReady {
             foundation: self,
             tls_config,
-            streams_ctrl: Box::new(handy::DemandConcurrency),
+            streams_ctrl: Box::new(sid::handy::DemandConcurrency),
         }
     }
 }
 
 pub struct ServerFoundation {
-    token_registry: ArcTokenRegistry,
+    token_registry: token::ArcTokenRegistry,
     server_params: ServerParameters,
 }
 
@@ -125,7 +124,7 @@ impl ServerFoundation {
         TlsReady {
             foundation: self,
             tls_config,
-            streams_ctrl: Box::new(handy::DemandConcurrency),
+            streams_ctrl: Box::new(sid::handy::DemandConcurrency),
         }
     }
 }
@@ -183,20 +182,21 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
 
         let reliable_frames = reliable::ArcReliableFrameDeque::with_capacity(8);
         let data_space = data::Space::new(
-            Role::Client,
+            sid::Role::Client,
             reliable_frames.clone(),
             client_params,
             self.streams_ctrl,
         );
-        let handshake = Handshake::new(Role::Client, reliable_frames.clone());
-        let flow_ctrl = FlowController::new(
+
+        let handshake = conn::Handshake::new(sid::Role::Client, reliable_frames.clone());
+        let flow_ctrl = conn::FlowController::new(
             peer_initial_max_data,
             local_initial_max_data,
             reliable_frames.clone(),
         );
 
         client_params.set_initial_source_connection_id(chosen_initial_scid);
-        let parameters = ArcParameters::new_client(*client_params, *remembered);
+        let parameters = param::ArcParameters::new_client(*client_params, *remembered);
         parameters.original_dcid_from_server_need_equal(random_initial_dcid);
 
         let initial_keys = initial_keys_with(
@@ -206,7 +206,7 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             rustls::quic::Version::V1,
         );
         let tls_session =
-            ArcTlsSession::new_client(self.foundation.server, self.tls_config, &parameters);
+            tls::ArcTlsSession::new_client(self.foundation.server, self.tls_config, &parameters);
 
         let spaces = Spaces {
             initial: initial::Space::new(initial_keys, self.foundation.token),
@@ -252,17 +252,18 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
 
         let reliable_frames = reliable::ArcReliableFrameDeque::with_capacity(8);
         let data_space = data::Space::new(
-            Role::Client,
+            sid::Role::Client,
             reliable_frames.clone(),
             server_params,
             self.streams_ctrl,
         );
-        let handshake = Handshake::new(Role::Server, reliable_frames.clone());
-        let flow_ctrl = FlowController::new(0, local_initial_max_data, reliable_frames.clone());
+        let handshake = conn::Handshake::new(sid::Role::Server, reliable_frames.clone());
+        let flow_ctrl =
+            conn::FlowController::new(0, local_initial_max_data, reliable_frames.clone());
 
         server_params.set_initial_source_connection_id(chosen_initial_scid);
         server_params.set_original_destination_connection_id(original_dcid);
-        let parameters = ArcParameters::new_server(*server_params);
+        let parameters = param::ArcParameters::new_server(*server_params);
         parameters.initial_scid_from_peer_need_equal(client_scid);
 
         let initial_keys = initial_keys_with(
@@ -271,7 +272,7 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             rustls::Side::Server,
             rustls::quic::Version::V1,
         );
-        let tls_session = ArcTlsSession::new_server(self.tls_config, &parameters);
+        let tls_session = tls::ArcTlsSession::new_server(self.tls_config, &parameters);
 
         let spaces = Spaces {
             initial: initial::Space::new(initial_keys, Vec::with_capacity(0)),
@@ -294,11 +295,11 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
 
 pub struct SpaceReady {
     initial_dcid: ConnectionId,
-    parameters: ArcParameters,
-    tls_session: ArcTlsSession,
-    handshake: Handshake,
-    token_registry: ArcTokenRegistry,
-    flow_ctrl: FlowController,
+    parameters: param::ArcParameters,
+    tls_session: tls::ArcTlsSession,
+    handshake: conn::Handshake,
+    token_registry: token::ArcTokenRegistry,
+    flow_ctrl: conn::FlowController,
     reliable_frames: reliable::ArcReliableFrameDeque,
     spaces: Spaces,
 }
@@ -307,7 +308,7 @@ impl SpaceReady {
     pub fn run_with(
         self,
         proto: Arc<router::QuicProto>,
-        event_broker: Arc<event::EventBroker>,
+        event_broker: event::EventBroker,
     ) -> CoreConnection {
         let local_params = self.parameters.local().unwrap();
         let initial_scid = local_params.initial_source_connection_id();
@@ -321,13 +322,13 @@ impl SpaceReady {
         let conn_if = Arc::new(router::ConnInterface::new(proto.clone(), new_path as _));
 
         let router_registry = proto.registry(conn_if.clone(), self.reliable_frames.clone());
-        let local_cids = ArcLocalCids::new(initial_scid, router_registry);
-        let remote_cids = ArcRemoteCids::new(
+        let local_cids = conn::ArcLocalCids::new(initial_scid, router_registry);
+        let remote_cids = conn::ArcRemoteCids::new(
             self.initial_dcid,
             local_params.active_connection_id_limit().into(),
             self.reliable_frames.clone(),
         );
-        let cid_registry = CidRegistry::new(local_cids, remote_cids);
+        let cid_registry = conn::CidRegistry::new(local_cids, remote_cids);
 
         let components = Components {
             parameters: self.parameters,
@@ -369,7 +370,7 @@ impl CoreConnection {
     pub fn entry_closing(
         self,
         error: &qbase::error::Error,
-        event_broker: Arc<event::EventBroker>,
+        event_broker: event::EventBroker,
     ) -> closing::Connection {
         self.spaces.data.streams().on_conn_error(error);
         self.spaces.data.datagrams().on_conn_error(error);
