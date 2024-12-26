@@ -168,7 +168,7 @@ impl Future for GetRemoteKeys<'_> {
             KeysState::Pending(waker) => {
                 if waker
                     .as_ref()
-                    .is_some_and(|waker| waker.will_wake(cx.waker()))
+                    .is_some_and(|waker| !waker.will_wake(cx.waker()))
                 {
                     unreachable!("Try to get remote keys from multiple tasks! This is a bug, please report it.")
                 }
@@ -397,7 +397,7 @@ impl Future for GetRemoteOneRttKeys<'_> {
             OneRttKeysState::Pending(waker) => {
                 if waker
                     .as_ref()
-                    .is_some_and(|waker| waker.will_wake(cx.waker()))
+                    .is_some_and(|waker| !waker.will_wake(cx.waker()))
                 {
                     unreachable!("Try to get remote keys from multiple tasks! This is a bug, please report it.")
                 }
