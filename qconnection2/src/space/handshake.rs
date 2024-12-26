@@ -142,11 +142,11 @@ pub struct PacketEntry {
     rcvd_journal: journal::ArcRcvdJournal,
 
     // EventBroker
-    event_broker: Arc<event::EventBroker>,
+    event_broker: event::EventBroker,
 }
 
 impl PacketEntry {
-    pub async fn new(space: Space, event_broker: Arc<event::EventBroker>) -> Option<Self> {
+    pub async fn new(space: Space, event_broker: event::EventBroker) -> Option<Self> {
         let keys = space.keys.get_remote_keys().await?;
         let crypto_stream_incoming = space.crypto_stream.incoming();
         let crypto_stream_outgoing = space.crypto_stream.outgoing();
@@ -238,15 +238,11 @@ pub struct ClosingSpace {
     ccf_packet: bytes::Bytes,
     rcvd_journal: journal::ArcRcvdJournal,
     keys: Option<Arc<rustls::quic::Keys>>,
-    event_broker: Arc<event::EventBroker>,
+    event_broker: event::EventBroker,
 }
 
 impl Space {
-    pub fn close(
-        self,
-        ccf_packet: bytes::Bytes,
-        event_broker: Arc<event::EventBroker>,
-    ) -> ClosingSpace {
+    pub fn close(self, ccf_packet: bytes::Bytes, event_broker: event::EventBroker) -> ClosingSpace {
         // TOOD：此方案其实不需要invalid
         let keys = self.keys.invalid();
         let rcvd_journal = self.journal.of_rcvd_packets();

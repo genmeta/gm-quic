@@ -227,7 +227,7 @@ impl Connection {
             let conn_error = conn_error.clone();
             let cid_registry = cid_registry.clone();
             async move {
-                if let Some(Pair { local: _, remote }) = params.await {
+                if let Ok(Pair { local: _, remote }) = params.await {
                     // pretend to receive the MAX_STREAM frames
                     _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
                         remote.initial_max_streams_bidi(),
