@@ -56,7 +56,6 @@ impl<const N: usize> AntiAmplifier<N> {
                 // 再次检查，以防grant、abort在self.waker赋值前被调用，导致任务死掉
                 let state = self.state.load(Ordering::Acquire);
                 if state == Self::NORMAL {
-                    log::debug!("credit is 0, waiting for new data");
                     Poll::Pending
                 } else {
                     self.waker.take();

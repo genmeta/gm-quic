@@ -129,7 +129,7 @@ impl InitialSpaceReader {
                 encrypt_packet(
                     k.local.packet.as_ref(),
                     pn,
-                    &mut buf[..pkt_size],
+                    &mut buf[.. pkt_size],
                     hdr_len + pn_len,
                 );
                 protect_header(

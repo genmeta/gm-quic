@@ -151,7 +151,7 @@ fn initial_keys_with(
             _ => None,
         })
         .flatten()
-        .unwrap()
+        .expect("crypto provider does not provide supported cipher suite")
         .keys(client_dcid, side, version)
 }
 
@@ -321,7 +321,8 @@ impl SpaceReady {
 
         let conn_if = Arc::new(router::ConnInterface::new(proto.clone(), new_path as _));
 
-        let router_registry = proto.registry(conn_if.clone(), self.reliable_frames.clone());
+        let router_registry =
+            proto.registry(conn_if.clone(), initial_scid, self.reliable_frames.clone());
         let local_cids = conn::ArcLocalCids::new(initial_scid, router_registry);
         let remote_cids = conn::ArcRemoteCids::new(
             self.initial_dcid,
@@ -329,6 +330,45 @@ impl SpaceReady {
             self.reliable_frames.clone(),
         );
         let cid_registry = conn::CidRegistry::new(local_cids, remote_cids);
+
+        self.tls_session.keys_upgrade(
+            [
+                self.spaces.initial.crypto_stream(),
+                self.spaces.handshake.crypto_stream(),
+                self.spaces.data.crypto_stream(),
+            ],
+            self.spaces.handshake.keys().clone(),
+            self.spaces.data.one_rtt_keys().clone(),
+            self.handshake.clone(),
+            self.parameters.clone(),
+            event_broker.clone(),
+        );
+
+        tokio::spawn({
+            let params = self.parameters.clone();
+            let streams = self.spaces.data.streams().clone();
+            let cid_registry = cid_registry.clone();
+            let event_broker = event_broker.clone();
+            async move {
+                use qbase::frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame};
+
+                use crate::util::subscribe::Subscribe;
+                if let Ok(param::Pair { local: _, remote }) = params.await {
+                    // pretend to receive the MAX_STREAM frames
+                    _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
+                        remote.initial_max_streams_bidi(),
+                    )));
+                    _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Uni(
+                        remote.initial_max_streams_uni(),
+                    )));
+
+                    let active_cid_limit = remote.active_connection_id_limit().into();
+                    if let Err(e) = cid_registry.local.set_limit(active_cid_limit) {
+                        _ = event_broker.deliver(e.into());
+                    }
+                }
+            }
+        });
 
         let components = Components {
             parameters: self.parameters,
@@ -339,13 +379,15 @@ impl SpaceReady {
             flow_ctrl: self.flow_ctrl,
         };
 
-        let paths = Arc::new(path::Paths::new_with(
+        let path_creator = path::Path::creator(
             conn_if.clone(),
             initial_scid,
             self.spaces.clone(),
             components.clone(),
-            event_broker,
-        ));
+            event_broker.clone(),
+        );
+
+        let paths = Arc::new(path::Paths::new_with(path_creator, event_broker));
 
         tokio::spawn({
             let paths = paths.clone();

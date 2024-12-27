@@ -158,13 +158,16 @@ impl QuicProto {
     pub fn registry<ISSUED>(
         self: &Arc<Self>,
         conn_if: Arc<ConnInterface>,
+        scid: cid::ConnectionId,
         local_cids: ISSUED,
     ) -> RouterRegistry<ISSUED> {
-        RouterRegistry {
+        let registry = RouterRegistry {
             proto: self.clone(),
             conn_if,
             local_cids,
-        }
+        };
+        registry.launch_pipeline(scid.into());
+        registry
     }
 }
 
@@ -199,18 +202,24 @@ where
                 })
                 .unwrap();
 
+        self.launch_pipeline(unique_cid.into());
+
+        unique_cid
+    }
+}
+
+impl<ISSUED> RouterRegistry<ISSUED> {
+    fn launch_pipeline(&self, signpost: signpost::Signpost) {
         // spawn a task to deliver packets
         use futures::StreamExt;
         use subscribe::{Publish, Subscribe};
         let conn_if = self.conn_if.clone();
-        let mut packets = self.proto.resources_viewer(unique_cid.into());
+        let mut packets = self.proto.resources_viewer(signpost);
         tokio::spawn(async move {
             while let Some((way, pkt)) = packets.next().await {
                 _ = conn_if.deliver((way, pkt))
             }
         });
-
-        unique_cid
     }
 }
 
