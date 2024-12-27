@@ -39,7 +39,7 @@ impl Space {
 
     // todo: 暂时只检测密钥
     pub fn has_pending_data(&self) -> bool {
-        self.keys.get_local_keys().is_some()
+        self.keys.get_local_keys().is_some() // && ...
     }
 
     pub fn try_assemble<'b>(
@@ -73,7 +73,7 @@ impl Space {
         let crypto_stream_outgoing = self.crypto_stream.outgoing();
         crypto_stream_outgoing.try_load_data_into(&mut packet);
 
-        if fill {
+        if !packet.is_empty() && fill {
             let remaining = packet.remaining_mut();
             packet.put_bytes(0, remaining);
         }
@@ -113,6 +113,14 @@ impl Space {
             journal: self.journal.clone(),
             outgoing: self.crypto_stream.outgoing().clone(),
         }
+    }
+
+    pub(crate) fn keys(&self) -> &keys::ArcKeys {
+        &self.keys
+    }
+
+    pub(crate) fn crypto_stream(&self) -> &crypto::CryptoStream {
+        &self.crypto_stream
     }
 }
 

@@ -5,18 +5,13 @@ use core::{
 use std::sync::{Arc, Mutex};
 
 use qbase::{
-    cid::ConnectionId,
     error::{Error, ErrorKind},
     packet::keys::{ArcKeys, ArcOneRttKeys},
     param::ArcParameters,
     Epoch,
 };
 use qrecovery::crypto::CryptoStream;
-use rustls::{
-    crypto::CryptoProvider,
-    quic::{KeyChange, Keys},
-    Side,
-};
+use rustls::quic::KeyChange;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{
@@ -154,22 +149,6 @@ impl ArcTlsSession {
             rustls::quic::ServerConnection::new(tls_config, Self::QUIC_VERSION, params).unwrap();
         let connection = rustls::quic::Connection::Server(server_connection);
         Self(Arc::new(Mutex::new(Ok(connection.into()))))
-    }
-
-    /// Generate the keys for the initial packet protection.
-    pub fn initial_keys(crypto_provider: &CryptoProvider, side: Side, cid: ConnectionId) -> Keys {
-        let suite = crypto_provider
-            .cipher_suites
-            .iter()
-            .find_map(|cs| match (cs.suite(), cs.tls13()) {
-                (rustls::CipherSuite::TLS13_AES_128_GCM_SHA256, Some(suite)) => {
-                    Some(suite.quic_suite())
-                }
-                _ => None,
-            })
-            .flatten()
-            .unwrap();
-        suite.keys(&cid, side, rustls::quic::Version::V1)
     }
 
     /// Abort the TLS session, the handshaking will be stopped if it is not completed.

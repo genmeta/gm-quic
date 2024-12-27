@@ -41,7 +41,7 @@ cargo run --example=h3-client --package=h3-shim -- https://localhost:4433/exampl
 # 设置服务根目录
 cargo run --example=h3-server --package=h3-shim -- --dir=/path/to/www
 # 更改绑定端口
-cargo run --example=h3-server --package=h3-shim -- -b=127.0.0.1:123456
+cargo run --example=h3-server --package=h3-shim -- -l=127.0.0.1:123456
 ```
 
 ## 问题排查
