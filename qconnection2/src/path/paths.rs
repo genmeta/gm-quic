@@ -1,48 +1,52 @@
 use std::{net, sync::Arc};
 
 use dashmap::DashMap;
-use qbase::cid;
+use qbase::{cid, sid};
 
 use super::entry;
 use crate::{builder, event, router, util::subscribe};
 
 struct PathWithTasks {
     path: Arc<super::Path>,
+    validate_task: Option<tokio::task::AbortHandle>,
     send_task: tokio::task::AbortHandle,
     recv_task: tokio::task::AbortHandle,
     tick_task: tokio::task::AbortHandle,
-    validate_task: tokio::task::AbortHandle,
     heartbeat_task: tokio::task::AbortHandle,
 }
 
 impl Drop for PathWithTasks {
     fn drop(&mut self) {
+        if let Some(validata_task) = self.validate_task.as_ref() {
+            validata_task.abort();
+        }
         self.send_task.abort();
         self.recv_task.abort();
         self.tick_task.abort();
-        self.validate_task.abort();
         self.heartbeat_task.abort();
     }
 }
 
-type PathCreator = Box<dyn Fn(&Arc<Paths>, super::Pathway) -> PathWithTasks + Send + Sync>;
+// used to hide `PathWithTasks` struct
+#[allow(clippy::type_complexity)]
+pub struct PathCreator(Box<dyn Fn(&Arc<Paths>, super::Pathway) -> PathWithTasks + Send + Sync>);
 
 pub struct Paths {
     paths: DashMap<net::SocketAddr, PathWithTasks>,
     // the logic is complex enough to be a closure
-    create_new_path: PathCreator,
+    path_creator: PathCreator,
     // terminate the connection when all paths are inactive
     event_broker: event::EventBroker,
 }
 
-impl Paths {
-    pub fn new_with(
+impl super::Path {
+    pub fn creator(
         conn_if: Arc<router::ConnInterface>,
         initial_scid: cid::ConnectionId,
         spaces: builder::Spaces,
         components: builder::Components,
         event_broker: event::EventBroker,
-    ) -> Self {
+    ) -> PathCreator {
         let create_packet_entry =
             entry::generator(spaces.clone(), components.clone(), event_broker.clone());
         let create_cc = {
@@ -71,7 +75,7 @@ impl Paths {
                 spaces.clone(),
             )
         };
-        let create_path = move |paths: &Arc<Self>, pathway| {
+        PathCreator(Box::new(move |paths: &Arc<Paths>, pathway| {
             let path = super::Path {
                 way: pathway,
                 cc: (create_cc)(),
@@ -97,23 +101,35 @@ impl Paths {
 
             let tick_task = path.begin_tick().abort_handle();
 
-            let validate_task = path.begin_validation(on_failed.clone()).abort_handle();
+            let validate_task = if components.handshake.is_handshake_done() {
+                Some(path.begin_validation(on_failed.clone()).abort_handle())
+            } else {
+                if components.handshake.role() == sid::Role::Client {
+                    path.grant_anti_amplifier();
+                }
+                None
+            };
 
             let heartbeat = path.new_heartbeat();
             let heartbeat_task = heartbeat.begin_keeping_alive(on_failed).abort_handle();
 
             PathWithTasks {
+                validate_task,
                 path,
                 send_task,
                 recv_task,
                 tick_task,
-                validate_task,
                 heartbeat_task,
             }
-        };
+        }))
+    }
+}
+
+impl Paths {
+    pub fn new_with(path_creator: PathCreator, event_broker: event::EventBroker) -> Self {
         Self {
             paths: DashMap::new(),
-            create_new_path: Box::new(create_path),
+            path_creator,
             event_broker,
         }
     }
@@ -122,7 +138,7 @@ impl Paths {
         let path_entry = self
             .paths
             .entry(pathway.src())
-            .or_insert_with(|| (self.create_new_path)(self, pathway));
+            .or_insert_with(|| (self.path_creator.0)(self, pathway));
         path_entry.path.clone()
     }
 

@@ -125,7 +125,7 @@ impl Connection {
         });
     }
 
-    pub fn build_with(
+    pub fn run_with(
         core_conn_builder: impl FnOnce(event::EventBroker) -> builder::CoreConnection,
     ) -> Arc<Self> {
         let (event_broker, events) = event::pipeline();

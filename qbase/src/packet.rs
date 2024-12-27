@@ -259,18 +259,21 @@ impl<'b> PacketWriter<'b> {
         let mut len_buf = &mut self.buffer[self.hdr_len..self.hdr_len + self.len_encoding];
         let (actual_pn, encoded_pn) = self.pn;
         let pkt_size = self.cursor + self.tag_len;
-        len_buf.encode_varint(&VarInt::try_from(payload_len).unwrap(), EncodeBytes::Two);
+        len_buf.encode_varint(
+            &VarInt::try_from(payload_len + self.tag_len).unwrap(),
+            EncodeBytes::Two,
+        );
         encode_long_first_byte(&mut self.buffer[0], encoded_pn.size());
         encrypt_packet(
             pk,
             actual_pn,
-            &mut self.buffer[..pkt_size],
-            self.hdr_len + self.len_encoding + encoded_pn.size(),
+            &mut self.buffer[..(pkt_size)],
+            (self.hdr_len) + (self.len_encoding) + (encoded_pn.size()),
         );
         protect_header(
             hpk,
             &mut self.buffer[..pkt_size],
-            self.hdr_len,
+            self.hdr_len + self.len_encoding,
             encoded_pn.size(),
         );
         AssembledPacket {
@@ -302,7 +305,7 @@ impl<'b> PacketWriter<'b> {
             pk,
             actual_pn,
             &mut self.buffer[..pkt_size],
-            self.hdr_len + self.len_encoding + encoded_pn.size(),
+            self.hdr_len + encoded_pn.size(),
         );
         protect_header(
             hpk,

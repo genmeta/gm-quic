@@ -55,7 +55,7 @@ impl Space {
     }
 
     pub fn has_early_data(&self) -> bool {
-        self.zero_rtt_keys.get_local_keys().is_some()
+        self.zero_rtt_keys.get_local_keys().is_some() // && ...
     }
 
     pub fn try_assemble_0rtt<'b>(
@@ -91,7 +91,7 @@ impl Space {
             .try_load_data_into(&mut packet, tx.flow_limit());
         self.datagrams.try_load_data_into(&mut packet);
 
-        if fill {
+        if !packet.is_empty() && fill {
             let remaining = packet.remaining_mut();
             packet.put_bytes(0, remaining);
         }
@@ -104,7 +104,7 @@ impl Space {
     }
 
     pub fn has_pending_data(&self) -> bool {
-        self.zero_rtt_keys.get_local_keys().is_some()
+        self.one_rtt_keys.get_local_keys().is_some() // && ...
     }
 
     pub fn try_assemble_1rtt<'b>(
@@ -150,7 +150,7 @@ impl Space {
             .try_load_data_into(&mut packet, tx.flow_limit());
         self.datagrams.try_load_data_into(&mut packet);
 
-        if fill {
+        if !packet.is_empty() && fill {
             let remaining = packet.remaining_mut();
             packet.put_bytes(0, remaining);
         }
@@ -201,6 +201,14 @@ impl Space {
 
     pub fn datagrams(&self) -> &qunreliable::DatagramFlow {
         &self.datagrams
+    }
+
+    pub(crate) fn one_rtt_keys(&self) -> &keys::ArcOneRttKeys {
+        &self.one_rtt_keys
+    }
+
+    pub(crate) fn crypto_stream(&self) -> &crypto::CryptoStream {
+        &self.crypto_stream
     }
 }
 
