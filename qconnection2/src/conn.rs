@@ -138,12 +138,14 @@ impl Connection {
         arc_conn
     }
 
+    // + application error code
     pub fn close(self: &Arc<Self>, msg: impl Into<std::borrow::Cow<'static, str>>) {
         use subscribe::Subscribe;
         _ = self
             .event_broker
             .deliver(event::ConnEvent::ApplicationClose);
         let error =
+        // 改ccf，error code
             qbase::error::Error::with_default_fty(qbase::error::ErrorKind::Application, msg);
         self.enter_closing(error);
     }

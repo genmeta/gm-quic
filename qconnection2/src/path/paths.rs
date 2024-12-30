@@ -6,7 +6,7 @@ use qbase::{cid, sid};
 use super::entry;
 use crate::{builder, event, router, util::subscribe};
 
-struct PathWithTasks {
+struct PathContext {
     path: Arc<super::Path>,
     validate_task: Option<tokio::task::AbortHandle>,
     send_task: tokio::task::AbortHandle,
@@ -15,7 +15,7 @@ struct PathWithTasks {
     heartbeat_task: tokio::task::AbortHandle,
 }
 
-impl Drop for PathWithTasks {
+impl Drop for PathContext {
     fn drop(&mut self) {
         if let Some(validata_task) = self.validate_task.as_ref() {
             validata_task.abort();
@@ -29,10 +29,10 @@ impl Drop for PathWithTasks {
 
 // used to hide `PathWithTasks` struct
 #[allow(clippy::type_complexity)]
-pub struct PathCreator(Box<dyn Fn(&Arc<Paths>, super::Pathway) -> PathWithTasks + Send + Sync>);
+pub struct PathCreator(Box<dyn Fn(&Arc<Paths>, super::Pathway) -> PathContext + Send + Sync>);
 
 pub struct Paths {
-    paths: DashMap<net::SocketAddr, PathWithTasks>,
+    paths: DashMap<net::SocketAddr, PathContext>,
     // the logic is complex enough to be a closure
     path_creator: PathCreator,
     // terminate the connection when all paths are inactive
@@ -113,7 +113,7 @@ impl super::Path {
             let heartbeat = path.new_heartbeat();
             let heartbeat_task = heartbeat.begin_keeping_alive(on_failed).abort_handle();
 
-            PathWithTasks {
+            PathContext {
                 validate_task,
                 path,
                 send_task,

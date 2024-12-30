@@ -239,6 +239,7 @@ impl<T> NewPacketGuard<'_, T> {
     /// [encoded]: https://www.rfc-editor.org/rfc/rfc9000.html#name-sample-packet-number-encodi
     pub fn pn(&self) -> (u64, PacketNumber) {
         let pn = self.inner.records.largest();
+        // TODO: peer可能给出一个错误的ACK，令这里发生下溢
         let encoded_pn = PacketNumber::encode(pn, self.inner.largest_acked_pktno);
         (pn, encoded_pn)
     }

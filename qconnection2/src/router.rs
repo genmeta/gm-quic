@@ -121,8 +121,11 @@ impl QuicProto {
         way: path::Pathway,
         dst: net::SocketAddr,
     ) -> io::Result<()> {
-        let no_if = || io::Error::new(io::ErrorKind::NotConnected, "no interface");
-        let qi = self.interfaces.get(&way.src()).ok_or_else(no_if)?.clone();
+        let qi = self
+            .interfaces
+            .get(&way.src())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "no interface"))?
+            .clone();
         core::future::poll_fn(|cx| qi.poll_send(cx, pkt, way, dst)).await
     }
 

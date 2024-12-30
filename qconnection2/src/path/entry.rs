@@ -27,24 +27,24 @@ pub(super) fn generator(
     // make the returned entry cheep to clone(not necessary)
     let get_entry = get_entry.map(|opt| opt.map(Arc::new));
     // adapte the future to a future that can be waited concurrently
-    let get_initial_entry = Arc::new(adapter::Concurrent::new(get_entry));
+    let get_initial_entry = Arc::new(adapter::SharedOnce::from_future(get_entry));
 
     // same as initial...
     let get_entry = handshake::PacketEntry::new(spaces.handshake, event_broker.clone());
     let get_entry = Box::pin(get_entry);
     let get_entry = get_entry.map(|opt| opt.map(Arc::new));
-    let get_handshake_entry = Arc::new(adapter::Concurrent::new(get_entry));
+    let get_handshake_entry = Arc::new(adapter::SharedOnce::from_future(get_entry));
 
     let get_entry = data::ZeroRttPacketEntry::new(spaces.data.clone(), components.clone());
     let get_entry = Box::pin(get_entry);
     let get_entry = get_entry.map(|opt| opt.map(Arc::new));
-    let get_zero_rtt_entry = Arc::new(adapter::Concurrent::new(get_entry));
+    let get_zero_rtt_entry = Arc::new(adapter::SharedOnce::from_future(get_entry));
 
     let get_entry =
         data::OneRttPacketEntry::new(spaces.data, components.clone(), event_broker.clone());
     let get_entry = Box::pin(get_entry);
     let get_entry = get_entry.map(|opt| opt.map(Arc::new));
-    let get_one_rtt_entry = Arc::new(adapter::Concurrent::new(get_entry));
+    let get_one_rtt_entry = Arc::new(adapter::SharedOnce::from_future(get_entry));
 
     move || {
         let (initial_entry, mut packets) = mpsc::unbounded::<(_, Arc<Path>)>();
@@ -52,7 +52,7 @@ pub(super) fn generator(
             let event_broker = event_broker.clone();
             let get_entry = get_initial_entry.clone();
             async move {
-                let Some(entry) = get_entry.poll().await.clone() else {
+                let Some(entry) = get_entry.get_or_init().await.clone() else {
                     return;
                 };
                 while let Some((pkt, path)) = packets.next().await {
@@ -68,7 +68,7 @@ pub(super) fn generator(
             let event_broker = event_broker.clone();
             let get_entry = get_handshake_entry.clone();
             async move {
-                let Some(entry) = get_entry.poll().await.clone() else {
+                let Some(entry) = get_entry.get_or_init().await.clone() else {
                     return;
                 };
                 while let Some((pkt, path)) = packets.next().await {
@@ -84,7 +84,7 @@ pub(super) fn generator(
             let event_broker = event_broker.clone();
             let get_entry = get_zero_rtt_entry.clone();
             async move {
-                let Some(entry) = get_entry.poll().await.clone() else {
+                let Some(entry) = get_entry.get_or_init().await.clone() else {
                     return;
                 };
                 while let Some((pkt, path)) = packets.next().await {
@@ -100,7 +100,7 @@ pub(super) fn generator(
             let event_broker = event_broker.clone();
             let get_entry = get_one_rtt_entry.clone();
             async move {
-                let Some(entry) = get_entry.poll().await.clone() else {
+                let Some(entry) = get_entry.get_or_init().await.clone() else {
                     return;
                 };
                 while let Some((pkt, path)) = packets.next().await {

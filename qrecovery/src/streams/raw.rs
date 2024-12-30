@@ -1,5 +1,5 @@
 use std::{
-    ops::Deref,
+    ops::DerefMut,
     task::{ready, Context, Poll},
 };
 
@@ -226,12 +226,74 @@ where
     /// Try to load data from streams into the `packet`,
     /// with a `flow_limit` which limits the max size of fresh data.
     /// Returns the size of fresh data.
-    pub fn try_load_data_into<B, P>(&self, _packet: &mut P, _flow_limit: usize) -> usize
+    pub fn try_load_data_into_once<B, P>(&self, packet: &mut P, flow_limit: usize) -> Option<usize>
     where
         B: BufMut,
-        P: Deref<Target = B> + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+        P: DerefMut<Target = B> + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
     {
-        todo!("try load as much data as possible into the packet, return the fresh data size")
+        // todo: use core::range instead in rust 2024
+        use core::ops::Bound::*;
+
+        let mut guard = self.output.streams();
+        let output = guard.as_mut().ok()?;
+
+        // 该tokens是令牌桶算法的token，为了多条Stream的公平性，给每个流定期地发放tokens，不累积
+        // 各流轮流按令牌桶算法发放的tokens来整理数据去发送
+        const DEFAULT_TOKENS: usize = 4096;
+        let streams: &mut dyn Iterator<Item = _> = match &output.cursor {
+            // [sid+1..] + [..=sid]
+            Some((sid, tokens)) if *tokens == 0 => &mut output
+                .outgoings
+                .range((Excluded(sid), Unbounded))
+                .chain(output.outgoings.range(..=sid))
+                .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+            // [sid] + [sid+1..] + [..sid]
+            Some((sid, tokens)) => &mut Option::into_iter(
+                output
+                    .outgoings
+                    .get(sid)
+                    .map(|outgoing| (*sid, outgoing, *tokens)),
+            )
+            .chain(
+                output
+                    .outgoings
+                    .range((Excluded(sid), Unbounded))
+                    .chain(output.outgoings.range(..sid))
+                    .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+            ),
+            // [..]
+            None => &mut output
+                .outgoings
+                .range(..)
+                .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+        };
+        // dyn Iterator: ?Sized..., 不能直接调用find_map
+        // streams.by_ref().find_map(|(sid, (outgoing, _s), tokens)| {
+        //     let (data_len, is_fresh) =
+        //         outgoing.try_load_data_into(packet, sid, flow_limit, tokens)?;
+        //     output.cursor = Some((sid, tokens - data_len));
+        //     Some(if is_fresh { data_len } else { 0 })
+        // })
+        for (sid, (outgoing, _s), tokens) in streams {
+            if let Some((data_len, is_fresh)) =
+                outgoing.try_load_data_into(packet, sid, flow_limit, tokens)
+            {
+                output.cursor = Some((sid, tokens - data_len));
+                return Some(if is_fresh { data_len } else { 0 });
+            }
+        }
+        None
+    }
+
+    /// Try to load data from streams into the `packet`,
+    /// with a `flow_limit` which limits the max size of fresh data.
+    /// Returns the size of fresh data.
+    pub fn try_load_data_into<B, P>(&self, packet: &mut P, flow_limit: usize) -> usize
+    where
+        B: BufMut,
+        P: DerefMut<Target = B> + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+    {
+        core::iter::from_fn(|| self.try_load_data_into_once(packet, flow_limit)).sum()
     }
 
     /// Called when the stream frame acked.

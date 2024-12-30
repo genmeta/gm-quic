@@ -14,7 +14,7 @@ pub mod prelude {
     pub use qunreliable::{UnreliableReader, UnreliableWriter};
 
     pub use crate::{
-        conn::{Connection, StreamReader},
+        conn::{Connection, StreamReader, StreamWriter},
         interface::QuicInteraface,
         path::{Endpoint, Pathway},
         router::{QuicListener, QuicProto},
