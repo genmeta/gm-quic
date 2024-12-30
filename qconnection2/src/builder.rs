@@ -24,6 +24,7 @@ pub struct CoreConnection {
     pub(crate) spaces: Spaces,
     pub(crate) components: Components,
     pub(crate) paths: Arc<path::Paths>,
+    // TOOD: if -> iface
     pub(crate) conn_if: Arc<router::ConnInterface>,
 }
 
@@ -348,6 +349,7 @@ impl SpaceReady {
             let params = self.parameters.clone();
             let streams = self.spaces.data.streams().clone();
             let cid_registry = cid_registry.clone();
+            let flow_ctrl = self.flow_ctrl.clone();
             let event_broker = event_broker.clone();
             async move {
                 use qbase::frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame};
@@ -361,6 +363,8 @@ impl SpaceReady {
                     _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Uni(
                         remote.initial_max_streams_uni(),
                     )));
+
+                    flow_ctrl.reset_send_window(remote.initial_max_data().into_inner());
 
                     let active_cid_limit = remote.active_connection_id_limit().into();
                     if let Err(e) = cid_registry.local.set_limit(active_cid_limit) {

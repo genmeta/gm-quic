@@ -177,7 +177,7 @@ impl PacketEntry {
         use subscribe::Subscribe as _;
         match frame {
             Frame::Ack(ack_frame) => {
-                path.cc().on_ack(qbase::Epoch::Initial, &ack_frame);
+                path.cc().on_ack(qbase::Epoch::Handshake, &ack_frame);
                 let mut recv_guard = self.sent_journal.rotate();
                 recv_guard.update_largest(ack_frame.largest.into_inner());
 
@@ -234,7 +234,7 @@ impl subscribe::Subscribe<(HandshakePacket, &path::Path)> for PacketEntry {
         };
         let is_ack_packet = FrameReader::new(body_buf, hdr.get_type()).try_fold(false, dispatch)?;
         path.cc()
-            .on_pkt_rcvd(qbase::Epoch::Initial, pn, is_ack_packet);
+            .on_pkt_rcvd(qbase::Epoch::Handshake, pn, is_ack_packet);
         self.rcvd_journal.register_pn(pn);
 
         Ok(())

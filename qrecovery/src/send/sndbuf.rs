@@ -125,9 +125,13 @@ impl BufMap {
         self.0
             .iter_mut()
             .enumerate()
-            .filter(|(.., state)| matches!(state.color(), Color::Pending | Color::Lost))
+            .filter(|(.., state)| {
+                (matches!(state.color(), Color::Pending) && flow_limit != 0)
+                    || matches!(state.color(), Color::Lost)
+            })
             .find_map(|(idx, state)| {
                 let available = predicate(state.offset())?;
+
                 let allowance = if state.color() == Color::Lost {
                     // 重传不受流量控制限制
                     available

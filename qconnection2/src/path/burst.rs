@@ -48,6 +48,7 @@ impl Burst {
 
         let send_initial = self.spaces.initial.has_pending_data();
         let send_handshake = self.spaces.handshake.has_pending_data();
+        // 互斥，要么0rtt要么1rtt要么不发
         let send_0rtt = self.spaces.data.has_early_data();
         let send_1rtt = self.spaces.data.has_pending_data();
 
@@ -97,8 +98,8 @@ impl Burst {
                 true,
             ) {
                 transaction.commit(qbase::Epoch::Data, &packet, fresh_data, ack);
-                // let size = packet.size();
-                // buf = &mut buf[size..];
+                let size = packet.size();
+                buf = &mut buf[size..];
             }
         }
 

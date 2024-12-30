@@ -6,7 +6,6 @@ use std::{
 use qbase::{
     error::Error,
     frame::{DatagramFrame, ReceiveFrame},
-    packet::PacketWriter,
 };
 
 use super::{
@@ -49,7 +48,12 @@ impl DatagramFlow {
         self.outgoing.try_read_datagram(buf)
     }
 
-    pub fn try_load_data_into(&self, packet: &mut PacketWriter<'_>) {
+    pub fn try_load_data_into<P, B>(&self, packet: &mut P)
+    where
+        B: bytes::BufMut,
+        P: core::ops::DerefMut<Target = B>
+            + qbase::packet::MarshalDataFrame<DatagramFrame, bytes::Bytes>,
+    {
         self.outgoing.try_load_data_into(packet)
     }
 

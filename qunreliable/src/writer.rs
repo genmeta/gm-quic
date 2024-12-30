@@ -9,7 +9,6 @@ use bytes::Bytes;
 use qbase::{
     error::Error,
     frame::{io::WriteDataFrame, BeFrame, DatagramFrame},
-    packet::PacketWriter,
     varint::VarInt,
 };
 
@@ -136,12 +135,39 @@ impl UnreliableOutgoing {
         }
     }
 
-    pub fn try_load_data_into(&self, _packet: &mut PacketWriter<'_>) {
+    pub fn try_load_data_into<P, B>(&self, packet: &mut P)
+    where
+        B: bytes::BufMut,
+        P: core::ops::DerefMut<Target = B>
+            + qbase::packet::MarshalDataFrame<DatagramFrame, bytes::Bytes>,
+    {
         let mut guard = self.0.lock().unwrap();
-        let Ok(_writer) = guard.as_mut() else {
+        let Ok(writer) = guard.as_mut() else { return };
+        let Some(datagram) = writer.queue.front() else {
             return;
         };
-        todo!()
+
+        let available = packet.remaining_mut();
+
+        let max_encoding_size = available.saturating_sub(datagram.len());
+        if max_encoding_size == 0 {
+            return;
+        }
+
+        let data = writer.queue.pop_front().expect("unreachable");
+        let frame_without_len = DatagramFrame::new(None);
+        let frame_with_len = DatagramFrame::new(Some(VarInt::try_from(data.len()).unwrap()));
+        match max_encoding_size {
+            // Encode length
+            n if n >= frame_with_len.encoding_size() => {
+                packet.dump_frame_with_data(frame_with_len, data);
+            }
+            // Do not encode length, may need padding
+            n => {
+                packet.put_bytes(0, n - frame_without_len.encoding_size());
+                packet.dump_frame_with_data(frame_with_len, data);
+            }
+        }
     }
 
     /// When a connection error occurs, set the internal state to an error state.
