@@ -6,6 +6,7 @@ use qbase::{error::Error, frame::ConnectionCloseFrame};
 use super::util::subscribe;
 
 pub enum ConnEvent {
+    // todo: remove this
     ApplicationClose,
     TransportError(Error),
     ReceivedCcf(ConnectionCloseFrame),

@@ -224,6 +224,7 @@ impl Connection {
         tokio::spawn({
             let params = params.clone();
             let streams = streams.clone();
+            let flow_ctrl = flow_ctrl.clone();
             let conn_error = conn_error.clone();
             let cid_registry = cid_registry.clone();
             async move {
@@ -235,6 +236,8 @@ impl Connection {
                     _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Uni(
                         remote.initial_max_streams_uni(),
                     )));
+
+                    flow_ctrl.reset_send_window(remote.initial_max_data().into_inner());
 
                     let active_cid_limit = remote.active_connection_id_limit().into();
                     if let Err(e) = cid_registry.local.set_limit(active_cid_limit) {

@@ -4,6 +4,7 @@ use bytes::BufMut;
 use qbase::{
     error::Error as QuicError,
     frame::{io::WriteDataFrame, ResetStreamError, ShouldCarryLength, StreamFrame},
+    packet::MarshalDataFrame,
     sid::StreamId,
     util::DescribeData,
     varint::{VarInt, VARINT_MAX},
@@ -58,6 +59,72 @@ impl<TX: Clone> Outgoing<TX> {
 
         let predicate = |offset| {
             StreamFrame::estimate_max_capacity(capacity, sid, offset).map(|c| tokens.min(c))
+        };
+        let mut sender = self.0.sender();
+        let inner = sender.deref_mut();
+
+        match inner {
+            Ok(sending_state) => match sending_state {
+                Sender::Ready(s) => {
+                    let result;
+                    if s.is_finished() {
+                        let mut s: DataSentSender<TX> = s.into();
+                        result = s.pick_up(predicate, flow_limit).map(write);
+                        *sending_state = Sender::DataSent(s);
+                    } else {
+                        let mut s: SendingSender<TX> = s.into();
+                        result = s.pick_up(predicate, flow_limit).map(write);
+                        *sending_state = Sender::Sending(s);
+                    }
+                    result
+                }
+                Sender::Sending(s) => s.pick_up(predicate, flow_limit).map(write),
+                Sender::DataSent(s) => s.pick_up(predicate, flow_limit).map(write),
+                _ => None,
+            },
+            Err(_) => None,
+        }
+    }
+
+    // consume the token internally, return the number of fresh data have been written to the buffer.
+    // return None indicates that the stream write no data to the buffer.
+    pub fn try_load_data_into<B, P>(
+        &self,
+        packet: &mut P,
+        sid: StreamId,
+        flow_limit: usize,
+        tokens: usize,
+    ) -> Option<(usize, bool)>
+    where
+        B: BufMut,
+        P: DerefMut<Target = B> + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+    {
+        let origin_len = packet.remaining_mut();
+        let write = |(offset, is_fresh, data, is_eos): (u64, bool, (&[u8], &[u8]), bool)| {
+            let mut frame = StreamFrame::new(sid, offset, data.len());
+
+            frame.set_eos_flag(is_eos);
+            match frame.should_carry_length(origin_len) {
+                ShouldCarryLength::NoProblem => {
+                    packet.dump_frame_with_data(frame, data);
+                }
+                // with out length encoding?
+                ShouldCarryLength::PaddingFirst(n) => {
+                    packet.put_bytes(0, n);
+                    packet.dump_frame_with_data(frame, data);
+                }
+                ShouldCarryLength::ShouldAfter(_not_carry_len, _carry_len) => {
+                    frame.carry_length();
+                    packet.dump_frame_with_data(frame, data);
+                }
+            }
+
+            (data.len(), is_fresh)
+        };
+
+        let predicate = |offset| {
+            StreamFrame::estimate_max_capacity(origin_len, sid, offset)
+                .map(|capacity| tokens.min(capacity))
         };
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();

@@ -14,8 +14,8 @@ use qbase::{
     cid::{ArcCidCell, BorrowedCid, ConnectionId},
     frame::{
         io::{WriteDataFrame, WriteFrame},
-        AckFrame, BeFrame, CryptoFrame, PathChallengeFrame, PathResponseFrame, PingFrame,
-        ReliableFrame, StreamFrame,
+        AckFrame, BeFrame, CryptoFrame, DatagramFrame, PathChallengeFrame, PathResponseFrame,
+        PingFrame, ReliableFrame, StreamFrame,
     },
     packet::{
         header::{io::WriteHeader, EncodeHeader},
@@ -153,6 +153,21 @@ where
             .dump_frame_with_data(frame, data)
             .and_then(|frame| {
                 self.guard.record_frame(GuaranteedFrame::Stream(frame));
+                None
+            })
+    }
+}
+
+impl<'b, D> MarshalDataFrame<DatagramFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
+where
+    D: DescribeData,
+    PacketWriter<'b>: WriteData<D> + WriteDataFrame<DatagramFrame, D>,
+{
+    fn dump_frame_with_data(&mut self, frame: DatagramFrame, data: D) -> Option<DatagramFrame> {
+        self.writer
+            .dump_frame_with_data(frame, data)
+            .and_then(|_frame| {
+                self.guard.record_trivial();
                 None
             })
     }

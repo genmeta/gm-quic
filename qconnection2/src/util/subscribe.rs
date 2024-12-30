@@ -4,6 +4,7 @@ use core::{
 };
 use std::{ops::Deref, sync::Arc};
 
+// 干掉这个
 pub(crate) trait Publish<Key: Copy> {
     type Resource;
 
