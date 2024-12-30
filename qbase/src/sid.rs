@@ -118,7 +118,7 @@ impl StreamId {
     /// It is prohibited to directly create a StreamId from external sources.
     /// StreamId can only be allocated incrementally by proactively creating new streams locally.
     /// or accepting new streams opened by peer.
-    fn new(role: Role, dir: Dir, id: u64) -> Self {
+    pub fn new(role: Role, dir: Dir, id: u64) -> Self {
         assert!(id <= MAX_STREAMS_LIMIT);
         Self((((id << 1) | (dir as u64)) << 1) | (role as u64))
     }

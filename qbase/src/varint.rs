@@ -221,11 +221,11 @@ impl<T: BufMut> WriteVarInt for T {
         if x < 1u64 << 6 {
             self.put_u8(x as u8);
         } else if x < 1u64 << 14 {
-            self.put_u16(0b01 << 14 | x as u16);
+            self.put_u16((0b01 << 14) | x as u16);
         } else if x < 1u64 << 30 {
-            self.put_u32(0b10 << 30 | x as u32);
+            self.put_u32((0b10 << 30) | x as u32);
         } else if x < 1u64 << 62 {
-            self.put_u64(0b11 << 62 | x);
+            self.put_u64((0b11 << 62) | x);
         } else {
             unreachable!("malformed VarInt")
         }
@@ -239,15 +239,15 @@ impl<T: BufMut> WriteVarInt for T {
             }
             EncodeBytes::Two => {
                 assert!(value.0 < 1u64 << 14);
-                self.put_u16(0b01 << 14 | value.0 as u16);
+                self.put_u16((0b01 << 14) | value.0 as u16);
             }
             EncodeBytes::Four => {
                 assert!(value.0 < 1u64 << 30);
-                self.put_u32(0b10 << 30 | value.0 as u32);
+                self.put_u32((0b10 << 30) | value.0 as u32);
             }
             EncodeBytes::Eight => {
                 assert!(value.0 < 1u64 << 62);
-                self.put_u64(0b11 << 62 | value.0);
+                self.put_u64((0b11 << 62) | value.0);
             }
         }
     }

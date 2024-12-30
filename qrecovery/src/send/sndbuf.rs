@@ -42,12 +42,6 @@ impl State {
         self.0 & Self::SUFFIX
     }
 
-    #[allow(dead_code)]
-    fn set_offset(&mut self, value: u64) {
-        debug_assert!(value <= Self::SUFFIX, "value({value}) overflow");
-        self.0 = (self.0 & Self::PREFIX) | (value & Self::SUFFIX)
-    }
-
     fn color(&self) -> Color {
         match self.0 >> 62 {
             0b00 => Color::Pending,
@@ -646,6 +640,24 @@ impl SendBuf {
 #[cfg(test)]
 mod tests {
     use super::{BufMap, Color, State};
+
+    #[test]
+    fn test_state() {
+        let state = State::encode(100, Color::Pending);
+        assert_eq!(state.offset(), 100);
+        assert_eq!(state.color(), Color::Pending);
+
+        let mut state = State::encode(100, Color::Pending);
+        state.set_color(Color::Flighting);
+        assert_eq!(state.color(), Color::Flighting);
+
+        let state = State::encode(100, Color::Pending);
+        assert_eq!(state.decode(), (100, Color::Pending));
+
+        // test Dispaly
+        assert_eq!(format!("{}", state), "[100: Pending]");
+        assert_eq!(format!("{:?}", state), "[100: Pending]");
+    }
 
     #[test]
     fn test_bufmap_empty() {
