@@ -337,7 +337,11 @@ where
     /// If the correspoding stream is not exist, `accept` the stream first.
     ///
     /// Actually calls the corresponding method of the corresponding stream for the corresponding frame type.
-    pub fn recv_stream_control(&self, stream_ctl_frame: &StreamCtlFrame) -> Result<(), QuicError> {
+    pub fn recv_stream_control(
+        &self,
+        stream_ctl_frame: &StreamCtlFrame,
+    ) -> Result<usize, QuicError> {
+        let mut sync_fresh_data = 0;
         match stream_ctl_frame {
             StreamCtlFrame::ResetStream(reset) => {
                 let sid = reset.stream_id;
@@ -357,7 +361,7 @@ where
                 }
                 if let Ok(set) = self.input.streams().as_mut() {
                     if let Some((incoming, s)) = set.remove(&sid) {
-                        incoming.recv_reset(reset)?;
+                        sync_fresh_data = incoming.recv_reset(reset)?;
                         s.shutdown_receive();
                         if s.is_terminated() {
                             self.stream_ids.remote.on_end_of_stream(reset.stream_id);
@@ -449,7 +453,7 @@ where
                 _ = self.stream_ids.remote.recv_frame(streams_blocked);
             }
         }
-        Ok(())
+        Ok(sync_fresh_data)
     }
 
     /// Called when a connection error occured.
