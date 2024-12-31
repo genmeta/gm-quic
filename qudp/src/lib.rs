@@ -3,6 +3,7 @@ use std::{
     io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
     pin::Pin,
+    sync::atomic::AtomicU16,
     task::{ready, Context, Poll},
 };
 
@@ -14,7 +15,7 @@ const DEFAULT_TTL: libc::c_int = 64;
 cfg_if::cfg_if! {
     if #[cfg(unix)]{
         #[path = "unix.rs"]
-        mod uinx;
+        mod unix;
         mod msg;
         #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         pub const BATCH_SIZE: usize = 64;
@@ -60,6 +61,8 @@ impl Default for PacketHeader {
 #[derive(Debug)]
 pub struct UdpSocketController {
     io: tokio::net::UdpSocket,
+    gso_size: AtomicU16,
+    gro_size: AtomicU16,
 }
 
 impl UdpSocketController {
@@ -81,7 +84,11 @@ impl UdpSocketController {
         // TODO: 会报错
         // io.set_ttl(DEFAULT_TTL as u32)?;
 
-        let socket = Self { io };
+        let socket = Self {
+            io,
+            gso_size: 1.into(),
+            gro_size: 1.into(),
+        };
         socket.config()?;
         Ok(socket)
     }
@@ -116,9 +123,17 @@ impl UdpSocketController {
         }
         Poll::Ready(ret)
     }
+
+    pub fn gso_size(&self) -> u16 {
+        self.gso_size.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn gro_size(&self) -> u16 {
+        self.gro_size.load(core::sync::atomic::Ordering::Acquire)
+    }
 }
 
-trait Io {
+pub trait Io {
     fn config(&self) -> io::Result<()>;
 
     fn sendmsg(&self, bufs: &[IoSlice<'_>], hdr: &PacketHeader) -> io::Result<usize>;
