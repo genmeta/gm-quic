@@ -503,7 +503,7 @@ mod tests {
                 b't', b'e', b's', b't', b's', b'c', b'i', b'd', // scid bytes
                 10,   // token length, no token
                 b't', b'e', b's', b't', b'_', b't', b'o', b'k', b'e', b'n', // token bytes
-                64, 16, // payload length, 2 bytes encoded varint
+                64, 32, // payload length, 2 bytes encoded varint
                 0,  // encoded packet number
                 // crypto frame header
                 6,  // crypto frame type
