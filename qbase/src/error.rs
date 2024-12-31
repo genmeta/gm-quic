@@ -174,6 +174,14 @@ pub struct Error {
     reason: Cow<'static, str>,
 }
 
+/// App specific error.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("App layer error occur with code {error_code}, reason: {reason}")]
+pub struct AppError {
+    error_code: VarInt,
+    reason: Cow<'static, str>,
+}
+
 impl Error {
     /// Create a new error with the given kind, frame type, and reason.
     /// The frame type is the one that triggered this error.
@@ -210,6 +218,34 @@ impl Error {
     }
 }
 
+impl AppError {
+    /// Create a new app error with the given app error code and reason.
+    pub fn new(error_code: VarInt, reason: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            error_code,
+            reason: reason.into(),
+        }
+    }
+
+    /// Return the error code.
+    ///
+    /// The error code is an application error code.
+    pub fn error_code(&self) -> u64 {
+        self.error_code.into_inner()
+    }
+
+    /// Otherwise, information about the application state might be revealed.
+    ///
+    /// Endpoints MUST clear the value of the Reason Phrase field and SHOULD use
+    /// the APPLICATION_ERROR code when converting to a CONNECTION_CLOSE of type 0x1c.
+    ///
+    /// See [section-10.2.3-3](https://datatracker.ietf.org/doc/html/rfc9000#section-10.2.3-3)
+    /// of [QUIC](https://datatracker.ietf.org/doc/html/rfc9000) for more details.
+    pub fn conceal() -> Error {
+        Error::with_default_fty(ErrorKind::Application, "")
+    }
+}
+
 impl From<Error> for std::io::Error {
     fn from(e: Error) -> Self {
         Self::new(std::io::ErrorKind::BrokenPipe, e)
@@ -218,20 +254,30 @@ impl From<Error> for std::io::Error {
 
 impl From<Error> for ConnectionCloseFrame {
     fn from(e: Error) -> Self {
-        Self {
-            error_kind: e.kind,
-            frame_type: Some(e.frame_type),
-            reason: e.reason,
-        }
+        Self::new_quic(e.kind, e.frame_type, e.reason)
+    }
+}
+
+impl From<AppError> for ConnectionCloseFrame {
+    fn from(e: AppError) -> Self {
+        Self::new_app(e.error_code, e.reason)
     }
 }
 
 impl From<ConnectionCloseFrame> for Error {
-    fn from(value: ConnectionCloseFrame) -> Self {
-        Self {
-            kind: value.error_kind,
-            frame_type: value.frame_type.unwrap_or(FrameType::Padding),
-            reason: value.reason,
+    fn from(frame: ConnectionCloseFrame) -> Self {
+        match frame {
+            ConnectionCloseFrame::Quic(frame) => {
+                Self::new(frame.error_kind, frame.frame_type, frame.reason)
+            }
+            ConnectionCloseFrame::App(frame) => Self::with_default_fty(
+                ErrorKind::Application,
+                format!(
+                    "App layer error occur with code {error_code}, reason: {reason}",
+                    error_code = frame.error_code,
+                    reason = frame.reason,
+                ),
+            ),
         }
     }
 }
@@ -291,13 +337,13 @@ mod tests {
 
         // Test Error to ConnectionCloseFrame
         let frame: ConnectionCloseFrame = err.clone().into();
-        assert_eq!(frame.error_kind, err.kind());
-        assert_eq!(frame.frame_type, Some(err.frame_type()));
-
-        // Test ConnectionCloseFrame to Error
-        let converted_err: Error = frame.into();
-        assert_eq!(converted_err.kind(), err.kind());
-        assert_eq!(converted_err.frame_type(), err.frame_type());
+        match frame {
+            ConnectionCloseFrame::Quic(frame) => {
+                assert_eq!(frame.error_kind, err.kind());
+                assert_eq!(frame.frame_type, err.frame_type());
+            }
+            _ => panic!("unexpected frame type"),
+        }
 
         // Test Error to io::Error
         let io_err: std::io::Error = err.into();

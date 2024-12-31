@@ -108,7 +108,7 @@ impl std::future::Future for ConnError {
 
 #[cfg(test)]
 mod tests {
-    use qbase::{error::ErrorKind, frame::FrameType::Padding};
+    use qbase::{error::ErrorKind, frame::FrameType::Padding, varint::VarInt};
 
     use super::*;
 
@@ -124,7 +124,7 @@ mod tests {
             }
         });
 
-        let ccf = ConnectionCloseFrame::new(ErrorKind::Internal, None, "Test close frame".into());
+        let ccf = ConnectionCloseFrame::new_app(VarInt::from_u32(1), "Test close frame");
         conn_error.on_ccf_rcvd(&ccf);
 
         _ = task.await;
