@@ -23,7 +23,7 @@ pub(super) struct Recv<TX> {
     rcvbuf: rcvbuf::RecvBuf,
     read_waker: Option<Waker>,
     stop_state: Option<u64>,
-    frames_tx: TX,
+    broker: TX,
     largest: u64,
     max_stream_data: u64,
 }
@@ -45,7 +45,7 @@ where
                 let max_stream_data = (self.rcvbuf.nread() + threshold * 2).min(VARINT_MAX);
                 if max_stream_data > self.max_stream_data {
                     self.max_stream_data = max_stream_data;
-                    self.frames_tx.send_frame([MaxStreamDataFrame::new(
+                    self.broker.send_frame([MaxStreamDataFrame::new(
                         self.stream_id,
                         VarInt::from_u64(max_stream_data).unwrap(),
                     )]);
@@ -67,7 +67,7 @@ where
     pub(super) fn stop(&mut self, err_code: u64) {
         if self.stop_state.is_none() {
             self.stop_state = Some(err_code);
-            self.frames_tx.send_frame([StopSendingFrame::new(
+            self.broker.send_frame([StopSendingFrame::new(
                 self.stream_id,
                 VarInt::from_u64(err_code).expect("app error code must not exceed 2^62!"),
             )]);
@@ -85,20 +85,20 @@ impl<TX: Clone> Recv<TX> {
             stream_id: self.stream_id,
             rcvbuf: std::mem::take(&mut self.rcvbuf),
             stop_state: self.stop_state.take(),
-            stop_tx: self.frames_tx.clone(),
+            broker: self.broker.clone(),
             read_waker: self.read_waker.take(),
         }
     }
 }
 
 impl<TX> Recv<TX> {
-    pub(super) fn new(stream_id: StreamId, buf_size: u64, frames_tx: TX) -> Self {
+    pub(super) fn new(stream_id: StreamId, buf_size: u64, broker: TX) -> Self {
         Self {
             stream_id,
             rcvbuf: rcvbuf::RecvBuf::default(),
             read_waker: None,
             stop_state: None,
-            frames_tx,
+            broker,
             largest: 0,
             max_stream_data: buf_size,
         }
@@ -118,8 +118,12 @@ impl<TX> Recv<TX> {
                 ),
             ));
         }
-        self.largest = std::cmp::max(self.largest, data_end);
-        let fresh_data = self.rcvbuf.recv(data_start, body);
+        self.rcvbuf.recv(data_start, body);
+        let mut fresh_data = 0;
+        if self.largest < data_end {
+            fresh_data = data_end - self.largest;
+            self.largest = data_end;
+        }
         if self.rcvbuf.is_readable() {
             if let Some(waker) = self.read_waker.take() {
                 waker.wake()
@@ -128,7 +132,7 @@ impl<TX> Recv<TX> {
         Ok(fresh_data as _)
     }
 
-    pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<u64, Error> {
+    pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<usize, Error> {
         let final_size = reset_frame.final_size.into_inner();
         if final_size < self.largest {
             return Err(Error::new(
@@ -141,12 +145,13 @@ impl<TX> Recv<TX> {
             ));
         }
         self.wake_reader();
-        Ok(final_size)
+        Ok((final_size - self.largest) as _)
     }
 
     pub(super) fn is_stopped(&self) -> bool {
         self.stop_state.is_some()
     }
+
     pub(super) fn wake_reader(&mut self) {
         if let Some(waker) = self.read_waker.take() {
             waker.wake()
@@ -163,7 +168,7 @@ pub struct SizeKnown<TX> {
     rcvbuf: rcvbuf::RecvBuf,
     read_waker: Option<Waker>,
     stop_state: Option<u64>,
-    stop_tx: TX,
+    broker: TX,
     final_size: u64,
 }
 
@@ -173,15 +178,14 @@ where
 {
     /// Abort can be called multiple times at the application level,
     /// but only the first call is effective.
-    pub(super) fn stop(&mut self, err_code: u64) -> u64 {
+    pub(super) fn stop(&mut self, err_code: u64) {
         if self.stop_state.is_none() {
             self.stop_state = Some(err_code);
-            self.stop_tx.send_frame([StopSendingFrame::new(
+            self.broker.send_frame([StopSendingFrame::new(
                 self.stream_id,
                 VarInt::from_u64(err_code).expect("app error code must not exceed 2^62!"),
             )]);
         }
-        self.final_size
     }
 }
 
@@ -209,13 +213,13 @@ impl<TX> SizeKnown<TX> {
                 ),
             ));
         }
-        let fresh_data = self.rcvbuf.recv(data_start, buf);
+        self.rcvbuf.recv(data_start, buf);
         if self.rcvbuf.is_readable() {
             if let Some(waker) = self.read_waker.take() {
                 waker.wake()
             }
         }
-        Ok(fresh_data as _)
+        Ok(0)
     }
 
     pub(super) fn is_all_rcvd(&self) -> bool {
@@ -247,7 +251,7 @@ impl<TX> SizeKnown<TX> {
         }
     }
 
-    pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<u64, Error> {
+    pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<(), Error> {
         let final_size = reset_frame.final_size.into_inner();
         if final_size != self.final_size {
             return Err(Error::new(
@@ -260,7 +264,7 @@ impl<TX> SizeKnown<TX> {
             ));
         }
         self.wake_reader();
-        Ok(final_size)
+        Ok(())
     }
 
     pub(super) fn is_stopped(&self) -> bool {

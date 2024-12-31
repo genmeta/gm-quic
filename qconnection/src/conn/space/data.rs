@@ -50,6 +50,65 @@ use crate::{
     tx::{PacketMemory, Transaction},
 };
 
+/// When receiving a [`StreamFrame`] or [`StreamCtlFrame`],
+/// flow control must be updated accordingly
+#[derive(Clone)]
+struct LimitedDataStreams {
+    streams: DataStreams,
+    flow_ctrl: FlowController,
+    conn_error: ConnError,
+}
+
+impl LimitedDataStreams {
+    fn new(streams: DataStreams, flow_ctrl: FlowController, conn_error: ConnError) -> Self {
+        Self {
+            streams,
+            flow_ctrl,
+            conn_error,
+        }
+    }
+}
+
+impl ReceiveFrame<(StreamFrame, Bytes)> for LimitedDataStreams {
+    type Output = ();
+
+    fn recv_frame(&self, data_frame: &(StreamFrame, Bytes)) -> Result<Self::Output, Error> {
+        match self.streams.recv_data(data_frame) {
+            Ok(new_data_size) => {
+                if let Err(e) = self.flow_ctrl.on_new_rcvd(new_data_size) {
+                    self.conn_error.on_error(Error::new(
+                        ErrorKind::FlowControl,
+                        data_frame.0.frame_type(),
+                        format!("{} flow control overflow: {}", data_frame.0.id, e),
+                    ));
+                }
+            }
+            Err(e) => self.conn_error.on_error(e),
+        }
+        Ok(())
+    }
+}
+
+impl ReceiveFrame<StreamCtlFrame> for LimitedDataStreams {
+    type Output = ();
+
+    fn recv_frame(&self, frame: &StreamCtlFrame) -> Result<Self::Output, Error> {
+        match self.streams.recv_stream_control(frame) {
+            Ok(new_data_size) => {
+                if let Err(e) = self.flow_ctrl.on_new_rcvd(new_data_size) {
+                    self.conn_error.on_error(Error::new(
+                        ErrorKind::FlowControl,
+                        frame.frame_type(),
+                        format!("flow control overflow: {}", e),
+                    ));
+                }
+            }
+            Err(e) => self.conn_error.on_error(e),
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct DataSpace {
     pub zero_rtt_keys: ArcKeys,
@@ -107,6 +166,8 @@ impl DataSpace {
         let (stream_frames_entry, rcvd_stream_frames) = mpsc::unbounded();
         let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded();
 
+        let limited_data_streams =
+            LimitedDataStreams::new(self.streams.clone(), flow_ctrl.clone(), conn_error.clone());
         let dispatch_data_frame = {
             let conn_error = conn_error.clone();
             move |frame: Frame, pty: Type, path: &Path| match frame {
@@ -166,13 +227,11 @@ impl DataSpace {
         pipe!(rcvd_data_blocked_frames |> flow_ctrl.recver, recv_frame);
         pipe!(@error(conn_error) rcvd_handshake_done_frames |> *handshake, recv_frame);
         pipe!(@error(conn_error) rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_frame);
-        pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> self.streams, recv_frame);
-        // pipe!(@error(conn_error) rcvd_stream_frames |> receive_stream_frame);
+        pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> limited_data_streams, recv_frame);
+        pipe!(@error(conn_error) rcvd_stream_frames |> limited_data_streams, recv_frame);
         pipe!(@error(conn_error) rcvd_datagram_frames |> self.datagrams, recv_frame);
         pipe!(rcvd_ack_frames |> on_data_acked);
         pipe!(rcvd_new_token_frames |> recv_new_token,recv_frame);
-
-        self.handle_stream_frame_with_flow_ctrl(flow_ctrl, conn_error.clone(), rcvd_stream_frames);
 
         let join_handler0 = self.parse_rcvd_0rtt_packet_and_dispatch_frames(
             rcvd_0rtt_packets,
@@ -328,36 +387,6 @@ impl DataSpace {
                 rcvd_packets
             }
         })
-    }
-
-    pub fn handle_stream_frame_with_flow_ctrl(
-        &self,
-        flow_ctrl: &FlowController,
-        conn_error: ConnError,
-        mut rcvd_stream_frames: mpsc::UnboundedReceiver<(StreamFrame, Bytes)>,
-    ) {
-        // Handling Stream Frames
-        tokio::spawn({
-            let streams = self.streams.clone();
-            let flow_ctrl = flow_ctrl.clone();
-            let conn_error = conn_error.clone();
-            async move {
-                while let Some(data_frame) = rcvd_stream_frames.next().await {
-                    match streams.recv_data(&data_frame) {
-                        Ok(new_data_size) => {
-                            if let Err(e) = flow_ctrl.on_new_rcvd(new_data_size) {
-                                conn_error.on_error(Error::new(
-                                    ErrorKind::FlowControl,
-                                    data_frame.0.frame_type(),
-                                    format!("{} flow control overflow: {}", data_frame.0.id, e),
-                                ));
-                            }
-                        }
-                        Err(e) => conn_error.on_error(e),
-                    }
-                }
-            }
-        });
     }
 
     pub fn try_assemble_0rtt<'b>(

@@ -71,18 +71,19 @@ where
     ///
     /// If all data sent by the peer has not been received, receiving a stream reset frame will cause
     /// any read calls to return an error, received data will be discarded.
-    pub fn recv_reset(&self, reset_frame: &ResetStreamFrame) -> Result<(), QuicError> {
+    pub fn recv_reset(&self, reset_frame: &ResetStreamFrame) -> Result<usize, QuicError> {
         // TODO: ResetStream中还有错误信息，比如http3的错误码，看是否能用到
+        let mut sync_fresh_data = 0;
         let mut recver = self.0.recver();
         let inner = recver.deref_mut();
         if let Ok(receiving_state) = inner {
             match receiving_state {
                 Recver::Recv(r) => {
-                    let _final_size = r.recv_reset(reset_frame)?;
+                    sync_fresh_data = r.recv_reset(reset_frame)?;
                     *receiving_state = Recver::ResetRcvd(reset_frame.into());
                 }
                 Recver::SizeKnown(r) => {
-                    let _final_size = r.recv_reset(reset_frame)?;
+                    r.recv_reset(reset_frame)?;
                     *receiving_state = Recver::ResetRcvd(reset_frame.into());
                 }
                 _ => {
@@ -91,7 +92,7 @@ where
                 }
             }
         }
-        Ok(())
+        Ok(sync_fresh_data)
     }
 }
 

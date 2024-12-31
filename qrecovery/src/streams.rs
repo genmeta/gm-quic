@@ -126,7 +126,7 @@ impl<TX> ReceiveFrame<StreamCtlFrame> for DataStreams<TX>
 where
     TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    type Output = ();
+    type Output = usize;
 
     fn recv_frame(&self, frame: &StreamCtlFrame) -> Result<Self::Output, Error> {
         self.0.recv_stream_control(frame)
