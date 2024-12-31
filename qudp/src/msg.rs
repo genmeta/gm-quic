@@ -8,7 +8,7 @@ use socket2::SockAddr;
 
 use crate::{
     cmsghdr::{decode, Cmsg, CmsgHdr, Iter, MsgHdr},
-    uinx::Gso,
+    unix::Gso,
     PacketHeader, UdpSocketController, BATCH_SIZE,
 };
 

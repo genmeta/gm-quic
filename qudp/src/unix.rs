@@ -88,6 +88,10 @@ impl Io for UdpSocketController {
             self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_UNICAST_HOPS, DEFAULT_TTL);
         }
 
+        use core::sync::atomic::Ordering::Release;
+        self.gso_size.store(self.max_gso_segments(), Release);
+        self.gro_size.store(self.max_gro_segments(), Release);
+
         Ok(())
     }
 
