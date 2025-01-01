@@ -1,4 +1,4 @@
-use std::net;
+use std::{net, ops::Deref};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Endpoint {
@@ -9,6 +9,17 @@ pub enum Endpoint {
         agent: net::SocketAddr,
         inner: net::SocketAddr,
     },
+}
+
+impl Deref for Endpoint {
+    type Target = net::SocketAddr;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Endpoint::Direct { addr } => addr,
+            Endpoint::Relay { inner, .. } => inner,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
