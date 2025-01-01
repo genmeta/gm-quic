@@ -2,6 +2,7 @@ use std::{
     io::{self},
     net::{SocketAddr, ToSocketAddrs},
     sync::{Arc, LazyLock, RwLock, Weak},
+    time::Duration,
 };
 
 use dashmap::DashMap;
@@ -62,6 +63,7 @@ pub struct QuicServer {
     passive_listening: bool,
     _supported_versions: Vec<u32>,
     _load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
+    _defer_idle_timeout: Duration,
     parameters: ServerParameters,
     tls_config: Arc<TlsServerConfig>,
     streams_controller:
@@ -76,6 +78,7 @@ impl QuicServer {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
             load_balance: Arc::new(|_| None),
+            defer_idle_timeout: Duration::ZERO,
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
@@ -91,6 +94,7 @@ impl QuicServer {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
             load_balance: Arc::new(|_| None),
+            defer_idle_timeout: Duration::ZERO,
             parameters: ServerParameters::default(),
             tls_config,
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
@@ -106,6 +110,7 @@ impl QuicServer {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
             load_balance: Arc::new(|_| None),
+            defer_idle_timeout: Duration::ZERO,
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
@@ -253,6 +258,7 @@ pub struct QuicServerBuilder<T> {
     supported_versions: Vec<u32>,
     passive_listening: bool,
     load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
+    defer_idle_timeout: Duration,
     parameters: ServerParameters,
     tls_config: T,
     streams_controller:
@@ -266,6 +272,7 @@ pub struct QuicServerSniBuilder<T> {
     passive_listening: bool,
     load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     hosts: Arc<DashMap<String, Host>>,
+    defer_idle_timeout: Duration,
     parameters: ServerParameters,
     tls_config: T,
     streams_controller:
@@ -328,6 +335,20 @@ impl<T> QuicServerBuilder<T> {
         self
     }
 
+    /// Provide an option to defer an idle timeout.
+    ///
+    /// This facility could be used when the application wishes to avoid losing
+    /// state that has been associated with an open connection but does not expect
+    /// to exchange application data for some time.
+    ///
+    /// See [Deferring Idle Timeout](https://datatracker.ietf.org/doc/html/rfc9000#name-deferring-idle-timeout)
+    /// of [RFC 9000](https://datatracker.ietf.org/doc/html/rfc9000)
+    /// for more information.
+    pub fn keep_alive(mut self, duration: Duration) -> Self {
+        self.defer_idle_timeout = duration;
+        self
+    }
+
     /// Specify the [transport parameters] for the server.
     ///
     /// If you call this multiple times, only the last `parameters` will be used.
@@ -364,6 +385,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
@@ -381,6 +403,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
@@ -406,6 +429,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
@@ -431,6 +455,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
@@ -452,6 +477,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
             load_balance: self.load_balance,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
@@ -553,6 +579,7 @@ impl QuicServerBuilder<TlsServerConfig> {
             listener: Default::default(),
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
+            _defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
             streams_controller: self.streams_controller,
@@ -618,6 +645,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             listener: Default::default(),
             _supported_versions: self.supported_versions,
             _load_balance: self.load_balance,
+            _defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
             streams_controller: self.streams_controller,
