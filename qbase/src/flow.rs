@@ -7,11 +7,9 @@ use std::{
     task::Waker,
 };
 
-use thiserror::Error;
-
 use crate::{
-    error::Error as QuicError,
-    frame::{DataBlockedFrame, MaxDataFrame, ReceiveFrame, SendFrame},
+    error::{Error as QuicError, ErrorKind as QuicErrorKind},
+    frame::{DataBlockedFrame, FrameType, MaxDataFrame, ReceiveFrame, SendFrame},
     varint::VarInt,
 };
 
@@ -208,12 +206,6 @@ where
     }
 }
 
-/// Overflow error, i.e. the flow control limit is exceeded while receiving.
-/// See [`ErrorKind::FlowControl`](`crate::error::ErrorKind::FlowControl`).
-#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
-#[error("Flow Control exceed {0} bytes on receiving")]
-pub struct Overflow(usize);
-
 /// Receiver's flow controller for managing the flow limit of incoming stream data.
 #[derive(Debug, Default)]
 struct RecvController<TX> {
@@ -251,7 +243,7 @@ where
     /// The data must be new, old retransmitted data does not count. Whether the data is
     /// new or not will be determined by each stream after delivering the data packet to them.
     /// The amount of new data will be passed as the `amount` parameter.
-    fn on_new_rcvd(&self, amount: usize) -> Result<usize, Overflow> {
+    fn on_new_rcvd(&self, frame_type: FrameType, amount: usize) -> Result<usize, QuicError> {
         debug_assert!(!self.is_closed.load(Ordering::Relaxed));
 
         self.rcvd_data.fetch_add(amount as u64, Ordering::Release);
@@ -267,7 +259,12 @@ where
             }
             Ok(amount)
         } else {
-            Err(Overflow((rcvd_data - max_data) as usize))
+            // Err(Overflow((rcvd_data - max_data) as usize))
+            Err(QuicError::new(
+                QuicErrorKind::FlowControl,
+                frame_type,
+                format!("flow control overflow: {}", rcvd_data - max_data),
+            ))
         }
     }
 }
@@ -312,8 +309,8 @@ where
     ///
     /// As mentioned in [`ArcSendControler`], if the flow control limit is exceeded,
     /// an [`Overflow`] error will be returned.
-    pub fn on_new_rcvd(&self, amount: usize) -> Result<usize, Overflow> {
-        self.0.on_new_rcvd(amount)
+    pub fn on_new_rcvd(&self, frame_type: FrameType, amount: usize) -> Result<usize, QuicError> {
+        self.0.on_new_rcvd(frame_type, amount)
     }
 }
 
@@ -387,8 +384,8 @@ where
     /// Updates the total received data size and checks if the flow control limit is exceeded.
     /// By the way, it will also send a [`MaxDataFrame`] to the sender
     /// to expand the receive window if necessary.
-    pub fn on_new_rcvd(&self, amount: usize) -> Result<usize, Overflow> {
-        self.recver.on_new_rcvd(amount)
+    pub fn on_new_rcvd(&self, frame_type: FrameType, amount: usize) -> Result<usize, QuicError> {
+        self.recver.on_new_rcvd(frame_type, amount)
     }
 }
 
@@ -474,18 +471,19 @@ mod tests {
     fn test_recv_controller() {
         let broker = RecvControllerBroker::default();
         let controler = ArcRecvController::new(100, broker.clone());
-        let amount = controler.on_new_rcvd(20).unwrap();
+        let amount = controler.on_new_rcvd(FrameType::Stream(0), 20).unwrap();
         assert_eq!(amount, 20);
         assert_eq!(broker.lock().unwrap().len(), 0);
 
-        let amount = controler.on_new_rcvd(30).unwrap();
+        let amount = controler.on_new_rcvd(FrameType::Stream(3), 30).unwrap();
         assert_eq!(amount, 30);
         // broker should have a MaxDataFrame
         assert_eq!(broker.lock().unwrap().len(), 1);
         assert_eq!(broker.lock().unwrap()[0].max_data.into_inner(), 150);
 
         // test overflow
-        let result = controler.on_new_rcvd(101);
-        assert_eq!(result, Err(Overflow(1)));
+        let result = controler.on_new_rcvd(FrameType::ResetStream, 101);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), QuicErrorKind::FlowControl);
     }
 }
