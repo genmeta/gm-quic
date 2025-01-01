@@ -4,7 +4,7 @@ use bytes::{BufMut, Bytes};
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
     cid::ConnectionId,
-    error::{Error, ErrorKind},
+    error::Error,
     frame::{
         io::WriteFrame, AckFrame, BeFrame, ConnectionCloseFrame, Frame, FrameReader,
         PathChallengeFrame, PathResponseFrame, ReceiveFrame, ReliableFrame, SendFrame,
@@ -75,13 +75,8 @@ impl ReceiveFrame<(StreamFrame, Bytes)> for LimitedDataStreams {
     fn recv_frame(&self, data_frame: &(StreamFrame, Bytes)) -> Result<Self::Output, Error> {
         match self.streams.recv_data(data_frame) {
             Ok(new_data_size) => {
-                if let Err(e) = self.flow_ctrl.on_new_rcvd(new_data_size) {
-                    self.conn_error.on_error(Error::new(
-                        ErrorKind::FlowControl,
-                        data_frame.0.frame_type(),
-                        format!("{} flow control overflow: {}", data_frame.0.id, e),
-                    ));
-                }
+                self.flow_ctrl
+                    .on_new_rcvd(data_frame.0.frame_type(), new_data_size)?;
             }
             Err(e) => self.conn_error.on_error(e),
         }
@@ -95,13 +90,8 @@ impl ReceiveFrame<StreamCtlFrame> for LimitedDataStreams {
     fn recv_frame(&self, frame: &StreamCtlFrame) -> Result<Self::Output, Error> {
         match self.streams.recv_stream_control(frame) {
             Ok(new_data_size) => {
-                if let Err(e) = self.flow_ctrl.on_new_rcvd(new_data_size) {
-                    self.conn_error.on_error(Error::new(
-                        ErrorKind::FlowControl,
-                        frame.frame_type(),
-                        format!("flow control overflow: {}", e),
-                    ));
-                }
+                self.flow_ctrl
+                    .on_new_rcvd(frame.frame_type(), new_data_size)?;
             }
             Err(e) => self.conn_error.on_error(e),
         }

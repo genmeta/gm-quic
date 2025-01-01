@@ -8,7 +8,7 @@ use qbase::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::{long::io::LongHeaderBuilder, GetScid, GetType},
         keys::ArcKeys,
-        long, AssembledPacket, DataHeader, DataPacket, PacketWriter,
+        long, AssembledPacket, DataHeader, PacketWriter,
     },
     param::ArcParameters,
     Epoch,
@@ -24,10 +24,9 @@ use super::any;
 use crate::{
     conn::{transmit::InitialSpaceReader, ArcRemoteCids, RcvdPackets},
     error::ConnError,
-    path::{ArcPath, ArcPaths, Path, Pathway},
+    path::{ArcPath, ArcPaths, Path},
     pipe,
     tx::{PacketMemory, Transaction},
-    usc::ArcUsc,
 };
 
 #[derive(Clone)]

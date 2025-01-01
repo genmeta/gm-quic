@@ -11,6 +11,7 @@ use qrecovery::{
 pub mod events;
 pub mod interface;
 pub mod path;
+pub mod router;
 pub mod space;
 pub mod tls;
 pub mod tx;
