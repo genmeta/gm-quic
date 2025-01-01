@@ -1,27 +1,57 @@
-use std::{collections::VecDeque, io, path::Path, sync::Mutex};
+use std::{collections::VecDeque, path::Path, sync::Mutex};
 
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 use tokio::sync::Notify;
 
-pub fn parse_cert_files(
-    cert_chain_file: impl AsRef<Path>,
-    key_file: impl AsRef<Path>,
-) -> io::Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
-    let cast_pem_error = |e, path: &Path| match e {
-        rustls::pki_types::pem::Error::Io(error) => error,
-        pem_error => {
-            let file_path = path.file_name().unwrap().to_string_lossy();
-            let error = format!("faild to parse pem file `{file_path}`: `{pem_error}`");
-            io::Error::new(io::ErrorKind::InvalidData, error)
-        }
-    };
-    let cert_chain = CertificateDer::pem_file_iter(cert_chain_file.as_ref())
-        .map_err(|e| cast_pem_error(e, cert_chain_file.as_ref()))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| cast_pem_error(e, cert_chain_file.as_ref()))?;
-    let key_der = PrivateKeyDer::from_pem_file(key_file.as_ref())
-        .map_err(|e| cast_pem_error(e, key_file.as_ref()))?;
-    Ok((cert_chain, key_der))
+pub struct Certificate(Vec<CertificateDer<'static>>);
+
+impl From<Vec<CertificateDer<'static>>> for Certificate {
+    fn from(cert: Vec<CertificateDer<'static>>) -> Self {
+        Self(cert)
+    }
+}
+
+pub trait ToCertificate {
+    fn to_certificate(self) -> Vec<CertificateDer<'static>>;
+}
+
+impl ToCertificate for Certificate {
+    fn to_certificate(self) -> Vec<CertificateDer<'static>> {
+        self.0
+    }
+}
+
+impl<P: AsRef<Path>> ToCertificate for P {
+    fn to_certificate(self) -> Vec<CertificateDer<'static>> {
+        CertificateDer::pem_file_iter(self.as_ref())
+            .expect("failed to open cert file")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("failed to parse cert file")
+    }
+}
+
+pub struct PrivateKey(PrivateKeyDer<'static>);
+
+impl From<PrivateKeyDer<'static>> for PrivateKey {
+    fn from(key: PrivateKeyDer<'static>) -> Self {
+        Self(key)
+    }
+}
+
+pub trait ToPrivateKey {
+    fn to_private_key(self) -> PrivateKeyDer<'static>;
+}
+
+impl ToPrivateKey for PrivateKey {
+    fn to_private_key(self) -> PrivateKeyDer<'static> {
+        self.0
+    }
+}
+
+impl<P: AsRef<Path>> ToPrivateKey for P {
+    fn to_private_key(self) -> PrivateKeyDer<'static> {
+        PrivateKeyDer::from_pem_file(self.as_ref()).expect("failed to parse private key file")
+    }
 }
 
 /// Unbound multi-producer multi-consumer (mpmc) channel.
