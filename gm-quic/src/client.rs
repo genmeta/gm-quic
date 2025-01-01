@@ -2,6 +2,7 @@ use std::{
     io::{self},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
     sync::Arc,
+    time::Duration,
 };
 
 use qbase::{
@@ -29,9 +30,13 @@ pub struct QuicClient {
     bind_addresseses: Vec<SocketAddr>,
     reuse_udp_sockets: bool,
     _reuse_connection: bool, // TODO
+    // TODO: 好像得创建2个quic连接，一个用ipv4，一个用ipv6
+    //       然后看谁先收到服务器的响应比较好
     _enable_happy_eyepballs: bool,
     _prefer_versions: Vec<u32>,
+    _defer_idle_timeout: Duration,
     parameters: ClientParameters,
+    // TODO: 要改成一个加载上次连接的parameters的函数，根据server name
     remembered: Option<CommonParameters>,
     tls_config: Arc<TlsClientConfig>,
     streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
@@ -66,6 +71,7 @@ impl QuicClient {
             reuse_connection: true,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
+            defer_idle_timeout: Duration::ZERO,
             parameters: ClientParameters::default(),
             tls_config: TlsClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
@@ -83,6 +89,7 @@ impl QuicClient {
             reuse_connection: true,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
+            defer_idle_timeout: Duration::ZERO,
             parameters: ClientParameters::default(),
             tls_config: TlsClientConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
@@ -102,6 +109,7 @@ impl QuicClient {
             reuse_connection: true,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
+            defer_idle_timeout: Duration::ZERO,
             parameters: ClientParameters::default(),
             tls_config,
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
@@ -250,6 +258,7 @@ pub struct QuicClientBuilder<T> {
     reuse_connection: bool,
     enable_happy_eyepballs: bool,
     prefer_versions: Vec<u32>,
+    defer_idle_timeout: Duration,
     parameters: ClientParameters,
     tls_config: T,
     streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
@@ -302,6 +311,20 @@ impl<T> QuicClientBuilder<T> {
     pub fn prefer_versions(mut self, versions: impl IntoIterator<Item = u32>) -> Self {
         self.prefer_versions.clear();
         self.prefer_versions.extend(versions);
+        self
+    }
+
+    /// Provide an option to defer an idle timeout.
+    ///
+    /// This facility could be used when the application wishes to avoid losing
+    /// state that has been associated with an open connection but does not expect
+    /// to exchange application data for some time.
+    ///
+    /// See [Deferring Idle Timeout](https://datatracker.ietf.org/doc/html/rfc9000#name-deferring-idle-timeout)
+    /// of [RFC 9000](https://datatracker.ietf.org/doc/html/rfc9000)
+    /// for more information.
+    pub fn keep_alive(mut self, duration: Duration) -> Self {
+        self.defer_idle_timeout = duration;
         self
     }
 
@@ -361,6 +384,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self.tls_config.with_root_certificates(root_store),
             streams_controller: self.streams_controller,
@@ -381,6 +405,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self.tls_config.with_webpki_verifier(verifier),
             streams_controller: self.streams_controller,
@@ -405,6 +430,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
@@ -423,6 +449,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self.tls_config.with_no_client_auth(),
             streams_controller: self.streams_controller,
@@ -441,6 +468,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self.tls_config.with_client_cert_resolver(cert_resolver),
             streams_controller: self.streams_controller,
@@ -484,6 +512,7 @@ impl QuicClientBuilder<TlsClientConfig> {
             _reuse_connection: self.reuse_connection,
             _enable_happy_eyepballs: self.enable_happy_eyepballs,
             _prefer_versions: self.prefer_versions,
+            _defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             // TODO: 要能加载上次连接的parameters
             remembered: None,
