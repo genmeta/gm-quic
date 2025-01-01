@@ -14,12 +14,15 @@ use qbase::{
 };
 use qconnection::{conn::ArcConnection, path::Pathway, router::Router, usc::ArcUsc};
 use rustls::{
-    pki_types::{CertificateDer, PrivateKeyDer},
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };
 
-use crate::{get_or_create_usc, util, ConnKey, QuicConnection, CONNECTIONS};
+use crate::{
+    get_or_create_usc,
+    util::{self, ToCertificate, ToPrivateKey},
+    ConnKey, QuicConnection, CONNECTIONS,
+};
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
 type QuicListner = Arc<util::Channel<(Arc<QuicConnection>, Pathway)>>;
@@ -396,8 +399,8 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
     /// Read [`TlsServerConfigBuilder::with_single_cert`] for more.
     pub fn with_single_cert(
         self,
-        cert_chain: Vec<CertificateDer<'static>>,
-        key_der: PrivateKeyDer<'static>,
+        cert_chain: impl ToCertificate,
+        key_der: impl ToPrivateKey,
     ) -> QuicServerBuilder<TlsServerConfig> {
         QuicServerBuilder {
             passive_listening: self.passive_listening,
@@ -406,24 +409,11 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
             parameters: self.parameters,
             tls_config: self
                 .tls_config
-                .with_single_cert(cert_chain, key_der)
+                .with_single_cert(cert_chain.to_certificate(), key_der.to_private_key())
                 .expect("The private key was wrong encoded or failed validation"),
             streams_controller: self.streams_controller,
             token_provider: self.token_provider,
         }
-    }
-
-    /// Add a host with a certificate chain and a private key from cert files.
-    ///
-    /// This is a useful wapper of [`QuicServerBuilder::with_single_cert_files`], we do the *pem* file decoding and error
-    /// handling for you.
-    pub fn with_single_cert_files(
-        self,
-        cert_chain_file: impl AsRef<std::path::Path>,
-        key_file: impl AsRef<std::path::Path>,
-    ) -> io::Result<QuicServerBuilder<TlsServerConfig>> {
-        let (cert_chain, key_der) = util::parse_cert_files(cert_chain_file, key_file)?;
-        Ok(self.with_single_cert(cert_chain, key_der))
     }
 
     /// Sets a single certificate chain, matching private key and optional OCSP
@@ -433,8 +423,8 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
     /// Read [`TlsServerConfigBuilder::with_single_cert_with_ocsp`] for more.
     pub fn with_single_cert_with_ocsp(
         self,
-        cert_chain: Vec<CertificateDer<'static>>,
-        key_der: PrivateKeyDer<'static>,
+        cert_chain: impl ToCertificate,
+        key_der: impl ToPrivateKey,
         ocsp: Vec<u8>,
     ) -> QuicServerBuilder<TlsServerConfig> {
         QuicServerBuilder {
@@ -444,36 +434,15 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
             parameters: self.parameters,
             tls_config: self
                 .tls_config
-                .with_single_cert_with_ocsp(cert_chain, key_der, ocsp)
+                .with_single_cert_with_ocsp(
+                    cert_chain.to_certificate(),
+                    key_der.to_private_key(),
+                    ocsp,
+                )
                 .expect("The private key was wrong encoded or failed validation"),
             streams_controller: self.streams_controller,
             token_provider: self.token_provider,
         }
-    }
-
-    /// Add a host with a certificate chain and a private key from cert files.
-    ///
-    /// This is a useful wapper of [`QuicServerBuilder::with_single_cert_files_with_ocsp`], we do the *pem* file decoding
-    /// and error handling for you.
-    pub fn with_single_cert_files_with_ocsp(
-        self,
-        cert_chain_file: impl AsRef<std::path::Path>,
-        key_file: impl AsRef<std::path::Path>,
-        ocsp: Vec<u8>,
-    ) -> io::Result<QuicServerBuilder<TlsServerConfig>> {
-        let (cert_chain, key_der) = util::parse_cert_files(cert_chain_file, key_file)?;
-        Ok(QuicServerBuilder {
-            passive_listening: self.passive_listening,
-            supported_versions: self.supported_versions,
-            load_balance: self.load_balance,
-            parameters: self.parameters,
-            tls_config: self
-                .tls_config
-                .with_single_cert_with_ocsp(cert_chain, key_der, ocsp)
-                .expect("The private key was wrong encoded or failed validation"),
-            streams_controller: self.streams_controller,
-            token_provider: self.token_provider,
-        })
     }
 
     /// Enable TLS SNI (Server Name Indication) extensions.
@@ -504,39 +473,25 @@ impl QuicServerSniBuilder<TlsServerConfig> {
     pub fn add_host(
         self,
         server_name: impl Into<String>,
-        cert_chain: Vec<CertificateDer<'static>>,
-        key_der: PrivateKeyDer<'static>,
+        cert_chain: impl ToCertificate,
+        key_der: impl ToPrivateKey,
     ) -> Self {
         let private_key = self
             .tls_config
             .crypto_provider()
             .key_provider
-            .load_private_key(key_der)
+            .load_private_key(key_der.to_private_key())
             .unwrap();
 
         let server_name = server_name.into();
         self.hosts.insert(
             server_name,
             Host {
-                cert_chain,
+                cert_chain: cert_chain.to_certificate(),
                 private_key,
             },
         );
         self
-    }
-
-    /// Add a host with a certificate chain and a private key decoded from cert files.
-    ///
-    /// This is a useful wapper of [`QuicServerSniBuilder::add_host`], we do the *pem* file decoding and error handling
-    /// for you.
-    pub fn add_host_with_cert_files(
-        self,
-        server_name: impl Into<String>,
-        cert_chain_file: impl AsRef<std::path::Path>,
-        key_file: impl AsRef<std::path::Path>,
-    ) -> io::Result<Self> {
-        let (cert_chain, key_der) = util::parse_cert_files(cert_chain_file, key_file)?;
-        Ok(self.add_host(server_name, cert_chain, key_der))
     }
 }
 

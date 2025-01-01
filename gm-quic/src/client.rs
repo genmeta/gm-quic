@@ -1,7 +1,6 @@
 use std::{
     io::{self},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
-    path::Path,
     sync::Arc,
 };
 
@@ -14,11 +13,14 @@ use qbase::{
 use qconnection::{conn::ArcConnection, path::Pathway};
 use rustls::{
     client::{ResolvesClientCert, WantsClientCert},
-    pki_types::{CertificateDer, PrivateKeyDer},
     ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
 };
 
-use crate::{create_new_usc, get_or_create_usc, util, ConnKey, QuicConnection, CONNECTIONS};
+use crate::{
+    create_new_usc, get_or_create_usc,
+    util::{ToCertificate, ToPrivateKey},
+    ConnKey, QuicConnection, CONNECTIONS,
+};
 
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 
@@ -394,8 +396,8 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
     /// Read [TlsClientConfigBuilder::with_single_cert] for more information.
     pub fn with_cert(
         self,
-        cert_chain: Vec<CertificateDer<'static>>,
-        key_der: PrivateKeyDer<'static>,
+        cert_chain: impl ToCertificate,
+        key_der: impl ToPrivateKey,
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_addresses: self.bind_addresses,
@@ -406,25 +408,11 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
             parameters: self.parameters,
             tls_config: self
                 .tls_config
-                .with_client_auth_cert(cert_chain, key_der)
+                .with_client_auth_cert(cert_chain.to_certificate(), key_der.to_private_key())
                 .expect("The private key was wrong encoded or failed validation"),
             streams_controller: self.streams_controller,
             token_sink: self.token_sink,
         }
-    }
-
-    /// Sets a single certificate chain and matching private key for use
-    /// in client authentication.
-    ///
-    /// This is a useful wapper of [`QuicClientBuilder::with_cert`], we do the *pem* file decoding and error handling
-    /// for you.
-    pub fn with_cert_files(
-        self,
-        cert_chain_file: impl AsRef<Path>,
-        key_file: impl AsRef<Path>,
-    ) -> io::Result<QuicClientBuilder<TlsClientConfig>> {
-        let (cert_chain, key_der) = util::parse_cert_files(cert_chain_file, key_file)?;
-        Ok(self.with_cert(cert_chain, key_der))
     }
 
     /// Do not support client auth.
