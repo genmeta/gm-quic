@@ -22,7 +22,6 @@ use qrecovery::{
     journal::{ArcSentJournal, Journal},
     reliable::GuaranteedFrame,
 };
-use tokio::sync::Notify;
 
 use crate::{
     events::{EmitEvent, Event},
@@ -46,19 +45,22 @@ pub trait RecvPacket {
     }
 }
 
-async fn any<F, T>(fut: F, notify: &Notify) -> Option<T>
-where
-    F: Future<Output = Option<T>>,
-{
-    tokio::select! {
-        _ = notify.notified() => None,
-        v = fut => v,
+async fn try_join2<T1, T2>(
+    f1: impl Future<Output = Option<T1>> + Unpin,
+    f2: impl Future<Output = Option<T2>> + Unpin,
+) -> Option<(T1, T2)> {
+    use futures::future::*;
+    match select(f1, f2).await {
+        Either::Left((None, ..)) => None,
+        Either::Right((None, ..)) => None,
+        Either::Left((Some(t1), f2)) => Some((t1, f2.await?)),
+        Either::Right((Some(t2), f1)) => Some((f1.await?, t2)),
     }
 }
 
 fn pipe<F: Send + 'static>(
     mut source: UnboundedReceiver<F>,
-    destination: impl ReceiveFrame<F, Output = ()> + Send + 'static,
+    destination: impl ReceiveFrame<F> + Send + 'static,
     broker: impl EmitEvent + Send + 'static,
 ) {
     tokio::spawn(async move {
