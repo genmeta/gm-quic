@@ -1,29 +1,33 @@
-use core::net;
-use std::{convert::Infallible, io, net::SocketAddr, sync::Arc};
+use core::net::SocketAddr;
+use std::{convert::Infallible, io, sync::Arc};
 
 use dashmap::DashMap;
+use futures::StreamExt;
 use qbase::{
     cid::{ConnectionId, GenUniqueCid},
+    error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
-    packet::{self, header::GetDcid, Packet},
+    packet::{self, header::GetDcid, Packet, PacketReader},
 };
-use tokio::task;
+use signpost::Signpost;
+use tokio::task::JoinHandle;
 
-use super::{interface, path};
-use crate::util::bound_queue;
-
+use crate::{
+    interface::{QuicInterface, SendCapability},
+    path::{Endpoint, Pathway},
+    util::bound_queue::{BoundQueue, Receiver},
+};
 mod conn_iface;
 mod signpost;
 pub use conn_iface::ConnInterface;
-pub use signpost::Signpost;
 
-pub type QuicListener = Arc<dyn Fn((Arc<QuicProto>, path::Pathway, Packet)) + Send + Sync>;
+pub type QuicListener = Arc<dyn Fn((Arc<QuicProto>, Pathway, Packet)) + Send + Sync>;
 
 #[doc(alias = "RouterInterface")]
 #[derive(Default)]
 pub struct QuicProto {
-    interfaces: DashMap<SocketAddr, Arc<dyn interface::QuicInterface>>,
-    entries: DashMap<Signpost, bound_queue::BoundQueue<(path::Pathway, Packet)>>,
+    interfaces: DashMap<SocketAddr, Arc<dyn QuicInterface>>,
+    entries: DashMap<Signpost, BoundQueue<(Pathway, Packet)>>,
     listener: Option<QuicListener>,
 }
 
@@ -43,8 +47,8 @@ impl QuicProto {
     pub fn add_interface(
         self: &Arc<Self>,
         local: SocketAddr,
-        qiface: Arc<dyn interface::QuicInterface>,
-    ) -> task::JoinHandle<io::Result<Infallible>> {
+        qiface: Arc<dyn QuicInterface>,
+    ) -> JoinHandle<io::Result<Infallible>> {
         struct Guard {
             addr: SocketAddr,
             iface: Arc<QuicProto>,
@@ -69,7 +73,7 @@ impl QuicProto {
                 let (datagram, way) = core::future::poll_fn(|cx| qiface.poll_recv(cx)).await?;
                 let datagram_size = datagram.len();
                 // todo: parse packets with any length of dcid
-                rcvd_pkts.extend(qbase::packet::PacketReader::new(datagram, 8).flatten());
+                rcvd_pkts.extend(PacketReader::new(datagram, 8).flatten());
 
                 // rfc9000 14.1
                 // A server MUST discard an Initial packet that is carried in a UDP datagram with a payload that is smaller than
@@ -77,9 +81,11 @@ impl QuicProto {
                 // connection by sending a CONNECTION_CLOSE frame with an error code of PROTOCOL_VIOLATION; see
                 // Section 10.2.3.
                 let is_initial_packet = |pkt: &Packet| matches!(pkt, Packet::Data(packet) if matches!(packet.header, packet::DataHeader::Long(packet::long::DataHeader::Initial(..))));
-                let contain_initial_packet = rcvd_pkts.iter().any(is_initial_packet);
 
-                for pkt in rcvd_pkts.drain(..) {
+                for pkt in rcvd_pkts
+                    .drain(..)
+                    .filter(|pkt| !(is_initial_packet(pkt) && datagram_size < 1200))
+                {
                     let dcid = match &pkt {
                         Packet::VN(vn) => vn.get_dcid(),
                         Packet::Retry(retry) => retry.get_dcid(),
@@ -88,30 +94,24 @@ impl QuicProto {
                     let signpost = if dcid.len() != 0 {
                         Signpost::from(*dcid)
                     } else {
-                        use path::Endpoint::*;
+                        use Endpoint::*;
                         let (Direct { addr } | Relay { agent: addr, .. }) = way.local;
                         Signpost::from(addr)
                     };
 
                     if let Some(queue) = this.entries.get(&signpost) {
-                        queue.send((way, pkt)).await;
+                        _ = queue.send((way, pkt)).await;
                         continue;
                     }
                     if let Some(listener) = this.listener.as_ref() {
-                        if contain_initial_packet && datagram_size < 1200 {
-                            continue;
-                        }
-                        _ = (listener)((this.clone(), way, pkt));
+                        (listener)((this.clone(), way, pkt));
                     }
                 }
             }
         })
     }
 
-    pub(crate) fn send_capability(
-        &self,
-        on: path::Pathway,
-    ) -> io::Result<interface::SendCapability> {
+    pub(crate) fn send_capability(&self, on: Pathway) -> io::Result<SendCapability> {
         self.interfaces
             .get(&on.src())
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "no interface"))?
@@ -122,8 +122,8 @@ impl QuicProto {
     pub(crate) async fn send_packets(
         &self,
         mut pkts: &[io::IoSlice<'_>],
-        way: path::Pathway,
-        dst: net::SocketAddr,
+        way: Pathway,
+        dst: SocketAddr,
     ) -> io::Result<()> {
         let qiface = self
             .interfaces
@@ -137,14 +137,11 @@ impl QuicProto {
         Ok(())
     }
 
-    pub(crate) fn register(
-        &self,
-        signpost: Signpost,
-    ) -> bound_queue::Receiver<(path::Pathway, Packet)> {
+    pub(crate) fn register(&self, signpost: Signpost) -> Receiver<(Pathway, Packet)> {
         // size?
         self.entries
             .entry(signpost)
-            .or_insert_with(|| bound_queue::BoundQueue::new(16))
+            .or_insert_with(|| BoundQueue::new(16))
             .receiver()
     }
 
@@ -180,7 +177,7 @@ impl GenUniqueCid for QuicProto {
                     return false;
                 }
 
-                entry.insert(bound_queue::BoundQueue::new(16));
+                entry.insert(BoundQueue::new(16));
                 true
             })
             .unwrap()
@@ -195,13 +192,12 @@ pub struct RouterRegistry<ISSUED> {
 }
 
 impl<ISSUED> RouterRegistry<ISSUED> {
-    fn launch_receiving_pipeline(&self, signpost: signpost::Signpost) {
-        use futures::StreamExt;
+    fn launch_receiving_pipeline(&self, signpost: Signpost) {
         let mut pkts = self.router_iface.register(signpost);
         let conn_iface = self.conn_iface.clone();
         tokio::spawn(async move {
             while let Some((way, pkt)) = pkts.next().await {
-                conn_iface.deliver(way, pkt);
+                conn_iface.deliver(way, pkt).await;
             }
         });
     }
@@ -233,12 +229,9 @@ where
 {
     type Output = ();
 
-    fn recv_frame(
-        &self,
-        frame: &RetireConnectionIdFrame,
-    ) -> Result<Self::Output, qbase::error::Error> {
+    fn recv_frame(&self, frame: &RetireConnectionIdFrame) -> Result<Self::Output, Error> {
         if let Some(cid) = self.local_cids.recv_frame(frame)? {
-            self.router_iface.unregister(&signpost::Signpost::from(cid));
+            self.router_iface.unregister(&Signpost::from(cid));
         }
         Ok(())
     }
