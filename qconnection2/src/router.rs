@@ -1,13 +1,13 @@
 use core::net;
 use std::{convert::Infallible, io, sync::Arc};
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use qbase::{
     cid, frame,
     packet::{self, header::GetDcid, Packet},
     util::ArcAsyncDeque,
 };
-use tokio::task;
+use tokio::{sync::mpsc, task};
 
 use super::{interface, path, util::subscribe};
 
@@ -26,7 +26,8 @@ pub type QuicListener = Box<
 #[derive(Default)]
 pub struct QuicProto {
     interfaces: DashMap<net::SocketAddr, Arc<dyn interface::QuicInteraface>>,
-    entries: DashMap<Signpost, ArcAsyncDeque<(path::Pathway, Packet)>>,
+    signposts: DashSet<Signpost>,
+    entries: DashMap<Signpost, mpsc::Sender<(path::Pathway, Packet)>>,
     listener: Option<QuicListener>,
 }
 
@@ -37,6 +38,7 @@ impl QuicProto {
 
     pub fn new_with_listener(listener: QuicListener) -> Self {
         Self {
+            signposts: DashSet::new(),
             interfaces: DashMap::new(),
             entries: DashMap::new(),
             listener: Some(listener),

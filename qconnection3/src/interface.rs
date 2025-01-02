@@ -18,7 +18,7 @@ pub struct SendCapability {
     pub segments: u16,
 }
 
-pub trait QuicInterface {
+pub trait QuicInterface: Send + Sync {
     fn send_capability(&self, on: path::Pathway) -> io::Result<SendCapability>;
 
     fn poll_send(
