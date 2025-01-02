@@ -1,4 +1,3 @@
-use futures::channel::mpsc;
 use path::Pathway;
 use qbase::{flow, packet::DataPacket};
 use qrecovery::{
@@ -15,8 +14,9 @@ pub mod router;
 pub mod space;
 pub mod tls;
 pub mod tx;
+pub mod util;
 
-pub type RcvdPackets = mpsc::UnboundedReceiver<(DataPacket, Pathway)>;
+pub type RcvdPackets = tokio::sync::mpsc::UnboundedReceiver<(DataPacket, Pathway)>;
 
 pub type FlowController = flow::FlowController<ArcReliableFrameDeque>;
 pub type Credit<'a> = flow::Credit<'a, ArcReliableFrameDeque>;
