@@ -1,31 +1,40 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    ops::Deref,
+    sync::{Arc, Mutex},
+};
 
 use bytes::BufMut;
-use futures::channel::mpsc;
+use futures::{channel::mpsc, Stream, StreamExt};
 use qbase::{
     frame::{Frame, FrameReader},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
-        header::{long::io::LongHeaderBuilder, GetScid},
+        header::{
+            long::{io::LongHeaderBuilder, InitialHeader},
+            GetScid, GetType,
+        },
         keys::ArcKeys,
-        long, AssembledPacket, DataHeader, PacketWriter,
+        AssembledPacket, PacketWriter,
     },
-    param::ArcParameters,
+    token::TokenRegistry,
     Epoch,
 };
-use qcongestion::TrackPackets;
+use qcongestion::{CongestionControl, TrackPackets};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::InitialJournal,
 };
-use tokio::{sync::Notify, task::JoinHandle};
+use tokio::task::JoinHandle;
 
-use super::{any, pipe, AckHandshake, AckInitial};
+use super::{pipe, try_join2, AckInitial};
 use crate::{
     events::{EmitEvent, Event},
+    path::{Path, Paths, Pathway},
     tx::{PacketMemory, Transaction},
-    RcvdPackets,
+    Components,
 };
+
+pub type HandshakePacket = (InitialHeader, bytes::BytesMut, usize);
 
 #[derive(Clone)]
 pub struct InitialSpace {
@@ -49,17 +58,13 @@ impl InitialSpace {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
-        rcvd_packets: RcvdPackets,
-        pathes: &ArcPaths,
-        remote_cids: &ArcRemoteCids,
-        notify: &Arc<Notify>,
+        rcvd_packets: impl Stream<Item = (HandshakePacket, Pathway)> + Unpin + Send + 'static,
+        pathes: &Arc<Paths>,
+        components: &Components,
         broker: impl EmitEvent + Clone + Send + 'static,
-        parameters: ArcParameters,
-        validate: impl Fn(&[u8], ArcPath) + Send + 'static,
-    ) -> JoinHandle<RcvdPackets> {
+    ) -> JoinHandle<()> {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
 
@@ -84,51 +89,59 @@ impl InitialSpace {
         pipe(
             rcvd_ack_frames,
             AckInitial::new(&self.journal, &self.crypto_stream),
-            broker,
+            broker.clone(),
         );
 
         self.parse_rcvd_packets_and_dispatch_frames(
             rcvd_packets,
             pathes,
-            remote_cids,
             dispatch_frame,
-            notify,
+            components,
             broker,
-            parameters,
-            validate,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn parse_rcvd_packets_and_dispatch_frames(
         &self,
-        mut rcvd_packets: RcvdPackets,
-        pathes: &ArcPaths,
-        remote_cids: &ArcRemoteCids,
+        mut rcvd_packets: impl Stream<Item = (HandshakePacket, Pathway)> + Unpin + Send + 'static,
+        pathes: &Arc<Paths>,
         dispatch_frame: impl Fn(Frame, &Path) + Send + 'static,
-        notify: &Arc<Notify>,
+        components: &Components,
         broker: impl EmitEvent + Clone + Send + 'static,
-        parameters: ArcParameters,
-        validate: impl Fn(&[u8], ArcPath) + Send + 'static,
-    ) -> JoinHandle<RcvdPackets> {
+    ) -> JoinHandle<()> {
         let pathes = pathes.clone();
+        let parameters = components.parameters.clone();
+
+        let validate = {
+            let tls_session = components.tls_session.clone();
+            let token_registry = components.token_registry.clone();
+            move |initial_token: &[u8], path: &Path| {
+                if let TokenRegistry::Server(provider) = token_registry.deref() {
+                    if let Some(server_name) = tls_session.server_name() {
+                        if provider.verify_token(server_name, initial_token) {
+                            path.grant_anti_amplifier();
+                        }
+                    }
+                }
+            }
+        };
         tokio::spawn({
             let rcvd_journal = self.journal.of_rcvd_packets();
             let keys = self.keys.clone();
-            let remote_cids = remote_cids.clone();
-            let notify = notify.clone();
+            let remote_cids = components.cid_registry.remote.clone();
 
             async move {
-                while let Some((mut packet, pathway, usc)) = any(rcvd_packets.next(), &notify).await
+                while let Some((((header, mut bytes, offset), pathway), keys)) =
+                    try_join2(rcvd_packets.next(), keys.get_remote_keys()).await
                 {
-                    let pty = packet.header.get_type();
-                    let Some(keys) = any(keys.get_remote_keys(), &notify).await else {
-                        break;
+                    let Some(path) = pathes.get(&pathway) else {
+                        continue;
                     };
                     let undecoded_pn = match remove_protection_of_long_packet(
                         keys.remote.header.as_ref(),
-                        packet.bytes.as_mut(),
-                        packet.offset,
+                        bytes.as_mut(),
+                        offset,
                     ) {
                         Ok(Some(pn)) => pn,
                         Ok(None) => continue,
@@ -143,30 +156,26 @@ impl InitialSpace {
                         // TooOld/TooLarge/HasRcvd
                         Err(_e) => continue,
                     };
-                    let body_offset = packet.offset + undecoded_pn.size();
+                    let body_offset = offset + undecoded_pn.size();
                     let decrypted = decrypt_packet(
                         keys.remote.packet.as_ref(),
                         pn,
-                        packet.bytes.as_mut(),
+                        bytes.as_mut(),
                         body_offset,
                     );
                     let Ok(pkt_len) = decrypted else { continue };
 
-                    let path = pathes.get_or_create(pathway, usc);
-                    path.on_rcvd(packet.bytes.len());
+                    path.on_rcvd(bytes.len());
 
-                    let _header = packet.bytes.split_to(body_offset);
-                    packet.bytes.truncate(pkt_len);
+                    let _header = bytes.split_to(body_offset);
+                    bytes.truncate(pkt_len);
 
-                    let remote_scid = match packet.header {
-                        DataHeader::Long(ref long_header) => long_header.get_scid(),
-                        _ => unreachable!(),
-                    };
+                    let remote_scid = header.get_scid();
                     // When receiving the initial packet, change the DCID of the
                     // path to the SCID carried in the received packet.
                     remote_cids.revise_initial_dcid(*remote_scid);
 
-                    match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
+                    match FrameReader::new(bytes.freeze(), header.get_type()).try_fold(
                         false,
                         |is_ack_packet, frame| {
                             let (frame, is_ack_eliciting) = frame?;
@@ -188,16 +197,13 @@ impl InitialSpace {
                     // QUIC uses a token in the Initial packet to provide address validation prior to completing the handshake.
                     // This token is delivered to the client during connection establishment with a Retry packet (see Section 8.1.2)
                     // or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
-                    if let DataHeader::Long(long::DataHeader::Initial(initial)) = &packet.header {
-                        // only the first cid will be set
-                        parameters.initial_scid_from_peer_need_equal(initial.scid);
+                    // only the first cid will be set
+                    parameters.initial_scid_from_peer_need_equal(*header.get_scid());
 
-                        if !initial.token.is_empty() {
-                            validate(&initial.token, path);
-                        }
+                    if !header.token.is_empty() {
+                        validate(&header.token, &path);
                     }
                 }
-                rcvd_packets
             }
         })
     }

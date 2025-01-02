@@ -36,7 +36,7 @@ impl<T> BoundQueue<T> {
             let mut queue = inner.queue.lock().unwrap();
             if queue.capacity() == 0 {
                 let item = item.take().unwrap();
-                return core::task::Poll::Ready(Err(item));
+                core::task::Poll::Ready(Err(item))
             } else if queue.len() == queue.capacity() {
                 inner.write_waker.register(cx.waker());
                 core::task::Poll::Pending
@@ -51,7 +51,7 @@ impl<T> BoundQueue<T> {
     }
 
     pub fn close(&self) {
-        let inner = self.inner.write().unwrap();
+        let inner = self.inner.read().unwrap();
         // queue.cap() == 0 indicates that the queue is closed
         core::mem::take(&mut *inner.queue.lock().unwrap());
         inner.read_waker.wake();

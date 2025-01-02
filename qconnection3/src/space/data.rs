@@ -1,21 +1,24 @@
 use std::sync::Arc;
 
 use bytes::BufMut;
-use futures::{channel::mpsc, StreamExt};
+use futures::{channel::mpsc, Stream, StreamExt};
 use qbase::{
     cid::ConnectionId,
     error::Error,
     frame::{
         io::WriteFrame, ConnectionCloseFrame, Frame, FrameReader, PathChallengeFrame,
-        PathResponseFrame, SendFrame,
+        PathResponseFrame, ReceiveFrame, SendFrame,
     },
     packet::{
+        self,
         decrypt::{
             decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
         },
         encrypt::{encode_short_first_byte, encrypt_packet, protect_header},
         header::{
-            io::WriteHeader, long::io::LongHeaderBuilder, EncodeHeader, GetType, OneRttHeader,
+            io::WriteHeader,
+            long::{io::LongHeaderBuilder, ZeroRttHeader},
+            EncodeHeader, GetType, OneRttHeader,
         },
         keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys, HeaderProtectionKeys},
         number::WritePacketNumber,
@@ -25,25 +28,24 @@ use qbase::{
     },
     param::CommonParameters,
     sid::{ControlConcurrency, Role},
-    token::ArcTokenRegistry,
     Epoch,
 };
-use qcongestion::{TrackPackets, MSS};
+use qcongestion::{CongestionControl, TrackPackets, MSS};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcRcvdJournal, DataJournal},
     reliable::{ArcReliableFrameDeque, GuaranteedFrame},
 };
 use qunreliable::DatagramFlow;
-use tokio::{sync::Notify, task::JoinHandle};
+use tokio::task::JoinHandle;
 
+use super::try_join2;
 use crate::{
-    events::{EmitEvent, Event},
-    path::SendBuffer,
-    space::{any, pipe, AckData, FlowControlledDataStreams},
-    tx::{PacketMemory, Transaction},
-    DataStreams, FlowController, Handshake, RcvdPackets,
+    events::{EmitEvent, Event}, path::{Path, Paths, Pathway, SendBuffer}, space::{pipe, AckData, FlowControlledDataStreams}, tx::{PacketMemory, Transaction}, Components, DataStreams
 };
+
+pub type ZeroRttPacket = (ZeroRttHeader, bytes::BytesMut, usize);
+pub type OneRttPacket = (OneRttHeader, bytes::BytesMut, usize);
 
 #[derive(Clone)]
 pub struct DataSpace {
@@ -75,19 +77,14 @@ impl DataSpace {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
-        pathes: &ArcPaths,
-        handshake: &Handshake,
-        cid_registry: &CidRegistry,
-        flow_ctrl: &FlowController,
-        notify: &Arc<Notify>,
-        rcvd_0rtt_packets: RcvdPackets,
-        rcvd_1rtt_packets: RcvdPackets,
-        token_registry: ArcTokenRegistry,
+        pathes: &Arc<Paths>,
+        components: &Components,
+        rcvd_0rtt_packets: impl Stream<Item = (ZeroRttPacket, Pathway)> + Send + Unpin + 'static,
+        rcvd_1rtt_packets: impl Stream<Item = (OneRttPacket, Pathway)> + Send + Unpin + 'static,
         broker: impl EmitEvent + Clone + Send + 'static,
-    ) -> (JoinHandle<RcvdPackets>, JoinHandle<RcvdPackets>) {
+    ) -> (JoinHandle<()>, JoinHandle<()>) {
         let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
         // 连接级的
         let (max_data_frames_entry, rcvd_max_data_frames) = mpsc::unbounded();
@@ -103,10 +100,10 @@ impl DataSpace {
         let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded();
 
         let flow_controlled_data_streams =
-            FlowControlledDataStreams::new(self.streams.clone(), flow_ctrl.clone());
+            FlowControlledDataStreams::new(self.streams.clone(), components.flow_ctrl.clone());
         let dispatch_data_frame = {
             let broker = broker.clone();
-            move |frame: Frame, pty: Type, path: &Path| match frame {
+            move |frame: Frame, pty: packet::Type, path: &Path| match frame {
                 Frame::Ack(f) => {
                     path.cc().on_ack(Epoch::Data, &f);
                     _ = ack_frames_entry.unbounded_send(f)
@@ -117,8 +114,8 @@ impl DataSpace {
                 Frame::RetireConnectionId(f) => _ = retire_cid_frames_entry.unbounded_send(f),
                 Frame::HandshakeDone(f) => _ = handshake_done_frames_entry.unbounded_send(f),
                 Frame::DataBlocked(f) => _ = data_blocked_frames_entry.unbounded_send(f),
-                Frame::Challenge(f) => path.recv_challenge(f),
-                Frame::Response(f) => path.recv_response(f),
+                Frame::Challenge(f) => _ = path.recv_frame(&f),
+                Frame::Response(f) => _ = path.recv_frame(&f),
                 Frame::StreamCtl(f) => _ = stream_ctrl_frames_entry.unbounded_send(f),
                 Frame::Stream(f, data) => _ = stream_frames_entry.unbounded_send((f, data)),
                 Frame::Crypto(f, bytes) => _ = crypto_frames_entry.unbounded_send((f, bytes)),
@@ -130,30 +127,29 @@ impl DataSpace {
 
         // Assemble the pipelines of frame processing
         // TODO: pipe rcvd_new_token_frames
-        let local_cids_with_router = Router::revoke(cid_registry.local.clone());
         pipe(
             rcvd_retire_cid_frames,
-            local_cids_with_router,
+            components.cid_registry.local.clone(),
             broker.clone(),
         );
         pipe(
             rcvd_new_cid_frames,
-            cid_registry.remote.clone(),
+            components.cid_registry.remote.clone(),
             broker.clone(),
         );
         pipe(
             rcvd_max_data_frames,
-            flow_ctrl.sender.clone(),
+            components.flow_ctrl.sender.clone(),
             broker.clone(),
         );
         pipe(
             rcvd_data_blocked_frames,
-            flow_ctrl.recver.clone(),
+            components.flow_ctrl.recver.clone(),
             broker.clone(),
         );
         pipe(
             rcvd_handshake_done_frames,
-            handshake.clone(),
+            components.handshake.clone(),
             broker.clone(),
         );
         pipe(
@@ -166,27 +162,33 @@ impl DataSpace {
             flow_controlled_data_streams.clone(),
             broker.clone(),
         );
-        pipe(rcvd_stream_frames, flow_controlled_data_streams, broker);
+        pipe(
+            rcvd_stream_frames,
+            flow_controlled_data_streams,
+            broker.clone(),
+        );
         pipe(rcvd_datagram_frames, self.datagrams.clone(), broker.clone());
         pipe(
             rcvd_ack_frames,
             AckData::new(&self.journal, &self.streams, &self.crypto_stream),
-            broker,
+            broker.clone(),
         );
-        pipe(rcvd_new_token_frames, token_registry, broker.clone());
+        pipe(
+            rcvd_new_token_frames,
+            components.token_registry.clone(),
+            broker.clone(),
+        );
 
         let join_handler0 = self.parse_rcvd_0rtt_packet_and_dispatch_frames(
             rcvd_0rtt_packets,
             pathes.clone(),
             dispatch_data_frame.clone(),
-            notify.clone(),
             broker.clone(),
         );
         let join_handler1 = self.parse_rcvd_1rtt_packet_and_dispatch_frames(
             rcvd_1rtt_packets,
             pathes.clone(),
             dispatch_data_frame,
-            notify.clone(),
             broker.clone(),
         );
         (join_handler0, join_handler1)
@@ -194,25 +196,25 @@ impl DataSpace {
 
     fn parse_rcvd_0rtt_packet_and_dispatch_frames(
         &self,
-        mut rcvd_packets: RcvdPackets,
-        pathes: ArcPaths,
-        dispatch_frame: impl Fn(Frame, Type, &Path) + Send + 'static,
-        notify: Arc<Notify>,
+        mut rcvd_packets: impl Stream<Item = (ZeroRttPacket, Pathway)> + Send + Unpin + 'static,
+        pathes: Arc<Paths>,
+        dispatch_frame: impl Fn(Frame, packet::Type, &Path) + Send + 'static,
         broker: impl EmitEvent + Clone + Send + 'static,
-    ) -> JoinHandle<RcvdPackets> {
+    ) -> JoinHandle<()> {
         tokio::spawn({
             let rcvd_journal = self.journal.of_rcvd_packets();
             let keys = self.zero_rtt_keys.clone();
             async move {
-                while let Some((mut packet, pathway)) = any(rcvd_packets.next(), &notify).await {
-                    let pty = packet.header.get_type();
-                    let Some(keys) = any(keys.get_remote_keys(), &notify).await else {
-                        break;
+                while let Some((((header, mut bytes, offset), pathway), keys)) =
+                    try_join2(rcvd_packets.next(), keys.get_remote_keys()).await
+                {
+                    let Some(path) = pathes.get(&pathway) else {
+                        continue;
                     };
                     let undecoded_pn = match remove_protection_of_long_packet(
                         keys.remote.header.as_ref(),
-                        packet.bytes.as_mut(),
-                        packet.offset,
+                        bytes.as_mut(),
+                        offset,
                     ) {
                         Ok(Some(pn)) => pn,
                         Ok(None) => continue,
@@ -227,26 +229,25 @@ impl DataSpace {
                         // TooOld/TooLarge/HasRcvd
                         Err(_e) => continue,
                     };
-                    let body_offset = packet.offset + undecoded_pn.size();
+                    let body_offset = offset + undecoded_pn.size();
                     let decrypted = decrypt_packet(
                         keys.remote.packet.as_ref(),
                         pn,
-                        packet.bytes.as_mut(),
+                        bytes.as_mut(),
                         body_offset,
                     );
                     let Ok(pkt_len) = decrypted else { continue };
 
-                    let path = pathes.get_or_create(pathway, usc);
-                    path.on_rcvd(packet.bytes.len());
+                    path.on_rcvd(bytes.len());
 
-                    let _header = packet.bytes.split_to(body_offset);
-                    packet.bytes.truncate(pkt_len);
+                    let _header = bytes.split_to(body_offset);
+                    bytes.truncate(pkt_len);
 
-                    match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
+                    match FrameReader::new(bytes.freeze(), header.get_type()).try_fold(
                         false,
                         |is_ack_packet, frame| {
                             let (frame, is_ack_eliciting) = frame?;
-                            dispatch_frame(frame, pty, &path);
+                            dispatch_frame(frame, header.get_type(), &path);
                             Ok(is_ack_packet || is_ack_eliciting)
                         },
                     ) {
@@ -257,32 +258,31 @@ impl DataSpace {
                         Err(e) => broker.emit(Event::Failed(e)),
                     }
                 }
-                rcvd_packets
             }
         })
     }
 
     fn parse_rcvd_1rtt_packet_and_dispatch_frames(
         &self,
-        mut rcvd_packets: RcvdPackets,
-        pathes: ArcPaths,
-        dispatch_frame: impl Fn(Frame, Type, &Path) + Send + 'static,
-        notify: Arc<Notify>,
+        mut rcvd_packets: impl Stream<Item = (OneRttPacket, Pathway)> + Send + Unpin + 'static,
+        pathes: Arc<Paths>,
+        dispatch_frame: impl Fn(Frame, packet::Type, &Path) + Send + 'static,
         broker: impl EmitEvent + Clone + Send + 'static,
-    ) -> JoinHandle<RcvdPackets> {
+    ) -> JoinHandle<()> {
         tokio::spawn({
             let rcvd_journal = self.journal.of_rcvd_packets();
             let keys = self.one_rtt_keys.clone();
             async move {
-                while let Some((mut packet, pathwayc)) = any(rcvd_packets.next(), &notify).await {
-                    let pty = packet.header.get_type();
-                    let Some((hpk, pk)) = any(keys.get_remote_keys(), &notify).await else {
-                        break;
+                while let Some((((header, mut bytes, offset), pathway), (hpk, pk))) =
+                    try_join2(rcvd_packets.next(), keys.get_remote_keys()).await
+                {
+                    let Some(path) = pathes.get(&pathway) else {
+                        continue;
                     };
                     let (undecoded_pn, key_phase) = match remove_protection_of_short_packet(
                         hpk.as_ref(),
-                        packet.bytes.as_mut(),
-                        packet.offset,
+                        bytes.as_mut(),
+                        offset,
                     ) {
                         Ok(Some(pn)) => pn,
                         Ok(None) => continue,
@@ -297,23 +297,21 @@ impl DataSpace {
                         // TooOld/TooLarge/HasRcvd
                         Err(_e) => continue,
                     };
-                    let body_offset = packet.offset + undecoded_pn.size();
+                    let body_offset = offset + undecoded_pn.size();
                     let pk = pk.lock_guard().get_remote(key_phase, pn);
-                    let decrypted =
-                        decrypt_packet(pk.as_ref(), pn, packet.bytes.as_mut(), body_offset);
+                    let decrypted = decrypt_packet(pk.as_ref(), pn, bytes.as_mut(), body_offset);
                     let Ok(pkt_len) = decrypted else { continue };
 
-                    let path = pathes.get_or_create(pathway, usc);
-                    path.on_rcvd(packet.bytes.len());
+                    path.on_rcvd(bytes.len());
 
-                    let _header = packet.bytes.split_to(body_offset);
-                    packet.bytes.truncate(pkt_len);
+                    let _header = bytes.split_to(body_offset);
+                    bytes.truncate(pkt_len);
 
-                    match FrameReader::new(packet.bytes.freeze(), pty).try_fold(
+                    match FrameReader::new(bytes.freeze(), header.get_type()).try_fold(
                         false,
                         |is_ack_packet, frame| {
                             let (frame, is_ack_eliciting) = frame?;
-                            dispatch_frame(frame, pty, &path);
+                            dispatch_frame(frame, header.get_type(), &path);
                             Ok(is_ack_packet || is_ack_eliciting)
                         },
                     ) {
@@ -324,7 +322,6 @@ impl DataSpace {
                         Err(e) => broker.emit(Event::Failed(e)),
                     }
                 }
-                rcvd_packets
             }
         })
     }

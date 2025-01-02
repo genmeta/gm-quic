@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use qbase::cid::{self, ConnectionId};
+use qbase::cid::ConnectionId;
 
 #[derive(Debug, PartialEq, Clone, Copy, Eq, Hash)]
 pub struct Signpost {
@@ -20,7 +20,7 @@ impl From<ConnectionId> for Signpost {
 impl From<SocketAddr> for Signpost {
     fn from(value: SocketAddr) -> Self {
         Self {
-            cid: cid::ConnectionId::default(),
+            cid: ConnectionId::default(),
             peer: Some(value),
         }
     }
