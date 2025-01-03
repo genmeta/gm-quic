@@ -45,9 +45,9 @@ impl Usc {
 impl super::QuicInterface for Usc {
     fn send_capability(&self, _on: path::Pathway) -> io::Result<super::SendCapability> {
         Ok(super::SendCapability {
-            segment_size: qcongestion::MSS as _,
+            max_segment_size: qcongestion::MSS as _,
             reversed_size: 0,
-            segments: self.inner.gso_size(),
+            max_segments: self.inner.gso_size(),
         })
     }
 
@@ -64,7 +64,7 @@ impl super::QuicInterface for Usc {
             dst,
             ttl: 64,
             ecn: None,
-            seg_size: self.send_capability(way)?.segment_size as _,
+            seg_size: self.send_capability(way)?.max_segment_size as _,
             gso: true,
         };
 
