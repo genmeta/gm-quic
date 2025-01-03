@@ -1,11 +1,11 @@
-use std::ops::Deref;
+use std::sync::Arc;
 
 use bytes::{buf::UninitSlice, BufMut, BytesMut};
 use deref_derive::{Deref, DerefMut};
 use encrypt::{encode_long_first_byte, encode_short_first_byte, encrypt_packet, protect_header};
 use enum_dispatch::enum_dispatch;
 use getset::CopyGetters;
-use header::io::WriteHeader;
+use header::{io::WriteHeader, LongHeader};
 
 use crate::{
     cid::ConnectionId,
@@ -163,17 +163,55 @@ pub trait MarshalPathFrame<F> {
     fn dump_path_frame(&mut self, frame: F);
 }
 
-pub struct PacketWriter<'b> {
-    buffer: &'b mut [u8],
+enum Keys {
+    LongHeaderPacket {
+        keys: Arc<rustls::quic::Keys>,
+    },
+    ShortHeaderPacket {
+        hpk: Arc<dyn rustls::quic::HeaderProtectionKey>,
+        pk: Arc<dyn rustls::quic::PacketKey>,
+        key_phase: KeyPhaseBit,
+    },
+}
+
+impl Keys {
+    fn hpk(&self) -> &dyn rustls::quic::HeaderProtectionKey {
+        match self {
+            Self::LongHeaderPacket { keys } => keys.local.header.as_ref(),
+            Self::ShortHeaderPacket { hpk, .. } => hpk.as_ref(),
+        }
+    }
+
+    fn pk(&self) -> &dyn rustls::quic::PacketKey {
+        match self {
+            Self::LongHeaderPacket { keys } => keys.local.packet.as_ref(),
+            Self::ShortHeaderPacket { pk, .. } => pk.as_ref(),
+        }
+    }
+
+    fn key_phase(&self) -> Option<KeyPhaseBit> {
+        match self {
+            Self::LongHeaderPacket { .. } => None,
+            Self::ShortHeaderPacket { key_phase, .. } => Some(*key_phase),
+        }
+    }
+}
+
+#[derive(CopyGetters)]
+pub struct MiddleAssembledPacket {
     hdr_len: usize,
     len_encoding: usize,
     pn: (u64, PacketNumber),
+
     cursor: usize,
     end: usize,
-    tag_len: usize,
+
+    keys: Keys,
+    // indicates whether the packet is long header or short header
 
     // Packets containing only frames with [`Spec::N`] are not ack-eliciting;
     // otherwise, they are ack-eliciting.
+    #[getset(get_copy = "pub")]
     ack_eliciting: bool,
     // A Boolean that indicates whether the packet counts toward bytes in flight.
     // See [Section 2](https://www.rfc-editor.org/rfc/rfc9002#section-2)
@@ -182,22 +220,51 @@ pub struct PacketWriter<'b> {
     //
     // Packets containing only frames with [`Spec::C`] do not
     // count toward bytes in flight for congestion control purposes.
+    #[getset(get_copy = "pub")]
     in_flight: bool,
     // Packets containing only frames with [`Spec::P`] can be used to
     // probe new network paths during connection migration.
     _probe_new_path: bool,
 }
 
+impl MiddleAssembledPacket {
+    pub fn resume(mut self, buffer: &mut [u8]) -> PacketWriter {
+        self.end = buffer.len() - self.keys.pk().tag_len();
+        assert!(self.end > self.cursor);
+        PacketWriter {
+            packet: self,
+            buffer,
+        }
+    }
+
+    pub fn size(&self) -> usize {
+        let payload_len = self.cursor - self.hdr_len - self.len_encoding;
+        let pkt_size = (payload_len + self.keys.pk().tag_len()).min(20);
+        self.hdr_len + self.len_encoding + pkt_size
+    }
+
+    fn is_short_header(&self) -> bool {
+        self.keys.key_phase().is_some()
+    }
+}
+
+#[derive(Deref, DerefMut)]
+pub struct PacketWriter<'b> {
+    #[deref]
+    packet: MiddleAssembledPacket,
+    buffer: &'b mut [u8],
+}
+
 impl<'b> PacketWriter<'b> {
-    pub fn new<H>(
-        header: &H,
+    pub fn new_long<S>(
+        header: &LongHeader<S>,
         buffer: &'b mut [u8],
         pn: (u64, PacketNumber),
-        tag_len: usize,
+        keys: Arc<rustls::quic::Keys>,
     ) -> Option<Self>
     where
-        H: EncodeHeader,
-        for<'a> &'a mut [u8]: WriteHeader<H>,
+        S: EncodeHeader,
+        for<'a> &'a mut [u8]: WriteHeader<LongHeader<S>>,
     {
         let hdr_len = header.size();
         let len_encoding = header.length_encoding();
@@ -210,19 +277,57 @@ impl<'b> PacketWriter<'b> {
         hdr_buf.put_header(header);
         payload_buf.put_packet_number(encoded_pn);
 
-        let end = buffer.len() - tag_len;
-        Some(Self {
-            buffer,
+        let cursor = hdr_len + len_encoding + encoded_pn.size();
+        let keys = Keys::LongHeaderPacket { keys };
+        let end = buffer.len() - keys.pk().tag_len();
+        let packet = MiddleAssembledPacket {
             hdr_len,
             len_encoding,
             pn,
-            cursor: hdr_len + len_encoding + encoded_pn.size(),
+            cursor,
             end,
-            tag_len,
+            keys,
             ack_eliciting: false,
             in_flight: false,
             _probe_new_path: false,
-        })
+        };
+        Some(Self { buffer, packet })
+    }
+
+    pub fn new_short(
+        header: &OneRttHeader,
+        buffer: &'b mut [u8],
+        pn: (u64, PacketNumber),
+        hpk: Arc<dyn rustls::quic::HeaderProtectionKey>,
+        pk: Arc<dyn rustls::quic::PacketKey>,
+        key_phase: KeyPhaseBit,
+    ) -> Option<Self> {
+        let hdr_len = header.size();
+        if buffer.len() < hdr_len + 20 {
+            return None;
+        }
+
+        let mut hdr_buf = &mut buffer[..hdr_len];
+        hdr_buf.put_header(header);
+        let cursor = hdr_len + pn.1.size();
+        let keys = Keys::ShortHeaderPacket { hpk, pk, key_phase };
+        let end = buffer.len() - keys.pk().tag_len();
+        let packet = MiddleAssembledPacket {
+            hdr_len,
+            len_encoding: 0,
+            pn,
+            cursor,
+            end,
+            keys,
+            ack_eliciting: false,
+            in_flight: false,
+            _probe_new_path: false,
+        };
+        Some(Self { buffer, packet })
+    }
+
+    pub fn abandon(self) -> MiddleAssembledPacket {
+        self.packet
     }
 
     pub fn pad(&mut self, cnt: usize) {
@@ -243,78 +348,48 @@ impl<'b> PacketWriter<'b> {
         self.cursor == self.hdr_len + self.len_encoding + self.pn.1.size()
     }
 
-    pub fn encrypt_long_packet(
-        mut self,
-        hpk: &dyn rustls::quic::HeaderProtectionKey,
-        pk: &dyn rustls::quic::PacketKey,
-    ) -> AssembledPacket<'b> {
-        let mut payload_len = self.cursor - self.hdr_len - self.len_encoding;
-        debug_assert!(payload_len > 0);
-        if payload_len + self.tag_len < 20 {
-            let padding_len = 20 - payload_len - self.tag_len;
-            self.pad(padding_len);
-            payload_len += padding_len;
-        }
-
-        let mut len_buf = &mut self.buffer[self.hdr_len..self.hdr_len + self.len_encoding];
-        let (actual_pn, encoded_pn) = self.pn;
-        let pkt_size = self.cursor + self.tag_len;
-        len_buf.encode_varint(
-            &VarInt::try_from(payload_len + self.tag_len).unwrap(),
-            EncodeBytes::Two,
-        );
-        encode_long_first_byte(&mut self.buffer[0], encoded_pn.size());
-        encrypt_packet(
-            pk,
-            actual_pn,
-            &mut self.buffer[..(pkt_size)],
-            (self.hdr_len) + (self.len_encoding) + (encoded_pn.size()),
-        );
-        protect_header(
-            hpk,
-            &mut self.buffer[..pkt_size],
-            self.hdr_len + self.len_encoding,
-            encoded_pn.size(),
-        );
-        AssembledPacket {
-            buffer: self.buffer,
-            pn: actual_pn,
-            size: pkt_size,
-            is_ack_eliciting: self.ack_eliciting,
-            in_flight: self.in_flight,
-        }
-    }
-
-    pub fn encrypt_short_packet(
-        mut self,
-        key_phase: KeyPhaseBit,
-        hpk: &dyn rustls::quic::HeaderProtectionKey,
-        pk: &dyn rustls::quic::PacketKey,
-    ) -> AssembledPacket<'b> {
+    pub fn encrypt_and_protect(&mut self) -> AssembledPacket {
         let payload_len = self.cursor - self.hdr_len - self.len_encoding;
+
+        let tag_len = self.keys.pk().tag_len();
         debug_assert!(payload_len > 0);
-        if payload_len + self.tag_len < 20 {
-            let padding_len = 20 - payload_len - self.tag_len;
+        if payload_len + tag_len < 20 {
+            let padding_len = 20 - payload_len - tag_len;
             self.pad(padding_len);
         }
 
-        let pkt_size = self.cursor + self.tag_len;
         let (actual_pn, encoded_pn) = self.pn;
-        encode_short_first_byte(&mut self.buffer[0], encoded_pn.size(), key_phase);
-        encrypt_packet(
-            pk,
-            actual_pn,
-            &mut self.buffer[..pkt_size],
-            self.hdr_len + encoded_pn.size(),
-        );
-        protect_header(
-            hpk,
-            &mut self.buffer[..pkt_size],
-            self.hdr_len,
-            encoded_pn.size(),
-        );
+        let pn_len = encoded_pn.size();
+        let pkt_size = self.cursor + tag_len;
+
+        if self.is_short_header() {
+            let key_phase = self.keys.key_phase().unwrap();
+            encode_short_first_byte(&mut self.buffer[0], pn_len, key_phase);
+
+            let pk = self.packet.keys.pk();
+            let body_offset = self.hdr_len + pn_len;
+            encrypt_packet(pk, actual_pn, &mut self.buffer[..pkt_size], body_offset);
+
+            let payload_offset = self.hdr_len;
+            let hpk = self.packet.keys.hpk();
+            protect_header(hpk, &mut self.buffer[..pkt_size], payload_offset, pn_len);
+        } else {
+            let packet_len = payload_len + tag_len;
+            let len_buffer_range = self.hdr_len..self.hdr_len + self.len_encoding;
+            let mut len_buf = &mut self.buffer[len_buffer_range];
+            len_buf.encode_varint(&VarInt::try_from(packet_len).unwrap(), EncodeBytes::Two);
+
+            encode_long_first_byte(&mut self.buffer[0], pn_len);
+
+            let pk = self.packet.keys.pk();
+            let payload_offset = self.hdr_len + self.len_encoding;
+            let body_offset = payload_offset + pn_len;
+            encrypt_packet(pk, actual_pn, &mut self.buffer[..pkt_size], body_offset);
+
+            let hpk = self.packet.keys.hpk();
+            protect_header(hpk, &mut self.buffer[..pkt_size], payload_offset, pn_len);
+        }
         AssembledPacket {
-            buffer: self.buffer,
             pn: actual_pn,
             size: pkt_size,
             is_ack_eliciting: self.ack_eliciting,
@@ -324,8 +399,7 @@ impl<'b> PacketWriter<'b> {
 }
 
 #[derive(Debug, CopyGetters)]
-pub struct AssembledPacket<'b> {
-    buffer: &'b mut [u8],
+pub struct AssembledPacket {
     #[getset(get_copy = "pub")]
     pn: u64,
     #[getset(get_copy = "pub")]
@@ -334,14 +408,6 @@ pub struct AssembledPacket<'b> {
     is_ack_eliciting: bool,
     #[getset(get_copy = "pub")]
     in_flight: bool,
-}
-
-impl Deref for AssembledPacket<'_> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.buffer[..self.size]
-    }
 }
 
 impl<F> MarshalFrame<F> for PacketWriter<'_>
@@ -391,7 +457,8 @@ unsafe impl BufMut for PacketWriter<'_> {
     }
 
     fn chunk_mut(&mut self) -> &mut UninitSlice {
-        UninitSlice::new(&mut self.buffer[self.cursor..self.end])
+        let range = self.cursor..self.end;
+        UninitSlice::new(&mut self.buffer[range])
     }
 }
 
@@ -468,9 +535,19 @@ mod tests {
         .initial(b"test_token".to_vec());
 
         let pn = (0, PacketNumber::encode(0, 0));
-        let tag_len = 16;
 
-        let mut writer = PacketWriter::new(&header, &mut buffer, pn, tag_len).unwrap();
+        let keys = Arc::new(rustls::quic::Keys {
+            local: rustls::quic::DirectionalKeys {
+                packet: Box::new(TransparentKeys),
+                header: Box::new(TransparentKeys),
+            },
+            remote: rustls::quic::DirectionalKeys {
+                packet: Box::new(TransparentKeys),
+                header: Box::new(TransparentKeys),
+            },
+        });
+
+        let mut writer = PacketWriter::new_long(&header, &mut buffer, pn, keys).unwrap();
         let frame = CryptoFrame {
             length: VarInt::from_u32(12),
             offset: VarInt::from_u32(0),
@@ -480,12 +557,12 @@ mod tests {
         assert!(writer.is_ack_eliciting());
         assert!(writer.in_flight());
 
-        let packet = writer.encrypt_long_packet(&TransparentKeys, &TransparentKeys);
+        let packet = writer.encrypt_and_protect();
         assert!(packet.is_ack_eliciting());
         assert!(packet.in_flight());
-        assert_eq!(packet.len(), 68);
+        assert_eq!(packet.size(), 68);
         assert_eq!(
-            packet.deref(),
+            &buffer[..packet.size()],
             [
                 // initial packet:
                 // header form (1) = 1,, long header

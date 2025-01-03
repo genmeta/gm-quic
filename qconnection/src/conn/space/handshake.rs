@@ -11,7 +11,7 @@ use qbase::{
         header::{io::WriteHeader, long::io::LongHeaderBuilder, EncodeHeader, GetType},
         keys::ArcKeys,
         number::WritePacketNumber,
-        AssembledPacket, DataPacket, PacketNumber, PacketWriter,
+        DataPacket, PacketNumber,
     },
     varint::{EncodeBytes, VarInt, WriteVarInt},
     Epoch,
@@ -29,7 +29,6 @@ use crate::{
     error::ConnError,
     path::{ArcPaths, Path},
     pipe,
-    tx::{PacketMemory, Transaction},
 };
 
 #[derive(Clone)]
@@ -177,43 +176,6 @@ impl HandshakeSpace {
                 rcvd_packets
             }
         })
-    }
-
-    pub fn try_assemble<'b>(
-        &self,
-        tx: &mut Transaction<'_>,
-        buf: &'b mut [u8],
-    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
-        let keys = self.keys.get_local_keys()?;
-        let sent_journal = self.journal.of_sent_packets();
-        let mut packet = PacketMemory::new(
-            LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).handshake(),
-            buf,
-            keys.local.packet.tag_len(),
-            &sent_journal,
-        )?;
-
-        let mut ack = None;
-        if let Some((largest, rcvd_time)) = tx.need_ack(Epoch::Handshake) {
-            let rcvd_journal = self.journal.of_rcvd_packets();
-            if let Some(ack_frame) =
-                rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
-            {
-                packet.dump_ack_frame(ack_frame);
-                ack = Some(largest);
-            }
-        }
-
-        // TODO: 可以封装在CryptoStream中，当成一个函数
-        //      crypto_stream.try_load_data_into(&mut packet);
-        let crypto_stream_outgoing = self.crypto_stream.outgoing();
-        crypto_stream_outgoing.try_load_data_into(&mut packet);
-
-        let packet: PacketWriter<'b> = packet.try_into().ok()?;
-        Some((
-            packet.encrypt_long_packet(keys.local.header.as_ref(), keys.local.packet.as_ref()),
-            ack,
-        ))
     }
 
     pub fn reader(&self) -> HandshakeSpaceReader {

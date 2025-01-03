@@ -9,29 +9,35 @@ use std::{
     time::Instant,
 };
 
+use bytes::BufMut;
 use deref_derive::{Deref, DerefMut};
 use qbase::{
-    cid,
+    cid::{ArcCidCell, BorrowedCid, ConnectionId},
     frame::{
         io::{WriteDataFrame, WriteFrame},
         AckFrame, BeFrame, CryptoFrame, DatagramFrame, PathChallengeFrame, PathResponseFrame,
         PingFrame, ReliableFrame, StreamFrame,
     },
     packet::{
-        header::{io::WriteHeader, EncodeHeader},
-        signal::SpinBit,
-        AssembledPacket, MarshalDataFrame, MarshalFrame, MarshalPathFrame, PacketWriter,
+        header::{io::WriteHeader, long::LongHeader, short::OneRttHeader, EncodeHeader},
+        signal::{KeyPhaseBit, SpinBit},
+        AssembledPacket, MarshalDataFrame, MarshalFrame, MarshalPathFrame, MiddleAssembledPacket,
+        PacketWriter,
     },
     util::{DescribeData, WriteData},
     Epoch,
 };
-use qcongestion::CongestionControl;
-use qrecovery::{journal, reliable};
+use qcongestion::{ArcCC, CongestionControl};
+use qrecovery::{
+    journal::{ArcSentJournal, NewPacketGuard},
+    reliable::{ArcReliableFrameDeque, GuaranteedFrame},
+};
 
 use super::{
     path,
     space::{data, handshake, initial},
 };
+use crate::{path::Constraints, space::Spaces, Credit};
 
 /// 发送一个数据包，
 #[derive(Deref, DerefMut)]
@@ -39,23 +45,37 @@ pub struct PacketMemory<'b, 's, F> {
     #[deref]
     writer: PacketWriter<'b>,
     // 不同空间的send guard类型不一样
-    guard: journal::NewPacketGuard<'s, F>,
+    guard: NewPacketGuard<'s, F>,
 }
 
 impl<'b, 's, F> PacketMemory<'b, 's, F> {
-    pub fn new<H>(
-        header: H,
-        buf: &'b mut [u8],
-        tag_len: usize,
-        journal: &'s journal::ArcSentJournal<F>,
+    pub fn new_long<S>(
+        header: LongHeader<S>,
+        buffer: &'b mut [u8],
+        keys: Arc<rustls::quic::Keys>,
+        journal: &'s ArcSentJournal<F>,
     ) -> Option<Self>
     where
-        H: EncodeHeader,
-        for<'a> &'a mut [u8]: WriteHeader<H>,
+        S: EncodeHeader,
+        for<'a> &'a mut [u8]: WriteHeader<LongHeader<S>>,
     {
         let guard = journal.new_packet();
         let pn = guard.pn();
-        let writer = PacketWriter::new(&header, buf, pn, tag_len)?;
+        let writer = PacketWriter::new_long(&header, buffer, pn, keys)?;
+        Some(Self { writer, guard })
+    }
+
+    pub fn new_short(
+        header: OneRttHeader,
+        buffer: &'b mut [u8],
+        hpk: Arc<dyn rustls::quic::HeaderProtectionKey>,
+        pk: Arc<dyn rustls::quic::PacketKey>,
+        key_phase: KeyPhaseBit,
+        journal: &'s ArcSentJournal<F>,
+    ) -> Option<Self> {
+        let guard = journal.new_packet();
+        let pn = guard.pn();
+        let writer = PacketWriter::new_short(&header, buffer, pn, hpk, pk, key_phase)?;
         Some(Self { writer, guard })
     }
 }
@@ -88,7 +108,7 @@ where
     }
 }
 
-impl<'b> MarshalPathFrame<PathChallengeFrame> for PacketMemory<'b, '_, reliable::GuaranteedFrame>
+impl<'b> MarshalPathFrame<PathChallengeFrame> for PacketMemory<'b, '_, GuaranteedFrame>
 where
     PacketWriter<'b>: WriteFrame<PathChallengeFrame>,
 {
@@ -98,7 +118,7 @@ where
     }
 }
 
-impl<'b> MarshalPathFrame<PathResponseFrame> for PacketMemory<'b, '_, reliable::GuaranteedFrame>
+impl<'b> MarshalPathFrame<PathResponseFrame> for PacketMemory<'b, '_, GuaranteedFrame>
 where
     PacketWriter<'b>: WriteFrame<PathResponseFrame>,
 {
@@ -108,7 +128,7 @@ where
     }
 }
 
-impl<'b, F> MarshalFrame<F> for PacketMemory<'b, '_, reliable::GuaranteedFrame>
+impl<'b, F> MarshalFrame<F> for PacketMemory<'b, '_, GuaranteedFrame>
 where
     F: BeFrame + Into<ReliableFrame>,
     PacketWriter<'b>: WriteFrame<F>,
@@ -116,13 +136,13 @@ where
     fn dump_frame(&mut self, frame: F) -> Option<F> {
         self.writer.dump_frame(frame).and_then(|frame| {
             self.guard
-                .record_frame(reliable::GuaranteedFrame::Reliable(frame.into()));
+                .record_frame(GuaranteedFrame::Reliable(frame.into()));
             None
         })
     }
 }
 
-impl<'b, D> MarshalDataFrame<CryptoFrame, D> for PacketMemory<'b, '_, reliable::GuaranteedFrame>
+impl<'b, D> MarshalDataFrame<CryptoFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
 where
     D: DescribeData,
     PacketWriter<'b>: WriteData<D> + WriteDataFrame<CryptoFrame, D>,
@@ -131,14 +151,13 @@ where
         self.writer
             .dump_frame_with_data(frame, data)
             .and_then(|frame| {
-                self.guard
-                    .record_frame(reliable::GuaranteedFrame::Crypto(frame));
+                self.guard.record_frame(GuaranteedFrame::Crypto(frame));
                 None
             })
     }
 }
 
-impl<'b, D> MarshalDataFrame<StreamFrame, D> for PacketMemory<'b, '_, reliable::GuaranteedFrame>
+impl<'b, D> MarshalDataFrame<StreamFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
 where
     D: DescribeData,
     PacketWriter<'b>: WriteData<D> + WriteDataFrame<StreamFrame, D>,
@@ -147,14 +166,13 @@ where
         self.writer
             .dump_frame_with_data(frame, data)
             .and_then(|frame| {
-                self.guard
-                    .record_frame(reliable::GuaranteedFrame::Stream(frame));
+                self.guard.record_frame(GuaranteedFrame::Stream(frame));
                 None
             })
     }
 }
 
-impl<'b, D> MarshalDataFrame<DatagramFrame, D> for PacketMemory<'b, '_, reliable::GuaranteedFrame>
+impl<'b, D> MarshalDataFrame<DatagramFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
 where
     D: DescribeData,
     PacketWriter<'b>: WriteData<D> + WriteDataFrame<DatagramFrame, D>,
@@ -181,21 +199,21 @@ impl<'b, F> TryFrom<PacketMemory<'b, '_, F>> for PacketWriter<'b> {
     }
 }
 
-pub type DcidCell = cid::ArcCidCell<reliable::ArcReliableFrameDeque>;
+pub type DcidCell = ArcCidCell<ArcReliableFrameDeque>;
 
 pub struct Transaction<'a> {
-    scid: cid::ConnectionId,
-    dcid: cid::BorrowedCid<'a, reliable::ArcReliableFrameDeque>,
-    cc: &'a qcongestion::ArcCC,
-    flow_limit: crate::Credit<'a>,
-    constraints: path::Constraints,
+    scid: ConnectionId,
+    dcid: BorrowedCid<'a, ArcReliableFrameDeque>,
+    cc: &'a ArcCC,
+    flow_limit: Credit<'a>,
+    constraints: Constraints,
 }
 
 impl<'a> Transaction<'a> {
     pub fn prepare(
-        scid: cid::ConnectionId,
+        scid: ConnectionId,
         dcid: &'a DcidCell,
-        cc: &'a qcongestion::ArcCC,
+        cc: &'a ArcCC,
         anti_amplifier: &'a path::AntiAmplifier,
         flow_ctrl: &'a crate::FlowController,
     ) -> PrepareTransaction<'a> {
@@ -208,11 +226,11 @@ impl<'a> Transaction<'a> {
         }
     }
 
-    pub fn scid(&self) -> cid::ConnectionId {
+    pub fn scid(&self) -> ConnectionId {
         self.scid
     }
 
-    pub fn dcid(&self) -> cid::ConnectionId {
+    pub fn dcid(&self) -> ConnectionId {
         *self.dcid
     }
 
@@ -224,39 +242,39 @@ impl<'a> Transaction<'a> {
         self.flow_limit.available()
     }
 
-    pub fn load_initial_space<'b>(
+    pub fn load_initial_space(
         &mut self,
-        buf: &'b mut [u8],
+        buf: &mut [u8],
         initial_space: &initial::InitialSpace,
-    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
+    ) -> Option<(MiddleAssembledPacket, Option<u64>)> {
         initial_space.try_assemble(self, self.constraints.constrain(buf))
     }
 
-    pub fn load_0rtt_data<'b>(
+    pub fn load_0rtt_data(
         &mut self,
-        buf: &'b mut [u8],
+        buf: &mut [u8],
         path_challenge_frames: &path::SendBuffer<PathChallengeFrame>,
         data_space: &data::DataSpace,
-    ) -> Option<(AssembledPacket<'b>, usize)> {
+    ) -> Option<(MiddleAssembledPacket, usize)> {
         data_space.try_assemble_0rtt(self, path_challenge_frames, self.constraints.constrain(buf))
     }
 
-    pub fn load_handshake_space<'b>(
+    pub fn load_handshake_space(
         &mut self,
-        buf: &'b mut [u8],
+        buf: &mut [u8],
         hs_space: &handshake::HandshakeSpace,
-    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
+    ) -> Option<(MiddleAssembledPacket, Option<u64>)> {
         hs_space.try_assemble(self, self.constraints.constrain(buf))
     }
 
-    pub fn load_1rtt_data<'b>(
+    pub fn load_1rtt_data(
         &mut self,
-        buf: &'b mut [u8],
+        buf: &mut [u8],
         spin: &Arc<AtomicBool>,
         path_challenge_frames: &path::SendBuffer<PathChallengeFrame>,
         path_response_frames: &path::SendBuffer<PathResponseFrame>,
         data_space: &data::DataSpace,
-    ) -> Option<(AssembledPacket<'b>, Option<u64>, usize)> {
+    ) -> Option<(MiddleAssembledPacket, Option<u64>, usize)> {
         let spin = SpinBit::from(spin.load(Ordering::Relaxed));
         data_space.try_assemble_1rtt(
             self,
@@ -270,7 +288,7 @@ impl<'a> Transaction<'a> {
     pub fn commit(
         &mut self,
         epoch: Epoch,
-        packet: &AssembledPacket<'_>,
+        packet: AssembledPacket,
         fresh_data: usize,
         ack: Option<u64>,
     ) {
@@ -288,9 +306,9 @@ impl<'a> Transaction<'a> {
 }
 
 pub struct PrepareTransaction<'a> {
-    scid: cid::ConnectionId,
+    scid: ConnectionId,
     dcid: &'a DcidCell,
-    cc: &'a qcongestion::ArcCC,
+    cc: &'a ArcCC,
     anti_amplifier: &'a path::AntiAmplifier,
     flow_ctrl: &'a crate::FlowController,
 }
@@ -311,7 +329,7 @@ impl<'a> Future for PrepareTransaction<'a> {
         let Some(borrowed_dcid) = ready!(self.dcid.poll_borrow_cid(cx)) else {
             return Poll::Ready(None);
         };
-        let constraints = path::Constraints::new(credit_limit, send_quota);
+        let constraints = Constraints::new(credit_limit, send_quota);
 
         Poll::Ready(Some(Transaction {
             scid: self.scid,
@@ -320,5 +338,158 @@ impl<'a> Future for PrepareTransaction<'a> {
             flow_limit,
             constraints,
         }))
+    }
+}
+
+struct LevelState {
+    epoch: Epoch,
+    mid_pkt: MiddleAssembledPacket,
+    ack: Option<u64>,
+}
+
+impl Transaction<'_> {
+    pub fn load_spaces(
+        &mut self,
+        datagram: &mut [u8],
+        spaces: &Spaces,
+        spin: &Arc<AtomicBool>,
+        path_challenge_frames: &path::SendBuffer<PathChallengeFrame>,
+        path_response_frames: &path::SendBuffer<PathResponseFrame>,
+    ) -> usize {
+        let mut written = 0;
+        let mut last_level: Option<LevelState> = None;
+        let mut last_level_size = 0;
+
+        if let Some((mid_pkt, ack)) =
+            self.load_initial_space(&mut datagram[written..], &spaces.initial)
+        {
+            self.constraints.commit(mid_pkt.size(), mid_pkt.in_flight());
+            last_level_size = mid_pkt.size();
+            last_level = Some(LevelState {
+                epoch: Epoch::Initial,
+                mid_pkt,
+                ack,
+            });
+        }
+
+        let is_one_rtt_ready = spaces.data.is_one_rtt_ready();
+        if !is_one_rtt_ready {
+            if let Some((mid_pkt, fresh_data)) = self.load_0rtt_data(
+                &mut datagram[written + last_level_size..],
+                path_challenge_frames,
+                &spaces.data,
+            ) {
+                if let Some(last_level) = last_level.take() {
+                    let packet = last_level
+                        .mid_pkt
+                        .resume(&mut datagram[written..])
+                        .encrypt_and_protect();
+                    written += packet.size();
+                    self.cc.on_pkt_sent(
+                        last_level.epoch,
+                        packet.pn(),
+                        packet.is_ack_eliciting(),
+                        packet.size(),
+                        packet.in_flight(),
+                        last_level.ack,
+                    );
+                }
+
+                last_level_size = mid_pkt.size();
+                self.constraints.commit(mid_pkt.size(), mid_pkt.in_flight());
+                self.flow_limit.post_sent(fresh_data);
+                last_level = Some(LevelState {
+                    epoch: Epoch::Data,
+                    mid_pkt,
+                    ack: None,
+                });
+            }
+        }
+
+        if let Some((mid_pkt, ack)) = self.load_handshake_space(
+            &mut datagram[written + last_level_size..],
+            &spaces.handshake,
+        ) {
+            if let Some(last_level) = last_level.take() {
+                let packet = last_level
+                    .mid_pkt
+                    .resume(&mut datagram[written..])
+                    .encrypt_and_protect();
+                written += packet.size();
+                self.cc.on_pkt_sent(
+                    last_level.epoch,
+                    packet.pn(),
+                    packet.is_ack_eliciting(),
+                    packet.size(),
+                    packet.in_flight(),
+                    last_level.ack,
+                );
+            }
+
+            last_level_size = mid_pkt.size();
+            self.constraints.commit(mid_pkt.size(), mid_pkt.in_flight());
+            last_level = Some(LevelState {
+                epoch: Epoch::Data,
+                mid_pkt,
+                ack,
+            });
+        }
+
+        if is_one_rtt_ready {
+            if let Some((mid_pkt, ack, fresh_data)) = self.load_1rtt_data(
+                &mut datagram[written + last_level_size..],
+                spin,
+                path_challenge_frames,
+                path_response_frames,
+                &spaces.data,
+            ) {
+                if let Some(last_level) = last_level.take() {
+                    let packet = last_level
+                        .mid_pkt
+                        .resume(&mut datagram[written..])
+                        .encrypt_and_protect();
+                    written += packet.size();
+                    self.cc.on_pkt_sent(
+                        last_level.epoch,
+                        packet.pn(),
+                        packet.is_ack_eliciting(),
+                        packet.size(),
+                        packet.in_flight(),
+                        last_level.ack,
+                    );
+                }
+
+                self.constraints.commit(mid_pkt.size(), mid_pkt.in_flight());
+                self.flow_limit.post_sent(fresh_data);
+                last_level = Some(LevelState {
+                    epoch: Epoch::Data,
+                    mid_pkt,
+                    ack,
+                });
+            }
+        }
+
+        if let Some(final_level) = last_level {
+            let mut packet = final_level
+                .mid_pkt
+                .resume(self.constraints.constrain(&mut datagram[written..]));
+
+            let padding = packet.remaining_mut();
+            packet.pad(padding);
+            self.constraints.commit(padding, packet.in_flight());
+
+            let packet = packet.encrypt_and_protect();
+            written += packet.size();
+            self.cc.on_pkt_sent(
+                final_level.epoch,
+                packet.pn(),
+                packet.is_ack_eliciting(),
+                packet.size(),
+                packet.in_flight(),
+                final_level.ack,
+            );
+        }
+
+        written
     }
 }

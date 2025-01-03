@@ -14,7 +14,7 @@ use qbase::{
             GetScid, GetType,
         },
         keys::ArcKeys,
-        AssembledPacket, PacketWriter,
+        MiddleAssembledPacket, PacketWriter,
     },
     token::TokenRegistry,
     Epoch,
@@ -34,7 +34,7 @@ use crate::{
     Components,
 };
 
-pub type HandshakePacket = (InitialHeader, bytes::BytesMut, usize);
+pub type InitialPacket = (InitialHeader, bytes::BytesMut, usize);
 
 #[derive(Clone)]
 pub struct InitialSpace {
@@ -60,7 +60,7 @@ impl InitialSpace {
 
     pub fn build(
         &self,
-        rcvd_packets: impl Stream<Item = (HandshakePacket, Pathway)> + Unpin + Send + 'static,
+        rcvd_packets: impl Stream<Item = (InitialPacket, Pathway)> + Unpin + Send + 'static,
         pathes: &Arc<Paths>,
         components: &Components,
         broker: impl EmitEvent + Clone + Send + 'static,
@@ -104,7 +104,7 @@ impl InitialSpace {
     #[allow(clippy::too_many_arguments)]
     fn parse_rcvd_packets_and_dispatch_frames(
         &self,
-        mut rcvd_packets: impl Stream<Item = (HandshakePacket, Pathway)> + Unpin + Send + 'static,
+        mut rcvd_packets: impl Stream<Item = (InitialPacket, Pathway)> + Unpin + Send + 'static,
         pathes: &Arc<Paths>,
         dispatch_frame: impl Fn(Frame, &Path) + Send + 'static,
         components: &Components,
@@ -214,14 +214,14 @@ impl InitialSpace {
         &self,
         tx: &mut Transaction<'_>,
         buf: &'b mut [u8],
-    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
+    ) -> Option<(MiddleAssembledPacket, Option<u64>)> {
         let keys = self.keys.get_local_keys()?;
         let sent_journal = self.journal.of_sent_packets();
-        let mut packet = PacketMemory::new(
+        let mut packet = PacketMemory::new_long(
             LongHeaderBuilder::with_cid(tx.dcid(), tx.scid())
                 .initial(self.token.lock().unwrap().clone()),
             buf,
-            keys.local.packet.tag_len(),
+            keys,
             &sent_journal,
         )?;
 
@@ -240,10 +240,7 @@ impl InitialSpace {
         crypto_stream_outgoing.try_load_data_into(&mut packet);
 
         let packet: PacketWriter<'b> = packet.try_into().ok()?;
-        Some((
-            packet.encrypt_long_packet(keys.local.header.as_ref(), keys.local.packet.as_ref()),
-            ack,
-        ))
+        Some((packet.abandon(), ack))
     }
 }
 
