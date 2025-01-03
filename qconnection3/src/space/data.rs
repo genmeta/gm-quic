@@ -24,7 +24,7 @@ use qbase::{
         number::WritePacketNumber,
         r#type::Type,
         signal::SpinBit,
-        AssembledPacket, DataPacket, PacketNumber, PacketWriter,
+        DataPacket, MiddleAssembledPacket, PacketNumber, PacketWriter,
     },
     param::CommonParameters,
     sid::{ControlConcurrency, Role},
@@ -41,7 +41,11 @@ use tokio::task::JoinHandle;
 
 use super::try_join2;
 use crate::{
-    events::{EmitEvent, Event}, path::{Path, Paths, Pathway, SendBuffer}, space::{pipe, AckData, FlowControlledDataStreams}, tx::{PacketMemory, Transaction}, Components, DataStreams
+    events::{EmitEvent, Event},
+    path::{Path, Paths, Pathway, SendBuffer},
+    space::{pipe, AckData, FlowControlledDataStreams},
+    tx::{PacketMemory, Transaction},
+    Components, DataStreams,
 };
 
 pub type ZeroRttPacket = (ZeroRttHeader, bytes::BytesMut, usize);
@@ -331,17 +335,17 @@ impl DataSpace {
         tx: &mut Transaction<'_>,
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         buf: &'b mut [u8],
-    ) -> Option<(AssembledPacket<'b>, usize)> {
+    ) -> Option<(MiddleAssembledPacket, usize)> {
         if self.one_rtt_keys.get_local_keys().is_some() {
             return None;
         }
 
         let keys = self.zero_rtt_keys.get_local_keys()?;
         let sent_journal = self.journal.of_sent_packets();
-        let mut packet = PacketMemory::new(
+        let mut packet = PacketMemory::new_long(
             LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).zero_rtt(),
             buf,
-            keys.local.packet.tag_len(),
+            keys,
             &sent_journal,
         )?;
 
@@ -359,10 +363,7 @@ impl DataSpace {
         self.datagrams.try_load_data_into(&mut packet);
 
         let packet: PacketWriter<'b> = packet.try_into().ok()?;
-        Some((
-            packet.encrypt_long_packet(keys.local.header.as_ref(), keys.local.packet.as_ref()),
-            fresh_data,
-        ))
+        Some((packet.abandon(), fresh_data))
     }
 
     pub fn try_assemble_1rtt<'b>(
@@ -372,13 +373,16 @@ impl DataSpace {
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
         buf: &'b mut [u8],
-    ) -> Option<(AssembledPacket<'b>, Option<u64>, usize)> {
+    ) -> Option<(MiddleAssembledPacket, Option<u64>, usize)> {
         let (hpk, pk) = self.one_rtt_keys.get_local_keys()?;
+        let (key_phase, pk) = pk.lock_guard().get_local();
         let sent_journal = self.journal.of_sent_packets();
-        let mut packet = PacketMemory::new(
+        let mut packet = PacketMemory::new_short(
             OneRttHeader::new(spin, tx.dcid()),
             buf,
-            pk.tag_len(),
+            hpk,
+            pk,
+            key_phase,
             &sent_journal,
         )?;
 
@@ -408,13 +412,11 @@ impl DataSpace {
         self.datagrams.try_load_data_into(&mut packet);
 
         let packet: PacketWriter<'b> = packet.try_into().ok()?;
-        let pk_guard = pk.lock_guard();
-        let (key_phase, pk) = pk_guard.get_local();
-        Some((
-            packet.encrypt_short_packet(key_phase, hpk.as_ref(), pk.as_ref()),
-            ack,
-            fresh_data,
-        ))
+        Some((packet.abandon(), ack, fresh_data))
+    }
+
+    pub fn is_one_rtt_ready(&self) -> bool {
+        self.one_rtt_keys.get_local_keys().is_some()
     }
 
     pub fn on_conn_error(&self, error: &Error) {

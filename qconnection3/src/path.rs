@@ -106,7 +106,7 @@ impl Path {
         self.conn_if.send_capability(self.way)
     }
 
-    pub async fn send_packet(&self, pkts: &[io::IoSlice<'_>], dst: SocketAddr) -> io::Result<()> {
+    pub async fn send_packets(&self, pkts: &[io::IoSlice<'_>], dst: SocketAddr) -> io::Result<()> {
         self.conn_if.send_packets(pkts, self.way, dst).await
     }
 }

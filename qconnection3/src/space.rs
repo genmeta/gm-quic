@@ -5,10 +5,10 @@ pub mod initial;
 use std::future::Future;
 
 use bytes::Bytes;
-pub use data::{ClosingOneRttScope, DataSpace};
+pub use data::*;
 use futures::{channel::mpsc::UnboundedReceiver, StreamExt};
-pub use handshake::{ClosingHandshakeScope, HandshakeSpace};
-pub use initial::InitialSpace;
+pub use handshake::*;
+pub use initial::*;
 use qbase::{
     error::Error,
     frame::{
@@ -27,6 +27,12 @@ use crate::{
     events::{EmitEvent, Event},
     DataStreams, FlowController,
 };
+
+pub struct Spaces {
+    pub initial: InitialSpace,
+    pub handshake: HandshakeSpace,
+    pub data: DataSpace,
+}
 
 pub trait RecvPacket {
     fn has_rcvd_ccf(&self, packet: DataPacket) -> bool;

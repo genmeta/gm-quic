@@ -15,14 +15,11 @@ use qbase::{
             decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
         },
         encrypt::{encode_short_first_byte, encrypt_packet, protect_header},
-        header::{
-            io::WriteHeader, long::io::LongHeaderBuilder, EncodeHeader, GetType, OneRttHeader,
-        },
+        header::{io::WriteHeader, EncodeHeader, GetType, OneRttHeader},
         keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys, HeaderProtectionKeys},
         number::WritePacketNumber,
         r#type::Type,
-        signal::SpinBit,
-        AssembledPacket, DataPacket, PacketNumber, PacketWriter,
+        DataPacket, PacketNumber,
     },
     param::CommonParameters,
     sid::{ControlConcurrency, Role},
@@ -47,7 +44,6 @@ use crate::{
     path::{ArcPaths, Path, SendBuffer},
     pipe,
     router::Router,
-    tx::{PacketMemory, Transaction},
 };
 
 /// When receiving a [`StreamFrame`] or [`StreamCtlFrame`],
@@ -377,97 +373,6 @@ impl DataSpace {
                 rcvd_packets
             }
         })
-    }
-
-    pub fn try_assemble_0rtt<'b>(
-        &self,
-        tx: &mut Transaction<'_>,
-        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
-        buf: &'b mut [u8],
-    ) -> Option<(AssembledPacket<'b>, usize)> {
-        if self.one_rtt_keys.get_local_keys().is_some() {
-            return None;
-        }
-
-        let keys = self.zero_rtt_keys.get_local_keys()?;
-        let sent_journal = self.journal.of_sent_packets();
-        let mut packet = PacketMemory::new(
-            LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).zero_rtt(),
-            buf,
-            keys.local.packet.tag_len(),
-            &sent_journal,
-        )?;
-
-        path_challenge_frames.try_load_frames_into(&mut packet);
-        // TODO: 可以封装在CryptoStream中，当成一个函数
-        //      crypto_stream.try_load_data_into(&mut packet);
-        let crypto_stream_outgoing = self.crypto_stream.outgoing();
-        crypto_stream_outgoing.try_load_data_into(&mut packet);
-        // try to load reliable frames into this 0RTT packet to send
-        self.reliable_frames.try_load_frames_into(&mut packet);
-        // try to load stream frames into this 0RTT packet to send
-        let fresh_data = self
-            .streams
-            .try_load_data_into(&mut packet, tx.flow_limit());
-        self.datagrams.try_load_data_into(&mut packet);
-
-        let packet: PacketWriter<'b> = packet.try_into().ok()?;
-        Some((
-            packet.encrypt_long_packet(keys.local.header.as_ref(), keys.local.packet.as_ref()),
-            fresh_data,
-        ))
-    }
-
-    pub fn try_assemble_1rtt<'b>(
-        &self,
-        tx: &mut Transaction<'_>,
-        spin: SpinBit,
-        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
-        path_response_frames: &SendBuffer<PathResponseFrame>,
-        buf: &'b mut [u8],
-    ) -> Option<(AssembledPacket<'b>, Option<u64>, usize)> {
-        let (hpk, pk) = self.one_rtt_keys.get_local_keys()?;
-        let sent_journal = self.journal.of_sent_packets();
-        let mut packet = PacketMemory::new(
-            OneRttHeader::new(spin, tx.dcid()),
-            buf,
-            pk.tag_len(),
-            &sent_journal,
-        )?;
-
-        let mut ack = None;
-        if let Some((largest, rcvd_time)) = tx.need_ack(Epoch::Handshake) {
-            let rcvd_journal = self.journal.of_rcvd_packets();
-            if let Some(ack_frame) =
-                rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
-            {
-                packet.dump_ack_frame(ack_frame);
-                ack = Some(largest);
-            }
-        }
-
-        path_challenge_frames.try_load_frames_into(&mut packet);
-        path_response_frames.try_load_frames_into(&mut packet);
-        // TODO: 可以封装在CryptoStream中，当成一个函数
-        //      crypto_stream.try_load_data_into(&mut packet);
-        let crypto_stream_outgoing = self.crypto_stream.outgoing();
-        crypto_stream_outgoing.try_load_data_into(&mut packet);
-        // try to load reliable frames into this 0RTT packet to send
-        self.reliable_frames.try_load_frames_into(&mut packet);
-        // try to load stream frames into this 0RTT packet to send
-        let fresh_data = self
-            .streams
-            .try_load_data_into(&mut packet, tx.flow_limit());
-        self.datagrams.try_load_data_into(&mut packet);
-
-        let packet: PacketWriter<'b> = packet.try_into().ok()?;
-        let pk_guard = pk.lock_guard();
-        let (key_phase, pk) = pk_guard.get_local();
-        Some((
-            packet.encrypt_short_packet(key_phase, hpk.as_ref(), pk.as_ref()),
-            ack,
-            fresh_data,
-        ))
     }
 
     pub fn on_conn_error(&self, error: &Error) {

@@ -15,7 +15,7 @@ use qbase::{
         },
         keys::ArcKeys,
         number::WritePacketNumber,
-        AssembledPacket, DataPacket, PacketNumber, PacketWriter,
+        DataPacket, MiddleAssembledPacket, PacketNumber, PacketWriter,
     },
     varint::{EncodeBytes, VarInt, WriteVarInt},
     Epoch,
@@ -171,13 +171,13 @@ impl HandshakeSpace {
         &self,
         tx: &mut Transaction<'_>,
         buf: &'b mut [u8],
-    ) -> Option<(AssembledPacket<'b>, Option<u64>)> {
+    ) -> Option<(MiddleAssembledPacket, Option<u64>)> {
         let keys = self.keys.get_local_keys()?;
         let sent_journal = self.journal.of_sent_packets();
-        let mut packet = PacketMemory::new(
+        let mut packet = PacketMemory::new_long(
             LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).handshake(),
             buf,
-            keys.local.packet.tag_len(),
+            keys,
             &sent_journal,
         )?;
 
@@ -198,10 +198,7 @@ impl HandshakeSpace {
         crypto_stream_outgoing.try_load_data_into(&mut packet);
 
         let packet: PacketWriter<'b> = packet.try_into().ok()?;
-        Some((
-            packet.encrypt_long_packet(keys.local.header.as_ref(), keys.local.packet.as_ref()),
-            ack,
-        ))
+        Some((packet.abandon(), ack))
     }
 }
 
