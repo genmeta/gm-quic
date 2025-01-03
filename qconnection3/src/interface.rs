@@ -11,11 +11,11 @@ use crate::path;
 
 pub struct SendCapability {
     // 一个数据报最大多大
-    pub segment_size: u16,
+    pub max_segment_size: u16,
     // 一个数据报的前多少字节应该保留
     pub reversed_size: u16,
     // 指示对GSO的支持
-    pub segments: u16,
+    pub max_segments: u16,
 }
 
 pub trait QuicInterface: Send + Sync {
