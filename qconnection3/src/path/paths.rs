@@ -10,8 +10,12 @@ impl Paths {
         Self::default()
     }
 
-    pub fn insert(&self, pathway: super::Pathway, path: Arc<super::Path>) {
-        self.0.insert(pathway, path);
+    pub fn add_with(&self, pathway: super::Pathway, new_path: impl FnOnce() -> Arc<super::Path>) {
+        self.0.entry(pathway).or_insert_with(new_path);
+    }
+
+    pub fn del(&self, pathway: &super::Pathway) {
+        self.0.remove(pathway);
     }
 
     pub fn get(&self, pathway: &super::Pathway) -> Option<Arc<super::Path>> {
