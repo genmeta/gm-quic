@@ -16,6 +16,18 @@ pub enum Event {
     Terminated,
 }
 
+impl From<Error> for Event {
+    fn from(v: Error) -> Self {
+        Self::Failed(v)
+    }
+}
+
+impl From<ConnectionCloseFrame> for Event {
+    fn from(v: ConnectionCloseFrame) -> Self {
+        Self::Closed(v)
+    }
+}
+
 pub trait EmitEvent {
     fn emit(&self, event: Event);
 }

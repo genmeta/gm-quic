@@ -7,6 +7,7 @@ use std::{
 
 mod aa;
 pub mod burst;
+pub mod entry;
 mod paths;
 pub use aa::*;
 pub use paths::*;
@@ -20,7 +21,7 @@ use qcongestion::ArcCC;
 use tokio::time::Instant;
 pub use util::*;
 
-use crate::{interface::SendCapability, router};
+use crate::{interface::SendCapability, router::ConnInterface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Endpoint {
@@ -86,10 +87,43 @@ pub struct Path {
     response_sndbuf: SendBuffer<PathResponseFrame>,
     response_rcvbuf: RecvBuffer<PathResponseFrame>,
 
-    conn_if: Arc<router::ConnInterface>,
+    conn_iface: Arc<ConnInterface>,
 }
 
 impl Path {
+    pub fn new(way: Pathway, cc: ArcCC, conn_iface: Arc<ConnInterface>) -> Self {
+        Self {
+            way,
+            cc,
+            conn_iface,
+            anti_amplifier: Default::default(),
+            last_recv_time: Instant::now().into(),
+            challenge_sndbuf: Default::default(),
+            response_sndbuf: Default::default(),
+            response_rcvbuf: Default::default(),
+        }
+    }
+
+    pub async fn validate(&self) -> bool {
+        let challenge = PathChallengeFrame::random();
+        for _ in 0..3 {
+            use qcongestion::CongestionControl;
+            let pto = self.cc.pto_time(qbase::Epoch::Data);
+            self.challenge_sndbuf.write(challenge);
+            match tokio::time::timeout(pto, self.response_rcvbuf.receive()).await {
+                Ok(Some(response)) if *response == *challenge => {
+                    self.anti_amplifier.grant();
+                    return true;
+                }
+                // 外部发生变化，导致路径验证任务作废
+                Ok(None) => return false,
+                // 超时或者收到不对的response，按"停-等协议"，继续再发一次Challenge，最多3次
+                _ => continue,
+            }
+        }
+        false
+    }
+
     pub fn cc(&self) -> &ArcCC {
         &self.cc
     }
@@ -104,11 +138,11 @@ impl Path {
     }
 
     pub fn send_capability(&self) -> io::Result<SendCapability> {
-        self.conn_if.send_capability(self.way)
+        self.conn_iface.send_capability(self.way)
     }
 
     pub async fn send_packets(&self, pkts: &[io::IoSlice<'_>], dst: SocketAddr) -> io::Result<()> {
-        self.conn_if.send_packets(pkts, self.way, dst).await
+        self.conn_iface.send_packets(pkts, self.way, dst).await
     }
 }
 

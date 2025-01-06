@@ -30,7 +30,7 @@ use tokio::task::JoinHandle;
 use super::try_join2;
 use crate::{
     events::{EmitEvent, Event},
-    path::{Path, Paths, Pathway},
+    path::{ArcPaths, Path, Pathway},
     space::{pipe, AckHandshake},
     tx::{PacketMemory, Transaction},
 };
@@ -40,8 +40,8 @@ pub type HandshakePacket = (HandshakeHeader, bytes::BytesMut, usize);
 #[derive(Clone)]
 pub struct HandshakeSpace {
     pub keys: ArcKeys,
-    pub journal: HandshakeJournal,
     pub crypto_stream: CryptoStream,
+    journal: HandshakeJournal,
 }
 
 impl Default for HandshakeSpace {
@@ -55,10 +55,14 @@ impl Default for HandshakeSpace {
 }
 
 impl HandshakeSpace {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn build(
         &self,
         rcvd_packets: impl Stream<Item = (HandshakePacket, Pathway)> + Unpin + Send + 'static,
-        pathes: &Arc<Paths>,
+        paths: &ArcPaths,
         broker: impl EmitEvent + Clone + Send + 'static,
     ) -> JoinHandle<()> {
         let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
@@ -89,17 +93,17 @@ impl HandshakeSpace {
             broker.clone(),
         );
 
-        self.parse_rcvd_packets_and_dispatch_frames(rcvd_packets, pathes, dispatch_frame, broker)
+        self.parse_rcvd_packets_and_dispatch_frames(rcvd_packets, paths, dispatch_frame, broker)
     }
 
     fn parse_rcvd_packets_and_dispatch_frames(
         &self,
         mut rcvd_packets: impl Stream<Item = (HandshakePacket, Pathway)> + Unpin + Send + 'static,
-        pathes: &Arc<Paths>,
+        paths: &ArcPaths,
         dispatch_frame: impl Fn(Frame, &Path) + Send + 'static,
         broker: impl EmitEvent + Clone + Send + 'static,
     ) -> JoinHandle<()> {
-        let pathes = pathes.clone();
+        let paths = paths.clone();
         tokio::spawn({
             let rcvd_journal = self.journal.of_rcvd_packets();
             let keys = self.keys.clone();
@@ -107,7 +111,7 @@ impl HandshakeSpace {
                 while let Some((((header, mut bytes, offset), pathway), keys)) =
                     try_join2(rcvd_packets.next(), keys.get_remote_keys()).await
                 {
-                    let Some(path) = pathes.get(&pathway) else {
+                    let Some(path) = paths.get(&pathway) else {
                         continue;
                     };
                     let undecoded_pn = match remove_protection_of_long_packet(
@@ -199,6 +203,13 @@ impl HandshakeSpace {
 
         let packet: PacketWriter<'b> = packet.try_into().ok()?;
         Some((packet.abandon(), ack))
+    }
+
+    pub fn tracker(&self) -> HandshakeTracker {
+        HandshakeTracker {
+            journal: self.journal.clone(),
+            outgoing: self.crypto_stream.outgoing().clone(),
+        }
     }
 }
 
@@ -303,12 +314,6 @@ impl super::RecvPacket for ClosingHandshakeScope {
 pub struct HandshakeTracker {
     journal: HandshakeJournal,
     outgoing: CryptoStreamOutgoing,
-}
-
-impl HandshakeTracker {
-    pub fn new(journal: HandshakeJournal, outgoing: CryptoStreamOutgoing) -> Self {
-        Self { journal, outgoing }
-    }
 }
 
 impl TrackPackets for HandshakeTracker {

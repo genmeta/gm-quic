@@ -60,8 +60,8 @@ impl ConnInterface {
         entry.or_insert_with(|| BoundQueue::new(16)).receiver()
     }
 
-    pub fn unregister(&self, way: Pathway) {
-        let (_way, queue) = self.queues.remove(&way).unwrap();
+    pub fn unregister(&self, way: &Pathway) {
+        let (_way, queue) = self.queues.remove(way).unwrap();
         queue.close();
     }
 }
