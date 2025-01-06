@@ -1,4 +1,8 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    io,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use futures::{Stream, StreamExt};
 pub use qbase::{
@@ -8,6 +12,8 @@ pub use qbase::{
     token::{TokenProvider, TokenSink},
 };
 use qbase::{
+    error::Error,
+    frame::ConnectionCloseFrame,
     param::{self, ArcParameters},
     sid,
     token::ArcTokenRegistry,
@@ -15,15 +21,16 @@ use qbase::{
 use qcongestion::{ArcCC, CongestionAlgorithm};
 use qrecovery::reliable::ArcReliableFrameDeque;
 pub use rustls::crypto::CryptoProvider;
+use tokio::time::Instant;
 
 use crate::{
-    events::EmitEvent,
+    events::{EmitEvent, Event},
     path::{entry::PacketEntry, ArcPaths, Path, Pathway},
     router::{ConnInterface, QuicProto},
     space::{DataSpace, HandshakeSpace, InitialSpace, Spaces},
     tls::ArcTlsSession,
     ArcLocalCids, ArcRemoteCids, CidRegistry, Components, Connection, CoreConnection, DataStreams,
-    FlowController, Handshake,
+    FlowController, Handshake, Termination,
 };
 
 impl Connection {
@@ -422,7 +429,7 @@ async fn accpet_transport_parameters<EE>(
 
         let active_cid_limit = remote.active_connection_id_limit().into();
         if let Err(e) = cid_registry.local.set_limit(active_cid_limit) {
-            event_broker.emit(e.into());
+            event_broker.emit(Event::Failed(e));
         }
     }
 }
@@ -452,15 +459,15 @@ async fn accept_probed_paths(
 
             let mut rcvd_packets = conn_iface.register(new_pathway);
             let packet_entry = packet_entry.clone();
-            let recv_task = async move {
+            let recv_task = tokio::spawn(async move {
                 while let Some(new_packet) = rcvd_packets.next().await {
                     if !packet_entry.deliver(new_packet, new_pathway).await {
                         break;
                     }
                 }
-            };
+            });
 
-            let send_task = {
+            let send_fut = {
                 let dcid = components.cid_registry.remote.apply_dcid();
                 let flow_ctrl = components.flow_ctrl.clone();
                 // 探测到的路径不可能是第一条路径，就不给它发送i0h包的能力
@@ -479,7 +486,7 @@ async fn accept_probed_paths(
                         // recv task terminate(connection terminate)
                         _ = recv_task => {}
                         // connection or network path terminate
-                        _ = send_task => {}
+                        _ = send_fut => {}
                     }
                     paths.del(&new_pathway);
                     // TODO: way & pathway, 不统一，之后改改
@@ -510,15 +517,15 @@ impl CoreConnection {
 
             let mut rcvd_packets = self.conn_iface.register(pathway);
             let packet_entry = self.packet_entry.clone();
-            let recv_task = async move {
+            let recv_task = tokio::spawn(async move {
                 while let Some(new_packet) = rcvd_packets.next().await {
                     if !packet_entry.deliver(new_packet, pathway).await {
                         break;
                     }
                 }
-            };
+            });
 
-            let send_task = {
+            let send_fut = {
                 let path = path.clone();
                 let dcid = self.components.cid_registry.remote.apply_dcid();
                 let flow_ctrl = self.components.flow_ctrl.clone();
@@ -562,7 +569,7 @@ impl CoreConnection {
                         // recv task terminate(connection terminate)
                         _ = recv_task => {}
                         // connection or network path terminate
-                        _ = send_task => {}
+                        _ = send_fut => {}
                     }
                     paths.del(&pathway);
                     conn_iface.unregister(&pathway);
@@ -571,6 +578,219 @@ impl CoreConnection {
 
             path
         });
+    }
+
+    pub(crate) fn enter_closing<EE>(self, error: Error, event_broker: EE) -> Termination
+    where
+        EE: EmitEvent + Send + Clone + 'static,
+    {
+        self.spaces.data.streams.on_conn_error(&error);
+        self.spaces.data.datagrams.on_conn_error(&error);
+        self.components.flow_ctrl.on_conn_error(&error);
+        self.components.parameters.on_conn_error(&error);
+        self.components.tls_session.on_conn_error(&error);
+        self.components.cid_registry.local.freeze();
+        self.conn_iface.disable_probing();
+        self.paths.clear();
+
+        tokio::spawn({
+            let event_broker = event_broker.clone();
+            let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
+            async move {
+                tokio::time::sleep(pto_duration).await;
+                event_broker.emit(Event::Terminated);
+            }
+        });
+
+        struct ReceivingStatistics {
+            last_recv_time: Instant,
+            rcvd_packets: usize,
+        }
+
+        impl ReceivingStatistics {
+            fn should_send(&mut self) -> bool {
+                let last_recv_time = core::mem::replace(&mut self.last_recv_time, Instant::now());
+                self.rcvd_packets += 1;
+                last_recv_time.elapsed() > Duration::from_secs(1) || self.rcvd_packets % 3 == 0
+            }
+        }
+
+        let statistics = Arc::new(Mutex::new(ReceivingStatistics {
+            last_recv_time: Instant::now(),
+            rcvd_packets: 0,
+        }));
+
+        let scid = self.components.cid_registry.local.initial_scid();
+        let dcid = self.components.cid_registry.remote.latest_dcid();
+        let ccf: Arc<ConnectionCloseFrame> = Arc::new(error.clone().into());
+
+        self.packet_entry.one_rtt.close();
+
+        match self.spaces.initial.close() {
+            None => self.packet_entry.initial.close(),
+            Some(space) => {
+                let mut packets = self.packet_entry.initial.receiver();
+                let ccf = ccf.clone();
+                let event_broker = event_broker.clone();
+                let statistics = statistics.clone();
+                let conn_iface = self.conn_iface.clone();
+                tokio::spawn(async move {
+                    while let Some((packet, pathway)) = packets.next().await {
+                        if let Some(ccf) = space.deliver(packet) {
+                            event_broker.emit(Event::Closed(ccf));
+                        }
+                        if statistics.lock().unwrap().should_send() {
+                            let (Some(scid), Some(dcid)) = (scid, dcid) else {
+                                continue;
+                            };
+                            let Ok(send_capability) = conn_iface.send_capability(pathway) else {
+                                continue;
+                            };
+                            let max_segment_size = send_capability.max_segment_size as usize;
+                            let reversed_size = send_capability.reversed_size as usize;
+                            let mut buffer = vec![0; max_segment_size];
+                            let buf = &mut buffer[reversed_size..];
+                            // None -> buffer too small, hardly possible
+                            if let Some(packet) =
+                                space.try_assemble_ccf_packet(scid, dcid, ccf.as_ref(), buf)
+                            {
+                                let packets =
+                                    &[io::IoSlice::new(&buffer[..reversed_size + packet.size()])];
+                                _ = conn_iface
+                                    .send_packets(packets, pathway, pathway.dst())
+                                    .await;
+                            };
+                        }
+                    }
+                });
+            }
+        }
+
+        self.packet_entry.zero_rtt.close();
+
+        match self.spaces.handshake.close() {
+            None => self.packet_entry.handshake.close(),
+            Some(space) => {
+                let mut packets = self.packet_entry.handshake.receiver();
+                let ccf = ccf.clone();
+                let event_broker = event_broker.clone();
+                let statistics = statistics.clone();
+                let conn_iface = self.conn_iface.clone();
+                tokio::spawn(async move {
+                    while let Some((packet, pathway)) = packets.next().await {
+                        if let Some(ccf) = space.deliver(packet) {
+                            event_broker.emit(Event::Closed(ccf));
+                        }
+                        if statistics.lock().unwrap().should_send() {
+                            let (Some(scid), Some(dcid)) = (scid, dcid) else {
+                                continue;
+                            };
+                            let Ok(send_capability) = conn_iface.send_capability(pathway) else {
+                                continue;
+                            };
+                            let max_segment_size = send_capability.max_segment_size as usize;
+                            let reversed_size = send_capability.reversed_size as usize;
+                            let mut buffer = vec![0; max_segment_size];
+                            let buf = &mut buffer[reversed_size..];
+                            // None -> buffer too small, hardly possible
+                            if let Some(packet) =
+                                space.try_assemble_ccf_packet(scid, dcid, ccf.as_ref(), buf)
+                            {
+                                let packets =
+                                    &[io::IoSlice::new(&buffer[..reversed_size + packet.size()])];
+                                _ = conn_iface
+                                    .send_packets(packets, pathway, pathway.dst())
+                                    .await;
+                            };
+                        }
+                    }
+                });
+            }
+        }
+
+        match self.spaces.data.close() {
+            None => todo!(),
+            Some(space) => {
+                let mut packets = self.packet_entry.one_rtt.receiver();
+                let ccf = ccf.clone();
+                let event_broker = event_broker.clone();
+                let statistics = statistics.clone();
+                let conn_iface = self.conn_iface.clone();
+                tokio::spawn(async move {
+                    while let Some((packet, pathway)) = packets.next().await {
+                        if let Some(ccf) = space.deliver(packet) {
+                            event_broker.emit(Event::Closed(ccf));
+                        }
+                        if statistics.lock().unwrap().should_send() {
+                            let Some(dcid) = dcid else {
+                                continue;
+                            };
+                            let Ok(send_capability) = conn_iface.send_capability(pathway) else {
+                                continue;
+                            };
+                            let max_segment_size = send_capability.max_segment_size as usize;
+                            let reversed_size = send_capability.reversed_size as usize;
+                            let mut buffer = vec![0; max_segment_size];
+                            let buf = &mut buffer[reversed_size..];
+                            // None -> buffer too small, hardly possible
+                            if let Some(packet) =
+                                space.try_assemble_ccf_packet(dcid, ccf.as_ref(), buf)
+                            {
+                                let packets =
+                                    &[io::IoSlice::new(&buffer[..reversed_size + packet.size()])];
+                                _ = conn_iface
+                                    .send_packets(packets, pathway, pathway.dst())
+                                    .await;
+                            };
+                        }
+                    }
+                });
+            }
+        }
+
+        Termination {
+            error,
+            cid_registry: self.components.cid_registry,
+            conn_iface: self.conn_iface,
+            packet_entry: self.packet_entry,
+            is_draining: false,
+        }
+    }
+
+    pub(crate) fn enter_draining<EE>(self, error: Error, event_broker: EE) -> Termination
+    where
+        EE: EmitEvent + Send + Clone + 'static,
+    {
+        self.spaces.data.streams.on_conn_error(&error);
+        self.spaces.data.datagrams.on_conn_error(&error);
+        self.components.flow_ctrl.on_conn_error(&error);
+        self.components.parameters.on_conn_error(&error);
+        self.components.tls_session.on_conn_error(&error);
+        self.components.cid_registry.local.freeze();
+        self.conn_iface.disable_probing();
+        self.paths.clear();
+
+        tokio::spawn({
+            let event_broker = event_broker.clone();
+            let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
+            async move {
+                tokio::time::sleep(pto_duration).await;
+                event_broker.emit(Event::Terminated);
+            }
+        });
+
+        self.packet_entry.initial.close();
+        self.packet_entry.handshake.close();
+        self.packet_entry.zero_rtt.close();
+        self.packet_entry.one_rtt.close();
+
+        Termination {
+            error,
+            cid_registry: self.components.cid_registry,
+            conn_iface: self.conn_iface,
+            packet_entry: self.packet_entry,
+            is_draining: false,
+        }
     }
 }
 

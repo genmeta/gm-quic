@@ -6,7 +6,8 @@ use std::{
 use bytes::BufMut;
 use futures::{channel::mpsc, Stream, StreamExt};
 use qbase::{
-    frame::{Frame, FrameReader},
+    cid::ConnectionId,
+    frame::{ConnectionCloseFrame, Frame, FrameReader},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::{
@@ -14,7 +15,8 @@ use qbase::{
             GetScid, GetType,
         },
         keys::ArcKeys,
-        MiddleAssembledPacket, PacketWriter,
+        number::PacketNumber,
+        AssembledPacket, MarshalFrame, MiddleAssembledPacket, PacketWriter,
     },
     token::TokenRegistry,
     Epoch,
@@ -22,8 +24,9 @@ use qbase::{
 use qcongestion::{CongestionControl, TrackPackets};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
-    journal::InitialJournal,
+    journal::{ArcRcvdJournal, InitialJournal},
 };
+use rustls::quic::Keys;
 use tokio::task::JoinHandle;
 
 use super::{pipe, try_join2, AckInitial};
@@ -101,7 +104,6 @@ impl InitialSpace {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn parse_rcvd_packets_and_dispatch_frames(
         &self,
         mut rcvd_packets: impl Stream<Item = (InitialPacket, Pathway)> + Unpin + Send + 'static,
@@ -266,5 +268,67 @@ impl TrackPackets for InitialTracker {
 
     fn retire(&self, pn: u64) {
         self.journal.of_rcvd_packets().write().retire(pn);
+    }
+}
+
+#[derive(Clone)]
+pub struct ClosingInitialSpace {
+    rcvd_journal: ArcRcvdJournal,
+    ccf_packet_pn: (u64, PacketNumber),
+    keys: Arc<Keys>,
+}
+
+impl InitialSpace {
+    pub fn close(self) -> Option<ClosingInitialSpace> {
+        let keys = self.keys.get_local_keys()?;
+        let sent_journal = self.journal.of_sent_packets();
+        let new_packet_guard = sent_journal.new_packet();
+        let ccf_packet_pn = new_packet_guard.pn();
+        let rcvd_journal = self.journal.of_rcvd_packets();
+        Some(ClosingInitialSpace {
+            rcvd_journal,
+            ccf_packet_pn,
+            keys,
+        })
+    }
+}
+
+impl ClosingInitialSpace {
+    pub fn deliver(
+        &self,
+        (header, mut bytes, offset): InitialPacket,
+    ) -> Option<ConnectionCloseFrame> {
+        let (hpk, pk) = (
+            self.keys.remote.header.as_ref(),
+            self.keys.remote.packet.as_ref(),
+        );
+        let undecoded_pn = remove_protection_of_long_packet(hpk, bytes.as_mut(), offset).ok()??;
+
+        let pn = self.rcvd_journal.decode_pn(undecoded_pn).ok()?;
+        let body_offset = offset + undecoded_pn.size();
+        let _pkt_len = decrypt_packet(pk, pn, bytes.as_mut(), body_offset).ok()?;
+
+        FrameReader::new(bytes.freeze(), header.get_type())
+            .filter_map(Result::ok)
+            .find_map(|(f, _ack)| match f {
+                Frame::Close(ccf) => Some(ccf),
+                _ => None,
+            })
+    }
+
+    pub fn try_assemble_ccf_packet(
+        &self,
+        scid: ConnectionId,
+        dcid: ConnectionId,
+        ccf: &ConnectionCloseFrame,
+        buf: &mut [u8],
+    ) -> Option<AssembledPacket> {
+        let header = LongHeaderBuilder::with_cid(scid, dcid).handshake();
+        let pn = self.ccf_packet_pn;
+        let mut packet_writer = PacketWriter::new_long(&header, buf, pn, self.keys.clone())?;
+
+        packet_writer.dump_frame(ccf.clone());
+
+        Some(packet_writer.encrypt_and_protect())
     }
 }

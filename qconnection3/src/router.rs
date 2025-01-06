@@ -146,7 +146,9 @@ impl QuicProto {
     }
 
     pub(crate) fn unregister(&self, signpost: &Signpost) {
-        self.entries.remove(signpost);
+        if let Some((_signpost, queue)) = self.entries.remove(signpost) {
+            queue.close();
+        }
     }
 
     pub(crate) fn registry<ISSUED>(

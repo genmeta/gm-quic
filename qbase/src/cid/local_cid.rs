@@ -60,6 +60,13 @@ where
         self.cid_deque.get(0)?.map(|(cid, _)| cid)
     }
 
+    fn active_cids(&self) -> Vec<ConnectionId> {
+        self.cid_deque
+            .iter()
+            .filter_map(|v| v.map(|(cid, _)| cid))
+            .collect()
+    }
+
     /// Set the maximum number of active connection IDs.
     ///
     /// The value of the active_connection_id_limit parameter MUST be at least 2.
@@ -143,7 +150,7 @@ where
 /// and those issued to the peer and have not been retired,
 /// otherwise routing conflicts will occur.
 #[derive(Debug, Clone)]
-pub struct ArcLocalCids<ISSUED>(Arc<Mutex<LocalCids<ISSUED>>>)
+pub struct ArcLocalCids<ISSUED>(Arc<Mutex<Result<LocalCids<ISSUED>, Vec<ConnectionId>>>>)
 where
     ISSUED: GenUniqueCid + SendFrame<NewConnectionIdFrame>;
 
@@ -160,7 +167,7 @@ where
     ///    eventually sending the [`NewConnectionIdFrame`] to the peer.
     pub fn new(scid: ConnectionId, issued_cids: ISSUED) -> Self {
         let raw_local_cids = LocalCids::new(scid, issued_cids);
-        Self(Arc::new(Mutex::new(raw_local_cids)))
+        Self(Arc::new(Mutex::new(Ok(raw_local_cids))))
     }
 
     /// Get the initial source connection ID.
@@ -201,7 +208,18 @@ where
     /// which indicates that the connection has been established,
     /// and only the short header packet should be used.
     pub fn initial_scid(&self) -> Option<ConnectionId> {
-        self.0.lock().unwrap().initial_scid()
+        self.0.lock().unwrap().as_ref().ok()?.initial_scid()
+    }
+
+    /// Stop issuing new connection IDs and retire all active connection IDs.
+    ///
+    /// This method is used in conjunction with the [`Self::active_cids`] to ensure that no more connection IDs are issued after it is called.
+    /// This method should be called before [`Self::active_cids`].
+    pub fn freeze(&self) {
+        let mut guard = self.0.lock().unwrap();
+        if let Ok(local_cids) = guard.as_ref() {
+            *guard = Err(local_cids.active_cids());
+        }
     }
 
     /// Get all active connection IDs.
@@ -209,13 +227,11 @@ where
     /// This method will be useful when finally releasing connection resources,
     /// as it will remove all routing table entries related to this connection.
     pub fn active_cids(&self) -> Vec<ConnectionId> {
-        self.0
-            .lock()
-            .unwrap()
-            .cid_deque
-            .iter()
-            .filter_map(|v| v.map(|(cid, _)| cid))
-            .collect()
+        let guard = self.0.lock().unwrap();
+        match guard.as_ref() {
+            Ok(local_cids) => local_cids.active_cids(),
+            Err(cids) => cids.clone(),
+        }
     }
 
     /// Set the maximum number of active connection IDs.
@@ -223,7 +239,11 @@ where
     /// After fully obtaining the peer's connection parameters, extract the peer's
     /// active_cid_limit parameter and set it through this method.
     pub fn set_limit(&self, active_cid_limit: u64) -> Result<(), Error> {
-        self.0.lock().unwrap().set_limit(active_cid_limit)
+        let mut guard = self.0.lock().unwrap();
+        if let Ok(local_cids) = guard.as_mut() {
+            local_cids.set_limit(active_cid_limit)?;
+        }
+        Ok(())
     }
 }
 
@@ -239,7 +259,10 @@ where
         &self,
         frame: &RetireConnectionIdFrame,
     ) -> Result<Self::Output, crate::error::Error> {
-        self.0.lock().unwrap().recv_retire_cid_frame(frame)
+        match self.0.lock().unwrap().as_mut() {
+            Ok(local_cids) => local_cids.recv_retire_cid_frame(frame),
+            Err(_) => Ok(None),
+        }
     }
 }
 
@@ -275,11 +298,12 @@ mod tests {
         let initial_scid = ConnectionId::random_gen(8);
         let local_cids = ArcLocalCids::new(initial_scid, IssuedCids::default());
         let mut guard = local_cids.0.lock().unwrap();
+        let local_cids = guard.as_mut().unwrap();
 
-        assert_eq!(guard.cid_deque.len(), 2);
+        assert_eq!(local_cids.cid_deque.len(), 2);
 
-        guard.set_limit(3).unwrap();
-        assert_eq!(guard.cid_deque.len(), 3);
+        local_cids.set_limit(3).unwrap();
+        assert_eq!(local_cids.cid_deque.len(), 3);
     }
 
     #[test]

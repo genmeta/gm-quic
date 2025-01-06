@@ -18,11 +18,11 @@ pub struct ConnInterface {
 
 impl ConnInterface {
     pub fn new(
-        router_if: Arc<super::QuicProto>,
+        router_iface: Arc<super::QuicProto>,
         probed_pathway_tx: mpsc::UnboundedSender<Pathway>,
     ) -> Self {
         Self {
-            router_iface: router_if,
+            router_iface,
             probed_pathway_tx,
             queues: DashMap::new(),
         }
@@ -45,16 +45,16 @@ impl ConnInterface {
         self.router_iface.send_packets(pkts, way, dst).await
     }
 
-    pub async fn deliver(&self, way: Pathway, pkt: Packet) {
-        let queue = self.queues.entry(way).or_insert_with(|| {
-            _ = self.probed_pathway_tx.unbounded_send(way);
+    pub async fn deliver(&self, pathway: Pathway, packet: Packet) {
+        let queue = self.queues.entry(pathway).or_insert_with(|| {
+            _ = self.probed_pathway_tx.unbounded_send(pathway);
             BoundQueue::new(16)
         });
-        _ = queue.send(pkt);
+        _ = queue.send(packet);
     }
 
-    pub fn register(&self, way: Pathway) -> Receiver<Packet> {
-        let entry = self.queues.entry(way);
+    pub fn register(&self, pathway: Pathway) -> Receiver<Packet> {
+        let entry = self.queues.entry(pathway);
         // 不该发生冲突
         debug_assert!(matches!(entry, dashmap::Entry::Vacant(..)));
         entry.or_insert_with(|| BoundQueue::new(16)).receiver()
@@ -63,5 +63,9 @@ impl ConnInterface {
     pub fn unregister(&self, way: &Pathway) {
         let (_way, queue) = self.queues.remove(way).unwrap();
         queue.close();
+    }
+
+    pub fn disable_probing(&self) {
+        self.probed_pathway_tx.close_channel();
     }
 }

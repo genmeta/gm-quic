@@ -85,6 +85,12 @@ impl<T> BoundQueue<T> {
     }
 }
 
+impl<T> Drop for BoundQueue<T> {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
 pub struct Receiver<T> {
     inner: Arc<BoundQueueInner<T>>,
 }

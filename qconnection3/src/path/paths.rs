@@ -3,11 +3,15 @@ use std::{sync::Arc, time::Duration};
 use dashmap::DashMap;
 use qbase::Epoch;
 use qcongestion::CongestionControl;
+use tokio::task::AbortHandle;
 
 use super::{Path, Pathway};
 
 #[derive(Clone)]
-pub struct ArcPaths(Arc<DashMap<Pathway, Arc<Path>>>);
+pub struct ArcPaths {
+    paths: Arc<DashMap<Pathway, Arc<Path>>>,
+    ticker: AbortHandle,
+}
 
 impl Default for ArcPaths {
     fn default() -> Self {
@@ -17,40 +21,44 @@ impl Default for ArcPaths {
 
 impl ArcPaths {
     pub fn new() -> Self {
-        let arc_paths = Self(Arc::new(DashMap::new()));
-        tokio::spawn({
-            let arc_paths = arc_paths.clone();
+        let paths: Arc<DashMap<Pathway, Arc<Path>>> = Arc::new(DashMap::new());
+        let ticker = tokio::spawn({
+            let arc_paths = paths.clone();
             async move {
                 loop {
                     tokio::time::sleep(Duration::from_micros(10)).await;
-                    for path in arc_paths.0.iter() {
-                        path.cc.do_tick();
+                    for path in arc_paths.iter() {
+                        path.value().cc.do_tick();
                     }
                 }
             }
-        });
-        arc_paths
+        })
+        .abort_handle();
+        Self { paths, ticker }
     }
 
     pub fn get(&self, pathway: &Pathway) -> Option<Arc<Path>> {
-        self.0.get(pathway).map(|arc| arc.value().clone())
+        self.paths.get(pathway).map(|arc| arc.value().clone())
     }
 
     pub fn entry(&self, pathway: Pathway) -> dashmap::Entry<'_, Pathway, Arc<Path>> {
-        self.0.entry(pathway)
+        self.paths.entry(pathway)
     }
 
     pub fn del(&self, pathway: &Pathway) {
-        self.0.remove(pathway);
+        self.paths.remove(pathway);
     }
 
     pub fn exist_paths(&self) -> usize {
-        self.0.len()
+        self.paths.len()
     }
 
     pub fn max_pto_duration(&self) -> Option<Duration> {
-        self.0.iter().map(|p| p.cc.pto_time(Epoch::Data)).max()
+        self.paths.iter().map(|p| p.cc.pto_time(Epoch::Data)).max()
     }
 
-    pub fn launch_ticker(self: &Arc<Self>) {}
+    pub fn clear(&self) {
+        self.ticker.abort();
+        self.paths.clear();
+    }
 }
