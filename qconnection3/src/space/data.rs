@@ -1,40 +1,41 @@
+use std::sync::Arc;
+
 use bytes::BufMut;
 use futures::{channel::mpsc, Stream, StreamExt};
 use qbase::{
     cid::ConnectionId,
     error::Error,
     frame::{
-        io::WriteFrame, ConnectionCloseFrame, Frame, FrameReader, PathChallengeFrame,
-        PathResponseFrame, ReceiveFrame, SendFrame,
+        ConnectionCloseFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
+        ReceiveFrame, SendFrame,
     },
     packet::{
         self,
         decrypt::{
             decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
         },
-        encrypt::{encode_short_first_byte, encrypt_packet, protect_header},
         header::{
-            io::WriteHeader,
             long::{io::LongHeaderBuilder, ZeroRttHeader},
-            EncodeHeader, GetType, OneRttHeader,
+            GetType, OneRttHeader,
         },
-        keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys, HeaderProtectionKeys},
-        number::WritePacketNumber,
+        keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys},
+        number::PacketNumber,
         r#type::Type,
         signal::SpinBit,
-        DataPacket, MiddleAssembledPacket, PacketNumber, PacketWriter,
+        AssembledPacket, MarshalFrame, MiddleAssembledPacket, PacketWriter,
     },
     param::CommonParameters,
     sid::{ControlConcurrency, Role},
     Epoch,
 };
-use qcongestion::{CongestionControl, TrackPackets, MSS};
+use qcongestion::{CongestionControl, TrackPackets};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcRcvdJournal, DataJournal},
     reliable::{ArcReliableFrameDeque, GuaranteedFrame},
 };
 use qunreliable::DatagramFlow;
+use rustls::quic::HeaderProtectionKey;
 use tokio::task::JoinHandle;
 
 use super::try_join2;
@@ -457,95 +458,63 @@ impl TrackPackets for DataTracker {
 }
 
 #[derive(Clone)]
-pub struct ClosingOneRttScope {
-    keys: (HeaderProtectionKeys, ArcOneRttPacketKeys),
+pub struct ClosingDataSpace {
+    keys: (Arc<dyn HeaderProtectionKey>, ArcOneRttPacketKeys),
+    ccf_packet_pn: (u64, PacketNumber),
     rcvd_journal: ArcRcvdJournal,
-    // 发包时用得着
-    next_sending_pn: (u64, PacketNumber),
 }
 
-impl ClosingOneRttScope {
-    pub fn assemble_ccf_packet(
-        &self,
-        buf: &mut [u8; MSS],
-        ccf: &ConnectionCloseFrame,
-        dcid: ConnectionId,
-    ) -> usize {
-        let (hpk, pk) = &self.keys;
-        let hpk = &hpk.local;
-
-        let spin = Default::default();
-        let hdr = OneRttHeader::new(spin, dcid);
-        let (mut hdr_buf, payload_tag) = buf.split_at_mut(hdr.size());
-        let payload_tag_len = payload_tag.len();
-        let tag_len = pk.tag_len();
-        let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
-
-        let (pn, encoded_pn) = self.next_sending_pn;
-        let (mut pn_buf, mut body_buf) = payload_buf.split_at_mut(encoded_pn.size());
-
-        let body_size = body_buf.remaining_mut();
-
-        body_buf.put_frame(ccf);
-
-        let hdr_len = hdr_buf.len();
-        let pn_len = pn_buf.len();
-        let mut body_len = body_size - body_buf.remaining_mut();
-        if pn_len + body_len + tag_len < 20 {
-            let padding_len = 20 - pn_len - body_len - tag_len;
-            body_buf.put_bytes(0, padding_len);
-            body_len += padding_len;
-        }
-        let sent_size = hdr_len + pn_len + body_len + tag_len;
-
-        hdr_buf.put_header(&hdr);
-        pn_buf.put_packet_number(encoded_pn);
-
-        let (key_phase, pk) = pk.lock_guard().get_local();
-        encode_short_first_byte(&mut buf[0], pn_len, key_phase);
-        encrypt_packet(pk.as_ref(), pn, &mut buf[..sent_size], hdr_len + pn_len);
-        protect_header(hpk.as_ref(), &mut buf[..sent_size], hdr_len, pn_len);
-
-        sent_size
-    }
-}
-
-impl TryFrom<DataSpace> for ClosingOneRttScope {
-    type Error = ();
-
-    fn try_from(data: DataSpace) -> Result<Self, Self::Error> {
-        let Some(keys) = data.one_rtt_keys.invalid() else {
-            return Err(());
-        };
-        let rcvd_journal = data.journal.of_rcvd_packets();
-        let next_sending_pn = data.journal.of_sent_packets().new_packet().pn();
-
-        Ok(Self {
-            keys,
+impl DataSpace {
+    pub fn close(self) -> Option<ClosingDataSpace> {
+        let keys = self.one_rtt_keys.get_local_keys()?;
+        let sent_journal = self.journal.of_sent_packets();
+        let new_packet_guard = sent_journal.new_packet();
+        let ccf_packet_pn = new_packet_guard.pn();
+        let rcvd_journal = self.journal.of_rcvd_packets();
+        Some(ClosingDataSpace {
             rcvd_journal,
-            next_sending_pn,
+            ccf_packet_pn,
+            keys,
         })
     }
 }
 
-impl super::RecvPacket for ClosingOneRttScope {
-    fn has_rcvd_ccf(&self, mut packet: DataPacket) -> bool {
-        let (undecoded_pn, key_phase) = match remove_protection_of_short_packet(
-            self.keys.0.remote.as_ref(),
-            packet.bytes.as_mut(),
-            packet.offset,
-        ) {
-            Ok(Some(pn)) => pn,
-            _ => return false,
-        };
+impl ClosingDataSpace {
+    pub fn deliver(
+        &self,
+        (header, mut bytes, offset): OneRttPacket,
+    ) -> Option<ConnectionCloseFrame> {
+        let (hpk, pk) = &self.keys;
+        let (undecoded_pn, key_phase) =
+            remove_protection_of_short_packet(hpk.as_ref(), bytes.as_mut(), offset).ok()??;
+        let pn = self.rcvd_journal.decode_pn(undecoded_pn).ok()?;
+        let body_offset = offset + undecoded_pn.size();
+        let pk = pk.lock_guard().get_remote(key_phase, pn);
+        let _pkt_len = decrypt_packet(pk.as_ref(), pn, bytes.as_mut(), body_offset).ok()?;
 
-        let pn = match self.rcvd_journal.decode_pn(undecoded_pn) {
-            Ok(pn) => pn,
-            // TooOld/TooLarge/HasRcvd
-            Err(_e) => return false,
-        };
-        let body_offset = packet.offset + undecoded_pn.size();
-        let pk = self.keys.1.lock_guard().get_remote(key_phase, pn);
-        Self::decrypt_and_parse(pk.as_ref(), pn, packet, body_offset)
+        FrameReader::new(bytes.freeze(), header.get_type())
+            .filter_map(Result::ok)
+            .find_map(|(f, _ack)| match f {
+                Frame::Close(ccf) => Some(ccf),
+                _ => None,
+            })
+    }
+
+    pub fn try_assemble_ccf_packet(
+        &self,
+        dcid: ConnectionId,
+        ccf: &ConnectionCloseFrame,
+        buf: &mut [u8],
+    ) -> Option<AssembledPacket> {
+        let (hpk, pk) = &self.keys;
+        let (key_phase, pk) = pk.lock_guard().get_local();
+        let header = OneRttHeader::new(Default::default(), dcid);
+        let pn = self.ccf_packet_pn;
+        let mut packet_writer =
+            PacketWriter::new_short(&header, buf, pn, hpk.clone(), pk, key_phase)?;
+
+        packet_writer.dump_frame(ccf.clone());
+
+        Some(packet_writer.encrypt_and_protect())
     }
 }

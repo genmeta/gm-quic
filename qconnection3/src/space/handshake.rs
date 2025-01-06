@@ -4,27 +4,25 @@ use bytes::BufMut;
 use futures::{channel::mpsc, Stream, StreamExt};
 use qbase::{
     cid::ConnectionId,
-    frame::{io::WriteFrame, ConnectionCloseFrame, Frame, FrameReader},
+    frame::{ConnectionCloseFrame, Frame, FrameReader},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
-        encrypt::{encode_long_first_byte, encrypt_packet, protect_header},
         header::{
-            io::WriteHeader,
             long::{io::LongHeaderBuilder, HandshakeHeader},
-            EncodeHeader, GetType,
+            GetType,
         },
         keys::ArcKeys,
-        number::WritePacketNumber,
-        DataPacket, MiddleAssembledPacket, PacketNumber, PacketWriter,
+        number::PacketNumber,
+        AssembledPacket, MarshalFrame, MiddleAssembledPacket, PacketWriter,
     },
-    varint::{EncodeBytes, VarInt, WriteVarInt},
     Epoch,
 };
-use qcongestion::{CongestionControl, TrackPackets, MSS};
+use qcongestion::{CongestionControl, TrackPackets};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcRcvdJournal, HandshakeJournal},
 };
+use rustls::quic::Keys;
 use tokio::task::JoinHandle;
 
 use super::try_join2;
@@ -72,7 +70,7 @@ impl HandshakeSpace {
             let broker = broker.clone();
             move |frame: Frame, path: &Path| match frame {
                 Frame::Ack(f) => {
-                    path.cc().on_ack(Epoch::Initial, &f);
+                    path.cc().on_ack(Epoch::Handshake, &f);
                     _ = ack_frames_entry.unbounded_send(f);
                 }
                 Frame::Close(f) => broker.emit(Event::Closed(f)),
@@ -149,7 +147,7 @@ impl HandshakeSpace {
                     // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
                     // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
                     // address to have been validated.
-                    // It may have already been verified using tokens in the Initial space
+                    // It may have already been verified using tokens in the Handshake space
                     path.grant_anti_amplifier();
 
                     match FrameReader::new(bytes.freeze(), header.get_type()).try_fold(
@@ -214,103 +212,6 @@ impl HandshakeSpace {
 }
 
 #[derive(Clone)]
-pub struct ClosingHandshakeScope {
-    keys: Arc<rustls::quic::Keys>,
-    rcvd_journal: ArcRcvdJournal,
-    // 发包时用得着
-    next_sending_pn: (u64, PacketNumber),
-}
-
-impl ClosingHandshakeScope {
-    pub fn assemble_ccf_packet(
-        &self,
-        buf: &mut [u8; MSS],
-        ccf: &ConnectionCloseFrame,
-        scid: ConnectionId,
-        dcid: ConnectionId,
-    ) -> usize {
-        let (pk, hk) = (
-            self.keys.local.packet.as_ref(),
-            self.keys.local.header.as_ref(),
-        );
-
-        let hdr = LongHeaderBuilder::with_cid(dcid, scid).handshake();
-        let (mut hdr_buf, payload_tag) = buf.split_at_mut(hdr.size() + 2);
-        let payload_tag_len = payload_tag.len();
-        let tag_len = pk.tag_len();
-        let payload_buf = &mut payload_tag[..payload_tag_len - tag_len];
-
-        let (pn, encoded_pn) = self.next_sending_pn;
-        let (mut pn_buf, mut body_buf) = payload_buf.split_at_mut(encoded_pn.size());
-
-        let body_size = body_buf.remaining_mut();
-        body_buf.put_frame(ccf);
-        let mut body_len = body_size - body_buf.remaining_mut();
-
-        let hdr_len = hdr_buf.len();
-        let pn_len = pn_buf.len();
-        if pn_len + body_len + tag_len < 20 {
-            let padding_len = 20 - pn_len - body_len - tag_len;
-            body_buf.put_bytes(0, padding_len);
-            body_len += padding_len;
-        }
-        let pkt_size = hdr_len + pn_len + body_len + tag_len;
-
-        hdr_buf.put_header(&hdr);
-        hdr_buf.encode_varint(
-            &VarInt::try_from(pn_len + body_len + tag_len).unwrap(),
-            EncodeBytes::Two,
-        );
-        pn_buf.put_packet_number(encoded_pn);
-
-        encode_long_first_byte(&mut buf[0], pn_len);
-        encrypt_packet(pk, pn, &mut buf[..pkt_size], hdr_len + pn_len);
-        protect_header(hk, &mut buf[..pkt_size], hdr_len, pn_len);
-
-        pkt_size
-    }
-}
-
-impl TryFrom<HandshakeSpace> for ClosingHandshakeScope {
-    type Error = ();
-
-    fn try_from(hs: HandshakeSpace) -> Result<Self, Self::Error> {
-        let Some(keys) = hs.keys.invalid() else {
-            return Err(());
-        };
-        let rcvd_journal = hs.journal.of_rcvd_packets();
-        let next_sending_pn = hs.journal.of_sent_packets().new_packet().pn();
-
-        Ok(Self {
-            keys,
-            rcvd_journal,
-            next_sending_pn,
-        })
-    }
-}
-
-impl super::RecvPacket for ClosingHandshakeScope {
-    fn has_rcvd_ccf(&self, mut packet: DataPacket) -> bool {
-        let undecoded_pn = match remove_protection_of_long_packet(
-            self.keys.remote.header.as_ref(),
-            packet.bytes.as_mut(),
-            packet.offset,
-        ) {
-            Ok(Some(pn)) => pn,
-            _ => return false,
-        };
-
-        let pn = match self.rcvd_journal.decode_pn(undecoded_pn) {
-            Ok(pn) => pn,
-            // TooOld/TooLarge/HasRcvd
-            Err(_e) => return false,
-        };
-        let body_offset = packet.offset + undecoded_pn.size();
-        Self::decrypt_and_parse(self.keys.remote.packet.as_ref(), pn, packet, body_offset)
-    }
-}
-
-#[derive(Clone)]
 pub struct HandshakeTracker {
     journal: HandshakeJournal,
     outgoing: CryptoStreamOutgoing,
@@ -325,5 +226,67 @@ impl TrackPackets for HandshakeTracker {
 
     fn retire(&self, pn: u64) {
         self.journal.of_rcvd_packets().write().retire(pn);
+    }
+}
+
+#[derive(Clone)]
+pub struct ClosingHandshakeSpace {
+    rcvd_journal: ArcRcvdJournal,
+    ccf_packet_pn: (u64, PacketNumber),
+    keys: Arc<Keys>,
+}
+
+impl HandshakeSpace {
+    pub fn close(self) -> Option<ClosingHandshakeSpace> {
+        let keys = self.keys.get_local_keys()?;
+        let sent_journal = self.journal.of_sent_packets();
+        let new_packet_guard = sent_journal.new_packet();
+        let ccf_packet_pn = new_packet_guard.pn();
+        let rcvd_journal = self.journal.of_rcvd_packets();
+        Some(ClosingHandshakeSpace {
+            rcvd_journal,
+            ccf_packet_pn,
+            keys,
+        })
+    }
+}
+
+impl ClosingHandshakeSpace {
+    pub fn deliver(
+        &self,
+        (header, mut bytes, offset): HandshakePacket,
+    ) -> Option<ConnectionCloseFrame> {
+        let (hpk, pk) = (
+            self.keys.remote.header.as_ref(),
+            self.keys.remote.packet.as_ref(),
+        );
+        let undecoded_pn = remove_protection_of_long_packet(hpk, bytes.as_mut(), offset).ok()??;
+
+        let pn = self.rcvd_journal.decode_pn(undecoded_pn).ok()?;
+        let body_offset = offset + undecoded_pn.size();
+        let _pkt_len = decrypt_packet(pk, pn, bytes.as_mut(), body_offset).ok()?;
+
+        FrameReader::new(bytes.freeze(), header.get_type())
+            .filter_map(Result::ok)
+            .find_map(|(f, _ack)| match f {
+                Frame::Close(ccf) => Some(ccf),
+                _ => None,
+            })
+    }
+
+    pub fn try_assemble_ccf_packet(
+        &self,
+        scid: ConnectionId,
+        dcid: ConnectionId,
+        ccf: &ConnectionCloseFrame,
+        buf: &mut [u8],
+    ) -> Option<AssembledPacket> {
+        let header = LongHeaderBuilder::with_cid(scid, dcid).handshake();
+        let pn = self.ccf_packet_pn;
+        let mut packet_writer = PacketWriter::new_long(&header, buf, pn, self.keys.clone())?;
+
+        packet_writer.dump_frame(ccf.clone());
+
+        Some(packet_writer.encrypt_and_protect())
     }
 }
