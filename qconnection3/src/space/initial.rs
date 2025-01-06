@@ -29,7 +29,7 @@ use tokio::task::JoinHandle;
 use super::{pipe, try_join2, AckInitial};
 use crate::{
     events::{EmitEvent, Event},
-    path::{Path, Paths, Pathway},
+    path::{ArcPaths, Path, Pathway},
     tx::{PacketMemory, Transaction},
     Components,
 };
@@ -38,10 +38,10 @@ pub type InitialPacket = (InitialHeader, bytes::BytesMut, usize);
 
 #[derive(Clone)]
 pub struct InitialSpace {
-    pub token: Arc<Mutex<Vec<u8>>>,
     pub keys: ArcKeys,
-    pub journal: InitialJournal,
     pub crypto_stream: CryptoStream,
+    token: Arc<Mutex<Vec<u8>>>,
+    journal: InitialJournal,
 }
 
 impl InitialSpace {
@@ -61,7 +61,7 @@ impl InitialSpace {
     pub fn build(
         &self,
         rcvd_packets: impl Stream<Item = (InitialPacket, Pathway)> + Unpin + Send + 'static,
-        pathes: &Arc<Paths>,
+        paths: &ArcPaths,
         components: &Components,
         broker: impl EmitEvent + Clone + Send + 'static,
     ) -> JoinHandle<()> {
@@ -94,7 +94,7 @@ impl InitialSpace {
 
         self.parse_rcvd_packets_and_dispatch_frames(
             rcvd_packets,
-            pathes,
+            paths,
             dispatch_frame,
             components,
             broker,
@@ -105,12 +105,12 @@ impl InitialSpace {
     fn parse_rcvd_packets_and_dispatch_frames(
         &self,
         mut rcvd_packets: impl Stream<Item = (InitialPacket, Pathway)> + Unpin + Send + 'static,
-        pathes: &Arc<Paths>,
+        paths: &ArcPaths,
         dispatch_frame: impl Fn(Frame, &Path) + Send + 'static,
         components: &Components,
         broker: impl EmitEvent + Clone + Send + 'static,
     ) -> JoinHandle<()> {
-        let pathes = pathes.clone();
+        let paths = paths.clone();
         let parameters = components.parameters.clone();
 
         let validate = {
@@ -135,7 +135,7 @@ impl InitialSpace {
                 while let Some((((header, mut bytes, offset), pathway), keys)) =
                     try_join2(rcvd_packets.next(), keys.get_remote_keys()).await
                 {
-                    let Some(path) = pathes.get(&pathway) else {
+                    let Some(path) = paths.get(&pathway) else {
                         continue;
                     };
                     let undecoded_pn = match remove_protection_of_long_packet(
@@ -242,18 +242,19 @@ impl InitialSpace {
         let packet: PacketWriter<'b> = packet.try_into().ok()?;
         Some((packet.abandon(), ack))
     }
+
+    pub fn tracker(&self) -> InitialTracker {
+        InitialTracker {
+            journal: self.journal.clone(),
+            outgoing: self.crypto_stream.outgoing().clone(),
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct InitialTracker {
     journal: InitialJournal,
     outgoing: CryptoStreamOutgoing,
-}
-
-impl InitialTracker {
-    pub fn new(journal: InitialJournal, outgoing: CryptoStreamOutgoing) -> Self {
-        Self { journal, outgoing }
-    }
 }
 
 impl TrackPackets for InitialTracker {

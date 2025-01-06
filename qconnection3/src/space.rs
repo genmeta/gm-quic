@@ -28,6 +28,7 @@ use crate::{
     DataStreams, FlowController,
 };
 
+#[derive(Clone)]
 pub struct Spaces {
     pub initial: InitialSpace,
     pub handshake: HandshakeSpace,

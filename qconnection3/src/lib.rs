@@ -1,10 +1,16 @@
-use qbase::{cid, flow, param, token};
+use std::sync::{Arc, RwLock};
+
+use path::{entry::PacketEntry, ArcPaths};
+use qbase::{cid, flow, param::ArcParameters, token::ArcTokenRegistry};
 use qrecovery::{
     recv,
     reliable::{self, ArcReliableFrameDeque},
     send,
     streams::{self, Ext},
 };
+use router::ConnInterface;
+use space::Spaces;
+use tls::ArcTlsSession;
 
 pub mod events;
 pub mod interface;
@@ -14,6 +20,10 @@ pub mod space;
 pub mod tls;
 pub mod tx;
 pub mod util;
+
+pub mod prelude {}
+
+pub mod builder;
 
 pub type ArcLocalCids = cid::ArcLocalCids<router::RouterRegistry<reliable::ArcReliableFrameDeque>>;
 pub type ArcRemoteCids = cid::ArcRemoteCids<reliable::ArcReliableFrameDeque>;
@@ -28,11 +38,22 @@ pub type StreamReader = recv::Reader<Ext<ArcReliableFrameDeque>>;
 
 pub type Handshake = qbase::handshake::Handshake<reliable::ArcReliableFrameDeque>;
 
+#[derive(Clone)]
 pub struct Components {
-    parameters: param::ArcParameters,
-    tls_session: tls::ArcTlsSession,
+    parameters: ArcParameters,
+    tls_session: ArcTlsSession,
     handshake: Handshake,
-    token_registry: token::ArcTokenRegistry,
+    token_registry: ArcTokenRegistry,
     cid_registry: CidRegistry,
     flow_ctrl: FlowController,
 }
+
+pub struct CoreConnection {
+    components: Components,
+    spaces: Spaces,
+    paths: ArcPaths,
+    conn_iface: Arc<ConnInterface>,
+    packet_entry: Arc<PacketEntry>,
+}
+
+pub struct Connection(RwLock<Result<CoreConnection, ()>>);

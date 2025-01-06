@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use bytes::BufMut;
 use futures::{channel::mpsc, Stream, StreamExt};
 use qbase::{
@@ -42,7 +40,7 @@ use tokio::task::JoinHandle;
 use super::try_join2;
 use crate::{
     events::{EmitEvent, Event},
-    path::{Path, Paths, Pathway, SendBuffer},
+    path::{ArcPaths, Path, Pathway, SendBuffer},
     space::{pipe, AckData, FlowControlledDataStreams},
     tx::{PacketMemory, Transaction},
     Components, DataStreams,
@@ -55,20 +53,20 @@ pub type OneRttPacket = (OneRttHeader, bytes::BytesMut, usize);
 pub struct DataSpace {
     pub zero_rtt_keys: ArcKeys,
     pub one_rtt_keys: ArcOneRttKeys,
-    pub journal: DataJournal,
     pub crypto_stream: CryptoStream,
-    pub reliable_frames: ArcReliableFrameDeque,
     pub streams: DataStreams,
     pub datagrams: DatagramFlow,
+    journal: DataJournal,
+    reliable_frames: ArcReliableFrameDeque,
 }
 
 impl DataSpace {
     pub fn new(
         role: Role,
+        reliable_frames: ArcReliableFrameDeque,
         local_params: &CommonParameters,
         streams_ctrl: Box<dyn ControlConcurrency>,
     ) -> Self {
-        let reliable_frames = ArcReliableFrameDeque::with_capacity(8);
         let streams = DataStreams::new(role, local_params, streams_ctrl, reliable_frames.clone());
         Self {
             zero_rtt_keys: ArcKeys::new_pending(),
@@ -83,7 +81,7 @@ impl DataSpace {
 
     pub fn build(
         &self,
-        pathes: &Arc<Paths>,
+        paths: &ArcPaths,
         components: &Components,
         rcvd_0rtt_packets: impl Stream<Item = (ZeroRttPacket, Pathway)> + Send + Unpin + 'static,
         rcvd_1rtt_packets: impl Stream<Item = (OneRttPacket, Pathway)> + Send + Unpin + 'static,
@@ -185,13 +183,13 @@ impl DataSpace {
 
         let join_handler0 = self.parse_rcvd_0rtt_packet_and_dispatch_frames(
             rcvd_0rtt_packets,
-            pathes.clone(),
+            paths.clone(),
             dispatch_data_frame.clone(),
             broker.clone(),
         );
         let join_handler1 = self.parse_rcvd_1rtt_packet_and_dispatch_frames(
             rcvd_1rtt_packets,
-            pathes.clone(),
+            paths.clone(),
             dispatch_data_frame,
             broker.clone(),
         );
@@ -201,7 +199,7 @@ impl DataSpace {
     fn parse_rcvd_0rtt_packet_and_dispatch_frames(
         &self,
         mut rcvd_packets: impl Stream<Item = (ZeroRttPacket, Pathway)> + Send + Unpin + 'static,
-        pathes: Arc<Paths>,
+        paths: ArcPaths,
         dispatch_frame: impl Fn(Frame, packet::Type, &Path) + Send + 'static,
         broker: impl EmitEvent + Clone + Send + 'static,
     ) -> JoinHandle<()> {
@@ -212,7 +210,7 @@ impl DataSpace {
                 while let Some((((header, mut bytes, offset), pathway), keys)) =
                     try_join2(rcvd_packets.next(), keys.get_remote_keys()).await
                 {
-                    let Some(path) = pathes.get(&pathway) else {
+                    let Some(path) = paths.get(&pathway) else {
                         continue;
                     };
                     let undecoded_pn = match remove_protection_of_long_packet(
@@ -269,7 +267,7 @@ impl DataSpace {
     fn parse_rcvd_1rtt_packet_and_dispatch_frames(
         &self,
         mut rcvd_packets: impl Stream<Item = (OneRttPacket, Pathway)> + Send + Unpin + 'static,
-        pathes: Arc<Paths>,
+        paths: ArcPaths,
         dispatch_frame: impl Fn(Frame, packet::Type, &Path) + Send + 'static,
         broker: impl EmitEvent + Clone + Send + 'static,
     ) -> JoinHandle<()> {
@@ -280,7 +278,7 @@ impl DataSpace {
                 while let Some((((header, mut bytes, offset), pathway), (hpk, pk))) =
                     try_join2(rcvd_packets.next(), keys.get_remote_keys()).await
                 {
-                    let Some(path) = pathes.get(&pathway) else {
+                    let Some(path) = paths.get(&pathway) else {
                         continue;
                     };
                     let (undecoded_pn, key_phase) = match remove_protection_of_short_packet(
@@ -419,6 +417,15 @@ impl DataSpace {
         self.one_rtt_keys.get_local_keys().is_some()
     }
 
+    pub fn tracker(&self) -> DataTracker {
+        DataTracker {
+            journal: self.journal.clone(),
+            reliable_frames: self.reliable_frames.clone(),
+            streams: self.streams.clone(),
+            outgoing: self.crypto_stream.outgoing().clone(),
+        }
+    }
+
     pub fn on_conn_error(&self, error: &Error) {
         self.streams.on_conn_error(error);
         self.datagrams.on_conn_error(error);
@@ -431,22 +438,6 @@ pub struct DataTracker {
     reliable_frames: ArcReliableFrameDeque,
     streams: DataStreams,
     outgoing: CryptoStreamOutgoing,
-}
-
-impl DataTracker {
-    pub fn new(
-        journal: DataJournal,
-        reliable_frames: ArcReliableFrameDeque,
-        streams: DataStreams,
-        outgoing: CryptoStreamOutgoing,
-    ) -> Self {
-        Self {
-            journal,
-            reliable_frames,
-            streams,
-            outgoing,
-        }
-    }
 }
 
 impl TrackPackets for DataTracker {
