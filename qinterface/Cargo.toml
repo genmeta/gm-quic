@@ -9,8 +9,10 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-qbase = { workspace = true }
 bytes = { workspace = true }
+dashmap = { workspace = true }
+qbase = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
 
 qudp = { workspace = true, optional = true }
 
