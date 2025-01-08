@@ -32,7 +32,7 @@ use qrecovery::{
 
 use crate::{
     path::{AntiAmplifier, Constraints, SendBuffer},
-    space::{DataSpace, HandshakeSpace, InitialSpace, Spaces},
+    space::{data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace, Spaces},
     Credit, FlowController,
 };
 

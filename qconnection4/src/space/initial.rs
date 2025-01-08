@@ -4,9 +4,10 @@ use std::{
 };
 
 use bytes::BufMut;
-use futures::{channel::mpsc, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use qbase::{
     cid::ConnectionId,
+    error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
@@ -28,9 +29,9 @@ use qrecovery::{
     journal::{ArcRcvdJournal, InitialJournal},
 };
 use rustls::quic::Keys;
-use tokio::task::JoinHandle;
+use tokio::sync::mpsc;
 
-use super::{pipe, try_join2, AckInitial};
+use super::{pipe, AckInitial, DecryptedPacket};
 use crate::{
     events::{EmitEvent, Event},
     path::{ArcPaths, Path},
@@ -39,6 +40,7 @@ use crate::{
 };
 
 pub type InitialPacket = (InitialHeader, bytes::BytesMut, usize);
+pub type DecryptedInitialPacket = DecryptedPacket<InitialHeader>;
 
 #[derive(Clone)]
 pub struct InitialSpace {
@@ -62,154 +64,32 @@ impl InitialSpace {
         }
     }
 
-    // pub fn build(
-    //     &self,
-    //     rcvd_packets: impl Stream<Item = (InitialPacket, Pathway)> + Unpin + Send + 'static,
-    //     paths: &ArcPaths,
-    //     components: &Components,
-    //     broker: impl EmitEvent + Clone + Send + 'static,
-    // ) -> JoinHandle<()> {
-    //     let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
-    //     let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
+    pub async fn decrypt_packet(
+        &self,
+        (header, mut payload, offset): InitialPacket,
+    ) -> Option<Result<DecryptedInitialPacket, Error>> {
+        let keys = self.keys.get_remote_keys().await?;
+        let (hpk, pk) = (keys.remote.header.as_ref(), keys.remote.packet.as_ref());
 
-    //     let dispatch_frame = move |frame: Frame, path: &Path| {
-    //         match frame {
-    //             Frame::Ack(f) => {
-    //                 path.cc().on_ack(Epoch::Initial, &f);
-    //                 _ = ack_frames_entry.unbounded_send(f)
-    //             }
-    //             Frame::Crypto(f, bytes) => _ = crypto_frames_entry.unbounded_send((f, bytes)),
-    //             Frame::Close(_) => { /* trustless */ }
-    //             Frame::Padding(_) | Frame::Ping(_) => {}
-    //             _ => unreachable!("unexpected frame: {:?} in initial packet", frame),
-    //         }
-    //     };
+        let undecoded_pn =
+            match remove_protection_of_long_packet(hpk, payload.as_mut(), offset).transpose()? {
+                Ok(undecoded_pn) => undecoded_pn,
+                Err(invalid_reversed_bits) => return Some(Err(invalid_reversed_bits.into())),
+            };
+        let rcvd_journal = self.journal.of_rcvd_packets();
+        let pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
+        let body_offset = offset + undecoded_pn.size();
+        let pkt_len = decrypt_packet(pk, pn, payload.as_mut(), body_offset).ok()?;
 
-    //     pipe(
-    //         rcvd_crypto_frames,
-    //         self.crypto_stream.incoming(),
-    //         broker.clone(),
-    //     );
-    //     pipe(
-    //         rcvd_ack_frames,
-    //         AckInitial::new(&self.journal, &self.crypto_stream),
-    //         broker.clone(),
-    //     );
+        let _header = payload.split_to(body_offset);
+        payload.truncate(pkt_len);
 
-    //     self.parse_rcvd_packets_and_dispatch_frames(
-    //         rcvd_packets,
-    //         paths,
-    //         dispatch_frame,
-    //         components,
-    //         broker,
-    //     )
-    // }
-
-    // fn parse_rcvd_packets_and_dispatch_frames(
-    //     &self,
-    //     mut rcvd_packets: impl Stream<Item = (InitialPacket, Pathway)> + Unpin + Send + 'static,
-    //     paths: &ArcPaths,
-    //     dispatch_frame: impl Fn(Frame, &Path) + Send + 'static,
-    //     components: &Components,
-    //     broker: impl EmitEvent + Clone + Send + 'static,
-    // ) -> JoinHandle<()> {
-    //     let paths = paths.clone();
-    //     let parameters = components.parameters.clone();
-
-    //     let validate = {
-    //         let tls_session = components.tls_session.clone();
-    //         let token_registry = components.token_registry.clone();
-    //         move |initial_token: &[u8], path: &Path| {
-    //             if let TokenRegistry::Server(provider) = token_registry.deref() {
-    //                 if let Some(server_name) = tls_session.server_name() {
-    //                     if provider.verify_token(server_name, initial_token) {
-    //                         path.grant_anti_amplifier();
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //     };
-    //     tokio::spawn({
-    //         let rcvd_journal = self.journal.of_rcvd_packets();
-    //         let keys = self.keys.clone();
-    //         let remote_cids = components.cid_registry.remote.clone();
-
-    //         async move {
-    //             while let Some((((header, mut bytes, offset), pathway), keys)) =
-    //                 try_join2(rcvd_packets.next(), keys.get_remote_keys()).await
-    //             {
-    //                 let Some(path) = paths.get(&pathway) else {
-    //                     continue;
-    //                 };
-    //                 let undecoded_pn = match remove_protection_of_long_packet(
-    //                     keys.remote.header.as_ref(),
-    //                     bytes.as_mut(),
-    //                     offset,
-    //                 ) {
-    //                     Ok(Some(pn)) => pn,
-    //                     Ok(None) => continue,
-    //                     Err(invalid_reserved_bits) => {
-    //                         broker.emit(Event::Failed(invalid_reserved_bits.into()));
-    //                         break;
-    //                     }
-    //                 };
-
-    //                 let pn = match rcvd_journal.decode_pn(undecoded_pn) {
-    //                     Ok(pn) => pn,
-    //                     // TooOld/TooLarge/HasRcvd
-    //                     Err(_e) => continue,
-    //                 };
-    //                 let body_offset = offset + undecoded_pn.size();
-    //                 let decrypted = decrypt_packet(
-    //                     keys.remote.packet.as_ref(),
-    //                     pn,
-    //                     bytes.as_mut(),
-    //                     body_offset,
-    //                 );
-    //                 let Ok(pkt_len) = decrypted else { continue };
-
-    //                 path.on_rcvd(bytes.len());
-
-    //                 let _header = bytes.split_to(body_offset);
-    //                 bytes.truncate(pkt_len);
-
-    //                 let remote_scid = header.get_scid();
-    //                 // When receiving the initial packet, change the DCID of the
-    //                 // path to the SCID carried in the received packet.
-    //                 remote_cids.revise_initial_dcid(*remote_scid);
-
-    //                 match FrameReader::new(bytes.freeze(), header.get_type()).try_fold(
-    //                     false,
-    //                     |is_ack_packet, frame| {
-    //                         let (frame, is_ack_eliciting) = frame?;
-    //                         dispatch_frame(frame, &path);
-    //                         Ok(is_ack_packet || is_ack_eliciting)
-    //                     },
-    //                 ) {
-    //                     Ok(is_ack_packet) => {
-    //                         rcvd_journal.register_pn(pn);
-    //                         path.cc().on_pkt_rcvd(Epoch::Initial, pn, is_ack_packet);
-    //                     }
-    //                     Err(e) => {
-    //                         broker.emit(Event::Failed(e));
-    //                         break;
-    //                     }
-    //                 }
-    //                 // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
-    //                 // A server might wish to validate the client address before starting the cryptographic handshake.
-    //                 // QUIC uses a token in the Initial packet to provide address validation prior to completing the handshake.
-    //                 // This token is delivered to the client during connection establishment with a Retry packet (see Section 8.1.2)
-    //                 // or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
-    //                 // only the first cid will be set
-    //                 parameters.initial_scid_from_peer_need_equal(*header.get_scid());
-
-    //                 if !header.token.is_empty() {
-    //                     validate(&header.token, &path);
-    //                 }
-    //             }
-    //         }
-    //     })
-    // }
+        Some(Ok(DecryptedInitialPacket {
+            header,
+            pn,
+            payload: payload.freeze(),
+        }))
+    }
 
     /// TODO: 还要padding、加密等功能，理应返回一个PacketWriter+密钥，以防后续还要padding
     ///     或者提供一个不需外部计算padding的接口，比如先填充Initial之外的包，最后再填充Initial，提供最小长度
@@ -252,6 +132,96 @@ impl InitialSpace {
             outgoing: self.crypto_stream.outgoing().clone(),
         }
     }
+}
+
+pub fn launch_deliver_and_parse(
+    mut packets: impl Stream<Item = (InitialPacket, Pathway)> + Unpin + Send + 'static,
+    space: &InitialSpace,
+    paths: &ArcPaths,
+    components: &Components,
+    event_broker: impl EmitEvent + Clone + Send + Sync + 'static,
+) {
+    let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded_channel();
+    let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded_channel();
+
+    pipe(
+        rcvd_crypto_frames,
+        space.crypto_stream.incoming(),
+        event_broker.clone(),
+    );
+    pipe(
+        rcvd_ack_frames,
+        AckInitial::new(&space.journal, &space.crypto_stream),
+        event_broker.clone(),
+    );
+
+    let parameters = components.parameters.clone();
+    let validate = {
+        let tls_session = components.tls_session.clone();
+        let token_registry = components.token_registry.clone();
+        move |initial_token: &[u8], path: &Path| {
+            if let TokenRegistry::Server(provider) = token_registry.deref() {
+                if let Some(server_name) = tls_session.server_name() {
+                    if provider.verify_token(server_name, initial_token) {
+                        path.grant_anti_amplifier();
+                    }
+                }
+            }
+        }
+    };
+
+    let space = space.clone();
+    let paths = paths.clone();
+    tokio::spawn(async move {
+        while let Some((packet, pathway)) = packets.next().await {
+            let Some(path) = paths.get(&pathway) else {
+                continue;
+            };
+            let dispatch_frame = {
+                |frame: Frame| match frame {
+                    Frame::Ack(f) => {
+                        path.cc().on_ack(Epoch::Initial, &f);
+                        _ = ack_frames_entry.send(f);
+                    }
+                    Frame::Close(f) => event_broker.emit(Event::Closed(f)),
+                    Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
+                    Frame::Padding(_) | Frame::Ping(_) => {}
+                    _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
+                }
+            };
+            match space.decrypt_packet(packet).await {
+                Some(Ok(packet)) => {
+                    match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
+                        false,
+                        |is_ack_packet, frame| {
+                            let (frame, is_ack_eliciting) = frame?;
+                            dispatch_frame(frame);
+                            Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                        },
+                    ) {
+                        Ok(is_ack_packet) => {
+                            space.journal.of_rcvd_packets().register_pn(packet.pn);
+                            path.cc()
+                                .on_pkt_rcvd(Epoch::Handshake, packet.pn, is_ack_packet);
+                            // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
+                            // A server might wish to validate the client address before starting the cryptographic handshake.
+                            // QUIC uses a token in the Initial packet to provide address validation prior to completing the handshake.
+                            // This token is delivered to the client during connection establishment with a Retry packet (see Section 8.1.2)
+                            // or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
+                            // only the first cid will be set
+                            parameters.initial_scid_from_peer_need_equal(*packet.header.get_scid());
+                            if !packet.header.token.is_empty() {
+                                validate(&packet.header.token, &path);
+                            }
+                        }
+                        Err(error) => event_broker.emit(Event::Failed(error)),
+                    }
+                }
+                Some(Err(error)) => event_broker.emit(Event::Failed(error)),
+                None => continue,
+            }
+        }
+    });
 }
 
 #[derive(Clone)]
