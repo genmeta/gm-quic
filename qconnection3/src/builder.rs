@@ -6,7 +6,7 @@ use std::{
 
 use futures::{Stream, StreamExt};
 pub use qbase::{
-    cid::ConnectionId,
+    cid::{ConnectionId, GenUniqueCid},
     param::{ClientParameters, CommonParameters, ServerParameters},
     sid::ControlConcurrency,
     token::{TokenProvider, TokenSink},
@@ -25,7 +25,7 @@ use tokio::time::Instant;
 
 use crate::{
     events::{EmitEvent, Event},
-    path::{entry::PacketEntry, ArcPaths, Path, Pathway},
+    path::{entry::PacketEntry, ArcPaths, Path, PathGuard, Pathway},
     router::{ConnInterface, QuicProto},
     space::{DataSpace, HandshakeSpace, InitialSpace, Spaces},
     tls::ArcTlsSession,
@@ -443,8 +443,8 @@ async fn accept_probed_paths(
     conn_iface: Arc<ConnInterface>,
     paths: ArcPaths,
 ) {
-    while let Some(new_pathway) = probed_paths.next().await {
-        paths.entry(new_pathway).or_insert_with(|| {
+    while let Some(pathway) = probed_paths.next().await {
+        paths.entry(pathway).or_insert_with(|| {
             let cc = ArcCC::new(
                 CongestionAlgorithm::Bbr,
                 Duration::from_micros(100),
@@ -455,15 +455,13 @@ async fn accept_probed_paths(
                 ],
                 components.handshake.clone(),
             );
-            let path = Arc::new(Path::new(new_pathway, cc, conn_iface.clone()));
+            let path = Arc::new(Path::new(pathway, cc, conn_iface.clone()));
 
-            let mut rcvd_packets = conn_iface.register(new_pathway);
+            let mut rcvd_packets = conn_iface.register(pathway);
             let packet_entry = packet_entry.clone();
             let recv_task = tokio::spawn(async move {
                 while let Some(new_packet) = rcvd_packets.next().await {
-                    if !packet_entry.deliver(new_packet, new_pathway).await {
-                        break;
-                    }
+                    packet_entry.deliver(new_packet, pathway).await
                 }
             });
 
@@ -475,7 +473,7 @@ async fn accept_probed_paths(
                 path.new_one_rtt_burst(dcid, flow_ctrl, space).launch()
             };
 
-            tokio::spawn({
+            let task = tokio::spawn({
                 let path = path.clone();
                 let paths = paths.clone();
                 let conn_iface = conn_iface.clone();
@@ -488,13 +486,12 @@ async fn accept_probed_paths(
                         // connection or network path terminate
                         _ = send_fut => {}
                     }
-                    paths.del(&new_pathway);
-                    // TODO: way & pathway, 不统一，之后改改
-                    conn_iface.unregister(&new_pathway);
+                    paths.del(&pathway);
+                    conn_iface.unregister(&pathway);
                 }
             });
 
-            path
+            PathGuard::new(path, task.abort_handle())
         });
     }
 }
@@ -519,9 +516,7 @@ impl CoreConnection {
             let packet_entry = self.packet_entry.clone();
             let recv_task = tokio::spawn(async move {
                 while let Some(new_packet) = rcvd_packets.next().await {
-                    if !packet_entry.deliver(new_packet, pathway).await {
-                        break;
-                    }
+                    packet_entry.deliver(new_packet, pathway).await;
                 }
             });
 
@@ -558,7 +553,7 @@ impl CoreConnection {
                 }
             };
 
-            tokio::spawn({
+            let task = tokio::spawn({
                 let path = path.clone();
                 let paths = self.paths.clone();
                 let conn_iface = self.conn_iface.clone();
@@ -576,14 +571,19 @@ impl CoreConnection {
                 }
             });
 
-            path
+            PathGuard::new(path, task.abort_handle())
         });
     }
 
-    pub(crate) fn enter_closing<EE>(self, error: Error, event_broker: EE) -> Termination
+    pub fn del_path(&self, pathway: Pathway) {
+        self.paths.del(&pathway);
+    }
+
+    pub fn enter_closing<EE>(self, ccf: ConnectionCloseFrame, event_broker: EE) -> Termination
     where
         EE: EmitEvent + Send + Clone + 'static,
     {
+        let error = ccf.clone().into();
         self.spaces.data.streams.on_conn_error(&error);
         self.spaces.data.datagrams.on_conn_error(&error);
         self.components.flow_ctrl.on_conn_error(&error);
@@ -622,7 +622,7 @@ impl CoreConnection {
 
         let scid = self.components.cid_registry.local.initial_scid();
         let dcid = self.components.cid_registry.remote.latest_dcid();
-        let ccf: Arc<ConnectionCloseFrame> = Arc::new(error.clone().into());
+        let ccf = Arc::new(ccf);
 
         self.packet_entry.one_rtt.close();
 
@@ -709,7 +709,7 @@ impl CoreConnection {
         }
 
         match self.spaces.data.close() {
-            None => todo!(),
+            None => self.packet_entry.one_rtt.close(),
             Some(space) => {
                 let mut packets = self.packet_entry.one_rtt.receiver();
                 let ccf = ccf.clone();
@@ -757,7 +757,7 @@ impl CoreConnection {
         }
     }
 
-    pub(crate) fn enter_draining<EE>(self, error: Error, event_broker: EE) -> Termination
+    pub fn enter_draining<EE>(self, error: Error, event_broker: EE) -> Termination
     where
         EE: EmitEvent + Send + Clone + 'static,
     {

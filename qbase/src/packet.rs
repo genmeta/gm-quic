@@ -206,8 +206,8 @@ pub struct MiddleAssembledPacket {
     cursor: usize,
     end: usize,
 
+    // keys, can also be used to indicates whether the packet is long header or short header
     keys: Keys,
-    // indicates whether the packet is long header or short header
 
     // Packets containing only frames with [`Spec::N`] are not ack-eliciting;
     // otherwise, they are ack-eliciting.
@@ -307,9 +307,11 @@ impl<'b> PacketWriter<'b> {
             return None;
         }
 
-        let mut hdr_buf = &mut buffer[..hdr_len];
+        let (mut hdr_buf, mut payload_buf) = buffer.split_at_mut(hdr_len);
+        let encoded_pn = pn.1;
         hdr_buf.put_header(header);
-        let cursor = hdr_len + pn.1.size();
+        payload_buf.put_packet_number(encoded_pn);
+        let cursor = hdr_len + encoded_pn.size();
         let keys = Keys::ShortHeaderPacket { hpk, pk, key_phase };
         let end = buffer.len() - keys.pk().tag_len();
         let packet = MiddleAssembledPacket {
@@ -367,10 +369,10 @@ impl<'b> PacketWriter<'b> {
             encode_short_first_byte(&mut self.buffer[0], pn_len, key_phase);
 
             let pk = self.packet.keys.pk();
-            let body_offset = self.hdr_len + pn_len;
+            let payload_offset = self.hdr_len;
+            let body_offset = payload_offset + pn_len;
             encrypt_packet(pk, actual_pn, &mut self.buffer[..pkt_size], body_offset);
 
-            let payload_offset = self.hdr_len;
             let hpk = self.packet.keys.hpk();
             protect_header(hpk, &mut self.buffer[..pkt_size], payload_offset, pn_len);
         } else {

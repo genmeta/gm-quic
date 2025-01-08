@@ -7,9 +7,26 @@ use tokio::task::AbortHandle;
 
 use super::{Path, Pathway};
 
+pub struct PathGuard {
+    path: Arc<Path>,
+    task: AbortHandle,
+}
+
+impl PathGuard {
+    pub fn new(path: Arc<Path>, task: AbortHandle) -> Self {
+        Self { path, task }
+    }
+}
+
+impl Drop for PathGuard {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 #[derive(Clone)]
 pub struct ArcPaths {
-    paths: Arc<DashMap<Pathway, Arc<Path>>>,
+    paths: Arc<DashMap<Pathway, PathGuard>>,
     ticker: AbortHandle,
 }
 
@@ -21,14 +38,14 @@ impl Default for ArcPaths {
 
 impl ArcPaths {
     pub fn new() -> Self {
-        let paths: Arc<DashMap<Pathway, Arc<Path>>> = Arc::new(DashMap::new());
+        let paths: Arc<DashMap<Pathway, PathGuard>> = Arc::new(DashMap::new());
         let ticker = tokio::spawn({
             let arc_paths = paths.clone();
             async move {
                 loop {
                     tokio::time::sleep(Duration::from_micros(10)).await;
-                    for path in arc_paths.iter() {
-                        path.value().cc.do_tick();
+                    for path_guard in arc_paths.iter() {
+                        path_guard.path.cc.do_tick();
                     }
                 }
             }
@@ -38,10 +55,10 @@ impl ArcPaths {
     }
 
     pub fn get(&self, pathway: &Pathway) -> Option<Arc<Path>> {
-        self.paths.get(pathway).map(|arc| arc.value().clone())
+        self.paths.get(pathway).map(|guard| guard.path.clone())
     }
 
-    pub fn entry(&self, pathway: Pathway) -> dashmap::Entry<'_, Pathway, Arc<Path>> {
+    pub fn entry(&self, pathway: Pathway) -> dashmap::Entry<'_, Pathway, PathGuard> {
         self.paths.entry(pathway)
     }
 
@@ -54,7 +71,10 @@ impl ArcPaths {
     }
 
     pub fn max_pto_duration(&self) -> Option<Duration> {
-        self.paths.iter().map(|p| p.cc.pto_time(Epoch::Data)).max()
+        self.paths
+            .iter()
+            .map(|guard| guard.path.cc.pto_time(Epoch::Data))
+            .max()
     }
 
     pub fn clear(&self) {

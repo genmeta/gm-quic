@@ -1,10 +1,7 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::Arc,
     task::{Context, Poll},
     time::Instant,
 };
@@ -270,12 +267,11 @@ impl<'a> Transaction<'a> {
     pub fn load_1rtt_data(
         &mut self,
         buf: &mut [u8],
-        spin: &Arc<AtomicBool>,
+        spin: SpinBit,
         path_challenge_frames: &path::SendBuffer<PathChallengeFrame>,
         path_response_frames: &path::SendBuffer<PathResponseFrame>,
         data_space: &data::DataSpace,
     ) -> Option<(MiddleAssembledPacket, Option<u64>, usize)> {
-        let spin = SpinBit::from(spin.load(Ordering::Relaxed));
         data_space.try_assemble_1rtt(
             self,
             spin,
@@ -352,7 +348,7 @@ impl Transaction<'_> {
         &mut self,
         datagram: &mut [u8],
         spaces: &Spaces,
-        spin: &Arc<AtomicBool>,
+        spin: SpinBit,
         path_challenge_frames: &path::SendBuffer<PathChallengeFrame>,
         path_response_frames: &path::SendBuffer<PathResponseFrame>,
     ) -> usize {
@@ -429,7 +425,7 @@ impl Transaction<'_> {
             last_level_size = mid_pkt.size();
             self.constraints.commit(mid_pkt.size(), mid_pkt.in_flight());
             last_level = Some(LevelState {
-                epoch: Epoch::Data,
+                epoch: Epoch::Handshake,
                 mid_pkt,
                 ack,
             });
@@ -470,9 +466,7 @@ impl Transaction<'_> {
         }
 
         if let Some(final_level) = last_level {
-            let mut packet = final_level
-                .mid_pkt
-                .resume(self.constraints.constrain(&mut datagram[written..]));
+            let mut packet = final_level.mid_pkt.resume(&mut datagram[written..]);
 
             let padding = packet.remaining_mut();
             packet.pad(padding);

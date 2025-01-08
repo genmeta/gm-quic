@@ -50,18 +50,16 @@ impl ConnInterface {
             _ = self.probed_pathway_tx.unbounded_send(pathway);
             BoundQueue::new(16)
         });
-        _ = queue.send(packet);
+        _ = queue.send(packet).await;
     }
 
     pub fn register(&self, pathway: Pathway) -> Receiver<Packet> {
         let entry = self.queues.entry(pathway);
-        // 不该发生冲突
-        debug_assert!(matches!(entry, dashmap::Entry::Vacant(..)));
         entry.or_insert_with(|| BoundQueue::new(16)).receiver()
     }
 
-    pub fn unregister(&self, way: &Pathway) {
-        let (_way, queue) = self.queues.remove(way).unwrap();
+    pub fn unregister(&self, pathway: &Pathway) {
+        let (_pathway, queue) = self.queues.remove(pathway).unwrap();
         queue.close();
     }
 

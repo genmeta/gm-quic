@@ -6,7 +6,12 @@ use std::{
 use events::EmitEvent;
 use path::{entry::PacketEntry, ArcPaths};
 use qbase::{
-    cid, error::Error, flow, frame::ConnectionCloseFrame, param::ArcParameters,
+    cid,
+    error::Error,
+    flow,
+    frame::ConnectionCloseFrame,
+    param::{self, ArcParameters},
+    sid::StreamId,
     token::ArcTokenRegistry,
 };
 use qrecovery::{
@@ -29,7 +34,18 @@ pub mod tls;
 pub mod tx;
 pub mod util;
 
-pub mod prelude {}
+pub mod prelude {
+    pub use qbase::{frame::ConnectionCloseFrame, sid::StreamId, varint::VarInt};
+    pub use qunreliable::{UnreliableReader, UnreliableWriter};
+
+    pub use crate::{
+        events::Event,
+        interface::QuicInterface,
+        path::{Endpoint, Pathway},
+        router::{QuicListener, QuicProto},
+        Connection, StreamReader, StreamWriter,
+    };
+}
 
 pub mod builder;
 
@@ -77,13 +93,13 @@ pub struct Termination {
 pub struct Connection(RwLock<Result<CoreConnection, Termination>>);
 
 impl Connection {
-    pub fn enter_closing<EE>(&self, error: Error, event_broker: EE)
+    pub fn enter_closing<EE>(&self, ccf: ConnectionCloseFrame, event_broker: EE)
     where
         EE: EmitEvent + Send + Clone + 'static,
     {
         let mut conn = self.0.write().unwrap();
         if let Ok(core_conn) = conn.as_mut() {
-            *conn = Err(core_conn.clone().enter_closing(error, event_broker));
+            *conn = Err(core_conn.clone().enter_closing(ccf, event_broker));
         }
     }
 
@@ -117,6 +133,81 @@ impl Connection {
     fn map<T>(&self, map: impl Fn(&CoreConnection) -> T) -> io::Result<T> {
         let guard = self.0.read().unwrap();
         guard.as_ref().map(map).map_err(|e| e.error.clone().into())
+    }
+
+    pub async fn open_bi_stream(
+        &self,
+    ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
+        let (params, streams) = self.map(|core_conn| {
+            (
+                core_conn.components.parameters.clone(),
+                core_conn.spaces.data.streams.clone(),
+            )
+        })?;
+        let param::Pair { remote, .. } = params.await?;
+        let result = streams
+            .open_bi(remote.initial_max_stream_data_bidi_remote().into())
+            .await;
+        Ok(result?)
+    }
+
+    pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, StreamWriter)>> {
+        let (params, streams) = self.map(|core_conn| {
+            (
+                core_conn.components.parameters.clone(),
+                core_conn.spaces.data.streams.clone(),
+            )
+        })?;
+        let param::Pair { remote, .. } = params.await?;
+        let result = streams
+            .open_uni(remote.initial_max_stream_data_uni().into())
+            .await;
+        Ok(result?)
+    }
+
+    pub async fn accept_bi_stream(
+        &self,
+    ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
+        let (params, streams) = self.map(|core_conn| {
+            (
+                core_conn.components.parameters.clone(),
+                core_conn.spaces.data.streams.clone(),
+            )
+        })?;
+        let param::Pair { remote, .. } = params.await?;
+        let result = streams
+            .accept_bi(remote.initial_max_stream_data_bidi_local().into())
+            .await;
+        Ok(Some(result?))
+    }
+
+    pub async fn accept_uni_stream(&self) -> io::Result<Option<(StreamId, StreamReader)>> {
+        let (streams,) = self.map(|core_conn| (core_conn.spaces.data.streams.clone(),))?;
+        let result = streams.accept_uni().await;
+        Ok(Some(result?))
+    }
+
+    pub fn unreliable_reader(&self) -> io::Result<qunreliable::UnreliableReader> {
+        self.map(|core_conn| core_conn.spaces.data.datagrams.reader())?
+    }
+
+    pub async fn unreliable_writer(&self) -> io::Result<qunreliable::UnreliableWriter> {
+        let (params, datagrams) = self.map(|core_conn| {
+            (
+                core_conn.components.parameters.clone(),
+                core_conn.spaces.data.datagrams.clone(),
+            )
+        })?;
+        let param::Pair { remote, .. } = params.await?;
+        datagrams.writer(remote.max_datagram_frame_size().into())
+    }
+
+    pub fn add_path(&self, pathway: path::Pathway) -> io::Result<()> {
+        self.map(|core_conn| core_conn.add_path(pathway))
+    }
+
+    pub fn del_path(&self, pathway: path::Pathway) -> io::Result<()> {
+        self.map(|core_conn| core_conn.del_path(pathway))
     }
 }
 

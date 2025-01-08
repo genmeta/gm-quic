@@ -386,7 +386,7 @@ impl DataSpace {
         )?;
 
         let mut ack = None;
-        if let Some((largest, rcvd_time)) = tx.need_ack(Epoch::Handshake) {
+        if let Some((largest, rcvd_time)) = tx.need_ack(Epoch::Data) {
             let rcvd_journal = self.journal.of_rcvd_packets();
             if let Some(ack_frame) =
                 rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
@@ -402,9 +402,9 @@ impl DataSpace {
         //      crypto_stream.try_load_data_into(&mut packet);
         let crypto_stream_outgoing = self.crypto_stream.outgoing();
         crypto_stream_outgoing.try_load_data_into(&mut packet);
-        // try to load reliable frames into this 0RTT packet to send
+        // try to load reliable frames into this 1RTT packet to send
         self.reliable_frames.try_load_frames_into(&mut packet);
-        // try to load stream frames into this 0RTT packet to send
+        // try to load stream frames into this 1RTT packet to send
         let fresh_data = self
             .streams
             .try_load_data_into(&mut packet, tx.flow_limit());

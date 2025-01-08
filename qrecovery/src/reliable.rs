@@ -78,11 +78,12 @@ impl ArcReliableFrameDeque {
     {
         let mut deque = self.0.lock().unwrap();
         while let Some(frame) = deque.front() {
-            if frame.max_encoding_size() <= packet.remaining_mut()
-                || frame.encoding_size() <= packet.remaining_mut()
+            if frame.max_encoding_size() > packet.remaining_mut()
+                && frame.encoding_size() > packet.remaining_mut()
             {
-                packet.dump_frame(deque.pop_front().unwrap());
+                return;
             }
+            packet.dump_frame(deque.pop_front().unwrap());
         }
     }
 }

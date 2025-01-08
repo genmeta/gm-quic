@@ -40,7 +40,7 @@ async fn h3_test() {
     };
 
     let client = async move {
-        _ = client_example::run(client_opt)
+        client_example::run(client_opt)
             .await
             .expect("client failed");
     };
