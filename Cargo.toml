@@ -4,12 +4,13 @@ members = [
     "qbase",
     "qrecovery",
     "qconnection",
-    "qconnection3",
+    "qconnection4",
     "qcongestion",
     "qudp",
     "qunreliable",
     "gm-quic",
     "h3-shim",
+    "qinterface",
 ]
 default-members = [
     "qbase",
@@ -67,6 +68,7 @@ qrecovery = { path = "./qrecovery", version = "0.0.1" }
 qconnection = { path = "./qconnection", version = "0.0.1" }
 qcongestion = { path = "./qcongestion", version = "0.0.1" }
 qudp = { path = "./qudp", version = "0.0.1" }
+qinterface = { path = "./qinterface", version = "0.0.1" }
 qunreliable = { path = "./qunreliable", version = "0.0.1" }
 gm-quic = { path = "./gm-quic", version = "0.0.1" }
 

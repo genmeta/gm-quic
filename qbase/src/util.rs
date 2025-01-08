@@ -1,4 +1,5 @@
 mod async_deque;
+pub mod bound_deque;
 pub use async_deque::ArcAsyncDeque;
 
 mod data;
