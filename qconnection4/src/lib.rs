@@ -1,13 +1,16 @@
 pub mod events;
 pub mod path;
 pub mod space;
+pub mod termination;
 pub mod tls;
 pub mod tx;
 
-use std::sync::Arc;
+pub mod builder;
 
-use path::ArcPaths;
-use qbase::{cid, flow, param::ArcParameters, token::ArcTokenRegistry};
+use std::sync::{Arc, RwLock};
+
+use path::{entry::PacketEntry, ArcPaths};
+use qbase::{cid, error::Error, flow, param::ArcParameters, token::ArcTokenRegistry};
 use qinterface::{conn::ConnInterface, router::RouterRegistry};
 use qrecovery::{
     recv,
@@ -50,3 +53,16 @@ pub struct CoreConnection {
     spaces: Spaces,
     conn_iface: Arc<ConnInterface>,
 }
+
+#[derive(Clone)]
+pub struct Termination {
+    // for generate io::Error
+    error: Error,
+    // keep this to keep the routing
+    _cid_registry: CidRegistry,
+    // for closing space to enter draining state
+    packet_entry: Arc<PacketEntry>,
+    is_draining: bool,
+}
+
+pub struct Connection(RwLock<Result<CoreConnection, Termination>>);

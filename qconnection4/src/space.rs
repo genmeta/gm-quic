@@ -2,8 +2,6 @@ pub mod data;
 pub mod handshake;
 pub mod initial;
 
-use std::future::Future;
-
 use bytes::Bytes;
 use qbase::{
     error::Error,
@@ -34,19 +32,6 @@ pub struct DecryptedPacket<H> {
     header: H,
     pn: u64,
     payload: Bytes,
-}
-
-async fn try_join2<T1, T2>(
-    f1: impl Future<Output = Option<T1>> + Unpin,
-    f2: impl Future<Output = Option<T2>> + Unpin,
-) -> Option<(T1, T2)> {
-    use futures::future::*;
-    match select(f1, f2).await {
-        Either::Left((None, ..)) => None,
-        Either::Right((None, ..)) => None,
-        Either::Left((Some(t1), f2)) => Some((t1, f2.await?)),
-        Either::Right((Some(t2), f1)) => Some((f1.await?, t2)),
-    }
 }
 
 fn pipe<F: Send + 'static>(

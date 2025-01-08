@@ -29,7 +29,7 @@ use qbase::{
     Epoch,
 };
 use qcongestion::{CongestionControl, TrackPackets};
-use qinterface::path::Pathway;
+use qinterface::{closing::ClosingInterface, path::Pathway};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcRcvdJournal, DataJournal},
@@ -466,7 +466,7 @@ impl DataSpace {
 }
 
 impl ClosingDataSpace {
-    pub fn deliver(
+    pub fn recv_packet(
         &self,
         (header, mut bytes, offset): OneRttPacket,
     ) -> Option<ConnectionCloseFrame> {
@@ -503,4 +503,29 @@ impl ClosingDataSpace {
 
         Some(packet_writer.encrypt_and_protect())
     }
+}
+
+pub fn launch_deliver_and_parse_closing(
+    mut packets: impl Stream<Item = (OneRttPacket, Pathway)> + Unpin + Send + 'static,
+    space: ClosingDataSpace,
+    closing_iface: Arc<ClosingInterface>,
+    event_broker: impl EmitEvent + Clone + Send + 'static,
+) {
+    tokio::spawn(async move {
+        while let Some((packet, pathway)) = packets.next().await {
+            if let Some(ccf) = space.recv_packet(packet) {
+                event_broker.emit(Event::Closed(ccf.clone()));
+                return;
+            }
+            if closing_iface.should_send() {
+                _ = closing_iface
+                    .try_send_with(pathway, pathway.dst(), |buf, _scid, dcid, ccf| {
+                        space
+                            .try_assemble_ccf_packet(dcid?, ccf, buf)
+                            .map(|packet| packet.size())
+                    })
+                    .await;
+            }
+        }
+    });
 }

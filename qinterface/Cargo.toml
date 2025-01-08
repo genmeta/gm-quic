@@ -13,6 +13,7 @@ bytes = { workspace = true }
 dashmap = { workspace = true }
 qbase = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
+futures = { workspace = true }
 
 qudp = { workspace = true, optional = true }
 

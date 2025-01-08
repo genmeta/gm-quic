@@ -1,5 +1,6 @@
 pub mod conn;
 // handy（qudp）是可选的
+pub mod closing;
 #[cfg(feature = "qudp")]
 pub mod handy;
 pub mod path;
