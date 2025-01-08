@@ -1,11 +1,6 @@
-use std::{
-    convert::Infallible,
-    io,
-    ops::ControlFlow,
-    sync::{atomic::AtomicBool, Arc},
-};
+use std::{convert::Infallible, io, ops::ControlFlow, sync::Arc};
 
-use qbase::{cid::ConnectionId, Epoch};
+use qbase::{cid::ConnectionId, packet::signal::SpinBit, Epoch};
 
 use crate::{
     space::{DataSpace, Spaces},
@@ -17,7 +12,7 @@ pub struct Burst<S> {
     path: Arc<super::Path>,
     scid: ConnectionId,
     dcid: DcidCell,
-    spin: Arc<AtomicBool>,
+    spin: bool,
     flow_ctrl: FlowController,
     space: S,
 }
@@ -30,7 +25,7 @@ impl super::Path {
         space: DataSpace,
     ) -> Burst<DataSpace> {
         let path = self.clone();
-        let spin = Arc::new(AtomicBool::new(false));
+        let spin = false;
         Burst {
             path,
             scid: Default::default(),
@@ -49,7 +44,7 @@ impl super::Path {
         space: Spaces,
     ) -> Burst<Spaces> {
         let path = self.clone();
-        let spin = Arc::new(AtomicBool::new(false));
+        let spin = false;
         Burst {
             path,
             scid,
@@ -103,7 +98,7 @@ impl Burst<Spaces> {
                         let packets_size = transaction.load_spaces(
                             buffer,
                             &self.space,
-                            &self.spin,
+                            SpinBit::from(self.spin),
                             &self.path.challenge_sndbuf,
                             &self.path.response_sndbuf,
                         );
@@ -122,7 +117,10 @@ impl Burst<Spaces> {
                     });
                 segs
             };
-            self.path.send_packets(&segs, self.path.way.dst()).await?;
+            tokio::task::yield_now().await;
+            if !segs.is_empty() {
+                self.path.send_packets(&segs, self.path.way.dst()).await?;
+            }
         }
     }
 }
@@ -154,7 +152,7 @@ impl Burst<DataSpace> {
                     .try_fold(Vec::with_capacity(max_segs), |mut segs, buffer| {
                         let load_1rtt_data = transaction.load_1rtt_data(
                             buffer,
-                            &self.spin,
+                            SpinBit::from(self.spin),
                             &self.path.challenge_sndbuf,
                             &self.path.response_sndbuf,
                             &self.space,
@@ -178,7 +176,10 @@ impl Burst<DataSpace> {
                     });
                 segs
             };
-            self.path.send_packets(&segs, self.path.way.dst()).await?;
+            tokio::task::yield_now().await;
+            if !segs.is_empty() {
+                self.path.send_packets(&segs, self.path.way.dst()).await?;
+            }
         }
     }
 }

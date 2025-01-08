@@ -325,6 +325,7 @@ impl DataSpace {
                     let Some((hpk, pk)) = any(keys.get_remote_keys(), &notify).await else {
                         break;
                     };
+
                     let (undecoded_pn, key_phase) = match remove_protection_of_short_packet(
                         hpk.as_ref(),
                         packet.bytes.as_mut(),

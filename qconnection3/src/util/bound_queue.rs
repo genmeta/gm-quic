@@ -8,6 +8,7 @@ use std::{
 use futures::task::AtomicWaker;
 
 struct BoundQueueInner<T> {
+    // it should be Box<[T]>, use VecDeque for avoiding implement ring buffer
     queue: Mutex<VecDeque<T>>,
     read_waker: AtomicWaker,
     write_waker: AtomicWaker,
@@ -110,5 +111,45 @@ impl<T> futures::Stream for Receiver<T> {
             self.inner.read_waker.register(cx.waker());
             Poll::Pending
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::StreamExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_send_receive() {
+        let queue = Arc::new(BoundQueue::new(2));
+
+        tokio::spawn({
+            let queue = queue.clone();
+            async move {
+                queue.send(1).await.unwrap();
+                queue.send(2).await.unwrap();
+            }
+        });
+
+        let mut receiver = queue.receiver();
+        assert_eq!(receiver.next().await, Some(1));
+        assert_eq!(receiver.next().await, Some(2));
+    }
+
+    #[tokio::test]
+    async fn test_queue_full() {
+        let queue = Arc::new(BoundQueue::new(1));
+
+        tokio::spawn({
+            let queue = queue.clone();
+            async move {
+                queue.send(1).await.unwrap();
+                assert!(queue.send(2).await.is_err());
+            }
+        });
+
+        let mut receiver = queue.receiver();
+        assert_eq!(receiver.next().await, Some(1));
     }
 }

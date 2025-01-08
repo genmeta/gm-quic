@@ -30,28 +30,28 @@ impl PacketEntry {
         }
     }
 
-    pub async fn deliver(&self, packet: Packet, pathway: Pathway) -> bool {
+    pub async fn deliver(&self, packet: Packet, pathway: Pathway) {
         match packet {
             Packet::Data(packet) => match packet.header {
                 DataHeader::Long(long::DataHeader::Initial(header)) => {
                     let packet = (header, packet.bytes, packet.offset);
-                    self.initial.send((packet, pathway)).await.is_ok()
+                    _ = self.initial.send((packet, pathway)).await;
                 }
                 DataHeader::Long(long::DataHeader::Handshake(header)) => {
                     let packet = (header, packet.bytes, packet.offset);
-                    self.handshake.send((packet, pathway)).await.is_ok()
+                    _ = self.handshake.send((packet, pathway)).await;
                 }
                 DataHeader::Long(long::DataHeader::ZeroRtt(header)) => {
                     let packet = (header, packet.bytes, packet.offset);
-                    self.zero_rtt.send((packet, pathway)).await.is_ok()
+                    _ = self.zero_rtt.send((packet, pathway)).await;
                 }
                 DataHeader::Short(header) => {
                     let packet = (header, packet.bytes, packet.offset);
-                    self.one_rtt.send((packet, pathway)).await.is_ok()
+                    _ = self.one_rtt.send((packet, pathway)).await;
                 }
             },
-            Packet::VN(_vn) => true,
-            Packet::Retry(_retry) => true,
+            Packet::VN(_vn) => {}
+            Packet::Retry(_retry) => {}
         }
     }
 }
