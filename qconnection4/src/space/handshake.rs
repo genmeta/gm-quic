@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use bytes::BufMut;
-use futures::{channel::mpsc, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use qbase::{
     cid::ConnectionId,
     error::Error,
-    frame::{ConnectionCloseFrame, CryptoFrame, Frame, FrameReader, ReceiveFrame},
+    frame::{ConnectionCloseFrame, Frame, FrameReader},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::{
@@ -25,17 +25,18 @@ use qrecovery::{
     journal::{ArcRcvdJournal, HandshakeJournal},
 };
 use rustls::quic::Keys;
-use tokio::task::JoinHandle;
+use tokio::sync::mpsc;
 
-use super::try_join2;
+use super::{AckHandshake, DecryptedPacket};
 use crate::{
     events::{EmitEvent, Event},
-    space::{pipe, AckHandshake},
+    path::ArcPaths,
+    space::pipe,
     tx::{PacketMemory, Transaction},
-    Components,
 };
 
 pub type HandshakePacket = (HandshakeHeader, bytes::BytesMut, usize);
+pub type DecryptedHandshakePacket = DecryptedPacket<HandshakeHeader>;
 
 #[derive(Clone)]
 pub struct HandshakeSpace {
@@ -59,142 +60,31 @@ impl HandshakeSpace {
         Self::default()
     }
 
-    pub async fn recv_packet(
+    pub async fn decrypt_packet(
         &self,
-        (header, mut bytes, offset): HandshakePacket,
-    ) -> Option<Result<impl Iterator<Item = Result<Frame, Error>>, Error>> {
+        (header, mut payload, offset): HandshakePacket,
+    ) -> Option<Result<DecryptedHandshakePacket, Error>> {
         let keys = self.keys.get_remote_keys().await?;
         let (hpk, pk) = (keys.remote.header.as_ref(), keys.remote.packet.as_ref());
 
         let undecoded_pn =
-            match remove_protection_of_long_packet(hpk, bytes.as_mut(), offset).transpose()? {
+            match remove_protection_of_long_packet(hpk, payload.as_mut(), offset).transpose()? {
                 Ok(undecoded_pn) => undecoded_pn,
                 Err(invalid_reversed_bits) => return Some(Err(invalid_reversed_bits.into())),
             };
         let rcvd_journal = self.journal.of_rcvd_packets();
         let pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
         let body_offset = offset + undecoded_pn.size();
-        let pkt_len = decrypt_packet(pk, pn, bytes.as_mut(), body_offset).ok()?;
+        let pkt_len = decrypt_packet(pk, pn, payload.as_mut(), body_offset).ok()?;
 
-        let _header = bytes.split_to(body_offset);
-        bytes.truncate(pkt_len);
-
-        Some(Ok(FrameReader::new(bytes.freeze(), header.get_type())
-            .map(|result| result.map(|(frame, _)| frame))
-            .map(|result| result.map_err(Into::into))))
+        let _header = payload.split_to(body_offset);
+        payload.truncate(pkt_len);
+        Some(Ok(DecryptedPacket {
+            header,
+            pn,
+            payload: payload.freeze(),
+        }))
     }
-
-    // pub fn build(
-    //     &self,
-    //     rcvd_packets: impl Stream<Item = (HandshakePacket, Pathway)> + Unpin + Send + 'static,
-    //     paths: &ArcPaths,
-    //     broker: impl EmitEvent + Clone + Send + 'static,
-    // ) -> JoinHandle<()> {
-    //     let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
-    //     let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
-
-    //     let dispatch_frame = {
-    //         let broker = broker.clone();
-    //         move |frame: Frame, path: &Path| match frame {
-    //             Frame::Ack(f) => {
-    //                 path.cc().on_ack(Epoch::Handshake, &f);
-    //                 _ = ack_frames_entry.unbounded_send(f);
-    //             }
-    //             Frame::Close(f) => broker.emit(Event::Closed(f)),
-    //             Frame::Crypto(f, bytes) => _ = crypto_frames_entry.unbounded_send((f, bytes)),
-    //             Frame::Padding(_) | Frame::Ping(_) => {}
-    //             _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
-    //         }
-    //     };
-
-    //     pipe(
-    //         rcvd_crypto_frames,
-    //         self.crypto_stream.incoming(),
-    //         broker.clone(),
-    //     );
-    //     pipe(
-    //         rcvd_ack_frames,
-    //         AckHandshake::new(&self.journal, &self.crypto_stream),
-    //         broker.clone(),
-    //     );
-
-    //     self.parse_rcvd_packets_and_dispatch_frames(rcvd_packets, paths, dispatch_frame, broker)
-    // }
-
-    // fn parse_rcvd_packets_and_dispatch_frames(
-    //     &self,
-    //     mut rcvd_packets: impl Stream<Item = (HandshakePacket, Pathway)> + Unpin + Send + 'static,
-    //     paths: &ArcPaths,
-    //     dispatch_frame: impl Fn(Frame, &Path) + Send + 'static,
-    //     broker: impl EmitEvent + Clone + Send + 'static,
-    // ) -> JoinHandle<()> {
-    //     let paths = paths.clone();
-    //     tokio::spawn({
-    //         let rcvd_journal = self.journal.of_rcvd_packets();
-    //         let keys = self.keys.clone();
-    //         async move {
-    //             while let Some((((header, mut bytes, offset), pathway), keys)) =
-    //                 try_join2(rcvd_packets.next(), keys.get_remote_keys()).await
-    //             {
-    //                 let Some(path) = paths.get(&pathway) else {
-    //                     continue;
-    //                 };
-    //                 let undecoded_pn = match remove_protection_of_long_packet(
-    //                     keys.remote.header.as_ref(),
-    //                     bytes.as_mut(),
-    //                     offset,
-    //                 ) {
-    //                     Ok(Some(pn)) => pn,
-    //                     Ok(None) => continue,
-    //                     Err(invalid_reserved_bits) => {
-    //                         broker.emit(Event::Failed(invalid_reserved_bits.into()));
-    //                         break;
-    //                     }
-    //                 };
-
-    //                 let pn = match rcvd_journal.decode_pn(undecoded_pn) {
-    //                     Ok(pn) => pn,
-    //                     // TooOld/TooLarge/HasRcvd
-    //                     Err(_e) => continue,
-    //                 };
-    //                 let body_offset = offset + undecoded_pn.size();
-    //                 let decrypted = decrypt_packet(
-    //                     keys.remote.packet.as_ref(),
-    //                     pn,
-    //                     bytes.as_mut(),
-    //                     body_offset,
-    //                 );
-    //                 let Ok(pkt_len) = decrypted else { continue };
-
-    //                 path.on_rcvd(bytes.len());
-
-    //                 let _header = bytes.split_to(body_offset);
-    //                 bytes.truncate(pkt_len);
-
-    //                 // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
-    //                 // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
-    //                 // address to have been validated.
-    //                 // It may have already been verified using tokens in the Handshake space
-    //                 path.grant_anti_amplifier();
-
-    //                 match FrameReader::new(bytes.freeze(), header.get_type()).try_fold(
-    //                     false,
-    //                     |is_ack_packet, frame| {
-    //                         let (frame, is_ack_eliciting) = frame?;
-    //                         dispatch_frame(frame, &path);
-    //                         Ok(is_ack_packet || is_ack_eliciting)
-    //                     },
-    //                 ) {
-    //                     Ok(is_ack_packet) => {
-    //                         rcvd_journal.register_pn(pn);
-    //                         path.cc().on_pkt_rcvd(Epoch::Handshake, pn, is_ack_packet);
-    //                     }
-    //                     Err(e) => broker.emit(Event::Failed(e)),
-    //                 }
-    //             }
-    //         }
-    //     })
-    // }
 
     pub fn try_assemble<'b>(
         &self,
@@ -234,10 +124,74 @@ impl HandshakeSpace {
     }
 }
 
-pub fn deliver_and_parse(
-    packets: impl Stream<Item = (HandshakePacket, Pathway)> + Unpin + Send + 'static,
-    components: &Components,
+pub fn launch_deliver_and_parse(
+    mut packets: impl Stream<Item = (HandshakePacket, Pathway)> + Unpin + Send + 'static,
+    space: &HandshakeSpace,
+    paths: &ArcPaths,
+    event_broker: impl EmitEvent + Clone + Send + Sync + 'static,
 ) {
+    let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded_channel();
+    let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded_channel();
+
+    pipe(
+        rcvd_crypto_frames,
+        space.crypto_stream.incoming(),
+        event_broker.clone(),
+    );
+    pipe(
+        rcvd_ack_frames,
+        AckHandshake::new(&space.journal, &space.crypto_stream),
+        event_broker.clone(),
+    );
+
+    let space = space.clone();
+    let paths = paths.clone();
+    tokio::spawn(async move {
+        while let Some((packet, pathway)) = packets.next().await {
+            let Some(path) = paths.get(&pathway) else {
+                continue;
+            };
+            let dispatch_frame = {
+                |frame: Frame| match frame {
+                    Frame::Ack(f) => {
+                        path.cc().on_ack(Epoch::Handshake, &f);
+                        _ = ack_frames_entry.send(f);
+                    }
+                    Frame::Close(f) => event_broker.emit(Event::Closed(f)),
+                    Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
+                    Frame::Padding(_) | Frame::Ping(_) => {}
+                    _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
+                }
+            };
+            match space.decrypt_packet(packet).await {
+                Some(Ok(packet)) => {
+                    // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
+                    // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
+                    // address to have been validated.
+                    // It may have already been verified using tokens in the Handshake space
+                    path.grant_anti_amplifier();
+
+                    match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
+                        false,
+                        |is_ack_packet, frame| {
+                            let (frame, is_ack_eliciting) = frame?;
+                            dispatch_frame(frame);
+                            Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                        },
+                    ) {
+                        Ok(is_ack_packet) => {
+                            space.journal.of_rcvd_packets().register_pn(packet.pn);
+                            path.cc()
+                                .on_pkt_rcvd(Epoch::Handshake, packet.pn, is_ack_packet);
+                        }
+                        Err(error) => event_broker.emit(Event::Failed(error)),
+                    }
+                }
+                Some(Err(error)) => event_broker.emit(Event::Failed(error)),
+                None => continue,
+            }
+        }
+    });
 }
 
 #[derive(Clone)]

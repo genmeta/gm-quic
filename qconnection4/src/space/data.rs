@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use bytes::BufMut;
-use futures::{channel::mpsc, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use qbase::{
     cid::ConnectionId,
     error::Error,
@@ -29,6 +29,7 @@ use qbase::{
     Epoch,
 };
 use qcongestion::{CongestionControl, TrackPackets};
+use qinterface::path::Pathway;
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcRcvdJournal, DataJournal},
@@ -36,9 +37,9 @@ use qrecovery::{
 };
 use qunreliable::DatagramFlow;
 use rustls::quic::HeaderProtectionKey;
-use tokio::task::JoinHandle;
+use tokio::sync::mpsc;
 
-use super::try_join2;
+use super::DecryptedPacket;
 use crate::{
     events::{EmitEvent, Event},
     path::{ArcPaths, Path, SendBuffer},
@@ -48,7 +49,9 @@ use crate::{
 };
 
 pub type ZeroRttPacket = (ZeroRttHeader, bytes::BytesMut, usize);
+pub type DecryptedZeroRttPacket = DecryptedPacket<ZeroRttHeader>;
 pub type OneRttPacket = (OneRttHeader, bytes::BytesMut, usize);
+pub type DecryptedOneRttPacket = DecryptedPacket<OneRttHeader>;
 
 #[derive(Clone)]
 pub struct DataSpace {
@@ -80,254 +83,59 @@ impl DataSpace {
         }
     }
 
-    // pub fn build(
-    //     &self,
-    //     paths: &ArcPaths,
-    //     components: &Components,
-    //     rcvd_0rtt_packets: impl Stream<Item = (ZeroRttPacket, Pathway)> + Send + Unpin + 'static,
-    //     rcvd_1rtt_packets: impl Stream<Item = (OneRttPacket, Pathway)> + Send + Unpin + 'static,
-    //     broker: impl EmitEvent + Clone + Send + 'static,
-    // ) -> (JoinHandle<()>, JoinHandle<()>) {
-    //     let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded();
-    //     // 连接级的
-    //     let (max_data_frames_entry, rcvd_max_data_frames) = mpsc::unbounded();
-    //     let (data_blocked_frames_entry, rcvd_data_blocked_frames) = mpsc::unbounded();
-    //     let (new_cid_frames_entry, rcvd_new_cid_frames) = mpsc::unbounded();
-    //     let (retire_cid_frames_entry, rcvd_retire_cid_frames) = mpsc::unbounded();
-    //     let (handshake_done_frames_entry, rcvd_handshake_done_frames) = mpsc::unbounded();
-    //     let (new_token_frames_entry, rcvd_new_token_frames) = mpsc::unbounded();
-    //     // 数据级的
-    //     let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded();
-    //     let (stream_ctrl_frames_entry, rcvd_stream_ctrl_frames) = mpsc::unbounded();
-    //     let (stream_frames_entry, rcvd_stream_frames) = mpsc::unbounded();
-    //     let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded();
+    pub async fn decrypt_0rtt_packet(
+        &self,
+        (header, mut payload, offset): ZeroRttPacket,
+    ) -> Option<Result<DecryptedZeroRttPacket, Error>> {
+        let keys = self.zero_rtt_keys.get_remote_keys().await?;
+        let (hpk, pk) = (keys.remote.header.as_ref(), keys.remote.packet.as_ref());
 
-    //     let flow_controlled_data_streams =
-    //         FlowControlledDataStreams::new(self.streams.clone(), components.flow_ctrl.clone());
-    //     let dispatch_data_frame = {
-    //         let broker = broker.clone();
-    //         move |frame: Frame, pty: packet::Type, path: &Path| match frame {
-    //             Frame::Ack(f) => {
-    //                 path.cc().on_ack(Epoch::Data, &f);
-    //                 _ = ack_frames_entry.unbounded_send(f)
-    //             }
-    //             Frame::NewToken(f) => _ = new_token_frames_entry.unbounded_send(f),
-    //             Frame::MaxData(f) => _ = max_data_frames_entry.unbounded_send(f),
-    //             Frame::NewConnectionId(f) => _ = new_cid_frames_entry.unbounded_send(f),
-    //             Frame::RetireConnectionId(f) => _ = retire_cid_frames_entry.unbounded_send(f),
-    //             Frame::HandshakeDone(f) => _ = handshake_done_frames_entry.unbounded_send(f),
-    //             Frame::DataBlocked(f) => _ = data_blocked_frames_entry.unbounded_send(f),
-    //             Frame::Challenge(f) => _ = path.recv_frame(&f),
-    //             Frame::Response(f) => _ = path.recv_frame(&f),
-    //             Frame::StreamCtl(f) => _ = stream_ctrl_frames_entry.unbounded_send(f),
-    //             Frame::Stream(f, data) => _ = stream_frames_entry.unbounded_send((f, data)),
-    //             Frame::Crypto(f, bytes) => _ = crypto_frames_entry.unbounded_send((f, bytes)),
-    //             Frame::Datagram(f, data) => _ = datagram_frames_entry.unbounded_send((f, data)),
-    //             Frame::Close(f) if matches!(pty, Type::Short(_)) => broker.emit(Event::Closed(f)),
-    //             _ => {}
-    //         }
-    //     };
+        let undecoded_pn =
+            match remove_protection_of_long_packet(hpk, payload.as_mut(), offset).transpose()? {
+                Ok(undecoded_pn) => undecoded_pn,
+                Err(invalid_reversed_bits) => return Some(Err(invalid_reversed_bits.into())),
+            };
+        let rcvd_journal = self.journal.of_rcvd_packets();
+        let pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
+        let body_offset = offset + undecoded_pn.size();
+        let pkt_len = decrypt_packet(pk, pn, payload.as_mut(), body_offset).ok()?;
 
-    //     // Assemble the pipelines of frame processing
-    //     // TODO: pipe rcvd_new_token_frames
-    //     pipe(
-    //         rcvd_retire_cid_frames,
-    //         components.cid_registry.local.clone(),
-    //         broker.clone(),
-    //     );
-    //     pipe(
-    //         rcvd_new_cid_frames,
-    //         components.cid_registry.remote.clone(),
-    //         broker.clone(),
-    //     );
-    //     pipe(
-    //         rcvd_max_data_frames,
-    //         components.flow_ctrl.sender.clone(),
-    //         broker.clone(),
-    //     );
-    //     pipe(
-    //         rcvd_data_blocked_frames,
-    //         components.flow_ctrl.recver.clone(),
-    //         broker.clone(),
-    //     );
-    //     pipe(
-    //         rcvd_handshake_done_frames,
-    //         components.handshake.clone(),
-    //         broker.clone(),
-    //     );
-    //     pipe(
-    //         rcvd_crypto_frames,
-    //         self.crypto_stream.incoming(),
-    //         broker.clone(),
-    //     );
-    //     pipe(
-    //         rcvd_stream_ctrl_frames,
-    //         flow_controlled_data_streams.clone(),
-    //         broker.clone(),
-    //     );
-    //     pipe(
-    //         rcvd_stream_frames,
-    //         flow_controlled_data_streams,
-    //         broker.clone(),
-    //     );
-    //     pipe(rcvd_datagram_frames, self.datagrams.clone(), broker.clone());
-    //     pipe(
-    //         rcvd_ack_frames,
-    //         AckData::new(&self.journal, &self.streams, &self.crypto_stream),
-    //         broker.clone(),
-    //     );
-    //     pipe(
-    //         rcvd_new_token_frames,
-    //         components.token_registry.clone(),
-    //         broker.clone(),
-    //     );
+        let _header = payload.split_to(body_offset);
+        payload.truncate(pkt_len);
+        Some(Ok(DecryptedPacket {
+            header,
+            pn,
+            payload: payload.freeze(),
+        }))
+    }
 
-    //     let join_handler0 = self.parse_rcvd_0rtt_packet_and_dispatch_frames(
-    //         rcvd_0rtt_packets,
-    //         paths.clone(),
-    //         dispatch_data_frame.clone(),
-    //         broker.clone(),
-    //     );
-    //     let join_handler1 = self.parse_rcvd_1rtt_packet_and_dispatch_frames(
-    //         rcvd_1rtt_packets,
-    //         paths.clone(),
-    //         dispatch_data_frame,
-    //         broker.clone(),
-    //     );
-    //     (join_handler0, join_handler1)
-    // }
+    pub async fn decrypt_1rtt_packet(
+        &self,
+        (header, mut payload, offset): OneRttPacket,
+    ) -> Option<Result<DecryptedOneRttPacket, Error>> {
+        let (hpk, pk) = self.one_rtt_keys.get_remote_keys().await?;
+        let (undecoded_pn, key_phase) =
+            match remove_protection_of_short_packet(hpk.as_ref(), payload.as_mut(), offset)
+                .transpose()?
+            {
+                Ok(ok) => ok,
+                Err(invalid_reversed_bits) => return Some(Err(invalid_reversed_bits.into())),
+            };
 
-    // fn parse_rcvd_0rtt_packet_and_dispatch_frames(
-    //     &self,
-    //     mut rcvd_packets: impl Stream<Item = (ZeroRttPacket, Pathway)> + Send + Unpin + 'static,
-    //     paths: ArcPaths,
-    //     dispatch_frame: impl Fn(Frame, packet::Type, &Path) + Send + 'static,
-    //     broker: impl EmitEvent + Clone + Send + 'static,
-    // ) -> JoinHandle<()> {
-    //     tokio::spawn({
-    //         let rcvd_journal = self.journal.of_rcvd_packets();
-    //         let keys = self.zero_rtt_keys.clone();
-    //         async move {
-    //             while let Some((((header, mut bytes, offset), pathway), keys)) =
-    //                 try_join2(rcvd_packets.next(), keys.get_remote_keys()).await
-    //             {
-    //                 let Some(path) = paths.get(&pathway) else {
-    //                     continue;
-    //                 };
-    //                 let undecoded_pn = match remove_protection_of_long_packet(
-    //                     keys.remote.header.as_ref(),
-    //                     bytes.as_mut(),
-    //                     offset,
-    //                 ) {
-    //                     Ok(Some(pn)) => pn,
-    //                     Ok(None) => continue,
-    //                     Err(invalid_reserved_bits) => {
-    //                         broker.emit(Event::Failed(invalid_reserved_bits.into()));
-    //                         break;
-    //                     }
-    //                 };
+        let rcvd_journal = self.journal.of_rcvd_packets();
+        let pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
+        let pk = pk.lock_guard().get_remote(key_phase, pn);
+        let body_offset = offset + undecoded_pn.size();
+        let pkt_len = decrypt_packet(pk.as_ref(), pn, payload.as_mut(), body_offset).ok()?;
 
-    //                 let pn = match rcvd_journal.decode_pn(undecoded_pn) {
-    //                     Ok(pn) => pn,
-    //                     // TooOld/TooLarge/HasRcvd
-    //                     Err(_e) => continue,
-    //                 };
-    //                 let body_offset = offset + undecoded_pn.size();
-    //                 let decrypted = decrypt_packet(
-    //                     keys.remote.packet.as_ref(),
-    //                     pn,
-    //                     bytes.as_mut(),
-    //                     body_offset,
-    //                 );
-    //                 let Ok(pkt_len) = decrypted else { continue };
-
-    //                 path.on_rcvd(bytes.len());
-
-    //                 let _header = bytes.split_to(body_offset);
-    //                 bytes.truncate(pkt_len);
-
-    //                 match FrameReader::new(bytes.freeze(), header.get_type()).try_fold(
-    //                     false,
-    //                     |is_ack_packet, frame| {
-    //                         let (frame, is_ack_eliciting) = frame?;
-    //                         dispatch_frame(frame, header.get_type(), &path);
-    //                         Ok(is_ack_packet || is_ack_eliciting)
-    //                     },
-    //                 ) {
-    //                     Ok(is_ack_packet) => {
-    //                         rcvd_journal.register_pn(pn);
-    //                         path.cc().on_pkt_rcvd(Epoch::Data, pn, is_ack_packet);
-    //                     }
-    //                     Err(e) => broker.emit(Event::Failed(e)),
-    //                 }
-    //             }
-    //         }
-    //     })
-    // }
-
-    // fn parse_rcvd_1rtt_packet_and_dispatch_frames(
-    //     &self,
-    //     mut rcvd_packets: impl Stream<Item = (OneRttPacket, Pathway)> + Send + Unpin + 'static,
-    //     paths: ArcPaths,
-    //     dispatch_frame: impl Fn(Frame, packet::Type, &Path) + Send + 'static,
-    //     broker: impl EmitEvent + Clone + Send + 'static,
-    // ) -> JoinHandle<()> {
-    //     tokio::spawn({
-    //         let rcvd_journal = self.journal.of_rcvd_packets();
-    //         let keys = self.one_rtt_keys.clone();
-    //         async move {
-    //             while let Some((((header, mut bytes, offset), pathway), (hpk, pk))) =
-    //                 try_join2(rcvd_packets.next(), keys.get_remote_keys()).await
-    //             {
-    //                 let Some(path) = paths.get(&pathway) else {
-    //                     continue;
-    //                 };
-    //                 let (undecoded_pn, key_phase) = match remove_protection_of_short_packet(
-    //                     hpk.as_ref(),
-    //                     bytes.as_mut(),
-    //                     offset,
-    //                 ) {
-    //                     Ok(Some(pn)) => pn,
-    //                     Ok(None) => continue,
-    //                     Err(invalid_reserved_bits) => {
-    //                         broker.emit(Event::Failed(invalid_reserved_bits.into()));
-    //                         break;
-    //                     }
-    //                 };
-
-    //                 let pn = match rcvd_journal.decode_pn(undecoded_pn) {
-    //                     Ok(pn) => pn,
-    //                     // TooOld/TooLarge/HasRcvd
-    //                     Err(_e) => continue,
-    //                 };
-    //                 let body_offset = offset + undecoded_pn.size();
-    //                 let pk = pk.lock_guard().get_remote(key_phase, pn);
-    //                 let decrypted = decrypt_packet(pk.as_ref(), pn, bytes.as_mut(), body_offset);
-    //                 let Ok(pkt_len) = decrypted else { continue };
-
-    //                 path.on_rcvd(bytes.len());
-
-    //                 let _header = bytes.split_to(body_offset);
-    //                 bytes.truncate(pkt_len);
-
-    //                 match FrameReader::new(bytes.freeze(), header.get_type()).try_fold(
-    //                     false,
-    //                     |is_ack_packet, frame| {
-    //                         let (frame, is_ack_eliciting) = frame?;
-    //                         dispatch_frame(frame, header.get_type(), &path);
-    //                         Ok(is_ack_packet || is_ack_eliciting)
-    //                     },
-    //                 ) {
-    //                     Ok(is_ack_packet) => {
-    //                         rcvd_journal.register_pn(pn);
-    //                         path.cc().on_pkt_rcvd(Epoch::Data, pn, is_ack_packet);
-    //                     }
-    //                     Err(e) => broker.emit(Event::Failed(e)),
-    //                 }
-    //             }
-    //         }
-    //     })
-    // }
+        let _header = payload.split_to(body_offset);
+        payload.truncate(pkt_len);
+        Some(Ok(DecryptedPacket {
+            header,
+            pn,
+            payload: payload.freeze(),
+        }))
+    }
 
     pub fn try_assemble_0rtt<'b>(
         &self,
@@ -431,6 +239,184 @@ impl DataSpace {
         self.streams.on_conn_error(error);
         self.datagrams.on_conn_error(error);
     }
+}
+
+pub fn launch_deliver_and_parse(
+    mut zeor_rtt_packets: impl Stream<Item = (ZeroRttPacket, Pathway)> + Unpin + Send + 'static,
+    mut one_rtt_packets: impl Stream<Item = (OneRttPacket, Pathway)> + Unpin + Send + 'static,
+    space: &DataSpace,
+    paths: &ArcPaths,
+    components: &Components,
+    event_broker: impl EmitEvent + Clone + Send + Sync + 'static,
+) {
+    let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded_channel();
+    // 连接级的
+    let (max_data_frames_entry, rcvd_max_data_frames) = mpsc::unbounded_channel();
+    let (data_blocked_frames_entry, rcvd_data_blocked_frames) = mpsc::unbounded_channel();
+    let (new_cid_frames_entry, rcvd_new_cid_frames) = mpsc::unbounded_channel();
+    let (retire_cid_frames_entry, rcvd_retire_cid_frames) = mpsc::unbounded_channel();
+    let (handshake_done_frames_entry, rcvd_handshake_done_frames) = mpsc::unbounded_channel();
+    let (new_token_frames_entry, rcvd_new_token_frames) = mpsc::unbounded_channel();
+    // 数据级的
+    let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded_channel();
+    let (stream_ctrl_frames_entry, rcvd_stream_ctrl_frames) = mpsc::unbounded_channel();
+    let (stream_frames_entry, rcvd_stream_frames) = mpsc::unbounded_channel();
+    let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded_channel();
+
+    let flow_controlled_data_streams =
+        FlowControlledDataStreams::new(space.streams.clone(), components.flow_ctrl.clone());
+
+    // Assemble the pipelines of frame processing
+    // TODO: pipe rcvd_new_token_frames
+    pipe(
+        rcvd_retire_cid_frames,
+        components.cid_registry.local.clone(),
+        event_broker.clone(),
+    );
+    pipe(
+        rcvd_new_cid_frames,
+        components.cid_registry.remote.clone(),
+        event_broker.clone(),
+    );
+    pipe(
+        rcvd_max_data_frames,
+        components.flow_ctrl.sender.clone(),
+        event_broker.clone(),
+    );
+    pipe(
+        rcvd_data_blocked_frames,
+        components.flow_ctrl.recver.clone(),
+        event_broker.clone(),
+    );
+    pipe(
+        rcvd_handshake_done_frames,
+        components.handshake.clone(),
+        event_broker.clone(),
+    );
+    pipe(
+        rcvd_crypto_frames,
+        space.crypto_stream.incoming(),
+        event_broker.clone(),
+    );
+    pipe(
+        rcvd_stream_ctrl_frames,
+        flow_controlled_data_streams.clone(),
+        event_broker.clone(),
+    );
+    pipe(
+        rcvd_stream_frames,
+        flow_controlled_data_streams,
+        event_broker.clone(),
+    );
+    pipe(
+        rcvd_datagram_frames,
+        space.datagrams.clone(),
+        event_broker.clone(),
+    );
+    pipe(
+        rcvd_ack_frames,
+        AckData::new(&space.journal, &space.streams, &space.crypto_stream),
+        event_broker.clone(),
+    );
+    pipe(
+        rcvd_new_token_frames,
+        components.token_registry.clone(),
+        event_broker.clone(),
+    );
+
+    let dispatch_data_frame = {
+        let event_broker = event_broker.clone();
+        move |frame: Frame, pty: packet::Type, path: &Path| match frame {
+            Frame::Ack(f) => {
+                path.cc().on_ack(Epoch::Data, &f);
+                _ = ack_frames_entry.send(f)
+            }
+            Frame::NewToken(f) => _ = new_token_frames_entry.send(f),
+            Frame::MaxData(f) => _ = max_data_frames_entry.send(f),
+            Frame::NewConnectionId(f) => _ = new_cid_frames_entry.send(f),
+            Frame::RetireConnectionId(f) => _ = retire_cid_frames_entry.send(f),
+            Frame::HandshakeDone(f) => _ = handshake_done_frames_entry.send(f),
+            Frame::DataBlocked(f) => _ = data_blocked_frames_entry.send(f),
+            Frame::Challenge(f) => _ = path.recv_frame(&f),
+            Frame::Response(f) => _ = path.recv_frame(&f),
+            Frame::StreamCtl(f) => _ = stream_ctrl_frames_entry.send(f),
+            Frame::Stream(f, data) => _ = stream_frames_entry.send((f, data)),
+            Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
+            Frame::Datagram(f, data) => _ = datagram_frames_entry.send((f, data)),
+            Frame::Close(f) if matches!(pty, Type::Short(_)) => event_broker.emit(Event::Closed(f)),
+            _ => {}
+        }
+    };
+
+    tokio::spawn({
+        let space = space.clone();
+        let paths = paths.clone();
+        let event_broker = event_broker.clone();
+        let dispatch_data_frame = dispatch_data_frame.clone();
+        async move {
+            while let Some((packet, pathway)) = zeor_rtt_packets.next().await {
+                let Some(path) = paths.get(&pathway) else {
+                    continue;
+                };
+                let pty = packet.0.get_type();
+                let dispatch_frame = |frame| dispatch_data_frame(frame, pty, &path);
+                match space.decrypt_0rtt_packet(packet).await {
+                    Some(Ok(packet)) => {
+                        match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
+                            false,
+                            |is_ack_packet, frame| {
+                                let (frame, is_ack_eliciting) = frame?;
+                                dispatch_frame(frame);
+                                Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                            },
+                        ) {
+                            Ok(is_ack_packet) => {
+                                space.journal.of_rcvd_packets().register_pn(packet.pn);
+                                path.cc().on_pkt_rcvd(Epoch::Data, packet.pn, is_ack_packet);
+                            }
+                            Err(error) => event_broker.emit(Event::Failed(error)),
+                        }
+                    }
+                    Some(Err(error)) => event_broker.emit(Event::Failed(error)),
+                    None => continue,
+                }
+            }
+        }
+    });
+    tokio::spawn({
+        let space = space.clone();
+        let paths = paths.clone();
+        let dispatch_data_frame = dispatch_data_frame.clone();
+        async move {
+            while let Some((packet, pathway)) = one_rtt_packets.next().await {
+                let Some(path) = paths.get(&pathway) else {
+                    continue;
+                };
+                let pty = packet.0.get_type();
+                let dispatch_frame = |frame| dispatch_data_frame(frame, pty, &path);
+                match space.decrypt_1rtt_packet(packet).await {
+                    Some(Ok(packet)) => {
+                        match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
+                            false,
+                            |is_ack_packet, frame| {
+                                let (frame, is_ack_eliciting) = frame?;
+                                dispatch_frame(frame);
+                                Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                            },
+                        ) {
+                            Ok(is_ack_packet) => {
+                                space.journal.of_rcvd_packets().register_pn(packet.pn);
+                                path.cc().on_pkt_rcvd(Epoch::Data, packet.pn, is_ack_packet);
+                            }
+                            Err(error) => event_broker.emit(Event::Failed(error)),
+                        }
+                    }
+                    Some(Err(error)) => event_broker.emit(Event::Failed(error)),
+                    None => continue,
+                }
+            }
+        }
+    });
 }
 
 #[derive(Clone)]

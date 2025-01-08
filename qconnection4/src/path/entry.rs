@@ -4,7 +4,11 @@ use qbase::{
 };
 
 use super::Pathway;
-use crate::space::{HandshakePacket, InitialPacket, OneRttPacket, ZeroRttPacket};
+use crate::space::{
+    data::{OneRttPacket, ZeroRttPacket},
+    handshake::HandshakePacket,
+    initial::InitialPacket,
+};
 
 pub struct PacketEntry {
     pub initial: BoundQueue<(InitialPacket, Pathway)>,

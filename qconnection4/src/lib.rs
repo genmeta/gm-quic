@@ -40,13 +40,13 @@ pub struct Components {
     token_registry: ArcTokenRegistry,
     cid_registry: CidRegistry,
     flow_ctrl: FlowController,
-    paths: ArcPaths,
-    packet_entry: ArcPacketEntry,
 }
 
 #[derive(Clone)]
 pub struct CoreConnection {
     components: Components,
+    packet_entry: ArcPacketEntry,
+    paths: ArcPaths,
     spaces: Spaces,
     conn_iface: Arc<ConnInterface>,
 }

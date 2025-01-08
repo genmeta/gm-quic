@@ -5,10 +5,6 @@ pub mod initial;
 use std::future::Future;
 
 use bytes::Bytes;
-pub use data::*;
-use futures::{channel::mpsc::UnboundedReceiver, StreamExt};
-pub use handshake::*;
-pub use initial::*;
 use qbase::{
     error::Error,
     frame::{
@@ -20,6 +16,7 @@ use qrecovery::{
     journal::{ArcSentJournal, Journal},
     reliable::GuaranteedFrame,
 };
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
     events::{EmitEvent, Event},
@@ -28,9 +25,15 @@ use crate::{
 
 #[derive(Clone)]
 pub struct Spaces {
-    pub initial: InitialSpace,
-    pub handshake: HandshakeSpace,
-    pub data: DataSpace,
+    pub initial: initial::InitialSpace,
+    pub handshake: handshake::HandshakeSpace,
+    pub data: data::DataSpace,
+}
+
+pub struct DecryptedPacket<H> {
+    header: H,
+    pn: u64,
+    payload: Bytes,
 }
 
 async fn try_join2<T1, T2>(
@@ -52,7 +55,7 @@ fn pipe<F: Send + 'static>(
     broker: impl EmitEvent + Send + 'static,
 ) {
     tokio::spawn(async move {
-        while let Some(f) = source.next().await {
+        while let Some(f) = source.recv().await {
             if let Err(e) = destination.recv_frame(&f) {
                 broker.emit(Event::Failed(e));
                 break;
