@@ -7,6 +7,8 @@ pub use local_cid::*;
 mod remote_cid;
 pub use remote_cid::*;
 
+pub mod local_cid2;
+
 /// Connection ID registry.
 ///
 /// - `local` represents the management of connection IDs issued by me to peer,

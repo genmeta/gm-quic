@@ -143,6 +143,17 @@ pub trait GenUniqueCid {
     fn gen_unique_cid(&self) -> ConnectionId;
 }
 
+pub trait RegisterCid {
+    /// Generate a unique connection ID.
+    ///
+    /// When issuing a CID to the peer, be careful not to duplicate
+    /// other local connection IDs, as this will cause routing conflicts.
+    #[must_use]
+    fn gen_unique_cid(&self) -> ConnectionId;
+
+    fn retire_cid(&self, cid: ConnectionId);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
