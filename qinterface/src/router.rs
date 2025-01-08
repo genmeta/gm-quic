@@ -6,10 +6,10 @@ use qbase::{
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     packet::{self, header::GetDcid, Packet, PacketReader},
-    util::bound_deque::BoundQueue,
 };
 
 use crate::{
+    conn::ConnInterface,
     path::{Endpoint, Pathway},
     QuicInterface, SendCapability,
 };
@@ -40,13 +40,11 @@ impl From<SocketAddr> for Signpost {
 
 pub type QuicListener = Box<dyn Fn(Arc<QuicProto>, Packet, Pathway) + Send + Sync>;
 
-type PacketQueue = BoundQueue<(Packet, Pathway)>;
-
 #[doc(alias = "RouterInterface")]
 #[derive(Default)]
 pub struct QuicProto {
     interfaces: DashMap<SocketAddr, Arc<dyn QuicInterface>>,
-    connections: DashMap<Signpost, Arc<PacketQueue>>,
+    connections: DashMap<Signpost, Arc<ConnInterface>>,
     listner: Option<QuicListener>,
 }
 
@@ -98,7 +96,8 @@ impl QuicProto {
             let mut rcvd_pkts = Vec::with_capacity(3);
             loop {
                 // way: local -> peer
-                let (datagram, way) = core::future::poll_fn(|cx| interface.poll_recv(cx)).await?;
+                let (datagram, pathway) =
+                    core::future::poll_fn(|cx| interface.poll_recv(cx)).await?;
                 let datagram_size = datagram.len();
                 // todo: parse packets with any length of dcid
                 rcvd_pkts.extend(PacketReader::new(datagram, 8).flatten());
@@ -110,11 +109,11 @@ impl QuicProto {
                 // Section 10.2.3.
                 let is_initial_packet = |pkt: &Packet| matches!(pkt, Packet::Data(packet) if matches!(packet.header, packet::DataHeader::Long(packet::long::DataHeader::Initial(..))));
 
-                for pkt in rcvd_pkts
+                for packet in rcvd_pkts
                     .drain(..)
                     .filter(|pkt| !(is_initial_packet(pkt) && datagram_size < 1200))
                 {
-                    let dcid = match &pkt {
+                    let dcid = match &packet {
                         Packet::VN(vn) => vn.get_dcid(),
                         Packet::Retry(retry) => retry.get_dcid(),
                         Packet::Data(data_packet) => data_packet.get_dcid(),
@@ -123,16 +122,16 @@ impl QuicProto {
                         Signpost::from(*dcid)
                     } else {
                         use Endpoint::*;
-                        let (Direct { addr } | Relay { agent: addr, .. }) = way.local;
+                        let (Direct { addr } | Relay { agent: addr, .. }) = pathway.local;
                         Signpost::from(addr)
                     };
 
-                    if let Some(queue) = this.connections.get(&signpost) {
-                        _ = queue.send((pkt, way)).await;
+                    if let Some(conn_iface) = this.connections.get(&signpost) {
+                        _ = conn_iface.recv_from(packet, pathway).await;
                         continue;
                     }
                     if let Some(listener) = this.listner.as_ref() {
-                        (listener)(this.clone(), pkt, way);
+                        (listener)(this.clone(), packet, pathway);
                     }
                 }
             }
@@ -165,8 +164,8 @@ impl QuicProto {
     }
 
     // for origin_dcid
-    pub fn register(&self, signpost: Signpost, packet_queue: Arc<PacketQueue>) {
-        self.connections.insert(signpost, packet_queue);
+    pub fn register(&self, signpost: Signpost, conn_iface: Arc<ConnInterface>) {
+        self.connections.insert(signpost, conn_iface);
     }
 
     pub fn unregister(&self, signpost: &Signpost) {
@@ -175,12 +174,12 @@ impl QuicProto {
 
     pub fn registry<ISSUED>(
         self: &Arc<Self>,
-        packet_queue: Arc<PacketQueue>,
+        conn_iface: Arc<ConnInterface>,
         local_cids: ISSUED,
     ) -> RouterRegistry<ISSUED> {
         RouterRegistry {
             router_iface: self.clone(),
-            packet_queue,
+            conn_iface,
             local_cids,
         }
     }
@@ -189,7 +188,7 @@ impl QuicProto {
 #[derive(Clone)]
 pub struct RouterRegistry<ISSUED> {
     router_iface: Arc<QuicProto>,
-    packet_queue: Arc<PacketQueue>,
+    conn_iface: Arc<ConnInterface>,
     local_cids: ISSUED,
 }
 
@@ -207,7 +206,7 @@ where
                     return false;
                 }
 
-                entry.insert(self.packet_queue.clone());
+                entry.insert(self.conn_iface.clone());
                 true
             })
             .unwrap()
