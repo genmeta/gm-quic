@@ -1,14 +1,21 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+use qbase::{cid, flow};
+use qinterface::router::RouterRegistry;
+use qrecovery::{
+    recv,
+    reliable::ArcReliableFrameDeque,
+    send,
+    streams::{self, Ext},
+};
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub type ArcLocalCids = cid::local_cid2::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
+pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
+pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub type FlowController = flow::FlowController<ArcReliableFrameDeque>;
+pub type Credit<'a> = flow::Credit<'a, ArcReliableFrameDeque>;
+
+pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
+pub type StreamWriter = send::Writer<Ext<ArcReliableFrameDeque>>;
+pub type StreamReader = recv::Reader<Ext<ArcReliableFrameDeque>>;
+
+pub type Handshake = qbase::handshake::Handshake<ArcReliableFrameDeque>;
