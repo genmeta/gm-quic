@@ -175,12 +175,12 @@ impl QuicProto {
     pub fn registry<ISSUED>(
         self: &Arc<Self>,
         conn_iface: Arc<ConnInterface>,
-        local_cids: ISSUED,
+        issued_cids: ISSUED,
     ) -> RouterRegistry<ISSUED> {
         RouterRegistry {
             router_iface: self.clone(),
             conn_iface,
-            local_cids,
+            issued_cids,
         }
     }
 }
@@ -189,7 +189,7 @@ impl QuicProto {
 pub struct RouterRegistry<ISSUED> {
     router_iface: Arc<QuicProto>,
     conn_iface: Arc<ConnInterface>,
-    local_cids: ISSUED,
+    issued_cids: ISSUED,
 }
 
 impl<T> RegisterCid for RouterRegistry<T>
@@ -222,7 +222,7 @@ where
     T: SendFrame<NewConnectionIdFrame>,
 {
     fn send_frame<I: IntoIterator<Item = NewConnectionIdFrame>>(&self, iter: I) {
-        self.local_cids.send_frame(iter);
+        self.issued_cids.send_frame(iter);
     }
 }
 
@@ -233,6 +233,6 @@ where
     type Output = ();
 
     fn recv_frame(&self, frame: &RetireConnectionIdFrame) -> Result<Self::Output, Error> {
-        self.local_cids.recv_frame(frame)
+        self.issued_cids.recv_frame(frame)
     }
 }

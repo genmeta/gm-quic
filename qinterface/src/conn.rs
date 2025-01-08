@@ -1,61 +1,41 @@
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{
+    io,
+    net::SocketAddr,
+    sync::{atomic::AtomicUsize, Arc, Mutex},
+    time::Instant,
+};
 
 use dashmap::DashMap;
+use futures::channel::mpsc;
 use qbase::{
+    cid::RegisterCid,
+    frame::{ConnectionCloseFrame, NewConnectionIdFrame, RetireConnectionIdFrame, SendFrame},
     packet::Packet,
     util::bound_deque::{BoundQueue, Receiver},
 };
-use tokio::{sync::mpsc, task::AbortHandle};
 
-use crate::{path::Pathway, router::QuicProto, SendCapability};
-
-pub struct PathProber {
-    // tokio的channel不能close，futures的可以close但它的实现是是链表
-    pathway_entry: mpsc::UnboundedSender<Pathway>,
-    probed_task: AbortHandle,
-}
-
-impl Drop for PathProber {
-    fn drop(&mut self) {
-        self.disable_probing();
-    }
-}
-
-impl PathProber {
-    pub fn new<P>(path_creator: Box<dyn Fn(Pathway) + Send>) -> Self {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let probed_task = tokio::spawn(async move {
-            while let Some(pathway) = rx.recv().await {
-                path_creator(pathway);
-            }
-        });
-        Self {
-            pathway_entry: tx,
-            probed_task: probed_task.abort_handle(),
-        }
-    }
-
-    fn on_probed(&self, pathway: Pathway) {
-        _ = self.pathway_entry.send(pathway);
-    }
-
-    pub fn disable_probing(&self) {
-        self.probed_task.abort();
-    }
-}
+use crate::{
+    closing::ClosingInterface,
+    path::Pathway,
+    router::{QuicProto, RouterRegistry},
+    SendCapability,
+};
 
 pub struct ConnInterface {
     router_iface: Arc<QuicProto>,
-    path_prober: PathProber,
-    queues: DashMap<Pathway, BoundQueue<Packet>>,
+    probed_path_tx: mpsc::UnboundedSender<Pathway>,
+    paths: DashMap<Pathway, BoundQueue<Packet>>,
 }
 
 impl ConnInterface {
-    pub fn new(router_iface: Arc<QuicProto>, path_prober: PathProber) -> Self {
+    pub fn new(
+        router_iface: Arc<QuicProto>,
+        probed_path_tx: mpsc::UnboundedSender<Pathway>,
+    ) -> Self {
         Self {
             router_iface,
-            path_prober,
-            queues: DashMap::new(),
+            probed_path_tx,
+            paths: DashMap::new(),
         }
     }
 
@@ -77,24 +57,52 @@ impl ConnInterface {
     }
 
     pub async fn recv_from(&self, packet: Packet, pathway: Pathway) {
-        let queue = self.queues.entry(pathway).or_insert_with(|| {
-            self.path_prober.on_probed(pathway);
+        let queue = self.paths.entry(pathway).or_insert_with(|| {
+            _ = self.probed_path_tx.unbounded_send(pathway);
             BoundQueue::new(16)
         });
         _ = queue.send(packet).await;
     }
 
     pub fn register(&self, pathway: Pathway) -> Receiver<Packet> {
-        let entry = self.queues.entry(pathway);
+        let entry = self.paths.entry(pathway);
         entry.or_insert_with(|| BoundQueue::new(16)).receiver()
     }
 
     pub fn unregister(&self, pathway: &Pathway) {
-        let (_pathway, queue) = self.queues.remove(pathway).unwrap();
+        let (_pathway, queue) = self.paths.remove(pathway).unwrap();
         queue.close();
     }
+}
 
+pub type ArcLocalCids<ISSUED> = qbase::cid::local_cid2::ArcLocalCids<RouterRegistry<ISSUED>>;
+pub type ArcRemoteCids<RETIRED> = qbase::cid::ArcRemoteCids<RETIRED>;
+
+pub type CidRegistry<ISSUED, RETIRED> =
+    qbase::cid::Registry<ArcLocalCids<ISSUED>, ArcRemoteCids<RETIRED>>;
+
+impl ConnInterface {
     pub fn disable_probing(&self) {
-        self.path_prober.disable_probing();
+        self.probed_path_tx.close_channel();
+    }
+
+    pub fn close<ISSUED, RETIRED>(
+        &self,
+        connection_close_frame: ConnectionCloseFrame,
+        cid_registry: &CidRegistry<ISSUED, RETIRED>,
+    ) -> ClosingInterface
+    where
+        ISSUED: SendFrame<NewConnectionIdFrame> + Send + Sync + 'static,
+        RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
+    {
+        self.disable_probing();
+        ClosingInterface::new(
+            self.router_iface.clone(),
+            Mutex::new(Instant::now()),
+            AtomicUsize::new(0),
+            cid_registry.local.initial_scid(),
+            cid_registry.remote.latest_dcid(),
+            connection_close_frame,
+        )
     }
 }
