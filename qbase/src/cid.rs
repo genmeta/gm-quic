@@ -9,6 +9,19 @@ pub use remote_cid::*;
 
 pub mod local_cid2;
 
+/// When issuing a CID to the peer, be careful not to duplicate
+/// other local connection IDs, as this will cause routing conflicts.
+pub trait GenUniqueCid {
+    /// Generate a unique connection ID.
+    #[must_use]
+    fn gen_unique_cid(&self) -> ConnectionId;
+}
+
+pub trait RetireCid {
+    /// Retire a connection ID.
+    fn retire_cid(&self, cid: ConnectionId);
+}
+
 /// Connection ID registry.
 ///
 /// - `local` represents the management of connection IDs issued by me to peer,

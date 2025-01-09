@@ -21,12 +21,12 @@ pub mod builder;
 
 use std::{
     io,
-    pin::{pin, Pin},
+    pin::Pin,
     sync::{Arc, RwLock},
     task::{Context, Poll},
 };
 
-use deref_derive::{Deref, DerefMut};
+use deref_derive::Deref;
 use events::EmitEvent;
 use path::{entry::PacketEntry, ArcPaths};
 use qbase::{
@@ -141,11 +141,11 @@ pub struct Components {
 
 #[derive(Clone)]
 pub struct CoreConnection {
-    components: Components,
+    conn_iface: Arc<ConnInterface>,
     packet_entry: ArcPacketEntry,
+    components: Components,
     paths: ArcPaths,
     spaces: Spaces,
-    conn_iface: Arc<ConnInterface>,
 }
 
 #[derive(Clone)]
@@ -185,9 +185,9 @@ impl Connection {
         }
     }
 
-    fn map<T>(&self, map: impl Fn(&CoreConnection) -> T) -> io::Result<T> {
+    fn map<T>(&self, op: impl Fn(&CoreConnection) -> T) -> io::Result<T> {
         let guard = self.0.read().unwrap();
-        guard.as_ref().map(map).map_err(|e| e.error.clone().into())
+        guard.as_ref().map(op).map_err(|e| e.error.clone().into())
     }
 
     pub async fn open_bi_stream(
@@ -202,8 +202,14 @@ impl Connection {
         let param::Pair { remote, .. } = params.await?;
         let result = streams
             .open_bi(remote.initial_max_stream_data_bidi_remote().into())
-            .await;
-        Ok(result?)
+            .await?
+            .map(|(id, (reader, writer))| {
+                (
+                    id,
+                    (reader, StreamWriter::new(writer, Arc::new(Notify::new()))),
+                )
+            });
+        Ok(result)
     }
 
     pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, StreamWriter)>> {
@@ -213,11 +219,15 @@ impl Connection {
                 core_conn.spaces.data.streams.clone(),
             )
         })?;
+
+        let notify = Arc::new(Notify::new());
         let param::Pair { remote, .. } = params.await?;
         let result = streams
             .open_uni(remote.initial_max_stream_data_uni().into())
-            .await;
-        Ok(result?)
+            .await?
+            .map(|(id, writer)| (id, StreamWriter::new(writer, notify)));
+
+        Ok(result)
     }
 
     pub async fn accept_bi_stream(
@@ -232,7 +242,13 @@ impl Connection {
         let param::Pair { remote, .. } = params.await?;
         let result = streams
             .accept_bi(remote.initial_max_stream_data_bidi_local().into())
-            .await;
+            .await
+            .map(|(sid, (reader, writer))| {
+                (
+                    sid,
+                    (reader, StreamWriter::new(writer, Arc::new(Notify::new()))),
+                )
+            });
         Ok(Some(result?))
     }
 

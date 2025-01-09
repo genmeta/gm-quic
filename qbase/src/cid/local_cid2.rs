@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use super::{ConnectionId, RegisterCid};
+use super::{ConnectionId, GenUniqueCid, RetireCid};
 use crate::{
     error::{Error, ErrorKind},
     frame::{
@@ -15,7 +15,7 @@ use crate::{
 #[derive(Debug)]
 struct LocalCids<ISSUED>
 where
-    ISSUED: RegisterCid + SendFrame<NewConnectionIdFrame>,
+    ISSUED: GenUniqueCid + RetireCid + SendFrame<NewConnectionIdFrame>,
 {
     // If the item in cid_deque is None, it means the connection ID has been retired.
     cid_deque: IndexDeque<Option<(ConnectionId, ResetToken)>, VARINT_MAX>,
@@ -33,7 +33,7 @@ where
 
 impl<ISSUED> LocalCids<ISSUED>
 where
-    ISSUED: RegisterCid + SendFrame<NewConnectionIdFrame>,
+    ISSUED: GenUniqueCid + RetireCid + SendFrame<NewConnectionIdFrame>,
 {
     /// Create a new local connection ID manager.
     fn new(scid: ConnectionId, issued_cids: ISSUED) -> Self {
@@ -123,7 +123,7 @@ where
 
 impl<ISSUED> Drop for LocalCids<ISSUED>
 where
-    ISSUED: RegisterCid + SendFrame<NewConnectionIdFrame>,
+    ISSUED: GenUniqueCid + RetireCid + SendFrame<NewConnectionIdFrame>,
 {
     fn drop(&mut self) {
         for (cid, _) in self.cid_deque.iter().flatten() {
@@ -153,11 +153,11 @@ where
 #[derive(Debug, Clone)]
 pub struct ArcLocalCids<ISSUED>(Arc<Mutex<Result<LocalCids<ISSUED>, Vec<ConnectionId>>>>)
 where
-    ISSUED: RegisterCid + SendFrame<NewConnectionIdFrame>;
+    ISSUED: GenUniqueCid + RetireCid + SendFrame<NewConnectionIdFrame>;
 
 impl<ISSUED> ArcLocalCids<ISSUED>
 where
-    ISSUED: RegisterCid + SendFrame<NewConnectionIdFrame>,
+    ISSUED: GenUniqueCid + RetireCid + SendFrame<NewConnectionIdFrame>,
 {
     /// Create a new share local connection ID manager.
     ///
@@ -227,7 +227,7 @@ where
 
 impl<ISSUED> ReceiveFrame<RetireConnectionIdFrame> for ArcLocalCids<ISSUED>
 where
-    ISSUED: RegisterCid + SendFrame<NewConnectionIdFrame>,
+    ISSUED: GenUniqueCid + RetireCid + SendFrame<NewConnectionIdFrame>,
 {
     type Output = ();
 
@@ -266,7 +266,7 @@ mod tests {
         }
     }
 
-    impl RegisterCid for IssuedCids {
+    impl GenUniqueCid for IssuedCids {
         fn gen_unique_cid(&self) -> ConnectionId {
             let mut local_cids = self.active_cids.lock().unwrap();
             let unique_cid =
@@ -277,7 +277,9 @@ mod tests {
             local_cids.insert(unique_cid, ResetToken::default());
             unique_cid
         }
+    }
 
+    impl RetireCid for IssuedCids {
         fn retire_cid(&self, cid: ConnectionId) {
             self.active_cids.lock().unwrap().remove(&cid);
         }

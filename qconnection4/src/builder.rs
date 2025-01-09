@@ -2,7 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use futures::{Stream, StreamExt};
 pub use qbase::{
-    cid::{ConnectionId, RegisterCid},
+    cid::{ConnectionId, GenUniqueCid, RetireCid},
     param::{ClientParameters, CommonParameters, ServerParameters},
     sid::ControlConcurrency,
     token::{TokenProvider, TokenSink},
@@ -16,7 +16,7 @@ use qbase::{
 };
 use qinterface::{conn::ConnInterface, path::Pathway, router::QuicProto};
 pub use rustls::crypto::CryptoProvider;
-use tokio::{sync::Notify, time::Instant};
+use tokio::sync::Notify;
 
 use crate::{
     events::{EmitEvent, Event},

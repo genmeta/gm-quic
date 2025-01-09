@@ -1,8 +1,8 @@
-use std::{convert::Infallible, io, net::SocketAddr, sync::Arc};
+use std::{convert::Infallible, fmt, io, net::SocketAddr, sync::Arc};
 
 use dashmap::DashMap;
 use qbase::{
-    cid::{ConnectionId, RegisterCid},
+    cid::{ConnectionId, GenUniqueCid, RetireCid},
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     packet::{self, header::GetDcid, Packet, PacketReader},
@@ -48,8 +48,8 @@ pub struct QuicProto {
     listner: Option<QuicListener>,
 }
 
-impl core::fmt::Debug for QuicProto {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for QuicProto {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("QuicProto")
             .field("interfaces", &"...")
             .field("connections", &"...")
@@ -192,7 +192,7 @@ pub struct RouterRegistry<ISSUED> {
     issued_cids: ISSUED,
 }
 
-impl<T> RegisterCid for RouterRegistry<T>
+impl<T> GenUniqueCid for RouterRegistry<T>
 where
     T: Send + Sync + 'static,
 {
@@ -211,7 +211,12 @@ where
             })
             .unwrap()
     }
+}
 
+impl<T> RetireCid for RouterRegistry<T>
+where
+    T: Send + Sync + 'static,
+{
     fn retire_cid(&self, cid: ConnectionId) {
         self.router_iface.unregister(&Signpost::from(cid));
     }
