@@ -14,6 +14,15 @@ struct BoundQueueInner<T> {
     write_waker: AtomicWaker,
 }
 
+impl<T> BoundQueueInner<T> {
+    /// Close the queue and return all items in the queue.
+    fn close(&self) -> VecDeque<T> {
+        self.read_waker.wake();
+        self.write_waker.wake();
+        core::mem::take(&mut *self.queue.lock().unwrap())
+    }
+}
+
 pub struct BoundQueue<T> {
     inner: RwLock<Arc<BoundQueueInner<T>>>,
 }
@@ -52,33 +61,19 @@ impl<T> BoundQueue<T> {
     }
 
     pub fn close(&self) {
-        let inner = self.inner.read().unwrap();
-        // queue.cap() == 0 indicates that the queue is closed
-        core::mem::take(&mut *inner.queue.lock().unwrap());
-        inner.read_waker.wake();
-        inner.write_waker.wake();
+        self.inner.read().unwrap().close();
     }
 
     pub fn receiver(&self) -> Receiver<T> {
         let mut inner = self.inner.write().unwrap();
 
-        // close the current queue, wake the receiver
-        // queue.cap() == 0 indicates that the queue is closed
-        let queue = core::mem::take(&mut *inner.queue.lock().unwrap());
-        inner.read_waker.wake();
-
-        let read_waker = AtomicWaker::new();
-
-        // keep the write waker
-        let write_waker = AtomicWaker::new();
-        if let Some(previous_waker) = inner.write_waker.take() {
-            write_waker.register(&previous_waker);
-        }
+        // close the Receiver
+        let queue = inner.close();
 
         *inner = Arc::new(BoundQueueInner {
             queue: queue.into(),
-            read_waker,
-            write_waker,
+            read_waker: AtomicWaker::new(),
+            write_waker: AtomicWaker::new(),
         });
         Receiver {
             inner: inner.clone(),
@@ -94,6 +89,12 @@ impl<T> Drop for BoundQueue<T> {
 
 pub struct Receiver<T> {
     inner: Arc<BoundQueueInner<T>>,
+}
+
+impl<T> Receiver<T> {
+    pub fn close(&self) {
+        self.inner.close();
+    }
 }
 
 impl<T> futures::Stream for Receiver<T> {

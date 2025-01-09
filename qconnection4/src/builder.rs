@@ -353,6 +353,7 @@ impl SpaceReady {
             packet_entry.initial.receiver(),
             self.spaces.initial.clone(),
             paths.clone(),
+            conn_iface.clone(),
             &components,
             event_broker.clone(),
         );
@@ -360,6 +361,8 @@ impl SpaceReady {
             packet_entry.handshake.receiver(),
             self.spaces.handshake.clone(),
             paths.clone(),
+            conn_iface.clone(),
+            &components,
             event_broker.clone(),
         );
         data::launch_deliver_and_parse(
@@ -574,8 +577,13 @@ impl CoreConnection {
         self.spaces.data.streams.on_conn_error(&error);
         self.spaces.data.datagrams.on_conn_error(&error);
         self.components.flow_ctrl.on_conn_error(&error);
-        self.components.parameters.on_conn_error(&error);
         self.components.tls_session.on_conn_error(&error);
+        if self.components.handshake.role() == sid::Role::Server {
+            let local_parameters = self.components.parameters.server().unwrap();
+            let origin_dcid = local_parameters.original_destination_connection_id();
+            self.conn_iface.router_if().unregister(&origin_dcid.into());
+        }
+        self.components.parameters.on_conn_error(&error);
         let closing_interface = Arc::new(self.conn_iface.close(ccf, &self.components.cid_registry));
         self.paths.clear();
 
@@ -643,8 +651,13 @@ impl CoreConnection {
         self.spaces.data.streams.on_conn_error(&error);
         self.spaces.data.datagrams.on_conn_error(&error);
         self.components.flow_ctrl.on_conn_error(&error);
-        self.components.parameters.on_conn_error(&error);
         self.components.tls_session.on_conn_error(&error);
+        if self.components.handshake.role() == sid::Role::Server {
+            let local_parameters = self.components.parameters.server().unwrap();
+            let origin_dcid = local_parameters.original_destination_connection_id();
+            self.conn_iface.router_if().unregister(&origin_dcid.into());
+        }
+        self.components.parameters.on_conn_error(&error);
         self.conn_iface.disable_probing();
         self.paths.clear();
 

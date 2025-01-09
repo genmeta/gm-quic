@@ -113,7 +113,7 @@ impl AsyncWrite for StreamWriter {
     ) -> Poll<Result<usize, io::Error>> {
         let result = self.inner.write_or_await(cx, buf);
         match result {
-            Poll::Ready(Ok(_)) => {
+            Poll::Ready(Ok(n)) if n > 0 => {
                 self.notify.notify_waiters();
             }
             _ => {}
