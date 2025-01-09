@@ -21,30 +21,58 @@ pub mod builder;
 
 use std::{
     io,
+    pin::{pin, Pin},
     sync::{Arc, RwLock},
+    task::{Context, Poll},
 };
 
+use deref_derive::{Deref, DerefMut};
 use events::EmitEvent;
 use path::{entry::PacketEntry, ArcPaths};
 use qbase::{
     cid,
     error::Error,
     flow,
-    frame::ConnectionCloseFrame,
+    frame::{ConnectionCloseFrame, ReliableFrame, SendFrame},
     param::{self, ArcParameters},
     sid::StreamId,
     token::ArcTokenRegistry,
 };
 use qinterface::{conn::ConnInterface, path::Pathway, router::RouterRegistry};
 use qrecovery::{
-    recv,
-    reliable::ArcReliableFrameDeque,
-    send,
+    recv, reliable, send,
     streams::{self, Ext},
 };
 use qunreliable::{UnreliableReader, UnreliableWriter};
 use space::Spaces;
 use tls::ArcTlsSession;
+use tokio::{io::AsyncWrite, sync::Notify};
+
+#[derive(Clone, Deref)]
+pub struct ArcReliableFrameDeque {
+    #[deref]
+    inner: reliable::ArcReliableFrameDeque,
+    notify: Arc<Notify>,
+}
+
+impl ArcReliableFrameDeque {
+    pub fn with_capacity_and_notify(capacity: usize, notify: Arc<Notify>) -> Self {
+        Self {
+            inner: reliable::ArcReliableFrameDeque::with_capacity(capacity),
+            notify,
+        }
+    }
+}
+
+impl<T> SendFrame<T> for ArcReliableFrameDeque
+where
+    T: Into<ReliableFrame>,
+{
+    fn send_frame<I: IntoIterator<Item = T>>(&self, iter: I) {
+        self.inner.send_frame(iter.into_iter().map(Into::into));
+        self.notify.notify_waiters();
+    }
+}
 
 pub type ArcLocalCids = cid::local_cid2::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
 pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
@@ -53,12 +81,53 @@ pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
 pub type FlowController = flow::FlowController<ArcReliableFrameDeque>;
 pub type Credit<'a> = flow::Credit<'a, ArcReliableFrameDeque>;
 
-pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
-pub type StreamWriter = send::Writer<Ext<ArcReliableFrameDeque>>;
-pub type StreamReader = recv::Reader<Ext<ArcReliableFrameDeque>>;
-
 pub type Handshake = qbase::handshake::Handshake<ArcReliableFrameDeque>;
 pub type ArcPacketEntry = Arc<path::entry::PacketEntry>;
+
+pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
+pub type StreamReader = recv::Reader<Ext<ArcReliableFrameDeque>>;
+
+pub struct StreamWriter {
+    inner: send::Writer<Ext<ArcReliableFrameDeque>>,
+    notify: Arc<Notify>,
+}
+
+impl StreamWriter {
+    pub fn new(inner: send::Writer<Ext<ArcReliableFrameDeque>>, notify: Arc<Notify>) -> Self {
+        Self { inner, notify }
+    }
+
+    pub fn cancel(&mut self, err_code: u64) {
+        self.inner.cancel(err_code);
+    }
+}
+
+impl Unpin for StreamWriter {}
+
+impl AsyncWrite for StreamWriter {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        let result = self.inner.write_or_await(cx, buf);
+        match result {
+            Poll::Ready(Ok(_)) => {
+                self.notify.notify_waiters();
+            }
+            _ => {}
+        }
+        result
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.inner.flush_or_await(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.inner.shutdown_or_await(cx)
+    }
+}
 
 #[derive(Clone)]
 pub struct Components {

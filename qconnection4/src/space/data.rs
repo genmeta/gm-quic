@@ -33,7 +33,7 @@ use qinterface::{closing::ClosingInterface, path::Pathway};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcRcvdJournal, DataJournal},
-    reliable::{ArcReliableFrameDeque, GuaranteedFrame},
+    reliable::GuaranteedFrame,
 };
 use qunreliable::DatagramFlow;
 use tokio::sync::mpsc;
@@ -44,7 +44,7 @@ use crate::{
     path::{ArcPaths, Path, SendBuffer},
     space::{pipe, AckData, FlowControlledDataStreams},
     tx::{PacketMemory, Transaction},
-    Components, DataStreams,
+    ArcReliableFrameDeque, Components, DataStreams,
 };
 
 pub type ZeroRttPacket = (ZeroRttHeader, bytes::BytesMut, usize);

@@ -100,15 +100,9 @@ where
     }
 }
 
-impl<TX: Unpin> Unpin for Writer<TX> {}
-
-impl<TX: Clone> AsyncWrite for Writer<TX> {
+impl<TX: Clone> Writer<TX> {
     /// 往sndbuf里面写数据，直到写满MAX_STREAM_DATA，等通告窗口更新再写
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
+    pub fn write_or_await(&self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         let mut sender = self.0.sender();
         let sending_state = sender.as_mut().map_err(|e| e.clone())?;
         match sending_state {
@@ -131,7 +125,7 @@ impl<TX: Clone> AsyncWrite for Writer<TX> {
         }
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    pub fn flush_or_await(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let mut sender = self.0.sender();
         let sending_state = sender.as_mut().map_err(|e| e.clone())?;
         match sending_state {
@@ -155,7 +149,7 @@ impl<TX: Clone> AsyncWrite for Writer<TX> {
         }
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    pub fn shutdown_or_await(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let mut sender = self.0.sender();
         let sending_state = sender.as_mut().map_err(|e| e.clone())?;
         match sending_state {
@@ -201,6 +195,27 @@ impl<TX: Clone> AsyncWrite for Writer<TX> {
                 Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
             }
         }
+    }
+}
+
+impl<TX: Unpin> Unpin for Writer<TX> {}
+
+impl<TX: Clone> AsyncWrite for Writer<TX> {
+    /// 往sndbuf里面写数据，直到写满MAX_STREAM_DATA，等通告窗口更新再写
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.write_or_await(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.flush_or_await(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.shutdown_or_await(cx)
     }
 }
 
