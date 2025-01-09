@@ -8,7 +8,6 @@ use std::{
 use dashmap::DashMap;
 use futures::channel::mpsc;
 use qbase::{
-    cid::RegisterCid,
     frame::{ConnectionCloseFrame, NewConnectionIdFrame, RetireConnectionIdFrame, SendFrame},
     packet::Packet,
     util::bound_deque::{BoundQueue, Receiver},

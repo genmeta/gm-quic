@@ -18,7 +18,7 @@ use qbase::{
             long::{io::LongHeaderBuilder, ZeroRttHeader},
             GetType, OneRttHeader,
         },
-        keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys},
+        keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys, HeaderProtectionKeys},
         number::PacketNumber,
         r#type::Type,
         signal::SpinBit,
@@ -36,7 +36,6 @@ use qrecovery::{
     reliable::{ArcReliableFrameDeque, GuaranteedFrame},
 };
 use qunreliable::DatagramFlow;
-use rustls::quic::HeaderProtectionKey;
 use tokio::sync::mpsc;
 
 use super::DecryptedPacket;
@@ -244,8 +243,8 @@ impl DataSpace {
 pub fn launch_deliver_and_parse(
     mut zeor_rtt_packets: impl Stream<Item = (ZeroRttPacket, Pathway)> + Unpin + Send + 'static,
     mut one_rtt_packets: impl Stream<Item = (OneRttPacket, Pathway)> + Unpin + Send + 'static,
-    space: &DataSpace,
-    paths: &ArcPaths,
+    space: DataSpace,
+    paths: ArcPaths,
     components: &Components,
     event_broker: impl EmitEvent + Clone + Send + Sync + 'static,
 ) {
@@ -384,8 +383,6 @@ pub fn launch_deliver_and_parse(
         }
     });
     tokio::spawn({
-        let space = space.clone();
-        let paths = paths.clone();
         let dispatch_data_frame = dispatch_data_frame.clone();
         async move {
             while let Some((packet, pathway)) = one_rtt_packets.next().await {
@@ -445,14 +442,14 @@ impl TrackPackets for DataTracker {
 
 #[derive(Clone)]
 pub struct ClosingDataSpace {
-    keys: (Arc<dyn HeaderProtectionKey>, ArcOneRttPacketKeys),
+    keys: (HeaderProtectionKeys, ArcOneRttPacketKeys),
     ccf_packet_pn: (u64, PacketNumber),
     rcvd_journal: ArcRcvdJournal,
 }
 
 impl DataSpace {
     pub fn close(self) -> Option<ClosingDataSpace> {
-        let keys = self.one_rtt_keys.get_local_keys()?;
+        let keys = self.one_rtt_keys.invalid()?;
         let sent_journal = self.journal.of_sent_packets();
         let new_packet_guard = sent_journal.new_packet();
         let ccf_packet_pn = new_packet_guard.pn();
@@ -471,6 +468,7 @@ impl ClosingDataSpace {
         (header, mut bytes, offset): OneRttPacket,
     ) -> Option<ConnectionCloseFrame> {
         let (hpk, pk) = &self.keys;
+        let hpk = &hpk.local;
         let (undecoded_pn, key_phase) =
             remove_protection_of_short_packet(hpk.as_ref(), bytes.as_mut(), offset).ok()??;
         let pn = self.rcvd_journal.decode_pn(undecoded_pn).ok()?;
@@ -497,7 +495,7 @@ impl ClosingDataSpace {
         let header = OneRttHeader::new(Default::default(), dcid);
         let pn = self.ccf_packet_pn;
         let mut packet_writer =
-            PacketWriter::new_short(&header, buf, pn, hpk.clone(), pk, key_phase)?;
+            PacketWriter::new_short(&header, buf, pn, hpk.local.clone(), pk, key_phase)?;
 
         packet_writer.dump_frame(ccf.clone());
 

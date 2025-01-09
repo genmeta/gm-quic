@@ -126,8 +126,8 @@ impl HandshakeSpace {
 
 pub fn launch_deliver_and_parse(
     mut packets: impl Stream<Item = (HandshakePacket, Pathway)> + Unpin + Send + 'static,
-    space: &HandshakeSpace,
-    paths: &ArcPaths,
+    space: HandshakeSpace,
+    paths: ArcPaths,
     event_broker: impl EmitEvent + Clone + Send + Sync + 'static,
 ) {
     let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded_channel();
@@ -144,8 +144,6 @@ pub fn launch_deliver_and_parse(
         event_broker.clone(),
     );
 
-    let space = space.clone();
-    let paths = paths.clone();
     tokio::spawn(async move {
         while let Some((packet, pathway)) = packets.next().await {
             let Some(path) = paths.get(&pathway) else {
@@ -221,7 +219,7 @@ pub struct ClosingHandshakeSpace {
 
 impl HandshakeSpace {
     pub fn close(self) -> Option<ClosingHandshakeSpace> {
-        let keys = self.keys.get_local_keys()?;
+        let keys = self.keys.invalid()?;
         let sent_journal = self.journal.of_sent_packets();
         let new_packet_guard = sent_journal.new_packet();
         let ccf_packet_pn = new_packet_guard.pn();

@@ -1,12 +1,8 @@
-use std::{
-    io,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::sync::{Arc, RwLock};
 
 use futures::{Stream, StreamExt};
 pub use qbase::{
-    cid::{ConnectionId, GenUniqueCid},
+    cid::{ConnectionId, RegisterCid},
     param::{ClientParameters, CommonParameters, ServerParameters},
     sid::ControlConcurrency,
     token::{TokenProvider, TokenSink},
@@ -18,15 +14,13 @@ use qbase::{
     sid,
     token::ArcTokenRegistry,
 };
-use qcongestion::{ArcCC, CongestionAlgorithm};
 use qinterface::{conn::ConnInterface, path::Pathway, router::QuicProto};
 use qrecovery::reliable::ArcReliableFrameDeque;
 pub use rustls::crypto::CryptoProvider;
-use tokio::time::Instant;
 
 use crate::{
     events::{EmitEvent, Event},
-    path::{entry::PacketEntry, ArcPaths, Path, PathGuard},
+    path::{entry::PacketEntry, ArcPaths},
     space::{
         data::{self, DataSpace},
         handshake::{self, HandshakeSpace},
@@ -43,14 +37,10 @@ impl Connection {
         server_name: String,
         token_sink: Arc<dyn TokenSink>,
     ) -> ClientFoundation {
-        let Ok(server) = rustls::pki_types::ServerName::try_from(server_name.clone()) else {
-            panic!("server_name is not valid")
-        };
-        let token = token_sink.fetch_token(&server_name);
-
         ClientFoundation {
-            server,
-            token,
+            server: rustls::pki_types::ServerName::try_from(server_name.clone())
+                .expect("server name is not valid"),
+            token: token_sink.fetch_token(&server_name),
             token_registry: ArcTokenRegistry::with_sink(server_name, token_sink),
             client_params: ClientParameters::default(),
             remembered: None,
@@ -163,11 +153,7 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
         }
     }
 
-    pub fn with_cids(
-        mut self,
-        chosen_initial_scid: ConnectionId,
-        random_initial_dcid: ConnectionId,
-    ) -> SpaceReady {
+    pub fn with_cids(mut self, random_initial_dcid: ConnectionId) -> SpaceReady {
         let client_params = &mut self.foundation.client_params;
         let remembered = &self.foundation.remembered;
 
@@ -189,7 +175,7 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             reliable_frames.clone(),
         );
 
-        client_params.set_initial_source_connection_id(chosen_initial_scid);
+        // client_params.set_initial_source_connection_id(chosen_initial_scid);
         let parameters = ArcParameters::new_client(*client_params, *remembered);
         parameters.original_dcid_from_server_need_equal(random_initial_dcid);
 
@@ -237,7 +223,6 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
 
     pub fn with_cids(
         mut self,
-        chosen_initial_scid: ConnectionId,
         original_dcid: ConnectionId,
         client_scid: ConnectionId,
     ) -> SpaceReady {
@@ -254,7 +239,7 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         let handshake = Handshake::new(sid::Role::Server, reliable_frames.clone());
         let flow_ctrl = FlowController::new(0, local_initial_max_data, reliable_frames.clone());
 
-        server_params.set_initial_source_connection_id(chosen_initial_scid);
+        // server_params.set_initial_source_connection_id(chosen_initial_scid);
         server_params.set_original_destination_connection_id(original_dcid);
         let parameters = ArcParameters::new_server(*server_params);
         parameters.initial_scid_from_peer_need_equal(client_scid);
@@ -310,6 +295,8 @@ impl SpaceReady {
 
         let issued_cids = self.reliable_frames.clone();
         let router_registry = proto.registry(conn_iface.clone(), issued_cids);
+        self.parameters
+            .set_initial_scid(router_registry.gen_unique_cid());
         let local_cids = ArcLocalCids::new(initial_scid, router_registry);
 
         let active_cid_limit = local_params.active_connection_id_limit().into();
@@ -356,22 +343,22 @@ impl SpaceReady {
 
         initial::launch_deliver_and_parse(
             packet_entry.initial.receiver(),
-            &self.spaces.initial,
-            &paths,
+            self.spaces.initial.clone(),
+            paths.clone(),
             &components,
             event_broker.clone(),
         );
         handshake::launch_deliver_and_parse(
             packet_entry.handshake.receiver(),
-            &self.spaces.handshake,
-            &paths,
+            self.spaces.handshake.clone(),
+            paths.clone(),
             event_broker.clone(),
         );
         data::launch_deliver_and_parse(
             packet_entry.zero_rtt.receiver(),
             packet_entry.one_rtt.receiver(),
-            &self.spaces.data,
-            &paths,
+            self.spaces.data.clone(),
+            paths.clone(),
             &components,
             event_broker.clone(),
         );
@@ -387,16 +374,13 @@ impl SpaceReady {
             )
         });
 
-        Connection(
-            Ok(CoreConnection {
-                spaces: self.spaces,
-                conn_iface,
-                components,
-                packet_entry,
-                paths,
-            })
-            .into(),
-        )
+        Connection(RwLock::new(Ok(CoreConnection {
+            spaces: self.spaces,
+            conn_iface,
+            components,
+            packet_entry,
+            paths,
+        })))
     }
 }
 
@@ -638,7 +622,7 @@ impl CoreConnection {
 
         Termination {
             error,
-            _cid_registry: self.components.cid_registry,
+            _local_cids: self.components.cid_registry.local,
             packet_entry: self.packet_entry,
             is_draining: false,
         }
@@ -672,7 +656,7 @@ impl CoreConnection {
 
         Termination {
             error,
-            _cid_registry: self.components.cid_registry,
+            _local_cids: self.components.cid_registry.local,
             packet_entry: self.packet_entry,
             is_draining: false,
         }
