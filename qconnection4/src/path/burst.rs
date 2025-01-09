@@ -4,15 +4,13 @@ use qbase::Epoch;
 use qinterface::SendCapability;
 
 use crate::{
-    space::Spaces,
-    tx::{DcidCell, Transaction},
-    ArcLocalCids, Components, FlowController,
+    space::Spaces, tx::Transaction, ArcDcidCell, ArcLocalCids, Components, FlowController,
 };
 
 pub struct Burst {
     path: Arc<super::Path>,
     local_cids: ArcLocalCids,
-    dcid: DcidCell,
+    dcid: ArcDcidCell,
     spin: bool,
     flow_ctrl: FlowController,
     spaces: Spaces,
