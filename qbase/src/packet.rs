@@ -400,7 +400,7 @@ impl<'b> PacketWriter<'b> {
     }
 }
 
-#[derive(Debug, CopyGetters)]
+#[derive(Debug, CopyGetters, Clone, Copy)]
 pub struct AssembledPacket {
     #[getset(get_copy = "pub")]
     pn: u64,

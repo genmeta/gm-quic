@@ -136,8 +136,8 @@ impl InitialSpace {
 
 pub fn launch_deliver_and_parse(
     mut packets: impl Stream<Item = (InitialPacket, Pathway)> + Unpin + Send + 'static,
-    space: &InitialSpace,
-    paths: &ArcPaths,
+    space: InitialSpace,
+    paths: ArcPaths,
     components: &Components,
     event_broker: impl EmitEvent + Clone + Send + Sync + 'static,
 ) {
@@ -251,7 +251,7 @@ pub struct ClosingInitialSpace {
 
 impl InitialSpace {
     pub fn close(self) -> Option<ClosingInitialSpace> {
-        let keys = self.keys.get_local_keys()?;
+        let keys = self.keys.invalid()?;
         let sent_journal = self.journal.of_sent_packets();
         let new_packet_guard = sent_journal.new_packet();
         let ccf_packet_pn = new_packet_guard.pn();
