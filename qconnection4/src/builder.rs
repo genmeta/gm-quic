@@ -15,8 +15,8 @@ use qbase::{
     token::ArcTokenRegistry,
 };
 use qinterface::{conn::ConnInterface, path::Pathway, router::QuicProto};
-use qrecovery::reliable::ArcReliableFrameDeque;
 pub use rustls::crypto::CryptoProvider;
+use tokio::{sync::Notify, time::Instant};
 
 use crate::{
     events::{EmitEvent, Event},
@@ -28,8 +28,8 @@ use crate::{
         Spaces,
     },
     tls::ArcTlsSession,
-    ArcLocalCids, ArcRemoteCids, CidRegistry, Components, Connection, CoreConnection, DataStreams,
-    FlowController, Handshake, Termination,
+    ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
+    CoreConnection, DataStreams, FlowController, Handshake, Termination,
 };
 
 impl Connection {
@@ -160,7 +160,8 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
         let local_initial_max_data = client_params.initial_max_data().into_inner();
         let peer_initial_max_data = remembered.map_or(0, |p| p.initial_max_data().into_inner());
 
-        let reliable_frames = ArcReliableFrameDeque::with_capacity(8);
+        let notify = Arc::new(Notify::new());
+        let reliable_frames = ArcReliableFrameDeque::with_capacity_and_notify(8, notify.clone());
         let data_space = DataSpace::new(
             sid::Role::Client,
             reliable_frames.clone(),
@@ -203,6 +204,7 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             flow_ctrl,
             reliable_frames,
             spaces,
+            notify,
         }
     }
 }
@@ -229,7 +231,8 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         let server_params = &mut self.foundation.server_params;
         let local_initial_max_data = server_params.initial_max_data().into_inner();
 
-        let reliable_frames = ArcReliableFrameDeque::with_capacity(8);
+        let notify = Arc::new(Notify::new());
+        let reliable_frames = ArcReliableFrameDeque::with_capacity_and_notify(8, notify.clone());
         let data_space = DataSpace::new(
             sid::Role::Client,
             reliable_frames.clone(),
@@ -267,6 +270,7 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             flow_ctrl,
             reliable_frames,
             spaces,
+            notify,
         }
     }
 }
@@ -280,6 +284,10 @@ pub struct SpaceReady {
     flow_ctrl: FlowController,
     reliable_frames: ArcReliableFrameDeque,
     spaces: Spaces,
+    // TODO: 当路径发送任务没数据可发时，则等待这个通知；
+    //       绝不可进入下次循环，尝试发送数据仍无数据可发，会陷入死循环
+    //       相应地，当数据写入，或者重传时，要唤醒该通知
+    notify: Arc<Notify>,
 }
 
 impl SpaceReady {
