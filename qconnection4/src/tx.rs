@@ -9,7 +9,7 @@ use std::{
 use bytes::BufMut;
 use deref_derive::{Deref, DerefMut};
 use qbase::{
-    cid::{ArcCidCell, BorrowedCid, ConnectionId},
+    cid::{BorrowedCid, ConnectionId},
     frame::{
         io::{WriteDataFrame, WriteFrame},
         AckFrame, BeFrame, CryptoFrame, DatagramFrame, PathChallengeFrame, PathResponseFrame,
@@ -27,13 +27,13 @@ use qbase::{
 use qcongestion::{ArcCC, CongestionControl};
 use qrecovery::{
     journal::{ArcSentJournal, NewPacketGuard},
-    reliable::{ArcReliableFrameDeque, GuaranteedFrame},
+    reliable::GuaranteedFrame,
 };
 
 use crate::{
     path::{AntiAmplifier, Constraints, SendBuffer},
     space::{data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace, Spaces},
-    Credit, FlowController,
+    ArcDcidCell, ArcReliableFrameDeque, Credit, FlowController,
 };
 
 /// 发送一个数据包，
@@ -196,8 +196,6 @@ impl<'b, F> TryFrom<PacketMemory<'b, '_, F>> for PacketWriter<'b> {
     }
 }
 
-pub type DcidCell = ArcCidCell<ArcReliableFrameDeque>;
-
 pub struct Transaction<'a> {
     scid: ConnectionId,
     dcid: BorrowedCid<'a, ArcReliableFrameDeque>,
@@ -209,7 +207,7 @@ pub struct Transaction<'a> {
 impl<'a> Transaction<'a> {
     pub fn prepare(
         scid: ConnectionId,
-        dcid: &'a DcidCell,
+        dcid: &'a ArcDcidCell,
         cc: &'a ArcCC,
         anti_amplifier: &'a AntiAmplifier,
         flow_ctrl: &'a crate::FlowController,
@@ -303,7 +301,7 @@ impl<'a> Transaction<'a> {
 
 pub struct PrepareTransaction<'a> {
     scid: ConnectionId,
-    dcid: &'a DcidCell,
+    dcid: &'a ArcDcidCell,
     cc: &'a ArcCC,
     anti_amplifier: &'a AntiAmplifier,
     flow_ctrl: &'a FlowController,

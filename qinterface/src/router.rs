@@ -7,6 +7,7 @@ use qbase::{
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     packet::{self, header::GetDcid, Packet, PacketReader},
 };
+use tokio::task::JoinHandle;
 
 use crate::{
     conn::ConnInterface,
@@ -74,7 +75,7 @@ impl QuicProto {
         self: &Arc<Self>,
         local_address: SocketAddr,
         interface: Arc<dyn QuicInterface>,
-    ) -> tokio::task::JoinHandle<io::Result<Infallible>> {
+    ) -> JoinHandle<io::Result<Infallible>> {
         struct InterfaceGuard {
             addr: SocketAddr,
             proto: Arc<QuicProto>,
@@ -137,6 +138,7 @@ impl QuicProto {
             }
         })
     }
+
     pub fn send_capability(&self, on: Pathway) -> io::Result<SendCapability> {
         self.interfaces
             .get(&on.src())

@@ -77,6 +77,7 @@ where
 pub type ArcLocalCids = cid::local_cid2::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
 pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
 pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
+pub type ArcDcidCell = cid::ArcCidCell<ArcReliableFrameDeque>;
 
 pub type FlowController = flow::FlowController<ArcReliableFrameDeque>;
 pub type Credit<'a> = flow::Credit<'a, ArcReliableFrameDeque>;
