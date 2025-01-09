@@ -19,7 +19,7 @@ use qbase::{
     Epoch,
 };
 use qcongestion::{CongestionControl, TrackPackets};
-use qinterface::{closing::ClosingInterface, path::Pathway};
+use qinterface::{closing::ClosingInterface, conn::ConnInterface, path::Pathway};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcRcvdJournal, HandshakeJournal},
@@ -33,6 +33,7 @@ use crate::{
     path::ArcPaths,
     space::pipe,
     tx::{PacketMemory, Transaction},
+    Components,
 };
 
 pub type HandshakePacket = (HandshakeHeader, bytes::BytesMut, usize);
@@ -128,6 +129,8 @@ pub fn launch_deliver_and_parse(
     mut packets: impl Stream<Item = (HandshakePacket, Pathway)> + Unpin + Send + 'static,
     space: HandshakeSpace,
     paths: ArcPaths,
+    conn_iface: Arc<ConnInterface>,
+    components: &Components,
     event_broker: impl EmitEvent + Clone + Send + Sync + 'static,
 ) {
     let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded_channel();
@@ -144,6 +147,8 @@ pub fn launch_deliver_and_parse(
         event_broker.clone(),
     );
 
+    let role = components.handshake.role();
+    let parameters = components.parameters.clone();
     tokio::spawn(async move {
         while let Some((packet, pathway)) = packets.next().await {
             let Some(path) = paths.get(&pathway) else {
@@ -181,6 +186,19 @@ pub fn launch_deliver_and_parse(
                             space.journal.of_rcvd_packets().register_pn(packet.pn);
                             path.cc()
                                 .on_pkt_rcvd(Epoch::Handshake, packet.pn, is_ack_packet);
+
+                            // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
+                            // negotiating done.
+                            // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
+                            if role == qbase::sid::Role::Server {
+                                if let Some(origin_dcid) = parameters.server().map(|local_params| {
+                                    local_params.original_destination_connection_id()
+                                }) {
+                                    if origin_dcid != packet.header.dcid {
+                                        conn_iface.router_if().unregister(&origin_dcid.into());
+                                    }
+                                }
+                            }
                         }
                         Err(error) => event_broker.emit(Event::Failed(error)),
                     }

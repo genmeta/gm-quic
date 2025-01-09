@@ -13,7 +13,7 @@ use qbase::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::{
             long::{io::LongHeaderBuilder, InitialHeader},
-            GetScid, GetType,
+            GetType,
         },
         keys::ArcKeys,
         number::PacketNumber,
@@ -23,7 +23,7 @@ use qbase::{
     Epoch,
 };
 use qcongestion::{CongestionControl, TrackPackets};
-use qinterface::{closing::ClosingInterface, path::Pathway};
+use qinterface::{closing::ClosingInterface, conn::ConnInterface, path::Pathway};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcRcvdJournal, InitialJournal},
@@ -138,6 +138,7 @@ pub fn launch_deliver_and_parse(
     mut packets: impl Stream<Item = (InitialPacket, Pathway)> + Unpin + Send + 'static,
     space: InitialSpace,
     paths: ArcPaths,
+    conn_iface: Arc<ConnInterface>,
     components: &Components,
     event_broker: impl EmitEvent + Clone + Send + Sync + 'static,
 ) {
@@ -155,7 +156,6 @@ pub fn launch_deliver_and_parse(
         event_broker.clone(),
     );
 
-    let parameters = components.parameters.clone();
     let validate = {
         let tls_session = components.tls_session.clone();
         let token_registry = components.token_registry.clone();
@@ -170,10 +170,20 @@ pub fn launch_deliver_and_parse(
         }
     };
 
-    let space = space.clone();
-    let paths = paths.clone();
+    let role = components.handshake.role();
+    let parameters = components.parameters.clone();
     tokio::spawn(async move {
         while let Some((packet, pathway)) = packets.next().await {
+            // rfc9000 7.2:
+            // if subsequent Initial packets include a different Source Connection ID, they MUST be discarded. This avoids
+            // unpredictable outcomes that might otherwise result from stateless processing of multiple Initial packets
+            // with different Source Connection IDs.
+            if parameters
+                .initial_scid_from_peer()
+                .is_some_and(|scid| scid != packet.0.scid)
+            {
+                continue;
+            }
             let Some(path) = paths.get(&pathway) else {
                 continue;
             };
@@ -203,15 +213,29 @@ pub fn launch_deliver_and_parse(
                             space.journal.of_rcvd_packets().register_pn(packet.pn);
                             path.cc()
                                 .on_pkt_rcvd(Epoch::Handshake, packet.pn, is_ack_packet);
+                            if parameters.initial_scid_from_peer().is_none() {
+                                parameters.initial_scid_from_peer_need_equal(packet.header.scid);
+                            }
                             // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
                             // A server might wish to validate the client address before starting the cryptographic handshake.
                             // QUIC uses a token in the Initial packet to provide address validation prior to completing the handshake.
                             // This token is delivered to the client during connection establishment with a Retry packet (see Section 8.1.2)
                             // or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
-                            // only the first cid will be set
-                            parameters.initial_scid_from_peer_need_equal(*packet.header.get_scid());
                             if !packet.header.token.is_empty() {
                                 validate(&packet.header.token, &path);
+                            }
+
+                            // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
+                            // negotiating done.
+                            // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
+                            if role == qbase::sid::Role::Server {
+                                if let Some(origin_dcid) = parameters.server().map(|local_params| {
+                                    local_params.original_destination_connection_id()
+                                }) {
+                                    if origin_dcid != packet.header.dcid {
+                                        conn_iface.router_if().unregister(&origin_dcid.into());
+                                    }
+                                }
                             }
                         }
                         Err(error) => event_broker.emit(Event::Failed(error)),

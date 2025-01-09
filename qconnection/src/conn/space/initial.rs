@@ -197,7 +197,9 @@ impl InitialSpace {
                     // or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
                     if let DataHeader::Long(long::DataHeader::Initial(initial)) = &packet.header {
                         // only the first cid will be set
-                        parameters.initial_scid_from_peer_need_equal(initial.scid);
+                        if parameters.initial_scid_from_peer().is_none() {
+                            parameters.initial_scid_from_peer_need_equal(initial.scid);
+                        }
 
                         if !initial.token.is_empty() {
                             validate(&initial.token, path);

@@ -136,13 +136,25 @@ impl Parameters {
     }
 
     fn remote(&self) -> Option<&CommonParameters> {
-        if self.role == Role::Client && self.state & Self::SERVER_READY != 0 {
-            Some(self.server.deref())
-        } else if self.role == Role::Server && self.state & Self::CLIENT_READY != 0 {
-            Some(self.client.deref())
-        } else {
-            None
+        match self.role {
+            Role::Client if self.state & Self::SERVER_READY != 0 => Some(self.server.deref()),
+            Role::Server if self.state & Self::CLIENT_READY != 0 => Some(self.client.deref()),
+            _ => None,
         }
+    }
+
+    fn client(&self) -> Option<ClientParameters> {
+        if self.state & Self::CLIENT_READY == 0 {
+            return None;
+        }
+        Some(self.client)
+    }
+
+    fn server(&self) -> Option<ServerParameters> {
+        if self.state & Self::CLIENT_READY == 0 {
+            return None;
+        }
+        Some(self.server)
     }
 
     fn remembered(&self) -> Option<&CommonParameters> {
@@ -214,11 +226,16 @@ impl Parameters {
         }
     }
 
-    fn initial_scid_from_peer_need_equal(&mut self, cid: ConnectionId) {
-        // TODO: 暂时这样实现
+    fn old_initial_scid_from_peer_need_equal(&mut self, cid: ConnectionId) {
+        assert_eq!(self.role, Role::Server);
         if self.requirements.initial_source_connection_id.is_none() {
             self.requirements.initial_source_connection_id = Some(cid)
         }
+    }
+
+    fn initial_scid_from_peer_need_equal(&mut self, cid: ConnectionId) {
+        assert_eq!(self.role, Role::Server);
+        self.requirements.initial_source_connection_id = Some(cid)
     }
 
     fn retry_scid_from_server_need_equal(&mut self, cid: ConnectionId) {
@@ -359,6 +376,28 @@ impl ArcParameters {
         Self(Arc::new(Mutex::new(Ok(Parameters::new_server(server)))))
     }
 
+    /// Returns the client side transport parameters.
+    /// Returns None if some connection error occurred,
+    ///  or parameters have not be received(only for the server).
+    ///
+    /// - For the client, this equal to [`Self::local`];
+    /// - For the server, this equal to [`Self::remote`].
+    pub fn client(&self) -> Option<ClientParameters> {
+        let guard = self.0.lock().unwrap();
+        guard.as_ref().ok()?.client()
+    }
+
+    /// Returns the server side transport parameters.
+    /// Returns None if some connection error occurred,
+    ///  or parameters have not be received(only for the client).
+    ///
+    /// - For the client, this equal to [`Self::remote`];
+    /// - For the server, this equal to [`Self::local`].
+    pub fn server(&self) -> Option<ServerParameters> {
+        let guard = self.0.lock().unwrap();
+        guard.as_ref().ok()?.server()
+    }
+
     /// Returns the local transport parameters.
     /// Returns None if some connection error occurred.
     ///
@@ -445,6 +484,24 @@ impl ArcParameters {
         if let Ok(params) = guard.deref() {
             buf.put_parameters(params);
         }
+    }
+
+    /// No matter the client or server, after receiving the Initial
+    /// packet from the peer, the initial_source_connection_id in
+    /// the remote transport parameters must equal the source connection
+    /// id in the received Initial packet.
+    #[deprecated]
+    pub fn old_initial_scid_from_peer_need_equal(&self, cid: ConnectionId) {
+        let mut guard = self.0.lock().unwrap();
+        if let Ok(params) = guard.deref_mut() {
+            params.old_initial_scid_from_peer_need_equal(cid);
+        }
+    }
+
+    pub fn initial_scid_from_peer(&self) -> Option<ConnectionId> {
+        let guard = self.0.lock().unwrap();
+        let parameters = guard.as_ref().ok()?;
+        parameters.requirements.initial_source_connection_id
     }
 
     /// No matter the client or server, after receiving the Initial
@@ -566,7 +623,7 @@ mod tests {
         let mut params = Parameters::new_client(client_params, None);
 
         let server_cid = ConnectionId::from_slice(b"server_test");
-        params.initial_scid_from_peer_need_equal(server_cid);
+        params.old_initial_scid_from_peer_need_equal(server_cid);
 
         let original_cid = ConnectionId::from_slice(b"original");
         params.original_dcid_from_server_need_equal(original_cid);
