@@ -30,9 +30,7 @@ use deref_derive::Deref;
 use events::EmitEvent;
 use path::{ArcPaths, RcvdPacketBuffer};
 use qbase::{
-    cid,
-    error::Error,
-    flow,
+    cid, flow,
     frame::{ConnectionCloseFrame, ReliableFrame, SendFrame},
     handshake,
     param::{self, ArcParameters},
@@ -46,6 +44,7 @@ use qrecovery::{
 };
 use qunreliable::{UnreliableReader, UnreliableWriter};
 use space::Spaces;
+use termination::Termination;
 use tls::ArcTlsSession;
 use tokio::{io::AsyncWrite, sync::Notify};
 
@@ -150,17 +149,6 @@ pub struct CoreConnection {
     spaces: Spaces,
 }
 
-#[derive(Clone)]
-pub struct Termination {
-    // for generate io::Error
-    error: Error,
-    // keep this to keep the routing
-    _local_cids: ArcLocalCids,
-    // for closing space to enter draining state
-    rvd_pkt_buf: ArcRcvdPacketBuffer,
-    is_draining: bool,
-}
-
 pub struct Connection(RwLock<Result<CoreConnection, Termination>>);
 
 impl Connection {
@@ -182,14 +170,16 @@ impl Connection {
         let mut conn = self.0.write().unwrap();
         match conn.as_mut() {
             Ok(core_conn) => *conn = Err(core_conn.clone().enter_draining(error, event_broker)),
-            Err(closing_conn) if !closing_conn.is_draining => closing_conn.enter_draining(),
-            Err(_draining) => {}
+            Err(termination) => termination.enter_draining(),
         }
     }
 
     fn map<T>(&self, op: impl Fn(&CoreConnection) -> T) -> io::Result<T> {
         let guard = self.0.read().unwrap();
-        guard.as_ref().map(op).map_err(|e| e.error.clone().into())
+        guard
+            .as_ref()
+            .map(op)
+            .map_err(|termination| termination.error().into())
     }
 
     pub async fn open_bi_stream(
