@@ -6,7 +6,6 @@ use std::{
 
 mod aa;
 pub mod burst;
-pub mod entry;
 mod paths;
 pub use aa::*;
 pub use paths::*;
