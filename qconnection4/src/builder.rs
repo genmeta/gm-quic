@@ -601,12 +601,7 @@ impl CoreConnection {
             &event_broker,
         );
 
-        Termination {
-            error,
-            _local_cids: self.components.cid_registry.local,
-            rvd_pkt_buf: self.rvd_pkt_buf,
-            is_draining: false,
-        }
+        Termination::closing(error, self.components.cid_registry.local, self.rvd_pkt_buf)
     }
 
     pub fn enter_draining<EE>(self, error: Error, event_broker: EE) -> Termination
@@ -636,11 +631,6 @@ impl CoreConnection {
         });
 
         self.rvd_pkt_buf.close();
-        Termination {
-            error,
-            _local_cids: self.components.cid_registry.local,
-            rvd_pkt_buf: self.rvd_pkt_buf,
-            is_draining: false,
-        }
+        Termination::draining(error, self.components.cid_registry.local)
     }
 }
