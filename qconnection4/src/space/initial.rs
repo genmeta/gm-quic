@@ -44,8 +44,8 @@ pub type DecryptedInitialPacket = DecryptedPacket<InitialHeader>;
 
 #[derive(Clone)]
 pub struct InitialSpace {
-    pub keys: ArcKeys,
-    pub crypto_stream: CryptoStream,
+    keys: ArcKeys,
+    crypto_stream: CryptoStream,
     token: Arc<Mutex<Vec<u8>>>,
     journal: InitialJournal,
 }
@@ -62,6 +62,14 @@ impl InitialSpace {
             journal,
             crypto_stream,
         }
+    }
+
+    pub fn keys(&self) -> ArcKeys {
+        self.keys.clone()
+    }
+
+    pub fn crypto_stream(&self) -> &CryptoStream {
+        &self.crypto_stream
     }
 
     pub async fn decrypt_packet(

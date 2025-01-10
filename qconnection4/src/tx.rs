@@ -355,7 +355,7 @@ impl Transaction<'_> {
         let mut last_level_size = 0;
 
         if let Some((mid_pkt, ack)) =
-            self.load_initial_space(&mut datagram[written..], &spaces.initial)
+            self.load_initial_space(&mut datagram[written..], spaces.initial())
         {
             self.constraints.commit(mid_pkt.size(), mid_pkt.in_flight());
             last_level_size = mid_pkt.size();
@@ -366,12 +366,12 @@ impl Transaction<'_> {
             });
         }
 
-        let is_one_rtt_ready = spaces.data.is_one_rtt_ready();
+        let is_one_rtt_ready = spaces.data().is_one_rtt_ready();
         if !is_one_rtt_ready {
             if let Some((mid_pkt, fresh_data)) = self.load_0rtt_data(
                 &mut datagram[written + last_level_size..],
                 path_challenge_frames,
-                &spaces.data,
+                spaces.data(),
             ) {
                 if let Some(last_level) = last_level.take() {
                     let packet = last_level
@@ -402,7 +402,7 @@ impl Transaction<'_> {
 
         if let Some((mid_pkt, ack)) = self.load_handshake_space(
             &mut datagram[written + last_level_size..],
-            &spaces.handshake,
+            spaces.handshake(),
         ) {
             if let Some(last_level) = last_level.take() {
                 let packet = last_level
@@ -435,7 +435,7 @@ impl Transaction<'_> {
                 spin,
                 path_challenge_frames,
                 path_response_frames,
-                &spaces.data,
+                spaces.data(),
             ) {
                 if let Some(last_level) = last_level.take() {
                     let packet = last_level

@@ -90,7 +90,7 @@ impl Burst {
                         self.spin.into(),
                         &self.path.challenge_sndbuf,
                         &self.path.response_sndbuf,
-                        &self.spaces.data,
+                        self.spaces.data(),
                     )?;
                     let packet = mid_pkt.resume(buffer).encrypt_and_protect();
                     transaction.commit(Epoch::Data, packet, fresh_data, ack);
