@@ -20,7 +20,7 @@ use tokio::sync::Notify;
 
 use crate::{
     events::{EmitEvent, Event},
-    path::{entry::RcvdPacketBuffer, ArcPaths},
+    path::{ArcPaths, RcvdPacketBuffer},
     space::{
         data::{self, DataSpace},
         handshake::{self, HandshakeSpace},

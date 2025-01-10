@@ -28,7 +28,7 @@ use std::{
 
 use deref_derive::Deref;
 use events::EmitEvent;
-use path::{entry::RcvdPacketBuffer, ArcPaths};
+use path::{ArcPaths, RcvdPacketBuffer};
 use qbase::{
     cid,
     error::Error,
