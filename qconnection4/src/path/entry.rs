@@ -10,7 +10,7 @@ use crate::space::{
     initial::InitialPacket,
 };
 
-pub struct PacketEntry {
+pub struct RcvdPacketBuffer {
     pub initial: BoundQueue<(InitialPacket, Pathway)>,
     pub handshake: BoundQueue<(HandshakePacket, Pathway)>,
     pub zero_rtt: BoundQueue<(ZeroRttPacket, Pathway)>,
@@ -18,13 +18,13 @@ pub struct PacketEntry {
     // pub retry:
 }
 
-impl Default for PacketEntry {
+impl Default for RcvdPacketBuffer {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl PacketEntry {
+impl RcvdPacketBuffer {
     pub fn new() -> Self {
         Self {
             initial: BoundQueue::new(16),

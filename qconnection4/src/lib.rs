@@ -28,12 +28,13 @@ use std::{
 
 use deref_derive::Deref;
 use events::EmitEvent;
-use path::{entry::PacketEntry, ArcPaths};
+use path::{entry::RcvdPacketBuffer, ArcPaths};
 use qbase::{
     cid,
     error::Error,
     flow,
     frame::{ConnectionCloseFrame, ReliableFrame, SendFrame},
+    handshake,
     param::{self, ArcParameters},
     sid::StreamId,
     token::ArcTokenRegistry,
@@ -82,8 +83,8 @@ pub type ArcDcidCell = cid::ArcCidCell<ArcReliableFrameDeque>;
 pub type FlowController = flow::FlowController<ArcReliableFrameDeque>;
 pub type Credit<'a> = flow::Credit<'a, ArcReliableFrameDeque>;
 
-pub type Handshake = qbase::handshake::Handshake<ArcReliableFrameDeque>;
-pub type ArcPacketEntry = Arc<path::entry::PacketEntry>;
+pub type Handshake = handshake::Handshake<ArcReliableFrameDeque>;
+pub type ArcRcvdPacketBuffer = Arc<RcvdPacketBuffer>;
 
 pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
 pub type StreamReader = recv::Reader<Ext<ArcReliableFrameDeque>>;
@@ -143,7 +144,7 @@ pub struct Components {
 #[derive(Clone)]
 pub struct CoreConnection {
     conn_iface: Arc<ConnInterface>,
-    packet_entry: ArcPacketEntry,
+    rvd_pkt_buf: ArcRcvdPacketBuffer,
     components: Components,
     paths: ArcPaths,
     spaces: Spaces,
@@ -156,7 +157,7 @@ pub struct Termination {
     // keep this to keep the routing
     _local_cids: ArcLocalCids,
     // for closing space to enter draining state
-    packet_entry: Arc<PacketEntry>,
+    rvd_pkt_buf: ArcRcvdPacketBuffer,
     is_draining: bool,
 }
 
