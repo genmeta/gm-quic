@@ -189,11 +189,11 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
         let tls_session =
             ArcTlsSession::new_client(self.foundation.server, self.tls_config, &parameters);
 
-        let spaces = Spaces {
-            initial: InitialSpace::new(initial_keys, self.foundation.token),
-            handshake: HandshakeSpace::new(),
-            data: data_space,
-        };
+        let spaces = Spaces::new(
+            InitialSpace::new(initial_keys, self.foundation.token),
+            HandshakeSpace::new(),
+            data_space,
+        );
 
         SpaceReady {
             initial_dcid: random_initial_dcid,
@@ -255,11 +255,11 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         );
         let tls_session = ArcTlsSession::new_server(self.tls_config, &parameters);
 
-        let spaces = Spaces {
-            initial: InitialSpace::new(initial_keys, Vec::with_capacity(0)),
-            handshake: HandshakeSpace::new(),
-            data: data_space,
-        };
+        let spaces = Spaces::new(
+            InitialSpace::new(initial_keys, Vec::with_capacity(0)),
+            HandshakeSpace::new(),
+            data_space,
+        );
 
         SpaceReady {
             initial_dcid: client_scid,
@@ -315,12 +315,12 @@ impl SpaceReady {
 
         self.tls_session.keys_upgrade(
             [
-                &self.spaces.initial.crypto_stream,
-                &self.spaces.handshake.crypto_stream,
-                &self.spaces.data.crypto_stream,
+                self.spaces.initial().crypto_stream(),
+                self.spaces.handshake().crypto_stream(),
+                &self.spaces.data().crypto_stream,
             ],
-            self.spaces.handshake.keys.clone(),
-            self.spaces.data.one_rtt_keys.clone(),
+            self.spaces.handshake().keys(),
+            self.spaces.data().one_rtt_keys(),
             self.handshake.clone(),
             self.parameters.clone(),
             event_broker.clone(),
@@ -329,7 +329,7 @@ impl SpaceReady {
         tokio::spawn({
             accpet_transport_parameters(
                 self.parameters.clone(),
-                self.spaces.data.streams.clone(),
+                self.spaces.data().streams.clone(),
                 cid_registry.clone(),
                 self.flow_ctrl.clone(),
                 event_broker.clone(),
@@ -350,25 +350,25 @@ impl SpaceReady {
         let rvd_pkt_buf = Arc::new(RcvdPacketBuffer::new());
 
         initial::launch_deliver_and_parse(
-            rvd_pkt_buf.initial.receiver(),
-            self.spaces.initial.clone(),
+            rvd_pkt_buf.initial().receiver(),
+            self.spaces.initial().clone(),
             paths.clone(),
             conn_iface.clone(),
             &components,
             event_broker.clone(),
         );
         handshake::launch_deliver_and_parse(
-            rvd_pkt_buf.handshake.receiver(),
-            self.spaces.handshake.clone(),
+            rvd_pkt_buf.handshake().receiver(),
+            self.spaces.handshake().clone(),
             paths.clone(),
             conn_iface.clone(),
             &components,
             event_broker.clone(),
         );
         data::launch_deliver_and_parse(
-            rvd_pkt_buf.zero_rtt.receiver(),
-            rvd_pkt_buf.one_rtt.receiver(),
-            self.spaces.data.clone(),
+            rvd_pkt_buf.zero_rtt().receiver(),
+            rvd_pkt_buf.one_rtt().receiver(),
+            self.spaces.data().clone(),
             paths.clone(),
             &components,
             event_broker.clone(),
@@ -574,8 +574,8 @@ impl CoreConnection {
         EE: EmitEvent + Send + Clone + 'static,
     {
         let error = ccf.clone().into();
-        self.spaces.data.streams.on_conn_error(&error);
-        self.spaces.data.datagrams.on_conn_error(&error);
+        self.spaces.data().streams.on_conn_error(&error);
+        self.spaces.data().datagrams.on_conn_error(&error);
         self.components.flow_ctrl.on_conn_error(&error);
         self.components.tls_session.on_conn_error(&error);
         if self.components.handshake.role() == sid::Role::Server {
@@ -584,7 +584,6 @@ impl CoreConnection {
             self.conn_iface.router_if().unregister(&origin_dcid.into());
         }
         self.components.parameters.on_conn_error(&error);
-        let closing_interface = Arc::new(self.conn_iface.close(ccf, &self.components.cid_registry));
         self.paths.clear();
 
         tokio::spawn({
@@ -596,45 +595,11 @@ impl CoreConnection {
             }
         });
 
-        self.rvd_pkt_buf.one_rtt.close();
-
-        match self.spaces.initial.close() {
-            None => self.rvd_pkt_buf.initial.close(),
-            Some(space) => {
-                initial::launch_deliver_and_parse_closing(
-                    self.rvd_pkt_buf.initial.receiver(),
-                    space,
-                    closing_interface.clone(),
-                    event_broker.clone(),
-                );
-            }
-        }
-
-        self.rvd_pkt_buf.zero_rtt.close();
-
-        match self.spaces.handshake.close() {
-            None => self.rvd_pkt_buf.handshake.close(),
-            Some(space) => {
-                handshake::launch_deliver_and_parse_closing(
-                    self.rvd_pkt_buf.handshake.receiver(),
-                    space,
-                    closing_interface.clone(),
-                    event_broker.clone(),
-                );
-            }
-        }
-
-        match self.spaces.data.close() {
-            None => self.rvd_pkt_buf.one_rtt.close(),
-            Some(space) => {
-                data::launch_deliver_and_parse_closing(
-                    self.rvd_pkt_buf.one_rtt.receiver(),
-                    space,
-                    closing_interface.clone(),
-                    event_broker.clone(),
-                );
-            }
-        }
+        self.spaces.close(
+            &self.rvd_pkt_buf,
+            Arc::new(self.conn_iface.close(ccf, &self.components.cid_registry)),
+            &event_broker,
+        );
 
         Termination {
             error,
@@ -648,8 +613,8 @@ impl CoreConnection {
     where
         EE: EmitEvent + Send + Clone + 'static,
     {
-        self.spaces.data.streams.on_conn_error(&error);
-        self.spaces.data.datagrams.on_conn_error(&error);
+        self.spaces.data().streams.on_conn_error(&error);
+        self.spaces.data().datagrams.on_conn_error(&error);
         self.components.flow_ctrl.on_conn_error(&error);
         self.components.tls_session.on_conn_error(&error);
         if self.components.handshake.role() == sid::Role::Server {
@@ -670,11 +635,7 @@ impl CoreConnection {
             }
         });
 
-        self.rvd_pkt_buf.initial.close();
-        self.rvd_pkt_buf.handshake.close();
-        self.rvd_pkt_buf.zero_rtt.close();
-        self.rvd_pkt_buf.one_rtt.close();
-
+        self.rvd_pkt_buf.close();
         Termination {
             error,
             _local_cids: self.components.cid_registry.local,

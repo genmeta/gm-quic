@@ -41,8 +41,8 @@ pub type DecryptedHandshakePacket = DecryptedPacket<HandshakeHeader>;
 
 #[derive(Clone)]
 pub struct HandshakeSpace {
-    pub keys: ArcKeys,
-    pub crypto_stream: CryptoStream,
+    keys: ArcKeys,
+    crypto_stream: CryptoStream,
     journal: HandshakeJournal,
 }
 
@@ -59,6 +59,14 @@ impl Default for HandshakeSpace {
 impl HandshakeSpace {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn keys(&self) -> ArcKeys {
+        self.keys.clone()
+    }
+
+    pub fn crypto_stream(&self) -> &CryptoStream {
+        &self.crypto_stream
     }
 
     pub async fn decrypt_packet(

@@ -198,7 +198,7 @@ impl Connection {
         let (params, streams) = self.map(|core_conn| {
             (
                 core_conn.components.parameters.clone(),
-                core_conn.spaces.data.streams.clone(),
+                core_conn.spaces.data().streams.clone(),
             )
         })?;
         let param::Pair { remote, .. } = params.await?;
@@ -218,7 +218,7 @@ impl Connection {
         let (params, streams) = self.map(|core_conn| {
             (
                 core_conn.components.parameters.clone(),
-                core_conn.spaces.data.streams.clone(),
+                core_conn.spaces.data().streams.clone(),
             )
         })?;
 
@@ -238,7 +238,7 @@ impl Connection {
         let (params, streams) = self.map(|core_conn| {
             (
                 core_conn.components.parameters.clone(),
-                core_conn.spaces.data.streams.clone(),
+                core_conn.spaces.data().streams.clone(),
             )
         })?;
         let param::Pair { remote, .. } = params.await?;
@@ -255,20 +255,20 @@ impl Connection {
     }
 
     pub async fn accept_uni_stream(&self) -> io::Result<Option<(StreamId, StreamReader)>> {
-        let (streams,) = self.map(|core_conn| (core_conn.spaces.data.streams.clone(),))?;
+        let (streams,) = self.map(|core_conn| (core_conn.spaces.data().streams.clone(),))?;
         let result = streams.accept_uni().await;
         Ok(Some(result?))
     }
 
     pub fn unreliable_reader(&self) -> io::Result<UnreliableReader> {
-        self.map(|core_conn| core_conn.spaces.data.datagrams.reader())?
+        self.map(|core_conn| core_conn.spaces.data().datagrams.reader())?
     }
 
     pub async fn unreliable_writer(&self) -> io::Result<UnreliableWriter> {
         let (params, datagrams) = self.map(|core_conn| {
             (
                 core_conn.components.parameters.clone(),
-                core_conn.spaces.data.datagrams.clone(),
+                core_conn.spaces.data().datagrams.clone(),
             )
         })?;
         let param::Pair { remote, .. } = params.await?;

@@ -11,10 +11,10 @@ use crate::space::{
 };
 
 pub struct RcvdPacketBuffer {
-    pub initial: BoundQueue<(InitialPacket, Pathway)>,
-    pub handshake: BoundQueue<(HandshakePacket, Pathway)>,
-    pub zero_rtt: BoundQueue<(ZeroRttPacket, Pathway)>,
-    pub one_rtt: BoundQueue<(OneRttPacket, Pathway)>,
+    initial: BoundQueue<(InitialPacket, Pathway)>,
+    handshake: BoundQueue<(HandshakePacket, Pathway)>,
+    zero_rtt: BoundQueue<(ZeroRttPacket, Pathway)>,
+    one_rtt: BoundQueue<(OneRttPacket, Pathway)>,
     // pub retry:
 }
 
@@ -32,6 +32,30 @@ impl RcvdPacketBuffer {
             zero_rtt: BoundQueue::new(16),
             one_rtt: BoundQueue::new(16),
         }
+    }
+
+    pub fn initial(&self) -> &BoundQueue<(InitialPacket, Pathway)> {
+        &self.initial
+    }
+
+    pub fn handshake(&self) -> &BoundQueue<(HandshakePacket, Pathway)> {
+        &self.handshake
+    }
+
+    pub fn zero_rtt(&self) -> &BoundQueue<(ZeroRttPacket, Pathway)> {
+        &self.zero_rtt
+    }
+
+    pub fn one_rtt(&self) -> &BoundQueue<(OneRttPacket, Pathway)> {
+        &self.one_rtt
+    }
+
+    pub fn close(&self) {
+        self.initial.close();
+        self.handshake.close();
+        // zero_rtt has already closed?
+        self.zero_rtt.close();
+        self.one_rtt.close();
     }
 
     pub async fn deliver(&self, packet: Packet, pathway: Pathway) {

@@ -54,8 +54,8 @@ pub type DecryptedOneRttPacket = DecryptedPacket<OneRttHeader>;
 
 #[derive(Clone)]
 pub struct DataSpace {
-    pub zero_rtt_keys: ArcKeys,
-    pub one_rtt_keys: ArcOneRttKeys,
+    zero_rtt_keys: ArcKeys,
+    one_rtt_keys: ArcOneRttKeys,
     pub crypto_stream: CryptoStream,
     pub streams: DataStreams,
     pub datagrams: DatagramFlow,
@@ -223,6 +223,10 @@ impl DataSpace {
 
     pub fn is_one_rtt_ready(&self) -> bool {
         self.one_rtt_keys.get_local_keys().is_some()
+    }
+
+    pub fn one_rtt_keys(&self) -> ArcOneRttKeys {
+        self.one_rtt_keys.clone()
     }
 
     pub fn tracker(&self) -> DataTracker {

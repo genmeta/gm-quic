@@ -2,6 +2,8 @@ pub mod data;
 pub mod handshake;
 pub mod initial;
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 use qbase::{
     error::Error,
@@ -9,6 +11,7 @@ use qbase::{
         AckFrame, BeFrame, CryptoFrame, ReceiveFrame, ReliableFrame, StreamCtlFrame, StreamFrame,
     },
 };
+use qinterface::closing::ClosingInterface;
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcSentJournal, Journal},
@@ -18,14 +21,87 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
     events::{EmitEvent, Event},
-    DataStreams, FlowController,
+    ArcRcvdPacketBuffer, DataStreams, FlowController,
 };
 
 #[derive(Clone)]
 pub struct Spaces {
-    pub initial: initial::InitialSpace,
-    pub handshake: handshake::HandshakeSpace,
-    pub data: data::DataSpace,
+    initial: initial::InitialSpace,
+    handshake: handshake::HandshakeSpace,
+    data: data::DataSpace,
+}
+
+impl Spaces {
+    pub fn new(
+        initial: initial::InitialSpace,
+        handshake: handshake::HandshakeSpace,
+        data: data::DataSpace,
+    ) -> Self {
+        Self {
+            initial,
+            handshake,
+            data,
+        }
+    }
+
+    pub fn initial(&self) -> &initial::InitialSpace {
+        &self.initial
+    }
+
+    pub fn handshake(&self) -> &handshake::HandshakeSpace {
+        &self.handshake
+    }
+
+    pub fn data(&self) -> &data::DataSpace {
+        &self.data
+    }
+
+    pub fn close<EE>(
+        self,
+        rvd_pkt_buf: &ArcRcvdPacketBuffer,
+        closing_iface: Arc<ClosingInterface>,
+        event_broker: &EE,
+    ) where
+        EE: EmitEvent + Clone + Send + 'static,
+    {
+        match self.initial.close() {
+            None => rvd_pkt_buf.initial().close(),
+            Some(space) => {
+                initial::launch_deliver_and_parse_closing(
+                    rvd_pkt_buf.initial().receiver(),
+                    space,
+                    closing_iface.clone(),
+                    event_broker.clone(),
+                );
+            }
+        }
+
+        rvd_pkt_buf.zero_rtt().close();
+
+        match self.handshake.close() {
+            None => rvd_pkt_buf.handshake().close(),
+            Some(space) => {
+                handshake::launch_deliver_and_parse_closing(
+                    rvd_pkt_buf.handshake().receiver(),
+                    space,
+                    closing_iface.clone(),
+                    event_broker.clone(),
+                );
+            }
+        }
+
+        match self.data.close() {
+            None => rvd_pkt_buf.one_rtt().close(),
+            Some(space) => {
+                data::launch_deliver_and_parse_closing(
+                    rvd_pkt_buf.one_rtt().receiver(),
+                    space,
+                    closing_iface.clone(),
+                    event_broker.clone(),
+                );
+            }
+        }
+    }
 }
 
 pub struct DecryptedPacket<H> {
