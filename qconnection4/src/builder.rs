@@ -20,7 +20,7 @@ use tokio::sync::Notify;
 
 use crate::{
     events::{EmitEvent, Event},
-    path::{entry::PacketEntry, ArcPaths},
+    path::{entry::RcvdPacketBuffer, ArcPaths},
     space::{
         data::{self, DataSpace},
         handshake::{self, HandshakeSpace},
@@ -28,8 +28,8 @@ use crate::{
         Spaces,
     },
     tls::ArcTlsSession,
-    ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
-    CoreConnection, DataStreams, FlowController, Handshake, Termination,
+    ArcLocalCids, ArcRcvdPacketBuffer, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry,
+    Components, Connection, CoreConnection, DataStreams, FlowController, Handshake, Termination,
 };
 
 impl Connection {
@@ -347,10 +347,10 @@ impl SpaceReady {
 
         let paths = ArcPaths::new();
 
-        let packet_entry = Arc::new(PacketEntry::new());
+        let rvd_pkt_buf = Arc::new(RcvdPacketBuffer::new());
 
         initial::launch_deliver_and_parse(
-            packet_entry.initial.receiver(),
+            rvd_pkt_buf.initial.receiver(),
             self.spaces.initial.clone(),
             paths.clone(),
             conn_iface.clone(),
@@ -358,7 +358,7 @@ impl SpaceReady {
             event_broker.clone(),
         );
         handshake::launch_deliver_and_parse(
-            packet_entry.handshake.receiver(),
+            rvd_pkt_buf.handshake.receiver(),
             self.spaces.handshake.clone(),
             paths.clone(),
             conn_iface.clone(),
@@ -366,8 +366,8 @@ impl SpaceReady {
             event_broker.clone(),
         );
         data::launch_deliver_and_parse(
-            packet_entry.zero_rtt.receiver(),
-            packet_entry.one_rtt.receiver(),
+            rvd_pkt_buf.zero_rtt.receiver(),
+            rvd_pkt_buf.one_rtt.receiver(),
             self.spaces.data.clone(),
             paths.clone(),
             &components,
@@ -379,7 +379,7 @@ impl SpaceReady {
                 probed_path_rx,
                 components.clone(),
                 self.spaces.clone(),
-                packet_entry.clone(),
+                rvd_pkt_buf.clone(),
                 conn_iface.clone(),
                 paths.clone(),
             )
@@ -389,7 +389,7 @@ impl SpaceReady {
             spaces: self.spaces,
             conn_iface,
             components,
-            packet_entry,
+            rvd_pkt_buf,
             paths,
         })))
     }
@@ -428,7 +428,7 @@ async fn accept_probed_paths(
     mut probed_paths: impl Stream<Item = Pathway> + Unpin,
     components: Components,
     spaces: Spaces,
-    packet_entry: Arc<PacketEntry>,
+    rvd_pkt_buf: ArcRcvdPacketBuffer,
     conn_iface: Arc<ConnInterface>,
     paths: ArcPaths,
 ) {
@@ -596,13 +596,13 @@ impl CoreConnection {
             }
         });
 
-        self.packet_entry.one_rtt.close();
+        self.rvd_pkt_buf.one_rtt.close();
 
         match self.spaces.initial.close() {
-            None => self.packet_entry.initial.close(),
+            None => self.rvd_pkt_buf.initial.close(),
             Some(space) => {
                 initial::launch_deliver_and_parse_closing(
-                    self.packet_entry.initial.receiver(),
+                    self.rvd_pkt_buf.initial.receiver(),
                     space,
                     closing_interface.clone(),
                     event_broker.clone(),
@@ -610,13 +610,13 @@ impl CoreConnection {
             }
         }
 
-        self.packet_entry.zero_rtt.close();
+        self.rvd_pkt_buf.zero_rtt.close();
 
         match self.spaces.handshake.close() {
-            None => self.packet_entry.handshake.close(),
+            None => self.rvd_pkt_buf.handshake.close(),
             Some(space) => {
                 handshake::launch_deliver_and_parse_closing(
-                    self.packet_entry.handshake.receiver(),
+                    self.rvd_pkt_buf.handshake.receiver(),
                     space,
                     closing_interface.clone(),
                     event_broker.clone(),
@@ -625,10 +625,10 @@ impl CoreConnection {
         }
 
         match self.spaces.data.close() {
-            None => self.packet_entry.one_rtt.close(),
+            None => self.rvd_pkt_buf.one_rtt.close(),
             Some(space) => {
                 data::launch_deliver_and_parse_closing(
-                    self.packet_entry.one_rtt.receiver(),
+                    self.rvd_pkt_buf.one_rtt.receiver(),
                     space,
                     closing_interface.clone(),
                     event_broker.clone(),
@@ -639,7 +639,7 @@ impl CoreConnection {
         Termination {
             error,
             _local_cids: self.components.cid_registry.local,
-            packet_entry: self.packet_entry,
+            rvd_pkt_buf: self.rvd_pkt_buf,
             is_draining: false,
         }
     }
@@ -670,15 +670,15 @@ impl CoreConnection {
             }
         });
 
-        self.packet_entry.initial.close();
-        self.packet_entry.handshake.close();
-        self.packet_entry.zero_rtt.close();
-        self.packet_entry.one_rtt.close();
+        self.rvd_pkt_buf.initial.close();
+        self.rvd_pkt_buf.handshake.close();
+        self.rvd_pkt_buf.zero_rtt.close();
+        self.rvd_pkt_buf.one_rtt.close();
 
         Termination {
             error,
             _local_cids: self.components.cid_registry.local,
-            packet_entry: self.packet_entry,
+            rvd_pkt_buf: self.rvd_pkt_buf,
             is_draining: false,
         }
     }

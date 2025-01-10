@@ -5,9 +5,9 @@ impl Termination {
         if core::mem::replace(&mut self.is_draining, true) {
             return;
         }
-        self.packet_entry.initial.close();
-        self.packet_entry.handshake.close();
+        self.rvd_pkt_buf.initial.close();
+        self.rvd_pkt_buf.handshake.close();
         // zero_rtt has already closed
-        self.packet_entry.one_rtt.close();
+        self.rvd_pkt_buf.one_rtt.close();
     }
 }
