@@ -2,11 +2,11 @@ use std::mem;
 
 use qbase::error::Error;
 
-use crate::{ArcLocalCids, ArcRcvdPacketBuffer};
+use crate::{ArcClosingInterface, ArcLocalCids};
 
 #[derive(Clone, Default)]
 enum State {
-    Closing(ArcRcvdPacketBuffer),
+    Closing(ArcClosingInterface),
     #[default]
     Draining,
 }
@@ -24,12 +24,12 @@ impl Termination {
     pub fn closing(
         error: Error,
         local_cids: ArcLocalCids,
-        rvd_pkt_buf: ArcRcvdPacketBuffer,
+        closing_iface: ArcClosingInterface,
     ) -> Self {
         Self {
             error,
             _local_cids: local_cids,
-            state: State::Closing(rvd_pkt_buf),
+            state: State::Closing(closing_iface),
         }
     }
 
@@ -47,7 +47,7 @@ impl Termination {
 
     pub fn enter_draining(&mut self) {
         if let State::Closing(rvd_pkt_buf) = mem::take(&mut self.state) {
-            rvd_pkt_buf.close();
+            rvd_pkt_buf.received_packets_buffer().close_all();
         }
     }
 }

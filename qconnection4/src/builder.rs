@@ -1,6 +1,5 @@
 use std::sync::{Arc, RwLock};
 
-use futures::{Stream, StreamExt};
 pub use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
     param::{ClientParameters, CommonParameters, ServerParameters},
@@ -13,24 +12,19 @@ use qbase::{
     param::{self, ArcParameters},
     sid,
     token::ArcTokenRegistry,
+    Epoch,
 };
+use qcongestion::CongestionControl;
 use qinterface::{conn::ConnInterface, path::Pathway, router::QuicProto};
 pub use rustls::crypto::CryptoProvider;
 use tokio::sync::Notify;
 
 use crate::{
     events::{EmitEvent, Event},
-    path::{ArcPaths, RcvdPacketBuffer},
-    space::{
-        data::{self, DataSpace},
-        handshake::{self, HandshakeSpace},
-        initial::{self, InitialSpace},
-        Spaces,
-    },
+    space::{self, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace, Spaces},
     tls::ArcTlsSession,
-    ArcLocalCids, ArcRcvdPacketBuffer, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry,
-    Components, Connection, CoreConnection, DataStreams, FlowController, Handshake, RawHandshake,
-    Termination,
+    ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
+    CoreConnection, DataStreams, FlowController, Handshake, RawHandshake, Termination,
 };
 
 impl Connection {
@@ -299,11 +293,12 @@ impl SpaceReady {
         let local_params = self.parameters.local().unwrap();
         let initial_scid = local_params.initial_source_connection_id();
 
-        let (probed_path_tx, probed_path_rx) = futures::channel::mpsc::unbounded();
-        let conn_iface = Arc::new(ConnInterface::new(proto.clone(), probed_path_tx));
+        let conn_iface = Arc::new(ConnInterface::new(proto.clone()));
 
         let issued_cids = self.reliable_frames.clone();
-        let router_registry = proto.registry(conn_iface.clone(), issued_cids);
+        let router_registry =
+            proto.registry(conn_iface.received_packets_buffer().clone(), issued_cids);
+
         self.parameters
             .set_initial_scid(router_registry.gen_unique_cid());
         let local_cids = ArcLocalCids::new(initial_scid, router_registry);
@@ -346,55 +341,13 @@ impl SpaceReady {
             token_registry: self.token_registry,
             cid_registry,
             flow_ctrl: self.flow_ctrl,
+            spaces: self.spaces,
+            conn_iface: conn_iface.clone(),
         };
 
-        let paths = ArcPaths::new();
+        space::launch_deliver_and_parse(&components, event_broker.clone());
 
-        let rvd_pkt_buf = Arc::new(RcvdPacketBuffer::new());
-
-        initial::launch_deliver_and_parse(
-            rvd_pkt_buf.initial().receiver(),
-            self.spaces.initial().clone(),
-            paths.clone(),
-            conn_iface.clone(),
-            &components,
-            event_broker.clone(),
-        );
-        handshake::launch_deliver_and_parse(
-            rvd_pkt_buf.handshake().receiver(),
-            self.spaces.handshake().clone(),
-            paths.clone(),
-            conn_iface.clone(),
-            &components,
-            event_broker.clone(),
-        );
-        data::launch_deliver_and_parse(
-            rvd_pkt_buf.zero_rtt().receiver(),
-            rvd_pkt_buf.one_rtt().receiver(),
-            self.spaces.data().clone(),
-            paths.clone(),
-            &components,
-            event_broker.clone(),
-        );
-
-        tokio::spawn({
-            accept_probed_paths(
-                probed_path_rx,
-                components.clone(),
-                self.spaces.clone(),
-                rvd_pkt_buf.clone(),
-                conn_iface.clone(),
-                paths.clone(),
-            )
-        });
-
-        Connection(RwLock::new(Ok(CoreConnection {
-            spaces: self.spaces,
-            conn_iface,
-            components,
-            rvd_pkt_buf,
-            paths,
-        })))
+        Connection(RwLock::new(Ok(CoreConnection { components })))
     }
 }
 
@@ -426,68 +379,66 @@ async fn accpet_transport_parameters<EE>(
     }
 }
 
-// 叫accept好吗？
-async fn accept_probed_paths(
-    mut probed_paths: impl Stream<Item = Pathway> + Unpin,
-    components: Components,
-    spaces: Spaces,
-    rvd_pkt_buf: ArcRcvdPacketBuffer,
-    conn_iface: Arc<ConnInterface>,
-    paths: ArcPaths,
-) {
-    while let Some(pathway) = probed_paths.next().await {
-        paths.entry(pathway).or_insert_with(|| {
-            // let cc = ArcCC::new(
-            //     CongestionAlgorithm::Bbr,
-            //     Duration::from_micros(100),
-            //     [
-            //         Box::new(spaces.initial.tracker().clone()),
-            //         Box::new(spaces.handshake.tracker().clone()),
-            //         Box::new(spaces.data.tracker().clone()),
-            //     ],
-            //     components.handshake.clone(),
-            // );
-            // let path = Arc::new(Path::new(pathway, cc, conn_iface.clone()));
+// async fn accept_probed_paths(
+//     mut probed_paths: impl Stream<Item = Pathway> + Unpin,
+//     components: Components,
+//     spaces: Spaces,
+//     rvd_pkt_buf: ArcRcvdPacketBuffer,
+//     conn_iface: ArcConnInterface,
+//     paths: ArcPaths,
+// ) {
+//     while let Some(pathway) = probed_paths.next().await {
+//         paths.entry(pathway).or_insert_with(|| {
+// let cc = ArcCC::new(
+//     CongestionAlgorithm::Bbr,
+//     Duration::from_micros(100),
+//     [
+//         Box::new(spaces.initial.tracker().clone()),
+//         Box::new(spaces.handshake.tracker().clone()),
+//         Box::new(spaces.data.tracker().clone()),
+//     ],
+//     components.handshake.clone(),
+// );
+// let path = Arc::new(Path::new(pathway, cc, conn_iface.clone()));
 
-            // let mut rcvd_packets = conn_iface.register(pathway);
-            // let packet_entry = packet_entry.clone();
-            // let recv_task = tokio::spawn(async move {
-            //     while let Some(new_packet) = rcvd_packets.next().await {
-            //         packet_entry.deliver(new_packet, pathway).await
-            //     }
-            // });
+// let mut rcvd_packets = conn_iface.register(pathway);
+// let packet_entry = packet_entry.clone();
+// let recv_task = tokio::spawn(async move {
+//     while let Some(new_packet) = rcvd_packets.next().await {
+//         packet_entry.deliver(new_packet, pathway).await
+//     }
+// });
 
-            // let send_fut = {
-            //     let dcid = components.cid_registry.remote.apply_dcid();
-            //     let flow_ctrl = components.flow_ctrl.clone();
-            //     // 探测到的路径不可能是第一条路径，就不给它发送i0h包的能力
-            //     let space = spaces.data.clone();
-            //     path.new_one_rtt_burst(dcid, flow_ctrl, space).launch()
-            // };
+// let send_fut = {
+//     let dcid = components.cid_registry.remote.apply_dcid();
+//     let flow_ctrl = components.flow_ctrl.clone();
+//     // 探测到的路径不可能是第一条路径，就不给它发送i0h包的能力
+//     let space = spaces.data.clone();
+//     path.new_one_rtt_burst(dcid, flow_ctrl, space).launch()
+// };
 
-            // let task = tokio::spawn({
-            //     let path = path.clone();
-            //     let paths = paths.clone();
-            //     let conn_iface = conn_iface.clone();
-            //     async move {
-            //         tokio::select! {
-            //             // path validate faild
-            //             false = path.validate() => {}
-            //             // recv task terminate(connection terminate)
-            //             _ = recv_task => {}
-            //             // connection or network path terminate
-            //             _ = send_fut => {}
-            //         }
-            //         paths.del(&pathway);
-            //         conn_iface.unregister(&pathway);
-            //     }
-            // });
-
-            // PathGuard::new(path, task.abort_handle())
-            todo!()
-        });
-    }
-}
+// let task = tokio::spawn({
+//     let path = path.clone();
+//     let paths = paths.clone();
+//     let conn_iface = conn_iface.clone();
+//     async move {
+//         tokio::select! {
+//             // path validate faild
+//             false = path.validate() => {}
+//             // recv task terminate(connection terminate)
+//             _ = recv_task => {}
+//             // connection or network path terminate
+//             _ = send_fut => {}
+//         }
+//         paths.del(&pathway);
+//         conn_iface.unregister(&pathway);
+//     }
+// });
+// PathGuard::new(path, task.abort_handle())
+//             todo!()
+//         });
+//     }
+// }
 
 impl CoreConnection {
     // 对于server，第一条路径也通过add_path添加
@@ -568,8 +519,8 @@ impl CoreConnection {
         // });
     }
 
-    pub fn del_path(&self, pathway: Pathway) {
-        self.paths.del(&pathway);
+    pub fn del_path(&self, pathway: &Pathway) {
+        self.conn_iface.paths().remove(pathway);
     }
 
     pub fn enter_closing<EE>(self, ccf: ConnectionCloseFrame, event_broker: EE) -> Termination
@@ -587,24 +538,28 @@ impl CoreConnection {
             self.conn_iface.router_if().unregister(&origin_dcid.into());
         }
         self.components.parameters.on_conn_error(&error);
-        self.paths.clear();
+        let closing_iface = Arc::new(self.conn_iface.close(ccf, &self.components.cid_registry));
 
         tokio::spawn({
             let event_broker = event_broker.clone();
-            let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
+            let pto_duration = self
+                .conn_iface
+                .paths()
+                .iter()
+                .map(|p| p.cc().pto_time(Epoch::Data))
+                .max()
+                .unwrap_or_default();
             async move {
                 tokio::time::sleep(pto_duration).await;
                 event_broker.emit(Event::Terminated);
             }
         });
 
-        self.spaces.close(
-            &self.rvd_pkt_buf,
-            Arc::new(self.conn_iface.close(ccf, &self.components.cid_registry)),
-            &event_broker,
-        );
+        self.components
+            .spaces
+            .close(closing_iface.clone(), &event_broker);
 
-        Termination::closing(error, self.components.cid_registry.local, self.rvd_pkt_buf)
+        Termination::closing(error, self.components.cid_registry.local, closing_iface)
     }
 
     pub fn enter_draining<EE>(self, error: Error, event_broker: EE) -> Termination
@@ -621,19 +576,23 @@ impl CoreConnection {
             self.conn_iface.router_if().unregister(&origin_dcid.into());
         }
         self.components.parameters.on_conn_error(&error);
-        self.conn_iface.disable_probing();
-        self.paths.clear();
 
         tokio::spawn({
             let event_broker = event_broker.clone();
-            let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
+            let pto_duration = self
+                .conn_iface
+                .paths()
+                .iter()
+                .map(|p| p.cc().pto_time(Epoch::Data))
+                .max()
+                .unwrap_or_default();
             async move {
                 tokio::time::sleep(pto_duration).await;
                 event_broker.emit(Event::Terminated);
             }
         });
 
-        self.rvd_pkt_buf.close();
+        self.conn_iface.received_packets_buffer().close_all();
         Termination::draining(error, self.components.cid_registry.local)
     }
 }

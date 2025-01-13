@@ -2,8 +2,6 @@ pub mod data;
 pub mod handshake;
 pub mod initial;
 
-use std::sync::Arc;
-
 use bytes::Bytes;
 use qbase::{
     error::Error,
@@ -11,7 +9,6 @@ use qbase::{
         AckFrame, BeFrame, CryptoFrame, ReceiveFrame, ReliableFrame, StreamCtlFrame, StreamFrame,
     },
 };
-use qinterface::closing::ClosingInterface;
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcSentJournal, Journal},
@@ -21,7 +18,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
     events::{EmitEvent, Event},
-    ArcRcvdPacketBuffer, DataStreams, FlowController,
+    ArcClosingInterface, Components, DataStreams, FlowController,
 };
 
 #[derive(Clone)]
@@ -56,19 +53,16 @@ impl Spaces {
         &self.data
     }
 
-    pub fn close<EE>(
-        self,
-        rvd_pkt_buf: &ArcRcvdPacketBuffer,
-        closing_iface: Arc<ClosingInterface>,
-        event_broker: &EE,
-    ) where
+    pub fn close<EE>(self, closing_iface: ArcClosingInterface, event_broker: &EE)
+    where
         EE: EmitEvent + Clone + Send + 'static,
     {
+        let received_packets_buffer = closing_iface.received_packets_buffer();
         match self.initial.close() {
-            None => rvd_pkt_buf.initial().close(),
+            None => received_packets_buffer.initial().close(),
             Some(space) => {
                 initial::launch_deliver_and_parse_closing(
-                    rvd_pkt_buf.initial().receiver(),
+                    received_packets_buffer.initial().receiver(),
                     space,
                     closing_iface.clone(),
                     event_broker.clone(),
@@ -76,13 +70,13 @@ impl Spaces {
             }
         }
 
-        rvd_pkt_buf.zero_rtt().close();
+        received_packets_buffer.zero_rtt().close();
 
         match self.handshake.close() {
-            None => rvd_pkt_buf.handshake().close(),
+            None => received_packets_buffer.handshake().close(),
             Some(space) => {
                 handshake::launch_deliver_and_parse_closing(
-                    rvd_pkt_buf.handshake().receiver(),
+                    received_packets_buffer.handshake().receiver(),
                     space,
                     closing_iface.clone(),
                     event_broker.clone(),
@@ -91,10 +85,10 @@ impl Spaces {
         }
 
         match self.data.close() {
-            None => rvd_pkt_buf.one_rtt().close(),
+            None => received_packets_buffer.one_rtt().close(),
             Some(space) => {
                 data::launch_deliver_and_parse_closing(
-                    rvd_pkt_buf.one_rtt().receiver(),
+                    received_packets_buffer.one_rtt().receiver(),
                     space,
                     closing_iface.clone(),
                     event_broker.clone(),
@@ -246,4 +240,30 @@ impl ReceiveFrame<AckFrame> for AckData {
         }
         Ok(())
     }
+}
+
+pub fn launch_deliver_and_parse<EE>(components: &Components, event_broker: EE)
+where
+    EE: EmitEvent + Clone + Send + Sync + 'static,
+{
+    let received_packets_buffer = components.conn_iface.received_packets_buffer();
+    initial::launch_deliver_and_parse(
+        received_packets_buffer.initial().receiver(),
+        components.spaces.initial.clone(),
+        components,
+        event_broker.clone(),
+    );
+    handshake::launch_deliver_and_parse(
+        received_packets_buffer.handshake().receiver(),
+        components.spaces.handshake.clone(),
+        components,
+        event_broker.clone(),
+    );
+    data::launch_deliver_and_parse(
+        received_packets_buffer.zero_rtt().receiver(),
+        received_packets_buffer.one_rtt().receiver(),
+        components.spaces.data.clone(),
+        components,
+        event_broker,
+    );
 }

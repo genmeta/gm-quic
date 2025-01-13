@@ -19,7 +19,7 @@ use qbase::{
     Epoch,
 };
 use qcongestion::{CongestionControl, TrackPackets};
-use qinterface::{closing::ClosingInterface, conn::ConnInterface, path::Pathway};
+use qinterface::{closing::ClosingInterface, path::Pathway};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcRcvdJournal, HandshakeJournal},
@@ -30,7 +30,6 @@ use tokio::sync::mpsc;
 use super::{AckHandshake, DecryptedPacket};
 use crate::{
     events::{EmitEvent, Event},
-    path::ArcPaths,
     space::pipe,
     tx::{PacketMemory, Transaction},
     Components,
@@ -136,8 +135,6 @@ impl HandshakeSpace {
 pub fn launch_deliver_and_parse(
     mut packets: impl Stream<Item = (HandshakePacket, Pathway)> + Unpin + Send + 'static,
     space: HandshakeSpace,
-    paths: ArcPaths,
-    conn_iface: Arc<ConnInterface>,
     components: &Components,
     event_broker: impl EmitEvent + Clone + Send + Sync + 'static,
 ) {
@@ -157,9 +154,10 @@ pub fn launch_deliver_and_parse(
 
     let role = components.handshake.role();
     let parameters = components.parameters.clone();
+    let conn_iface = components.conn_iface.clone();
     tokio::spawn(async move {
         while let Some((packet, pathway)) = packets.next().await {
-            let Some(path) = paths.get(&pathway) else {
+            let Some(path) = conn_iface.paths().get(&pathway) else {
                 continue;
             };
             let dispatch_frame = {
