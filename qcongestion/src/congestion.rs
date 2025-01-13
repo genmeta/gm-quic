@@ -7,19 +7,36 @@ use std::{
 };
 
 use qbase::{
-    frame::{AckFrame, EcnCounts},
+    frame::{AckFrame, EcnCounts, HandshakeDoneFrame, SendFrame},
     handshake::Handshake,
     sid::Role,
     Epoch,
 };
-use qrecovery::reliable::ArcReliableFrameDeque;
+
+// todo: remove this in future
+impl<T> ObserveHandshake for Handshake<T>
+where
+    T: SendFrame<HandshakeDoneFrame> + Clone + Send + Sync,
+{
+    fn role(&self) -> qbase::sid::Role {
+        Handshake::role(self)
+    }
+
+    fn is_handshake_done(&self) -> bool {
+        Handshake::is_handshake_done(self)
+    }
+
+    fn is_getting_keys(&self) -> bool {
+        Handshake::is_getting_keys(self)
+    }
+}
 
 use crate::{
     bbr::{self, INITIAL_CWND},
     new_reno::NewReno,
     pacing::{self, Pacer},
     rtt::{ArcRtt, INITIAL_RTT},
-    TrackPackets,
+    ObserveHandshake, TrackPackets,
 };
 
 const K_GRANULARITY: Duration = Duration::from_millis(1);
@@ -66,7 +83,7 @@ pub struct CongestionController {
     // Space packet trackers
     trackers: [Arc<dyn TrackPackets>; 3],
     // Handshake state
-    handshake: Handshake<ArcReliableFrameDeque>,
+    handshake: Box<dyn ObserveHandshake>,
 }
 
 impl CongestionController {
@@ -75,7 +92,7 @@ impl CongestionController {
         algorithm: CongestionAlgorithm,
         max_ack_delay: Duration,
         trackers: [Arc<dyn TrackPackets>; 3],
-        handshake: Handshake<ArcReliableFrameDeque>,
+        handshake: Box<dyn ObserveHandshake>,
     ) -> Self {
         let algorithm: Box<dyn Algorithm> = match algorithm {
             CongestionAlgorithm::Bbr => Box::new(bbr::Bbr::new()),
@@ -423,7 +440,7 @@ impl ArcCC {
         algorithm: CongestionAlgorithm,
         max_ack_delay: Duration,
         trackers: [Arc<dyn TrackPackets>; 3],
-        handshake: Handshake<ArcReliableFrameDeque>,
+        handshake: Box<dyn ObserveHandshake>,
     ) -> Self {
         ArcCC(Arc::new(Mutex::new(CongestionController::new(
             algorithm,
@@ -750,6 +767,7 @@ impl LossDetectionTimer {
 #[cfg(test)]
 mod tests {
     use qbase::varint::VarInt;
+    use qrecovery::reliable::ArcReliableFrameDeque;
 
     use super::*;
 
@@ -943,7 +961,7 @@ mod tests {
             CongestionAlgorithm::Bbr,
             Duration::from_millis(100),
             [Arc::new(Mock), Arc::new(Mock), Arc::new(Mock)],
-            Handshake::new(qbase::sid::Role::Client, output),
+            Box::new(Handshake::new(qbase::sid::Role::Client, output)),
         )
     }
 }
