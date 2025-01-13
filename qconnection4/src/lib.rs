@@ -15,7 +15,10 @@ pub mod prelude {
     };
     pub use qunreliable::{UnreliableReader, UnreliableWriter};
 
-    pub use crate::{events::Event, Connection, StreamReader, StreamWriter};
+    pub use crate::{
+        events::{EmitEvent, Event},
+        Connection, StreamReader, StreamWriter,
+    };
 }
 
 pub mod builder;
@@ -29,7 +32,7 @@ use std::{
 
 use deref_derive::Deref;
 use events::EmitEvent;
-use path::{ArcPaths, RcvdPacketBuffer};
+use path::Path;
 use qbase::{
     cid, flow,
     frame::{ConnectionCloseFrame, ReliableFrame, SendFrame},
@@ -37,7 +40,7 @@ use qbase::{
     sid::StreamId,
     token::ArcTokenRegistry,
 };
-use qinterface::{conn::ConnInterface, path::Pathway, router::RouterRegistry};
+use qinterface::{buffer::RcvdPacketBuffer, path::Pathway, router::RouterRegistry};
 use qrecovery::{
     recv, reliable, send,
     streams::{self, Ext},
@@ -89,6 +92,12 @@ pub type ArcRcvdPacketBuffer = Arc<RcvdPacketBuffer>;
 pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
 pub type StreamReader = recv::Reader<Ext<ArcReliableFrameDeque>>;
 
+pub type ConnInterface = qinterface::conn::ConnInterface<Path>;
+pub type ArcConnInterface = Arc<ConnInterface>;
+
+pub type ClosingInterface = qinterface::closing::ClosingInterface;
+pub type ArcClosingInterface = Arc<ClosingInterface>;
+
 pub struct StreamWriter {
     inner: send::Writer<Ext<ArcReliableFrameDeque>>,
     notify: Arc<Notify>,
@@ -139,15 +148,13 @@ pub struct Components {
     token_registry: ArcTokenRegistry,
     cid_registry: CidRegistry,
     flow_ctrl: FlowController,
+    spaces: Spaces,
+    conn_iface: ArcConnInterface,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Deref)]
 pub struct CoreConnection {
-    conn_iface: Arc<ConnInterface>,
-    rvd_pkt_buf: ArcRcvdPacketBuffer,
     components: Components,
-    paths: ArcPaths,
-    spaces: Spaces,
 }
 
 pub struct Connection(RwLock<Result<CoreConnection, Termination>>);
@@ -189,7 +196,7 @@ impl Connection {
         let (params, streams) = self.map(|core_conn| {
             (
                 core_conn.components.parameters.clone(),
-                core_conn.spaces.data().streams.clone(),
+                core_conn.components.spaces.data().streams.clone(),
             )
         })?;
         let param::Pair { remote, .. } = params.await?;
@@ -209,7 +216,7 @@ impl Connection {
         let (params, streams) = self.map(|core_conn| {
             (
                 core_conn.components.parameters.clone(),
-                core_conn.spaces.data().streams.clone(),
+                core_conn.components.spaces.data().streams.clone(),
             )
         })?;
 
@@ -229,7 +236,7 @@ impl Connection {
         let (params, streams) = self.map(|core_conn| {
             (
                 core_conn.components.parameters.clone(),
-                core_conn.spaces.data().streams.clone(),
+                core_conn.components.spaces.data().streams.clone(),
             )
         })?;
         let param::Pair { remote, .. } = params.await?;
@@ -246,20 +253,21 @@ impl Connection {
     }
 
     pub async fn accept_uni_stream(&self) -> io::Result<Option<(StreamId, StreamReader)>> {
-        let (streams,) = self.map(|core_conn| (core_conn.spaces.data().streams.clone(),))?;
+        let (streams,) =
+            self.map(|core_conn| (core_conn.components.spaces.data().streams.clone(),))?;
         let result = streams.accept_uni().await;
         Ok(Some(result?))
     }
 
     pub fn unreliable_reader(&self) -> io::Result<UnreliableReader> {
-        self.map(|core_conn| core_conn.spaces.data().datagrams.reader())?
+        self.map(|core_conn| core_conn.components.spaces.data().datagrams.reader())?
     }
 
     pub async fn unreliable_writer(&self) -> io::Result<UnreliableWriter> {
         let (params, datagrams) = self.map(|core_conn| {
             (
                 core_conn.components.parameters.clone(),
-                core_conn.spaces.data().datagrams.clone(),
+                core_conn.components.spaces.data().datagrams.clone(),
             )
         })?;
         let param::Pair { remote, .. } = params.await?;
@@ -270,7 +278,7 @@ impl Connection {
         self.map(|core_conn| core_conn.add_path(pathway))
     }
 
-    pub fn del_path(&self, pathway: Pathway) -> io::Result<()> {
+    pub fn del_path(&self, pathway: &Pathway) -> io::Result<()> {
         self.map(|core_conn| core_conn.del_path(pathway))
     }
 }

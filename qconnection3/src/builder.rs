@@ -440,7 +440,7 @@ async fn accept_probed_paths(
     components: Components,
     spaces: Spaces,
     packet_entry: Arc<PacketEntry>,
-    conn_iface: Arc<ConnInterface>,
+    conn_iface: ArcConnInterface,
     paths: ArcPaths,
 ) {
     while let Some(pathway) = probed_paths.next().await {

@@ -10,7 +10,7 @@ use qbase::{
 use tokio::task::JoinHandle;
 
 use crate::{
-    conn::ConnInterface,
+    buffer::RcvdPacketBuffer,
     path::{Endpoint, Pathway},
     QuicInterface, SendCapability,
 };
@@ -45,7 +45,7 @@ pub type QuicListener = Box<dyn Fn(Arc<QuicProto>, Packet, Pathway) + Send + Syn
 #[derive(Default)]
 pub struct QuicProto {
     interfaces: DashMap<SocketAddr, Arc<dyn QuicInterface>>,
-    connections: DashMap<Signpost, Arc<ConnInterface>>,
+    connections: DashMap<Signpost, Arc<RcvdPacketBuffer>>,
     listner: Option<QuicListener>,
 }
 
@@ -166,8 +166,8 @@ impl QuicProto {
     }
 
     // for origin_dcid
-    pub fn register(&self, signpost: Signpost, conn_iface: Arc<ConnInterface>) {
-        self.connections.insert(signpost, conn_iface);
+    pub fn register(&self, signpost: Signpost, buffer: Arc<RcvdPacketBuffer>) {
+        self.connections.insert(signpost, buffer);
     }
 
     pub fn unregister(&self, signpost: &Signpost) {
@@ -176,12 +176,12 @@ impl QuicProto {
 
     pub fn registry<ISSUED>(
         self: &Arc<Self>,
-        conn_iface: Arc<ConnInterface>,
+        rcvd_pkts_buf: Arc<RcvdPacketBuffer>,
         issued_cids: ISSUED,
     ) -> RouterRegistry<ISSUED> {
         RouterRegistry {
             router_iface: self.clone(),
-            conn_iface,
+            rcvd_pkts_buf,
             issued_cids,
         }
     }
@@ -190,7 +190,7 @@ impl QuicProto {
 #[derive(Clone)]
 pub struct RouterRegistry<ISSUED> {
     router_iface: Arc<QuicProto>,
-    conn_iface: Arc<ConnInterface>,
+    rcvd_pkts_buf: Arc<RcvdPacketBuffer>,
     issued_cids: ISSUED,
 }
 
@@ -208,7 +208,7 @@ where
                     return false;
                 }
 
-                entry.insert(self.conn_iface.clone());
+                entry.insert(self.rcvd_pkts_buf.clone());
                 true
             })
             .unwrap()

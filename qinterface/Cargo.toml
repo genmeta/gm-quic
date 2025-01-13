@@ -11,6 +11,7 @@ categories.workspace = true
 [dependencies]
 bytes = { workspace = true }
 dashmap = { workspace = true }
+deref-derive = { workspace = true }
 qbase = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 futures = { workspace = true }

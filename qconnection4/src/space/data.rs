@@ -41,7 +41,7 @@ use tokio::sync::mpsc;
 use super::DecryptedPacket;
 use crate::{
     events::{EmitEvent, Event},
-    path::{ArcPaths, Path, SendBuffer},
+    path::{Path, SendBuffer},
     space::{pipe, AckData, FlowControlledDataStreams},
     tx::{PacketMemory, Transaction},
     ArcReliableFrameDeque, Components, DataStreams,
@@ -248,7 +248,6 @@ pub fn launch_deliver_and_parse(
     mut zeor_rtt_packets: impl Stream<Item = (ZeroRttPacket, Pathway)> + Unpin + Send + 'static,
     mut one_rtt_packets: impl Stream<Item = (OneRttPacket, Pathway)> + Unpin + Send + 'static,
     space: DataSpace,
-    paths: ArcPaths,
     components: &Components,
     event_broker: impl EmitEvent + Clone + Send + Sync + 'static,
 ) {
@@ -353,12 +352,12 @@ pub fn launch_deliver_and_parse(
 
     tokio::spawn({
         let space = space.clone();
-        let paths = paths.clone();
+        let conn_iface = components.conn_iface.clone();
         let event_broker = event_broker.clone();
         let dispatch_data_frame = dispatch_data_frame.clone();
         async move {
             while let Some((packet, pathway)) = zeor_rtt_packets.next().await {
-                let Some(path) = paths.get(&pathway) else {
+                let Some(path) = conn_iface.paths().get(&pathway) else {
                     continue;
                 };
                 let pty = packet.0.get_type();
@@ -387,10 +386,11 @@ pub fn launch_deliver_and_parse(
         }
     });
     tokio::spawn({
+        let conn_iface = components.conn_iface.clone();
         let dispatch_data_frame = dispatch_data_frame.clone();
         async move {
             while let Some((packet, pathway)) = one_rtt_packets.next().await {
-                let Some(path) = paths.get(&pathway) else {
+                let Some(path) = conn_iface.paths().get(&pathway) else {
                     continue;
                 };
                 let pty = packet.0.get_type();

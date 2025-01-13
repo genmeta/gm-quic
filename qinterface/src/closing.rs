@@ -10,12 +10,13 @@ use std::{
 
 use qbase::{cid::ConnectionId, frame::ConnectionCloseFrame};
 
-use crate::{path::Pathway, router::QuicProto};
+use crate::{buffer::RcvdPacketBuffer, path::Pathway, router::QuicProto};
 
 pub struct ClosingInterface {
     router_iface: Arc<QuicProto>,
     last_recv_time: Mutex<Instant>,
-    rcvd_packets: AtomicUsize,
+    rcvd_pkts: AtomicUsize,
+    rcvd_pkts_buf: Arc<RcvdPacketBuffer>,
     scid: Option<ConnectionId>,
     dcid: Option<ConnectionId>,
     ccf: ConnectionCloseFrame,
@@ -24,26 +25,30 @@ pub struct ClosingInterface {
 impl ClosingInterface {
     pub(crate) fn new(
         router_iface: Arc<QuicProto>,
-        last_recv_time: Mutex<Instant>,
-        rcvd_packets: AtomicUsize,
+        rcvd_pkts_buf: Arc<RcvdPacketBuffer>,
         scid: Option<ConnectionId>,
         dcid: Option<ConnectionId>,
         ccf: ConnectionCloseFrame,
     ) -> Self {
         Self {
             router_iface,
-            last_recv_time,
-            rcvd_packets,
+            rcvd_pkts_buf,
+            last_recv_time: Mutex::new(Instant::now()),
+            rcvd_pkts: AtomicUsize::new(0),
             scid,
             dcid,
             ccf,
         }
     }
 
+    pub fn received_packets_buffer(&self) -> &Arc<RcvdPacketBuffer> {
+        &self.rcvd_pkts_buf
+    }
+
     pub fn should_send(&self) -> bool {
         let mut last_recv_time = self.last_recv_time.lock().unwrap();
         let last_recv_time = core::mem::replace(&mut *last_recv_time, Instant::now());
-        let rcvd_packets = self.rcvd_packets.fetch_add(1, Ordering::AcqRel);
+        let rcvd_packets = self.rcvd_pkts.fetch_add(1, Ordering::AcqRel);
         last_recv_time.elapsed() > Duration::from_secs(1) || rcvd_packets % 3 == 0
     }
 

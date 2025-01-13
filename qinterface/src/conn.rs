@@ -1,39 +1,50 @@
-use std::{
-    io,
-    net::SocketAddr,
-    sync::{atomic::AtomicUsize, Arc, Mutex},
-    time::Instant,
-};
+use std::{io, net::SocketAddr, sync::Arc};
 
 use dashmap::DashMap;
-use futures::channel::mpsc;
-use qbase::{
-    frame::{ConnectionCloseFrame, NewConnectionIdFrame, RetireConnectionIdFrame, SendFrame},
-    packet::Packet,
-    util::bound_deque::{BoundQueue, Receiver},
+use deref_derive::{Deref, DerefMut};
+use qbase::frame::{
+    ConnectionCloseFrame, NewConnectionIdFrame, RetireConnectionIdFrame, SendFrame,
 };
+use tokio::task::AbortHandle;
 
 use crate::{
+    buffer::RcvdPacketBuffer,
     closing::ClosingInterface,
     path::Pathway,
     router::{QuicProto, RouterRegistry},
     SendCapability,
 };
 
-pub struct ConnInterface {
-    router_iface: Arc<QuicProto>,
-    probed_path_tx: mpsc::UnboundedSender<Pathway>,
-    paths: DashMap<Pathway, BoundQueue<Packet>>,
+#[derive(Deref, DerefMut)]
+pub struct PathGuard<P> {
+    #[deref]
+    path: Arc<P>,
+    task: AbortHandle,
 }
 
-impl ConnInterface {
-    pub fn new(
-        router_iface: Arc<QuicProto>,
-        probed_path_tx: mpsc::UnboundedSender<Pathway>,
-    ) -> Self {
+impl<P> PathGuard<P> {
+    pub fn new(path: Arc<P>, task: AbortHandle) -> Self {
+        Self { path, task }
+    }
+}
+
+impl<P> Drop for PathGuard<P> {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+pub struct ConnInterface<P> {
+    router_iface: Arc<QuicProto>,
+    rcvd_pkts_buf: Arc<RcvdPacketBuffer>,
+    paths: DashMap<Pathway, PathGuard<P>>,
+}
+
+impl<P> ConnInterface<P> {
+    pub fn new(router_iface: Arc<QuicProto>) -> Self {
         Self {
             router_iface,
-            probed_path_tx,
+            rcvd_pkts_buf: Arc::new(Default::default()),
             paths: DashMap::new(),
         }
     }
@@ -42,8 +53,16 @@ impl ConnInterface {
         &self.router_iface
     }
 
+    pub fn received_packets_buffer(&self) -> &Arc<RcvdPacketBuffer> {
+        &self.rcvd_pkts_buf
+    }
+
     pub fn send_capability(&self, on: Pathway) -> io::Result<SendCapability> {
         self.router_iface.send_capability(on)
+    }
+
+    pub fn paths(&self) -> &DashMap<Pathway, PathGuard<P>> {
+        &self.paths
     }
 
     pub async fn send_packets(
@@ -54,24 +73,6 @@ impl ConnInterface {
     ) -> io::Result<()> {
         self.router_iface.send_packets(pkts, way, dst).await
     }
-
-    pub async fn recv_from(&self, packet: Packet, pathway: Pathway) {
-        let queue = self.paths.entry(pathway).or_insert_with(|| {
-            _ = self.probed_path_tx.unbounded_send(pathway);
-            BoundQueue::new(16)
-        });
-        _ = queue.send(packet).await;
-    }
-
-    pub fn register(&self, pathway: Pathway) -> Receiver<Packet> {
-        let entry = self.paths.entry(pathway);
-        entry.or_insert_with(|| BoundQueue::new(16)).receiver()
-    }
-
-    pub fn unregister(&self, pathway: &Pathway) {
-        let (_pathway, queue) = self.paths.remove(pathway).unwrap();
-        queue.close();
-    }
 }
 
 pub type ArcLocalCids<ISSUED> = qbase::cid::local_cid2::ArcLocalCids<RouterRegistry<ISSUED>>;
@@ -80,11 +81,7 @@ pub type ArcRemoteCids<RETIRED> = qbase::cid::ArcRemoteCids<RETIRED>;
 pub type CidRegistry<ISSUED, RETIRED> =
     qbase::cid::Registry<ArcLocalCids<ISSUED>, ArcRemoteCids<RETIRED>>;
 
-impl ConnInterface {
-    pub fn disable_probing(&self) {
-        self.probed_path_tx.close_channel();
-    }
-
+impl<P> ConnInterface<P> {
     pub fn close<ISSUED, RETIRED>(
         &self,
         connection_close_frame: ConnectionCloseFrame,
@@ -94,11 +91,9 @@ impl ConnInterface {
         ISSUED: SendFrame<NewConnectionIdFrame> + Send + Sync + 'static,
         RETIRED: SendFrame<RetireConnectionIdFrame> + Clone,
     {
-        self.disable_probing();
         ClosingInterface::new(
             self.router_iface.clone(),
-            Mutex::new(Instant::now()),
-            AtomicUsize::new(0),
+            self.rcvd_pkts_buf.clone(),
             cid_registry.local.initial_scid(),
             cid_registry.remote.latest_dcid(),
             connection_close_frame,
