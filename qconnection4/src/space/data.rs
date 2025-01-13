@@ -31,7 +31,7 @@ use qbase::{
 use qcongestion::{CongestionControl, TrackPackets};
 use qinterface::{closing::ClosingInterface, path::Pathway};
 use qrecovery::{
-    crypto::{CryptoStream, CryptoStreamOutgoing},
+    crypto::CryptoStream,
     journal::{ArcRcvdJournal, DataJournal},
     reliable::GuaranteedFrame,
 };
@@ -52,7 +52,6 @@ pub type DecryptedZeroRttPacket = DecryptedPacket<ZeroRttHeader>;
 pub type OneRttPacket = (OneRttHeader, bytes::BytesMut, usize);
 pub type DecryptedOneRttPacket = DecryptedPacket<OneRttHeader>;
 
-#[derive(Clone)]
 pub struct DataSpace {
     zero_rtt_keys: ArcKeys,
     one_rtt_keys: ArcOneRttKeys,
@@ -229,15 +228,6 @@ impl DataSpace {
         self.one_rtt_keys.clone()
     }
 
-    pub fn tracker(&self) -> DataTracker {
-        DataTracker {
-            journal: self.journal.clone(),
-            reliable_frames: self.reliable_frames.clone(),
-            streams: self.streams.clone(),
-            outgoing: self.crypto_stream.outgoing().clone(),
-        }
-    }
-
     pub fn on_conn_error(&self, error: &Error) {
         self.streams.on_conn_error(error);
         self.datagrams.on_conn_error(error);
@@ -247,7 +237,7 @@ impl DataSpace {
 pub fn launch_deliver_and_parse(
     mut zeor_rtt_packets: impl Stream<Item = (ZeroRttPacket, Pathway)> + Unpin + Send + 'static,
     mut one_rtt_packets: impl Stream<Item = (OneRttPacket, Pathway)> + Unpin + Send + 'static,
-    space: DataSpace,
+    space: Arc<DataSpace>,
     components: &Components,
     event_broker: impl EmitEvent + Clone + Send + Sync + 'static,
 ) {
@@ -420,21 +410,13 @@ pub fn launch_deliver_and_parse(
     });
 }
 
-#[derive(Clone)]
-pub struct DataTracker {
-    journal: DataJournal,
-    reliable_frames: ArcReliableFrameDeque,
-    streams: DataStreams,
-    outgoing: CryptoStreamOutgoing,
-}
-
-impl TrackPackets for DataTracker {
+impl TrackPackets for DataSpace {
     fn may_loss(&self, pn: u64) {
         for frame in self.journal.of_sent_packets().rotate().may_loss_pkt(pn) {
             match frame {
                 GuaranteedFrame::Stream(f) => self.streams.may_loss_data(&f),
                 GuaranteedFrame::Reliable(f) => self.reliable_frames.send_frame([f]),
-                GuaranteedFrame::Crypto(f) => self.outgoing.may_loss_data(&f),
+                GuaranteedFrame::Crypto(f) => self.crypto_stream.outgoing().may_loss_data(&f),
             }
         }
     }
@@ -452,7 +434,7 @@ pub struct ClosingDataSpace {
 }
 
 impl DataSpace {
-    pub fn close(self) -> Option<ClosingDataSpace> {
+    pub fn close(&self) -> Option<ClosingDataSpace> {
         let keys = self.one_rtt_keys.invalid()?;
         let sent_journal = self.journal.of_sent_packets();
         let new_packet_guard = sent_journal.new_packet();
