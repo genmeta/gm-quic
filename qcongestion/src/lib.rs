@@ -73,3 +73,15 @@ pub trait TrackPackets: Send + Sync {
     /// - `pn`: The packet number of the packet record to retire.
     fn retire(&self, pn: u64);
 }
+
+/// The [`ObserveHandshake`] trait defines the interface for observing the handshake state.
+pub trait ObserveHandshake: Send + Sync {
+    /// Retrieves the role of the connection.
+    fn role(&self) -> qbase::sid::Role;
+
+    /// Checks if the handshake is complete.
+    fn is_handshake_done(&self) -> bool;
+
+    /// Checks if the connection is currently receiving keys.
+    fn is_getting_keys(&self) -> bool;
+}

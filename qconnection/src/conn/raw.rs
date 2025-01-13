@@ -158,7 +158,7 @@ impl Connection {
                         Arc::new(hs_tracker.clone()),
                         Arc::new(data_tracker.clone()),
                     ],
-                    handshake.clone(),
+                    Box::new(handshake.clone()),
                 );
 
                 let path = Path::new(usc, scid, dcid, cc);
