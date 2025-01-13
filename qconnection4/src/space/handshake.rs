@@ -38,7 +38,6 @@ use crate::{
 pub type HandshakePacket = (HandshakeHeader, bytes::BytesMut, usize);
 pub type DecryptedHandshakePacket = DecryptedPacket<HandshakeHeader>;
 
-#[derive(Clone)]
 pub struct HandshakeSpace {
     keys: ArcKeys,
     crypto_stream: CryptoStream,
@@ -123,18 +122,11 @@ impl HandshakeSpace {
         let packet: PacketWriter<'b> = packet.try_into().ok()?;
         Some((packet.abandon(), ack))
     }
-
-    pub fn tracker(&self) -> HandshakeTracker {
-        HandshakeTracker {
-            journal: self.journal.clone(),
-            outgoing: self.crypto_stream.outgoing().clone(),
-        }
-    }
 }
 
 pub fn launch_deliver_and_parse(
     mut packets: impl Stream<Item = (HandshakePacket, Pathway)> + Unpin + Send + 'static,
-    space: HandshakeSpace,
+    space: Arc<HandshakeSpace>,
     components: &Components,
     event_broker: impl EmitEvent + Clone + Send + Sync + 'static,
 ) {
@@ -222,6 +214,18 @@ pub struct HandshakeTracker {
     outgoing: CryptoStreamOutgoing,
 }
 
+impl TrackPackets for HandshakeSpace {
+    fn may_loss(&self, pn: u64) {
+        for frame in self.journal.of_sent_packets().rotate().may_loss_pkt(pn) {
+            self.crypto_stream.outgoing().may_loss_data(&frame);
+        }
+    }
+
+    fn retire(&self, pn: u64) {
+        self.journal.of_rcvd_packets().write().retire(pn);
+    }
+}
+
 impl TrackPackets for HandshakeTracker {
     fn may_loss(&self, pn: u64) {
         for frame in self.journal.of_sent_packets().rotate().may_loss_pkt(pn) {
@@ -242,7 +246,7 @@ pub struct ClosingHandshakeSpace {
 }
 
 impl HandshakeSpace {
-    pub fn close(self) -> Option<ClosingHandshakeSpace> {
+    pub fn close(&self) -> Option<ClosingHandshakeSpace> {
         let keys = self.keys.invalid()?;
         let sent_journal = self.journal.of_sent_packets();
         let new_packet_guard = sent_journal.new_packet();

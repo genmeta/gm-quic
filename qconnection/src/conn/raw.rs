@@ -154,9 +154,9 @@ impl Connection {
                     CongestionAlgorithm::Bbr,
                     Duration::from_millis(100),
                     [
-                        Box::new(initial_tracker.clone()),
-                        Box::new(hs_tracker.clone()),
-                        Box::new(data_tracker.clone()),
+                        Arc::new(initial_tracker.clone()),
+                        Arc::new(hs_tracker.clone()),
+                        Arc::new(data_tracker.clone()),
                     ],
                     handshake.clone(),
                 );

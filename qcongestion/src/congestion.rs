@@ -64,7 +64,7 @@ pub struct CongestionController {
     // The waker to notify when the controller is ready to send.
     send_waker: Option<Waker>,
     // Space packet trackers
-    trackers: [Box<dyn TrackPackets>; 3],
+    trackers: [Arc<dyn TrackPackets>; 3],
     // Handshake state
     handshake: Handshake<ArcReliableFrameDeque>,
 }
@@ -74,7 +74,7 @@ impl CongestionController {
     fn new(
         algorithm: CongestionAlgorithm,
         max_ack_delay: Duration,
-        trackers: [Box<dyn TrackPackets>; 3],
+        trackers: [Arc<dyn TrackPackets>; 3],
         handshake: Handshake<ArcReliableFrameDeque>,
     ) -> Self {
         let algorithm: Box<dyn Algorithm> = match algorithm {
@@ -422,7 +422,7 @@ impl ArcCC {
     pub fn new(
         algorithm: CongestionAlgorithm,
         max_ack_delay: Duration,
-        trackers: [Box<dyn TrackPackets>; 3],
+        trackers: [Arc<dyn TrackPackets>; 3],
         handshake: Handshake<ArcReliableFrameDeque>,
     ) -> Self {
         ArcCC(Arc::new(Mutex::new(CongestionController::new(
@@ -607,7 +607,7 @@ impl RcvdRecords {
 
     /// Processes an acknowledged (ACK) packet.
     /// If the ACKed packet number matches the last sent ACK number, retires all acknowledged packets.
-    fn ack(&mut self, ack: u64, trackers: &[Box<dyn TrackPackets>; 3]) {
+    fn ack(&mut self, ack: u64, trackers: &[Arc<dyn TrackPackets>; 3]) {
         if let Some((pn, largest_acked)) = self.last_ack_sent {
             if ack == pn {
                 self.rcvd_queue
@@ -920,14 +920,14 @@ mod tests {
         ack_reocrd.on_ack_sent(3, 9);
 
         // recv pn 2 ack, ingore
-        ack_reocrd.ack(2, &[Box::new(Mock), Box::new(Mock), Box::new(Mock)]);
+        ack_reocrd.ack(2, &[Arc::new(Mock), Arc::new(Mock), Arc::new(Mock)]);
         assert_eq!(ack_reocrd.rcvd_queue, vec![0, 1, 3, 5, 7, 9]);
 
         ack_reocrd.on_pkt_rcvd(11);
         assert_eq!(ack_reocrd.rcvd_queue, vec![0, 1, 3, 5, 7, 9, 11]);
         // recv pn 3 ack, ret
 
-        ack_reocrd.ack(3, &[Box::new(Mock), Box::new(Mock), Box::new(Mock)]);
+        ack_reocrd.ack(3, &[Arc::new(Mock), Arc::new(Mock), Arc::new(Mock)]);
         assert_eq!(ack_reocrd.rcvd_queue, vec![11]);
     }
 
@@ -942,7 +942,7 @@ mod tests {
         CongestionController::new(
             CongestionAlgorithm::Bbr,
             Duration::from_millis(100),
-            [Box::new(Mock), Box::new(Mock), Box::new(Mock)],
+            [Arc::new(Mock), Arc::new(Mock), Arc::new(Mock)],
             Handshake::new(qbase::sid::Role::Client, output),
         )
     }

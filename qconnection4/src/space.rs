@@ -2,6 +2,8 @@ pub mod data;
 pub mod handshake;
 pub mod initial;
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 use qbase::{
     error::Error,
@@ -23,9 +25,9 @@ use crate::{
 
 #[derive(Clone)]
 pub struct Spaces {
-    initial: initial::InitialSpace,
-    handshake: handshake::HandshakeSpace,
-    data: data::DataSpace,
+    initial: Arc<initial::InitialSpace>,
+    handshake: Arc<handshake::HandshakeSpace>,
+    data: Arc<data::DataSpace>,
 }
 
 impl Spaces {
@@ -35,9 +37,9 @@ impl Spaces {
         data: data::DataSpace,
     ) -> Self {
         Self {
-            initial,
-            handshake,
-            data,
+            initial: Arc::new(initial),
+            handshake: Arc::new(handshake),
+            data: Arc::new(data),
         }
     }
 

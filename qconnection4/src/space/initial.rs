@@ -25,7 +25,7 @@ use qbase::{
 use qcongestion::{CongestionControl, TrackPackets};
 use qinterface::{closing::ClosingInterface, path::Pathway};
 use qrecovery::{
-    crypto::{CryptoStream, CryptoStreamOutgoing},
+    crypto::CryptoStream,
     journal::{ArcRcvdJournal, InitialJournal},
 };
 use rustls::quic::Keys;
@@ -42,11 +42,10 @@ use crate::{
 pub type InitialPacket = (InitialHeader, bytes::BytesMut, usize);
 pub type DecryptedInitialPacket = DecryptedPacket<InitialHeader>;
 
-#[derive(Clone)]
 pub struct InitialSpace {
     keys: ArcKeys,
     crypto_stream: CryptoStream,
-    token: Arc<Mutex<Vec<u8>>>,
+    token: Mutex<Vec<u8>>,
     journal: InitialJournal,
 }
 
@@ -57,7 +56,7 @@ impl InitialSpace {
         let crypto_stream = CryptoStream::new(4096, 4096);
 
         Self {
-            token: Arc::new(Mutex::new(token)),
+            token: Mutex::new(token),
             keys: ArcKeys::with_keys(keys),
             journal,
             crypto_stream,
@@ -133,18 +132,11 @@ impl InitialSpace {
         let packet: PacketWriter<'b> = packet.try_into().ok()?;
         Some((packet.abandon(), ack))
     }
-
-    pub fn tracker(&self) -> InitialTracker {
-        InitialTracker {
-            journal: self.journal.clone(),
-            outgoing: self.crypto_stream.outgoing().clone(),
-        }
-    }
 }
 
 pub fn launch_deliver_and_parse(
     mut packets: impl Stream<Item = (InitialPacket, Pathway)> + Unpin + Send + 'static,
-    space: InitialSpace,
+    space: Arc<InitialSpace>,
     components: &Components,
     event_broker: impl EmitEvent + Clone + Send + Sync + 'static,
 ) {
@@ -255,16 +247,10 @@ pub fn launch_deliver_and_parse(
     });
 }
 
-#[derive(Clone)]
-pub struct InitialTracker {
-    journal: InitialJournal,
-    outgoing: CryptoStreamOutgoing,
-}
-
-impl TrackPackets for InitialTracker {
+impl TrackPackets for InitialSpace {
     fn may_loss(&self, pn: u64) {
         for frame in self.journal.of_sent_packets().rotate().may_loss_pkt(pn) {
-            self.outgoing.may_loss_data(&frame);
+            self.crypto_stream.outgoing().may_loss_data(&frame);
         }
     }
 
@@ -281,7 +267,7 @@ pub struct ClosingInitialSpace {
 }
 
 impl InitialSpace {
-    pub fn close(self) -> Option<ClosingInitialSpace> {
+    pub fn close(&self) -> Option<ClosingInitialSpace> {
         let keys = self.keys.invalid()?;
         let sent_journal = self.journal.of_sent_packets();
         let new_packet_guard = sent_journal.new_packet();
