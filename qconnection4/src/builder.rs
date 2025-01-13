@@ -29,7 +29,8 @@ use crate::{
     },
     tls::ArcTlsSession,
     ArcLocalCids, ArcRcvdPacketBuffer, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry,
-    Components, Connection, CoreConnection, DataStreams, FlowController, Handshake, Termination,
+    Components, Connection, CoreConnection, DataStreams, FlowController, Handshake, RawHandshake,
+    Termination,
 };
 
 impl Connection {
@@ -169,7 +170,7 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             self.streams_ctrl,
         );
 
-        let handshake = Handshake::new(sid::Role::Client, reliable_frames.clone());
+        let handshake = RawHandshake::new(sid::Role::Client, reliable_frames.clone());
         let flow_ctrl = FlowController::new(
             peer_initial_max_data,
             local_initial_max_data,
@@ -239,7 +240,7 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             server_params,
             self.streams_ctrl,
         );
-        let handshake = Handshake::new(sid::Role::Server, reliable_frames.clone());
+        let handshake = RawHandshake::new(sid::Role::Server, reliable_frames.clone());
         let flow_ctrl = FlowController::new(0, local_initial_max_data, reliable_frames.clone());
 
         // server_params.set_initial_source_connection_id(chosen_initial_scid);
@@ -279,7 +280,7 @@ pub struct SpaceReady {
     initial_dcid: ConnectionId,
     parameters: ArcParameters,
     tls_session: ArcTlsSession,
-    handshake: Handshake,
+    handshake: RawHandshake,
     token_registry: ArcTokenRegistry,
     flow_ctrl: FlowController,
     reliable_frames: ArcReliableFrameDeque,
@@ -313,6 +314,8 @@ impl SpaceReady {
 
         let cid_registry = CidRegistry::new(local_cids, remote_cids);
 
+        let handshake = Handshake::new(self.handshake, Arc::new(event_broker.clone()));
+
         self.tls_session.keys_upgrade(
             [
                 self.spaces.initial().crypto_stream(),
@@ -321,7 +324,7 @@ impl SpaceReady {
             ],
             self.spaces.handshake().keys(),
             self.spaces.data().one_rtt_keys(),
-            self.handshake.clone(),
+            handshake.clone(),
             self.parameters.clone(),
             event_broker.clone(),
         );
@@ -339,7 +342,7 @@ impl SpaceReady {
         let components = Components {
             parameters: self.parameters,
             tls_session: self.tls_session,
-            handshake: self.handshake,
+            handshake,
             token_registry: self.token_registry,
             cid_registry,
             flow_ctrl: self.flow_ctrl,

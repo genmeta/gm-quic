@@ -1,4 +1,5 @@
 pub mod events;
+pub mod handshake;
 pub mod path;
 pub mod space;
 pub mod termination;
@@ -32,7 +33,6 @@ use path::{ArcPaths, RcvdPacketBuffer};
 use qbase::{
     cid, flow,
     frame::{ConnectionCloseFrame, ReliableFrame, SendFrame},
-    handshake,
     param::{self, ArcParameters},
     sid::StreamId,
     token::ArcTokenRegistry,
@@ -83,6 +83,7 @@ pub type FlowController = flow::FlowController<ArcReliableFrameDeque>;
 pub type Credit<'a> = flow::Credit<'a, ArcReliableFrameDeque>;
 
 pub type Handshake = handshake::Handshake<ArcReliableFrameDeque>;
+pub type RawHandshake = handshake::RawHandshake<ArcReliableFrameDeque>;
 pub type ArcRcvdPacketBuffer = Arc<RcvdPacketBuffer>;
 
 pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;

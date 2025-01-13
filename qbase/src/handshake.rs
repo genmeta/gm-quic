@@ -35,11 +35,14 @@ impl ClientHandshake {
     ///
     /// Once the client receives the HANDSHAKE_DONE frame,
     /// it marks the completion of the client handshake.
-    pub fn recv_handshake_done_frame(&self, _frame: &HandshakeDoneFrame) {
-        let _has_done = self.done.swap(true, Ordering::AcqRel);
-        if !_has_done {
+    ///
+    /// Return whether it is the first time to receive the HANDSHAKE_DONE frame.
+    pub fn recv_handshake_done_frame(&self, _frame: &HandshakeDoneFrame) -> bool {
+        let has_done = self.done.swap(true, Ordering::AcqRel);
+        if !has_done {
             log::trace!("Client handshake is done");
         }
+        !has_done
     }
 
     /// TLS upgrade the handshake keys.
@@ -112,7 +115,9 @@ where
     /// and once the server handshake is complete,
     /// servers should send the [`HandshakeDoneFrame`] immediately.
     /// See [`ServerHandshake`].
-    pub fn done(&self) {
+    ///
+    /// This method return [`true`] when it first time set the handshake status to complete.
+    pub fn done(&self) -> bool {
         if self
             .is_done
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -120,6 +125,9 @@ where
         {
             log::trace!("Server handshake is done");
             self.output.send_frame([HandshakeDoneFrame]);
+            true
+        } else {
+            false
         }
     }
 
@@ -195,9 +203,14 @@ where
         }
     }
 
-    pub fn done(&self) {
+    /// Set the handshake status to complete(for server)
+    ///
+    /// For client, this method does nothing and always returns [`false`].
+    ///
+    /// This method return [`true`] when it first time set the handshake status to complete.
+    pub fn done(&self) -> bool {
         match self {
-            Handshake::Client(..) => (), /* for client, do nothing */
+            Handshake::Client(..) => false, /* for client, do nothing */
             Handshake::Server(h) => h.done(),
         }
     }
@@ -215,7 +228,7 @@ impl<T> ReceiveFrame<HandshakeDoneFrame> for Handshake<T>
 where
     T: SendFrame<HandshakeDoneFrame> + Clone,
 {
-    type Output = ();
+    type Output = bool;
 
     /// Receive the [`HandshakeDoneFrame`].
     ///
@@ -224,12 +237,11 @@ where
     /// as a connection error of type PROTOCOL_VIOLATION.
     /// See [section 19.20](https://www.rfc-editor.org/rfc/rfc9000.html#section-19.20)
     /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html).
-    fn recv_frame(&self, frame: &HandshakeDoneFrame) -> Result<(), Error> {
+    ///
+    /// Return whether it is the first time to receive the HANDSHAKE_DONE frame(for client).
+    fn recv_frame(&self, frame: &HandshakeDoneFrame) -> Result<bool, Error> {
         match self {
-            Handshake::Client(h) => {
-                h.recv_handshake_done_frame(frame);
-                Ok(())
-            }
+            Handshake::Client(h) => Ok(h.recv_handshake_done_frame(frame)),
             _ => Err(Error::with_default_fty(
                 ErrorKind::ProtocolViolation,
                 "Server received a HANDSHAKE_DONE frame",
@@ -275,7 +287,15 @@ mod tests {
 
         match &handshake {
             Handshake::Client(client_handshake) => {
-                client_handshake.recv_handshake_done_frame(&HandshakeDoneFrame)
+                assert!(client_handshake.recv_handshake_done_frame(&HandshakeDoneFrame));
+            }
+            Handshake::Server(..) => unreachable!(),
+        }
+        assert!(handshake.is_handshake_done());
+
+        match &handshake {
+            Handshake::Client(client_handshake) => {
+                assert!(!client_handshake.recv_handshake_done_frame(&HandshakeDoneFrame));
             }
             Handshake::Server(..) => unreachable!(),
         }
@@ -289,8 +309,14 @@ mod tests {
 
         match &handshake {
             Handshake::Client(..) => unreachable!(),
-            Handshake::Server(server_handshake) => server_handshake.done(),
-        }
+            Handshake::Server(server_handshake) => assert!(server_handshake.done()),
+        };
+        assert!(handshake.is_handshake_done());
+
+        match &handshake {
+            Handshake::Client(..) => unreachable!(),
+            Handshake::Server(server_handshake) => assert!(!server_handshake.done()),
+        };
         assert!(handshake.is_handshake_done());
     }
 
