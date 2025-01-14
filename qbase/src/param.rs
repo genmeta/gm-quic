@@ -234,7 +234,6 @@ impl Parameters {
     }
 
     fn initial_scid_from_peer_need_equal(&mut self, cid: ConnectionId) {
-        assert_eq!(self.role, Role::Server);
         self.requirements.initial_source_connection_id = Some(cid)
     }
 

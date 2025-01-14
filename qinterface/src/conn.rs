@@ -84,7 +84,7 @@ impl<P> ConnInterface<P> {
     }
 
     pub fn try_create_initial_path(&self) -> bool {
-        self.initial_path_created.swap(true, Relaxed)
+        !self.initial_path_created.swap(true, Relaxed)
     }
 }
 

@@ -32,8 +32,8 @@ use crate::{
     path::{Path, PathKind},
     space::{self, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace, Spaces},
     tls::{self, ArcTlsSession},
-    ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
-    CoreConnection, DataStreams, FlowController, Handshake, RawHandshake, Termination,
+    ArcConnInterface, ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components,
+    Connection, CoreConnection, DataStreams, FlowController, Handshake, RawHandshake, Termination,
 };
 
 impl Connection {
@@ -157,30 +157,27 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
         }
     }
 
-    pub fn with_cids(mut self, random_initial_dcid: ConnectionId) -> SpaceReady {
+    pub fn with_iface(
+        mut self,
+        proto: Arc<QuicProto>,
+        random_initial_dcid: ConnectionId,
+    ) -> ComponentsReady {
         let client_params = &mut self.foundation.client_params;
         let remembered = &self.foundation.remembered;
 
-        let local_initial_max_data = client_params.initial_max_data().into_inner();
-        let peer_initial_max_data = remembered.map_or(0, |p| p.initial_max_data().into_inner());
+        let send_notify = Arc::new(Notify::new());
+        let reliable_frames =
+            ArcReliableFrameDeque::with_capacity_and_notify(8, send_notify.clone());
 
-        let notify = Arc::new(Notify::new());
-        let reliable_frames = ArcReliableFrameDeque::with_capacity_and_notify(8, notify.clone());
-        let data_space = DataSpace::new(
-            sid::Role::Client,
-            reliable_frames.clone(),
-            client_params,
-            self.streams_ctrl,
-        );
+        let conn_iface = Arc::new(ConnInterface::new(proto.clone()));
 
-        let handshake = RawHandshake::new(sid::Role::Client, reliable_frames.clone());
-        let flow_ctrl = FlowController::new(
-            peer_initial_max_data,
-            local_initial_max_data,
+        let router_registry = proto.registry(
+            conn_iface.received_packets_buffer().clone(),
             reliable_frames.clone(),
         );
+        let initial_scid = router_registry.gen_unique_cid();
 
-        // client_params.set_initial_source_connection_id(chosen_initial_scid);
+        client_params.set_initial_source_connection_id(initial_scid);
         let parameters = ArcParameters::new_client(*client_params, *remembered);
         parameters.original_dcid_from_server_need_equal(random_initial_dcid);
 
@@ -190,25 +187,48 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             rustls::Side::Client,
             rustls::quic::Version::V1,
         );
+
         let tls_session =
             ArcTlsSession::new_client(self.foundation.server, self.tls_config, &parameters);
+
+        let raw_handshake = RawHandshake::new(sid::Role::Client, reliable_frames.clone());
+
+        let cid_registry = CidRegistry::new(
+            ArcLocalCids::new(initial_scid, router_registry),
+            ArcRemoteCids::new(
+                random_initial_dcid,
+                client_params.active_connection_id_limit().into(),
+                reliable_frames.clone(),
+            ),
+        );
+
+        let flow_ctrl = FlowController::new(
+            remembered.map_or(0, |p| p.initial_max_data().into_inner()),
+            client_params.initial_max_data().into_inner(),
+            reliable_frames.clone(),
+        );
 
         let spaces = Spaces::new(
             InitialSpace::new(initial_keys, self.foundation.token),
             HandshakeSpace::new(),
-            data_space,
+            DataSpace::new(
+                sid::Role::Client,
+                reliable_frames.clone(),
+                client_params,
+                self.streams_ctrl,
+            ),
         );
 
-        SpaceReady {
-            initial_dcid: random_initial_dcid,
+        ComponentsReady {
             parameters,
             tls_session,
-            handshake,
+            raw_handshake,
             token_registry: self.foundation.token_registry,
+            cid_registry,
             flow_ctrl,
-            reliable_frames,
             spaces,
-            send_notify: notify,
+            conn_iface,
+            send_notify,
         }
     }
 }
@@ -227,24 +247,23 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         }
     }
 
-    pub fn with_cids(
+    pub fn with_iface(
         mut self,
+        proto: Arc<QuicProto>,
         original_dcid: ConnectionId,
         client_scid: ConnectionId,
-    ) -> SpaceReady {
+    ) -> ComponentsReady {
         let server_params = &mut self.foundation.server_params;
-        let local_initial_max_data = server_params.initial_max_data().into_inner();
+        let send_notify = Arc::new(Notify::new());
+        let reliable_frames =
+            ArcReliableFrameDeque::with_capacity_and_notify(8, send_notify.clone());
 
-        let notify = Arc::new(Notify::new());
-        let reliable_frames = ArcReliableFrameDeque::with_capacity_and_notify(8, notify.clone());
-        let data_space = DataSpace::new(
-            sid::Role::Client,
-            reliable_frames.clone(),
-            server_params,
-            self.streams_ctrl,
-        );
-        let handshake = RawHandshake::new(sid::Role::Server, reliable_frames.clone());
-        let flow_ctrl = FlowController::new(0, local_initial_max_data, reliable_frames.clone());
+        let conn_iface = Arc::new(ConnInterface::new(proto.clone()));
+
+        let issued_cids = reliable_frames.clone();
+        let router_registry =
+            proto.registry(conn_iface.received_packets_buffer().clone(), issued_cids);
+        let initial_scid = router_registry.gen_unique_cid();
 
         // server_params.set_initial_source_connection_id(chosen_initial_scid);
         server_params.set_original_destination_connection_id(original_dcid);
@@ -259,76 +278,76 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         );
         let tls_session = ArcTlsSession::new_server(self.tls_config, &parameters);
 
+        let raw_handshake = RawHandshake::new(sid::Role::Server, reliable_frames.clone());
+
+        let cid_registry = CidRegistry::new(
+            ArcLocalCids::new(initial_scid, router_registry),
+            ArcRemoteCids::new(
+                client_scid,
+                server_params.active_connection_id_limit().into(),
+                reliable_frames.clone(),
+            ),
+        );
+
+        let flow_ctrl = FlowController::new(
+            0,
+            server_params.initial_max_data().into_inner(),
+            reliable_frames.clone(),
+        );
+
         let spaces = Spaces::new(
             InitialSpace::new(initial_keys, Vec::with_capacity(0)),
             HandshakeSpace::new(),
-            data_space,
+            DataSpace::new(
+                sid::Role::Client,
+                reliable_frames.clone(),
+                server_params,
+                self.streams_ctrl,
+            ),
         );
 
-        SpaceReady {
-            initial_dcid: client_scid,
+        ComponentsReady {
             parameters,
             tls_session,
-            handshake,
+            raw_handshake,
             token_registry: self.foundation.token_registry,
+            cid_registry,
             flow_ctrl,
-            reliable_frames,
             spaces,
-            send_notify: notify,
+            conn_iface,
+            send_notify,
         }
     }
 }
 
-pub struct SpaceReady {
-    initial_dcid: ConnectionId,
+pub struct ComponentsReady {
     parameters: ArcParameters,
     tls_session: ArcTlsSession,
-    handshake: RawHandshake,
+    raw_handshake: RawHandshake,
     token_registry: ArcTokenRegistry,
+    cid_registry: CidRegistry,
     flow_ctrl: FlowController,
-    reliable_frames: ArcReliableFrameDeque,
     spaces: Spaces,
-    // TODO: 当路径发送任务没数据可发时，则等待这个通知；
-    //       绝不可进入下次循环，尝试发送数据仍无数据可发，会陷入死循环
-    //       相应地，当数据写入，或者重传时，要唤醒该通知
+    conn_iface: ArcConnInterface,
     send_notify: Arc<Notify>,
 }
 
-impl SpaceReady {
-    pub fn run_with<EE>(self, proto: Arc<QuicProto>, event_broker: EE) -> Connection
+impl ComponentsReady {
+    pub fn run_with<EE>(self, event_broker: EE) -> Connection
     where
         EE: EmitEvent + Clone + Send + Sync + 'static,
     {
-        let local_params = self.parameters.local().unwrap();
-        let initial_scid = local_params.initial_source_connection_id();
-
-        let conn_iface = Arc::new(ConnInterface::new(proto.clone()));
-
-        let issued_cids = self.reliable_frames.clone();
-        let router_registry =
-            proto.registry(conn_iface.received_packets_buffer().clone(), issued_cids);
-
-        self.parameters
-            .set_initial_scid(router_registry.gen_unique_cid());
-        let local_cids = ArcLocalCids::new(initial_scid, router_registry);
-
-        let active_cid_limit = local_params.active_connection_id_limit().into();
-        let retired_cids = self.reliable_frames.clone();
-        let remote_cids = ArcRemoteCids::new(self.initial_dcid, active_cid_limit, retired_cids);
-
-        let cid_registry = CidRegistry::new(local_cids, remote_cids);
-
-        let handshake = Handshake::new(self.handshake, Arc::new(event_broker.clone()));
+        let handshake = Handshake::new(self.raw_handshake, Arc::new(event_broker.clone()));
 
         let components = Components {
             parameters: self.parameters,
             tls_session: self.tls_session,
             handshake,
             token_registry: self.token_registry,
-            cid_registry,
+            cid_registry: self.cid_registry,
             flow_ctrl: self.flow_ctrl,
             spaces: self.spaces,
-            conn_iface: conn_iface.clone(),
+            conn_iface: self.conn_iface,
             send_notify: self.send_notify,
         };
 
