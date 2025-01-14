@@ -389,9 +389,9 @@ impl Transaction<'_> {
                     );
                 }
 
-                last_level_size = mid_pkt.size();
                 self.constraints.commit(mid_pkt.size(), mid_pkt.in_flight());
                 self.flow_limit.post_sent(fresh_data);
+                last_level_size = mid_pkt.size();
                 last_level = Some(LevelState {
                     epoch: Epoch::Data,
                     mid_pkt,
@@ -420,8 +420,8 @@ impl Transaction<'_> {
                 );
             }
 
-            last_level_size = mid_pkt.size();
             self.constraints.commit(mid_pkt.size(), mid_pkt.in_flight());
+            last_level_size = mid_pkt.size();
             last_level = Some(LevelState {
                 epoch: Epoch::Handshake,
                 mid_pkt,

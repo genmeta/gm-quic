@@ -31,6 +31,7 @@ pub mod builder;
 use std::{
     io,
     pin::Pin,
+    prelude::rust_2024::Future,
     sync::{Arc, RwLock},
     task::{Context, Poll},
 };
@@ -137,7 +138,7 @@ where
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
         match Pin::new(&mut self.raw_writer).poll_write(cx, buf) {
-            sent @ Poll::Ready(Ok(n)) if n > 0 => {
+            sent @ Poll::Ready(Ok(_n)) => {
                 self.send_notify.notify_waiters();
                 sent
             }
@@ -150,6 +151,7 @@ where
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.send_notify.notify_waiters();
         Pin::new(&mut self.raw_writer).poll_shutdown(cx)
     }
 }
@@ -165,6 +167,92 @@ pub struct Components {
     spaces: Spaces,
     conn_iface: ArcConnInterface,
     send_notify: Arc<Notify>,
+}
+
+impl Components {
+    pub fn open_bi_stream(
+        &self,
+    ) -> impl Future<Output = io::Result<Option<(StreamId, (StreamReader, StreamWriter))>>> + Send
+    {
+        let params = self.parameters.clone();
+        let streams = self.spaces.data().streams().clone();
+        let send_notify = self.send_notify.clone();
+        async move {
+            let param::Pair { remote, .. } = params.await?;
+            let map_bi_stream =
+                |(id, (reader, writer))| (id, (reader, Writer::new(writer, send_notify.clone())));
+            Ok(streams
+                .open_bi(remote.initial_max_stream_data_bidi_remote().into())
+                .await?
+                .map(map_bi_stream))
+        }
+    }
+
+    pub fn open_uni_stream(
+        &self,
+    ) -> impl Future<Output = io::Result<Option<(StreamId, StreamWriter)>>> + Send {
+        let params = self.parameters.clone();
+        let streams = self.spaces.data().streams().clone();
+        let send_notify = self.send_notify.clone();
+        async move {
+            let param::Pair { remote, .. } = params.await?;
+            let map_uni_stream = |(id, writer)| (id, Writer::new(writer, send_notify.clone()));
+            Ok(streams
+                .open_uni(remote.initial_max_stream_data_uni().into())
+                .await?
+                .map(map_uni_stream))
+        }
+    }
+
+    pub fn accept_bi_stream(
+        &self,
+    ) -> impl Future<Output = io::Result<Option<(StreamId, (StreamReader, StreamWriter))>>> + Send
+    {
+        let params = self.parameters.clone();
+        let streams = self.spaces.data().streams().clone();
+        let send_notify = self.send_notify.clone();
+        async move {
+            let param::Pair { remote, .. } = params.await?;
+            let map_bi_stream =
+                |(id, (reader, writer))| (id, (reader, Writer::new(writer, send_notify.clone())));
+            let bi_stream = streams
+                .accept_bi(remote.initial_max_stream_data_bidi_local().into())
+                .await?;
+            Ok(Some(map_bi_stream(bi_stream)))
+        }
+    }
+
+    pub fn accept_uni_stream(
+        &self,
+    ) -> impl Future<Output = io::Result<Option<(StreamId, StreamReader)>>> + Send {
+        let streams = self.spaces.data().streams().clone();
+        async move { Ok(Some(streams.accept_uni().await?)) }
+    }
+
+    pub fn unreliable_reader(&self) -> io::Result<UnreliableReader> {
+        self.spaces.data().datagrams().reader()
+    }
+
+    pub fn unreliable_writer(&self) -> impl Future<Output = io::Result<UnreliableWriter>> + Send {
+        let params = self.parameters.clone();
+        let datagrams = self.spaces.data().datagrams().clone();
+        async move {
+            let param::Pair { remote, .. } = params.await?;
+            datagrams.writer(remote.max_datagram_frame_size().into())
+        }
+    }
+
+    pub fn add_path(&self, pathway: Pathway) {
+        if let dashmap::Entry::Vacant(vacant) = self.conn_iface.paths().entry(pathway) {
+            if let Some(path) = self.try_create_path(pathway, false) {
+                vacant.insert(path);
+            }
+        }
+    }
+
+    pub fn del_path(&self, pathway: &Pathway) {
+        self.conn_iface.paths().remove(pathway);
+    }
 }
 
 #[derive(Clone, Deref)]
@@ -208,85 +296,29 @@ impl Connection {
     pub async fn open_bi_stream(
         &self,
     ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
-        let (params, streams) = self.map(|core_conn| {
-            (
-                core_conn.components.parameters.clone(),
-                core_conn.components.spaces.data().streams().clone(),
-            )
-        })?;
-        let param::Pair { remote, .. } = params.await?;
-        let result = streams
-            .open_bi(remote.initial_max_stream_data_bidi_remote().into())
-            .await?
-            .map(|(id, (reader, writer))| {
-                (
-                    id,
-                    (reader, StreamWriter::new(writer, Arc::new(Notify::new()))),
-                )
-            });
-        Ok(result)
+        self.map(|core_conn| core_conn.open_bi_stream())?.await
     }
 
     pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, StreamWriter)>> {
-        let (params, streams) = self.map(|core_conn| {
-            (
-                core_conn.components.parameters.clone(),
-                core_conn.components.spaces.data().streams().clone(),
-            )
-        })?;
-
-        let notify = Arc::new(Notify::new());
-        let param::Pair { remote, .. } = params.await?;
-        let result = streams
-            .open_uni(remote.initial_max_stream_data_uni().into())
-            .await?
-            .map(|(id, writer)| (id, StreamWriter::new(writer, notify)));
-
-        Ok(result)
+        self.map(|core_conn| core_conn.open_uni_stream())?.await
     }
 
     pub async fn accept_bi_stream(
         &self,
     ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
-        let (params, streams) = self.map(|core_conn| {
-            (
-                core_conn.components.parameters.clone(),
-                core_conn.components.spaces.data().streams().clone(),
-            )
-        })?;
-        let param::Pair { remote, .. } = params.await?;
-        let result = streams
-            .accept_bi(remote.initial_max_stream_data_bidi_local().into())
-            .await
-            .map(|(sid, (reader, writer))| {
-                (
-                    sid,
-                    (reader, StreamWriter::new(writer, Arc::new(Notify::new()))),
-                )
-            });
-        Ok(Some(result?))
+        self.map(|core_conn| core_conn.accept_bi_stream())?.await
     }
 
     pub async fn accept_uni_stream(&self) -> io::Result<Option<(StreamId, StreamReader)>> {
-        let (streams,) =
-            self.map(|core_conn| (core_conn.components.spaces.data().streams().clone(),))?;
-        let result = streams.accept_uni().await;
-        Ok(Some(result?))
+        self.map(|core_conn| core_conn.accept_uni_stream())?.await
     }
 
     pub fn unreliable_reader(&self) -> io::Result<UnreliableReader> {
-        self.map(|core_conn| core_conn.components.spaces.data().datagrams().reader())?
+        self.map(|core_conn| core_conn.unreliable_reader())?
     }
 
     pub async fn unreliable_writer(&self) -> io::Result<UnreliableWriter> {
-        let (params, datagrams) = self.map(|core_conn| {
-            (
-                core_conn.components.parameters.clone(),
-                core_conn.components.spaces.data().datagrams().clone(),
-            )
-        })?;
-        let param::Pair { remote, .. } = params.await?;
-        datagrams.writer(remote.max_datagram_frame_size().into())
+        self.map(|core_conn| core_conn.unreliable_writer())?.await
     }
 
     pub fn add_path(&self, pathway: Pathway) -> io::Result<()> {

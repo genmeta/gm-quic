@@ -239,7 +239,7 @@ impl MiddleAssembledPacket {
 
     pub fn size(&self) -> usize {
         let payload_len = self.cursor - self.hdr_len - self.len_encoding;
-        let pkt_size = (payload_len + self.keys.pk().tag_len()).min(20);
+        let pkt_size = (payload_len + self.keys.pk().tag_len()).max(20);
         self.hdr_len + self.len_encoding + pkt_size
     }
 

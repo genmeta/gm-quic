@@ -47,7 +47,6 @@ impl Burst {
     ) -> impl Iterator<Item = &'b mut [u8]> {
         let max_segments = send_capability.max_segments as usize;
         let max_segment_size = send_capability.max_segment_size as usize;
-        let reversed_size = send_capability.reversed_size as usize;
 
         if buffers.len() < max_segments {
             buffers.resize_with(max_segments, || vec![0; max_segment_size]);
@@ -57,7 +56,7 @@ impl Burst {
             if buffer.len() < max_segment_size {
                 buffer.resize(max_segment_size, 0);
             }
-            &mut buffer[reversed_size..max_segment_size]
+            &mut buffer[..max_segment_size]
         })
     }
 
