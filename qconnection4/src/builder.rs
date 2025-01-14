@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -30,7 +31,7 @@ use crate::{
     events::{EmitEvent, Event},
     path::{Path, PathKind},
     space::{self, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace, Spaces},
-    tls::ArcTlsSession,
+    tls::{self, ArcTlsSession},
     ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
     CoreConnection, DataStreams, FlowController, Handshake, RawHandshake, Termination,
 };
@@ -207,7 +208,7 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             flow_ctrl,
             reliable_frames,
             spaces,
-            should_send: notify,
+            send_notify: notify,
         }
     }
 }
@@ -273,7 +274,7 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             flow_ctrl,
             reliable_frames,
             spaces,
-            should_send: notify,
+            send_notify: notify,
         }
     }
 }
@@ -290,7 +291,7 @@ pub struct SpaceReady {
     // TODO: 当路径发送任务没数据可发时，则等待这个通知；
     //       绝不可进入下次循环，尝试发送数据仍无数据可发，会陷入死循环
     //       相应地，当数据写入，或者重传时，要唤醒该通知
-    should_send: Arc<Notify>,
+    send_notify: Arc<Notify>,
 }
 
 impl SpaceReady {
@@ -319,29 +320,6 @@ impl SpaceReady {
 
         let handshake = Handshake::new(self.handshake, Arc::new(event_broker.clone()));
 
-        self.tls_session.keys_upgrade(
-            [
-                self.spaces.initial().crypto_stream(),
-                self.spaces.handshake().crypto_stream(),
-                &self.spaces.data().crypto_stream,
-            ],
-            self.spaces.handshake().keys(),
-            self.spaces.data().one_rtt_keys(),
-            handshake.clone(),
-            self.parameters.clone(),
-            event_broker.clone(),
-        );
-
-        tokio::spawn({
-            accpet_transport_parameters(
-                self.parameters.clone(),
-                self.spaces.data().streams.clone(),
-                cid_registry.clone(),
-                self.flow_ctrl.clone(),
-                event_broker.clone(),
-            )
-        });
-
         let components = Components {
             parameters: self.parameters,
             tls_session: self.tls_session,
@@ -351,8 +329,15 @@ impl SpaceReady {
             flow_ctrl: self.flow_ctrl,
             spaces: self.spaces,
             conn_iface: conn_iface.clone(),
-            send_notify: self.should_send,
+            send_notify: self.send_notify,
         };
+
+        tokio::spawn(tls::keys_upgrade(&components, event_broker.clone()));
+
+        tokio::spawn(accpet_transport_parameters(
+            &components,
+            event_broker.clone(),
+        ));
 
         space::launch_deliver_and_parse(&components, event_broker.clone());
 
@@ -360,30 +345,34 @@ impl SpaceReady {
     }
 }
 
-async fn accpet_transport_parameters<EE>(
-    params: ArcParameters,
-    streams: DataStreams,
-    cid_registry: CidRegistry,
-    flow_ctrl: FlowController,
+fn accpet_transport_parameters<EE>(
+    components: &Components,
     event_broker: EE,
-) where
+) -> impl Future<Output = ()> + Send
+where
     EE: EmitEvent + Clone + Send + 'static,
 {
-    use qbase::frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame};
-    if let Ok(param::Pair { local: _, remote }) = params.await {
-        // pretend to receive the MAX_STREAM frames
-        _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
-            remote.initial_max_streams_bidi(),
-        )));
-        _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Uni(
-            remote.initial_max_streams_uni(),
-        )));
+    let params: ArcParameters = components.parameters.clone();
+    let streams: DataStreams = components.spaces.data().streams().clone();
+    let cid_registry: CidRegistry = components.cid_registry.clone();
+    let flow_ctrl: FlowController = components.flow_ctrl.clone();
+    async move {
+        use qbase::frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame};
+        if let Ok(param::Pair { local: _, remote }) = params.await {
+            // pretend to receive the MAX_STREAM frames
+            _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
+                remote.initial_max_streams_bidi(),
+            )));
+            _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Uni(
+                remote.initial_max_streams_uni(),
+            )));
 
-        flow_ctrl.reset_send_window(remote.initial_max_data().into_inner());
+            flow_ctrl.reset_send_window(remote.initial_max_data().into_inner());
 
-        let active_cid_limit = remote.active_connection_id_limit().into();
-        if let Err(e) = cid_registry.local.set_limit(active_cid_limit) {
-            event_broker.emit(Event::Failed(e));
+            let active_cid_limit = remote.active_connection_id_limit().into();
+            if let Err(e) = cid_registry.local.set_limit(active_cid_limit) {
+                event_broker.emit(Event::Failed(e));
+            }
         }
     }
 }
@@ -447,8 +436,7 @@ impl CoreConnection {
         EE: EmitEvent + Send + Clone + 'static,
     {
         let error = ccf.clone().into();
-        self.spaces.data().streams.on_conn_error(&error);
-        self.spaces.data().datagrams.on_conn_error(&error);
+        self.spaces.data().on_conn_error(&error);
         self.components.flow_ctrl.on_conn_error(&error);
         self.components.tls_session.on_conn_error(&error);
         if self.components.handshake.role() == sid::Role::Server {
@@ -487,8 +475,7 @@ impl CoreConnection {
     where
         EE: EmitEvent + Send + Clone + 'static,
     {
-        self.spaces.data().streams.on_conn_error(&error);
-        self.spaces.data().datagrams.on_conn_error(&error);
+        self.spaces.data().on_conn_error(&error);
         self.components.flow_ctrl.on_conn_error(&error);
         self.components.tls_session.on_conn_error(&error);
         if self.components.handshake.role() == sid::Role::Server {
