@@ -1,4 +1,7 @@
-use std::sync::{Arc, RwLock};
+use std::{
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 pub use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
@@ -14,13 +17,18 @@ use qbase::{
     token::ArcTokenRegistry,
     Epoch,
 };
-use qcongestion::CongestionControl;
-use qinterface::{conn::ConnInterface, path::Pathway, router::QuicProto};
+use qcongestion::{ArcCC, CongestionAlgorithm, CongestionControl};
+use qinterface::{
+    conn::{ConnInterface, PathContext},
+    path::Pathway,
+    router::QuicProto,
+};
 pub use rustls::crypto::CryptoProvider;
 use tokio::sync::Notify;
 
 use crate::{
     events::{EmitEvent, Event},
+    path::{Path, PathKind},
     space::{self, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace, Spaces},
     tls::ArcTlsSession,
     ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
@@ -199,7 +207,7 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             flow_ctrl,
             reliable_frames,
             spaces,
-            notify,
+            should_send: notify,
         }
     }
 }
@@ -265,7 +273,7 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             flow_ctrl,
             reliable_frames,
             spaces,
-            notify,
+            should_send: notify,
         }
     }
 }
@@ -282,7 +290,7 @@ pub struct SpaceReady {
     // TODO: 当路径发送任务没数据可发时，则等待这个通知；
     //       绝不可进入下次循环，尝试发送数据仍无数据可发，会陷入死循环
     //       相应地，当数据写入，或者重传时，要唤醒该通知
-    notify: Arc<Notify>,
+    should_send: Arc<Notify>,
 }
 
 impl SpaceReady {
@@ -343,6 +351,7 @@ impl SpaceReady {
             flow_ctrl: self.flow_ctrl,
             spaces: self.spaces,
             conn_iface: conn_iface.clone(),
+            send_notify: self.should_send,
         };
 
         space::launch_deliver_and_parse(&components, event_broker.clone());
@@ -379,144 +388,54 @@ async fn accpet_transport_parameters<EE>(
     }
 }
 
-// async fn accept_probed_paths(
-//     mut probed_paths: impl Stream<Item = Pathway> + Unpin,
-//     components: Components,
-//     spaces: Spaces,
-//     rvd_pkt_buf: ArcRcvdPacketBuffer,
-//     conn_iface: ArcConnInterface,
-//     paths: ArcPaths,
-// ) {
-//     while let Some(pathway) = probed_paths.next().await {
-//         paths.entry(pathway).or_insert_with(|| {
-// let cc = ArcCC::new(
-//     CongestionAlgorithm::Bbr,
-//     Duration::from_micros(100),
-//     [
-//         Box::new(spaces.initial.tracker().clone()),
-//         Box::new(spaces.handshake.tracker().clone()),
-//         Box::new(spaces.data.tracker().clone()),
-//     ],
-//     components.handshake.clone(),
-// );
-// let path = Arc::new(Path::new(pathway, cc, conn_iface.clone()));
+impl Components {
+    pub fn try_create_path(&self, pathway: Pathway, is_probed: bool) -> Option<PathContext<Path>> {
+        let max_ack_delay = self.parameters.local()?.max_ack_delay().into_inner();
 
-// let mut rcvd_packets = conn_iface.register(pathway);
-// let packet_entry = packet_entry.clone();
-// let recv_task = tokio::spawn(async move {
-//     while let Some(new_packet) = rcvd_packets.next().await {
-//         packet_entry.deliver(new_packet, pathway).await
-//     }
-// });
+        let cc = ArcCC::new(
+            CongestionAlgorithm::Bbr,
+            Duration::from_micros(max_ack_delay as _),
+            [
+                self.spaces.initial().clone(),
+                self.spaces.handshake().clone(),
+                self.spaces.data().clone(),
+            ],
+            Box::new(self.handshake.clone()),
+        );
 
-// let send_fut = {
-//     let dcid = components.cid_registry.remote.apply_dcid();
-//     let flow_ctrl = components.flow_ctrl.clone();
-//     // 探测到的路径不可能是第一条路径，就不给它发送i0h包的能力
-//     let space = spaces.data.clone();
-//     path.new_one_rtt_burst(dcid, flow_ctrl, space).launch()
-// };
+        let conn_iface = self.conn_iface.clone();
+        let is_initial = conn_iface.try_create_initial_path();
+        let kind = PathKind::new(is_initial, is_probed);
+        let path = Arc::new(Path::new(pathway, cc, kind, conn_iface.clone()));
 
-// let task = tokio::spawn({
-//     let path = path.clone();
-//     let paths = paths.clone();
-//     let conn_iface = conn_iface.clone();
-//     async move {
-//         tokio::select! {
-//             // path validate faild
-//             false = path.validate() => {}
-//             // recv task terminate(connection terminate)
-//             _ = recv_task => {}
-//             // connection or network path terminate
-//             _ = send_fut => {}
-//         }
-//         paths.del(&pathway);
-//         conn_iface.unregister(&pathway);
-//     }
-// });
-// PathGuard::new(path, task.abort_handle())
-//             todo!()
-//         });
-//     }
-// }
+        if !kind.is_probed() {
+            path.grant_anti_amplifier();
+        }
+
+        let burst = path.new_burst(self);
+        let guard = path.new_guard(self);
+        let ticker = path.new_ticker();
+
+        let task = tokio::spawn(async move {
+            tokio::select! {
+                _ = burst.launch() => {},
+                _ = guard.launch() => {},
+                _ = ticker.launch() => {}
+            }
+            conn_iface.paths().remove(&pathway);
+        });
+        Some(PathContext::new(path, task.abort_handle()))
+    }
+}
 
 impl CoreConnection {
     // 对于server，第一条路径也通过add_path添加
     pub fn add_path(&self, pathway: Pathway) {
-        // self.paths.entry(pathway).or_insert_with(|| {
-        //     let cc = ArcCC::new(
-        //         CongestionAlgorithm::Bbr,
-        //         Duration::from_micros(100),
-        //         [
-        //             Box::new(self.spaces.initial.tracker().clone()),
-        //             Box::new(self.spaces.handshake.tracker().clone()),
-        //             Box::new(self.spaces.data.tracker().clone()),
-        //         ],
-        //         self.components.handshake.clone(),
-        //     );
-        //     let path = Arc::new(Path::new(pathway, cc, self.conn_iface.clone()));
-
-        //     let mut rcvd_packets = self.conn_iface.register(pathway);
-        //     let packet_entry = self.packet_entry.clone();
-        //     let recv_task = tokio::spawn(async move {
-        //         while let Some(new_packet) = rcvd_packets.next().await {
-        //             packet_entry.deliver(new_packet, pathway).await;
-        //         }
-        //     });
-
-        //     let send_fut = {
-        //         let path = path.clone();
-        //         let dcid = self.components.cid_registry.remote.apply_dcid();
-        //         let flow_ctrl = self.components.flow_ctrl.clone();
-        //         let initial_scid = self.components.cid_registry.local.initial_scid();
-        //         let is_client = self.components.handshake.role() == sid::Role::Client;
-        //         let spaces = self.spaces.clone();
-        //         async move {
-        //             match initial_scid {
-        //                 Some(scid) => {
-        //                     // rfc9000 21.1.1.1:
-        //                     // Note: The anti-amplification limit only applies when an endpoint responds to packets
-        //                     // received from an unvalidated address. The anti-amplification limit does not apply to
-        //                     // clients when establishing a new connection or when initiating connection migration.
-        //                     if is_client {
-        //                         //  clients when establishing a new connection
-        //                         path.grant_anti_amplifier();
-        //                     }
-        //                     path.new_all_level_burst(scid, dcid, flow_ctrl, spaces)
-        //                         .launch()
-        //                         .await
-        //                 }
-        //                 None => {
-        //                     // "initiating connection migration"
-        //                     path.grant_anti_amplifier();
-        //                     path.new_one_rtt_burst(dcid, flow_ctrl, spaces.data)
-        //                         .launch()
-        //                         .await
-        //                 }
-        //             }
-        //         }
-        //     };
-
-        //     let task = tokio::spawn({
-        //         let path = path.clone();
-        //         let paths = self.paths.clone();
-        //         let conn_iface = self.conn_iface.clone();
-        //         async move {
-        //             tokio::select! {
-        //                 // path validate faild
-        //                 false = path.validate() => {}
-        //                 // recv task terminate(connection terminate)
-        //                 _ = recv_task => {}
-        //                 // connection or network path terminate
-        //                 _ = send_fut => {}
-        //             }
-        //             paths.del(&pathway);
-        //             conn_iface.unregister(&pathway);
-        //         }
-        //     });
-
-        //     PathGuard::new(path, task.abort_handle())
-        // });
+        if let dashmap::Entry::Vacant(vacant) = self.conn_iface.paths().entry(pathway) {
+            if let Some(path) = self.components.try_create_path(pathway, false) {
+                vacant.insert(path);
+            }
+        }
     }
 
     pub fn del_path(&self, pathway: &Pathway) {

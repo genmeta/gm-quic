@@ -43,15 +43,15 @@ impl Spaces {
         }
     }
 
-    pub fn initial(&self) -> &initial::InitialSpace {
+    pub fn initial(&self) -> &Arc<initial::InitialSpace> {
         &self.initial
     }
 
-    pub fn handshake(&self) -> &handshake::HandshakeSpace {
+    pub fn handshake(&self) -> &Arc<handshake::HandshakeSpace> {
         &self.handshake
     }
 
-    pub fn data(&self) -> &data::DataSpace {
+    pub fn data(&self) -> &Arc<data::DataSpace> {
         &self.data
     }
 

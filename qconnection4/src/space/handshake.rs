@@ -164,6 +164,7 @@ pub fn launch_deliver_and_parse(
                     _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
                 }
             };
+            let packet_size = packet.1.len();
             match space.decrypt_packet(packet).await {
                 Some(Ok(packet)) => {
                     // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
@@ -171,6 +172,7 @@ pub fn launch_deliver_and_parse(
                     // address to have been validated.
                     // It may have already been verified using tokens in the Handshake space
                     path.grant_anti_amplifier();
+                    path.on_rcvd(packet_size);
 
                     match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
                         false,

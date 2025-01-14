@@ -1,4 +1,11 @@
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{
+    io,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, Ordering::Relaxed},
+        Arc,
+    },
+};
 
 use dashmap::DashMap;
 use deref_derive::{Deref, DerefMut};
@@ -16,19 +23,19 @@ use crate::{
 };
 
 #[derive(Deref, DerefMut)]
-pub struct PathGuard<P> {
+pub struct PathContext<P> {
     #[deref]
     path: Arc<P>,
     task: AbortHandle,
 }
 
-impl<P> PathGuard<P> {
+impl<P> PathContext<P> {
     pub fn new(path: Arc<P>, task: AbortHandle) -> Self {
         Self { path, task }
     }
 }
 
-impl<P> Drop for PathGuard<P> {
+impl<P> Drop for PathContext<P> {
     fn drop(&mut self) {
         self.task.abort();
     }
@@ -37,7 +44,8 @@ impl<P> Drop for PathGuard<P> {
 pub struct ConnInterface<P> {
     router_iface: Arc<QuicProto>,
     rcvd_pkts_buf: Arc<RcvdPacketBuffer>,
-    paths: DashMap<Pathway, PathGuard<P>>,
+    paths: DashMap<Pathway, PathContext<P>>,
+    initial_path_created: AtomicBool,
 }
 
 impl<P> ConnInterface<P> {
@@ -46,6 +54,7 @@ impl<P> ConnInterface<P> {
             router_iface,
             rcvd_pkts_buf: Arc::new(Default::default()),
             paths: DashMap::new(),
+            initial_path_created: AtomicBool::new(false),
         }
     }
 
@@ -61,7 +70,7 @@ impl<P> ConnInterface<P> {
         self.router_iface.send_capability(on)
     }
 
-    pub fn paths(&self) -> &DashMap<Pathway, PathGuard<P>> {
+    pub fn paths(&self) -> &DashMap<Pathway, PathContext<P>> {
         &self.paths
     }
 
@@ -72,6 +81,10 @@ impl<P> ConnInterface<P> {
         dst: SocketAddr,
     ) -> io::Result<()> {
         self.router_iface.send_packets(pkts, way, dst).await
+    }
+
+    pub fn try_create_initial_path(&self) -> bool {
+        self.initial_path_created.swap(true, Relaxed)
     }
 }
 
