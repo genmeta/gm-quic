@@ -186,7 +186,7 @@ impl ReceiveFrame<AckFrame> for AckHandshake {
 
     fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
         let mut rotate_guard = self.sent_journal.rotate();
-        rotate_guard.update_largest(ack_frame.largest.into_inner());
+        rotate_guard.update_largest(ack_frame)?;
 
         for pn in ack_frame.iter().flat_map(|r| r.rev()) {
             for frame in rotate_guard.on_pkt_acked(pn) {
@@ -222,7 +222,7 @@ impl ReceiveFrame<AckFrame> for AckData {
 
     fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
         let mut rotate_guard = self.send_journal.rotate();
-        rotate_guard.update_largest(ack_frame.largest.into_inner());
+        rotate_guard.update_largest(ack_frame)?;
 
         for pn in ack_frame.iter().flat_map(|r| r.rev()) {
             for frame in rotate_guard.on_pkt_acked(pn) {

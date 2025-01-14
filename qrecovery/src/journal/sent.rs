@@ -5,7 +5,13 @@ use std::{
 };
 
 use deref_derive::{Deref, DerefMut};
-use qbase::{packet::PacketNumber, util::IndexDeque, varint::VARINT_MAX};
+use qbase::{
+    error::{Error, ErrorKind},
+    frame::{AckFrame, BeFrame},
+    packet::PacketNumber,
+    util::IndexDeque,
+    varint::VARINT_MAX,
+};
 
 /// 记录发送的数据包的状态，包括
 /// - Flighting: 数据包正在传输中
@@ -183,10 +189,18 @@ impl<T: Clone> RotateGuard<'_, T> {
     /// Handle the [`Largest Acknowledged`] field of the ack frame from peer.
     ///
     /// [`Largest Acknowleged`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-ack-frames
-    pub fn update_largest(&mut self, largest: u64) {
-        if largest > self.inner.largest_acked_pktno {
-            self.inner.largest_acked_pktno = largest;
+    pub fn update_largest(&mut self, f: &AckFrame) -> Result<(), Error> {
+        if f.largest > self.largest_pn() {
+            return Err(Error::new(
+                ErrorKind::ProtocolViolation,
+                f.frame_type(),
+                "ack frame largest pn is larger than the largest pn sent",
+            ));
         }
+        if f.largest > self.inner.largest_acked_pktno {
+            self.inner.largest_acked_pktno = f.largest.into_inner();
+        }
+        Ok(())
     }
 
     /// Called when the packet sent is acked by peer, return the frames in that packet.
