@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::{channel::mpsc, StreamExt};
 use qbase::{
+    error::Error,
     frame::{AckFrame, Frame, FrameReader, ReceiveFrame},
     packet::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
@@ -80,18 +81,19 @@ impl InitialSpace {
             let sent_journal = self.journal.of_sent_packets();
             move |ack_frame: &AckFrame| {
                 let mut rotate_guard = sent_journal.rotate();
-                rotate_guard.update_largest(ack_frame.largest.into_inner());
+                rotate_guard.update_largest(ack_frame)?;
 
                 for pn in ack_frame.iter().flat_map(|r| r.rev()) {
                     for frame in rotate_guard.on_pkt_acked(pn) {
                         crypto_stream_outgoing.on_data_acked(&frame);
                     }
                 }
+                Result::<_, Error>::Ok(())
             }
         };
 
         pipe!(@error(conn_error) rcvd_crypto_frames |> self.crypto_stream.incoming(), recv_frame);
-        pipe!(rcvd_ack_frames |> on_data_acked);
+        pipe!(@error(conn_error) rcvd_ack_frames |> on_data_acked);
 
         self.parse_rcvd_packets_and_dispatch_frames(
             rcvd_packets,

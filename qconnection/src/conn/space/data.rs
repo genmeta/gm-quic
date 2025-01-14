@@ -183,7 +183,7 @@ impl DataSpace {
             let sent_journal = self.journal.of_sent_packets();
             move |ack_frame: &AckFrame| {
                 let mut rotate_guard = sent_journal.rotate();
-                rotate_guard.update_largest(ack_frame.largest.into_inner());
+                rotate_guard.update_largest(ack_frame)?;
 
                 for pn in ack_frame.iter().flat_map(|r| r.rev()) {
                     for frame in rotate_guard.on_pkt_acked(pn) {
@@ -201,6 +201,7 @@ impl DataSpace {
                         }
                     }
                 }
+                Result::<_, Error>::Ok(())
             }
         };
 
@@ -216,7 +217,7 @@ impl DataSpace {
         pipe!(@error(conn_error) rcvd_stream_ctrl_frames |> limited_data_streams, recv_frame);
         pipe!(@error(conn_error) rcvd_stream_frames |> limited_data_streams, recv_frame);
         pipe!(@error(conn_error) rcvd_datagram_frames |> self.datagrams, recv_frame);
-        pipe!(rcvd_ack_frames |> on_data_acked);
+        pipe!(@error(conn_error) rcvd_ack_frames |> on_data_acked);
         pipe!(rcvd_new_token_frames |> recv_new_token,recv_frame);
 
         let join_handler0 = self.parse_rcvd_0rtt_packet_and_dispatch_frames(
