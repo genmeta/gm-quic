@@ -15,6 +15,11 @@ pub mod prelude {
     };
     pub use qunreliable::{UnreliableReader, UnreliableWriter};
 
+    pub mod handy {
+        pub use qbase::sid::handy::*;
+        pub use qinterface::handy::*;
+    }
+
     pub use crate::{
         events::{EmitEvent, Event},
         Connection, StreamReader, StreamWriter,
@@ -91,52 +96,62 @@ pub type ArcRcvdPacketBuffer = Arc<RcvdPacketBuffer>;
 
 pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
 pub type StreamReader = recv::Reader<Ext<ArcReliableFrameDeque>>;
+type RawStreamWriter = send::Writer<Ext<ArcReliableFrameDeque>>;
+pub type StreamWriter = Writer<send::Writer<Ext<ArcReliableFrameDeque>>>;
 
-pub type ConnInterface = qinterface::conn::ConnInterface<Path>;
+type ConnInterface = qinterface::conn::ConnInterface<Path>;
 pub type ArcConnInterface = Arc<ConnInterface>;
 
-pub type ClosingInterface = qinterface::closing::ClosingInterface;
+type ClosingInterface = qinterface::closing::ClosingInterface;
 pub type ArcClosingInterface = Arc<ClosingInterface>;
 
-pub struct StreamWriter {
-    inner: send::Writer<Ext<ArcReliableFrameDeque>>,
-    notify: Arc<Notify>,
+pub struct Writer<W> {
+    raw_writer: W,
+    send_notify: Arc<Notify>,
 }
 
-impl StreamWriter {
-    pub fn new(inner: send::Writer<Ext<ArcReliableFrameDeque>>, notify: Arc<Notify>) -> Self {
-        Self { inner, notify }
+impl<W> Writer<W> {
+    fn new(raw_writer: W, send_notify: Arc<Notify>) -> Self {
+        Self {
+            raw_writer,
+            send_notify,
+        }
     }
+}
 
+impl Writer<RawStreamWriter> {
     pub fn cancel(&mut self, err_code: u64) {
-        self.inner.cancel(err_code);
+        self.raw_writer.cancel(err_code);
     }
 }
 
-impl Unpin for StreamWriter {}
+impl<W: Unpin> Unpin for Writer<W> {}
 
-impl AsyncWrite for StreamWriter {
+impl<W> AsyncWrite for Writer<W>
+where
+    W: AsyncWrite + Unpin,
+{
     fn poll_write(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        let result = self.inner.write_or_await(cx, buf);
+        let result = Pin::new(&mut self.raw_writer).poll_write(cx, buf);
         match result {
             Poll::Ready(Ok(n)) if n > 0 => {
-                self.notify.notify_waiters();
+                self.send_notify.notify_waiters();
             }
             _ => {}
         }
         result
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.inner.flush_or_await(cx)
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.raw_writer).poll_flush(cx)
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.inner.shutdown_or_await(cx)
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.raw_writer).poll_shutdown(cx)
     }
 }
 
@@ -197,7 +212,7 @@ impl Connection {
         let (params, streams) = self.map(|core_conn| {
             (
                 core_conn.components.parameters.clone(),
-                core_conn.components.spaces.data().streams.clone(),
+                core_conn.components.spaces.data().streams().clone(),
             )
         })?;
         let param::Pair { remote, .. } = params.await?;
@@ -217,7 +232,7 @@ impl Connection {
         let (params, streams) = self.map(|core_conn| {
             (
                 core_conn.components.parameters.clone(),
-                core_conn.components.spaces.data().streams.clone(),
+                core_conn.components.spaces.data().streams().clone(),
             )
         })?;
 
@@ -237,7 +252,7 @@ impl Connection {
         let (params, streams) = self.map(|core_conn| {
             (
                 core_conn.components.parameters.clone(),
-                core_conn.components.spaces.data().streams.clone(),
+                core_conn.components.spaces.data().streams().clone(),
             )
         })?;
         let param::Pair { remote, .. } = params.await?;
@@ -255,20 +270,20 @@ impl Connection {
 
     pub async fn accept_uni_stream(&self) -> io::Result<Option<(StreamId, StreamReader)>> {
         let (streams,) =
-            self.map(|core_conn| (core_conn.components.spaces.data().streams.clone(),))?;
+            self.map(|core_conn| (core_conn.components.spaces.data().streams().clone(),))?;
         let result = streams.accept_uni().await;
         Ok(Some(result?))
     }
 
     pub fn unreliable_reader(&self) -> io::Result<UnreliableReader> {
-        self.map(|core_conn| core_conn.components.spaces.data().datagrams.reader())?
+        self.map(|core_conn| core_conn.components.spaces.data().datagrams().reader())?
     }
 
     pub async fn unreliable_writer(&self) -> io::Result<UnreliableWriter> {
         let (params, datagrams) = self.map(|core_conn| {
             (
                 core_conn.components.parameters.clone(),
-                core_conn.components.spaces.data().datagrams.clone(),
+                core_conn.components.spaces.data().datagrams().clone(),
             )
         })?;
         let param::Pair { remote, .. } = params.await?;

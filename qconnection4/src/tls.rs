@@ -2,7 +2,10 @@ use core::{
     ops::DerefMut,
     task::{Context, Poll, Waker},
 };
-use std::sync::{Arc, Mutex};
+use std::{
+    future::Future,
+    sync::{Arc, Mutex},
+};
 
 use qbase::{
     cid::ConnectionId,
@@ -17,11 +20,14 @@ use rustls::{
     quic::{KeyChange, Keys},
     Side,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::Notify,
+};
 
 use crate::{
     events::{EmitEvent, Event},
-    Handshake,
+    Components, Handshake, Writer,
 };
 
 type TlsConnection = rustls::quic::Connection;
@@ -197,111 +203,6 @@ impl ArcTlsSession {
         }
     }
 
-    /// Start the TLS handshake, automatically upgrade the keys, and transmit tls data.
-    ///
-    /// The [`CryptoStream`]s are provide for TLS connection to transmit the encrypted data.
-    ///
-    /// The [`ArcKeys`] and [`ArcOneRttKeys`] will be set when the keys are upgraded.
-    ///
-    /// The [`ConnError`] is used to notify the other components that a connection error occurred
-    /// in the process of the handshake.
-    ///
-    /// The [`Handshake`] is used to notify the other components that the handshake is completed,
-    /// for server, it should send the [`HandshakeDoneFrame`] to the client.
-    ///
-    /// [`HandshakeDoneFrame`]: qbase::frame::HandshakeDoneFrame
-    pub fn keys_upgrade(
-        &self,
-        crypto_streams: [&CryptoStream; 3],
-        handshake_keys: ArcKeys,
-        one_rtt_keys: ArcOneRttKeys,
-        handshake: Handshake,
-        parameters: ArcParameters,
-        broker: impl EmitEvent + Clone + Send + 'static,
-    ) {
-        let for_each_epoch = |epoch: Epoch| {
-            let mut crypto_stream_reader = crypto_streams[epoch].reader();
-            let tls_session = self.clone();
-            let broker = broker.clone();
-
-            tokio::spawn(async move {
-                let mut read_buf = [0u8; 1500];
-                while let Ok(read) = crypto_stream_reader.read(&mut read_buf[..]).await {
-                    let mut guard = tls_session.0.lock().unwrap();
-                    let tls_connection = match guard.deref_mut() {
-                        Ok(tls_session) => tls_session,
-                        Err(_aborted) => break,
-                    };
-
-                    if let Err(e) = tls_connection.write(&read_buf[..read]) {
-                        let error_kind = match tls_connection.alert() {
-                            Some(alert) => ErrorKind::Crypto(alert.into()),
-                            None => ErrorKind::ProtocolViolation,
-                        };
-                        let reason = format!("TLS error: {e}");
-                        broker.emit(Event::Failed(Error::with_default_fty(error_kind, reason)));
-                        break;
-                    }
-
-                    tls_connection.wake_read();
-                }
-            })
-        };
-
-        tokio::spawn({
-            let tls_session = self.clone();
-
-            let mut crypto_stream_writers =
-                Epoch::EPOCHS.map(|epoch| crypto_streams[epoch].writer());
-            let crypto_stream_read_tasks = Epoch::EPOCHS.map(for_each_epoch);
-
-            async move {
-                let mut messages = Vec::with_capacity(1500);
-                let mut cur_epoch = Epoch::Initial;
-                loop {
-                    let key_upgrade = match tls_session
-                        .read_and_process(&mut messages, &parameters, &handshake)
-                        .await
-                    {
-                        Ok(results) => results,
-                        Err(e) => {
-                            broker.emit(Event::Failed(e));
-                            break;
-                        }
-                    };
-
-                    if !messages.is_empty() {
-                        let write_result =
-                            crypto_stream_writers[cur_epoch].write_all(&messages).await;
-                        if let Err(e) = write_result {
-                            let error = Error::with_default_fty(ErrorKind::Internal, e.to_string());
-                            broker.emit(Event::Failed(error));
-                            break;
-                        }
-                    }
-
-                    if let Some(key_change) = key_upgrade {
-                        match key_change {
-                            rustls::quic::KeyChange::Handshake { keys } => {
-                                handshake_keys.set_keys(keys);
-                                handshake.on_key_upgrade();
-                                cur_epoch = Epoch::Handshake;
-                            }
-                            rustls::quic::KeyChange::OneRtt { keys, next } => {
-                                one_rtt_keys.set_keys(keys, next);
-                                cur_epoch = Epoch::Data;
-                            }
-                        }
-                    }
-                }
-
-                for read_task in crypto_stream_read_tasks {
-                    read_task.abort();
-                }
-            }
-        });
-    }
-
     /// For server, retrieves the server name, if any, used to select the certificate and private key.
     ///
     /// For client, returns [`None`].
@@ -315,5 +216,112 @@ impl ArcTlsSession {
             .ok()
             .and_then(TlsSession::server_name)
             .map(ToString::to_string)
+    }
+}
+
+/// Start the TLS handshake, automatically upgrade the keys, and transmit tls data.
+///
+/// The [`CryptoStream`]s are provide for TLS connection to transmit the encrypted data.
+///
+/// The [`ArcKeys`] and [`ArcOneRttKeys`] will be set when the keys are upgraded.
+///
+/// The [`ConnError`] is used to notify the other components that a connection error occurred
+/// in the process of the handshake.
+///
+/// The [`Handshake`] is used to notify the other components that the handshake is completed,
+/// for server, it should send the [`HandshakeDoneFrame`] to the client.
+///
+/// [`HandshakeDoneFrame`]: qbase::frame::HandshakeDoneFrame
+pub fn keys_upgrade(
+    components: &Components,
+    broker: impl EmitEvent + Clone + Send + 'static,
+) -> impl Future<Output = ()> + Send {
+    let tls_session = components.tls_session.clone();
+    let crypto_streams: [&CryptoStream; 3] = [
+        components.spaces.initial().crypto_stream(),
+        components.spaces.handshake().crypto_stream(),
+        components.spaces.data().crypto_stream(),
+    ];
+    let handshake_keys: ArcKeys = components.spaces.handshake().keys();
+    let one_rtt_keys: ArcOneRttKeys = components.spaces.data().one_rtt_keys();
+    let handshake: Handshake = components.handshake.clone();
+    let parameters: ArcParameters = components.parameters.clone();
+    let send_notify: Arc<Notify> = components.send_notify.clone();
+
+    let for_each_epoch = |epoch: Epoch| {
+        let mut crypto_stream_reader = crypto_streams[epoch].reader();
+        let tls_session = tls_session.clone();
+        let broker = broker.clone();
+
+        tokio::spawn(async move {
+            let mut read_buf = [0u8; 1500];
+            while let Ok(read) = crypto_stream_reader.read(&mut read_buf[..]).await {
+                let mut guard = tls_session.0.lock().unwrap();
+                let tls_connection = match guard.deref_mut() {
+                    Ok(tls_session) => tls_session,
+                    Err(_aborted) => break,
+                };
+
+                if let Err(e) = tls_connection.write(&read_buf[..read]) {
+                    let error_kind = match tls_connection.alert() {
+                        Some(alert) => ErrorKind::Crypto(alert.into()),
+                        None => ErrorKind::ProtocolViolation,
+                    };
+                    let reason = format!("TLS error: {e}");
+                    broker.emit(Event::Failed(Error::with_default_fty(error_kind, reason)));
+                    break;
+                }
+
+                tls_connection.wake_read();
+            }
+        })
+    };
+
+    let mut crypto_stream_writers =
+        Epoch::EPOCHS.map(|epoch| Writer::new(crypto_streams[epoch].writer(), send_notify.clone()));
+    let crypto_stream_read_tasks = Epoch::EPOCHS.map(for_each_epoch);
+
+    async move {
+        let mut messages = Vec::with_capacity(1500);
+        let mut cur_epoch = Epoch::Initial;
+        loop {
+            let key_upgrade = match tls_session
+                .read_and_process(&mut messages, &parameters, &handshake)
+                .await
+            {
+                Ok(results) => results,
+                Err(e) => {
+                    broker.emit(Event::Failed(e));
+                    break;
+                }
+            };
+
+            if !messages.is_empty() {
+                let write_result = crypto_stream_writers[cur_epoch].write_all(&messages).await;
+                if let Err(e) = write_result {
+                    let error = Error::with_default_fty(ErrorKind::Internal, e.to_string());
+                    broker.emit(Event::Failed(error));
+                    break;
+                }
+            }
+
+            if let Some(key_change) = key_upgrade {
+                match key_change {
+                    rustls::quic::KeyChange::Handshake { keys } => {
+                        handshake_keys.set_keys(keys);
+                        handshake.on_key_upgrade();
+                        cur_epoch = Epoch::Handshake;
+                    }
+                    rustls::quic::KeyChange::OneRtt { keys, next } => {
+                        one_rtt_keys.set_keys(keys, next);
+                        cur_epoch = Epoch::Data;
+                    }
+                }
+            }
+        }
+
+        for read_task in crypto_stream_read_tasks {
+            read_task.abort();
+        }
     }
 }

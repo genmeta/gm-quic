@@ -55,9 +55,9 @@ pub type DecryptedOneRttPacket = DecryptedPacket<OneRttHeader>;
 pub struct DataSpace {
     zero_rtt_keys: ArcKeys,
     one_rtt_keys: ArcOneRttKeys,
-    pub crypto_stream: CryptoStream,
-    pub streams: DataStreams,
-    pub datagrams: DatagramFlow,
+    crypto_stream: CryptoStream,
+    streams: DataStreams,
+    datagrams: DatagramFlow,
     journal: DataJournal,
     reliable_frames: ArcReliableFrameDeque,
 }
@@ -231,6 +231,18 @@ impl DataSpace {
     pub fn on_conn_error(&self, error: &Error) {
         self.streams.on_conn_error(error);
         self.datagrams.on_conn_error(error);
+    }
+
+    pub fn crypto_stream(&self) -> &CryptoStream {
+        &self.crypto_stream
+    }
+
+    pub fn streams(&self) -> &DataStreams {
+        &self.streams
+    }
+
+    pub fn datagrams(&self) -> &DatagramFlow {
+        &self.datagrams
     }
 }
 
