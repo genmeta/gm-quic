@@ -136,14 +136,13 @@ where
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        let result = Pin::new(&mut self.raw_writer).poll_write(cx, buf);
-        match result {
-            Poll::Ready(Ok(n)) if n > 0 => {
+        match Pin::new(&mut self.raw_writer).poll_write(cx, buf) {
+            sent @ Poll::Ready(Ok(n)) if n > 0 => {
                 self.send_notify.notify_waiters();
+                sent
             }
-            _ => {}
+            other => other,
         }
-        result
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {

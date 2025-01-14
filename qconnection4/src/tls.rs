@@ -20,10 +20,7 @@ use rustls::{
     quic::{KeyChange, Keys},
     Side,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::Notify,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{
     events::{EmitEvent, Event},
@@ -236,21 +233,15 @@ pub fn keys_upgrade(
     components: &Components,
     broker: impl EmitEvent + Clone + Send + 'static,
 ) -> impl Future<Output = ()> + Send {
-    let tls_session = components.tls_session.clone();
     let crypto_streams: [&CryptoStream; 3] = [
         components.spaces.initial().crypto_stream(),
         components.spaces.handshake().crypto_stream(),
         components.spaces.data().crypto_stream(),
     ];
-    let handshake_keys: ArcKeys = components.spaces.handshake().keys();
-    let one_rtt_keys: ArcOneRttKeys = components.spaces.data().one_rtt_keys();
-    let handshake: Handshake = components.handshake.clone();
-    let parameters: ArcParameters = components.parameters.clone();
-    let send_notify: Arc<Notify> = components.send_notify.clone();
 
-    let for_each_epoch = |epoch: Epoch| {
+    let epoch_read_task = |epoch: Epoch| {
         let mut crypto_stream_reader = crypto_streams[epoch].reader();
-        let tls_session = tls_session.clone();
+        let tls_session = components.tls_session.clone();
         let broker = broker.clone();
 
         tokio::spawn(async move {
@@ -277,9 +268,20 @@ pub fn keys_upgrade(
         })
     };
 
-    let mut crypto_stream_writers =
-        Epoch::EPOCHS.map(|epoch| Writer::new(crypto_streams[epoch].writer(), send_notify.clone()));
-    let crypto_stream_read_tasks = Epoch::EPOCHS.map(for_each_epoch);
+    let epoch_crypto_writer = |epoch: Epoch| {
+        let crypto_stream = crypto_streams[epoch].writer();
+        let send_notify = components.send_notify.clone();
+        Writer::new(crypto_stream, send_notify)
+    };
+
+    let crypto_stream_read_tasks = Epoch::EPOCHS.map(epoch_read_task);
+    let mut crypto_stream_writers = Epoch::EPOCHS.map(epoch_crypto_writer);
+
+    let tls_session: ArcTlsSession = components.tls_session.clone();
+    let handshake_keys: ArcKeys = components.spaces.handshake().keys();
+    let one_rtt_keys: ArcOneRttKeys = components.spaces.data().one_rtt_keys();
+    let handshake: Handshake = components.handshake.clone();
+    let parameters: ArcParameters = components.parameters.clone();
 
     async move {
         let mut messages = Vec::with_capacity(1500);

@@ -40,7 +40,7 @@ impl super::Path {
 }
 
 impl Burst {
-    fn prepare_buffer<'b>(
+    fn prepare_buffers<'b>(
         &self,
         send_capability: &SendCapability,
         buffers: &'b mut Vec<Vec<u8>>,
@@ -78,34 +78,39 @@ impl Burst {
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"))?;
 
         let reversed_size = send_capability.reversed_size as usize;
-        Ok(prepared_buffers.filter_map(move |buffer| {
-            let packet_size = if scid.is_some() && self.path.kind.is_initial() {
-                transaction.load_spaces(
-                    &mut buffer[reversed_size..],
-                    &self.spaces,
-                    self.spin.into(),
-                    &self.path.challenge_sndbuf,
-                    &self.path.response_sndbuf,
-                )
-            } else {
-                let (mid_pkt, ack, fresh_data) = transaction.load_1rtt_data(
-                    &mut buffer[reversed_size..],
-                    self.spin.into(),
-                    &self.path.challenge_sndbuf,
-                    &self.path.response_sndbuf,
-                    self.spaces.data(),
-                )?;
-                let packet = mid_pkt.resume(buffer).encrypt_and_protect();
-                transaction.commit(Epoch::Data, packet, fresh_data, ack);
-                packet.size()
-            };
+        Ok(prepared_buffers
+            .map(move |buffer| {
+                let packet_size = if scid.is_some() && self.path.kind.is_initial() {
+                    transaction.load_spaces(
+                        &mut buffer[reversed_size..],
+                        &self.spaces,
+                        self.spin.into(),
+                        &self.path.challenge_sndbuf,
+                        &self.path.response_sndbuf,
+                    )
+                } else {
+                    let (mid_pkt, ack, fresh_data) = transaction.load_1rtt_data(
+                        &mut buffer[reversed_size..],
+                        self.spin.into(),
+                        &self.path.challenge_sndbuf,
+                        &self.path.response_sndbuf,
+                        self.spaces.data(),
+                    )?;
+                    let packet = mid_pkt.resume(buffer).encrypt_and_protect();
+                    transaction.commit(Epoch::Data, packet, fresh_data, ack);
+                    packet.size()
+                };
 
-            if packet_size == 0 {
-                None
-            } else {
-                Some(io::IoSlice::new(&buffer[..reversed_size + packet_size]))
-            }
-        }))
+                if packet_size == 0 {
+                    None
+                } else {
+                    Some(io::IoSlice::new(&buffer[..reversed_size + packet_size]))
+                }
+            })
+            // (0..10).filter_map(|x| x % 2 == 0) ==> [0, 2, 4, 6, 8].iter()
+            // what we want is [0].iter(), so we need to take_while(Option::is_some).flatten()
+            .take_while(Option::is_some)
+            .flatten())
     }
 
     fn collect_filled_buffers<'b>(
@@ -131,28 +136,26 @@ impl Burst {
 
     pub async fn launch(self) -> io::Result<Infallible> {
         let mut buffers = vec![];
-        let mut send_notified1 = pin!(self.path.send_notify.notified());
-        let mut send_notified2 = pin!(self.conn_send_notify.notified());
+        let mut path_send_notified = pin!(self.path.send_notify.notified());
+        let mut conn_send_notified = pin!(self.conn_send_notify.notified());
         loop {
-            send_notified1.as_mut().enable();
-            send_notified2.as_mut().enable();
+            path_send_notified.as_mut().enable();
+            conn_send_notified.as_mut().enable();
             let send_capability = self.path.send_capability()?;
-            let prepared_buffers = self.prepare_buffer(&send_capability, &mut buffers);
-            let filled_buffers = self
-                .load_into_buffers(&send_capability, prepared_buffers)
-                .await?;
-            let segments = Self::collect_filled_buffers(&send_capability, filled_buffers);
+            let buffers = self.prepare_buffers(&send_capability, &mut buffers);
+            let buffers = self.load_into_buffers(&send_capability, buffers).await?;
+            let segments = Self::collect_filled_buffers(&send_capability, buffers);
             if !segments.is_empty() {
                 self.path
                     .send_packets(&segments, self.path.pathway.dst())
                     .await?;
             } else {
                 tokio::select! {
-                    _ = send_notified1.as_mut() => {},
-                    _ = send_notified2.as_mut() => {},
+                    _ = path_send_notified.as_mut() => {},
+                    _ = conn_send_notified.as_mut() => {},
                 }
-                send_notified1.set(self.path.send_notify.notified());
-                send_notified2.set(self.conn_send_notify.notified());
+                path_send_notified.set(self.path.send_notify.notified());
+                conn_send_notified.set(self.conn_send_notify.notified());
             }
         }
     }
