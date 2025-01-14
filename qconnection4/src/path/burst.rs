@@ -1,7 +1,8 @@
-use std::{convert::Infallible, io, ops::ControlFlow, sync::Arc};
+use std::{convert::Infallible, io, ops::ControlFlow, pin::pin, sync::Arc};
 
 use qbase::Epoch;
 use qinterface::SendCapability;
+use tokio::sync::Notify;
 
 use crate::{
     space::Spaces, tx::Transaction, ArcDcidCell, ArcLocalCids, Components, FlowController,
@@ -14,15 +15,18 @@ pub struct Burst {
     spin: bool,
     flow_ctrl: FlowController,
     spaces: Spaces,
+    conn_send_notify: Arc<Notify>,
 }
 
 impl super::Path {
-    pub fn new_burst(self: &Arc<Self>, components: &Components, spaces: Spaces) -> Burst {
+    pub fn new_burst(self: &Arc<Self>, components: &Components) -> Burst {
         let local_cids = components.cid_registry.local.clone();
         let dcid = components.cid_registry.remote.apply_dcid();
         let flow_ctrl = components.flow_ctrl.clone();
         let path = self.clone();
         let spin = false;
+        let spaces = components.spaces.clone();
+        let conn_send_notify = components.send_notify.clone();
         Burst {
             path,
             local_cids,
@@ -30,6 +34,7 @@ impl super::Path {
             spin,
             flow_ctrl,
             spaces,
+            conn_send_notify,
         }
     }
 }
@@ -74,28 +79,25 @@ impl Burst {
 
         let reversed_size = send_capability.reversed_size as usize;
         Ok(prepared_buffers.filter_map(move |buffer| {
-            let packet_size = match scid {
-                // all space
-                Some(_) => transaction.load_spaces(
+            let packet_size = if scid.is_some() && self.path.kind.is_initial() {
+                transaction.load_spaces(
                     &mut buffer[reversed_size..],
                     &self.spaces,
                     self.spin.into(),
                     &self.path.challenge_sndbuf,
                     &self.path.response_sndbuf,
-                ),
-                // 1rtt only
-                None => {
-                    let (mid_pkt, ack, fresh_data) = transaction.load_1rtt_data(
-                        &mut buffer[reversed_size..],
-                        self.spin.into(),
-                        &self.path.challenge_sndbuf,
-                        &self.path.response_sndbuf,
-                        self.spaces.data(),
-                    )?;
-                    let packet = mid_pkt.resume(buffer).encrypt_and_protect();
-                    transaction.commit(Epoch::Data, packet, fresh_data, ack);
-                    packet.size()
-                }
+                )
+            } else {
+                let (mid_pkt, ack, fresh_data) = transaction.load_1rtt_data(
+                    &mut buffer[reversed_size..],
+                    self.spin.into(),
+                    &self.path.challenge_sndbuf,
+                    &self.path.response_sndbuf,
+                    self.spaces.data(),
+                )?;
+                let packet = mid_pkt.resume(buffer).encrypt_and_protect();
+                transaction.commit(Epoch::Data, packet, fresh_data, ack);
+                packet.size()
             };
 
             if packet_size == 0 {
@@ -127,9 +129,13 @@ impl Burst {
         filled_buffers
     }
 
-    pub async fn launch(&mut self) -> io::Result<Infallible> {
+    pub async fn launch(self) -> io::Result<Infallible> {
         let mut buffers = vec![];
+        let mut send_notified1 = pin!(self.path.send_notify.notified());
+        let mut send_notified2 = pin!(self.conn_send_notify.notified());
         loop {
+            send_notified1.as_mut().enable();
+            send_notified2.as_mut().enable();
             let send_capability = self.path.send_capability()?;
             let prepared_buffers = self.prepare_buffer(&send_capability, &mut buffers);
             let filled_buffers = self
@@ -140,9 +146,14 @@ impl Burst {
                 self.path
                     .send_packets(&segments, self.path.pathway.dst())
                     .await?;
+            } else {
+                tokio::select! {
+                    _ = send_notified1.as_mut() => {},
+                    _ = send_notified2.as_mut() => {},
+                }
+                send_notified1.set(self.path.send_notify.notified());
+                send_notified2.set(self.conn_send_notify.notified());
             }
-            // TODO: 不死循环，应该等有数据再进行发送
-            tokio::task::yield_now().await;
         }
     }
 }

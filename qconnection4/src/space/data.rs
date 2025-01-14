@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 
 use bytes::BufMut;
 use futures::{Stream, StreamExt};
@@ -351,9 +351,11 @@ pub fn launch_deliver_and_parse(
                     continue;
                 };
                 let pty = packet.0.get_type();
+                let packet_size = packet.1.len();
                 let dispatch_frame = |frame| dispatch_data_frame(frame, pty, &path);
                 match space.decrypt_0rtt_packet(packet).await {
                     Some(Ok(packet)) => {
+                        path.on_rcvd(packet_size);
                         match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
                             false,
                             |is_ack_packet, frame| {
@@ -376,22 +378,30 @@ pub fn launch_deliver_and_parse(
         }
     });
     tokio::spawn({
+        let components = components.clone();
         let conn_iface = components.conn_iface.clone();
         let dispatch_data_frame = dispatch_data_frame.clone();
         async move {
             while let Some((packet, pathway)) = one_rtt_packets.next().await {
-                let Some(path) = conn_iface.paths().get(&pathway) else {
-                    continue;
-                };
-                let pty = packet.0.get_type();
-                let dispatch_frame = |frame| dispatch_data_frame(frame, pty, &path);
+                let packet_size = packet.1.len();
                 match space.decrypt_1rtt_packet(packet).await {
                     Some(Ok(packet)) => {
+                        let path = match conn_iface.paths().entry(pathway) {
+                            dashmap::Entry::Occupied(path) => path.get().deref().clone(),
+                            dashmap::Entry::Vacant(vacant_entry) => {
+                                match components.try_create_path(pathway, true) {
+                                    Some(new_path) => vacant_entry.insert(new_path).clone(),
+                                    // connection already entered closing or draining state
+                                    None => continue,
+                                }
+                            }
+                        };
+                        path.on_rcvd(packet_size);
                         match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
                             false,
                             |is_ack_packet, frame| {
                                 let (frame, is_ack_eliciting) = frame?;
-                                dispatch_frame(frame);
+                                dispatch_data_frame(frame, packet.header.get_type(), &path);
                                 Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                             },
                         ) {

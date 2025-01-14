@@ -10,19 +10,45 @@ use qbase::{
 };
 use qcongestion::{ArcCC, CongestionControl};
 use qinterface::{path::Pathway, SendCapability};
-use tokio::time::Instant;
+use tokio::{sync::Notify, time::Instant};
 
 mod aa;
-pub use aa::*;
-pub mod burst;
+pub mod ticker;
 mod util;
+pub use aa::*;
 pub use util::*;
+pub mod burst;
+pub mod idle;
 
 use crate::ArcConnInterface;
+
+#[derive(Debug, Clone, Copy)]
+pub struct PathKind {
+    is_initial: bool,
+    is_probed: bool,
+}
+
+impl PathKind {
+    pub fn new(is_initial: bool, is_probed: bool) -> Self {
+        Self {
+            is_initial,
+            is_probed,
+        }
+    }
+
+    pub fn is_initial(&self) -> bool {
+        self.is_initial
+    }
+
+    pub fn is_probed(&self) -> bool {
+        self.is_probed
+    }
+}
 
 pub struct Path {
     pathway: Pathway,
     cc: ArcCC,
+    kind: PathKind,
     anti_amplifier: AntiAmplifier,
     last_recv_time: Mutex<Instant>,
     challenge_sndbuf: SendBuffer<PathChallengeFrame>,
@@ -30,19 +56,22 @@ pub struct Path {
     response_rcvbuf: RecvBuffer<PathResponseFrame>,
 
     conn_iface: ArcConnInterface,
+    send_notify: Notify,
 }
 
 impl Path {
-    pub fn new(way: Pathway, cc: ArcCC, conn_iface: ArcConnInterface) -> Self {
+    pub fn new(way: Pathway, cc: ArcCC, kind: PathKind, conn_iface: ArcConnInterface) -> Self {
         Self {
             pathway: way,
             cc,
+            kind,
             conn_iface,
             anti_amplifier: Default::default(),
             last_recv_time: Instant::now().into(),
             challenge_sndbuf: Default::default(),
             response_sndbuf: Default::default(),
             response_rcvbuf: Default::default(),
+            send_notify: Notify::new(),
         }
     }
 
@@ -51,6 +80,7 @@ impl Path {
         for _ in 0..3 {
             let pto = self.cc.pto_time(qbase::Epoch::Data);
             self.challenge_sndbuf.write(challenge);
+            self.send_notify.notify_waiters();
             match tokio::time::timeout(pto, self.response_rcvbuf.receive()).await {
                 Ok(Some(response)) if *response == *challenge => {
                     self.anti_amplifier.grant();

@@ -150,6 +150,7 @@ pub struct Components {
     flow_ctrl: FlowController,
     spaces: Spaces,
     conn_iface: ArcConnInterface,
+    send_notify: Arc<Notify>,
 }
 
 #[derive(Clone, Deref)]
