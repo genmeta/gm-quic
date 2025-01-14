@@ -203,6 +203,7 @@ impl QuicServer {
 
         if server.listener.send((conn, pathway.filp())).is_ok() {
             CONNECTIONS.insert(ConnKey::Server(initial_scid), inner);
+            log::info!("accepted connection from {}", pathway.dst_addr());
             _ = Router::try_to_route_packet_from(packet, pathway, usc);
         }
     }

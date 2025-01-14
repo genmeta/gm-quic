@@ -170,6 +170,7 @@ pub fn launch_deliver_and_parse(
 
     let role = components.handshake.role();
     let parameters = components.parameters.clone();
+    let remote_cids = components.cid_registry.remote.clone();
     let conn_iface = components.conn_iface.clone();
     tokio::spawn(async move {
         while let Some((packet, pathway)) = packets.next().await {
@@ -213,8 +214,9 @@ pub fn launch_deliver_and_parse(
                         Ok(is_ack_packet) => {
                             space.journal.of_rcvd_packets().register_pn(packet.pn);
                             path.cc()
-                                .on_pkt_rcvd(Epoch::Handshake, packet.pn, is_ack_packet);
+                                .on_pkt_rcvd(Epoch::Initial, packet.pn, is_ack_packet);
                             if parameters.initial_scid_from_peer().is_none() {
+                                remote_cids.revise_initial_dcid(packet.header.scid);
                                 parameters.initial_scid_from_peer_need_equal(packet.header.scid);
                             }
                             // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)

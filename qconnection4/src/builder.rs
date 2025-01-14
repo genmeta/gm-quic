@@ -438,17 +438,6 @@ impl Components {
 
 impl CoreConnection {
     // 对于server，第一条路径也通过add_path添加
-    pub fn add_path(&self, pathway: Pathway) {
-        if let dashmap::Entry::Vacant(vacant) = self.conn_iface.paths().entry(pathway) {
-            if let Some(path) = self.components.try_create_path(pathway, false) {
-                vacant.insert(path);
-            }
-        }
-    }
-
-    pub fn del_path(&self, pathway: &Pathway) {
-        self.conn_iface.paths().remove(pathway);
-    }
 
     pub fn enter_closing<EE>(self, ccf: ConnectionCloseFrame, event_broker: EE) -> Termination
     where

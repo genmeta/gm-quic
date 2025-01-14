@@ -63,7 +63,7 @@ impl HandshakeSpace {
             let conn_error = conn_error.clone();
             move |frame: Frame, path: &Path| match frame {
                 Frame::Ack(f) => {
-                    path.cc().on_ack(Epoch::Initial, &f);
+                    path.cc().on_ack(Epoch::Handshake, &f);
                     _ = ack_frames_entry.unbounded_send(f);
                 }
                 Frame::Close(f) => conn_error.on_ccf_rcvd(&f),
