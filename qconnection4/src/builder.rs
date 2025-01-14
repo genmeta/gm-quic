@@ -460,6 +460,7 @@ impl CoreConnection {
         let closing_iface = Arc::new(self.conn_iface.close(ccf, &self.components.cid_registry));
 
         tokio::spawn({
+            let local_cids = self.cid_registry.local.clone();
             let event_broker = event_broker.clone();
             let pto_duration = self
                 .conn_iface
@@ -470,6 +471,7 @@ impl CoreConnection {
                 .unwrap_or_default();
             async move {
                 tokio::time::sleep(pto_duration).await;
+                local_cids.clear();
                 event_broker.emit(Event::Terminated);
             }
         });
@@ -497,6 +499,7 @@ impl CoreConnection {
         self.components.parameters.on_conn_error(&error);
 
         tokio::spawn({
+            let local_cids = self.cid_registry.local.clone();
             let event_broker = event_broker.clone();
             let pto_duration = self
                 .conn_iface
@@ -507,6 +510,7 @@ impl CoreConnection {
                 .unwrap_or_default();
             async move {
                 tokio::time::sleep(pto_duration).await;
+                local_cids.clear();
                 event_broker.emit(Event::Terminated);
             }
         });

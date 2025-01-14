@@ -119,6 +119,12 @@ where
         }
         Ok(())
     }
+
+    fn clear(&mut self) {
+        for (cid, _) in self.cid_deque.iter().flatten() {
+            self.issued_cids.retire_cid(*cid);
+        }
+    }
 }
 
 impl<ISSUED> Drop for LocalCids<ISSUED>
@@ -126,9 +132,7 @@ where
     ISSUED: GenUniqueCid + RetireCid + SendFrame<NewConnectionIdFrame>,
 {
     fn drop(&mut self) {
-        for (cid, _) in self.cid_deque.iter().flatten() {
-            self.issued_cids.retire_cid(*cid);
-        }
+        self.clear();
     }
 }
 
@@ -151,7 +155,7 @@ where
 /// and those issued to the peer and have not been retired,
 /// otherwise routing conflicts will occur.
 #[derive(Debug, Clone)]
-pub struct ArcLocalCids<ISSUED>(Arc<Mutex<Result<LocalCids<ISSUED>, Vec<ConnectionId>>>>)
+pub struct ArcLocalCids<ISSUED>(Arc<Mutex<LocalCids<ISSUED>>>)
 where
     ISSUED: GenUniqueCid + RetireCid + SendFrame<NewConnectionIdFrame>;
 
@@ -168,7 +172,7 @@ where
     ///    eventually sending the [`NewConnectionIdFrame`] to the peer.
     pub fn new(scid: ConnectionId, issued_cids: ISSUED) -> Self {
         let raw_local_cids = LocalCids::new(scid, issued_cids);
-        Self(Arc::new(Mutex::new(Ok(raw_local_cids))))
+        Self(Arc::new(Mutex::new(raw_local_cids)))
     }
 
     /// Get the initial source connection ID.
@@ -209,7 +213,22 @@ where
     /// which indicates that the connection has been established,
     /// and only the short header packet should be used.
     pub fn initial_scid(&self) -> Option<ConnectionId> {
-        self.0.lock().unwrap().as_ref().ok()?.initial_scid()
+        self.0.lock().unwrap().initial_scid()
+    }
+
+    /// Unilaterally no longer use all local connection IDs.
+    ///
+    /// No longer used means that packets sent by the peer to that connection ID are no
+    /// longer accepted. This method is called when the End event occurs and [`LocalCids`]
+    /// dropped, to clean up the state of the connection after the connection ends.
+    ///
+    /// In some rare cases, there are still connection IDs issued after the End event occurs,
+    /// resulting in incomplete cleaning of the connection status.
+    /// After externally receiving the End event, the connection instance should be dropped
+    /// as early as possible to trigger another cleanup in the [`Drop`] implementation to
+    /// completely clean up connection's state.
+    pub fn clear(&self) {
+        self.0.lock().unwrap().clear();
     }
 
     /// Set the maximum number of active connection IDs.
@@ -217,11 +236,7 @@ where
     /// After fully obtaining the peer's connection parameters, extract the peer's
     /// active_cid_limit parameter and set it through this method.
     pub fn set_limit(&self, active_cid_limit: u64) -> Result<(), Error> {
-        let mut guard = self.0.lock().unwrap();
-        if let Ok(local_cids) = guard.as_mut() {
-            local_cids.set_limit(active_cid_limit)?;
-        }
-        Ok(())
+        self.0.lock().unwrap().set_limit(active_cid_limit)
     }
 }
 
@@ -237,10 +252,7 @@ where
         &self,
         frame: &RetireConnectionIdFrame,
     ) -> Result<Self::Output, crate::error::Error> {
-        match self.0.lock().unwrap().as_mut() {
-            Ok(local_cids) => local_cids.recv_retire_cid_frame(frame),
-            Err(_) => Ok(()),
-        }
+        self.0.lock().unwrap().recv_retire_cid_frame(frame)
     }
 }
 
@@ -295,8 +307,7 @@ mod tests {
     fn test_issue_cid() {
         let initial_scid = ConnectionId::random_gen(8);
         let local_cids = ArcLocalCids::new(initial_scid, IssuedCids::default());
-        let mut guard = local_cids.0.lock().unwrap();
-        let local_cids = guard.as_mut().unwrap();
+        let mut local_cids = local_cids.0.lock().unwrap();
 
         assert_eq!(local_cids.cid_deque.len(), 2);
 
