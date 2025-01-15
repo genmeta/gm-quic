@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 
 use bytes::BufMut;
 use futures::{Stream, StreamExt};
@@ -30,6 +30,7 @@ use tokio::sync::mpsc;
 use super::{AckHandshake, DecryptedPacket};
 use crate::{
     events::{EmitEvent, Event},
+    path::Path,
     space::pipe,
     tx::{PacketMemory, Transaction},
     Components,
@@ -144,29 +145,35 @@ pub fn launch_deliver_and_parse(
         event_broker.clone(),
     );
 
+    let components = components.clone();
     let role = components.handshake.role();
     let parameters = components.parameters.clone();
     let conn_iface = components.conn_iface.clone();
     tokio::spawn(async move {
         while let Some((packet, pathway)) = packets.next().await {
-            let Some(path) = conn_iface.paths().get(&pathway) else {
-                continue;
-            };
-            let dispatch_frame = {
-                |frame: Frame| match frame {
-                    Frame::Ack(f) => {
-                        path.cc().on_ack(Epoch::Handshake, &f);
-                        _ = ack_frames_entry.send(f);
-                    }
-                    Frame::Close(f) => event_broker.emit(Event::Closed(f)),
-                    Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
-                    Frame::Padding(_) | Frame::Ping(_) => {}
-                    _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
+            let dispatch_frame = |frame: Frame, path: &Path| match frame {
+                Frame::Ack(f) => {
+                    path.cc().on_ack(Epoch::Handshake, &f);
+                    _ = ack_frames_entry.send(f);
                 }
+                Frame::Close(f) => event_broker.emit(Event::Closed(f)),
+                Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
+                Frame::Padding(_) | Frame::Ping(_) => {}
+                _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
             };
             let packet_size = packet.1.len();
             match space.decrypt_packet(packet).await {
                 Some(Ok(packet)) => {
+                    let path = match conn_iface.paths().entry(pathway) {
+                        dashmap::Entry::Occupied(path) => path.get().deref().clone(),
+                        dashmap::Entry::Vacant(vacant_entry) => {
+                            match components.try_create_path(pathway, true) {
+                                Some(new_path) => vacant_entry.insert(new_path).clone(),
+                                // connection already entered closing or draining state
+                                None => continue,
+                            }
+                        }
+                    };
                     // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
                     // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
                     // address to have been validated.
@@ -178,7 +185,7 @@ pub fn launch_deliver_and_parse(
                         false,
                         |is_ack_packet, frame| {
                             let (frame, is_ack_eliciting) = frame?;
-                            dispatch_frame(frame);
+                            dispatch_frame(frame, &path);
                             Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                         },
                     ) {

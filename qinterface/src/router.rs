@@ -114,29 +114,33 @@ impl QuicProto {
                     .drain(..)
                     .filter(|pkt| !(is_initial_packet(pkt) && datagram_size < 1200))
                 {
-                    let dcid = match &packet {
-                        Packet::VN(vn) => vn.get_dcid(),
-                        Packet::Retry(retry) => retry.get_dcid(),
-                        Packet::Data(data_packet) => data_packet.get_dcid(),
-                    };
-                    let signpost = if dcid.len() != 0 {
-                        Signpost::from(*dcid)
-                    } else {
-                        use Endpoint::*;
-                        let (Direct { addr } | Relay { agent: addr, .. }) = pathway.local;
-                        Signpost::from(addr)
-                    };
-
-                    if let Some(conn_iface) = this.connections.get(&signpost) {
-                        _ = conn_iface.recv_from(packet, pathway).await;
-                        continue;
-                    }
-                    if let Some(listener) = this.listner.as_ref() {
-                        (listener)(this.clone(), packet, pathway);
-                    }
+                    this.route_packet(packet, pathway).await;
                 }
             }
         })
+    }
+
+    pub async fn route_packet(self: &Arc<Self>, packet: Packet, pathway: Pathway) {
+        let dcid = match &packet {
+            Packet::VN(vn) => vn.get_dcid(),
+            Packet::Retry(retry) => retry.get_dcid(),
+            Packet::Data(data_packet) => data_packet.get_dcid(),
+        };
+        let signpost = if dcid.len() != 0 {
+            Signpost::from(*dcid)
+        } else {
+            use Endpoint::*;
+            let (Direct { addr } | Relay { agent: addr, .. }) = pathway.local;
+            Signpost::from(addr)
+        };
+
+        if let Some(conn_iface) = self.connections.get(&signpost) {
+            _ = conn_iface.recv_from(packet, pathway).await;
+            return;
+        }
+        if let Some(listener) = self.listner.as_ref() {
+            (listener)(self.clone(), packet, pathway);
+        }
     }
 
     pub fn send_capability(&self, on: Pathway) -> io::Result<SendCapability> {

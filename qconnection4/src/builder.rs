@@ -157,7 +157,7 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
         }
     }
 
-    pub fn with_iface(
+    pub fn with_interface(
         mut self,
         proto: Arc<QuicProto>,
         random_initial_dcid: ConnectionId,
@@ -171,10 +171,11 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
 
         let conn_iface = Arc::new(ConnInterface::new(proto.clone()));
 
-        let router_registry = proto.registry(
-            conn_iface.received_packets_buffer().clone(),
-            reliable_frames.clone(),
-        );
+        let router_registry: qinterface::router::RouterRegistry<ArcReliableFrameDeque> = proto
+            .registry(
+                conn_iface.received_packets_buffer().clone(),
+                reliable_frames.clone(),
+            );
         let initial_scid = router_registry.gen_unique_cid();
 
         client_params.set_initial_source_connection_id(initial_scid);
@@ -247,7 +248,7 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         }
     }
 
-    pub fn with_iface(
+    pub fn with_interface(
         mut self,
         proto: Arc<QuicProto>,
         original_dcid: ConnectionId,
@@ -261,11 +262,16 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         let conn_iface = Arc::new(ConnInterface::new(proto.clone()));
 
         let issued_cids = reliable_frames.clone();
-        let router_registry =
+        let router_registry: qinterface::router::RouterRegistry<ArcReliableFrameDeque> =
             proto.registry(conn_iface.received_packets_buffer().clone(), issued_cids);
-        let initial_scid = router_registry.gen_unique_cid();
 
-        // server_params.set_initial_source_connection_id(chosen_initial_scid);
+        let initial_scid = router_registry.gen_unique_cid();
+        server_params.set_initial_source_connection_id(initial_scid);
+
+        proto.register(
+            original_dcid.into(),
+            conn_iface.received_packets_buffer().clone(),
+        );
         server_params.set_original_destination_connection_id(original_dcid);
         let parameters = ArcParameters::new_server(*server_params);
         parameters.initial_scid_from_peer_need_equal(client_scid);
@@ -299,7 +305,7 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             InitialSpace::new(initial_keys, Vec::with_capacity(0)),
             HandshakeSpace::new(),
             DataSpace::new(
-                sid::Role::Client,
+                sid::Role::Server,
                 reliable_frames.clone(),
                 server_params,
                 self.streams_ctrl,
