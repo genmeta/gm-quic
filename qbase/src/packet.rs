@@ -230,7 +230,7 @@ pub struct MiddleAssembledPacket {
 impl MiddleAssembledPacket {
     pub fn resume(mut self, buffer: &mut [u8]) -> PacketWriter {
         self.end = buffer.len() - self.keys.pk().tag_len();
-        assert!(self.end > self.cursor);
+        assert!(self.end >= self.cursor);
         PacketWriter {
             packet: self,
             buffer,

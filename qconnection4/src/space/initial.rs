@@ -168,6 +168,7 @@ pub fn launch_deliver_and_parse(
         }
     };
 
+    let components = components.clone();
     let role = components.handshake.role();
     let parameters = components.parameters.clone();
     let remote_cids = components.cid_registry.remote.clone();
@@ -184,30 +185,35 @@ pub fn launch_deliver_and_parse(
             {
                 continue;
             }
-            let Some(path) = conn_iface.paths().get(&pathway) else {
-                continue;
-            };
-            let dispatch_frame = {
-                |frame: Frame| match frame {
-                    Frame::Ack(f) => {
-                        path.cc().on_ack(Epoch::Initial, &f);
-                        _ = ack_frames_entry.send(f);
-                    }
-                    Frame::Close(f) => event_broker.emit(Event::Closed(f)),
-                    Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
-                    Frame::Padding(_) | Frame::Ping(_) => {}
-                    _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
+            let dispatch_frame = |frame: Frame, path: &Path| match frame {
+                Frame::Ack(f) => {
+                    path.cc().on_ack(Epoch::Initial, &f);
+                    _ = ack_frames_entry.send(f);
                 }
+                Frame::Close(f) => event_broker.emit(Event::Closed(f)),
+                Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
+                Frame::Padding(_) | Frame::Ping(_) => {}
+                _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
             };
             let packet_size = packet.1.len();
             match space.decrypt_packet(packet).await {
                 Some(Ok(packet)) => {
+                    let path = match conn_iface.paths().entry(pathway) {
+                        dashmap::Entry::Occupied(path) => path.get().deref().clone(),
+                        dashmap::Entry::Vacant(vacant_entry) => {
+                            match components.try_create_path(pathway, true) {
+                                Some(new_path) => vacant_entry.insert(new_path).clone(),
+                                // connection already entered closing or draining state
+                                None => continue,
+                            }
+                        }
+                    };
                     path.on_rcvd(packet_size);
                     match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
                         false,
                         |is_ack_packet, frame| {
                             let (frame, is_ack_eliciting) = frame?;
-                            dispatch_frame(frame);
+                            dispatch_frame(frame, &path);
                             Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                         },
                     ) {

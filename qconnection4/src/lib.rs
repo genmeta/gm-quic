@@ -20,6 +20,14 @@ pub mod prelude {
         pub use qinterface::handy::*;
     }
 
+    pub mod server {
+        pub use qbase::packet::{
+            header::{GetDcid, GetScid},
+            long::DataHeader as LongDataHeader,
+            DataHeader, Packet,
+        };
+    }
+
     pub use crate::{
         events::{EmitEvent, Event},
         Connection, StreamReader, StreamWriter,
