@@ -14,6 +14,7 @@ dashmap = { workspace = true }
 deref-derive = { workspace = true }
 qbase = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
+thiserror = { workspace = true }
 futures = { workspace = true }
 
 qudp = { workspace = true, optional = true }

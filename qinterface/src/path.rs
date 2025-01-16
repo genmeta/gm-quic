@@ -22,35 +22,56 @@ impl Deref for Endpoint {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Pathway {
-    pub local: Endpoint,
-    pub remote: Endpoint,
+    local: Endpoint,
+    remote: Endpoint,
 }
 
 impl Pathway {
+    #[inline]
     pub fn new(local: Endpoint, remote: Endpoint) -> Self {
         Self { local, remote }
     }
 
+    #[inline]
+    pub fn local(&self) -> Endpoint {
+        self.local
+    }
+
+    #[inline]
+    pub fn remote(&self) -> Endpoint {
+        self.remote
+    }
+
+    #[inline]
     pub fn flip(self) -> Self {
         Self {
             local: self.remote,
             remote: self.local,
         }
     }
+}
 
-    pub fn src(&self) -> SocketAddr {
-        match self.local {
-            Endpoint::Direct { addr } => addr,
-            Endpoint::Relay { agent, .. } => agent,
-        }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Socket {
+    src: SocketAddr,
+    dst: SocketAddr,
+}
+
+impl Socket {
+    #[inline]
+    pub fn new(src: SocketAddr, dst: SocketAddr) -> Self {
+        Self { src, dst }
     }
 
+    #[inline]
+    pub fn src(&self) -> SocketAddr {
+        self.src
+    }
+
+    #[inline]
     pub fn dst(&self) -> SocketAddr {
-        match self.remote {
-            Endpoint::Direct { addr } => addr,
-            Endpoint::Relay { agent, .. } => agent,
-        }
+        self.dst
     }
 }

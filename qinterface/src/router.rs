@@ -1,4 +1,4 @@
-use std::{convert::Infallible, fmt, future::Future, io, net::SocketAddr, sync::Arc};
+use std::{convert::Infallible, fmt, io, net::SocketAddr, sync::Arc};
 
 use dashmap::DashMap;
 use qbase::{
@@ -7,11 +7,13 @@ use qbase::{
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     packet::{self, header::GetDcid, Packet, PacketReader},
 };
+use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::{
-    buffer::RcvdPacketBuffer,
-    path::{Endpoint, Pathway},
-    QuicInterface, SendCapability,
+    path::{Endpoint, Pathway, Socket},
+    queue::RcvdPacketQueue,
+    util::Channel,
+    QuicInterface,
 };
 
 #[derive(Debug, PartialEq, Clone, Copy, Eq, Hash)]
@@ -38,14 +40,25 @@ impl From<SocketAddr> for Signpost {
     }
 }
 
-pub type QuicListener = Box<dyn Fn(Arc<QuicProto>, Packet, Pathway) + Send + Sync>;
+struct InterfaceContext {
+    inner: Arc<dyn QuicInterface>,
+    task: AbortHandle,
+}
+
+impl Drop for InterfaceContext {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
 
 #[doc(alias = "RouterInterface")]
 #[derive(Default)]
 pub struct QuicProto {
-    interfaces: DashMap<SocketAddr, Arc<dyn QuicInterface>>,
-    connections: DashMap<Signpost, Arc<RcvdPacketBuffer>>,
-    listner: Option<QuicListener>,
+    interfaces: DashMap<SocketAddr, InterfaceContext>,
+    // 叫 "路由表" 这样的名字
+    connections: DashMap<Signpost, Arc<RcvdPacketQueue>>,
+    // unrouted packets : ...<(packet, pathway, SocketAddr)>
+    unrouted_packets: Channel<(Packet, Pathway, Socket)>,
 }
 
 impl fmt::Debug for QuicProto {
@@ -63,46 +76,28 @@ impl QuicProto {
         Self::default()
     }
 
-    pub fn with_listener(listner: QuicListener) -> Self {
-        Self {
-            listner: Some(listner),
-            ..Default::default()
-        }
-    }
-
-    pub fn listen_on(
+    pub fn add_interface(
         self: &Arc<Self>,
         local_address: SocketAddr,
         interface: Arc<dyn QuicInterface>,
-    ) -> Option<impl Future<Output = io::Result<Infallible>> + Send> {
-        struct InterfaceGuard {
-            addr: SocketAddr,
-            proto: Arc<QuicProto>,
-        }
-
-        impl Drop for InterfaceGuard {
-            fn drop(&mut self) {
-                self.proto.interfaces.remove(&self.addr);
-            }
-        }
-
-        match self.interfaces.entry(local_address) {
-            dashmap::Entry::Occupied(_exist) => return None,
-            dashmap::Entry::Vacant(entry) => _ = entry.insert(interface.clone()),
-        }
+    ) -> JoinHandle<io::Result<Infallible>> {
+        let entry = self
+            .interfaces
+            .entry(local_address)
+            .and_modify(|ctx| ctx.task.abort());
 
         let this = self.clone();
-        Some(async move {
-            this.interfaces.insert(local_address, interface.clone());
-            let _guard = InterfaceGuard {
-                addr: local_address,
-                proto: this.clone(),
-            };
+        let recv_task = tokio::spawn(async move {
             let mut rcvd_pkts = Vec::with_capacity(3);
             loop {
                 // way: local -> peer
-                let (datagram, pathway) =
-                    core::future::poll_fn(|cx| interface.poll_recv(cx)).await?;
+                let (datagram, pathway, socket) = core::future::poll_fn(|cx| {
+                    let interface = this.interfaces.get(&local_address).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "interface already be removed")
+                    })?;
+                    interface.inner.poll_recv(cx)
+                })
+                .await?;
                 let datagram_size = datagram.len();
                 // todo: parse packets with any length of dcid
                 rcvd_pkts.extend(PacketReader::new(datagram, 8).flatten());
@@ -118,13 +113,29 @@ impl QuicProto {
                     .drain(..)
                     .filter(|pkt| !(is_initial_packet(pkt) && datagram_size < 1200))
                 {
-                    this.route_packet(packet, pathway).await;
+                    this.deliver(packet, pathway, socket).await;
                 }
             }
-        })
+        });
+        entry.insert(InterfaceContext {
+            inner: interface,
+            task: recv_task.abort_handle(),
+        });
+        recv_task
     }
 
-    pub async fn route_packet(self: &Arc<Self>, packet: Packet, pathway: Pathway) {
+    pub fn get_interface(&self, local_address: SocketAddr) -> io::Result<Arc<dyn QuicInterface>> {
+        self.interfaces
+            .get(&local_address)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "interface does not exist"))
+            .map(|ctx| ctx.inner.clone())
+    }
+
+    pub fn del_interface(&self, local_address: SocketAddr) {
+        self.interfaces.remove(&local_address);
+    }
+
+    pub async fn deliver(self: &Arc<Self>, packet: Packet, pathway: Pathway, socket: Socket) {
         let dcid = match &packet {
             Packet::VN(vn) => vn.get_dcid(),
             Packet::Retry(retry) => retry.get_dcid(),
@@ -134,57 +145,38 @@ impl QuicProto {
             Signpost::from(*dcid)
         } else {
             use Endpoint::*;
-            let (Direct { addr } | Relay { agent: addr, .. }) = pathway.local;
+            let (Direct { addr } | Relay { agent: addr, .. }) = pathway.local();
             Signpost::from(addr)
         };
 
         if let Some(conn_iface) = self.connections.get(&signpost) {
-            _ = conn_iface.recv_from(packet, pathway).await;
+            _ = conn_iface.deliver(packet, pathway, socket).await;
             return;
         }
-        if let Some(listener) = self.listner.as_ref() {
-            (listener)(self.clone(), packet, pathway);
-        }
+        _ = self.unrouted_packets.send((packet, pathway, socket));
     }
 
-    pub fn send_capability(&self, on: Pathway) -> io::Result<SendCapability> {
-        self.interfaces
-            .get(&on.src())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "no interface"))?
-            .value()
-            .send_capability(on)
+    pub fn try_recv_unrouted_packet(&self) -> Option<(Packet, Pathway, Socket)> {
+        self.unrouted_packets.try_recv().ok()
     }
 
-    pub async fn send_packets(
-        &self,
-        mut pkts: &[io::IoSlice<'_>],
-        way: Pathway,
-        dst: SocketAddr,
-    ) -> io::Result<()> {
-        let qiface = self
-            .interfaces
-            .get(&way.src())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "no interface"))?
-            .clone();
-        while !pkts.is_empty() {
-            let sent = core::future::poll_fn(|cx| qiface.poll_send(cx, pkts, way, dst)).await?;
-            pkts = &pkts[sent..];
-        }
-        Ok(())
+    pub async fn recv_unrouted_packet(&self) -> (Packet, Pathway, Socket) {
+        // channel will never be closed
+        self.unrouted_packets.recv().await.unwrap()
     }
 
     // for origin_dcid
-    pub fn register(&self, signpost: Signpost, buffer: Arc<RcvdPacketBuffer>) {
-        self.connections.insert(signpost, buffer);
+    pub fn add_router_entry(&self, signpost: Signpost, queue: Arc<RcvdPacketQueue>) {
+        self.connections.insert(signpost, queue);
     }
 
-    pub fn unregister(&self, signpost: &Signpost) {
+    pub fn del_router_entry(&self, signpost: &Signpost) {
         self.connections.remove(signpost);
     }
 
     pub fn registry<ISSUED>(
         self: &Arc<Self>,
-        rcvd_pkts_buf: Arc<RcvdPacketBuffer>,
+        rcvd_pkts_buf: Arc<RcvdPacketQueue>,
         issued_cids: ISSUED,
     ) -> RouterRegistry<ISSUED> {
         RouterRegistry {
@@ -198,7 +190,7 @@ impl QuicProto {
 #[derive(Clone)]
 pub struct RouterRegistry<ISSUED> {
     router_iface: Arc<QuicProto>,
-    rcvd_pkts_buf: Arc<RcvdPacketBuffer>,
+    rcvd_pkts_buf: Arc<RcvdPacketQueue>,
     issued_cids: ISSUED,
 }
 
@@ -228,7 +220,7 @@ where
     T: Send + Sync + 'static,
 {
     fn retire_cid(&self, cid: ConnectionId) {
-        self.router_iface.unregister(&Signpost::from(cid));
+        self.router_iface.del_router_entry(&Signpost::from(cid));
     }
 }
 

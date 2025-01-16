@@ -1,57 +1,43 @@
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
-use qbase::param::{self, ArcParameters};
+use qbase::param::{self};
 
-use super::Path;
 use crate::Components;
 
-pub struct Guard {
-    path: Arc<Path>,
-    defer_timeout: Duration,
-    parameters: ArcParameters,
-}
-
 impl super::Path {
-    pub fn new_guard(self: &Arc<Self>, components: &Components) -> Guard {
-        Guard {
-            path: self.clone(),
-            defer_timeout: Duration::from_secs(30),
-            parameters: components.parameters.clone(),
-        }
-    }
-}
-
-impl Guard {
-    pub async fn launch(self) -> Result<Infallible, ()> {
-        if !self.path.kind.is_initial {
-            self.path.validate().await;
-        }
-
-        let max_idle_timeout = {
-            let param::Pair { local, remote } = self.parameters.clone().await.map_err(|_| ())?;
-            match (local.max_idle_timeout(), remote.max_idle_timeout()) {
-                // idle timtout after 584,942,417,355 years
-                (Duration::ZERO, Duration::ZERO) => Duration::MAX,
-                (d, Duration::ZERO) | (Duration::ZERO, d) => d,
-                (a, b) => a.min(b),
-            }
-        };
-
+    pub async fn defer_idle_timeout(&self, defer_timeout: Duration) {
         loop {
-            let since_last_recv = self.path.last_recv_time.lock().unwrap().elapsed();
-            if since_last_recv > max_idle_timeout {
-                return Err(());
-            } else if since_last_recv > self.defer_timeout {
-                if !self.path.validate().await {
-                    return Err(());
+            let idle_duration = self.last_recv_time.lock().unwrap().elapsed();
+            if idle_duration > defer_timeout {
+                if !self.validate().await {
+                    return;
                 }
             } else {
-                tokio::time::sleep(
-                    self.defer_timeout
-                        .min(max_idle_timeout)
-                        .saturating_sub(since_last_recv),
-                )
-                .await;
+                tokio::time::sleep(defer_timeout.saturating_sub(idle_duration)).await;
+            }
+        }
+    }
+
+    pub fn idle_timeout(self: &Arc<Self>, components: &Components) -> impl Future<Output = ()> {
+        let parameters = components.parameters.clone();
+        let this = self.clone();
+        async move {
+            let Ok(param::Pair { local, remote }) = parameters.await else {
+                return;
+            };
+            let max_idle_timeout = match (local.max_idle_timeout(), remote.max_idle_timeout()) {
+                (Duration::ZERO, Duration::ZERO) => Duration::MAX,
+                (Duration::ZERO, d) | (d, Duration::ZERO) => d,
+                (d1, d2) => d1.min(d2),
+            };
+
+            loop {
+                let idle_duration = this.last_recv_time.lock().unwrap().elapsed();
+                if idle_duration > max_idle_timeout {
+                    return;
+                } else {
+                    tokio::time::sleep(max_idle_timeout.saturating_sub(idle_duration)).await;
+                }
             }
         }
     }

@@ -230,10 +230,12 @@ impl CongestionController {
     // A.8. Setting the Loss Detection Timer
     fn on_packets_lost(&mut self, packets: impl Iterator<Item = SentPkt>, epoch: Epoch) {
         let now = Instant::now();
-        for lost in packets {
-            self.algorithm.on_congestion_event(&lost, now);
-            self.trackers[epoch].may_loss(lost.pn);
-        }
+
+        self.trackers[epoch].may_loss(
+            &mut packets
+                .inspect(|lost| self.algorithm.on_congestion_event(lost, now))
+                .map(|lost| lost.pn),
+        );
     }
 
     fn set_loss_timer(&mut self) {
@@ -296,9 +298,7 @@ impl CongestionController {
             .iter()
             .take(self.pto_count as usize);
 
-        retransmit.for_each(|pkt| {
-            self.trackers[pto_epoch].may_loss(pkt.pn);
-        });
+        self.trackers[pto_epoch].may_loss(&mut retransmit.map(|lost| lost.pn));
 
         self.set_loss_timer();
     }
@@ -627,12 +627,13 @@ impl RcvdRecords {
     fn ack(&mut self, ack: u64, trackers: &[Arc<dyn TrackPackets>; 3]) {
         if let Some((pn, largest_acked)) = self.last_ack_sent {
             if ack == pn {
-                self.rcvd_queue
-                    .iter()
-                    .filter(|&&pn| pn <= largest_acked)
-                    .for_each(|pn| {
-                        trackers[self.epoch].retire(*pn);
-                    });
+                trackers[self.epoch].retire(
+                    &mut self
+                        .rcvd_queue
+                        .iter()
+                        .filter(|&&pn| pn <= largest_acked)
+                        .copied(),
+                );
                 self.rcvd_queue.retain(|&pn| pn > largest_acked);
             }
         }
@@ -951,8 +952,8 @@ mod tests {
 
     struct Mock;
     impl TrackPackets for Mock {
-        fn may_loss(&self, _: u64) {}
-        fn retire(&self, _: u64) {}
+        fn may_loss(&self, _: &mut dyn Iterator<Item = u64>) {}
+        fn retire(&self, _: &mut dyn Iterator<Item = u64>) {}
     }
 
     fn create_congestion_controller_for_test() -> CongestionController {

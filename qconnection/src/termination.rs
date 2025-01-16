@@ -1,13 +1,83 @@
-use std::mem;
+use std::{
+    io, mem,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
+};
 
-use qbase::error::Error;
+use qbase::{cid::ConnectionId, error::Error, frame::ConnectionCloseFrame};
+use qinterface::{path::Pathway, queue::RcvdPacketQueue};
 
-use crate::{ArcClosingInterface, ArcLocalCids};
+use crate::{path::Paths, ArcLocalCids, Components};
 
-#[derive(Clone, Default)]
+pub struct ClosingState {
+    last_recv_time: Mutex<Instant>,
+    rcvd_packets: AtomicUsize,
+    scid: Option<ConnectionId>,
+    dcid: Option<ConnectionId>,
+    ccf: ConnectionCloseFrame,
+    paths: Arc<Paths>,
+    rcvd_pkt_q: Arc<RcvdPacketQueue>,
+}
+
+impl ClosingState {
+    pub fn new(ccf: ConnectionCloseFrame, components: &Components) -> Self {
+        Self {
+            last_recv_time: Mutex::new(Instant::now()),
+            rcvd_packets: AtomicUsize::new(0),
+            scid: components.cid_registry.local.initial_scid(),
+            dcid: components.cid_registry.remote.latest_dcid(),
+            ccf,
+            paths: components.paths.clone(),
+            rcvd_pkt_q: components.rcvd_pkt_q.clone(),
+        }
+    }
+
+    pub fn should_send(&self) -> bool {
+        let mut last_recv_time_guard = self.last_recv_time.lock().unwrap();
+        let received_packets = self.rcvd_packets.fetch_add(1, Ordering::AcqRel);
+        let since_last_rcvd =
+            core::mem::replace(&mut *last_recv_time_guard, Instant::now()).elapsed();
+        since_last_rcvd > Duration::from_secs(1) || received_packets % 3 == 0
+    }
+
+    pub async fn try_send_with<W>(&self, pathway: Pathway, write: W)
+    where
+        W: FnOnce(
+            &mut [u8],
+            Option<ConnectionId>,
+            Option<ConnectionId>,
+            &ConnectionCloseFrame,
+        ) -> Option<usize>,
+    {
+        let Some(path) = self.paths.get(&pathway) else {
+            return;
+        };
+        let Ok(mss) = path.interface().max_segment_size() else {
+            return;
+        };
+
+        let mut datagram = vec![0; mss];
+        match write(&mut datagram, self.scid, self.dcid, &self.ccf) {
+            Some(written) if written > 0 => {
+                _ = path
+                    .send_packets(&[io::IoSlice::new(&datagram[..written])])
+                    .await;
+            }
+            _ => {}
+        };
+    }
+
+    pub fn rcvd_pkt_q(&self) -> &RcvdPacketQueue {
+        &self.rcvd_pkt_q
+    }
+}
+
+#[derive(Clone)]
 enum State {
-    Closing(ArcClosingInterface),
-    #[default]
+    Closing(Arc<ClosingState>),
     Draining,
 }
 
@@ -21,15 +91,11 @@ pub struct Termination {
 }
 
 impl Termination {
-    pub fn closing(
-        error: Error,
-        local_cids: ArcLocalCids,
-        closing_iface: ArcClosingInterface,
-    ) -> Self {
+    pub fn closing(error: Error, local_cids: ArcLocalCids, state: Arc<ClosingState>) -> Self {
         Self {
             error,
             _local_cids: local_cids,
-            state: State::Closing(closing_iface),
+            state: State::Closing(state),
         }
     }
 
@@ -46,8 +112,8 @@ impl Termination {
     }
 
     pub fn enter_draining(&mut self) {
-        if let State::Closing(rvd_pkt_buf) = mem::take(&mut self.state) {
-            rvd_pkt_buf.received_packets_buffer().close_all();
+        if let State::Closing(rvd_pkt_buf) = mem::replace(&mut self.state, State::Draining) {
+            rvd_pkt_buf.rcvd_pkt_q.close_all();
         }
     }
 }

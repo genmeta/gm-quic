@@ -170,7 +170,7 @@ impl QuicServer {
                 .with_interface(PROTO.clone(), origin_dcid, clinet_scid)
                 .run_with(event_broker),
         );
-        PROTO.route_packet(packet, pathway).await;
+        PROTO.deliver(packet, pathway).await;
 
         tokio::spawn({
             let connection = connection.clone();
@@ -580,6 +580,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             ));
         }
 
+        // 不接受出现错误，出现错误直接让listen返回Err
         let bind_address = addresses
             .to_socket_addrs()?
             .filter_map(|address| {

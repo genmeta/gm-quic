@@ -285,20 +285,11 @@ mod tests {
         let handshake = Handshake::<HandshakeDoneFrameTx>::new_client();
         assert!(!handshake.is_handshake_done());
 
-        match &handshake {
-            Handshake::Client(client_handshake) => {
-                assert!(client_handshake.recv_handshake_done_frame(&HandshakeDoneFrame));
-            }
-            Handshake::Server(..) => unreachable!(),
-        }
+        assert!(handshake.recv_frame(&HandshakeDoneFrame).unwrap());
         assert!(handshake.is_handshake_done());
 
-        match &handshake {
-            Handshake::Client(client_handshake) => {
-                assert!(!client_handshake.recv_handshake_done_frame(&HandshakeDoneFrame));
-            }
-            Handshake::Server(..) => unreachable!(),
-        }
+        // recv_frame will only return `true` once when handshake first done
+        assert!(!handshake.recv_frame(&HandshakeDoneFrame).unwrap());
         assert!(handshake.is_handshake_done());
     }
 
@@ -307,16 +298,11 @@ mod tests {
         let handshake = Handshake::new_server(HandshakeDoneFrameTx::default());
         assert!(!handshake.is_handshake_done());
 
-        match &handshake {
-            Handshake::Client(..) => unreachable!(),
-            Handshake::Server(server_handshake) => assert!(server_handshake.done()),
-        };
+        assert!(handshake.done());
         assert!(handshake.is_handshake_done());
 
-        match &handshake {
-            Handshake::Client(..) => unreachable!(),
-            Handshake::Server(server_handshake) => assert!(!server_handshake.done()),
-        };
+        // same as last test
+        assert!(!handshake.done());
         assert!(handshake.is_handshake_done());
     }
 

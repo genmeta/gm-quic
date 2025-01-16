@@ -1,10 +1,9 @@
-pub mod conn;
 // handy（qudp）是可选的
-pub mod buffer;
-pub mod closing;
 pub mod handy;
 pub mod path;
+pub mod queue;
 pub mod router;
+pub mod util;
 
 use std::{
     io,
@@ -13,19 +12,14 @@ use std::{
 };
 
 use bytes::BytesMut;
-use path::Pathway;
-
-pub struct SendCapability {
-    // 一个数据报最大多大
-    pub max_segment_size: u16,
-    // 一个数据报的前多少字节应该保留
-    pub reversed_size: u16,
-    // 指示对GSO的支持
-    pub max_segments: u16,
-}
+use path::{Pathway, Socket};
 
 pub trait QuicInterface: Send + Sync {
-    fn send_capability(&self, on: Pathway) -> io::Result<SendCapability>;
+    fn reversed_bytes(&self, on: Pathway) -> io::Result<usize>;
+
+    fn max_segment_size(&self) -> io::Result<usize>;
+
+    fn max_segments(&self) -> io::Result<usize>;
 
     fn poll_send(
         &self,
@@ -35,5 +29,5 @@ pub trait QuicInterface: Send + Sync {
         dst: SocketAddr,
     ) -> Poll<io::Result<usize>>;
 
-    fn poll_recv(&self, cx: &mut Context) -> Poll<io::Result<(BytesMut, Pathway)>>;
+    fn poll_recv(&self, cx: &mut Context) -> Poll<io::Result<(BytesMut, Pathway, Socket)>>;
 }

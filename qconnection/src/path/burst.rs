@@ -1,7 +1,12 @@
-use std::{convert::Infallible, io, ops::ControlFlow, pin::pin, sync::Arc};
+use std::{
+    convert::Infallible,
+    io,
+    ops::ControlFlow,
+    pin::pin,
+    sync::{atomic::Ordering, Arc},
+};
 
 use qbase::Epoch;
-use qinterface::SendCapability;
 use tokio::sync::Notify;
 
 use crate::{
@@ -42,27 +47,25 @@ impl super::Path {
 impl Burst {
     fn prepare_buffers<'b>(
         &self,
-        send_capability: &SendCapability,
         buffers: &'b mut Vec<Vec<u8>>,
-    ) -> impl Iterator<Item = &'b mut [u8]> {
-        let max_segments = send_capability.max_segments as usize;
-        let max_segment_size = send_capability.max_segment_size as usize;
+    ) -> io::Result<impl Iterator<Item = &'b mut [u8]>> {
+        let max_segments = self.path.interface.max_segments()?;
+        let max_segment_size = self.path.interface.max_segment_size()?;
 
         if buffers.len() < max_segments {
             buffers.resize_with(max_segments, || vec![0; max_segment_size]);
         }
 
-        buffers.iter_mut().map(move |buffer| {
+        Ok(buffers.iter_mut().map(move |buffer| {
             if buffer.len() < max_segment_size {
                 buffer.resize(max_segment_size, 0);
             }
             &mut buffer[..max_segment_size]
-        })
+        }))
     }
 
     async fn load_into_buffers<'b>(
         &'b self,
-        send_capability: &SendCapability,
         prepared_buffers: impl Iterator<Item = &'b mut [u8]> + 'b,
     ) -> io::Result<impl Iterator<Item = io::IoSlice<'b>>> {
         let scid = self.local_cids.initial_scid();
@@ -76,10 +79,11 @@ impl Burst {
         .await
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"))?;
 
-        let reversed_size = send_capability.reversed_size as usize;
+        let reversed_size = self.path.interface.reversed_bytes(self.path.way)?;
+
         Ok(prepared_buffers
             .map(move |buffer| {
-                let packet_size = if scid.is_some() && self.path.kind.is_initial() {
+                let packet_size = if scid.is_some() {
                     transaction.load_spaces(
                         &mut buffer[reversed_size..],
                         &self.spaces,
@@ -87,7 +91,7 @@ impl Burst {
                         &self.path.challenge_sndbuf,
                         &self.path.response_sndbuf,
                     )
-                } else {
+                } else if self.path.validated.load(Ordering::Acquire) {
                     let (mid_pkt, ack, fresh_data) = transaction.load_1rtt_data(
                         &mut buffer[reversed_size..],
                         self.spin.into(),
@@ -97,6 +101,16 @@ impl Burst {
                     )?;
                     let packet = mid_pkt.resume(buffer).encrypt_and_protect();
                     transaction.commit(Epoch::Data, packet, fresh_data, ack);
+                    packet.size()
+                } else {
+                    let packet = transaction.load_validation(
+                        &mut buffer[reversed_size..],
+                        self.spin.into(),
+                        &self.path.challenge_sndbuf,
+                        &self.path.response_sndbuf,
+                        self.spaces.data(),
+                    )?;
+                    transaction.commit(Epoch::Data, packet, 0, None);
                     packet.size()
                 };
 
@@ -113,14 +127,14 @@ impl Burst {
     }
 
     fn collect_filled_buffers<'b>(
-        send_capability: &SendCapability,
+        &self,
         mut filled_buffers: impl Iterator<Item = io::IoSlice<'b>>,
-    ) -> Vec<io::IoSlice<'b>> {
-        let mac_segments = send_capability.max_segments as usize;
-        let max_segment_size = send_capability.max_segment_size as usize;
+    ) -> io::Result<Vec<io::IoSlice<'b>>> {
+        let max_segments = self.path.interface.max_segments()?;
+        let max_segment_size = self.path.interface.max_segment_size()?;
         let (ControlFlow::Break(filled_buffers) | ControlFlow::Continue(filled_buffers)) =
             filled_buffers.try_fold(
-                Vec::with_capacity(mac_segments),
+                Vec::with_capacity(max_segments),
                 |mut filled_buffers, io_slice| {
                     filled_buffers.push(io_slice);
                     if io_slice.len() == max_segment_size {
@@ -130,31 +144,28 @@ impl Burst {
                     }
                 },
             );
-        filled_buffers
+        Ok(filled_buffers)
     }
 
     pub async fn launch(self) -> io::Result<Infallible> {
         let mut buffers = vec![];
-        let mut path_send_notified = pin!(self.path.send_notify.notified());
-        let mut conn_send_notified = pin!(self.conn_send_notify.notified());
+        let mut path_sendable = pin!(self.path.sendable.notified());
+        let mut conn_sendable = pin!(self.conn_send_notify.notified());
         loop {
-            path_send_notified.as_mut().enable();
-            conn_send_notified.as_mut().enable();
-            let send_capability = self.path.send_capability()?;
-            let buffers = self.prepare_buffers(&send_capability, &mut buffers);
-            let buffers = self.load_into_buffers(&send_capability, buffers).await?;
-            let segments = Self::collect_filled_buffers(&send_capability, buffers);
+            path_sendable.as_mut().enable();
+            conn_sendable.as_mut().enable();
+            let buffers = self.prepare_buffers(&mut buffers)?;
+            let buffers = self.load_into_buffers(buffers).await?;
+            let segments = self.collect_filled_buffers(buffers)?;
             if !segments.is_empty() {
-                self.path
-                    .send_packets(&segments, self.path.pathway.dst())
-                    .await?;
+                self.path.send_packets(&segments).await?;
             } else {
                 tokio::select! {
-                    _ = path_send_notified.as_mut() => {},
-                    _ = conn_send_notified.as_mut() => {},
+                    _ = path_sendable.as_mut() => {},
+                    _ = conn_sendable.as_mut() => {},
                 }
-                path_send_notified.set(self.path.send_notify.notified());
-                conn_send_notified.set(self.conn_send_notify.notified());
+                path_sendable.set(self.path.sendable.notified());
+                conn_sendable.set(self.conn_send_notify.notified());
             }
         }
     }
