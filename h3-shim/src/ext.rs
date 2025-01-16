@@ -1,6 +1,6 @@
 use std::task::{Context, Poll};
 
-use qunreliable::{UnreliableReader, UnreliableWriter};
+use gm_quic::{UnreliableReader, UnreliableWriter};
 
 use crate::{conn::QuicConnection, Error};
 

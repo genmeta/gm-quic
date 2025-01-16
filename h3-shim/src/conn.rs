@@ -6,8 +6,7 @@ use std::{
 };
 
 use futures::Stream;
-use qbase::sid::StreamId;
-use qconnection::conn::{StreamReader, StreamWriter};
+use gm_quic::{StreamId, StreamReader, StreamWriter};
 
 use crate::{
     ext::{RecvDatagram, SendDatagram},
@@ -17,7 +16,7 @@ use crate::{
 
 // 由于数据报的特性，接收流的特征，QuicConnection不允许被Clone
 pub struct QuicConnection {
-    connection: Arc<gm_quic::QuicConnection>,
+    connection: Arc<gm_quic::Connection>,
     accpet_bi: AcceptBiStreams,
     accpet_uni: AcceptUniStreams,
     open_bi: OpenBiStreams,
@@ -27,19 +26,14 @@ pub struct QuicConnection {
 }
 
 impl QuicConnection {
-    pub async fn new(conn: Arc<gm_quic::QuicConnection>) -> Self {
+    pub async fn new(conn: Arc<gm_quic::Connection>) -> Self {
         Self {
             accpet_bi: AcceptBiStreams::new(conn.clone()),
             accpet_uni: AcceptUniStreams::new(conn.clone()),
             open_bi: OpenBiStreams::new(conn.clone()),
             open_uni: OpenUniStreams::new(conn.clone()),
-            send_datagram: SendDatagram(
-                conn.datagram_writer()
-                    .await
-                    .map(Option::unwrap)
-                    .map_err(Into::into),
-            ),
-            recv_datagram: RecvDatagram(conn.datagram_reader().map_err(Into::into)),
+            send_datagram: SendDatagram(conn.unreliable_writer().await.map_err(Into::into)),
+            recv_datagram: RecvDatagram(conn.unreliable_reader().map_err(Into::into)),
             connection: conn,
         }
     }
@@ -86,9 +80,8 @@ impl<B: bytes::Buf> h3::quic::OpenStreams<B> for QuicConnection {
 
     #[inline]
     fn close(&mut self, code: h3::error::Code, reason: &[u8]) {
-        let _ignored = code;
         let reason = unsafe { String::from_utf8_unchecked(reason.to_vec()) };
-        self.connection.close(reason);
+        self.connection.close(reason, code.into());
     }
 }
 
@@ -128,13 +121,13 @@ impl<B: bytes::Buf> h3::quic::Connection<B> for QuicConnection {
 
 /// 多此一举，实在是多此一举
 pub struct OpenStreams {
-    connection: Arc<gm_quic::QuicConnection>,
+    connection: Arc<gm_quic::Connection>,
     open_bi: OpenBiStreams,
     open_uni: OpenUniStreams,
 }
 
 impl OpenStreams {
-    fn new(conn: Arc<gm_quic::QuicConnection>) -> Self {
+    fn new(conn: Arc<gm_quic::Connection>) -> Self {
         Self {
             open_bi: OpenBiStreams::new(conn.clone()),
             open_uni: OpenUniStreams::new(conn.clone()),
@@ -179,9 +172,8 @@ impl<B: bytes::Buf> h3::quic::OpenStreams<B> for OpenStreams {
 
     #[inline]
     fn close(&mut self, code: h3::error::Code, reason: &[u8]) {
-        let _ignored = code;
         let reason = unsafe { String::from_utf8_unchecked(reason.to_vec()) };
-        self.connection.close(reason);
+        self.connection.close(reason, code.into());
     }
 }
 
@@ -198,7 +190,7 @@ fn sid_exceed_limit_error() -> io::Error {
 struct OpenBiStreams(BoxStream<Result<(StreamId, (StreamReader, StreamWriter)), Error>>);
 
 impl OpenBiStreams {
-    fn new(conn: Arc<gm_quic::QuicConnection>) -> Self {
+    fn new(conn: Arc<gm_quic::Connection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let bidi = conn
                 .open_bi_stream()
@@ -225,7 +217,7 @@ impl OpenBiStreams {
 struct OpenUniStreams(BoxStream<Result<(StreamId, StreamWriter), Error>>);
 
 impl OpenUniStreams {
-    fn new(conn: Arc<gm_quic::QuicConnection>) -> Self {
+    fn new(conn: Arc<gm_quic::Connection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let send = conn
                 .open_uni_stream()
@@ -250,7 +242,7 @@ impl OpenUniStreams {
 struct AcceptBiStreams(BoxStream<Result<(StreamId, (StreamReader, StreamWriter)), Error>>);
 
 impl AcceptBiStreams {
-    fn new(conn: Arc<gm_quic::QuicConnection>) -> Self {
+    fn new(conn: Arc<gm_quic::Connection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let bidi = conn
                 .accept_bi_stream()
@@ -280,13 +272,13 @@ impl AcceptBiStreams {
 struct AcceptUniStreams(BoxStream<Result<(StreamId, StreamReader), Error>>);
 
 impl AcceptUniStreams {
-    fn new(conn: Arc<gm_quic::QuicConnection>) -> Self {
+    fn new(conn: Arc<gm_quic::Connection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
             let recv = conn.accept_uni_stream().await.map_err(Into::into);
             if recv.is_err() && !conn.is_active() {
                 return None;
             }
-            Some((recv, conn))
+            Some((recv.map(Option::unwrap), conn))
         });
         Self(Box::pin(stream))
     }

@@ -2,8 +2,6 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
 use futures::future;
-use h3_shim::rustls;
-use qbase::param::ClientParameters;
 use rustls::pki_types::{pem::PemObject, CertificateDer};
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
@@ -84,7 +82,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
         panic!("failed to parse trust anchor: {}", e);
     }
 
-    let mut params = ClientParameters::default();
+    let mut params = h3_shim::ClientParameters::default();
     params.set_initial_max_streams_bidi(100);
     params.set_initial_max_streams_uni(100);
     params.set_initial_max_data((1u32 << 20).into());

@@ -1,3 +1,5 @@
+use std::{ops::Deref, sync::Arc};
+
 use qbase::{error::Error, frame::ConnectionCloseFrame};
 use tokio::sync::mpsc;
 
@@ -16,8 +18,14 @@ pub enum Event {
     Terminated,
 }
 
-pub trait EmitEvent {
+pub trait EmitEvent: Send + Sync {
     fn emit(&self, event: Event);
+}
+
+impl<E: EmitEvent + ?Sized> EmitEvent for Arc<E> {
+    fn emit(&self, event: Event) {
+        self.deref().emit(event);
+    }
 }
 
 impl EmitEvent for mpsc::UnboundedSender<Event> {

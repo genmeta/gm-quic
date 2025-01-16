@@ -1,7 +1,7 @@
 use std::{
     ops::Deref,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::Mutex,
     task::{Context, Poll},
 };
 
@@ -15,12 +15,12 @@ use qbase::{
 
 /// A buffer that contains a single frame to be sent.
 ///
-/// Be different with [`qbase::util::Future`], this struct is ully synchronized, this struct does not provide a method
+/// Be different with [`qbase::util::Future`], this struct is fully synchronized, this struct does not provide a method
 /// to wait for a frame to be sent.
 ///
 /// This struct impl [`Default`], and the `new` method is not provided.
-#[derive(Default, Clone)]
-pub struct SendBuffer<T>(Arc<Mutex<Option<T>>>);
+#[derive(Default)]
+pub struct SendBuffer<T>(Mutex<Option<T>>);
 
 impl<T> SendBuffer<T> {
     /// Write a frame to the buffer.

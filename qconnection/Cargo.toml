@@ -19,8 +19,7 @@ log = { workspace = true }
 qbase = { workspace = true }
 qcongestion = { workspace = true }
 qrecovery = { workspace = true }
-qudp = { workspace = true }
 qunreliable = { workspace = true }
 rustls = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+qinterface = { workspace = true }

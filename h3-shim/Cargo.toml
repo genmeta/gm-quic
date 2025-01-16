@@ -13,11 +13,8 @@ categories.workspace = true
 h3 = "0.0.6"
 bytes = { workspace = true }
 futures = { workspace = true }
-qbase = { workspace = true }
-qconnection = { workspace = true }
-qrecovery = { workspace = true }
 gm-quic = { workspace = true }
-qunreliable = { workspace = true }
+qbase = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]

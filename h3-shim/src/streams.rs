@@ -5,7 +5,7 @@ use std::{
 };
 
 use bytes::Buf;
-use qconnection::conn::{StreamReader, StreamWriter};
+use gm_quic::{StreamReader, StreamWriter};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::Error;

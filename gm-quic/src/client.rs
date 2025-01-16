@@ -1,26 +1,22 @@
 use std::{
-    io::{self},
+    io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
     sync::Arc,
     time::Duration,
 };
 
-use qbase::{
-    cid::ConnectionId,
-    param::{ClientParameters, CommonParameters},
-    sid::{handy::ConsistentConcurrency, ControlConcurrency},
-    token::{ArcTokenRegistry, TokenSink},
-};
-use qconnection::{conn::ArcConnection, path::Pathway};
+use dashmap::DashSet;
+use handy::Usc;
+pub use qconnection::{builder::*, prelude::*};
 use rustls::{
     client::{ResolvesClientCert, WantsClientCert},
     ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
 };
+use tokio::sync::mpsc;
 
 use crate::{
-    create_new_usc, get_or_create_usc,
     util::{ToCertificate, ToPrivateKey},
-    ConnKey, QuicConnection, CONNECTIONS,
+    PROTO,
 };
 
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
@@ -28,6 +24,7 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 /// A quic client that can initiates connections to servers.
 pub struct QuicClient {
     bind_addresseses: Vec<SocketAddr>,
+    active_addresses: Arc<DashSet<SocketAddr>>,
     reuse_udp_sockets: bool,
     _reuse_connection: bool, // TODO
     // TODO: 好像得创建2个quic连接，一个用ipv4，一个用ipv6
@@ -37,7 +34,7 @@ pub struct QuicClient {
     _defer_idle_timeout: Duration,
     parameters: ClientParameters,
     // TODO: 要改成一个加载上次连接的parameters的函数，根据server name
-    remembered: Option<CommonParameters>,
+    _remembered: Option<CommonParameters>,
     tls_config: Arc<TlsClientConfig>,
     streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
     token_sink: Option<Arc<dyn TokenSink>>,
@@ -132,10 +129,6 @@ impl QuicClient {
         Ok(())
     }
 
-    fn gen_cid() -> ConnectionId {
-        ConnectionId::random_gen_with_mark(8, 0, 0x7F)
-    }
-
     /// Returns the connection to the specified server.
     ///
     /// `server_name` is the name of the server, it will be included in the `ClientHello` message.
@@ -174,21 +167,24 @@ impl QuicClient {
         &self,
         server_name: impl Into<String>,
         server_addr: SocketAddr,
-    ) -> io::Result<Arc<QuicConnection>> {
+    ) -> io::Result<Arc<Connection>> {
         let server_name = server_name.into();
 
-        let usc_creator = if self.reuse_udp_sockets {
-            get_or_create_usc
-        } else {
-            create_new_usc
-        };
-
-        let usc = if self.bind_addresseses.is_empty() {
-            if server_addr.is_ipv4() {
-                (usc_creator)(&SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+        let local_addr = if self.bind_addresseses.is_empty() {
+            let usc = if server_addr.is_ipv4() {
+                Usc::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
             } else {
-                (usc_creator)(&SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
-            }
+                Usc::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
+            }?;
+            let local_addr = usc.local_addr()?;
+            let active_address = self.active_addresses.clone();
+            tokio::spawn(async move {
+                match PROTO.listen_on(local_addr, Arc::new(usc)).unwrap().await {
+                    Err(_) => active_address.remove(&local_addr),
+                };
+            });
+            self.active_addresses.insert(local_addr);
+            local_addr
         } else {
             // similar to std::net::UdpSocket::bind
             let mut last_error = None;
@@ -198,56 +194,79 @@ impl QuicClient {
             self.bind_addresseses
                 .iter()
                 .filter(|addr| addr.is_ipv4() == server_addr.is_ipv4())
-                .find_map(|suite_addr| {
-                    match (usc_creator)(suite_addr) {
-                        Ok(usc) => return Some(usc),
-                        Err(err) => last_error = Some(err),
+                .find_map(|&local_addr| {
+                    if self.active_addresses.contains(&local_addr) {
+                        if self.reuse_udp_sockets {
+                            Some(local_addr)
+                        } else {
+                            None
+                        }
+                    } else {
+                        let usc = match Usc::bind(local_addr) {
+                            Ok(usc) => usc,
+                            Err(error) => {
+                                last_error = Some(error);
+                                return None;
+                            }
+                        };
+                        let local_addr = match usc.local_addr() {
+                            Ok(local_addr) => local_addr,
+                            Err(error) => {
+                                last_error = Some(error);
+                                return None;
+                            }
+                        };
+                        let active_address = self.active_addresses.clone();
+                        tokio::spawn(async move {
+                            match PROTO.listen_on(local_addr, Arc::new(usc)).unwrap().await {
+                                Err(_) => active_address.remove(&local_addr),
+                            };
+                        });
+                        Some(local_addr)
                     }
-                    None
                 })
-                .ok_or(last_error.unwrap_or_else(no_available_address))
-        }?;
-
-        let pathway = Pathway::Direct {
-            local: usc.local_addr(),
-            remote: server_addr,
+                .ok_or(last_error.unwrap_or_else(no_available_address))?
         };
 
-        // 创建initial_scid，不能重复
-        // 倒不是与路由表中的重复，而是与全局的QuicConnection集合中的key重复
-        // 有可能，连向同一个服务器的，四元组一样，连接id不一样而已？
-        // 这是个问题，得解决下！
-        let initial_scid = std::iter::repeat_with(Self::gen_cid)
-            .find(|cid| !CONNECTIONS.contains_key(&ConnKey::Client(*cid)))
-            .unwrap();
-
-        let streams_ctrl = (self.streams_controller)(
-            self.parameters.initial_max_streams_bidi().into_inner(),
-            self.parameters.initial_max_streams_uni().into_inner(),
+        let pathway = Pathway::new(
+            Endpoint::Direct { addr: local_addr },
+            Endpoint::Direct { addr: server_addr },
         );
 
-        let token_registry = match &self.token_sink {
-            Some(sink) => ArcTokenRegistry::with_sink(server_name.clone(), sink.clone()),
-            None => ArcTokenRegistry::default_sink(server_name.clone()),
-        };
+        let token_sink = self
+            .token_sink
+            .clone()
+            .unwrap_or_else(|| Arc::new(NoopTokenRegistry));
 
-        let tls_config = self.tls_config.clone();
-        let key = ConnKey::Client(initial_scid);
-        let inner = ArcConnection::new_client(
-            initial_scid,
-            server_name,
-            self.parameters,
-            self.remembered,
-            streams_ctrl,
-            tls_config,
-            token_registry,
+        let (event_broker, mut events) = mpsc::unbounded_channel();
+
+        let connection = Arc::new(
+            Connection::with_token_sink(server_name, token_sink)
+                .with_parameters(self.parameters, None)
+                .with_tls_config(self.tls_config.clone())
+                .with_streams_ctrl(&self.streams_controller)
+                .with_interface(PROTO.clone(), ConnectionId::random_gen(8))
+                .run_with(event_broker),
         );
-        inner.add_initial_path(pathway, usc);
 
-        CONNECTIONS.insert(key.clone(), inner.clone());
-        let conn = QuicConnection { key, inner };
+        connection.add_path(pathway)?;
 
-        Ok(Arc::new(conn))
+        tokio::spawn({
+            let connection = connection.clone();
+            async move {
+                while let Some(event) = events.recv().await {
+                    match event {
+                        Event::Handshaked => {}
+                        Event::Failed(error) => connection.enter_closing(error.into()),
+                        Event::Closed(ccf) => connection.enter_draining(ccf),
+                        Event::StatelessReset => {}
+                        Event::Terminated => { /* Todo: connections set */ }
+                    }
+                }
+            }
+        });
+
+        Ok(connection)
     }
 }
 
@@ -508,6 +527,7 @@ impl QuicClientBuilder<TlsClientConfig> {
     pub fn build(self) -> QuicClient {
         QuicClient {
             bind_addresseses: self.bind_addresses,
+            active_addresses: Default::default(),
             reuse_udp_sockets: self.reuse_udp_sockets,
             _reuse_connection: self.reuse_connection,
             _enable_happy_eyepballs: self.enable_happy_eyepballs,
@@ -515,7 +535,7 @@ impl QuicClientBuilder<TlsClientConfig> {
             _defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             // TODO: 要能加载上次连接的parameters
-            remembered: None,
+            _remembered: None,
             tls_config: Arc::new(self.tls_config),
             streams_controller: self.streams_controller,
             token_sink: self.token_sink,
