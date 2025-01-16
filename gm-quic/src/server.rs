@@ -1,32 +1,27 @@
 use std::{
+    collections::HashSet,
     io::{self},
     net::{SocketAddr, ToSocketAddrs},
     sync::{Arc, LazyLock, RwLock, Weak},
     time::Duration,
 };
 
-use dashmap::DashMap;
-use qbase::{
-    cid::ConnectionId,
-    packet::{header::GetScid, long, DataHeader, DataPacket, InitialHeader, RetryHeader},
-    param::ServerParameters,
-    sid::{handy::ConsistentConcurrency, ControlConcurrency},
-    token::{ArcTokenRegistry, TokenProvider},
-};
-use qconnection::{conn::ArcConnection, path::Pathway, router::Router, usc::ArcUsc};
+use dashmap::{DashMap, DashSet};
+use handy::Usc;
+pub use qconnection::{builder::*, prelude::*};
 use rustls::{
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };
+use tokio::sync::mpsc;
 
 use crate::{
-    get_or_create_usc,
     util::{self, ToCertificate, ToPrivateKey},
-    ConnKey, QuicConnection, CONNECTIONS,
+    PROTO,
 };
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
-type QuicListner = Arc<util::Channel<(Arc<QuicConnection>, Pathway)>>;
+type QuicListner = Arc<util::Channel<(Arc<Connection>, Pathway)>>;
 
 /// 理应全局只有一个server
 static SERVER: LazyLock<RwLock<Weak<QuicServer>>> = LazyLock::new(RwLock::default);
@@ -58,11 +53,10 @@ impl ResolvesServerCert for VirtualHosts {
 /// [`QuicServer`] can only accept connections, dont manage the connections. You can get the incoming connection by
 /// calling the [`QuicServer::accept`] method.
 pub struct QuicServer {
-    sockets: DashMap<SocketAddr, ArcUsc>,
+    bind_address: DashSet<SocketAddr>,
     listener: QuicListner,
     passive_listening: bool,
     _supported_versions: Vec<u32>,
-    _load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     _defer_idle_timeout: Duration,
     parameters: ServerParameters,
     tls_config: Arc<TlsServerConfig>,
@@ -77,7 +71,6 @@ impl QuicServer {
         QuicServerBuilder {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
-            load_balance: Arc::new(|_| None),
             defer_idle_timeout: Duration::ZERO,
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
@@ -93,7 +86,6 @@ impl QuicServer {
         QuicServerBuilder {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
-            load_balance: Arc::new(|_| None),
             defer_idle_timeout: Duration::ZERO,
             parameters: ServerParameters::default(),
             tls_config,
@@ -109,7 +101,6 @@ impl QuicServer {
         QuicServerBuilder {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
-            load_balance: Arc::new(|_| None),
             defer_idle_timeout: Duration::ZERO,
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_provider(provider)
@@ -125,8 +116,8 @@ impl QuicServer {
     /// The return vector may be different from the addresses you passed to the [`QuicServerBuilder::listen`] method,
     /// because the server may fail to bind to some addresses. And, while the server is running, some sockets may be
     /// closed unexpectedly.
-    pub fn addresses(&self) -> Vec<SocketAddr> {
-        self.sockets.iter().map(|entry| *entry.key()).collect()
+    pub fn addresses(&self) -> HashSet<SocketAddr> {
+        self.bind_address.iter().map(|addr| *addr).collect()
     }
 
     /// Accept the next incoming connection.
@@ -135,7 +126,7 @@ impl QuicServer {
     /// as sending data, receiving data... operations will be pending until the connection is connected or closed.
     ///
     /// If all listening udp sockets are closed, this method will return an error.
-    pub async fn accept(&self) -> io::Result<(Arc<QuicConnection>, Pathway)> {
+    pub async fn accept(&self) -> io::Result<(Arc<Connection>, Pathway)> {
         let no_address_listening = || {
             let error = "all listening udp sockets are closed";
             io::Error::new(io::ErrorKind::AddrNotAvailable, error)
@@ -146,105 +137,68 @@ impl QuicServer {
 
 // internal methods
 impl QuicServer {
-    pub(crate) fn try_to_accept_conn_from(mut packet: DataPacket, pathway: Pathway, usc: &ArcUsc) {
-        log::info!("try to accept connection from {}", pathway.dst_addr());
+    pub(crate) async fn try_accpet_connection(packet: Packet, pathway: Pathway) {
         let Some(server) = SERVER.read().unwrap().upgrade() else {
             return;
         };
 
-        // 剔除来自没被监听的地址的包
-        if !(server.passive_listening || server.sockets.contains_key(&pathway.local_addr())) {
+        if !(server.passive_listening || server.bind_address.contains(&pathway.src())) {
             return;
         }
 
-        let initial_scid =
-            std::iter::repeat_with(|| ConnectionId::random_gen_with_mark(8, 0, 0x7F))
-                .find(|cid| !CONNECTIONS.contains_key(&ConnKey::Server(*cid)))
-                .unwrap();
-        let (initial_dcid, origin_dcid) = match &mut packet.header {
-            DataHeader::Long(long::DataHeader::Initial(hdr)) => {
-                let client_dcid = core::mem::replace(&mut hdr.dcid, initial_scid);
-                (*hdr.get_scid(), client_dcid)
-            }
-            DataHeader::Long(long::DataHeader::ZeroRtt(hdr)) => {
-                let client_dcid = core::mem::replace(&mut hdr.dcid, initial_scid);
-                (*hdr.get_scid(), client_dcid)
-            }
+        let (clinet_scid, origin_dcid) = match &packet {
+            Packet::Data(data_packet) => match &data_packet.header {
+                DataHeader::Long(LongHeader::Initial(hdr)) => (*hdr.get_scid(), *hdr.get_scid()),
+                DataHeader::Long(LongHeader::ZeroRtt(hdr)) => (*hdr.get_scid(), *hdr.get_scid()),
+                _ => return,
+            },
             _ => return,
         };
 
-        let streams_ctrl = (server.streams_controller)(
-            server.parameters.initial_max_streams_bidi().into_inner(),
-            server.parameters.initial_max_streams_uni().into_inner(),
-        );
+        let token_provider = server
+            .token_provider
+            .clone()
+            .unwrap_or_else(|| Arc::new(NoopTokenRegistry));
 
-        let token_registry = match &server.token_provider {
-            Some(provider) => ArcTokenRegistry::with_provider(provider.clone()),
-            None => ArcTokenRegistry::default_provider(),
-        };
+        let (event_broker, mut events) = mpsc::unbounded_channel();
 
-        let initial_keys = server.initial_server_keys(origin_dcid);
-        let tls_config = server.tls_config.clone();
-        let inner = ArcConnection::new_server(
-            initial_scid,
-            initial_dcid,
-            origin_dcid,
-            initial_keys,
-            server.parameters,
-            streams_ctrl,
-            tls_config,
-            token_registry,
+        let connection = Arc::new(
+            Connection::with_token_provider(token_provider)
+                .with_parameters(server.parameters)
+                .with_tls_config(server.tls_config.clone())
+                .with_streams_ctrl(&server.streams_controller)
+                .with_interface(PROTO.clone(), origin_dcid, clinet_scid)
+                .run_with(event_broker),
         );
-        inner.add_initial_path(pathway, usc.clone());
-        let conn = Arc::new(QuicConnection {
-            key: ConnKey::Server(initial_scid),
-            inner: inner.clone(), // emm...
+        PROTO.route_packet(packet, pathway).await;
+
+        tokio::spawn({
+            let connection = connection.clone();
+            async move {
+                while let Some(event) = events.recv().await {
+                    match event {
+                        Event::Handshaked => {}
+                        Event::Failed(error) => connection.enter_closing(error.into()),
+                        Event::Closed(ccf) => connection.enter_draining(ccf),
+                        Event::StatelessReset => {}
+                        Event::Terminated => { /* Todo: connections set */ }
+                    }
+                }
+            }
         });
 
-        if server.listener.send((conn, pathway.filp())).is_ok() {
-            CONNECTIONS.insert(ConnKey::Server(initial_scid), inner);
-            log::info!("accepted connection from {}", pathway.dst_addr());
-            _ = Router::try_to_route_packet_from(packet, pathway, usc);
-        }
+        _ = server.listener.send((connection, pathway));
     }
 
     pub(crate) fn on_socket_close(addr: SocketAddr) {
         if let Some(server) = SERVER.read().unwrap().upgrade() {
-            let bind_address_removed = server.sockets.remove(&addr).is_some();
+            let bind_address_removed = server.bind_address.remove(&addr).is_some();
             // when: add listening sockets are removed, and passive listening is not enabled, it's not possiable
             // to accept new connections anymore, so close the server's listener...
-            if bind_address_removed && !server.passive_listening && server.sockets.is_empty() {
+            if bind_address_removed && !server.passive_listening && server.bind_address.is_empty() {
                 server.listener.close();
             }
         }
-    }
-
-    fn initial_server_keys(&self, dcid: ConnectionId) -> rustls::quic::Keys {
-        let suite = self
-            .tls_config
-            .crypto_provider()
-            .cipher_suites
-            .iter()
-            .find_map(|cs| match (cs.suite(), cs.tls13()) {
-                (rustls::CipherSuite::TLS13_AES_128_GCM_SHA256, Some(suite)) => suite.quic_suite(),
-                _ => None,
-            })
-            .unwrap();
-        suite.keys(&dcid, rustls::Side::Server, rustls::quic::Version::V1)
-    }
-
-    /// Set the server as the global server.
-    fn listen(self: &Arc<Self>) -> io::Result<()> {
-        // 全局Server是Weak，用户持有的Arc Server全都被Drop后，全局Server自然会变成空
-        let mut server = SERVER.write().unwrap();
-        if server.strong_count() != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                "There is already a server running",
-            ));
-        }
-        *server = Arc::downgrade(self);
-        Ok(())
     }
 }
 
@@ -258,7 +212,6 @@ struct Host {
 pub struct QuicServerBuilder<T> {
     supported_versions: Vec<u32>,
     passive_listening: bool,
-    load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     defer_idle_timeout: Duration,
     parameters: ServerParameters,
     tls_config: T,
@@ -271,7 +224,6 @@ pub struct QuicServerBuilder<T> {
 pub struct QuicServerSniBuilder<T> {
     supported_versions: Vec<u32>,
     passive_listening: bool,
-    load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
     hosts: Arc<DashMap<String, Host>>,
     defer_idle_timeout: Duration,
     parameters: ServerParameters,
@@ -288,24 +240,6 @@ impl<T> QuicServerBuilder<T> {
     pub fn with_supported_versions(mut self, versions: impl IntoIterator<Item = u32>) -> Self {
         self.supported_versions.clear();
         self.supported_versions.extend(versions);
-        self
-    }
-
-    /// (WIP)Specify the strategy for sending retry packets.
-    ///
-    /// If you call this multiple times, only the last `load_balance` will be used.
-    ///
-    /// The `load_balance` will be called when the server receives an [Initial packet]. If `load_balance` returns [`Some`],
-    /// the server will send a [Retry packet] to the client. Otherwise, the server will continue the handshake with the
-    /// client, and you can get the incoming connection by calling the [`QuicServer::accept`] method.
-    ///
-    /// [Initial packet](https://www.rfc-editor.org/rfc/rfc9000.html#name-initial-packet)
-    /// [Retry packet](https://www.rfc-editor.org/rfc/rfc9000.html#name-retry-packet)
-    pub fn with_load_balance(
-        mut self,
-        load_balance: Arc<dyn Fn(InitialHeader) -> Option<RetryHeader> + Send + Sync + 'static>,
-    ) -> Self {
-        self.load_balance = load_balance;
         self
     }
 
@@ -385,7 +319,6 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
         QuicServerBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
-            load_balance: self.load_balance,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
@@ -403,7 +336,6 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
         QuicServerBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
-            load_balance: self.load_balance,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
@@ -429,7 +361,6 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
-            load_balance: self.load_balance,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
@@ -455,7 +386,6 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
-            load_balance: self.load_balance,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
@@ -477,7 +407,6 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerSniBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
-            load_balance: self.load_balance,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
@@ -561,32 +490,47 @@ impl QuicServerBuilder<TlsServerConfig> {
     ///
     /// Although all given addresses are failed to bind, the server can still accept connections from other addresses.
     pub fn listen(self, addresses: impl ToSocketAddrs) -> io::Result<Arc<QuicServer>> {
-        let uscs = addresses
+        let mut server = SERVER.write().unwrap();
+        if server.strong_count() != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "There is already a server running",
+            ));
+        }
+
+        let bind_address = addresses
             .to_socket_addrs()?
             .filter_map(|address| {
-                let arc_usc = get_or_create_usc(&address).map_err(|e| log::error!("{e}"));
-                Some((address, arc_usc.ok()?))
+                let usc = Arc::new(Usc::bind(address).ok()?);
+                let local_address = usc.local_addr().ok()?;
+                let usc_recv_task = PROTO.listen_on(local_address, usc.clone())?;
+                tokio::spawn(async move {
+                    match usc_recv_task.await {
+                        Err(_) => QuicServer::on_socket_close(local_address),
+                    }
+                });
+                Some(local_address)
             })
-            .collect::<DashMap<_, _>>();
-        if uscs.is_empty() && !self.passive_listening {
+            .collect::<DashSet<_>>();
+
+        if bind_address.is_empty() && !self.passive_listening {
             let error = "all addresses are not available";
             let error = io::Error::new(io::ErrorKind::AddrNotAvailable, error);
             return Err(error);
         }
 
         let quic_server = Arc::new(QuicServer {
-            sockets: uscs,
+            bind_address,
             passive_listening: self.passive_listening,
             listener: Default::default(),
             _supported_versions: self.supported_versions,
-            _load_balance: self.load_balance,
             _defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
             streams_controller: self.streams_controller,
             token_provider: self.token_provider,
         });
-        quic_server.listen()?;
+        *server = Arc::downgrade(&quic_server);
         Ok(quic_server)
     }
 }
@@ -628,31 +572,47 @@ impl QuicServerSniBuilder<TlsServerConfig> {
     ///
     /// Although all given addresses are failed to bind, the server can still accept connections from other addresses.
     pub fn listen(self, addresses: impl ToSocketAddrs) -> io::Result<Arc<QuicServer>> {
-        let uscs = addresses
+        let mut server = SERVER.write().unwrap();
+        if server.strong_count() != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "There is already a server running",
+            ));
+        }
+
+        let bind_address = addresses
             .to_socket_addrs()?
             .filter_map(|address| {
-                let arc_usc = get_or_create_usc(&address).map_err(|e| log::error!("{e}"));
-                Some((address, arc_usc.ok()?))
+                let usc = Arc::new(Usc::bind(address).ok()?);
+                let local_address = usc.local_addr().ok()?;
+                let usc_recv_task = PROTO.listen_on(local_address, usc.clone())?;
+                tokio::spawn(async move {
+                    match usc_recv_task.await {
+                        Err(_) => QuicServer::on_socket_close(local_address),
+                    }
+                });
+                Some(local_address)
             })
-            .collect::<DashMap<_, _>>();
-        if uscs.is_empty() && !self.passive_listening {
+            .collect::<DashSet<_>>();
+
+        if bind_address.is_empty() && !self.passive_listening {
             let error = "all addresses are not available";
             let error = io::Error::new(io::ErrorKind::AddrNotAvailable, error);
             return Err(error);
         }
+
         let quic_server = Arc::new(QuicServer {
-            sockets: uscs,
+            bind_address,
             passive_listening: self.passive_listening,
             listener: Default::default(),
             _supported_versions: self.supported_versions,
-            _load_balance: self.load_balance,
             _defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
             streams_controller: self.streams_controller,
             token_provider: self.token_provider,
         });
-        quic_server.listen()?;
+        *server = Arc::downgrade(&quic_server);
         Ok(quic_server)
     }
 }

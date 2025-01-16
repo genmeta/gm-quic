@@ -251,7 +251,7 @@ pub fn launch_deliver_and_parse(
     mut one_rtt_packets: impl Stream<Item = (OneRttPacket, Pathway)> + Unpin + Send + 'static,
     space: Arc<DataSpace>,
     components: &Components,
-    event_broker: impl EmitEvent + Clone + Send + Sync + 'static,
+    event_broker: impl EmitEvent + Clone + 'static,
 ) {
     let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded_channel();
     // 连接级的
@@ -521,7 +521,7 @@ pub fn launch_deliver_and_parse_closing(
     mut packets: impl Stream<Item = (OneRttPacket, Pathway)> + Unpin + Send + 'static,
     space: ClosingDataSpace,
     closing_iface: Arc<ClosingInterface>,
-    event_broker: impl EmitEvent + Clone + Send + 'static,
+    event_broker: impl EmitEvent + Clone + 'static,
 ) {
     tokio::spawn(async move {
         while let Some((packet, pathway)) = packets.next().await {

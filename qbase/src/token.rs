@@ -78,19 +78,6 @@ pub enum TokenRegistry {
 pub struct ArcTokenRegistry(Arc<TokenRegistry>);
 
 impl ArcTokenRegistry {
-    pub fn default_sink(server_name: String) -> Self {
-        Self(Arc::new(TokenRegistry::Client((
-            server_name,
-            Arc::new(DefaultTokenRegistry),
-        ))))
-    }
-
-    pub fn default_provider() -> Self {
-        Self(Arc::new(TokenRegistry::Server(Arc::new(
-            DefaultTokenRegistry,
-        ))))
-    }
-
     pub fn with_sink(server_name: String, sink: Arc<dyn TokenSink>) -> Self {
         Self(Arc::new(TokenRegistry::Client((server_name, sink))))
     }
@@ -126,27 +113,29 @@ impl ReceiveFrame<NewTokenFrame> for ArcTokenRegistry {
     }
 }
 
-struct DefaultTokenRegistry;
+pub mod handy {
+    pub struct NoopTokenRegistry;
 
-impl TokenSink for DefaultTokenRegistry {
-    fn sink(&self, _: &str, _: Vec<u8>) {}
+    impl super::TokenSink for NoopTokenRegistry {
+        fn sink(&self, _: &str, _: Vec<u8>) {}
 
-    fn fetch_token(&self, _: &str) -> Vec<u8> {
-        Vec::with_capacity(0)
-    }
-}
-
-impl TokenProvider for DefaultTokenRegistry {
-    fn gen_new_token(&self, _: &str) -> Vec<u8> {
-        Vec::new()
+        fn fetch_token(&self, _: &str) -> Vec<u8> {
+            Vec::with_capacity(0)
+        }
     }
 
-    fn gen_retry_token(&self, _: &str) -> Vec<u8> {
-        Vec::new()
-    }
+    impl super::TokenProvider for NoopTokenRegistry {
+        fn gen_new_token(&self, _: &str) -> Vec<u8> {
+            Vec::new()
+        }
 
-    fn verify_token(&self, _: String, _: &[u8]) -> bool {
-        false
+        fn gen_retry_token(&self, _: &str) -> Vec<u8> {
+            Vec::new()
+        }
+
+        fn verify_token(&self, _: String, _: &[u8]) -> bool {
+            false
+        }
     }
 }
 

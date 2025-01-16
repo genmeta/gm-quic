@@ -98,7 +98,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn std::error::Error + Send + Sync
         .add_host("localhost", cert, key)
         .with_alpns([ALPN.to_vec()])
         .listen(&opt.listen[..])?;
-    info!("listening on {:?}", opt.listen);
+    info!("listening on {:?}", quic_server.addresses());
 
     // handle incoming connections and requests
 

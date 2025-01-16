@@ -2,13 +2,9 @@ pub mod data;
 pub mod handshake;
 pub mod initial;
 
-use std::future::Future;
+use std::sync::Arc;
 
 use bytes::Bytes;
-pub use data::*;
-use futures::{channel::mpsc::UnboundedReceiver, StreamExt};
-pub use handshake::*;
-pub use initial::*;
 use qbase::{
     error::Error,
     frame::{
@@ -20,39 +16,103 @@ use qrecovery::{
     journal::{ArcSentJournal, Journal},
     reliable::GuaranteedFrame,
 };
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
     events::{EmitEvent, Event},
-    DataStreams, FlowController,
+    ArcClosingInterface, Components, DataStreams, FlowController,
 };
 
 #[derive(Clone)]
 pub struct Spaces {
-    pub initial: InitialSpace,
-    pub handshake: HandshakeSpace,
-    pub data: DataSpace,
+    initial: Arc<initial::InitialSpace>,
+    handshake: Arc<handshake::HandshakeSpace>,
+    data: Arc<data::DataSpace>,
 }
 
-async fn try_join2<T1, T2>(
-    f1: impl Future<Output = Option<T1>> + Unpin,
-    f2: impl Future<Output = Option<T2>> + Unpin,
-) -> Option<(T1, T2)> {
-    use futures::future::*;
-    match select(f1, f2).await {
-        Either::Left((None, ..)) => None,
-        Either::Right((None, ..)) => None,
-        Either::Left((Some(t1), f2)) => Some((t1, f2.await?)),
-        Either::Right((Some(t2), f1)) => Some((f1.await?, t2)),
+impl Spaces {
+    pub fn new(
+        initial: initial::InitialSpace,
+        handshake: handshake::HandshakeSpace,
+        data: data::DataSpace,
+    ) -> Self {
+        Self {
+            initial: Arc::new(initial),
+            handshake: Arc::new(handshake),
+            data: Arc::new(data),
+        }
     }
+
+    pub fn initial(&self) -> &Arc<initial::InitialSpace> {
+        &self.initial
+    }
+
+    pub fn handshake(&self) -> &Arc<handshake::HandshakeSpace> {
+        &self.handshake
+    }
+
+    pub fn data(&self) -> &Arc<data::DataSpace> {
+        &self.data
+    }
+
+    pub fn close<EE>(self, closing_iface: ArcClosingInterface, event_broker: &EE)
+    where
+        EE: EmitEvent + Clone + Send + 'static,
+    {
+        let received_packets_buffer = closing_iface.received_packets_buffer();
+        match self.initial.close() {
+            None => received_packets_buffer.initial().close(),
+            Some(space) => {
+                initial::launch_deliver_and_parse_closing(
+                    received_packets_buffer.initial().receiver(),
+                    space,
+                    closing_iface.clone(),
+                    event_broker.clone(),
+                );
+            }
+        }
+
+        received_packets_buffer.zero_rtt().close();
+
+        match self.handshake.close() {
+            None => received_packets_buffer.handshake().close(),
+            Some(space) => {
+                handshake::launch_deliver_and_parse_closing(
+                    received_packets_buffer.handshake().receiver(),
+                    space,
+                    closing_iface.clone(),
+                    event_broker.clone(),
+                );
+            }
+        }
+
+        match self.data.close() {
+            None => received_packets_buffer.one_rtt().close(),
+            Some(space) => {
+                data::launch_deliver_and_parse_closing(
+                    received_packets_buffer.one_rtt().receiver(),
+                    space,
+                    closing_iface.clone(),
+                    event_broker.clone(),
+                );
+            }
+        }
+    }
+}
+
+pub struct DecryptedPacket<H> {
+    header: H,
+    pn: u64,
+    payload: Bytes,
 }
 
 fn pipe<F: Send + 'static>(
     mut source: UnboundedReceiver<F>,
     destination: impl ReceiveFrame<F> + Send + 'static,
-    broker: impl EmitEvent + Send + 'static,
+    broker: impl EmitEvent + 'static,
 ) {
     tokio::spawn(async move {
-        while let Some(f) = source.next().await {
+        while let Some(f) = source.recv().await {
             if let Err(e) = destination.recv_frame(&f) {
                 broker.emit(Event::Failed(e));
                 break;
@@ -126,7 +186,7 @@ impl ReceiveFrame<AckFrame> for AckHandshake {
 
     fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
         let mut rotate_guard = self.sent_journal.rotate();
-        rotate_guard.update_largest(ack_frame.largest.into_inner());
+        rotate_guard.update_largest(ack_frame)?;
 
         for pn in ack_frame.iter().flat_map(|r| r.rev()) {
             for frame in rotate_guard.on_pkt_acked(pn) {
@@ -162,7 +222,7 @@ impl ReceiveFrame<AckFrame> for AckData {
 
     fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
         let mut rotate_guard = self.send_journal.rotate();
-        rotate_guard.update_largest(ack_frame.largest.into_inner());
+        rotate_guard.update_largest(ack_frame)?;
 
         for pn in ack_frame.iter().flat_map(|r| r.rev()) {
             for frame in rotate_guard.on_pkt_acked(pn) {
@@ -182,4 +242,27 @@ impl ReceiveFrame<AckFrame> for AckData {
         }
         Ok(())
     }
+}
+
+pub fn launch_deliver_and_parse(components: &Components) {
+    let received_packets_buffer = components.conn_iface.received_packets_buffer();
+    initial::launch_deliver_and_parse(
+        received_packets_buffer.initial().receiver(),
+        components.spaces.initial.clone(),
+        components,
+        components.event_broker.clone(),
+    );
+    handshake::launch_deliver_and_parse(
+        received_packets_buffer.handshake().receiver(),
+        components.spaces.handshake.clone(),
+        components,
+        components.event_broker.clone(),
+    );
+    data::launch_deliver_and_parse(
+        received_packets_buffer.zero_rtt().receiver(),
+        received_packets_buffer.one_rtt().receiver(),
+        components.spaces.data.clone(),
+        components,
+        components.event_broker.clone(),
+    );
 }

@@ -97,7 +97,8 @@ mod qudp {
             recv_buffer.unread -= 1;
             let mut bytes_mut = recv_buffer.bufs[recv_buffer.unread].clone();
             bytes_mut.truncate(recv_buffer.hdrs[recv_buffer.unread].seg_size as _);
-            let local = recv_buffer.hdrs[recv_buffer.unread].dst;
+            // let local = recv_buffer.hdrs[recv_buffer.unread].dst;
+            let local = self.local_addr()?;
             let local = Endpoint::Direct { addr: local };
             let remote = recv_buffer.hdrs[recv_buffer.unread].src;
             let remote = Endpoint::Direct { addr: remote };

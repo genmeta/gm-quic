@@ -6,12 +6,17 @@ use std::{
 
 pub use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
+    packet::{
+        header::{GetDcid, GetScid},
+        long::DataHeader as LongHeader,
+        DataHeader, Packet,
+    },
     param::{ClientParameters, CommonParameters, ServerParameters},
-    sid::ControlConcurrency,
-    token::{TokenProvider, TokenSink},
+    sid::{handy::*, ControlConcurrency},
+    token::{handy::*, TokenProvider, TokenSink},
 };
 use qbase::{
-    error::Error,
+    error::{Error, ErrorKind},
     frame::ConnectionCloseFrame,
     param::{self, ArcParameters},
     sid,
@@ -33,7 +38,7 @@ use crate::{
     space::{self, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace, Spaces},
     tls::{self, ArcTlsSession},
     ArcConnInterface, ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components,
-    Connection, CoreConnection, DataStreams, FlowController, Handshake, RawHandshake, Termination,
+    Connection, CoreConnection, FlowController, Handshake, RawHandshake, Termination,
 };
 
 impl Connection {
@@ -343,7 +348,8 @@ impl ComponentsReady {
     where
         EE: EmitEvent + Clone + Send + Sync + 'static,
     {
-        let handshake = Handshake::new(self.raw_handshake, Arc::new(event_broker.clone()));
+        let event_broker = Arc::new(event_broker);
+        let handshake = Handshake::new(self.raw_handshake, event_broker.clone());
 
         let components = Components {
             parameters: self.parameters,
@@ -355,32 +361,25 @@ impl ComponentsReady {
             spaces: self.spaces,
             conn_iface: self.conn_iface,
             send_notify: self.send_notify,
+            event_broker,
         };
 
-        tokio::spawn(tls::keys_upgrade(&components, event_broker.clone()));
+        tokio::spawn(tls::keys_upgrade(&components));
 
-        tokio::spawn(accpet_transport_parameters(
-            &components,
-            event_broker.clone(),
-        ));
+        tokio::spawn(accpet_transport_parameters(&components));
 
-        space::launch_deliver_and_parse(&components, event_broker.clone());
+        space::launch_deliver_and_parse(&components);
 
         Connection(RwLock::new(Ok(CoreConnection { components })))
     }
 }
 
-fn accpet_transport_parameters<EE>(
-    components: &Components,
-    event_broker: EE,
-) -> impl Future<Output = ()> + Send
-where
-    EE: EmitEvent + Clone + Send + 'static,
-{
-    let params: ArcParameters = components.parameters.clone();
-    let streams: DataStreams = components.spaces.data().streams().clone();
-    let cid_registry: CidRegistry = components.cid_registry.clone();
-    let flow_ctrl: FlowController = components.flow_ctrl.clone();
+fn accpet_transport_parameters(components: &Components) -> impl Future<Output = ()> + Send {
+    let params = components.parameters.clone();
+    let streams = components.spaces.data().streams().clone();
+    let cid_registry = components.cid_registry.clone();
+    let flow_ctrl = components.flow_ctrl.clone();
+    let event_broker = components.event_broker.clone();
     async move {
         use qbase::frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame};
         if let Ok(param::Pair { local: _, remote }) = params.await {
@@ -430,6 +429,7 @@ impl Components {
         let guard = path.new_guard(self);
         let ticker = path.new_ticker();
 
+        let event_broker = self.event_broker.clone();
         let task = tokio::spawn(async move {
             tokio::select! {
                 _ = burst.launch() => {},
@@ -437,6 +437,12 @@ impl Components {
                 _ = ticker.launch() => {}
             }
             conn_iface.paths().remove(&pathway);
+            if conn_iface.paths().is_empty() {
+                event_broker.emit(Event::Failed(Error::with_default_fty(
+                    ErrorKind::NoViablePath,
+                    "no viable path exist",
+                )));
+            }
         });
         Some(PathContext::new(path, task.abort_handle()))
     }
@@ -445,10 +451,7 @@ impl Components {
 impl CoreConnection {
     // 对于server，第一条路径也通过add_path添加
 
-    pub fn enter_closing<EE>(self, ccf: ConnectionCloseFrame, event_broker: EE) -> Termination
-    where
-        EE: EmitEvent + Send + Clone + 'static,
-    {
+    pub fn enter_closing(self, ccf: ConnectionCloseFrame) -> Termination {
         let error = ccf.clone().into();
         self.spaces.data().on_conn_error(&error);
         self.components.flow_ctrl.on_conn_error(&error);
@@ -463,7 +466,7 @@ impl CoreConnection {
 
         tokio::spawn({
             let local_cids = self.cid_registry.local.clone();
-            let event_broker = event_broker.clone();
+            let event_broker = self.event_broker.clone();
             let pto_duration = self
                 .conn_iface
                 .paths()
@@ -480,15 +483,12 @@ impl CoreConnection {
 
         self.components
             .spaces
-            .close(closing_iface.clone(), &event_broker);
+            .close(closing_iface.clone(), &self.components.event_broker);
 
         Termination::closing(error, self.components.cid_registry.local, closing_iface)
     }
 
-    pub fn enter_draining<EE>(self, error: Error, event_broker: EE) -> Termination
-    where
-        EE: EmitEvent + Send + Clone + 'static,
-    {
+    pub fn enter_draining(self, error: Error) -> Termination {
         self.spaces.data().on_conn_error(&error);
         self.components.flow_ctrl.on_conn_error(&error);
         self.components.tls_session.on_conn_error(&error);
@@ -501,7 +501,7 @@ impl CoreConnection {
 
         tokio::spawn({
             let local_cids = self.cid_registry.local.clone();
-            let event_broker = event_broker.clone();
+            let event_broker = self.event_broker.clone();
             let pto_duration = self
                 .conn_iface
                 .paths()

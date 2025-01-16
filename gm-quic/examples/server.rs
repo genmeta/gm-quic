@@ -47,7 +47,7 @@ async fn run(options: Opt) -> Result<(), Box<dyn std::error::Error>> {
         .listen(options.bind)?;
 
     while let Ok((_conn, pathway)) = server.accept().await {
-        log::trace!("New connection from {}", pathway.local_addr());
+        log::trace!("New connection from {}", pathway.dst());
     }
     Ok(())
 }

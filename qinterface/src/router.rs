@@ -1,4 +1,4 @@
-use std::{convert::Infallible, fmt, io, net::SocketAddr, sync::Arc};
+use std::{convert::Infallible, fmt, future::Future, io, net::SocketAddr, sync::Arc};
 
 use dashmap::DashMap;
 use qbase::{
@@ -7,7 +7,6 @@ use qbase::{
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     packet::{self, header::GetDcid, Packet, PacketReader},
 };
-use tokio::task::JoinHandle;
 
 use crate::{
     buffer::RcvdPacketBuffer,
@@ -71,11 +70,11 @@ impl QuicProto {
         }
     }
 
-    pub fn add_interface(
+    pub fn listen_on(
         self: &Arc<Self>,
         local_address: SocketAddr,
         interface: Arc<dyn QuicInterface>,
-    ) -> JoinHandle<io::Result<Infallible>> {
+    ) -> Option<impl Future<Output = io::Result<Infallible>> + Send> {
         struct InterfaceGuard {
             addr: SocketAddr,
             proto: Arc<QuicProto>,
@@ -87,8 +86,13 @@ impl QuicProto {
             }
         }
 
+        match self.interfaces.entry(local_address) {
+            dashmap::Entry::Occupied(_exist) => return None,
+            dashmap::Entry::Vacant(entry) => _ = entry.insert(interface.clone()),
+        }
+
         let this = self.clone();
-        tokio::spawn(async move {
+        Some(async move {
             this.interfaces.insert(local_address, interface.clone());
             let _guard = InterfaceGuard {
                 addr: local_address,
