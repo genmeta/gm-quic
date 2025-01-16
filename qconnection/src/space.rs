@@ -20,7 +20,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
     events::{EmitEvent, Event},
-    ArcClosingInterface, Components, DataStreams, FlowController,
+    termination::ClosingState,
+    Components, DataStreams, FlowController,
 };
 
 #[derive(Clone)]
@@ -55,44 +56,44 @@ impl Spaces {
         &self.data
     }
 
-    pub fn close<EE>(self, closing_iface: ArcClosingInterface, event_broker: &EE)
+    pub fn close<EE>(self, closing_state: Arc<ClosingState>, event_broker: &EE)
     where
         EE: EmitEvent + Clone + Send + 'static,
     {
-        let received_packets_buffer = closing_iface.received_packets_buffer();
+        let received_packet_queue = closing_state.rcvd_pkt_q();
         match self.initial.close() {
-            None => received_packets_buffer.initial().close(),
+            None => received_packet_queue.initial().close(),
             Some(space) => {
-                initial::launch_deliver_and_parse_closing(
-                    received_packets_buffer.initial().receiver(),
+                initial::spawn_deliver_and_parse_closing(
+                    received_packet_queue.initial().receiver(),
                     space,
-                    closing_iface.clone(),
+                    closing_state.clone(),
                     event_broker.clone(),
                 );
             }
         }
 
-        received_packets_buffer.zero_rtt().close();
+        received_packet_queue.zero_rtt().close();
 
         match self.handshake.close() {
-            None => received_packets_buffer.handshake().close(),
+            None => received_packet_queue.handshake().close(),
             Some(space) => {
-                handshake::launch_deliver_and_parse_closing(
-                    received_packets_buffer.handshake().receiver(),
+                handshake::spawn_deliver_and_parse_closing(
+                    received_packet_queue.handshake().receiver(),
                     space,
-                    closing_iface.clone(),
+                    closing_state.clone(),
                     event_broker.clone(),
                 );
             }
         }
 
         match self.data.close() {
-            None => received_packets_buffer.one_rtt().close(),
+            None => received_packet_queue.one_rtt().close(),
             Some(space) => {
-                data::launch_deliver_and_parse_closing(
-                    received_packets_buffer.one_rtt().receiver(),
+                data::spawn_deliver_and_parse_closing(
+                    received_packet_queue.one_rtt().receiver(),
                     space,
-                    closing_iface.clone(),
+                    closing_state.clone(),
                     event_broker.clone(),
                 );
             }
@@ -244,23 +245,23 @@ impl ReceiveFrame<AckFrame> for AckData {
     }
 }
 
-pub fn launch_deliver_and_parse(components: &Components) {
-    let received_packets_buffer = components.conn_iface.received_packets_buffer();
-    initial::launch_deliver_and_parse(
-        received_packets_buffer.initial().receiver(),
+pub fn spawn_deliver_and_parse(components: &Components) {
+    let received_packets_queue = &components.rcvd_pkt_q;
+    initial::spawn_deliver_and_parse(
+        received_packets_queue.initial().receiver(),
         components.spaces.initial.clone(),
         components,
         components.event_broker.clone(),
     );
-    handshake::launch_deliver_and_parse(
-        received_packets_buffer.handshake().receiver(),
+    handshake::spawn_deliver_and_parse(
+        received_packets_queue.handshake().receiver(),
         components.spaces.handshake.clone(),
         components,
         components.event_broker.clone(),
     );
-    data::launch_deliver_and_parse(
-        received_packets_buffer.zero_rtt().receiver(),
-        received_packets_buffer.one_rtt().receiver(),
+    data::spawn_deliver_and_parse(
+        received_packets_queue.zero_rtt().receiver(),
+        received_packets_queue.one_rtt().receiver(),
         components.spaces.data.clone(),
         components,
         components.event_broker.clone(),

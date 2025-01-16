@@ -10,7 +10,7 @@ pub mod prelude {
     pub use qbase::{frame::ConnectionCloseFrame, sid::StreamId, varint::VarInt};
     pub use qinterface::{
         path::{Endpoint, Pathway},
-        router::{QuicListener, QuicProto},
+        router::QuicProto,
         QuicInterface,
     };
     pub use qunreliable::{UnreliableReader, UnreliableWriter};
@@ -29,16 +29,17 @@ pub mod builder;
 
 use std::{
     borrow::Cow,
+    future::Future,
     io,
     pin::Pin,
-    prelude::rust_2024::Future,
     sync::{Arc, RwLock},
     task::{Context, Poll},
+    time::Duration,
 };
 
 use deref_derive::Deref;
 use events::EmitEvent;
-use path::Path;
+use path::Paths;
 use qbase::{
     cid, flow,
     frame::{ConnectionCloseFrame, ReliableFrame, SendFrame},
@@ -46,7 +47,11 @@ use qbase::{
     sid::StreamId,
     token::ArcTokenRegistry,
 };
-use qinterface::{buffer::RcvdPacketBuffer, path::Pathway, router::RouterRegistry};
+use qinterface::{
+    path::{Pathway, Socket},
+    queue::RcvdPacketQueue,
+    router::{QuicProto, RouterRegistry},
+};
 use qrecovery::{
     recv, reliable, send,
     streams::{self, Ext},
@@ -93,19 +98,13 @@ pub type Credit<'a> = flow::Credit<'a, ArcReliableFrameDeque>;
 
 pub type Handshake = handshake::Handshake<ArcReliableFrameDeque>;
 pub type RawHandshake = handshake::RawHandshake<ArcReliableFrameDeque>;
-pub type ArcRcvdPacketBuffer = Arc<RcvdPacketBuffer>;
 
 pub type DataStreams = streams::DataStreams<ArcReliableFrameDeque>;
 pub type StreamReader = recv::Reader<Ext<ArcReliableFrameDeque>>;
 type RawStreamWriter = send::Writer<Ext<ArcReliableFrameDeque>>;
 pub type StreamWriter = Writer<send::Writer<Ext<ArcReliableFrameDeque>>>;
 
-type ConnInterface = qinterface::conn::ConnInterface<Path>;
-pub type ArcConnInterface = Arc<ConnInterface>;
-
-type ClosingInterface = qinterface::closing::ClosingInterface;
-pub type ArcClosingInterface = Arc<ClosingInterface>;
-
+// rename(ask AI)
 pub struct Writer<W> {
     raw_writer: W,
     send_notify: Arc<Notify>,
@@ -165,9 +164,12 @@ pub struct Components {
     cid_registry: CidRegistry,
     flow_ctrl: FlowController,
     spaces: Spaces,
-    conn_iface: ArcConnInterface,
+    paths: Arc<Paths>,
+    proto: Arc<QuicProto>,
+    rcvd_pkt_q: Arc<RcvdPacketQueue>,
     send_notify: Arc<Notify>,
     event_broker: Arc<dyn EmitEvent>,
+    defer_idle_timeout: Duration,
 }
 
 impl Components {
@@ -243,25 +245,20 @@ impl Components {
         }
     }
 
-    pub fn add_path(&self, pathway: Pathway) {
-        if let dashmap::Entry::Vacant(vacant) = self.conn_iface.paths().entry(pathway) {
-            if let Some(path) = self.try_create_path(pathway, false) {
+    pub fn add_path(&self, socket: Socket, pathway: Pathway) {
+        if let dashmap::Entry::Vacant(vacant) = self.paths.entry(pathway) {
+            if let Some(path) = self.try_create_path(socket, pathway, false, true) {
                 vacant.insert(path);
             }
         }
     }
 
     pub fn del_path(&self, pathway: &Pathway) {
-        self.conn_iface.paths().remove(pathway);
+        self.paths.remove(pathway);
     }
 }
 
-#[derive(Clone, Deref)]
-pub struct CoreConnection {
-    components: Components,
-}
-
-pub struct Connection(RwLock<Result<CoreConnection, Termination>>);
+pub struct Connection(RwLock<Result<Components, Termination>>);
 
 impl Connection {
     pub fn enter_closing(&self, ccf: ConnectionCloseFrame) {
@@ -285,7 +282,7 @@ impl Connection {
         self.enter_closing(ConnectionCloseFrame::new_app(error_code, reason));
     }
 
-    fn map<T>(&self, op: impl Fn(&CoreConnection) -> T) -> io::Result<T> {
+    fn map<T>(&self, op: impl Fn(&Components) -> T) -> io::Result<T> {
         let guard = self.0.read().unwrap();
         guard
             .as_ref()
@@ -321,14 +318,15 @@ impl Connection {
         self.map(|core_conn| core_conn.unreliable_writer())?.await
     }
 
-    pub fn add_path(&self, pathway: Pathway) -> io::Result<()> {
-        self.map(|core_conn| core_conn.add_path(pathway))
+    pub fn add_path(&self, socket: Socket, pathway: Pathway) -> io::Result<()> {
+        self.map(|core_conn| core_conn.add_path(socket, pathway))
     }
 
     pub fn del_path(&self, pathway: &Pathway) -> io::Result<()> {
         self.map(|core_conn| core_conn.del_path(pathway))
     }
 
+    // for [`h3-shim`] ... write docs
     pub fn is_active(&self) -> bool {
         self.0.read().unwrap().is_ok()
     }

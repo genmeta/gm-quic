@@ -10,8 +10,8 @@ mod qudp {
     use bytes::BytesMut;
 
     use crate::{
-        path::{Endpoint, Pathway},
-        QuicInterface, SendCapability,
+        path::{Endpoint, Pathway, Socket},
+        QuicInterface,
     };
 
     struct ReceiveBuffers {
@@ -24,7 +24,7 @@ mod qudp {
         fn empty(gro_size: u16) -> Self {
             Self {
                 unread: 0,
-                bufs: vec![bytes::BytesMut::zeroed(1500); gro_size as _],
+                bufs: vec![bytes::BytesMut::zeroed(1200); gro_size as _],
                 hdrs: vec![qudp::PacketHeader::default(); gro_size as _],
             }
         }
@@ -51,19 +51,23 @@ mod qudp {
     }
 
     impl QuicInterface for Usc {
-        fn send_capability(&self, _on: Pathway) -> io::Result<SendCapability> {
-            Ok(SendCapability {
-                max_segment_size: 1200,
-                reversed_size: 0,
-                max_segments: self.inner.gso_size(),
-            })
+        fn reversed_bytes(&self, _on: Pathway) -> io::Result<usize> {
+            Ok(0)
+        }
+
+        fn max_segments(&self) -> io::Result<usize> {
+            Ok(self.inner.gso_size() as _)
+        }
+
+        fn max_segment_size(&self) -> io::Result<usize> {
+            Ok(1200)
         }
 
         fn poll_send(
             &self,
             cx: &mut Context,
             ptks: &[io::IoSlice],
-            way: Pathway,
+            _way: Pathway,
             dst: SocketAddr,
         ) -> Poll<io::Result<usize>> {
             let src = self.local_addr()?;
@@ -72,14 +76,14 @@ mod qudp {
                 dst,
                 ttl: 64,
                 ecn: None,
-                seg_size: self.send_capability(way)?.max_segment_size as _,
+                seg_size: self.max_segment_size()? as _,
                 gso: true,
             };
 
             self.inner.poll_send(ptks, &hdr, cx)
         }
 
-        fn poll_recv(&self, cx: &mut Context) -> Poll<io::Result<(BytesMut, Pathway)>> {
+        fn poll_recv(&self, cx: &mut Context) -> Poll<io::Result<(BytesMut, Pathway, Socket)>> {
             let mut recv_buffer = self.recv_bufs.lock().unwrap();
 
             while recv_buffer.unread == 0 {
@@ -99,12 +103,13 @@ mod qudp {
             bytes_mut.truncate(recv_buffer.hdrs[recv_buffer.unread].seg_size as _);
             // let local = recv_buffer.hdrs[recv_buffer.unread].dst;
             let local = self.local_addr()?;
-            let local = Endpoint::Direct { addr: local };
             let remote = recv_buffer.hdrs[recv_buffer.unread].src;
+            let socket = Socket::new(local, remote);
+            let local = Endpoint::Direct { addr: local };
             let remote = Endpoint::Direct { addr: remote };
             let pathway = Pathway::new(local, remote);
 
-            Poll::Ready(Ok((bytes_mut, pathway)))
+            Poll::Ready(Ok((bytes_mut, pathway, socket)))
         }
     }
 }

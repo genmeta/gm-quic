@@ -25,8 +25,8 @@ use qbase::{
 };
 use qcongestion::{ArcCC, CongestionAlgorithm, CongestionControl};
 use qinterface::{
-    conn::{ConnInterface, PathContext},
-    path::Pathway,
+    path::{Pathway, Socket},
+    queue::RcvdPacketQueue,
     router::QuicProto,
 };
 pub use rustls::crypto::CryptoProvider;
@@ -34,11 +34,12 @@ use tokio::sync::Notify;
 
 use crate::{
     events::{EmitEvent, Event},
-    path::{Path, PathKind},
+    path::{Path, PathContext, Paths},
     space::{self, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace, Spaces},
+    termination::ClosingState,
     tls::{self, ArcTlsSession},
-    ArcConnInterface, ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components,
-    Connection, CoreConnection, FlowController, Handshake, RawHandshake, Termination,
+    ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
+    FlowController, Handshake, RawHandshake, Termination,
 };
 
 impl Connection {
@@ -162,25 +163,78 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
         }
     }
 
-    pub fn with_interface(
-        mut self,
+    pub fn with_proto(
+        self,
         proto: Arc<QuicProto>,
-        random_initial_dcid: ConnectionId,
-    ) -> ComponentsReady {
+    ) -> ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
+        ProtoReady {
+            foundation: self.foundation,
+            tls_config: self.tls_config,
+            streams_ctrl: self.streams_ctrl,
+            proto,
+            defer_idle_timeout: Duration::MAX,
+        }
+    }
+}
+
+impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
+    pub fn with_streams_ctrl(
+        self,
+        gen_streams_ctrl: impl FnOnce(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync,
+    ) -> Self {
+        let server_params = &self.foundation.server_params;
+        let max_bidi_streams = server_params.initial_max_streams_bidi().into_inner();
+        let max_uni_streams = server_params.initial_max_streams_uni().into_inner();
+        TlsReady {
+            streams_ctrl: gen_streams_ctrl(max_bidi_streams, max_uni_streams),
+            ..self
+        }
+    }
+
+    pub fn with_proto(
+        self,
+        proto: Arc<QuicProto>,
+    ) -> ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
+        ProtoReady {
+            foundation: self.foundation,
+            tls_config: self.tls_config,
+            streams_ctrl: self.streams_ctrl,
+            proto,
+            defer_idle_timeout: Duration::MAX,
+        }
+    }
+}
+
+pub struct ProtoReady<Foundation, Config> {
+    foundation: Foundation,
+    tls_config: Config,
+    streams_ctrl: Box<dyn ControlConcurrency>,
+    proto: Arc<QuicProto>,
+    defer_idle_timeout: Duration,
+}
+
+impl<Foundation, Config> ProtoReady<Foundation, Config> {
+    pub fn defer_idle_timeout(self, duration: Duration) -> Self {
+        Self {
+            defer_idle_timeout: duration,
+            ..self
+        }
+    }
+}
+
+impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
+    pub fn with_cids(mut self, random_initial_dcid: ConnectionId) -> ComponentsReady {
         let client_params = &mut self.foundation.client_params;
         let remembered = &self.foundation.remembered;
 
-        let send_notify = Arc::new(Notify::new());
-        let reliable_frames =
-            ArcReliableFrameDeque::with_capacity_and_notify(8, send_notify.clone());
+        let sendable = Arc::new(Notify::new());
+        let reliable_frames = ArcReliableFrameDeque::with_capacity_and_notify(8, sendable.clone());
 
-        let conn_iface = Arc::new(ConnInterface::new(proto.clone()));
+        let rcvd_pkt_q = Arc::new(RcvdPacketQueue::new());
 
-        let router_registry: qinterface::router::RouterRegistry<ArcReliableFrameDeque> = proto
-            .registry(
-                conn_iface.received_packets_buffer().clone(),
-                reliable_frames.clone(),
-            );
+        let router_registry: qinterface::router::RouterRegistry<ArcReliableFrameDeque> = self
+            .proto
+            .registry(rcvd_pkt_q.clone(), reliable_frames.clone());
         let initial_scid = router_registry.gen_unique_cid();
 
         client_params.set_initial_source_connection_id(initial_scid);
@@ -233,50 +287,35 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             cid_registry,
             flow_ctrl,
             spaces,
-            conn_iface,
-            send_notify,
+            proto: self.proto,
+            rcvd_pkt_q,
+            sendable,
+            defer_idle_timeout: self.defer_idle_timeout,
         }
     }
 }
 
-impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
-    pub fn with_streams_ctrl(
-        self,
-        gen_streams_ctrl: impl FnOnce(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync,
-    ) -> Self {
-        let server_params = &self.foundation.server_params;
-        let max_bidi_streams = server_params.initial_max_streams_bidi().into_inner();
-        let max_uni_streams = server_params.initial_max_streams_uni().into_inner();
-        TlsReady {
-            streams_ctrl: gen_streams_ctrl(max_bidi_streams, max_uni_streams),
-            ..self
-        }
-    }
-
-    pub fn with_interface(
+impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
+    pub fn with_cids(
         mut self,
-        proto: Arc<QuicProto>,
         original_dcid: ConnectionId,
         client_scid: ConnectionId,
     ) -> ComponentsReady {
         let server_params = &mut self.foundation.server_params;
-        let send_notify = Arc::new(Notify::new());
-        let reliable_frames =
-            ArcReliableFrameDeque::with_capacity_and_notify(8, send_notify.clone());
+        let sendable = Arc::new(Notify::new());
+        let reliable_frames = ArcReliableFrameDeque::with_capacity_and_notify(8, sendable.clone());
 
-        let conn_iface = Arc::new(ConnInterface::new(proto.clone()));
+        let rcvd_pkt_q = Arc::new(RcvdPacketQueue::new());
 
         let issued_cids = reliable_frames.clone();
         let router_registry: qinterface::router::RouterRegistry<ArcReliableFrameDeque> =
-            proto.registry(conn_iface.received_packets_buffer().clone(), issued_cids);
+            self.proto.registry(rcvd_pkt_q.clone(), issued_cids);
 
         let initial_scid = router_registry.gen_unique_cid();
         server_params.set_initial_source_connection_id(initial_scid);
 
-        proto.register(
-            original_dcid.into(),
-            conn_iface.received_packets_buffer().clone(),
-        );
+        self.proto
+            .add_router_entry(original_dcid.into(), rcvd_pkt_q.clone());
         server_params.set_original_destination_connection_id(original_dcid);
         let parameters = ArcParameters::new_server(*server_params);
         parameters.initial_scid_from_peer_need_equal(client_scid);
@@ -325,8 +364,10 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             cid_registry,
             flow_ctrl,
             spaces,
-            conn_iface,
-            send_notify,
+            proto: self.proto,
+            rcvd_pkt_q,
+            sendable,
+            defer_idle_timeout: self.defer_idle_timeout,
         }
     }
 }
@@ -339,8 +380,10 @@ pub struct ComponentsReady {
     cid_registry: CidRegistry,
     flow_ctrl: FlowController,
     spaces: Spaces,
-    conn_iface: ArcConnInterface,
-    send_notify: Arc<Notify>,
+    proto: Arc<QuicProto>,
+    rcvd_pkt_q: Arc<RcvdPacketQueue>,
+    defer_idle_timeout: Duration,
+    sendable: Arc<Notify>,
 }
 
 impl ComponentsReady {
@@ -349,28 +392,27 @@ impl ComponentsReady {
         EE: EmitEvent + Clone + Send + Sync + 'static,
     {
         let event_broker = Arc::new(event_broker);
-        let handshake = Handshake::new(self.raw_handshake, event_broker.clone());
-
         let components = Components {
             parameters: self.parameters,
             tls_session: self.tls_session,
-            handshake,
+            handshake: Handshake::new(self.raw_handshake, event_broker.clone()),
             token_registry: self.token_registry,
             cid_registry: self.cid_registry,
             flow_ctrl: self.flow_ctrl,
             spaces: self.spaces,
-            conn_iface: self.conn_iface,
-            send_notify: self.send_notify,
+            proto: self.proto,
+            rcvd_pkt_q: self.rcvd_pkt_q,
+            paths: Arc::new(Paths::new()),
+            send_notify: self.sendable,
             event_broker,
+            defer_idle_timeout: self.defer_idle_timeout,
         };
 
         tokio::spawn(tls::keys_upgrade(&components));
-
         tokio::spawn(accpet_transport_parameters(&components));
+        space::spawn_deliver_and_parse(&components);
 
-        space::launch_deliver_and_parse(&components);
-
-        Connection(RwLock::new(Ok(CoreConnection { components })))
+        Connection(RwLock::new(Ok(components)))
     }
 }
 
@@ -402,7 +444,13 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
 }
 
 impl Components {
-    pub fn try_create_path(&self, pathway: Pathway, is_probed: bool) -> Option<PathContext<Path>> {
+    pub fn try_create_path(
+        &self,
+        socket: Socket,
+        pathway: Pathway,
+        is_probed: bool,
+        do_validate: bool,
+    ) -> Option<PathContext> {
         let max_ack_delay = self.parameters.local()?.max_ack_delay().into_inner();
 
         let cc = ArcCC::new(
@@ -416,107 +464,117 @@ impl Components {
             Box::new(self.handshake.clone()),
         );
 
-        let conn_iface = self.conn_iface.clone();
-        let is_initial = conn_iface.try_create_initial_path();
-        let kind = PathKind::new(is_initial, is_probed);
-        let path = Arc::new(Path::new(pathway, cc, kind, conn_iface.clone()));
+        let interface = self.proto.get_interface(socket.src()).ok()?;
 
-        if !kind.is_probed() {
+        // hs.is_done()
+        let path = Arc::new(Path::new(interface, socket.dst(), pathway, cc));
+
+        if !is_probed {
             path.grant_anti_amplifier();
         }
 
         let burst = path.new_burst(self);
-        let guard = path.new_guard(self);
-        let ticker = path.new_ticker();
+        let idle_timeout = path.idle_timeout(self);
 
-        let event_broker = self.event_broker.clone();
-        let task = tokio::spawn(async move {
-            tokio::select! {
-                _ = burst.launch() => {},
-                _ = guard.launch() => {},
-                _ = ticker.launch() => {}
-            }
-            conn_iface.paths().remove(&pathway);
-            if conn_iface.paths().is_empty() {
-                event_broker.emit(Event::Failed(Error::with_default_fty(
-                    ErrorKind::NoViablePath,
-                    "no viable path exist",
-                )));
+        let task = tokio::spawn({
+            let path = path.clone();
+            let paths = self.paths.clone();
+            let event_broker = self.event_broker.clone();
+            let defer_idle_timeout = self.defer_idle_timeout;
+            async move {
+                let validate = async {
+                    if paths.is_empty() || !do_validate {
+                        path.skip_validation();
+                        true
+                    } else {
+                        path.validate().await
+                    }
+                };
+
+                tokio::select! {
+                    false = validate => {}
+                    _ = idle_timeout => {}
+                    _ = burst.launch() => {}
+                    _ = path.do_ticks() => {}
+                    _ = path.defer_idle_timeout(defer_idle_timeout) =>  {}
+                }
+                if paths.is_empty() {
+                    event_broker.emit(Event::Failed(Error::with_default_fty(
+                        ErrorKind::NoViablePath,
+                        "no viable path exist",
+                    )));
+                }
             }
         });
         Some(PathContext::new(path, task.abort_handle()))
     }
 }
 
-impl CoreConnection {
+impl Components {
     // 对于server，第一条路径也通过add_path添加
 
     pub fn enter_closing(self, ccf: ConnectionCloseFrame) -> Termination {
         let error = ccf.clone().into();
         self.spaces.data().on_conn_error(&error);
-        self.components.flow_ctrl.on_conn_error(&error);
-        self.components.tls_session.on_conn_error(&error);
-        if self.components.handshake.role() == sid::Role::Server {
-            let local_parameters = self.components.parameters.server().unwrap();
+        self.flow_ctrl.on_conn_error(&error);
+        self.tls_session.on_conn_error(&error);
+        if self.handshake.role() == sid::Role::Server {
+            let local_parameters = self.parameters.server().unwrap();
             let origin_dcid = local_parameters.original_destination_connection_id();
-            self.conn_iface.router_if().unregister(&origin_dcid.into());
+            self.proto.del_router_entry(&origin_dcid.into());
         }
-        self.components.parameters.on_conn_error(&error);
-        let closing_iface = Arc::new(self.conn_iface.close(ccf, &self.components.cid_registry));
+        self.parameters.on_conn_error(&error);
+        let closing_state = Arc::new(ClosingState::new(ccf, &self));
 
         tokio::spawn({
             let local_cids = self.cid_registry.local.clone();
             let event_broker = self.event_broker.clone();
             let pto_duration = self
-                .conn_iface
-                .paths()
+                .paths
                 .iter()
                 .map(|p| p.cc().pto_time(Epoch::Data))
                 .max()
                 .unwrap_or_default();
             async move {
-                tokio::time::sleep(pto_duration).await;
+                tokio::time::sleep(pto_duration * 3).await;
                 local_cids.clear();
                 event_broker.emit(Event::Terminated);
             }
         });
 
-        self.components
-            .spaces
-            .close(closing_iface.clone(), &self.components.event_broker);
+        self.spaces.close(closing_state.clone(), &self.event_broker);
 
-        Termination::closing(error, self.components.cid_registry.local, closing_iface)
+        Termination::closing(error, self.cid_registry.local, closing_state)
     }
 
     pub fn enter_draining(self, error: Error) -> Termination {
         self.spaces.data().on_conn_error(&error);
-        self.components.flow_ctrl.on_conn_error(&error);
-        self.components.tls_session.on_conn_error(&error);
-        if self.components.handshake.role() == sid::Role::Server {
-            let local_parameters = self.components.parameters.server().unwrap();
+        self.flow_ctrl.on_conn_error(&error);
+        self.tls_session.on_conn_error(&error);
+        if self.handshake.role() == sid::Role::Server {
+            let local_parameters = self.parameters.server().unwrap();
             let origin_dcid = local_parameters.original_destination_connection_id();
-            self.conn_iface.router_if().unregister(&origin_dcid.into());
+            self.proto.del_router_entry(&origin_dcid.into());
         }
-        self.components.parameters.on_conn_error(&error);
+        self.parameters.on_conn_error(&error);
 
         tokio::spawn({
             let local_cids = self.cid_registry.local.clone();
             let event_broker = self.event_broker.clone();
             let pto_duration = self
-                .conn_iface
-                .paths()
+                .paths
                 .iter()
                 .map(|p| p.cc().pto_time(Epoch::Data))
                 .max()
                 .unwrap_or_default();
             async move {
-                tokio::time::sleep(pto_duration).await;
+                tokio::time::sleep(pto_duration * 3).await;
                 local_cids.clear();
                 event_broker.emit(Event::Terminated);
             }
         });
 
-        self.conn_iface.received_packets_buffer().close_all();
-        Termination::draining(error, self.components.cid_registry.local)
+        self.rcvd_pkt_q.close_all();
+        Termination::draining(error, self.cid_registry.local)
     }
 }

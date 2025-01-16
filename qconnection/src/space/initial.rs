@@ -23,7 +23,7 @@ use qbase::{
     Epoch,
 };
 use qcongestion::{CongestionControl, TrackPackets};
-use qinterface::{closing::ClosingInterface, path::Pathway};
+use qinterface::path::{Pathway, Socket};
 use qrecovery::{
     crypto::CryptoStream,
     journal::{ArcRcvdJournal, InitialJournal},
@@ -35,6 +35,7 @@ use super::{pipe, AckInitial, DecryptedPacket};
 use crate::{
     events::{EmitEvent, Event},
     path::Path,
+    termination::ClosingState,
     tx::{PacketMemory, Transaction},
     Components,
 };
@@ -98,8 +99,6 @@ impl InitialSpace {
         }))
     }
 
-    /// TODO: 还要padding、加密等功能，理应返回一个PacketWriter+密钥，以防后续还要padding
-    ///     或者提供一个不需外部计算padding的接口，比如先填充Initial之外的包，最后再填充Initial，提供最小长度
     pub fn try_assemble<'b>(
         &self,
         tx: &mut Transaction<'_>,
@@ -134,8 +133,8 @@ impl InitialSpace {
     }
 }
 
-pub fn launch_deliver_and_parse(
-    mut packets: impl Stream<Item = (InitialPacket, Pathway)> + Unpin + Send + 'static,
+pub fn spawn_deliver_and_parse(
+    mut packets: impl Stream<Item = (InitialPacket, Pathway, Socket)> + Unpin + Send + 'static,
     space: Arc<InitialSpace>,
     components: &Components,
     event_broker: impl EmitEvent + Clone + 'static,
@@ -172,9 +171,8 @@ pub fn launch_deliver_and_parse(
     let role = components.handshake.role();
     let parameters = components.parameters.clone();
     let remote_cids = components.cid_registry.remote.clone();
-    let conn_iface = components.conn_iface.clone();
     tokio::spawn(async move {
-        while let Some((packet, pathway)) = packets.next().await {
+        while let Some((packet, pathway, socket)) = packets.next().await {
             // rfc9000 7.2:
             // if subsequent Initial packets include a different Source Connection ID, they MUST be discarded. This avoids
             // unpredictable outcomes that might otherwise result from stateless processing of multiple Initial packets
@@ -198,10 +196,10 @@ pub fn launch_deliver_and_parse(
             let packet_size = packet.1.len();
             match space.decrypt_packet(packet).await {
                 Some(Ok(packet)) => {
-                    let path = match conn_iface.paths().entry(pathway) {
+                    let path = match components.paths.entry(pathway) {
                         dashmap::Entry::Occupied(path) => path.get().deref().clone(),
                         dashmap::Entry::Vacant(vacant_entry) => {
-                            match components.try_create_path(pathway, true) {
+                            match components.try_create_path(socket, pathway, true, true) {
                                 Some(new_path) => vacant_entry.insert(new_path).clone(),
                                 // connection already entered closing or draining state
                                 None => continue,
@@ -242,7 +240,7 @@ pub fn launch_deliver_and_parse(
                                     local_params.original_destination_connection_id()
                                 }) {
                                     if origin_dcid != packet.header.dcid {
-                                        conn_iface.router_if().unregister(&origin_dcid.into());
+                                        components.proto.del_router_entry(&origin_dcid.into());
                                     }
                                 }
                             }
@@ -258,14 +256,23 @@ pub fn launch_deliver_and_parse(
 }
 
 impl TrackPackets for InitialSpace {
-    fn may_loss(&self, pn: u64) {
-        for frame in self.journal.of_sent_packets().rotate().may_loss_pkt(pn) {
-            self.crypto_stream.outgoing().may_loss_data(&frame);
+    fn may_loss(&self, pns: &mut dyn Iterator<Item = u64>) {
+        let sent_jornal = self.journal.of_sent_packets();
+        let outgoing = self.crypto_stream.outgoing();
+        let mut rotate = sent_jornal.rotate();
+        for pn in pns {
+            for frame in rotate.may_loss_pkt(pn) {
+                outgoing.may_loss_data(&frame);
+            }
         }
     }
 
-    fn retire(&self, pn: u64) {
-        self.journal.of_rcvd_packets().write().retire(pn);
+    fn retire(&self, pns: &mut dyn Iterator<Item = u64>) {
+        let rcvd_journal = self.journal.of_rcvd_packets();
+        let mut write_guard = rcvd_journal.write();
+        for pn in pns {
+            write_guard.retire(pn);
+        }
     }
 }
 
@@ -331,21 +338,21 @@ impl ClosingInitialSpace {
     }
 }
 
-pub fn launch_deliver_and_parse_closing(
-    mut packets: impl Stream<Item = (InitialPacket, Pathway)> + Unpin + Send + 'static,
+pub fn spawn_deliver_and_parse_closing(
+    mut packets: impl Stream<Item = (InitialPacket, Pathway, Socket)> + Unpin + Send + 'static,
     space: ClosingInitialSpace,
-    closing_iface: Arc<ClosingInterface>,
+    closing_state: Arc<ClosingState>,
     event_broker: impl EmitEvent + Clone + 'static,
 ) {
     tokio::spawn(async move {
-        while let Some((packet, pathway)) = packets.next().await {
+        while let Some((packet, pathway, _socket)) = packets.next().await {
             if let Some(ccf) = space.recv_packet(packet) {
                 event_broker.emit(Event::Closed(ccf.clone()));
                 return;
             }
-            if closing_iface.should_send() {
-                _ = closing_iface
-                    .try_send_with(pathway, pathway.dst(), |buf, scid, dcid, ccf| {
+            if closing_state.should_send() {
+                _ = closing_state
+                    .try_send_with(pathway, |buf, scid, dcid, ccf| {
                         space
                             .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
                             .map(|packet| packet.size())

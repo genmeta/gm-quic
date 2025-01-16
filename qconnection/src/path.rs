@@ -1,7 +1,11 @@
 use std::{
-    io::{self},
+    io,
     net::SocketAddr,
-    sync::Mutex,
+    ops::Deref,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use qbase::{
@@ -9,70 +13,57 @@ use qbase::{
     frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
 };
 use qcongestion::{ArcCC, CongestionControl};
-use qinterface::{path::Pathway, SendCapability};
+use qinterface::{path::Pathway, QuicInterface};
 use tokio::{sync::Notify, time::Instant};
 
 mod aa;
+mod paths;
 pub mod ticker;
 mod util;
 pub use aa::*;
+pub use paths::*;
 pub use util::*;
 pub mod burst;
 pub mod idle;
 
-use crate::ArcConnInterface;
-
-#[derive(Debug, Clone, Copy)]
-pub struct PathKind {
-    is_initial: bool,
-    is_probed: bool,
-}
-
-impl PathKind {
-    pub fn new(is_initial: bool, is_probed: bool) -> Self {
-        Self {
-            is_initial,
-            is_probed,
-        }
-    }
-
-    pub fn is_initial(&self) -> bool {
-        self.is_initial
-    }
-
-    pub fn is_probed(&self) -> bool {
-        self.is_probed
-    }
-}
-
 pub struct Path {
-    pathway: Pathway,
+    interface: Arc<dyn QuicInterface>,
+    validated: AtomicBool,
+    dst: SocketAddr,
+    way: Pathway,
     cc: ArcCC,
-    kind: PathKind,
     anti_amplifier: AntiAmplifier,
     last_recv_time: Mutex<Instant>,
     challenge_sndbuf: SendBuffer<PathChallengeFrame>,
     response_sndbuf: SendBuffer<PathResponseFrame>,
     response_rcvbuf: RecvBuffer<PathResponseFrame>,
-
-    conn_iface: ArcConnInterface,
-    send_notify: Notify,
+    sendable: Notify,
 }
 
 impl Path {
-    pub fn new(way: Pathway, cc: ArcCC, kind: PathKind, conn_iface: ArcConnInterface) -> Self {
+    pub fn new(
+        interface: Arc<dyn QuicInterface>,
+        dst: SocketAddr,
+        way: Pathway,
+        cc: ArcCC,
+    ) -> Self {
         Self {
-            pathway: way,
+            interface,
+            dst,
+            way,
             cc,
-            kind,
-            conn_iface,
+            validated: AtomicBool::new(false),
             anti_amplifier: Default::default(),
             last_recv_time: Instant::now().into(),
             challenge_sndbuf: Default::default(),
             response_sndbuf: Default::default(),
             response_rcvbuf: Default::default(),
-            send_notify: Notify::new(),
+            sendable: Notify::new(),
         }
+    }
+
+    pub fn skip_validation(&self) {
+        self.validated.store(true, Ordering::Release);
     }
 
     pub async fn validate(&self) -> bool {
@@ -80,7 +71,7 @@ impl Path {
         for _ in 0..3 {
             let pto = self.cc.pto_time(qbase::Epoch::Data);
             self.challenge_sndbuf.write(challenge);
-            self.send_notify.notify_waiters();
+            self.sendable.notify_waiters();
             match tokio::time::timeout(pto, self.response_rcvbuf.receive()).await {
                 Ok(Some(response)) if *response == *challenge => {
                     self.anti_amplifier.grant();
@@ -99,6 +90,10 @@ impl Path {
         &self.cc
     }
 
+    pub fn interface(&self) -> &dyn QuicInterface {
+        self.interface.deref()
+    }
+
     pub fn on_rcvd(&self, amount: usize) {
         self.anti_amplifier.on_rcvd(amount);
         *self.last_recv_time.lock().unwrap() = Instant::now();
@@ -108,12 +103,14 @@ impl Path {
         self.anti_amplifier.grant();
     }
 
-    pub fn send_capability(&self) -> io::Result<SendCapability> {
-        self.conn_iface.send_capability(self.pathway)
-    }
-
-    pub async fn send_packets(&self, pkts: &[io::IoSlice<'_>], dst: SocketAddr) -> io::Result<()> {
-        self.conn_iface.send_packets(pkts, self.pathway, dst).await
+    pub async fn send_packets(&self, mut pkts: &[io::IoSlice<'_>]) -> io::Result<()> {
+        while !pkts.is_empty() {
+            let sent =
+                core::future::poll_fn(|cx| self.interface.poll_send(cx, pkts, self.way, self.dst))
+                    .await?;
+            pkts = &pkts[sent..];
+        }
+        Ok(())
     }
 }
 

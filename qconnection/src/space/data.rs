@@ -29,7 +29,7 @@ use qbase::{
     Epoch,
 };
 use qcongestion::{CongestionControl, TrackPackets};
-use qinterface::{closing::ClosingInterface, path::Pathway};
+use qinterface::path::{Pathway, Socket};
 use qrecovery::{
     crypto::CryptoStream,
     journal::{ArcRcvdJournal, DataJournal},
@@ -43,6 +43,7 @@ use crate::{
     events::{EmitEvent, Event},
     path::{Path, SendBuffer},
     space::{pipe, AckData, FlowControlledDataStreams},
+    termination::ClosingState,
     tx::{PacketMemory, Transaction},
     ArcReliableFrameDeque, Components, DataStreams,
 };
@@ -220,6 +221,37 @@ impl DataSpace {
         Some((packet.abandon(), ack, fresh_data))
     }
 
+    pub fn try_assemble_validation<'b>(
+        &self,
+        tx: &mut Transaction<'_>,
+        spin: SpinBit,
+        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
+        path_response_frames: &SendBuffer<PathResponseFrame>,
+        buf: &'b mut [u8],
+    ) -> Option<AssembledPacket> {
+        let (hpk, pk) = self.one_rtt_keys.get_local_keys()?;
+        let (key_phase, pk) = pk.lock_guard().get_local();
+        let sent_journal = self.journal.of_sent_packets();
+        let mut packet = PacketMemory::new_short(
+            OneRttHeader::new(spin, tx.dcid()),
+            buf,
+            hpk,
+            pk,
+            key_phase,
+            &sent_journal,
+        )?;
+
+        path_challenge_frames.try_load_frames_into(&mut packet);
+        path_response_frames.try_load_frames_into(&mut packet);
+        // 其实还应该加上NCID，但是从ReliableFrameDeque分拣太复杂了
+
+        let remaining = packet.remaining_mut();
+        packet.pad(remaining);
+
+        let mut packet: PacketWriter<'b> = packet.try_into().ok()?;
+        Some(packet.encrypt_and_protect())
+    }
+
     pub fn is_one_rtt_ready(&self) -> bool {
         self.one_rtt_keys.get_local_keys().is_some()
     }
@@ -246,9 +278,9 @@ impl DataSpace {
     }
 }
 
-pub fn launch_deliver_and_parse(
-    mut zeor_rtt_packets: impl Stream<Item = (ZeroRttPacket, Pathway)> + Unpin + Send + 'static,
-    mut one_rtt_packets: impl Stream<Item = (OneRttPacket, Pathway)> + Unpin + Send + 'static,
+pub fn spawn_deliver_and_parse(
+    mut zeor_rtt_packets: impl Stream<Item = (ZeroRttPacket, Pathway, Socket)> + Unpin + Send + 'static,
+    mut one_rtt_packets: impl Stream<Item = (OneRttPacket, Pathway, Socket)> + Unpin + Send + 'static,
     space: Arc<DataSpace>,
     components: &Components,
     event_broker: impl EmitEvent + Clone + 'static,
@@ -355,18 +387,17 @@ pub fn launch_deliver_and_parse(
     tokio::spawn({
         let components = components.clone();
         let space = space.clone();
-        let conn_iface = components.conn_iface.clone();
         let event_broker = event_broker.clone();
         let dispatch_data_frame = dispatch_data_frame.clone();
         async move {
-            while let Some((packet, pathway)) = zeor_rtt_packets.next().await {
+            while let Some((packet, pathway, socket)) = zeor_rtt_packets.next().await {
                 let packet_size = packet.1.len();
                 match space.decrypt_0rtt_packet(packet).await {
                     Some(Ok(packet)) => {
-                        let path = match conn_iface.paths().entry(pathway) {
+                        let path = match components.paths.entry(pathway) {
                             dashmap::Entry::Occupied(path) => path.get().deref().clone(),
                             dashmap::Entry::Vacant(vacant_entry) => {
-                                match components.try_create_path(pathway, true) {
+                                match components.try_create_path(socket, pathway, true, true) {
                                     Some(new_path) => vacant_entry.insert(new_path).clone(),
                                     // connection already entered closing or draining state
                                     None => continue,
@@ -397,17 +428,16 @@ pub fn launch_deliver_and_parse(
     });
     tokio::spawn({
         let components = components.clone();
-        let conn_iface = components.conn_iface.clone();
         let dispatch_data_frame = dispatch_data_frame.clone();
         async move {
-            while let Some((packet, pathway)) = one_rtt_packets.next().await {
+            while let Some((packet, pathway, socket)) = one_rtt_packets.next().await {
                 let packet_size = packet.1.len();
                 match space.decrypt_1rtt_packet(packet).await {
                     Some(Ok(packet)) => {
-                        let path = match conn_iface.paths().entry(pathway) {
+                        let path = match components.paths.entry(pathway) {
                             dashmap::Entry::Occupied(path) => path.get().deref().clone(),
                             dashmap::Entry::Vacant(vacant_entry) => {
-                                match components.try_create_path(pathway, true) {
+                                match components.try_create_path(socket, pathway, true, true) {
                                     Some(new_path) => vacant_entry.insert(new_path).clone(),
                                     // connection already entered closing or draining state
                                     None => continue,
@@ -439,18 +469,27 @@ pub fn launch_deliver_and_parse(
 }
 
 impl TrackPackets for DataSpace {
-    fn may_loss(&self, pn: u64) {
-        for frame in self.journal.of_sent_packets().rotate().may_loss_pkt(pn) {
-            match frame {
-                GuaranteedFrame::Stream(f) => self.streams.may_loss_data(&f),
-                GuaranteedFrame::Reliable(f) => self.reliable_frames.send_frame([f]),
-                GuaranteedFrame::Crypto(f) => self.crypto_stream.outgoing().may_loss_data(&f),
+    fn may_loss(&self, pns: &mut dyn Iterator<Item = u64>) {
+        let sent_jornal = self.journal.of_sent_packets();
+        let crypto_outgoing = self.crypto_stream.outgoing();
+        let mut rotate = sent_jornal.rotate();
+        for pn in pns {
+            for frame in rotate.may_loss_pkt(pn) {
+                match frame {
+                    GuaranteedFrame::Stream(f) => self.streams.may_loss_data(&f),
+                    GuaranteedFrame::Reliable(f) => self.reliable_frames.send_frame([f]),
+                    GuaranteedFrame::Crypto(f) => crypto_outgoing.may_loss_data(&f),
+                }
             }
         }
     }
 
-    fn retire(&self, pn: u64) {
-        self.journal.of_rcvd_packets().write().retire(pn);
+    fn retire(&self, pns: &mut dyn Iterator<Item = u64>) {
+        let rcvd_journal = self.journal.of_rcvd_packets();
+        let mut write_guard = rcvd_journal.write();
+        for pn in pns {
+            write_guard.retire(pn);
+        }
     }
 }
 
@@ -517,21 +556,21 @@ impl ClosingDataSpace {
     }
 }
 
-pub fn launch_deliver_and_parse_closing(
-    mut packets: impl Stream<Item = (OneRttPacket, Pathway)> + Unpin + Send + 'static,
+pub fn spawn_deliver_and_parse_closing(
+    mut packets: impl Stream<Item = (OneRttPacket, Pathway, Socket)> + Unpin + Send + 'static,
     space: ClosingDataSpace,
-    closing_iface: Arc<ClosingInterface>,
+    closing_state: Arc<ClosingState>,
     event_broker: impl EmitEvent + Clone + 'static,
 ) {
     tokio::spawn(async move {
-        while let Some((packet, pathway)) = packets.next().await {
+        while let Some((packet, pathway, _socket)) = packets.next().await {
             if let Some(ccf) = space.recv_packet(packet) {
                 event_broker.emit(Event::Closed(ccf.clone()));
                 return;
             }
-            if closing_iface.should_send() {
-                _ = closing_iface
-                    .try_send_with(pathway, pathway.dst(), |buf, _scid, dcid, ccf| {
+            if closing_state.should_send() {
+                _ = closing_state
+                    .try_send_with(pathway, |buf, _scid, dcid, ccf| {
                         space
                             .try_assemble_ccf_packet(dcid?, ccf, buf)
                             .map(|packet| packet.size())

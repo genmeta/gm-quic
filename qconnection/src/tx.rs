@@ -484,4 +484,21 @@ impl Transaction<'_> {
 
         written
     }
+
+    pub fn load_validation(
+        &mut self,
+        buf: &mut [u8],
+        spin: SpinBit,
+        path_challenge_frames: &SendBuffer<PathChallengeFrame>,
+        path_response_frames: &SendBuffer<PathResponseFrame>,
+        data_space: &DataSpace,
+    ) -> Option<AssembledPacket> {
+        data_space.try_assemble_validation(
+            self,
+            spin,
+            path_challenge_frames,
+            path_response_frames,
+            self.constraints.constrain(buf),
+        )
+    }
 }
