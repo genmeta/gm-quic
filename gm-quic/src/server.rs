@@ -195,7 +195,7 @@ impl QuicServer {
                             && bind_interfaces.contains_key(&socket.src())
                         {
                             // TODO：不该令进程崩溃，而是以某种方法传递错误
-                            panic!("initerface on {} is closed unexpectedly", socket.src());
+                            panic!("interface on {} is closed unexpectedly", socket.src());
                         }
                     }
                     Event::Failed(error) => connection.enter_closing(error.into()),

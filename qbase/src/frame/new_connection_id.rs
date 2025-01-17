@@ -75,7 +75,7 @@ pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnec
         )));
     }
     let (remain, cid) = be_connection_id(remain)?;
-    if cid.len() == 0 {
+    if cid.is_empty() {
         return Err(nom::Err::Error(nom::error::make_error(
             input,
             nom::error::ErrorKind::Verify,
