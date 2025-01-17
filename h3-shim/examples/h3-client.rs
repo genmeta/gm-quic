@@ -4,7 +4,7 @@ use clap::Parser;
 use futures::future;
 use rustls::pki_types::{pem::PemObject, CertificateDer};
 use tokio::io::AsyncWriteExt;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 static ALPN: &[u8] = b"h3";
 
@@ -90,6 +90,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
     params.set_initial_max_stream_data_bidi_local((1u32 << 20).into());
     params.set_initial_max_stream_data_bidi_remote((1u32 << 20).into());
 
+    debug!(bind = ?opt.bind, "build QuicClient");
     let quic_client = ::gm_quic::QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()
@@ -97,14 +98,15 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
         .with_alpns([ALPN.into()])
         .with_parameters(params)
         .bind(&opt.bind[..])?
-        .build();
-    info!("connecting to {:?}", addr);
+        .build()?;
+    info!(%addr, "connecting to server");
     let conn = quic_client.connect(auth.host(), addr)?;
 
     // create h3 client
 
     let gm_quic_conn = h3_shim::QuicConnection::new(conn).await;
     let (mut conn, mut send_request) = h3::client::new(gm_quic_conn).await?;
+    log::info!("hs done");
     let driver = async move {
         future::poll_fn(|cx| conn.poll_close(cx)).await?;
         // tokio::time::sleep(std::time::Duration::from_secs(1)).await;

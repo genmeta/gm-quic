@@ -486,11 +486,11 @@ impl Components {
                     }
                 };
                 tokio::select! {
-                    false = validate => {}
-                    _ = idle_timeout => {}
-                    _ = burst.launch() => {}
-                    _ = path.do_ticks() => {}
-                    _ = path.defer_idle_timeout(defer_idle_timeout) =>  {}
+                    false = validate => {},
+                    _ = idle_timeout => {},
+                    _ = burst.launch() => {},
+                    _ = path.do_ticks() => {},
+                    _ = path.defer_idle_timeout(defer_idle_timeout) => {},
                 }
                 // same as [`Components::del_path`]
                 paths.remove(&pathway);

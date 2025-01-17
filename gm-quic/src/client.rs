@@ -506,8 +506,9 @@ impl QuicClientBuilder<TlsClientConfig> {
     pub fn build(self) -> io::Result<QuicClient> {
         let bind_interfaces = self.bind_addresses.into_iter().try_fold(
             HashMap::new(),
-            |mut bind_interfaces, local_addr| {
-                let quic_ifacce = (self.quic_iface_binder)(local_addr)?;
+            |mut bind_interfaces, bind_addr| {
+                let quic_ifacce = (self.quic_iface_binder)(bind_addr)?;
+                let local_addr = quic_ifacce.local_addr()?;
                 Interfaces::add(quic_ifacce.clone())?;
                 bind_interfaces.insert(local_addr, quic_ifacce);
                 io::Result::Ok(bind_interfaces)

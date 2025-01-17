@@ -10,6 +10,7 @@ use std::{
 use dashmap::DashMap;
 use handy::Usc;
 pub use qconnection::{builder::*, prelude::*};
+use qinterface::util::Channel;
 use rustls::{
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
@@ -18,7 +19,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     interfaces::Interfaces,
-    util::{Channel, ToCertificate, ToPrivateKey},
+    util::{ToCertificate, ToPrivateKey},
     PROTO,
 };
 
@@ -155,12 +156,13 @@ impl QuicServer {
 
         let (clinet_scid, origin_dcid) = match &packet {
             Packet::Data(data_packet) => match &data_packet.header {
-                DataHeader::Long(LongHeader::Initial(hdr)) => (*hdr.get_scid(), *hdr.get_scid()),
-                DataHeader::Long(LongHeader::ZeroRtt(hdr)) => (*hdr.get_scid(), *hdr.get_scid()),
+                DataHeader::Long(LongHeader::Initial(hdr)) => (*hdr.get_scid(), *hdr.get_dcid()),
+                DataHeader::Long(LongHeader::ZeroRtt(hdr)) => (*hdr.get_scid(), *hdr.get_dcid()),
                 _ => return,
             },
             _ => return,
         };
+        log::info!("accepting connection from {}", socket.src());
 
         let token_provider = server
             .token_provider
