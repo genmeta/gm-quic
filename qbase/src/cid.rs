@@ -7,8 +7,6 @@ pub use local_cid::*;
 mod remote_cid;
 pub use remote_cid::*;
 
-pub mod local_cid2;
-
 /// When issuing a CID to the peer, be careful not to duplicate
 /// other local connection IDs, as this will cause routing conflicts.
 pub trait GenUniqueCid {

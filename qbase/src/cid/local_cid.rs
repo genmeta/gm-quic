@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use super::{ConnectionId, GenUniqueCid};
+use super::{ConnectionId, GenUniqueCid, RetireCid};
 use crate::{
     error::{Error, ErrorKind},
     frame::{
@@ -15,7 +15,7 @@ use crate::{
 #[derive(Debug)]
 struct LocalCids<ISSUED>
 where
-    ISSUED: GenUniqueCid + SendFrame<NewConnectionIdFrame>,
+    ISSUED: GenUniqueCid + RetireCid + SendFrame<NewConnectionIdFrame>,
 {
     // If the item in cid_deque is None, it means the connection ID has been retired.
     cid_deque: IndexDeque<Option<(ConnectionId, ResetToken)>, VARINT_MAX>,
@@ -33,7 +33,7 @@ where
 
 impl<ISSUED> LocalCids<ISSUED>
 where
-    ISSUED: GenUniqueCid + SendFrame<NewConnectionIdFrame>,
+    ISSUED: GenUniqueCid + RetireCid + SendFrame<NewConnectionIdFrame>,
 {
     /// Create a new local connection ID manager.
     fn new(scid: ConnectionId, issued_cids: ISSUED) -> Self {
@@ -58,13 +58,6 @@ where
 
     fn initial_scid(&self) -> Option<ConnectionId> {
         self.cid_deque.get(0)?.map(|(cid, _)| cid)
-    }
-
-    fn active_cids(&self) -> Vec<ConnectionId> {
-        self.cid_deque
-            .iter()
-            .filter_map(|v| v.map(|(cid, _)| cid))
-            .collect()
     }
 
     /// Set the maximum number of active connection IDs.
@@ -101,10 +94,7 @@ where
 
     /// Receive a [`RetireConnectionIdFrame`] from the peer,
     /// retire the connection IDs of the sequence in [`RetireConnectionIdFrame`].
-    fn recv_retire_cid_frame(
-        &mut self,
-        frame: &RetireConnectionIdFrame,
-    ) -> Result<Option<ConnectionId>, Error> {
+    fn recv_retire_cid_frame(&mut self, frame: &RetireConnectionIdFrame) -> Result<(), Error> {
         let seq = frame.sequence.into_inner();
         if seq >= self.cid_deque.largest() {
             return Err(Error::new(
@@ -124,10 +114,25 @@ where
 
                 // generates a new connection ID while retiring an old one.
                 self.issue_new_cid();
-                return Ok(Some(cid));
+                self.issued_cids.retire_cid(cid);
             }
         }
-        Ok(None)
+        Ok(())
+    }
+
+    fn clear(&mut self) {
+        for (cid, _) in self.cid_deque.iter().flatten() {
+            self.issued_cids.retire_cid(*cid);
+        }
+    }
+}
+
+impl<ISSUED> Drop for LocalCids<ISSUED>
+where
+    ISSUED: GenUniqueCid + RetireCid + SendFrame<NewConnectionIdFrame>,
+{
+    fn drop(&mut self) {
+        self.clear();
     }
 }
 
@@ -152,11 +157,11 @@ where
 #[derive(Debug, Clone)]
 pub struct ArcLocalCids<ISSUED>(Arc<Mutex<LocalCids<ISSUED>>>)
 where
-    ISSUED: GenUniqueCid + SendFrame<NewConnectionIdFrame>;
+    ISSUED: GenUniqueCid + RetireCid + SendFrame<NewConnectionIdFrame>;
 
 impl<ISSUED> ArcLocalCids<ISSUED>
 where
-    ISSUED: GenUniqueCid + SendFrame<NewConnectionIdFrame>,
+    ISSUED: GenUniqueCid + RetireCid + SendFrame<NewConnectionIdFrame>,
 {
     /// Create a new share local connection ID manager.
     ///
@@ -211,12 +216,19 @@ where
         self.0.lock().unwrap().initial_scid()
     }
 
-    /// Get all active connection IDs.
+    /// Unilaterally no longer use all local connection IDs.
     ///
-    /// This method will be useful when finally releasing connection resources,
-    /// as it will remove all routing table entries related to this connection.
-    pub fn active_cids(&self) -> Vec<ConnectionId> {
-        self.0.lock().unwrap().active_cids()
+    /// No longer used means that packets sent by the peer to that connection ID are no
+    /// longer accepted. This method is called when the Termination event occurs and `LocalCids`
+    /// dropped, to clean up the state of the connection after the connection ends.
+    ///
+    /// In some rare cases, there are still connection IDs issued after the Termination event occurs,
+    /// resulting in incomplete cleaning of the connection status.
+    /// After externally receiving the Termination event, the connection instance should be dropped
+    /// as early as possible to trigger another cleanup in the [`Drop`] implementation to
+    /// completely clean up connection's state.
+    pub fn clear(&self) {
+        self.0.lock().unwrap().clear();
     }
 
     /// Set the maximum number of active connection IDs.
@@ -230,9 +242,9 @@ where
 
 impl<ISSUED> ReceiveFrame<RetireConnectionIdFrame> for ArcLocalCids<ISSUED>
 where
-    ISSUED: GenUniqueCid + SendFrame<NewConnectionIdFrame>,
+    ISSUED: GenUniqueCid + RetireCid + SendFrame<NewConnectionIdFrame>,
 {
-    type Output = Option<ConnectionId>;
+    type Output = ();
 
     /// Receive a [`RetireConnectionIdFrame`] from the peer,
     /// retire the connection IDs of the sequence in [`RetireConnectionIdFrame`].
@@ -246,28 +258,48 @@ where
 
 #[cfg(test)]
 mod tests {
-    use deref_derive::Deref;
+    use std::{collections::HashMap, sync::MutexGuard};
 
     use super::*;
 
-    #[derive(Debug, Deref, Default)]
-    struct IssuedCids(Arc<Mutex<Vec<NewConnectionIdFrame>>>);
+    #[derive(Default)]
+    struct IssuedCids {
+        frames: Mutex<Vec<NewConnectionIdFrame>>,
+        active_cids: Mutex<HashMap<ConnectionId, ResetToken>>,
+    }
 
     impl IssuedCids {
-        fn lock_guard(&self) -> std::sync::MutexGuard<'_, Vec<NewConnectionIdFrame>> {
-            self.0.lock().unwrap()
+        fn frames(&self) -> MutexGuard<Vec<NewConnectionIdFrame>> {
+            self.frames.lock().unwrap()
+        }
+
+        fn active_cids(&self) -> MutexGuard<HashMap<ConnectionId, ResetToken>> {
+            self.active_cids.lock().unwrap()
         }
     }
 
     impl GenUniqueCid for IssuedCids {
         fn gen_unique_cid(&self) -> ConnectionId {
-            ConnectionId::random_gen_with_mark(8, 0x80, 0x7F)
+            let mut local_cids = self.active_cids.lock().unwrap();
+            let unique_cid =
+                core::iter::from_fn(|| Some(ConnectionId::random_gen_with_mark(8, 0x80, 0x7F)))
+                    .find(|cid| !local_cids.contains_key(cid))
+                    .unwrap();
+
+            local_cids.insert(unique_cid, ResetToken::default());
+            unique_cid
+        }
+    }
+
+    impl RetireCid for IssuedCids {
+        fn retire_cid(&self, cid: ConnectionId) {
+            self.active_cids.lock().unwrap().remove(&cid);
         }
     }
 
     impl SendFrame<NewConnectionIdFrame> for IssuedCids {
         fn send_frame<I: IntoIterator<Item = NewConnectionIdFrame>>(&self, iter: I) {
-            self.0.lock().unwrap().extend(iter);
+            self.frames.lock().unwrap().extend(iter);
         }
     }
 
@@ -289,31 +321,37 @@ mod tests {
         let mut local_cids = LocalCids::new(initial_scid, IssuedCids::default());
 
         assert_eq!(local_cids.cid_deque.len(), 2);
-        assert_eq!(local_cids.issued_cids.lock_guard().len(), 1);
+        assert_eq!(local_cids.issued_cids.frames().len(), 1);
 
-        let issued_cid2 = local_cids.issued_cids.lock_guard()[0].id;
+        let issued_cid2 = local_cids.issued_cids.frames()[0].id;
 
         let retire_frame = RetireConnectionIdFrame {
             sequence: VarInt::from_u32(1),
         };
         let cid2 = local_cids.recv_retire_cid_frame(&retire_frame);
         assert!(cid2.is_ok());
-        assert_eq!(cid2, Ok(Some(issued_cid2)));
+        assert!(!local_cids
+            .issued_cids
+            .active_cids()
+            .contains_key(&issued_cid2));
         assert_eq!(local_cids.cid_deque.get(1), Some(&None));
         // issued new cid while retiring an old one
         assert_eq!(local_cids.cid_deque.len(), 3);
-        assert_eq!(local_cids.issued_cids.lock_guard().len(), 2);
+        assert_eq!(local_cids.issued_cids.frames().len(), 2);
 
         let retire_frame = RetireConnectionIdFrame {
             sequence: VarInt::from_u32(0),
         };
         let cid1 = local_cids.recv_retire_cid_frame(&retire_frame);
         assert!(cid1.is_ok());
-        assert_eq!(cid1, Ok(Some(initial_scid)));
+        assert!(!local_cids
+            .issued_cids
+            .active_cids()
+            .contains_key(&initial_scid));
         assert_eq!(local_cids.cid_deque.get(0), None); // have been slided out
 
         assert_eq!(local_cids.cid_deque.len(), 2);
-        assert_eq!(local_cids.issued_cids.lock_guard().len(), 3);
+        assert_eq!(local_cids.issued_cids.frames().len(), 3);
 
         let retire_frame = RetireConnectionIdFrame {
             sequence: VarInt::from_u32(2),

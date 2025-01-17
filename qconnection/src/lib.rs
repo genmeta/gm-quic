@@ -88,7 +88,7 @@ where
     }
 }
 
-pub type ArcLocalCids = cid::local_cid2::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
+pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
 pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
 pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;
 pub type ArcDcidCell = cid::ArcCidCell<ArcReliableFrameDeque>;

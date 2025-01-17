@@ -213,18 +213,6 @@ impl ArcTlsSession {
 }
 
 /// Start the TLS handshake, automatically upgrade the keys, and transmit tls data.
-///
-/// The [`CryptoStream`]s are provide for TLS connection to transmit the encrypted data.
-///
-/// The [`ArcKeys`] and [`ArcOneRttKeys`] will be set when the keys are upgraded.
-///
-/// The [`ConnError`] is used to notify the other components that a connection error occurred
-/// in the process of the handshake.
-///
-/// The [`Handshake`] is used to notify the other components that the handshake is completed,
-/// for server, it should send the [`HandshakeDoneFrame`] to the client.
-///
-/// [`HandshakeDoneFrame`]: qbase::frame::HandshakeDoneFrame
 pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send {
     let crypto_streams: [&CryptoStream; 3] = [
         components.spaces.initial().crypto_stream(),
