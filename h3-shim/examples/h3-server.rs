@@ -104,9 +104,13 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn std::error::Error + Send + Sync
 
     while let Ok((new_conn, _pathway)) = quic_server.accept().await {
         let root = root.clone();
-        let mut h3_conn = h3::server::Connection::new(h3_shim::QuicConnection::new(new_conn).await)
-            .await
-            .unwrap();
+        let Ok(mut h3_conn) =
+            h3::server::Connection::new(h3_shim::QuicConnection::new(new_conn).await)
+                .await
+                .inspect_err(|e| log::error!("failed to create h3 connection: {}", e))
+        else {
+            continue;
+        };
         tokio::spawn(async move {
             info!("new connection established");
             loop {
@@ -130,7 +134,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn std::error::Error + Send + Sync
                     }
 
                     Err(err) => {
-                        error!("error on accept {}", err);
+                        error!("error on accept connection: {}", err);
                         match err.get_error_level() {
                             ErrorLevel::ConnectionError => break,
                             ErrorLevel::StreamError => continue,
@@ -169,7 +173,7 @@ where
         }
     };
 
-    let resp = http::Response::builder().status(status).body(()).unwrap();
+    let resp = http::Response::builder().status(status).body(())?;
     match stream.send_response(resp).await {
         Ok(_) => info!("successfully respond to connection"),
         Err(err) => error!("unable to send response to connection peer: {:?}", err),
