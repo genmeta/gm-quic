@@ -180,7 +180,7 @@ impl QuicProto {
             Packet::Retry(retry) => retry.get_dcid(),
             Packet::Data(data_packet) => data_packet.get_dcid(),
         };
-        let signpost = if dcid.len() != 0 {
+        let signpost = if !dcid.is_empty() {
             Signpost::from(*dcid)
         } else {
             use Endpoint::*;
