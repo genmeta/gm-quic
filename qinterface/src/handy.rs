@@ -44,15 +44,15 @@ mod qudp {
                 recv_bufs: bufs,
             })
         }
-
-        pub fn local_addr(&self) -> io::Result<SocketAddr> {
-            self.inner.local_addr()
-        }
     }
 
     impl QuicInterface for Usc {
         fn reversed_bytes(&self, _on: Pathway) -> io::Result<usize> {
             Ok(0)
+        }
+
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            self.inner.local_addr()
         }
 
         fn max_segments(&self) -> io::Result<usize> {

@@ -16,14 +16,13 @@ pub use qbase::{
     token::{handy::*, TokenProvider, TokenSink},
 };
 use qbase::{
-    error::{Error, ErrorKind},
+    error::Error,
     frame::ConnectionCloseFrame,
     param::{self, ArcParameters},
     sid,
     token::ArcTokenRegistry,
-    Epoch,
 };
-use qcongestion::{ArcCC, CongestionAlgorithm, CongestionControl};
+use qcongestion::{ArcCC, CongestionAlgorithm};
 use qinterface::{
     path::{Pathway, Socket},
     queue::RcvdPacketQueue,
@@ -34,7 +33,7 @@ use tokio::sync::Notify;
 
 use crate::{
     events::{EmitEvent, Event},
-    path::{Path, PathContext, Paths},
+    path::{ArcPaths, Path, PathContext},
     space::{self, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace, Spaces},
     termination::ClosingState,
     tls::{self, ArcTlsSession},
@@ -402,7 +401,7 @@ impl ComponentsReady {
             spaces: self.spaces,
             proto: self.proto,
             rcvd_pkt_q: self.rcvd_pkt_q,
-            paths: Arc::new(Paths::new()),
+            paths: ArcPaths::new(event_broker.clone()),
             send_notify: self.sendable,
             event_broker,
             defer_idle_timeout: self.defer_idle_timeout,
@@ -464,10 +463,7 @@ impl Components {
             Box::new(self.handshake.clone()),
         );
 
-        let interface = self.proto.get_interface(socket.src()).ok()?;
-
-        // hs.is_done()
-        let path = Arc::new(Path::new(interface, socket.dst(), pathway, cc));
+        let path = Arc::new(Path::new(&self.proto, socket, pathway, cc)?);
 
         if !is_probed {
             path.grant_anti_amplifier();
@@ -479,7 +475,6 @@ impl Components {
         let task = tokio::spawn({
             let path = path.clone();
             let paths = self.paths.clone();
-            let event_broker = self.event_broker.clone();
             let defer_idle_timeout = self.defer_idle_timeout;
             async move {
                 let validate = async {
@@ -490,7 +485,6 @@ impl Components {
                         path.validate().await
                     }
                 };
-
                 tokio::select! {
                     false = validate => {}
                     _ = idle_timeout => {}
@@ -498,12 +492,8 @@ impl Components {
                     _ = path.do_ticks() => {}
                     _ = path.defer_idle_timeout(defer_idle_timeout) =>  {}
                 }
-                if paths.is_empty() {
-                    event_broker.emit(Event::Failed(Error::with_default_fty(
-                        ErrorKind::NoViablePath,
-                        "no viable path exist",
-                    )));
-                }
+                // same as [`Components::del_path`]
+                paths.remove(&pathway);
             }
         });
         Some(PathContext::new(path, task.abort_handle()))
@@ -529,12 +519,7 @@ impl Components {
         tokio::spawn({
             let local_cids = self.cid_registry.local.clone();
             let event_broker = self.event_broker.clone();
-            let pto_duration = self
-                .paths
-                .iter()
-                .map(|p| p.cc().pto_time(Epoch::Data))
-                .max()
-                .unwrap_or_default();
+            let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
             async move {
                 tokio::time::sleep(pto_duration * 3).await;
                 local_cids.clear();
@@ -561,12 +546,7 @@ impl Components {
         tokio::spawn({
             let local_cids = self.cid_registry.local.clone();
             let event_broker = self.event_broker.clone();
-            let pto_duration = self
-                .paths
-                .iter()
-                .map(|p| p.cc().pto_time(Epoch::Data))
-                .max()
-                .unwrap_or_default();
+            let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
             async move {
                 tokio::time::sleep(pto_duration * 3).await;
                 local_cids.clear();

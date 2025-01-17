@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .prefer_versions([0x00000001u32])
         .with_webpki_verifier(verifier)
         .without_cert()
-        .build();
+        .build()?;
 
     let _conn = client
         .connect("localhost", "127.0.0.1:5000".parse().unwrap())

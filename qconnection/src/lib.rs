@@ -9,7 +9,7 @@ pub mod tx;
 pub mod prelude {
     pub use qbase::{frame::ConnectionCloseFrame, sid::StreamId, varint::VarInt};
     pub use qinterface::{
-        path::{Endpoint, Pathway},
+        path::{Endpoint, Pathway, Socket},
         router::QuicProto,
         QuicInterface,
     };
@@ -39,7 +39,7 @@ use std::{
 
 use deref_derive::Deref;
 use events::EmitEvent;
-use path::Paths;
+use path::ArcPaths;
 use qbase::{
     cid, flow,
     frame::{ConnectionCloseFrame, ReliableFrame, SendFrame},
@@ -164,7 +164,7 @@ pub struct Components {
     cid_registry: CidRegistry,
     flow_ctrl: FlowController,
     spaces: Spaces,
-    paths: Arc<Paths>,
+    paths: ArcPaths,
     proto: Arc<QuicProto>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     send_notify: Arc<Notify>,
