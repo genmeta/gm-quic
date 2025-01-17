@@ -10,7 +10,7 @@ use std::{
 use qbase::{cid::ConnectionId, error::Error, frame::ConnectionCloseFrame};
 use qinterface::{path::Pathway, queue::RcvdPacketQueue};
 
-use crate::{path::Paths, ArcLocalCids, Components};
+use crate::{path::ArcPaths, ArcLocalCids, Components};
 
 pub struct ClosingState {
     last_recv_time: Mutex<Instant>,
@@ -18,7 +18,7 @@ pub struct ClosingState {
     scid: Option<ConnectionId>,
     dcid: Option<ConnectionId>,
     ccf: ConnectionCloseFrame,
-    paths: Arc<Paths>,
+    paths: ArcPaths,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
 }
 
@@ -52,9 +52,10 @@ impl ClosingState {
             &ConnectionCloseFrame,
         ) -> Option<usize>,
     {
-        let Some(path) = self.paths.get(&pathway) else {
+        let dashmap::Entry::Occupied(path) = self.paths.entry(pathway) else {
             return;
         };
+        let path = path.get();
         let Ok(mss) = path.interface().max_segment_size() else {
             return;
         };

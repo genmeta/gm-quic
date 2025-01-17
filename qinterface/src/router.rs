@@ -12,7 +12,7 @@ use tokio::task::{AbortHandle, JoinHandle};
 use crate::{
     path::{Endpoint, Pathway, Socket},
     queue::RcvdPacketQueue,
-    util::Channel,
+    util::{Channel, TryRecvError},
     QuicInterface,
 };
 
@@ -76,14 +76,34 @@ impl QuicProto {
         Self::default()
     }
 
+    /// Add a new interface for quic connections to send and receive packets.
+    ///
+    /// ### Listen
+    ///
+    /// A task will be spawned to poll the interface to receive packets(by calling [`QuicInterface::poll_recv`]).
+    ///
+    /// When a packet is received, it will be delivered to the corresponding connection if it exists.
+    ///
+    /// Otherwise, it will be stored in the unrouted packets queue, you can get it by calling [`Self::recv_unrouted_packet`],
+    /// or [`Self::try_recv_unrouted_packet`] to check if there is a packet in the queue.
+    /// For quic server, they can accept connections by handling unrouted packets.
+    ///
+    /// If you want to dismiss all unrouted packets, you can call [`Self::dismiss_unrouted_packets`].
+    ///
+    /// ### Note
+    ///
+    /// If you add an interface with the same local address, the old interface will be replaced, and the exist receive task
+    /// on interface(if exist) will be aborted.
+    ///
+    /// Though the interface is replaced, the connections that are using the old interface will not be affected.
     pub fn add_interface(
         self: &Arc<Self>,
-        local_address: SocketAddr,
+        local_addr: SocketAddr,
         interface: Arc<dyn QuicInterface>,
     ) -> JoinHandle<io::Result<Infallible>> {
         let entry = self
             .interfaces
-            .entry(local_address)
+            .entry(local_addr)
             .and_modify(|ctx| ctx.task.abort());
 
         let this = self.clone();
@@ -92,7 +112,7 @@ impl QuicProto {
             loop {
                 // way: local -> peer
                 let (datagram, pathway, socket) = core::future::poll_fn(|cx| {
-                    let interface = this.interfaces.get(&local_address).ok_or_else(|| {
+                    let interface = this.interfaces.get(&local_addr).ok_or_else(|| {
                         io::Error::new(io::ErrorKind::BrokenPipe, "interface already be removed")
                     })?;
                     interface.inner.poll_recv(cx)
@@ -124,15 +144,34 @@ impl QuicProto {
         recv_task
     }
 
-    pub fn get_interface(&self, local_address: SocketAddr) -> io::Result<Arc<dyn QuicInterface>> {
+    pub fn get_interface(&self, local_addr: SocketAddr) -> io::Result<Arc<dyn QuicInterface>> {
         self.interfaces
-            .get(&local_address)
+            .get(&local_addr)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "interface does not exist"))
             .map(|ctx| ctx.inner.clone())
     }
 
-    pub fn del_interface(&self, local_address: SocketAddr) {
-        self.interfaces.remove(&local_address);
+    /// Remove the interface by the local address.
+    ///
+    /// If the interface exist, it will be removed, and the receive task on the interface will be aborted.
+    pub fn del_interface(&self, local_addr: SocketAddr) {
+        self.interfaces.remove(&local_addr);
+    }
+
+    /// Remove the interface by the local address if the condition is [`true`].
+    ///
+    /// Its better to use this method to remove the interface than [`Self::del_interface`].
+    pub fn del_interface_if<P>(&self, local_addr: SocketAddr, f: P) -> bool
+    where
+        P: for<'a> FnOnce(&'a Arc<dyn QuicInterface>, &'a AbortHandle) -> bool,
+    {
+        if let dashmap::Entry::Occupied(entry) = self.interfaces.entry(local_addr) {
+            if f(&entry.get().inner, &entry.get().task) {
+                entry.remove();
+                return true;
+            }
+        }
+        false
     }
 
     pub async fn deliver(self: &Arc<Self>, packet: Packet, pathway: Pathway, socket: Socket) {
@@ -156,13 +195,24 @@ impl QuicProto {
         _ = self.unrouted_packets.send((packet, pathway, socket));
     }
 
-    pub fn try_recv_unrouted_packet(&self) -> Option<(Packet, Pathway, Socket)> {
-        self.unrouted_packets.try_recv().ok()
+    /// Dismiss all unrouted packets.
+    ///
+    /// This is useful for a quic client that dont need to handle unrouted packets.
+    ///
+    /// Once this is called, [`Self::try_recv_unrouted_packet`] will always return [`TryRecvError::Closed`],
+    /// and [`Self::recv_unrouted_packet`] will return None.
+    ///
+    /// **Once this operation is called it cannot be undone**
+    pub fn dismiss_unrouted_packets(&self) {
+        self.unrouted_packets.close();
     }
 
-    pub async fn recv_unrouted_packet(&self) -> (Packet, Pathway, Socket) {
-        // channel will never be closed
-        self.unrouted_packets.recv().await.unwrap()
+    pub fn try_recv_unrouted_packet(&self) -> Result<(Packet, Pathway, Socket), TryRecvError> {
+        self.unrouted_packets.try_recv()
+    }
+
+    pub async fn recv_unrouted_packet(&self) -> Option<(Packet, Pathway, Socket)> {
+        self.unrouted_packets.recv().await
     }
 
     // for origin_dcid

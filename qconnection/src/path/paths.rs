@@ -1,11 +1,17 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use dashmap::DashMap;
-use deref_derive::{Deref, DerefMut};
+use deref_derive::Deref;
+use qbase::{
+    error::{Error, ErrorKind},
+    Epoch,
+};
+use qcongestion::CongestionControl;
 use qinterface::path::Pathway;
 use tokio::task::AbortHandle;
 
 use super::Path;
+use crate::prelude::{EmitEvent, Event};
 
 #[derive(Deref)]
 pub struct PathContext {
@@ -26,11 +32,41 @@ impl PathContext {
     }
 }
 
-#[derive(Default, Deref, DerefMut)]
-pub struct Paths(DashMap<Pathway, PathContext>);
+#[derive(Clone)]
+pub struct ArcPaths {
+    inner: Arc<DashMap<Pathway, PathContext>>,
+    broker: Arc<dyn EmitEvent>,
+}
 
-impl Paths {
-    pub fn new() -> Self {
-        Self::default()
+impl ArcPaths {
+    pub fn new(event_broker: Arc<dyn EmitEvent>) -> Self {
+        Self {
+            inner: Default::default(),
+            broker: event_broker,
+        }
+    }
+
+    pub fn entry(&self, pathway: Pathway) -> dashmap::Entry<'_, Pathway, PathContext> {
+        self.inner.entry(pathway)
+    }
+
+    pub fn remove(&self, pathway: &Pathway) {
+        if let Some((_, path)) = self.inner.remove(pathway) {
+            self.broker
+                .emit(Event::PathInactivated(path.pathway, path.socket));
+            if self.inner.is_empty() {
+                let error =
+                    Error::with_default_fty(ErrorKind::NoViablePath, "no viable path exist");
+                self.broker.emit(Event::Failed(error));
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    pub fn max_pto_duration(&self) -> Option<Duration> {
+        self.inner.iter().map(|p| p.cc.pto_time(Epoch::Data)).max()
     }
 }

@@ -12,9 +12,9 @@ pub use qconnection::{
     },
 };
 pub use server::{QuicServer, QuicServerBuilder, QuicServerSniBuilder};
-use tokio::sync::mpsc;
 
 mod client;
+pub mod interfaces;
 mod server;
 mod util;
 
@@ -23,15 +23,15 @@ pub mod prelude {
 }
 
 static PROTO: LazyLock<Arc<prelude::QuicProto>> = LazyLock::new(|| {
-    let (unrouted_packets_tx, mut unrouted_packets_rx) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        while let Some((packet, pathway)) = unrouted_packets_rx.recv().await {
-            QuicServer::try_accpet_connection(packet, pathway).await;
+    let proto = Arc::new(QuicProto::new());
+    tokio::spawn({
+        let proto = proto.clone();
+        async move {
+            while let Some((packet, pathway, socket)) = proto.recv_unrouted_packet().await {
+                QuicServer::try_accpet_connection(packet, pathway, socket).await;
+            }
         }
     });
-    Arc::new(QuicProto::with_listener(Box::new(
-        move |_, packet, pathway| {
-            _ = unrouted_packets_tx.send((packet, pathway));
-        },
-    )))
+
+    proto
 });

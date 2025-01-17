@@ -1,6 +1,5 @@
 use std::{
     io,
-    net::SocketAddr,
     ops::Deref,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -13,7 +12,11 @@ use qbase::{
     frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
 };
 use qcongestion::{ArcCC, CongestionControl};
-use qinterface::{path::Pathway, QuicInterface};
+use qinterface::{
+    path::{Pathway, Socket},
+    router::QuicProto,
+    QuicInterface,
+};
 use tokio::{sync::Notify, time::Instant};
 
 mod aa;
@@ -29,8 +32,8 @@ pub mod idle;
 pub struct Path {
     interface: Arc<dyn QuicInterface>,
     validated: AtomicBool,
-    dst: SocketAddr,
-    way: Pathway,
+    socket: Socket,
+    pathway: Pathway,
     cc: ArcCC,
     anti_amplifier: AntiAmplifier,
     last_recv_time: Mutex<Instant>,
@@ -41,16 +44,12 @@ pub struct Path {
 }
 
 impl Path {
-    pub fn new(
-        interface: Arc<dyn QuicInterface>,
-        dst: SocketAddr,
-        way: Pathway,
-        cc: ArcCC,
-    ) -> Self {
-        Self {
+    pub fn new(proto: &QuicProto, socket: Socket, pathway: Pathway, cc: ArcCC) -> Option<Self> {
+        let interface = proto.get_interface(socket.src()).ok()?;
+        Some(Self {
             interface,
-            dst,
-            way,
+            socket,
+            pathway,
             cc,
             validated: AtomicBool::new(false),
             anti_amplifier: Default::default(),
@@ -59,7 +58,7 @@ impl Path {
             response_sndbuf: Default::default(),
             response_rcvbuf: Default::default(),
             sendable: Notify::new(),
-        }
+        })
     }
 
     pub fn skip_validation(&self) {
@@ -105,9 +104,11 @@ impl Path {
 
     pub async fn send_packets(&self, mut pkts: &[io::IoSlice<'_>]) -> io::Result<()> {
         while !pkts.is_empty() {
-            let sent =
-                core::future::poll_fn(|cx| self.interface.poll_send(cx, pkts, self.way, self.dst))
-                    .await?;
+            let sent = core::future::poll_fn(|cx| {
+                self.interface
+                    .poll_send(cx, pkts, self.pathway, self.socket.dst())
+            })
+            .await?;
             pkts = &pkts[sent..];
         }
         Ok(())

@@ -1,11 +1,11 @@
 use std::{
+    collections::HashMap,
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
     sync::Arc,
     time::Duration,
 };
 
-use dashmap::DashSet;
 use handy::Usc;
 pub use qconnection::{builder::*, prelude::*};
 use rustls::{
@@ -15,6 +15,7 @@ use rustls::{
 use tokio::sync::mpsc;
 
 use crate::{
+    interfaces::Interfaces,
     util::{ToCertificate, ToPrivateKey},
     PROTO,
 };
@@ -23,15 +24,15 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 
 /// A quic client that can initiates connections to servers.
 pub struct QuicClient {
-    bind_addresseses: Vec<SocketAddr>,
-    active_addresses: Arc<DashSet<SocketAddr>>,
+    bind_interfaces: Arc<HashMap<SocketAddr, Arc<dyn QuicInterface>>>,
     reuse_udp_sockets: bool,
     _reuse_connection: bool, // TODO
     // TODO: 好像得创建2个quic连接，一个用ipv4，一个用ipv6
     //       然后看谁先收到服务器的响应比较好
     _enable_happy_eyepballs: bool,
     _prefer_versions: Vec<u32>,
-    _defer_idle_timeout: Duration,
+    defer_idle_timeout: Duration,
+    quic_iface_binder: Box<dyn Fn(SocketAddr) -> io::Result<Arc<dyn QuicInterface>> + Send + Sync>,
     parameters: ClientParameters,
     // TODO: 要改成一个加载上次连接的parameters的函数，根据server name
     _remembered: Option<CommonParameters>,
@@ -68,7 +69,8 @@ impl QuicClient {
             reuse_connection: true,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
-            defer_idle_timeout: Duration::ZERO,
+            defer_idle_timeout: Duration::MAX,
+            quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
             parameters: ClientParameters::default(),
             tls_config: TlsClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
@@ -86,7 +88,8 @@ impl QuicClient {
             reuse_connection: true,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
-            defer_idle_timeout: Duration::ZERO,
+            defer_idle_timeout: Duration::MAX,
+            quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
             parameters: ClientParameters::default(),
             tls_config: TlsClientConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
@@ -106,27 +109,13 @@ impl QuicClient {
             reuse_connection: true,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
-            defer_idle_timeout: Duration::ZERO,
+            defer_idle_timeout: Duration::MAX,
+            quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
             parameters: ClientParameters::default(),
             tls_config,
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
             token_sink: None,
         }
-    }
-
-    /// Rebind the client to the given addresses.
-    ///
-    /// New connections will be initiates with the new boudn addresses, previously created connections will not be affected.
-    ///
-    /// If you call this multiple times, only the last `addrs` will be used. You can pass a empty slice to clear the
-    /// bound addresses, then each time the client initiates a new connection, the client will use the address and port
-    /// that dynamic assigned by the system.
-    ///
-    /// To know more about how the client selects the socket address, read [`QuicClient::connect`].
-    pub fn rebind(&mut self, addrs: impl ToSocketAddrs) -> io::Result<()> {
-        self.bind_addresseses.clear();
-        self.bind_addresseses.extend(addrs.to_socket_addrs()?);
-        Ok(())
     }
 
     /// Returns the connection to the specified server.
@@ -170,64 +159,37 @@ impl QuicClient {
     ) -> io::Result<Arc<Connection>> {
         let server_name = server_name.into();
 
-        let local_addr = if self.bind_addresseses.is_empty() {
-            let usc = if server_addr.is_ipv4() {
-                Usc::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+        let quic_iface = if self.bind_interfaces.is_empty() {
+            let quic_iface = if server_addr.is_ipv4() {
+                (self.quic_iface_binder)(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))?
             } else {
-                Usc::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
-            }?;
-            let local_addr = usc.local_addr()?;
-            let active_address = self.active_addresses.clone();
-            tokio::spawn(async move {
-                match PROTO.listen_on(local_addr, Arc::new(usc)).unwrap().await {
-                    Err(_) => active_address.remove(&local_addr),
-                };
-            });
-            self.active_addresses.insert(local_addr);
-            local_addr
+                (self.quic_iface_binder)(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))?
+            };
+            Interfaces::add(quic_iface.clone())?;
+            quic_iface
         } else {
-            // similar to std::net::UdpSocket::bind
-            let mut last_error = None;
-
-            let no_available_address =
-                || io::Error::new(io::ErrorKind::AddrNotAvailable, "No available address");
-            self.bind_addresseses
-                .iter()
-                .filter(|addr| addr.is_ipv4() == server_addr.is_ipv4())
-                .find_map(|&local_addr| {
-                    if self.active_addresses.contains(&local_addr) {
-                        if self.reuse_udp_sockets {
-                            Some(local_addr)
-                        } else {
-                            None
-                        }
+            let no_available_address = || {
+                let mut reason = String::from("No address matches the server's address family");
+                if !self.reuse_udp_sockets {
+                    reason.push_str(", or all the bound addresses are used by other connections");
+                }
+                io::Error::new(io::ErrorKind::AddrNotAvailable, reason)
+            };
+            self.bind_interfaces
+                .keys()
+                .filter(|local_addr| local_addr.is_ipv4() == server_addr.is_ipv4())
+                .find_map(|local_addr| {
+                    if self.reuse_udp_sockets {
+                        Interfaces::try_acquire_unique(*local_addr)
                     } else {
-                        let usc = match Usc::bind(local_addr) {
-                            Ok(usc) => usc,
-                            Err(error) => {
-                                last_error = Some(error);
-                                return None;
-                            }
-                        };
-                        let local_addr = match usc.local_addr() {
-                            Ok(local_addr) => local_addr,
-                            Err(error) => {
-                                last_error = Some(error);
-                                return None;
-                            }
-                        };
-                        let active_address = self.active_addresses.clone();
-                        tokio::spawn(async move {
-                            match PROTO.listen_on(local_addr, Arc::new(usc)).unwrap().await {
-                                Err(_) => active_address.remove(&local_addr),
-                            };
-                        });
-                        Some(local_addr)
+                        Interfaces::try_acquire_shared(*local_addr)
                     }
                 })
-                .ok_or(last_error.unwrap_or_else(no_available_address))?
+                .ok_or_else(no_available_address)?
         };
 
+        let local_addr = quic_iface.local_addr()?;
+        let socket = Socket::new(local_addr, server_addr);
         let pathway = Pathway::new(
             Endpoint::Direct { addr: local_addr },
             Endpoint::Direct { addr: server_addr },
@@ -245,19 +207,29 @@ impl QuicClient {
                 .with_parameters(self.parameters, None)
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_ctrl(&self.streams_controller)
-                .with_interface(PROTO.clone(), ConnectionId::random_gen(8))
+                .with_proto(PROTO.clone())
+                .defer_idle_timeout(self.defer_idle_timeout)
+                .with_cids(ConnectionId::random_gen(8))
                 .run_with(event_broker),
         );
 
-        connection.add_path(pathway)?;
-
         tokio::spawn({
             let connection = connection.clone();
+            let bind_interfaces = self.bind_interfaces.clone();
             async move {
                 while let Some(event) = events.recv().await {
                     match event {
                         Event::Handshaked => {}
                         Event::Failed(error) => connection.enter_closing(error.into()),
+                        Event::ProbedNewPath(_, _) => {}
+                        Event::PathInactivated(_pathway, socket) => {
+                            if Interfaces::try_free_interface(socket.src())
+                                && bind_interfaces.contains_key(&socket.src())
+                            {
+                                // TODO：不该令进程崩溃，而是以某种方法传递错误
+                                panic!("initerface on {} is closed unexpectedly", socket.src());
+                            }
+                        }
                         Event::Closed(ccf) => connection.enter_draining(ccf),
                         Event::StatelessReset => {}
                         Event::Terminated => { /* Todo: connections set */ }
@@ -266,6 +238,7 @@ impl QuicClient {
             }
         });
 
+        connection.add_path(socket, pathway)?;
         Ok(connection)
     }
 }
@@ -278,6 +251,7 @@ pub struct QuicClientBuilder<T> {
     enable_happy_eyepballs: bool,
     prefer_versions: Vec<u32>,
     defer_idle_timeout: Duration,
+    quic_iface_binder: Box<dyn Fn(SocketAddr) -> io::Result<Arc<dyn QuicInterface>> + Send + Sync>,
     parameters: ClientParameters,
     tls_config: T,
     streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
@@ -404,6 +378,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
+            quic_iface_binder: self.quic_iface_binder,
             parameters: self.parameters,
             tls_config: self.tls_config.with_root_certificates(root_store),
             streams_controller: self.streams_controller,
@@ -425,6 +400,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
+            quic_iface_binder: self.quic_iface_binder,
             parameters: self.parameters,
             tls_config: self.tls_config.with_webpki_verifier(verifier),
             streams_controller: self.streams_controller,
@@ -450,6 +426,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
+            quic_iface_binder: self.quic_iface_binder,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
@@ -469,6 +446,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
             defer_idle_timeout: self.defer_idle_timeout,
+            quic_iface_binder: self.quic_iface_binder,
             parameters: self.parameters,
             tls_config: self.tls_config.with_no_client_auth(),
             streams_controller: self.streams_controller,
@@ -487,6 +465,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
+            quic_iface_binder: self.quic_iface_binder,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self.tls_config.with_client_cert_resolver(cert_resolver),
@@ -524,21 +503,30 @@ impl QuicClientBuilder<TlsClientConfig> {
     }
 
     /// Build the QuicClient, ready to initiates connect to the servers.
-    pub fn build(self) -> QuicClient {
-        QuicClient {
-            bind_addresseses: self.bind_addresses,
-            active_addresses: Default::default(),
+    pub fn build(self) -> io::Result<QuicClient> {
+        let bind_interfaces = self.bind_addresses.into_iter().try_fold(
+            HashMap::new(),
+            |mut bind_interfaces, local_addr| {
+                let quic_ifacce = (self.quic_iface_binder)(local_addr)?;
+                Interfaces::add(quic_ifacce.clone())?;
+                bind_interfaces.insert(local_addr, quic_ifacce);
+                io::Result::Ok(bind_interfaces)
+            },
+        )?;
+        Ok(QuicClient {
+            bind_interfaces: Arc::new(bind_interfaces),
             reuse_udp_sockets: self.reuse_udp_sockets,
             _reuse_connection: self.reuse_connection,
             _enable_happy_eyepballs: self.enable_happy_eyepballs,
             _prefer_versions: self.prefer_versions,
-            _defer_idle_timeout: self.defer_idle_timeout,
+            quic_iface_binder: self.quic_iface_binder,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             // TODO: 要能加载上次连接的parameters
             _remembered: None,
             tls_config: Arc::new(self.tls_config),
             streams_controller: self.streams_controller,
             token_sink: self.token_sink,
-        }
+        })
     }
 }

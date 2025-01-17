@@ -17,6 +17,8 @@ use path::{Pathway, Socket};
 pub trait QuicInterface: Send + Sync {
     fn reversed_bytes(&self, on: Pathway) -> io::Result<usize>;
 
+    fn local_addr(&self) -> io::Result<SocketAddr>;
+
     fn max_segment_size(&self) -> io::Result<usize>;
 
     fn max_segments(&self) -> io::Result<usize>;

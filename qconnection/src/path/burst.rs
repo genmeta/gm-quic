@@ -79,7 +79,7 @@ impl Burst {
         .await
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"))?;
 
-        let reversed_size = self.path.interface.reversed_bytes(self.path.way)?;
+        let reversed_size = self.path.interface.reversed_bytes(self.path.pathway)?;
 
         Ok(prepared_buffers
             .map(move |buffer| {

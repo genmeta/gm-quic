@@ -64,7 +64,7 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
         .without_cert()
         .with_keylog(args.keylog)
         .with_alpns([b"hq-29".as_ref()].iter().map(|s| s.to_vec()))
-        .build();
+        .build()?;
 
     let quic_conn = client.connect(args.domain, args.addr).unwrap();
     let mut counter = 0;
