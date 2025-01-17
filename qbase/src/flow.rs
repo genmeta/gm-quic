@@ -308,7 +308,7 @@ where
     /// when new stream data is received.
     ///
     /// As mentioned in [`ArcSendControler`], if the flow control limit is exceeded,
-    /// an [`Overflow`] error will be returned.
+    /// a [`QuicError`] error will be returned.
     pub fn on_new_rcvd(&self, frame_type: FrameType, amount: usize) -> Result<usize, QuicError> {
         self.0.on_new_rcvd(frame_type, amount)
     }
