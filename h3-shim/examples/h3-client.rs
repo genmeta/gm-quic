@@ -25,7 +25,7 @@ pub struct Opt {
     #[structopt(long, short = 'b', default_value = "[::]:0")]
     pub bind: Vec<SocketAddr>,
 
-    #[structopt(default_value = "https://localhost:4433/Cargo.toml")]
+    #[structopt(default_value = "https://localhost:4433/Cargo.lock")]
     pub uri: String,
 }
 
@@ -139,8 +139,8 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
 
         // `recv_data()` must be called after `recv_response()` for
         // receiving potential response body
+        let mut out = tokio::io::stdout();
         while let Some(mut chunk) = stream.recv_data().await? {
-            let mut out = tokio::io::stdout();
             out.write_all_buf(&mut chunk).await?;
             out.flush().await?;
         }

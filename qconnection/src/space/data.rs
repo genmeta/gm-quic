@@ -1,4 +1,4 @@
-use std::{ops::Deref, sync::Arc};
+use std::sync::Arc;
 
 use bytes::BufMut;
 use futures::{Stream, StreamExt};
@@ -394,18 +394,9 @@ pub fn spawn_deliver_and_parse(
                 let packet_size = packet.1.len();
                 match space.decrypt_0rtt_packet(packet).await {
                     Some(Ok(packet)) => {
-                        let path = match components.paths.entry(pathway) {
-                            dashmap::Entry::Occupied(path) => path.get().deref().clone(),
-                            dashmap::Entry::Vacant(vacant_entry) => {
-                                match components.try_create_path(socket, pathway, true, true) {
-                                    Some(new_path) => {
-                                        event_broker.emit(Event::ProbedNewPath(pathway, socket));
-                                        vacant_entry.insert(new_path).clone()
-                                    }
-                                    // connection already entered closing or draining state
-                                    None => continue,
-                                }
-                            }
+                        let path = match components.get_or_create_path(socket, pathway, true) {
+                            Some(path) => path,
+                            None => return,
                         };
                         path.on_rcvd(packet_size);
                         match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
@@ -437,18 +428,9 @@ pub fn spawn_deliver_and_parse(
                 let packet_size = packet.1.len();
                 match space.decrypt_1rtt_packet(packet).await {
                     Some(Ok(packet)) => {
-                        let path = match components.paths.entry(pathway) {
-                            dashmap::Entry::Occupied(path) => path.get().deref().clone(),
-                            dashmap::Entry::Vacant(vacant_entry) => {
-                                match components.try_create_path(socket, pathway, true, true) {
-                                    Some(new_path) => {
-                                        event_broker.emit(Event::ProbedNewPath(pathway, socket));
-                                        vacant_entry.insert(new_path).clone()
-                                    }
-                                    // connection already entered closing or draining state
-                                    None => continue,
-                                }
-                            }
+                        let path = match components.get_or_create_path(socket, pathway, true) {
+                            Some(path) => path,
+                            None => return,
                         };
                         path.on_rcvd(packet_size);
                         match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
