@@ -1,11 +1,12 @@
 use std::{
-    collections::HashMap,
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
     sync::Arc,
     time::Duration,
 };
 
+use dashmap::DashMap;
+use futures::{FutureExt, StreamExt};
 use handy::Usc;
 pub use qconnection::{builder::*, prelude::*};
 use rustls::{
@@ -24,20 +25,21 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 
 /// A quic client that can initiates connections to servers.
 pub struct QuicClient {
-    bind_interfaces: Arc<HashMap<SocketAddr, Arc<dyn QuicInterface>>>,
-    reuse_udp_sockets: bool,
-    _reuse_connection: bool, // TODO
+    // be different from QuicServer, QuicClient is not arc
+    bind_interfaces: Option<Arc<DashMap<SocketAddr, Arc<dyn QuicInterface>>>>,
+    defer_idle_timeout: Duration,
     // TODO: 好像得创建2个quic连接，一个用ipv4，一个用ipv6
     //       然后看谁先收到服务器的响应比较好
     _enable_happy_eyepballs: bool,
-    _prefer_versions: Vec<u32>,
-    defer_idle_timeout: Duration,
-    quic_iface_binder: Box<dyn Fn(SocketAddr) -> io::Result<Arc<dyn QuicInterface>> + Send + Sync>,
     parameters: ClientParameters,
+    _prefer_versions: Vec<u32>,
+    quic_iface_binder: Box<dyn Fn(SocketAddr) -> io::Result<Arc<dyn QuicInterface>> + Send + Sync>,
     // TODO: 要改成一个加载上次连接的parameters的函数，根据server name
     _remembered: Option<CommonParameters>,
-    tls_config: Arc<TlsClientConfig>,
+    _reuse_connection: bool,
+    reuse_udp_sockets: bool,
     streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
+    tls_config: Arc<TlsClientConfig>,
     token_sink: Option<Arc<dyn TokenSink>>,
 }
 
@@ -64,7 +66,7 @@ impl QuicClient {
     /// ```
     pub fn builder() -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         QuicClientBuilder {
-            bind_addresses: vec![],
+            bind_interfaces: Arc::new(DashMap::new()),
             reuse_udp_sockets: false,
             reuse_connection: true,
             enable_happy_eyepballs: false,
@@ -83,7 +85,7 @@ impl QuicClient {
         provider: Arc<rustls::crypto::CryptoProvider>,
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         QuicClientBuilder {
-            bind_addresses: vec![],
+            bind_interfaces: Arc::new(DashMap::new()),
             reuse_udp_sockets: false,
             reuse_connection: true,
             enable_happy_eyepballs: false,
@@ -104,7 +106,7 @@ impl QuicClient {
     /// This is useful when you want to customize the TLS configuration, or integrate qm-quic with other crates.
     pub fn builder_with_tls(tls_config: TlsClientConfig) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
-            bind_addresses: vec![],
+            bind_interfaces: Arc::new(DashMap::new()),
             reuse_udp_sockets: false,
             reuse_connection: true,
             enable_happy_eyepballs: false,
@@ -159,33 +161,38 @@ impl QuicClient {
     ) -> io::Result<Arc<Connection>> {
         let server_name = server_name.into();
 
-        let quic_iface = if self.bind_interfaces.is_empty() {
-            let quic_iface = if server_addr.is_ipv4() {
-                (self.quic_iface_binder)(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))?
-            } else {
-                (self.quic_iface_binder)(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))?
-            };
-            Interfaces::add(quic_iface.clone())?;
-            quic_iface
-        } else {
-            let no_available_address = || {
-                let mut reason = String::from("No address matches the server's address family");
-                if !self.reuse_udp_sockets {
-                    reason.push_str(", or all the bound addresses are used by other connections");
-                }
-                io::Error::new(io::ErrorKind::AddrNotAvailable, reason)
-            };
-            self.bind_interfaces
-                .keys()
-                .filter(|local_addr| local_addr.is_ipv4() == server_addr.is_ipv4())
-                .find_map(|local_addr| {
-                    if self.reuse_udp_sockets {
-                        Interfaces::try_acquire_unique(*local_addr)
-                    } else {
-                        Interfaces::try_acquire_shared(*local_addr)
+        let quic_iface = match &self.bind_interfaces {
+            None => {
+                let quic_iface = if server_addr.is_ipv4() {
+                    (self.quic_iface_binder)(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))?
+                } else {
+                    (self.quic_iface_binder)(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))?
+                };
+                Interfaces::add(quic_iface.clone())?;
+                quic_iface
+            }
+            Some(bind_interfaces) => {
+                let no_available_address = || {
+                    let mut reason = String::from("No address matches the server's address family");
+                    if !self.reuse_udp_sockets {
+                        reason
+                            .push_str(", or all the bound addresses are used by other connections");
                     }
-                })
-                .ok_or_else(no_available_address)?
+                    io::Error::new(io::ErrorKind::AddrNotAvailable, reason)
+                };
+                bind_interfaces
+                    .iter()
+                    .map(|entry| *entry.key())
+                    .filter(|local_addr| local_addr.is_ipv4() == server_addr.is_ipv4())
+                    .find_map(|local_addr| {
+                        if self.reuse_udp_sockets {
+                            Interfaces::try_acquire_unique(local_addr)
+                        } else {
+                            Interfaces::try_acquire_shared(local_addr)
+                        }
+                    })
+                    .ok_or_else(no_available_address)?
+            }
         };
 
         let local_addr = quic_iface.local_addr()?;
@@ -215,7 +222,6 @@ impl QuicClient {
 
         tokio::spawn({
             let connection = connection.clone();
-            let bind_interfaces = self.bind_interfaces.clone();
             async move {
                 while let Some(event) = events.recv().await {
                     match event {
@@ -223,12 +229,7 @@ impl QuicClient {
                         Event::Failed(error) => connection.enter_closing(error.into()),
                         Event::ProbedNewPath(_, _) => {}
                         Event::PathInactivated(_pathway, socket) => {
-                            if Interfaces::try_free_interface(socket.src())
-                                && bind_interfaces.contains_key(&socket.src())
-                            {
-                                // TODO：不该令进程崩溃，而是以某种方法传递错误
-                                panic!("interface on {} is closed unexpectedly", socket.src());
-                            }
+                            _ = Interfaces::try_free_interface(socket.src())
                         }
                         Event::Closed(ccf) => connection.enter_draining(ccf),
                         Event::StatelessReset => {}
@@ -243,9 +244,20 @@ impl QuicClient {
     }
 }
 
+impl Drop for QuicClient {
+    fn drop(&mut self) {
+        if let Some(bind_interfaces) = self.bind_interfaces.take() {
+            for entry in bind_interfaces.iter() {
+                Interfaces::del(*entry.key(), entry.value());
+            }
+            bind_interfaces.clear();
+        }
+    }
+}
+
 /// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
-    bind_addresses: Vec<SocketAddr>,
+    bind_interfaces: Arc<DashMap<SocketAddr, Arc<dyn QuicInterface>>>,
     reuse_udp_sockets: bool,
     reuse_connection: bool,
     enable_happy_eyepballs: bool,
@@ -259,17 +271,113 @@ pub struct QuicClientBuilder<T> {
 }
 
 impl<T> QuicClientBuilder<T> {
-    /// Bind the client to the given addresses.
+    /// Specify how to bind interfaces.
     ///
-    /// If you call this multiple times, only the last `addrs` will be used.
+    /// The given closure will be used by [`Self::bind`],
+    /// and/or [`QuicClient::connect`] if no interface bound when client built.
     ///
-    /// Although you dont bind any address, each time the client initiates a new connection, the client will use the
-    /// address and port that dynamic assigned by the system.
+    /// The default quic interface is [`Usc`] that support GSO and GRO,
+    /// and the binder is [`Usc::bind`].
+    pub fn with_iface_binder<QI, Binder>(self, binder: Binder) -> Self
+    where
+        QI: QuicInterface + 'static,
+        Binder: Fn(SocketAddr) -> io::Result<QI> + Send + Sync + 'static,
+    {
+        Self {
+            quic_iface_binder: Box::new(move |addr| Ok(Arc::new(binder(addr)?))),
+            ..self
+        }
+    }
+
+    /// Bind the interfaces on given address.
     ///
-    /// To know more about how the client selects the socket address, read [`QuicClient::connect`].
-    pub fn bind(mut self, addrs: impl ToSocketAddrs) -> io::Result<Self> {
-        self.bind_addresses.clear();
-        self.bind_addresses.extend(addrs.to_socket_addrs()?);
+    /// The default quic interface is [`Usc`] that support GSO and GRO.
+    /// You can also Specify how to bind the interface by calling [`Self::with_iface_binder`].
+    ///
+    /// Or you can use your own created interface by calling [`Self::with_interfaces`].
+    ///
+    /// If you call this multiple times, only the last set of interface will be used,
+    /// previous bound interface will be freed immediately.
+    ///
+    /// If you dont bind any address, each time the client initiates a new connection,
+    /// the client will use bind new interface on address and port that dynamic assigned by the system.
+    ///
+    /// To know more about how the client selects the socket address when initiates a new connection,
+    /// read [`QuicClient::connect`].
+    pub fn bind(self, addrs: impl ToSocketAddrs) -> io::Result<Self> {
+        for entry in self.bind_interfaces.iter() {
+            Interfaces::del(*entry.key(), entry.value());
+        }
+        self.bind_interfaces.clear();
+
+        let iface_recv_tasks =
+            addrs
+                .to_socket_addrs()?
+                .try_fold(vec![], |mut recv_tasks, address| {
+                    if self.bind_interfaces.contains_key(&address) {
+                        return io::Result::Ok(recv_tasks);
+                    }
+                    let interface = (self.quic_iface_binder)(address)?;
+                    let local_addr = interface.local_addr()?;
+                    recv_tasks.push(
+                        Interfaces::add(interface.clone())?.map(move |result| (result, local_addr)),
+                    );
+                    self.bind_interfaces.insert(local_addr, interface);
+                    Ok(recv_tasks)
+                })?;
+
+        tokio::spawn({
+            let bind_interfaces = self.bind_interfaces.clone();
+            async move {
+                let mut iface_recv_tasks =
+                    futures::stream::FuturesUnordered::from_iter(iface_recv_tasks);
+                while let Some((result, local_addr)) = iface_recv_tasks.next().await {
+                    let error = match result {
+                        // Ok(result) => result.into_err(),
+                        Ok(result) => match result {
+                            Err(error) => error,
+                        },
+                        Err(join_error) if join_error.is_cancelled() => return,
+                        Err(join_error) => join_error.into(),
+                    };
+                    log::warn!(
+                        "interface on {local_addr} that client bound was closed unexpectedly: {error}"
+                    );
+                    bind_interfaces.remove(&local_addr);
+                }
+                log::warn!("all interfaces that client bound were closed unexpectedly, client will not be able to connect to the server");
+            }
+        });
+        Ok(self)
+    }
+
+    /// Specify the Interface that client use.
+    ///
+    /// The client will use the given interfaces to initiates connections.
+    ///
+    /// If you call this multiple times, only the last set of interfaces will be used.
+    ///
+    /// This method will return [`io::Error`] if any of the interfaces failed to get its local addresses
+    /// (by calling [`QuicInterface::local_addr`]).
+    ///
+    /// If the given iterator is empty, each time the client initiates a new connection,
+    /// the client will use bind new interface on address and port that dynamic assigned by the system.
+    pub fn with_interfaces(
+        mut self,
+        interfaces: impl IntoIterator<Item = Arc<dyn QuicInterface>>,
+    ) -> io::Result<Self> {
+        for entry in self.bind_interfaces.iter() {
+            Interfaces::del(*entry.key(), entry.value());
+        }
+        self.bind_interfaces = interfaces.into_iter().try_fold(
+            Arc::new(DashMap::new()),
+            |bind_interfaces, interface| {
+                let local_addr = interface.local_addr()?;
+                bind_interfaces.insert(local_addr, interface);
+                io::Result::Ok(bind_interfaces)
+            },
+        )?;
+        self.bind_interfaces.clear();
         Ok(self)
     }
 
@@ -372,7 +480,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         root_store: impl Into<Arc<rustls::RootCertStore>>,
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
-            bind_addresses: self.bind_addresses,
+            bind_interfaces: self.bind_interfaces,
             reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
@@ -394,7 +502,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         verifier: Arc<rustls::client::WebPkiServerVerifier>,
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
-            bind_addresses: self.bind_addresses,
+            bind_interfaces: self.bind_interfaces,
             reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
@@ -420,7 +528,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         key_der: impl ToPrivateKey,
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
-            bind_addresses: self.bind_addresses,
+            bind_interfaces: self.bind_interfaces,
             reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
@@ -440,7 +548,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
     /// Do not support client auth.
     pub fn without_cert(self) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
-            bind_addresses: self.bind_addresses,
+            bind_interfaces: self.bind_interfaces,
             reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
@@ -460,7 +568,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         cert_resolver: Arc<dyn ResolvesClientCert>,
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
-            bind_addresses: self.bind_addresses,
+            bind_interfaces: self.bind_interfaces,
             reuse_udp_sockets: self.reuse_udp_sockets,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
@@ -503,19 +611,16 @@ impl QuicClientBuilder<TlsClientConfig> {
     }
 
     /// Build the QuicClient, ready to initiates connect to the servers.
-    pub fn build(self) -> io::Result<QuicClient> {
-        let bind_interfaces = self.bind_addresses.into_iter().try_fold(
-            HashMap::new(),
-            |mut bind_interfaces, bind_addr| {
-                let quic_ifacce = (self.quic_iface_binder)(bind_addr)?;
-                let local_addr = quic_ifacce.local_addr()?;
-                Interfaces::add(quic_ifacce.clone())?;
-                bind_interfaces.insert(local_addr, quic_ifacce);
-                io::Result::Ok(bind_interfaces)
-            },
-        )?;
-        Ok(QuicClient {
-            bind_interfaces: Arc::new(bind_interfaces),
+    ///
+    /// If
+    pub fn build(self) -> QuicClient {
+        let bind_interfaces = if self.bind_interfaces.is_empty() {
+            None
+        } else {
+            Some(self.bind_interfaces)
+        };
+        QuicClient {
+            bind_interfaces,
             reuse_udp_sockets: self.reuse_udp_sockets,
             _reuse_connection: self.reuse_connection,
             _enable_happy_eyepballs: self.enable_happy_eyepballs,
@@ -528,6 +633,6 @@ impl QuicClientBuilder<TlsClientConfig> {
             tls_config: Arc::new(self.tls_config),
             streams_controller: self.streams_controller,
             token_sink: self.token_sink,
-        })
+        }
     }
 }

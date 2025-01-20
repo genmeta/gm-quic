@@ -98,7 +98,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
         .with_alpns([ALPN.into()])
         .with_parameters(params)
         .bind(&opt.bind[..])?
-        .build()?;
+        .build();
     info!(%addr, "connecting to server");
     let conn = quic_client.connect(auth.host(), addr)?;
 

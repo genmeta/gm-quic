@@ -35,12 +35,20 @@ impl<T> Channel<T> {
         }
     }
 
-    /// Close the channel.
+    /// Close the channel, return all unrecieved items.
     ///
     /// All unrecieved items will be dropped, and all pending [`Channel::recv`] calls will return [`None`].
-    pub fn close(&self) {
-        drop(self.deque.lock().unwrap().take());
+    ///
+    /// If the channel is already closed, this call will have no effect, and return [`None`]
+    pub fn close(&self) -> Option<VecDeque<T>> {
+        let mut deque = self.deque.lock().unwrap();
         self.notify.notify_waiters();
+        deque.take()
+    }
+
+    /// Check if the channel is closed.
+    pub fn is_closed(&self) -> bool {
+        self.deque.lock().unwrap().is_none()
     }
 
     /// Try to recieve an item from the channel.
