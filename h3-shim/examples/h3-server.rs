@@ -192,5 +192,6 @@ where
     }
 
     stream.finish().await?;
+    info!("stream finished");
     Ok(())
 }

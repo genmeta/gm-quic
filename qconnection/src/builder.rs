@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    ops::Deref,
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -22,7 +23,7 @@ use qbase::{
     sid,
     token::ArcTokenRegistry,
 };
-use qcongestion::{ArcCC, CongestionAlgorithm};
+use qcongestion::{ArcCC, CongestionAlgorithm, ObserveHandshake};
 use qinterface::{
     path::{Pathway, Socket},
     queue::RcvdPacketQueue,
@@ -443,60 +444,75 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
 }
 
 impl Components {
-    pub fn try_create_path(
+    pub fn get_or_create_path(
         &self,
         socket: Socket,
         pathway: Pathway,
         is_probed: bool,
-        do_validate: bool,
-    ) -> Option<PathContext> {
-        let max_ack_delay = self.parameters.local()?.max_ack_delay().into_inner();
+    ) -> Option<Arc<Path>> {
+        let do_validate = self.handshake.is_handshake_done();
+        match self.paths.entry(pathway) {
+            dashmap::Entry::Occupied(occuiped_entry) => Some(occuiped_entry.get().deref().clone()),
+            dashmap::Entry::Vacant(vacant_entry) => {
+                let max_ack_delay = self.parameters.local()?.max_ack_delay().into_inner();
 
-        let cc = ArcCC::new(
-            CongestionAlgorithm::Bbr,
-            Duration::from_micros(max_ack_delay as _),
-            [
-                self.spaces.initial().clone(),
-                self.spaces.handshake().clone(),
-                self.spaces.data().clone(),
-            ],
-            Box::new(self.handshake.clone()),
-        );
+                let cc = ArcCC::new(
+                    CongestionAlgorithm::Bbr,
+                    Duration::from_micros(max_ack_delay as _),
+                    [
+                        self.spaces.initial().clone(),
+                        self.spaces.handshake().clone(),
+                        self.spaces.data().clone(),
+                    ],
+                    Box::new(self.handshake.clone()),
+                );
 
-        let path = Arc::new(Path::new(&self.proto, socket, pathway, cc)?);
+                let path = Arc::new(Path::new(&self.proto, socket, pathway, cc)?);
 
-        if !is_probed {
-            path.grant_anti_amplifier();
-        }
-
-        let burst = path.new_burst(self);
-        let idle_timeout = path.idle_timeout(self);
-
-        let task = tokio::spawn({
-            let path = path.clone();
-            let paths = self.paths.clone();
-            let defer_idle_timeout = self.defer_idle_timeout;
-            async move {
-                let validate = async {
-                    if paths.is_empty() || !do_validate {
-                        path.skip_validation();
-                        true
-                    } else {
-                        path.validate().await
-                    }
-                };
-                tokio::select! {
-                    false = validate => {},
-                    _ = idle_timeout => {},
-                    _ = burst.launch() => {},
-                    _ = path.do_ticks() => {},
-                    _ = path.defer_idle_timeout(defer_idle_timeout) => {},
+                if !is_probed {
+                    path.grant_anti_amplifier();
                 }
-                // same as [`Components::del_path`]
-                paths.remove(&pathway);
+
+                let burst = path.new_burst(self);
+                let idle_timeout = path.idle_timeout(self);
+
+                let task = tokio::spawn({
+                    let path = path.clone();
+                    let paths = self.paths.clone();
+                    let defer_idle_timeout = self.defer_idle_timeout;
+                    async move {
+                        tracing::debug!(
+                            ?pathway,
+                            ?socket,
+                            is_probed,
+                            do_validate,
+                            "created new path"
+                        );
+                        let validate = async {
+                            if do_validate {
+                                path.validate().await
+                            } else {
+                                path.skip_validation();
+                                true
+                            }
+                        };
+                        let reason = tokio::select! {
+                            false = validate => "failed to validate",
+                            _ = idle_timeout => "idle timeout",
+                            _ = burst.launch() => "failed to send packets",
+                            _ = path.do_ticks() => unreachable!(),
+                            _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout ",
+                        };
+                        tracing::debug!(?pathway, ?socket, reason, "path inactived");
+                        // same as [`Components::del_path`]
+                        paths.remove(&pathway);
+                    }
+                });
+
+                vacant_entry.insert(PathContext::new(path.clone(), task.abort_handle()));
+                Some(path)
             }
-        });
-        Some(PathContext::new(path, task.abort_handle()))
+        }
     }
 }
 

@@ -125,7 +125,8 @@ impl ReceiveFrame<PathChallengeFrame> for Path {
     type Output = ();
 
     fn recv_frame(&self, frame: &PathChallengeFrame) -> Result<Self::Output, Error> {
-        self.challenge_sndbuf.write(*frame);
+        self.sendable.notify_waiters();
+        self.response_sndbuf.write((*frame).into());
         Ok(())
     }
 }

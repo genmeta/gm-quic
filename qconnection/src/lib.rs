@@ -246,11 +246,7 @@ impl Components {
     }
 
     pub fn add_path(&self, socket: Socket, pathway: Pathway) {
-        if let dashmap::Entry::Vacant(vacant) = self.paths.entry(pathway) {
-            if let Some(path) = self.try_create_path(socket, pathway, false, true) {
-                vacant.insert(path);
-            }
-        }
+        self.get_or_create_path(socket, pathway, false);
     }
 
     pub fn del_path(&self, pathway: &Pathway) {
@@ -326,7 +322,6 @@ impl Connection {
         self.map(|core_conn| core_conn.del_path(pathway))
     }
 
-    // for [`h3-shim`] ... write docs
     pub fn is_active(&self) -> bool {
         self.0.read().unwrap().is_ok()
     }
