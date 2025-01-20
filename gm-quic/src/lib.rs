@@ -1,20 +1,25 @@
 use std::sync::{Arc, LazyLock};
 
-pub use client::{QuicClient, QuicClientBuilder};
 use qconnection::prelude::QuicProto;
 pub use qconnection::{
     builder::{
-        ClientParameters, ConsistentConcurrency, ControlConcurrency, DemandConcurrency,
-        NoopTokenRegistry, ServerParameters, TokenProvider, TokenSink,
+        ClientParameters, ConnectionId, ConsistentConcurrency, ControlConcurrency,
+        DemandConcurrency, NoopTokenRegistry, ServerParameters, TokenProvider, TokenSink,
     },
     prelude::{
-        Connection, StreamId, StreamReader, StreamWriter, UnreliableReader, UnreliableWriter,
+        Connection, Pathway, QuicInterface, Socket, StreamId, StreamReader, StreamWriter,
+        UnreliableReader, UnreliableWriter,
     },
 };
-pub use server::{QuicServer, QuicServerBuilder, QuicServerSniBuilder};
+
+pub use crate::{
+    client::{QuicClient, QuicClientBuilder},
+    interfaces::Interfaces,
+    server::{QuicServer, QuicServerBuilder, QuicServerSniBuilder},
+};
 
 mod client;
-pub mod interfaces;
+mod interfaces;
 mod server;
 mod util;
 

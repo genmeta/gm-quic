@@ -1,6 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
-    convert::Infallible,
+    collections::HashSet,
     io::{self},
     net::{SocketAddr, ToSocketAddrs},
     sync::{Arc, LazyLock, RwLock, Weak},
@@ -15,7 +14,7 @@ use rustls::{
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::sync::mpsc;
 
 use crate::{
     interfaces::Interfaces,
@@ -24,7 +23,6 @@ use crate::{
 };
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
-type QuicListner = Arc<Channel<(Arc<Connection>, Pathway)>>;
 
 // 理应全局只有一个server
 static SERVER: LazyLock<RwLock<Weak<QuicServer>>> = LazyLock::new(RwLock::default);
@@ -45,8 +43,6 @@ impl ResolvesServerCert for VirtualHosts {
     }
 }
 
-type ListenedInterface = (Arc<dyn QuicInterface>, JoinHandle<io::Result<Infallible>>);
-
 /// The quic server that can accept incoming connections.
 ///
 /// To create a server, you need to use the [`QuicServerBuilder`] to configure the server, and then call the
@@ -58,15 +54,15 @@ type ListenedInterface = (Arc<dyn QuicInterface>, JoinHandle<io::Result<Infallib
 /// [`QuicServer`] can only accept connections, dont manage the connections. You can get the incoming connection by
 /// calling the [`QuicServer::accept`] method.
 pub struct QuicServer {
-    bind_addresses: Arc<HashMap<SocketAddr, ListenedInterface>>,
-    listener: QuicListner,
-    passive_listening: bool,
-    _supported_versions: Vec<u32>,
+    bind_interfaces: DashMap<SocketAddr, Arc<dyn QuicInterface>>,
     defer_idle_timeout: Duration,
+    listener: Arc<Channel<(Arc<Connection>, Pathway)>>,
     parameters: ServerParameters,
-    tls_config: Arc<TlsServerConfig>,
+    passive_listening: bool,
     streams_controller:
         Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
+    _supported_versions: Vec<u32>,
+    tls_config: Arc<TlsServerConfig>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
@@ -125,7 +121,10 @@ impl QuicServer {
     /// because the server may fail to bind to some addresses. And, while the server is running, some sockets may be
     /// closed unexpectedly.
     pub fn addresses(&self) -> HashSet<SocketAddr> {
-        self.bind_addresses.keys().copied().collect()
+        self.bind_interfaces
+            .iter()
+            .map(|entry| *entry.key())
+            .collect()
     }
 
     /// Accept the next incoming connection.
@@ -136,8 +135,9 @@ impl QuicServer {
     /// If all listening udp sockets are closed, this method will return an error.
     pub async fn accept(&self) -> io::Result<(Arc<Connection>, Pathway)> {
         let no_address_listening = || {
-            let error = "all listening udp sockets are closed";
-            io::Error::new(io::ErrorKind::AddrNotAvailable, error)
+            debug_assert!(!self.passive_listening);
+            let reason = "one of the listening interface was closed unexpectedly";
+            io::Error::new(io::ErrorKind::AddrNotAvailable, reason)
         };
         self.listener.recv().await.ok_or_else(no_address_listening)
     }
@@ -150,7 +150,7 @@ impl QuicServer {
             return;
         };
 
-        if !(server.passive_listening || server.bind_addresses.contains_key(&socket.src())) {
+        if !(server.passive_listening || server.bind_interfaces.contains_key(&socket.src())) {
             return;
         }
 
@@ -184,19 +184,13 @@ impl QuicServer {
         PROTO.deliver(packet, pathway, socket).await;
         _ = server.listener.send((connection.clone(), pathway));
 
-        let bind_interfaces = server.bind_addresses.clone();
         tokio::spawn(async move {
             while let Some(event) = events.recv().await {
                 match event {
                     Event::Handshaked => {}
                     Event::ProbedNewPath(..) => {}
                     Event::PathInactivated(_, socket) => {
-                        if Interfaces::try_free_interface(socket.src())
-                            && bind_interfaces.contains_key(&socket.src())
-                        {
-                            // TODO：不该令进程崩溃，而是以某种方法传递错误
-                            panic!("interface on {} is closed unexpectedly", socket.src());
-                        }
+                        _ = Interfaces::try_free_interface(socket.src())
                     }
                     Event::Failed(error) => connection.enter_closing(error.into()),
                     Event::Closed(ccf) => connection.enter_draining(ccf),
@@ -206,15 +200,22 @@ impl QuicServer {
             }
         });
     }
+
+    fn close(&self) {
+        if self.listener.close().is_none() {
+            // already closed
+            return;
+        }
+        for entry in self.bind_interfaces.iter() {
+            Interfaces::del(*entry.key(), entry.value());
+        }
+        self.bind_interfaces.clear();
+    }
 }
 
 impl Drop for QuicServer {
     fn drop(&mut self) {
-        for (&local_addr, (_, task)) in self.bind_addresses.as_ref() {
-            task.abort();
-            Interfaces::try_free_interface(local_addr);
-        }
-        self.listener.close();
+        self.close();
     }
 }
 
@@ -325,6 +326,21 @@ impl<T> QuicServerBuilder<T> {
     pub fn enable_passive_listening(mut self) -> Self {
         self.passive_listening = true;
         self
+    }
+
+    /// Specify how [`QuicServerBuilder::listen`] binds to the interface.
+    ///
+    /// The default quic interface is [`Usc`] that support GSO and GRO,
+    /// and the binder is [`Usc::bind`].
+    pub fn with_iface_binder<QI, Binder>(self, binder: Binder) -> Self
+    where
+        QI: QuicInterface + 'static,
+        Binder: Fn(SocketAddr) -> io::Result<QI> + Send + Sync + 'static,
+    {
+        Self {
+            quic_iface_binder: Box::new(move |addr| Ok(Arc::new(binder(addr)?))),
+            ..self
+        }
     }
 }
 
@@ -522,28 +538,30 @@ impl QuicServerBuilder<TlsServerConfig> {
         }
 
         // 不接受出现错误，出现错误直接让listen返回Err
-        let bind_addresses = addresses.to_socket_addrs()?.try_fold(
-            HashMap::new(),
-            |mut bind_address, address| {
-                if bind_address.contains_key(&address) {
-                    return io::Result::Ok(bind_address);
-                }
-                let interface = (self.quic_iface_binder)(address)?;
-                let local_addr = interface.local_addr()?;
-                let recv_task = Interfaces::add(interface.clone())?;
-                bind_address.insert(local_addr, (interface, recv_task));
-                Ok(bind_address)
-            },
-        )?;
+        let (bind_interfaces, iface_recv_tasks, local_addrs) =
+            addresses.to_socket_addrs()?.try_fold(
+                (DashMap::new(), vec![], vec![]),
+                |(bind_interfaces, mut recv_tasks, mut local_addrs), address| {
+                    if bind_interfaces.contains_key(&address) {
+                        return io::Result::Ok((bind_interfaces, recv_tasks, local_addrs));
+                    }
+                    let interface = (self.quic_iface_binder)(address)?;
+                    let local_addr = interface.local_addr()?;
+                    recv_tasks.push(Interfaces::add(interface.clone())?);
+                    local_addrs.push(local_addr);
+                    bind_interfaces.insert(local_addr, interface);
+                    Ok((bind_interfaces, recv_tasks, local_addrs))
+                },
+            )?;
 
-        if bind_addresses.is_empty() && !self.passive_listening {
+        if bind_interfaces.is_empty() && !self.passive_listening {
             let error = "no address provided, and passive listening is not enabled";
             let error = io::Error::new(io::ErrorKind::AddrNotAvailable, error);
             return Err(error);
         }
 
         let quic_server = Arc::new(QuicServer {
-            bind_addresses: Arc::new(bind_addresses),
+            bind_interfaces,
             passive_listening: self.passive_listening,
             listener: Default::default(),
             _supported_versions: self.supported_versions,
@@ -553,6 +571,25 @@ impl QuicServerBuilder<TlsServerConfig> {
             streams_controller: self.streams_controller,
             token_provider: self.token_provider,
         });
+
+        tokio::spawn({
+            let server = quic_server.clone();
+            async move {
+                let (result, iface_idx, _) = futures::future::select_all(iface_recv_tasks).await;
+                let error = match result {
+                    // Ok(result) => result.into_err(),
+                    Ok(result) => match result {
+                        Err(error) => error,
+                    },
+                    Err(join_error) if join_error.is_cancelled() => return,
+                    Err(join_error) => join_error.into(),
+                };
+                let local_addr = local_addrs[iface_idx];
+                log::error!("interface on {local_addr} that server listened was closed unexpectedly: {error}");
+                server.close();
+            }
+        });
+
         *server = Arc::downgrade(&quic_server);
         Ok(quic_server)
     }
@@ -604,28 +641,30 @@ impl QuicServerSniBuilder<TlsServerConfig> {
         }
 
         // 不接受出现错误，出现错误直接让listen返回Err
-        let bind_addresses = addresses.to_socket_addrs()?.try_fold(
-            HashMap::new(),
-            |mut bind_address, address| {
-                if bind_address.contains_key(&address) {
-                    return io::Result::Ok(bind_address);
-                }
-                let interface = (self.quic_iface_binder)(address)?;
-                let local_addr = interface.local_addr()?;
-                let recv_task = Interfaces::add(interface.clone())?;
-                bind_address.insert(local_addr, (interface, recv_task));
-                Ok(bind_address)
-            },
-        )?;
+        let (bind_interfaces, iface_recv_tasks, local_addrs) =
+            addresses.to_socket_addrs()?.try_fold(
+                (DashMap::new(), vec![], vec![]),
+                |(bind_interfaces, mut recv_tasks, mut local_addrs), address| {
+                    if bind_interfaces.contains_key(&address) {
+                        return io::Result::Ok((bind_interfaces, recv_tasks, local_addrs));
+                    }
+                    let interface = (self.quic_iface_binder)(address)?;
+                    let local_addr = interface.local_addr()?;
+                    recv_tasks.push(Interfaces::add(interface.clone())?);
+                    local_addrs.push(local_addr);
+                    bind_interfaces.insert(local_addr, interface);
+                    Ok((bind_interfaces, recv_tasks, local_addrs))
+                },
+            )?;
 
-        if bind_addresses.is_empty() && !self.passive_listening {
+        if bind_interfaces.is_empty() && !self.passive_listening {
             let error = "no address provided, and passive listening is not enabled";
             let error = io::Error::new(io::ErrorKind::AddrNotAvailable, error);
             return Err(error);
         }
 
         let quic_server = Arc::new(QuicServer {
-            bind_addresses: Arc::new(bind_addresses),
+            bind_interfaces,
             passive_listening: self.passive_listening,
             listener: Default::default(),
             _supported_versions: self.supported_versions,
@@ -635,6 +674,25 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             streams_controller: self.streams_controller,
             token_provider: self.token_provider,
         });
+
+        tokio::spawn({
+            let server = quic_server.clone();
+            async move {
+                let (result, iface_idx, _) = futures::future::select_all(iface_recv_tasks).await;
+                let error = match result {
+                    // Ok(result) => result.into_err(),
+                    Ok(result) => match result {
+                        Err(error) => error,
+                    },
+                    Err(join_error) if join_error.is_cancelled() => return,
+                    Err(join_error) => join_error.into(),
+                };
+                let local_addr = local_addrs[iface_idx];
+                log::error!("interface on {local_addr} that server listened was closed unexpectedly: {error}");
+                server.close();
+            }
+        });
+
         *server = Arc::downgrade(&quic_server);
         Ok(quic_server)
     }
