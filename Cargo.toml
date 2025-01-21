@@ -3,20 +3,21 @@ resolver = "2"
 members = [
     "qbase",
     "qrecovery",
-    "qconnection",
     "qcongestion",
     "qudp",
+    "qinterface",
     "qunreliable",
+    "qconnection",
     "gm-quic",
     "h3-shim",
-    "qinterface",
 ]
 default-members = [
     "qbase",
     "qrecovery",
-    "qconnection",
     "qcongestion",
     "qunreliable",
+    "qinterface",
+    "qconnection",
     "gm-quic",
 ]
 

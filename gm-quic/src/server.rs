@@ -201,7 +201,7 @@ impl QuicServer {
         });
     }
 
-    fn close(&self) {
+    fn shutdown(&self) {
         if self.listener.close().is_none() {
             // already closed
             return;
@@ -215,7 +215,7 @@ impl QuicServer {
 
 impl Drop for QuicServer {
     fn drop(&mut self) {
-        self.close();
+        self.shutdown();
     }
 }
 
@@ -577,16 +577,13 @@ impl QuicServerBuilder<TlsServerConfig> {
             async move {
                 let (result, iface_idx, _) = futures::future::select_all(iface_recv_tasks).await;
                 let error = match result {
-                    // Ok(result) => result.into_err(),
-                    Ok(result) => match result {
-                        Err(error) => error,
-                    },
+                    Ok(error) => error,
                     Err(join_error) if join_error.is_cancelled() => return,
                     Err(join_error) => join_error.into(),
                 };
                 let local_addr = local_addrs[iface_idx];
                 log::error!("interface on {local_addr} that server listened was closed unexpectedly: {error}");
-                server.close();
+                server.shutdown();
             }
         });
 
@@ -611,26 +608,26 @@ impl QuicServerSniBuilder<TlsServerConfig> {
     /// Once listen is called, the server will start to accept incoming connections, do the handshake automatically, and
     /// you can get the incoming connection by calling the [`QuicServer::accept`] method.
     ///
+    /// ### Bind interfaces
+    ///
+    /// All addresses need to be successfully bound before the Server will start.
+    /// Errors occurring in the binding address will be returned immediately
+    ///
+    /// After the server is started, if any interface that the server is listening to is closed (meaning
+    /// [`QuicInterface::poll_recv`] returns an error), the Server will be shut down immediately and free all bound
+    /// interfaces, the [`QuicServer::accept`] method will return [`Err`].
+    ///
+    /// ### Server is unique
+    ///
+    /// If the passive listening is enabled, the server will accept connections from all address that gm-quic has
+    /// already bound to, such as those used by other local clients to connect to the remote server.
+    ///
     /// Note that there can be only one server running at the same time, so this method will return an error if there is
     /// already a server running.
     ///
-    /// When the `QuicServer` is dropped, the server will stop listening for incoming connections, and you can start a
-    /// new server by calling the [`QuicServerBuilder::listen`] method again.
+    /// When the [`QuicServer`] is dropped, the server will be shut down immediately and free all bound interfaces,
+    /// and you can start a new server by calling the [`QuicServerBuilder::listen`] method again.
     ///
-    /// ## If the passive listening is not enabled
-    ///
-    /// This method will try to bind all of the given addresses. The server will *only* accept connections from the given
-    /// addresses that successfully bound.
-    ///
-    /// If all given addresses are failed to bind, this method will return an error.
-    ///
-    /// ## If the passive listening is enabled
-    ///
-    /// This method will also attempt to bind to the given address, but the server will accept connections from *all*
-    /// addresses that gm-quic has already bound to, such as those used by other local clients to connect to the remote
-    /// server.
-    ///
-    /// Although all given addresses are failed to bind, the server can still accept connections from other addresses.
     pub fn listen(self, addresses: impl ToSocketAddrs) -> io::Result<Arc<QuicServer>> {
         let mut server = SERVER.write().unwrap();
         if server.strong_count() != 0 {
@@ -680,16 +677,13 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             async move {
                 let (result, iface_idx, _) = futures::future::select_all(iface_recv_tasks).await;
                 let error = match result {
-                    // Ok(result) => result.into_err(),
-                    Ok(result) => match result {
-                        Err(error) => error,
-                    },
+                    Ok(error) => error,
                     Err(join_error) if join_error.is_cancelled() => return,
                     Err(join_error) => join_error.into(),
                 };
                 let local_addr = local_addrs[iface_idx];
                 log::error!("interface on {local_addr} that server listened was closed unexpectedly: {error}");
-                server.close();
+                server.shutdown();
             }
         });
 

@@ -21,8 +21,7 @@ qbase = { workspace = true }
 qcongestion = { workspace = true }
 qconnection = { workspace = true }
 qrecovery = { workspace = true }
-qinterface = { workspace = true }
-qudp = { workspace = true }
+qinterface = { workspace = true, features = ["qudp"] }
 qunreliable = { workspace = true }
 rustls = { workspace = true }
 thiserror = { workspace = true }

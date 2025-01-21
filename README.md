@@ -33,6 +33,7 @@ With these layers in place, it becomes clear that the `Accept Functor` and the `
 - **qbase**: Core structure of the QUIC protocol, including variable integer encoding (VarInt), connection ID management, stream ID, various frame and packet type definitions, and asynchronous keys.
 - **qrecovery**: The reliable transport part of QUIC, encompassing the state machine evolution of the sender/receiver, and the internal logic interaction between the application layer and the transport layer.
 - **qcongestion**: Congestion control in QUIC, which abstracts a unified congestion control interface and implements BBRv1. In the future, it will also implement more transport control algorithms such as Cubic and others.
+- **qinterface**: QUIC's packet routing and definition of the underlying IO interface (`QuicInterface`) enable gm-quic to run in various environments. Contains an optional qudp-based `QuicInterface` implementation
 - **qconnection**: Encapsulation of QUIC connections, linking the necessary components and tasks within a QUIC connection to ensure smooth operation.
 - **gm-quic**: The top-level encapsulation of the QUIC protocol, including interfaces for both the QUIC client and server.
 - **qudp**: High-performance UDP encapsulation for QUIC. Ordinary UDP incurs a system call for each packet sent or received, resulting in poor performance. 
@@ -78,15 +79,27 @@ The QUIC client not only offers configuration options specified by the QUIC prot
 
 ```rust
 let quic_client = QuicClient::builder()
+    // Allows reusing a connection to the server when there is already one,
+    // instead of initiating a new connection every time.
     .reuse_connection()
+    // Keep the connection alive when it is idle
+    .keep_alive(Durnation::from_secs(30))       
     // The QUIC version negotiation mechanism prioritizes using the earlier versions, 
     // currently only supporting V1.
     .prefer_versions([1u32])                
     // .with_parameter(&client_parameters)      // If not set, the default parameters will be used
+    // .witl_streams_controller(controller)     // Specify the streams controller for the client
     // .with_token_sink(token_sink)             // Manage Tokens issued by various servers
     .with_root_certificates(root_certificates)
     // .with_webpki_verifier(verifier)          // More advanced ways to verify server certificates
     .without_cert()                             // Generally, clients do not need to set certificates
+    // Specify how client bind interfaces
+    // The default interface is the high-performance udp implementation provided by qudp.
+    // .with_iface_binder(binder)
+    // Let the client only use the interface on specified address.
+    // By default, a new interface will be used every time initiates a connection.
+    // like 0.0.0.0:0 or [::]:0
+    // .bind(&local_addrs[..])?
     .build();
 
 let quic_client_conn = quic_client
@@ -98,11 +111,9 @@ The QUIC server provides SNI(Server Name Indication) support in TLS, allowing th
 
 ```rust
 let quic_server = QuicServer::builder()
+    // Keep the accepted connection alive when it is idle
+    .keep_alive(Durnation::from_secs(30))       
     .with_supported_versions([1u32])
-    // for load balancing
-    // .with_load_balance(move |initial_packet: &InitialPacket| -> Option<RetryPacket> {
-    //   ...
-    // })
     .without_cert_verifier()      // Generally, client identity is not verified
     .enable_sni()
     .add_host("www.genmeta.net", www_cert, www_key)
@@ -118,6 +129,8 @@ while let Ok(quic_server_conn) = quic_server.accept().await? {
 }
 ```
 
+For complete examples, please refer to the `examples` folders under the `h3-shim`, `gm-quic` and `qconnection` folders.
+
 There is an asynchronous interface for creating unidirectional or bidirectional QUIC streams from a QUIC Connection, or for listening to incoming streams from the other side of a QUIC Connection. This interface is almost identical to the one in [`hyperium/h3`](https://github.com/hyperium/h3/blob/master/docs/PROPOSAL.md#5-quic-transport).
 
 We also implement the interface defined by [`hyperium/h3`](https://github.com/hyperium/h3/blob/master/docs/PROPOSAL.md#5-quic-transport) in `h3-shim` crate to facilitate with other crates integrated. We have a frok of `reqwest` that use `gm-quic` as the transport layer, you can find it [here](https://github.com/genmeta/reqwest/tree/gm-quic).
@@ -126,12 +139,11 @@ As for reading and writing data from a QUIC stream, the tokio's `AsyncRead` and 
 
 ## Progress
 
-`gm-quic` has entered the final testing phase. Next, we will further improve the documentation and add the qlog module. Stay tuned.
+The early version has been released and is still being continuously optimized and improved. Welcome to use it :D
 
 ## Documentation 
 
-While `gm-quic` is not yet complete, its documentation will not be uploaded to `crate.io`. 
-Please refer to the documentation within the code for now!
+Online documentation released with the release is at docs.rs. You can also view the latest documentation in the code.
 
 ## Contribution 
 

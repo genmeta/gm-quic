@@ -24,6 +24,7 @@ QUIC协议可谓一个相当复杂的、IO密集型的协议，因此正是适�
 - **qbase**: QUIC协议的基础结构，包括可变整型编码VarInt、连接ID管理、流ID、各种帧以及包类型定义、异步密钥等
 - **qrecovery**: QUIC的可靠传输部分，包括发送端/接收端的状态机演变、应用层与传输层的内部逻辑交互等
 - **qcongestion**: QUIC的拥塞控制，抽象了统一的拥塞控制接口，并实现了BBRv1，未来还会实现Cubic、ETC等更多的传输控制算法
+- **qinterface**: QUIC的数据包路由和对底层IO接口(`QuicInterface`)的定义，令gm-quic可以运行在各种环境。内含一个可选的基于qudp的`QuicInterface`实现
 - **qconnection**： QUIC连接封装，将QUIC连接内部所需的各组件、任务串联起来，最终能够完美运行
 - **gm-quic**: QUIC协议的顶层封装，包括QUIC客户端和服务端2部分的接口
 - **qudp**： QUIC的高性能UDP封装，普通的UDP每收发一个包就是一次系统调用，性能低下。qudp则使用GSO、GRO等手段极致优化UDP的性能，如发送的压测效果如下：
@@ -68,14 +69,23 @@ QUIC客户端不仅提供了QUIC协议所规定的Parameters选项配置，也�
 
 ```rust
 let quic_client = QuicClient::builder()
+    // 允许复用到服务器的连接，而不是每次都发起新连接
     .reuse_connection()
-    .enable_happy_eyeballs()
+    // 自动在连接空闲时发送数据包保持连接活跃
+    .keep_alive(Durnation::from_secs(30))       
     .prefer_versions([1u32])                // QUIC的版本协商机制，会优先使用靠前的版本，目前仅支持V1
     // .with_parameter(&client_parameters)  // 不设置即为使用默认参数
     // .with_token_sink(token_sink)         // 管理各服务器颁发的Token
     .with_root_certificates(root_certificates)
     // .with_webpki_verifier(verifier)      // 更高级地验证服务端证书的办法
     .without_cert()                         // 一般客户端不必设置证书
+    // 指定客户端怎么绑定接口
+    // 默认的接口为qudp提供的高性能实现
+    // .with_iface_binder(binder)
+    // 令client只使用给定的地址
+    // 默认client每次建立连接时会创建一个新的接口，绑定系统随机分配的地址端口
+    // 即绑定0.0.0.0:0 或 [::]:0
+    // .bind(&local_addrs[..])?
     .build();
 
 let quic_client_conn = quic_client
@@ -87,11 +97,9 @@ QUIC服务端支持SNI（Server Name Indication），可以设置多台Server的
 
 ```rust
 let quic_server = QuicServer::builder()
+    // 同client
+    .keep_alive(Durnation::from_secs(30))       
     .with_supported_versions([1u32])
-    // 通过重试包进行负载均衡
-    // .with_load_balance(move |initial_packet: &InitialPacket| -> Option<RetryPacket> {
-    //   ...
-    // })
     .without_cert_verifier()  // 一般不验证客户端身份
     .enable_sni()
     .add_host("www.genmeta.net", www_cert, www_key)
@@ -107,17 +115,19 @@ while let Ok(quic_server_conn) = quic_server.accept().await? {
 }
 ```
 
+完整用例请翻阅`h3-shim`，`gm-quic`以及`qconnection`文件夹下的`examples`文件夹。
+
 关于如何从QUIC Connection中创建单向QUIC流，或者双向QUIC流，抑或是从QUIC Connection监听来自对方的流，都有一套异步的接口，这套接口几乎与[`hyperium/h3`](https://github.com/hyperium/h3/blob/master/docs/PROPOSAL.md#5-quic-transport)的接口相同。
 
 至于如何从QUIC流中读写数据，则为QUIC流实现了标准的`AsyncRead`、`AsyncWrite`接口，可以很方便地使用。
 
 ## 进展
 
-`gm-quic`已经进入到最后的测试阶段。接下来，将进一步完善文档，以及补充qlog模块，敬请期待。
+早期版本已经发布，目前仍在不断优化改进中，欢迎使用 :D
 
 ## 文档
 
-在`gm-quic`尚未完成之际，其文档也不会上传托管到`crate.io`。请暂且先查看代码中的文档！
+随版本发布的在线文档位于docs.rs，也可查看代码中的最新文档。
 
 ## 贡献
 

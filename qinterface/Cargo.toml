@@ -20,5 +20,4 @@ futures = { workspace = true }
 qudp = { workspace = true, optional = true }
 
 [features]
-default = ["qudp"]
 qudp = ["dep:qudp"]
