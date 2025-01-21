@@ -17,8 +17,7 @@ use qinterface::{
     router::QuicProto,
     QuicInterface,
 };
-use tokio::{sync::Notify, time::Instant};
-use tokio::task::AbortHandle;
+use tokio::{sync::Notify, task::AbortHandle, time::Instant};
 
 mod aa;
 mod paths;
@@ -52,7 +51,7 @@ impl Path {
             interface,
             socket,
             pathway,
-            cc:(cc, handle),
+            cc: (cc, handle),
             validated: AtomicBool::new(false),
             anti_amplifier: Default::default(),
             last_recv_time: Instant::now().into(),

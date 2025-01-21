@@ -5,15 +5,15 @@ use std::{
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
+
 use log::debug;
-use tokio::sync::Notify;
-use tokio::task::AbortHandle;
 use qbase::{
     frame::{AckFrame, EcnCounts, HandshakeDoneFrame, SendFrame},
     handshake::Handshake,
     sid::Role,
     Epoch,
 };
+use tokio::{sync::Notify, task::AbortHandle};
 
 // todo: remove this in future
 impl<T> ObserveHandshake for Handshake<T>
@@ -297,7 +297,10 @@ impl CongestionController {
             self.handshake.role(),
             pto_epoch,
             self.pto_count,
-            self.sent_packets[pto_epoch].iter().map(|pkt| pkt.pn).collect::<Vec<_>>()
+            self.sent_packets[pto_epoch]
+                .iter()
+                .map(|pkt| pkt.pn)
+                .collect::<Vec<_>>()
         );
         // Retransmit frames from the oldest sent packet. However,
         // these packets are not actually declared lost, so have no effect on
@@ -413,7 +416,10 @@ impl CongestionController {
     }
 
     fn slide_sent_packets(&mut self, space: Epoch) {
-        while self.sent_packets[space].front().map_or(false, |sent| sent.is_acked) {
+        while self.sent_packets[space]
+            .front()
+            .is_some_and(|sent| sent.is_acked)
+        {
             self.sent_packets[space].pop_front();
         }
     }
@@ -432,23 +438,31 @@ impl CongestionController {
 
     #[inline]
     fn requires_ack(&self) -> bool {
-        self.rcvd_records.iter().any(|record| record.requires_ack(self.max_ack_delay).is_some())
+        self.rcvd_records
+            .iter()
+            .any(|record| record.requires_ack(self.max_ack_delay).is_some())
     }
 
     #[inline]
     fn send_quota(&mut self, now: Instant) -> usize {
-        self.pacer.schedule(self.rtt.smoothed_rtt(), self.algorithm.cwnd(), MSS, now, self.algorithm.pacing_rate())
+        self.pacer.schedule(
+            self.rtt.smoothed_rtt(),
+            self.algorithm.cwnd(),
+            MSS,
+            now,
+            self.algorithm.pacing_rate(),
+        )
     }
 
     #[inline]
-    fn send_elapsed(&self, now: Instant) -> Duration{
-         now.saturating_duration_since(self.last_sent_time)
+    fn send_elapsed(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.last_sent_time)
     }
 
     #[inline]
-    fn ready_to_send(&mut self, now: Instant) -> Option<usize>{
+    fn ready_to_send(&mut self, now: Instant) -> Option<usize> {
         let token = self.send_quota(now);
-        if token >= MSS || self.requires_ack()  || self.send_elapsed(now) >= MAX_SENT_DELAY{
+        if token >= MSS || self.requires_ack() || self.send_elapsed(now) >= MAX_SENT_DELAY {
             return Some(token);
         }
         None
@@ -476,7 +490,7 @@ impl ArcCC {
 }
 
 impl super::CongestionControl for ArcCC {
-     fn launch(&self, notify: Arc<Notify>) -> AbortHandle {
+    fn launch(&self, notify: Arc<Notify>) -> AbortHandle {
         let cc = self.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(10));
@@ -496,7 +510,8 @@ impl super::CongestionControl for ArcCC {
                     notify.notify_waiters();
                 }
             }
-        }).abort_handle()
+        })
+        .abort_handle()
     }
     fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize> {
         let mut guard = self.0.lock().unwrap();

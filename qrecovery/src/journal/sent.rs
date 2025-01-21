@@ -119,7 +119,7 @@ impl<T> SentJournal<T> {
         let (n, f) = self
             .records
             .iter()
-            .filter(|s| !matches!(s, SentPktState::Flighting(_)))
+            .take_while(|s| !matches!(s, SentPktState::Flighting(_)))
             .fold((0usize, 0usize), |(n, f), s| (n + 1, f + s.nframes()));
         self.records.advance(n);
         let _ = self.queue.drain(..f);
