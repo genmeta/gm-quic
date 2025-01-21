@@ -18,10 +18,10 @@ use qinterface::{
     QuicInterface,
 };
 use tokio::{sync::Notify, time::Instant};
+use tokio::task::AbortHandle;
 
 mod aa;
 mod paths;
-pub mod ticker;
 mod util;
 pub use aa::*;
 pub use paths::*;
@@ -34,30 +34,32 @@ pub struct Path {
     validated: AtomicBool,
     socket: Socket,
     pathway: Pathway,
-    cc: ArcCC,
+    cc: (ArcCC, AbortHandle),
     anti_amplifier: AntiAmplifier,
     last_recv_time: Mutex<Instant>,
     challenge_sndbuf: SendBuffer<PathChallengeFrame>,
     response_sndbuf: SendBuffer<PathResponseFrame>,
     response_rcvbuf: RecvBuffer<PathResponseFrame>,
-    sendable: Notify,
+    sendable: Arc<Notify>,
 }
 
 impl Path {
     pub fn new(proto: &QuicProto, socket: Socket, pathway: Pathway, cc: ArcCC) -> Option<Self> {
         let interface = proto.get_interface(socket.src()).ok()?;
+        let notify = Arc::new(Notify::new());
+        let handle = cc.launch(notify.clone());
         Some(Self {
             interface,
             socket,
             pathway,
-            cc,
+            cc:(cc, handle),
             validated: AtomicBool::new(false),
             anti_amplifier: Default::default(),
             last_recv_time: Instant::now().into(),
             challenge_sndbuf: Default::default(),
             response_sndbuf: Default::default(),
             response_rcvbuf: Default::default(),
-            sendable: Notify::new(),
+            sendable: notify,
         })
     }
 
@@ -68,7 +70,7 @@ impl Path {
     pub async fn validate(&self) -> bool {
         let challenge = PathChallengeFrame::random();
         for _ in 0..3 {
-            let pto = self.cc.pto_time(qbase::Epoch::Data);
+            let pto = self.cc().pto_time(qbase::Epoch::Data);
             self.challenge_sndbuf.write(challenge);
             self.sendable.notify_waiters();
             match tokio::time::timeout(pto, self.response_rcvbuf.receive()).await {
@@ -86,7 +88,7 @@ impl Path {
     }
 
     pub fn cc(&self) -> &ArcCC {
-        &self.cc
+        &self.cc.0
     }
 
     pub fn interface(&self) -> &dyn QuicInterface {
@@ -118,6 +120,7 @@ impl Path {
 impl Drop for Path {
     fn drop(&mut self) {
         self.response_rcvbuf.dismiss();
+        self.cc.1.abort();
     }
 }
 

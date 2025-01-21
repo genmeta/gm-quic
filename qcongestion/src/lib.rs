@@ -2,7 +2,9 @@ use std::{
     task::{Context, Poll},
     time::{Duration, Instant},
 };
-
+use std::sync::Arc;
+use tokio::sync::Notify;
+use tokio::task::AbortHandle;
 pub use congestion::{ArcCC, CongestionAlgorithm, MSS};
 use qbase::{frame::AckFrame, Epoch};
 
@@ -17,7 +19,7 @@ mod rtt;
 /// The [`CongestionControl`] trait defines the interface for congestion control algorithms.
 pub trait CongestionControl {
     /// Performs a periodic tick to drive the congestion control algorithm.
-    fn do_tick(&self);
+    fn launch(&self, notify: Arc<Notify>) -> AbortHandle;
 
     /// Polls whether packets can be sent and returns the amount of data that can be sent.
     /// # Returns

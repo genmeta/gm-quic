@@ -39,7 +39,7 @@ impl Pacer {
         self.tokens = self.tokens.saturating_sub(packet_size);
     }
 
-    // Schedule and return the the packet size to send, max size is mtu
+    // Schedule and return the packet size to send, max size is mtu
     pub(super) fn schedule(
         &mut self,
         srtt: Duration,
@@ -57,7 +57,7 @@ impl Pacer {
         self.cwnd = cwnd;
         self.rate = rate;
         if self.tokens > mtu as u64 {
-            return mtu;
+            return self.tokens as usize;
         }
 
         let rate = match rate {
@@ -76,7 +76,7 @@ impl Pacer {
             .min(self.capacity);
         self.last_burst_time = now;
 
-        self.tokens.min(mtu as u64) as usize
+        self.tokens as usize
     }
 
     fn calculate_capacity(smoothed_rtt: Duration, cwnd: u64, mtu: usize, rate: Option<u64>) -> u64 {
@@ -115,7 +115,7 @@ mod tests {
         assert_eq!(pacer.tokens, pacer.capacity);
         assert_eq!(pacer.last_burst_time, now);
 
-        // if rate is None capactity = cwnd * brust_interval / rtt
+        // if rate is None capacity = cwnd * brust_interval / rtt
         let pacer = Pacer::new(Duration::from_millis(100), 2_000_000, 1500, now, None);
         assert_eq!(pacer.capacity, 20_000);
 
@@ -205,7 +205,7 @@ mod tests {
         let size = pacer.schedule(srtt, cwnd, mtu, update_time, rate);
         assert_eq!(size, 1_000);
 
-        // udpate rate to update capacity
+        // update rate to update capacity
         // 1 MB
         rate = Some(1_000_000);
         let size = pacer.schedule(srtt, cwnd, mtu, update_time, rate);

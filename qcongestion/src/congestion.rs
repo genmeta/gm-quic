@@ -5,7 +5,9 @@ use std::{
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
-
+use log::debug;
+use tokio::sync::Notify;
+use tokio::task::AbortHandle;
 use qbase::{
     frame::{AckFrame, EcnCounts, HandshakeDoneFrame, SendFrame},
     handshake::Handshake,
@@ -155,7 +157,7 @@ impl CongestionController {
         // If this datagram unblocks the server, arm the PTO timer to avoid deadlock.
         self.set_loss_timer();
         if self.loss_timer.is_timeout(now) {
-            // Execute PTO if it would have expired while the amplification limit applied.
+            // Execute PTO if it had expired while the amplification limit applied.
             self.on_loss_timeout(now);
         }
     }
@@ -291,7 +293,7 @@ impl CongestionController {
             pto_epoch,
             self.pto_count
         );
-        // Retransmit frames from the oldest sent packet. However
+        // Retransmit frames from the oldest sent packet. However,
         // these packets are not actually declared lost, so have no effect on
         // congestion control, we just retransmit the data they carry.
         let retransmit = self.sent_packets[pto_epoch]
@@ -429,6 +431,16 @@ impl CongestionController {
     fn process_ecn(&mut self, _: Epoch, _: EcnCounts) {
         todo!()
     }
+
+    #[inline]
+    fn requires_ack(&self) -> bool {
+        self.rcvd_records.iter().any(|record| record.requires_ack(self.max_ack_delay).is_some())
+    }
+
+    #[inline]
+    fn send_quota(&mut self, now: Instant) -> usize {
+        self.pacer.schedule(self.rtt.smoothed_rtt(), self.algorithm.cwnd(), MSS, now, self.algorithm.pacing_rate())
+    }
 }
 
 /// Shared congestion controller
@@ -452,17 +464,31 @@ impl ArcCC {
 }
 
 impl super::CongestionControl for ArcCC {
-    fn do_tick(&self) {
-        let mut guard = self.0.lock().unwrap();
-        let now = Instant::now();
-        if guard.loss_timer.is_timeout(now) {
-            guard.on_loss_timeout(now);
-        }
-        if let Some(waker) = guard.send_waker.take() {
-            waker.wake();
-        }
+     fn launch(&self, notify: Arc<Notify>) -> AbortHandle {
+        let cc = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(10));
+            loop {
+                interval.tick().await;
+                let now = Instant::now();
+                let mut guard = cc.0.lock().unwrap();
+                if guard.loss_timer.is_timeout(now) {
+                    guard.on_loss_timeout(now);
+                }
+                let requires_ack = guard.requires_ack();
+                // Can send some data
+                if guard.send_quota(now) > MSS || requires_ack {
+                    if let Some(waker) = guard.send_waker.take() {
+                        waker.wake();
+                    }
+                }
+                // require send ack
+                if requires_ack {
+                    notify.notify_waiters();
+                }
+            }
+        }).abort_handle()
     }
-
     fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize> {
         let mut guard = self.0.lock().unwrap();
         guard.send_waker = Some(cx.waker().clone());
@@ -483,7 +509,7 @@ impl super::CongestionControl for ArcCC {
         let mut need_ack = false;
         for &epoch in Epoch::iter() {
             if guard.rcvd_records[epoch]
-                .need_ack(guard.max_ack_delay)
+                .requires_ack(guard.max_ack_delay)
                 .is_some()
             {
                 need_ack = true;
@@ -501,7 +527,7 @@ impl super::CongestionControl for ArcCC {
 
     fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)> {
         let guard = self.0.lock().unwrap();
-        guard.rcvd_records[space].need_ack(guard.max_ack_delay)
+        guard.rcvd_records[space].requires_ack(guard.max_ack_delay)
     }
 
     fn on_pkt_sent(
@@ -600,7 +626,7 @@ impl RcvdRecords {
 
     /// Checks whether an ACK frame needs to be sent.
     /// Returns [`Some`] if it's time to send an ACK based on the maximum delay.
-    fn need_ack(&self, max_delay: Duration) -> Option<(u64, Instant)> {
+    fn requires_ack(&self, max_delay: Duration) -> Option<(u64, Instant)> {
         if self.need_ack {
             return self.largest_recv_time;
         }
@@ -909,26 +935,26 @@ mod tests {
         let max_ack_delay = Duration::from_millis(100);
         let mut ack_reocrd = RcvdRecords::new(Epoch::Initial);
         ack_reocrd.on_pkt_rcvd(1);
-        assert!(ack_reocrd.need_ack(max_ack_delay).is_some());
+        assert!(ack_reocrd.requires_ack(max_ack_delay).is_some());
 
         ack_reocrd.on_pkt_rcvd(1);
         assert_eq!(ack_reocrd.rcvd_queue.len(), 1);
 
         ack_reocrd.on_ack_sent(1, 1);
         assert_eq!(ack_reocrd.last_ack_sent, Some((1, 1)));
-        assert!(ack_reocrd.need_ack(max_ack_delay).is_none());
+        assert!(ack_reocrd.requires_ack(max_ack_delay).is_none());
 
         ack_reocrd.on_pkt_rcvd(3);
         assert_eq!(ack_reocrd.rcvd_queue, vec![1, 3]);
 
         ack_reocrd.on_pkt_rcvd(0);
         assert_eq!(ack_reocrd.rcvd_queue, vec![0, 1, 3]);
-        assert_eq!(ack_reocrd.need_ack(max_ack_delay).unwrap().0, 3);
+        assert_eq!(ack_reocrd.requires_ack(max_ack_delay).unwrap().0, 3);
 
         ack_reocrd.on_pkt_rcvd(5);
         ack_reocrd.on_pkt_rcvd(7);
         assert_eq!(ack_reocrd.rcvd_queue, vec![0, 1, 3, 5, 7]);
-        assert_eq!(ack_reocrd.need_ack(max_ack_delay).unwrap().0, 7);
+        assert_eq!(ack_reocrd.requires_ack(max_ack_delay).unwrap().0, 7);
 
         // pn 2 ack 0,1,3,5,7
         ack_reocrd.on_ack_sent(2, 7);

@@ -72,7 +72,7 @@ impl Burst {
         let mut transaction = Transaction::prepare(
             scid.unwrap_or_default(),
             &self.dcid,
-            &self.path.cc,
+            &self.path.cc(),
             &self.path.anti_amplifier,
             &self.flow_ctrl,
         )
