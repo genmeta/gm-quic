@@ -1,12 +1,12 @@
 use std::{
+    sync::Arc,
     task::{Context, Poll},
     time::{Duration, Instant},
 };
-use std::sync::Arc;
-use tokio::sync::Notify;
-use tokio::task::AbortHandle;
+
 pub use congestion::{ArcCC, CongestionAlgorithm, MSS};
 use qbase::{frame::AckFrame, Epoch};
+use tokio::{sync::Notify, task::AbortHandle};
 
 mod bbr;
 mod congestion;
