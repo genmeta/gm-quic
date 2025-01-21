@@ -1,4 +1,4 @@
-use std::{convert::Infallible, fmt, io, net::SocketAddr, sync::Arc};
+use std::{fmt, io, net::SocketAddr, sync::Arc};
 
 use dashmap::DashMap;
 use qbase::{
@@ -100,7 +100,7 @@ impl QuicProto {
         self: &Arc<Self>,
         local_addr: SocketAddr,
         interface: Arc<dyn QuicInterface>,
-    ) -> JoinHandle<io::Result<Infallible>> {
+    ) -> JoinHandle<io::Error> {
         let entry = self
             .interfaces
             .entry(local_addr)
@@ -111,13 +111,17 @@ impl QuicProto {
             let mut rcvd_pkts = Vec::with_capacity(3);
             loop {
                 // way: local -> peer
-                let (datagram, pathway, socket) = core::future::poll_fn(|cx| {
+                let (datagram, pathway, socket) = match core::future::poll_fn(|cx| {
                     let interface = this.interfaces.get(&local_addr).ok_or_else(|| {
                         io::Error::new(io::ErrorKind::BrokenPipe, "interface already be removed")
                     })?;
                     interface.inner.poll_recv(cx)
                 })
-                .await?;
+                .await
+                {
+                    Ok(t) => t,
+                    Err(e) => return e,
+                };
                 let datagram_size = datagram.len();
                 // todo: parse packets with any length of dcid
                 rcvd_pkts.extend(PacketReader::new(datagram, 8).flatten());

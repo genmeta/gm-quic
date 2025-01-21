@@ -1,7 +1,7 @@
 use std::{
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
-    sync::Arc,
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 
@@ -36,12 +36,16 @@ pub struct QuicClient {
     quic_iface_binder: Box<dyn Fn(SocketAddr) -> io::Result<Arc<dyn QuicInterface>> + Send + Sync>,
     // TODO: 要改成一个加载上次连接的parameters的函数，根据server name
     _remembered: Option<CommonParameters>,
-    _reuse_connection: bool,
-    reuse_udp_sockets: bool,
+    reuse_connection: bool,
+    reuse_interfaces: bool,
     streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
     tls_config: Arc<TlsClientConfig>,
     token_sink: Option<Arc<dyn TokenSink>>,
 }
+
+//                                        (server_name, server_addr)
+static REUSEABLE_CONNECTIONS: LazyLock<DashMap<(String, SocketAddr), Arc<Connection>>> =
+    LazyLock::new(DashMap::new);
 
 impl QuicClient {
     /// Start to build a QuicClient.
@@ -67,7 +71,7 @@ impl QuicClient {
     pub fn builder() -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         QuicClientBuilder {
             bind_interfaces: Arc::new(DashMap::new()),
-            reuse_udp_sockets: false,
+            reuse_interfaces: false,
             reuse_connection: true,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
@@ -86,7 +90,7 @@ impl QuicClient {
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
         QuicClientBuilder {
             bind_interfaces: Arc::new(DashMap::new()),
-            reuse_udp_sockets: false,
+            reuse_interfaces: false,
             reuse_connection: true,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
@@ -107,7 +111,7 @@ impl QuicClient {
     pub fn builder_with_tls(tls_config: TlsClientConfig) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_interfaces: Arc::new(DashMap::new()),
-            reuse_udp_sockets: false,
+            reuse_interfaces: false,
             reuse_connection: true,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
@@ -120,47 +124,11 @@ impl QuicClient {
         }
     }
 
-    /// Returns the connection to the specified server.
-    ///
-    /// `server_name` is the name of the server, it will be included in the `ClientHello` message.
-    ///
-    /// `server_addr` is the address of the server, packets will be sent to this address.
-    ///
-    /// Note that the returned connection may not yet be connected to the server, but you can use it to do anything you
-    /// want, such as sending data, receiving data... operations will be pending until the connection is connected or
-    /// failed to connect.
-    ///
-    /// ### (WIP)Reuse connection
-    ///
-    /// If `reuse connection` is enabled, the client will try to reuse the connection that has already connected to the
-    /// server, this means that the client will not initiates a new connection, but return the existing connection.
-    /// Otherwise, the client will initiates a new connection to the server.
-    ///
-    /// If `reuse connection` is not enabled or there is no connection that can be reused, the client will bind a UDP Socket
-    /// and initiates a new connection to the server.
-    ///
-    /// If the client does not bind any address, Each time the client initiates a new connection, the client will use
-    /// the address and port that dynamic assigned by the system.
-    ///
-    /// If the client has already bound a set of addresses, The client will successively try to bind to an address that
-    /// matches the server's address family, until an address is successfully bound. If none of the given addresses are
-    /// successfully bound, the last error will be returned (similar to `UdpSocket::bind`). Its also possiable that all
-    /// of the bound addresses dont match the server's address family, an error will be returned in this case.
-    ///
-    /// How the client binds the address depends on whether `reuse udp sockets` is enabled.
-    ///
-    /// If `reuse udp sockets` is enabled, the client may share the same address with other connections. If `reuse udp
-    /// sockets` is disabled (default), The client will not bind to addresses that is already used by another connection.
-    ///
-    /// Note that although `reuse udp sockets` is not enabled, the socket bound by the client may still be reused, because
-    /// this option can only determine the behavior of this client when initiates a new connection.
-    pub fn connect(
+    fn new_connection(
         &self,
-        server_name: impl Into<String>,
+        server_name: String,
         server_addr: SocketAddr,
     ) -> io::Result<Arc<Connection>> {
-        let server_name = server_name.into();
-
         let quic_iface = match &self.bind_interfaces {
             None => {
                 let quic_iface = if server_addr.is_ipv4() {
@@ -174,7 +142,7 @@ impl QuicClient {
             Some(bind_interfaces) => {
                 let no_available_address = || {
                     let mut reason = String::from("No address matches the server's address family");
-                    if !self.reuse_udp_sockets {
+                    if !self.reuse_interfaces {
                         reason
                             .push_str(", or all the bound addresses are used by other connections");
                     }
@@ -185,7 +153,7 @@ impl QuicClient {
                     .map(|entry| *entry.key())
                     .filter(|local_addr| local_addr.is_ipv4() == server_addr.is_ipv4())
                     .find_map(|local_addr| {
-                        if self.reuse_udp_sockets {
+                        if self.reuse_interfaces {
                             Interfaces::try_acquire_unique(local_addr)
                         } else {
                             Interfaces::try_acquire_shared(local_addr)
@@ -210,7 +178,7 @@ impl QuicClient {
         let (event_broker, mut events) = mpsc::unbounded_channel();
 
         let connection = Arc::new(
-            Connection::with_token_sink(server_name, token_sink)
+            Connection::with_token_sink(server_name.clone(), token_sink)
                 .with_parameters(self.parameters, None)
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_ctrl(&self.streams_controller)
@@ -226,14 +194,26 @@ impl QuicClient {
                 while let Some(event) = events.recv().await {
                     match event {
                         Event::Handshaked => {}
-                        Event::Failed(error) => connection.enter_closing(error.into()),
                         Event::ProbedNewPath(_, _) => {}
                         Event::PathInactivated(_pathway, socket) => {
                             _ = Interfaces::try_free_interface(socket.src())
                         }
-                        Event::Closed(ccf) => connection.enter_draining(ccf),
+                        Event::Failed(error) => {
+                            REUSEABLE_CONNECTIONS
+                                .remove_if(&(server_name.clone(), server_addr), |_, exist| {
+                                    Arc::ptr_eq(&connection, exist)
+                                });
+                            connection.enter_closing(error.into())
+                        }
+                        Event::Closed(ccf) => {
+                            REUSEABLE_CONNECTIONS
+                                .remove_if(&(server_name.clone(), server_addr), |_, exist| {
+                                    Arc::ptr_eq(&connection, exist)
+                                });
+                            connection.enter_draining(ccf)
+                        }
                         Event::StatelessReset => {}
-                        Event::Terminated => { /* Todo: connections set */ }
+                        Event::Terminated => {}
                     }
                 }
             }
@@ -241,6 +221,53 @@ impl QuicClient {
 
         connection.add_path(socket, pathway)?;
         Ok(connection)
+    }
+
+    /// Returns the connection to the specified server.
+    ///
+    /// `server_name` is the name of the server, it will be included in the `ClientHello` message.
+    ///
+    /// `server_addr` is the address of the server, packets will be sent to this address.
+    ///
+    /// Note that the returned connection may not yet be connected to the server, but you can use it to do anything you
+    /// want, such as sending data, receiving data... operations will be pending until the connection is connected or
+    /// failed to connect.
+    ///
+    /// ### Select an interface
+    ///
+    /// First, the client will select an interface to communicate with the server.
+    ///
+    /// If the client has already bound a set of addresses, The client will select the interface whose IP family of the
+    /// first address matches the server addr from the bound and not closed interfaces.
+    ///
+    /// If `reuse_interfaces` is not enabled; the client will not select an interface that is in use.
+    ///
+    /// ### Connecte to server
+    ///
+    /// If connection reuse is enabled, the client will give priority to returning the existing connection to the
+    /// `server_name` and `server_addr`.
+    ///
+    /// If the client does not bind any interface, the client will bind the interface on the address/port randomly assigned
+    /// by the system (i.e. xxx) through `quic_iface_binder` *every time* it establishes a connection. When no interface is
+    /// bound, the reuse interface option will have no effect.
+    ///
+    /// If `reuse connection` is not enabled or there is no connection that can be reused, the client will initiates
+    /// a new connection to the server.
+    pub fn connect(
+        &self,
+        server_name: impl Into<String>,
+        server_addr: SocketAddr,
+    ) -> io::Result<Arc<Connection>> {
+        let server_name = server_name.into();
+
+        if self.reuse_connection {
+            REUSEABLE_CONNECTIONS
+                .entry((server_name.clone(), server_addr))
+                .or_try_insert_with(|| self.new_connection(server_name, server_addr))
+                .map(|entry| entry.clone())
+        } else {
+            self.new_connection(server_name, server_addr)
+        }
     }
 }
 
@@ -258,7 +285,7 @@ impl Drop for QuicClient {
 /// A builder for [`QuicClient`].
 pub struct QuicClientBuilder<T> {
     bind_interfaces: Arc<DashMap<SocketAddr, Arc<dyn QuicInterface>>>,
-    reuse_udp_sockets: bool,
+    reuse_interfaces: bool,
     reuse_connection: bool,
     enable_happy_eyepballs: bool,
     prefer_versions: Vec<u32>,
@@ -271,7 +298,7 @@ pub struct QuicClientBuilder<T> {
 }
 
 impl<T> QuicClientBuilder<T> {
-    /// Specify how to bind interfaces.
+    /// Specify how client bind interfaces.
     ///
     /// The given closure will be used by [`Self::bind`],
     /// and/or [`QuicClient::connect`] if no interface bound when client built.
@@ -289,21 +316,26 @@ impl<T> QuicClientBuilder<T> {
         }
     }
 
-    /// Bind the interfaces on given address.
+    /// Create quic interfaces bound on given address.
+    ///
+    /// If the bind failed, the error will be returned immediately.
     ///
     /// The default quic interface is [`Usc`] that support GSO and GRO.
-    /// You can also Specify how to bind the interface by calling [`Self::with_iface_binder`].
+    /// You can let the client bind custom interfaces by calling the [`Self::with_iface_binder`] method.
     ///
-    /// Or you can use your own created interface by calling [`Self::with_interfaces`].
+    /// If you dont bind any address, each time the client initiates a new connection,
+    /// the client will use bind a new interface on address and port that dynamic assigned by the system.
+    ///
+    /// To know more about how the client selects the interface when initiates a new connection,
+    /// read [`QuicClient::connect`].
     ///
     /// If you call this multiple times, only the last set of interface will be used,
     /// previous bound interface will be freed immediately.
     ///
-    /// If you dont bind any address, each time the client initiates a new connection,
-    /// the client will use bind new interface on address and port that dynamic assigned by the system.
+    /// If the interface is closed for some reason after being created (meaning [`QuicInterface::poll_recv`]
+    /// returns an error), only the log will be printed.
     ///
-    /// To know more about how the client selects the socket address when initiates a new connection,
-    /// read [`QuicClient::connect`].
+    /// If all interfaces are closed, clients will no longer be able to initiate new connections.
     pub fn bind(self, addrs: impl ToSocketAddrs) -> io::Result<Self> {
         for entry in self.bind_interfaces.iter() {
             Interfaces::del(*entry.key(), entry.value());
@@ -334,9 +366,7 @@ impl<T> QuicClientBuilder<T> {
                 while let Some((result, local_addr)) = iface_recv_tasks.next().await {
                     let error = match result {
                         // Ok(result) => result.into_err(),
-                        Ok(result) => match result {
-                            Err(error) => error,
-                        },
+                        Ok(error) => error,
                         Err(join_error) if join_error.is_cancelled() => return,
                         Err(join_error) => join_error.into(),
                     };
@@ -351,58 +381,24 @@ impl<T> QuicClientBuilder<T> {
         Ok(self)
     }
 
-    /// Specify the Interface that client use.
+    /// Enable efficiently reuse connections.
     ///
-    /// The client will use the given interfaces to initiates connections.
-    ///
-    /// If you call this multiple times, only the last set of interfaces will be used.
-    ///
-    /// This method will return [`io::Error`] if any of the interfaces failed to get its local addresses
-    /// (by calling [`QuicInterface::local_addr`]).
-    ///
-    /// If the given iterator is empty, each time the client initiates a new connection,
-    /// the client will use bind new interface on address and port that dynamic assigned by the system.
-    pub fn with_interfaces(
-        mut self,
-        interfaces: impl IntoIterator<Item = Arc<dyn QuicInterface>>,
-    ) -> io::Result<Self> {
-        for entry in self.bind_interfaces.iter() {
-            Interfaces::del(*entry.key(), entry.value());
-        }
-        self.bind_interfaces = interfaces.into_iter().try_fold(
-            Arc::new(DashMap::new()),
-            |bind_interfaces, interface| {
-                let local_addr = interface.local_addr()?;
-                bind_interfaces.insert(local_addr, interface);
-                io::Result::Ok(bind_interfaces)
-            },
-        )?;
-        self.bind_interfaces.clear();
-        Ok(self)
-    }
-
-    /// (WIP)Enable efficiently reuse connections.
-    ///
-    /// If you enable this option, the client will try to reuse the connection that has already connected to the server,
-    /// this means that the client will not initiates a new connection, but return the existing connection when you call
-    /// [`QuicClient::connect`].
+    /// If you enable this option the client will give priority to returning the existing connection to the `server_name`
+    /// and `server_addr`, instead of creating a new connection every time.
     pub fn reuse_connection(mut self) -> Self {
         self.reuse_connection = true;
         self
     }
 
-    /// Enable reuse UDP sockets.
+    /// Enable reuse interface.
     ///
+    /// If you dont bind any address, this option will not take effect.
     ///
-    /// By default, the client will not use the same address as other connections, which means that the client must bind
-    /// to a new address every time it initiates a connection. If you enable this option, the client cloud share the same
-    /// address with other connections. This option can only determine the behavior of this client when establishing a
-    /// new connection.
-    ///
-    /// If you dont bind any address, this option will not take effect because the client will use the address and port
-    /// that dynamic assigned by the system each time it initiates a new connection.
-    pub fn reuse_udp_sockets(mut self) -> Self {
-        self.reuse_udp_sockets = true;
+    /// By default, the client will not use the same interface with other connections, which means that the client must
+    /// select a new interface every time it initiates a connection. If you enable this option, the client will share
+    /// the same address between connections.
+    pub fn reuse_interfaces(mut self) -> Self {
+        self.reuse_interfaces = true;
         self
     }
 
@@ -481,7 +477,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_udp_sockets: self.reuse_udp_sockets,
+            reuse_interfaces: self.reuse_interfaces,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
@@ -503,7 +499,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
     ) -> QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_udp_sockets: self.reuse_udp_sockets,
+            reuse_interfaces: self.reuse_interfaces,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
@@ -529,7 +525,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_udp_sockets: self.reuse_udp_sockets,
+            reuse_interfaces: self.reuse_interfaces,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
@@ -549,7 +545,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
     pub fn without_cert(self) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_udp_sockets: self.reuse_udp_sockets,
+            reuse_interfaces: self.reuse_interfaces,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
@@ -569,7 +565,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
     ) -> QuicClientBuilder<TlsClientConfig> {
         QuicClientBuilder {
             bind_interfaces: self.bind_interfaces,
-            reuse_udp_sockets: self.reuse_udp_sockets,
+            reuse_interfaces: self.reuse_interfaces,
             reuse_connection: self.reuse_connection,
             enable_happy_eyepballs: self.enable_happy_eyepballs,
             prefer_versions: self.prefer_versions,
@@ -611,8 +607,6 @@ impl QuicClientBuilder<TlsClientConfig> {
     }
 
     /// Build the QuicClient, ready to initiates connect to the servers.
-    ///
-    /// If
     pub fn build(self) -> QuicClient {
         let bind_interfaces = if self.bind_interfaces.is_empty() {
             None
@@ -621,8 +615,8 @@ impl QuicClientBuilder<TlsClientConfig> {
         };
         QuicClient {
             bind_interfaces,
-            reuse_udp_sockets: self.reuse_udp_sockets,
-            _reuse_connection: self.reuse_connection,
+            reuse_interfaces: self.reuse_interfaces,
+            reuse_connection: self.reuse_connection,
             _enable_happy_eyepballs: self.enable_happy_eyepballs,
             _prefer_versions: self.prefer_versions,
             quic_iface_binder: self.quic_iface_binder,

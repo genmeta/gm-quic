@@ -67,16 +67,9 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     let quic_conn = client.connect(args.domain, args.addr).unwrap();
-    let mut counter = 0;
     loop {
         let mut input = String::new();
-
-        if counter == 0 {
-            input = "/README.md".to_string();
-            counter += 1;
-        } else {
-            let _n = std::io::stdin().read_line(&mut input).unwrap();
-        }
+        _ = std::io::stdin().read_line(&mut input).unwrap();
 
         let content = input.trim();
         if content.is_empty() {
