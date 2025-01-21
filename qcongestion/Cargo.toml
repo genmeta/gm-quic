@@ -16,3 +16,4 @@ log = { workspace = true }
 qbase = { workspace = true }
 qrecovery = { workspace = true }
 rand = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }

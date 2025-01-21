@@ -67,6 +67,6 @@ impl ArcPaths {
     }
 
     pub fn max_pto_duration(&self) -> Option<Duration> {
-        self.inner.iter().map(|p| p.cc.pto_time(Epoch::Data)).max()
+        self.inner.iter().map(|p| p.cc().pto_time(Epoch::Data)).max()
     }
 }

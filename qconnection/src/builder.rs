@@ -452,7 +452,7 @@ impl Components {
     ) -> Option<Arc<Path>> {
         let do_validate = self.handshake.is_handshake_done();
         match self.paths.entry(pathway) {
-            dashmap::Entry::Occupied(occuiped_entry) => Some(occuiped_entry.get().deref().clone()),
+            dashmap::Entry::Occupied(occupied_entry) => Some(occupied_entry.get().deref().clone()),
             dashmap::Entry::Vacant(vacant_entry) => {
                 let max_ack_delay = self.parameters.local()?.max_ack_delay().into_inner();
 
@@ -500,10 +500,9 @@ impl Components {
                             false = validate => "failed to validate",
                             _ = idle_timeout => "idle timeout",
                             _ = burst.launch() => "failed to send packets",
-                            _ = path.do_ticks() => unreachable!(),
                             _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout ",
                         };
-                        tracing::debug!(?pathway, ?socket, reason, "path inactived");
+                        tracing::debug!(?pathway, ?socket, reason, "path inactive");
                         // same as [`Components::del_path`]
                         paths.remove(&pathway);
                     }
