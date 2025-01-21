@@ -165,7 +165,7 @@ mod tests {
         let packet_size = pacer.schedule(srtt, cwnd, mtu, update_time, None);
 
         assert_eq!(pacer.tokens, 20_000);
-        assert_eq!(packet_size, 1500);
+        assert_eq!(packet_size, 20_000);
         pacer.on_sent(1500 * 13);
 
         assert_eq!(pacer.tokens, 500);
@@ -177,14 +177,14 @@ mod tests {
         // burst interval add token 25000
         assert_eq!(pacer.capacity, 20_000);
         assert_eq!(pacer.tokens, 20_000);
-        assert_eq!(packet_size, 1500);
+        assert_eq!(packet_size, 20_000);
 
         // change cwnd, change capacity
         cwnd = 1_500_000; // 1.5 MB
         let packet_size = pacer.schedule(srtt, cwnd, mtu, update_time, None);
         assert_eq!(pacer.capacity, 15_000);
         assert_eq!(pacer.tokens, 15_000);
-        assert_eq!(packet_size, 1500);
+        assert_eq!(packet_size, 15_000);
     }
 
     #[test]
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(pacer.capacity, 16_000);
 
         let size = pacer.schedule(srtt, cwnd, mtu, update_time, rate);
-        assert_eq!(size, 1500);
+        assert_eq!(size, 16_000);
         pacer.on_sent(15_000);
         let size = pacer.schedule(srtt, cwnd, mtu, update_time, rate);
         assert_eq!(size, 1_000);
@@ -214,6 +214,6 @@ mod tests {
         update_time += BURST_INTERVAL;
         let size = pacer.schedule(srtt, cwnd, mtu, update_time, rate);
         assert_eq!(pacer.tokens, 2000);
-        assert_eq!(size, 1500);
+        assert_eq!(size, 2000);
     }
 }
