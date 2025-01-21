@@ -37,6 +37,7 @@ where
         cx: &mut Context<'_>,
         buf: &mut impl BufMut,
     ) -> Poll<io::Result<()>> {
+        log::info!("Recv::poll_read");
         if self.rcvbuf.is_readable() {
             self.rcvbuf.try_read(buf);
 
@@ -223,7 +224,7 @@ impl<TX> SizeKnown<TX> {
     }
 
     pub(super) fn is_all_rcvd(&self) -> bool {
-        self.rcvbuf.available() == self.final_size
+        self.rcvbuf.nread() + self.rcvbuf.available() == self.final_size
     }
 
     #[allow(dead_code)]
