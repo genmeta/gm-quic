@@ -9,6 +9,7 @@ impl super::Path {
         loop {
             let idle_duration = self.last_recv_time.lock().unwrap().elapsed();
             if idle_duration > defer_timeout {
+                tracing::trace!("try to defer idle timeout");
                 if !self.validate().await {
                     return;
                 }
@@ -34,6 +35,7 @@ impl super::Path {
             loop {
                 let idle_duration = this.last_recv_time.lock().unwrap().elapsed();
                 if idle_duration > max_idle_timeout {
+                    tracing::trace!("path idle timeout");
                     return;
                 } else {
                     tokio::time::sleep(max_idle_timeout.saturating_sub(idle_duration)).await;

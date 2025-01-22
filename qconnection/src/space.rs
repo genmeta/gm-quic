@@ -17,6 +17,7 @@ use qrecovery::{
     reliable::GuaranteedFrame,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
+use tracing::{debug_span, Instrument};
 
 use crate::{
     events::{EmitEvent, Event},
@@ -112,14 +113,20 @@ fn pipe<F: Send + 'static>(
     destination: impl ReceiveFrame<F> + Send + 'static,
     broker: impl EmitEvent + 'static,
 ) {
-    tokio::spawn(async move {
-        while let Some(f) = source.recv().await {
-            if let Err(e) = destination.recv_frame(&f) {
-                broker.emit(Event::Failed(e));
-                break;
+    tokio::spawn(
+        async move {
+            while let Some(f) = source.recv().await {
+                if let Err(e) = destination.recv_frame(&f) {
+                    broker.emit(Event::Failed(e));
+                    break;
+                }
             }
         }
-    });
+        .instrument(debug_span!(
+            "frame_pipeline",
+            frame = core::any::type_name::<F>()
+        )),
+    );
 }
 
 /// When receiving a [`StreamFrame`] or [`StreamCtlFrame`],
@@ -185,6 +192,7 @@ impl AckHandshake {
 impl ReceiveFrame<AckFrame> for AckHandshake {
     type Output = ();
 
+    #[tracing::instrument(name = "recv_ack_frame", level = "debug", skip(self), ret, err)]
     fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
         let mut rotate_guard = self.sent_journal.rotate();
         rotate_guard.update_largest(ack_frame)?;
@@ -221,12 +229,15 @@ impl AckData {
 impl ReceiveFrame<AckFrame> for AckData {
     type Output = ();
 
+    #[tracing::instrument(name = "recv_ack_frame", level = "debug", skip(self), ret, err)]
     fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
         let mut rotate_guard = self.send_journal.rotate();
         rotate_guard.update_largest(ack_frame)?;
 
         for pn in ack_frame.iter().flat_map(|r| r.rev()) {
+            tracing::trace!(?pn, "packet acked");
             for frame in rotate_guard.on_pkt_acked(pn) {
+                tracing::trace!(?frame, "frame acked");
                 match frame {
                     GuaranteedFrame::Stream(stream_frame) => {
                         self.data_streams.on_data_acked(stream_frame)

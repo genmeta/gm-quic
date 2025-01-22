@@ -1,4 +1,4 @@
-use std::{ops::Deref, sync::Arc};
+use std::sync::Arc;
 
 use qbase::{error::Error, frame::ConnectionCloseFrame};
 use qinterface::path::{Pathway, Socket};
@@ -27,9 +27,19 @@ pub trait EmitEvent: Send + Sync {
     fn emit(&self, event: Event);
 }
 
-impl<E: EmitEvent + ?Sized> EmitEvent for Arc<E> {
+#[derive(Clone)]
+pub struct ArcEventBroker(Arc<dyn EmitEvent>);
+
+impl ArcEventBroker {
+    pub fn new<E: EmitEvent + 'static>(event_broker: E) -> Self {
+        Self(Arc::new(event_broker))
+    }
+}
+
+impl EmitEvent for ArcEventBroker {
     fn emit(&self, event: Event) {
-        self.deref().emit(event);
+        tracing::trace!(?event, "emit event");
+        self.0.emit(event);
     }
 }
 

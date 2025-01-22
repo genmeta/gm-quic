@@ -118,9 +118,17 @@ impl<T> SentJournal<T> {
     fn auto_drain(&mut self) {
         let (n, f) = self
             .records
-            .iter()
-            .take_while(|s| !matches!(s, SentPktState::Flighting(_)))
-            .fold((0usize, 0usize), |(n, f), s| (n + 1, f + s.nframes()));
+            .iter_with_idx()
+            .take_while(|(idx, s)| {
+                tracing::trace!(idx, ?s);
+                matches!(s, SentPktState::Acked(_))
+            })
+            .fold((0usize, 0usize), |(n, f), (_, s)| (n + 1, f + s.nframes()));
+        tracing::trace!(
+            from = self.records.offset(),
+            to = self.records.offset() + n as u64,
+            "advanced"
+        );
         self.records.advance(n);
         let _ = self.queue.drain(..f);
     }
@@ -253,7 +261,6 @@ impl<T> NewPacketGuard<'_, T> {
     /// [encoded]: https://www.rfc-editor.org/rfc/rfc9000.html#name-sample-packet-number-encodi
     pub fn pn(&self) -> (u64, PacketNumber) {
         let pn = self.inner.records.largest();
-        // TODO: peer可能给出一个错误的ACK，令这里发生下溢
         let encoded_pn = PacketNumber::encode(pn, self.inner.largest_acked_pktno);
         (pn, encoded_pn)
     }
@@ -284,6 +291,11 @@ impl<T> Drop for NewPacketGuard<'_, T> {
                 .records
                 .push_back(SentPktState::Flighting(nframes as u16))
                 .expect("packet number never overflow");
+            tracing::info!(
+                pn = self.inner.records.largest() - 1,
+                records = ?self.inner.records.iter_with_idx().collect::<Vec<_>>(),
+                "packet number consumed",
+            );
         }
     }
 }

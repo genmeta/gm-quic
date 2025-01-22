@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use bytes::{Buf, BufMut, Bytes};
 use enum_dispatch::enum_dispatch;
 use io::WriteFrame;
@@ -58,7 +60,7 @@ pub use streams_blocked::StreamsBlockedFrame;
 
 /// Define the basic behaviors for all kinds of frames
 #[enum_dispatch]
-pub trait BeFrame {
+pub trait BeFrame: Debug {
     /// Return the type of frame
     fn frame_type(&self) -> FrameType;
 

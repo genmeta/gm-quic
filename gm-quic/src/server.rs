@@ -15,6 +15,7 @@ use rustls::{
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };
 use tokio::sync::mpsc;
+use tracing::{debug_span, Instrument};
 
 use crate::{
     interfaces::Interfaces,
@@ -145,6 +146,7 @@ impl QuicServer {
 
 // internal methods
 impl QuicServer {
+    #[tracing::instrument(skip(packet))]
     pub(crate) async fn try_accpet_connection(packet: Packet, pathway: Pathway, socket: Socket) {
         let Some(server) = SERVER.read().unwrap().upgrade() else {
             return;
@@ -162,7 +164,7 @@ impl QuicServer {
             },
             _ => return,
         };
-        log::info!("accepting connection from {}", socket.src());
+        tracing::info!("accepting connection from {}", socket.src());
 
         let token_provider = server
             .token_provider
@@ -184,21 +186,24 @@ impl QuicServer {
         PROTO.deliver(packet, pathway, socket).await;
         _ = server.listener.send((connection.clone(), pathway));
 
-        tokio::spawn(async move {
-            while let Some(event) = events.recv().await {
-                match event {
-                    Event::Handshaked => {}
-                    Event::ProbedNewPath(..) => {}
-                    Event::PathInactivated(_, socket) => {
-                        _ = Interfaces::try_free_interface(socket.src())
+        tokio::spawn(
+            async move {
+                while let Some(event) = events.recv().await {
+                    match event {
+                        Event::Handshaked => {}
+                        Event::ProbedNewPath(..) => {}
+                        Event::PathInactivated(_, socket) => {
+                            _ = Interfaces::try_free_interface(socket.src())
+                        }
+                        Event::Failed(error) => connection.enter_closing(error.into()),
+                        Event::Closed(ccf) => connection.enter_draining(ccf),
+                        Event::StatelessReset => {}
+                        Event::Terminated => { /* Todo: connections set */ }
                     }
-                    Event::Failed(error) => connection.enter_closing(error.into()),
-                    Event::Closed(ccf) => connection.enter_draining(ccf),
-                    Event::StatelessReset => {}
-                    Event::Terminated => { /* Todo: connections set */ }
                 }
             }
-        });
+            .instrument(debug_span!("server_connection_driver")),
+        );
     }
 
     fn shutdown(&self) {
@@ -582,7 +587,7 @@ impl QuicServerBuilder<TlsServerConfig> {
                     Err(join_error) => join_error.into(),
                 };
                 let local_addr = local_addrs[iface_idx];
-                log::error!("interface on {local_addr} that server listened was closed unexpectedly: {error}");
+                tracing::error!("interface on {local_addr} that server listened was closed unexpectedly: {error}");
                 server.shutdown();
             }
         });
@@ -682,7 +687,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
                     Err(join_error) => join_error.into(),
                 };
                 let local_addr = local_addrs[iface_idx];
-                log::error!("interface on {local_addr} that server listened was closed unexpectedly: {error}");
+                tracing::error!("interface on {local_addr} that server listened was closed unexpectedly: {error}");
                 server.shutdown();
             }
         });

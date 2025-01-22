@@ -38,7 +38,7 @@ use std::{
 };
 
 use deref_derive::Deref;
-use events::EmitEvent;
+use events::ArcEventBroker;
 use path::ArcPaths;
 use qbase::{
     cid, flow,
@@ -168,7 +168,7 @@ pub struct Components {
     proto: Arc<QuicProto>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     send_notify: Arc<Notify>,
-    event_broker: Arc<dyn EmitEvent>,
+    event_broker: ArcEventBroker,
     defer_idle_timeout: Duration,
 }
 
@@ -257,6 +257,7 @@ impl Components {
 pub struct Connection(RwLock<Result<Components, Termination>>);
 
 impl Connection {
+    #[tracing::instrument(level = "debug", skip(self))]
     pub fn enter_closing(&self, ccf: ConnectionCloseFrame) {
         let mut conn = self.0.write().unwrap();
         if let Ok(core_conn) = conn.as_mut() {
@@ -264,6 +265,7 @@ impl Connection {
         }
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub fn enter_draining(&self, ccf: ConnectionCloseFrame) {
         let error = ccf.into();
         let mut conn = self.0.write().unwrap();
@@ -273,7 +275,8 @@ impl Connection {
         }
     }
 
-    pub fn close(&self, reason: impl Into<Cow<'static, str>>, code: u64) {
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn close(&self, reason: Cow<'static, str>, code: u64) {
         let error_code = code.try_into().unwrap();
         self.enter_closing(ConnectionCloseFrame::new_app(error_code, reason));
     }
@@ -286,38 +289,46 @@ impl Connection {
             .map_err(|termination| termination.error().into())
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub async fn open_bi_stream(
         &self,
     ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
         self.map(|core_conn| core_conn.open_bi_stream())?.await
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, StreamWriter)>> {
         self.map(|core_conn| core_conn.open_uni_stream())?.await
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub async fn accept_bi_stream(
         &self,
     ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
         self.map(|core_conn| core_conn.accept_bi_stream())?.await
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub async fn accept_uni_stream(&self) -> io::Result<Option<(StreamId, StreamReader)>> {
         self.map(|core_conn| core_conn.accept_uni_stream())?.await
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub fn unreliable_reader(&self) -> io::Result<UnreliableReader> {
         self.map(|core_conn| core_conn.unreliable_reader())?
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub async fn unreliable_writer(&self) -> io::Result<UnreliableWriter> {
         self.map(|core_conn| core_conn.unreliable_writer())?.await
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub fn add_path(&self, socket: Socket, pathway: Pathway) -> io::Result<()> {
         self.map(|core_conn| core_conn.add_path(socket, pathway))
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub fn del_path(&self, pathway: &Pathway) -> io::Result<()> {
         self.map(|core_conn| core_conn.del_path(pathway))
     }
