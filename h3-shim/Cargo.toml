@@ -17,6 +17,7 @@ gm-quic = { workspace = true }
 qbase = { workspace = true }
 tokio = { workspace = true }
 
+log = { workspace = true }
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }
 http = { workspace = true }
