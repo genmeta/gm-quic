@@ -14,7 +14,7 @@ use rustls::{
     ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
 };
 use tokio::sync::mpsc;
-use tracing::{debug_span, Instrument};
+use tracing::{trace_span, Instrument};
 
 use crate::{
     interfaces::Interfaces,
@@ -220,7 +220,7 @@ impl QuicClient {
                     }
                 }
             }
-            .instrument(debug_span!("client_connection_driver")),
+            .instrument(trace_span!("client_connection_driver")),
         );
 
         connection.add_path(socket, pathway)?;
@@ -263,7 +263,7 @@ impl QuicClient {
         server_addr: SocketAddr,
     ) -> io::Result<Arc<Connection>> {
         let server_name = server_name.into();
-        debug_span!("connect", %server_name,%server_addr).in_scope(|| {
+        trace_span!("connect", %server_name,%server_addr).in_scope(|| {
             if self.reuse_connection {
                 REUSEABLE_CONNECTIONS
                     .entry((server_name.clone(), server_addr))

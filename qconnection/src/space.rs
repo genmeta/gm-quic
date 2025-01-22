@@ -17,7 +17,7 @@ use qrecovery::{
     reliable::GuaranteedFrame,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
-use tracing::{debug_span, Instrument};
+use tracing::{trace_span, Instrument};
 
 use crate::{
     events::{EmitEvent, Event},
@@ -122,7 +122,7 @@ fn pipe<F: Send + 'static>(
                 }
             }
         }
-        .instrument(debug_span!(
+        .instrument(trace_span!(
             "frame_pipeline",
             frame = core::any::type_name::<F>()
         )),
@@ -192,7 +192,7 @@ impl AckHandshake {
 impl ReceiveFrame<AckFrame> for AckHandshake {
     type Output = ();
 
-    #[tracing::instrument(name = "recv_ack_frame", level = "debug", skip(self), ret, err)]
+    #[tracing::instrument(name = "recv_ack_frame", level = "trace", skip(self), ret, err)]
     fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
         let mut rotate_guard = self.sent_journal.rotate();
         rotate_guard.update_largest(ack_frame)?;
@@ -229,7 +229,7 @@ impl AckData {
 impl ReceiveFrame<AckFrame> for AckData {
     type Output = ();
 
-    #[tracing::instrument(name = "recv_ack_frame", level = "debug", skip(self), ret, err)]
+    #[tracing::instrument(name = "recv_ack_frame", level = "trace", skip(self), ret, err)]
     fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
         let mut rotate_guard = self.send_journal.rotate();
         rotate_guard.update_largest(ack_frame)?;

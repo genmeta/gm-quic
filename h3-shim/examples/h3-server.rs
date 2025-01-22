@@ -6,7 +6,7 @@ use h3::{error::ErrorLevel, quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
 use qbase::param::ServerParameters;
 use tokio::{fs::File, io::AsyncReadExt};
-use tracing::{error, info};
+use tracing::{error, info, info_span, Instrument};
 
 #[derive(Parser, Debug)]
 #[structopt(name = "server")]
@@ -111,38 +111,40 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn std::error::Error + Send + Sync
         else {
             continue;
         };
-        tokio::spawn(async move {
-            info!("new connection established");
-            loop {
-                match h3_conn.accept().await {
-                    Ok(Some((req, stream))) => {
-                        info!("new request: {:#?}", req);
+        tokio::spawn(
+            async move {
+                info!("new connection established");
+                loop {
+                    match h3_conn.accept().await {
+                        Ok(Some((req, stream))) => {
+                            info!("new request: {:#?}", req);
 
-                        let root = root.clone();
+                            let root = root.clone();
 
-                        tokio::spawn(async {
-                            if let Err(e) = handle_request(req, stream, root).await {
-                                error!("handling request failed: {}", e);
+                            tokio::spawn(async {
+                                if let Err(e) = handle_request(req, stream, root).await {
+                                    error!("handling request failed: {}", e);
+                                }
+                            });
+                        }
+
+                        // indicating no more streams to be received
+                        Ok(None) => {
+                            break;
+                        }
+
+                        Err(err) => {
+                            error!("error on accept connection: {}", err);
+                            match err.get_error_level() {
+                                ErrorLevel::ConnectionError => break,
+                                ErrorLevel::StreamError => continue,
                             }
-                            info!("request handled");
-                        });
-                    }
-
-                    // indicating no more streams to be received
-                    Ok(None) => {
-                        break;
-                    }
-
-                    Err(err) => {
-                        error!("error on accept connection: {}", err);
-                        match err.get_error_level() {
-                            ErrorLevel::ConnectionError => break,
-                            ErrorLevel::StreamError => continue,
                         }
                     }
                 }
             }
-        });
+            .instrument(info_span!("handle_connection")),
+        );
     }
 
     // shut down gracefully
@@ -151,6 +153,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn std::error::Error + Send + Sync
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 async fn handle_request<T>(
     req: Request<()>,
     mut stream: RequestStream<T, Bytes>,
