@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use qbase::{
     error::Error,
     frame::{HandshakeDoneFrame, ReceiveFrame, SendFrame},
@@ -7,7 +5,7 @@ use qbase::{
 };
 use qcongestion::ObserveHandshake;
 
-use crate::events::{EmitEvent, Event};
+use crate::events::{ArcEventBroker, EmitEvent, Event};
 
 pub type RawHandshake<T> = qbase::handshake::Handshake<T>;
 
@@ -19,15 +17,15 @@ pub struct Handshake<T>
 where
     T: SendFrame<HandshakeDoneFrame> + Clone,
 {
-    inner: qbase::handshake::Handshake<T>,
-    broker: Arc<dyn EmitEvent + Send + Sync>,
+    inner: RawHandshake<T>,
+    broker: ArcEventBroker,
 }
 
 impl<T> Handshake<T>
 where
     T: SendFrame<HandshakeDoneFrame> + Clone,
 {
-    pub fn new(raw: RawHandshake<T>, broker: Arc<dyn EmitEvent + Send + Sync>) -> Self {
+    pub fn new(raw: RawHandshake<T>, broker: ArcEventBroker) -> Self {
         Self { inner: raw, broker }
     }
 

@@ -147,6 +147,7 @@ impl Burst {
         Ok(filled_buffers)
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub async fn launch(self) -> io::Result<Infallible> {
         let mut buffers = vec![];
         let mut path_sendable = pin!(self.path.sendable.notified());
@@ -158,8 +159,13 @@ impl Burst {
             let buffers = self.load_into_buffers(buffers).await?;
             let segments = self.collect_filled_buffers(buffers)?;
             if !segments.is_empty() {
+                tracing::trace!(
+                    packets = ?segments.iter().map(|seg| seg.len()).collect::<Vec<_>>(),
+                    "sending packets"
+                );
                 self.path.send_packets(&segments).await?;
             } else {
+                tracing::trace!("no packet to send, waiting for notification");
                 tokio::select! {
                     _ = path_sendable.as_mut() => {},
                     _ = conn_sendable.as_mut() => {},

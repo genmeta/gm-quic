@@ -26,6 +26,7 @@ use qrecovery::{
 };
 use rustls::quic::Keys;
 use tokio::sync::mpsc;
+use tracing::{debug_span, Instrument};
 
 use super::{AckHandshake, DecryptedPacket};
 use crate::{
@@ -126,6 +127,7 @@ impl HandshakeSpace {
     }
 }
 
+#[tracing::instrument(level = "debug", name = "handshake_packet_handler", skip_all)]
 pub fn spawn_deliver_and_parse(
     mut packets: impl Stream<Item = (HandshakePacket, Pathway, Socket)> + Unpin + Send + 'static,
     space: Arc<HandshakeSpace>,
@@ -149,66 +151,76 @@ pub fn spawn_deliver_and_parse(
     let components = components.clone();
     let role = components.handshake.role();
     let parameters = components.parameters.clone();
-    tokio::spawn(async move {
-        while let Some((packet, pathway, socket)) = packets.next().await {
-            let dispatch_frame = |frame: Frame, path: &Path| match frame {
-                Frame::Ack(f) => {
-                    path.cc().on_ack(Epoch::Handshake, &f);
-                    _ = ack_frames_entry.send(f);
-                }
-                Frame::Close(f) => event_broker.emit(Event::Closed(f)),
-                Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
-                Frame::Padding(_) | Frame::Ping(_) => {}
-                _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
-            };
-            let packet_size = packet.1.len();
-            match space.decrypt_packet(packet).await {
-                Some(Ok(packet)) => {
-                    let path = match components.get_or_create_path(socket, pathway, false) {
-                        Some(path) => path,
-                        None => return,
-                    };
-                    // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
-                    // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
-                    // address to have been validated.
-                    // It may have already been verified using tokens in the Handshake space
-                    path.grant_anti_amplifier();
-                    path.on_rcvd(packet_size);
+    tokio::spawn(
+        async move {
+            while let Some((packet, pathway, socket)) = packets.next().await {
+                let dispatch_frame = |frame: Frame, path: &Path| match frame {
+                    Frame::Ack(f) => {
+                        path.cc().on_ack(Epoch::Handshake, &f);
+                        _ = ack_frames_entry.send(f);
+                    }
+                    Frame::Close(f) => event_broker.emit(Event::Closed(f)),
+                    Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
+                    Frame::Padding(_) | Frame::Ping(_) => {}
+                    _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
+                };
+                let packet_size = packet.1.len();
+                match space.decrypt_packet(packet).await {
+                    Some(Ok(packet)) => {
+                        tracing::trace!(
+                            pn = packet.pn,
+                            payload_size = packet.payload.len(),
+                            "decrypted packet"
+                        );
+                        let path = match components.get_or_create_path(socket, pathway, false) {
+                            Some(path) => path,
+                            None => return,
+                        };
+                        // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
+                        // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
+                        // address to have been validated.
+                        // It may have already been verified using tokens in the Handshake space
+                        path.grant_anti_amplifier();
+                        path.on_rcvd(packet_size);
 
-                    match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
-                        false,
-                        |is_ack_packet, frame| {
-                            let (frame, is_ack_eliciting) = frame?;
-                            dispatch_frame(frame, &path);
-                            Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
-                        },
-                    ) {
-                        Ok(is_ack_packet) => {
-                            space.journal.of_rcvd_packets().register_pn(packet.pn);
-                            path.cc()
-                                .on_pkt_rcvd(Epoch::Handshake, packet.pn, is_ack_packet);
+                        match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
+                            false,
+                            |is_ack_packet, frame| {
+                                let (frame, is_ack_eliciting) = frame?;
+                                dispatch_frame(frame, &path);
+                                Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                            },
+                        ) {
+                            Ok(is_ack_packet) => {
+                                space.journal.of_rcvd_packets().register_pn(packet.pn);
+                                path.cc()
+                                    .on_pkt_rcvd(Epoch::Handshake, packet.pn, is_ack_packet);
 
-                            // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
-                            // negotiating done.
-                            // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
-                            if role == qbase::sid::Role::Server {
-                                if let Some(origin_dcid) = parameters.server().map(|local_params| {
-                                    local_params.original_destination_connection_id()
-                                }) {
-                                    if origin_dcid != packet.header.dcid {
-                                        components.proto.del_router_entry(&origin_dcid.into());
+                                // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
+                                // negotiating done.
+                                // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
+                                if role == qbase::sid::Role::Server {
+                                    if let Some(origin_dcid) =
+                                        parameters.server().map(|local_params| {
+                                            local_params.original_destination_connection_id()
+                                        })
+                                    {
+                                        if origin_dcid != packet.header.dcid {
+                                            components.proto.del_router_entry(&origin_dcid.into());
+                                        }
                                     }
                                 }
                             }
+                            Err(error) => event_broker.emit(Event::Failed(error)),
                         }
-                        Err(error) => event_broker.emit(Event::Failed(error)),
                     }
+                    Some(Err(error)) => event_broker.emit(Event::Failed(error)),
+                    None => continue,
                 }
-                Some(Err(error)) => event_broker.emit(Event::Failed(error)),
-                None => continue,
             }
         }
-    });
+        .instrument(debug_span!("task")),
+    );
 }
 
 impl TrackPackets for HandshakeSpace {

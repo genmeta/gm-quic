@@ -11,7 +11,10 @@ use qinterface::path::Pathway;
 use tokio::task::AbortHandle;
 
 use super::Path;
-use crate::prelude::{EmitEvent, Event};
+use crate::{
+    events::ArcEventBroker,
+    prelude::{EmitEvent, Event},
+};
 
 #[derive(Deref)]
 pub struct PathContext {
@@ -35,11 +38,11 @@ impl PathContext {
 #[derive(Clone)]
 pub struct ArcPaths {
     inner: Arc<DashMap<Pathway, PathContext>>,
-    broker: Arc<dyn EmitEvent>,
+    broker: ArcEventBroker,
 }
 
 impl ArcPaths {
-    pub fn new(event_broker: Arc<dyn EmitEvent>) -> Self {
+    pub fn new(event_broker: ArcEventBroker) -> Self {
         Self {
             inner: Default::default(),
             broker: event_broker,

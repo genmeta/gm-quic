@@ -14,6 +14,7 @@ use rustls::{
     ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
 };
 use tokio::sync::mpsc;
+use tracing::{debug_span, Instrument};
 
 use crate::{
     interfaces::Interfaces,
@@ -188,36 +189,39 @@ impl QuicClient {
                 .run_with(event_broker),
         );
 
-        tokio::spawn({
-            let connection = connection.clone();
-            async move {
-                while let Some(event) = events.recv().await {
-                    match event {
-                        Event::Handshaked => {}
-                        Event::ProbedNewPath(_, _) => {}
-                        Event::PathInactivated(_pathway, socket) => {
-                            _ = Interfaces::try_free_interface(socket.src())
+        tokio::spawn(
+            {
+                let connection = connection.clone();
+                async move {
+                    while let Some(event) = events.recv().await {
+                        match event {
+                            Event::Handshaked => {}
+                            Event::ProbedNewPath(_, _) => {}
+                            Event::PathInactivated(_pathway, socket) => {
+                                _ = Interfaces::try_free_interface(socket.src())
+                            }
+                            Event::Failed(error) => {
+                                REUSEABLE_CONNECTIONS
+                                    .remove_if(&(server_name.clone(), server_addr), |_, exist| {
+                                        Arc::ptr_eq(&connection, exist)
+                                    });
+                                connection.enter_closing(error.into())
+                            }
+                            Event::Closed(ccf) => {
+                                REUSEABLE_CONNECTIONS
+                                    .remove_if(&(server_name.clone(), server_addr), |_, exist| {
+                                        Arc::ptr_eq(&connection, exist)
+                                    });
+                                connection.enter_draining(ccf)
+                            }
+                            Event::StatelessReset => {}
+                            Event::Terminated => {}
                         }
-                        Event::Failed(error) => {
-                            REUSEABLE_CONNECTIONS
-                                .remove_if(&(server_name.clone(), server_addr), |_, exist| {
-                                    Arc::ptr_eq(&connection, exist)
-                                });
-                            connection.enter_closing(error.into())
-                        }
-                        Event::Closed(ccf) => {
-                            REUSEABLE_CONNECTIONS
-                                .remove_if(&(server_name.clone(), server_addr), |_, exist| {
-                                    Arc::ptr_eq(&connection, exist)
-                                });
-                            connection.enter_draining(ccf)
-                        }
-                        Event::StatelessReset => {}
-                        Event::Terminated => {}
                     }
                 }
             }
-        });
+            .instrument(debug_span!("client_connection_driver")),
+        );
 
         connection.add_path(socket, pathway)?;
         Ok(connection)
@@ -259,15 +263,16 @@ impl QuicClient {
         server_addr: SocketAddr,
     ) -> io::Result<Arc<Connection>> {
         let server_name = server_name.into();
-
-        if self.reuse_connection {
-            REUSEABLE_CONNECTIONS
-                .entry((server_name.clone(), server_addr))
-                .or_try_insert_with(|| self.new_connection(server_name, server_addr))
-                .map(|entry| entry.clone())
-        } else {
-            self.new_connection(server_name, server_addr)
-        }
+        debug_span!("connect", %server_name,%server_addr).in_scope(|| {
+            if self.reuse_connection {
+                REUSEABLE_CONNECTIONS
+                    .entry((server_name.clone(), server_addr))
+                    .or_try_insert_with(|| self.new_connection(server_name, server_addr))
+                    .map(|entry| entry.clone())
+            } else {
+                self.new_connection(server_name, server_addr)
+            }
+        })
     }
 }
 
@@ -370,12 +375,12 @@ impl<T> QuicClientBuilder<T> {
                         Err(join_error) if join_error.is_cancelled() => return,
                         Err(join_error) => join_error.into(),
                     };
-                    log::warn!(
+                    tracing::warn!(
                         "interface on {local_addr} that client bound was closed unexpectedly: {error}"
                     );
                     bind_interfaces.remove(&local_addr);
                 }
-                log::warn!("all interfaces that client bound were closed unexpectedly, client will not be able to connect to the server");
+                tracing::warn!("all interfaces that client bound were closed unexpectedly, client will not be able to connect to the server");
             }
         });
         Ok(self)

@@ -16,7 +16,6 @@ bytes = { workspace = true }
 dashmap = { workspace = true }
 deref-derive = { workspace = true }
 futures = { workspace = true }
-log = { workspace = true }
 qbase = { workspace = true }
 qcongestion = { workspace = true }
 qconnection = { workspace = true }
@@ -26,12 +25,14 @@ qunreliable = { workspace = true }
 rustls = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 clap = { workspace = true }
 env_logger = { workspace = true }
 rustls = { workspace = true, features = ["ring"] }
 url = { workspace = true }
+log = { workspace = true }
 tokio = { features = ["fs"], workspace = true }
 
 [[example]]

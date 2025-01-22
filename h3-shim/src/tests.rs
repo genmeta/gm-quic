@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use tracing::{info_span, Instrument};
+
 mod client_example {
     use crate as h3_shim;
     include!("../examples/h3-client.rs");
@@ -10,13 +12,15 @@ mod server_example {
     include!("../examples/h3-server.rs");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn h3_test() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
         .with_max_level(tracing::Level::DEBUG)
         .with_writer(std::io::stdout)
+        // .pretty()
+        // .with_ansi(false)
         .init();
     // CryptoProvider ring is installed automatically.
 
@@ -41,6 +45,7 @@ async fn h3_test() {
 
     let client = async move {
         client_example::run(client_opt)
+            .instrument(info_span!("client"))
             .await
             .expect("client failed");
     };
@@ -48,7 +53,7 @@ async fn h3_test() {
     let server = async move {
         // give it a litte time to enter draining state...
         let test_time = std::time::Duration::from_secs(2);
-        let run = server_example::run(server_opt);
+        let run = server_example::run(server_opt).instrument(info_span!("server"));
         match tokio::time::timeout(test_time, run).await {
             Ok(result) => result.expect("server failed"),
             Err(_finish) => { /* ok */ }

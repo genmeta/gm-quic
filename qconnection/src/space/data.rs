@@ -37,6 +37,7 @@ use qrecovery::{
 };
 use qunreliable::DatagramFlow;
 use tokio::sync::mpsc;
+use tracing::{debug_span, Instrument};
 
 use super::DecryptedPacket;
 use crate::{
@@ -278,6 +279,7 @@ impl DataSpace {
     }
 }
 
+#[tracing::instrument(level = "debug", name = "data_space_packet_handler", skip_all)]
 pub fn spawn_deliver_and_parse(
     mut zeor_rtt_packets: impl Stream<Item = (ZeroRttPacket, Pathway, Socket)> + Unpin + Send + 'static,
     mut one_rtt_packets: impl Stream<Item = (OneRttPacket, Pathway, Socket)> + Unpin + Send + 'static,
@@ -384,76 +386,88 @@ pub fn spawn_deliver_and_parse(
         }
     };
 
-    tokio::spawn({
-        let components = components.clone();
-        let space = space.clone();
-        let event_broker = event_broker.clone();
-        let dispatch_data_frame = dispatch_data_frame.clone();
-        async move {
-            while let Some((packet, pathway, socket)) = zeor_rtt_packets.next().await {
-                let packet_size = packet.1.len();
-                match space.decrypt_0rtt_packet(packet).await {
-                    Some(Ok(packet)) => {
-                        let path = match components.get_or_create_path(socket, pathway, true) {
-                            Some(path) => path,
-                            None => return,
-                        };
-                        path.on_rcvd(packet_size);
-                        match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
-                            false,
-                            |is_ack_packet, frame| {
-                                let (frame, is_ack_eliciting) = frame?;
-                                dispatch_data_frame(frame, packet.header.get_type(), &path);
-                                Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
-                            },
-                        ) {
-                            Ok(is_ack_packet) => {
-                                space.journal.of_rcvd_packets().register_pn(packet.pn);
-                                path.cc().on_pkt_rcvd(Epoch::Data, packet.pn, is_ack_packet);
+    tokio::spawn(
+        {
+            let components = components.clone();
+            let space = space.clone();
+            let event_broker = event_broker.clone();
+            let dispatch_data_frame = dispatch_data_frame.clone();
+            async move {
+                while let Some((packet, pathway, socket)) = zeor_rtt_packets.next().await {
+                    let packet_size = packet.1.len();
+                    match space.decrypt_0rtt_packet(packet).await {
+                        Some(Ok(packet)) => {
+                            tracing::trace!(
+                                pn = packet.pn,
+                                payload_size = packet.payload.len(),
+                                "decrypted packet"
+                            );
+                            let path = match components.get_or_create_path(socket, pathway, true) {
+                                Some(path) => path,
+                                None => return,
+                            };
+                            path.on_rcvd(packet_size);
+                            match FrameReader::new(packet.payload, packet.header.get_type())
+                                .try_fold(false, |is_ack_packet, frame| {
+                                    let (frame, is_ack_eliciting) = frame?;
+                                    dispatch_data_frame(frame, packet.header.get_type(), &path);
+                                    Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                                }) {
+                                Ok(is_ack_packet) => {
+                                    space.journal.of_rcvd_packets().register_pn(packet.pn);
+                                    path.cc().on_pkt_rcvd(Epoch::Data, packet.pn, is_ack_packet);
+                                }
+                                Err(error) => event_broker.emit(Event::Failed(error)),
                             }
-                            Err(error) => event_broker.emit(Event::Failed(error)),
                         }
+                        Some(Err(error)) => event_broker.emit(Event::Failed(error)),
+                        None => continue,
                     }
-                    Some(Err(error)) => event_broker.emit(Event::Failed(error)),
-                    None => continue,
                 }
             }
         }
-    });
-    tokio::spawn({
-        let components = components.clone();
-        let dispatch_data_frame = dispatch_data_frame.clone();
-        async move {
-            while let Some((packet, pathway, socket)) = one_rtt_packets.next().await {
-                let packet_size = packet.1.len();
-                match space.decrypt_1rtt_packet(packet).await {
-                    Some(Ok(packet)) => {
-                        let path = match components.get_or_create_path(socket, pathway, true) {
-                            Some(path) => path,
-                            None => return,
-                        };
-                        path.on_rcvd(packet_size);
-                        match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
-                            false,
-                            |is_ack_packet, frame| {
-                                let (frame, is_ack_eliciting) = frame?;
-                                dispatch_data_frame(frame, packet.header.get_type(), &path);
-                                Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
-                            },
-                        ) {
-                            Ok(is_ack_packet) => {
-                                space.journal.of_rcvd_packets().register_pn(packet.pn);
-                                path.cc().on_pkt_rcvd(Epoch::Data, packet.pn, is_ack_packet);
+        .instrument(debug_span!("zeor_rtt_task")),
+    );
+    tokio::spawn(
+        {
+            let components = components.clone();
+            let dispatch_data_frame = dispatch_data_frame.clone();
+            async move {
+                while let Some((packet, pathway, socket)) = one_rtt_packets.next().await {
+                    let packet_size = packet.1.len();
+                    match space.decrypt_1rtt_packet(packet).await {
+                        Some(Ok(packet)) => {
+                            tracing::trace!(
+                                pn = packet.pn,
+                                payload_size = packet.payload.len(),
+                                "decrypted packet"
+                            );
+                            let path = match components.get_or_create_path(socket, pathway, true) {
+                                Some(path) => path,
+                                None => return,
+                            };
+                            path.on_rcvd(packet_size);
+                            match FrameReader::new(packet.payload, packet.header.get_type())
+                                .try_fold(false, |is_ack_packet, frame| {
+                                    let (frame, is_ack_eliciting) = frame?;
+                                    dispatch_data_frame(frame, packet.header.get_type(), &path);
+                                    Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                                }) {
+                                Ok(is_ack_packet) => {
+                                    space.journal.of_rcvd_packets().register_pn(packet.pn);
+                                    path.cc().on_pkt_rcvd(Epoch::Data, packet.pn, is_ack_packet);
+                                }
+                                Err(error) => event_broker.emit(Event::Failed(error)),
                             }
-                            Err(error) => event_broker.emit(Event::Failed(error)),
                         }
+                        Some(Err(error)) => event_broker.emit(Event::Failed(error)),
+                        None => continue,
                     }
-                    Some(Err(error)) => event_broker.emit(Event::Failed(error)),
-                    None => continue,
                 }
             }
         }
-    });
+        .instrument(debug_span!("one_rtt_task")),
+    );
 }
 
 impl TrackPackets for DataSpace {

@@ -4,7 +4,7 @@ use clap::Parser;
 use futures::future;
 use rustls::pki_types::{pem::PemObject, CertificateDer};
 use tokio::io::AsyncWriteExt;
-use tracing::{debug, error, info};
+use tracing::{error, info, trace};
 
 static ALPN: &[u8] = b"h3";
 
@@ -90,7 +90,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
     params.set_initial_max_stream_data_bidi_local((1u32 << 20).into());
     params.set_initial_max_stream_data_bidi_remote((1u32 << 20).into());
 
-    debug!(bind = ?opt.bind, "build QuicClient");
+    trace!(bind = ?opt.bind, "build QuicClient");
     let quic_client = ::gm_quic::QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()
@@ -144,6 +144,8 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
             out.write_all_buf(&mut chunk).await?;
             out.flush().await?;
         }
+
+        info!("all data received");
 
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         Ok::<_, Box<dyn std::error::Error + 'static + Send + Sync>>(())

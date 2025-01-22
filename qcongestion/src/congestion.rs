@@ -6,7 +6,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use log::debug;
 use qbase::{
     frame::{AckFrame, EcnCounts, HandshakeDoneFrame, SendFrame},
     handshake::Handshake,
@@ -278,7 +277,7 @@ impl CongestionController {
                 // Client sends an anti-deadlock packet: Initial is padded
                 // to earn more anti-amplification credit,
                 // a Handshake packet proves address ownership.
-                debug!("Anti-deadlock packet sent");
+                log::trace!("Anti-deadlock packet sent");
                 if self.handshake.is_getting_keys() {
                     Epoch::Handshake
                 } else {
@@ -292,7 +291,7 @@ impl CongestionController {
             };
 
         self.pto_count += 1;
-        log::debug!(
+        log::trace!(
             "{:?} PTO timeout, epoch: {:?}, pto_count: {} inflight: {:?}",
             self.handshake.role(),
             pto_epoch,
