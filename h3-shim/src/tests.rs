@@ -16,7 +16,7 @@ mod server_example {
 async fn h3_test() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
+        // .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
         .with_max_level(tracing::Level::DEBUG)
         .with_writer(std::io::stdout)
         // .pretty()

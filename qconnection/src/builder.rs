@@ -31,7 +31,7 @@ use qinterface::{
 };
 pub use rustls::crypto::CryptoProvider;
 use tokio::sync::Notify;
-use tracing::{debug_span, Instrument};
+use tracing::{trace_span, Instrument};
 
 use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
@@ -270,13 +270,14 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
         );
 
         let spaces = Spaces::new(
-            InitialSpace::new(initial_keys, self.foundation.token),
-            HandshakeSpace::new(),
+            InitialSpace::new(initial_keys, self.foundation.token, sendable.clone()),
+            HandshakeSpace::new(sendable.clone()),
             DataSpace::new(
                 sid::Role::Client,
                 reliable_frames.clone(),
                 client_params,
                 self.streams_ctrl,
+                sendable.clone(),
             ),
         );
 
@@ -347,13 +348,14 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         );
 
         let spaces = Spaces::new(
-            InitialSpace::new(initial_keys, Vec::with_capacity(0)),
-            HandshakeSpace::new(),
+            InitialSpace::new(initial_keys, Vec::with_capacity(0), sendable.clone()),
+            HandshakeSpace::new(sendable.clone()),
             DataSpace::new(
                 sid::Role::Server,
                 reliable_frames.clone(),
                 server_params,
                 self.streams_ctrl,
+                sendable.clone(),
             ),
         );
 
@@ -443,11 +445,11 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
             }
         }
     }
-    .instrument(debug_span!("accept_transport_parameters"))
+    .instrument(trace_span!("accept_transport_parameters"))
 }
 
 impl Components {
-    #[tracing::instrument(level = "debug", skip(self))]
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn get_or_create_path(
         &self,
         socket: Socket,
@@ -502,7 +504,7 @@ impl Components {
                         tracing::trace!(reason, "path inactive");
                         // same as [`Components::del_path`]
                         paths.remove(&pathway);
-                    }.instrument(debug_span!("path_task", ?pathway,?socket,is_probed,do_validate))
+                    }.instrument(trace_span!("path_task", ?pathway,?socket,is_probed,do_validate))
                 });
 
                 vacant_entry.insert(PathContext::new(path.clone(), task.abort_handle()));
@@ -514,7 +516,7 @@ impl Components {
 
 impl Components {
     // 对于server，第一条路径也通过add_path添加
-    #[tracing::instrument(level = "debug", skip(self))]
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn enter_closing(self, ccf: ConnectionCloseFrame) -> Termination {
         let error = ccf.clone().into();
         self.spaces.data().on_conn_error(&error);
@@ -537,7 +539,7 @@ impl Components {
                 local_cids.clear();
                 event_broker.emit(Event::Terminated);
             }
-            .instrument(debug_span!("termination_timer", ?pto_duration))
+            .instrument(trace_span!("termination_timer", ?pto_duration))
         });
 
         self.spaces.close(closing_state.clone(), &self.event_broker);
@@ -545,7 +547,7 @@ impl Components {
         Termination::closing(error, self.cid_registry.local, closing_state)
     }
 
-    #[tracing::instrument(level = "debug", skip(self))]
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn enter_draining(self, error: Error) -> Termination {
         self.spaces.data().on_conn_error(&error);
         self.flow_ctrl.on_conn_error(&error);
@@ -566,7 +568,7 @@ impl Components {
                 local_cids.clear();
                 event_broker.emit(Event::Terminated);
             }
-            .instrument(debug_span!("termination_timer", ?pto_duration))
+            .instrument(trace_span!("termination_timer", ?pto_duration))
         });
 
         self.rcvd_pkt_q.close_all();

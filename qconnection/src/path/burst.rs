@@ -147,7 +147,7 @@ impl Burst {
         Ok(filled_buffers)
     }
 
-    #[tracing::instrument(level = "debug", skip(self))]
+    #[tracing::instrument(level = "trace", skip(self))]
     pub async fn launch(self) -> io::Result<Infallible> {
         let mut buffers = vec![];
         let mut path_sendable = pin!(self.path.sendable.notified());

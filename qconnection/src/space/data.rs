@@ -36,8 +36,8 @@ use qrecovery::{
     reliable::GuaranteedFrame,
 };
 use qunreliable::DatagramFlow;
-use tokio::sync::mpsc;
-use tracing::{debug_span, Instrument};
+use tokio::sync::{mpsc, Notify};
+use tracing::{trace_span, Instrument};
 
 use super::DecryptedPacket;
 use crate::{
@@ -62,6 +62,7 @@ pub struct DataSpace {
     datagrams: DatagramFlow,
     journal: DataJournal,
     reliable_frames: ArcReliableFrameDeque,
+    sendable: Arc<Notify>,
 }
 
 impl DataSpace {
@@ -70,6 +71,7 @@ impl DataSpace {
         reliable_frames: ArcReliableFrameDeque,
         local_params: &CommonParameters,
         streams_ctrl: Box<dyn ControlConcurrency>,
+        sendable: Arc<Notify>,
     ) -> Self {
         let streams = DataStreams::new(role, local_params, streams_ctrl, reliable_frames.clone());
         Self {
@@ -80,6 +82,7 @@ impl DataSpace {
             reliable_frames,
             streams,
             datagrams: DatagramFlow::new(1024),
+            sendable,
         }
     }
 
@@ -279,7 +282,7 @@ impl DataSpace {
     }
 }
 
-#[tracing::instrument(level = "debug", name = "data_space_packet_handler", skip_all)]
+#[tracing::instrument(level = "trace", name = "data_space_packet_handler", skip_all)]
 pub fn spawn_deliver_and_parse(
     mut zeor_rtt_packets: impl Stream<Item = (ZeroRttPacket, Pathway, Socket)> + Unpin + Send + 'static,
     mut one_rtt_packets: impl Stream<Item = (OneRttPacket, Pathway, Socket)> + Unpin + Send + 'static,
@@ -426,7 +429,7 @@ pub fn spawn_deliver_and_parse(
                 }
             }
         }
-        .instrument(debug_span!("zeor_rtt_task")),
+        .instrument(trace_span!("zeor_rtt_task")),
     );
     tokio::spawn(
         {
@@ -466,7 +469,7 @@ pub fn spawn_deliver_and_parse(
                 }
             }
         }
-        .instrument(debug_span!("one_rtt_task")),
+        .instrument(trace_span!("one_rtt_task")),
     );
 }
 
@@ -478,9 +481,18 @@ impl TrackPackets for DataSpace {
         for pn in pns {
             for frame in rotate.may_loss_pkt(pn) {
                 match frame {
-                    GuaranteedFrame::Stream(f) => self.streams.may_loss_data(&f),
-                    GuaranteedFrame::Reliable(f) => self.reliable_frames.send_frame([f]),
-                    GuaranteedFrame::Crypto(f) => crypto_outgoing.may_loss_data(&f),
+                    GuaranteedFrame::Stream(f) => {
+                        self.streams.may_loss_data(&f);
+                        self.sendable.notify_waiters();
+                    }
+                    GuaranteedFrame::Reliable(f) => {
+                        self.reliable_frames.send_frame([f]);
+                        // self.sendable.notify_waiters();
+                    }
+                    GuaranteedFrame::Crypto(f) => {
+                        crypto_outgoing.may_loss_data(&f);
+                        self.sendable.notify_waiters();
+                    }
                 }
             }
         }

@@ -66,7 +66,7 @@ impl Path {
         self.validated.store(true, Ordering::Release);
     }
 
-    #[tracing::instrument(level = "debug", skip(self), ret)]
+    #[tracing::instrument(level = "trace", skip(self), ret)]
     pub async fn validate(&self) -> bool {
         let challenge = PathChallengeFrame::random();
         for _ in 0..3 {

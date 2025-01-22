@@ -99,6 +99,7 @@ where
         self.writer
             .dump_frame_with_data(frame, data)
             .and_then(|frame| {
+                tracing::trace!(?frame, pn = self.guard.pn().0, "dump frame");
                 self.guard.record_frame(frame);
                 None
             })

@@ -15,7 +15,7 @@ use rustls::{
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };
 use tokio::sync::mpsc;
-use tracing::{debug_span, Instrument};
+use tracing::{trace_span, Instrument};
 
 use crate::{
     interfaces::Interfaces,
@@ -202,7 +202,7 @@ impl QuicServer {
                     }
                 }
             }
-            .instrument(debug_span!("server_connection_driver")),
+            .instrument(trace_span!("server_connection_driver")),
         );
     }
 

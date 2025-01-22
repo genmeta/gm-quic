@@ -29,8 +29,8 @@ use qrecovery::{
     journal::{ArcRcvdJournal, InitialJournal},
 };
 use rustls::quic::Keys;
-use tokio::sync::mpsc;
-use tracing::{debug_span, Instrument};
+use tokio::sync::{mpsc, Notify};
+use tracing::{trace_span, Instrument};
 
 use super::{pipe, AckInitial, DecryptedPacket};
 use crate::{
@@ -49,11 +49,12 @@ pub struct InitialSpace {
     crypto_stream: CryptoStream,
     token: Mutex<Vec<u8>>,
     journal: InitialJournal,
+    sendable: Arc<Notify>,
 }
 
 impl InitialSpace {
     // Initial keys应该是预先知道的，或者传入dcid，可以构造出来
-    pub fn new(keys: rustls::quic::Keys, token: Vec<u8>) -> Self {
+    pub fn new(keys: rustls::quic::Keys, token: Vec<u8>, sendable: Arc<Notify>) -> Self {
         let journal = InitialJournal::with_capacity(16);
         let crypto_stream = CryptoStream::new(4096, 4096);
 
@@ -62,6 +63,7 @@ impl InitialSpace {
             keys: ArcKeys::with_keys(keys),
             journal,
             crypto_stream,
+            sendable,
         }
     }
 
@@ -257,7 +259,7 @@ pub fn spawn_deliver_and_parse(
                 }
             }
         }
-        .instrument(debug_span!("task")),
+        .instrument(trace_span!("task")),
     );
 }
 
@@ -269,6 +271,7 @@ impl TrackPackets for InitialSpace {
         for pn in pns {
             for frame in rotate.may_loss_pkt(pn) {
                 outgoing.may_loss_data(&frame);
+                self.sendable.notify_waiters();
             }
         }
     }
