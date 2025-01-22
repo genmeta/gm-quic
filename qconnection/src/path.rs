@@ -66,6 +66,7 @@ impl Path {
         self.validated.store(true, Ordering::Release);
     }
 
+    #[tracing::instrument(level = "debug", skip(self), ret)]
     pub async fn validate(&self) -> bool {
         let challenge = PathChallengeFrame::random();
         for _ in 0..3 {
@@ -80,7 +81,10 @@ impl Path {
                 // 外部发生变化，导致路径验证任务作废
                 Ok(None) => return false,
                 // 超时或者收到不对的response，按"停-等协议"，继续再发一次Challenge，最多3次
-                _ => continue,
+                _ => {
+                    tracing::trace!("retry");
+                    continue;
+                }
             }
         }
         false

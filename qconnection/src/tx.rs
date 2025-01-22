@@ -110,6 +110,7 @@ where
     PacketWriter<'b>: WriteFrame<PathChallengeFrame>,
 {
     fn dump_path_frame(&mut self, frame: PathChallengeFrame) {
+        tracing::trace!(?frame, pn = self.guard.pn().0, "dump frame");
         self.writer.dump_frame(frame);
         self.guard.record_trivial();
     }
@@ -120,6 +121,7 @@ where
     PacketWriter<'b>: WriteFrame<PathResponseFrame>,
 {
     fn dump_path_frame(&mut self, frame: PathResponseFrame) {
+        tracing::trace!(?frame, pn = self.guard.pn().0, "dump frame");
         self.writer.dump_frame(frame);
         self.guard.record_trivial();
     }
@@ -132,6 +134,7 @@ where
 {
     fn dump_frame(&mut self, frame: F) -> Option<F> {
         self.writer.dump_frame(frame).and_then(|frame| {
+            tracing::trace!(?frame, pn = self.guard.pn().0, "dump frame");
             self.guard
                 .record_frame(GuaranteedFrame::Reliable(frame.into()));
             None
@@ -148,6 +151,7 @@ where
         self.writer
             .dump_frame_with_data(frame, data)
             .and_then(|frame| {
+                tracing::trace!(?frame, pn = self.guard.pn().0, "dump frame");
                 self.guard.record_frame(GuaranteedFrame::Crypto(frame));
                 None
             })
@@ -163,6 +167,7 @@ where
         self.writer
             .dump_frame_with_data(frame, data)
             .and_then(|frame| {
+                tracing::trace!(?frame, pn = self.guard.pn().0, "dump frame");
                 self.guard.record_frame(GuaranteedFrame::Stream(frame));
                 None
             })
@@ -178,6 +183,7 @@ where
         self.writer
             .dump_frame_with_data(frame, data)
             .and_then(|_frame| {
+                tracing::trace!(?frame, pn = self.guard.pn().0, "dump frame");
                 self.guard.record_trivial();
                 None
             })

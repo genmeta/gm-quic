@@ -77,7 +77,7 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if content == "exit" || content == "quit" {
-            quic_conn.close("Client close the connection", 0);
+            quic_conn.close("Client close the connection".into(), 0);
             break;
         }
 

@@ -31,9 +31,10 @@ use qinterface::{
 };
 pub use rustls::crypto::CryptoProvider;
 use tokio::sync::Notify;
+use tracing::{debug_span, Instrument};
 
 use crate::{
-    events::{EmitEvent, Event},
+    events::{ArcEventBroker, EmitEvent, Event},
     path::{ArcPaths, Path, PathContext},
     space::{self, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace, Spaces},
     termination::ClosingState,
@@ -391,7 +392,7 @@ impl ComponentsReady {
     where
         EE: EmitEvent + Clone + Send + Sync + 'static,
     {
-        let event_broker = Arc::new(event_broker);
+        let event_broker = ArcEventBroker::new(event_broker);
         let components = Components {
             parameters: self.parameters,
             tls_session: self.tls_session,
@@ -425,6 +426,7 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
     async move {
         use qbase::frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame};
         if let Ok(param::Pair { local: _, remote }) = params.await {
+            tracing::trace!("got transport parameters");
             // pretend to receive the MAX_STREAM frames
             _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
                 remote.initial_max_streams_bidi(),
@@ -441,9 +443,11 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
             }
         }
     }
+    .instrument(debug_span!("accept_transport_parameters"))
 }
 
 impl Components {
+    #[tracing::instrument(level = "debug", skip(self))]
     pub fn get_or_create_path(
         &self,
         socket: Socket,
@@ -481,13 +485,6 @@ impl Components {
                     let paths = self.paths.clone();
                     let defer_idle_timeout = self.defer_idle_timeout;
                     async move {
-                        tracing::debug!(
-                            ?pathway,
-                            ?socket,
-                            is_probed,
-                            do_validate,
-                            "created new path"
-                        );
                         let validate = async {
                             if do_validate {
                                 path.validate().await
@@ -502,10 +499,10 @@ impl Components {
                             _ = burst.launch() => "failed to send packets",
                             _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout ",
                         };
-                        tracing::debug!(?pathway, ?socket, reason, "path inactive");
+                        tracing::trace!(reason, "path inactive");
                         // same as [`Components::del_path`]
                         paths.remove(&pathway);
-                    }
+                    }.instrument(debug_span!("path_task", ?pathway,?socket,is_probed,do_validate))
                 });
 
                 vacant_entry.insert(PathContext::new(path.clone(), task.abort_handle()));
@@ -517,7 +514,7 @@ impl Components {
 
 impl Components {
     // 对于server，第一条路径也通过add_path添加
-
+    #[tracing::instrument(level = "debug", skip(self))]
     pub fn enter_closing(self, ccf: ConnectionCloseFrame) -> Termination {
         let error = ccf.clone().into();
         self.spaces.data().on_conn_error(&error);
@@ -540,6 +537,7 @@ impl Components {
                 local_cids.clear();
                 event_broker.emit(Event::Terminated);
             }
+            .instrument(debug_span!("termination_timer", ?pto_duration))
         });
 
         self.spaces.close(closing_state.clone(), &self.event_broker);
@@ -547,6 +545,7 @@ impl Components {
         Termination::closing(error, self.cid_registry.local, closing_state)
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     pub fn enter_draining(self, error: Error) -> Termination {
         self.spaces.data().on_conn_error(&error);
         self.flow_ctrl.on_conn_error(&error);
@@ -567,6 +566,7 @@ impl Components {
                 local_cids.clear();
                 event_broker.emit(Event::Terminated);
             }
+            .instrument(debug_span!("termination_timer", ?pto_duration))
         });
 
         self.rcvd_pkt_q.close_all();

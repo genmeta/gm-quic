@@ -60,7 +60,7 @@ where
                     }
                 }
                 _ => {
-                    log::debug!("ignored stream frame {:?}", stream_frame);
+                    tracing::trace!(?stream_frame, "ignored stream frame");
                 }
             }
         }
@@ -87,7 +87,7 @@ where
                     *receiving_state = Recver::ResetRcvd(reset_frame.into());
                 }
                 _ => {
-                    log::error!("there is sth wrong, ignored recv_reset");
+                    tracing::error!("there is sth wrong, ignored recv_reset");
                     unreachable!();
                 }
             }
