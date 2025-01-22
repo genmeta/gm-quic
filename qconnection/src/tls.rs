@@ -20,7 +20,7 @@ use rustls::{
     Side,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{debug_span, Instrument};
+use tracing::{trace_span, Instrument};
 
 use crate::{events::Event, prelude::EmitEvent, Components, Handshake, Writer};
 
@@ -214,7 +214,7 @@ impl ArcTlsSession {
 }
 
 /// Start the TLS handshake, automatically upgrade the keys, and transmit tls data.
-#[tracing::instrument(level = "debug", skip(components))]
+#[tracing::instrument(level = "trace", skip(components))]
 pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send {
     let crypto_streams: [&CryptoStream; 3] = [
         components.spaces.initial().crypto_stream(),
@@ -250,7 +250,7 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
                     tls_connection.wake_read();
                 }
             }
-            .instrument(debug_span!("crypto_read_task", ?epoch)),
+            .instrument(trace_span!("crypto_read_task", ?epoch)),
         )
     };
 
@@ -315,5 +315,5 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
             read_task.abort();
         }
     }
-    .instrument(debug_span!("crypto_write_task"))
+    .instrument(trace_span!("crypto_write_task"))
 }

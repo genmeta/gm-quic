@@ -4,7 +4,7 @@ use clap::Parser;
 use futures::future;
 use rustls::pki_types::{pem::PemObject, CertificateDer};
 use tokio::io::AsyncWriteExt;
-use tracing::{error, info, trace};
+use tracing::{error, info, info_span, trace, Instrument};
 
 static ALPN: &[u8] = b"h3";
 
@@ -120,7 +120,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
     //             So we "move" it.
     //                  vvvv
     let request = async move {
-        info!("sending request ...");
+        info!(%uri,"sending request ...");
 
         let req = http::Request::builder().uri(uri).body(())?;
 
@@ -149,7 +149,8 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
 
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         Ok::<_, Box<dyn std::error::Error + 'static + Send + Sync>>(())
-    };
+    }
+    .instrument(info_span!("request"));
 
     let derive = tokio::spawn(driver);
     let request = tokio::spawn(request);

@@ -25,8 +25,8 @@ use qrecovery::{
     journal::{ArcRcvdJournal, HandshakeJournal},
 };
 use rustls::quic::Keys;
-use tokio::sync::mpsc;
-use tracing::{debug_span, Instrument};
+use tokio::sync::{mpsc, Notify};
+use tracing::{trace_span, Instrument};
 
 use super::{AckHandshake, DecryptedPacket};
 use crate::{
@@ -45,21 +45,17 @@ pub struct HandshakeSpace {
     keys: ArcKeys,
     crypto_stream: CryptoStream,
     journal: HandshakeJournal,
-}
-
-impl Default for HandshakeSpace {
-    fn default() -> Self {
-        Self {
-            keys: ArcKeys::new_pending(),
-            journal: HandshakeJournal::with_capacity(16),
-            crypto_stream: CryptoStream::new(4096, 4096),
-        }
-    }
+    sendable: Arc<Notify>,
 }
 
 impl HandshakeSpace {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(sendable: Arc<Notify>) -> Self {
+        Self {
+            keys: ArcKeys::new_pending(),
+            crypto_stream: CryptoStream::new(4096, 4096),
+            journal: HandshakeJournal::with_capacity(16),
+            sendable,
+        }
     }
 
     pub fn keys(&self) -> ArcKeys {
@@ -127,7 +123,7 @@ impl HandshakeSpace {
     }
 }
 
-#[tracing::instrument(level = "debug", name = "handshake_packet_handler", skip_all)]
+#[tracing::instrument(level = "trace", name = "handshake_packet_handler", skip_all)]
 pub fn spawn_deliver_and_parse(
     mut packets: impl Stream<Item = (HandshakePacket, Pathway, Socket)> + Unpin + Send + 'static,
     space: Arc<HandshakeSpace>,
@@ -219,7 +215,7 @@ pub fn spawn_deliver_and_parse(
                 }
             }
         }
-        .instrument(debug_span!("task")),
+        .instrument(trace_span!("task")),
     );
 }
 
@@ -231,6 +227,7 @@ impl TrackPackets for HandshakeSpace {
         for pn in pns {
             for frame in rotate.may_loss_pkt(pn) {
                 outgoing.may_loss_data(&frame);
+                self.sendable.notify_waiters();
             }
         }
     }
