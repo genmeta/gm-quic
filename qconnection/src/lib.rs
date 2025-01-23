@@ -175,7 +175,7 @@ pub struct Components {
 impl Components {
     pub fn open_bi_stream(
         &self,
-    ) -> impl Future<Output = io::Result<Option<(StreamId, (StreamReader, StreamWriter))>>> + Send
+    ) -> impl Future<Output = io::Result<Option<(StreamId, (StreamReader, StreamWriter))>>> + Send + use<>
     {
         let params = self.parameters.clone();
         let streams = self.spaces.data().streams().clone();
@@ -193,7 +193,7 @@ impl Components {
 
     pub fn open_uni_stream(
         &self,
-    ) -> impl Future<Output = io::Result<Option<(StreamId, StreamWriter)>>> + Send {
+    ) -> impl Future<Output = io::Result<Option<(StreamId, StreamWriter)>>> + Send + use<> {
         let params = self.parameters.clone();
         let streams = self.spaces.data().streams().clone();
         let send_notify = self.send_notify.clone();
@@ -209,7 +209,7 @@ impl Components {
 
     pub fn accept_bi_stream(
         &self,
-    ) -> impl Future<Output = io::Result<Option<(StreamId, (StreamReader, StreamWriter))>>> + Send
+    ) -> impl Future<Output = io::Result<Option<(StreamId, (StreamReader, StreamWriter))>>> + Send + use<>
     {
         let params = self.parameters.clone();
         let streams = self.spaces.data().streams().clone();
@@ -227,7 +227,7 @@ impl Components {
 
     pub fn accept_uni_stream(
         &self,
-    ) -> impl Future<Output = io::Result<Option<(StreamId, StreamReader)>>> + Send {
+    ) -> impl Future<Output = io::Result<Option<(StreamId, StreamReader)>>> + Send + use<> {
         let streams = self.spaces.data().streams().clone();
         async move { Ok(Some(streams.accept_uni().await?)) }
     }
@@ -236,7 +236,9 @@ impl Components {
         self.spaces.data().datagrams().reader()
     }
 
-    pub fn unreliable_writer(&self) -> impl Future<Output = io::Result<UnreliableWriter>> + Send {
+    pub fn unreliable_writer(
+        &self,
+    ) -> impl Future<Output = io::Result<UnreliableWriter>> + Send + use<> {
         let params = self.parameters.clone();
         let datagrams = self.spaces.data().datagrams().clone();
         async move {

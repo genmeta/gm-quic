@@ -95,7 +95,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn std::error::Error + Send + Sync
         .without_cert_verifier()
         .with_parameters(params)
         .enable_sni()
-        .add_host("localhost", cert, key)
+        .add_host("localhost", cert.as_path(), key.as_path())
         .with_alpns([ALPN.to_vec()])
         .listen(&opt.listen[..])?;
     info!("listening on {:?}", quic_server.addresses());

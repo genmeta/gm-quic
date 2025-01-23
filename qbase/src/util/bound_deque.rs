@@ -105,12 +105,15 @@ impl<T> futures::Stream for Receiver<T> {
         if queue.capacity() == 0 {
             return Poll::Ready(None);
         }
-        if let Some(item) = queue.pop_front() {
-            self.inner.write_waker.wake();
-            Poll::Ready(Some(item))
-        } else {
-            self.inner.read_waker.register(cx.waker());
-            Poll::Pending
+        match queue.pop_front() {
+            Some(item) => {
+                self.inner.write_waker.wake();
+                Poll::Ready(Some(item))
+            }
+            _ => {
+                self.inner.read_waker.register(cx.waker());
+                Poll::Pending
+            }
         }
     }
 }

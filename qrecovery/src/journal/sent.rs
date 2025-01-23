@@ -212,12 +212,12 @@ impl<T: Clone> RotateGuard<'_, T> {
     }
 
     /// Called when the packet sent is acked by peer, return the frames in that packet.
-    pub fn on_pkt_acked(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ {
+    pub fn on_pkt_acked(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ + use<'_, T> {
         self.inner.on_pkt_acked(pn)
     }
 
     /// Called when the packet sent may lost, reutrn the frames in that packet.
-    pub fn may_loss_pkt(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ {
+    pub fn may_loss_pkt(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ + use<'_, T> {
         self.inner.may_loss_pkt(pn)
     }
 

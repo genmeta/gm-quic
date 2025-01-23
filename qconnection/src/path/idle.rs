@@ -19,7 +19,10 @@ impl super::Path {
         }
     }
 
-    pub fn idle_timeout(self: &Arc<Self>, components: &Components) -> impl Future<Output = ()> {
+    pub fn idle_timeout(
+        self: &Arc<Self>,
+        components: &Components,
+    ) -> impl Future<Output = ()> + use<> {
         let parameters = components.parameters.clone();
         let this = self.clone();
         async move {

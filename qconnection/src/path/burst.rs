@@ -48,7 +48,7 @@ impl Burst {
     fn prepare_buffers<'b>(
         &self,
         buffers: &'b mut Vec<Vec<u8>>,
-    ) -> io::Result<impl Iterator<Item = &'b mut [u8]>> {
+    ) -> io::Result<impl Iterator<Item = &'b mut [u8]> + use<'b>> {
         let max_segments = self.path.interface.max_segments()?;
         let max_segment_size = self.path.interface.max_segment_size()?;
 
