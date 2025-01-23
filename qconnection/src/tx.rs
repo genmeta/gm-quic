@@ -79,11 +79,13 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
 
 impl<F> PacketMemory<'_, '_, F> {
     pub fn dump_ack_frame(&mut self, frame: AckFrame) {
+        tracing::trace!(?frame, pn = self.guard.pn().0, "dump frame");
         self.writer.dump_frame(frame);
         self.guard.record_trivial();
     }
 
     pub fn dump_ping_frame(&mut self, frame: PingFrame) {
+        tracing::trace!(?frame, pn = self.guard.pn().0, "dump frame");
         self.writer.dump_frame(frame);
         self.guard.record_trivial();
     }

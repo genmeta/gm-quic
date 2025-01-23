@@ -93,79 +93,96 @@ impl RcvdJournal {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     fn gen_ack_frame_util(
         &self,
         largest: u64,
         rcvd_time: Instant,
         mut capacity: usize,
     ) -> Option<AckFrame> {
-        let mut iter = self
+        let mut pkts = self
             .queue
             .iter_with_idx()
             .rev()
-            .skip_while(|(pktno, _)| *pktno > largest);
+            .skip_while(|(pktno, _)| *pktno > largest)
+            .inspect(|(pktno, state)| tracing::trace!(pktno, ?state));
 
-        // 注意assert中的next消耗掉一个单位，若要去掉assert，first_range还需减1
-        assert!(
-            iter.by_ref()
-                .next()
-                .expect("largest in recv pkt records must be record")
-                .1
-                .is_received
-        );
-
-        let largest = VarInt::from_u64(largest).unwrap();
-        let delay = VarInt::from_u64(rcvd_time.elapsed().as_micros() as u64).unwrap();
         // Minimum length with at least ACK frame type, largest, delay, range count, first_range (at least 1 byte for 0)
+        let largest = VarInt::from_u64(largest).unwrap();
+        let delay = rcvd_time.elapsed().as_micros() as u64;
+        let delay = VarInt::from_u64(delay).unwrap();
+        // Frame type + Largest Acknowledged + First Ack Range + Ack Range Count
         let min_len = 1 + largest.encoding_size() + delay.encoding_size() + 1 + 1;
         if capacity < min_len {
             return None;
         }
         capacity -= min_len;
 
-        let first_range = iter.by_ref().take_while(|(_, s)| s.is_received).count();
-        let mut ack_range_count = 0u64;
-        let mut ranges = Vec::with_capacity(16);
-        loop {
-            let additional_count_encoding = if ack_range_count == (1 << 6) - 1 {
-                1 // 下一个ack_range_count需要用2字节编码了
-            } else if ack_range_count == (1 << 30) - 1 {
-                2 // 下一个ack_range_count需要用4字节编码了
-            } else if ack_range_count == (1 << 62) - 1 {
-                4 // 下一个ack_range_count需要用8字节编码了
-            } else {
-                0
-            };
-            if capacity <= additional_count_encoding {
-                break;
-            }
-            capacity -= additional_count_encoding;
+        let first_range = pkts.by_ref().take_while(|(_, s)| s.is_received).count() - 1;
+        let first_range = VarInt::try_from(first_range).unwrap();
 
-            if iter.next().is_none() {
-                break;
+        fn range_count_size_increment(range_count: usize) -> usize {
+            match range_count {
+                // 接下来需要2字节编码
+                len if len == (1 << 6) - 1 => 1, // 2 - 1
+                // 接下来需要4字节编码
+                len if len == (1 << 14) - 1 => 2, // 4 - 2
+                // 接下来需要8字节编码
+                len if len == (1 << 30) - 1 => 2, // 8 - 4
+                // 放不下了，不可能走到这里
+                len if len == (1 << 62) - 1 => usize::MAX, // 8 - 4
+                _ => 0,
             }
-            let gap = iter.by_ref().take_while(|(_, s)| !s.is_received).count();
-
-            if iter.next().is_none() {
-                break;
-            }
-            let acked = iter.by_ref().take_while(|(_, s)| s.is_received).count();
-
-            let gap = VarInt::try_from(gap).unwrap();
-            let acked = VarInt::try_from(acked).unwrap();
-            if capacity < gap.encoding_size() + acked.encoding_size() {
-                break;
-            }
-            capacity -= gap.encoding_size() + acked.encoding_size();
-
-            ranges.push((gap, acked));
-            ack_range_count += 1;
         }
 
+        let mut ranges = vec![];
+
+        use core::ops::ControlFlow::*;
+        let (Continue((gap, ack, last_is_acked)) | Break((gap, ack, last_is_acked))) = pkts
+            .try_fold(
+                // take_while第一个被判否的元素会被消耗，如果它是gap那这里有gap=1，如果是因为迭代器没有更多元素这里gap=1也不影响
+                (1, 0, false),
+                |(gap, ack, last_is_acked), (_pktno, state)| {
+                    let range_count = ranges.len();
+                    match (last_is_acked, state.is_received) {
+                        // 本range结束了，看看是否放得下本range，开始新的range
+                        (true, false) => {
+                            // 修正
+                            let gap = VarInt::from_u32(gap - 1);
+                            let ack = VarInt::from_u32(ack - 1);
+                            if capacity
+                                < range_count_size_increment(range_count)
+                                    + gap.encoding_size()
+                                    + ack.encoding_size()
+                            {
+                                return Break((0, 0, false));
+                            }
+                            ranges.push((gap, ack));
+                            Continue((1, 0, state.is_received))
+                        }
+                        // 如果当前是ack，增加ack，保持gap不变
+                        (false | true, true) => Continue((gap, ack + 1, state.is_received)),
+                        // 当前和之前都是gap，增加gap
+                        (false, false) => Continue((gap + 1, ack, state.is_received)),
+                    }
+                },
+            );
+        // 处理最后一个未来完成的range
+        if last_is_acked {
+            let gap = VarInt::from_u32(gap - 1);
+            let ack = VarInt::from_u32(ack - 1);
+            if capacity
+                > range_count_size_increment(ranges.len())
+                    + gap.encoding_size()
+                    + ack.encoding_size()
+            {
+                ranges.push((gap, ack));
+            }
+        }
         Some(AckFrame {
             largest,
             delay,
-            first_range: unsafe { VarInt::from_u64_unchecked(first_range as u64) },
+            first_range,
             ranges,
             ecn: None,
         })
@@ -350,5 +367,47 @@ mod tests {
             records.decode_pn(PacketNumber::encode(9, 0)),
             Err(InvalidPacketNumber::TooOld)
         );
+    }
+
+    #[test]
+    fn gen_ack_frame() {
+        let rcvd_state = State {
+            is_active: true,
+            is_received: true,
+        };
+        let unrcvd_state = State {
+            is_active: true,
+            is_received: false,
+        };
+        let mut queue = IndexDeque::with_capacity(45);
+        for idx in 1..11 {
+            queue.insert(idx, rcvd_state).unwrap();
+        }
+        for idx in 11..12 {
+            queue.insert(idx, unrcvd_state).unwrap();
+        }
+        for idx in 12..45 {
+            queue.insert(idx, rcvd_state).unwrap();
+        }
+        for idx in 45..50 {
+            queue.insert(idx, unrcvd_state).unwrap();
+        }
+        for idx in 50..55 {
+            queue.insert(idx, rcvd_state).unwrap();
+        }
+
+        let rcvd_jornal = RcvdJournal { queue };
+
+        let ack = rcvd_jornal
+            .gen_ack_frame_util(52, Instant::now(), 1000)
+            .unwrap();
+        assert_eq!(
+            ack.ranges,
+            vec![
+                (VarInt::from_u32(50 - 45 - 1), VarInt::from_u32(45 - 12 - 1)),
+                (VarInt::from_u32(12 - 11 - 1), VarInt::from_u32(11 - 1 - 1))
+            ]
+        );
+        assert_eq!(ack.first_range, VarInt::from_u32(2))
     }
 }
