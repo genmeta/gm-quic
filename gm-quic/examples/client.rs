@@ -27,11 +27,12 @@ struct Arguments {
 fn main() {
     let args = Arguments::parse();
     let code = {
-        if let Err(e) = run(args) {
-            eprintln!("ERROR: {e}");
-            1
-        } else {
-            0
+        match run(args) {
+            Err(e) => {
+                eprintln!("ERROR: {e}");
+                1
+            }
+            _ => 0,
         }
     };
     ::std::process::exit(code);

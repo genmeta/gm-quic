@@ -21,11 +21,12 @@ struct Opt {
 fn main() {
     let opt = Opt::parse();
     let code = {
-        if let Err(e) = run(opt) {
-            eprintln!("ERROR: {e}");
-            1
-        } else {
-            0
+        match run(opt) {
+            Err(e) => {
+                eprintln!("ERROR: {e}");
+                1
+            }
+            _ => 0,
         }
     };
     ::std::process::exit(code);
@@ -44,7 +45,7 @@ async fn run(options: Opt) -> Result<(), Box<dyn std::error::Error>> {
         .with_supported_versions([0x00000001u32])
         .without_cert_verifier()
         // .keep_alive()
-        .with_single_cert(options.cert, options.key)
+        .with_single_cert(options.cert.as_path(), options.key.as_path())
         .listen(options.bind)?;
 
     while let Ok((_conn, pathway)) = server.accept().await {
