@@ -149,6 +149,7 @@ impl<TX: Clone> Writer<TX> {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip_all, ret)]
     pub fn shutdown_or_await(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let mut sender = self.0.sender();
         let sending_state = sender.as_mut().map_err(|e| e.clone())?;

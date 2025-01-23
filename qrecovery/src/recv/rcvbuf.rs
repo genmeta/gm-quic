@@ -149,13 +149,24 @@ impl RecvBuf {
                 Err(seg_index) => {
                     // 首先需要检测是否和上一个seg重合
                     data = match self.segments.get(seg_index - 1) {
+                        // start > prev_seg.offset && end < prev_seg.offset + prev_seg.len
+                        // 有可能这一段完全被上一段囊括，直接break
+                        Some(prev_seg)
+                            if (start + data.len() as u64)
+                                < prev_seg.offset + prev_seg.data.len() as u64 =>
+                        {
+                            break;
+                        }
                         Some(prev_seg) if start < prev_seg.offset + prev_seg.data.len() as u64 => {
                             // 裁下后，start必定和prev_seg.offset + prev_seg.data.len()相等
                             // 下次loop就会进入上一个分支
                             // start < prev_seg.offset + prev_seg.data.len()
                             // 0 < start - prev_seg.offset + prev_seg.data.len() - start ，不会越界
-                            let length_covered =
-                                prev_seg.offset + prev_seg.data.len() as u64 - start;
+                            //
+                            // 还有可能，start + data.len() < prev_seg.offset + prev_seg.data.len() 也就是被上一个段完全覆盖
+                            // 所以需要data.len(length_covered)
+                            let length_covered = (data.len() as u64)
+                                .min(prev_seg.offset + prev_seg.data.len() as u64 - start);
                             start += length_covered;
                             data.split_off(length_covered as usize)
                         }
@@ -317,6 +328,16 @@ mod tests {
         assert_eq!(buf.segments.len(), 2);
         assert_eq!(buf.segments[0].offset, 0);
         assert_eq!(buf.segments[1].offset, 2);
+        assert_eq!(buf.available(), 6);
+    }
+
+    #[test]
+    fn test_covered() {
+        let mut buf = RecvBuf::default();
+        assert_eq!(buf.recv(0, Bytes::from("114514")), 6);
+        assert_eq!(buf.recv(2, Bytes::from("45")), 0);
+        assert_eq!(buf.segments.len(), 1);
+        assert_eq!(buf.segments[0].offset, 0);
         assert_eq!(buf.available(), 6);
     }
 

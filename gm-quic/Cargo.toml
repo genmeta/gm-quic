@@ -33,13 +33,22 @@ env_logger = { workspace = true }
 rustls = { workspace = true, features = ["ring"] }
 url = { workspace = true }
 log = { workspace = true }
-tokio = { features = ["fs"], workspace = true }
+tokio = { features = ["fs", "io-std"], workspace = true }
+
+[dev-dependencies.tracing-subscriber]
+workspace = true
+features = ["fmt", "ansi", "env-filter", "time", "tracing-log"]
 
 [[example]]
-name = "client"
+name = "http_client"
+path = "examples/http/client.rs"
 
 [[example]]
-name = "connection"
+name = "http_server"
+path = "examples/http/server.rs"
 
 [[example]]
-name = "server"
+name = "echo_server"
+
+[[example]]
+name = "echo_client"

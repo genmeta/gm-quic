@@ -343,6 +343,7 @@ impl<TX> DataSentSender<TX> {
             })
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     pub(super) fn on_data_acked(&mut self, range: &Range<u64>, is_fin: bool) {
         self.sndbuf.on_data_acked(range);
         if is_fin {
@@ -358,6 +359,7 @@ impl<TX> DataSentSender<TX> {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip(self), ret)]
     pub(super) fn is_all_rcvd(&self) -> bool {
         self.sndbuf.is_all_rcvd() && self.fin_state == FinState::Rcvd
     }

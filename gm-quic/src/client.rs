@@ -73,7 +73,7 @@ impl QuicClient {
         QuicClientBuilder {
             bind_interfaces: Arc::new(DashMap::new()),
             reuse_interfaces: false,
-            reuse_connection: true,
+            reuse_connection: false,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
             defer_idle_timeout: Duration::MAX,
@@ -92,7 +92,7 @@ impl QuicClient {
         QuicClientBuilder {
             bind_interfaces: Arc::new(DashMap::new()),
             reuse_interfaces: false,
-            reuse_connection: true,
+            reuse_connection: false,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
             defer_idle_timeout: Duration::MAX,
@@ -113,7 +113,7 @@ impl QuicClient {
         QuicClientBuilder {
             bind_interfaces: Arc::new(DashMap::new()),
             reuse_interfaces: false,
-            reuse_connection: true,
+            reuse_connection: false,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
             defer_idle_timeout: Duration::MAX,
