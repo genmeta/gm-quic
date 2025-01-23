@@ -2,38 +2,36 @@ use std::path::Path;
 
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 
-pub struct Certificate(Vec<CertificateDer<'static>>);
-
-impl From<Vec<CertificateDer<'static>>> for Certificate {
-    fn from(cert: Vec<CertificateDer<'static>>) -> Self {
-        Self(cert)
-    }
-}
-
 pub trait ToCertificate {
     fn to_certificate(self) -> Vec<CertificateDer<'static>>;
 }
 
-impl ToCertificate for Certificate {
+impl ToCertificate for Vec<CertificateDer<'static>> {
     fn to_certificate(self) -> Vec<CertificateDer<'static>> {
-        self.0
+        self
     }
 }
 
-impl<P: AsRef<Path>> ToCertificate for P {
+impl ToCertificate for &Path {
     fn to_certificate(self) -> Vec<CertificateDer<'static>> {
-        CertificateDer::pem_file_iter(self.as_ref())
+        CertificateDer::pem_file_iter(self)
             .expect("failed to open cert file")
             .collect::<Result<Vec<_>, _>>()
             .expect("failed to parse cert file")
     }
 }
 
-pub struct PrivateKey(PrivateKeyDer<'static>);
+impl ToCertificate for &[u8] {
+    fn to_certificate(self) -> Vec<CertificateDer<'static>> {
+        CertificateDer::pem_slice_iter(self)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("failed to parse cert file")
+    }
+}
 
-impl From<PrivateKeyDer<'static>> for PrivateKey {
-    fn from(key: PrivateKeyDer<'static>) -> Self {
-        Self(key)
+impl<const N: usize> ToCertificate for &[u8; N] {
+    fn to_certificate(self) -> Vec<CertificateDer<'static>> {
+        <&[u8]>::to_certificate(self)
     }
 }
 
@@ -41,14 +39,26 @@ pub trait ToPrivateKey {
     fn to_private_key(self) -> PrivateKeyDer<'static>;
 }
 
-impl ToPrivateKey for PrivateKey {
+impl ToPrivateKey for PrivateKeyDer<'static> {
     fn to_private_key(self) -> PrivateKeyDer<'static> {
-        self.0
+        self
     }
 }
 
-impl<P: AsRef<Path>> ToPrivateKey for P {
+impl ToPrivateKey for &Path {
     fn to_private_key(self) -> PrivateKeyDer<'static> {
-        PrivateKeyDer::from_pem_file(self.as_ref()).expect("failed to parse private key file")
+        PrivateKeyDer::from_pem_file(self).expect("failed to parse private key file")
+    }
+}
+
+impl ToPrivateKey for &[u8] {
+    fn to_private_key(self) -> PrivateKeyDer<'static> {
+        PrivateKeyDer::from_pem_slice(self).expect("failed to parse private key file")
+    }
+}
+
+impl<const N: usize> ToPrivateKey for &[u8; N] {
+    fn to_private_key(self) -> PrivateKeyDer<'static> {
+        <&[u8]>::to_private_key(self)
     }
 }
