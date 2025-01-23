@@ -260,7 +260,7 @@ impl Components {
 pub struct Connection(RwLock<Result<Components, Termination>>);
 
 impl Connection {
-    #[tracing::instrument(level = "trace", skip(self))]
+    #[tracing::instrument(level = "info", skip(self))]
     pub fn enter_closing(&self, ccf: ConnectionCloseFrame) {
         let mut conn = self.0.write().unwrap();
         if let Ok(core_conn) = conn.as_mut() {
@@ -268,7 +268,7 @@ impl Connection {
         }
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
+    #[tracing::instrument(level = "info", skip(self))]
     pub fn enter_draining(&self, ccf: ConnectionCloseFrame) {
         let error = ccf.into();
         let mut conn = self.0.write().unwrap();

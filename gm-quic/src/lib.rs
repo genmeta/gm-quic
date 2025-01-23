@@ -16,11 +16,14 @@ pub use crate::{
     client::{QuicClient, QuicClientBuilder},
     interfaces::Interfaces,
     server::{QuicServer, QuicServerBuilder, QuicServerSniBuilder},
+    util::{ToCertificate, ToPrivateKey},
 };
 
 mod client;
 mod interfaces;
 mod server;
+#[cfg(test)]
+pub mod tests;
 mod util;
 
 pub mod prelude {
