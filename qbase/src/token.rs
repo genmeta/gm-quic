@@ -21,7 +21,7 @@ impl ResetToken {
 
     pub fn random_gen() -> Self {
         let mut bytes = [0; RESET_TOKEN_SIZE];
-        rand::thread_rng().fill(&mut bytes);
+        rand::rng().fill(&mut bytes);
         Self(bytes)
     }
 

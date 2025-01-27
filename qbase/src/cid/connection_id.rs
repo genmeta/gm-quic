@@ -86,7 +86,7 @@ impl ConnectionId {
     pub fn random_gen(len: usize) -> Self {
         debug_assert!(len <= MAX_CID_SIZE);
         let mut bytes = [0; MAX_CID_SIZE];
-        rand::thread_rng().fill(&mut bytes[..len]);
+        rand::rng().fill(&mut bytes[..len]);
         Self {
             len: len as u8,
             bytes,
@@ -98,7 +98,7 @@ impl ConnectionId {
     pub fn random_gen_with_mark(len: usize, mark: u8, mask: u8) -> Self {
         debug_assert!(len > 0 && len <= MAX_CID_SIZE);
         let mut bytes = [0; MAX_CID_SIZE];
-        rand::thread_rng().fill(&mut bytes[..len]);
+        rand::rng().fill(&mut bytes[..len]);
         bytes[0] = (bytes[0] & mask) | mark;
         Self {
             len: len as u8,

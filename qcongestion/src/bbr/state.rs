@@ -84,7 +84,7 @@ impl Bbr {
         self.cwnd_gain = 2.0;
 
         // 随机从一个阶段开始
-        self.cycle_index = GAIN_CYCLE_LEN - 1 - rand::thread_rng().gen_range(0..GAIN_CYCLE_LEN - 1);
+        self.cycle_index = GAIN_CYCLE_LEN - 1 - rand::rng().random_range(0..GAIN_CYCLE_LEN - 1);
         self.advance_cycle_phase()
     }
 
