@@ -26,7 +26,7 @@ impl PathChallengeFrame {
 
     pub fn random() -> Self {
         use rand::Rng;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut data = [0; 8];
         rng.fill(&mut data);
         Self { data }
