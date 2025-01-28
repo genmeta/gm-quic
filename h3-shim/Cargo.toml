@@ -1,6 +1,6 @@
 [package]
 name = "h3-shim"
-version = "0.0.1"
+version = "0.1.0"
 edition.workspace = true
 description = "Shim libray between gm-quic and h3"
 readme.workspace = true
@@ -17,7 +17,6 @@ gm-quic = { workspace = true }
 qbase = { workspace = true }
 tokio = { workspace = true }
 
-log = { workspace = true }
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }
 http = { workspace = true }

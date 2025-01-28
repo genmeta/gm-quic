@@ -1,6 +1,6 @@
 [package]
 name = "gm-quic"
-version = "0.0.1"
+version = "0.1.0"
 edition.workspace = true
 description = "An IETF quic transport protocol implemented natively using async Rust"
 readme.workspace = true

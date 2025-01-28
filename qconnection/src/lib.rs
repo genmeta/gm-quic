@@ -15,6 +15,7 @@ pub mod prelude {
     };
     pub use qunreliable::{UnreliableReader, UnreliableWriter};
 
+    #[allow(unused_imports)]
     pub mod handy {
         pub use qinterface::handy::*;
     }

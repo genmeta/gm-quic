@@ -106,7 +106,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
 
     let gm_quic_conn = h3_shim::QuicConnection::new(conn).await;
     let (mut conn, mut send_request) = h3::client::new(gm_quic_conn).await?;
-    log::info!("hs done");
+    info!("handshake done");
     let driver = async move {
         future::poll_fn(|cx| conn.poll_close(cx)).await?;
         // tokio::time::sleep(std::time::Duration::from_secs(1)).await;
