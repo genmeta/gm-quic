@@ -2,6 +2,7 @@
 name = "qinterface"
 version.workspace = true
 edition.workspace = true
+description = "gm-quic's packet routing and definition of the underlying IO interface"
 readme.workspace = true
 repository.workspace = true
 license.workspace = true
@@ -13,7 +14,7 @@ bytes = { workspace = true }
 dashmap = { workspace = true }
 deref-derive = { workspace = true }
 qbase = { workspace = true }
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt", "sync"] }
 thiserror = { workspace = true }
 futures = { workspace = true }
 

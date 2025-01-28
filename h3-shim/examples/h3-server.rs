@@ -107,7 +107,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn std::error::Error + Send + Sync
         let Ok(mut h3_conn) =
             h3::server::Connection::new(h3_shim::QuicConnection::new(new_conn).await)
                 .await
-                .inspect_err(|e| log::error!("failed to create h3 connection: {}", e))
+                .inspect_err(|e| error!("failed to create h3 connection: {}", e))
         else {
             continue;
         };
