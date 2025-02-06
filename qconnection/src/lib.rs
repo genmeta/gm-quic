@@ -219,6 +219,9 @@ impl Components {
             let param::Pair { remote, .. } = params.await?;
             let map_bi_stream =
                 |(id, (reader, writer))| (id, (reader, Writer::new(writer, send_notify.clone())));
+            if remote.initial_max_stream_data_bidi_local() == 0 {
+                tracing::trace!("bp2");
+            }
             let bi_stream = streams
                 .accept_bi(remote.initial_max_stream_data_bidi_local().into())
                 .await?;
@@ -336,6 +339,7 @@ impl Connection {
         self.map(|core_conn| core_conn.del_path(pathway))
     }
 
+    #[tracing::instrument(level = "trace", skip(self), ret)]
     pub fn is_active(&self) -> bool {
         self.0.read().unwrap().is_ok()
     }

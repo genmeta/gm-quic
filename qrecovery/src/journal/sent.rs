@@ -120,7 +120,7 @@ impl<T> SentJournal<T> {
             .records
             .iter_with_idx()
             .take_while(|(idx, s)| {
-                tracing::trace!(idx, ?s);
+                tracing::trace!(idx, state=?s);
                 !matches!(s, SentPktState::Flighting(_))
             })
             .fold((0usize, 0usize), |(n, f), (_, s)| (n + 1, f + s.nframes()));

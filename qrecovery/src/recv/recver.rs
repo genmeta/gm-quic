@@ -76,18 +76,35 @@ where
 }
 
 impl<TX: Clone> Recv<TX> {
-    pub(super) fn determin_size(&mut self, total_size: u64) -> SizeKnown<TX> {
+    pub(super) fn determin_size(
+        &mut self,
+        stream_frame: &StreamFrame,
+    ) -> Result<SizeKnown<TX>, Error> {
         if let Some(waker) = self.read_waker.take() {
             waker.wake();
         }
-        SizeKnown {
-            final_size: total_size,
+
+        let final_size = stream_frame.offset() + stream_frame.len() as u64;
+        let received_largest_offset = self.rcvbuf.largest_offset();
+        if received_largest_offset > final_size {
+            return Err(Error::new(
+                ErrorKind::FinalSize,
+                stream_frame.frame_type(),
+                format!(
+                    "{} send a wrong smaller final size {} than the largest rcvd data offset {}",
+                    stream_frame.id, final_size, received_largest_offset
+                ),
+            ));
+        }
+
+        Ok(SizeKnown {
+            final_size,
             stream_id: self.stream_id,
             rcvbuf: std::mem::take(&mut self.rcvbuf),
             stop_state: self.stop_state.take(),
             broker: self.broker.clone(),
             read_waker: self.read_waker.take(),
-        }
+        })
     }
 }
 
@@ -222,6 +239,7 @@ impl<TX> SizeKnown<TX> {
         Ok(0)
     }
 
+    #[tracing::instrument(level = "trace", skip(self), ret)]
     pub(super) fn is_all_rcvd(&self) -> bool {
         self.rcvbuf.nread() + self.rcvbuf.available() == self.final_size
     }

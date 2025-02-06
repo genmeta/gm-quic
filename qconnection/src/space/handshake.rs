@@ -215,7 +215,7 @@ pub fn spawn_deliver_and_parse(
                 }
             }
         }
-        .instrument(trace_span!("task")),
+        .instrument(trace_span!("handshake")),
     );
 }
 
