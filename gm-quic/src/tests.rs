@@ -31,7 +31,7 @@ use crate::ToCertificate;
 #[tokio::test]
 async fn parallel_stream() -> io::Result<()> {
     tracing_subscriber::fmt()
-        .with_max_level(tracing::level_filters::LevelFilter::TRACE)
+        .with_max_level(tracing::level_filters::LevelFilter::INFO)
         // .with_writer(
         //     std::fs::OpenOptions::new()
         //         .create(true)
@@ -69,10 +69,8 @@ async fn parallel_stream() -> io::Result<()> {
     );
 
     const CONNECTIONS: usize = 1;
-    const STREAMS: usize = 6;
+    const STREAMS: usize = 64;
     const DATA: &[u8] = include_bytes!("tests.rs");
-
-    println!("{}", String::from_utf8_lossy(DATA));
 
     let mut connections = JoinSet::new();
 

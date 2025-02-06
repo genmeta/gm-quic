@@ -68,11 +68,22 @@ impl BeFrame for StreamFrame {
     }
 }
 
-/// The result of whether the stream frame should carry the length field.
-pub enum ShouldCarryLength {
-    NoProblem,
-    PaddingFirst(usize),
-    ShouldAfter(usize, usize),
+/// Efficient strategies for encoding stream frames
+pub struct EncodingStrategy {
+    carry_length: bool,
+    padding: usize,
+}
+
+impl EncodingStrategy {
+    /// Cound the stream frame carry its data's length.
+    pub fn carry_length(&self) -> bool {
+        self.carry_length
+    }
+
+    /// How many padding frames should be put before the stream frame.
+    pub fn padding(&self) -> usize {
+        self.padding
+    }
 }
 
 impl StreamFrame {
@@ -122,38 +133,57 @@ impl StreamFrame {
         }
     }
 
+    /// Set the length flag of this stream frame.
+    pub fn set_len_flag(&mut self, with_len: bool) {
+        if with_len {
+            self.flag |= LEN_BIT;
+        } else {
+            self.flag &= !LEN_BIT;
+        }
+    }
+
+    /// Returns the most efficient stream frame encoding strategy.
+    ///
     /// By default, a stream frame is considered the last frame within a data packet,
     /// allowing it to carry data up to the maximum payload capacity. However, if the
     ///  data does not fill the entire frame and there is sufficient space remaining
     /// in the packet, other data frames can be carried after it. In this case, the
-    /// frame is designated as carrying length.
-    pub fn should_carry_length(&self, capacity: usize) -> ShouldCarryLength {
-        let frame_encoding_size = self.encoding_size() + self.length;
-        assert!(frame_encoding_size <= capacity);
-        if frame_encoding_size == capacity {
-            ShouldCarryLength::NoProblem
-        } else {
-            let len_encoding_size = VarInt::try_from(self.length)
-                .expect("length of stream frame must be less than 2^62")
-                .encoding_size();
-            let remaining = capacity - frame_encoding_size;
-            if remaining <= len_encoding_size {
-                ShouldCarryLength::PaddingFirst(remaining)
-            } else {
-                // Return this result, perhaps by invoking the carry_length function to
-                // set the LEN_BIT. This option is left to the packet assembly logic for handling.
-                ShouldCarryLength::ShouldAfter(remaining - len_encoding_size, remaining)
+    /// frame is designated as carrying length. However, when a stream frame with a length
+    /// is put into the data packet, the remaining space may be too small to put another
+    /// stream frame. Filling the remaining space is sometimes more beneficial to taking
+    /// advantage of GSO features.
+    pub fn encoding_strategy(&self, capacity: usize) -> EncodingStrategy {
+        // this method is used to determine the encoding strategy of the stream frame
+        debug_assert!(self.flag & LEN_BIT == 0);
 
-                // For further optimization, if there are non-data frames following, the
-                // Stream frame can be forced to be placed at the end of the packet,
-                // freeing up additional bytes to accommodate other frames.
+        let encoding_size_without_length = self.encoding_size() + self.length;
+        assert!(encoding_size_without_length <= capacity);
+
+        let len_encoding_size = VarInt::try_from(self.length)
+            .expect("length of stream frame must be less than 2^62")
+            .encoding_size();
+
+        let remaining = capacity - encoding_size_without_length;
+
+        if remaining >= len_encoding_size {
+            let remaining = remaining - len_encoding_size;
+            if remaining < STREAM_FRAME_MAX_ENCODING_SIZE {
+                EncodingStrategy {
+                    carry_length: true,
+                    padding: remaining,
+                }
+            } else {
+                EncodingStrategy {
+                    carry_length: true,
+                    padding: 0,
+                }
+            }
+        } else {
+            EncodingStrategy {
+                carry_length: false,
+                padding: remaining,
             }
         }
-    }
-
-    /// Fill the length field when encoding this stream frame.
-    pub fn carry_length(&mut self) {
-        self.flag |= LEN_BIT;
     }
 
     /// Estimate the maximum capacity that one stream frame with the given capacity,

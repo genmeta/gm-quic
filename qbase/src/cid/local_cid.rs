@@ -142,9 +142,9 @@ where
 /// The number of active connection IDs is limited by the peer's active_cid_limit.
 ///
 /// - `ISSUED`: is a struct that can generate unique connection id and finally send the new
-///    issued connection ID frame to the peer.
-///    It can be a channel, a queue, or a buffer. Whatever, it must be able to send the
-///    [`NewConnectionIdFrame`] to the peer.
+///   issued connection ID frame to the peer.
+///   It can be a channel, a queue, or a buffer. Whatever, it must be able to send the
+///   [`NewConnectionIdFrame`] to the peer.
 ///
 /// ## Note
 ///
@@ -166,10 +166,10 @@ where
     /// Create a new share local connection ID manager.
     ///
     /// - `scid` is set initially, whether it is a client or a server,
-    ///    they both get their early `scid` externally.
+    ///   they both get their early `scid` externally.
     /// - `issued_cids` is responsible for generating CIDs that do not conflict
-    ///    in the packet reception routing table and will also be responsible for
-    ///    eventually sending the [`NewConnectionIdFrame`] to the peer.
+    ///   in the packet reception routing table and will also be responsible for
+    ///   eventually sending the [`NewConnectionIdFrame`] to the peer.
     pub fn new(scid: ConnectionId, issued_cids: ISSUED) -> Self {
         let raw_local_cids = LocalCids::new(scid, issued_cids);
         Self(Arc::new(Mutex::new(raw_local_cids)))

@@ -41,7 +41,7 @@ use tracing::{trace_span, Instrument};
 
 use super::DecryptedPacket;
 use crate::{
-    events::{EmitEvent, Event},
+    events::{ArcEventBroker, EmitEvent, Event},
     path::{Path, SendBuffer},
     space::{pipe, AckData, FlowControlledDataStreams},
     termination::ClosingState,
@@ -288,7 +288,7 @@ pub fn spawn_deliver_and_parse(
     mut one_rtt_packets: impl Stream<Item = (OneRttPacket, Pathway, Socket)> + Unpin + Send + 'static,
     space: Arc<DataSpace>,
     components: &Components,
-    event_broker: impl EmitEvent + Clone + 'static,
+    event_broker: ArcEventBroker,
 ) {
     let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded_channel();
     // 连接级的
@@ -574,7 +574,7 @@ pub fn spawn_deliver_and_parse_closing(
     mut packets: impl Stream<Item = (OneRttPacket, Pathway, Socket)> + Unpin + Send + 'static,
     space: ClosingDataSpace,
     closing_state: Arc<ClosingState>,
-    event_broker: impl EmitEvent + Clone + 'static,
+    event_broker: ArcEventBroker,
 ) {
     tokio::spawn(async move {
         while let Some((packet, pathway, _socket)) = packets.next().await {

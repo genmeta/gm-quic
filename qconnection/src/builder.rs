@@ -543,7 +543,8 @@ impl Components {
             .instrument(trace_span!("termination_timer", ?pto_duration))
         });
 
-        self.spaces.close(closing_state.clone(), &self.event_broker);
+        self.spaces
+            .close(closing_state.clone(), self.event_broker.clone());
 
         Termination::closing(error, self.cid_registry.local, closing_state)
     }

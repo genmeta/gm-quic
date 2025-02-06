@@ -34,7 +34,7 @@ use tracing::{trace_span, Instrument};
 
 use super::{pipe, AckInitial, DecryptedPacket};
 use crate::{
-    events::{EmitEvent, Event},
+    events::{ArcEventBroker, EmitEvent, Event},
     path::Path,
     termination::ClosingState,
     tx::{PacketMemory, Transaction},
@@ -140,7 +140,7 @@ pub fn spawn_deliver_and_parse(
     mut packets: impl Stream<Item = (InitialPacket, Pathway, Socket)> + Unpin + Send + 'static,
     space: Arc<InitialSpace>,
     components: &Components,
-    event_broker: impl EmitEvent + Clone + 'static,
+    event_broker: ArcEventBroker,
 ) {
     let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded_channel();
     let (ack_frames_entry, rcvd_ack_frames) = mpsc::unbounded_channel();
@@ -351,7 +351,7 @@ pub fn spawn_deliver_and_parse_closing(
     mut packets: impl Stream<Item = (InitialPacket, Pathway, Socket)> + Unpin + Send + 'static,
     space: ClosingInitialSpace,
     closing_state: Arc<ClosingState>,
-    event_broker: impl EmitEvent + Clone + 'static,
+    event_broker: ArcEventBroker,
 ) {
     tokio::spawn(async move {
         while let Some((packet, pathway, _socket)) = packets.next().await {

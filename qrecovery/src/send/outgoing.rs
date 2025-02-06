@@ -3,7 +3,7 @@ use std::ops::{DerefMut, Range};
 use bytes::BufMut;
 use qbase::{
     error::Error as QuicError,
-    frame::{io::WriteDataFrame, ResetStreamError, ShouldCarryLength, StreamFrame},
+    frame::{ResetStreamError, StreamFrame},
     packet::MarshalDataFrame,
     sid::StreamId,
     util::DescribeData,
@@ -17,75 +17,13 @@ use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
 pub struct Outgoing<TX>(ArcSender<TX>);
 
 impl<TX: Clone> Outgoing<TX> {
-    /// Read the data that the application has written into the buffer.
+    /// Try to load data that the application wants to sent to the packet.
     ///
-    /// See [`DataStreams::try_read_data`] for more about this method.
+    /// See [`DataStreams::try_load_data_into`] for more about this method.
     ///
-    /// ## Returns:
+    /// Return the size of data loaded, and whether the data is fresh.
     ///
-    /// If no data is written to the buffer, return [`None`], or a tuple will be returned:
-    /// * [`StreamFrame`]: Stream frame obtained by reading
-    /// * [`usize`]:       The length of the stream data that was read
-    /// * [`bool`]:        Whether the data is fresh(not retransmitted)
-    /// * [`usize`]:       How much data was written to the buffer
-    ///
-    /// [`DataStreams::try_read_data`]: crate::streams::raw::DataStreams::try_read_data
-    pub fn try_read(
-        &self,
-        sid: StreamId,
-        mut buf: &mut [u8],
-        tokens: usize,
-        flow_limit: usize,
-    ) -> Option<(StreamFrame, usize, bool, usize)> {
-        let capacity = buf.len();
-        let write = |(offset, is_fresh, data, is_eos): (u64, bool, (&[u8], &[u8]), bool)| {
-            let mut frame = StreamFrame::new(sid, offset, data.len());
-
-            frame.set_eos_flag(is_eos);
-            match frame.should_carry_length(capacity) {
-                ShouldCarryLength::NoProblem => {
-                    buf.put_data_frame(&frame, &data);
-                }
-                ShouldCarryLength::PaddingFirst(n) => {
-                    (&mut buf[n..]).put_data_frame(&frame, &data);
-                }
-                ShouldCarryLength::ShouldAfter(_not_carry_len, _carry_len) => {
-                    frame.carry_length();
-                    buf.put_data_frame(&frame, &data);
-                }
-            }
-            (frame, data.len(), is_fresh, capacity - buf.remaining_mut())
-        };
-
-        let predicate = |offset| {
-            StreamFrame::estimate_max_capacity(capacity, sid, offset).map(|c| tokens.min(c))
-        };
-        let mut sender = self.0.sender();
-        let inner = sender.deref_mut();
-
-        match inner {
-            Ok(sending_state) => match sending_state {
-                Sender::Ready(s) => {
-                    let result;
-                    if s.is_finished() {
-                        let mut s: DataSentSender<TX> = s.into();
-                        result = s.pick_up(predicate, flow_limit).map(write);
-                        *sending_state = Sender::DataSent(s);
-                    } else {
-                        let mut s: SendingSender<TX> = s.into();
-                        result = s.pick_up(predicate, flow_limit).map(write);
-                        *sending_state = Sender::Sending(s);
-                    }
-                    result
-                }
-                Sender::Sending(s) => s.pick_up(predicate, flow_limit).map(write),
-                Sender::DataSent(s) => s.pick_up(predicate, flow_limit).map(write),
-                _ => None,
-            },
-            Err(_) => None,
-        }
-    }
-
+    /// [`DataStreams::try_load_data_into`]: crate::streams::raw::DataStreams::try_load_data_into
     // consume the token internally, return the number of fresh data have been written to the buffer.
     // return None indicates that the stream write no data to the buffer.
     pub fn try_load_data_into<B, P>(
@@ -104,20 +42,10 @@ impl<TX: Clone> Outgoing<TX> {
             let mut frame = StreamFrame::new(sid, offset, data.len());
 
             frame.set_eos_flag(is_eos);
-            match frame.should_carry_length(origin_len) {
-                ShouldCarryLength::NoProblem => {
-                    packet.dump_frame_with_data(frame, data);
-                }
-                // with out length encoding?
-                ShouldCarryLength::PaddingFirst(n) => {
-                    packet.put_bytes(0, n);
-                    packet.dump_frame_with_data(frame, data);
-                }
-                ShouldCarryLength::ShouldAfter(_not_carry_len, _carry_len) => {
-                    frame.carry_length();
-                    packet.dump_frame_with_data(frame, data);
-                }
-            }
+            let strategy = frame.encoding_strategy(origin_len);
+            frame.set_len_flag(strategy.carry_length());
+            packet.put_bytes(0, strategy.padding());
+            packet.dump_frame_with_data(frame, data);
 
             (data.len(), is_fresh)
         };
@@ -137,7 +65,6 @@ impl<TX: Clone> Outgoing<TX> {
                     result = s.pick_up(predicate, flow_limit).map(write);
                     *sending_state = Sender::DataSent(s);
                 } else {
-                    tracing::warn!(?sid, "stream enter sending state");
                     let mut s: SendingSender<TX> = s.into();
                     result = s.pick_up(predicate, flow_limit).map(write);
                     *sending_state = Sender::Sending(s);

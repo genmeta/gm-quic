@@ -8,7 +8,6 @@ use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::{
         BeFrame, FrameType, ReceiveFrame, ResetStreamFrame, SendFrame, StreamCtlFrame, StreamFrame,
-        STREAM_FRAME_MAX_ENCODING_SIZE,
     },
     packet::MarshalDataFrame,
     param::CommonParameters,
@@ -135,98 +134,10 @@ impl<TX> DataStreams<TX>
 where
     TX: SendFrame<StreamCtlFrame> + Clone + Send + 'static,
 {
-    /// Try to read data from streams into stream frames and write the stream frame into the `buf`.
-    ///
-    /// # Fairness
-    ///
-    /// It's fair between streams. We have implemented a token bucket algorithm, and the [`try_read_data`]
-    /// method will read the data of each stream sequentially. Starting from the first stream, when
-    /// a stream exhausts its tokens (default is 4096, depending on the priority of the stream), or
-    /// there is no data to send, the method will move to the next stream, and so on.
-    ///
-    /// # Flow control
-    ///
-    /// QUIC employs a limit-based flow control scheme where a receiver advertises the limit of total
-    /// bytes it is prepared to receive on a given stream or for the entire connection. This leads to
-    /// two levels of data flow control in QUIC, stream level and connection level.
-    ///
-    /// Stream-level flow control had limited by the [`write`] calls on [`Writer`], if the application
-    /// wants to write more data than the stream's flow control limit , the [`write`] call will be
-    /// blocked until the sending window is updated.
-    ///
-    /// For connection-level flow control, it's limited by the parameter `flow_limit` of this method.
-    /// The amount of new data(never sent) will be read from the stream is less or equal to `flow_limit`.
-    ///
-    /// # Returns
-    ///
-    /// If no data written to the buffer, the method will return [`None`], or a tuple will be
-    /// returned:
-    ///
-    /// * [`StreamFrame`]: The stream frame to be sent.
-    /// * [`usize`]: The number of bytes written to the buffer.
-    /// * [`usize`]: The number of new data writen to the buffer.
-    ///
-    /// [`try_read_data`]: DataStreams::try_read_data
-    /// [`write`]: tokio::io::AsyncWriteExt::write
-    pub fn try_read_data(
-        &self,
-        buf: &mut [u8],
-        flow_limit: usize,
-    ) -> Option<(StreamFrame, usize, usize)> {
-        // todo: use core::range instead in rust 2024
-        use core::ops::Bound::*;
-
-        if buf.len() < STREAM_FRAME_MAX_ENCODING_SIZE + 1 {
-            return None;
-        }
-        let mut guard = self.output.streams();
-        let output = guard.as_mut().ok()?;
-
-        // 该tokens是令牌桶算法的token，为了多条Stream的公平性，给每个流定期地发放tokens，不累积
-        // 各流轮流按令牌桶算法发放的tokens来整理数据去发送
-        const DEFAULT_TOKENS: usize = 4096;
-        let streams: &mut dyn Iterator<Item = _> = match &output.cursor {
-            // [sid+1..] + [..=sid]
-            Some((sid, tokens)) if *tokens == 0 => &mut output
-                .outgoings
-                .range((Excluded(sid), Unbounded))
-                .chain(output.outgoings.range(..=sid))
-                .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
-            // [sid] + [sid+1..] + [..sid]
-            Some((sid, tokens)) => &mut Option::into_iter(
-                output
-                    .outgoings
-                    .get(sid)
-                    .map(|outgoing| (*sid, outgoing, *tokens)),
-            )
-            .chain(
-                output
-                    .outgoings
-                    .range((Excluded(sid), Unbounded))
-                    .chain(output.outgoings.range(..sid))
-                    .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
-            ),
-            // [..]
-            None => &mut output
-                .outgoings
-                .range(..)
-                .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
-        };
-        for (sid, (outgoing, _s), tokens) in streams.into_iter() {
-            if let Some((frame, data_len, is_fresh, written)) =
-                outgoing.try_read(sid, buf, tokens, flow_limit)
-            {
-                output.cursor = Some((sid, tokens - data_len));
-                return Some((frame, written, if is_fresh { data_len } else { 0 }));
-            }
-        }
-        None
-    }
-
     /// Try to load data from streams into the `packet`,
     /// with a `flow_limit` which limits the max size of fresh data.
     /// Returns the size of fresh data.
-    pub fn try_load_data_into_once<B, P>(&self, packet: &mut P, flow_limit: usize) -> Option<usize>
+    fn try_load_data_into_once<B, P>(&self, packet: &mut P, flow_limit: usize) -> Option<usize>
     where
         B: BufMut,
         P: DerefMut<Target = B> + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
@@ -285,9 +196,40 @@ where
         None
     }
 
-    /// Try to load data from streams into the `packet`,
-    /// with a `flow_limit` which limits the max size of fresh data.
-    /// Returns the size of fresh data.
+    /// Try to load data from streams into the packet.
+    ///
+    /// # Fairness
+    ///
+    /// It's fair between streams.
+    ///
+    /// We have implemented a token bucket algorithm, and this method will read the data of each stream
+    /// sequentially.  Starting from the first stream, when a stream exhausts its tokens (default is 4096,
+    /// depending on the priority of the stream), or there is no data to send, the method will move to
+    /// the next stream, and so on.
+    ///
+    /// # Flow control
+    ///
+    /// QUIC employs a limit-based flow control scheme where a receiver advertises the limit of total
+    /// bytes it is prepared to receive on a given stream or for the entire connection. This leads to
+    /// two levels of data flow control in QUIC, stream level and connection level.
+    ///
+    /// Stream-level flow control had limited by the [`write`] calls on [`Writer`], if the application
+    /// wants to write more data than the stream's flow control limit , the [`write`] call will be
+    /// blocked until the sending window is updated.
+    ///
+    /// For connection-level flow control, it's limited by the parameter `flow_limit` of this method.
+    /// The amount of new data(never sent) will be read from the stream is less or equal to `flow_limit`.
+    ///
+    /// # Returns
+    ///
+    /// If no data written to the buffer, the method will return [`None`], or a tuple will be
+    /// returned:
+    ///
+    /// * [`StreamFrame`]: The stream frame to be sent.
+    /// * [`usize`]: The number of bytes written to the buffer.
+    /// * [`usize`]: The number of new data writen to the buffer.
+    ///
+    /// [`write`]: tokio::io::AsyncWriteExt::write
     pub fn try_load_data_into<B, P>(&self, packet: &mut P, flow_limit: usize) -> usize
     where
         B: BufMut,

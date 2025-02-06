@@ -18,7 +18,7 @@ derive_builder = { workspace = true }
 enum_dispatch = { workspace = true }
 futures = { workspace = true }
 getset = { workspace = true }
-log = { workspace = true }
+tracing = { workspace = true }
 nom = { workspace = true }
 rand = { workspace = true }
 rustls = { workspace = true }
