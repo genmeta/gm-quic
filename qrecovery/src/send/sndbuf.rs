@@ -611,10 +611,6 @@ impl SendBuf {
                 let (l, r) = self.data.as_slices();
                 let s1 = &l[start.min(l.len())..l.len().min(end)];
                 let s2 = &r[start.saturating_sub(l.len())..end.saturating_sub(l.len())];
-                if s1.first().is_some_and(|&b| b == 0) {
-                    tracing::trace!("bp");
-                    // break point
-                }
                 (range.start, is_fresh, (s1, s2))
             })
     }

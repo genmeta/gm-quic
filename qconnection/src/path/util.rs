@@ -188,6 +188,10 @@ impl Constraints {
         &mut buf[..min_len]
     }
 
+    pub fn available(&self) -> usize {
+        self.credit_limit.min(self.send_quota)
+    }
+
     /// Commit consumption of credit limit and send quota.
     ///
     /// The `len` is how much data was written to the constrained buffer, `is_just_ack` instruct whether the send quota

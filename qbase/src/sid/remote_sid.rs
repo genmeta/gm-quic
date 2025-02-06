@@ -102,7 +102,7 @@ where
         } else {
             let start = *cur;
             *cur = unsafe { sid.next_unchecked() };
-            log::trace!("unallocated: {:?}", self.unallocated[idx]);
+            tracing::trace!("unallocated: {:?}", self.unallocated[idx]);
             if let Some(max_streams) = self.ctrl.on_accept_streams(sid.dir(), sid.id()) {
                 self.max[idx] = max_streams;
                 self.max_tx.send_frame([MaxStreamsFrame::with(

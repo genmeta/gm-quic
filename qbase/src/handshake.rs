@@ -40,7 +40,7 @@ impl ClientHandshake {
     pub fn recv_handshake_done_frame(&self, _frame: &HandshakeDoneFrame) -> bool {
         let has_done = self.done.swap(true, Ordering::AcqRel);
         if !has_done {
-            log::trace!("Client handshake is done");
+            tracing::trace!("Client handshake is done");
         }
         !has_done
     }
@@ -49,7 +49,7 @@ impl ClientHandshake {
     pub fn on_key_upgrade(&self) {
         let has_keys = self.has_keys.swap(true, Ordering::AcqRel);
         if !has_keys {
-            log::trace!("Client is getting handshake keys");
+            tracing::trace!("Client is getting handshake keys");
         }
     }
 }
@@ -57,8 +57,8 @@ impl ClientHandshake {
 /// Server's handshake status.
 ///
 /// - `T` is responsible for reliably sending [`HandshakeDoneFrame`] to the client.
-///    It can be a channel, a queue, or a buffer. Whatever, it must be able to send the
-///    [`HandshakeDoneFrame`] to the client.
+///   It can be a channel, a queue, or a buffer. Whatever, it must be able to send the
+///   [`HandshakeDoneFrame`] to the client.
 ///
 /// The server considers the handshake complete only after receiving
 /// the [finished message](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.4.4)
@@ -123,7 +123,7 @@ where
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            log::trace!("Server handshake is done");
+            tracing::trace!("Server handshake is done");
             self.output.send_frame([HandshakeDoneFrame]);
             true
         } else {
@@ -135,7 +135,7 @@ where
     pub fn on_key_upgrade(&self) {
         let has_keys = self.has_keys.swap(true, Ordering::AcqRel);
         if !has_keys {
-            log::trace!("Server is getting handshake keys");
+            tracing::trace!("Server is getting handshake keys");
         }
     }
 }

@@ -20,7 +20,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{trace_span, Instrument};
 
 use crate::{
-    events::{EmitEvent, Event},
+    events::{ArcEventBroker, EmitEvent, Event},
     termination::ClosingState,
     Components, DataStreams, FlowController,
 };
@@ -57,10 +57,7 @@ impl Spaces {
         &self.data
     }
 
-    pub fn close<EE>(self, closing_state: Arc<ClosingState>, event_broker: &EE)
-    where
-        EE: EmitEvent + Clone + Send + 'static,
-    {
+    pub fn close(self, closing_state: Arc<ClosingState>, event_broker: ArcEventBroker) {
         let received_packet_queue = closing_state.rcvd_pkt_q();
         match self.initial.close() {
             None => received_packet_queue.initial().close(),
@@ -111,7 +108,7 @@ pub struct DecryptedPacket<H> {
 fn pipe<F: Send + Debug + 'static>(
     mut source: UnboundedReceiver<F>,
     destination: impl ReceiveFrame<F> + Send + 'static,
-    broker: impl EmitEvent + 'static,
+    broker: ArcEventBroker,
 ) {
     tokio::spawn(
         async move {
@@ -122,6 +119,7 @@ fn pipe<F: Send + Debug + 'static>(
                     break;
                 }
             }
+            tracing::trace!(frame_type = core::any::type_name::<F>(), "pipeline broken");
         }
         .instrument(trace_span!("frame_pipeline",)),
     );

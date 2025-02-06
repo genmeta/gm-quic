@@ -475,7 +475,7 @@ impl Transaction<'_> {
         if let Some(final_level) = last_level {
             let mut packet = final_level.mid_pkt.resume(&mut datagram[written..]);
 
-            let padding = packet.remaining_mut();
+            let padding = packet.remaining_mut().min(self.constraints.available());
             packet.pad(padding);
             self.constraints.commit(padding, packet.in_flight());
 
