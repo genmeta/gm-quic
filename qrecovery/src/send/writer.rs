@@ -102,6 +102,7 @@ where
 
 impl<TX: Clone> Writer<TX> {
     /// 往sndbuf里面写数据，直到写满MAX_STREAM_DATA，等通告窗口更新再写
+    #[tracing::instrument(level = "trace", skip_all, ret)]
     pub fn write_or_await(&self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         let mut sender = self.0.sender();
         let sending_state = sender.as_mut().map_err(|e| e.clone())?;
@@ -125,6 +126,7 @@ impl<TX: Clone> Writer<TX> {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip_all, ret)]
     pub fn flush_or_await(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let mut sender = self.0.sender();
         let sending_state = sender.as_mut().map_err(|e| e.clone())?;

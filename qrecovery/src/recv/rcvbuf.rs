@@ -15,6 +15,10 @@ impl Segment {
     fn new_with_data(offset: u64, data: Bytes) -> Self {
         Segment { offset, data }
     }
+
+    fn end(&self) -> u64 {
+        self.offset + self.data.len() as u64
+    }
 }
 
 /// Received data of a stream is stored in [`RecvBuf`].
@@ -31,6 +35,7 @@ impl Segment {
 #[derive(Default, Debug)]
 pub struct RecvBuf {
     nread: u64,
+    largest_offset: u64,
     // segments[0].offset >= nread
     segments: VecDeque<Segment>,
 }
@@ -65,6 +70,13 @@ impl RecvBuf {
         self.nread
     }
 
+    /// Returns the largest offset received.
+    ///
+    /// For receiver in SizeKnown state, this must smaller than the `final_size`
+    pub fn largest_offset(&self) -> u64 {
+        self.largest_offset
+    }
+
     /// Receive a fragment of data, return the new data's size.
     ///
     /// # Example
@@ -93,7 +105,6 @@ impl RecvBuf {
     /// recvbuf.try_read(&mut received);
     /// assert_eq!(received.as_ref(), b"hello, world!");
     /// ```
-    ///
     pub fn recv(&mut self, offset: u64, mut data: Bytes) -> u64 {
         let mut written = 0;
 
@@ -129,20 +140,21 @@ impl RecvBuf {
                 // 2. 如果是下一个seg的index（只可能是index=0)，也会执行上述逻辑，故index 0 可以做特别处理
                 Err(0) => {
                     let uncovered = match self.segments.front() {
-                        // 如果和下一段数据有重合的话，裁下data中不重合的部分
+                        // 如果和下一段数据有重合的话，裁下data中前一部分（不重合的部分）
                         Some(next_seg) if start + data.len() as u64 > next_seg.offset => {
                             // 裁下后，start必定和next_seg.offset相等，下次loop就会进入上一个分支
                             // next_seg.offset < start + data.len()
                             // next_seg.offset - start < data.len() ，不会越界
                             data.split_to((next_seg.offset - start) as usize)
                         }
-                        // 如果没有重合，或者这是第一段数据，直接取出data
+                        // 如果没有重合，或者这是第一段数据，直接取出整个data
                         // 然后下次循环时data.is_empty() == true => break
                         Some(..) | None => core::mem::take(&mut data),
                     };
                     let segment = Segment::new_with_data(start, uncovered);
                     written += segment.data.len() as u64;
                     start += segment.data.len() as u64;
+                    self.largest_offset = self.largest_offset.max(segment.end());
                     self.segments.push_front(segment);
                 }
                 // seg_index != 0 => seg_index > 0
@@ -191,6 +203,7 @@ impl RecvBuf {
                     let segment = Segment::new_with_data(start, uncovered);
                     written += segment.data.len() as u64;
                     start += segment.data.len() as u64;
+                    self.largest_offset = self.largest_offset.max(segment.end());
                     self.segments.insert(seg_index, segment);
                 }
             }
@@ -201,6 +214,7 @@ impl RecvBuf {
     }
 
     /// Returns the length of continuous unread data.
+    #[tracing::instrument(level = "trace", skip(self), ret)]
     pub fn available(&self) -> u64 {
         use core::ops::ControlFlow;
         let (ControlFlow::Continue(continuous_end) | ControlFlow::Break(continuous_end)) =
@@ -216,6 +230,7 @@ impl RecvBuf {
 
     /// Once the received data becomes continuous, it becomes readable. If necessary (if the application
     /// layer is blocked on reading), it is necessary to notify the application layer to read.
+    #[tracing::instrument(level = "debug", skip(self))]
     pub fn is_readable(&self) -> bool {
         !self.segments.is_empty() && self.segments[0].offset == self.nread
     }
@@ -250,6 +265,7 @@ impl RecvBuf {
     /// recvbuf.try_read(&mut dst2);
     /// assert_eq!(dst2.as_ref(), b"6789");
     ///
+    #[tracing::instrument(level = "trace", skip(self, dst), ret)]
     pub fn try_read(&mut self, dst: &mut impl BufMut) -> usize {
         let origin = dst.remaining_mut();
         while let Some(seg) = self.segments.front_mut() {
@@ -338,6 +354,18 @@ mod tests {
         assert_eq!(buf.recv(2, Bytes::from("45")), 0);
         assert_eq!(buf.segments.len(), 1);
         assert_eq!(buf.segments[0].offset, 0);
+        assert_eq!(buf.available(), 6);
+    }
+
+    #[test]
+    fn test_covered2() {
+        let mut buf = RecvBuf::default();
+        assert_eq!(buf.recv(2, Bytes::from("45")), 2);
+        assert_eq!(buf.recv(0, Bytes::from("114514")), 4);
+        assert_eq!(buf.segments.len(), 3);
+        assert_eq!(buf.segments[0].offset, 0);
+        assert_eq!(buf.segments[1].offset, 2);
+        assert_eq!(buf.segments[2].offset, 4);
         assert_eq!(buf.available(), 6);
     }
 

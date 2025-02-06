@@ -655,6 +655,7 @@ where
                 let rcv_buf_size = self.remote_bi_stream_rcvbuf_size;
                 for sid in need_create {
                     let arc_recver = self.create_recver(sid, rcv_buf_size);
+                    // buf_size will be revised by Listener::poll_accept_bi_stream
                     let arc_sender = self.create_sender(sid, 0);
                     let io_state = IOState::bidirection();
                     input.insert(sid, Incoming::new(arc_recver.clone()), io_state.clone());

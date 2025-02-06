@@ -1,6 +1,6 @@
 use std::{
     io,
-    ops::{DerefMut, Range},
+    ops::Range,
     sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll, Waker},
 };
@@ -84,6 +84,11 @@ impl<TX> ReadySender<TX> {
             let n = std::cmp::min((self.max_stream_data - stream_data) as usize, buf.len());
             Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
         } else {
+            tracing::trace!(
+                stream_data,
+                max_stream_data = self.max_stream_data,
+                "write blocked(ReadySender)"
+            );
             self.writable_waker = Some(cx.waker().clone());
             Poll::Pending
         }
@@ -189,11 +194,16 @@ impl<TX> SendingSender<TX> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let written = self.sndbuf.written();
-        if written < self.max_stream_data {
-            let n = std::cmp::min((self.max_stream_data - written) as usize, buf.len());
+        let stream_data = self.sndbuf.written();
+        if stream_data < self.max_stream_data {
+            let n = std::cmp::min((self.max_stream_data - stream_data) as usize, buf.len());
             Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
         } else {
+            tracing::trace!(
+                stream_data,
+                max_stream_data = self.max_stream_data,
+                "write blocked(SendingSender)"
+            );
             self.writable_waker = Some(cx.waker().clone());
             Poll::Pending
         }
@@ -442,9 +452,10 @@ impl<TX> ArcSender<TX> {
 
 impl<TX> ArcSender<TX> {
     pub(crate) fn revise_buffer_size(&self, snd_buf_size: u64) {
-        let mut sender = self.sender();
-        if let Ok(Sender::Ready(s)) = sender.deref_mut() {
-            s.update_window(snd_buf_size);
+        match self.sender().as_mut() {
+            Ok(Sender::Ready(s)) => s.update_window(snd_buf_size),
+            Ok(Sender::Sending(s)) => s.update_window(snd_buf_size),
+            _ => {}
         }
     }
 

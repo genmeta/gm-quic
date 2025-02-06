@@ -12,7 +12,7 @@ categories.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-log = { workspace = true }
+tracing = { workspace = true }
 qbase = { workspace = true }
 qrecovery = { workspace = true }
 rand = { workspace = true }

@@ -125,11 +125,14 @@ impl BufMap {
         self.0
             .iter_mut()
             .enumerate()
-            .filter(|(.., state)| {
+            .find(|(.., state)| {
+                // 选择Pending的区间（如果流控允许），或者选择Lost的区间
                 (matches!(state.color(), Color::Pending) && flow_limit != 0)
                     || matches!(state.color(), Color::Lost)
             })
-            .find_map(|(idx, state)| {
+            .and_then(|(idx, state)| {
+                // 如果区间的offset不符合predicate，就不发送这一段
+                // 其实选择到的第一段数据数据的offset已经是最小的了，如果最小的offset都不能发送，那么后面片段肯定也不能发送
                 let available = predicate(state.offset())?;
 
                 let allowance = if state.color() == Color::Lost {
@@ -525,7 +528,7 @@ pub struct SendBuf {
 }
 
 impl SendBuf {
-    /// Create a new [`SendBuf `]with the given size.
+    /// Create a new [`SendBuf`] with the given size.
     pub fn with_capacity(n: usize) -> Self {
         Self {
             offset: 0,
@@ -581,19 +584,20 @@ impl SendBuf {
     /// Pick up data that can be sent.
     ///
     /// The selected data is also subject to `predicate`, which accepts the starting position of the
-    /// data, returns whether the data will be sent and the maximum amount sent.
+    /// data segment, returns whether the segment could be sent and the maximum amount of bytes could
+    /// take.
     ///
-    /// If the data picked up is new (never sent before), how much data can be sent is also subject to
-    /// `flow_limit`.
+    /// If the data picked up is new (never sent before), how much data can be sent is also subject
+    /// to `flow_limit`.
     ///
     /// ### Returns
     /// `None` if there is no data picked up.
     ///
     /// Otherwise, return a tuple:
-    /// * `u64`: the starting position of the data.
-    /// * `bool`: whether the data is new.
+    /// * `u64`: offset, the starting position of the data.
+    /// * `bool`: whether the data is new(not retransmitted).
     /// * `(&[u8], &[u8])`: the data picked up, duo to the internal buffer is a ring buffer, the data
-    ///   picked up is in two parts, the begin of the second slice and the end of the first slice
+    ///   picked up is in two parts, the begin of the second slice are the end of the first slice
     pub fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Option<Data>
     where
         P: Fn(u64) -> Option<usize>,
@@ -607,6 +611,10 @@ impl SendBuf {
                 let (l, r) = self.data.as_slices();
                 let s1 = &l[start.min(l.len())..l.len().min(end)];
                 let s2 = &r[start.saturating_sub(l.len())..end.saturating_sub(l.len())];
+                if s1.first().is_some_and(|&b| b == 0) {
+                    tracing::trace!("bp");
+                    // break point
+                }
                 (range.start, is_fresh, (s1, s2))
             })
     }

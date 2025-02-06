@@ -2,7 +2,7 @@ pub mod data;
 pub mod handshake;
 pub mod initial;
 
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
 
 use bytes::Bytes;
 use qbase::{
@@ -108,7 +108,7 @@ pub struct DecryptedPacket<H> {
     payload: Bytes,
 }
 
-fn pipe<F: Send + 'static>(
+fn pipe<F: Send + Debug + 'static>(
     mut source: UnboundedReceiver<F>,
     destination: impl ReceiveFrame<F> + Send + 'static,
     broker: impl EmitEvent + 'static,
@@ -116,16 +116,14 @@ fn pipe<F: Send + 'static>(
     tokio::spawn(
         async move {
             while let Some(f) = source.recv().await {
+                tracing::trace!(frame = ?f, "received frame");
                 if let Err(e) = destination.recv_frame(&f) {
                     broker.emit(Event::Failed(e));
                     break;
                 }
             }
         }
-        .instrument(trace_span!(
-            "frame_pipeline",
-            frame = core::any::type_name::<F>()
-        )),
+        .instrument(trace_span!("frame_pipeline",)),
     );
 }
 

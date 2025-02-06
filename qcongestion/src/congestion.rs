@@ -13,6 +13,7 @@ use qbase::{
     Epoch,
 };
 use tokio::{sync::Notify, task::AbortHandle};
+use tracing::{trace_span, Instrument};
 
 // todo: remove this in future
 impl<T> ObserveHandshake for Handshake<T>
@@ -277,7 +278,7 @@ impl CongestionController {
                 // Client sends an anti-deadlock packet: Initial is padded
                 // to earn more anti-amplification credit,
                 // a Handshake packet proves address ownership.
-                log::trace!("Anti-deadlock packet sent");
+                tracing::trace!("Anti-deadlock packet sent");
                 if self.handshake.is_getting_keys() {
                     Epoch::Handshake
                 } else {
@@ -291,15 +292,15 @@ impl CongestionController {
             };
 
         self.pto_count += 1;
-        log::trace!(
-            "{:?} PTO timeout, epoch: {:?}, pto_count: {} inflight: {:?}",
-            self.handshake.role(),
-            pto_epoch,
-            self.pto_count,
-            self.sent_packets[pto_epoch]
+        tracing::trace!(
+            role = %self.handshake.role(),
+            ?pto_epoch,
+            pto_count = self.pto_count,
+            inflight = ?self.sent_packets[pto_epoch]
                 .iter()
                 .map(|pkt| pkt.pn)
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            "PTO timeout",
         );
         // Retransmit frames from the oldest sent packet. However,
         // these packets are not actually declared lost, so have no effect on
@@ -491,25 +492,28 @@ impl ArcCC {
 impl super::CongestionControl for ArcCC {
     fn launch(&self, notify: Arc<Notify>) -> AbortHandle {
         let cc = self.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(10));
-            loop {
-                interval.tick().await;
-                let now = Instant::now();
-                let mut guard = cc.0.lock().unwrap();
-                if guard.loss_timer.is_timeout(now) {
-                    guard.on_loss_timeout(now);
-                }
-                if guard.ready_to_send(now).is_some() {
-                    if let Some(waker) = guard.send_waker.take() {
-                        waker.wake();
+        tokio::spawn(
+            async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(10));
+                loop {
+                    interval.tick().await;
+                    let now = Instant::now();
+                    let mut guard = cc.0.lock().unwrap();
+                    if guard.loss_timer.is_timeout(now) {
+                        guard.on_loss_timeout(now);
+                    }
+                    if guard.ready_to_send(now).is_some() {
+                        if let Some(waker) = guard.send_waker.take() {
+                            waker.wake();
+                        }
+                    }
+                    if guard.requires_ack() {
+                        notify.notify_waiters();
                     }
                 }
-                if guard.requires_ack() {
-                    notify.notify_waiters();
-                }
             }
-        })
+            .instrument(trace_span!("congestion_controller")),
+        )
         .abort_handle()
     }
     fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize> {

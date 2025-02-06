@@ -127,28 +127,26 @@ impl<TX: Clone> Outgoing<TX> {
                 .map(|capacity| tokens.min(capacity))
         };
         let mut sender = self.0.sender();
-        let inner = sender.deref_mut();
+        let sending_state = sender.as_mut().ok()?;
 
-        match inner {
-            Ok(sending_state) => match sending_state {
-                Sender::Ready(s) => {
-                    let result;
-                    if s.is_finished() {
-                        let mut s: DataSentSender<TX> = s.into();
-                        result = s.pick_up(predicate, flow_limit).map(write);
-                        *sending_state = Sender::DataSent(s);
-                    } else {
-                        let mut s: SendingSender<TX> = s.into();
-                        result = s.pick_up(predicate, flow_limit).map(write);
-                        *sending_state = Sender::Sending(s);
-                    }
-                    result
+        match sending_state {
+            Sender::Ready(s) => {
+                let result;
+                if s.is_finished() {
+                    let mut s: DataSentSender<TX> = s.into();
+                    result = s.pick_up(predicate, flow_limit).map(write);
+                    *sending_state = Sender::DataSent(s);
+                } else {
+                    tracing::warn!(?sid, "stream enter sending state");
+                    let mut s: SendingSender<TX> = s.into();
+                    result = s.pick_up(predicate, flow_limit).map(write);
+                    *sending_state = Sender::Sending(s);
                 }
-                Sender::Sending(s) => s.pick_up(predicate, flow_limit).map(write),
-                Sender::DataSent(s) => s.pick_up(predicate, flow_limit).map(write),
-                _ => None,
-            },
-            Err(_) => None,
+                result
+            }
+            Sender::Sending(s) => s.pick_up(predicate, flow_limit).map(write),
+            Sender::DataSent(s) => s.pick_up(predicate, flow_limit).map(write),
+            _ => None,
         }
     }
 }
@@ -197,7 +195,6 @@ impl<TX> Outgoing<TX> {
                 Sender::DataSent(s) => {
                     s.on_data_acked(range, is_fin);
                     if s.is_all_rcvd() {
-                        s.wake_all();
                         *sending_state = Sender::DataRcvd;
                         return true;
                     }

@@ -39,8 +39,7 @@ where
             match receiving_state {
                 Recver::Recv(r) => {
                     if stream_frame.is_fin() {
-                        let final_size = stream_frame.offset() + stream_frame.len() as u64;
-                        let mut size_known = r.determin_size(final_size);
+                        let mut size_known = r.determin_size(stream_frame)?;
                         fresh_data = size_known.recv(stream_frame, body)?;
                         if size_known.is_all_rcvd() {
                             is_into_rcvd = true;

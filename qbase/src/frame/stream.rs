@@ -84,7 +84,7 @@ impl StreamFrame {
             offset: VarInt::from_u64(offset)
                 .expect("offset of stream frame must be less than 2^62"),
             length,
-            flag: 0,
+            flag: if offset != 0 { OFF_BIT } else { 0 },
         }
     }
 

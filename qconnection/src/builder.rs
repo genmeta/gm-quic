@@ -428,7 +428,7 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
     async move {
         use qbase::frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame};
         if let Ok(param::Pair { local: _, remote }) = params.await {
-            tracing::trace!("got transport parameters");
+            tracing::trace!(?remote, "got transport parameters");
             // pretend to receive the MAX_STREAM frames
             _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
                 remote.initial_max_streams_bidi(),
@@ -504,10 +504,11 @@ impl Components {
                         tracing::trace!(reason, "path inactive");
                         // same as [`Components::del_path`]
                         paths.remove(&pathway);
-                    }.instrument(trace_span!("path_task", ?pathway,?socket,is_probed,do_validate))
+                    }.instrument(trace_span!("path_task"))
                 });
 
                 vacant_entry.insert(PathContext::new(path.clone(), task.abort_handle()));
+                tracing::debug!(do_validate, "created new path");
                 Some(path)
             }
         }

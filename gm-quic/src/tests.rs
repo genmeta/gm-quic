@@ -24,7 +24,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     task::JoinSet,
 };
-use tracing::{debug, info, info_span, Instrument};
+use tracing::{debug, error, info, info_span, Instrument};
 
 use crate::ToCertificate;
 
@@ -32,7 +32,14 @@ use crate::ToCertificate;
 async fn parallel_stream() -> io::Result<()> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::level_filters::LevelFilter::TRACE)
-        .with_ansi(false)
+        // .with_writer(
+        //     std::fs::OpenOptions::new()
+        //         .create(true)
+        //         .write(true)
+        //         .truncate(true)
+        //         .open("/tmp/gm-quic.log")?,
+        // )
+        // .with_ansi(false)
         .init();
 
     let server = crate::QuicServer::builder()
@@ -44,7 +51,8 @@ async fn parallel_stream() -> io::Result<()> {
         .with_parameters(server_stream_unlimited_parameters())
         .listen("0.0.0.0:0")?;
 
-    let server_addr = server.addresses().into_iter().next().unwrap();
+    let mut server_addr = server.addresses().into_iter().next().unwrap();
+    server_addr.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
     tokio::spawn(echo_server::launch(server));
 
     let mut roots = RootCertStore::empty();
@@ -61,8 +69,10 @@ async fn parallel_stream() -> io::Result<()> {
     );
 
     const CONNECTIONS: usize = 1;
-    const STREAMS: usize = 4;
+    const STREAMS: usize = 6;
     const DATA: &[u8] = include_bytes!("tests.rs");
+
+    println!("{}", String::from_utf8_lossy(DATA));
 
     let mut connections = JoinSet::new();
 
@@ -78,12 +88,17 @@ async fn parallel_stream() -> io::Result<()> {
 
                     writer.write_all(DATA).await?;
                     writer.shutdown().await?;
-                    debug!(%stream_id, "sender shutdowned, wait for shutdown");
+                    debug!(%stream_id, "sender shutdowned, wait for server to echo");
 
                     let mut data = Vec::new();
                     reader.read_to_end(&mut data).await?;
 
-                    info!("stream correctly echoed");
+                    if data != DATA {
+                        error!("server incorrectly echoed");
+                        return Err(io::Error::other("server incorrectly echoed"));
+                    }
+
+                    info!(%stream_id, "server correctly echoed");
 
                     io::Result::Ok(())
                 }
