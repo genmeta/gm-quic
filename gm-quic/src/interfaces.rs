@@ -43,7 +43,7 @@ impl Interfaces {
         let iface = PROTO
             .get_interface(local_addr)
             .expect("unreachable, this is a bug");
-        if Arc::strong_count(&iface) == 2 {
+        if Arc::strong_count(&iface) == 3 {
             Some(iface)
         } else {
             None

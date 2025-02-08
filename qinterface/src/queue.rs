@@ -61,24 +61,24 @@ impl RcvdPacketQueue {
         self.one_rtt.close();
     }
 
-    pub async fn deliver(&self, packet: Packet, pathway: Pathway, local: Socket) {
+    pub async fn deliver(&self, packet: Packet, pathway: Pathway, socket: Socket) {
         match packet {
             Packet::Data(packet) => match packet.header {
                 DataHeader::Long(long::DataHeader::Initial(header)) => {
                     let packet = (header, packet.bytes, packet.offset);
-                    _ = self.initial.send((packet, pathway, local)).await;
+                    _ = self.initial.send((packet, pathway, socket)).await;
                 }
                 DataHeader::Long(long::DataHeader::Handshake(header)) => {
                     let packet = (header, packet.bytes, packet.offset);
-                    _ = self.handshake.send((packet, pathway, local)).await;
+                    _ = self.handshake.send((packet, pathway, socket)).await;
                 }
                 DataHeader::Long(long::DataHeader::ZeroRtt(header)) => {
                     let packet = (header, packet.bytes, packet.offset);
-                    _ = self.zero_rtt.send((packet, pathway, local)).await;
+                    _ = self.zero_rtt.send((packet, pathway, socket)).await;
                 }
                 DataHeader::Short(header) => {
                     let packet = (header, packet.bytes, packet.offset);
-                    _ = self.one_rtt.send((packet, pathway, local)).await;
+                    _ = self.one_rtt.send((packet, pathway, socket)).await;
                 }
             },
             Packet::VN(_vn) => {}

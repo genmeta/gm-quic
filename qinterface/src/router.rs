@@ -55,9 +55,7 @@ impl Drop for InterfaceContext {
 #[derive(Default)]
 pub struct QuicProto {
     interfaces: DashMap<SocketAddr, InterfaceContext>,
-    // 叫 "路由表" 这样的名字
-    connections: DashMap<Signpost, Arc<RcvdPacketQueue>>,
-    // unrouted packets : ...<(packet, pathway, SocketAddr)>
+    router_table: DashMap<Signpost, Arc<RcvdPacketQueue>>,
     unrouted_packets: Channel<(Packet, Pathway, Socket)>,
 }
 
@@ -191,8 +189,8 @@ impl QuicProto {
             Signpost::from(addr)
         };
 
-        if let Some(conn_iface) = self.connections.get(&signpost) {
-            _ = conn_iface.deliver(packet, pathway, socket).await;
+        if let Some(rcvd_pkt_q) = self.router_table.get(&signpost).map(|queue| queue.clone()) {
+            _ = rcvd_pkt_q.deliver(packet, pathway, socket).await;
             return;
         }
         _ = self.unrouted_packets.send((packet, pathway, socket));
@@ -220,11 +218,11 @@ impl QuicProto {
 
     // for origin_dcid
     pub fn add_router_entry(&self, signpost: Signpost, queue: Arc<RcvdPacketQueue>) {
-        self.connections.insert(signpost, queue);
+        self.router_table.insert(signpost, queue);
     }
 
     pub fn del_router_entry(&self, signpost: &Signpost) {
-        self.connections.remove(signpost);
+        self.router_table.remove(signpost);
     }
 
     pub fn registry<ISSUED>(
@@ -255,7 +253,7 @@ where
         core::iter::from_fn(|| Some(ConnectionId::random_gen_with_mark(8, 0x80, 0x7F)))
             .find(|cid| {
                 let signpost = Signpost::from(*cid);
-                let entry = self.router_iface.connections.entry(signpost);
+                let entry = self.router_iface.router_table.entry(signpost);
 
                 if matches!(entry, dashmap::Entry::Occupied(..)) {
                     return false;
