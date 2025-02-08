@@ -3,6 +3,7 @@ mod qudp {
     use std::{
         io,
         net::SocketAddr,
+        ops::Range,
         sync::Mutex,
         task::{Context, Poll},
     };
@@ -15,7 +16,7 @@ mod qudp {
     };
 
     struct ReceiveBuffers {
-        unread: usize,
+        undelivered: Range<usize>,
         bufs: Vec<BytesMut>,
         hdrs: Vec<qudp::PacketHeader>,
     }
@@ -23,7 +24,7 @@ mod qudp {
     impl ReceiveBuffers {
         fn empty(gro_size: u16) -> Self {
             Self {
-                unread: 0,
+                undelivered: 0..0, // empty range
                 bufs: vec![bytes::BytesMut::zeroed(1200); gro_size as _],
                 hdrs: vec![qudp::PacketHeader::default(); gro_size as _],
             }
@@ -86,7 +87,7 @@ mod qudp {
         fn poll_recv(&self, cx: &mut Context) -> Poll<io::Result<(BytesMut, Pathway, Socket)>> {
             let mut recv_buffer = self.recv_bufs.lock().unwrap();
 
-            while recv_buffer.unread == 0 {
+            while recv_buffer.undelivered.is_empty() {
                 let ReceiveBuffers { bufs, hdrs, .. } = &mut *recv_buffer;
                 // 想不vec!也行，但是那样就得处理自引用结构之类的...，太复杂而了
                 // 之后可以考虑用small_vec这样的库，array小于一个阈值就放在栈上，更可接受
@@ -94,17 +95,18 @@ mod qudp {
                     .iter_mut()
                     .map(|buf| io::IoSliceMut::new(&mut buf[..]))
                     .collect::<Vec<_>>(); // :(
-                recv_buffer.unread =
-                    core::task::ready!(self.inner.poll_recv(&mut io_slices, hdrs, cx)?);
+                recv_buffer.undelivered =
+                    0..core::task::ready!(self.inner.poll_recv(&mut io_slices, hdrs, cx)?);
             }
 
-            // TOOD: 纠正反顺问题
-            recv_buffer.unread -= 1;
-            let mut bytes_mut = recv_buffer.bufs[recv_buffer.unread].clone();
-            bytes_mut.truncate(recv_buffer.hdrs[recv_buffer.unread].seg_size as _);
+            let seg_idx = recv_buffer.undelivered.start;
+            recv_buffer.undelivered.start += 1;
+
+            let mut bytes_mut = recv_buffer.bufs[seg_idx].clone();
+            bytes_mut.truncate(recv_buffer.hdrs[seg_idx].seg_size as _);
             // let local = recv_buffer.hdrs[recv_buffer.unread].dst;
             let local = self.local_addr()?;
-            let remote = recv_buffer.hdrs[recv_buffer.unread].src;
+            let remote = recv_buffer.hdrs[seg_idx].src;
             let socket = Socket::new(local, remote);
             let local = Endpoint::Direct { addr: local };
             let remote = Endpoint::Direct { addr: remote };
