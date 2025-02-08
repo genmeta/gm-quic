@@ -155,9 +155,9 @@ impl QuicClient {
                     .filter(|local_addr| local_addr.is_ipv4() == server_addr.is_ipv4())
                     .find_map(|local_addr| {
                         if self.reuse_interfaces {
-                            Interfaces::try_acquire_unique(local_addr)
-                        } else {
                             Interfaces::try_acquire_shared(local_addr)
+                        } else {
+                            Interfaces::try_acquire_unique(local_addr)
                         }
                     })
                     .ok_or_else(no_available_address)?
