@@ -1,6 +1,6 @@
 use std::task::{Context, Poll};
 
-use gm_quic::{UnreliableReader, UnreliableWriter};
+use gm_quic::{DatagramReader, DatagramWriter};
 
 use crate::{conn::QuicConnection, Error};
 
@@ -30,7 +30,7 @@ impl h3::quic::RecvDatagramExt for QuicConnection {
     }
 }
 
-pub struct SendDatagram(pub(crate) Result<UnreliableWriter, Error>);
+pub struct SendDatagram(pub(crate) Result<DatagramWriter, Error>);
 
 impl<B: bytes::Buf> h3::quic::SendDatagramExt<B> for SendDatagram {
     type Error = Error;
@@ -49,7 +49,7 @@ impl<B: bytes::Buf> h3::quic::SendDatagramExt<B> for SendDatagram {
     }
 }
 
-pub struct RecvDatagram(pub(crate) Result<UnreliableReader, Error>);
+pub struct RecvDatagram(pub(crate) Result<DatagramReader, Error>);
 
 impl h3::quic::RecvDatagramExt for RecvDatagram {
     type Buf = bytes::Bytes;

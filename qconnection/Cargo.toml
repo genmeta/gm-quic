@@ -18,8 +18,14 @@ futures = { workspace = true }
 qbase = { workspace = true }
 qcongestion = { workspace = true }
 qrecovery = { workspace = true }
-qunreliable = { workspace = true }
 rustls = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tracing = { workspace = true }
 qinterface = { workspace = true }
+
+# features: unreliable
+qunreliable = { workspace = true, optional = true }
+
+[features]
+default = ["unreliable"]
+unreliable = ["dep:qunreliable"]

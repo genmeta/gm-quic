@@ -5,82 +5,95 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes};
 use qbase::{
     error::Error,
-    frame::{io::WriteDataFrame, BeFrame, DatagramFrame},
+    frame::{BeFrame, DatagramFrame},
+    packet::MarshalDataFrame,
     varint::VarInt,
 };
 
-/// The queue that caches the datagram frames to send.
-///
-/// For application layer, this represents as the [`UnreliableWriter`], which is used to send the [datagram frames] to
-/// the peer.
-///
-/// [`UnreliableWriter`] is created by [`UnreliableOutgoing::new_writer`] and each QUIC Connection has only one queue.
-/// All [`UnreliableWriter`]s share the same queue, you can create many [`UnreliableWriter`]s (or simply clone they) to
-/// send the datagram frames at the same time.
-///
-/// For protocol layer, this represents as the [`UnreliableOutgoing`]. The [datagram frames] application want to send
-/// will not be sent immediately; they will be pushed into this  queue. The protocol layer will read the datagram the
-/// from the queue and send it to the peer.
-///
-///
-/// [datagram frames]: https://www.rfc-editor.org/rfc/rfc9221.html
 #[derive(Debug)]
-pub struct DatagramFrameSink {
+struct RawDatagramWriter {
     /// The queue that stores the datagram frame to send.
-    queue: VecDeque<Bytes>,
+    datagrams: VecDeque<Bytes>,
 }
 
-impl DatagramFrameSink {
-    pub(crate) fn new() -> Self {
+impl RawDatagramWriter {
+    fn new() -> Self {
         Self {
-            queue: Default::default(),
+            datagrams: VecDeque::new(),
         }
     }
 }
-
-/// A wrapper of [`DatagramFrameSink`] that can be shared between multiple [`UnreliableWriter`]s and [`UnreliableOutgoing`]s.
-///
-/// If a connection error occurs, the internal state will be set to an error state. See [`UnreliableOutgoing::on_conn_error`]
-/// for more details.
-pub type ArcDatagramFrameSink = Arc<Mutex<Result<DatagramFrameSink, Error>>>;
 
 /// The struct for protocol layer to mange the outgoing side of the datagram flow.
 #[derive(Debug, Clone)]
-pub struct UnreliableOutgoing(pub(crate) ArcDatagramFrameSink);
+pub struct DatagramOutgoing(Arc<Mutex<Result<RawDatagramWriter, Error>>>);
 
-impl UnreliableOutgoing {
-    /// Creates a new instance of [`UnreliableWriter`].
-    ///
-    /// Returns an error when the connection is closing or already closed.
+impl DatagramOutgoing {
+    pub fn new() -> DatagramOutgoing {
+        DatagramOutgoing(Arc::new(Mutex::new(Ok(RawDatagramWriter::new()))))
+    }
+
+    /// Try to reate a new instance of [`DatagramWriter`].
     ///
     /// This method takes the remote transport parameters `max_datagram_frame_size`.
     ///
-    /// Be different from [`UnreliableReader`], there can be multiple [`UnreliableWriter`]s at the same time.
-    /// All of them share the same internal queue.
-    ///
-    /// [`UnreliableReader`]: crate::reader::UnreliableReader
-    pub fn new_writer(&self, max_datagram_frame_size: u64) -> io::Result<UnreliableWriter> {
-        match self.0.lock().unwrap().deref_mut() {
-            Ok(..) => Ok(UnreliableWriter {
-                writer: self.0.clone(),
-                max_datagram_frame_size: max_datagram_frame_size as _,
-            }),
-            Err(e) => Err(io::Error::from(e.clone())),
+    /// Return an error if the connection is closing or already closed,
+    /// or datagram is disenabled by peer(`max_datagram_frame_size` is `0`)
+    pub fn new_writer(&self, max_datagram_frame_size: u64) -> io::Result<DatagramWriter> {
+        let mut guard = self.0.lock().unwrap();
+        let _writer = guard.as_mut().map_err(|e| e.clone())?;
+        if max_datagram_frame_size == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Unreliable Datagram Extension was disenabled by peer's parameters",
+            ));
         }
+        Ok(DatagramWriter {
+            writer: self.0.clone(),
+            max_datagram_frame_size: max_datagram_frame_size as _,
+        })
     }
 
-    /// Attempts to encode the datagram frame into the buffer.
-    ///
-    /// If the datagram frame is successfully encoded, the method will return the datagram frame and the number of bytes
-    /// written to the buffer. Otherwise, the method will return [`None`], and the buffer will not be modified.
-    ///
-    /// If the connection is closing or already closed, the method will return [`None`].
-    /// See [`UnreliableOutgoing::on_conn_error`] for more details.
-    ///
-    /// If the internal queue is empty (no [`DatagramFrame`] needs to be sent), the method will return [`None`].
+    // Same logic with `try_load_data_into`, only used for test purpose.
+    #[cfg(test)]
+    fn try_read_datagram(&self, mut buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
+        use qbase::frame::io::WriteDataFrame;
+
+        let mut guard = self.0.lock().unwrap();
+        let Ok(writer) = guard.as_mut() else {
+            return None;
+        };
+        let datagram = writer.datagrams.front()?;
+        let available = buf.remaining_mut();
+
+        let max_encoding_size = available.saturating_sub(datagram.len());
+        if max_encoding_size == 0 {
+            return None;
+        }
+
+        let data = writer.datagrams.pop_front().expect("unreachable");
+        let frame_without_len = DatagramFrame::new(None);
+        let frame_with_len = DatagramFrame::new(Some(VarInt::try_from(data.len()).unwrap()));
+        let frame = match max_encoding_size {
+            // Encode length
+            n if n >= frame_with_len.encoding_size() => {
+                buf.put_data_frame(&frame_with_len, &data);
+                frame_with_len
+            }
+            // Do not encode length, may need padding
+            n => {
+                buf.put_bytes(0, n - frame_without_len.encoding_size());
+                buf.put_data_frame(&frame_without_len, &data);
+                frame_without_len
+            }
+        };
+        Some((frame, available - buf.remaining_mut()))
+    }
+
+    /// Attempts to load the datagram frame into the packet.
     ///
     /// # Encoding
     ///
@@ -93,57 +106,24 @@ impl UnreliableOutgoing {
     ///
     /// The size of this form of frame is `1 byte` + `the size of the data's length` + `the size of the data`.
     ///
-    /// The datagram won't be split into multiple frames. If the buffer is not enough to encode the datagram frame, the
-    /// method will return [`None`]. In this case, the buffer will not be modified, and the data will still be in the
-    /// internal queue.
+    /// The datagram won't be split into multiple frames. If the remaining space of packet is not enough to encode the datagram frame,
+    /// the datagram will not be loaded.
     ///
     /// This method tries to encode the [`DatagramFrame`] with the data's length first (frame type `0x31`).
     ///
-    /// If the buffer is not enough to encode the length, it will encode the [`DatagramFrame`] without the data's length
-    /// (frame type `0x30`). Because no frame can be put after the datagram frame without length, this method will put
-    /// padding frames before to fill the buffer. In this case, the buffer will be filled.
-    pub fn try_read_datagram(&self, mut buf: &mut [u8]) -> Option<(DatagramFrame, usize)> {
-        let mut guard = self.0.lock().unwrap();
-        let writer = guard.as_mut().ok()?;
-        let datagram = writer.queue.front()?;
-
-        let available = buf.len();
-
-        let max_encoding_size = available.saturating_sub(datagram.len());
-        if max_encoding_size == 0 {
-            return None;
-        }
-
-        let datagram = writer.queue.pop_front()?;
-        let frame_without_len = DatagramFrame::new(None);
-        let frame_with_len = DatagramFrame::new(Some(VarInt::try_from(datagram.len()).unwrap()));
-        match max_encoding_size {
-            // Encode length
-            n if n >= frame_with_len.encoding_size() => {
-                buf.put_data_frame(&frame_with_len, &datagram);
-                let written = frame_with_len.encoding_size() + datagram.len();
-                Some((frame_with_len, written))
-            }
-            // Do not encode length, may need padding
-            n => {
-                debug_assert_eq!(frame_without_len.encoding_size(), 1);
-                buf = &mut buf[n - frame_without_len.encoding_size()..];
-                buf.put_data_frame(&frame_without_len, &datagram);
-                let written = n + datagram.len();
-                Some((frame_without_len, written))
-            }
-        }
-    }
-
+    /// If remaining space of the packet is not enough to encode the length,
+    /// it will encode the [`DatagramFrame`] without the data's length (frame type `0x30`).
+    /// Because no frame can be put after the datagram frame without length,
+    /// padding frames will be put before the datagram frame.
+    /// In this case, the packet will be filled.
     pub fn try_load_data_into<P, B>(&self, packet: &mut P)
     where
-        B: bytes::BufMut,
-        P: core::ops::DerefMut<Target = B>
-            + qbase::packet::MarshalDataFrame<DatagramFrame, bytes::Bytes>,
+        B: BufMut,
+        P: DerefMut<Target = B> + MarshalDataFrame<DatagramFrame, Bytes>,
     {
         let mut guard = self.0.lock().unwrap();
         let Ok(writer) = guard.as_mut() else { return };
-        let Some(datagram) = writer.queue.front() else {
+        let Some(datagram) = writer.datagrams.front() else {
             return;
         };
 
@@ -154,7 +134,7 @@ impl UnreliableOutgoing {
             return;
         }
 
-        let data = writer.queue.pop_front().expect("unreachable");
+        let data = writer.datagrams.pop_front().expect("unreachable");
         let frame_without_len = DatagramFrame::new(None);
         let frame_with_len = DatagramFrame::new(Some(VarInt::try_from(data.len()).unwrap()));
         match max_encoding_size {
@@ -165,14 +145,14 @@ impl UnreliableOutgoing {
             // Do not encode length, may need padding
             n => {
                 packet.put_bytes(0, n - frame_without_len.encoding_size());
-                packet.dump_frame_with_data(frame_with_len, data);
+                packet.dump_frame_with_data(frame_without_len, data);
             }
         }
     }
 
     /// When a connection error occurs, set the internal state to an error state.
     ///
-    /// Any subsequent calls to [`UnreliableWriter::send`] or [`UnreliableWriter::send_bytes`] will return an error.
+    /// Any subsequent calls to [`DatagramWriter::send`] or [`DatagramWriter::send_bytes`] will return an error.
     /// All datagrams in the internal queue will be dropped and not sent to the peer.
     pub fn on_conn_error(&self, error: &Error) {
         let writer = &mut self.0.lock().unwrap();
@@ -182,14 +162,20 @@ impl UnreliableOutgoing {
     }
 }
 
+impl Default for DatagramOutgoing {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The writer for application to send the [datagram frames] to the peer.
 ///
 /// You can clone the writer or wrapper it in an [`Arc`] to send the datagram frames in many tasks.
 ///
 /// [datagram frames]: https://www.rfc-editor.org/rfc/rfc9221.html
 #[derive(Debug, Clone)]
-pub struct UnreliableWriter {
-    writer: ArcDatagramFrameSink,
+pub struct DatagramWriter {
+    writer: Arc<Mutex<Result<RawDatagramWriter, Error>>>,
     /// The maximum size of the datagram frame that can be sent to the peer.
     ///
     /// The value is set by the remote peer, and the protocol layer will use this value to limit the size of the datagram frame.
@@ -200,10 +186,10 @@ pub struct UnreliableWriter {
     max_datagram_frame_size: usize,
 }
 
-impl UnreliableWriter {
+impl DatagramWriter {
     /// Send unreliable data to the peer.
     ///
-    /// The `data` will not be sent immediately, and the `data` sent may not be sent to the peer.
+    /// The `data` will not be sent immediately, and the `data` sent is not guaranteed to be delivered.
     ///
     /// If the peer dont support want to receive datagram frames, the method will return an error.
     ///
@@ -213,7 +199,7 @@ impl UnreliableWriter {
     ///
     /// If the size of the `data` exceeds the limit, the method will return an error.
     ///
-    /// You can call [`UnreliableWriter::max_datagram_frame_size`] to know the maximum size of the datagram frame you can
+    /// You can call [`DatagramWriter::max_datagram_frame_size`] to know the maximum size of the datagram frame you can
     /// send, read its documentation for more details.
     ///
     /// If the connection is closing or already closed, the method will also return an error.
@@ -227,13 +213,7 @@ impl UnreliableWriter {
                         "datagram frame size exceeds the limit",
                     ));
                 }
-                if self.max_datagram_frame_size == 0 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        "peer does not support RFC 9221: An Unreliable Datagram Extension to QUIC, or it dont want to receive datagram frames",
-                    ));
-                }
-                writer.queue.push_back(data.clone());
+                writer.datagrams.push_back(data.clone());
                 Ok(())
             }
             Err(e) => Err(io::Error::from(e.clone())),
@@ -242,9 +222,7 @@ impl UnreliableWriter {
 
     /// Send unreliable data to the peer.
     ///
-    /// The `data` will not be sent immediately, and the `data` sent may not be sent to the peer.
-    ///
-    /// If the peer dont support want to receive datagram frames, the method will return an error.
+    /// The `data` will not be sent immediately, and the `data` sent is not guaranteed to be delivered.
     ///
     /// The size of the datagram frame is limited by the `max_datagram_frame_size` transport parameter set by the peer.
     /// See [RFC](https://www.rfc-editor.org/rfc/rfc9221.html#name-transport-parameter) for more details about transport
@@ -252,7 +230,7 @@ impl UnreliableWriter {
     ///
     /// If the size of the `data` exceeds the limit, the method will return an error.
     ///
-    /// You can call [`UnreliableWriter::max_datagram_frame_size`] to know the maximum size of the datagram frame you can
+    /// You can call [`DatagramWriter::max_datagram_frame_size`] to know the maximum size of the datagram frame you can
     /// send, read its documentation for more details.
     ///
     /// If the connection is closing or already closed, the method will also return an error.
@@ -264,8 +242,8 @@ impl UnreliableWriter {
     ///
     /// If the connection is closing or already closed, the method will return an error.
     ///
-    /// The value is a transport parameter set by the peer, and you cant send a datagram frame whose size exceeds this
-    /// value.
+    /// The value is a transport parameter set by the peer,
+    /// and you cant send a datagram frame whose size exceeds this value.
     ///
     /// Because of the encoding, the size of the data you can send is less than this value, usually 1 byte less. Although
     /// its possiable to send a datagram frame with the size of `max_datagram_frame_size` - 1, its hardly to happen.     
@@ -289,15 +267,17 @@ mod tests {
 
     use qbase::{
         error::ErrorKind,
-        frame::{io::WriteFrame, FrameType, PaddingFrame},
+        frame::{
+            io::{WriteDataFrame, WriteFrame},
+            FrameType, PaddingFrame,
+        },
     };
 
     use super::*;
 
     #[test]
     fn test_datagram_writer_with_length() {
-        let writer = Arc::new(Mutex::new(Ok(DatagramFrameSink::new())));
-        let outgoing = UnreliableOutgoing(writer);
+        let outgoing = DatagramOutgoing::new();
         let writer = outgoing.new_writer(1024).unwrap();
 
         let data = Bytes::from_static(b"hello world");
@@ -320,8 +300,7 @@ mod tests {
 
     #[test]
     fn test_datagram_writer_without_length() {
-        let writer = Arc::new(Mutex::new(Ok(DatagramFrameSink::new())));
-        let outgoing = UnreliableOutgoing(writer);
+        let outgoing = DatagramOutgoing::new();
         let writer = outgoing.new_writer(1024).unwrap();
 
         let data = Bytes::from_static(b"hello world");
@@ -343,8 +322,7 @@ mod tests {
 
     #[test]
     fn test_datagram_writer_unwritten() {
-        let writer = Arc::new(Mutex::new(Ok(DatagramFrameSink::new())));
-        let outgoing = UnreliableOutgoing(writer);
+        let outgoing = DatagramOutgoing::new();
         let writer = outgoing.new_writer(1024).unwrap();
 
         let data = Bytes::from_static(b"hello world");
@@ -359,8 +337,7 @@ mod tests {
 
     #[test]
     fn test_datagram_writer_padding_first() {
-        let writer = Arc::new(Mutex::new(Ok(DatagramFrameSink::new())));
-        let outgoing = UnreliableOutgoing(writer);
+        let outgoing = DatagramOutgoing::new();
         let writer = outgoing.new_writer(1024).unwrap();
 
         // Will be encoded to 2 bytes
@@ -385,19 +362,13 @@ mod tests {
 
     #[test]
     fn test_datagram_writer_exceeds_limit() {
-        let writer = Arc::new(Mutex::new(Ok(DatagramFrameSink::new())));
-        let outgoing = UnreliableOutgoing(writer);
-        let writer = outgoing.new_writer(0).unwrap();
-
-        let data = Bytes::from_static(b"hello world");
-        let result = writer.send_bytes(data);
-        assert!(result.is_err());
+        let outgoing = DatagramOutgoing::new();
+        assert!(outgoing.new_writer(0).is_err());
     }
 
     #[test]
     fn test_datagram_writer_on_conn_error() {
-        let writer = Arc::new(Mutex::new(Ok(DatagramFrameSink::new())));
-        let outgoing = UnreliableOutgoing(writer);
+        let outgoing = DatagramOutgoing::new();
         let writer = outgoing.new_writer(1024).unwrap();
 
         outgoing.on_conn_error(&Error::new(
