@@ -198,7 +198,7 @@ pub mod io {
         combinator::{eof, map},
         multi::{length_data, many_till},
         number::streaming::be_u32,
-        Err,
+        Err, Parser,
     };
 
     use super::*;
@@ -217,7 +217,7 @@ pub mod io {
     /// Parse the version negotiation packet,
     /// [nom](https://docs.rs/nom/latest/nom/) parser style.
     pub fn be_version_negotiation(input: &[u8]) -> nom::IResult<&[u8], VersionNegotiation> {
-        let (remain, (versions, _)) = many_till(be_u32, eof)(input)?;
+        let (remain, (versions, _)) = many_till(be_u32, eof).parse(input)?;
         Ok((remain, VersionNegotiation { versions }))
     }
 
@@ -237,7 +237,8 @@ pub mod io {
     pub fn be_initial(input: &[u8]) -> nom::IResult<&[u8], Initial> {
         map(length_data(be_varint), |token| Initial {
             token: Vec::from(token),
-        })(input)
+        })
+        .parse(input)
     }
 
     /// Parse the 0-RTT packet,

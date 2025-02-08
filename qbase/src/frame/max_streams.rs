@@ -95,7 +95,9 @@ impl<T: bytes::BufMut> super::io::WriteFrame<MaxStreamsFrame> for T {
 }
 #[cfg(test)]
 mod tests {
-    use super::{MaxStreamsFrame, MAX_STREAMS_FRAME_TYPE};
+    use nom::{combinator::flat_map, Parser};
+
+    use super::{max_streams_frame_with_dir, MaxStreamsFrame, MAX_STREAMS_FRAME_TYPE};
     use crate::{
         frame::{io::WriteFrame, BeFrame, FrameType},
         varint::{be_varint, VarInt},
@@ -116,9 +118,6 @@ mod tests {
 
     #[test]
     fn test_read_max_streams_frame() {
-        use nom::combinator::flat_map;
-
-        use super::max_streams_frame_with_dir;
         let buf = vec![MAX_STREAMS_FRAME_TYPE, 0x52, 0x34];
         let (input, frame) = flat_map(be_varint, |frame_type| {
             if frame_type.into_inner() == MAX_STREAMS_FRAME_TYPE as u64 {
@@ -126,7 +125,8 @@ mod tests {
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
-        })(buf.as_ref())
+        })
+        .parse(buf.as_ref())
         .unwrap();
         assert!(input.is_empty());
         assert_eq!(frame, MaxStreamsFrame::Bi(VarInt::from_u32(0x1234)));
@@ -138,7 +138,8 @@ mod tests {
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
-        })(buf.as_ref())
+        })
+        .parse(buf.as_ref())
         .unwrap();
         assert!(input.is_empty());
         assert_eq!(frame, MaxStreamsFrame::Uni(VarInt::from_u32(0x1236)));
@@ -146,9 +147,6 @@ mod tests {
 
     #[test]
     fn test_read_too_large_max_streams_frame() {
-        use nom::combinator::flat_map;
-
-        use super::max_streams_frame_with_dir;
         let buf = vec![
             MAX_STREAMS_FRAME_TYPE,
             0xd0,
@@ -166,7 +164,8 @@ mod tests {
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
-        })(buf.as_ref());
+        })
+        .parse(buf.as_ref());
         assert_eq!(
             result,
             Err(nom::Err::Error(nom::error::Error::new(

@@ -46,15 +46,16 @@ impl super::BeFrame for ResetStreamFrame {
 /// Parse a RESET_STREAM frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_reset_stream_frame(input: &[u8]) -> nom::IResult<&[u8], ResetStreamFrame> {
-    use nom::{combinator::map, sequence::tuple};
+    use nom::{combinator::map, Parser};
     map(
-        tuple((be_streamid, be_varint, be_varint)),
+        (be_streamid, be_varint, be_varint),
         |(stream_id, app_error_code, final_size)| ResetStreamFrame {
             stream_id,
             app_error_code,
             final_size,
         },
-    )(input)
+    )
+    .parse(input)
 }
 
 impl<T: bytes::BufMut> super::io::WriteFrame<ResetStreamFrame> for T {
@@ -105,7 +106,7 @@ impl From<&ResetStreamFrame> for ResetStreamError {
 
 #[cfg(test)]
 mod tests {
-    use nom::combinator::flat_map;
+    use nom::{combinator::flat_map, Parser};
 
     use super::{ResetStreamError, ResetStreamFrame, RESET_STREAM_FRAME_TYPE};
     use crate::{
@@ -152,7 +153,8 @@ mod tests {
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
-        })(buf.as_ref())
+        })
+        .parse(buf.as_ref())
         .unwrap();
         assert!(input.is_empty());
         assert_eq!(

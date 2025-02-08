@@ -35,8 +35,8 @@ impl super::BeFrame for MaxDataFrame {
 /// Parse a MAX_DATA frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_max_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxDataFrame> {
-    use nom::combinator::map;
-    map(be_varint, |max_data| MaxDataFrame { max_data })(input)
+    use nom::{combinator::map, Parser};
+    map(be_varint, |max_data| MaxDataFrame { max_data }).parse(input)
 }
 
 impl<T: bytes::BufMut> super::io::WriteFrame<MaxDataFrame> for T {
@@ -66,7 +66,7 @@ mod tests {
 
     #[test]
     fn test_read_max_data_frame() {
-        use nom::combinator::flat_map;
+        use nom::{combinator::flat_map, Parser};
 
         use super::be_max_data_frame;
         use crate::varint::be_varint;
@@ -77,7 +77,8 @@ mod tests {
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
-        })(buf.as_ref())
+        })
+        .parse(buf.as_ref())
         .unwrap();
         assert!(input.is_empty());
         assert_eq!(

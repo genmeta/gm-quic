@@ -263,7 +263,7 @@ where
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use nom::combinator::flat_map;
+    use nom::{combinator::flat_map, Parser};
 
     use super::{stream_frame_with_flag, StreamFrame, STREAM_FRAME_TYPE};
     use crate::{
@@ -297,7 +297,8 @@ mod tests {
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
-        })(input)
+        })
+        .parse(input)
         .unwrap();
 
         assert_eq!(
@@ -328,7 +329,8 @@ mod tests {
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
-        })(input)
+        })
+        .parse(input)
         .unwrap();
 
         assert_eq!(

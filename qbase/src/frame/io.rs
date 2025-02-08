@@ -23,39 +23,45 @@ fn complete_frame(
     frame_type: FrameType,
     raw: Bytes,
 ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], Frame> {
-    use nom::combinator::map;
+    use nom::{combinator::map, Parser};
     move |input: &[u8]| match frame_type {
         FrameType::Padding => Ok((input, Frame::Padding(PaddingFrame))),
         FrameType::Ping => Ok((input, Frame::Ping(PingFrame))),
         FrameType::ConnectionClose(layer) => {
-            map(connection_close_frame_at_layer(layer), Frame::Close)(input)
+            map(connection_close_frame_at_layer(layer), Frame::Close).parse(input)
         }
         FrameType::NewConnectionId => {
-            map(be_new_connection_id_frame, Frame::NewConnectionId)(input)
+            map(be_new_connection_id_frame, Frame::NewConnectionId).parse(input)
         }
         FrameType::RetireConnectionId => {
-            map(be_retire_connection_id_frame, Frame::RetireConnectionId)(input)
+            map(be_retire_connection_id_frame, Frame::RetireConnectionId).parse(input)
         }
-        FrameType::DataBlocked => map(be_data_blocked_frame, Frame::DataBlocked)(input),
-        FrameType::MaxData => map(be_max_data_frame, Frame::MaxData)(input),
-        FrameType::PathChallenge => map(be_path_challenge_frame, Frame::Challenge)(input),
-        FrameType::PathResponse => map(be_path_response_frame, Frame::Response)(input),
+        FrameType::DataBlocked => map(be_data_blocked_frame, Frame::DataBlocked).parse(input),
+        FrameType::MaxData => map(be_max_data_frame, Frame::MaxData).parse(input),
+        FrameType::PathChallenge => map(be_path_challenge_frame, Frame::Challenge).parse(input),
+        FrameType::PathResponse => map(be_path_response_frame, Frame::Response).parse(input),
         FrameType::HandshakeDone => Ok((input, Frame::HandshakeDone(HandshakeDoneFrame))),
-        FrameType::NewToken => map(be_new_token_frame, Frame::NewToken)(input),
-        FrameType::Ack(ecn) => map(ack_frame_with_flag(ecn), Frame::Ack)(input),
-        FrameType::ResetStream => map(be_reset_stream_frame, |f| Frame::StreamCtl(f.into()))(input),
-        FrameType::StopSending => map(be_stop_sending_frame, |f| Frame::StreamCtl(f.into()))(input),
+        FrameType::NewToken => map(be_new_token_frame, Frame::NewToken).parse(input),
+        FrameType::Ack(ecn) => map(ack_frame_with_flag(ecn), Frame::Ack).parse(input),
+        FrameType::ResetStream => {
+            map(be_reset_stream_frame, |f| Frame::StreamCtl(f.into())).parse(input)
+        }
+        FrameType::StopSending => {
+            map(be_stop_sending_frame, |f| Frame::StreamCtl(f.into())).parse(input)
+        }
         FrameType::MaxStreamData => {
-            map(be_max_stream_data_frame, |f| Frame::StreamCtl(f.into()))(input)
+            map(be_max_stream_data_frame, |f| Frame::StreamCtl(f.into())).parse(input)
         }
         FrameType::MaxStreams(dir) => map(max_streams_frame_with_dir(dir), |f| {
             Frame::StreamCtl(f.into())
-        })(input),
+        })
+        .parse(input),
         FrameType::StreamsBlocked(dir) => map(streams_blocked_frame_with_dir(dir), |f| {
             Frame::StreamCtl(f.into())
-        })(input),
+        })
+        .parse(input),
         FrameType::StreamDataBlocked => {
-            map(be_stream_data_blocked_frame, |f| Frame::StreamCtl(f.into()))(input)
+            map(be_stream_data_blocked_frame, |f| Frame::StreamCtl(f.into())).parse(input)
         }
         FrameType::Crypto => {
             let (input, frame) = be_crypto_frame(input)?;

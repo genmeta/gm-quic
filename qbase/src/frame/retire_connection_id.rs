@@ -35,8 +35,8 @@ impl super::BeFrame for RetireConnectionIdFrame {
 /// Parse a RETIRE_CONNECTION_ID frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_retire_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], RetireConnectionIdFrame> {
-    use nom::combinator::map;
-    map(be_varint, |sequence| RetireConnectionIdFrame { sequence })(input)
+    use nom::{combinator::map, Parser};
+    map(be_varint, |sequence| RetireConnectionIdFrame { sequence }).parse(input)
 }
 
 impl<T: bytes::BufMut> super::io::WriteFrame<RetireConnectionIdFrame> for T {

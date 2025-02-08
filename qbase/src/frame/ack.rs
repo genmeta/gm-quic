@@ -1,6 +1,6 @@
 use std::ops::RangeInclusive;
 
-use nom::{combinator::map, sequence::tuple};
+use nom::{combinator::map, Parser};
 
 use crate::varint::{be_varint, VarInt, WriteVarInt};
 
@@ -119,27 +119,27 @@ impl EcnCounts {
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn ack_frame_with_flag(ecn_flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8], AckFrame> {
     move |input: &[u8]| {
-        let (mut input, (largest, delay, count, first_range)) =
-            tuple((be_varint, be_varint, be_varint, be_varint))(input)?;
+        let (mut remain, (largest, delay, count, first_range)) =
+            (be_varint, be_varint, be_varint, be_varint).parse(input)?;
         let mut ranges = Vec::new();
         let mut count = count.into_inner() as usize;
         while count > 0 {
-            let (i, (gap, ack)) = tuple((be_varint, be_varint))(input)?;
+            let (i, (gap, ack)) = (be_varint, be_varint).parse(remain)?;
             ranges.push((gap, ack));
             count -= 1;
-            input = i;
+            remain = i;
         }
 
         let ecn = if ecn_flag & ECN_OPT != 0 {
-            let (i, ecn) = be_ecn_counts(input)?;
-            input = i;
+            let (i, ecn) = be_ecn_counts(remain)?;
+            remain = i;
             Some(ecn)
         } else {
             None
         };
 
         Ok((
-            input,
+            remain,
             AckFrame {
                 largest,
                 delay,
@@ -154,10 +154,10 @@ pub fn ack_frame_with_flag(ecn_flag: u8) -> impl Fn(&[u8]) -> nom::IResult<&[u8]
 /// Parse the ECN counts from the input bytes,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub(super) fn be_ecn_counts(input: &[u8]) -> nom::IResult<&[u8], EcnCounts> {
-    map(
-        tuple((be_varint, be_varint, be_varint)),
-        |(ect0, ect1, ce)| EcnCounts { ect0, ect1, ce },
-    )(input)
+    map((be_varint, be_varint, be_varint), |(ect0, ect1, ce)| {
+        EcnCounts { ect0, ect1, ce }
+    })
+    .parse(input)
 }
 
 impl<T: bytes::BufMut> super::io::WriteFrame<AckFrame> for T {
@@ -187,7 +187,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<AckFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use nom::combinator::flat_map;
+    use nom::{combinator::flat_map, Parser};
 
     use super::{ack_frame_with_flag, be_ecn_counts, AckFrame, EcnCounts, ACK_FRAME_TYPE};
     use crate::{
@@ -244,7 +244,8 @@ mod tests {
             } else {
                 panic!("wrong frame type")
             }
-        })(&input)
+        })
+        .parse(&input)
         .unwrap();
         assert!(input.is_empty());
         assert_eq!(

@@ -156,7 +156,7 @@ pub mod err {
 }
 
 use bytes::BufMut;
-use nom::{bits::streaming::take, combinator::flat_map, error::Error, IResult};
+use nom::{bits::streaming::take, combinator::flat_map, error::Error, IResult, Parser};
 
 /// Parse a variable-length integer from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
@@ -172,7 +172,8 @@ use nom::{bits::streaming::take, combinator::flat_map, error::Error, IResult};
 pub fn be_varint(input: &[u8]) -> IResult<&[u8], VarInt> {
     flat_map(take(2usize), |prefix: u8| {
         take::<&[u8], u64, usize, Error<(&[u8], usize)>>((8 << prefix) - 2)
-    })((input, 0))
+    })
+    .parse((input, 0))
     .map_err(|err| match err {
         nom::Err::Incomplete(needed) => {
             nom::Err::Incomplete(needed.map(|n| n.get().div_ceil(8) - input.len()))

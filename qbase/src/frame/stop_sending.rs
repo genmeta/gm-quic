@@ -49,14 +49,14 @@ impl super::BeFrame for StopSendingFrame {
 /// Parse a STOP_SENDING frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_stop_sending_frame(input: &[u8]) -> nom::IResult<&[u8], StopSendingFrame> {
-    use nom::{combinator::map, sequence::tuple};
-    map(
-        tuple((be_streamid, be_varint)),
-        |(stream_id, app_err_code)| StopSendingFrame {
+    use nom::{combinator::map, Parser};
+    map((be_streamid, be_varint), |(stream_id, app_err_code)| {
+        StopSendingFrame {
             stream_id,
             app_err_code,
-        },
-    )(input)
+        }
+    })
+    .parse(input)
 }
 
 impl<T: bytes::BufMut> super::io::WriteFrame<StopSendingFrame> for T {
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn test_parse_stop_sending_frame() {
-        use nom::combinator::flat_map;
+        use nom::{combinator::flat_map, Parser};
 
         use super::be_stop_sending_frame;
         use crate::varint::be_varint;
@@ -104,7 +104,8 @@ mod tests {
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
-        })(buf.as_ref())
+        })
+        .parse(buf.as_ref())
         .unwrap();
         assert!(input.is_empty());
         assert_eq!(parsed, frame);

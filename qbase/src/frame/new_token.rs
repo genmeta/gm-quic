@@ -40,6 +40,7 @@ pub fn be_new_token_frame(input: &[u8]) -> nom::IResult<&[u8], NewTokenFrame> {
     use nom::{
         bytes::streaming::take,
         combinator::{flat_map, map},
+        Parser,
     };
     flat_map(be_varint, |length| {
         map(take(length.into_inner() as usize), |data: &[u8]| {
@@ -47,7 +48,8 @@ pub fn be_new_token_frame(input: &[u8]) -> nom::IResult<&[u8], NewTokenFrame> {
                 token: data.to_vec(),
             }
         })
-    })(input)
+    })
+    .parse(input)
 }
 
 impl<T: bytes::BufMut> super::io::WriteFrame<NewTokenFrame> for T {

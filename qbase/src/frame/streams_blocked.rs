@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn test_read_streams_blocked_frame() {
-        use nom::combinator::flat_map;
+        use nom::{combinator::flat_map, Parser};
 
         use super::streams_blocked_frame_with_dir;
         use crate::varint::be_varint;
@@ -121,7 +121,8 @@ mod tests {
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
-        })(buf.as_ref())
+        })
+        .parse(buf.as_ref())
         .unwrap();
         assert!(input.is_empty());
         assert_eq!(frame, StreamsBlockedFrame::Bi(VarInt::from_u32(0x1234)));
@@ -133,7 +134,8 @@ mod tests {
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
-        })(buf.as_ref())
+        })
+        .parse(buf.as_ref())
         .unwrap();
         assert!(input.is_empty());
         assert_eq!(frame, StreamsBlockedFrame::Uni(VarInt::from_u32(0x1234)));
