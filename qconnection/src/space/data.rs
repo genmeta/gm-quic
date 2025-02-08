@@ -35,6 +35,7 @@ use qrecovery::{
     journal::{ArcRcvdJournal, DataJournal},
     reliable::GuaranteedFrame,
 };
+#[cfg(feature = "unreliable")]
 use qunreliable::DatagramFlow;
 use tokio::sync::{mpsc, Notify};
 use tracing::{trace_span, Instrument};
@@ -59,6 +60,7 @@ pub struct DataSpace {
     one_rtt_keys: ArcOneRttKeys,
     crypto_stream: CryptoStream,
     streams: DataStreams,
+    #[cfg(feature = "unreliable")]
     datagrams: DatagramFlow,
     journal: DataJournal,
     reliable_frames: ArcReliableFrameDeque,
@@ -81,6 +83,7 @@ impl DataSpace {
             crypto_stream: CryptoStream::new(4096, 4096),
             reliable_frames,
             streams,
+            #[cfg(feature = "unreliable")]
             datagrams: DatagramFlow::new(1024),
             sendable,
         }
@@ -170,6 +173,7 @@ impl DataSpace {
         let fresh_data = self
             .streams
             .try_load_data_into(&mut packet, tx.flow_limit());
+        #[cfg(feature = "unreliable")]
         self.datagrams.try_load_data_into(&mut packet);
 
         let packet: PacketWriter<'b> = packet.try_into().ok()?;
@@ -219,6 +223,7 @@ impl DataSpace {
         let fresh_data = self
             .streams
             .try_load_data_into(&mut packet, tx.flow_limit());
+        #[cfg(feature = "unreliable")]
         self.datagrams.try_load_data_into(&mut packet);
 
         let packet: PacketWriter<'b> = packet.try_into().ok()?;
@@ -266,6 +271,7 @@ impl DataSpace {
 
     pub fn on_conn_error(&self, error: &Error) {
         self.streams.on_conn_error(error);
+        #[cfg(feature = "unreliable")]
         self.datagrams.on_conn_error(error);
     }
 
@@ -277,6 +283,7 @@ impl DataSpace {
         &self.streams
     }
 
+    #[cfg(feature = "unreliable")]
     pub fn datagrams(&self) -> &DatagramFlow {
         &self.datagrams
     }
@@ -302,6 +309,7 @@ pub fn spawn_deliver_and_parse(
     let (crypto_frames_entry, rcvd_crypto_frames) = mpsc::unbounded_channel();
     let (stream_ctrl_frames_entry, rcvd_stream_ctrl_frames) = mpsc::unbounded_channel();
     let (stream_frames_entry, rcvd_stream_frames) = mpsc::unbounded_channel();
+    #[cfg(feature = "unreliable")]
     let (datagram_frames_entry, rcvd_datagram_frames) = mpsc::unbounded_channel();
 
     let flow_controlled_data_streams =
@@ -349,6 +357,7 @@ pub fn spawn_deliver_and_parse(
         flow_controlled_data_streams,
         event_broker.clone(),
     );
+    #[cfg(feature = "unreliable")]
     pipe(
         rcvd_datagram_frames,
         space.datagrams.clone(),
@@ -383,6 +392,7 @@ pub fn spawn_deliver_and_parse(
             Frame::StreamCtl(f) => _ = stream_ctrl_frames_entry.send(f),
             Frame::Stream(f, data) => _ = stream_frames_entry.send((f, data)),
             Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
+            #[cfg(feature = "unreliable")]
             Frame::Datagram(f, data) => _ = datagram_frames_entry.send((f, data)),
             Frame::Close(f) if matches!(pty, Type::Short(_)) => event_broker.emit(Event::Closed(f)),
             _ => {}

@@ -1,15 +1,11 @@
 use std::sync::{Arc, LazyLock};
 
-use qconnection::prelude::QuicProto;
 pub use qconnection::{
     builder::{
         ClientParameters, ConnectionId, ConsistentConcurrency, ControlConcurrency,
         DemandConcurrency, NoopTokenRegistry, ServerParameters, TokenProvider, TokenSink,
     },
-    prelude::{
-        Connection, Pathway, QuicInterface, Socket, StreamId, StreamReader, StreamWriter,
-        UnreliableReader, UnreliableWriter,
-    },
+    prelude::*,
 };
 
 pub use crate::{

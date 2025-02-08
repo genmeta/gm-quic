@@ -8,12 +8,12 @@ use std::{
 use futures::Stream;
 use gm_quic::{StreamId, StreamReader, StreamWriter};
 
+#[cfg(feature = "unreliable")]
+use crate::ext::{RecvDatagram, SendDatagram};
 use crate::{
-    ext::{RecvDatagram, SendDatagram},
     streams::{BidiStream, RecvStream, SendStream},
     Error,
 };
-
 // 由于数据报的特性，接收流的特征，QuicConnection不允许被Clone
 pub struct QuicConnection {
     connection: Arc<gm_quic::Connection>,
@@ -21,7 +21,9 @@ pub struct QuicConnection {
     accpet_uni: AcceptUniStreams,
     open_bi: OpenBiStreams,
     open_uni: OpenUniStreams,
+    #[cfg(feature = "unreliable")]
     pub(crate) send_datagram: SendDatagram,
+    #[cfg(feature = "unreliable")]
     pub(crate) recv_datagram: RecvDatagram,
 }
 
@@ -32,7 +34,9 @@ impl QuicConnection {
             accpet_uni: AcceptUniStreams::new(conn.clone()),
             open_bi: OpenBiStreams::new(conn.clone()),
             open_uni: OpenUniStreams::new(conn.clone()),
+            #[cfg(feature = "unreliable")]
             send_datagram: SendDatagram(conn.unreliable_writer().await.map_err(Into::into)),
+            #[cfg(feature = "unreliable")]
             recv_datagram: RecvDatagram(conn.unreliable_reader().map_err(Into::into)),
             connection: conn,
         }

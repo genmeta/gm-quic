@@ -13,7 +13,8 @@ pub mod prelude {
         router::QuicProto,
         QuicInterface,
     };
-    pub use qunreliable::{UnreliableReader, UnreliableWriter};
+    #[cfg(feature = "unreliable")]
+    pub use qunreliable::{DatagramReader, DatagramWriter};
 
     #[allow(unused_imports)]
     pub mod handy {
@@ -57,7 +58,8 @@ use qrecovery::{
     recv, reliable, send,
     streams::{self, Ext},
 };
-use qunreliable::{UnreliableReader, UnreliableWriter};
+#[cfg(feature = "unreliable")]
+use qunreliable::{DatagramReader, DatagramWriter};
 use space::Spaces;
 use termination::Termination;
 use tls::ArcTlsSession;
@@ -236,13 +238,15 @@ impl Components {
         async move { Ok(Some(streams.accept_uni().await?)) }
     }
 
-    pub fn unreliable_reader(&self) -> io::Result<UnreliableReader> {
+    #[cfg(feature = "unreliable")]
+    pub fn unreliable_reader(&self) -> io::Result<DatagramReader> {
         self.spaces.data().datagrams().reader()
     }
 
+    #[cfg(feature = "unreliable")]
     pub fn unreliable_writer(
         &self,
-    ) -> impl Future<Output = io::Result<UnreliableWriter>> + Send + use<> {
+    ) -> impl Future<Output = io::Result<DatagramWriter>> + Send + use<> {
         let params = self.parameters.clone();
         let datagrams = self.spaces.data().datagrams().clone();
         async move {
@@ -319,13 +323,15 @@ impl Connection {
         self.map(|core_conn| core_conn.accept_uni_stream())?.await
     }
 
+    #[cfg(feature = "unreliable")]
     #[tracing::instrument(level = "trace", skip(self))]
-    pub fn unreliable_reader(&self) -> io::Result<UnreliableReader> {
+    pub fn unreliable_reader(&self) -> io::Result<DatagramReader> {
         self.map(|core_conn| core_conn.unreliable_reader())?
     }
 
+    #[cfg(feature = "unreliable")]
     #[tracing::instrument(level = "trace", skip(self))]
-    pub async fn unreliable_writer(&self) -> io::Result<UnreliableWriter> {
+    pub async fn unreliable_writer(&self) -> io::Result<DatagramWriter> {
         self.map(|core_conn| core_conn.unreliable_writer())?.await
     }
 
