@@ -168,7 +168,7 @@ pub fn spawn_deliver_and_parse(
                             payload_size = packet.payload.len(),
                             "decrypted packet"
                         );
-                        let path = match components.get_or_create_path(socket, pathway, false) {
+                        let path = match components.get_or_create_path(socket, pathway, true) {
                             Some(path) => path,
                             None => return,
                         };

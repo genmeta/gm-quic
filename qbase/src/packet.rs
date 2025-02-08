@@ -269,6 +269,7 @@ impl<'b> PacketWriter<'b> {
         let hdr_len = header.size();
         let len_encoding = header.length_encoding();
         if buffer.len() < hdr_len + len_encoding + 20 {
+            tracing::trace!("buffer is too samll to put a long header packet");
             return None;
         }
 
@@ -304,6 +305,7 @@ impl<'b> PacketWriter<'b> {
     ) -> Option<Self> {
         let hdr_len = header.size();
         if buffer.len() < hdr_len + 20 {
+            tracing::trace!("buffer is too samll to put a short header packet");
             return None;
         }
 

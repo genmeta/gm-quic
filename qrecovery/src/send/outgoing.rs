@@ -26,6 +26,7 @@ impl<TX: Clone> Outgoing<TX> {
     /// [`DataStreams::try_load_data_into`]: crate::streams::raw::DataStreams::try_load_data_into
     // consume the token internally, return the number of fresh data have been written to the buffer.
     // return None indicates that the stream write no data to the buffer.
+    #[tracing::instrument(level = "trace", skip(self, packet), ret)]
     pub fn try_load_data_into<B, P>(
         &self,
         packet: &mut P,

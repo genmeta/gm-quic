@@ -51,6 +51,7 @@ impl Burst {
     ) -> io::Result<impl Iterator<Item = &'b mut [u8]> + use<'b>> {
         let max_segments = self.path.interface.max_segments()?;
         let max_segment_size = self.path.interface.max_segment_size()?;
+        tracing::trace!(max_segments, max_segment_size, "prepare buffers");
 
         if buffers.len() < max_segments {
             buffers.resize_with(max_segments, || vec![0; max_segment_size]);
@@ -80,6 +81,7 @@ impl Burst {
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"))?;
 
         let reversed_size = self.path.interface.reversed_bytes(self.path.pathway)?;
+        tracing::trace!(reversed_size, "load data");
 
         Ok(prepared_buffers
             .map(move |buffer| {
@@ -115,6 +117,7 @@ impl Burst {
                 };
 
                 if packet_size == 0 {
+                    tracing::trace!("no more data, end loading");
                     None
                 } else {
                     Some(io::IoSlice::new(&buffer[..reversed_size + packet_size]))
@@ -130,17 +133,19 @@ impl Burst {
         &self,
         mut filled_buffers: impl Iterator<Item = io::IoSlice<'b>>,
     ) -> io::Result<Vec<io::IoSlice<'b>>> {
+        // dont acquire max_segment_size here because it may have changed and is different from when the buffer was prepared
+        // let max_segment_size = self.path.interface.max_segment_size()?;
         let max_segments = self.path.interface.max_segments()?;
-        let max_segment_size = self.path.interface.max_segment_size()?;
-        let (ControlFlow::Break(filled_buffers) | ControlFlow::Continue(filled_buffers)) =
+        let (ControlFlow::Break((filled_buffers, _)) | ControlFlow::Continue((filled_buffers, _))) =
             filled_buffers.try_fold(
-                Vec::with_capacity(max_segments),
-                |mut filled_buffers, io_slice| {
+                (Vec::with_capacity(max_segments), 0),
+                |(mut filled_buffers, last_segment_size), io_slice| {
                     filled_buffers.push(io_slice);
-                    if io_slice.len() == max_segment_size {
-                        ControlFlow::Continue(filled_buffers)
+                    // If one segment is smaller than the last, it is the last segment
+                    if io_slice.len() < last_segment_size {
+                        ControlFlow::Break((filled_buffers, io_slice.len()))
                     } else {
-                        ControlFlow::Break(filled_buffers)
+                        ControlFlow::Continue((filled_buffers, io_slice.len()))
                     }
                 },
             );
@@ -161,11 +166,11 @@ impl Burst {
             if !segments.is_empty() {
                 tracing::trace!(
                     packets = ?segments.iter().map(|seg| seg.len()).collect::<Vec<_>>(),
-                    "sending packets"
+                    "send packets"
                 );
                 self.path.send_packets(&segments).await?;
             } else {
-                tracing::trace!("no packet to send, waiting for notification");
+                tracing::trace!(reason = "no data", "sending blocked");
                 tokio::select! {
                     _ = path_sendable.as_mut() => {},
                     _ = conn_sendable.as_mut() => {},

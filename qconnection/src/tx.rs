@@ -320,19 +320,43 @@ impl<'a> Future for PrepareTransaction<'a> {
     type Output = Option<Transaction<'a>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        use core::task::ready;
+        let send_quota = match self.cc.poll_send(cx) {
+            Poll::Ready(send_quota) => send_quota,
+            Poll::Pending => {
+                tracing::trace!(reason = "send quota", "sending blocked");
+                return Poll::Pending;
+            }
+        };
+        let credit_limit = match self.anti_amplifier.poll_balance(cx) {
+            Poll::Ready(Some(credit_limit)) => credit_limit,
+            Poll::Ready(None) => return Poll::Ready(None),
+            Poll::Pending => {
+                tracing::trace!(reason = "credit limit", "sending blocked");
+                return Poll::Pending;
+            }
+        };
 
-        let send_quota = ready!(self.cc.poll_send(cx));
-        let Some(credit_limit) = ready!(self.anti_amplifier.poll_balance(cx)) else {
-            return Poll::Ready(None);
+        let flow_limit = match self.flow_ctrl.send_limit() {
+            Ok(flow_limit) => flow_limit,
+            Err(_error) => return Poll::Ready(None),
         };
-        let Ok(flow_limit) = self.flow_ctrl.send_limit() else {
-            return Poll::Ready(None);
-        };
-        let Some(borrowed_dcid) = ready!(self.dcid.poll_borrow_cid(cx)) else {
-            return Poll::Ready(None);
+
+        let borrowed_dcid = match self.dcid.poll_borrow_cid(cx) {
+            Poll::Ready(Some(borrowed_dcid)) => borrowed_dcid,
+            Poll::Ready(None) => return Poll::Ready(None),
+            Poll::Pending => {
+                tracing::trace!(reason = "borrow dcid", "sending blocked");
+                return Poll::Pending;
+            }
         };
         let constraints = Constraints::new(credit_limit, send_quota);
+        tracing::trace!(
+            credit_limit,
+            send_quota,
+            borrowed_dcid = ?*borrowed_dcid,
+            flow_limit = flow_limit.available(),
+            "transaction ready"
+        );
 
         Poll::Ready(Some(Transaction {
             scid: self.scid,

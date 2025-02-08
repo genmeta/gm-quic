@@ -8,6 +8,7 @@ use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::{
         BeFrame, FrameType, ReceiveFrame, ResetStreamFrame, SendFrame, StreamCtlFrame, StreamFrame,
+        STREAM_FRAME_MAX_ENCODING_SIZE,
     },
     packet::MarshalDataFrame,
     param::CommonParameters,
@@ -144,6 +145,11 @@ where
     {
         // todo: use core::range instead in rust 2024
         use core::ops::Bound::*;
+
+        if packet.remaining_mut() < STREAM_FRAME_MAX_ENCODING_SIZE {
+            tracing::trace!("remaining space of packet too samll, stop loading stream data");
+            return None;
+        }
 
         let mut guard = self.output.streams();
         let output = guard.as_mut().ok()?;
