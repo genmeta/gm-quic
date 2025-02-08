@@ -175,7 +175,7 @@ pub fn be_varint(input: &[u8]) -> IResult<&[u8], VarInt> {
     })((input, 0))
     .map_err(|err| match err {
         nom::Err::Incomplete(needed) => {
-            nom::Err::Incomplete(needed.map(|n| (n.get() + 7) / 8 - input.len()))
+            nom::Err::Incomplete(needed.map(|n| n.get().div_ceil(8) - input.len()))
         }
         _ => unreachable!(),
     })
