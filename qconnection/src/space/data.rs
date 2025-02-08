@@ -479,22 +479,25 @@ impl TrackPackets for DataSpace {
         let crypto_outgoing = self.crypto_stream.outgoing();
         let mut rotate = sent_jornal.rotate();
         for pn in pns {
-            for frame in rotate.may_loss_pkt(pn) {
-                match frame {
-                    GuaranteedFrame::Stream(f) => {
-                        self.streams.may_loss_data(&f);
-                        self.sendable.notify_waiters();
-                    }
-                    GuaranteedFrame::Reliable(f) => {
-                        self.reliable_frames.send_frame([f]);
-                        // self.sendable.notify_waiters();
-                    }
-                    GuaranteedFrame::Crypto(f) => {
-                        crypto_outgoing.may_loss_data(&f);
-                        self.sendable.notify_waiters();
+            trace_span!("data_packet_may_loss", pn).in_scope(|| {
+                for frame in rotate.may_loss_pkt(pn) {
+                    tracing::trace!(?frame, "frame may lost");
+                    match frame {
+                        GuaranteedFrame::Stream(f) => {
+                            self.streams.may_loss_data(&f);
+                            self.sendable.notify_waiters();
+                        }
+                        GuaranteedFrame::Reliable(f) => {
+                            self.reliable_frames.send_frame([f]);
+                            // self.sendable.notify_waiters();
+                        }
+                        GuaranteedFrame::Crypto(f) => {
+                            crypto_outgoing.may_loss_data(&f);
+                            self.sendable.notify_waiters();
+                        }
                     }
                 }
-            }
+            })
         }
     }
 

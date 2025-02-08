@@ -42,7 +42,7 @@ use crate::{
 /// When the application wants to send data to the peer, it will call [`write`] method on [`Writer`]
 /// to write data to the [`SendBuf`].
 ///
-/// Protocol layer will call [`try_read_data`] to read data from the streams into stream frames and
+/// Protocol layer will call [`try_load_data_into`] to read data from the streams into stream frames and
 /// write the frame into the quic packet.
 ///
 /// ## Stream control frame
@@ -85,7 +85,7 @@ use crate::{
 /// [`write`]: tokio::io::AsyncWriteExt::write
 /// [`SendBuf`]: crate::send::SendBuf
 /// [`send_frame`]: SendFrame::send_frame
-/// [`try_read_data`]: DataStreams::try_read_data
+/// [`try_load_data_into`]: DataStreams::try_load_data_into
 /// [`recv_data`]: DataStreams::recv_data
 /// [`recv_stream_control`]: DataStreams::recv_stream_control
 /// [`on_data_acked`]: DataStreams::on_data_acked
