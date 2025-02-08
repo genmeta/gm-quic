@@ -98,6 +98,7 @@ mod qudp {
                     core::task::ready!(self.inner.poll_recv(&mut io_slices, hdrs, cx)?);
             }
 
+            // TOOD: 纠正反顺问题
             recv_buffer.unread -= 1;
             let mut bytes_mut = recv_buffer.bufs[recv_buffer.unread].clone();
             bytes_mut.truncate(recv_buffer.hdrs[recv_buffer.unread].seg_size as _);

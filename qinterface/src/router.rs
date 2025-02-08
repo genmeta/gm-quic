@@ -111,14 +111,13 @@ impl QuicProto {
             let mut rcvd_pkts = Vec::with_capacity(3);
             loop {
                 // way: local -> peer
-                let (datagram, pathway, socket) = match core::future::poll_fn(|cx| {
+                let recv = core::future::poll_fn(|cx| {
                     let interface = this.interfaces.get(&local_addr).ok_or_else(|| {
                         io::Error::new(io::ErrorKind::BrokenPipe, "interface already be removed")
                     })?;
                     interface.inner.poll_recv(cx)
-                })
-                .await
-                {
+                });
+                let (datagram, pathway, socket) = match recv.await {
                     Ok(t) => t,
                     Err(e) => return e,
                 };

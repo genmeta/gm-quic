@@ -16,6 +16,7 @@ deref-derive = { workspace = true }
 qbase = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 futures = { workspace = true }
 
 qudp = { workspace = true, optional = true }

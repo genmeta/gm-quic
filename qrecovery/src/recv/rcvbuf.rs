@@ -127,15 +127,15 @@ impl RecvBuf {
                 //             | new_seg........|
                 // 绝大多数情况下都会先进入这一个分支
                 Ok(exist_seg_index) => {
-                    let length_covered = self.segments[exist_seg_index].data.len();
-                    data.advance(data.len().min(length_covered));
+                    let length_covered = data.len().min(self.segments[exist_seg_index].data.len());
+                    data.advance(length_covered);
                     start += length_covered as u64;
                 }
-                // 没有恰好和一个现有的数据段重合：瞻前顾后
+                // 没有恰好和一个现有的数据段重合：查看和上一个&下一段数据是否重合，裁去重合的部分
                 //      | exist_seg1 |    | exist_seg2 |
                 // 1.                  | new_seg|
                 // 2. | new_seg |
-                // seg_index可能是上一个seg的index，也可能是下一个seg的index
+                // 二分查找的结果seg_index可能是上一个seg的index，也可能是下一个seg的index
                 // 1. 如果是上一个seg的index，需要有逻辑：需要检查下一个seg是否存在，如果存在就裁剪自身
                 // 2. 如果是下一个seg的index（只可能是index=0)，也会执行上述逻辑，故index 0 可以做特别处理
                 Err(0) => {
@@ -158,27 +158,25 @@ impl RecvBuf {
                     self.segments.push_front(segment);
                 }
                 // seg_index != 0 => seg_index > 0
+                // start > prev_seg.offset
                 Err(seg_index) => {
                     // 首先需要检测是否和上一个seg重合
+                    // 此步骤完成后, offset >= prev_seg.end()
                     data = match self.segments.get(seg_index - 1) {
-                        // start > prev_seg.offset && end < prev_seg.offset + prev_seg.len
+                        // start > prev_seg.offset && end <= prev_seg.end()
+                        //  | ---prev_seg-- |
+                        //    | new_seg     |
                         // 有可能这一段完全被上一段囊括，直接break
-                        Some(prev_seg)
-                            if (start + data.len() as u64)
-                                < prev_seg.offset + prev_seg.data.len() as u64 =>
-                        {
-                            break;
-                        }
-                        Some(prev_seg) if start < prev_seg.offset + prev_seg.data.len() as u64 => {
-                            // 裁下后，start必定和prev_seg.offset + prev_seg.data.len()相等
+                        Some(prev_seg) if (start + data.len() as u64) <= prev_seg.end() => break,
+                        // start > prev_seg.offset && start < prev_seg.end()
+                        //  | ---prev_seg-- |
+                        //    | ---new_seg--- |
+                        // 裁剪掉和上一段重合的，剩下的部分也一定不是空的
+                        Some(prev_seg) if start < prev_seg.end() => {
+                            // 裁下后，start必定和prev_seg.end()相等
                             // 下次loop就会进入上一个分支
-                            // start < prev_seg.offset + prev_seg.data.len()
-                            // 0 < start - prev_seg.offset + prev_seg.data.len() - start ，不会越界
-                            //
-                            // 还有可能，start + data.len() < prev_seg.offset + prev_seg.data.len() 也就是被上一个段完全覆盖
-                            // 所以需要data.len(length_covered)
-                            let length_covered = (data.len() as u64)
-                                .min(prev_seg.offset + prev_seg.data.len() as u64 - start);
+                            // start < prev_seg.end() => 0 < prev_seg.end() - start，不会越界
+                            let length_covered = prev_seg.end() - start;
                             start += length_covered;
                             data.split_off(length_covered as usize)
                         }
@@ -188,6 +186,14 @@ impl RecvBuf {
                     };
 
                     let uncovered = match self.segments.get(seg_index) {
+                        // next_seg.offset >= prev_seg.end() && start >= prev_seg.end()
+                        //  | ---next_seg--- |
+                        //  | ---new_seg-- |
+                        // uncovered 为 [prev_seg.end(), next_seg.offset)区间的数据
+                        // 如果offset == next_seg.offset，说明unconvert是空的，直接continue
+                        Some(next_seg) if start == next_seg.offset => continue,
+                        //    | --next_seg--- |
+                        //  | ---new_seg-- |
                         // 如果和下一段数据有重合的话，裁下data中不重合的部分
                         Some(next_seg) if start + data.len() as u64 > next_seg.offset => {
                             // 裁下后，start必定和next_seg.offset相等，下次loop就会进入上一个分支
@@ -291,7 +297,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_recvbuf_recv() {
+    fn test_no_overlap() {
         let mut buf = RecvBuf::default();
         assert_eq!(buf.recv(0, Bytes::from("hello")), 5);
         assert_eq!(buf.recv(6, Bytes::from("world")), 5);
@@ -305,17 +311,28 @@ mod tests {
         assert_eq!(buf.segments[0].offset, 0);
         assert_eq!(buf.segments[1].offset, 5);
         assert_eq!(buf.segments[2].offset, 6);
-
-        assert_eq!(buf.recv(12, Bytes::from("hello")), 5);
-        assert_eq!(buf.recv(6, Bytes::from("world.hell")), 1);
     }
 
     #[test]
-    fn test_rcvbuf_recv_extend() {
+    fn test_left_partially_overlap() {
+        let mut buf = RecvBuf::default();
+        assert_eq!(buf.recv(0, Bytes::from("01234")), 5);
+        assert_eq!(buf.recv(2, Bytes::from("2345")), 1); //left segment partially overlapped this
+        assert_eq!(buf.recv(6, Bytes::from("6789")), 4); // no overlap
+
+        assert_eq!(buf.segments.len(), 3);
+        assert_eq!(buf.segments[0].offset, 0);
+        assert_eq!(buf.segments[1].offset, 5);
+        assert_eq!(buf.segments[2].offset, 6);
+        assert_eq!(buf.available(), 10);
+    }
+
+    #[test]
+    fn test_right_partially_overlap() {
         let mut buf = RecvBuf::default();
         assert_eq!(buf.recv(0, Bytes::from("hello")), 5);
         assert_eq!(buf.recv(6, Bytes::from("world!")), 6);
-        assert_eq!(buf.recv(5, Bytes::from(" wor")), 1);
+        assert_eq!(buf.recv(5, Bytes::from(" wor")), 1); // overlap right
 
         assert_eq!(buf.segments.len(), 3);
         assert_eq!(buf.segments[0].offset, 0);
@@ -325,87 +342,83 @@ mod tests {
     }
 
     #[test]
-    fn test_rcvbuf_recv_extend_more() {
+    #[doc(alias = "fully_overlap_left")]
+    fn test_same_offset() {
+        let mut buf = RecvBuf::default();
+        assert_eq!(buf.recv(0, Bytes::from("01234")), 5);
+        assert_eq!(buf.recv(0, Bytes::from("0123456789")), 5);
+
+        assert_eq!(buf.segments.len(), 2);
+        assert_eq!(buf.segments[0].offset, 0);
+        assert_eq!(buf.segments[1].offset, 5);
+        assert_eq!(buf.available(), 10);
+    }
+
+    #[test]
+    fn test_fully_overlap_right() {
         let mut buf = RecvBuf::default();
         assert_eq!(buf.recv(0, Bytes::from("hello")), 5);
         assert_eq!(buf.recv(6, Bytes::from("world")), 5);
-        assert_eq!(buf.recv(5, Bytes::from(" world!")), 2);
+        assert_eq!(buf.recv(5, Bytes::from(" world!")), 2); // fully overlap right
 
         assert_eq!(buf.segments.len(), 4);
+        assert_eq!(buf.segments[0].offset, 0);
+        assert_eq!(buf.segments[1].offset, 5);
+        assert_eq!(buf.segments[2].offset, 6);
+        assert_eq!(buf.segments[3].offset, 11);
         assert_eq!(buf.available(), 12);
     }
 
     #[test]
-    fn test_overlap() {
-        let mut buf = RecvBuf::default();
-        assert_eq!(buf.recv(2, Bytes::from("4514")), 4);
-        assert_eq!(buf.recv(0, Bytes::from("1199")), 2);
-
-        assert_eq!(buf.segments.len(), 2);
-        assert_eq!(buf.segments[0].offset, 0);
-        assert_eq!(buf.segments[1].offset, 2);
-        assert_eq!(buf.available(), 6);
-    }
-
-    #[test]
-    fn test_covered() {
+    fn test_left_fully_overlap() {
         let mut buf = RecvBuf::default();
         assert_eq!(buf.recv(0, Bytes::from("114514")), 6);
-        assert_eq!(buf.recv(2, Bytes::from("45")), 0);
+        assert_eq!(buf.recv(2, Bytes::from("45")), 0); // left segment fully overlapped this
+        assert_eq!(buf.recv(2, Bytes::from("4514")), 0); // left segment fully overlapped this
         assert_eq!(buf.segments.len(), 1);
         assert_eq!(buf.segments[0].offset, 0);
         assert_eq!(buf.available(), 6);
     }
 
     #[test]
-    fn test_covered2() {
+    fn test_right_fully_overlapp() {
         let mut buf = RecvBuf::default();
-        assert_eq!(buf.recv(2, Bytes::from("45")), 2);
-        assert_eq!(buf.recv(0, Bytes::from("114514")), 4);
-        assert_eq!(buf.segments.len(), 3);
-        assert_eq!(buf.segments[0].offset, 0);
-        assert_eq!(buf.segments[1].offset, 2);
-        assert_eq!(buf.segments[2].offset, 4);
-        assert_eq!(buf.available(), 6);
-    }
+        assert_eq!(buf.recv(0, Bytes::from("114514")), 6);
+        assert_eq!(buf.recv(6, Bytes::from("1919810")), 7);
+        assert_eq!(buf.recv(8, Bytes::from("1981")), 0); // right segment fully overlapped this
+        assert_eq!(buf.recv(8, Bytes::from("19810")), 0); // right segment fully overlapped this
 
-    #[test]
-    fn test_rcvbuf_recv_extend_and_replace() {
-        // "hello  world!"
-        let mut buf = RecvBuf::default();
-        assert_eq!(buf.recv(0, Bytes::from("hello")), 5);
-        assert_eq!(buf.recv(7, Bytes::from("world")), 5);
-        assert_eq!(buf.recv(6, Bytes::from(" world!")), 2);
-
-        assert_eq!(buf.segments.len(), 4);
+        assert_eq!(buf.segments.len(), 2);
         assert_eq!(buf.segments[0].offset, 0);
         assert_eq!(buf.segments[1].offset, 6);
-        assert_eq!(buf.segments[2].offset, 7);
-        assert_eq!(buf.segments[3].offset, 12);
-        assert_eq!(buf.available(), 5);
-
-        assert_eq!(buf.recv(0, Bytes::from("hello  world!")), 1);
-        assert_eq!(buf.segments.len(), 5);
         assert_eq!(buf.available(), 13);
     }
 
     #[test]
-    fn test_recvbuf_recv_and_insert() {
+    fn test_left_right_partially_overlap() {
         let mut buf = RecvBuf::default();
-        assert_eq!(buf.recv(0, Bytes::from("how")), 3);
-        assert_eq!(buf.recv(9, Bytes::from("you")), 3);
-        assert_eq!(buf.recv(5, Bytes::from("are")), 3);
+        assert_eq!(buf.recv(0, Bytes::from("012345")), 6);
+        assert_eq!(buf.recv(7, Bytes::from("789")), 3);
+        assert_eq!(buf.recv(6, Bytes::from("6")), 1); // left and right partially overlapped this
 
         assert_eq!(buf.segments.len(), 3);
         assert_eq!(buf.segments[0].offset, 0);
-        assert_eq!(buf.segments[1].offset, 5);
-        assert_eq!(buf.segments[2].offset, 9);
+        assert_eq!(buf.segments[1].offset, 6);
+        assert_eq!(buf.segments[2].offset, 7);
+        assert_eq!(buf.available(), 10);
+    }
 
-        assert_eq!(buf.recv(3, Bytes::from("w are you")), 3);
+    #[test]
+    fn test_left_right_fully_overlap() {
+        let mut buf = RecvBuf::default();
+        assert_eq!(buf.recv(0, Bytes::from("01234")), 5);
+        assert_eq!(buf.recv(5, Bytes::from("56789")), 5);
+        assert_eq!(buf.recv(2, Bytes::from("2345678")), 0); // left and right fully overlapped this
 
-        assert_eq!(buf.segments.len(), 5);
+        assert_eq!(buf.segments.len(), 2);
         assert_eq!(buf.segments[0].offset, 0);
-        assert_eq!(buf.available(), 12);
+        assert_eq!(buf.segments[1].offset, 5);
+        assert_eq!(buf.available(), 10);
     }
 
     #[test]
@@ -424,19 +437,5 @@ mod tests {
 
         assert_eq!(buf.remaining_mut(), 9);
         assert_eq!(dst[..11], b"hello world"[..]);
-    }
-
-    #[test]
-    fn test_rcvbuf_recv_overlap_seg() {
-        let mut buf = RecvBuf::default();
-        assert_eq!(buf.recv(0, Bytes::from("he")), 2);
-        assert_eq!(buf.recv(6, Bytes::from("world")), 5);
-        assert_eq!(buf.recv(0, Bytes::from("hello")), 3);
-
-        let mut buf = RecvBuf::default();
-        assert_eq!(buf.recv(0, Bytes::from("he")), 2);
-        assert_eq!(buf.recv(6, Bytes::from("wo")), 2);
-        assert_eq!(buf.recv(12, Bytes::from("00")), 2);
-        assert_eq!(buf.recv(0, Bytes::from("hello world")), 7);
     }
 }

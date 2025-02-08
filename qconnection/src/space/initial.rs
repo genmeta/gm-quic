@@ -269,10 +269,13 @@ impl TrackPackets for InitialSpace {
         let outgoing = self.crypto_stream.outgoing();
         let mut rotate = sent_jornal.rotate();
         for pn in pns {
-            for frame in rotate.may_loss_pkt(pn) {
-                outgoing.may_loss_data(&frame);
-                self.sendable.notify_waiters();
-            }
+            trace_span!("initial_packet_may_loss", pn).in_scope(|| {
+                for frame in rotate.may_loss_pkt(pn) {
+                    tracing::trace!(?frame, "frame may lost");
+                    outgoing.may_loss_data(&frame);
+                    self.sendable.notify_waiters();
+                }
+            })
         }
     }
 
