@@ -54,12 +54,13 @@ pub fn take_pn_len(pn_len: u8) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], Packe
     use nom::{
         combinator::map,
         number::complete::{be_u16, be_u24, be_u32, be_u8},
+        Parser,
     };
     move |input: &[u8]| match pn_len {
-        1 => map(be_u8, PacketNumber::U8)(input),
-        2 => map(be_u16, PacketNumber::U16)(input),
-        3 => map(be_u24, PacketNumber::U24)(input),
-        4 => map(be_u32, PacketNumber::U32)(input),
+        1 => map(be_u8, PacketNumber::U8).parse(input),
+        2 => map(be_u16, PacketNumber::U16).parse(input),
+        3 => map(be_u24, PacketNumber::U24).parse(input),
+        4 => map(be_u32, PacketNumber::U32).parse(input),
         _ => unreachable!(),
     }
 }

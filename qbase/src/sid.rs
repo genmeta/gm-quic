@@ -189,8 +189,8 @@ impl From<StreamId> for u64 {
 /// Parse a stream ID from the input bytes,
 /// [nom](https://docs.rs/nom/6.2.1/nom/) parser style.
 pub fn be_streamid(input: &[u8]) -> nom::IResult<&[u8], StreamId> {
-    use nom::combinator::map;
-    map(be_varint, StreamId::from)(input)
+    use nom::{combinator::map, Parser};
+    map(be_varint, StreamId::from).parse(input)
 }
 
 /// A BufMut extension trait for writing a stream ID.

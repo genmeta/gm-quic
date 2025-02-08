@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use nom::sequence::tuple;
+use nom::Parser;
 
 use crate::{
     util::{DescribeData, WriteData},
@@ -84,7 +84,7 @@ impl CryptoFrame {
 /// Parse a CRYPTO frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_crypto_frame(input: &[u8]) -> nom::IResult<&[u8], CryptoFrame> {
-    let (remain, (offset, length)) = tuple((be_varint, be_varint))(input)?;
+    let (remain, (offset, length)) = (be_varint, be_varint).parse(input)?;
     if offset.into_inner() + offset.into_inner() > VARINT_MAX {
         return Err(nom::Err::Error(nom::error::make_error(
             input,

@@ -35,8 +35,8 @@ impl super::BeFrame for DataBlockedFrame {
 /// Parse a DATA_BLOCKED frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], DataBlockedFrame> {
-    use nom::combinator::map;
-    map(be_varint, |limit| DataBlockedFrame { limit })(input)
+    use nom::{combinator::map, Parser};
+    map(be_varint, |limit| DataBlockedFrame { limit }).parse(input)
 }
 
 impl<T: bytes::BufMut> super::io::WriteFrame<DataBlockedFrame> for T {

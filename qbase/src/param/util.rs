@@ -148,21 +148,23 @@ impl PreferredAddress {
 /// Parse the preferred address from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_preferred_address(input: &[u8]) -> nom::IResult<&[u8], PreferredAddress> {
-    use nom::{bytes::streaming::take, combinator::map};
+    use nom::{bytes::streaming::take, combinator::map, Parser};
 
     let (input, address_v4) = map(take(6usize), |buf: &[u8]| {
         let mut addr = [0u8; 4];
         addr.copy_from_slice(&buf[..4]);
         let port = u16::from_be_bytes([buf[4], buf[5]]);
         SocketAddrV4::new(addr.into(), port)
-    })(input)?;
+    })
+    .parse(input)?;
 
     let (input, address_v6) = map(take(18usize), |buf: &[u8]| {
         let mut addr = [0u8; 16];
         addr.copy_from_slice(&buf[..16]);
         let port = u16::from_be_bytes([buf[16], buf[17]]);
         SocketAddrV6::new(addr.into(), port, 0, 0)
-    })(input)?;
+    })
+    .parse(input)?;
 
     let (input, connection_id) = be_connection_id(input)?;
     let (input, stateless_reset_token) = be_reset_token(input)?;

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use deref_derive::{Deref, DerefMut};
 use getset::{CopyGetters, Setters};
-use nom::combinator::map;
+use nom::{combinator::map, Parser};
 
 use super::{
     be_parameter_id, be_preferred_address, ParameterId, PreferredAddress, WirtePreferredAddress,
@@ -288,7 +288,7 @@ pub(super) fn be_client_parameters<'b>(
         match id {
             ParameterId::MaxIdleTimeout => {
                 (input, params.max_idle_timeout) =
-                    map(be_varint, |v| Duration::from_secs(v.into_inner()))(remain)?
+                    map(be_varint, |v| Duration::from_secs(v.into_inner())).parse(remain)?
             }
             ParameterId::MaxUdpPayloadSize => {
                 (input, params.max_udp_payload_size) = be_varint(remain)?
@@ -429,7 +429,7 @@ pub(super) fn be_server_parameters<'b>(
             }
             ParameterId::MaxIdleTimeout => {
                 (input, params.max_idle_timeout) =
-                    map(be_varint, |v| Duration::from_secs(v.into_inner()))(remain)?
+                    map(be_varint, |v| Duration::from_secs(v.into_inner())).parse(remain)?
             }
             ParameterId::StatelssResetToken => {
                 (input, params.statelss_reset_token) =

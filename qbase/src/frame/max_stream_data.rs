@@ -50,14 +50,15 @@ impl super::BeFrame for MaxStreamDataFrame {
 /// Parse a MAX_STREAM_DATA frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_max_stream_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxStreamDataFrame> {
-    use nom::{combinator::map, sequence::pair};
+    use nom::{combinator::map, sequence::pair, Parser};
     map(
         pair(be_streamid, be_varint),
         |(stream_id, max_stream_data)| MaxStreamDataFrame {
             stream_id,
             max_stream_data,
         },
-    )(input)
+    )
+    .parse(input)
 }
 
 impl<T: bytes::BufMut> super::io::WriteFrame<MaxStreamDataFrame> for T {

@@ -1,5 +1,5 @@
 use bytes::BytesMut;
-use nom::multi::length_data;
+use nom::{multi::length_data, Parser};
 
 use super::{
     error::Error,
@@ -20,7 +20,7 @@ fn be_payload(
 ) -> Result<(BytesMut, usize), Error> {
     let offset = datagram.len() - remain_len;
     let input = &datagram[offset..];
-    let (remain, payload) = length_data(be_varint)(input).map_err(|e| match e {
+    let (remain, payload) = length_data(be_varint).parse(input).map_err(|e| match e {
         ne @ nom::Err::Incomplete(_) => Error::IncompleteHeader(pkty, ne.to_string()),
         _ => unreachable!("parsing packet header never generates error or failure"),
     })?;

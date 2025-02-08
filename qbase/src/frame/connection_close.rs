@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_read_connection_close_frame() {
-        use nom::combinator::flat_map;
+        use nom::{combinator::flat_map, Parser};
 
         use super::connection_close_frame_at_layer;
         use crate::varint::be_varint;
@@ -224,7 +224,8 @@ mod tests {
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
-        })(buf.as_ref())
+        })
+        .parse(buf.as_ref())
         .unwrap();
         assert!(input.is_empty());
         assert_eq!(

@@ -53,8 +53,8 @@ impl super::BeFrame for PathResponseFrame {
 /// Parse a PATH_RESPONSE frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_path_response_frame(input: &[u8]) -> nom::IResult<&[u8], PathResponseFrame> {
-    use nom::{bytes::complete::take, combinator::map};
-    map(take(8usize), PathResponseFrame::from_slice)(input)
+    use nom::{bytes::complete::take, combinator::map, Parser};
+    map(take(8usize), PathResponseFrame::from_slice).parse(input)
 }
 
 impl<T: bytes::BufMut> super::io::WriteFrame<PathResponseFrame> for T {
@@ -79,7 +79,7 @@ mod tests {
 
     #[test]
     fn test_read_path_response_frame() {
-        use nom::combinator::flat_map;
+        use nom::{combinator::flat_map, Parser};
 
         use super::be_path_response_frame;
         use crate::varint::be_varint;
@@ -100,7 +100,8 @@ mod tests {
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }
-        })(buf.as_ref())
+        })
+        .parse(buf.as_ref())
         .unwrap();
         assert!(input.is_empty());
         assert_eq!(
