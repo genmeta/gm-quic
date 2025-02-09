@@ -160,7 +160,6 @@ impl Bbr {
     }
 
     fn handle_probe_rtt(&mut self) {
-        // C.app_limited = (BW.delivered + packets_in_flight) ? : 1
         self.delivery_rate.update_app_limited(true);
 
         let now = Instant::now();

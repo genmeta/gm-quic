@@ -8,6 +8,7 @@ use std::{
 
 use qbase::Epoch;
 use tokio::sync::Notify;
+use tracing::info;
 
 use crate::{
     space::Spaces, tx::Transaction, ArcDcidCell, ArcLocalCids, Components, FlowController,
@@ -80,7 +81,6 @@ impl Burst {
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"))?;
 
         let reversed_size = self.path.interface.reversed_bytes(self.path.pathway)?;
-
         Ok(prepared_buffers
             .map(move |buffer| {
                 let packet_size = if scid.is_some() {
@@ -115,6 +115,7 @@ impl Burst {
                 };
 
                 if packet_size == 0 {
+                    info!("no packet to send, waiting for notification");
                     None
                 } else {
                     Some(io::IoSlice::new(&buffer[..reversed_size + packet_size]))

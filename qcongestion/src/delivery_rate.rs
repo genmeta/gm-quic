@@ -46,8 +46,8 @@ impl Rate {
 
         pkt.first_sent_time = self.first_sent_time;
         pkt.delivered_time = self.delivered_time;
-        pkt.delivered = self.delivered;
         pkt.is_app_limited = self.app_limited();
+        pkt.delivered = self.delivered;
         pkt.tx_in_flight = bytes_in_flight;
         pkt.lost = bytes_lost;
 
@@ -78,11 +78,6 @@ impl Rate {
     }
 
     pub fn generate_rate_sample(&mut self) {
-        // End app-limited phase if bubble is ACKed and gone.
-        if self.app_limited() && self.largest_acked > self.end_of_app_limited {
-            self.update_app_limited(false);
-        }
-
         if self.rate_sample.prior_time.is_some() {
             let interval = self
                 .rate_sample
@@ -96,14 +91,19 @@ impl Rate {
 
             if !interval.is_zero() {
                 // Fill in rate_sample with a rate sample.
+                tracing::trace!(
+                    "update rate sample: {:?} {:?}",
+                    self.rate_sample.delivered,
+                    interval
+                );
                 self.rate_sample.delivery_rate =
                     (self.rate_sample.delivered as f64 / interval.as_secs_f64()) as u64;
             }
         }
     }
 
-    pub fn update_app_limited(&mut self, v: bool) {
-        self.end_of_app_limited = if v { self.last_sent_packet.max(1) } else { 0 }
+    pub fn update_app_limited(&mut self, is_limited: bool) {
+        self.end_of_app_limited = if is_limited { self.last_sent_packet } else { 0 }
     }
 
     pub fn app_limited(&mut self) -> bool {

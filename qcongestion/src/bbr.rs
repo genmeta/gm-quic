@@ -3,6 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tracing::info;
+
 use crate::{
     congestion::{AckedPkt, Algorithm, SentPkt, MSS},
     delivery_rate::Rate,
@@ -104,7 +106,7 @@ pub(crate) struct Bbr {
     probe_rtt_done_stamp: Option<Instant>,
     // Whether a roundtrip in ProbeRTT state ends.
     probe_rtt_round_done: bool,
-    // Whether in packet sonservation mode.
+    // Whether in packet conservation mode.
     packet_conservation: bool,
     // Cwnd before loss recovery.
     prior_cwnd: u64,
@@ -188,17 +190,18 @@ impl Bbr {
 
 impl Algorithm for Bbr {
     fn on_sent(&mut self, sent: &mut SentPkt, _: usize, _: Instant) {
+        self.bytes_in_flight += sent.size as u64;
+        self.delivery_rate
+            .update_app_limited(self.bytes_in_flight < self.cwnd);
         self.delivery_rate.on_packet_sent(
             sent,
             self.bytes_in_flight as usize,
             self.bytes_lost_in_total,
         );
 
-        self.bytes_in_flight += sent.size as u64;
         self.on_transmit();
     }
 
-    //  todo: VecDeque 是否有必要
     fn on_ack(&mut self, packets: VecDeque<AckedPkt>, now: Instant) {
         self.newly_acked_bytes = 0;
         self.newly_lost_bytes = 0;
@@ -232,9 +235,11 @@ impl Algorithm for Bbr {
         self.update_control_parameters();
     }
 
-    fn on_congestion_event(&mut self, _: &SentPkt, _: Instant) {
-        // todo: enter_recovery
-        // update newly lost bytes, set BBR.packet_conservation = true
+    fn on_congestion_event(&mut self, pk: &SentPkt, _: Instant) {
+        self.bytes_in_flight -= pk.size as u64;
+        self.bytes_lost_in_total += pk.size as u64;
+        self.newly_lost_bytes += pk.size as u64;
+        self.in_recovery = true;
     }
 
     fn cwnd(&self) -> u64 {

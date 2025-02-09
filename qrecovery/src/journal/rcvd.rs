@@ -209,6 +209,11 @@ impl RcvdJournal {
 
     fn slide_retired(&mut self) {
         let n = self.queue.iter().take_while(|s| !s.is_active).count();
+        tracing::info!(
+            "retire packet number {} to {}",
+            self.queue.offset(),
+            self.queue.offset() + n as u64
+        );
         self.queue.advance(n)
     }
 }

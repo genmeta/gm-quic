@@ -36,6 +36,7 @@ impl Bbr {
             self.btlbw = self
                 .btlbwfilter
                 .update_max(self.round_count, self.delivery_rate.sample_delivery_rate());
+            tracing::trace!("bbr btlbw updated to {}", self.btlbw);
         }
     }
 
