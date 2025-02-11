@@ -43,7 +43,6 @@ use crate::{
 
 const K_GRANULARITY: Duration = Duration::from_millis(1);
 const K_PACKET_THRESHOLD: usize = 3;
-const MAX_SENT_DELAY: Duration = Duration::from_millis(30);
 
 ///  default datagram size in bytes.
 pub const MSS: usize = 1200;
@@ -81,7 +80,7 @@ pub struct CongestionController {
     // Records of received packets for each epoch.
     rcvd_records: [RcvdRecords; Epoch::count()],
     // The waker to notify when the controller is ready to send.
-    send_waker: Option<Waker>,
+    pending_burst: Option<(Waker, usize)>,
     // Space packet trackers
     trackers: [Arc<dyn TrackPackets>; 3],
     // Handshake state
@@ -119,7 +118,7 @@ impl CongestionController {
             ],
             pacer: Pacer::new(INITIAL_RTT, INITIAL_CWND, MSS, now, None),
             last_sent_time: now,
-            send_waker: None,
+            pending_burst: None,
             trackers,
             handshake,
         }
@@ -453,20 +452,6 @@ impl CongestionController {
             self.algorithm.pacing_rate(),
         )
     }
-
-    #[inline]
-    fn send_elapsed(&self, now: Instant) -> Duration {
-        now.saturating_duration_since(self.last_sent_time)
-    }
-
-    #[inline]
-    fn ready_to_send(&mut self, now: Instant) -> Option<usize> {
-        let token = self.send_quota(now);
-        if token >= MSS || self.requires_ack() || self.send_elapsed(now) >= MAX_SENT_DELAY {
-            return Some(token);
-        }
-        None
-    }
 }
 
 /// Shared congestion controller
@@ -495,6 +480,7 @@ impl super::CongestionControl for ArcCC {
         tokio::spawn(
             async move {
                 let mut interval = tokio::time::interval(Duration::from_millis(10));
+                let mut count = 0;
                 loop {
                     interval.tick().await;
                     let now = Instant::now();
@@ -502,27 +488,33 @@ impl super::CongestionControl for ArcCC {
                     if guard.loss_timer.is_timeout(now) {
                         guard.on_loss_timeout(now);
                     }
-                    if guard.ready_to_send(now).is_some() {
-                        if let Some(waker) = guard.send_waker.take() {
-                            waker.wake();
+                    if let Some(&(.., expect_quota)) = guard.pending_burst.as_ref() {
+                        if guard.send_quota(now) >= expect_quota {
+                            guard.pending_burst.take().unwrap().0.wake();
                         }
                     }
                     if guard.requires_ack() {
                         notify.notify_waiters();
                     }
+                    if count % 100 == 0 {
+                        tracing::trace!(send_quote = guard.send_quota(now));
+                    }
+                    count += 1;
                 }
             }
             .instrument(trace_span!("congestion_controller")),
         )
         .abort_handle()
     }
-    fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize> {
+
+    fn poll_send(&self, cx: &mut Context<'_>, expect_quota: usize) -> Poll<usize> {
         let mut guard = self.0.lock().unwrap();
         let now = Instant::now();
-        if let Some(tokens) = guard.ready_to_send(now) {
-            return Poll::Ready(tokens);
+        let send_quota = guard.send_quota(now);
+        if send_quota >= expect_quota {
+            return Poll::Ready(send_quota);
         }
-        guard.send_waker = Some(cx.waker().clone());
+        guard.pending_burst = Some((cx.waker().clone(), expect_quota));
         Poll::Pending
     }
 

@@ -220,6 +220,7 @@ impl<'a> Transaction<'a> {
         cc: &'a ArcCC,
         anti_amplifier: &'a AntiAmplifier,
         flow_ctrl: &'a crate::FlowController,
+        expect_quota: usize,
     ) -> PrepareTransaction<'a> {
         PrepareTransaction {
             scid,
@@ -227,6 +228,7 @@ impl<'a> Transaction<'a> {
             cc,
             anti_amplifier,
             flow_ctrl,
+            expect_quota,
         }
     }
 
@@ -314,16 +316,17 @@ pub struct PrepareTransaction<'a> {
     cc: &'a ArcCC,
     anti_amplifier: &'a AntiAmplifier,
     flow_ctrl: &'a FlowController,
+    expect_quota: usize,
 }
 
 impl<'a> Future for PrepareTransaction<'a> {
     type Output = Option<Transaction<'a>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let send_quota = match self.cc.poll_send(cx) {
+        let send_quota = match self.cc.poll_send(cx, self.expect_quota) {
             Poll::Ready(send_quota) => send_quota,
             Poll::Pending => {
-                tracing::trace!(reason = "send quota", "sending blocked");
+                tracing::trace!(reason = "send quota to small", "sending blocked");
                 return Poll::Pending;
             }
         };
