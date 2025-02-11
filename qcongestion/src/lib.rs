@@ -24,7 +24,7 @@ pub trait CongestionControl {
     /// Polls whether packets can be sent and returns the amount of data that can be sent.
     /// # Returns
     /// A [`Poll`] indicating readiness to send and the amount of data that can be sent.
-    fn poll_send(&self, cx: &mut Context<'_>) -> Poll<usize>;
+    fn poll_send(&self, cx: &mut Context<'_>, expect_quota: usize) -> Poll<usize>;
 
     /// Checks if an AckFrame should be sent in the next packet for the given epoch.
     /// # Returns

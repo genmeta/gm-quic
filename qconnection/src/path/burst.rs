@@ -45,10 +45,10 @@ impl super::Path {
 }
 
 impl Burst {
-    fn prepare_buffers<'b>(
+    async fn prepare<'b>(
         &self,
         buffers: &'b mut Vec<Vec<u8>>,
-    ) -> io::Result<impl Iterator<Item = &'b mut [u8]> + use<'b>> {
+    ) -> io::Result<(impl Iterator<Item = &'b mut [u8]> + use<'b>, Transaction)> {
         let max_segments = self.path.interface.max_segments()?;
         let max_segment_size = self.path.interface.max_segment_size()?;
         tracing::trace!(max_segments, max_segment_size, "prepare buffers");
@@ -57,28 +57,40 @@ impl Burst {
             buffers.resize_with(max_segments, || vec![0; max_segment_size]);
         }
 
-        Ok(buffers.iter_mut().map(move |buffer| {
+        let buffers = buffers.iter_mut().map(move |buffer| {
             if buffer.len() < max_segment_size {
                 buffer.resize(max_segment_size, 0);
             }
             &mut buffer[..max_segment_size]
-        }))
-    }
+        });
 
-    async fn load_into_buffers<'b>(
-        &'b self,
-        prepared_buffers: impl Iterator<Item = &'b mut [u8]> + 'b,
-    ) -> io::Result<impl Iterator<Item = io::IoSlice<'b>>> {
         let scid = self.local_cids.initial_scid();
-        let mut transaction = Transaction::prepare(
+        let transaction = Transaction::prepare(
             scid.unwrap_or_default(),
             &self.dcid,
             self.path.cc(),
             &self.path.anti_amplifier,
             &self.flow_ctrl,
+            max_segment_size,
         )
         .await
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"))?;
+
+        Ok((buffers, transaction))
+    }
+
+    fn load_into_buffers<'b>(
+        &'b self,
+        prepared_buffers: impl Iterator<Item = &'b mut [u8]> + 'b,
+        mut transaction: Transaction<'b>,
+    ) -> io::Result<impl Iterator<Item = io::IoSlice<'b>>> {
+        let scid = self.local_cids.initial_scid();
+
+        std::panic::set_hook(Box::new(move |panic_info| {
+            let location = panic_info.location().unwrap();
+            let backtrace = std::backtrace::Backtrace::force_capture();
+            tracing::trace!(%backtrace, %location, "panic");
+        }));
 
         let reversed_size = self.path.interface.reversed_bytes(self.path.pathway)?;
         tracing::trace!(reversed_size, "load data");
@@ -160,8 +172,8 @@ impl Burst {
         loop {
             path_sendable.as_mut().enable();
             conn_sendable.as_mut().enable();
-            let buffers = self.prepare_buffers(&mut buffers)?;
-            let buffers = self.load_into_buffers(buffers).await?;
+            let (buffers, transcation) = self.prepare(&mut buffers).await?;
+            let buffers = self.load_into_buffers(buffers, transcation)?;
             let segments = self.collect_filled_buffers(buffers)?;
             if !segments.is_empty() {
                 tracing::trace!(
