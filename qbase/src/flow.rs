@@ -22,6 +22,7 @@ use crate::{
 struct SendControler<TX> {
     sent_data: u64,
     max_data: u64,
+    blocking: bool,
     broker: TX,
     wakers: Vec<Waker>,
 }
@@ -31,6 +32,7 @@ impl<TX> SendControler<TX> {
         Self {
             sent_data: 0,
             max_data: initial_max_data,
+            blocking: false,
             broker,
             wakers: Vec::with_capacity(4),
         }
@@ -49,6 +51,7 @@ impl<TX> SendControler<TX> {
     fn increase_limit(&mut self, max_data: u64) {
         if max_data > self.max_data {
             self.max_data = max_data;
+            self.blocking = false;
             for waker in self.wakers.drain(..) {
                 waker.wake();
             }
@@ -193,7 +196,8 @@ where
             Ok(inner) => {
                 debug_assert!(inner.sent_data + amount as u64 <= inner.max_data);
                 inner.sent_data += amount as u64;
-                if inner.sent_data == inner.max_data {
+                if inner.sent_data == inner.max_data && !inner.blocking {
+                    inner.blocking = true;
                     inner.broker.send_frame([DataBlockedFrame {
                         limit: VarInt::from_u64(inner.max_data).expect(
                             "max_data of flow controller is very very hard to exceed 2^62 - 1",
