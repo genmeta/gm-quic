@@ -241,7 +241,13 @@ where
         B: BufMut,
         P: DerefMut<Target = B> + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
     {
-        core::iter::from_fn(|| self.try_load_data_into_once(packet, flow_limit)).sum()
+        core::iter::repeat(()) // while true
+            .scan(flow_limit, |flow_limit, ()| {
+                let fresh_bytes = self.try_load_data_into_once(packet, *flow_limit)?;
+                *flow_limit -= fresh_bytes;
+                Some(fresh_bytes)
+            })
+            .sum()
     }
 
     /// Called when the stream frame acked.
