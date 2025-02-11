@@ -177,7 +177,7 @@ impl CongestionController {
             return;
         }
 
-        let ack_delay = Duration::from_millis(ack_frame.delay.into());
+        let ack_delay = Duration::from_micros(ack_frame.delay.into());
         if let Some(latest_rtt) = latest_rtt {
             let is_handshake_confirmed = self.handshake.is_handshake_done();
             self.rtt
