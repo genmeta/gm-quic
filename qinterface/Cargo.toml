@@ -23,3 +23,4 @@ qudp = { workspace = true, optional = true }
 
 [features]
 qudp = ["dep:qudp"]
+enable_gso = []

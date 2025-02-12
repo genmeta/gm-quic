@@ -291,7 +291,7 @@ impl CongestionController {
             };
 
         self.pto_count += 1;
-        tracing::trace!(
+        tracing::info!(
             role = %self.handshake.role(),
             ?pto_epoch,
             pto_count = self.pto_count,

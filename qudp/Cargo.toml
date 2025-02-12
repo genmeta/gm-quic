@@ -17,6 +17,7 @@ libc = "0.2"
 log = { workspace = true }
 socket2 = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
+tracing = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -24,6 +25,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_IO",
     "Win32_Networking_WinSock",
 ] }
+
+[features]
+enable_gso = []
 
 [dev-dependencies]
 clap = { workspace = true }

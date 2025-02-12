@@ -78,7 +78,10 @@ mod qudp {
                 ttl: 64,
                 ecn: None,
                 seg_size: self.max_segment_size()? as _,
+                #[cfg(feature = "enable_gso")]
                 gso: true,
+                #[cfg(not(feature = "enable_gso"))]
+                gso: false,
             };
 
             self.inner.poll_send(ptks, &hdr, cx)
