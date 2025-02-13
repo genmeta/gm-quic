@@ -37,3 +37,6 @@ path = "examples/send.rs"
 [[example]]
 name = "receive"
 path = "examples/receive.rs"
+
+[features]
+gso = []

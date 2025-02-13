@@ -19,19 +19,19 @@ type IpTosTy = libc::c_uchar;
 #[cfg(not(target_os = "freebsd"))]
 type IpTosTy = libc::c_int;
 
-#[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios"))]
+#[cfg(not(feature = "gso"))]
 type HdrTy = libc::msghdr;
-#[cfg(not(any(target_os = "freebsd", target_os = "macos", target_os = "ios")))]
+#[cfg(feature = "gso")]
 type HdrTy = libc::mmsghdr;
 
 #[macro_export]
 macro_rules! msg_hdr {
     ($hdr:expr) => {{
-        #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios"))]
+        #[cfg(not(feature = "gso"))]
         {
             $hdr
         }
-        #[cfg(not(any(target_os = "freebsd", target_os = "macos", target_os = "ios")))]
+        #[cfg(feature = "gso")]
         {
             &mut $hdr.msg_hdr
         }
@@ -117,7 +117,7 @@ impl Message {
     ) {
         assert!(msg_count <= BATCH_SIZE);
         for (i, hdr) in self.hdrs.iter_mut().enumerate().take(msg_count) {
-            #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
+            #[cfg(feature = "gso")]
             {
                 recv_hdrs[i].seg_size = hdr.msg_len as u16;
             }

@@ -33,14 +33,13 @@ async fn main() {
     let socket = UdpSocketController::new(addr).expect("failed to create socket");
     let dst = args.dst.parse().unwrap();
 
-    let send_hdr = PacketHeader {
-        src: socket.local_addr().expect("failed to get local addr"),
+    let send_hdr = PacketHeader::new(
+        socket.local_addr().expect("failed to get local addr"),
         dst,
-        ttl: 64,
-        ecn: Some(1),
-        seg_size: args.msg_size as u16,
-        gso: args.gso,
-    };
+        64,
+        None,
+        args.msg_size as u16,
+    );
 
     let payload = vec![8u8; args.msg_size];
     let payloads = vec![IoSlice::new(&payload[..]); args.msg_count];
