@@ -192,10 +192,12 @@ pub(super) fn sendmmsg(
     let mut sent_packets = 0;
     for batch in bufs.chunks(gso_size as usize * BATCH_SIZE) {
         let mut mmsg_batch_size: usize = 0;
+        let mut packet_count = 0;
         for (i, gso_batch) in batch.chunks(gso_size as usize).enumerate() {
             mmsg_batch_size += 1;
             let hdr = &mut message.hdrs[i].msg_hdr;
             let iovec = &mut iovecs[i];
+            packet_count += gso_batch.len();
             iovec.clear();
             iovec.extend(gso_batch.iter().map(|payload| IoSlice::new(payload)));
             hdr.msg_iov = iovec.as_ptr() as *mut _;
@@ -213,7 +215,7 @@ pub(super) fn sendmmsg(
                 // msgvec; if this is less than vlen, the caller can retry with a
                 // further sendmmsg() call to send the remaining messages.
                 Ok(n) => {
-                    sent_packets += n;
+                    sent_packets += packet_count;
                     if n != vlen as usize {
                         log::warn!("sendmmsg : only {} messages sent out of {}", n, vlen);
                         vlen = n as u32 - vlen;
