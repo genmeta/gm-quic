@@ -123,10 +123,10 @@ impl Io for UdpSocketController {
             send_hdr.dst.into()
         };
 
-        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
+        #[cfg(feature = "gso")]
         return sendmmsg(&self.io, bufs, send_hdr, &dst, gso_size);
 
-        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "openbsd",))]
+        #[cfg(not(feature = "gso"))]
         return sendmsg(&self.io, bufs, send_hdr, &dst, gso_size);
     }
 
@@ -140,7 +140,7 @@ impl Io for UdpSocketController {
 
         msg.prepare_recv(bufs, max_msg_count);
         let ret: io::Result<Rcvd>;
-        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
+        #[cfg(feature = "gso")]
         {
             ret = unsafe {
                 recvmmsg(
@@ -151,7 +151,7 @@ impl Io for UdpSocketController {
             };
         }
 
-        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "openbsd",))]
+        #[cfg(not(feature = "gso"))]
         {
             ret = recvmsg(self.io.as_raw_fd(), &mut msg.hdrs[0]);
         }
@@ -173,7 +173,7 @@ impl Io for UdpSocketController {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
+#[cfg(feature = "gso")]
 pub(super) fn sendmmsg(
     io: &impl AsRawFd,
     bufs: &[IoSlice<'_>],
@@ -235,7 +235,7 @@ pub(super) fn sendmmsg(
     Ok(sent_packets)
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios", target_os = "openbsd",))]
+#[cfg(not(feature = "gso"))]
 pub(super) fn sendmsg(
     io: &impl AsRawFd,
     bufs: &[IoSlice<'_>],
@@ -283,7 +283,7 @@ enum Rcvd {
 }
 
 /// recvmmsg wrapper with ENOSYS handling
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
+#[cfg(feature = "gso")]
 unsafe fn recvmmsg(
     sockfd: libc::c_int,
     msgvec: *mut libc::mmsghdr,
@@ -329,7 +329,7 @@ fn to_result(code: isize) -> io::Result<usize> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(feature = "gso")]
 static GSO_GRO_SIZE: std::sync::LazyLock<(u16, u16)> = std::sync::LazyLock::new(|| {
     const GSO_SIZE: libc::c_int = 1500;
     let socket = match std::net::UdpSocket::bind("[::]:0")
@@ -349,7 +349,7 @@ static GSO_GRO_SIZE: std::sync::LazyLock<(u16, u16)> = std::sync::LazyLock::new(
     (gso_size, gro_size)
 });
 
-#[cfg(target_os = "linux")]
+#[cfg(feature = "gso")]
 impl Gso for UdpSocketController {
     fn max_gso_segments(&self) -> u16 {
         GSO_GRO_SIZE.0
@@ -360,14 +360,14 @@ impl Gso for UdpSocketController {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(feature = "gso")]
 impl Gro for UdpSocketController {
     fn max_gro_segments(&self) -> u16 {
         GSO_GRO_SIZE.1
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(feature = "gso"))]
 impl Gso for UdpSocketController {
     fn max_gso_segments(&self) -> u16 {
         1
@@ -378,7 +378,7 @@ impl Gso for UdpSocketController {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(feature = "gso"))]
 impl Gro for UdpSocketController {
     fn max_gro_segments(&self) -> u16 {
         1

@@ -17,9 +17,9 @@ cfg_if::cfg_if! {
         #[path = "unix.rs"]
         mod unix;
         mod msg;
-        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        #[cfg(feature = "gso")]
         pub const BATCH_SIZE: usize = 64;
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #[cfg(not(feature = "gso"))]
         pub const BATCH_SIZE: usize = 1;
     } else if #[cfg(windows)] {
         #[path = "windows.rs"]
@@ -42,9 +42,21 @@ pub struct PacketHeader {
     // packet segment size
     pub seg_size: u16,
     // use gso
-    pub gso: bool,
+    gso: bool,
 }
 
+impl PacketHeader {
+    pub fn new(src: SocketAddr, dst: SocketAddr, ttl: u8, ecn: Option<u8>, seg_size: u16) -> Self {
+        Self {
+            src,
+            dst,
+            ttl,
+            ecn,
+            seg_size,
+            ..Default::default()
+        }
+    }
+}
 impl Default for PacketHeader {
     fn default() -> Self {
         Self {
@@ -52,6 +64,9 @@ impl Default for PacketHeader {
             dst: SocketAddr::from(([0, 0, 0, 0], 0)),
             ttl: DEFAULT_TTL as u8,
             ecn: None,
+            #[cfg(feature = "gso")]
+            gso: true,
+            #[cfg(not(feature = "gso"))]
             gso: false,
             seg_size: 0,
         }

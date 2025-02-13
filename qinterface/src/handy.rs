@@ -72,14 +72,7 @@ mod qudp {
             dst: SocketAddr,
         ) -> Poll<io::Result<usize>> {
             let src = self.local_addr()?;
-            let hdr = qudp::PacketHeader {
-                src,
-                dst,
-                ttl: 64,
-                ecn: None,
-                seg_size: self.max_segment_size()? as _,
-                gso: true,
-            };
+            let hdr = qudp::PacketHeader::new(src, dst, 64, None, self.max_segment_size()? as _);
 
             self.inner.poll_send(ptks, &hdr, cx)
         }
