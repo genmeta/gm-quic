@@ -25,7 +25,14 @@ pub struct ConnectionId {
     pub(crate) bytes: [u8; MAX_CID_SIZE],
 }
 
-impl ConnectionId {}
+impl core::fmt::LowerHex for ConnectionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for &b in self.as_ref() {
+            write!(f, "{:02x}", b)?;
+        }
+        Ok(())
+    }
+}
 
 /// Parse a connection ID from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
