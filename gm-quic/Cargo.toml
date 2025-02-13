@@ -33,7 +33,7 @@ env_logger = { workspace = true }
 rustls = { workspace = true, features = ["ring"] }
 url = { workspace = true }
 log = { workspace = true }
-tokio = { features = ["fs", "io-std"], workspace = true }
+tokio = { workspace = true, features = ["fs", "io-std"] }
 
 [dev-dependencies.tracing-subscriber]
 workspace = true

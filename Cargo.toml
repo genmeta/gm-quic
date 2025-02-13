@@ -10,6 +10,7 @@ members = [
     "qconnection",
     "gm-quic",
     "h3-shim",
+    "qlog",
 ]
 default-members = [
     "qbase",
@@ -35,6 +36,7 @@ cfg-if = "1"
 dashmap = "6"
 deref-derive = "0.1"
 derive_builder = "0.20"
+derive_more = "2"
 enum_dispatch = "0.3"
 futures = "0.3"
 getset = "0.1"
@@ -42,9 +44,13 @@ log = "0.4"
 nom = "8"
 rand = "0.9"
 rustls = { version = "0.23", default-features = false, features = ["std"] }
+serde = "1"
+serde_json = "1"
+serde_with = "3"
 socket2 = "0.5"
 thiserror = "2"
 tokio = { version = "1" }
+tracing = "0.1"
 
 # h3 for h3-shim, windows-sys and libc for qudp
 # they are not the default members of the workspace
@@ -57,7 +63,6 @@ clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 http = "1"
 rustls-native-certs = "0.8"
-tracing = "0.1"
 tracing-subscriber = "0.3"
 url = "2"
 
