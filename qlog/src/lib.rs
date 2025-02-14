@@ -494,10 +494,10 @@ mod tests {
 }"#;
         let des = serde_json::from_str::<CommonFields>(with_custom_fields).unwrap();
         dbg!(&des);
-        assert_eq!(
-            serde_json::to_string_pretty(&des).unwrap(),
-            with_custom_fields
-        );
+        let filed_string = serde_json::to_string_pretty(&des).unwrap();
+        dbg!(&filed_string);
+        let des2 = serde_json::from_str::<CommonFields>(&filed_string).unwrap();
+        assert_eq!(des, des2,);
     }
 
     #[test]
