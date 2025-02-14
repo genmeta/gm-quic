@@ -47,6 +47,7 @@ impl Io for UdpSocketController {
 
         let addr = io.local_addr()?;
         let is_ipv4 = addr.family() == libc::AF_INET as libc::sa_family_t;
+        self.setsockopt(libc::SOL_SOCKET, libc::SO_RCVBUF, 2 * 1024 * 1024);
         if is_ipv4 || !io.only_v6()? {
             //  If enabled, the IP_TOS ancillary message is passed with
             //  incoming packets.  It contains a byte which specifies the

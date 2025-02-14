@@ -89,6 +89,7 @@ impl Io for UdpSocketController {
         let is_ipv6 = addr.is_ipv6();
 
         let is_ipv4 = addr.is_ipv4();
+        self.setsockopt(WinSock::SOL_SOCKET, WinSock::SO_RCVBUF, 2 * 1024 * 1024);
         if is_ipv4 {
             self.setsockopt(WinSock::IPPROTO_IP, WinSock::IP_RECVTOS, OPTION_ON);
             self.setsockopt(WinSock::IPPROTO_IP, WinSock::IP_PKTINFO, OPTION_ON);
