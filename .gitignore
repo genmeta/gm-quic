@@ -17,4 +17,4 @@ tarpaulin-report.html
 *.pdb
 .vscode/*
 .idea/
-*log
+*.log
