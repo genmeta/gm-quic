@@ -1,3 +1,5 @@
+pub mod handy;
+
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -12,13 +14,13 @@ use serde_json::Value;
 
 use crate::Event;
 
-pub trait EmitEvent {
+pub trait ExportEvent {
     fn emit(&self, event: Event);
 }
 
 pub struct NoopBroker;
 
-impl EmitEvent for NoopBroker {
+impl ExportEvent for NoopBroker {
     fn emit(&self, event: Event) {
         _ = event;
     }
@@ -26,7 +28,7 @@ impl EmitEvent for NoopBroker {
 
 #[derive(Clone)]
 pub struct Span {
-    broker: Arc<dyn EmitEvent>,
+    exporter: Arc<dyn ExportEvent>,
     fields: Arc<HashMap<&'static str, Value>>,
 }
 
@@ -40,15 +42,15 @@ impl Debug for Span {
 }
 
 impl Span {
-    pub fn new<B: EmitEvent + 'static>(broker: B, fields: HashMap<&'static str, Value>) -> Self {
+    pub fn new<B: ExportEvent + 'static>(broker: B, fields: HashMap<&'static str, Value>) -> Self {
         Self {
-            broker: Arc::new(broker),
+            exporter: Arc::new(broker),
             fields: Arc::new(fields),
         }
     }
 
     pub fn emit(&self, event: Event) {
-        self.broker.emit(event);
+        self.exporter.emit(event);
     }
 
     pub fn load<T: DeserializeOwned>(&self, name: &'static str) -> T {
@@ -58,7 +60,7 @@ impl Span {
 
 impl PartialEq for Span {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.fields, &other.fields) && Arc::ptr_eq(&self.broker, &other.broker)
+        Arc::ptr_eq(&self.fields, &other.fields) && Arc::ptr_eq(&self.exporter, &other.exporter)
     }
 }
 
@@ -255,7 +257,7 @@ mod tests {
     fn event() {
         struct TestBroker;
 
-        impl EmitEvent for TestBroker {
+        impl ExportEvent for TestBroker {
             fn emit(&self, event: Event) {
                 let str = serde_json::to_string_pretty(&event).unwrap();
                 let event = serde_json::to_value(event).unwrap();
@@ -286,19 +288,5 @@ mod tests {
                 passive_listening = true
             );
         });
-
-        async {
-            let custom_field2 = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-            // 任何地方
-            event!(
-                connectivity::ServerListening::builder()
-                    .ip_v6("::1".to_string())
-                    .port_v6(7897u16)
-                    .build(),
-                passive_listening = true,
-                custom_field2
-            );
-        }
-        .instrument(span!(TestBroker));
     }
 }
