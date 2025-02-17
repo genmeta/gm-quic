@@ -1,5 +1,6 @@
 use std::{collections::HashMap, fmt::Display};
 
+use derive_builder::Builder;
 use derive_more::{From, Into, LowerHex};
 use serde::{Deserialize, Serialize};
 
@@ -111,12 +112,17 @@ pub enum IpVersion {
 /// As such, structures logging path information SHOULD include two
 /// different PathEndpointInfo instances, one for each half of the path.
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct PathEndpointInfo {
     pub path_id: PathID,
+    #[builder(default)]
     pub ip_v4: Option<IPAddress>,
+    #[builder(default)]
     pub ip_v6: Option<IPAddress>,
+    #[builder(default)]
     pub port_v4: Option<u16>,
+    #[builder(default)]
     pub port_v6: Option<u16>,
 
     /// Even though usually only a single ConnectionID
@@ -154,46 +160,60 @@ pub enum PacketNumberSpace {
 
 // 8.8
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct PacketHeader {
+    #[builder(default)]
     #[serde(default)]
     pub quic_bit: bool,
     pub packet_type: PacketType,
 
     /// only if packet_type === "initial" || "handshake" || "0RTT" || "1RTT"
+    #[builder(default)]
     pub packet_number: Option<u64>,
 
     ///  the bit flags of the packet headers (spin bit, key update bit,
     /// etc. up to and including the packet number length bits
     /// if present
+    #[builder(default)]
     pub flags: Option<u8>,
 
     /// only if packet_type === "initial" || "retry"
+    #[builder(default)]
     pub token: Option<Token>,
 
     /// only if packet_type === "initial" || "handshake" || "0RTT"
     /// Signifies length of the packet_number plus the payload
+    #[builder(default)]
     pub length: Option<u16>,
 
     /// only if present in the header
     /// if correctly using transport:connection_id_updated events,
     /// dcid can be skipped for 1RTT packets
+    #[builder(default)]
     version: Option<QuicVersion>,
+    #[builder(default)]
     scil: Option<u8>,
+    #[builder(default)]
     dcil: Option<u8>,
+    #[builder(default)]
     scid: Option<ConnectionID>,
+    #[builder(default)]
     dcid: Option<ConnectionID>,
 }
 
 // 8.9
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
+#[serde(default)]
 pub struct Token {
     pub r#type: Option<TokenType>,
 
     /// decoded fields included in the token
     /// (typically: peer's IP address, creation time)
-    pub details: HashMap<String, String>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub details: HashMap<String, serde_json::Value>,
 
     pub raw: Option<RawInfo>,
 }
@@ -487,4 +507,10 @@ impl<'de> Deserialize<'de> for CryptoError {
             },
         )
     }
+}
+
+crate::gen_builder_method! {
+    PathEndpointInfoBuilder => PathEndpointInfo;
+    PacketHeaderBuilder     => PacketHeader;
+    TokenBuilder            => Token;
 }

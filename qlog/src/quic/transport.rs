@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -23,13 +24,18 @@ use crate::{HexString, PathID, RawInfo};
 ///
 /// [QUIC-TRANSPORT]: https://www.rfc-editor.org/rfc/rfc9000
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct VersionInformation {
     // Vec for `? filed: [ +ty]``, Option<Vec> for `* filed: [* ty]`
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub server_versions: Vec<QuicVersion>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub client_versions: Vec<QuicVersion>,
     pub chosed_version: Option<QuicVersion>,
 }
@@ -53,16 +59,30 @@ pub struct VersionInformation {
 /// [QUIC-TRANSPORT]: https://www.rfc-editor.org/rfc/rfc9000
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct ALPNInformation {
     pub server_alpns: Option<Vec<ALPNIdentifier>>,
     pub client_alpns: Option<Vec<ALPNIdentifier>>,
     pub chosed_alpn: Option<ALPNIdentifier>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// ALPN identifiers are byte sequences, that may be possible to present
+/// as UTF-8.  The ALPNIdentifier` type supports either format.
+/// Implementations SHOULD log at least one format, but MAY log both or
+/// none.
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct ALPNIdentifier {
     pub byte_value: Option<HexString>,
     pub string_value: Option<String>,
@@ -104,8 +124,13 @@ pub struct ALPNIdentifier {
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
 /// [QUIC-TRANSPORT]: https://www.rfc-editor.org/rfc/rfc9000
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct ParametersSet {
     pub owner: Option<Owner>,
 
@@ -147,7 +172,8 @@ pub struct ParametersSet {
     pub grease_quic_bit: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into), build_fn(private, name = "fallible_build"))]
 pub struct PreferredAddress {
     pub ipv4: IPAddress,
     pub ipv6: IPAddress,
@@ -156,10 +182,12 @@ pub struct PreferredAddress {
     pub stateless_reset_token: StatelessResetToken,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct UnknownParameter {
     pub id: u64,
+    #[builder(default)]
     pub value: Option<HexString>,
 }
 
@@ -175,8 +203,13 @@ pub struct UnknownParameter {
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct ParametersRestored {
     // RFC 9000
     pub disable_active_migration: Option<bool>,
@@ -204,23 +237,31 @@ pub struct ParametersRestored {
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct PacketSent {
     pub header: PacketHeader,
+    #[builder(default)]
     pub frames: Option<Vec<QuicFrame>>,
 
     /// only if header.packet_type === "stateless_reset"
     /// is always 128 bits in length.
+    #[builder(default)]
     pub stateless_reset_token: Option<StatelessResetToken>,
 
     /// only if header.packet_type === "version_negotiation"
+    #[builder(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub supported_versions: Vec<QuicVersion>,
+    #[builder(default)]
     pub raw: Option<RawInfo>,
+    #[builder(default)]
     pub datagram_id: Option<u32>,
+    #[builder(default)]
     #[serde(default)]
     pub is_mtu_probe_packet: bool,
 
+    #[builder(default)]
     pub trigger: Option<PacketSentTrigger>,
 }
 
@@ -239,21 +280,28 @@ pub enum PacketSentTrigger {
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct PacketReceived {
     pub header: PacketHeader,
+    #[builder(default)]
     pub frames: Option<Vec<QuicFrame>>,
 
     /// only if header.packet_type === "stateless_reset"
     /// is always 128 bits in length.
+    #[builder(default)]
     pub stateless_reset_token: Option<StatelessResetToken>,
 
     /// only if header.packet_type === "version_negotiation"
+    #[builder(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub supported_versions: Vec<QuicVersion>,
+    #[builder(default)]
     pub raw: Option<RawInfo>,
+    #[builder(default)]
     pub datagram_id: Option<u32>,
 
+    #[builder(default)]
     pub trigger: Option<PacketReceivedTrigger>,
 }
 
@@ -272,15 +320,21 @@ pub enum PacketReceivedTrigger {
 /// implementation-specific information.
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
+#[serde(default)]
 pub struct PacketDropped {
     /// Primarily packet_type should be filled here,
     /// as other fields might not be decrypteable or parseable
     pub header: Option<PacketHeader>,
     pub raw: Option<RawInfo>,
     pub datagram_id: Option<u32>,
-    pub details: HashMap<String, String>,
+    pub details: HashMap<String, serde_json::Value>,
     pub trigger: Option<PacketDroppedTrigger>,
 }
 
@@ -314,8 +368,13 @@ pub enum PacketDroppedTrigger {
 /// event has Base importance level; see Section 9.2 of [QLOG-MAIN].
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct PacketBuffered {
     /// Primarily packet_type should be filled here,
     /// as other fields might not be decrypteable or parseable
@@ -348,8 +407,13 @@ pub enum PacketBufferedTrigger {
 /// log frame contents.
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct PacketsAcked {
     pub packet_number_space: Option<PacketNumberSpace>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -361,8 +425,13 @@ pub struct PacketsAcked {
 /// The event has Extra importance level; see Section 9.2 of [QLOG-MAIN].
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct UdpDatagramSent {
     /// to support passing multiple at once
     pub count: Option<u16>,
@@ -388,8 +457,13 @@ pub struct UdpDatagramSent {
 /// Section 9.2 of [QLOG-MAIN].
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct UdpDatagramReceived {
     /// to support passing multiple at once
     pub count: Option<u16>,
@@ -416,8 +490,13 @@ pub struct UdpDatagramReceived {
 /// level; see Section 9.2 of [QLOG-MAIN].
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct UdpDatagramDropped {
     /// The RawInfo fields do not include the UDP headers,
     /// only the UDP payload
@@ -432,16 +511,20 @@ pub struct UdpDatagramDropped {
 ///
 /// [QUIC-TRANSPORT]: https://www.rfc-editor.org/rfc/rfc9000
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct StreamStateUpdated {
     pub stream_id: u64,
 
     /// mainly useful when opening the stream
+    #[builder(default)]
     pub stream_type: Option<StreamType>,
+    #[builder(default)]
     pub old: Option<StreamState>,
     pub new: StreamState,
 
+    #[builder(default)]
     pub stream_side: Option<StreamSide>,
 }
 
@@ -532,9 +615,11 @@ pub enum StreamSide {
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct FramesProcessed {
     pub frames: Vec<QuicFrame>,
+    #[builder(default)]
     pub packet_numbers: Option<Vec<u64>>,
 }
 
@@ -573,8 +658,13 @@ pub struct FramesProcessed {
 /// Section 5.16.
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct StreamDataMoved {
     pub stream_id: Option<u64>,
     pub offset: Option<u64>,
@@ -632,8 +722,13 @@ pub enum DataMovedAdditionalInfo {
 ///
 /// [RFC9221]: https://www.rfc-editor.org/rfc/rfc9221.html
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct DatagramDataMoved {
     /// byte length of the moved data
     pub length: Option<u64>,
@@ -659,18 +754,23 @@ pub struct DatagramDataMoved {
 /// to serve as a ground-truth source of information.
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct MigrationStateUpdated {
+    #[builder(default)]
     pub old: Option<MigrationState>,
     pub new: MigrationState,
 
+    #[builder(default)]
     pub path_id: Option<PathID>,
 
     /// the information for traffic going towards the remote receiver
+    #[builder(default)]
     pub path_remote: Option<PathEndpointInfo>,
 
     /// the information for traffic coming in at the local endpoint
+    #[builder(default)]
     pub path_local: Option<PathEndpointInfo>,
 }
 
@@ -694,4 +794,27 @@ pub enum MigrationState {
     MigrationAbandoned,
     /// new path is now fully used, old path is discarded
     MigrationComplete,
+}
+
+crate::gen_builder_method! {
+    VersionInformationBuilder    => VersionInformation;
+    ALPNInformationBuilder       => ALPNInformation;
+    ALPNIdentifierBuilder        => ALPNIdentifier;
+    ParametersSetBuilder         => ParametersSet;
+    PreferredAddressBuilder      => PreferredAddress;
+    UnknownParameterBuilder      => UnknownParameter;
+    ParametersRestoredBuilder    => ParametersRestored;
+    PacketSentBuilder            => PacketSent;
+    PacketReceivedBuilder        => PacketReceived;
+    PacketDroppedBuilder         => PacketDropped;
+    PacketBufferedBuilder        => PacketBuffered;
+    PacketsAckedBuilder          => PacketsAcked;
+    UdpDatagramSentBuilder       => UdpDatagramSent;
+    UdpDatagramReceivedBuilder   => UdpDatagramReceived;
+    UdpDatagramDroppedBuilder    => UdpDatagramDropped;
+    StreamStateUpdatedBuilder    => StreamStateUpdated;
+    FramesProcessedBuilder       => FramesProcessed;
+    StreamDataMovedBuilder       => StreamDataMoved;
+    DatagramDataMovedBuilder     => DatagramDataMoved;
+    MigrationStateUpdatedBuilder => MigrationStateUpdated;
 }
