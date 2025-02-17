@@ -28,8 +28,26 @@ pub struct LogFile {
 #[builder(setter(into), build_fn(private, name = "fallible_build"))]
 pub struct QlogFile {
     #[serde(flatten)]
-    pub qlog: LogFile,
+    pub log_file: LogFile,
     pub traces: Vec<Traces>,
+}
+
+/// A qlog file using the QlogFileSeq schema can be serialized to a
+/// streamable JSON format called JSON Text Sequences (JSON-SEQ)
+/// ([RFC7464]). The top-level element in this schema defines only a
+/// small set of "header" fields and an array of component traces.
+///
+/// [RFC7464]: https://www.rfc-editor.org/rfc/rfc7464
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into), build_fn(private, name = "fallible_build"))]
+pub struct QlogFileSeq {
+    #[serde(flatten)]
+    pub log_file: LogFile,
+    pub trace_seq: TraceSeq,
+}
+
+impl QlogFileSeq {
+    pub const SCHEMA: &'static str = "urn:ietf:params:qlog:file:sequential";
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -63,6 +81,25 @@ pub struct Trace {
     #[builder(default)]
     pub vantage_point: Option<VantagePoint>,
     pub events: Vec<Event>,
+}
+
+/// TraceSeq is used with QlogFileSeq. It is conceptually similar to a
+/// Trace, with the exception that qlog events are not contained within
+/// it, but rather appended after it in a QlogFileSeq.
+#[serde_with::skip_serializing_none]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
+pub struct TraceSeq {
+    /// The optional "title" fields provide additional free-text information about the trace.
+    #[builder(default)]
+    pub title: Option<String>,
+    /// The optional "description" fields provide additional free-text information about the trace.
+    #[builder(default)]
+    pub description: Option<String>,
+    #[builder(default)]
+    pub common_fields: Option<CommonFields>,
+    #[builder(default)]
+    pub vantage_point: Option<VantagePoint>,
 }
 
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -509,7 +546,9 @@ macro_rules! gen_builder_method {
 gen_builder_method! {
     LogFileBuilder       => LogFile;
     QlogFileBuilder      => QlogFile;
+    QlogFileSeqBuilder   => QlogFileSeq;
     TraceBuilder         => Trace;
+    TraceSeqBuilder      => TraceSeq;
     TraceErrorBuilder    => TraceError;
     CommonFieldsBuilder  => CommonFields;
     VantagePointBuilder  => VantagePoint;
