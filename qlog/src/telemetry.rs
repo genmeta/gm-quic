@@ -14,13 +14,13 @@ use serde_json::Value;
 
 use crate::Event;
 
-pub trait ExportEvent {
+pub trait ExportEvent: Send + Sync {
     fn emit(&self, event: Event);
 }
 
-pub struct NoopBroker;
+pub struct NoopExporter;
 
-impl ExportEvent for NoopBroker {
+impl ExportEvent for NoopExporter {
     fn emit(&self, event: Event) {
         _ = event;
     }
@@ -42,9 +42,9 @@ impl Debug for Span {
 }
 
 impl Span {
-    pub fn new<B: ExportEvent + 'static>(broker: B, fields: HashMap<&'static str, Value>) -> Self {
+    pub fn new(exporter: Arc<dyn ExportEvent>, fields: HashMap<&'static str, Value>) -> Self {
         Self {
-            exporter: Arc::new(broker),
+            exporter,
             fields: Arc::new(fields),
         }
     }
@@ -66,7 +66,7 @@ impl PartialEq for Span {
 
 impl Default for Span {
     fn default() -> Self {
-        Self::new(NoopBroker, HashMap::new())
+        Self::new(Arc::new(NoopExporter), HashMap::new())
     }
 }
 
@@ -137,6 +137,10 @@ pub mod macro_support {
 
     use super::*;
 
+    pub fn current_span_exporter() -> Arc<dyn ExportEvent> {
+        current_span::CURRENT_SPAN.with(|span| span.borrow().exporter.clone())
+    }
+
     pub fn current_span_fields() -> HashMap<&'static str, Value> {
         current_span::CURRENT_SPAN.with(|span| span.borrow().fields.as_ref().clone())
     }
@@ -165,6 +169,10 @@ pub mod macro_support {
 macro_rules! span {
     () => {{
         $crate::telemetry::Span::current()
+    }};
+    (@current     $(, $($tt:tt)* )?) => {{
+        let __current_exporter = $crate::telemetry::macro_support::current_span_exporter();
+        $crate::span!(__current_exporter $(, $($tt)* )?)
     }};
     ($broker:expr $(, $($tt:tt)* )?) => {{
         #[allow(unused_mut)]
@@ -224,6 +232,8 @@ macro_rules! event {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use qbase::cid::ConnectionId;
 
     use super::*;
@@ -234,16 +244,17 @@ mod tests {
 
     #[test]
     fn span_fields() {
-        let _span = span!(NoopBroker);
+        let exporter = Arc::new(NoopExporter);
+        let _span = span!(exporter.clone());
         let a = 0i32;
         let c = 123456789usize;
-        span!(NoopBroker, a, b = 12.3f32, c, d = "Hello world!").in_scope(|| {
+        span!(exporter.clone(), a, a, b = 12.3f32, c, d = "Hello world!").in_scope(|| {
             assert_eq!(Span::current().load::<i32>("a"), 0);
             assert_eq!(Span::current().load::<f32>("b"), 12.3);
             assert_eq!(Span::current().load::<usize>("c"), 123456789);
             assert_eq!(Span::current().load::<String>("d"), "Hello world!");
             let e = vec![1, 2, 3];
-            span!(NoopBroker, a = 1, b = 2, c = 3, e).in_scope(|| {
+            span!(exporter.clone(), a = 1, b = 2, c = 3, e).in_scope(|| {
                 assert_eq!(Span::current().load::<i32>("a"), 1);
                 assert_eq!(Span::current().load::<i32>("b"), 2);
                 assert_eq!(Span::current().load::<i32>("c"), 3);
@@ -279,7 +290,7 @@ mod tests {
             ])))
         }
 
-        span!(TestBroker, group_id = group_id()).in_scope(|| {
+        span!(Arc::new(TestBroker), group_id = group_id()).in_scope(|| {
             event!(
                 connectivity::ServerListening::builder()
                     .ip_v4("127.0.0.1".to_owned())

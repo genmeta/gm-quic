@@ -20,7 +20,7 @@ pub struct LogFile {
     pub title: Option<String>,
     #[builder(default)]
     pub description: Option<String>,
-    #[builder(default = "todo!()")]
+    #[builder(default)]
     pub event_schemas: Vec<String>,
 }
 
@@ -87,18 +87,18 @@ pub struct Trace {
 /// Trace, with the exception that qlog events are not contained within
 /// it, but rather appended after it in a QlogFileSeq.
 #[serde_with::skip_serializing_none]
-#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct TraceSeq {
     /// The optional "title" fields provide additional free-text information about the trace.
-    #[builder(default)]
     pub title: Option<String>,
     /// The optional "description" fields provide additional free-text information about the trace.
-    #[builder(default)]
     pub description: Option<String>,
-    #[builder(default)]
     pub common_fields: Option<CommonFields>,
-    #[builder(default)]
     pub vantage_point: Option<VantagePoint>,
 }
 
@@ -178,6 +178,7 @@ pub struct Event {
     #[builder(default)]
     pub system_info: Option<SystemInformation>,
     /// events can contain any amount of custom fields
+    #[builder(default)]
     #[serde(flatten)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     // * text => any
