@@ -1,5 +1,6 @@
 pub mod loglevel;
 pub mod quic;
+pub mod telemetry;
 
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -271,7 +272,7 @@ impl ProtocolType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, From, Into, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct GroupID(String);
 
@@ -498,7 +499,7 @@ macro_rules! gen_builder_method {
         }
 
         impl $builder {
-            pub fn build(self) -> $event {
+            pub fn build(&mut self) -> $event {
                 self.fallible_build().expect("Failed to build event")
             }
         }

@@ -25,7 +25,8 @@ pub struct ServerListening {
 
     /// the server will always answer client initials with a retry
     /// (no 1-RTT connection setups by choice)
-    pub retry_required: bool,
+    #[builder(default)]
+    pub retry_required: Option<bool>,
 }
 
 /// The connection_started event is used for both attempting (client-
