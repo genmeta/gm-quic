@@ -51,3 +51,61 @@ impl ExportEvent for IoExpoter {
         _ = self.0.send(event);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::{
+        quic::connectivity,
+        telemetry::{Instrument, Span},
+        LogFile, TraceSeq, VantagePoint, VantagePointType,
+    };
+
+    #[tokio::test]
+    async fn io_exporter() {
+        let exporter = IoExpoter::new(
+            QlogFileSeq::builder()
+                .log_file(
+                    LogFile::builder()
+                        .title("io exporter example")
+                        .file_schema(QlogFileSeq::SCHEMA)
+                        .serialization_format("application/qlog+json-seq")
+                        .build(),
+                )
+                .trace_seq(
+                    TraceSeq::builder()
+                        .title("io exporter example")
+                        .description("just a example")
+                        .vantage_point(
+                            VantagePoint::builder()
+                                .r#type(VantagePointType::Unknow)
+                                .build(),
+                        )
+                        .build(),
+                )
+                .build(),
+            tokio::io::stdout(),
+        );
+
+        let meaningless_field = 112233u64;
+        crate::span!(Arc::new(exporter), meaningless_field).in_scope(|| {
+            crate::event!(connectivity::ServerListening::builder()
+                .ip_v4("192.168.31.1".to_owned())
+                .port_v4(443u16)
+                .build());
+
+            tokio::spawn(
+                async move {
+                    assert_eq!(Span::current().load::<String>("path_id"), "new path");
+                    assert_eq!(Span::current().load::<u64>("meaningless_field"), 112233u64);
+                    // do something
+                }
+                .instrument(crate::span!(@current, path_id = String::from("new path"))),
+            );
+        });
+
+        tokio::task::yield_now().await;
+    }
+}
