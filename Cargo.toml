@@ -42,6 +42,7 @@ futures = "0.3"
 getset = "0.1"
 log = "0.4"
 nom = "8"
+pin-project-lite = "0.2"
 rand = "0.9"
 rustls = { version = "0.23", default-features = false, features = ["std"] }
 serde = "1"
