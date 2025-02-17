@@ -14,6 +14,7 @@ categories.workspace = true
 [dependencies]
 bytes = { workspace = true }
 enum_dispatch = { workspace = true }
+derive_builder = { workspace = true }
 derive_more = { workspace = true, features = ["from", "into", "display"] }
 serde = { workspace = true, features = ["derive"] }
 qbase = { workspace = true }

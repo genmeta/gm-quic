@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 
 use super::{PacketHeader, PacketNumberSpace, QuicFrame};
@@ -14,42 +15,51 @@ use super::{PacketHeader, PacketNumberSpace, QuicFrame};
 /// than once
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct RecoveryParametersSet {
     /// Loss detection, see RFC 9002 Appendix A.2
     /// in amount of packets
+    #[builder(default)]
     pub reordering_threshold: Option<u16>,
 
     /// as RTT multiplier
+    #[builder(default)]
     pub time_threshold: Option<f32>,
 
     /// in ms
     pub timer_granularity: u16,
 
     /// in ms
+    #[builder(default)]
     pub initial_rtt: Option<f32>,
 
     /// congestion control, see RFC 9002 Appendix B.2
     /// in bytes. Note that this could be updated after pmtud
+    #[builder(default)]
     pub max_datagram_size: Option<u32>,
 
     /// in bytes
+    #[builder(default)]
     pub initial_congestion_window: Option<u64>,
 
     /// Note that this could change when max_datagram_size changes
     /// in bytes
+    #[builder(default)]
     pub minimum_congestion_window: Option<u64>,
     pub loss_reduction_factor: Option<f32>,
 
     /// as PTO multiplier
+    #[builder(default)]
     pub persistent_congestion_threshold: Option<u16>,
 
     /// Additionally, this event can contain any number of unspecified fields
     /// to support different recovery approaches.
+    #[builder(default)]
     #[serde(flatten)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub custom_fileds: HashMap<String, String>,
+    pub custom_fields: HashMap<String, serde_json::Value>,
 }
 
 /// The recovery_metrics_updated event is emitted when one or more of the
@@ -64,8 +74,13 @@ pub struct RecoveryParametersSet {
 /// guaranteed to contain at least one of the listed metrics.
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct RecoveryMetricsUpdated {
     /// Loss detection, see RFC 9002 Appendix A.3
     /// all following rtt fields are expressed in ms
@@ -94,7 +109,7 @@ pub struct RecoveryMetricsUpdated {
     /// approaches.
     #[serde(flatten)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub custom_fileds: HashMap<String, String>,
+    pub custom_fields: HashMap<String, serde_json::Value>,
 }
 
 /// The congestion_state_updated event indicates when the congestion
@@ -112,11 +127,14 @@ pub struct RecoveryMetricsUpdated {
 /// markings.
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct CongestionStateUpdated {
+    #[builder(default)]
     pub old: Option<String>,
     pub new: String,
+    #[builder(default)]
     pub trigger: Option<String>,
 }
 
@@ -140,15 +158,19 @@ pub struct CongestionStateUpdated {
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct LossTimerUpdated {
     /// called "mode" in RFC 9002 A.9.
+    #[builder(default)]
     pub timer_type: Option<TimerType>,
+    #[builder(default)]
     pub packet_number_space: Option<PacketNumberSpace>,
     pub event_type: EventType,
 
     /// if event_type === "set": delta time is in ms from
     /// this event's timestamp until when the timer will trigger
+    #[builder(default)]
     pub delta: Option<f32>,
 }
 
@@ -177,7 +199,12 @@ pub enum EventType {
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct PacketLost {
     /// should include at least the packet_type and packet_number
     pub header: Option<PacketHeader>,
@@ -185,7 +212,7 @@ pub struct PacketLost {
     /// not all implementations will keep track of full
     /// packets, so these are optional
     pub frames: Option<Vec<QuicFrame>>,
-    pub is_mtu_probe_packet: Option<bool>,
+    pub is_mtu_probe_packet: bool,
     pub trigger: Option<PacketLostTrigger>,
 }
 
@@ -222,9 +249,9 @@ pub enum PacketLostTrigger {
 /// one can determine when data was retransmitted).
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into), build_fn(private, name = "fallible_build"))]
 pub struct MarkedForRetransmit {
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub frames: Vec<QuicFrame>,
 }
 
@@ -234,8 +261,10 @@ pub struct MarkedForRetransmit {
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct ECNStateUpdated {
+    #[builder(default)]
     pub old: Option<ECNState>,
     pub new: ECNState,
 }
@@ -253,4 +282,14 @@ pub enum ECNState {
     /// testing was successful, the endpoint now
     /// sends packets with ECT(0) marking
     Capable,
+}
+
+crate::gen_builder_method! {
+    RecoveryParametersSetBuilder  => RecoveryParametersSet;
+    RecoveryMetricsUpdatedBuilder => RecoveryMetricsUpdated;
+    CongestionStateUpdatedBuilder => CongestionStateUpdated;
+    LossTimerUpdatedBuilder       => LossTimerUpdated;
+    PacketLostBuilder             => PacketLost;
+    MarkedForRetransmitBuilder    => MarkedForRetransmit;
+    ECNStateUpdatedBuilder        => ECNStateUpdated;
 }

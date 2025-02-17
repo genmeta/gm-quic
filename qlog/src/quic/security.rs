@@ -1,3 +1,4 @@
+use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 
 use super::KeyType;
@@ -7,15 +8,19 @@ use crate::HexString;
 /// [QLOG-MAIN]
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct KeyUpdated {
     pub key_type: KeyType,
+    #[builder(default)]
     pub old: Option<HexString>,
+    #[builder(default)]
     pub new: Option<HexString>,
 
     /// needed for 1RTT key updates
     pub key_phase: u64,
+    #[builder(default)]
     pub trigger: Option<KeyUpdatedTrigger>,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -32,14 +37,17 @@ pub enum KeyUpdatedTrigger {
 /// [QLOG-MAIN].
 ///
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct KeyDiscarded {
     pub key_type: KeyType,
+    #[builder(default)]
     pub key: Option<HexString>,
 
     /// needed for 1RTT key updates
     pub key_phase: u64,
+    #[builder(default)]
     pub trigger: Option<KeyDiscardedTrigger>,
 }
 
@@ -51,4 +59,9 @@ pub enum KeyDiscardedTrigger {
     Tls,
     RemoteUpdate,
     LocalUpdate,
+}
+
+crate::gen_builder_method! {
+    KeyUpdatedBuilder   => KeyUpdated;
+    KeyDiscardedBuilder => KeyDiscarded;
 }

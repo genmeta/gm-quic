@@ -4,21 +4,27 @@ pub mod quic;
 use std::{collections::HashMap, net::SocketAddr};
 
 use bytes::Bytes;
+use derive_builder::Builder;
 use derive_more::{From, Into};
 use quic::ConnectionID;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct LogFile {
     pub file_schema: String,
     pub serialization_format: String,
+    #[builder(default)]
     pub title: Option<String>,
+    #[builder(default)]
     pub description: Option<String>,
+    #[builder(default = "todo!()")]
     pub event_schemas: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into), build_fn(private, name = "fallible_build"))]
 pub struct QlogFile {
     #[serde(flatten)]
     pub qlog: LogFile,
@@ -26,7 +32,7 @@ pub struct QlogFile {
 }
 
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Traces {
     Trace(Trace),
@@ -41,36 +47,47 @@ pub enum Traces {
 /// point.  For example, for QUIC, a single trace only contains events
 /// for a single logical QUIC connection for either the client or the
 /// server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct Trace {
     /// The optional "title" fields provide additional free-text information about the trace.
+    #[builder(default)]
     pub title: Option<String>,
     /// The optional "description" fields provide additional free-text information about the trace.
+    #[builder(default)]
     pub description: Option<String>,
+    #[builder(default)]
     pub common_fields: Option<CommonFields>,
+    #[builder(default)]
     pub vantage_point: Option<VantagePoint>,
     pub events: Vec<Event>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct CommonFields {
     pub path: PathID,
     pub time_format: TimeFormat,
     pub reference_time: ReferenceTime,
     pub protocol_types: ProtocolTypeList,
     pub group_id: GroupID,
+    #[builder(default)]
     #[serde(flatten)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub custom_fileds: HashMap<String, String>,
+    //  * text => any
+    pub custom_fields: HashMap<String, serde_json::Value>,
 }
 
 /// A VantagePoint describes the vantage point from which a trace originates
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct VantagePoint {
+    #[builder(default)]
     pub name: Option<String>,
     pub r#type: VantagePointType,
+    #[builder(default)]
     pub flow: Option<VantagePointType>,
 }
 
@@ -87,11 +104,14 @@ pub enum VantagePointType {
     Unknow,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde_with::skip_serializing_none]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct TraceError {
     pub error_description: String,
+    #[builder(default)]
     pub uri: Option<String>,
+    #[builder(default)]
     pub vantage_point: Option<VantagePoint>,
 }
 
@@ -99,7 +119,8 @@ pub struct TraceError {
 ///
 /// Events can contain any amount of custom fields.
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct Event {
     pub time: f64,
     #[serde(flatten)]
@@ -108,14 +129,21 @@ pub struct Event {
     /// of IP addresses and ports). In many cases, the path will be the same for all events in a given trace, and does
     /// not need to be logged explicitly with each event. In this case, the "path" field can be omitted (in which case
     /// the default value of "" is assumed) or reflected in "common_fields" instead
+    #[builder(default)]
     pub path: Option<PathID>,
+    #[builder(default)]
     pub time_format: Option<TimeFormat>,
+    #[builder(default)]
     pub protocol_types: Option<ProtocolTypeList>,
+    #[builder(default)]
     pub group_id: Option<GroupID>,
+    #[builder(default)]
     pub system_info: Option<SystemInformation>,
+    /// events can contain any amount of custom fields
     #[serde(flatten)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub custom_fileds: HashMap<String, String>,
+    // * text => any
+    pub custom_fields: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, From, Into, Serialize, Deserialize, PartialEq, Eq)]
@@ -123,7 +151,12 @@ pub struct Event {
 pub struct PathID(String);
 
 #[serde_with::skip_serializing_none]
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 #[serde(try_from = "UncheckedReferenceTime")]
 pub struct ReferenceTime {
     /// The required "clock_type" field represents the type of clock used for time measurements. The value "system"
@@ -139,6 +172,7 @@ pub struct ReferenceTime {
     /// The optional "wall_clock_time" field can be used to provide an approximate date/time value that logging commenced
     /// at if the epoch value is "unknown". It uses the format defined in [RFC3339]. Note that conversion of timestamps
     /// to calendar time based on wall clock times cannot be safely relied on.
+    #[builder(default)]
     pub wall_clock_time: Option<RFC3339DateTime>,
 }
 
@@ -167,8 +201,6 @@ impl TryFrom<UncheckedReferenceTime> for ReferenceTime {
         })
     }
 }
-
-impl ReferenceTime {}
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -258,8 +290,13 @@ impl From<(SocketAddr, SocketAddr)> for GroupID {
 /// The "system_info" field can be used to record system-specific details related to an event. This is useful, for instance,
 /// where an application splits work across CPUs, processes, or threads and events for a single trace occur on potentially
 /// different combinations thereof. Each field is optional to support deployment diversity.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Builder, Default, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde_with::skip_serializing_none]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct SystemInformation {
     pub processor_id: Option<u32>,
     pub process_id: Option<u32>,
@@ -364,9 +401,9 @@ pub trait BeEventData {
     fn importance(&self) -> EventImportance;
 }
 
-macro_rules! be_events {
+macro_rules! imp_be_events {
     ( $($importance:ident $event:ty => $prefix:ident $schme:literal ;)* ) => {
-        $( be_events!{@impl_one $importance $event => $prefix $schme ; } )*
+        $( imp_be_events!{@impl_one $importance $event => $prefix $schme ; } )*
     };
     (@impl_one $importance:ident $event:ty => urn $schme:literal ; ) => {
         impl BeEventData for $event {
@@ -381,7 +418,7 @@ macro_rules! be_events {
     };
 }
 
-be_events! {
+imp_be_events! {
     Extra quic::connectivity::ServerListening        => urn "quic:server_listening";
     Base  quic::connectivity::ConnectionStarted      => urn "quic:connection_started";
     Base  quic::connectivity::ConnectionClosed       => urn "quic:connection_closed";
@@ -430,7 +467,12 @@ be_events! {
 pub struct HexString(#[serde_as(as = "serde_with::hex::Hex")] Bytes);
 
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct RawInfo {
     /// the full byte length of the entity (e.g., packet or frame),
     /// including possible headers and trailers
@@ -441,6 +483,38 @@ pub struct RawInfo {
     /// the (potentially truncated) contents of the full entity,
     /// including headers and possibly trailers
     pub data: Option<HexString>,
+}
+
+#[macro_export(local_inner_macros)]
+macro_rules! gen_builder_method {
+    ( $($builder:ty => $event:ty;)* ) => {
+        $( gen_builder_method!{@impl_one $event => $builder ;} )*
+    };
+    (@impl_one $event:ty => $builder:ty ; ) => {
+        impl $event {
+            pub fn builder() -> $builder {
+                Default::default()
+            }
+        }
+
+        impl $builder {
+            pub fn build(self) -> $event {
+                self.fallible_build().expect("Failed to build event")
+            }
+        }
+    };
+}
+
+gen_builder_method! {
+    LogFileBuilder       => LogFile;
+    QlogFileBuilder      => QlogFile;
+    TraceBuilder         => Trace;
+    TraceErrorBuilder    => TraceError;
+    CommonFieldsBuilder  => CommonFields;
+    VantagePointBuilder  => VantagePoint;
+    EventBuilder         => Event;
+    ReferenceTimeBuilder => ReferenceTime;
+    RawInfoBuilder       => RawInfo;
 }
 
 #[cfg(test)]
@@ -460,7 +534,7 @@ mod tests {
             reference_time: ReferenceTime::default(),
             protocol_types: ProtocolTypeList::from(vec![ProtocolType::quic()]),
             group_id: GroupID::from(odcid),
-            custom_fileds: Default::default(),
+            custom_fields: Default::default(),
         };
         let expect = r#"{
   "path": "",
@@ -517,7 +591,7 @@ mod tests {
             protocol_types: None,
             group_id: None,
             system_info: None,
-            custom_fileds: HashMap::new(),
+            custom_fields: HashMap::new(),
         };
         let expect = r#"{
   "time": 1.0,
