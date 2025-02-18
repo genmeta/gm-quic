@@ -115,6 +115,13 @@ impl BufMap {
         self.1
     }
 
+    fn sent(&self) -> u64 {
+        match self.0.back() {
+            Some(s) if s.color() == Color::Pending => s.offset(),
+            _ => self.1,
+        }
+    }
+
     // 挑选Lost/Pending的数据发送。越靠前的数据，越高优先级发送；
     // 丢包重传的数据，相比于Pending数据更靠前，因此具有更高的优先级。
     fn pick<P>(&mut self, predicate: P, flow_limit: usize) -> Option<(Range<u64>, bool)>
@@ -568,6 +575,11 @@ impl SendBuf {
         self.state.1
     }
 
+    /// Return the number of bytes that have been sent.
+    pub fn sent(&self) -> u64 {
+        self.state.sent()
+    }
+
     /// Return the number of bytes can be written without reallocation.
     pub fn remaining_mut(&self) -> usize {
         self.data.capacity() - self.data.len()
@@ -782,6 +794,19 @@ mod tests {
                 State::encode(50, Color::Flighting),
             ]
         );
+    }
+
+    #[test]
+    fn test_bufmap_sent() {
+        let mut buf_map = BufMap::default();
+        buf_map.extend_to(200);
+        assert_eq!(buf_map.sent(), 0);
+
+        buf_map.pick(|_| Some(120), usize::MAX);
+        assert_eq!(buf_map.sent(), 120);
+
+        buf_map.pick(|_| Some(80), usize::MAX);
+        assert_eq!(buf_map.sent(), 200);
     }
 
     #[test]

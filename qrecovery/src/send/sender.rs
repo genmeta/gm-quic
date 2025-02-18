@@ -36,7 +36,7 @@ where
 {
     /// 应用层使用，取消发送流
     pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
-        let final_size = self.sndbuf.written();
+        let final_size = self.sndbuf.sent();
         let reset_stream_err = ResetStreamError::new(
             VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
             VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
@@ -177,7 +177,7 @@ where
     TX: SendFrame<ResetStreamFrame>,
 {
     pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
-        let final_size = self.sndbuf.written();
+        let final_size = self.sndbuf.sent();
         let reset_stream_err = ResetStreamError::new(
             VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
             VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
@@ -316,7 +316,7 @@ where
     TX: SendFrame<ResetStreamFrame>,
 {
     pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
-        let final_size = self.sndbuf.written();
+        let final_size = self.sndbuf.sent();
         let reset_stream_err = ResetStreamError::new(
             VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
             VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
@@ -332,11 +332,11 @@ impl<TX> DataSentSender<TX> {
     where
         P: Fn(u64) -> Option<usize>,
     {
-        let final_size = self.sndbuf.written();
+        let total_size = self.sndbuf.written();
         self.sndbuf
             .pick_up(&predicate, flow_limit)
             .map(|(offset, is_fresh, data)| {
-                let is_eos = offset + data.len() as u64 == final_size;
+                let is_eos = offset + data.len() as u64 == total_size;
                 if is_eos {
                     self.fin_state = FinState::Sent;
                 }
@@ -344,9 +344,9 @@ impl<TX> DataSentSender<TX> {
             })
             .or_else(|| {
                 if self.fin_state == FinState::None {
-                    let _ = predicate(final_size)?;
+                    let _ = predicate(total_size)?;
                     self.fin_state = FinState::Sent;
-                    Some((final_size, false, (&[], &[]), true))
+                    Some((total_size, false, (&[], &[]), true))
                 } else {
                     None
                 }
