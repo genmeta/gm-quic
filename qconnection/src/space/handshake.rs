@@ -10,7 +10,7 @@ use qbase::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::{
             long::{io::LongHeaderBuilder, HandshakeHeader},
-            GetType,
+            GetDcid, GetType,
         },
         keys::ArcKeys,
         number::PacketNumber,
@@ -201,7 +201,7 @@ pub fn spawn_deliver_and_parse(
                                             local_params.original_destination_connection_id()
                                         })
                                     {
-                                        if origin_dcid != packet.header.dcid {
+                                        if origin_dcid != *packet.header.dcid() {
                                             components.proto.del_router_entry(&origin_dcid.into());
                                         }
                                     }

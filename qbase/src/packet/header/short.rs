@@ -31,6 +31,11 @@ impl OneRttHeader {
     pub fn new(spin: SpinBit, dcid: ConnectionId) -> Self {
         Self { spin, dcid }
     }
+
+    /// Get the spin bit.
+    pub fn spin(&self) -> SpinBit {
+        self.spin
+    }
 }
 
 impl EncodeHeader for OneRttHeader {
@@ -46,7 +51,7 @@ impl GetType for OneRttHeader {
 }
 
 impl super::GetDcid for OneRttHeader {
-    fn get_dcid(&self) -> &ConnectionId {
+    fn dcid(&self) -> &ConnectionId {
         &self.dcid
     }
 }

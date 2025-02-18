@@ -157,8 +157,8 @@ impl QuicServer {
 
         let (clinet_scid, origin_dcid) = match &packet {
             Packet::Data(data_packet) => match &data_packet.header {
-                DataHeader::Long(LongHeader::Initial(hdr)) => (*hdr.get_scid(), *hdr.get_dcid()),
-                DataHeader::Long(LongHeader::ZeroRtt(hdr)) => (*hdr.get_scid(), *hdr.get_dcid()),
+                DataHeader::Long(LongHeader::Initial(hdr)) => (*hdr.scid(), *hdr.dcid()),
+                DataHeader::Long(LongHeader::ZeroRtt(hdr)) => (*hdr.scid(), *hdr.dcid()),
                 _ => return,
             },
             _ => return,

@@ -50,14 +50,14 @@ pub trait EncodeHeader {
 #[enum_dispatch]
 pub trait GetDcid {
     /// Get the Destination Connection ID (DCID) of the packet.
-    fn get_dcid(&self) -> &ConnectionId;
+    fn dcid(&self) -> &ConnectionId;
 }
 
 /// Get the Source Connection ID (SCID) of the packet, only long packets have SCID.
 #[enum_dispatch]
 pub trait GetScid {
     /// Get the Source Connection ID (SCID) of the packet.
-    fn get_scid(&self) -> &ConnectionId;
+    fn scid(&self) -> &ConnectionId;
 }
 
 /// The sum type of all packet headers.
@@ -145,6 +145,8 @@ pub mod io {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Deref;
+
     use super::{
         io::be_header,
         long::{Handshake, Initial, Retry, VersionNegotiation, ZeroRtt},
@@ -153,9 +155,13 @@ mod tests {
     use crate::{
         cid::ConnectionId,
         packet::{
-            header::io::WriteHeader,
-            r#type::{long, long::Ver1, short::OneRtt, Type},
-            OneRttHeader, SpinBit,
+            header::{io::WriteHeader, GetScid},
+            r#type::{
+                long::{self, Ver1},
+                short::OneRtt,
+                Type,
+            },
+            GetDcid, OneRttHeader, SpinBit,
         },
     };
 
@@ -168,9 +174,9 @@ mod tests {
         assert_eq!(remain.len(), 0);
         match vn_long_header {
             Header::VN(vn) => {
-                assert_eq!(vn.dcid, ConnectionId::default());
-                assert_eq!(vn.scid, ConnectionId::default());
-                assert_eq!(vn.specific.versions, vec![0x01, 0x02]);
+                assert_eq!(vn.dcid(), &ConnectionId::default());
+                assert_eq!(vn.scid(), &ConnectionId::default());
+                assert_eq!(vn.versions(), &vec![0x01, 0x02]);
             }
             _ => panic!("unexpected header type"),
         }
@@ -185,12 +191,12 @@ mod tests {
         assert_eq!(remain.len(), 0);
         match retry_long_header {
             Header::Retry(retry) => {
-                assert_eq!(retry.dcid, ConnectionId::default());
-                assert_eq!(retry.scid, ConnectionId::default());
-                assert_eq!(retry.token, [0x00, 0x00, 0x00]);
+                assert_eq!(retry.dcid(), &ConnectionId::default());
+                assert_eq!(retry.scid(), &ConnectionId::default());
+                assert_eq!(retry.token().deref(), &[0x00, 0x00, 0x00]);
                 assert_eq!(
-                    retry.integrity,
-                    [
+                    retry.integrity(),
+                    &[
                         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
                         0x0c, 0x0d, 0x0e, 0x0f
                     ]
@@ -216,9 +222,9 @@ mod tests {
         assert_eq!(remain.len(), 0);
         match initial_long_header {
             Header::Initial(initial) => {
-                assert_eq!(initial.dcid, ConnectionId::default());
-                assert_eq!(initial.scid, ConnectionId::default());
-                assert_eq!(initial.token, [0x01, 0x02, 0x03,]);
+                assert_eq!(initial.dcid(), &ConnectionId::default());
+                assert_eq!(initial.scid(), &ConnectionId::default());
+                assert_eq!(initial.token().deref(), [0x01, 0x02, 0x03,]);
             }
             _ => panic!("unexpected header type"),
         }
@@ -230,8 +236,8 @@ mod tests {
         assert_eq!(remain.len(), 0);
         match zero_rtt_long_header {
             Header::ZeroRtt(zero_rtt) => {
-                assert_eq!(zero_rtt.dcid, ConnectionId::default());
-                assert_eq!(zero_rtt.scid, ConnectionId::default());
+                assert_eq!(zero_rtt.dcid(), &ConnectionId::default());
+                assert_eq!(zero_rtt.scid(), &ConnectionId::default());
             }
             _ => panic!("unexpected header type"),
         }
@@ -243,8 +249,8 @@ mod tests {
         assert_eq!(remain.len(), 0);
         match handshake_long_header {
             Header::Handshake(handshake) => {
-                assert_eq!(handshake.dcid, ConnectionId::default());
-                assert_eq!(handshake.scid, ConnectionId::default());
+                assert_eq!(handshake.dcid(), &ConnectionId::default());
+                assert_eq!(handshake.scid(), &ConnectionId::default());
             }
             _ => panic!("unexpected header type"),
         }
@@ -270,11 +276,8 @@ mod tests {
         // VersionNegotiation Header
         let mut buf = vec![];
         let vn_long_header = Header::VN(
-            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
-                VersionNegotiation {
-                    versions: vec![0x01, 0x02],
-                },
-            ),
+            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default())
+                .wrap(VersionNegotiation::new(vec![0x01, 0x02])),
         );
         buf.put_header(&vn_long_header);
         assert_eq!(
@@ -289,13 +292,13 @@ mod tests {
         let mut buf = vec![];
         let retry_long_header = Header::Retry(
             LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
-                Retry {
-                    token: vec![0x00, 0x00, 0x00],
-                    integrity: [
+                Retry::new(
+                    &[0x00, 0x00, 0x00],
+                    &[
                         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
                         0x0c, 0x0d, 0x0e, 0x0f,
                     ],
-                },
+                ),
             ),
         );
         buf.put_header(&retry_long_header);
@@ -310,11 +313,8 @@ mod tests {
         // Initial Header
         let mut buf = vec![];
         let initial_header = Header::Initial(
-            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
-                Initial {
-                    token: vec![0x01, 0x02, 0x03],
-                },
-            ),
+            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default())
+                .wrap(Initial::with_token(vec![0x01, 0x02, 0x03])),
         );
         buf.put_header(&initial_header);
         assert_eq!(

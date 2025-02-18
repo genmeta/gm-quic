@@ -177,9 +177,9 @@ impl QuicProto {
 
     pub async fn deliver(self: &Arc<Self>, packet: Packet, pathway: Pathway, socket: Socket) {
         let dcid = match &packet {
-            Packet::VN(vn) => vn.get_dcid(),
-            Packet::Retry(retry) => retry.get_dcid(),
-            Packet::Data(data_packet) => data_packet.get_dcid(),
+            Packet::VN(vn) => vn.dcid(),
+            Packet::Retry(retry) => retry.dcid(),
+            Packet::Data(data_packet) => data_packet.dcid(),
         };
         let signpost = if !dcid.is_empty() {
             Signpost::from(*dcid)
