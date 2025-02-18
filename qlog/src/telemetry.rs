@@ -238,7 +238,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        quic::{connectivity, ConnectionID},
+        quic::{connectivity::ServerListening, ConnectionID},
         GroupID,
     };
 
@@ -292,10 +292,10 @@ mod tests {
 
         span!(Arc::new(TestBroker), group_id = group_id()).in_scope(|| {
             event!(
-                connectivity::ServerListening::builder()
-                    .ip_v4("127.0.0.1".to_owned())
-                    .port_v4(8080u16)
-                    .build(),
+                crate::build!(ServerListening {
+                    ip_v4: "127.0.0.1".to_owned(),
+                    port_v4: 8080u16,
+                }),
                 passive_listening = true
             );
         });
