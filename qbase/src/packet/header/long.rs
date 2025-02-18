@@ -25,20 +25,20 @@ use crate::{cid::ConnectionId, varint::VarInt};
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Default, Clone, Deref, DerefMut)]
 pub struct LongHeader<T> {
-    pub dcid: ConnectionId,
-    pub scid: ConnectionId,
+    dcid: ConnectionId,
+    scid: ConnectionId,
     #[deref]
-    pub specific: T,
+    specific: T,
 }
 
 impl<T> super::GetDcid for LongHeader<T> {
-    fn get_dcid(&self) -> &ConnectionId {
+    fn dcid(&self) -> &ConnectionId {
         &self.dcid
     }
 }
 
 impl<T> super::GetScid for LongHeader<T> {
-    fn get_scid(&self) -> &ConnectionId {
+    fn scid(&self) -> &ConnectionId {
         &self.scid
     }
 }
@@ -54,7 +54,19 @@ impl<T> super::GetScid for LongHeader<T> {
 /// all the version numbers supported by the server, each version being 32 bits.
 #[derive(Debug, Default, Clone)]
 pub struct VersionNegotiation {
-    pub versions: Vec<u32>,
+    versions: Vec<u32>,
+}
+
+impl VersionNegotiation {
+    /// Create a new VersionNegotiation packet from the version numbers.
+    pub fn new(versions: Vec<u32>) -> Self {
+        VersionNegotiation { versions }
+    }
+
+    /// Get the version numbers supported by the server.
+    pub fn versions(&self) -> &Vec<u32> {
+        &self.versions
+    }
 }
 
 /// The specific contents of the retry packet, which includes a retry token and a
@@ -65,8 +77,8 @@ pub struct VersionNegotiation {
 /// requiring the client to reconnect to the new address with the token.
 #[derive(Debug, Default, Clone)]
 pub struct Retry {
-    pub token: Vec<u8>,
-    pub integrity: [u8; 16],
+    token: Vec<u8>,
+    integrity: [u8; 16],
 }
 
 impl Retry {
@@ -74,13 +86,23 @@ impl Retry {
     ///
     /// The token is required to be carried by the Initial packet when the client
     /// reconnects in the future and will be used by the server for address verification.
-    fn from_slice(token: &[u8], integrity: &[u8]) -> Self {
+    pub fn new(token: &[u8], integrity: &[u8]) -> Self {
         let mut retry = Retry {
             token: Vec::from(token),
             integrity: [0; 16],
         };
         retry.integrity.copy_from_slice(integrity);
         retry
+    }
+
+    /// Get the retry token.
+    pub fn token(&self) -> &Vec<u8> {
+        &self.token
+    }
+
+    /// Get the integrity value.
+    pub fn integrity(&self) -> &[u8; 16] {
+        &self.integrity
     }
 }
 
@@ -92,7 +114,26 @@ impl Retry {
 /// If the client connects to the server for the first time, the token is empty.
 #[derive(Debug, Default, Clone)]
 pub struct Initial {
-    pub token: Vec<u8>,
+    token: Vec<u8>,
+}
+
+impl Initial {
+    /// Create a new Initial packet from the token.
+    pub fn with_token(token: Vec<u8>) -> Self {
+        Initial { token }
+    }
+
+    /// Create a new Initial packet from the token slice.
+    pub fn from_slice(token: &[u8]) -> Self {
+        Initial {
+            token: Vec::from(token),
+        }
+    }
+
+    /// Get the token.
+    pub fn token(&self) -> &Vec<u8> {
+        &self.token
+    }
 }
 
 /// The specific contents of the 0-RTT packet, which is empty.
@@ -218,7 +259,7 @@ pub mod io {
     /// [nom](https://docs.rs/nom/latest/nom/) parser style.
     pub fn be_version_negotiation(input: &[u8]) -> nom::IResult<&[u8], VersionNegotiation> {
         let (remain, (versions, _)) = many_till(be_u32, eof).parse(input)?;
-        Ok((remain, VersionNegotiation { versions }))
+        Ok((remain, VersionNegotiation::new(versions)))
     }
 
     /// Parse the retry packet,
@@ -229,16 +270,13 @@ pub mod io {
         }
         let token_length = input.len() - 16;
         let (integrity, token) = take(token_length)(input)?;
-        Ok((&[][..], Retry::from_slice(token, integrity)))
+        Ok((&[][..], Retry::new(token, integrity)))
     }
 
     /// Parse the initial packet,
     /// [nom](https://docs.rs/nom/latest/nom/) parser style.
     pub fn be_initial(input: &[u8]) -> nom::IResult<&[u8], Initial> {
-        map(length_data(be_varint), |token| Initial {
-            token: Vec::from(token),
-        })
-        .parse(input)
+        map(length_data(be_varint), Initial::from_slice).parse(input)
     }
 
     /// Parse the 0-RTT packet,
@@ -278,7 +316,7 @@ pub mod io {
 
         /// Build into a version negotiation header.
         pub fn vn(self, versions: Vec<u32>) -> LongHeader<VersionNegotiation> {
-            self.wrap(VersionNegotiation { versions })
+            self.wrap(VersionNegotiation::new(versions))
         }
 
         /// Build into a retry header.
@@ -288,7 +326,7 @@ pub mod io {
 
         /// Build into an initial header.
         pub fn initial(self, token: Vec<u8>) -> LongHeader<Initial> {
-            self.wrap(Initial { token })
+            self.wrap(Initial::with_token(token))
         }
 
         /// Build into a 0-RTT header.
@@ -454,11 +492,8 @@ mod tests {
 
         let mut buf = Vec::<u8>::new();
         let vn_long_header =
-            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
-                VersionNegotiation {
-                    versions: vec![0x01, 0x02],
-                },
-            );
+            LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default())
+                .wrap(VersionNegotiation::new(vec![0x01, 0x02]));
         buf.put_specific(&vn_long_header.specific);
         assert_eq!(buf, vec![0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02]);
     }
@@ -471,13 +506,13 @@ mod tests {
         let mut buf = Vec::<u8>::new();
         let retry_long_header =
             LongHeaderBuilder::with_cid(ConnectionId::default(), ConnectionId::default()).wrap(
-                Retry {
-                    token: vec![0x00, 0x00, 0x00],
-                    integrity: [
+                Retry::new(
+                    &[0x00, 0x00, 0x00],
+                    &[
                         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
                         0x0c, 0x0d, 0x0e, 0x0f,
                     ],
-                },
+                ),
             );
         buf.put_specific(&retry_long_header.specific);
         assert_eq!(

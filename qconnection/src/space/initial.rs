@@ -13,7 +13,7 @@ use qbase::{
         decrypt::{decrypt_packet, remove_protection_of_long_packet},
         header::{
             long::{io::LongHeaderBuilder, InitialHeader},
-            GetType,
+            GetDcid, GetScid, GetType,
         },
         keys::ArcKeys,
         number::PacketNumber,
@@ -183,7 +183,7 @@ pub fn spawn_deliver_and_parse(
                 // with different Source Connection IDs.
                 if parameters
                     .initial_scid_from_peer()
-                    .is_some_and(|scid| scid != packet.0.scid)
+                    .is_some_and(|scid| scid != *packet.0.scid())
                 {
                     continue;
                 }
@@ -223,17 +223,17 @@ pub fn spawn_deliver_and_parse(
                                 path.cc()
                                     .on_pkt_rcvd(Epoch::Initial, packet.pn, is_ack_packet);
                                 if parameters.initial_scid_from_peer().is_none() {
-                                    remote_cids.revise_initial_dcid(packet.header.scid);
+                                    remote_cids.revise_initial_dcid(*packet.header.scid());
                                     parameters
-                                        .initial_scid_from_peer_need_equal(packet.header.scid);
+                                        .initial_scid_from_peer_need_equal(*packet.header.scid());
                                 }
                                 // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
                                 // A server might wish to validate the client address before starting the cryptographic handshake.
                                 // QUIC uses a token in the Initial packet to provide address validation prior to completing the handshake.
                                 // This token is delivered to the client during connection establishment with a Retry packet (see Section 8.1.2)
                                 // or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
-                                if !packet.header.token.is_empty() {
-                                    validate(&packet.header.token, &path);
+                                if !packet.header.token().is_empty() {
+                                    validate(packet.header.token(), &path);
                                 }
 
                                 // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
@@ -245,7 +245,7 @@ pub fn spawn_deliver_and_parse(
                                             local_params.original_destination_connection_id()
                                         })
                                     {
-                                        if origin_dcid != packet.header.dcid {
+                                        if origin_dcid != *packet.header.dcid() {
                                             components.proto.del_router_entry(&origin_dcid.into());
                                         }
                                     }
