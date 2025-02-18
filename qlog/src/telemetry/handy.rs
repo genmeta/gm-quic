@@ -58,7 +58,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        quic::connectivity,
+        quic::connectivity::ServerListening,
         telemetry::{Instrument, Span},
         LogFile, TraceSeq, VantagePoint, VantagePointType,
     };
@@ -66,35 +66,29 @@ mod tests {
     #[tokio::test]
     async fn io_exporter() {
         let exporter = IoExpoter::new(
-            QlogFileSeq::builder()
-                .log_file(
-                    LogFile::builder()
-                        .title("io exporter example")
-                        .file_schema(QlogFileSeq::SCHEMA)
-                        .serialization_format("application/qlog+json-seq")
-                        .build(),
-                )
-                .trace_seq(
-                    TraceSeq::builder()
-                        .title("io exporter example")
-                        .description("just a example")
-                        .vantage_point(
-                            VantagePoint::builder()
-                                .r#type(VantagePointType::Unknow)
-                                .build(),
-                        )
-                        .build(),
-                )
-                .build(),
+            crate::build!(QlogFileSeq {
+                log_file: LogFile {
+                    title: "io exporter example",
+                    file_schema: QlogFileSeq::SCHEMA,
+                    serialization_format: "application/qlog+json-seq",
+                },
+                trace_seq: TraceSeq {
+                    title: "io exporter example",
+                    description: "just a example",
+                    vantage_point: VantagePoint {
+                        r#type: VantagePointType::Unknow,
+                    },
+                }
+            }),
             tokio::io::stdout(),
         );
 
         let meaningless_field = 112233u64;
         crate::span!(Arc::new(exporter), meaningless_field).in_scope(|| {
-            crate::event!(connectivity::ServerListening::builder()
-                .ip_v4("192.168.31.1".to_owned())
-                .port_v4(443u16)
-                .build());
+            crate::event!(crate::build!(ServerListening {
+                ip_v4: "127.0.0.1".to_owned(),
+                port_v4: 443u16
+            }));
 
             tokio::spawn(
                 async move {
