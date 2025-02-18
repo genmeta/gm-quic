@@ -83,7 +83,7 @@ let quic_client = QuicClient::builder()
     // instead of initiating a new connection every time.
     .reuse_connection()
     // Keep the connection alive when it is idle
-    .keep_alive(Durnation::from_secs(30))       
+    .defer_idle_timeout(HeartbeatConfig::new(Durnation::from_secs(30)))       
     // The QUIC version negotiation mechanism prioritizes using the earlier versions, 
     // currently only supporting V1.
     .prefer_versions([1u32])                
@@ -112,7 +112,7 @@ The QUIC server provides SNI(Server Name Indication) support in TLS, allowing th
 ```rust
 let quic_server = QuicServer::builder()
     // Keep the accepted connection alive when it is idle
-    .keep_alive(Durnation::from_secs(30))       
+    .defer_idle_timeout(HeartbeatConfig::new(Durnation::from_secs(30)))       
     .with_supported_versions([1u32])
     .without_cert_verifier()      // Generally, client identity is not verified
     .enable_sni()

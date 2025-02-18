@@ -557,7 +557,10 @@ impl super::CongestionControl for ArcCC {
         guard.on_ack_rcvd(space, ack_frame, now);
     }
 
-    fn on_pkt_rcvd(&self, epoch: Epoch, pn: u64, _is_ack_eliciting: bool) {
+    fn on_pkt_rcvd(&self, epoch: Epoch, pn: u64, is_ack_eliciting: bool) {
+        if !is_ack_eliciting {
+            return;
+        }
         let mut guard = self.0.lock().unwrap();
         guard.rcvd_records[epoch].on_pkt_rcvd(pn);
         let now = Instant::now();

@@ -19,7 +19,7 @@ mod client;
 mod interfaces;
 mod server;
 #[cfg(test)]
-pub mod tests;
+mod tests;
 mod util;
 
 pub mod prelude {

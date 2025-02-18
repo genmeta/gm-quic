@@ -16,7 +16,7 @@ fn client_stream_unlimited_parameters() -> crate::ClientParameters {
     params
 }
 
-use std::{io, sync::Arc};
+use std::{io, sync::Arc, time::Duration};
 
 use echo_server::server_stream_unlimited_parameters;
 use rustls::RootCertStore;
@@ -28,10 +28,10 @@ use tracing::{debug, error, info, info_span, Instrument};
 
 use crate::ToCertificate;
 
-#[tokio::test]
-async fn parallel_stream() -> io::Result<()> {
+#[test]
+fn set() -> io::Result<()> {
     tracing_subscriber::fmt()
-        .with_max_level(tracing::level_filters::LevelFilter::INFO)
+        .with_max_level(tracing::level_filters::LevelFilter::TRACE)
         // .with_max_level(tracing::level_filters::LevelFilter::TRACE)
         // .with_writer(
         //     std::fs::OpenOptions::new()
@@ -43,6 +43,19 @@ async fn parallel_stream() -> io::Result<()> {
         // .with_ansi(false)
         .init();
 
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(disable_keep_alive());
+    rt.block_on(enable_keep_alive());
+    rt.block_on(parallel_stream())?;
+
+    Ok(())
+}
+
+async fn parallel_stream() -> io::Result<()> {
     let server = crate::QuicServer::builder()
         .without_cert_verifier()
         .with_single_cert(
@@ -54,7 +67,7 @@ async fn parallel_stream() -> io::Result<()> {
 
     let mut server_addr = server.addresses().into_iter().next().unwrap();
     server_addr.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
-    tokio::spawn(echo_server::launch(server));
+    let running_server = tokio::spawn(echo_server::launch(server));
 
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(
@@ -75,7 +88,7 @@ async fn parallel_stream() -> io::Result<()> {
 
     let mut connections = JoinSet::new();
 
-    async fn for_eacho_connection(connection: Arc<crate::Connection>) -> io::Result<()> {
+    async fn for_each_connection(connection: Arc<crate::Connection>) -> io::Result<()> {
         let mut streams = JoinSet::new();
         for stream_idx in 0..STREAMS {
             streams.spawn({
@@ -113,11 +126,98 @@ async fn parallel_stream() -> io::Result<()> {
             let client = client.clone();
             async move {
                 let connection = client.connect("localhost", server_addr)?;
-                for_eacho_connection(connection).await
+                for_each_connection(connection).await
             }
             .instrument(info_span!("connection", conn_idx))
         });
     }
 
-    connections.join_all().await.into_iter().collect()
+    connections
+        .join_all()
+        .await
+        .into_iter()
+        .collect::<Result<(), _>>()?;
+    // server.shutdown()
+    running_server.abort();
+    Ok(())
+}
+
+async fn disable_keep_alive() {
+    let disabled_keep_alive = crate::HeartbeatConfig::disabled();
+
+    let mut parameters = crate::ServerParameters::default();
+    parameters.set_max_idle_timeout(Duration::from_millis(500));
+
+    let server = crate::QuicServer::builder()
+        .without_cert_verifier()
+        .with_single_cert(
+            include_bytes!("../examples/keychain/localhost/server.cert"),
+            include_bytes!("../examples/keychain/localhost/server.key"),
+        )
+        .defer_idle_timeout(disabled_keep_alive)
+        .with_parameters(parameters)
+        .listen("127.0.0.1:0")
+        .unwrap();
+    let mut server_addr = server.addresses().into_iter().next().unwrap();
+    server_addr.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
+
+    let mut roots = RootCertStore::empty();
+    roots.add_parsable_certificates(
+        include_bytes!("../examples/keychain/localhost/ca.cert").to_certificate(),
+    );
+    let client = Arc::new(
+        crate::QuicClient::builder()
+            .with_root_certificates(roots)
+            .without_cert()
+            .defer_idle_timeout(disabled_keep_alive)
+            .build(),
+    );
+
+    let connection = client.connect("localhost", server_addr).unwrap();
+
+    // timeout after 0.5s
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(!connection.is_active());
+    server.shutdown();
+}
+
+async fn enable_keep_alive() {
+    let enabled_keep_alive = crate::HeartbeatConfig::new_with_interval(
+        Duration::from_millis(2000),
+        Duration::from_millis(100),
+    );
+
+    let mut parameters = crate::ServerParameters::default();
+    parameters.set_max_idle_timeout(Duration::from_millis(500));
+
+    let server = crate::QuicServer::builder()
+        .without_cert_verifier()
+        .with_single_cert(
+            include_bytes!("../examples/keychain/localhost/server.cert"),
+            include_bytes!("../examples/keychain/localhost/server.key"),
+        )
+        .with_parameters(parameters)
+        .listen("127.0.0.1:0")
+        .unwrap();
+    let mut server_addr = server.addresses().into_iter().next().unwrap();
+    server_addr.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
+
+    let mut roots = RootCertStore::empty();
+    roots.add_parsable_certificates(
+        include_bytes!("../examples/keychain/localhost/ca.cert").to_certificate(),
+    );
+    let client = Arc::new(
+        crate::QuicClient::builder()
+            .with_root_certificates(roots)
+            .without_cert()
+            .defer_idle_timeout(enabled_keep_alive)
+            .build(),
+    );
+
+    let connection = client.connect("localhost", server_addr).unwrap();
+
+    // timeout after 0.5s, but keep alive for 2s with 100ms interval
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(connection.is_active());
+    server.shutdown();
 }

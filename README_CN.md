@@ -72,7 +72,7 @@ let quic_client = QuicClient::builder()
     // 允许复用到服务器的连接，而不是每次都发起新连接
     .reuse_connection()
     // 自动在连接空闲时发送数据包保持连接活跃
-    .keep_alive(Durnation::from_secs(30))       
+    .defer_idle_timeout(HeartbeatConfig::new(Durnation::from_secs(30)))       
     .prefer_versions([1u32])                // QUIC的版本协商机制，会优先使用靠前的版本，目前仅支持V1
     // .with_parameter(&client_parameters)  // 不设置即为使用默认参数
     // .with_token_sink(token_sink)         // 管理各服务器颁发的Token
@@ -98,7 +98,7 @@ QUIC服务端支持SNI（Server Name Indication），可以设置多台Server的
 ```rust
 let quic_server = QuicServer::builder()
     // 同client
-    .keep_alive(Durnation::from_secs(30))       
+    .defer_idle_timeout(HeartbeatConfig::new(Durnation::from_secs(30)))       
     .with_supported_versions([1u32])
     .without_cert_verifier()  // 一般不验证客户端身份
     .enable_sni()

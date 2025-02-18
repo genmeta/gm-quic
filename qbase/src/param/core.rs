@@ -216,7 +216,7 @@ impl<T: bytes::BufMut> WriteCommonParameters for T {
     fn put_common_parameters(&mut self, parameters: &CommonParameters) {
         self.put_varint_parameter(
             ParameterId::MaxIdleTimeout,
-            VarInt::from_u64(parameters.max_idle_timeout.as_secs())
+            VarInt::from_u128(parameters.max_idle_timeout.as_millis())
                 .expect("max_idle timeout can not exceed 2^62 seconds"),
         );
         self.put_varint_parameter(
@@ -288,7 +288,7 @@ pub(super) fn be_client_parameters<'b>(
         match id {
             ParameterId::MaxIdleTimeout => {
                 (input, params.max_idle_timeout) =
-                    map(be_varint, |v| Duration::from_secs(v.into_inner())).parse(remain)?
+                    map(be_varint, |v| Duration::from_millis(v.into_inner())).parse(remain)?
             }
             ParameterId::MaxUdpPayloadSize => {
                 (input, params.max_udp_payload_size) = be_varint(remain)?
@@ -429,7 +429,7 @@ pub(super) fn be_server_parameters<'b>(
             }
             ParameterId::MaxIdleTimeout => {
                 (input, params.max_idle_timeout) =
-                    map(be_varint, |v| Duration::from_secs(v.into_inner())).parse(remain)?
+                    map(be_varint, |v| Duration::from_millis(v.into_inner())).parse(remain)?
             }
             ParameterId::StatelssResetToken => {
                 (input, params.statelss_reset_token) =
