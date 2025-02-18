@@ -2,7 +2,6 @@ use std::{
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
     sync::{Arc, LazyLock},
-    time::Duration,
 };
 
 use dashmap::DashMap;
@@ -28,7 +27,7 @@ type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 pub struct QuicClient {
     // be different from QuicServer, QuicClient is not arc
     bind_interfaces: Option<Arc<DashMap<SocketAddr, Arc<dyn QuicInterface>>>>,
-    defer_idle_timeout: Duration,
+    defer_idle_timeout: HeartbeatConfig,
     // TODO: 好像得创建2个quic连接，一个用ipv4，一个用ipv6
     //       然后看谁先收到服务器的响应比较好
     _enable_happy_eyepballs: bool,
@@ -76,8 +75,8 @@ impl QuicClient {
             reuse_connection: false,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
-            defer_idle_timeout: Duration::MAX,
             quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
+            defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ClientParameters::default(),
             tls_config: TlsClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
@@ -95,8 +94,8 @@ impl QuicClient {
             reuse_connection: false,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
-            defer_idle_timeout: Duration::MAX,
             quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
+            defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ClientParameters::default(),
             tls_config: TlsClientConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
@@ -116,7 +115,7 @@ impl QuicClient {
             reuse_connection: false,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
-            defer_idle_timeout: Duration::MAX,
+            defer_idle_timeout: HeartbeatConfig::default(),
             quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
             parameters: ClientParameters::default(),
             tls_config,
@@ -294,8 +293,8 @@ pub struct QuicClientBuilder<T> {
     reuse_connection: bool,
     enable_happy_eyepballs: bool,
     prefer_versions: Vec<u32>,
-    defer_idle_timeout: Duration,
     quic_iface_binder: Box<dyn Fn(SocketAddr) -> io::Result<Arc<dyn QuicInterface>> + Send + Sync>,
+    defer_idle_timeout: HeartbeatConfig,
     parameters: ClientParameters,
     tls_config: T,
     streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
@@ -425,8 +424,8 @@ impl<T> QuicClientBuilder<T> {
     /// See [Deferring Idle Timeout](https://datatracker.ietf.org/doc/html/rfc9000#name-deferring-idle-timeout)
     /// of [RFC 9000](https://datatracker.ietf.org/doc/html/rfc9000)
     /// for more information.
-    pub fn keep_alive(mut self, duration: Duration) -> Self {
-        self.defer_idle_timeout = duration;
+    pub fn defer_idle_timeout(mut self, config: HeartbeatConfig) -> Self {
+        self.defer_idle_timeout = config;
         self
     }
 

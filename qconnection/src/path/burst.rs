@@ -85,13 +85,6 @@ impl Burst {
         mut transaction: Transaction<'b>,
     ) -> io::Result<impl Iterator<Item = io::IoSlice<'b>>> {
         let scid = self.local_cids.initial_scid();
-
-        std::panic::set_hook(Box::new(move |panic_info| {
-            let location = panic_info.location().unwrap();
-            let backtrace = std::backtrace::Backtrace::force_capture();
-            tracing::trace!(%backtrace, %location, "panic");
-        }));
-
         let reversed_size = self.path.interface.reversed_bytes(self.path.pathway)?;
         tracing::trace!(reversed_size, "load data");
 

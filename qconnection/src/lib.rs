@@ -23,6 +23,7 @@ pub mod prelude {
 
     pub use crate::{
         events::{EmitEvent, Event},
+        path::idle::HeartbeatConfig,
         Connection, StreamReader, StreamWriter,
     };
 }
@@ -36,12 +37,12 @@ use std::{
     pin::Pin,
     sync::{Arc, RwLock},
     task::{Context, Poll},
-    time::Duration,
 };
 
 use deref_derive::Deref;
 use events::ArcEventBroker;
 use path::ArcPaths;
+use prelude::HeartbeatConfig;
 use qbase::{
     cid, flow,
     frame::{ConnectionCloseFrame, ReliableFrame, SendFrame},
@@ -170,9 +171,9 @@ pub struct Components {
     paths: ArcPaths,
     proto: Arc<QuicProto>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
+    defer_idle_timeout: HeartbeatConfig,
     send_notify: Arc<Notify>,
     event_broker: ArcEventBroker,
-    defer_idle_timeout: Duration,
 }
 
 impl Components {

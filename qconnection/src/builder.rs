@@ -36,6 +36,7 @@ use tracing::{trace_span, Instrument};
 use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
     path::{ArcPaths, Path, PathContext},
+    prelude::HeartbeatConfig,
     space::{self, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace, Spaces},
     termination::ClosingState,
     tls::{self, ArcTlsSession},
@@ -173,7 +174,7 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             tls_config: self.tls_config,
             streams_ctrl: self.streams_ctrl,
             proto,
-            defer_idle_timeout: Duration::MAX,
+            defer_idle_timeout: HeartbeatConfig::default(),
         }
     }
 }
@@ -201,7 +202,7 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             tls_config: self.tls_config,
             streams_ctrl: self.streams_ctrl,
             proto,
-            defer_idle_timeout: Duration::MAX,
+            defer_idle_timeout: HeartbeatConfig::default(),
         }
     }
 }
@@ -211,13 +212,13 @@ pub struct ProtoReady<Foundation, Config> {
     tls_config: Config,
     streams_ctrl: Box<dyn ControlConcurrency>,
     proto: Arc<QuicProto>,
-    defer_idle_timeout: Duration,
+    defer_idle_timeout: HeartbeatConfig,
 }
 
 impl<Foundation, Config> ProtoReady<Foundation, Config> {
-    pub fn defer_idle_timeout(self, duration: Duration) -> Self {
+    pub fn defer_idle_timeout(self, config: HeartbeatConfig) -> Self {
         Self {
-            defer_idle_timeout: duration,
+            defer_idle_timeout: config,
             ..self
         }
     }
@@ -385,7 +386,7 @@ pub struct ComponentsReady {
     spaces: Spaces,
     proto: Arc<QuicProto>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
-    defer_idle_timeout: Duration,
+    defer_idle_timeout: HeartbeatConfig,
     sendable: Arc<Notify>,
 }
 
@@ -407,8 +408,8 @@ impl ComponentsReady {
             rcvd_pkt_q: self.rcvd_pkt_q,
             paths: ArcPaths::new(event_broker.clone()),
             send_notify: self.sendable,
-            event_broker,
             defer_idle_timeout: self.defer_idle_timeout,
+            event_broker,
         };
 
         tokio::spawn(tls::keys_upgrade(&components));
@@ -504,7 +505,8 @@ impl Components {
                         tracing::trace!(reason, "path inactive");
                         // same as [`Components::del_path`]
                         paths.remove(&pathway);
-                    }.instrument(trace_span!("path_task"))
+                    }
+                    .instrument(trace_span!("path_task"))
                 });
 
                 vacant_entry.insert(PathContext::new(path.clone(), task.abort_handle()));

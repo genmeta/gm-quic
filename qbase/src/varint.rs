@@ -42,7 +42,7 @@ impl VarInt {
         if x < (1 << 62) {
             Ok(Self(x))
         } else {
-            Err(err::Overflow(x))
+            Err(err::Overflow(x as _))
         }
     }
 
@@ -53,6 +53,16 @@ impl VarInt {
     /// `x` must be less than 2^62.
     pub unsafe fn from_u64_unchecked(x: u64) -> Self {
         Self(x)
+    }
+
+    /// Construct a `VarInt` from a [`u128`].
+    /// Succeeds if `x` < 2^62.
+    pub fn from_u128(x: u128) -> Result<Self, err::Overflow> {
+        if x < (1 << 62) {
+            Ok(Self(x as _))
+        } else {
+            Err(err::Overflow(x))
+        }
     }
 
     /// Extract the integer value
@@ -98,6 +108,14 @@ impl From<u16> for VarInt {
 impl From<u32> for VarInt {
     fn from(x: u32) -> Self {
         Self(x.into())
+    }
+}
+
+impl TryFrom<u128> for VarInt {
+    type Error = err::Overflow;
+
+    fn try_from(x: u128) -> Result<Self, Self::Error> {
+        Self::from_u128(x)
     }
 }
 
@@ -152,7 +170,7 @@ pub mod err {
     /// Overflow error indicating that a value exceeds 2^62
     #[derive(Debug, Copy, Clone, Eq, PartialEq, Error)]
     #[error("value({0}) too large for varint encoding")]
-    pub struct Overflow(pub(super) u64);
+    pub struct Overflow(pub(super) u128);
 }
 
 use bytes::BufMut;

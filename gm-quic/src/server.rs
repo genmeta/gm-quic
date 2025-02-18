@@ -3,7 +3,6 @@ use std::{
     io::{self},
     net::{SocketAddr, ToSocketAddrs},
     sync::{Arc, LazyLock, RwLock, Weak},
-    time::Duration,
 };
 
 use dashmap::DashMap;
@@ -56,7 +55,7 @@ impl ResolvesServerCert for VirtualHosts {
 /// calling the [`QuicServer::accept`] method.
 pub struct QuicServer {
     bind_interfaces: DashMap<SocketAddr, Arc<dyn QuicInterface>>,
-    defer_idle_timeout: Duration,
+    defer_idle_timeout: HeartbeatConfig,
     listener: Arc<Channel<(Arc<Connection>, Pathway)>>,
     parameters: ServerParameters,
     passive_listening: bool,
@@ -73,7 +72,7 @@ impl QuicServer {
         QuicServerBuilder {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
-            defer_idle_timeout: Duration::MAX,
+            defer_idle_timeout: HeartbeatConfig::default(),
             quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
@@ -89,8 +88,8 @@ impl QuicServer {
         QuicServerBuilder {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
-            defer_idle_timeout: Duration::MAX,
             quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
+            defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ServerParameters::default(),
             tls_config,
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
@@ -105,8 +104,8 @@ impl QuicServer {
         QuicServerBuilder {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
-            defer_idle_timeout: Duration::MAX,
             quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
+            defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
@@ -206,7 +205,7 @@ impl QuicServer {
         );
     }
 
-    fn shutdown(&self) {
+    pub fn shutdown(&self) {
         if self.listener.close().is_none() {
             // already closed
             return;
@@ -234,8 +233,8 @@ struct Host {
 pub struct QuicServerBuilder<T> {
     supported_versions: Vec<u32>,
     passive_listening: bool,
-    defer_idle_timeout: Duration,
     quic_iface_binder: Box<dyn Fn(SocketAddr) -> io::Result<Arc<dyn QuicInterface>> + Send + Sync>,
+    defer_idle_timeout: HeartbeatConfig,
     parameters: ServerParameters,
     tls_config: T,
     streams_controller:
@@ -248,8 +247,8 @@ pub struct QuicServerSniBuilder<T> {
     supported_versions: Vec<u32>,
     passive_listening: bool,
     hosts: Arc<DashMap<String, Host>>,
-    defer_idle_timeout: Duration,
     quic_iface_binder: Box<dyn Fn(SocketAddr) -> io::Result<Arc<dyn QuicInterface>> + Send + Sync>,
+    defer_idle_timeout: HeartbeatConfig,
     parameters: ServerParameters,
     tls_config: T,
     streams_controller:
@@ -303,8 +302,8 @@ impl<T> QuicServerBuilder<T> {
     /// See [Deferring Idle Timeout](https://datatracker.ietf.org/doc/html/rfc9000#name-deferring-idle-timeout)
     /// of [RFC 9000](https://datatracker.ietf.org/doc/html/rfc9000)
     /// for more information.
-    pub fn keep_alive(mut self, duration: Duration) -> Self {
-        self.defer_idle_timeout = duration;
+    pub fn defer_idle_timeout(mut self, config: HeartbeatConfig) -> Self {
+        self.defer_idle_timeout = config;
         self
     }
 
@@ -376,8 +375,8 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
         QuicServerBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
-            defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_binder: self.quic_iface_binder,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
@@ -402,8 +401,8 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
-            defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_binder: self.quic_iface_binder,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
@@ -428,8 +427,8 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
-            defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_binder: self.quic_iface_binder,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
@@ -450,8 +449,8 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerSniBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
-            defer_idle_timeout: self.defer_idle_timeout,
             quic_iface_binder: self.quic_iface_binder,
+            defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
@@ -535,11 +534,13 @@ impl QuicServerBuilder<TlsServerConfig> {
     /// Although all given addresses are failed to bind, the server can still accept connections from other addresses.
     pub fn listen(self, addresses: impl ToSocketAddrs) -> io::Result<Arc<QuicServer>> {
         let mut server = SERVER.write().unwrap();
-        if server.strong_count() != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                "There is already a server running",
-            ));
+        if let Some(server) = server.upgrade() {
+            if !server.listener.is_closed() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "There is already a active server running",
+                ));
+            }
         }
 
         // 不接受出现错误，出现错误直接让listen返回Err
