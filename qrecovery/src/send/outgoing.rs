@@ -160,13 +160,14 @@ impl<TX> Outgoing<TX> {
     /// Called when the [`STOP_SENDING frame`] sent by the peer is received.
     ///
     /// If the stream has not been closed, the stream will be reset and then a [`RESET_STREAM frame`] will
-    /// be sent to the peer to reset the peer. in this case, the method will return `true`.
+    /// be sent to the peer to reset the peer with the `final_size`.
+    /// In this case, the method will return the `final_size`.
     ///
-    /// If the stream has closed, `false` will be returned, and the method will do nothing.
+    /// If the stream has closed, `None` will be returned, and the method will do nothing.
     ///
     /// [`STOP_SENDING frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-stop_sending-frames
     /// [`STREAM_RESET frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
-    pub fn on_stopped(&self, error_code: u64) -> bool {
+    pub fn be_stopped(&self, error_code: u64) -> Option<u64> {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         match inner {
@@ -180,7 +181,7 @@ impl<TX> Outgoing<TX> {
                         VarInt::from_u64(error_code).expect("app error code must not exceed 2^62"),
                         VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
                     ));
-                    true
+                    Some(final_size)
                 }
                 Sender::DataSent(s) => {
                     let final_size = s.stop();
@@ -188,11 +189,11 @@ impl<TX> Outgoing<TX> {
                         VarInt::from_u64(error_code).expect("app error code must not exceed 2^62"),
                         VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
                     ));
-                    true
+                    Some(final_size)
                 }
-                _ => false,
+                _ => None,
             },
-            Err(_) => false,
+            Err(_) => None,
         }
     }
 

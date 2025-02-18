@@ -61,7 +61,7 @@ use crate::{
 /// | -------------------------------------------------------- | -------------------------------------------------- |
 /// | [`recv_data`]                                            | [`Incoming::recv_data`]                            |
 /// | [`recv_stream_control`] ([`RESET_STREAM frame`])         | [`Incoming::recv_reset`]                           |
-/// | [`recv_stream_control`] ([`STOP_SENDING frame`])         | [`Outgoing::on_stopped`]                           |
+/// | [`recv_stream_control`] ([`STOP_SENDING frame`])         | [`Outgoing::be_stopped`]                           |
 /// | [`recv_stream_control`] ([`MAX_STREAM_DATA frame`])      | [`Outgoing::update_window`]                        |
 /// | [`recv_stream_control`] ([`STREAM_DATA_BLOCKED frame`])  | none(the frame will be ignored)                    |
 /// | [`recv_stream_control`] ([`MAX_STREAMS frame`])          | [`ArcLocalStreamIds::recv_max_streams_frame`]      |
@@ -400,18 +400,17 @@ where
                     self.try_accept_sid(sid)
                         .map_err(wrapper_error(stop_sending.frame_type()))?;
                 }
-                // TODO: 处理StopSendingFrame，响应ResetStreamFrame的final size不能为0
-                if self
+
+                if let Some(final_size) = self
                     .output
                     .streams()
                     .as_mut()
                     .ok()
                     .and_then(|set| set.get(&sid))
-                    .map(|(outgoing, _s)| outgoing.on_stopped(stop_sending.app_err_code()))
-                    .unwrap_or(false)
+                    .and_then(|(outgoing, _s)| outgoing.be_stopped(stop_sending.app_err_code()))
                 {
                     self.ctrl_frames.send_frame([StreamCtlFrame::ResetStream(
-                        stop_sending.reset_stream(VarInt::from_u32(0)),
+                        stop_sending.reset_stream(VarInt::from_u64(final_size).unwrap()),
                     )]);
                 }
             }
