@@ -19,7 +19,7 @@ cfg_if::cfg_if! {
         mod msg;
         #[cfg(feature = "gso")]
         pub const BATCH_SIZE: usize = 64;
-        #[cfg(not(feature = "gso"))]
+        #[cfg(not(feature = ""))]
         pub const BATCH_SIZE: usize = 1;
     } else if #[cfg(windows)] {
         #[path = "windows.rs"]
@@ -42,7 +42,7 @@ pub struct PacketHeader {
     // packet segment size
     pub seg_size: u16,
     // use gso
-    gso: bool,
+    pub gso: bool = true,
 }
 
 impl PacketHeader {
