@@ -15,18 +15,18 @@ use crate::{Deserialize, PathID, Serialize};
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct ServerListening {
     #[builder(default)]
-    pub ip_v4: Option<IPAddress>,
+    ip_v4: Option<IPAddress>,
     #[builder(default)]
-    pub ip_v6: Option<IPAddress>,
+    ip_v6: Option<IPAddress>,
     #[builder(default)]
-    pub port_v4: Option<u16>,
+    port_v4: Option<u16>,
     #[builder(default)]
-    pub port_v6: Option<u16>,
+    port_v6: Option<u16>,
 
     /// the server will always answer client initials with a retry
     /// (no 1-RTT connection setups by choice)
     #[builder(default)]
-    pub retry_required: Option<bool>,
+    retry_required: Option<bool>,
 }
 
 /// The connection_started event is used for both attempting (client-
@@ -41,22 +41,22 @@ pub struct ServerListening {
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct ConnectionStarted {
-    pub ip_version: IpVersion,
-    pub src_ip: IPAddress,
-    pub dst_ip: IPAddress,
+    ip_version: IpVersion,
+    src_ip: IPAddress,
+    dst_ip: IPAddress,
 
     // transport layer protocol
     #[builder(default = "ConnectionStarted::default_protocol()")]
     #[serde(default = "ConnectionStarted::default_protocol")]
-    pub protocol: String,
+    protocol: String,
     #[builder(default)]
-    pub src_port: Option<u16>,
+    src_port: Option<u16>,
     #[builder(default)]
-    pub dst_port: Option<u16>,
+    dst_port: Option<u16>,
     #[builder(default)]
-    pub src_cid: Option<ConnectionID>,
+    src_cid: Option<ConnectionID>,
     #[builder(default)]
-    pub dst_cid: Option<ConnectionID>,
+    dst_cid: Option<ConnectionID>,
 }
 
 impl ConnectionStarted {
@@ -105,12 +105,12 @@ impl ConnectionStarted {
 )]
 pub struct ConnectionClosed {
     /// which side closed the connection
-    pub owner: Option<Owner>,
-    pub connection_code: Option<ConnectionCode>,
-    pub application_code: Option<ApplicationCode>,
-    pub internal_code: Option<u32>,
-    pub reason: Option<String>,
-    pub trigger: Option<ConnectionCloseTrigger>,
+    owner: Option<Owner>,
+    connection_code: Option<ConnectionCode>,
+    application_code: Option<ApplicationCode>,
+    internal_code: Option<u32>,
+    reason: Option<String>,
+    trigger: Option<ConnectionCloseTrigger>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -152,11 +152,11 @@ pub enum ConnectionCloseTrigger {
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct ConnectionIDUpdated {
-    pub owner: Owner,
+    owner: Owner,
     #[builder(default)]
-    pub old: Option<ConnectionID>,
+    old: Option<ConnectionID>,
     #[builder(default)]
-    pub new: Option<ConnectionID>,
+    new: Option<ConnectionID>,
 }
 
 /// The spin_bit_updated event conveys information about the QUIC latency
@@ -170,7 +170,7 @@ pub struct ConnectionIDUpdated {
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[builder(setter(into), build_fn(private, name = "fallible_build"))]
 pub struct SpinBitUpdated {
-    pub state: bool,
+    state: bool,
 }
 
 /// The connection_state_updated event is used to track progress through
@@ -195,8 +195,8 @@ pub struct SpinBitUpdated {
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct ConnectionStateUpdated {
     #[builder(default)]
-    pub old: Option<ConnectionState>,
-    pub new: ConnectionState,
+    old: Option<ConnectionState>,
+    new: ConnectionState,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -264,13 +264,13 @@ pub enum GranularConnectionStates {
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct PathAssigned {
-    pub path_id: PathID,
+    path_id: PathID,
     /// the information for traffic going towards the remote receiver
     #[builder(default)]
-    pub path_remote: Option<PathEndpointInfo>,
+    path_remote: Option<PathEndpointInfo>,
     /// the information for traffic coming in at the local endpoint
     #[builder(default)]
-    pub path_local: Option<PathEndpointInfo>,
+    path_local: Option<PathEndpointInfo>,
 }
 
 /// The mtu_updated event indicates that the estimated Path MTU was
@@ -283,14 +283,14 @@ pub struct PathAssigned {
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct MtuUpdated {
     #[builder(default)]
-    pub old: Option<u32>,
-    pub new: u32,
+    old: Option<u32>,
+    new: u32,
 
     /// at some point, MTU discovery stops, as a "good enough"
     /// packet size has been found
     #[builder(default)]
     #[serde(default)]
-    pub done: bool,
+    done: bool,
 }
 
 crate::gen_builder_method! {

@@ -12,16 +12,16 @@ use crate::HexString;
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct KeyUpdated {
-    pub key_type: KeyType,
+    key_type: KeyType,
     #[builder(default)]
-    pub old: Option<HexString>,
+    old: Option<HexString>,
     #[builder(default)]
-    pub new: Option<HexString>,
+    new: Option<HexString>,
 
     /// needed for 1RTT key updates
-    pub key_phase: u64,
+    key_phase: u64,
     #[builder(default)]
-    pub trigger: Option<KeyUpdatedTrigger>,
+    trigger: Option<KeyUpdatedTrigger>,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -41,14 +41,14 @@ pub enum KeyUpdatedTrigger {
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct KeyDiscarded {
-    pub key_type: KeyType,
+    key_type: KeyType,
     #[builder(default)]
-    pub key: Option<HexString>,
+    key: Option<HexString>,
 
     /// needed for 1RTT key updates
-    pub key_phase: u64,
+    key_phase: u64,
     #[builder(default)]
-    pub trigger: Option<KeyDiscardedTrigger>,
+    trigger: Option<KeyDiscardedTrigger>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

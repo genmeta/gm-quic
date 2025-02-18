@@ -34,10 +34,10 @@ use crate::{HexString, PathID, RawInfo};
 pub struct VersionInformation {
     // Vec for `? filed: [ +ty]``, Option<Vec> for `* filed: [* ty]`
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub server_versions: Vec<QuicVersion>,
+    server_versions: Vec<QuicVersion>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub client_versions: Vec<QuicVersion>,
-    pub chosed_version: Option<QuicVersion>,
+    client_versions: Vec<QuicVersion>,
+    chosed_version: Option<QuicVersion>,
 }
 
 /// The alpn_information event supports Application-Layer Protocol
@@ -67,9 +67,9 @@ pub struct VersionInformation {
     build_fn(private, name = "fallible_build")
 )]
 pub struct ALPNInformation {
-    pub server_alpns: Option<Vec<ALPNIdentifier>>,
-    pub client_alpns: Option<Vec<ALPNIdentifier>>,
-    pub chosed_alpn: Option<ALPNIdentifier>,
+    server_alpns: Option<Vec<ALPNIdentifier>>,
+    client_alpns: Option<Vec<ALPNIdentifier>>,
+    chosed_alpn: Option<ALPNIdentifier>,
 }
 
 /// ALPN identifiers are byte sequences, that may be possible to present
@@ -84,8 +84,8 @@ pub struct ALPNInformation {
     build_fn(private, name = "fallible_build")
 )]
 pub struct ALPNIdentifier {
-    pub byte_value: Option<HexString>,
-    pub string_value: Option<String>,
+    byte_value: Option<HexString>,
+    string_value: Option<String>,
 }
 
 /// The parameters_set event groups settings from several different
@@ -132,63 +132,63 @@ pub struct ALPNIdentifier {
     build_fn(private, name = "fallible_build")
 )]
 pub struct ParametersSet {
-    pub owner: Option<Owner>,
+    owner: Option<Owner>,
 
     /// true if valid session ticket was received
-    pub resumption_allowed: Option<bool>,
+    resumption_allowed: Option<bool>,
 
     /// true if early data extension was enabled on the TLS layer
-    pub early_data_received: Option<bool>,
+    early_data_received: Option<bool>,
 
     /// e.g., "AES_128_GCM_SHA256"
-    pub tls_cipher: Option<String>,
+    tls_cipher: Option<String>,
 
     // RFC9000
-    pub original_destination_connection_id: Option<ConnectionID>,
-    pub initial_source_connection_id: Option<ConnectionID>,
-    pub retry_source_connection_id: Option<ConnectionID>,
-    pub stateless_reset_token: Option<StatelessResetToken>,
-    pub disable_active_migration: Option<bool>,
-    pub max_idle_timeout: Option<u64>,
-    pub max_udp_payload_size: Option<u32>,
-    pub ack_delay_exponent: Option<u16>,
-    pub max_ack_delay: Option<u16>,
-    pub active_connection_id_limit: Option<u32>,
-    pub initial_max_data: Option<u64>,
-    pub initial_max_stream_data_bidi_local: Option<u64>,
-    pub initial_max_stream_data_bidi_remote: Option<u64>,
-    pub initial_max_stream_data_uni: Option<u64>,
-    pub initial_max_streams_bidi: Option<u64>,
-    pub initial_max_streams_uni: Option<u64>,
-    pub preferred_address: Option<PreferredAddress>,
-    pub unknown_parameters: Option<Vec<UnknownParameter>>,
+    original_destination_connection_id: Option<ConnectionID>,
+    initial_source_connection_id: Option<ConnectionID>,
+    retry_source_connection_id: Option<ConnectionID>,
+    stateless_reset_token: Option<StatelessResetToken>,
+    disable_active_migration: Option<bool>,
+    max_idle_timeout: Option<u64>,
+    max_udp_payload_size: Option<u32>,
+    ack_delay_exponent: Option<u16>,
+    max_ack_delay: Option<u16>,
+    active_connection_id_limit: Option<u32>,
+    initial_max_data: Option<u64>,
+    initial_max_stream_data_bidi_local: Option<u64>,
+    initial_max_stream_data_bidi_remote: Option<u64>,
+    initial_max_stream_data_uni: Option<u64>,
+    initial_max_streams_bidi: Option<u64>,
+    initial_max_streams_uni: Option<u64>,
+    preferred_address: Option<PreferredAddress>,
+    unknown_parameters: Option<Vec<UnknownParameter>>,
 
     // RFC9221
-    pub max_datagram_frame_size: Option<u64>,
+    max_datagram_frame_size: Option<u64>,
 
     // RFC9287
     /// can only be restored at the client.
     /// servers MUST NOT restore this parameter!
-    pub grease_quic_bit: Option<bool>,
+    grease_quic_bit: Option<bool>,
 }
 
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into), build_fn(private, name = "fallible_build"))]
 pub struct PreferredAddress {
-    pub ipv4: IPAddress,
-    pub ipv6: IPAddress,
-    pub port: u16,
-    pub connection_id: ConnectionID,
-    pub stateless_reset_token: StatelessResetToken,
+    ipv4: IPAddress,
+    ipv6: IPAddress,
+    port: u16,
+    connection_id: ConnectionID,
+    stateless_reset_token: StatelessResetToken,
 }
 
 #[serde_with::skip_serializing_none]
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct UnknownParameter {
-    pub id: u64,
+    id: u64,
     #[builder(default)]
-    pub value: Option<HexString>,
+    value: Option<HexString>,
 }
 
 /// When using QUIC 0-RTT, clients are expected to remember and restore
@@ -212,24 +212,24 @@ pub struct UnknownParameter {
 )]
 pub struct ParametersRestored {
     // RFC 9000
-    pub disable_active_migration: Option<bool>,
-    pub max_idle_timeout: Option<u64>,
-    pub max_udp_payload_size: Option<u32>,
-    pub active_connection_id_limit: Option<u32>,
-    pub initial_max_data: Option<u64>,
-    pub initial_max_stream_data_bidi_local: Option<u64>,
-    pub initial_max_stream_data_bidi_remote: Option<u64>,
-    pub initial_max_stream_data_uni: Option<u64>,
-    pub initial_max_streams_bidi: Option<u64>,
-    pub initial_max_streams_uni: Option<u64>,
+    disable_active_migration: Option<bool>,
+    max_idle_timeout: Option<u64>,
+    max_udp_payload_size: Option<u32>,
+    active_connection_id_limit: Option<u32>,
+    initial_max_data: Option<u64>,
+    initial_max_stream_data_bidi_local: Option<u64>,
+    initial_max_stream_data_bidi_remote: Option<u64>,
+    initial_max_stream_data_uni: Option<u64>,
+    initial_max_streams_bidi: Option<u64>,
+    initial_max_streams_uni: Option<u64>,
 
     // RFC9221
-    pub max_datagram_frame_size: Option<u64>,
+    max_datagram_frame_size: Option<u64>,
 
     // RFC9287
     /// can only be restored at the client.
     /// servers MUST NOT restore this parameter!
-    pub grease_quic_bit: Option<bool>,
+    grease_quic_bit: Option<bool>,
 }
 
 /// The packet_sent event indicates a QUIC-level packet was sent.  It has
@@ -240,29 +240,29 @@ pub struct ParametersRestored {
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct PacketSent {
-    pub header: PacketHeader,
+    header: PacketHeader,
     #[builder(default)]
-    pub frames: Option<Vec<QuicFrame>>,
+    frames: Option<Vec<QuicFrame>>,
 
     /// only if header.packet_type === "stateless_reset"
     /// is always 128 bits in length.
     #[builder(default)]
-    pub stateless_reset_token: Option<StatelessResetToken>,
+    stateless_reset_token: Option<StatelessResetToken>,
 
     /// only if header.packet_type === "version_negotiation"
     #[builder(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub supported_versions: Vec<QuicVersion>,
+    supported_versions: Vec<QuicVersion>,
     #[builder(default)]
-    pub raw: Option<RawInfo>,
+    raw: Option<RawInfo>,
     #[builder(default)]
-    pub datagram_id: Option<u32>,
+    datagram_id: Option<u32>,
     #[builder(default)]
     #[serde(default)]
-    pub is_mtu_probe_packet: bool,
+    is_mtu_probe_packet: bool,
 
     #[builder(default)]
-    pub trigger: Option<PacketSentTrigger>,
+    trigger: Option<PacketSentTrigger>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -283,26 +283,26 @@ pub enum PacketSentTrigger {
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct PacketReceived {
-    pub header: PacketHeader,
+    header: PacketHeader,
     #[builder(default)]
-    pub frames: Option<Vec<QuicFrame>>,
+    frames: Option<Vec<QuicFrame>>,
 
     /// only if header.packet_type === "stateless_reset"
     /// is always 128 bits in length.
     #[builder(default)]
-    pub stateless_reset_token: Option<StatelessResetToken>,
+    stateless_reset_token: Option<StatelessResetToken>,
 
     /// only if header.packet_type === "version_negotiation"
     #[builder(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub supported_versions: Vec<QuicVersion>,
+    supported_versions: Vec<QuicVersion>,
     #[builder(default)]
-    pub raw: Option<RawInfo>,
+    raw: Option<RawInfo>,
     #[builder(default)]
-    pub datagram_id: Option<u32>,
+    datagram_id: Option<u32>,
 
     #[builder(default)]
-    pub trigger: Option<PacketReceivedTrigger>,
+    trigger: Option<PacketReceivedTrigger>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -331,11 +331,11 @@ pub enum PacketReceivedTrigger {
 pub struct PacketDropped {
     /// Primarily packet_type should be filled here,
     /// as other fields might not be decrypteable or parseable
-    pub header: Option<PacketHeader>,
-    pub raw: Option<RawInfo>,
-    pub datagram_id: Option<u32>,
-    pub details: HashMap<String, serde_json::Value>,
-    pub trigger: Option<PacketDroppedTrigger>,
+    header: Option<PacketHeader>,
+    raw: Option<RawInfo>,
+    datagram_id: Option<u32>,
+    details: HashMap<String, serde_json::Value>,
+    trigger: Option<PacketDroppedTrigger>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -378,10 +378,10 @@ pub enum PacketDroppedTrigger {
 pub struct PacketBuffered {
     /// Primarily packet_type should be filled here,
     /// as other fields might not be decrypteable or parseable
-    pub header: Option<PacketHeader>,
-    pub raw: Option<RawInfo>,
-    pub datagram_id: Option<u32>,
-    pub trigger: Option<PacketBufferedTrigger>,
+    header: Option<PacketHeader>,
+    raw: Option<RawInfo>,
+    datagram_id: Option<u32>,
+    trigger: Option<PacketBufferedTrigger>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -415,9 +415,9 @@ pub enum PacketBufferedTrigger {
     build_fn(private, name = "fallible_build")
 )]
 pub struct PacketsAcked {
-    pub packet_number_space: Option<PacketNumberSpace>,
+    packet_number_space: Option<PacketNumberSpace>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub packet_nubers: Vec<u64>,
+    packet_nubers: Vec<u64>,
 }
 /// The datagrams_sent event indicates when one or more UDP-level
 /// datagrams are passed to the underlying network socket.  This is
@@ -434,21 +434,21 @@ pub struct PacketsAcked {
 )]
 pub struct UdpDatagramSent {
     /// to support passing multiple at once
-    pub count: Option<u16>,
+    count: Option<u16>,
 
     /// The RawInfo fields do not include the UDP headers,
     /// only the UDP payload
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub raw: Vec<RawInfo>,
+    raw: Vec<RawInfo>,
 
     /// ECN bits in the IP header
     /// if not set, defaults to the value used on the last
     /// QUICDatagramsSent event
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub ecn: Vec<ECN>,
+    ecn: Vec<ECN>,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub datagram_ids: Vec<u32>,
+    datagram_ids: Vec<u32>,
 }
 
 /// When one or more UDP-level datagrams are received from the socket.
@@ -466,21 +466,21 @@ pub struct UdpDatagramSent {
 )]
 pub struct UdpDatagramReceived {
     /// to support passing multiple at once
-    pub count: Option<u16>,
+    count: Option<u16>,
 
     /// The RawInfo fields do not include the UDP headers,
     /// only the UDP payload
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub raw: Vec<RawInfo>,
+    raw: Vec<RawInfo>,
 
     /// ECN bits in the IP header
     /// if not set, defaults to the value used on the last
     /// QUICDatagramsSent event
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub ecn: Vec<ECN>,
+    ecn: Vec<ECN>,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub datagram_ids: Vec<u32>,
+    datagram_ids: Vec<u32>,
 }
 
 /// When a UDP-level datagram is dropped.  This is typically done if it
@@ -500,7 +500,7 @@ pub struct UdpDatagramReceived {
 pub struct UdpDatagramDropped {
     /// The RawInfo fields do not include the UDP headers,
     /// only the UDP payload
-    pub raw: Option<RawInfo>,
+    raw: Option<RawInfo>,
 }
 // The stream_state_updated event is emitted whenever the internal state
 // of a QUIC stream is updated; see Section 3 of [QUIC-TRANSPORT].  Most
@@ -515,17 +515,17 @@ pub struct UdpDatagramDropped {
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct StreamStateUpdated {
-    pub stream_id: u64,
+    stream_id: u64,
 
     /// mainly useful when opening the stream
     #[builder(default)]
-    pub stream_type: Option<StreamType>,
+    stream_type: Option<StreamType>,
     #[builder(default)]
-    pub old: Option<StreamState>,
-    pub new: StreamState,
+    old: Option<StreamState>,
+    new: StreamState,
 
     #[builder(default)]
-    pub stream_side: Option<StreamSide>,
+    stream_side: Option<StreamSide>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -618,9 +618,9 @@ pub enum StreamSide {
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct FramesProcessed {
-    pub frames: Vec<QuicFrame>,
+    frames: Vec<QuicFrame>,
     #[builder(default)]
-    pub packet_numbers: Option<Vec<u64>>,
+    packet_numbers: Option<Vec<u64>>,
 }
 
 /// The stream_data_moved event is used to indicate when QUIC stream data
@@ -666,18 +666,18 @@ pub struct FramesProcessed {
     build_fn(private, name = "fallible_build")
 )]
 pub struct StreamDataMoved {
-    pub stream_id: Option<u64>,
-    pub offset: Option<u64>,
+    stream_id: Option<u64>,
+    offset: Option<u64>,
 
     /// byte length of the moved data
-    pub length: Option<u64>,
+    length: Option<u64>,
 
-    pub from: Option<DataLocation>,
-    pub to: Option<DataLocation>,
+    from: Option<DataLocation>,
+    to: Option<DataLocation>,
 
-    pub additional_info: Option<DataMovedAdditionalInfo>,
+    additional_info: Option<DataMovedAdditionalInfo>,
 
-    pub raw: Option<RawInfo>,
+    raw: Option<RawInfo>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -731,10 +731,10 @@ pub enum DataMovedAdditionalInfo {
 )]
 pub struct DatagramDataMoved {
     /// byte length of the moved data
-    pub length: Option<u64>,
-    pub from: Option<DataLocation>,
-    pub to: Option<DataLocation>,
-    pub raw: Option<RawInfo>,
+    length: Option<u64>,
+    from: Option<DataLocation>,
+    to: Option<DataLocation>,
+    raw: Option<RawInfo>,
 }
 
 /// Use to provide additional information when attempting (client-side)
@@ -759,19 +759,19 @@ pub struct DatagramDataMoved {
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct MigrationStateUpdated {
     #[builder(default)]
-    pub old: Option<MigrationState>,
-    pub new: MigrationState,
+    old: Option<MigrationState>,
+    new: MigrationState,
 
     #[builder(default)]
-    pub path_id: Option<PathID>,
+    path_id: Option<PathID>,
 
     /// the information for traffic going towards the remote receiver
     #[builder(default)]
-    pub path_remote: Option<PathEndpointInfo>,
+    path_remote: Option<PathEndpointInfo>,
 
     /// the information for traffic coming in at the local endpoint
     #[builder(default)]
-    pub path_local: Option<PathEndpointInfo>,
+    path_local: Option<PathEndpointInfo>,
 }
 
 /// Note that MigrationState does not describe a full state machine

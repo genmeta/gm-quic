@@ -14,22 +14,22 @@ use serde::{Deserialize, Serialize};
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct LogFile {
-    pub file_schema: String,
-    pub serialization_format: String,
+    file_schema: String,
+    serialization_format: String,
     #[builder(default)]
-    pub title: Option<String>,
+    title: Option<String>,
     #[builder(default)]
-    pub description: Option<String>,
+    description: Option<String>,
     #[builder(default)]
-    pub event_schemas: Vec<String>,
+    event_schemas: Vec<String>,
 }
 
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into), build_fn(private, name = "fallible_build"))]
 pub struct QlogFile {
     #[serde(flatten)]
-    pub log_file: LogFile,
-    pub traces: Vec<Traces>,
+    log_file: LogFile,
+    traces: Vec<Traces>,
 }
 
 /// A qlog file using the QlogFileSeq schema can be serialized to a
@@ -42,8 +42,8 @@ pub struct QlogFile {
 #[builder(setter(into), build_fn(private, name = "fallible_build"))]
 pub struct QlogFileSeq {
     #[serde(flatten)]
-    pub log_file: LogFile,
-    pub trace_seq: TraceSeq,
+    log_file: LogFile,
+    trace_seq: TraceSeq,
 }
 
 impl QlogFileSeq {
@@ -72,15 +72,15 @@ pub enum Traces {
 pub struct Trace {
     /// The optional "title" fields provide additional free-text information about the trace.
     #[builder(default)]
-    pub title: Option<String>,
+    title: Option<String>,
     /// The optional "description" fields provide additional free-text information about the trace.
     #[builder(default)]
-    pub description: Option<String>,
+    description: Option<String>,
     #[builder(default)]
-    pub common_fields: Option<CommonFields>,
+    common_fields: Option<CommonFields>,
     #[builder(default)]
-    pub vantage_point: Option<VantagePoint>,
-    pub events: Vec<Event>,
+    vantage_point: Option<VantagePoint>,
+    events: Vec<Event>,
 }
 
 /// TraceSeq is used with QlogFileSeq. It is conceptually similar to a
@@ -95,26 +95,26 @@ pub struct Trace {
 )]
 pub struct TraceSeq {
     /// The optional "title" fields provide additional free-text information about the trace.
-    pub title: Option<String>,
+    title: Option<String>,
     /// The optional "description" fields provide additional free-text information about the trace.
-    pub description: Option<String>,
-    pub common_fields: Option<CommonFields>,
-    pub vantage_point: Option<VantagePoint>,
+    description: Option<String>,
+    common_fields: Option<CommonFields>,
+    vantage_point: Option<VantagePoint>,
 }
 
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct CommonFields {
-    pub path: PathID,
-    pub time_format: TimeFormat,
-    pub reference_time: ReferenceTime,
-    pub protocol_types: ProtocolTypeList,
-    pub group_id: GroupID,
+    path: PathID,
+    time_format: TimeFormat,
+    reference_time: ReferenceTime,
+    protocol_types: ProtocolTypeList,
+    group_id: GroupID,
     #[builder(default)]
     #[serde(flatten)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     //  * text => any
-    pub custom_fields: HashMap<String, serde_json::Value>,
+    custom_fields: HashMap<String, serde_json::Value>,
 }
 
 /// A VantagePoint describes the vantage point from which a trace originates
@@ -123,10 +123,10 @@ pub struct CommonFields {
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct VantagePoint {
     #[builder(default)]
-    pub name: Option<String>,
+    name: Option<String>,
     pub r#type: VantagePointType,
     #[builder(default)]
-    pub flow: Option<VantagePointType>,
+    flow: Option<VantagePointType>,
 }
 
 #[derive(Default, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -146,11 +146,11 @@ pub enum VantagePointType {
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct TraceError {
-    pub error_description: String,
+    error_description: String,
     #[builder(default)]
-    pub uri: Option<String>,
+    uri: Option<String>,
     #[builder(default)]
-    pub vantage_point: Option<VantagePoint>,
+    vantage_point: Option<VantagePoint>,
 }
 
 /// Events are logged at a time instant and convey specific details of the logging use case.
@@ -160,29 +160,29 @@ pub struct TraceError {
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct Event {
-    pub time: f64,
+    time: f64,
     #[serde(flatten)]
-    pub data: EvnetData,
+    data: EvnetData,
     /// A qlog event can be associated with a single "network path" (usually, but not always, identified by a 4-tuple
     /// of IP addresses and ports). In many cases, the path will be the same for all events in a given trace, and does
     /// not need to be logged explicitly with each event. In this case, the "path" field can be omitted (in which case
     /// the default value of "" is assumed) or reflected in "common_fields" instead
     #[builder(default)]
-    pub path: Option<PathID>,
+    path: Option<PathID>,
     #[builder(default)]
-    pub time_format: Option<TimeFormat>,
+    time_format: Option<TimeFormat>,
     #[builder(default)]
-    pub protocol_types: Option<ProtocolTypeList>,
+    protocol_types: Option<ProtocolTypeList>,
     #[builder(default)]
-    pub group_id: Option<GroupID>,
+    group_id: Option<GroupID>,
     #[builder(default)]
-    pub system_info: Option<SystemInformation>,
+    system_info: Option<SystemInformation>,
     /// events can contain any amount of custom fields
     #[builder(default)]
     #[serde(flatten)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     // * text => any
-    pub custom_fields: HashMap<String, serde_json::Value>,
+    custom_fields: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, From, Into, Serialize, Deserialize, PartialEq, Eq)]
@@ -202,17 +202,17 @@ pub struct ReferenceTime {
     /// represents a clock that uses system time, commonly measured against a chosen or well-known epoch. However,
     /// depending on the system, System time can potentially jump forward or back. In contrast, a clock using monotonic
     /// time is generally guaranteed to never go backwards. The value "monotonic" represents such a clock.
-    pub clock_type: TimeClockType,
+    clock_type: TimeClockType,
     /// The required "epoch" field is the start of the ReferenceTime. When using the "system" clock type, the epoch field
     /// **SHOULD** have a date/time value using the format defined in [RFC3339]. However, the value "unknown" **MAY** be
     /// used
     #[serde(default)]
-    pub epoch: TimeEpoch,
+    epoch: TimeEpoch,
     /// The optional "wall_clock_time" field can be used to provide an approximate date/time value that logging commenced
     /// at if the epoch value is "unknown". It uses the format defined in [RFC3339]. Note that conversion of timestamps
     /// to calendar time based on wall clock times cannot be safely relied on.
     #[builder(default)]
-    pub wall_clock_time: Option<RFC3339DateTime>,
+    wall_clock_time: Option<RFC3339DateTime>,
 }
 
 /// Intermediate data types during deserialization
@@ -337,9 +337,9 @@ impl From<(SocketAddr, SocketAddr)> for GroupID {
     build_fn(private, name = "fallible_build")
 )]
 pub struct SystemInformation {
-    pub processor_id: Option<u32>,
-    pub process_id: Option<u32>,
-    pub thread_id: Option<u32>,
+    processor_id: Option<u32>,
+    process_id: Option<u32>,
+    thread_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -515,13 +515,13 @@ pub struct HexString(#[serde_as(as = "serde_with::hex::Hex")] Bytes);
 pub struct RawInfo {
     /// the full byte length of the entity (e.g., packet or frame),
     /// including possible headers and trailers
-    pub length: Option<u64>,
+    length: Option<u64>,
     /// the byte length of the entity's payload,
     /// excluding possible headers or trailers
-    pub payload_length: Option<u64>,
+    payload_length: Option<u64>,
     /// the (potentially truncated) contents of the full entity,
     /// including headers and possibly trailers
-    pub data: Option<HexString>,
+    data: Option<HexString>,
 }
 
 #[macro_export(local_inner_macros)]
@@ -608,22 +608,18 @@ mod tests {
   "customB": "some other extensions"
 }"#;
         let des = serde_json::from_str::<CommonFields>(with_custom_fields).unwrap();
-        dbg!(&des);
         let filed_string = serde_json::to_string_pretty(&des).unwrap();
-        dbg!(&filed_string);
         let des2 = serde_json::from_str::<CommonFields>(&filed_string).unwrap();
-        assert_eq!(des, des2,);
+        assert_eq!(des, des2);
     }
 
     #[test]
     fn evnet_data() {
-        let event_data: EvnetData = loglevel::Warning {
-            code: Some(255),
-            message: Some(String::from(
-                "deepseek（已深度思考（用时0秒））：服务器繁忙，请稍后再试。",
-            )),
-        }
-        .into();
+        let event_data: EvnetData = loglevel::Warning::builder()
+            .message("deepseek（已深度思考（用时0秒））：服务器繁忙，请稍后再试。")
+            .code(255u64)
+            .build()
+            .into();
         let event = Event {
             time: 1.0,
             data: event_data.clone(),
