@@ -101,7 +101,7 @@ impl ReceiveFrame<NewTokenFrame> for ArcTokenRegistry {
     fn recv_frame(&self, frame: &NewTokenFrame) -> Result<Self::Output, crate::error::Error> {
         match self.deref() {
             TokenRegistry::Client((server_name, client)) => {
-                client.sink(server_name, frame.token.clone());
+                client.sink(server_name, frame.token().to_vec());
                 Ok(())
             }
             TokenRegistry::Server(_) => Err(Error::new(

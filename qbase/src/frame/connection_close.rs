@@ -11,15 +11,44 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppCloseFrame {
-    pub error_code: VarInt,
-    pub reason: Cow<'static, str>,
+    error_code: VarInt,
+    reason: Cow<'static, str>,
+}
+
+impl AppCloseFrame {
+    /// Return the error code of the frame.
+    pub fn error_code(&self) -> u64 {
+        self.error_code.into_inner()
+    }
+
+    /// Return the reason of the frame.
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuicCloseFrame {
-    pub error_kind: ErrorKind,
-    pub frame_type: FrameType,
-    pub reason: Cow<'static, str>,
+    error_kind: ErrorKind,
+    frame_type: FrameType,
+    reason: Cow<'static, str>,
+}
+
+impl QuicCloseFrame {
+    /// Return the error kind of the frame.
+    pub fn error_kind(&self) -> ErrorKind {
+        self.error_kind
+    }
+
+    /// Return the frame type of the frame.
+    pub fn frame_type(&self) -> FrameType {
+        self.frame_type
+    }
+
+    /// Return the reason of the frame.
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
 }
 
 /// CONNECTION_CLOSE Frame.

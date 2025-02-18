@@ -166,7 +166,7 @@ impl CongestionController {
 
     // A.7. On Receiving an Acknowledgment
     pub fn on_ack_rcvd(&mut self, space: Epoch, ack_frame: &AckFrame, now: Instant) {
-        let largest_acked: u64 = ack_frame.largest.into();
+        let largest_acked: u64 = ack_frame.largest();
 
         self.largest_acked_packet[space] =
             Some(largest_acked.max(self.largest_acked_packet[space].unwrap_or(0)));
@@ -176,7 +176,7 @@ impl CongestionController {
             return;
         }
 
-        let ack_delay = Duration::from_micros(ack_frame.delay.into());
+        let ack_delay = Duration::from_micros(ack_frame.delay());
         if let Some(latest_rtt) = latest_rtt {
             let is_handshake_confirmed = self.handshake.is_handshake_done();
             self.rtt
@@ -184,7 +184,7 @@ impl CongestionController {
         }
 
         // Process ECN information if present.
-        if let Some(ecn) = ack_frame.ecn {
+        if let Some(ecn) = ack_frame.ecn() {
             self.process_ecn(space, ecn)
         }
 
@@ -206,7 +206,7 @@ impl CongestionController {
         ack_frame: &AckFrame,
     ) -> (VecDeque<AckedPkt>, Option<Duration>) {
         let mut newly_acked_packets: VecDeque<AckedPkt> = VecDeque::new();
-        let largest_acked: u64 = ack_frame.largest.into();
+        let largest_acked: u64 = ack_frame.largest();
         let mut latest_rtt = None;
         for range in ack_frame.iter() {
             for pn in range {
@@ -869,13 +869,13 @@ mod tests {
             );
         }
         // ack 1 ~ 3
-        let ack_frame = AckFrame {
-            largest: VarInt::from_u32(3),
-            delay: VarInt::from_u32(100),
-            first_range: VarInt::from_u32(2),
-            ranges: vec![],
-            ecn: None,
-        };
+        let ack_frame = AckFrame::new(
+            VarInt::from_u32(3),
+            VarInt::from_u32(100),
+            VarInt::from_u32(2),
+            Vec::new(),
+            None,
+        );
         congestion_controller.on_ack_rcvd(Epoch::Initial, &ack_frame, now);
         // 验证前三个数据包已被移除，剩下的数据包还在
         assert_eq!(congestion_controller.sent_packets[Epoch::Initial].len(), 2);
@@ -902,13 +902,13 @@ mod tests {
         // ack 9
         // lost 4
         // 剩余 5,8,9(ack),10,11,12,13
-        let ack_frame = AckFrame {
-            largest: VarInt::from_u32(9),
-            delay: VarInt::from_u32(100),
-            first_range: VarInt::from_u32(0),
-            ranges: vec![],
-            ecn: None,
-        };
+        let ack_frame = AckFrame::new(
+            VarInt::from_u32(9),
+            VarInt::from_u32(100),
+            VarInt::from_u32(0),
+            Vec::new(),
+            None,
+        );
 
         congestion_controller.on_ack_rcvd(Epoch::Initial, &ack_frame, now);
         assert_eq!(congestion_controller.sent_packets[Epoch::Initial].len(), 7);

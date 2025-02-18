@@ -20,9 +20,9 @@ use crate::{
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResetStreamFrame {
-    pub stream_id: StreamId,
-    pub app_error_code: VarInt,
-    pub final_size: VarInt,
+    stream_id: StreamId,
+    app_error_code: VarInt,
+    final_size: VarInt,
 }
 
 const RESET_STREAM_FRAME_TYPE: u8 = 0x04;
@@ -40,6 +40,32 @@ impl super::BeFrame for ResetStreamFrame {
         1 + self.stream_id.encoding_size()
             + self.app_error_code.encoding_size()
             + self.final_size.encoding_size()
+    }
+}
+
+impl ResetStreamFrame {
+    /// Create a new [`ResetStreamFrame`].
+    pub fn new(stream_id: StreamId, app_error_code: VarInt, final_size: VarInt) -> Self {
+        Self {
+            stream_id,
+            app_error_code,
+            final_size,
+        }
+    }
+
+    /// Return the stream ID of the frame.
+    pub fn stream_id(&self) -> StreamId {
+        self.stream_id
+    }
+
+    /// Return the application protocol error code of the frame.
+    pub fn app_error_code(&self) -> u64 {
+        self.app_error_code.into_inner()
+    }
+
+    /// Return the final size of the frame.
+    pub fn final_size(&self) -> u64 {
+        self.final_size.into_inner()
     }
 }
 
@@ -116,14 +142,17 @@ mod tests {
 
     #[test]
     fn test_reset_stream_frame() {
-        let frame = ResetStreamFrame {
-            stream_id: VarInt::from_u32(0x1234).into(),
-            app_error_code: VarInt::from_u32(0x5678),
-            final_size: VarInt::from_u32(0x9abc),
-        };
+        let frame = ResetStreamFrame::new(
+            VarInt::from_u32(0x1234).into(),
+            VarInt::from_u32(0x5678),
+            VarInt::from_u32(0x9abc),
+        );
         assert_eq!(frame.frame_type(), FrameType::ResetStream);
         assert_eq!(frame.max_encoding_size(), 1 + 8 + 8 + 8);
         assert_eq!(frame.encoding_size(), 1 + 2 + 4 + 4);
+        assert_eq!(frame.stream_id(), VarInt::from_u32(0x1234).into());
+        assert_eq!(frame.app_error_code(), 0x5678);
+        assert_eq!(frame.final_size(), 0x9abc);
 
         let reset_stream_error: ResetStreamError = (&frame).into();
         assert_eq!(
@@ -159,24 +188,24 @@ mod tests {
         assert!(input.is_empty());
         assert_eq!(
             frame,
-            ResetStreamFrame {
-                stream_id: VarInt::from_u32(0x1234).into(),
-                app_error_code: VarInt::from_u32(0x5678),
-                final_size: VarInt::from_u32(0x9abc),
-            }
+            ResetStreamFrame::new(
+                VarInt::from_u32(0x1234).into(),
+                VarInt::from_u32(0x5678),
+                VarInt::from_u32(0x9abc),
+            )
         );
     }
 
     #[test]
     fn test_write_reset_stream_frame() {
         let mut buf = Vec::new();
-        buf.put_frame(&ResetStreamFrame {
-            stream_id: VarInt::from_u32(0x1234).into(),
+        buf.put_frame(&ResetStreamFrame::new(
+            VarInt::from_u32(0x1234).into(),
             // 0x5678 = 0b01010110 01111000 => 0b10000000 0x00 0x56 0x78
-            app_error_code: VarInt::from_u32(0x5678),
+            VarInt::from_u32(0x5678),
             // 0x9abc = 0b10011010 10111100 => 0b10000000 0x00 0x9a 0xbc
-            final_size: VarInt::from_u32(0x9abc),
-        });
+            VarInt::from_u32(0x9abc),
+        ));
         assert_eq!(
             buf,
             vec![

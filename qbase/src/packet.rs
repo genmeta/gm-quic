@@ -552,10 +552,7 @@ mod tests {
         });
 
         let mut writer = PacketWriter::new_long(&header, &mut buffer, pn, keys).unwrap();
-        let frame = CryptoFrame {
-            length: VarInt::from_u32(12),
-            offset: VarInt::from_u32(0),
-        };
+        let frame = CryptoFrame::new(VarInt::from_u32(0), VarInt::from_u32(12));
         writer.dump_frame_with_data(frame, "client_hello".as_bytes());
 
         assert!(writer.is_ack_eliciting());

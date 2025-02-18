@@ -164,7 +164,7 @@ impl<TX> ReceiveFrame<MaxDataFrame> for ArcSendControler<TX> {
     type Output = ();
 
     fn recv_frame(&self, frame: &MaxDataFrame) -> Result<Self::Output, QuicError> {
-        self.increase_limit(frame.max_data.into_inner());
+        self.increase_limit(frame.max_data());
         Ok(())
     }
 }
@@ -198,11 +198,11 @@ where
                 inner.sent_data += amount as u64;
                 if inner.sent_data == inner.max_data && !inner.blocking {
                     inner.blocking = true;
-                    inner.broker.send_frame([DataBlockedFrame {
-                        limit: VarInt::from_u64(inner.max_data).expect(
+                    inner.broker.send_frame([DataBlockedFrame::new(
+                        VarInt::from_u64(inner.max_data).expect(
                             "max_data of flow controller is very very hard to exceed 2^62 - 1",
                         ),
-                    }]);
+                    )]);
                 }
             }
             Err(_) => unreachable!(),
@@ -256,10 +256,10 @@ where
         if rcvd_data <= max_data {
             if rcvd_data + self.step >= max_data {
                 self.max_data.fetch_add(self.step, Ordering::Release);
-                self.broker.send_frame([MaxDataFrame {
-                    max_data: VarInt::from_u64(self.max_data.load(Ordering::Acquire))
+                self.broker.send_frame([MaxDataFrame::new(
+                    VarInt::from_u64(self.max_data.load(Ordering::Acquire))
                         .expect("max_data of flow controller is very very hard to exceed 2^62 - 1"),
-                }])
+                )])
             }
             Ok(amount)
         } else {
@@ -422,7 +422,7 @@ mod tests {
 
         // broker should have a DataBlockedFrame
         assert_eq!(broker.lock().unwrap().len(), 1);
-        assert_eq!(broker.lock().unwrap()[0].limit.into_inner(), 100);
+        assert_eq!(broker.lock().unwrap()[0].limit(), 100);
 
         let credit = controler.credit().unwrap();
         assert_eq!(credit.available(), 0);
@@ -459,7 +459,7 @@ mod tests {
 
         // broker should have a DataBlockedFrame
         assert_eq!(broker.lock().unwrap().len(), 2);
-        assert_eq!(broker.lock().unwrap()[1].limit.into_inner(), 200);
+        assert_eq!(broker.lock().unwrap()[1].limit(), 200);
     }
 
     #[derive(Clone, Debug, Default, Deref, DerefMut)]
@@ -483,7 +483,7 @@ mod tests {
         assert_eq!(amount, 30);
         // broker should have a MaxDataFrame
         assert_eq!(broker.lock().unwrap().len(), 1);
-        assert_eq!(broker.lock().unwrap()[0].max_data.into_inner(), 150);
+        assert_eq!(broker.lock().unwrap()[0].max_data(), 150);
 
         // test overflow
         let result = controler.on_new_rcvd(FrameType::ResetStream, 101);

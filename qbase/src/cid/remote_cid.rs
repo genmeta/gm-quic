@@ -90,8 +90,8 @@ where
         &mut self,
         frame: &NewConnectionIdFrame,
     ) -> Result<Option<ResetToken>, Error> {
-        let seq = frame.sequence.into_inner();
-        let retire_prior_to = frame.retire_prior_to.into_inner();
+        let seq = frame.sequence();
+        let retire_prior_to = frame.retire_prior_to();
         let active_len = seq.saturating_sub(retire_prior_to);
         if active_len > self.active_cid_limit {
             return Err(Error::new(
@@ -105,12 +105,12 @@ where
         }
 
         // Discard the frame if the sequence number is less than the current offset.
-        if frame.sequence < self.cid_deque.offset() {
+        if seq < self.cid_deque.offset() {
             return Ok(None);
         }
 
-        let id = frame.id;
-        let token = frame.reset_token;
+        let id = *frame.connection_id();
+        let token = *frame.reset_token();
         self.cid_deque.insert(seq, Some((seq, id, token))).unwrap();
         self.retire_prior_to(retire_prior_to);
         self.arrange_idle_cid();
@@ -171,10 +171,10 @@ where
             // // self.cid_cells.resize(seq, ArcCidCell::default()).expect("");
             self.retired_cids
                 .send_frame((self.ready_cells.offset()..tomb_seq).map(|seq| {
-                    RetireConnectionIdFrame {
-                        sequence: VarInt::from_u64(seq)
+                    RetireConnectionIdFrame::new(
+                        VarInt::from_u64(seq)
                             .expect("Sequence of connection id is very hard to exceed VARINT_MAX"),
-                    }
+                    )
                 }));
             self.ready_cells.reset_offset(tomb_seq);
         } else {
@@ -192,13 +192,13 @@ where
                 self.ready_cells.reset_offset(tomb_seq);
                 // even the cid that has not been applied is retired right now
                 self.retired_cids
-                    .send_frame(
-                        (actual_applied..tomb_seq).map(|seq| RetireConnectionIdFrame {
-                            sequence: VarInt::from_u64(seq).expect(
+                    .send_frame((actual_applied..tomb_seq).map(|seq| {
+                        RetireConnectionIdFrame::new(
+                            VarInt::from_u64(seq).expect(
                                 "Sequence of connection id is very hard to exceed VARINT_MAX",
                             ),
-                        }),
-                    );
+                        )
+                    }));
             }
         }
     }
@@ -310,7 +310,7 @@ where
                 let sequence = VarInt::try_from(seq)
                     .expect("Sequence of connection id is very hard to exceed VARINT_MAX");
                 self.retired_cids
-                    .send_frame([RetireConnectionIdFrame { sequence }]);
+                    .send_frame([RetireConnectionIdFrame::new(sequence)]);
             }
         }
 
@@ -348,7 +348,7 @@ where
             let sequence = VarInt::try_from(seq)
                 .expect("Sequence of connection id is very hard to exceed VARINT_MAX");
             self.retired_cids
-                .send_frame([RetireConnectionIdFrame { sequence }]);
+                .send_frame([RetireConnectionIdFrame::new(sequence)]);
         }
     }
 
@@ -360,7 +360,7 @@ where
                 let sequence = VarInt::try_from(seq)
                     .expect("Sequence of connection id is very hard to exceed VARINT_MAX");
                 self.retired_cids
-                    .send_frame([RetireConnectionIdFrame { sequence }]);
+                    .send_frame([RetireConnectionIdFrame::new(sequence)]);
             }
 
             if let Some(waker) = self.waker.take() {
@@ -490,12 +490,7 @@ mod tests {
         assert!(cid_apply1.poll_borrow_cid(&mut cx).is_pending());
 
         let cid = ConnectionId::random_gen(8);
-        let frame = NewConnectionIdFrame {
-            sequence: VarInt::from_u32(1),
-            retire_prior_to: VarInt::from_u32(0),
-            id: cid,
-            reset_token: ResetToken::random_gen(),
-        };
+        let frame = NewConnectionIdFrame::new(cid, VarInt::from_u32(1), VarInt::from_u32(0));
         assert!(remote_cids.recv_new_cid_frame(&frame).is_ok());
         assert_eq!(remote_cids.cid_deque.len(), 2);
 
@@ -523,12 +518,7 @@ mod tests {
         for seq in 1..8 {
             let cid = ConnectionId::random_gen(8);
             cids.push(cid);
-            let frame = NewConnectionIdFrame {
-                sequence: VarInt::from_u32(seq),
-                retire_prior_to: VarInt::from_u32(0),
-                id: cid,
-                reset_token: ResetToken::random_gen(),
-            };
+            let frame = NewConnectionIdFrame::new(cid, VarInt::from_u32(seq), VarInt::from_u32(0));
             _ = guard.recv_new_cid_frame(&frame);
         }
 
@@ -572,9 +562,7 @@ mod tests {
             assert_eq!(
                 // like a stack, the last in the first out
                 guard.retired_cids.0.lock().unwrap().pop(),
-                Some(RetireConnectionIdFrame {
-                    sequence: VarInt::from_u32(seq),
-                })
+                Some(RetireConnectionIdFrame::new(VarInt::from_u32(seq)))
             );
         }
 
@@ -591,9 +579,7 @@ mod tests {
         assert_eq!(guard.retired_cids.lock().unwrap().len(), 1);
         assert_eq!(
             guard.retired_cids.0.lock().unwrap().pop(),
-            Some(RetireConnectionIdFrame {
-                sequence: VarInt::from_u32(5),
-            })
+            Some(RetireConnectionIdFrame::new(VarInt::from_u32(5)))
         );
     }
 

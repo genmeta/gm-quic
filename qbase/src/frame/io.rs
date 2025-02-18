@@ -66,7 +66,7 @@ fn complete_frame(
         FrameType::Crypto => {
             let (input, frame) = be_crypto_frame(input)?;
             let start = raw.len() - input.len();
-            let len = frame.length.into_inner() as usize;
+            let len = frame.length() as usize;
             if input.len() < len {
                 Err(nom::Err::Incomplete(nom::Needed::new(len - input.len())))
             } else {

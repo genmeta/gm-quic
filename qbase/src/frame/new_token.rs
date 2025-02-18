@@ -14,7 +14,7 @@ use crate::varint::{be_varint, VarInt, WriteVarInt};
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewTokenFrame {
-    pub token: Vec<u8>,
+    token: Vec<u8>,
 }
 
 const NEW_TOKEN_FRAME_TYPE: u8 = 0x07;
@@ -34,6 +34,25 @@ impl super::BeFrame for NewTokenFrame {
     }
 }
 
+impl NewTokenFrame {
+    /// Create a new [`NewTokenFrame`] with the given token.
+    pub fn new(token: Vec<u8>) -> Self {
+        Self { token }
+    }
+
+    /// Create a new [`NewTokenFrame`] from the given token slice.
+    pub fn from_slice(token: &[u8]) -> Self {
+        Self {
+            token: token.to_vec(),
+        }
+    }
+
+    /// Return the token of the frame.
+    pub fn token(&self) -> &[u8] {
+        &self.token
+    }
+}
+
 /// Parse a NEW_TOKEN frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_new_token_frame(input: &[u8]) -> nom::IResult<&[u8], NewTokenFrame> {
@@ -43,11 +62,10 @@ pub fn be_new_token_frame(input: &[u8]) -> nom::IResult<&[u8], NewTokenFrame> {
         Parser,
     };
     flat_map(be_varint, |length| {
-        map(take(length.into_inner() as usize), |data: &[u8]| {
-            NewTokenFrame {
-                token: data.to_vec(),
-            }
-        })
+        map(
+            take(length.into_inner() as usize),
+            NewTokenFrame::from_slice,
+        )
     })
     .parse(input)
 }
@@ -65,9 +83,7 @@ mod tests {
 
     #[test]
     fn test_new_token_frame() {
-        let frame = super::NewTokenFrame {
-            token: vec![0x01, 0x02],
-        };
+        let frame = super::NewTokenFrame::new(vec![0x01, 0x02]);
         assert_eq!(frame.frame_type(), FrameType::NewToken);
         assert_eq!(frame.max_encoding_size(), 1 + 1 + 2);
         assert_eq!(frame.encoding_size(), 1 + 1 + 2);
@@ -85,9 +101,7 @@ mod tests {
     #[test]
     fn test_write_new_token_frame() {
         let mut buf = Vec::<u8>::new();
-        let frame = super::NewTokenFrame {
-            token: vec![0x01, 0x02],
-        };
+        let frame = super::NewTokenFrame::from_slice(&[0x01, 0x02]);
         buf.put_frame(&frame);
         assert_eq!(buf, vec![0x07, 0x02, 0x01, 0x02]);
     }

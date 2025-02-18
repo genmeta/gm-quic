@@ -28,11 +28,11 @@ use crate::varint::{be_varint, VarInt, WriteVarInt};
 /// the ranges when parsing.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AckFrame {
-    pub largest: VarInt,
-    pub delay: VarInt,
-    pub first_range: VarInt,
-    pub ranges: Vec<(VarInt, VarInt)>,
-    pub ecn: Option<EcnCounts>,
+    largest: VarInt,
+    delay: VarInt,
+    first_range: VarInt,
+    ranges: Vec<(VarInt, VarInt)>,
+    ecn: Option<EcnCounts>,
 }
 
 const ACK_FRAME_TYPE: u8 = 0x02;
@@ -69,6 +69,48 @@ impl super::BeFrame for AckFrame {
 }
 
 impl AckFrame {
+    /// Create a new [`AckFrame`].
+    pub fn new(
+        largest: VarInt,
+        delay: VarInt,
+        first_range: VarInt,
+        ranges: Vec<(VarInt, VarInt)>,
+        ecn: Option<EcnCounts>,
+    ) -> Self {
+        Self {
+            largest,
+            delay,
+            first_range,
+            ranges,
+            ecn,
+        }
+    }
+
+    /// Return the largest acknowledged packet number.
+    pub fn largest(&self) -> u64 {
+        self.largest.into_inner()
+    }
+
+    /// Return the delay in microseconds.
+    pub fn delay(&self) -> u64 {
+        self.delay.into_inner()
+    }
+
+    /// Return the first range.
+    pub fn first_range(&self) -> u64 {
+        self.first_range.into_inner()
+    }
+
+    /// Return the ranges.
+    pub fn ranges(&self) -> &Vec<(VarInt, VarInt)> {
+        &self.ranges
+    }
+
+    /// Return the ECN (Explicit Congestion Notification) counter.
+    pub fn ecn(&self) -> Option<EcnCounts> {
+        self.ecn
+    }
+
     /// Set the value of the ECN (Explicit Congestion Notification) counter
     pub fn set_ecn(&mut self, ecn: EcnCounts) {
         self.ecn = Some(ecn);
@@ -103,12 +145,32 @@ impl AckFrame {
 /// See [ecn-counts](https://www.rfc-editor.org/rfc/rfc9000.html#name-ecn-counts) of QUIC RFC 9000.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct EcnCounts {
-    pub ect0: VarInt,
-    pub ect1: VarInt,
-    pub ce: VarInt,
+    ect0: VarInt,
+    ect1: VarInt,
+    ce: VarInt,
 }
 
 impl EcnCounts {
+    /// Create a new [`EcnCounts`].
+    pub fn new(ect0: VarInt, ect1: VarInt, ce: VarInt) -> Self {
+        Self { ect0, ect1, ce }
+    }
+
+    /// Get the value of the ECT0 counter.
+    pub fn ect0(&self) -> u64 {
+        self.ect0.into_inner()
+    }
+
+    /// Get the value of the ECT1 counter.
+    pub fn ect1(&self) -> u64 {
+        self.ect1.into_inner()
+    }
+
+    /// Get the value of the CE counter.
+    pub fn ce(&self) -> u64 {
+        self.ce.into_inner()
+    }
+
     /// Calculates the encoding size of the [`EcnCounts`] struct.
     fn encoding_size(&self) -> usize {
         self.ect0.encoding_size() + self.ect1.encoding_size() + self.ce.encoding_size()

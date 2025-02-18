@@ -267,15 +267,17 @@ impl From<AppError> for ConnectionCloseFrame {
 impl From<ConnectionCloseFrame> for Error {
     fn from(frame: ConnectionCloseFrame) -> Self {
         match frame {
-            ConnectionCloseFrame::Quic(frame) => {
-                Self::new(frame.error_kind, frame.frame_type, frame.reason)
-            }
+            ConnectionCloseFrame::Quic(frame) => Self::new(
+                frame.error_kind(),
+                frame.frame_type(),
+                frame.reason().to_owned(),
+            ),
             ConnectionCloseFrame::App(frame) => Self::with_default_fty(
                 ErrorKind::Application,
                 format!(
                     "App layer error occur with code {error_code}, reason: {reason}",
-                    error_code = frame.error_code,
-                    reason = frame.reason,
+                    error_code = frame.error_code(),
+                    reason = frame.reason(),
                 ),
             ),
         }
@@ -339,8 +341,8 @@ mod tests {
         let frame: ConnectionCloseFrame = err.clone().into();
         match frame {
             ConnectionCloseFrame::Quic(frame) => {
-                assert_eq!(frame.error_kind, err.kind());
-                assert_eq!(frame.frame_type, err.frame_type());
+                assert_eq!(frame.error_kind(), err.kind());
+                assert_eq!(frame.frame_type(), err.frame_type());
             }
             _ => panic!("unexpected frame type"),
         }

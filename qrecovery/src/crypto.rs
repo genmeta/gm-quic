@@ -31,10 +31,10 @@ mod send {
             let buf_len = buffer.len();
             let predicate = |offset: u64| CryptoFrame::estimate_max_capacity(buf_len, offset);
             if let Some((offset, _is_fresh, data)) = self.sndbuf.pick_up(predicate, usize::MAX) {
-                let frame = CryptoFrame {
-                    offset: VarInt::from_u64(offset).unwrap(),
-                    length: VarInt::try_from(data.len()).unwrap(),
-                };
+                let frame = CryptoFrame::new(
+                    VarInt::from_u64(offset).unwrap(),
+                    VarInt::try_from(data.len()).unwrap(),
+                );
                 buffer.put_data_frame(&frame, &data);
                 let written = buf_len - buffer.remaining_mut();
                 Some((frame, written))
@@ -54,10 +54,10 @@ mod send {
             let max_size = packet.remaining_mut();
             let predicate = |offset: u64| CryptoFrame::estimate_max_capacity(max_size, offset);
             if let Some((offset, _is_fresh, data)) = self.sndbuf.pick_up(predicate, usize::MAX) {
-                let frame = CryptoFrame {
-                    offset: VarInt::from_u64(offset).unwrap(),
-                    length: VarInt::try_from(data.len()).unwrap(),
-                };
+                let frame = CryptoFrame::new(
+                    VarInt::from_u64(offset).unwrap(),
+                    VarInt::try_from(data.len()).unwrap(),
+                );
                 packet.dump_frame_with_data(frame, data);
                 true
             } else {
@@ -263,10 +263,7 @@ mod recv {
         type Output = ();
 
         fn recv_frame(&self, (frame, data): &(CryptoFrame, Bytes)) -> Result<Self::Output, Error> {
-            self.0
-                .lock()
-                .unwrap()
-                .recv(frame.offset.into(), data.clone());
+            self.0.lock().unwrap().recv(frame.offset(), data.clone());
             Ok(())
         }
     }
@@ -341,10 +338,7 @@ mod tests {
         crypto_stream
             .incoming()
             .recv_frame(&(
-                CryptoFrame {
-                    offset: VarInt::from_u32(0),
-                    length: VarInt::from_u32(11),
-                },
+                CryptoFrame::new(VarInt::from_u32(0), VarInt::from_u32(11)),
                 bytes::Bytes::copy_from_slice(b"hello world"),
             ))
             .unwrap();
