@@ -23,13 +23,14 @@ const NEW_CONNECTION_ID_FRAME_TYPE: u8 = 0x18;
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NewConnectionIdFrame {
-    pub sequence: VarInt,
-    pub retire_prior_to: VarInt,
-    pub id: ConnectionId,
-    pub reset_token: ResetToken,
+    sequence: VarInt,
+    retire_prior_to: VarInt,
+    id: ConnectionId,
+    reset_token: ResetToken,
 }
 
 impl NewConnectionIdFrame {
+    /// Create a new [`NewConnectionIdFrame`].
     pub fn new(cid: ConnectionId, sequence: VarInt, retire_prior_to: VarInt) -> Self {
         let reset_token = ResetToken::random_gen();
         Self {
@@ -38,6 +39,26 @@ impl NewConnectionIdFrame {
             id: cid,
             reset_token,
         }
+    }
+
+    /// Return the sequence number of the frame.
+    pub fn sequence(&self) -> u64 {
+        self.sequence.into_inner()
+    }
+
+    /// Return the retire prior to of the frame.
+    pub fn retire_prior_to(&self) -> u64 {
+        self.retire_prior_to.into_inner()
+    }
+
+    /// Return the connection ID of the frame.
+    pub fn connection_id(&self) -> &ConnectionId {
+        &self.id
+    }
+
+    /// Return the reset token of the frame.
+    pub fn reset_token(&self) -> &ResetToken {
+        &self.reset_token
     }
 }
 
@@ -118,8 +139,8 @@ mod tests {
             VarInt::from_u32(1),
             VarInt::from_u32(0),
         );
-        assert_eq!(new_cid_frame.sequence, VarInt::from_u32(1));
-        assert_eq!(new_cid_frame.retire_prior_to, VarInt::from_u32(0));
+        assert_eq!(new_cid_frame.sequence(), 1);
+        assert_eq!(new_cid_frame.retire_prior_to(), 0);
         assert_eq!(
             new_cid_frame.id,
             ConnectionId::from_slice(&[1, 2, 3, 4][..])
@@ -146,10 +167,13 @@ mod tests {
         // Skip frame type byte
         let (_, parsed_frame) = be_new_connection_id_frame(&buf[1..]).unwrap();
 
-        assert_eq!(parsed_frame.sequence, original_frame.sequence);
-        assert_eq!(parsed_frame.retire_prior_to, original_frame.retire_prior_to);
-        assert_eq!(parsed_frame.id, original_frame.id);
-        assert_eq!(parsed_frame.reset_token, original_frame.reset_token);
+        assert_eq!(parsed_frame.sequence(), original_frame.sequence());
+        assert_eq!(
+            parsed_frame.retire_prior_to(),
+            original_frame.retire_prior_to()
+        );
+        assert_eq!(parsed_frame.connection_id(), original_frame.connection_id());
+        assert_eq!(parsed_frame.reset_token(), original_frame.reset_token());
     }
 
     #[test]

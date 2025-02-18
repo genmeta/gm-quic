@@ -13,7 +13,7 @@ use crate::varint::{be_varint, VarInt, WriteVarInt};
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MaxDataFrame {
-    pub max_data: VarInt,
+    max_data: VarInt,
 }
 
 const MAX_DATA_FRAME_TYPE: u8 = 0x10;
@@ -32,11 +32,23 @@ impl super::BeFrame for MaxDataFrame {
     }
 }
 
+impl MaxDataFrame {
+    /// Create a new [`MaxDataFrame`] with the given maximum data.
+    pub fn new(max_data: VarInt) -> Self {
+        Self { max_data }
+    }
+
+    /// Return the maximum data of the frame.
+    pub fn max_data(&self) -> u64 {
+        self.max_data.into_inner()
+    }
+}
+
 /// Parse a MAX_DATA frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_max_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxDataFrame> {
     use nom::{combinator::map, Parser};
-    map(be_varint, |max_data| MaxDataFrame { max_data }).parse(input)
+    map(be_varint, MaxDataFrame::new).parse(input)
 }
 
 impl<T: bytes::BufMut> super::io::WriteFrame<MaxDataFrame> for T {
@@ -56,9 +68,7 @@ mod tests {
 
     #[test]
     fn test_max_data_frame() {
-        let frame = MaxDataFrame {
-            max_data: VarInt::from_u32(0x1234),
-        };
+        let frame = MaxDataFrame::new(VarInt::from_u32(0x1234));
         assert_eq!(frame.frame_type(), FrameType::MaxData);
         assert_eq!(frame.max_encoding_size(), 1 + 8);
         assert_eq!(frame.encoding_size(), 1 + 2);
@@ -81,20 +91,13 @@ mod tests {
         .parse(buf.as_ref())
         .unwrap();
         assert!(input.is_empty());
-        assert_eq!(
-            frame,
-            MaxDataFrame {
-                max_data: VarInt::from_u32(0x1234),
-            }
-        );
+        assert_eq!(frame, MaxDataFrame::new(VarInt::from_u32(0x1234),));
     }
 
     #[test]
     fn test_write_max_data_frame() {
         let mut buf = Vec::new();
-        buf.put_frame(&MaxDataFrame {
-            max_data: VarInt::from_u32(0x1234),
-        });
+        buf.put_frame(&MaxDataFrame::new(VarInt::from_u32(0x1234)));
         assert_eq!(buf, vec![MAX_DATA_FRAME_TYPE, 0x52, 0x34]);
     }
 }

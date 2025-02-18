@@ -28,7 +28,7 @@ use crate::{
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamFrame {
-    pub id: StreamId,
+    id: StreamId,
     offset: VarInt,
     length: usize,
     flag: u8,
@@ -97,6 +97,11 @@ impl StreamFrame {
             length,
             flag: if offset != 0 { OFF_BIT } else { 0 },
         }
+    }
+
+    /// Return the stream id of this stream frame.
+    pub fn stream_id(&self) -> StreamId {
+        self.id
     }
 
     /// Return whether this stream frame is the end of the stream.

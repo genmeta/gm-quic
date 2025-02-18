@@ -69,9 +69,9 @@ mod tests {
     #[test]
     fn test_path_challenge_frame() {
         use crate::frame::{BeFrame, FrameType};
-        let frame = super::PathChallengeFrame {
-            data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
-        };
+        let frame = super::PathChallengeFrame::from_slice(&[
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        ]);
         assert_eq!(frame.frame_type(), FrameType::PathChallenge);
         assert_eq!(frame.max_encoding_size(), 1 + 8);
         assert_eq!(frame.encoding_size(), 1 + 8);
@@ -116,9 +116,9 @@ mod tests {
     fn test_write_path_challenge_frame() {
         use crate::frame::io::WriteFrame;
         let mut buf = Vec::new();
-        let frame = super::PathChallengeFrame {
-            data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
-        };
+        let frame = super::PathChallengeFrame::from_slice(&[
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        ]);
         buf.put_frame(&frame);
         assert_eq!(
             buf,

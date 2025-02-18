@@ -22,8 +22,8 @@ use crate::{
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CryptoFrame {
-    pub offset: VarInt,
-    pub length: VarInt,
+    offset: VarInt,
+    length: VarInt,
 }
 
 const CRYPTO_FRAME_TYPE: u8 = 0x06;
@@ -43,6 +43,21 @@ impl super::BeFrame for CryptoFrame {
 }
 
 impl CryptoFrame {
+    /// Create a new [`CryptoFrame`] with the given offset and length.
+    pub fn new(offset: VarInt, length: VarInt) -> Self {
+        Self { offset, length }
+    }
+
+    /// Return the offset of the frame.
+    pub fn offset(&self) -> u64 {
+        self.offset.into_inner()
+    }
+
+    /// Return the length of the frame.
+    pub fn length(&self) -> u64 {
+        self.length.into_inner()
+    }
+
     /// Evaluate the maximum number of bytes of data that can be accommodated,
     /// starting from a certain offset, within a given capacity. If it cannot
     /// accommodate a CryptoFrame header or can only accommodate 0 bytes, return None.
@@ -118,13 +133,12 @@ mod tests {
 
     #[test]
     fn test_crypto_frame() {
-        let frame = CryptoFrame {
-            offset: VarInt::from_u32(0),
-            length: VarInt::from_u32(500),
-        };
+        let frame = CryptoFrame::new(VarInt::from_u32(0), VarInt::from_u32(500));
         assert_eq!(frame.frame_type(), super::super::FrameType::Crypto);
         assert_eq!(frame.max_encoding_size(), 1 + 8 + 8);
         assert_eq!(frame.encoding_size(), 1 + 1 + 2);
+        assert_eq!(frame.offset(), 0);
+        assert_eq!(frame.length(), 500);
         assert_eq!(frame.range(), 0..500);
     }
 
@@ -136,20 +150,14 @@ mod tests {
         assert_eq!(remain, &[]);
         assert_eq!(
             frame,
-            CryptoFrame {
-                offset: VarInt::from_u32(0x1234),
-                length: VarInt::from_u32(0x5678),
-            }
+            CryptoFrame::new(VarInt::from_u32(0x1234), VarInt::from_u32(0x5678))
         );
     }
 
     #[test]
     fn test_write_crypto_frame() {
         let mut buf = bytes::BytesMut::new();
-        let frame = CryptoFrame {
-            offset: VarInt::from_u32(0x1234),
-            length: VarInt::from_u32(0x5),
-        };
+        let frame = CryptoFrame::new(VarInt::from_u32(0x1234), VarInt::from_u32(0x5));
         buf.put_data_frame(&frame, b"hello");
         assert_eq!(
             buf,

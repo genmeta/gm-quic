@@ -66,12 +66,13 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PathResponseFrame> for T {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::frame::{io::WriteFrame, BeFrame, FrameType};
+
     #[test]
     fn test_path_response_frame() {
-        use crate::frame::{BeFrame, FrameType};
-        let frame = super::PathResponseFrame {
-            data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
-        };
+        let frame =
+            PathResponseFrame::from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
         assert_eq!(frame.frame_type(), FrameType::PathResponse);
         assert_eq!(frame.max_encoding_size(), 1 + 8);
         assert_eq!(frame.encoding_size(), 1 + 8);
@@ -81,7 +82,6 @@ mod tests {
     fn test_read_path_response_frame() {
         use nom::{combinator::flat_map, Parser};
 
-        use super::be_path_response_frame;
         use crate::varint::be_varint;
         let buf = vec![
             super::PATH_RESPONSE_FRAME_TYPE,
@@ -106,19 +106,15 @@ mod tests {
         assert!(input.is_empty());
         assert_eq!(
             frame,
-            super::PathResponseFrame {
-                data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
-            }
+            PathResponseFrame::from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08])
         );
     }
 
     #[test]
     fn test_write_path_response_frame() {
-        use crate::frame::io::WriteFrame;
         let mut buf = Vec::<u8>::new();
-        let frame = super::PathResponseFrame {
-            data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
-        };
+        let frame =
+            PathResponseFrame::from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
         buf.put_frame(&frame);
         assert_eq!(
             buf,

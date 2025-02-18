@@ -17,18 +17,34 @@ use crate::{
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StopSendingFrame {
-    pub stream_id: StreamId,
-    pub app_err_code: VarInt,
+    stream_id: StreamId,
+    app_err_code: VarInt,
 }
 
 const STOP_SENDING_FRAME_TYPE: u8 = 0x05;
 
 impl StopSendingFrame {
+    /// Create a new [`StopSendingFrame`].
     pub fn new(stream_id: StreamId, app_err_code: VarInt) -> Self {
         Self {
             stream_id,
             app_err_code,
         }
+    }
+
+    /// Return the stream ID of the frame.
+    pub fn stream_id(&self) -> StreamId {
+        self.stream_id
+    }
+
+    /// Return the application protocol error code of the frame.
+    pub fn app_err_code(&self) -> u64 {
+        self.app_err_code.into_inner()
+    }
+
+    /// Compose a RESET_STREAM frame from the STOP_SENDING frame with the given final size.
+    pub fn reset_stream(&self, final_size: VarInt) -> super::ResetStreamFrame {
+        super::ResetStreamFrame::new(self.stream_id, self.app_err_code, final_size)
     }
 }
 
@@ -69,18 +85,18 @@ impl<T: bytes::BufMut> super::io::WriteFrame<StopSendingFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use super::{StopSendingFrame, STOP_SENDING_FRAME_TYPE};
+    use super::{be_stop_sending_frame, StopSendingFrame, STOP_SENDING_FRAME_TYPE};
     use crate::{
         frame::{io::WriteFrame, BeFrame, FrameType},
-        varint::VarInt,
+        varint::{be_varint, VarInt},
     };
 
     #[test]
     fn test_stop_sending_frame() {
         let frame =
             StopSendingFrame::new(VarInt::from_u32(0x1234).into(), VarInt::from_u32(0x5678));
-        assert_eq!(frame.stream_id, VarInt::from_u32(0x1234).into());
-        assert_eq!(frame.app_err_code, VarInt::from_u32(0x5678));
+        assert_eq!(frame.stream_id(), VarInt::from_u32(0x1234).into());
+        assert_eq!(frame.app_err_code(), 0x5678);
         assert_eq!(frame.frame_type(), FrameType::StopSending);
         assert_eq!(frame.max_encoding_size(), 1 + 8 + 8);
         assert_eq!(frame.encoding_size(), 1 + 2 + 4);
@@ -90,12 +106,8 @@ mod tests {
     fn test_parse_stop_sending_frame() {
         use nom::{combinator::flat_map, Parser};
 
-        use super::be_stop_sending_frame;
-        use crate::varint::be_varint;
-        let frame = StopSendingFrame {
-            stream_id: VarInt::from_u32(0x1234).into(),
-            app_err_code: VarInt::from_u32(0x5678),
-        };
+        let frame =
+            StopSendingFrame::new(VarInt::from_u32(0x1234).into(), VarInt::from_u32(0x5678));
         let mut buf = Vec::new();
         buf.put_frame(&frame);
         let (input, parsed) = flat_map(be_varint, |frame_type| {

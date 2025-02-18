@@ -17,8 +17,8 @@ use crate::{
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamDataBlockedFrame {
-    pub stream_id: StreamId,
-    pub maximum_stream_data: VarInt,
+    stream_id: StreamId,
+    maximum_stream_data: VarInt,
 }
 
 const STREAM_DATA_BLOCKED_FRAME_TYPE: u8 = 0x15;
@@ -34,6 +34,26 @@ impl super::BeFrame for StreamDataBlockedFrame {
 
     fn encoding_size(&self) -> usize {
         1 + self.stream_id.encoding_size() + self.maximum_stream_data.encoding_size()
+    }
+}
+
+impl StreamDataBlockedFrame {
+    /// Create a new [`StreamDataBlockedFrame`].
+    pub fn new(stream_id: StreamId, maximum_stream_data: VarInt) -> Self {
+        Self {
+            stream_id,
+            maximum_stream_data,
+        }
+    }
+
+    /// Return the stream ID of the frame.
+    pub fn stream_id(&self) -> StreamId {
+        self.stream_id
+    }
+
+    /// Return the maximum stream data of the frame.
+    pub fn maximum_stream_data(&self) -> u64 {
+        self.maximum_stream_data.into_inner()
     }
 }
 
@@ -69,13 +89,13 @@ mod tests {
 
     #[test]
     fn test_stream_data_blocked_frame() {
-        let frame = StreamDataBlockedFrame {
-            stream_id: VarInt::from_u32(0x1234).into(),
-            maximum_stream_data: VarInt::from_u32(0x5678),
-        };
+        let frame =
+            StreamDataBlockedFrame::new(VarInt::from_u32(0x1234).into(), VarInt::from_u32(0x5678));
         assert_eq!(frame.frame_type(), FrameType::StreamDataBlocked);
         assert_eq!(frame.max_encoding_size(), 1 + 8 + 8);
         assert_eq!(frame.encoding_size(), 1 + 2 + 4);
+        assert_eq!(frame.stream_id(), VarInt::from_u32(0x1234).into());
+        assert_eq!(frame.maximum_stream_data(), 0x5678);
     }
 
     #[test]
@@ -85,20 +105,17 @@ mod tests {
         let (_, frame) = be_stream_data_blocked_frame(&buf).unwrap();
         assert_eq!(
             frame,
-            StreamDataBlockedFrame {
-                stream_id: VarInt::from_u32(0x1234).into(),
-                maximum_stream_data: VarInt::from_u32(0x5678),
-            }
+            StreamDataBlockedFrame::new(VarInt::from_u32(0x1234).into(), VarInt::from_u32(0x5678))
         );
     }
 
     #[test]
     fn test_write_stream_data_blocked_frame() {
         let mut buf = Vec::new();
-        buf.put_frame(&StreamDataBlockedFrame {
-            stream_id: VarInt::from_u32(0x1234).into(),
-            maximum_stream_data: VarInt::from_u32(0x5678),
-        });
+        buf.put_frame(&StreamDataBlockedFrame::new(
+            VarInt::from_u32(0x1234).into(),
+            VarInt::from_u32(0x5678),
+        ));
         assert_eq!(
             buf,
             vec![

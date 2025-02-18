@@ -47,7 +47,10 @@ where
             NewConnectionIdFrame::new(new_cid, VarInt::from_u32(1), VarInt::from_u32(0));
         issued_cids.send_frame([new_cid_frame]);
         cid_deque
-            .push_back(Some((new_cid_frame.id, new_cid_frame.reset_token)))
+            .push_back(Some((
+                *new_cid_frame.connection_id(),
+                *new_cid_frame.reset_token(),
+            )))
             .unwrap();
         Self {
             cid_deque,
@@ -88,14 +91,14 @@ where
         let new_cid = self.issued_cids.gen_unique_cid();
         let new_cid_frame = NewConnectionIdFrame::new(new_cid, seq, retire_prior_to);
         self.issued_cids.send_frame([new_cid_frame]);
-        self.cid_deque.push_back(Some((new_cid_frame.id, new_cid_frame.reset_token)))
+        self.cid_deque.push_back(Some((*new_cid_frame.connection_id(), *new_cid_frame.reset_token())))
             .expect("it's very very hard to issue a new connection ID whose sequence excceeds VARINT_MAX");
     }
 
     /// Receive a [`RetireConnectionIdFrame`] from the peer,
     /// retire the connection IDs of the sequence in [`RetireConnectionIdFrame`].
     fn recv_retire_cid_frame(&mut self, frame: &RetireConnectionIdFrame) -> Result<(), Error> {
-        let seq = frame.sequence.into_inner();
+        let seq = frame.sequence();
         if seq >= self.cid_deque.largest() {
             return Err(Error::new(
                 ErrorKind::ConnectionIdLimit,
@@ -323,11 +326,9 @@ mod tests {
         assert_eq!(local_cids.cid_deque.len(), 2);
         assert_eq!(local_cids.issued_cids.frames().len(), 1);
 
-        let issued_cid2 = local_cids.issued_cids.frames()[0].id;
+        let issued_cid2 = *local_cids.issued_cids.frames()[0].connection_id();
 
-        let retire_frame = RetireConnectionIdFrame {
-            sequence: VarInt::from_u32(1),
-        };
+        let retire_frame = RetireConnectionIdFrame::new(VarInt::from_u32(1));
         let cid2 = local_cids.recv_retire_cid_frame(&retire_frame);
         assert!(cid2.is_ok());
         assert!(!local_cids
@@ -339,9 +340,7 @@ mod tests {
         assert_eq!(local_cids.cid_deque.len(), 3);
         assert_eq!(local_cids.issued_cids.frames().len(), 2);
 
-        let retire_frame = RetireConnectionIdFrame {
-            sequence: VarInt::from_u32(0),
-        };
+        let retire_frame = RetireConnectionIdFrame::new(VarInt::from_u32(0));
         let cid1 = local_cids.recv_retire_cid_frame(&retire_frame);
         assert!(cid1.is_ok());
         assert!(!local_cids
@@ -353,9 +352,7 @@ mod tests {
         assert_eq!(local_cids.cid_deque.len(), 2);
         assert_eq!(local_cids.issued_cids.frames().len(), 3);
 
-        let retire_frame = RetireConnectionIdFrame {
-            sequence: VarInt::from_u32(2),
-        };
+        let retire_frame = RetireConnectionIdFrame::new(VarInt::from_u32(2));
         let cid3 = local_cids.recv_retire_cid_frame(&retire_frame);
         assert!(cid3.is_ok());
     }

@@ -179,13 +179,7 @@ impl RcvdJournal {
                 ranges.push((gap, ack));
             }
         }
-        Some(AckFrame {
-            largest,
-            delay,
-            first_range,
-            ranges,
-            ecn: None,
-        })
+        Some(AckFrame::new(largest, delay, first_range, ranges, None))
     }
 
     fn read_ack_frame_util(
@@ -402,12 +396,12 @@ mod tests {
             .gen_ack_frame_util(52, Instant::now(), 1000)
             .unwrap();
         assert_eq!(
-            ack.ranges,
-            vec![
+            ack.ranges(),
+            &vec![
                 (VarInt::from_u32(50 - 45 - 1), VarInt::from_u32(45 - 12 - 1)),
                 (VarInt::from_u32(12 - 11 - 1), VarInt::from_u32(11 - 1 - 1))
             ]
         );
-        assert_eq!(ack.first_range, VarInt::from_u32(2))
+        assert_eq!(ack.first_range(), 2)
     }
 }

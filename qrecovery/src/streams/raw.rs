@@ -256,18 +256,18 @@ where
     pub fn on_data_acked(&self, frame: StreamFrame) {
         if let Ok(set) = self.output.streams().as_mut() {
             let mut is_all_rcvd = false;
-            if let Some((o, s)) = set.get(&frame.id) {
+            if let Some((o, s)) = set.get(&frame.stream_id()) {
                 is_all_rcvd = o.on_data_acked(&frame.range(), frame.is_fin());
                 if is_all_rcvd {
                     s.shutdown_send();
                     if s.is_terminated() {
-                        self.stream_ids.remote.on_end_of_stream(frame.id);
+                        self.stream_ids.remote.on_end_of_stream(frame.stream_id());
                     }
                 }
             }
 
             if is_all_rcvd {
-                set.remove(&frame.id);
+                set.remove(&frame.stream_id());
             }
         }
     }
@@ -281,7 +281,7 @@ where
             .streams()
             .as_mut()
             .ok()
-            .and_then(|set| set.get(&stream_frame.id))
+            .and_then(|set| set.get(&stream_frame.stream_id()))
         {
             o.may_loss_data(&stream_frame.range());
         }
@@ -292,13 +292,13 @@ where
     /// Actually calls the [`Outgoing::on_reset_acked`] method of the corresponding stream.
     pub fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
         if let Ok(set) = self.output.streams().as_mut() {
-            if let Some((o, s)) = set.remove(&reset_frame.stream_id) {
+            if let Some((o, s)) = set.remove(&reset_frame.stream_id()) {
                 o.on_reset_acked();
                 s.shutdown_send();
                 if s.is_terminated() {
                     self.stream_ids
                         .remote
-                        .on_end_of_stream(reset_frame.stream_id);
+                        .on_end_of_stream(reset_frame.stream_id());
                 }
             }
             // 如果流是双向的，接收部分的流独立地管理结束。其实是上层应用决定接收的部分是否同时结束
@@ -314,7 +314,7 @@ where
         &self,
         (stream_frame, body): &(StreamFrame, bytes::Bytes),
     ) -> Result<usize, QuicError> {
-        let sid = stream_frame.id;
+        let sid = stream_frame.stream_id();
         // 对方必须是发送端，才能发送此帧
         if sid.role() != self.role {
             // 对方的sid，看是否跳跃，把跳跃的流给创建好
@@ -360,7 +360,7 @@ where
         let mut sync_fresh_data = 0;
         match stream_ctl_frame {
             StreamCtlFrame::ResetStream(reset) => {
-                let sid = reset.stream_id;
+                let sid = reset.stream_id();
                 // 对方必须是发送端，才能发送此帧
                 if sid.role() != self.role {
                     self.try_accept_sid(sid)
@@ -380,13 +380,13 @@ where
                         sync_fresh_data = incoming.recv_reset(reset)?;
                         s.shutdown_receive();
                         if s.is_terminated() {
-                            self.stream_ids.remote.on_end_of_stream(reset.stream_id);
+                            self.stream_ids.remote.on_end_of_stream(reset.stream_id());
                         }
                     }
                 }
             }
             StreamCtlFrame::StopSending(stop_sending) => {
-                let sid = stop_sending.stream_id;
+                let sid = stop_sending.stream_id();
                 // 对方必须是接收端，才能发送此帧
                 if sid.role() != self.role {
                     // 对方创建的单向流，接收端是我方，不可能收到对方的StopSendingFrame
@@ -400,25 +400,23 @@ where
                     self.try_accept_sid(sid)
                         .map_err(wrapper_error(stop_sending.frame_type()))?;
                 }
+                // TODO: 处理StopSendingFrame，响应ResetStreamFrame的final size不能为0
                 if self
                     .output
                     .streams()
                     .as_mut()
                     .ok()
                     .and_then(|set| set.get(&sid))
-                    .map(|(outgoing, _s)| outgoing.on_stopped(stop_sending.app_err_code.into()))
+                    .map(|(outgoing, _s)| outgoing.on_stopped(stop_sending.app_err_code()))
                     .unwrap_or(false)
                 {
-                    self.ctrl_frames
-                        .send_frame([StreamCtlFrame::ResetStream(ResetStreamFrame {
-                            stream_id: sid,
-                            app_error_code: VarInt::from_u32(0),
-                            final_size: VarInt::from_u32(0),
-                        })]);
+                    self.ctrl_frames.send_frame([StreamCtlFrame::ResetStream(
+                        stop_sending.reset_stream(VarInt::from_u32(0)),
+                    )]);
                 }
             }
             StreamCtlFrame::MaxStreamData(max_stream_data) => {
-                let sid = max_stream_data.stream_id;
+                let sid = max_stream_data.stream_id();
                 // 对方必须是接收端，才能发送此帧
                 if sid.role() != self.role {
                     // 对方创建的单向流，接收端是我方，不可能收到对方的MaxStreamData
@@ -439,11 +437,11 @@ where
                     .ok()
                     .and_then(|set| set.get(&sid))
                 {
-                    outgoing.update_window(max_stream_data.max_stream_data.into_inner());
+                    outgoing.update_window(max_stream_data.max_stream_data());
                 }
             }
             StreamCtlFrame::StreamDataBlocked(stream_data_blocked) => {
-                let sid = stream_data_blocked.stream_id;
+                let sid = stream_data_blocked.stream_id();
                 // 对方必须是发送端，才能发送此帧
                 if sid.role() != self.role {
                     self.try_accept_sid(sid)

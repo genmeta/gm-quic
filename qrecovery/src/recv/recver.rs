@@ -92,7 +92,9 @@ impl<TX: Clone> Recv<TX> {
                 stream_frame.frame_type(),
                 format!(
                     "{} send a wrong smaller final size {} than the largest rcvd data offset {}",
-                    stream_frame.id, final_size, received_largest_offset
+                    stream_frame.stream_id(),
+                    final_size,
+                    received_largest_offset
                 ),
             ));
         }
@@ -131,7 +133,8 @@ impl<TX> Recv<TX> {
                 stream_frame.frame_type(),
                 format!(
                     "{} send {data_end} bytes which exceeds the stream data limit {}",
-                    stream_frame.id, self.max_stream_data
+                    stream_frame.stream_id(),
+                    self.max_stream_data
                 ),
             ));
         }
@@ -150,14 +153,14 @@ impl<TX> Recv<TX> {
     }
 
     pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<usize, Error> {
-        let final_size = reset_frame.final_size.into_inner();
+        let final_size = reset_frame.final_size();
         if final_size < self.largest {
             return Err(Error::new(
                 ErrorKind::FinalSize,
                 reset_frame.frame_type(),
                 format!(
                     "{} reset with a wrong smaller final size {final_size} than the largest rcvd data offset {}",
-                    reset_frame.stream_id, self.largest
+                    reset_frame.stream_id(), self.largest
                 ),
             ));
         }
@@ -216,7 +219,8 @@ impl<TX> SizeKnown<TX> {
                 stream_frame.frame_type(),
                 format!(
                     "{} send {data_end} bytes which exceeds the final_size {}",
-                    stream_frame.id, self.final_size
+                    stream_frame.stream_id(),
+                    self.final_size
                 ),
             ));
         }
@@ -226,7 +230,8 @@ impl<TX> SizeKnown<TX> {
                 stream_frame.frame_type(),
                 format!(
                     "{} change the final size from {} to {data_end}",
-                    stream_frame.id, self.final_size
+                    stream_frame.stream_id(),
+                    self.final_size
                 ),
             ));
         }
@@ -270,14 +275,15 @@ impl<TX> SizeKnown<TX> {
     }
 
     pub(super) fn recv_reset(&mut self, reset_frame: &ResetStreamFrame) -> Result<(), Error> {
-        let final_size = reset_frame.final_size.into_inner();
+        let final_size = reset_frame.final_size();
         if final_size != self.final_size {
             return Err(Error::new(
                 ErrorKind::FinalSize,
                 reset_frame.frame_type(),
                 format!(
                     "{} change the final size from {} to {final_size}",
-                    reset_frame.stream_id, self.final_size
+                    reset_frame.stream_id(),
+                    self.final_size
                 ),
             ));
         }

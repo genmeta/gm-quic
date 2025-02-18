@@ -197,16 +197,16 @@ impl<T: Clone> RotateGuard<'_, T> {
     /// Handle the [`Largest Acknowledged`] field of the ack frame from peer.
     ///
     /// [`Largest Acknowleged`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-ack-frames
-    pub fn update_largest(&mut self, f: &AckFrame) -> Result<(), Error> {
-        if f.largest > self.largest_pn() {
+    pub fn update_largest(&mut self, ack_frame: &AckFrame) -> Result<(), Error> {
+        if ack_frame.largest() > self.largest_pn() {
             return Err(Error::new(
                 ErrorKind::ProtocolViolation,
-                f.frame_type(),
+                ack_frame.frame_type(),
                 "ack frame largest pn is larger than the largest pn sent",
             ));
         }
-        if f.largest > self.inner.largest_acked_pktno {
-            self.inner.largest_acked_pktno = f.largest.into_inner();
+        if ack_frame.largest() > self.inner.largest_acked_pktno {
+            self.inner.largest_acked_pktno = ack_frame.largest();
         }
         Ok(())
     }
