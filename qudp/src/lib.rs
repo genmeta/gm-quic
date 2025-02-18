@@ -42,7 +42,7 @@ pub struct PacketHeader {
     // packet segment size
     pub seg_size: u16,
     // use gso
-    gso: bool,
+    pub gso: bool = true,
 }
 
 impl PacketHeader {
