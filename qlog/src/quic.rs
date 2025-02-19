@@ -1,8 +1,12 @@
 use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 
+use bytes::Bytes;
 use derive_builder::Builder;
 use derive_more::{From, Into, LowerHex};
-use qbase::frame::AppCloseFrame;
+use qbase::frame::{
+    AppCloseFrame, BeFrame, CryptoFrame, DatagramFrame, MaxStreamsFrame, PathChallengeFrame,
+    PathResponseFrame, ReliableFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
+};
 use serde::{Deserialize, Serialize};
 
 pub mod connectivity;
@@ -10,7 +14,6 @@ pub mod recovery;
 pub mod security;
 pub mod transport;
 
-use super::PathID;
 use crate::{HexString, RawInfo};
 
 // 8.1
@@ -113,25 +116,23 @@ pub enum IpVersion {
 /// As such, structures logging path information SHOULD include two
 /// different PathEndpointInfo instances, one for each half of the path.
 #[serde_with::skip_serializing_none]
-#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct PathEndpointInfo {
-    pub path_id: PathID,
-    #[builder(default)]
-    pub ip_v4: Option<IPAddress>,
-    #[builder(default)]
-    pub ip_v6: Option<IPAddress>,
-    #[builder(default)]
-    pub port_v4: Option<u16>,
-    #[builder(default)]
-    pub port_v6: Option<u16>,
+    ip_v4: Option<IPAddress>,
+    ip_v6: Option<IPAddress>,
+    port_v4: Option<u16>,
+    port_v6: Option<u16>,
 
     /// Even though usually only a single ConnectionID
     /// is associated with a given path at a time,
     /// there are situations where there can be an overlap
     /// or a need to keep track of previous ConnectionIDs
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub conenction_ids: Vec<ConnectionID>,
+    conenction_ids: Vec<ConnectionID>,
 }
 
 impl From<SocketAddr> for PathEndpointInfo {
@@ -165,6 +166,31 @@ pub enum PacketType {
     Unknown,
 }
 
+impl From<qbase::packet::Type> for PacketType {
+    fn from(r#type: qbase::packet::Type) -> Self {
+        match r#type {
+            qbase::packet::r#type::Type::Long(long) => match long {
+                qbase::packet::r#type::long::Type::VersionNegotiation => {
+                    PacketType::VersionNegotiation
+                }
+                qbase::packet::r#type::long::Type::V1(
+                    qbase::packet::r#type::long::Version::INITIAL,
+                ) => PacketType::Initial,
+                qbase::packet::r#type::long::Type::V1(
+                    qbase::packet::r#type::long::Version::HANDSHAKE,
+                ) => PacketType::Handshake,
+                qbase::packet::r#type::long::Type::V1(
+                    qbase::packet::r#type::long::Version::ZERO_RTT,
+                ) => PacketType::ZeroRTT,
+                qbase::packet::r#type::long::Type::V1(
+                    qbase::packet::r#type::long::Version::RETRY,
+                ) => PacketType::Retry,
+            },
+            qbase::packet::r#type::Type::Short(_one_rtt) => PacketType::OneRTT,
+        }
+    }
+}
+
 // 8.7
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -181,27 +207,27 @@ pub enum PacketNumberSpace {
 pub struct PacketHeader {
     #[builder(default)]
     #[serde(default)]
-    pub quic_bit: bool,
-    pub packet_type: PacketType,
+    quic_bit: bool,
+    packet_type: PacketType,
 
     /// only if packet_type === "initial" || "handshake" || "0RTT" || "1RTT"
     #[builder(default)]
-    pub packet_number: Option<u64>,
+    packet_number: Option<u64>,
 
     ///  the bit flags of the packet headers (spin bit, key update bit,
     /// etc. up to and including the packet number length bits
     /// if present
     #[builder(default)]
-    pub flags: Option<u8>,
+    flags: Option<u8>,
 
     /// only if packet_type === "initial" || "retry"
     #[builder(default)]
-    pub token: Option<Token>,
+    token: Option<Token>,
 
     /// only if packet_type === "initial" || "handshake" || "0RTT"
     /// Signifies length of the packet_number plus the payload
     #[builder(default)]
-    pub length: Option<u16>,
+    length: Option<u16>,
 
     /// only if present in the header
     /// if correctly using transport:connection_id_updated events,
@@ -229,9 +255,36 @@ pub struct Token {
     /// decoded fields included in the token
     /// (typically: peer's IP address, creation time)
     #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub details: HashMap<String, serde_json::Value>,
+    details: HashMap<String, serde_json::Value>,
 
-    pub raw: Option<RawInfo>,
+    raw: Option<RawInfo>,
+}
+
+impl<H: 'static> TryFrom<&qbase::packet::header::LongHeader<H>> for Token {
+    type Error = ();
+    fn try_from(header: &qbase::packet::header::LongHeader<H>) -> Result<Self, Self::Error> {
+        use qbase::packet::header::{InitialHeader, RetryHeader};
+        let header: &dyn core::any::Any = header;
+        if let Some(initial) = header.downcast_ref::<InitialHeader>() {
+            return Ok(crate::build!(Token {
+                r#type: TokenType::Retry,
+                raw: RawInfo {
+                    length: initial.token().len() as u64,
+                    data: { Bytes::from_owner(initial.token().to_vec()) },
+                },
+            }));
+        }
+        if let Some(retry) = header.downcast_ref::<RetryHeader>() {
+            return Ok(crate::build!(Token {
+                r#type: TokenType::Retry,
+                raw: RawInfo {
+                    length: retry.token().len() as u64,
+                    data: { Bytes::from_owner(retry.token().to_vec()) },
+                },
+            }));
+        }
+        Err(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -243,7 +296,7 @@ pub enum TokenType {
 
 // 8.10
 #[serde_with::serde_as]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, From, Into, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StatelessResetToken(#[serde_as(as = "serde_with::hex::Hex")] [u8; 16]);
 
 // 8.11
@@ -369,6 +422,10 @@ pub enum QuicFrame {
         stream_id: u64,
         maximum: u64,
     },
+    MaxStream {
+        stream_type: StreamType,
+        maximum: u64,
+    },
     DataBlocked {
         maximum: u64,
     },
@@ -380,7 +437,7 @@ pub enum QuicFrame {
         stream_type: StreamType,
         limit: u64,
     },
-    NewConnectionID {
+    NewConnectionId {
         sequence_number: u32,
         retire_prior_to: u32,
 
@@ -390,7 +447,7 @@ pub enum QuicFrame {
         connection_id: ConnectionID,
         stateless_reset_token: StatelessResetToken,
     },
-    RetireConnectionID {
+    RetireConnectionId {
         sequence_number: u32,
     },
     PathChanllenge {
@@ -420,6 +477,159 @@ pub enum QuicFrame {
         length: Option<u64>,
         raw: Option<RawInfo>,
     },
+}
+
+impl From<(CryptoFrame, Bytes)> for QuicFrame {
+    fn from((frame, bytes): (CryptoFrame, Bytes)) -> Self {
+        let length = frame.encoding_size() + bytes.len();
+        let payload_length = bytes.len();
+        QuicFrame::Crypto {
+            offset: frame.offset(),
+            length: length as _,
+            payload_length: Some(payload_length as _),
+            raw: Some(RawInfo {
+                length: Some(length as _),
+                payload_length: Some(payload_length as _),
+                data: Some(bytes.into()),
+            }),
+        }
+    }
+}
+
+impl From<(StreamFrame, Bytes)> for QuicFrame {
+    fn from((frame, bytes): (StreamFrame, Bytes)) -> Self {
+        let length = frame.encoding_size() + bytes.len();
+        let payload_length = bytes.len();
+        QuicFrame::Stream {
+            stream_id: frame.stream_id().id(),
+            offset: frame.offset(),
+            length: length as _,
+            fin: frame.is_fin(),
+            raw: Some(RawInfo {
+                length: Some(length as _),
+                payload_length: Some(payload_length as _),
+                data: Some(bytes.into()),
+            }),
+        }
+    }
+}
+
+impl From<(DatagramFrame, Bytes)> for QuicFrame {
+    fn from((frame, bytes): (DatagramFrame, Bytes)) -> Self {
+        let length = frame.encoding_size() + bytes.len();
+        let payload_length = bytes.len();
+        QuicFrame::DatagramFrame {
+            length: Some(length as _),
+            raw: Some(RawInfo {
+                length: Some(length as _),
+                payload_length: Some(payload_length as _),
+                data: Some(bytes.into()),
+            }),
+        }
+    }
+}
+
+impl From<PathChallengeFrame> for QuicFrame {
+    fn from(frame: PathChallengeFrame) -> Self {
+        QuicFrame::PathChanllenge {
+            data: Bytes::from_owner(frame.to_vec()).into(),
+        }
+    }
+}
+
+impl From<PathResponseFrame> for QuicFrame {
+    fn from(frame: PathResponseFrame) -> Self {
+        QuicFrame::PathResponse {
+            data: Some(Bytes::from_owner(frame.to_vec()).into()),
+        }
+    }
+}
+
+impl From<ReliableFrame> for QuicFrame {
+    fn from(frame: ReliableFrame) -> Self {
+        match frame {
+            ReliableFrame::NewToken(new_token_frame) => QuicFrame::NewToken {
+                token: crate::build!(Token {
+                    r#type: TokenType::Retry,
+                    raw: RawInfo {
+                        length: new_token_frame.encoding_size() as u64,
+                        payload_length: new_token_frame.len() as u64,
+                        data: { Bytes::from_owner(new_token_frame.to_vec()) },
+                    },
+                }),
+            },
+            ReliableFrame::MaxData(max_data_frame) => QuicFrame::MaxData {
+                maximum: max_data_frame.max_data(),
+            },
+            ReliableFrame::DataBlocked(data_blocked_frame) => QuicFrame::DataBlocked {
+                maximum: data_blocked_frame.limit(),
+            },
+            ReliableFrame::NewConnectionId(new_connection_id_frame) => QuicFrame::NewConnectionId {
+                sequence_number: new_connection_id_frame.sequence() as u32,
+                retire_prior_to: new_connection_id_frame.retire_prior_to() as u32,
+                connection_id_length: new_connection_id_frame.connection_id().len() as _,
+                connection_id: (*new_connection_id_frame.connection_id()).into(),
+                stateless_reset_token: (**new_connection_id_frame.reset_token()).into(),
+            },
+            ReliableFrame::RetireConnectionId(retire_connection_id_frame) => {
+                QuicFrame::RetireConnectionId {
+                    sequence_number: retire_connection_id_frame.sequence() as u32,
+                }
+            }
+            ReliableFrame::HandshakeDone(_handshake_done_frame) => QuicFrame::HandshakeDone {},
+            ReliableFrame::Stream(stream_ctl_frame) => QuicFrame::from(stream_ctl_frame),
+        }
+    }
+}
+
+impl From<StreamCtlFrame> for QuicFrame {
+    fn from(frame: StreamCtlFrame) -> Self {
+        match frame {
+            StreamCtlFrame::ResetStream(reset_stream_frame) => QuicFrame::ResetStream {
+                stream_id: reset_stream_frame.stream_id().id(),
+                error_code: (reset_stream_frame.app_error_code() as u32).into(),
+                final_size: reset_stream_frame.final_size().into(),
+                length: None,
+                payload_length: None,
+            },
+            StreamCtlFrame::StopSending(stop_sending_frame) => QuicFrame::StopSending {
+                stream_id: stop_sending_frame.stream_id().id(),
+                error_code: (stop_sending_frame.app_err_code() as u32).into(),
+                length: None,
+                payload_length: None,
+            },
+            StreamCtlFrame::MaxStreamData(max_stream_data_frame) => QuicFrame::MaxStreamData {
+                stream_id: max_stream_data_frame.stream_id().id(),
+                maximum: max_stream_data_frame.max_stream_data(),
+            },
+            StreamCtlFrame::MaxStreams(max_streams_frame) => match max_streams_frame {
+                MaxStreamsFrame::Bi(maximum) => QuicFrame::MaxStream {
+                    stream_type: StreamType::Bidirectional,
+                    maximum: maximum.into_inner(),
+                },
+                MaxStreamsFrame::Uni(maximum) => QuicFrame::MaxStream {
+                    stream_type: StreamType::Unidirectional,
+                    maximum: maximum.into_inner(),
+                },
+            },
+            StreamCtlFrame::StreamDataBlocked(stream_data_blocked_frame) => {
+                QuicFrame::StreamDataBlocked {
+                    stream_id: stream_data_blocked_frame.stream_id().id(),
+                    maximum: stream_data_blocked_frame.maximum_stream_data(),
+                }
+            }
+            StreamCtlFrame::StreamsBlocked(streams_blocked_frame) => match streams_blocked_frame {
+                StreamsBlockedFrame::Bi(limit) => QuicFrame::StreamBlocked {
+                    stream_type: StreamType::Bidirectional,
+                    limit: limit.into_inner(),
+                },
+                StreamsBlockedFrame::Uni(limit) => QuicFrame::StreamBlocked {
+                    stream_type: StreamType::Unidirectional,
+                    limit: limit.into_inner(),
+                },
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq)]

@@ -26,7 +26,7 @@ use crate::{
 ///
 /// See [STREAM Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-stream-frames)
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamFrame {
     id: StreamId,
     offset: VarInt,

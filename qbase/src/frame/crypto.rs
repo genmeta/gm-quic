@@ -20,7 +20,7 @@ use crate::{
 ///
 /// See [crypto frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-crypto-frames)
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CryptoFrame {
     offset: VarInt,
     length: VarInt,

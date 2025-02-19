@@ -1,6 +1,7 @@
 use std::{ops::Deref, sync::Arc};
 
 use bytes::BufMut;
+use deref_derive::Deref;
 use nom::{bytes::complete::take, IResult};
 use rand::Rng;
 
@@ -11,7 +12,7 @@ use crate::{
 
 pub const RESET_TOKEN_SIZE: usize = 16;
 
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Deref, Debug, Copy, Clone, Default, PartialEq, Eq, Hash)]
 pub struct ResetToken([u8; RESET_TOKEN_SIZE]);
 
 impl ResetToken {
@@ -41,15 +42,7 @@ pub trait WriteResetToken {
 
 impl<T: BufMut> WriteResetToken for T {
     fn put_reset_token(&mut self, token: &ResetToken) {
-        self.put_slice(token);
-    }
-}
-
-impl std::ops::Deref for ResetToken {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+        self.put_slice(token.as_slice());
     }
 }
 
