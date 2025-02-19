@@ -206,11 +206,15 @@ pub struct ReferenceTime {
     /// The required "epoch" field is the start of the ReferenceTime. When using the "system" clock type, the epoch field
     /// **SHOULD** have a date/time value using the format defined in [RFC3339]. However, the value "unknown" **MAY** be
     /// used
+    ///
+    /// [RFC3339]: https://www.rfc-editor.org/rfc/rfc3339
     #[serde(default)]
     epoch: TimeEpoch,
     /// The optional "wall_clock_time" field can be used to provide an approximate date/time value that logging commenced
     /// at if the epoch value is "unknown". It uses the format defined in [RFC3339]. Note that conversion of timestamps
     /// to calendar time based on wall clock times cannot be safely relied on.
+    ///
+    /// [RFC3339]: https://www.rfc-editor.org/rfc/rfc3339
     #[builder(default)]
     wall_clock_time: Option<RFC3339DateTime>,
 }
