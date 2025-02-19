@@ -1,6 +1,8 @@
+use std::net::SocketAddr;
+
 use derive_builder::Builder;
 use derive_more::From;
-use qbase::frame::QuicCloseFrame;
+use qbase::frame::{ConnectionCloseFrame, QuicCloseFrame};
 
 use super::{
     ApplicationCode, ConnectionID, CryptoError, IPAddress, IpVersion, Owner, PathEndpointInfo,
@@ -61,6 +63,22 @@ pub struct ConnectionStarted {
     dst_cid: Option<ConnectionID>,
 }
 
+impl ConnectionStartedBuilder {
+    /// helper method to set the source and destination socket addresses
+    pub fn socket(&mut self, (src, dst): (SocketAddr, SocketAddr)) -> &mut Self {
+        debug_assert_eq!(src.is_ipv4(), dst.is_ipv4());
+        self.ip_version(if src.is_ipv4() {
+            IpVersion::V4
+        } else {
+            IpVersion::V6
+        })
+        .src_ip(src.ip().to_string())
+        .dst_ip(dst.ip().to_string())
+        .src_port(src.port())
+        .dst_port(dst.port())
+    }
+}
+
 impl ConnectionStarted {
     pub fn default_protocol() -> String {
         String::from("QUIC")
@@ -113,6 +131,19 @@ pub struct ConnectionClosed {
     internal_code: Option<u32>,
     reason: Option<String>,
     trigger: Option<ConnectionCloseTrigger>,
+}
+
+impl ConnectionClosedBuilder {
+    pub fn ccf(&mut self, ccf: &ConnectionCloseFrame) -> &mut Self {
+        match &ccf {
+            ConnectionCloseFrame::App(frame) => self
+                .application_code(frame)
+                .reason(frame.reason().to_owned()),
+            ConnectionCloseFrame::Quic(frame) => self
+                .connection_code(frame)
+                .reason(frame.reason().to_owned()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq)]

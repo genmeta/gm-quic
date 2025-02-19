@@ -299,6 +299,12 @@ pub enum TokenType {
 #[derive(Debug, Clone, Copy, From, Into, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StatelessResetToken(#[serde_as(as = "serde_with::hex::Hex")] [u8; 16]);
 
+impl From<qbase::token::ResetToken> for StatelessResetToken {
+    fn from(value: qbase::token::ResetToken) -> Self {
+        Self(*value)
+    }
+}
+
 // 8.11
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
