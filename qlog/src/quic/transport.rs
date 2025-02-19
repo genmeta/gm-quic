@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use derive_builder::Builder;
+use qbase::param::{ClientParameters, ServerParameters};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -173,14 +174,87 @@ pub struct ParametersSet {
     grease_quic_bit: Option<bool>,
 }
 
+impl ParametersSetBuilder {
+    /// helper method to set all client parameters at once
+    pub fn client_parameters(&mut self, params: ClientParameters) -> &mut Self {
+        self.initial_source_connection_id(params.initial_source_connection_id())
+            .disable_active_migration(params.disable_active_migration())
+            .max_idle_timeout(params.max_idle_timeout().as_millis() as u64)
+            .max_udp_payload_size(params.max_udp_payload_size().into_inner() as u32)
+            .ack_delay_exponent(params.ack_delay_exponent().into_inner() as u16)
+            .max_ack_delay(params.max_ack_delay().into_inner() as u16)
+            .active_connection_id_limit(params.active_connection_id_limit().into_inner() as u32)
+            .initial_max_data(params.initial_max_data().into_inner())
+            .initial_max_stream_data_bidi_local(
+                params.initial_max_stream_data_bidi_local().into_inner(),
+            )
+            .initial_max_stream_data_bidi_remote(
+                params.initial_max_stream_data_bidi_remote().into_inner(),
+            )
+            .initial_max_stream_data_uni(params.initial_max_stream_data_uni().into_inner())
+            .initial_max_streams_bidi(params.initial_max_streams_bidi().into_inner())
+            .initial_max_streams_uni(params.initial_max_streams_uni().into_inner())
+            .max_datagram_frame_size(params.max_datagram_frame_size().into_inner())
+        // .grease_quic_bit(params.grease_quic_bit() as _) currently not supported
+    }
+
+    /// helper method to set all server parameters at once
+    pub fn server_parameters(&mut self, params: ServerParameters) -> &mut Self {
+        self.original_destination_connection_id(params.original_destination_connection_id())
+            .initial_source_connection_id(params.initial_source_connection_id())
+            .disable_active_migration(params.disable_active_migration())
+            .max_idle_timeout(params.max_idle_timeout().as_millis() as u64)
+            .max_udp_payload_size(params.max_udp_payload_size().into_inner() as u32)
+            .ack_delay_exponent(params.ack_delay_exponent().into_inner() as u16)
+            .max_ack_delay(params.max_ack_delay().into_inner() as u16)
+            .active_connection_id_limit(params.active_connection_id_limit().into_inner() as u32)
+            .initial_max_data(params.initial_max_data().into_inner())
+            .initial_max_stream_data_bidi_local(
+                params.initial_max_stream_data_bidi_local().into_inner(),
+            )
+            .initial_max_stream_data_bidi_remote(
+                params.initial_max_stream_data_bidi_remote().into_inner(),
+            )
+            .initial_max_stream_data_uni(params.initial_max_stream_data_uni().into_inner())
+            .initial_max_streams_bidi(params.initial_max_streams_bidi().into_inner())
+            .initial_max_streams_uni(params.initial_max_streams_uni().into_inner())
+            .max_datagram_frame_size(params.max_datagram_frame_size().into_inner());
+        // .grease_quic_bit(params.grease_quic_bit() as _) currently not supported
+        if let Some(retry_scid) = params.retry_source_connection_id() {
+            self.retry_source_connection_id(retry_scid);
+        }
+        if let Some(preferred_address) = params.preferred_address() {
+            self.preferred_address(preferred_address);
+        }
+        if let Some(stateless_reset_token) = params.statelss_reset_token() {
+            self.stateless_reset_token(stateless_reset_token);
+        }
+        self
+    }
+}
+
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into), build_fn(private, name = "fallible_build"))]
 pub struct PreferredAddress {
-    ipv4: IPAddress,
-    ipv6: IPAddress,
-    port: u16,
+    ip_v4: IPAddress,
+    ip_v6: IPAddress,
+    port_v4: u16,
+    port_v6: u16,
     connection_id: ConnectionID,
     stateless_reset_token: StatelessResetToken,
+}
+
+impl From<qbase::param::PreferredAddress> for PreferredAddress {
+    fn from(pa: qbase::param::PreferredAddress) -> Self {
+        crate::build!(Self {
+            ip_v4: pa.address_v4().ip().to_string(),
+            ip_v6: pa.address_v6().ip().to_string(),
+            port_v4: pa.address_v4().port(),
+            port_v6: pa.address_v6().port(),
+            connection_id: pa.connection_id(),
+            stateless_reset_token: pa.stateless_reset_token(),
+        })
+    }
 }
 
 #[serde_with::skip_serializing_none]

@@ -34,7 +34,8 @@ use qlog::{
             BaseConnectionStates, ConnectionClosed, ConnectionStarted, ConnectionStateUpdated,
             GranularConnectionStates, PathAssigned,
         },
-        IpVersion, Owner,
+        transport::ParametersSet,
+        Owner,
     },
     telemetry::Instrument,
 };
@@ -436,10 +437,26 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
     let cid_registry = components.cid_registry.clone();
     let flow_ctrl = components.flow_ctrl.clone();
     let event_broker = components.event_broker.clone();
+    let role = components.handshake.role();
     async move {
         use qbase::frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame};
-        if let Ok(param::Pair { local: _, remote }) = params.await {
-            tracing::trace!(?remote, "got transport parameters");
+        if let Ok(param::Pair { remote, .. }) = params.clone().await {
+            // 自己的参数在这里打印合适吗？
+            qlog::event!(qlog::build!(ParametersSet {
+                owner: match role {
+                    sid::Role::Client => Owner::Local,
+                    sid::Role::Server => Owner::Remote,
+                },
+                client_parameters: params.client().expect("unreachable"),
+            }));
+            qlog::event!(qlog::build!(ParametersSet {
+                owner: match role {
+                    sid::Role::Client => Owner::Remote,
+                    sid::Role::Server => Owner::Local,
+                },
+                server_parameters: params.server().expect("unreachable"),
+            }));
+
             // pretend to receive the MAX_STREAM frames
             _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
                 remote.initial_max_streams_bidi(),
@@ -471,16 +488,7 @@ impl Components {
             dashmap::Entry::Vacant(vacant_entry) => {
                 if self.state.try_entry_attempted() {
                     qlog::event!(qlog::build!(ConnectionStarted {
-                        ip_version: if socket.src().is_ipv4() {
-                            IpVersion::V4
-                        } else {
-                            IpVersion::V6
-                        },
-                        src_ip: socket.src().ip().to_string(),
-                        src_port: socket.dst().port(),
-                        dst_ip: socket.src().ip().to_string(),
-                        dst_port: socket.dst().port(),
-                        // cid不在这一层，未知
+                        socket: { (socket.src(), socket.dst()) } // cid不在这一层，未知
                     }));
                     qlog::event!(qlog::build!(ConnectionStateUpdated {
                         new: BaseConnectionStates::Attempted,
@@ -552,19 +560,7 @@ impl Components {
     pub fn enter_closing(self, ccf: ConnectionCloseFrame) -> Termination {
         qlog::event!(qlog::build!(ConnectionClosed {
             owner: Owner::Local,
-            ?application_code: match &ccf{
-                ConnectionCloseFrame::App(frame) => Some(frame),
-                _ => None,
-            },
-            ?connection_code: match &ccf{
-                ConnectionCloseFrame::Quic(frame) => Some(frame),
-                _ => None,
-            },
-            reason: match &ccf {
-                ConnectionCloseFrame::App(frame) => frame.reason().to_owned(),
-                ConnectionCloseFrame::Quic(frame) => frame.reason().to_owned(),
-            },
-            // TODO: trigger
+            ccf: &ccf // TODO: trigger
         }));
         qlog::event!(qlog::build!(ConnectionStateUpdated {
             ?old: self.state.load(),
@@ -608,19 +604,7 @@ impl Components {
     pub fn enter_draining(self, ccf: ConnectionCloseFrame) -> Termination {
         qlog::event!(qlog::build!(ConnectionClosed {
             owner: Owner::Local,
-            ?application_code: match &ccf{
-                ConnectionCloseFrame::App(frame) => Some(frame),
-                _ => None,
-            },
-            ?connection_code: match &ccf{
-                ConnectionCloseFrame::Quic(frame) => Some(frame),
-                _ => None,
-            },
-            reason: match &ccf {
-                ConnectionCloseFrame::App(frame) => frame.reason().to_owned(),
-                ConnectionCloseFrame::Quic(frame) => frame.reason().to_owned(),
-            },
-            // TODO: trigger
+            ccf: &ccf // TODO: trigger
         }));
         qlog::event!(qlog::build!(ConnectionStateUpdated {
             ?old: self.state.load(),
