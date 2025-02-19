@@ -116,10 +116,9 @@ impl DatagramOutgoing {
     /// Because no frame can be put after the datagram frame without length,
     /// padding frames will be put before the datagram frame.
     /// In this case, the packet will be filled.
-    pub fn try_load_data_into<P, B>(&self, packet: &mut P)
+    pub fn try_load_data_into<P>(&self, packet: &mut P)
     where
-        B: BufMut,
-        P: DerefMut<Target = B> + MarshalDataFrame<DatagramFrame, Bytes>,
+        P: BufMut + MarshalDataFrame<DatagramFrame, Bytes>,
     {
         let mut guard = self.0.lock().unwrap();
         let Ok(writer) = guard.as_mut() else { return };

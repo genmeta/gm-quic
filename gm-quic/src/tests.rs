@@ -19,19 +19,20 @@ fn client_stream_unlimited_parameters() -> crate::ClientParameters {
 use std::{io, sync::Arc, time::Duration};
 
 use echo_server::server_stream_unlimited_parameters;
+use qlog::telemetry::{Instrument, NoopExporter};
 use rustls::RootCertStore;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     task::JoinSet,
 };
-use tracing::{debug, error, info, info_span, Instrument};
+use tracing::{debug, error, info, info_span};
 
 use crate::ToCertificate;
 
-#[test]
-fn set() -> io::Result<()> {
+#[tokio::test]
+async fn set() -> io::Result<()> {
     tracing_subscriber::fmt()
-        .with_max_level(tracing::level_filters::LevelFilter::TRACE)
+        .with_max_level(tracing::level_filters::LevelFilter::INFO)
         // .with_max_level(tracing::level_filters::LevelFilter::TRACE)
         // .with_writer(
         //     std::fs::OpenOptions::new()
@@ -42,15 +43,32 @@ fn set() -> io::Result<()> {
         // )
         // .with_ansi(false)
         .init();
+    // let exporter = qlog::telemetry::handy::IoExpoter::new(
+    //     qlog::build!(qlog::QlogFileSeq {
+    //         log_file: qlog::LogFile {
+    //             file_schema: qlog::QlogFileSeq::SCHEMA,
+    //             serialization_format: "application/qlog+json-seq",
+    //             title: "gm-quic test".to_string(),
+    //         },
+    //         trace_seq: qlog::TraceSeq {}
+    //     }),
+    //     tokio::fs::OpenOptions::new()
+    //         .create(true)
+    //         .write(true)
+    //         .truncate(true)
+    //         .open("/tmp/gm-quic.qlog")
+    //         .await?,
+    // );
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    // 其实是一个连接一个，目前暂时没有实现
+    let exporter = NoopExporter;
 
-    rt.block_on(disable_keep_alive());
-    rt.block_on(enable_keep_alive());
-    rt.block_on(parallel_stream())?;
+    let span = qlog::span!(Arc::new(exporter));
+    let _enter = span.enter();
+
+    disable_keep_alive().instrument(span.clone()).await;
+    enable_keep_alive().instrument(span.clone()).await;
+    parallel_stream().instrument(span.clone()).await?;
 
     Ok(())
 }
@@ -93,28 +111,30 @@ async fn parallel_stream() -> io::Result<()> {
         for stream_idx in 0..STREAMS {
             streams.spawn({
                 let connection = connection.clone();
-                async move {
-                    let (stream_id, (mut reader, mut writer)) =
-                        connection.open_bi_stream().await?.unwrap();
-                    debug!(%stream_id, "opened stream");
+                tracing::Instrument::instrument(
+                    async move {
+                        let (stream_id, (mut reader, mut writer)) =
+                            connection.open_bi_stream().await?.unwrap();
+                        debug!(%stream_id, "opened stream");
 
-                    writer.write_all(DATA).await?;
-                    writer.shutdown().await?;
-                    debug!(%stream_id, "sender shutdowned, wait for server to echo");
+                        writer.write_all(DATA).await?;
+                        writer.shutdown().await?;
+                        debug!(%stream_id, "sender shutdowned, wait for server to echo");
 
-                    let mut data = Vec::new();
-                    reader.read_to_end(&mut data).await?;
+                        let mut data = Vec::new();
+                        reader.read_to_end(&mut data).await?;
 
-                    if data != DATA {
-                        error!("server incorrectly echoed");
-                        return Err(io::Error::other("server incorrectly echoed"));
-                    }
+                        if data != DATA {
+                            error!("server incorrectly echoed");
+                            return Err(io::Error::other("server incorrectly echoed"));
+                        }
 
-                    info!(%stream_id, "server correctly echoed");
+                        info!(%stream_id, "server correctly echoed");
 
-                    io::Result::Ok(())
-                }
-                .instrument(info_span!("stream", stream_idx))
+                        io::Result::Ok(())
+                    },
+                    info_span!("stream", stream_idx),
+                )
             });
         }
 
@@ -124,11 +144,13 @@ async fn parallel_stream() -> io::Result<()> {
     for conn_idx in 0..CONNECTIONS {
         connections.spawn({
             let client = client.clone();
-            async move {
-                let connection = client.connect("localhost", server_addr)?;
-                for_each_connection(connection).await
-            }
-            .instrument(info_span!("connection", conn_idx))
+            tracing::Instrument::instrument(
+                async move {
+                    let connection = client.connect("localhost", server_addr)?;
+                    for_each_connection(connection).await
+                },
+                info_span!("connection", conn_idx),
+            )
         });
     }
 

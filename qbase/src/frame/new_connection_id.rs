@@ -121,7 +121,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<NewConnectionIdFrame> for T {
         self.put_varint(&frame.sequence);
         self.put_varint(&frame.retire_prior_to);
         self.put_connection_id(&frame.id);
-        self.put_slice(&frame.reset_token);
+        self.put_slice(frame.reset_token.as_slice());
     }
 }
 

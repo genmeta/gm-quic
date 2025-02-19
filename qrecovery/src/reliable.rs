@@ -1,7 +1,6 @@
 //! The reliable transmission for frames.
 use std::{
     collections::VecDeque,
-    ops::Deref,
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -71,10 +70,9 @@ impl ArcReliableFrameDeque {
         }
     }
 
-    pub fn try_load_frames_into<B, P>(&self, packet: &mut P)
+    pub fn try_load_frames_into<P>(&self, packet: &mut P)
     where
-        B: BufMut,
-        P: Deref<Target = B> + MarshalFrame<ReliableFrame>,
+        P: BufMut + MarshalFrame<ReliableFrame>,
     {
         let mut deque = self.0.lock().unwrap();
         while let Some(frame) = deque.front() {

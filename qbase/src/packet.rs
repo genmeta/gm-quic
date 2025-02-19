@@ -198,7 +198,7 @@ impl Keys {
 }
 
 #[derive(CopyGetters)]
-pub struct MiddleAssembledPacket {
+pub struct UnencryptedPacket {
     hdr_len: usize,
     len_encoding: usize,
     pn: (u64, PacketNumber),
@@ -227,7 +227,7 @@ pub struct MiddleAssembledPacket {
     _probe_new_path: bool,
 }
 
-impl MiddleAssembledPacket {
+impl UnencryptedPacket {
     pub fn resume(mut self, buffer: &mut [u8]) -> PacketWriter {
         self.end = buffer.len() - self.keys.pk().tag_len();
         assert!(self.end >= self.cursor);
@@ -237,13 +237,19 @@ impl MiddleAssembledPacket {
         }
     }
 
-    pub fn size(&self) -> usize {
-        let payload_len = self.cursor - self.hdr_len - self.len_encoding;
-        let pkt_size = (payload_len + self.keys.pk().tag_len()).max(20);
-        self.hdr_len + self.len_encoding + pkt_size
+    pub fn payload_len(&self) -> usize {
+        self.cursor - self.hdr_len - self.len_encoding
     }
 
-    fn is_short_header(&self) -> bool {
+    pub fn tag_len(&self) -> usize {
+        self.keys.pk().tag_len()
+    }
+
+    pub fn packet_len(&self) -> usize {
+        self.cursor + self.tag_len()
+    }
+
+    pub fn is_short_header(&self) -> bool {
         self.keys.key_phase().is_some()
     }
 }
@@ -251,7 +257,7 @@ impl MiddleAssembledPacket {
 #[derive(Deref, DerefMut)]
 pub struct PacketWriter<'b> {
     #[deref]
-    packet: MiddleAssembledPacket,
+    packet: UnencryptedPacket,
     buffer: &'b mut [u8],
 }
 
@@ -281,7 +287,7 @@ impl<'b> PacketWriter<'b> {
         let cursor = hdr_len + len_encoding + encoded_pn.size();
         let keys = Keys::LongHeaderPacket { keys };
         let end = buffer.len() - keys.pk().tag_len();
-        let packet = MiddleAssembledPacket {
+        let packet = UnencryptedPacket {
             hdr_len,
             len_encoding,
             pn,
@@ -293,6 +299,10 @@ impl<'b> PacketWriter<'b> {
             _probe_new_path: false,
         };
         Some(Self { buffer, packet })
+    }
+
+    pub fn buffer(&self) -> &[u8] {
+        &self.buffer[..self.packet.packet_len()]
     }
 
     pub fn new_short(
@@ -316,7 +326,7 @@ impl<'b> PacketWriter<'b> {
         let cursor = hdr_len + encoded_pn.size();
         let keys = Keys::ShortHeaderPacket { hpk, pk, key_phase };
         let end = buffer.len() - keys.pk().tag_len();
-        let packet = MiddleAssembledPacket {
+        let packet = UnencryptedPacket {
             hdr_len,
             len_encoding: 0,
             pn,
@@ -330,8 +340,8 @@ impl<'b> PacketWriter<'b> {
         Some(Self { buffer, packet })
     }
 
-    pub fn abandon(self) -> MiddleAssembledPacket {
-        self.packet
+    pub fn interrupt(self) -> (UnencryptedPacket, &'b mut [u8]) {
+        (self.packet, self.buffer)
     }
 
     pub fn pad(&mut self, cnt: usize) {
@@ -352,58 +362,57 @@ impl<'b> PacketWriter<'b> {
         self.cursor == self.hdr_len + self.len_encoding + self.pn.1.size()
     }
 
-    pub fn encrypt_and_protect(&mut self) -> AssembledPacket {
-        let payload_len = self.cursor - self.hdr_len - self.len_encoding;
+    pub fn encrypt_and_protect(self) -> EncryptedPacket {
+        let (packet, buffer) = (self.packet, self.buffer);
+        let payload_len = packet.payload_len();
+        let tag_len = packet.keys.pk().tag_len();
 
-        let tag_len = self.keys.pk().tag_len();
-        debug_assert!(payload_len > 0);
         if payload_len + tag_len < 20 {
-            let padding_len = 20 - payload_len - tag_len;
-            self.pad(padding_len);
+            unreachable!("packet is too small, and it should be padding before this step");
         }
 
-        let (actual_pn, encoded_pn) = self.pn;
+        let (actual_pn, encoded_pn) = packet.pn;
         let pn_len = encoded_pn.size();
-        let pkt_size = self.cursor + tag_len;
+        let pkt_size = packet.cursor + tag_len;
 
-        if self.is_short_header() {
-            let key_phase = self.keys.key_phase().unwrap();
-            encode_short_first_byte(&mut self.buffer[0], pn_len, key_phase);
+        if packet.is_short_header() {
+            let key_phase = packet.keys.key_phase().unwrap();
+            encode_short_first_byte(&mut buffer[0], pn_len, key_phase);
 
-            let pk = self.packet.keys.pk();
-            let payload_offset = self.hdr_len;
+            let pk = packet.keys.pk();
+            let payload_offset = packet.hdr_len;
             let body_offset = payload_offset + pn_len;
-            encrypt_packet(pk, actual_pn, &mut self.buffer[..pkt_size], body_offset);
+            encrypt_packet(pk, actual_pn, &mut buffer[..pkt_size], body_offset);
 
-            let hpk = self.packet.keys.hpk();
-            protect_header(hpk, &mut self.buffer[..pkt_size], payload_offset, pn_len);
+            let hpk = packet.keys.hpk();
+            protect_header(hpk, &mut buffer[..pkt_size], payload_offset, pn_len);
         } else {
             let packet_len = payload_len + tag_len;
-            let len_buffer_range = self.hdr_len..self.hdr_len + self.len_encoding;
-            let mut len_buf = &mut self.buffer[len_buffer_range];
+            let len_buffer_range = packet.hdr_len..packet.hdr_len + packet.len_encoding;
+            let mut len_buf = &mut buffer[len_buffer_range];
             len_buf.encode_varint(&VarInt::try_from(packet_len).unwrap(), EncodeBytes::Two);
 
-            encode_long_first_byte(&mut self.buffer[0], pn_len);
+            encode_long_first_byte(&mut buffer[0], pn_len);
 
-            let pk = self.packet.keys.pk();
-            let payload_offset = self.hdr_len + self.len_encoding;
+            let pk = packet.keys.pk();
+            let payload_offset = packet.hdr_len + packet.len_encoding;
             let body_offset = payload_offset + pn_len;
-            encrypt_packet(pk, actual_pn, &mut self.buffer[..pkt_size], body_offset);
+            encrypt_packet(pk, actual_pn, &mut buffer[..pkt_size], body_offset);
 
-            let hpk = self.packet.keys.hpk();
-            protect_header(hpk, &mut self.buffer[..pkt_size], payload_offset, pn_len);
+            let hpk = packet.keys.hpk();
+            protect_header(hpk, &mut buffer[..pkt_size], payload_offset, pn_len);
         }
-        AssembledPacket {
+        EncryptedPacket {
             pn: actual_pn,
             size: pkt_size,
-            is_ack_eliciting: self.ack_eliciting,
-            in_flight: self.in_flight,
+            is_ack_eliciting: packet.ack_eliciting,
+            in_flight: packet.in_flight,
         }
     }
 }
 
 #[derive(Debug, CopyGetters, Clone, Copy)]
-pub struct AssembledPacket {
+pub struct EncryptedPacket {
     #[getset(get_copy = "pub")]
     pn: u64,
     #[getset(get_copy = "pub")]
