@@ -56,6 +56,7 @@ pub struct VersionInformation {
 /// Implementations SHOULD log at least one format, but MAY log both or
 /// none.
 ///
+/// [RFC7301]: https://www.rfc-editor.org/rfc/rfc7301
 /// [QUIC-TRANSPORT]: https://www.rfc-editor.org/rfc/rfc9000
 /// [QLOG-MAIN]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-main-schema-09
 

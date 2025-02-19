@@ -349,10 +349,10 @@ pub enum QuicFrame {
         /// in ms
         ack_delay: Option<f32>,
 
-        /// e.g., looks like [[1,2],[4,5], [7], [10,22]] serialized
+        /// e.g., looks like \[\[1,2],\[4,5], \[7], \[10,22]] serialized
         ///
         /// ### AckRange:
-        /// either a single number (e.g., [1]) or two numbers (e.g., [1,2]).
+        /// either a single number (e.g., \[1]) or two numbers (e.g., \[1,2]).
         ///
         /// For two numbers:
         ///
