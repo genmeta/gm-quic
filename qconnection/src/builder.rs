@@ -17,7 +17,6 @@ pub use qbase::{
     token::{handy::*, TokenProvider, TokenSink},
 };
 use qbase::{
-    error::Error,
     frame::ConnectionCloseFrame,
     param::{self, ArcParameters},
     sid,
@@ -29,15 +28,25 @@ use qinterface::{
     queue::RcvdPacketQueue,
     router::QuicProto,
 };
+use qlog::{
+    quic::{
+        connectivity::{
+            BaseConnectionStates, ConnectionClosed, ConnectionStarted, ConnectionStateUpdated,
+            GranularConnectionStates, PathAssigned,
+        },
+        IpVersion, Owner,
+    },
+    telemetry::Instrument,
+};
 pub use rustls::crypto::CryptoProvider;
 use tokio::sync::Notify;
-use tracing::{trace_span, Instrument};
 
 use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
     path::{ArcPaths, Path, PathContext},
     prelude::HeartbeatConfig,
     space::{self, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace, Spaces},
+    state::ConnState,
     termination::ClosingState,
     tls::{self, ArcTlsSession},
     ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
@@ -410,6 +419,7 @@ impl ComponentsReady {
             send_notify: self.sendable,
             defer_idle_timeout: self.defer_idle_timeout,
             event_broker,
+            state: ConnState::new(),
         };
 
         tokio::spawn(tls::keys_upgrade(&components));
@@ -446,11 +456,9 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
             }
         }
     }
-    .instrument(trace_span!("accept_transport_parameters"))
 }
 
 impl Components {
-    #[tracing::instrument(level = "trace", skip(self))]
     pub fn get_or_create_path(
         &self,
         socket: Socket,
@@ -461,6 +469,28 @@ impl Components {
         match self.paths.entry(pathway) {
             dashmap::Entry::Occupied(occupied_entry) => Some(occupied_entry.get().deref().clone()),
             dashmap::Entry::Vacant(vacant_entry) => {
+                if self.state.try_entry_attempted() {
+                    qlog::event!(qlog::build!(ConnectionStarted {
+                        ip_version: if socket.src().is_ipv4() {
+                            IpVersion::V4
+                        } else {
+                            IpVersion::V6
+                        },
+                        src_ip: socket.src().ip().to_string(),
+                        src_port: socket.dst().port(),
+                        dst_ip: socket.src().ip().to_string(),
+                        dst_port: socket.dst().port(),
+                        // cid不在这一层，未知
+                    }));
+                    qlog::event!(qlog::build!(ConnectionStateUpdated {
+                        new: BaseConnectionStates::Attempted,
+                    }));
+                }
+                qlog::event!(qlog::build!(PathAssigned {
+                    path_id: pathway.to_string(),
+                    path_local: socket.src(),
+                    path_remote: socket.dst(),
+                }));
                 let max_ack_delay = self.parameters.local()?.max_ack_delay().into_inner();
 
                 let cc = ArcCC::new(
@@ -506,8 +536,7 @@ impl Components {
                         // same as [`Components::del_path`]
                         paths.remove(&pathway);
                     }
-                    .instrument(trace_span!("path_task"))
-                });
+                }.instrument(qlog::span!(@current, path=pathway.to_string())));
 
                 vacant_entry.insert(PathContext::new(path.clone(), task.abort_handle()));
                 tracing::debug!(do_validate, "created new path");
@@ -521,6 +550,27 @@ impl Components {
     // 对于server，第一条路径也通过add_path添加
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn enter_closing(self, ccf: ConnectionCloseFrame) -> Termination {
+        qlog::event!(qlog::build!(ConnectionClosed {
+            owner: Owner::Local,
+            ?application_code: match &ccf{
+                ConnectionCloseFrame::App(frame) => Some(frame),
+                _ => None,
+            },
+            ?connection_code: match &ccf{
+                ConnectionCloseFrame::Quic(frame) => Some(frame),
+                _ => None,
+            },
+            reason: match &ccf {
+                ConnectionCloseFrame::App(frame) => frame.reason().to_owned(),
+                ConnectionCloseFrame::Quic(frame) => frame.reason().to_owned(),
+            },
+            // TODO: trigger
+        }));
+        qlog::event!(qlog::build!(ConnectionStateUpdated {
+            ?old: self.state.load(),
+            new: GranularConnectionStates::Closing,
+        }));
+
         let error = ccf.clone().into();
         self.spaces.data().on_conn_error(&error);
         self.flow_ctrl.on_conn_error(&error);
@@ -541,8 +591,11 @@ impl Components {
                 tokio::time::sleep(pto_duration * 3).await;
                 local_cids.clear();
                 event_broker.emit(Event::Terminated);
+                qlog::event!(qlog::build!(ConnectionStateUpdated {
+                    old: GranularConnectionStates::Closing,
+                    new: GranularConnectionStates::Closed,
+                }));
             }
-            .instrument(trace_span!("termination_timer", ?pto_duration))
         });
 
         self.spaces
@@ -552,7 +605,29 @@ impl Components {
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
-    pub fn enter_draining(self, error: Error) -> Termination {
+    pub fn enter_draining(self, ccf: ConnectionCloseFrame) -> Termination {
+        qlog::event!(qlog::build!(ConnectionClosed {
+            owner: Owner::Local,
+            ?application_code: match &ccf{
+                ConnectionCloseFrame::App(frame) => Some(frame),
+                _ => None,
+            },
+            ?connection_code: match &ccf{
+                ConnectionCloseFrame::Quic(frame) => Some(frame),
+                _ => None,
+            },
+            reason: match &ccf {
+                ConnectionCloseFrame::App(frame) => frame.reason().to_owned(),
+                ConnectionCloseFrame::Quic(frame) => frame.reason().to_owned(),
+            },
+            // TODO: trigger
+        }));
+        qlog::event!(qlog::build!(ConnectionStateUpdated {
+            ?old: self.state.load(),
+            new: GranularConnectionStates::Draining,
+        }));
+
+        let error = ccf.into();
         self.spaces.data().on_conn_error(&error);
         self.flow_ctrl.on_conn_error(&error);
         self.tls_session.on_conn_error(&error);
@@ -571,8 +646,11 @@ impl Components {
                 tokio::time::sleep(pto_duration * 3).await;
                 local_cids.clear();
                 event_broker.emit(Event::Terminated);
+                qlog::event!(qlog::build!(ConnectionStateUpdated {
+                    old: GranularConnectionStates::Draining,
+                    new: GranularConnectionStates::Closed,
+                }));
             }
-            .instrument(trace_span!("termination_timer", ?pto_duration))
         });
 
         self.rcvd_pkt_q.close_all();

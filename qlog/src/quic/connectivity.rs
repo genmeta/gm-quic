@@ -1,4 +1,6 @@
 use derive_builder::Builder;
+use derive_more::From;
+use qbase::frame::QuicCloseFrame;
 
 use super::{
     ApplicationCode, ConnectionID, CryptoError, IPAddress, IpVersion, Owner, PathEndpointInfo,
@@ -113,12 +115,38 @@ pub struct ConnectionClosed {
     trigger: Option<ConnectionCloseTrigger>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ConnectionCode {
     TransportError(TransportError),
     CryptoError(CryptoError),
     Value(u32),
+}
+
+impl From<&QuicCloseFrame> for ConnectionCode {
+    fn from(value: &QuicCloseFrame) -> Self {
+        use qbase::error::ErrorKind;
+        match value.error_kind() {
+            ErrorKind::None => TransportError::NoError.into(),
+            ErrorKind::Internal => TransportError::InternalError.into(),
+            ErrorKind::ConnectionRefused => TransportError::ConnectionRefused.into(),
+            ErrorKind::FlowControl => TransportError::FlowControlError.into(),
+            ErrorKind::StreamLimit => TransportError::StreamLimitError.into(),
+            ErrorKind::StreamState => TransportError::StreamStateError.into(),
+            ErrorKind::FinalSize => TransportError::FinalSizeError.into(),
+            ErrorKind::FrameEncoding => TransportError::FrameEncodingError.into(),
+            ErrorKind::TransportParameter => TransportError::TransportParameterError.into(),
+            ErrorKind::ConnectionIdLimit => TransportError::ConnectionIDLimitError.into(),
+            ErrorKind::ProtocolViolation => TransportError::ProtocolViolation.into(),
+            ErrorKind::InvalidToken => TransportError::InvalidToken.into(),
+            ErrorKind::Application => TransportError::ApplicationError.into(),
+            ErrorKind::CryptoBufferExceeded => TransportError::CryptoBufferExceeded.into(),
+            ErrorKind::KeyUpdate => TransportError::KeyUpdateError.into(),
+            ErrorKind::AeadLimitReached => TransportError::AeadLimitReached.into(),
+            ErrorKind::NoViablePath => TransportError::NoViablePath.into(),
+            ErrorKind::Crypto(code) => CryptoError(code).into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -199,7 +227,7 @@ pub struct ConnectionStateUpdated {
     new: ConnectionState,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ConnectionState {
     Base(BaseConnectionStates),

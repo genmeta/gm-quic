@@ -1,7 +1,8 @@
-use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 
 use derive_builder::Builder;
 use derive_more::{From, Into, LowerHex};
+use qbase::frame::AppCloseFrame;
 use serde::{Deserialize, Serialize};
 
 pub mod connectivity;
@@ -131,6 +132,21 @@ pub struct PathEndpointInfo {
     /// or a need to keep track of previous ConnectionIDs
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub conenction_ids: Vec<ConnectionID>,
+}
+
+impl From<SocketAddr> for PathEndpointInfo {
+    fn from(value: SocketAddr) -> Self {
+        match value {
+            SocketAddr::V4(addr) => crate::build!(PathEndpointInfo {
+                ip_v4: addr.ip().to_string(),
+                port_v4: addr.port(),
+            }),
+            SocketAddr::V6(addr) => crate::build!(PathEndpointInfo {
+                ip_v6: addr.ip().to_string(),
+                port_v6: addr.port(),
+            }),
+        }
+    }
 }
 
 // 8.6
@@ -406,11 +422,17 @@ pub enum QuicFrame {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ApplicationCode {
     ApplicationError(ApplicationError),
     Value(u32),
+}
+
+impl From<&AppCloseFrame> for ApplicationCode {
+    fn from(frame: &AppCloseFrame) -> Self {
+        ApplicationCode::Value(frame.error_code() as _)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

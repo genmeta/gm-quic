@@ -577,6 +577,18 @@ macro_rules! build {
         $builder.$field($value);
         $crate::build!(@field $builder $(, $($remain)* )? );
     };
+    (@field $builder:expr, ? $field:ident $(, $($remain:tt)* )? ) => {
+        if let Some(__value) = $field {
+            $builder.$field(__value);
+        }
+        $crate::build!(@field $builder $(, $($remain)* )? );
+    };
+    (@field $builder:expr, ? $field:ident: $value:expr $(, $($remain:tt)* )? ) => {
+        if let Some(__value) = $value {
+            $builder.$field(__value);
+        }
+        $crate::build!(@field $builder $(, $($remain)* )? );
+    };
     (@field $builder:expr $(,)?) => {};
 }
 
