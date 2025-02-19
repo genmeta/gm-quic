@@ -27,7 +27,7 @@ impl<TX: Clone> Outgoing<TX> {
     // consume the token internally, return the number of fresh data have been written to the buffer.
     // return None indicates that the stream write no data to the buffer.
     #[tracing::instrument(level = "trace", skip(self, packet), ret)]
-    pub fn try_load_data_into<B, P>(
+    pub fn try_load_data_into<P>(
         &self,
         packet: &mut P,
         sid: StreamId,
@@ -35,8 +35,7 @@ impl<TX: Clone> Outgoing<TX> {
         tokens: usize,
     ) -> Option<(usize, bool)>
     where
-        B: BufMut,
-        P: DerefMut<Target = B> + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+        P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
     {
         let origin_len = packet.remaining_mut();
         let write = |(offset, is_fresh, data, is_eos): (u64, bool, (&[u8], &[u8]), bool)| {

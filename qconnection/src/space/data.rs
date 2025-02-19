@@ -22,7 +22,7 @@ use qbase::{
         number::PacketNumber,
         r#type::Type,
         signal::SpinBit,
-        AssembledPacket, MarshalFrame, MiddleAssembledPacket, PacketWriter,
+        EncryptedPacket, MarshalFrame, PacketWriter,
     },
     param::CommonParameters,
     sid::{ControlConcurrency, Role},
@@ -46,7 +46,7 @@ use crate::{
     path::{Path, SendBuffer},
     space::{pipe, AckData, FlowControlledDataStreams},
     termination::ClosingState,
-    tx::{PacketMemory, Transaction},
+    tx::{MiddleAssembledPacket, PacketMemory, Transaction},
     ArcReliableFrameDeque, Components, DataStreams,
 };
 
@@ -143,11 +143,11 @@ impl DataSpace {
         }))
     }
 
-    pub fn try_assemble_0rtt<'b>(
+    pub fn try_assemble_0rtt(
         &self,
         tx: &mut Transaction<'_>,
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
-        buf: &'b mut [u8],
+        buf: &mut [u8],
     ) -> Option<(MiddleAssembledPacket, usize)> {
         if self.one_rtt_keys.get_local_keys().is_some() {
             return None;
@@ -176,17 +176,16 @@ impl DataSpace {
         #[cfg(feature = "unreliable")]
         self.datagrams.try_load_data_into(&mut packet);
 
-        let packet: PacketWriter<'b> = packet.try_into().ok()?;
-        Some((packet.abandon(), fresh_data))
+        Some((packet.interrupt()?, fresh_data))
     }
 
-    pub fn try_assemble_1rtt<'b>(
+    pub fn try_assemble_1rtt(
         &self,
         tx: &mut Transaction<'_>,
         spin: SpinBit,
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
-        buf: &'b mut [u8],
+        buf: &mut [u8],
     ) -> Option<(MiddleAssembledPacket, Option<u64>, usize)> {
         let (hpk, pk) = self.one_rtt_keys.get_local_keys()?;
         let (key_phase, pk) = pk.lock_guard().get_local();
@@ -226,18 +225,17 @@ impl DataSpace {
         #[cfg(feature = "unreliable")]
         self.datagrams.try_load_data_into(&mut packet);
 
-        let packet: PacketWriter<'b> = packet.try_into().ok()?;
-        Some((packet.abandon(), ack, fresh_data))
+        Some((packet.interrupt()?, ack, fresh_data))
     }
 
-    pub fn try_assemble_validation<'b>(
+    pub fn try_assemble_validation(
         &self,
         tx: &mut Transaction<'_>,
         spin: SpinBit,
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
-        buf: &'b mut [u8],
-    ) -> Option<AssembledPacket> {
+        buf: &mut [u8],
+    ) -> Option<MiddleAssembledPacket> {
         let (hpk, pk) = self.one_rtt_keys.get_local_keys()?;
         let (key_phase, pk) = pk.lock_guard().get_local();
         let sent_journal = self.journal.of_sent_packets();
@@ -254,11 +252,7 @@ impl DataSpace {
         path_response_frames.try_load_frames_into(&mut packet);
         // 其实还应该加上NCID，但是从ReliableFrameDeque分拣太复杂了
 
-        let remaining = packet.remaining_mut();
-        packet.pad(remaining);
-
-        let mut packet: PacketWriter<'b> = packet.try_into().ok()?;
-        Some(packet.encrypt_and_protect())
+        packet.interrupt()
     }
 
     pub fn is_one_rtt_ready(&self) -> bool {
@@ -569,7 +563,7 @@ impl ClosingDataSpace {
         dcid: ConnectionId,
         ccf: &ConnectionCloseFrame,
         buf: &mut [u8],
-    ) -> Option<AssembledPacket> {
+    ) -> Option<EncryptedPacket> {
         let (hpk, pk) = &self.keys;
         let (key_phase, pk) = pk.lock_guard().get_local();
         let header = OneRttHeader::new(Default::default(), dcid);

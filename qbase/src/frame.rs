@@ -35,7 +35,7 @@ pub mod error;
 pub mod io;
 
 pub use ack::{AckFrame, EcnCounts};
-pub use connection_close::ConnectionCloseFrame;
+pub use connection_close::{AppCloseFrame, ConnectionCloseFrame, QuicCloseFrame};
 pub use crypto::CryptoFrame;
 pub use data_blocked::DataBlockedFrame;
 pub use datagram::DatagramFrame;

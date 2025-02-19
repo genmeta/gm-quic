@@ -1,7 +1,4 @@
-use std::{
-    ops::DerefMut,
-    task::{ready, Context, Poll},
-};
+use std::task::{ready, Context, Poll};
 
 use bytes::BufMut;
 use qbase::{
@@ -138,10 +135,9 @@ where
     /// Try to load data from streams into the `packet`,
     /// with a `flow_limit` which limits the max size of fresh data.
     /// Returns the size of fresh data.
-    fn try_load_data_into_once<B, P>(&self, packet: &mut P, flow_limit: usize) -> Option<usize>
+    fn try_load_data_into_once<P>(&self, packet: &mut P, flow_limit: usize) -> Option<usize>
     where
-        B: BufMut,
-        P: DerefMut<Target = B> + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+        P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
     {
         // todo: use core::range instead in rust 2024
         use core::ops::Bound::*;
@@ -236,10 +232,9 @@ where
     /// * [`usize`]: The number of new data writen to the buffer.
     ///
     /// [`write`]: tokio::io::AsyncWriteExt::write
-    pub fn try_load_data_into<B, P>(&self, packet: &mut P, flow_limit: usize) -> usize
+    pub fn try_load_data_into<P>(&self, packet: &mut P, flow_limit: usize) -> usize
     where
-        B: BufMut,
-        P: DerefMut<Target = B> + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
+        P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
     {
         core::iter::repeat(()) // while true
             .scan(flow_limit, |flow_limit, ()| {

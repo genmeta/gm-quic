@@ -35,10 +35,9 @@ impl DatagramFlow {
         }
     }
 
-    pub fn try_load_data_into<P, B>(&self, packet: &mut P)
+    pub fn try_load_data_into<P>(&self, packet: &mut P)
     where
-        B: bytes::BufMut,
-        P: core::ops::DerefMut<Target = B> + qbase::packet::MarshalDataFrame<DatagramFrame, Bytes>,
+        P: bytes::BufMut + qbase::packet::MarshalDataFrame<DatagramFrame, Bytes>,
     {
         self.outgoing.try_load_data_into(packet)
     }

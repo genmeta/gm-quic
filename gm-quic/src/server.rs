@@ -9,12 +9,12 @@ use dashmap::DashMap;
 use handy::Usc;
 pub use qconnection::{builder::*, prelude::*};
 use qinterface::util::Channel;
+use qlog::quic::connectivity::ServerListening;
 use rustls::{
     server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
 };
 use tokio::sync::mpsc;
-use tracing::{trace_span, Instrument};
 
 use crate::{
     interfaces::Interfaces,
@@ -185,24 +185,21 @@ impl QuicServer {
         PROTO.deliver(packet, pathway, socket).await;
         _ = server.listener.send((connection.clone(), pathway));
 
-        tokio::spawn(
-            async move {
-                while let Some(event) = events.recv().await {
-                    match event {
-                        Event::Handshaked => {}
-                        Event::ProbedNewPath(..) => {}
-                        Event::PathInactivated(_, socket) => {
-                            _ = Interfaces::try_free_interface(socket.src())
-                        }
-                        Event::Failed(error) => connection.enter_closing(error.into()),
-                        Event::Closed(ccf) => connection.enter_draining(ccf),
-                        Event::StatelessReset => {}
-                        Event::Terminated => { /* Todo: connections set */ }
+        tokio::spawn(async move {
+            while let Some(event) = events.recv().await {
+                match event {
+                    Event::Handshaked => {}
+                    Event::ProbedNewPath(..) => {}
+                    Event::PathInactivated(_, socket) => {
+                        _ = Interfaces::try_free_interface(socket.src())
                     }
+                    Event::Failed(error) => connection.enter_closing(error.into()),
+                    Event::Closed(ccf) => connection.enter_draining(ccf),
+                    Event::StatelessReset => {}
+                    Event::Terminated => { /* Todo: connections set */ }
                 }
             }
-            .instrument(trace_span!("server_connection_driver")),
-        );
+        });
     }
 
     pub fn shutdown(&self) {
@@ -656,6 +653,20 @@ impl QuicServerSniBuilder<TlsServerConfig> {
                     recv_tasks.push(Interfaces::add(interface.clone())?);
                     local_addrs.push(local_addr);
                     bind_interfaces.insert(local_addr, interface);
+                    qlog::event!(
+                        match address {
+                            SocketAddr::V4(address) => qlog::build!(ServerListening {
+                                ip_v4: address.ip().to_string(),
+                                port_v4: address.port(),
+                            }),
+                            SocketAddr::V6(address) => qlog::build!(ServerListening {
+                                ip_v4: address.ip().to_string(),
+                                port_v4: address.port(),
+                            }),
+                        },
+                        // 那些被passive_listening的地址就没法打印这个事件了
+                        passive_listening = self.passive_listening,
+                    );
                     Ok((bind_interfaces, recv_tasks, local_addrs))
                 },
             )?;

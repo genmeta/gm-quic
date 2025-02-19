@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "qbase",
+    "qlog",
     "qrecovery",
     "qcongestion",
     "qudp",
@@ -10,10 +11,10 @@ members = [
     "qconnection",
     "gm-quic",
     "h3-shim",
-    "qlog",
 ]
 default-members = [
     "qbase",
+    "qlog",
     "qrecovery",
     "qcongestion",
     "qinterface",
@@ -69,6 +70,7 @@ url = "2"
 
 # members
 qbase = { path = "./qbase", version = "0.1.0" }
+qlog = { path = "./qlog", version = "0.1.0" }
 qrecovery = { path = "./qrecovery", version = "0.1.0" }
 qconnection = { path = "./qconnection", version = "0.1.0" }
 qcongestion = { path = "./qcongestion", version = "0.1.0" }

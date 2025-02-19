@@ -1,4 +1,8 @@
+use std::net::SocketAddr;
+
 use derive_builder::Builder;
+use derive_more::From;
+use qbase::frame::{ConnectionCloseFrame, QuicCloseFrame};
 
 use super::{
     ApplicationCode, ConnectionID, CryptoError, IPAddress, IpVersion, Owner, PathEndpointInfo,
@@ -59,6 +63,22 @@ pub struct ConnectionStarted {
     dst_cid: Option<ConnectionID>,
 }
 
+impl ConnectionStartedBuilder {
+    /// helper method to set the source and destination socket addresses
+    pub fn socket(&mut self, (src, dst): (SocketAddr, SocketAddr)) -> &mut Self {
+        debug_assert_eq!(src.is_ipv4(), dst.is_ipv4());
+        self.ip_version(if src.is_ipv4() {
+            IpVersion::V4
+        } else {
+            IpVersion::V6
+        })
+        .src_ip(src.ip().to_string())
+        .dst_ip(dst.ip().to_string())
+        .src_port(src.port())
+        .dst_port(dst.port())
+    }
+}
+
 impl ConnectionStarted {
     pub fn default_protocol() -> String {
         String::from("QUIC")
@@ -113,12 +133,51 @@ pub struct ConnectionClosed {
     trigger: Option<ConnectionCloseTrigger>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+impl ConnectionClosedBuilder {
+    pub fn ccf(&mut self, ccf: &ConnectionCloseFrame) -> &mut Self {
+        match &ccf {
+            ConnectionCloseFrame::App(frame) => self
+                .application_code(frame)
+                .reason(frame.reason().to_owned()),
+            ConnectionCloseFrame::Quic(frame) => self
+                .connection_code(frame)
+                .reason(frame.reason().to_owned()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ConnectionCode {
     TransportError(TransportError),
     CryptoError(CryptoError),
     Value(u32),
+}
+
+impl From<&QuicCloseFrame> for ConnectionCode {
+    fn from(value: &QuicCloseFrame) -> Self {
+        use qbase::error::ErrorKind;
+        match value.error_kind() {
+            ErrorKind::None => TransportError::NoError.into(),
+            ErrorKind::Internal => TransportError::InternalError.into(),
+            ErrorKind::ConnectionRefused => TransportError::ConnectionRefused.into(),
+            ErrorKind::FlowControl => TransportError::FlowControlError.into(),
+            ErrorKind::StreamLimit => TransportError::StreamLimitError.into(),
+            ErrorKind::StreamState => TransportError::StreamStateError.into(),
+            ErrorKind::FinalSize => TransportError::FinalSizeError.into(),
+            ErrorKind::FrameEncoding => TransportError::FrameEncodingError.into(),
+            ErrorKind::TransportParameter => TransportError::TransportParameterError.into(),
+            ErrorKind::ConnectionIdLimit => TransportError::ConnectionIDLimitError.into(),
+            ErrorKind::ProtocolViolation => TransportError::ProtocolViolation.into(),
+            ErrorKind::InvalidToken => TransportError::InvalidToken.into(),
+            ErrorKind::Application => TransportError::ApplicationError.into(),
+            ErrorKind::CryptoBufferExceeded => TransportError::CryptoBufferExceeded.into(),
+            ErrorKind::KeyUpdate => TransportError::KeyUpdateError.into(),
+            ErrorKind::AeadLimitReached => TransportError::AeadLimitReached.into(),
+            ErrorKind::NoViablePath => TransportError::NoViablePath.into(),
+            ErrorKind::Crypto(code) => CryptoError(code).into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -199,7 +258,7 @@ pub struct ConnectionStateUpdated {
     new: ConnectionState,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ConnectionState {
     Base(BaseConnectionStates),

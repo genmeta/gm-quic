@@ -53,10 +53,9 @@ where
         0
     }
 
-    pub fn try_load_frames_into<B, P>(&self, packet: &mut P)
+    pub fn try_load_frames_into<P>(&self, packet: &mut P)
     where
-        B: BufMut,
-        P: Deref<Target = B> + MarshalPathFrame<F>,
+        P: BufMut + MarshalPathFrame<F>,
     {
         let mut guard = self.0.lock().unwrap();
         if let Some(frame) = guard.deref() {

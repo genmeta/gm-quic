@@ -4,6 +4,8 @@ pub trait DescribeData {
     fn len(&self) -> usize;
 
     fn is_empty(&self) -> bool;
+
+    fn to_bytes(&self) -> Bytes;
 }
 
 impl DescribeData for (&[u8], &[u8]) {
@@ -15,6 +17,11 @@ impl DescribeData for (&[u8], &[u8]) {
     #[inline]
     fn is_empty(&self) -> bool {
         self.0.is_empty() && self.1.is_empty()
+    }
+
+    #[inline]
+    fn to_bytes(&self) -> Bytes {
+        Bytes::from([self.0, self.1].concat())
     }
 }
 
@@ -28,6 +35,11 @@ impl DescribeData for &[u8] {
     fn is_empty(&self) -> bool {
         <[u8]>::is_empty(self)
     }
+
+    #[inline]
+    fn to_bytes(&self) -> Bytes {
+        Bytes::copy_from_slice(self)
+    }
 }
 
 impl<const N: usize> DescribeData for [u8; N] {
@@ -40,6 +52,11 @@ impl<const N: usize> DescribeData for [u8; N] {
     fn is_empty(&self) -> bool {
         N == 0
     }
+
+    #[inline]
+    fn to_bytes(&self) -> Bytes {
+        Bytes::copy_from_slice(self)
+    }
 }
 
 impl DescribeData for Bytes {
@@ -51,6 +68,11 @@ impl DescribeData for Bytes {
     #[inline]
     fn is_empty(&self) -> bool {
         self.is_empty()
+    }
+
+    #[inline]
+    fn to_bytes(&self) -> Bytes {
+        self.clone()
     }
 }
 

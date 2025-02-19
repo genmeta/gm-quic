@@ -6,7 +6,6 @@ use std::{
     sync::{atomic::Ordering, Arc},
 };
 
-use qbase::Epoch;
 use tokio::sync::Notify;
 
 use crate::{
@@ -99,26 +98,21 @@ impl Burst {
                         &self.path.response_sndbuf,
                     )
                 } else if self.path.validated.load(Ordering::Acquire) {
-                    let (mid_pkt, ack, fresh_data) = transaction.load_1rtt_data(
+                    transaction.load_one_rtt(
                         &mut buffer[reversed_size..],
                         self.spin.into(),
                         &self.path.challenge_sndbuf,
                         &self.path.response_sndbuf,
                         self.spaces.data(),
-                    )?;
-                    let packet = mid_pkt.resume(buffer).encrypt_and_protect();
-                    transaction.commit(Epoch::Data, packet, fresh_data, ack);
-                    packet.size()
+                    )
                 } else {
-                    let packet = transaction.load_validation(
+                    transaction.load_validation(
                         &mut buffer[reversed_size..],
                         self.spin.into(),
                         &self.path.challenge_sndbuf,
                         &self.path.response_sndbuf,
                         self.spaces.data(),
-                    )?;
-                    transaction.commit(Epoch::Data, packet, 0, None);
-                    packet.size()
+                    )
                 };
 
                 if packet_size == 0 {

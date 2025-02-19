@@ -56,6 +56,10 @@ impl Span {
     pub fn load<T: DeserializeOwned>(&self, name: &'static str) -> T {
         serde_json::from_value(self.fields[name].clone()).unwrap()
     }
+
+    pub fn try_load<T: DeserializeOwned>(&self, name: &'static str) -> Option<T> {
+        serde_json::from_value(self.fields.get(name)?.clone()).ok()
+    }
 }
 
 impl PartialEq for Span {
@@ -70,27 +74,44 @@ impl Default for Span {
     }
 }
 
+pub struct SpanGuard {
+    previous: Option<Span>,
+}
+
 mod current_span {
     use std::cell::RefCell;
 
-    use super::Span;
+    use super::{Span, SpanGuard};
 
     thread_local! {
         pub static CURRENT_SPAN: RefCell<Span> = RefCell::new(Span::default());
     }
 
+    impl Drop for SpanGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                CURRENT_SPAN.with(|span| {
+                    span.replace(previous.clone());
+                });
+            }
+        }
+    }
+
     impl Span {
-        pub fn in_scope<T>(&self, f: impl FnOnce() -> T) -> T {
-            CURRENT_SPAN.with(|span| {
-                if &*span.borrow() == self {
-                    f()
+        pub fn enter(&self) -> SpanGuard {
+            let previous = CURRENT_SPAN.with(|current| {
+                if &*current.borrow() == self {
+                    None
                 } else {
-                    let prev = span.replace(self.clone());
-                    let res = f();
-                    span.replace(prev);
-                    res
+                    Some(current.replace(self.clone()))
                 }
-            })
+            });
+            SpanGuard { previous }
+        }
+
+        pub fn in_scope<T>(&self, f: impl FnOnce() -> T) -> T {
+            let _guard = self.enter();
+            f()
         }
 
         pub fn current() -> Span {
@@ -136,6 +157,18 @@ pub mod macro_support {
     use serde::Serialize;
 
     use super::*;
+    use crate::EventBuilder;
+
+    pub fn modify_event_builder_costom_fields(
+        builder: &mut EventBuilder,
+        f: impl FnOnce(&mut HashMap<String, Value>),
+    ) {
+        if builder.custom_fields.is_none() {
+            builder.custom_fields = Some(HashMap::new());
+        }
+        let custom_fields = builder.custom_fields.as_mut().unwrap();
+        f(custom_fields);
+    }
 
     pub fn current_span_exporter() -> Arc<dyn ExportEvent> {
         current_span::CURRENT_SPAN.with(|span| span.borrow().exporter.clone())
@@ -220,11 +253,9 @@ macro_rules! event {
     };
     (@field $event_builder:expr, $name:ident = $value:expr $(, $($tt:tt)* )?) => {
         let __value = $crate::telemetry::macro_support::to_value($value);
-        if $event_builder.custom_fields.is_none() {
-            $event_builder.custom_fields = Some(::std::collections::HashMap::new());
-        }
-        let __custom_fields = $event_builder.custom_fields.as_mut().unwrap();
-        __custom_fields.insert(stringify!($name).to_owned(), __value);
+        $crate::telemetry::macro_support::modify_event_builder_costom_fields(&mut $event_builder, |__custom_fields| {
+            __custom_fields.insert(stringify!($name).to_owned(), __value);
+        });
         $crate::event!( @field $event_builder $(, $($tt)* )? );
     };
     (@field $event_builder:expr $(,)? ) => {};
@@ -238,7 +269,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        quic::{connectivity, ConnectionID},
+        quic::{connectivity::ServerListening, ConnectionID},
         GroupID,
     };
 
@@ -292,10 +323,10 @@ mod tests {
 
         span!(Arc::new(TestBroker), group_id = group_id()).in_scope(|| {
             event!(
-                connectivity::ServerListening::builder()
-                    .ip_v4("127.0.0.1".to_owned())
-                    .port_v4(8080u16)
-                    .build(),
+                crate::build!(ServerListening {
+                    ip_v4: "127.0.0.1".to_owned(),
+                    port_v4: 8080u16,
+                }),
                 passive_listening = true
             );
         });

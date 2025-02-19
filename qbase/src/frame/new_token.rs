@@ -1,3 +1,5 @@
+use deref_derive::Deref;
+
 use crate::varint::{be_varint, VarInt, WriteVarInt};
 
 /// NEW_TOKEN frame.
@@ -12,8 +14,9 @@ use crate::varint::{be_varint, VarInt, WriteVarInt};
 ///
 /// See [NEW_TOKEN Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-new_token-frames)
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Deref, Debug, Clone, PartialEq, Eq)]
 pub struct NewTokenFrame {
+    #[deref]
     token: Vec<u8>,
 }
 

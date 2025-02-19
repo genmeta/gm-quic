@@ -1,6 +1,6 @@
 use std::net::{SocketAddrV4, SocketAddrV6};
 
-use getset::{Getters, MutGetters, Setters};
+use getset::{CopyGetters, MutGetters, Setters};
 
 use crate::{
     cid::{be_connection_id, ConnectionId, WriteConnectionId},
@@ -111,7 +111,7 @@ impl<T: bytes::BufMut> WriteParameterId for T {
 /// See [section-18.2-4.31](https://datatracker.ietf.org/doc/html/rfc9000#section-18.2-4.32)
 /// and [figure-22](https://datatracker.ietf.org/doc/html/rfc9000#figure-22)
 /// for more details.
-#[derive(Getters, Setters, MutGetters, Debug, PartialEq, Clone, Copy)]
+#[derive(CopyGetters, Setters, MutGetters, Debug, PartialEq, Clone, Copy)]
 pub struct PreferredAddress {
     #[getset(get_copy = "pub", set = "pub")]
     address_v4: SocketAddrV4,

@@ -54,7 +54,7 @@ pub struct CommonParameters {
     pub(super) initial_max_streams_uni: VarInt,
     #[getset(get_copy = "pub", set = "pub")]
     pub(super) initial_source_connection_id: ConnectionId,
-    // TOOD: 对此传输参数的支持
+    // TOOD: 对此传输参数的支持，以及支持后修改qlog中对此的解析
     #[getset(get_copy = "pub", set = "pub")]
     pub(super) grease_quic_bit: bool,
 }

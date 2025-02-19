@@ -19,8 +19,9 @@ futures = { workspace = true }
 qbase = { workspace = true }
 qcongestion = { workspace = true }
 qconnection = { workspace = true }
-qrecovery = { workspace = true }
 qinterface = { workspace = true, features = ["qudp"] }
+qlog = { workspace = true }
+qrecovery = { workspace = true }
 qunreliable = { workspace = true }
 rustls = { workspace = true }
 thiserror = { workspace = true }

@@ -206,11 +206,15 @@ pub struct ReferenceTime {
     /// The required "epoch" field is the start of the ReferenceTime. When using the "system" clock type, the epoch field
     /// **SHOULD** have a date/time value using the format defined in [RFC3339]. However, the value "unknown" **MAY** be
     /// used
+    ///
+    /// [RFC3339]: https://www.rfc-editor.org/rfc/rfc3339
     #[serde(default)]
     epoch: TimeEpoch,
     /// The optional "wall_clock_time" field can be used to provide an approximate date/time value that logging commenced
     /// at if the epoch value is "unknown". It uses the format defined in [RFC3339]. Note that conversion of timestamps
     /// to calendar time based on wall clock times cannot be safely relied on.
+    ///
+    /// [RFC3339]: https://www.rfc-editor.org/rfc/rfc3339
     #[builder(default)]
     wall_clock_time: Option<RFC3339DateTime>,
 }
@@ -558,25 +562,59 @@ gen_builder_method! {
     RawInfoBuilder       => RawInfo;
 }
 
+#[macro_export]
+macro_rules! build {
+    ($struct:ty { $($tt:tt)* }) => {{
+        let mut __builder = <$struct>::builder();
+        $crate::build!(@field __builder, $($tt)*);
+        __builder.build()
+    }};
+    (@field $builder:expr, $field:ident $(, $($remain:tt)* )? ) => {
+        $builder.$field($field);
+        $crate::build!(@field $builder $(, $($remain)* )? );
+    };
+    (@field $builder:expr, $field:ident: $struct:ty { $($tt:tt)* } $(, $($remain:tt)* )? ) => {
+        $builder.$field($crate::build!($struct { $($tt)* }));
+        $crate::build!(@field $builder $(, $($remain)* )? );
+    };
+    (@field $builder:expr, $field:ident: $value:expr $(, $($remain:tt)* )? ) => {
+        $builder.$field($value);
+        $crate::build!(@field $builder $(, $($remain)* )? );
+    };
+    (@field $builder:expr, ? $field:ident $(, $($remain:tt)* )? ) => {
+        if let Some(__value) = $field {
+            $builder.$field(__value);
+        }
+        $crate::build!(@field $builder $(, $($remain)* )? );
+    };
+    (@field $builder:expr, ? $field:ident: $value:expr $(, $($remain:tt)* )? ) => {
+        if let Some(__value) = $value {
+            $builder.$field(__value);
+        }
+        $crate::build!(@field $builder $(, $($remain)* )? );
+    };
+    (@field $builder:expr $(,)?) => {};
+}
+
 #[cfg(test)]
 mod tests {
     use qbase::cid::ConnectionId;
 
     use super::*;
+    use crate::loglevel::Warning;
 
     #[test]
     fn custom_fields() {
         let odcid = ConnectionID::from(ConnectionId::from_slice(&[
             0x61, 0xb6, 0x91, 0x78, 0x80, 0xf7, 0x95, 0xee,
         ]));
-        let common_fields = CommonFields {
-            path: String::from("").into(),
+        let common_fields = build!(CommonFields {
+            path: "".to_owned(),
             time_format: TimeFormat::default(),
             reference_time: ReferenceTime::default(),
             protocol_types: ProtocolTypeList::from(vec![ProtocolType::quic()]),
             group_id: GroupID::from(odcid),
-            custom_fields: Default::default(),
-        };
+        });
         let expect = r#"{
   "path": "",
   "time_format": "relative_to_epoch",
@@ -615,21 +653,14 @@ mod tests {
 
     #[test]
     fn evnet_data() {
-        let event_data: EvnetData = loglevel::Warning::builder()
-            .message("deepseek（已深度思考（用时0秒））：服务器繁忙，请稍后再试。")
-            .code(255u64)
-            .build()
-            .into();
-        let event = Event {
+        let data = EvnetData::from(build!(Warning {
+            message: "deepseek（已深度思考（用时0秒））：服务器繁忙，请稍后再试。",
+            code: 255u64,
+        }));
+        let event = build!(Event {
             time: 1.0,
-            data: event_data.clone(),
-            path: None,
-            time_format: None,
-            protocol_types: None,
-            group_id: None,
-            system_info: None,
-            custom_fields: HashMap::new(),
-        };
+            data: data.clone(),
+        });
         let expect = r#"{
   "time": 1.0,
   "name": "loglevel:warning",
@@ -639,6 +670,6 @@ mod tests {
   }
 }"#;
         assert_eq!(serde_json::to_string_pretty(&event).unwrap(), expect);
-        assert_eq!(event_data.importance(), EventImportance::Base);
+        assert_eq!(data.importance(), EventImportance::Base);
     }
 }

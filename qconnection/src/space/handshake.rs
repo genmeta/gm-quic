@@ -14,7 +14,7 @@ use qbase::{
         },
         keys::ArcKeys,
         number::PacketNumber,
-        AssembledPacket, MarshalFrame, MiddleAssembledPacket, PacketWriter,
+        EncryptedPacket, MarshalFrame, PacketWriter,
     },
     Epoch,
 };
@@ -34,7 +34,7 @@ use crate::{
     path::Path,
     space::pipe,
     termination::ClosingState,
-    tx::{PacketMemory, Transaction},
+    tx::{MiddleAssembledPacket, PacketMemory, Transaction},
     Components,
 };
 
@@ -92,10 +92,10 @@ impl HandshakeSpace {
         }))
     }
 
-    pub fn try_assemble<'b>(
+    pub fn try_assemble(
         &self,
         tx: &mut Transaction<'_>,
-        buf: &'b mut [u8],
+        buf: &mut [u8],
     ) -> Option<(MiddleAssembledPacket, Option<u64>)> {
         let keys = self.keys.get_local_keys()?;
         let sent_journal = self.journal.of_sent_packets();
@@ -118,8 +118,7 @@ impl HandshakeSpace {
         let crypto_stream_outgoing = self.crypto_stream.outgoing();
         crypto_stream_outgoing.try_load_data_into(&mut packet);
 
-        let packet: PacketWriter<'b> = packet.try_into().ok()?;
-        Some((packet.abandon(), ack))
+        Some((packet.interrupt()?, ack))
     }
 }
 
@@ -295,7 +294,7 @@ impl ClosingHandshakeSpace {
         dcid: ConnectionId,
         ccf: &ConnectionCloseFrame,
         buf: &mut [u8],
-    ) -> Option<AssembledPacket> {
+    ) -> Option<EncryptedPacket> {
         let header = LongHeaderBuilder::with_cid(scid, dcid).handshake();
         let pn = self.ccf_packet_pn;
         let mut packet_writer = PacketWriter::new_long(&header, buf, pn, self.keys.clone())?;

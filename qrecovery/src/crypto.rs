@@ -2,7 +2,6 @@
 mod send {
     use std::{
         io,
-        ops::Deref,
         pin::Pin,
         sync::{Arc, Mutex},
         task::{Context, Poll, Waker},
@@ -46,10 +45,9 @@ mod send {
         /// 不再长的像write，因为rust可以多返回值，因此在返回的结果里面将读到的数据返回.
         /// 调用者一定要自行将其写入到buffer中发送。
         /// 一旦这种函数成功使用，try_read_data就可以淘汰了
-        fn try_load_data<B, P>(&mut self, packet: &mut P) -> bool
+        fn try_load_data<P>(&mut self, packet: &mut P) -> bool
         where
-            B: BufMut,
-            P: Deref<Target = B> + for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])>,
+            P: BufMut + for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])>,
         {
             let max_size = packet.remaining_mut();
             let predicate = |offset: u64| CryptoFrame::estimate_max_capacity(max_size, offset);
@@ -157,10 +155,9 @@ mod send {
             self.0.lock().unwrap().try_read_data(buffer)
         }
 
-        pub fn try_load_data_into<B, P>(&self, packet: &mut P)
+        pub fn try_load_data_into<P>(&self, packet: &mut P)
         where
-            B: BufMut,
-            P: Deref<Target = B> + for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])>,
+            P: BufMut + for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])>,
         {
             let mut inner = self.0.lock().unwrap();
             while inner.try_load_data(packet) {}
