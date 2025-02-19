@@ -2,6 +2,7 @@ pub mod events;
 pub mod handshake;
 pub mod path;
 pub mod space;
+pub mod state;
 pub mod termination;
 pub mod tls;
 pub mod tx;
@@ -62,6 +63,7 @@ use qrecovery::{
 #[cfg(feature = "unreliable")]
 use qunreliable::{DatagramReader, DatagramWriter};
 use space::Spaces;
+use state::ConnState;
 use termination::Termination;
 use tls::ArcTlsSession;
 use tokio::{io::AsyncWrite, sync::Notify};
@@ -174,6 +176,7 @@ pub struct Components {
     defer_idle_timeout: HeartbeatConfig,
     send_notify: Arc<Notify>,
     event_broker: ArcEventBroker,
+    state: ConnState,
 }
 
 impl Components {
@@ -278,10 +281,9 @@ impl Connection {
 
     #[tracing::instrument(level = "info", skip(self))]
     pub fn enter_draining(&self, ccf: ConnectionCloseFrame) {
-        let error = ccf.into();
         let mut conn = self.0.write().unwrap();
         match conn.as_mut() {
-            Ok(core_conn) => *conn = Err(core_conn.clone().enter_draining(error)),
+            Ok(core_conn) => *conn = Err(core_conn.clone().enter_draining(ccf)),
             Err(termination) => termination.enter_draining(),
         }
     }

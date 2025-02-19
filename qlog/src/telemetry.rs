@@ -56,6 +56,10 @@ impl Span {
     pub fn load<T: DeserializeOwned>(&self, name: &'static str) -> T {
         serde_json::from_value(self.fields[name].clone()).unwrap()
     }
+
+    pub fn try_load<T: DeserializeOwned>(&self, name: &'static str) -> Option<T> {
+        serde_json::from_value(self.fields.get(name)?.clone()).ok()
+    }
 }
 
 impl PartialEq for Span {
@@ -136,6 +140,18 @@ pub mod macro_support {
     use serde::Serialize;
 
     use super::*;
+    use crate::EventBuilder;
+
+    pub fn modify_event_builder_costom_fields(
+        builder: &mut EventBuilder,
+        f: impl FnOnce(&mut HashMap<String, Value>),
+    ) {
+        if builder.custom_fields.is_none() {
+            builder.custom_fields = Some(HashMap::new());
+        }
+        let custom_fields = builder.custom_fields.as_mut().unwrap();
+        f(custom_fields);
+    }
 
     pub fn current_span_exporter() -> Arc<dyn ExportEvent> {
         current_span::CURRENT_SPAN.with(|span| span.borrow().exporter.clone())
@@ -220,11 +236,9 @@ macro_rules! event {
     };
     (@field $event_builder:expr, $name:ident = $value:expr $(, $($tt:tt)* )?) => {
         let __value = $crate::telemetry::macro_support::to_value($value);
-        if $event_builder.custom_fields.is_none() {
-            $event_builder.custom_fields = Some(::std::collections::HashMap::new());
-        }
-        let __custom_fields = $event_builder.custom_fields.as_mut().unwrap();
-        __custom_fields.insert(stringify!($name).to_owned(), __value);
+        $crate::telemetry::macro_support::modify_event_builder_costom_fields(&mut $event_builder, |__custom_fields| {
+            __custom_fields.insert(stringify!($name).to_owned(), __value);
+        });
         $crate::event!( @field $event_builder $(, $($tt)* )? );
     };
     (@field $event_builder:expr $(,)? ) => {};

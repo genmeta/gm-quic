@@ -1,6 +1,8 @@
-use std::{net::SocketAddr, ops::Deref};
+use std::{fmt::Display, net::SocketAddr, ops::Deref};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Endpoint {
     Direct {
         addr: SocketAddr,
@@ -9,6 +11,15 @@ pub enum Endpoint {
         agent: SocketAddr,
         inner: SocketAddr,
     },
+}
+
+impl Display for Endpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Endpoint::Direct { addr } => write!(f, "{}", addr),
+            Endpoint::Relay { agent, inner } => write!(f, "{} <-> {}", agent, inner),
+        }
+    }
 }
 
 impl Deref for Endpoint {
@@ -22,10 +33,16 @@ impl Deref for Endpoint {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Pathway {
     local: Endpoint,
     remote: Endpoint,
+}
+
+impl Display for Pathway {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({}) -> ({}", self.local, self.remote)
+    }
 }
 
 impl Pathway {
@@ -53,7 +70,7 @@ impl Pathway {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Socket {
     src: SocketAddr,
     dst: SocketAddr,
