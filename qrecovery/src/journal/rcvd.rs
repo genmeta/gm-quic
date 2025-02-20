@@ -9,6 +9,7 @@ use qbase::{
     util::IndexDeque,
     varint::{VarInt, VARINT_MAX},
 };
+use qlog::quic::transport::PacketDroppedTrigger;
 use thiserror::Error;
 
 /// Packet有收到/没收到2种状态，状态也有有效/失活2种状态，失活的可以滑走
@@ -49,6 +50,17 @@ pub enum InvalidPacketNumber {
     TooLarge,
     #[error("packet with this number has been received")]
     HasRcvd,
+}
+
+impl From<InvalidPacketNumber> for PacketDroppedTrigger {
+    fn from(value: InvalidPacketNumber) -> Self {
+        match value {
+            InvalidPacketNumber::TooOld | InvalidPacketNumber::TooLarge => {
+                PacketDroppedTrigger::Genera
+            }
+            InvalidPacketNumber::HasRcvd => PacketDroppedTrigger::Duplicate,
+        }
+    }
 }
 
 /// 纯碎的一个收包记录，主要用于：

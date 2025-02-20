@@ -12,16 +12,17 @@ categories.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-futures = { workspace = true }
-tokio = { workspace = true, features = ["io-util"] }
-qbase = { workspace = true }
-rustls = { workspace = true }
 bytes = { workspace = true }
-thiserror = { workspace = true }
 deref-derive = { workspace = true }
-rand = { workspace = true }
-tracing = { workspace = true }
 enum_dispatch = { workspace = true }
+futures = { workspace = true }
+qbase = { workspace = true }
+qlog = { workspace = true }
+rand = { workspace = true }
+rustls = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

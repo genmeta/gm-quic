@@ -24,7 +24,10 @@ use qbase::{
 };
 use qcongestion::{CongestionControl, TrackPackets};
 use qinterface::path::{Pathway, Socket};
-use qlog::quic::{transport::PacketSent, QuicFrames};
+use qlog::quic::{
+    transport::{PacketDropped, PacketDroppedTrigger, PacketSent},
+    PacketHeader, QuicFrames,
+};
 use qrecovery::{
     crypto::CryptoStream,
     journal::{ArcRcvdJournal, InitialJournal},
@@ -80,23 +83,75 @@ impl InitialSpace {
         &self,
         (header, mut payload, payload_offset): InitialPacket,
     ) -> Option<Result<DecryptedInitialPacket, Error>> {
-        let keys = self.keys.get_remote_keys().await?;
+        let keys = match self.keys.get_remote_keys().await {
+            Some(keys) => keys,
+            None => {
+                qlog::event!(PacketDropped {
+                    header: PacketHeader { initial: &header },
+                    raw: payload.freeze(),
+                    trigger: PacketDroppedTrigger::KeyUnavailable,
+                });
+                return None;
+            }
+        };
         let (hpk, pk) = (keys.remote.header.as_ref(), keys.remote.packet.as_ref());
 
         let undecoded_pn =
-            match remove_protection_of_long_packet(hpk, payload.as_mut(), payload_offset)
-                .transpose()?
-            {
-                Ok(undecoded_pn) => undecoded_pn,
-                Err(invalid_reversed_bits) => return Some(Err(invalid_reversed_bits.into())),
+            match remove_protection_of_long_packet(hpk, payload.as_mut(), payload_offset) {
+                Ok(undecoded) => match undecoded {
+                    Some(undecoded) => undecoded,
+                    None => {
+                        qlog::event!(PacketDropped {
+                            header: PacketHeader { initial: &header },
+                            raw: payload.freeze(),
+                            // TOOD: details here... is it important?
+                            trigger: PacketDroppedTrigger::DecryptionFailure,
+                        });
+                        return None;
+                    }
+                },
+                Err(reverse_bits) => {
+                    qlog::event!(PacketDropped {
+                        header: PacketHeader { initial: &header },
+                        raw: payload.freeze(),
+                        details: { [("reason".to_owned(), reverse_bits.to_string().into(),)] },
+                        trigger: PacketDroppedTrigger::DecryptionFailure,
+                    });
+                    return Some(Err(reverse_bits.into()));
+                }
             };
+
         let rcvd_journal = self.journal.of_rcvd_packets();
-        let decoded_pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
+        let decoded_pn = match rcvd_journal.decode_pn(undecoded_pn) {
+            Ok(pn) => pn,
+            Err(invalid_pn) => {
+                qlog::event!(PacketDropped {
+                    header: PacketHeader { initial: &header },
+                    raw: payload.freeze(),
+                    details: { [("reason".to_owned(), invalid_pn.to_string().into()),] },
+                    trigger: invalid_pn,
+                });
+                return None;
+            }
+        };
         let body_offset = payload_offset + undecoded_pn.size();
-        let body_length = decrypt_packet(pk, decoded_pn, payload.as_mut(), body_offset).ok()?;
+        let body_length = match decrypt_packet(pk, decoded_pn, payload.as_mut(), body_offset) {
+            Ok(body_length) => body_length,
+            Err(error) => {
+                qlog::event!(PacketDropped {
+                    header: PacketHeader {
+                        initial: &header,
+                        packet_number: decoded_pn
+                    },
+                    raw: payload.freeze(),
+                    details: { [("reason".to_owned(), error.to_string().into()),] },
+                    trigger: error
+                });
+                return None;
+            }
+        };
 
         let decrypted = payload.freeze();
-
         Some(Ok(DecryptedInitialPacket {
             header,
             decoded_pn,
@@ -189,6 +244,12 @@ pub fn spawn_deliver_and_parse(
                     .initial_scid_from_peer()
                     .is_some_and(|scid| scid != *packet.0.scid())
                 {
+                    qlog::event!(PacketDropped {
+                        header: PacketHeader { initial: &packet.0 },
+                        raw: packet.1.freeze(),
+                        details: { [("reason".to_owned(), "different scid".into(),)] },
+                        trigger: PacketDroppedTrigger::Rejected,
+                    });
                     continue;
                 }
                 let dispatch_frame = |frame: Frame, path: &Path| match frame {
@@ -206,7 +267,17 @@ pub fn spawn_deliver_and_parse(
                     Some(Ok(packet)) => {
                         let path = match components.get_or_create_path(socket, pathway, true) {
                             Some(path) => path,
-                            None => return,
+                            None => {
+                                qlog::event!(PacketDropped {
+                                    header: packet.qlog_header(),
+                                    raw: packet.raw_info(),
+                                    details: {
+                                        [("reason".to_owned(), "connection closed".into())]
+                                    },
+                                    trigger: PacketDroppedTrigger::Genera,
+                                });
+                                return;
+                            }
                         };
                         path.on_rcvd(packet_size);
 

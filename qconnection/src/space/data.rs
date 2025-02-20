@@ -30,7 +30,10 @@ use qbase::{
 };
 use qcongestion::{CongestionControl, TrackPackets};
 use qinterface::path::{Pathway, Socket};
-use qlog::quic::{transport::PacketReceived, QuicFrames};
+use qlog::quic::{
+    transport::{PacketDropped, PacketDroppedTrigger, PacketReceived},
+    PacketHeader, QuicFrames,
+};
 use qrecovery::{
     crypto::CryptoStream,
     journal::{ArcRcvdJournal, DataJournal},
@@ -94,28 +97,80 @@ impl DataSpace {
         &self,
         (header, mut payload, payload_offset): ZeroRttPacket,
     ) -> Option<Result<DecryptedZeroRttPacket, Error>> {
-        let keys = self.zero_rtt_keys.get_remote_keys().await?;
+        let keys = match self.zero_rtt_keys.get_remote_keys().await {
+            Some(keys) => keys,
+            None => {
+                qlog::event!(PacketDropped {
+                    header: PacketHeader { zero_rtt: &header },
+                    raw: payload.freeze(),
+                    trigger: PacketDroppedTrigger::KeyUnavailable,
+                });
+                return None;
+            }
+        };
         let (hpk, pk) = (keys.remote.header.as_ref(), keys.remote.packet.as_ref());
 
         let undecoded_pn =
-            match remove_protection_of_long_packet(hpk, payload.as_mut(), payload_offset)
-                .transpose()?
-            {
-                Ok(undecoded_pn) => undecoded_pn,
-                Err(invalid_reversed_bits) => return Some(Err(invalid_reversed_bits.into())),
+            match remove_protection_of_long_packet(hpk, payload.as_mut(), payload_offset) {
+                Ok(undecoded) => match undecoded {
+                    Some(undecoded) => undecoded,
+                    None => {
+                        qlog::event!(PacketDropped {
+                            header: PacketHeader { zero_rtt: &header },
+                            raw: payload.freeze(),
+                            trigger: PacketDroppedTrigger::DecryptionFailure,
+                        });
+                        return None;
+                    }
+                },
+                Err(reverse_bits) => {
+                    qlog::event!(PacketDropped {
+                        header: PacketHeader { zero_rtt: &header },
+                        raw: payload.freeze(),
+                        details: { [("reason".to_owned(), reverse_bits.to_string().into(),)] },
+                        trigger: PacketDroppedTrigger::DecryptionFailure,
+                    });
+                    return Some(Err(reverse_bits.into()));
+                }
             };
-        let rcvd_journal = self.journal.of_rcvd_packets();
-        let decoded_pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
-        let body_offset = payload_offset + undecoded_pn.size();
-        let body_length = decrypt_packet(pk, decoded_pn, payload.as_mut(), body_offset).ok()?;
-        let decrypted = payload.freeze();
 
+        let rcvd_journal = self.journal.of_rcvd_packets();
+        let decoded_pn = match rcvd_journal.decode_pn(undecoded_pn) {
+            Ok(pn) => pn,
+            Err(invalid_pn) => {
+                qlog::event!(PacketDropped {
+                    header: PacketHeader { zero_rtt: &header },
+                    raw: payload.freeze(),
+                    details: { [("reason".to_owned(), invalid_pn.to_string().into()),] },
+                    trigger: invalid_pn,
+                });
+                return None;
+            }
+        };
+        let body_offset = payload_offset + undecoded_pn.size();
+        let body_length = match decrypt_packet(pk, decoded_pn, payload.as_mut(), body_offset) {
+            Ok(body_length) => body_length,
+            Err(error) => {
+                qlog::event!(PacketDropped {
+                    header: PacketHeader {
+                        zero_rtt: &header,
+                        packet_number: decoded_pn
+                    },
+                    raw: payload.freeze(),
+                    details: { [("reason".to_owned(), error.to_string().into()),] },
+                    trigger: error
+                });
+                return None;
+            }
+        };
+
+        let decrypted = payload.freeze();
         Some(Ok(DecryptedPacket {
             header,
             decoded_pn,
             undecoded_pn,
-            payload_offset,
             decrypted,
+            payload_offset,
             body_length,
         }))
     }
@@ -124,21 +179,73 @@ impl DataSpace {
         &self,
         (header, mut payload, payload_offset): OneRttPacket,
     ) -> Option<Result<DecryptedOneRttPacket, Error>> {
-        let (hpk, pk) = self.one_rtt_keys.get_remote_keys().await?;
+        let (hpk, pk) = match self.one_rtt_keys.get_remote_keys().await {
+            Some((hpk, pk)) => (hpk, pk),
+            None => {
+                qlog::event!(PacketDropped {
+                    header: PacketHeader { one_rtt: &header },
+                    raw: payload.freeze(),
+                    trigger: PacketDroppedTrigger::KeyUnavailable,
+                });
+                return None;
+            }
+        };
         let (undecoded_pn, key_phase) =
             match remove_protection_of_short_packet(hpk.as_ref(), payload.as_mut(), payload_offset)
-                .transpose()?
             {
-                Ok(ok) => ok,
-                Err(invalid_reversed_bits) => return Some(Err(invalid_reversed_bits.into())),
+                Ok(pair) => match pair {
+                    Some((undecoded_pn, key_phase)) => (undecoded_pn, key_phase),
+                    None => {
+                        qlog::event!(PacketDropped {
+                            header: PacketHeader { one_rtt: &header },
+                            raw: payload.freeze(),
+                            trigger: PacketDroppedTrigger::DecryptionFailure,
+                        });
+                        return None;
+                    }
+                },
+                Err(reverse_bits) => {
+                    qlog::event!(PacketDropped {
+                        header: PacketHeader { one_rtt: &header },
+                        raw: payload.freeze(),
+                        details: { [("reason".to_owned(), reverse_bits.to_string().into(),)] },
+                        trigger: PacketDroppedTrigger::DecryptionFailure,
+                    });
+                    return Some(Err(reverse_bits.into()));
+                }
             };
 
         let rcvd_journal = self.journal.of_rcvd_packets();
-        let decoded_pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
+        let decoded_pn = match rcvd_journal.decode_pn(undecoded_pn) {
+            Ok(pn) => pn,
+            Err(invalid_pn) => {
+                qlog::event!(PacketDropped {
+                    header: PacketHeader { one_rtt: &header },
+                    raw: payload.freeze(),
+                    details: { [("reason".to_owned(), invalid_pn.to_string().into()),] },
+                    trigger: invalid_pn,
+                });
+                return None;
+            }
+        };
         let pk = pk.lock_guard().get_remote(key_phase, decoded_pn);
         let body_offset = payload_offset + undecoded_pn.size();
         let body_length =
-            decrypt_packet(pk.as_ref(), decoded_pn, payload.as_mut(), body_offset).ok()?;
+            match decrypt_packet(pk.as_ref(), decoded_pn, payload.as_mut(), body_offset) {
+                Ok(body_length) => body_length,
+                Err(error) => {
+                    qlog::event!(PacketDropped {
+                        header: PacketHeader {
+                            one_rtt: &header,
+                            packet_number: decoded_pn
+                        },
+                        raw: payload.freeze(),
+                        details: { [("reason".to_owned(), error.to_string().into()),] },
+                        trigger: error
+                    });
+                    return None;
+                }
+            };
         let decrypted = payload.freeze();
 
         Some(Ok(DecryptedPacket {
@@ -414,7 +521,17 @@ pub fn spawn_deliver_and_parse(
                         Some(Ok(packet)) => {
                             let path = match components.get_or_create_path(socket, pathway, true) {
                                 Some(path) => path,
-                                None => return,
+                                None => {
+                                    qlog::event!(PacketDropped {
+                                        header: packet.qlog_header(),
+                                        raw: packet.raw_info(),
+                                        details: {
+                                            [("reason".to_owned(), "connection closed".into())]
+                                        },
+                                        trigger: PacketDroppedTrigger::Genera,
+                                    });
+                                    return;
+                                }
                             };
                             path.on_rcvd(packet_size);
 
@@ -464,7 +581,17 @@ pub fn spawn_deliver_and_parse(
                         Some(Ok(packet)) => {
                             let path = match components.get_or_create_path(socket, pathway, true) {
                                 Some(path) => path,
-                                None => return,
+                                None => {
+                                    qlog::event!(PacketDropped {
+                                        header: packet.qlog_header(),
+                                        raw: packet.raw_info(),
+                                        details: {
+                                            [("reason".to_owned(), "connection closed".into())]
+                                        },
+                                        trigger: PacketDroppedTrigger::Genera,
+                                    });
+                                    return;
+                                }
                             };
                             path.on_rcvd(packet_size);
 
