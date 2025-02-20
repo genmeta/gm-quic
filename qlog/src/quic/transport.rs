@@ -436,6 +436,22 @@ pub enum PacketDroppedTrigger {
     Genera,
 }
 
+impl From<qbase::packet::error::Error> for PacketDroppedTrigger {
+    fn from(error: qbase::packet::error::Error) -> Self {
+        match error {
+            qbase::packet::error::Error::UnsupportedVersion(_) => Self::Unsupported,
+            qbase::packet::error::Error::InvalidFixedBit
+            | qbase::packet::error::Error::InvalidReservedBits(_, _)
+            | qbase::packet::error::Error::IncompleteType(_)
+            | qbase::packet::error::Error::IncompleteHeader(_, _)
+            | qbase::packet::error::Error::IncompletePacket(_, _)
+            | qbase::packet::error::Error::UnderSampling(_) => Self::Invalid,
+            qbase::packet::error::Error::RemoveProtectionFailure
+            | qbase::packet::error::Error::DecryptPacketFailure => Self::DecryptionFailure,
+        }
+    }
+}
+
 /// The packet_buffered event is emitted when a packet is buffered
 /// because it cannot be processed yet.  Typically, this is because the
 /// packet cannot be parsed yet, and thus only the full packet contents

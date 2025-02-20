@@ -528,6 +528,16 @@ pub struct RawInfo {
     data: Option<HexString>,
 }
 
+impl From<Bytes> for RawInfo {
+    fn from(value: Bytes) -> Self {
+        Self {
+            length: Some(value.len() as u64),
+            payload_length: None,
+            data: Some(HexString::from(value)),
+        }
+    }
+}
+
 #[macro_export(local_inner_macros)]
 macro_rules! gen_builder_method {
     ( $($builder:ty => $event:ty;)* ) => {
