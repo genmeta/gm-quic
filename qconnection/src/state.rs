@@ -3,9 +3,17 @@ use std::sync::{
     Arc,
 };
 
-use qlog::quic::connectivity::{
-    BaseConnectionStates, ConnectionState as QlogConnectionState, GranularConnectionStates,
+use qinterface::path::Socket;
+use qlog::quic::{
+    connectivity::{
+        BaseConnectionStates, ConnectionStarted, ConnectionState as QlogConnectionState,
+        ConnectionStateUpdated, GranularConnectionStates,
+    },
+    transport::ParametersSet,
+    Owner,
 };
+
+use crate::Components;
 
 #[derive(Default, Clone)]
 pub struct ConnState(Arc<AtomicU8>);
@@ -15,11 +23,37 @@ impl ConnState {
         Self(Arc::new(AtomicU8::new(0)))
     }
 
-    pub fn try_entry_attempted(&self) -> bool {
+    /// Attempt to set the connection state from None to `BaseConnectionStates::Attempted`.
+    ///
+    /// Returns true if the state was successfully set to `BaseConnectionStates::Attempted`.
+    ///
+    /// Called when creating paths. If it returns true, it means that the path is the first path to connect.
+    pub fn try_entry_attempted(&self, components: &Components, socket: Socket) -> bool {
         let attempted = encode(BaseConnectionStates::Attempted.into());
-        self.0
+        let success = self
+            .0
             .compare_exchange(0, attempted, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+            .is_ok();
+
+        if success {
+            qlog::event!(qlog::build!(ConnectionStateUpdated {
+                new: BaseConnectionStates::Attempted,
+            }));
+            qlog::event!(qlog::build!(ConnectionStarted {
+                socket: { (socket.src(), socket.dst()) } // cid不在这一层，未知
+            }));
+            match components.handshake.role() {
+                qbase::sid::Role::Client => qlog::event!(qlog::build!(ParametersSet {
+                    owner: Owner::Local,
+                    client_parameters: components.parameters.client().expect("unreachable"),
+                })),
+                qbase::sid::Role::Server => qlog::event!(qlog::build!(ParametersSet {
+                    owner: Owner::Local,
+                    server_parameters: components.parameters.server().expect("unreachable"),
+                })),
+            }
+        }
+        success
     }
 
     pub fn update(&self, state: QlogConnectionState) -> Option<QlogConnectionState> {

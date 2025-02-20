@@ -50,7 +50,7 @@ impl NewPacketInfo {
         self.frames.push(frame);
     }
 
-    pub fn complete_and_emit_sent(mut self, packet: &PacketWriter) {
+    pub fn emit_sent_event(mut self, packet: &PacketWriter) {
         // TODO: 如果以后涉及到组装VN，Retry，这里的逻辑得改
         if !packet.is_short_header() {
             self.header
@@ -158,7 +158,7 @@ impl MiddleAssembledPacket {
             });
         }
 
-        self.info.complete_and_emit_sent(&writer);
+        self.info.emit_sent_event(&writer);
         writer.encrypt_and_protect()
     }
 
@@ -174,7 +174,7 @@ impl MiddleAssembledPacket {
             });
         }
 
-        self.info.complete_and_emit_sent(&writer);
+        self.info.emit_sent_event(&writer);
         writer.encrypt_and_protect()
     }
 }
@@ -208,6 +208,7 @@ unsafe impl<F> BufMut for PacketMemory<'_, '_, F> {
 
 impl<F> PacketMemory<'_, '_, F> {
     pub fn dump_ack_frame(&mut self, frame: AckFrame) {
+        self.info.record_frame((&frame).into());
         self.writer.dump_frame(frame);
         self.guard.record_trivial();
     }
@@ -243,7 +244,7 @@ impl<F> PacketMemory<'_, '_, F> {
             self.pad(20 - packet_len);
         }
 
-        self.info.complete_and_emit_sent(&self.writer);
+        self.info.emit_sent_event(&self.writer);
         Some(self.writer.encrypt_and_protect())
     }
 }
