@@ -441,14 +441,14 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
         use qbase::frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame};
         if let Ok(param::Pair { remote, .. }) = params.clone().await {
             match role {
-                sid::Role::Client => qlog::event!(qlog::build!(ParametersSet {
+                sid::Role::Client => qlog::event!(ParametersSet {
                     owner: Owner::Remote,
                     server_parameters: params.server().expect("unreachable"),
-                })),
-                sid::Role::Server => qlog::event!(qlog::build!(ParametersSet {
+                }),
+                sid::Role::Server => qlog::event!(ParametersSet {
                     owner: Owner::Local,
                     client_parameters: params.client().expect("unreachable"),
-                })),
+                }),
             }
 
             // pretend to receive the MAX_STREAM frames
@@ -480,11 +480,11 @@ impl Components {
             dashmap::Entry::Occupied(occupied_entry) => Some(occupied_entry.get().deref().clone()),
             dashmap::Entry::Vacant(vacant_entry) => {
                 let do_validate = !self.state.try_entry_attempted(self, socket);
-                qlog::event!(qlog::build!(PathAssigned {
+                qlog::event!(PathAssigned {
                     path_id: pathway.to_string(),
                     path_local: socket.src(),
                     path_remote: socket.dst(),
-                }));
+                });
                 let max_ack_delay = self.parameters.local()?.max_ack_delay().into_inner();
 
                 let cc = ArcCC::new(
@@ -544,14 +544,14 @@ impl Components {
     // 对于server，第一条路径也通过add_path添加
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn enter_closing(self, ccf: ConnectionCloseFrame) -> Termination {
-        qlog::event!(qlog::build!(ConnectionClosed {
+        qlog::event!(ConnectionClosed {
             owner: Owner::Local,
             ccf: &ccf // TODO: trigger
-        }));
-        qlog::event!(qlog::build!(ConnectionStateUpdated {
+        });
+        qlog::event!(ConnectionStateUpdated {
             ?old: self.state.load(),
             new: GranularConnectionStates::Closing,
-        }));
+        });
 
         let error = ccf.clone().into();
         self.spaces.data().on_conn_error(&error);
@@ -573,10 +573,10 @@ impl Components {
                 tokio::time::sleep(pto_duration * 3).await;
                 local_cids.clear();
                 event_broker.emit(Event::Terminated);
-                qlog::event!(qlog::build!(ConnectionStateUpdated {
+                qlog::event!(ConnectionStateUpdated {
                     old: GranularConnectionStates::Closing,
                     new: GranularConnectionStates::Closed,
-                }));
+                });
             }
         });
 
@@ -588,14 +588,14 @@ impl Components {
 
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn enter_draining(self, ccf: ConnectionCloseFrame) -> Termination {
-        qlog::event!(qlog::build!(ConnectionClosed {
+        qlog::event!(ConnectionClosed {
             owner: Owner::Local,
             ccf: &ccf // TODO: trigger
-        }));
-        qlog::event!(qlog::build!(ConnectionStateUpdated {
+        });
+        qlog::event!(ConnectionStateUpdated {
             ?old: self.state.load(),
             new: GranularConnectionStates::Draining,
-        }));
+        });
 
         let error = ccf.into();
         self.spaces.data().on_conn_error(&error);
@@ -616,10 +616,10 @@ impl Components {
                 tokio::time::sleep(pto_duration * 3).await;
                 local_cids.clear();
                 event_broker.emit(Event::Terminated);
-                qlog::event!(qlog::build!(ConnectionStateUpdated {
+                qlog::event!(ConnectionStateUpdated {
                     old: GranularConnectionStates::Draining,
                     new: GranularConnectionStates::Closed,
-                }));
+                });
             }
         });
 

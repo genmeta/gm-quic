@@ -8,21 +8,17 @@ use bytes::Bytes;
 use qbase::{
     error::Error,
     frame::{
-        AckFrame, BeFrame, CryptoFrame, Frame, ReceiveFrame, ReliableFrame, StreamCtlFrame,
-        StreamFrame,
+        AckFrame, BeFrame, CryptoFrame, ReceiveFrame, ReliableFrame, StreamCtlFrame, StreamFrame,
     },
-    packet::{
-        header::{GetDcid, GetScid},
-        number::PacketNumber,
-    },
+    packet::number::PacketNumber,
 };
+use qlog::quic::PacketHeader;
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcSentJournal, Journal},
     reliable::GuaranteedFrame,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
-use tracing::{trace_span, Instrument};
 
 use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
@@ -114,131 +110,62 @@ pub struct DecryptedPacket<H> {
 }
 
 impl<H> DecryptedPacket<H> {
-    pub fn payload(&self) -> Bytes {
+    pub fn payload_length(&self) -> usize {
+        self.undecoded_pn.size() + self.body_length
+    }
+
+    pub fn body(&self) -> Bytes {
         let packet_offset = self.payload_offset + self.undecoded_pn.size();
         self.decrypted
             .slice(packet_offset..packet_offset + self.body_length)
     }
-}
 
-impl From<&initial::DecryptedInitialPacket> for qlog::quic::PacketHeader {
-    fn from(packet: &initial::DecryptedInitialPacket) -> Self {
-        use qlog::quic::*;
-        qlog::build!(PacketHeader {
-            packet_type: PacketType::Initial,
-            packet_number: packet.decoded_pn,
-            token: { Token::try_from(&packet.header).expect("unreachable") },
-            length: { packet.payload().len() + packet.undecoded_pn.size() } as u16,
-            scil: packet.header.scid().len() as u8,
-            scid: { *packet.header.scid() },
-            dcil: packet.header.dcid().len() as u8,
-            dcid: { *packet.header.dcid() },
+    pub fn raw_info(&self) -> qlog::RawInfo {
+        qlog::build!(qlog::RawInfo {
+            length: self.decrypted.len() as u64,
+            payload_length: self.payload_length() as u64,
+            data: self.decrypted.clone(),
         })
     }
 }
 
-impl From<&handshake::DecryptedHandshakePacket> for qlog::quic::PacketHeader {
-    fn from(value: &handshake::DecryptedHandshakePacket) -> Self {
-        use qlog::quic::*;
+impl initial::DecryptedInitialPacket {
+    pub fn qlog_header(&self) -> PacketHeader {
         qlog::build!(PacketHeader {
-            packet_type: PacketType::Handshake,
-            packet_number: value.decoded_pn,
-            length: { value.payload().len() + value.undecoded_pn.size() } as u16,
-            scil: value.header.scid().len() as u8,
-            scid: { *value.header.scid() },
-            dcil: value.header.dcid().len() as u8,
-            dcid: { *value.header.dcid() },
+            initial: &self.header,
+            packet_number: self.decoded_pn,
+            length: self.payload_length() as u16,
         })
     }
 }
 
-impl From<&data::DecryptedZeroRttPacket> for qlog::quic::PacketHeader {
-    fn from(value: &data::DecryptedZeroRttPacket) -> Self {
-        use qlog::quic::*;
+impl handshake::DecryptedHandshakePacket {
+    pub fn qlog_header(&self) -> PacketHeader {
         qlog::build!(PacketHeader {
-            packet_type: PacketType::ZeroRTT,
-            packet_number: value.decoded_pn,
-            length: { value.payload().len() + value.undecoded_pn.size() } as u16,
-            scil: value.header.scid().len() as u8,
-            scid: { *value.header.scid() },
-            dcil: value.header.dcid().len() as u8,
-            dcid: { *value.header.dcid() },
+            handshake: &self.header,
+            packet_number: self.decoded_pn,
+            length: self.payload_length() as u16,
         })
     }
 }
 
-impl From<&data::DecryptedRttPacket> for qlog::quic::PacketHeader {
-    fn from(value: &data::DecryptedRttPacket) -> Self {
-        use qlog::quic::*;
+impl data::DecryptedZeroRttPacket {
+    pub fn qlog_header(&self) -> PacketHeader {
         qlog::build!(PacketHeader {
-            packet_type: PacketType::OneRTT,
-            packet_number: value.decoded_pn,
-            length: { value.payload().len() + value.undecoded_pn.size() } as u16,
-            dcil: value.header.dcid().len() as u8,
-            dcid: { *value.header.dcid() },
+            zero_rtt: &self.header,
+            packet_number: self.decoded_pn,
+            length: self.payload_length() as u16,
         })
     }
 }
 
-pub struct PacketMonitor {
-    header: qlog::quic::PacketHeader,
-    frames: Vec<qlog::quic::QuicFrame>,
-    raw: qlog::RawInfo,
-}
-
-impl PacketMonitor {
-    pub fn new<H>(packet: &DecryptedPacket<H>) -> Self
-    where
-        qlog::quic::PacketHeader: for<'a> From<&'a DecryptedPacket<H>>,
-    {
-        Self {
-            header: packet.into(),
-            frames: Vec::new(),
-            raw: qlog::build!(qlog::RawInfo {
-                length: packet.decrypted.len() as u64,
-                payload_length: packet.payload().len() as u64,
-                data: packet.decrypted.clone(),
-            }),
-        }
-    }
-
-    pub fn record_frame(&mut self, frame: &Frame) {
-        use qlog::quic::*;
-        if let Some(last) = self.frames.last_mut() {
-            match last {
-                QuicFrame::Padding {
-                    length,
-                    payload_length,
-                } => {
-                    *last = QuicFrame::Padding {
-                        length: length.map(|length| length + 1),
-                        payload_length: *payload_length + 1,
-                    };
-                    return;
-                }
-                QuicFrame::Ping {
-                    length,
-                    payload_length,
-                } => {
-                    *last = QuicFrame::Ping {
-                        length: length.map(|length| length + 1),
-                        payload_length: payload_length.map(|length| length + 1),
-                    };
-                    return;
-                }
-                _ => {}
-            }
-        }
-        self.frames.push(frame.into());
-    }
-
-    pub fn emit_received(self) {
-        use qlog::quic::*;
-        qlog::event!(qlog::build!(transport::PacketReceived {
-            header: self.header,
-            frames: self.frames,
-            raw: self.raw
-        }))
+impl data::DecryptedOneRttPacket {
+    pub fn qlog_header(&self) -> PacketHeader {
+        qlog::build!(PacketHeader {
+            one_rtt: &self.header,
+            packet_number: self.decoded_pn,
+            length: self.payload_length() as u16,
+        })
     }
 }
 
@@ -247,19 +174,14 @@ fn pipe<F: Send + Debug + 'static>(
     destination: impl ReceiveFrame<F> + Send + 'static,
     broker: ArcEventBroker,
 ) {
-    tokio::spawn(
-        async move {
-            while let Some(f) = source.recv().await {
-                tracing::trace!(frame = ?f, "received frame");
-                if let Err(e) = destination.recv_frame(&f) {
-                    broker.emit(Event::Failed(e));
-                    break;
-                }
+    tokio::spawn(async move {
+        while let Some(f) = source.recv().await {
+            if let Err(e) = destination.recv_frame(&f) {
+                broker.emit(Event::Failed(e));
+                break;
             }
-            tracing::trace!(frame_type = core::any::type_name::<F>(), "pipeline broken");
         }
-        .instrument(trace_span!("frame_pipeline",)),
-    );
+    });
 }
 
 /// When receiving a [`StreamFrame`] or [`StreamCtlFrame`],

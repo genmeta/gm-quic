@@ -3,10 +3,17 @@ use std::{collections::HashMap, fmt::Display, net::SocketAddr, time::Duration};
 use bytes::Bytes;
 use derive_builder::Builder;
 use derive_more::{From, Into, LowerHex};
-use qbase::frame::{
-    AckFrame, AppCloseFrame, BeFrame, ConnectionCloseFrame, CryptoFrame, DatagramFrame, Frame,
-    MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame, ReliableFrame,
-    StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
+use qbase::{
+    frame::{
+        AckFrame, AppCloseFrame, BeFrame, ConnectionCloseFrame, CryptoFrame, DatagramFrame, Frame,
+        MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame, ReliableFrame,
+        StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
+    },
+    packet::header::{
+        long::{HandshakeHeader, InitialHeader, ZeroRttHeader},
+        short::OneRttHeader,
+        GetDcid, GetScid,
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -243,6 +250,51 @@ pub struct PacketHeader {
     scid: Option<ConnectionID>,
     #[builder(default)]
     dcid: Option<ConnectionID>,
+}
+
+impl PacketHeaderBuilder {
+    /// Helper method used to set the fields of the initial header,
+    ///
+    /// Since the header defined by qbase is not complete enough, there are still many fields that need to be set manually.
+    pub fn initial(&mut self, header: &InitialHeader) -> &mut Self {
+        self.packet_type(PacketType::Initial)
+            .token(Token::try_from(header).unwrap())
+            .scil(header.scid().len() as u8)
+            .scid(*header.scid())
+            .dcil(header.dcid().len() as u8)
+            .scid(*header.dcid())
+    }
+
+    /// Helper method used to set the fields of the handshake header,
+    ///
+    /// Since the header defined by qbase is not complete enough, there are still many fields that need to be set manually.
+    pub fn handshake(&mut self, header: &HandshakeHeader) -> &mut Self {
+        self.packet_type(PacketType::Handshake)
+            .scil(header.scid().len() as u8)
+            .scid(*header.scid())
+            .dcil(header.dcid().len() as u8)
+            .scid(*header.dcid())
+    }
+
+    /// Helper method used to set the fields of the 0rtt header,
+    ///
+    /// Since the header defined by qbase is not complete enough, there are still many fields that need to be set manually.
+    pub fn zero_rtt(&mut self, header: &ZeroRttHeader) -> &mut Self {
+        self.packet_type(PacketType::ZeroRTT)
+            .scil(header.scid().len() as u8)
+            .scid(*header.scid())
+            .dcil(header.dcid().len() as u8)
+            .scid(*header.dcid())
+    }
+
+    /// Helper method used to set the fields of the 1rtt header,
+    ///
+    /// Since the header defined by qbase is not complete enough, there are still many fields that need to be set manually.
+    pub fn one_rtt(&mut self, header: &OneRttHeader) -> &mut Self {
+        self.packet_type(PacketType::OneRTT)
+            .dcil(header.dcid().len() as u8)
+            .scid(*header.dcid())
+    }
 }
 
 // 8.9
@@ -752,6 +804,55 @@ impl From<&Frame> for QuicFrame {
             Frame::Crypto(frame, bytes) => (frame, bytes).into(),
             Frame::Datagram(frame, bytes) => (frame, bytes).into(),
         }
+    }
+}
+
+/// A collection of automatically and efficiently converting raw quic frames into qlog quic frames.
+#[derive(Default)]
+pub struct QuicFrames(Vec<QuicFrame>);
+
+impl QuicFrames {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl<'f> Extend<&'f Frame> for QuicFrames {
+    fn extend<T: IntoIterator<Item = &'f Frame>>(&mut self, iter: T) {
+        for frame in iter {
+            if let Some(last) = self.0.last_mut() {
+                match last {
+                    QuicFrame::Padding {
+                        length,
+                        payload_length,
+                    } => {
+                        *last = QuicFrame::Padding {
+                            length: length.map(|length| length + 1),
+                            payload_length: *payload_length + 1,
+                        };
+                        continue;
+                    }
+                    QuicFrame::Ping {
+                        length,
+                        payload_length,
+                    } => {
+                        *last = QuicFrame::Ping {
+                            length: length.map(|length| length + 1),
+                            payload_length: payload_length.map(|length| length + 1),
+                        };
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            self.0.push(frame.into());
+        }
+    }
+}
+
+impl From<QuicFrames> for Vec<QuicFrame> {
+    fn from(value: QuicFrames) -> Self {
+        value.0
     }
 }
 

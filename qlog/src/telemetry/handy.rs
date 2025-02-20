@@ -85,10 +85,10 @@ mod tests {
 
         let meaningless_field = 112233u64;
         crate::span!(Arc::new(exporter), meaningless_field).in_scope(|| {
-            crate::event!(crate::build!(ServerListening {
+            crate::event!(ServerListening {
                 ip_v4: "127.0.0.1".to_owned(),
                 port_v4: 443u16
-            }));
+            });
 
             tokio::spawn(
                 async move {
