@@ -154,6 +154,16 @@ pub enum ConnectionCode {
     Value(u32),
 }
 
+impl From<ConnectionCode> for super::ConnectionCloseErrorCode {
+    fn from(value: ConnectionCode) -> Self {
+        match value {
+            ConnectionCode::TransportError(err) => err.into(),
+            ConnectionCode::CryptoError(err) => err.into(),
+            ConnectionCode::Value(code) => (code as u64).into(),
+        }
+    }
+}
+
 impl From<&QuicCloseFrame> for ConnectionCode {
     fn from(value: &QuicCloseFrame) -> Self {
         use qbase::error::ErrorKind;

@@ -32,7 +32,7 @@ use rustls::quic::Keys;
 use tokio::sync::{mpsc, Notify};
 use tracing::{trace_span, Instrument};
 
-use super::{pipe, AckInitial, DecryptedPacket};
+use super::{pipe, AckInitial, DecryptedPacket, PacketMonitor};
 use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
     path::Path,
@@ -77,28 +77,32 @@ impl InitialSpace {
 
     pub async fn decrypt_packet(
         &self,
-        (header, mut payload, offset): InitialPacket,
+        (header, mut payload, payload_offset): InitialPacket,
     ) -> Option<Result<DecryptedInitialPacket, Error>> {
         let keys = self.keys.get_remote_keys().await?;
         let (hpk, pk) = (keys.remote.header.as_ref(), keys.remote.packet.as_ref());
 
         let undecoded_pn =
-            match remove_protection_of_long_packet(hpk, payload.as_mut(), offset).transpose()? {
+            match remove_protection_of_long_packet(hpk, payload.as_mut(), payload_offset)
+                .transpose()?
+            {
                 Ok(undecoded_pn) => undecoded_pn,
                 Err(invalid_reversed_bits) => return Some(Err(invalid_reversed_bits.into())),
             };
         let rcvd_journal = self.journal.of_rcvd_packets();
-        let pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
-        let body_offset = offset + undecoded_pn.size();
-        let pkt_len = decrypt_packet(pk, pn, payload.as_mut(), body_offset).ok()?;
+        let decoded_pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
+        let body_offset = payload_offset + undecoded_pn.size();
+        let body_length = decrypt_packet(pk, decoded_pn, payload.as_mut(), body_offset).ok()?;
 
-        let _header = payload.split_to(body_offset);
-        payload.truncate(pkt_len);
+        let decrypted = payload.freeze();
 
         Some(Ok(DecryptedInitialPacket {
             header,
-            pn,
-            payload: payload.freeze(),
+            decoded_pn,
+            undecoded_pn,
+            decrypted,
+            body_length,
+            payload_offset,
         }))
     }
 
@@ -199,28 +203,32 @@ pub fn spawn_deliver_and_parse(
                 let packet_size = packet.1.len();
                 match space.decrypt_packet(packet).await {
                     Some(Ok(packet)) => {
-                        tracing::trace!(
-                            pn = packet.pn,
-                            payload_size = packet.payload.len(),
-                            "decrypted packet"
-                        );
                         let path = match components.get_or_create_path(socket, pathway, true) {
                             Some(path) => path,
                             None => return,
                         };
+                        let mut monitor = PacketMonitor::new(&packet);
                         path.on_rcvd(packet_size);
-                        match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
+                        match FrameReader::new(packet.payload(), packet.header.get_type()).try_fold(
                             false,
                             |is_ack_packet, frame| {
                                 let (frame, is_ack_eliciting) = frame?;
+                                monitor.record_frame(&frame);
                                 dispatch_frame(frame, &path);
                                 Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                             },
                         ) {
                             Ok(is_ack_packet) => {
-                                space.journal.of_rcvd_packets().register_pn(packet.pn);
-                                path.cc()
-                                    .on_pkt_rcvd(Epoch::Initial, packet.pn, is_ack_packet);
+                                monitor.emit_received();
+                                space
+                                    .journal
+                                    .of_rcvd_packets()
+                                    .register_pn(packet.decoded_pn);
+                                path.cc().on_pkt_rcvd(
+                                    Epoch::Initial,
+                                    packet.decoded_pn,
+                                    is_ack_packet,
+                                );
                                 if parameters.initial_scid_from_peer().is_none() {
                                     remote_cids.revise_initial_dcid(*packet.header.scid());
                                     parameters

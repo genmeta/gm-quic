@@ -40,7 +40,7 @@ use qunreliable::DatagramFlow;
 use tokio::sync::{mpsc, Notify};
 use tracing::{trace_span, Instrument};
 
-use super::DecryptedPacket;
+use super::{DecryptedPacket, PacketMonitor};
 use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
     path::{Path, SendBuffer},
@@ -53,7 +53,7 @@ use crate::{
 pub type ZeroRttPacket = (ZeroRttHeader, bytes::BytesMut, usize);
 pub type DecryptedZeroRttPacket = DecryptedPacket<ZeroRttHeader>;
 pub type OneRttPacket = (OneRttHeader, bytes::BytesMut, usize);
-pub type DecryptedOneRttPacket = DecryptedPacket<OneRttHeader>;
+pub type DecryptedRttPacket = DecryptedPacket<OneRttHeader>;
 
 pub struct DataSpace {
     zero_rtt_keys: ArcKeys,
@@ -91,37 +91,41 @@ impl DataSpace {
 
     pub async fn decrypt_0rtt_packet(
         &self,
-        (header, mut payload, offset): ZeroRttPacket,
+        (header, mut payload, payload_offset): ZeroRttPacket,
     ) -> Option<Result<DecryptedZeroRttPacket, Error>> {
         let keys = self.zero_rtt_keys.get_remote_keys().await?;
         let (hpk, pk) = (keys.remote.header.as_ref(), keys.remote.packet.as_ref());
 
         let undecoded_pn =
-            match remove_protection_of_long_packet(hpk, payload.as_mut(), offset).transpose()? {
+            match remove_protection_of_long_packet(hpk, payload.as_mut(), payload_offset)
+                .transpose()?
+            {
                 Ok(undecoded_pn) => undecoded_pn,
                 Err(invalid_reversed_bits) => return Some(Err(invalid_reversed_bits.into())),
             };
         let rcvd_journal = self.journal.of_rcvd_packets();
-        let pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
-        let body_offset = offset + undecoded_pn.size();
-        let pkt_len = decrypt_packet(pk, pn, payload.as_mut(), body_offset).ok()?;
+        let decoded_pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
+        let body_offset = payload_offset + undecoded_pn.size();
+        let body_length = decrypt_packet(pk, decoded_pn, payload.as_mut(), body_offset).ok()?;
+        let decrypted = payload.freeze();
 
-        let _header = payload.split_to(body_offset);
-        payload.truncate(pkt_len);
         Some(Ok(DecryptedPacket {
             header,
-            pn,
-            payload: payload.freeze(),
+            decoded_pn,
+            undecoded_pn,
+            payload_offset,
+            decrypted,
+            body_length,
         }))
     }
 
     pub async fn decrypt_1rtt_packet(
         &self,
-        (header, mut payload, offset): OneRttPacket,
-    ) -> Option<Result<DecryptedOneRttPacket, Error>> {
+        (header, mut payload, payload_offset): OneRttPacket,
+    ) -> Option<Result<DecryptedRttPacket, Error>> {
         let (hpk, pk) = self.one_rtt_keys.get_remote_keys().await?;
         let (undecoded_pn, key_phase) =
-            match remove_protection_of_short_packet(hpk.as_ref(), payload.as_mut(), offset)
+            match remove_protection_of_short_packet(hpk.as_ref(), payload.as_mut(), payload_offset)
                 .transpose()?
             {
                 Ok(ok) => ok,
@@ -129,17 +133,20 @@ impl DataSpace {
             };
 
         let rcvd_journal = self.journal.of_rcvd_packets();
-        let pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
-        let pk = pk.lock_guard().get_remote(key_phase, pn);
-        let body_offset = offset + undecoded_pn.size();
-        let pkt_len = decrypt_packet(pk.as_ref(), pn, payload.as_mut(), body_offset).ok()?;
+        let decoded_pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
+        let pk = pk.lock_guard().get_remote(key_phase, decoded_pn);
+        let body_offset = payload_offset + undecoded_pn.size();
+        let body_length =
+            decrypt_packet(pk.as_ref(), decoded_pn, payload.as_mut(), body_offset).ok()?;
+        let decrypted = payload.freeze();
 
-        let _header = payload.split_to(body_offset);
-        payload.truncate(pkt_len);
         Some(Ok(DecryptedPacket {
             header,
-            pn,
-            payload: payload.freeze(),
+            decoded_pn,
+            undecoded_pn,
+            decrypted,
+            body_length,
+            payload_offset,
         }))
     }
 
@@ -404,25 +411,30 @@ pub fn spawn_deliver_and_parse(
                     let packet_size = packet.1.len();
                     match space.decrypt_0rtt_packet(packet).await {
                         Some(Ok(packet)) => {
-                            tracing::trace!(
-                                pn = packet.pn,
-                                payload_size = packet.payload.len(),
-                                "decrypted packet"
-                            );
                             let path = match components.get_or_create_path(socket, pathway, true) {
                                 Some(path) => path,
                                 None => return,
                             };
+                            let mut monitor = PacketMonitor::new(&packet);
                             path.on_rcvd(packet_size);
-                            match FrameReader::new(packet.payload, packet.header.get_type())
+                            match FrameReader::new(packet.payload(), packet.header.get_type())
                                 .try_fold(false, |is_ack_packet, frame| {
                                     let (frame, is_ack_eliciting) = frame?;
+                                    monitor.record_frame(&frame);
                                     dispatch_data_frame(frame, packet.header.get_type(), &path);
                                     Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                                 }) {
                                 Ok(is_ack_packet) => {
-                                    space.journal.of_rcvd_packets().register_pn(packet.pn);
-                                    path.cc().on_pkt_rcvd(Epoch::Data, packet.pn, is_ack_packet);
+                                    monitor.emit_received();
+                                    space
+                                        .journal
+                                        .of_rcvd_packets()
+                                        .register_pn(packet.decoded_pn);
+                                    path.cc().on_pkt_rcvd(
+                                        Epoch::Data,
+                                        packet.decoded_pn,
+                                        is_ack_packet,
+                                    );
                                 }
                                 Err(error) => event_broker.emit(Event::Failed(error)),
                             }
@@ -444,25 +456,30 @@ pub fn spawn_deliver_and_parse(
                     let packet_size = packet.1.len();
                     match space.decrypt_1rtt_packet(packet).await {
                         Some(Ok(packet)) => {
-                            tracing::trace!(
-                                pn = packet.pn,
-                                payload_size = packet.payload.len(),
-                                "decrypted packet"
-                            );
                             let path = match components.get_or_create_path(socket, pathway, true) {
                                 Some(path) => path,
                                 None => return,
                             };
+                            let mut monitor = PacketMonitor::new(&packet);
                             path.on_rcvd(packet_size);
-                            match FrameReader::new(packet.payload, packet.header.get_type())
+                            match FrameReader::new(packet.payload(), packet.header.get_type())
                                 .try_fold(false, |is_ack_packet, frame| {
                                     let (frame, is_ack_eliciting) = frame?;
+                                    monitor.record_frame(&frame);
                                     dispatch_data_frame(frame, packet.header.get_type(), &path);
                                     Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                                 }) {
                                 Ok(is_ack_packet) => {
-                                    space.journal.of_rcvd_packets().register_pn(packet.pn);
-                                    path.cc().on_pkt_rcvd(Epoch::Data, packet.pn, is_ack_packet);
+                                    monitor.emit_received();
+                                    space
+                                        .journal
+                                        .of_rcvd_packets()
+                                        .register_pn(packet.decoded_pn);
+                                    path.cc().on_pkt_rcvd(
+                                        Epoch::Data,
+                                        packet.decoded_pn,
+                                        is_ack_packet,
+                                    );
                                 }
                                 Err(error) => event_broker.emit(Event::Failed(error)),
                             }
