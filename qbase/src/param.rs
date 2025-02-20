@@ -151,7 +151,7 @@ impl Parameters {
     }
 
     fn server(&self) -> Option<ServerParameters> {
-        if self.state & Self::CLIENT_READY == 0 {
+        if self.state & Self::SERVER_READY == 0 {
             return None;
         }
         Some(self.server)

@@ -22,7 +22,7 @@ use qbase::{
     sid,
     token::ArcTokenRegistry,
 };
-use qcongestion::{ArcCC, CongestionAlgorithm, ObserveHandshake};
+use qcongestion::{ArcCC, CongestionAlgorithm};
 use qinterface::{
     path::{Pathway, Socket},
     queue::RcvdPacketQueue,
@@ -31,8 +31,7 @@ use qinterface::{
 use qlog::{
     quic::{
         connectivity::{
-            BaseConnectionStates, ConnectionClosed, ConnectionStarted, ConnectionStateUpdated,
-            GranularConnectionStates, PathAssigned,
+            ConnectionClosed, ConnectionStateUpdated, GranularConnectionStates, PathAssigned,
         },
         transport::ParametersSet,
         Owner,
@@ -441,21 +440,16 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
     async move {
         use qbase::frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame};
         if let Ok(param::Pair { remote, .. }) = params.clone().await {
-            // 自己的参数在这里打印合适吗？
-            qlog::event!(qlog::build!(ParametersSet {
-                owner: match role {
-                    sid::Role::Client => Owner::Local,
-                    sid::Role::Server => Owner::Remote,
-                },
-                client_parameters: params.client().expect("unreachable"),
-            }));
-            qlog::event!(qlog::build!(ParametersSet {
-                owner: match role {
-                    sid::Role::Client => Owner::Remote,
-                    sid::Role::Server => Owner::Local,
-                },
-                server_parameters: params.server().expect("unreachable"),
-            }));
+            match role {
+                sid::Role::Client => qlog::event!(qlog::build!(ParametersSet {
+                    owner: Owner::Remote,
+                    server_parameters: params.server().expect("unreachable"),
+                })),
+                sid::Role::Server => qlog::event!(qlog::build!(ParametersSet {
+                    owner: Owner::Local,
+                    client_parameters: params.client().expect("unreachable"),
+                })),
+            }
 
             // pretend to receive the MAX_STREAM frames
             _ = streams.recv_frame(&StreamCtlFrame::MaxStreams(MaxStreamsFrame::Bi(
@@ -482,18 +476,10 @@ impl Components {
         pathway: Pathway,
         is_probed: bool,
     ) -> Option<Arc<Path>> {
-        let do_validate = self.handshake.is_handshake_done();
         match self.paths.entry(pathway) {
             dashmap::Entry::Occupied(occupied_entry) => Some(occupied_entry.get().deref().clone()),
             dashmap::Entry::Vacant(vacant_entry) => {
-                if self.state.try_entry_attempted() {
-                    qlog::event!(qlog::build!(ConnectionStarted {
-                        socket: { (socket.src(), socket.dst()) } // cid不在这一层，未知
-                    }));
-                    qlog::event!(qlog::build!(ConnectionStateUpdated {
-                        new: BaseConnectionStates::Attempted,
-                    }));
-                }
+                let do_validate = !self.state.try_entry_attempted(self, socket);
                 qlog::event!(qlog::build!(PathAssigned {
                     path_id: pathway.to_string(),
                     path_local: socket.src(),
