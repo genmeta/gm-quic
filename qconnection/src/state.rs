@@ -36,21 +36,21 @@ impl ConnState {
             .is_ok();
 
         if success {
-            qlog::event!(qlog::build!(ConnectionStateUpdated {
+            qlog::event!(ConnectionStateUpdated {
                 new: BaseConnectionStates::Attempted,
-            }));
-            qlog::event!(qlog::build!(ConnectionStarted {
+            });
+            qlog::event!(ConnectionStarted {
                 socket: { (socket.src(), socket.dst()) } // cid不在这一层，未知
-            }));
+            });
             match components.handshake.role() {
-                qbase::sid::Role::Client => qlog::event!(qlog::build!(ParametersSet {
+                qbase::sid::Role::Client => qlog::event!(ParametersSet {
                     owner: Owner::Local,
                     client_parameters: components.parameters.client().expect("unreachable"),
-                })),
-                qbase::sid::Role::Server => qlog::event!(qlog::build!(ParametersSet {
+                }),
+                qbase::sid::Role::Server => qlog::event!(ParametersSet {
                     owner: Owner::Local,
                     server_parameters: components.parameters.server().expect("unreachable"),
-                })),
+                }),
             }
         }
         success

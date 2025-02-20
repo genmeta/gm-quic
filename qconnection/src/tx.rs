@@ -21,8 +21,7 @@ use qbase::{
             GetType,
         },
         signal::{KeyPhaseBit, SpinBit},
-        EncryptedPacket, MarshalDataFrame, MarshalFrame, MarshalPathFrame, PacketWriter,
-        UnencryptedPacket,
+        CipherPacket, MarshalDataFrame, MarshalFrame, MarshalPathFrame, PacketWriter, PlainPacket,
     },
     util::{DescribeData, WriteData},
     Epoch,
@@ -57,7 +56,7 @@ impl PacketLogger {
                 .length((packet.payload_len() + packet.tag_len()) as u16);
         }
 
-        qlog::event!(qlog::build!(PacketSent {
+        qlog::event!(PacketSent {
             header: self.header.build(),
             frames: self.frames,
             raw: qlog::RawInfo {
@@ -66,7 +65,7 @@ impl PacketLogger {
                 data: { Bytes::from(packet.buffer().to_vec()) },
             },
             // TODO: trigger
-        }))
+        })
     }
 }
 
@@ -141,13 +140,13 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
 #[derive(Deref)]
 pub struct MiddleAssembledPacket {
     #[deref]
-    packet: UnencryptedPacket,
+    packet: PlainPacket,
     logger: PacketLogger,
 }
 
 impl MiddleAssembledPacket {
-    pub fn fill_and_complete(mut self, buffer: &mut [u8]) -> EncryptedPacket {
-        let mut writer = self.packet.resume(buffer);
+    pub fn fill_and_complete(mut self, buffer: &mut [u8]) -> CipherPacket {
+        let mut writer = self.packet.writer(buffer);
 
         let padding_len = writer.remaining_mut();
         if padding_len > 0 {
@@ -162,8 +161,8 @@ impl MiddleAssembledPacket {
         writer.encrypt_and_protect()
     }
 
-    pub fn complete(mut self, buffer: &mut [u8]) -> EncryptedPacket {
-        let mut writer = self.packet.resume(buffer);
+    pub fn complete(mut self, buffer: &mut [u8]) -> CipherPacket {
+        let mut writer = self.packet.writer(buffer);
         let packet_len = writer.packet_len();
         if packet_len < 20 {
             let padding_len = 20 - packet_len;
@@ -235,7 +234,7 @@ impl<F> PacketMemory<'_, '_, F> {
     }
 
     // 其实never used，但是还是给它留一个位置
-    pub fn complete(mut self) -> Option<EncryptedPacket> {
+    pub fn complete(mut self) -> Option<CipherPacket> {
         let packet_len = self.writer.packet_len();
         if packet_len == 0 {
             return None;
@@ -404,7 +403,7 @@ impl<'a> Transaction<'a> {
     pub fn commit(
         &mut self,
         epoch: Epoch,
-        packet: EncryptedPacket,
+        packet: CipherPacket,
         fresh_data: usize,
         ack: Option<u64>,
     ) {

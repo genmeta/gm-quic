@@ -22,7 +22,7 @@ use qbase::{
         number::PacketNumber,
         r#type::Type,
         signal::SpinBit,
-        EncryptedPacket, MarshalFrame, PacketWriter,
+        CipherPacket, MarshalFrame, PacketWriter,
     },
     param::CommonParameters,
     sid::{ControlConcurrency, Role},
@@ -30,6 +30,7 @@ use qbase::{
 };
 use qcongestion::{CongestionControl, TrackPackets};
 use qinterface::path::{Pathway, Socket};
+use qlog::quic::{transport::PacketReceived, QuicFrames};
 use qrecovery::{
     crypto::CryptoStream,
     journal::{ArcRcvdJournal, DataJournal},
@@ -40,7 +41,7 @@ use qunreliable::DatagramFlow;
 use tokio::sync::{mpsc, Notify};
 use tracing::{trace_span, Instrument};
 
-use super::{DecryptedPacket, PacketMonitor};
+use super::DecryptedPacket;
 use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
     path::{Path, SendBuffer},
@@ -53,7 +54,7 @@ use crate::{
 pub type ZeroRttPacket = (ZeroRttHeader, bytes::BytesMut, usize);
 pub type DecryptedZeroRttPacket = DecryptedPacket<ZeroRttHeader>;
 pub type OneRttPacket = (OneRttHeader, bytes::BytesMut, usize);
-pub type DecryptedRttPacket = DecryptedPacket<OneRttHeader>;
+pub type DecryptedOneRttPacket = DecryptedPacket<OneRttHeader>;
 
 pub struct DataSpace {
     zero_rtt_keys: ArcKeys,
@@ -122,7 +123,7 @@ impl DataSpace {
     pub async fn decrypt_1rtt_packet(
         &self,
         (header, mut payload, payload_offset): OneRttPacket,
-    ) -> Option<Result<DecryptedRttPacket, Error>> {
+    ) -> Option<Result<DecryptedOneRttPacket, Error>> {
         let (hpk, pk) = self.one_rtt_keys.get_remote_keys().await?;
         let (undecoded_pn, key_phase) =
             match remove_protection_of_short_packet(hpk.as_ref(), payload.as_mut(), payload_offset)
@@ -415,17 +416,22 @@ pub fn spawn_deliver_and_parse(
                                 Some(path) => path,
                                 None => return,
                             };
-                            let mut monitor = PacketMonitor::new(&packet);
                             path.on_rcvd(packet_size);
-                            match FrameReader::new(packet.payload(), packet.header.get_type())
+
+                            let mut frames = QuicFrames::new();
+                            match FrameReader::new(packet.body(), packet.header.get_type())
                                 .try_fold(false, |is_ack_packet, frame| {
                                     let (frame, is_ack_eliciting) = frame?;
-                                    monitor.record_frame(&frame);
+                                    frames.extend(Some(&frame));
                                     dispatch_data_frame(frame, packet.header.get_type(), &path);
                                     Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                                 }) {
                                 Ok(is_ack_packet) => {
-                                    monitor.emit_received();
+                                    qlog::event!(PacketReceived {
+                                        header: packet.qlog_header(),
+                                        frames,
+                                        raw: packet.raw_info()
+                                    });
                                     space
                                         .journal
                                         .of_rcvd_packets()
@@ -460,17 +466,22 @@ pub fn spawn_deliver_and_parse(
                                 Some(path) => path,
                                 None => return,
                             };
-                            let mut monitor = PacketMonitor::new(&packet);
                             path.on_rcvd(packet_size);
-                            match FrameReader::new(packet.payload(), packet.header.get_type())
+
+                            let mut frames = QuicFrames::new();
+                            match FrameReader::new(packet.body(), packet.header.get_type())
                                 .try_fold(false, |is_ack_packet, frame| {
                                     let (frame, is_ack_eliciting) = frame?;
-                                    monitor.record_frame(&frame);
+                                    frames.extend(Some(&frame));
                                     dispatch_data_frame(frame, packet.header.get_type(), &path);
                                     Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                                 }) {
                                 Ok(is_ack_packet) => {
-                                    monitor.emit_received();
+                                    qlog::event!(PacketReceived {
+                                        header: packet.qlog_header(),
+                                        frames,
+                                        raw: packet.raw_info()
+                                    });
                                     space
                                         .journal
                                         .of_rcvd_packets()
@@ -580,7 +591,7 @@ impl ClosingDataSpace {
         dcid: ConnectionId,
         ccf: &ConnectionCloseFrame,
         buf: &mut [u8],
-    ) -> Option<EncryptedPacket> {
+    ) -> Option<CipherPacket> {
         let (hpk, pk) = &self.keys;
         let (key_phase, pk) = pk.lock_guard().get_local();
         let header = OneRttHeader::new(Default::default(), dcid);

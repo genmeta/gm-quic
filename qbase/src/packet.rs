@@ -198,7 +198,7 @@ impl Keys {
 }
 
 #[derive(CopyGetters)]
-pub struct UnencryptedPacket {
+pub struct PlainPacket {
     hdr_len: usize,
     len_encoding: usize,
     pn: (u64, PacketNumber),
@@ -227,8 +227,8 @@ pub struct UnencryptedPacket {
     _probe_new_path: bool,
 }
 
-impl UnencryptedPacket {
-    pub fn resume(mut self, buffer: &mut [u8]) -> PacketWriter {
+impl PlainPacket {
+    pub fn writer(mut self, buffer: &mut [u8]) -> PacketWriter {
         self.end = buffer.len() - self.keys.pk().tag_len();
         assert!(self.end >= self.cursor);
         PacketWriter {
@@ -257,7 +257,7 @@ impl UnencryptedPacket {
 #[derive(Deref, DerefMut)]
 pub struct PacketWriter<'b> {
     #[deref]
-    packet: UnencryptedPacket,
+    packet: PlainPacket,
     buffer: &'b mut [u8],
 }
 
@@ -287,7 +287,7 @@ impl<'b> PacketWriter<'b> {
         let cursor = hdr_len + len_encoding + encoded_pn.size();
         let keys = Keys::LongHeaderPacket { keys };
         let end = buffer.len() - keys.pk().tag_len();
-        let packet = UnencryptedPacket {
+        let packet = PlainPacket {
             hdr_len,
             len_encoding,
             pn,
@@ -326,7 +326,7 @@ impl<'b> PacketWriter<'b> {
         let cursor = hdr_len + encoded_pn.size();
         let keys = Keys::ShortHeaderPacket { hpk, pk, key_phase };
         let end = buffer.len() - keys.pk().tag_len();
-        let packet = UnencryptedPacket {
+        let packet = PlainPacket {
             hdr_len,
             len_encoding: 0,
             pn,
@@ -340,7 +340,7 @@ impl<'b> PacketWriter<'b> {
         Some(Self { buffer, packet })
     }
 
-    pub fn interrupt(self) -> (UnencryptedPacket, &'b mut [u8]) {
+    pub fn interrupt(self) -> (PlainPacket, &'b mut [u8]) {
         (self.packet, self.buffer)
     }
 
@@ -362,7 +362,7 @@ impl<'b> PacketWriter<'b> {
         self.cursor == self.hdr_len + self.len_encoding + self.pn.1.size()
     }
 
-    pub fn encrypt_and_protect(self) -> EncryptedPacket {
+    pub fn encrypt_and_protect(self) -> CipherPacket {
         let (packet, buffer) = (self.packet, self.buffer);
         let payload_len = packet.payload_len();
         let tag_len = packet.keys.pk().tag_len();
@@ -402,7 +402,7 @@ impl<'b> PacketWriter<'b> {
             let hpk = packet.keys.hpk();
             protect_header(hpk, &mut buffer[..pkt_size], payload_offset, pn_len);
         }
-        EncryptedPacket {
+        CipherPacket {
             pn: actual_pn,
             size: pkt_size,
             is_ack_eliciting: packet.ack_eliciting,
@@ -412,7 +412,7 @@ impl<'b> PacketWriter<'b> {
 }
 
 #[derive(Debug, CopyGetters, Clone, Copy)]
-pub struct EncryptedPacket {
+pub struct CipherPacket {
     #[getset(get_copy = "pub")]
     pn: u64,
     #[getset(get_copy = "pub")]

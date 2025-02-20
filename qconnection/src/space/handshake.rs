@@ -14,12 +14,13 @@ use qbase::{
         },
         keys::ArcKeys,
         number::PacketNumber,
-        EncryptedPacket, MarshalFrame, PacketWriter,
+        CipherPacket, MarshalFrame, PacketWriter,
     },
     Epoch,
 };
 use qcongestion::{CongestionControl, TrackPackets};
 use qinterface::path::{Pathway, Socket};
+use qlog::quic::{transport::PacketReceived, QuicFrames};
 use qrecovery::{
     crypto::CryptoStream,
     journal::{ArcRcvdJournal, HandshakeJournal},
@@ -28,7 +29,7 @@ use rustls::quic::Keys;
 use tokio::sync::{mpsc, Notify};
 use tracing::{trace_span, Instrument};
 
-use super::{AckHandshake, DecryptedPacket, PacketMonitor};
+use super::{AckHandshake, DecryptedPacket};
 use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
     path::Path,
@@ -170,7 +171,6 @@ pub fn spawn_deliver_and_parse(
                             Some(path) => path,
                             None => return,
                         };
-                        let mut monitor = PacketMonitor::new(&packet);
                         // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
                         // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
                         // address to have been validated.
@@ -178,17 +178,22 @@ pub fn spawn_deliver_and_parse(
                         path.grant_anti_amplifier();
                         path.on_rcvd(packet_size);
 
-                        match FrameReader::new(packet.payload(), packet.header.get_type()).try_fold(
+                        let mut frames = QuicFrames::new();
+                        match FrameReader::new(packet.body(), packet.header.get_type()).try_fold(
                             false,
                             |is_ack_packet, frame| {
                                 let (frame, is_ack_eliciting) = frame?;
-                                monitor.record_frame(&frame);
+                                frames.extend(Some(&frame));
                                 dispatch_frame(frame, &path);
                                 Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                             },
                         ) {
                             Ok(is_ack_packet) => {
-                                monitor.emit_received();
+                                qlog::event!(PacketReceived {
+                                    header: packet.qlog_header(),
+                                    frames,
+                                    raw: packet.raw_info(),
+                                });
                                 space
                                     .journal
                                     .of_rcvd_packets()
@@ -302,7 +307,7 @@ impl ClosingHandshakeSpace {
         dcid: ConnectionId,
         ccf: &ConnectionCloseFrame,
         buf: &mut [u8],
-    ) -> Option<EncryptedPacket> {
+    ) -> Option<CipherPacket> {
         let header = LongHeaderBuilder::with_cid(scid, dcid).handshake();
         let pn = self.ccf_packet_pn;
         let mut packet_writer = PacketWriter::new_long(&header, buf, pn, self.keys.clone())?;
