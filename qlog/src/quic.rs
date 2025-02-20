@@ -4,9 +4,9 @@ use bytes::Bytes;
 use derive_builder::Builder;
 use derive_more::{From, Into, LowerHex};
 use qbase::frame::{
-    AckFrame, AppCloseFrame, BeFrame, CryptoFrame, DatagramFrame, MaxStreamsFrame,
-    PathChallengeFrame, PathResponseFrame, ReliableFrame, StreamCtlFrame, StreamFrame,
-    StreamsBlockedFrame,
+    AckFrame, AppCloseFrame, BeFrame, ConnectionCloseFrame, CryptoFrame, DatagramFrame, Frame,
+    MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame, ReliableFrame,
+    StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
 };
 use serde::{Deserialize, Serialize};
 
@@ -248,7 +248,11 @@ pub struct PacketHeader {
 // 8.9
 #[serde_with::skip_serializing_none]
 #[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 #[serde(default)]
 pub struct Token {
     pub r#type: Option<TokenType>,
@@ -337,10 +341,10 @@ pub enum ECN {
 }
 
 // 8.13
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "frame_type")]
 #[serde(rename_all = "snake_case")]
-#[serde_with::skip_serializing_none]
 pub enum QuicFrame {
     Padding {
         /// total frame length, including frame header
@@ -465,17 +469,35 @@ pub enum QuicFrame {
         /// always 64-bit
         data: Option<HexString>,
     },
+    /// An endpoint that receives unknown error codes can record it in the
+    /// error_code field using the numerical value without variable-length
+    /// integer encoding.
+    ///
+    /// When the connection is closed due a connection-level error, the
+    /// trigger_frame_type field can be used to log the frame that triggered
+    /// the error.  For known frame types, the appropriate string value is
+    /// used.  For unknown frame types, the numerical value without variable-
+    /// length integer encoding is used.
+    ///
+    /// The CONNECTION_CLOSE reason phrase is a byte sequences.  It is likely
+    /// that this sequence is presentable as UTF-8, in which case it can be
+    /// logged in the reason field.  The reason_bytes field supports logging
+    /// the raw bytes, which can be useful when the value is not UTF-8 or
+    /// when an endpoint does not want to decode it.  Implementations SHOULD
+    /// log at least one format, but MAY log both or none.
     ConnectionClose {
         error_space: ConenctionCloseErrorSpace,
         error_code: ConnectionCloseErrorCode,
 
         reason: Option<String>,
-        reason_type: Option<HexString>,
+        reason_bytes: Option<HexString>,
 
         /// when error_space === "transport"
         trigger_frame_type: Option<ConnectionCloseTriggerFrameType>,
     },
     HandshakeDone {},
+    /// The frame_type_bytes field is the numerical value without variable-
+    /// length integer encoding.
     Unknow {
         frame_type_bytes: u64,
         raw: Option<RawInfo>,
@@ -486,8 +508,8 @@ pub enum QuicFrame {
     },
 }
 
-impl From<(CryptoFrame, Bytes)> for QuicFrame {
-    fn from((frame, bytes): (CryptoFrame, Bytes)) -> Self {
+impl From<(&CryptoFrame, &Bytes)> for QuicFrame {
+    fn from((frame, bytes): (&CryptoFrame, &Bytes)) -> Self {
         let length = frame.encoding_size() + bytes.len();
         let payload_length = bytes.len();
         QuicFrame::Crypto {
@@ -497,14 +519,14 @@ impl From<(CryptoFrame, Bytes)> for QuicFrame {
             raw: Some(RawInfo {
                 length: Some(length as _),
                 payload_length: Some(payload_length as _),
-                data: Some(bytes.into()),
+                data: Some(bytes.clone().into()),
             }),
         }
     }
 }
 
-impl From<(StreamFrame, Bytes)> for QuicFrame {
-    fn from((frame, bytes): (StreamFrame, Bytes)) -> Self {
+impl From<(&StreamFrame, &Bytes)> for QuicFrame {
+    fn from((frame, bytes): (&StreamFrame, &Bytes)) -> Self {
         let length = frame.encoding_size() + bytes.len();
         let payload_length = bytes.len();
         QuicFrame::Stream {
@@ -515,14 +537,14 @@ impl From<(StreamFrame, Bytes)> for QuicFrame {
             raw: Some(RawInfo {
                 length: Some(length as _),
                 payload_length: Some(payload_length as _),
-                data: Some(bytes.into()),
+                data: Some(bytes.clone().into()),
             }),
         }
     }
 }
 
-impl From<(DatagramFrame, Bytes)> for QuicFrame {
-    fn from((frame, bytes): (DatagramFrame, Bytes)) -> Self {
+impl From<(&DatagramFrame, &Bytes)> for QuicFrame {
+    fn from((frame, bytes): (&DatagramFrame, &Bytes)) -> Self {
         let length = frame.encoding_size() + bytes.len();
         let payload_length = bytes.len();
         QuicFrame::DatagramFrame {
@@ -530,22 +552,22 @@ impl From<(DatagramFrame, Bytes)> for QuicFrame {
             raw: Some(RawInfo {
                 length: Some(length as _),
                 payload_length: Some(payload_length as _),
-                data: Some(bytes.into()),
+                data: Some(bytes.clone().into()),
             }),
         }
     }
 }
 
-impl From<PathChallengeFrame> for QuicFrame {
-    fn from(frame: PathChallengeFrame) -> Self {
+impl From<&PathChallengeFrame> for QuicFrame {
+    fn from(frame: &PathChallengeFrame) -> Self {
         QuicFrame::PathChanllenge {
             data: Bytes::from_owner(frame.to_vec()).into(),
         }
     }
 }
 
-impl From<PathResponseFrame> for QuicFrame {
-    fn from(frame: PathResponseFrame) -> Self {
+impl From<&PathResponseFrame> for QuicFrame {
+    fn from(frame: &PathResponseFrame) -> Self {
         QuicFrame::PathResponse {
             data: Some(Bytes::from_owner(frame.to_vec()).into()),
         }
@@ -582,19 +604,10 @@ impl From<&AckFrame> for QuicFrame {
     }
 }
 
-impl From<ReliableFrame> for QuicFrame {
-    fn from(frame: ReliableFrame) -> Self {
+impl From<&ReliableFrame> for QuicFrame {
+    fn from(frame: &ReliableFrame) -> Self {
         match frame {
-            ReliableFrame::NewToken(new_token_frame) => QuicFrame::NewToken {
-                token: crate::build!(Token {
-                    r#type: TokenType::Retry,
-                    raw: RawInfo {
-                        length: new_token_frame.encoding_size() as u64,
-                        payload_length: new_token_frame.len() as u64,
-                        data: { Bytes::from_owner(new_token_frame.to_vec()) },
-                    },
-                }),
-            },
+            ReliableFrame::NewToken(new_token_frame) => new_token_frame.into(),
             ReliableFrame::MaxData(max_data_frame) => QuicFrame::MaxData {
                 maximum: max_data_frame.max_data(),
             },
@@ -619,8 +632,23 @@ impl From<ReliableFrame> for QuicFrame {
     }
 }
 
-impl From<StreamCtlFrame> for QuicFrame {
-    fn from(frame: StreamCtlFrame) -> Self {
+impl From<&NewTokenFrame> for QuicFrame {
+    fn from(value: &NewTokenFrame) -> Self {
+        QuicFrame::NewToken {
+            token: crate::build!(Token {
+                r#type: TokenType::Retry,
+                raw: RawInfo {
+                    length: value.encoding_size() as u64,
+                    payload_length: value.token().len() as u64,
+                    data: { Bytes::from_owner(value.token().to_vec()) },
+                },
+            }),
+        }
+    }
+}
+
+impl From<&StreamCtlFrame> for QuicFrame {
+    fn from(frame: &StreamCtlFrame) -> Self {
         match frame {
             StreamCtlFrame::ResetStream(reset_stream_frame) => QuicFrame::ResetStream {
                 stream_id: reset_stream_frame.stream_id().id(),
@@ -669,11 +697,80 @@ impl From<StreamCtlFrame> for QuicFrame {
     }
 }
 
+impl From<&ConnectionCloseFrame> for QuicFrame {
+    fn from(frame: &ConnectionCloseFrame) -> Self {
+        Self::ConnectionClose {
+            error_space: match &frame {
+                ConnectionCloseFrame::App(..) => ConenctionCloseErrorSpace::Application,
+                ConnectionCloseFrame::Quic(..) => ConenctionCloseErrorSpace::Transport,
+            },
+            error_code: match &frame {
+                ConnectionCloseFrame::App(frame) => ApplicationCode::from(frame).into(),
+                ConnectionCloseFrame::Quic(frame) => {
+                    connectivity::ConnectionCode::from(frame).into()
+                }
+            },
+            reason: match &frame {
+                ConnectionCloseFrame::App(frame) => Some(frame.reason().to_owned()),
+                ConnectionCloseFrame::Quic(frame) => Some(frame.reason().to_owned()),
+            },
+            // TODO: 不应该强制要求reason是utf8的
+            reason_bytes: None,
+            trigger_frame_type: match &frame {
+                ConnectionCloseFrame::Quic(frame) => {
+                    Some((u8::from(frame.frame_type()) as u64).into())
+                }
+                ConnectionCloseFrame::App(..) => None,
+            },
+        }
+    }
+}
+
+impl From<&Frame> for QuicFrame {
+    fn from(frame: &Frame) -> Self {
+        match frame {
+            Frame::Padding(..) => QuicFrame::Padding {
+                length: Some(1),
+                payload_length: 1,
+            },
+            Frame::Ping(..) => QuicFrame::Ping {
+                length: Some(1),
+                payload_length: Some(1),
+            },
+            Frame::Ack(frame) => frame.into(),
+            Frame::Close(frame) => frame.into(),
+            Frame::NewToken(frame) => frame.into(),
+            Frame::MaxData(frame) => (&ReliableFrame::from(*frame)).into(),
+            Frame::DataBlocked(frame) => (&ReliableFrame::from(*frame)).into(),
+            Frame::NewConnectionId(frame) => (&ReliableFrame::from(*frame)).into(),
+            Frame::RetireConnectionId(frame) => (&ReliableFrame::from(*frame)).into(),
+            Frame::HandshakeDone(frame) => (&ReliableFrame::from(*frame)).into(),
+            Frame::Challenge(frame) => frame.into(),
+            Frame::Response(frame) => frame.into(),
+            Frame::StreamCtl(frame) => frame.into(),
+            Frame::Stream(frame, bytes) => (frame, bytes).into(),
+            Frame::Crypto(frame, bytes) => (frame, bytes).into(),
+            Frame::Datagram(frame, bytes) => (frame, bytes).into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ApplicationCode {
     ApplicationError(ApplicationError),
     Value(u32),
+}
+
+impl From<ApplicationCode> for ConnectionCloseErrorCode {
+    fn from(value: ApplicationCode) -> Self {
+        match value {
+            ApplicationCode::ApplicationError(error) => {
+                ConnectionCloseErrorCode::ApplicationError(error)
+            }
+            ApplicationCode::Value(value) => ConnectionCloseErrorCode::Value(value as _),
+        }
+    }
 }
 
 impl From<&AppCloseFrame> for ApplicationCode {
@@ -696,7 +793,7 @@ pub enum ConenctionCloseErrorSpace {
     Application,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, From, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ConnectionCloseErrorCode {
     TransportError(TransportError),
@@ -705,7 +802,7 @@ pub enum ConnectionCloseErrorCode {
     Value(u64),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, From, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ConnectionCloseTriggerFrameType {
     Id(u64),

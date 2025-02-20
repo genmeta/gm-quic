@@ -40,17 +40,17 @@ use crate::{
     ArcDcidCell, ArcReliableFrameDeque, Credit, FlowController,
 };
 
-pub struct NewPacketInfo {
+pub struct PacketLogger {
     header: qlog::quic::PacketHeaderBuilder,
     frames: Vec<QuicFrame>,
 }
 
-impl NewPacketInfo {
+impl PacketLogger {
     pub fn record_frame(&mut self, frame: QuicFrame) {
         self.frames.push(frame);
     }
 
-    pub fn emit_sent_event(mut self, packet: &PacketWriter) {
+    pub fn emit_sent(mut self, packet: &PacketWriter) {
         // TODO: 如果以后涉及到组装VN，Retry，这里的逻辑得改
         if !packet.is_short_header() {
             self.header
@@ -74,7 +74,7 @@ pub struct PacketMemory<'b, 's, F> {
     writer: PacketWriter<'b>,
     // 不同空间的send guard类型不一样
     guard: NewPacketGuard<'s, F>,
-    info: NewPacketInfo,
+    logger: PacketLogger,
 }
 
 impl<'b, 's, F> PacketMemory<'b, 's, F> {
@@ -94,7 +94,7 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
         Some(Self {
             guard,
             writer: PacketWriter::new_long(&header, buffer, pn, keys)?,
-            info: NewPacketInfo {
+            logger: PacketLogger {
                 header: {
                     let mut builder = qlog::quic::PacketHeader::builder();
                     builder.packet_type(header.get_type());
@@ -123,7 +123,7 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
         Some(Self {
             guard,
             writer: PacketWriter::new_short(&header, buffer, pn, hpk, pk, key_phase)?,
-            info: NewPacketInfo {
+            logger: PacketLogger {
                 header: {
                     let mut builder = qlog::quic::PacketHeader::builder();
                     builder.packet_type(header.get_type());
@@ -142,7 +142,7 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
 pub struct MiddleAssembledPacket {
     #[deref]
     packet: UnencryptedPacket,
-    info: NewPacketInfo,
+    logger: PacketLogger,
 }
 
 impl MiddleAssembledPacket {
@@ -152,13 +152,13 @@ impl MiddleAssembledPacket {
         let padding_len = writer.remaining_mut();
         if padding_len > 0 {
             writer.pad(padding_len);
-            self.info.record_frame(QuicFrame::Padding {
+            self.logger.record_frame(QuicFrame::Padding {
                 length: Some(padding_len as u32),
                 payload_length: padding_len as u32,
             });
         }
 
-        self.info.emit_sent_event(&writer);
+        self.logger.emit_sent(&writer);
         writer.encrypt_and_protect()
     }
 
@@ -168,13 +168,13 @@ impl MiddleAssembledPacket {
         if packet_len < 20 {
             let padding_len = 20 - packet_len;
             writer.pad(padding_len);
-            self.info.record_frame(QuicFrame::Padding {
+            self.logger.record_frame(QuicFrame::Padding {
                 length: Some(padding_len as u32),
                 payload_length: padding_len as u32,
             });
         }
 
-        self.info.emit_sent_event(&writer);
+        self.logger.emit_sent(&writer);
         writer.encrypt_and_protect()
     }
 }
@@ -208,7 +208,7 @@ unsafe impl<F> BufMut for PacketMemory<'_, '_, F> {
 
 impl<F> PacketMemory<'_, '_, F> {
     pub fn dump_ack_frame(&mut self, frame: AckFrame) {
-        self.info.record_frame((&frame).into());
+        self.logger.record_frame((&frame).into());
         self.writer.dump_frame(frame);
         self.guard.record_trivial();
     }
@@ -218,7 +218,7 @@ impl<F> PacketMemory<'_, '_, F> {
             return;
         }
         self.writer.pad(len);
-        self.info.record_frame(QuicFrame::Padding {
+        self.logger.record_frame(QuicFrame::Padding {
             length: Some(len as u32),
             payload_length: len as u32,
         });
@@ -230,7 +230,7 @@ impl<F> PacketMemory<'_, '_, F> {
         }
         Some(MiddleAssembledPacket {
             packet: self.writer.interrupt().0,
-            info: self.info,
+            logger: self.logger,
         })
     }
 
@@ -244,7 +244,7 @@ impl<F> PacketMemory<'_, '_, F> {
             self.pad(20 - packet_len);
         }
 
-        self.info.emit_sent_event(&self.writer);
+        self.logger.emit_sent(&self.writer);
         Some(self.writer.encrypt_and_protect())
     }
 }
@@ -260,7 +260,7 @@ where
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
-                self.info.record_frame((frame, data).into());
+                self.logger.record_frame((&frame, &data).into());
                 self.guard.record_frame(frame);
                 None
             })
@@ -274,7 +274,7 @@ where
     fn dump_path_frame(&mut self, frame: PathChallengeFrame) {
         tracing::trace!(?frame, pn = self.guard.pn().0, "dump frame");
         self.writer.dump_frame(frame);
-        self.info.record_frame(frame.into());
+        self.logger.record_frame((&frame).into());
         self.guard.record_trivial();
     }
 }
@@ -286,7 +286,7 @@ where
     fn dump_path_frame(&mut self, frame: PathResponseFrame) {
         tracing::trace!(?frame, pn = self.guard.pn().0, "dump frame");
         self.writer.dump_frame(frame);
-        self.info.record_frame(frame.into());
+        self.logger.record_frame((&frame).into());
         self.guard.record_trivial();
     }
 }
@@ -299,7 +299,7 @@ where
     fn dump_frame(&mut self, frame: F) -> Option<F> {
         self.writer.dump_frame(frame).and_then(|frame| {
             let reliable_frame = frame.into();
-            self.info.record_frame(reliable_frame.clone().into());
+            self.logger.record_frame((&reliable_frame).into());
             self.guard
                 .record_frame(GuaranteedFrame::Reliable(reliable_frame));
             None
@@ -317,7 +317,7 @@ where
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
-                self.info.record_frame((frame, data).into());
+                self.logger.record_frame((&frame, &data).into());
                 self.guard.record_frame(GuaranteedFrame::Crypto(frame));
                 None
             })
@@ -334,7 +334,7 @@ where
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
-                self.info.record_frame((frame, data).into());
+                self.logger.record_frame((&frame, &data).into());
                 self.guard.record_frame(GuaranteedFrame::Stream(frame));
                 None
             })
@@ -351,7 +351,7 @@ where
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
-                self.info.record_frame((frame, data).into());
+                self.logger.record_frame((&frame, &data).into());
                 self.guard.record_trivial();
                 None
             })

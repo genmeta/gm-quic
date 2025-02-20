@@ -28,7 +28,7 @@ use rustls::quic::Keys;
 use tokio::sync::{mpsc, Notify};
 use tracing::{trace_span, Instrument};
 
-use super::{AckHandshake, DecryptedPacket};
+use super::{AckHandshake, DecryptedPacket, PacketMonitor};
 use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
     path::Path,
@@ -68,27 +68,31 @@ impl HandshakeSpace {
 
     pub async fn decrypt_packet(
         &self,
-        (header, mut payload, offset): HandshakePacket,
+        (header, mut packet, payload_offset): HandshakePacket,
     ) -> Option<Result<DecryptedHandshakePacket, Error>> {
         let keys = self.keys.get_remote_keys().await?;
         let (hpk, pk) = (keys.remote.header.as_ref(), keys.remote.packet.as_ref());
 
         let undecoded_pn =
-            match remove_protection_of_long_packet(hpk, payload.as_mut(), offset).transpose()? {
+            match remove_protection_of_long_packet(hpk, packet.as_mut(), payload_offset)
+                .transpose()?
+            {
                 Ok(undecoded_pn) => undecoded_pn,
                 Err(invalid_reversed_bits) => return Some(Err(invalid_reversed_bits.into())),
             };
         let rcvd_journal = self.journal.of_rcvd_packets();
-        let pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
-        let body_offset = offset + undecoded_pn.size();
-        let pkt_len = decrypt_packet(pk, pn, payload.as_mut(), body_offset).ok()?;
+        let decoded_pn = rcvd_journal.decode_pn(undecoded_pn).ok()?;
+        let body_offset = payload_offset + undecoded_pn.size();
+        let body_length = decrypt_packet(pk, decoded_pn, packet.as_mut(), body_offset).ok()?;
+        let decrypted = packet.freeze();
 
-        let _header = payload.split_to(body_offset);
-        payload.truncate(pkt_len);
         Some(Ok(DecryptedPacket {
             header,
-            pn,
-            payload: payload.freeze(),
+            decoded_pn,
+            undecoded_pn,
+            decrypted,
+            payload_offset,
+            body_length,
         }))
     }
 
@@ -162,15 +166,11 @@ pub fn spawn_deliver_and_parse(
                 let packet_size = packet.1.len();
                 match space.decrypt_packet(packet).await {
                     Some(Ok(packet)) => {
-                        tracing::trace!(
-                            pn = packet.pn,
-                            payload_size = packet.payload.len(),
-                            "decrypted packet"
-                        );
                         let path = match components.get_or_create_path(socket, pathway, true) {
                             Some(path) => path,
                             None => return,
                         };
+                        let mut monitor = PacketMonitor::new(&packet);
                         // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
                         // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
                         // address to have been validated.
@@ -178,18 +178,26 @@ pub fn spawn_deliver_and_parse(
                         path.grant_anti_amplifier();
                         path.on_rcvd(packet_size);
 
-                        match FrameReader::new(packet.payload, packet.header.get_type()).try_fold(
+                        match FrameReader::new(packet.payload(), packet.header.get_type()).try_fold(
                             false,
                             |is_ack_packet, frame| {
                                 let (frame, is_ack_eliciting) = frame?;
+                                monitor.record_frame(&frame);
                                 dispatch_frame(frame, &path);
                                 Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                             },
                         ) {
                             Ok(is_ack_packet) => {
-                                space.journal.of_rcvd_packets().register_pn(packet.pn);
-                                path.cc()
-                                    .on_pkt_rcvd(Epoch::Handshake, packet.pn, is_ack_packet);
+                                monitor.emit_received();
+                                space
+                                    .journal
+                                    .of_rcvd_packets()
+                                    .register_pn(packet.decoded_pn);
+                                path.cc().on_pkt_rcvd(
+                                    Epoch::Handshake,
+                                    packet.decoded_pn,
+                                    is_ack_packet,
+                                );
 
                                 // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
                                 // negotiating done.

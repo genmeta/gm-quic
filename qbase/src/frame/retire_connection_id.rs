@@ -11,7 +11,7 @@ use crate::varint::{be_varint, VarInt, WriteVarInt};
 ///
 /// See [RETIRE_CONNECTION_ID Frames](https://www.rfc-editor.org/rfc/rfc9000.html#name-retire_connection_id-frames)
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetireConnectionIdFrame {
     sequence: VarInt,
 }
