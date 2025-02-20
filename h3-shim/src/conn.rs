@@ -248,15 +248,13 @@ struct AcceptBiStreams(BoxStream<Result<(StreamId, (StreamReader, StreamWriter))
 impl AcceptBiStreams {
     fn new(conn: Arc<gm_quic::Connection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
-            let bidi = conn
-                .accept_bi_stream()
-                .await
-                .map(Option::unwrap)
-                .map_err(Into::into);
-            if bidi.is_err() && !conn.is_active() {
-                return None;
-            }
-            Some((bidi, conn))
+            Some((
+                conn.accept_bi_stream()
+                    .await
+                    .map(Option::unwrap)
+                    .map_err(Into::into),
+                conn,
+            ))
         });
         Self(Box::pin(stream))
     }
@@ -278,11 +276,12 @@ struct AcceptUniStreams(BoxStream<Result<(StreamId, StreamReader), Error>>);
 impl AcceptUniStreams {
     fn new(conn: Arc<gm_quic::Connection>) -> Self {
         let stream = futures::stream::unfold(conn, |conn| async {
-            let recv = conn.accept_uni_stream().await.map_err(Into::into);
-            if recv.is_err() && !conn.is_active() {
-                return None;
-            }
-            Some((recv.map(Option::unwrap), conn))
+            let uni = conn
+                .accept_uni_stream()
+                .await
+                .map(Option::unwrap)
+                .map_err(Into::into);
+            Some((uni, conn))
         });
         Self(Box::pin(stream))
     }
