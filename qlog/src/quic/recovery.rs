@@ -293,3 +293,123 @@ crate::gen_builder_method! {
     MarkedForRetransmitBuilder    => MarkedForRetransmit;
     ECNStateUpdatedBuilder        => ECNStateUpdated;
 }
+
+mod rollback {
+
+    use super::*;
+    use crate::{build, legacy::quic as legacy};
+
+    impl From<RecoveryParametersSet> for legacy::RecoveryParametersSet {
+        fn from(value: RecoveryParametersSet) -> Self {
+            build!(legacy::RecoveryParametersSet {
+                ?reordering_threshold: value.reordering_threshold,
+                ?time_threshold: value.time_threshold,
+                timer_granularity: value.timer_granularity,
+                ?initial_rtt: value.initial_rtt,
+                ?max_datagram_size: value.max_datagram_size,
+                ?initial_congestion_window: value.initial_congestion_window,
+                ?minimum_congestion_window: value.minimum_congestion_window.map(|v| v as u32),
+                ?loss_reduction_factor: value.loss_reduction_factor,
+                ?persistent_congestion_threshold: value.persistent_congestion_threshold,
+                custom_fields: value.custom_fields,
+            })
+        }
+    }
+
+    impl From<RecoveryMetricsUpdated> for legacy::RecoveryMetricsUpdated {
+        fn from(value: RecoveryMetricsUpdated) -> Self {
+            build!(legacy::RecoveryMetricsUpdated {
+                ?smoothed_rtt: value.smoothed_rtt,
+                ?min_rtt: value.min_rtt,
+                ?latest_rtt: value.latest_rtt,
+                ?rtt_variance: value.rtt_variance,
+                ?pto_count: value.pto_count,
+                ?congestion_window: value.congestion_window,
+                ?bytes_in_flight: value.bytes_in_flight,
+                ?ssthresh: value.ssthresh,
+                ?packets_in_flight: value.packets_in_flight,
+                ?pacing_rate: value.pacing_rate,
+                custom_fields: value.custom_fields,
+            })
+        }
+    }
+
+    impl From<CongestionStateUpdated> for legacy::RecoveryCongestionStateUpdated {
+        fn from(value: CongestionStateUpdated) -> Self {
+            build!(legacy::RecoveryCongestionStateUpdated {
+                ?old: value.old,
+                new: value.new,
+                ?trigger: match value.trigger {
+                    Some(s) if s == "persistent_congestion" => Some(legacy::RecoveryCongestionStateUpdatedTrigger::PersistentCongestion),
+                    Some(s) if s == "ecn" => Some(legacy::RecoveryCongestionStateUpdatedTrigger::Ecn),
+                    _ => None,
+                },
+            })
+        }
+    }
+
+    impl From<TimerType> for legacy::LossTimerType {
+        #[inline]
+        fn from(value: TimerType) -> Self {
+            match value {
+                TimerType::Ack => legacy::LossTimerType::Ack,
+                TimerType::Pto => legacy::LossTimerType::Pto,
+            }
+        }
+    }
+
+    impl From<EventType> for legacy::LossTimerEventType {
+        #[inline]
+        fn from(value: EventType) -> Self {
+            match value {
+                EventType::Set => legacy::LossTimerEventType::Set,
+                EventType::Expired => legacy::LossTimerEventType::Expired,
+                EventType::Cancelled => legacy::LossTimerEventType::Cancelled,
+            }
+        }
+    }
+
+    impl From<LossTimerUpdated> for legacy::RecoveryLossTimerUpdated {
+        fn from(value: LossTimerUpdated) -> Self {
+            build!(legacy::RecoveryLossTimerUpdated {
+                ?timer_type: value.timer_type,
+                ?packet_number_space: value.packet_number_space,
+                event_type: value.event_type,
+                ?delta: value.delta,
+            })
+        }
+    }
+
+    impl From<PacketLostTrigger> for legacy::RecoveryPacketLostTrigger {
+        #[inline]
+        fn from(value: PacketLostTrigger) -> Self {
+            match value {
+                PacketLostTrigger::ReorderingThreshold => {
+                    legacy::RecoveryPacketLostTrigger::ReorderingThreshold
+                }
+                PacketLostTrigger::TimeThreshold => {
+                    legacy::RecoveryPacketLostTrigger::TimeThreshold
+                }
+                PacketLostTrigger::PtoExpired => legacy::RecoveryPacketLostTrigger::PtoExpired,
+            }
+        }
+    }
+
+    impl From<PacketLost> for legacy::RecoveryPacketLost {
+        fn from(value: PacketLost) -> Self {
+            build!(legacy::RecoveryPacketLost {
+                ?header: value.header,
+                ?frames: value.frames.map(|v| v.into_iter().map(Into::into).collect::<Vec<_>>()),
+                ?trigger: value.trigger,
+            })
+        }
+    }
+
+    impl From<MarkedForRetransmit> for legacy::RecoveryMarkedForRetransmit {
+        fn from(value: MarkedForRetransmit) -> Self {
+            build!(legacy::RecoveryMarkedForRetransmit {
+                frames: value.frames.into_iter().map(Into::into).collect::<Vec<_>>(),
+            })
+        }
+    }
+}

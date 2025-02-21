@@ -38,7 +38,7 @@ pub struct VersionInformation {
     server_versions: Vec<QuicVersion>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     client_versions: Vec<QuicVersion>,
-    chosed_version: Option<QuicVersion>,
+    chosen_version: Option<QuicVersion>,
 }
 
 /// The alpn_information event supports Application-Layer Protocol
@@ -71,7 +71,7 @@ pub struct VersionInformation {
 pub struct ALPNInformation {
     server_alpns: Option<Vec<ALPNIdentifier>>,
     client_alpns: Option<Vec<ALPNIdentifier>>,
-    chosed_alpn: Option<ALPNIdentifier>,
+    chosen_alpn: Option<ALPNIdentifier>,
 }
 
 /// ALPN identifiers are byte sequences, that may be possible to present
@@ -140,7 +140,7 @@ pub struct ParametersSet {
     resumption_allowed: Option<bool>,
 
     /// true if early data extension was enabled on the TLS layer
-    early_data_received: Option<bool>,
+    early_data_enabled: Option<bool>,
 
     /// e.g., "AES_128_GCM_SHA256"
     tls_cipher: Option<String>,
@@ -523,7 +523,7 @@ pub struct PacketsAcked {
     setter(into, strip_option),
     build_fn(private, name = "fallible_build")
 )]
-pub struct UdpDatagramSent {
+pub struct UdpDatagramsSent {
     /// to support passing multiple at once
     count: Option<u16>,
 
@@ -555,7 +555,7 @@ pub struct UdpDatagramSent {
     setter(into, strip_option),
     build_fn(private, name = "fallible_build")
 )]
-pub struct UdpDatagramReceived {
+pub struct UdpDatagramsReceived {
     /// to support passing multiple at once
     count: Option<u16>,
 
@@ -763,8 +763,8 @@ pub struct StreamDataMoved {
     /// byte length of the moved data
     length: Option<u64>,
 
-    from: Option<DataLocation>,
-    to: Option<DataLocation>,
+    from: Option<StreamDataLocation>,
+    to: Option<StreamDataLocation>,
 
     additional_info: Option<DataMovedAdditionalInfo>,
 
@@ -773,7 +773,7 @@ pub struct StreamDataMoved {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum DataLocation {
+pub enum StreamDataLocation {
     Application,
     Transport,
     Network,
@@ -823,8 +823,8 @@ pub enum DataMovedAdditionalInfo {
 pub struct DatagramDataMoved {
     /// byte length of the moved data
     length: Option<u64>,
-    from: Option<DataLocation>,
-    to: Option<DataLocation>,
+    from: Option<StreamDataLocation>,
+    to: Option<StreamDataLocation>,
     raw: Option<RawInfo>,
 }
 
@@ -900,12 +900,382 @@ crate::gen_builder_method! {
     PacketDroppedBuilder         => PacketDropped;
     PacketBufferedBuilder        => PacketBuffered;
     PacketsAckedBuilder          => PacketsAcked;
-    UdpDatagramSentBuilder       => UdpDatagramSent;
-    UdpDatagramReceivedBuilder   => UdpDatagramReceived;
+    UdpDatagramsSentBuilder      => UdpDatagramsSent;
+    UdpDatagramsReceivedBuilder  => UdpDatagramsReceived;
     UdpDatagramDroppedBuilder    => UdpDatagramDropped;
     StreamStateUpdatedBuilder    => StreamStateUpdated;
     FramesProcessedBuilder       => FramesProcessed;
     StreamDataMovedBuilder       => StreamDataMoved;
     DatagramDataMovedBuilder     => DatagramDataMoved;
     MigrationStateUpdatedBuilder => MigrationStateUpdated;
+}
+
+mod rollback {
+    use bytes::Bytes;
+
+    use super::*;
+    use crate::{build, legacy::quic as legacy};
+
+    impl From<QuicVersion> for legacy::QuicVersion {
+        #[inline]
+        fn from(value: QuicVersion) -> Self {
+            HexString::from(Bytes::from(value.0.to_be_bytes().to_vec())).into()
+        }
+    }
+
+    impl From<VersionInformation> for legacy::TransportVersionInformation {
+        fn from(vi: VersionInformation) -> Self {
+            build!(legacy::TransportVersionInformation {
+                server_versions: vi
+                    .server_versions
+                    .into_iter()
+                    .map(Into::into)
+                    .collect::<Vec<_>>(),
+                client_versions: vi
+                    .client_versions
+                    .into_iter()
+                    .map(Into::into)
+                    .collect::<Vec<_>>(),
+                ?chosen_version: vi.chosen_version,
+            })
+        }
+    }
+
+    impl From<ALPNIdentifier> for String {
+        fn from(value: ALPNIdentifier) -> Self {
+            value.string_value.as_ref().map_or(
+                value
+                    .byte_value
+                    .as_ref()
+                    .map(|b| b.to_string())
+                    .unwrap_or_default(),
+                |s| s.to_string(),
+            )
+        }
+    }
+
+    impl From<ALPNInformation> for legacy::TransportALPNInformation {
+        fn from(ai: ALPNInformation) -> Self {
+            build!(legacy::TransportALPNInformation {
+                ?client_alpns: ai.client_alpns.map( |v| {
+                    v.into_iter()
+                        .map(Into::into)
+                        .collect::<Vec<_>>()
+                }),
+                ?server_alpns: ai.server_alpns.map( |v| {
+                    v.into_iter()
+                        .map(Into::into)
+                        .collect::<Vec<_>>()
+                }),
+                //
+                ?chosen_alpn: ai.chosen_alpn.map(String::from),
+            })
+        }
+    }
+
+    impl From<PreferredAddress> for legacy::PreferredAddress {
+        fn from(pa: PreferredAddress) -> Self {
+            build!(legacy::PreferredAddress {
+                ip_v4: pa.ip_v4,
+                ip_v6: pa.ip_v6,
+                port_v4: pa.port_v4,
+                port_v6: pa.port_v6,
+                connection_id: pa.connection_id,
+                stateless_reset_token: pa.stateless_reset_token,
+            })
+        }
+    }
+
+    impl From<ParametersSet> for legacy::TransportParametersSet {
+        fn from(ps: ParametersSet) -> Self {
+            build!(legacy::TransportParametersSet {
+                ?owner: ps.owner,
+                ?resumption_allowed: ps.resumption_allowed,
+                ?early_data_enabled: ps.early_data_enabled,
+                ?tls_cipher: ps.tls_cipher,
+                ?original_destination_connection_id: ps.original_destination_connection_id,
+                ?initial_source_connection_id: ps.initial_source_connection_id,
+                ?retry_source_connection_id: ps.retry_source_connection_id,
+                ?stateless_reset_token: ps.stateless_reset_token,
+                ?disable_active_migration: ps.disable_active_migration,
+                ?max_idle_timeout: ps.max_idle_timeout,
+                ?max_udp_payload_size: ps.max_udp_payload_size,
+                ?ack_delay_exponent: ps.ack_delay_exponent,
+                ?max_ack_delay: ps.max_ack_delay,
+                ?active_connection_id_limit: ps.active_connection_id_limit,
+                ?initial_max_data: ps.initial_max_data,
+                ?initial_max_stream_data_bidi_local: ps.initial_max_stream_data_bidi_local,
+                ?initial_max_stream_data_bidi_remote: ps.initial_max_stream_data_bidi_remote,
+                ?initial_max_stream_data_uni: ps.initial_max_stream_data_uni,
+                ?initial_max_streams_bidi: ps.initial_max_streams_bidi,
+                ?initial_max_streams_uni: ps.initial_max_streams_uni,
+                ?preferred_address: ps.preferred_address,
+                // legacy doesnt support these
+                // ?unknown_parameters: ,
+                // ?max_datagram_frame_size: ps.max_datagram_frame_size,
+                // ?grease_quic_bit: ps.grease_quic_bit,
+            })
+        }
+    }
+
+    impl From<ParametersRestored> for legacy::TransportParametersRestored {
+        fn from(value: ParametersRestored) -> Self {
+            build!(legacy::TransportParametersRestored {
+                ?disable_active_migration: value.disable_active_migration,
+                ?max_idle_timeout: value.max_idle_timeout,
+                ?max_udp_payload_size: value.max_udp_payload_size,
+                ?active_connection_id_limit: value.active_connection_id_limit,
+                ?initial_max_data: value.initial_max_data,
+                ?initial_max_stream_data_bidi_local: value.initial_max_stream_data_bidi_local,
+                ?initial_max_stream_data_bidi_remote: value.initial_max_stream_data_bidi_remote,
+                ?initial_max_stream_data_uni: value.initial_max_stream_data_uni,
+                ?initial_max_streams_bidi: value.initial_max_streams_bidi,
+                ?initial_max_streams_uni: value.initial_max_streams_uni,
+                // legacy doesnt support these
+                // ?max_datagram_frame_size: value.max_datagram_frame_size,
+                // ?grease_quic_bit: value.grease_quic_bit,
+            })
+        }
+    }
+
+    impl From<PacketSentTrigger> for legacy::TransportPacketSentTrigger {
+        fn from(value: PacketSentTrigger) -> Self {
+            match value {
+                PacketSentTrigger::RetransmitReordered => Self::RetransmitReordered,
+                PacketSentTrigger::RetransmitTimeout => Self::RetransmitTimeout,
+                PacketSentTrigger::PtoProbe => Self::PtoProbe,
+                PacketSentTrigger::RetransmitCrypto => Self::RetransmitCrypto,
+                PacketSentTrigger::CcBandwidthProbe => Self::CcBandwidthProbe,
+            }
+        }
+    }
+
+    impl From<PacketSent> for legacy::TransportPacketSent {
+        fn from(value: PacketSent) -> Self {
+            build!(legacy::TransportPacketSent {
+                header: value.header,
+                ?frames: value.frames.map(|v| {
+                    v.into_iter()
+                        .map(Into::into)
+                        .collect::<Vec<_>>()
+                }),
+                ?stateless_reset_token: value.stateless_reset_token.map(|tk| Bytes::from(tk.0.to_vec())),
+                supported_versions: value.supported_versions.into_iter()
+                        .map(Into::into)
+                        .collect::<Vec<_>>(),
+                ?raw: value.raw,
+                ?datagram_id: value.datagram_id,
+                ?trigger: value.trigger,
+            })
+        }
+    }
+
+    impl From<PacketReceivedTrigger> for legacy::TransportPacketReceivedTrigger {
+        #[inline]
+        fn from(value: PacketReceivedTrigger) -> Self {
+            match value {
+                PacketReceivedTrigger::KeysAvailable => Self::KeysAvailable,
+            }
+        }
+    }
+
+    impl From<PacketReceived> for legacy::TransportPacketReceived {
+        fn from(value: PacketReceived) -> Self {
+            build!(legacy::TransportPacketReceived {
+                header: value.header,
+                ?frames: value.frames.map(|v| {
+                    v.into_iter()
+                        .map(Into::into)
+                        .collect::<Vec<_>>()
+                }),
+                ?stateless_reset_token: value.stateless_reset_token.map(|tk| Bytes::from(tk.0.to_vec())),
+                supported_versions: value.supported_versions.into_iter()
+                        .map(Into::into)
+                        .collect::<Vec<_>>(),
+                ?raw: value.raw,
+                ?datagram_id: value.datagram_id,
+                ?trigger: value.trigger,
+            })
+        }
+    }
+
+    impl TryFrom<PacketDroppedTrigger> for legacy::TransportpacketDroppedTrigger {
+        type Error = ();
+        #[inline]
+        fn try_from(value: PacketDroppedTrigger) -> Result<Self, ()> {
+            match value {
+                // 新设计不如旧的
+                PacketDroppedTrigger::InternalError
+                | PacketDroppedTrigger::Invalid
+                | PacketDroppedTrigger::Genera
+                // 似乎并没有完全对应, 移除头部保护失败也是这个错误
+                // PacketDroppedTrigger::DecryptionFailure => Ok(Self::PayloadDecryptError),
+                | PacketDroppedTrigger::DecryptionFailure
+                | PacketDroppedTrigger::Rejected => Err(()),
+                PacketDroppedTrigger::Unsupported => Ok(Self::UnsupportedVersion),
+                PacketDroppedTrigger::Duplicate => Ok(Self::Duplicate),
+                PacketDroppedTrigger::ConnectionUnknown => Ok(Self::UnknownConnectionId),
+                PacketDroppedTrigger::KeyUnavailable => Ok(Self::KeyUnavailable),
+            }
+        }
+    }
+
+    impl From<PacketDropped> for legacy::TransportPacketDropped {
+        fn from(value: PacketDropped) -> Self {
+            build!(legacy::TransportPacketDropped {
+                ?header: value.header,
+                ?raw: value.raw,
+                ?datagram_id: value.datagram_id,
+                ?trigger: value.trigger.and_then(|trigger| legacy::TransportpacketDroppedTrigger::try_from(trigger).ok()),
+            })
+        }
+    }
+
+    impl From<PacketBufferedTrigger> for legacy::TransportPacketBufferedTrigger {
+        #[inline]
+        fn from(value: PacketBufferedTrigger) -> Self {
+            match value {
+                PacketBufferedTrigger::Backpressure => Self::Backpressure,
+                PacketBufferedTrigger::KeysUnavailable => Self::KeysUnavailable,
+            }
+        }
+    }
+
+    impl From<PacketBuffered> for legacy::TransportPacketBuffered {
+        fn from(value: PacketBuffered) -> Self {
+            build!(legacy::TransportPacketBuffered {
+                ?header: value.header,
+                ?raw: value.raw,
+                ?datagram_id: value.datagram_id,
+                ?trigger: value.trigger,
+            })
+        }
+    }
+
+    impl From<PacketsAcked> for legacy::TransportPacketsAcked {
+        fn from(value: PacketsAcked) -> Self {
+            build!(legacy::TransportPacketsAcked {
+                ?packet_number_space: value.packet_number_space,
+                packet_numbers: value.packet_nubers,
+            })
+        }
+    }
+
+    impl From<UdpDatagramsSent> for legacy::TransportDatagramsSent {
+        fn from(value: UdpDatagramsSent) -> Self {
+            build!(legacy::TransportDatagramsSent {
+                ?count: value.count,
+                raw: value.raw.into_iter().collect::<Vec<_>>(),
+                datagram_ids: value.datagram_ids,
+            })
+        }
+    }
+
+    impl From<UdpDatagramsReceived> for legacy::TransportDatagramsReceived {
+        fn from(value: UdpDatagramsReceived) -> Self {
+            build!(legacy::TransportDatagramsReceived {
+                ?count: value.count,
+                raw: value.raw.into_iter().collect::<Vec<_>>(),
+                datagram_ids: value.datagram_ids,
+            })
+        }
+    }
+
+    impl From<UdpDatagramDropped> for legacy::TransportDatagramDropped {
+        fn from(value: UdpDatagramDropped) -> Self {
+            build!(legacy::TransportDatagramDropped {
+                ?raw: value.raw,
+            })
+        }
+    }
+
+    impl From<StreamState> for legacy::StreamState {
+        #[inline]
+        fn from(value: StreamState) -> Self {
+            match value {
+                StreamState::Base(BaseStreamStates::Idle) => Self::Idle,
+                StreamState::Base(BaseStreamStates::Open) => Self::Open,
+                StreamState::Base(BaseStreamStates::Closed) => Self::Closed,
+                StreamState::Granular(GranularStreamStates::HalfClosedLocal) => {
+                    Self::HalfClosedLocal
+                }
+                StreamState::Granular(GranularStreamStates::HalfClosedRemote) => {
+                    Self::HalfClosedRemote
+                }
+                StreamState::Granular(GranularStreamStates::Ready) => Self::Ready,
+                StreamState::Granular(GranularStreamStates::Send) => Self::Send,
+                StreamState::Granular(GranularStreamStates::DataSent) => Self::DataSent,
+                StreamState::Granular(GranularStreamStates::ResetSent) => Self::ResetSent,
+                StreamState::Granular(GranularStreamStates::ResetReceived) => Self::ResetReceived,
+                StreamState::Granular(GranularStreamStates::Receive) => Self::Receive,
+                StreamState::Granular(GranularStreamStates::SizeKnown) => Self::SizeKnown,
+                StreamState::Granular(GranularStreamStates::DataRead) => Self::DataRead,
+                StreamState::Granular(GranularStreamStates::ResetRead) => Self::ResetRead,
+                StreamState::Granular(GranularStreamStates::DataReceived) => Self::DataReceived,
+                StreamState::Granular(GranularStreamStates::Destroyed) => Self::Destroyed,
+            }
+        }
+    }
+
+    impl From<StreamSide> for legacy::StreamSide {
+        #[inline]
+        fn from(value: StreamSide) -> Self {
+            match value {
+                StreamSide::Sending => Self::Sending,
+                StreamSide::Receiving => Self::Receiving,
+            }
+        }
+    }
+
+    impl From<StreamStateUpdated> for legacy::TransportStreamStateUpdated {
+        fn from(value: StreamStateUpdated) -> Self {
+            build!(legacy::TransportStreamStateUpdated {
+                stream_id: value.stream_id,
+                ?stream_type: value.stream_type,
+                ?old: value.old,
+                new: value.new,
+                ?stream_side: value.stream_side,
+            })
+        }
+    }
+
+    impl From<FramesProcessed> for legacy::TransportFramesProcessed {
+        fn from(value: FramesProcessed) -> Self {
+            assert!(
+                value
+                    .packet_numbers
+                    .as_ref()
+                    .is_none_or(|value| value.len() != 1),
+                "it not possible to do this convert"
+            );
+            build!(legacy::TransportFramesProcessed {
+                frames: value.frames.into_iter().map(Into::into).collect::<Vec<_>>(),
+                ?packet_number: value.packet_numbers.map(|v| v[0]),
+            })
+        }
+    }
+
+    impl From<StreamDataLocation> for legacy::StreamDataLocation {
+        #[inline]
+        fn from(value: StreamDataLocation) -> Self {
+            match value {
+                StreamDataLocation::Application => Self::Application,
+                StreamDataLocation::Transport => Self::Transport,
+                StreamDataLocation::Network => Self::Network,
+            }
+        }
+    }
+
+    impl From<StreamDataMoved> for legacy::TransportDataMoved {
+        fn from(value: StreamDataMoved) -> Self {
+            build!(legacy::TransportDataMoved {
+                ?stream_id: value.stream_id,
+                ?offset: value.offset,
+                ?length: value.length,
+                ?from: value.from,
+                ?to: value.to,
+                ?data: value.raw.and_then(|raw| raw.data),
+            })
+        }
+    }
 }

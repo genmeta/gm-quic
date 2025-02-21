@@ -19,7 +19,8 @@ pub struct KeyUpdated {
     new: Option<HexString>,
 
     /// needed for 1RTT key updates
-    key_phase: u64,
+    #[builder(default)]
+    key_phase: Option<u64>,
     #[builder(default)]
     trigger: Option<KeyUpdatedTrigger>,
 }
@@ -46,7 +47,7 @@ pub struct KeyDiscarded {
     key: Option<HexString>,
 
     /// needed for 1RTT key updates
-    key_phase: u64,
+    key_phase: Option<u64>,
     #[builder(default)]
     trigger: Option<KeyDiscardedTrigger>,
 }
@@ -64,4 +65,76 @@ pub enum KeyDiscardedTrigger {
 crate::gen_builder_method! {
     KeyUpdatedBuilder   => KeyUpdated;
     KeyDiscardedBuilder => KeyDiscarded;
+}
+
+mod rollback {
+    use super::*;
+    use crate::{build, legacy::quic as legacy};
+
+    impl From<KeyType> for legacy::KeyType {
+        fn from(value: KeyType) -> Self {
+            match value {
+                KeyType::ServerInitialSecret => legacy::KeyType::ServerInitialSecret,
+                KeyType::ClientInitialSecret => legacy::KeyType::ClientInitialSecret,
+                KeyType::ServerHandshakeSecret => legacy::KeyType::ServerHandshakeSecret,
+                KeyType::ClientHandshakeSecret => legacy::KeyType::ClientHandshakeSecret,
+                KeyType::Server0RttSecret => legacy::KeyType::Server0RTTSecret,
+                KeyType::Client0RttSecret => legacy::KeyType::Client0RTTSecret,
+                KeyType::Server1RttSecret => legacy::KeyType::Server1RTTSecret,
+                KeyType::Client1RttSecret => legacy::KeyType::Client1RTTSecret,
+            }
+        }
+    }
+
+    impl From<KeyUpdatedTrigger> for legacy::SecurityKeyUpdatedTrigger {
+        #[inline]
+        fn from(value: KeyUpdatedTrigger) -> Self {
+            match value {
+                KeyUpdatedTrigger::Tls => legacy::SecurityKeyUpdatedTrigger::Tls,
+                KeyUpdatedTrigger::RemoteUpdate => legacy::SecurityKeyUpdatedTrigger::RemoteUpdate,
+                KeyUpdatedTrigger::LocalUpdate => legacy::SecurityKeyUpdatedTrigger::LocalUpdate,
+            }
+        }
+    }
+
+    impl From<KeyUpdated> for legacy::SecurityKeyUpdated {
+        #[inline]
+        fn from(value: KeyUpdated) -> Self {
+            build!(legacy::SecurityKeyUpdated {
+                key_type: value.key_type,
+                ?old: value.old,
+                // for legacy new is not optional
+                ?new: value.new,
+                // is this key_phase?
+                ?generation: value.key_phase.map(|p| p as u32),
+                ?trigger: value.trigger,
+            })
+        }
+    }
+
+    impl From<KeyDiscardedTrigger> for legacy::SecurityKeyRetiredTrigger {
+        #[inline]
+        fn from(value: KeyDiscardedTrigger) -> Self {
+            match value {
+                KeyDiscardedTrigger::Tls => legacy::SecurityKeyRetiredTrigger::Tls,
+                KeyDiscardedTrigger::RemoteUpdate => {
+                    legacy::SecurityKeyRetiredTrigger::RemoteUpdate
+                }
+                KeyDiscardedTrigger::LocalUpdate => legacy::SecurityKeyRetiredTrigger::LocalUpdate,
+            }
+        }
+    }
+
+    impl From<KeyDiscarded> for legacy::SecurityKeyRetired {
+        #[inline]
+        fn from(value: KeyDiscarded) -> Self {
+            build!(legacy::SecurityKeyRetired {
+                key_type: value.key_type,
+                ?key: value.key,
+                // is this key_phase?
+                ?generation: value.key_phase .map(|p| p as u32),
+                ?trigger: value.trigger,
+            })
+        }
+    }
 }
