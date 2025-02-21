@@ -43,14 +43,9 @@ async fn set() -> io::Result<()> {
         // )
         // .with_ansi(false)
         .init();
-    // let exporter = qlog::telemetry::handy::IoExpoter::new(
-    //     qlog::build!(qlog::QlogFileSeq {
-    //         log_file: qlog::LogFile {
-    //             file_schema: qlog::QlogFileSeq::SCHEMA,
-    //             serialization_format: "application/qlog+json-seq",
-    //             title: "gm-quic test".to_string(),
-    //         },
-    //         trace_seq: qlog::TraceSeq {}
+    // let exporter = qlog::legacy::exporter::IoExpoter::new(
+    //     qlog::build!(qlog::legacy::QlogFileSeq {
+    //         trace: qlog::legacy::TraceSeq {}
     //     }),
     //     tokio::fs::OpenOptions::new()
     //         .create(true)

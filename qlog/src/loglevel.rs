@@ -50,3 +50,50 @@ crate::gen_builder_method! {
     DebugBuilder   => Debug;
     VerboseBuilder => Verbose;
 }
+
+mod rollback {
+    use super::*;
+    use crate::{build, legacy};
+
+    impl From<Error> for legacy::GenericError {
+        fn from(value: Error) -> Self {
+            build!(legacy::GenericError {
+                ?code: value.code,
+                ?message: value.message
+            })
+        }
+    }
+
+    impl From<Warning> for legacy::GenericWarning {
+        fn from(value: Warning) -> Self {
+            build!(legacy::GenericWarning {
+                ?code: value.code,
+                ?message: value.message
+            })
+        }
+    }
+
+    impl From<Info> for legacy::GenericInfo {
+        fn from(value: Info) -> Self {
+            build!(legacy::GenericInfo {
+                message: value.message
+            })
+        }
+    }
+
+    impl From<Debug> for legacy::GenericDebug {
+        fn from(value: Debug) -> Self {
+            build!(legacy::GenericDebug {
+                message: value.message
+            })
+        }
+    }
+
+    impl From<Verbose> for legacy::GenericVerbose {
+        fn from(value: Verbose) -> Self {
+            build!(legacy::GenericVerbose {
+                message: value.message
+            })
+        }
+    }
+}

@@ -177,7 +177,7 @@ impl From<&QuicCloseFrame> for ConnectionCode {
             ErrorKind::FinalSize => TransportError::FinalSizeError.into(),
             ErrorKind::FrameEncoding => TransportError::FrameEncodingError.into(),
             ErrorKind::TransportParameter => TransportError::TransportParameterError.into(),
-            ErrorKind::ConnectionIdLimit => TransportError::ConnectionIDLimitError.into(),
+            ErrorKind::ConnectionIdLimit => TransportError::ConnectionIdLimitError.into(),
             ErrorKind::ProtocolViolation => TransportError::ProtocolViolation.into(),
             ErrorKind::InvalidToken => TransportError::InvalidToken.into(),
             ErrorKind::Application => TransportError::ApplicationError.into(),
@@ -220,7 +220,7 @@ pub enum ConnectionCloseTrigger {
 #[serde_with::skip_serializing_none]
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
-pub struct ConnectionIDUpdated {
+pub struct ConnectionIdUpdated {
     owner: Owner,
     #[builder(default)]
     old: Option<ConnectionID>,
@@ -366,9 +366,173 @@ crate::gen_builder_method! {
     ServerListeningBuilder        => ServerListening;
     ConnectionStartedBuilder      => ConnectionStarted;
     ConnectionClosedBuilder       => ConnectionClosed;
-    ConnectionIDUpdatedBuilder    => ConnectionIDUpdated;
+    ConnectionIdUpdatedBuilder    => ConnectionIdUpdated;
     SpinBitUpdatedBuilder         => SpinBitUpdated;
     ConnectionStateUpdatedBuilder => ConnectionStateUpdated;
     PathAssignedBuilder           => PathAssigned;
     MtuUpdatedBuilder             => MtuUpdated;
+}
+
+mod rollback {
+    use super::*;
+    use crate::{build, legacy::quic as legacy};
+
+    impl From<ServerListening> for legacy::ConnectivityServerListening {
+        #[inline]
+        fn from(value: ServerListening) -> Self {
+            build!(legacy::ConnectivityServerListening {
+                ?ip_v4: value.ip_v4,
+                ?ip_v6: value.ip_v6,
+                ?port_v4: value.port_v4,
+                ?port_v6: value.port_v6,
+                ?retry_required: value.retry_required,
+            })
+        }
+    }
+
+    impl From<ConnectionStarted> for legacy::ConnectivityConnectionStarted {
+        #[inline]
+        fn from(value: ConnectionStarted) -> Self {
+            build!(legacy::ConnectivityConnectionStarted {
+                ip_version: value.ip_version,
+                src_ip: value.src_ip,
+                dst_ip: value.dst_ip,
+                protocol: value.protocol,
+                ?src_port: value.src_port,
+                ?dst_port: value.dst_port,
+                ?src_cid: value.src_cid,
+                ?dst_cid: value.dst_cid,
+            })
+        }
+    }
+
+    impl From<CryptoError> for legacy::CryptoError {
+        #[inline]
+        fn from(value: CryptoError) -> Self {
+            legacy::CryptoError::from(value.0)
+        }
+    }
+
+    impl From<ConnectionCode> for legacy::ConnectionCode {
+        #[inline]
+        fn from(value: ConnectionCode) -> Self {
+            match value {
+                ConnectionCode::TransportError(err) => legacy::TransportError::from(err).into(),
+                ConnectionCode::CryptoError(err) => legacy::CryptoError::from(err).into(),
+                ConnectionCode::Value(code) => code.into(),
+            }
+        }
+    }
+
+    // 这两类型的交集有限
+    impl TryFrom<ConnectionCloseTrigger> for legacy::ConnectivityConnectionClosedTrigger {
+        type Error = ();
+        #[inline]
+        fn try_from(value: ConnectionCloseTrigger) -> Result<Self, ()> {
+            match value {
+                ConnectionCloseTrigger::IdleTimeout => {
+                    Ok(legacy::ConnectivityConnectionClosedTrigger::IdleTimeout)
+                }
+                ConnectionCloseTrigger::Application => {
+                    Ok(legacy::ConnectivityConnectionClosedTrigger::Application)
+                }
+                ConnectionCloseTrigger::Error => {
+                    Ok(legacy::ConnectivityConnectionClosedTrigger::Error)
+                }
+                ConnectionCloseTrigger::VersionMismatch => {
+                    Ok(legacy::ConnectivityConnectionClosedTrigger::VersionMismatch)
+                }
+                ConnectionCloseTrigger::StatelessReset => {
+                    Ok(legacy::ConnectivityConnectionClosedTrigger::StatelessReset)
+                }
+                ConnectionCloseTrigger::Unspecified => Err(()),
+            }
+        }
+    }
+
+    impl From<ConnectionClosed> for legacy::ConnectivityConnectionClosed {
+        #[inline]
+        fn from(value: ConnectionClosed) -> Self {
+            build!(legacy::ConnectivityConnectionClosed {
+                ?owner: value.owner,
+                ?connection_code: value.connection_code,
+                ?application_code: value.application_code,
+                ?internal_code: value.internal_code,
+                ?reason: value.reason,
+                ?trigger: value.trigger.and_then(|v| legacy::ConnectivityConnectionClosedTrigger::try_from(v).ok()),
+            })
+        }
+    }
+
+    impl From<ConnectionIdUpdated> for legacy::ConnectivityConnectionIdUpdated {
+        #[inline]
+        fn from(value: ConnectionIdUpdated) -> Self {
+            build!(legacy::ConnectivityConnectionIdUpdated {
+                owner: value.owner,
+                ?old: value.old,
+                ?new: value.new,
+            })
+        }
+    }
+
+    impl From<SpinBitUpdated> for legacy::ConnectivitySpinBitUpdated {
+        #[inline]
+        fn from(value: SpinBitUpdated) -> Self {
+            build!(legacy::ConnectivitySpinBitUpdated { state: value.state })
+        }
+    }
+
+    impl From<ConnectionState> for legacy::ConnectionState {
+        #[inline]
+        fn from(value: ConnectionState) -> Self {
+            match value {
+                ConnectionState::Base(BaseConnectionStates::Attempted) => {
+                    legacy::ConnectionState::Attempted
+                }
+                ConnectionState::Base(BaseConnectionStates::HandshakeStarted) => {
+                    legacy::ConnectionState::HandshakeStarted
+                }
+                ConnectionState::Base(BaseConnectionStates::HandshakeComplete) => {
+                    legacy::ConnectionState::HandshakeComplete
+                }
+                ConnectionState::Base(BaseConnectionStates::Closed) => {
+                    legacy::ConnectionState::Closed
+                }
+                ConnectionState::Granular(GranularConnectionStates::PeerValidated) => {
+                    legacy::ConnectionState::PeerValidated
+                }
+                ConnectionState::Granular(GranularConnectionStates::EarlyWrite) => {
+                    legacy::ConnectionState::EarlyWrite
+                }
+                ConnectionState::Granular(GranularConnectionStates::HandshakeConfirmed) => {
+                    legacy::ConnectionState::HandshakeConfirmed
+                }
+                ConnectionState::Granular(GranularConnectionStates::Closing) => {
+                    legacy::ConnectionState::Closing
+                }
+                ConnectionState::Granular(GranularConnectionStates::Draining) => {
+                    legacy::ConnectionState::Draining
+                }
+                ConnectionState::Granular(GranularConnectionStates::Closed) => {
+                    legacy::ConnectionState::Closed
+                }
+            }
+        }
+    }
+
+    impl From<ConnectionStateUpdated> for legacy::ConnectivityConnectionStateUpdated {
+        #[inline]
+        fn from(value: ConnectionStateUpdated) -> Self {
+            build!(legacy::ConnectivityConnectionStateUpdated {
+                ?old: value.old,
+                new: value.new,
+            })
+        }
+    }
+
+    // event not exist in legacy version
+    // impl From<PathAssigned> for
+
+    // event not exist in legacy version
+    // impl From<MtuUpdated> for
 }

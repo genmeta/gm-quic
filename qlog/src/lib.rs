@@ -1,8 +1,9 @@
+pub mod legacy;
 pub mod loglevel;
 pub mod quic;
 pub mod telemetry;
 
-use std::{collections::HashMap, net::SocketAddr};
+use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 
 use bytes::Bytes;
 use derive_builder::Builder;
@@ -124,7 +125,7 @@ pub struct CommonFields {
 pub struct VantagePoint {
     #[builder(default)]
     name: Option<String>,
-    pub r#type: VantagePointType,
+    r#type: VantagePointType,
     #[builder(default)]
     flow: Option<VantagePointType>,
 }
@@ -364,7 +365,7 @@ pub enum EvnetData {
     #[serde(rename = "quic:connection_closed")]
     ConnectionClosed(quic::connectivity::ConnectionClosed),
     #[serde(rename = "quic:connection_id_updated")]
-    ConnectionIDUpdated(quic::connectivity::ConnectionIDUpdated),
+    ConnectionIdUpdated(quic::connectivity::ConnectionIdUpdated),
     #[serde(rename = "quic:spin_bit_updated")]
     SpinBitUpdated(quic::connectivity::SpinBitUpdated),
     #[serde(rename = "quic:connection_state_updated")]
@@ -392,9 +393,9 @@ pub enum EvnetData {
     #[serde(rename = "quic:packets_acked")]
     PacketsAcked(quic::transport::PacketsAcked),
     #[serde(rename = "quic:udp_datagrams_sent")]
-    UdpDatagramSent(quic::transport::UdpDatagramSent),
+    UdpDatagramSent(quic::transport::UdpDatagramsSent),
     #[serde(rename = "quic:udp_datagrams_received")]
-    UdpDatagramReceived(quic::transport::UdpDatagramReceived),
+    UdpDatagramReceived(quic::transport::UdpDatagramsReceived),
     #[serde(rename = "quic:udp_datagram_dropped")]
     UdpDatagramDropped(quic::transport::UdpDatagramDropped),
     #[serde(rename = "quic:stream_state_updated")]
@@ -465,7 +466,7 @@ imp_be_events! {
     Extra quic::connectivity::ServerListening        => urn "quic:server_listening";
     Base  quic::connectivity::ConnectionStarted      => urn "quic:connection_started";
     Base  quic::connectivity::ConnectionClosed       => urn "quic:connection_closed";
-    Base  quic::connectivity::ConnectionIDUpdated    => urn "quic:connection_id_updated";
+    Base  quic::connectivity::ConnectionIdUpdated    => urn "quic:connection_id_updated";
     Base  quic::connectivity::SpinBitUpdated         => urn "quic:spin_bit_updated";
     Base  quic::connectivity::ConnectionStateUpdated => urn "quic:connection_state_updated";
     Base  quic::connectivity::PathAssigned           => urn "quic:path_assigned";
@@ -479,8 +480,8 @@ imp_be_events! {
     Base  quic::transport::PacketDropped             => urn "quic:packet_dropped";
     Base  quic::transport::PacketBuffered            => urn "quic:packet_buffered";
     Extra quic::transport::PacketsAcked              => urn "quic:packets_acked";
-    Extra quic::transport::UdpDatagramSent           => urn "quic:udp_datagrams_sent";
-    Extra quic::transport::UdpDatagramReceived       => urn "quic:udp_datagrams_received";
+    Extra quic::transport::UdpDatagramsSent           => urn "quic:udp_datagrams_sent";
+    Extra quic::transport::UdpDatagramsReceived       => urn "quic:udp_datagrams_received";
     Extra quic::transport::UdpDatagramDropped        => urn "quic:udp_datagram_dropped";
     Base  quic::transport::StreamStateUpdated        => urn "quic:stream_state_updated";
     Extra quic::transport::FramesProcessed           => urn "quic:frames_processed";
@@ -508,6 +509,12 @@ imp_be_events! {
 #[derive(Debug, Clone, From, Into, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct HexString(#[serde_as(as = "serde_with::hex::Hex")] Bytes);
+
+impl Display for HexString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:x}", self.0)
+    }
+}
 
 #[serde_with::skip_serializing_none]
 #[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -583,6 +590,10 @@ macro_rules! build {
         $builder.$field($field);
         $crate::build!(@field $builder $(, $($remain)* )? );
     };
+    (@field $builder:expr, $field:ident: Map        { $($tt:tt)* } $(, $($remain:tt)* )? ) => {
+        $builder.$field($crate::map!{ $($tt)* });
+        $crate::build!(@field $builder $(, $($remain)* )? );
+    };
     (@field $builder:expr, $field:ident: $struct:ty { $($tt:tt)* } $(, $($remain:tt)* )? ) => {
         $builder.$field($crate::build!($struct { $($tt)* }));
         $crate::build!(@field $builder $(, $($remain)* )? );
@@ -606,12 +617,142 @@ macro_rules! build {
     (@field $builder:expr $(,)?) => {};
 }
 
+#[doc(hidden)]
+pub mod macro_support {
+    pub use serde_json::Value;
+}
+
+#[macro_export]
+macro_rules! map {
+    {$($tt:tt)*}=>{
+        let mut map = ::std::collections::<String, $crate::macro_support::Value>::new();
+        $crate::map!(@field map, $($tt)*);
+    };
+    (@field $map:expr, $field:ident $(, $($remain:tt)* )?) => {
+        $map.insert(stringify!($field).to_owned(), $field.into());
+        $crate::map!(@field $map $(, $($remain)* )?)
+    };
+    (@field $map:expr, $field:ident: Map         {$($tt:tt)*} $(, $($remain:tt)* )?) => {
+        $map.insert(stringify!($field).to_owned(), $crate::map!{ $($tt)* });
+        $crate::map!(@field $map $(, $($remain)* )?)
+    };
+    (@field $map:expr, $field:ident: $struct:ty  {$($tt:tt)*} $(, $($remain:tt)* )?) => {
+        $map.insert(stringify!($field).to_owned(), $crate::build!($struct { $($tt)* }).into());
+        $crate::map!(@field $map $(, $($remain)* )?)
+    };
+    (@field $map:expr, $field:ident: $value:expr $(, $($remain:tt)* )?) => {
+        $map.insert(stringify!($field).to_owned(), $value.into());
+        $crate::map!(@field $map $(, $($remain)* )?)
+    };
+    (@field $map:expr $(,)?) => {};
+}
+
+mod rollback {
+
+    use super::*;
+    use crate::{build, legacy};
+
+    impl TryFrom<EvnetData> for legacy::EventData {
+        type Error = ();
+        #[rustfmt::skip]
+        fn try_from(value: EvnetData) -> Result<Self, Self::Error> {
+            match value {
+                EvnetData::ServerListening(data) => Ok(legacy::EventData::ServerListening(data.into())),
+                EvnetData::ConnectionStarted(data) => Ok(legacy::EventData::ConnectionStarted(data.into())),
+                EvnetData::ConnectionClosed(data) => Ok(legacy::EventData::ConnectionClosed(data.into())),
+                EvnetData::ConnectionIdUpdated(data) => Ok(legacy::EventData::ConnectionIdUpdated(data.into())),
+                EvnetData::SpinBitUpdated(data) => Ok(legacy::EventData::SpinBitUpdated(data.into())),
+                EvnetData::ConnectionStateUpdated(data) => Ok(legacy::EventData::ConnectionStateUpdated(data.into())),
+                EvnetData::PathAssigned(_data) => Err(()),
+                EvnetData::MtuUpdated(_data) => Err(()),
+                EvnetData::VersionInformation(data) => Ok(legacy::EventData::VersionInformation(data.into())),
+                EvnetData::ALPNInformation(data) => Ok(legacy::EventData::AlpnInformation(data.into())),
+                EvnetData::ParametersSet(data) => Ok(legacy::EventData::TransportParametersSet(data.into())),
+                EvnetData::ParametersRestored(data) => Ok(legacy::EventData::TransportParametersRestored(data.into())),
+                EvnetData::PacketSent(data) => Ok(legacy::EventData::PacketSent(data.into())),
+                EvnetData::PacketReceived(data) => Ok(legacy::EventData::PacketReceived(data.into())),
+                EvnetData::PacketDropped(data) => Ok(legacy::EventData::PacketDropped(data.into())),
+                EvnetData::PacketBuffered(data) => Ok(legacy::EventData::PacketBuffered(data.into())),
+                EvnetData::PacketsAcked(data) => Ok(legacy::EventData::PacketsAcked(data.into())),
+                EvnetData::UdpDatagramSent(data) => Ok(legacy::EventData::DatagramsSent(data.into())),
+                EvnetData::UdpDatagramReceived(data) => Ok(legacy::EventData::DatagramsReceived(data.into())),
+                EvnetData::UdpDatagramDropped(data) => Ok(legacy::EventData::DatagramDropped(data.into())),
+                EvnetData::StreamStateUpdated(data) => Ok(legacy::EventData::StreamStateUpdated(data.into())),
+                EvnetData::FramesProcessed(data) => Ok(legacy::EventData::FramesProcessed(data.into())),
+                EvnetData::StreamDataMoved(data) => Ok(legacy::EventData::DataMoved(data.into())),
+                EvnetData::DatagramDataMoved(_data) => Err(()),
+                EvnetData::MigrationStateUpdated(_data) => Err(()),
+                EvnetData::KeyUpdated(data) => Ok(legacy::EventData::KeyUpdated(data.into())),
+                EvnetData::KeyDiscarded(data) => Ok(legacy::EventData::KeyDiscarded(data.into())),
+                EvnetData::RecoveryParametersSet(data) => Ok(legacy::EventData::RecoveryParametersSet(data.into())),
+                EvnetData::RecoveryMetricsUpdated(data) => Ok(legacy::EventData::MetricsUpdated(data.into())),
+                EvnetData::CongestionStateUpdated(data) => Ok(legacy::EventData::CongestionStateUpdated(data.into())),
+                EvnetData::LossTimerUpdated(data) => Ok(legacy::EventData::LossTimerUpdated(data.into())),
+                EvnetData::PacketLost(data) => Ok(legacy::EventData::PacketLost(data.into())),
+                EvnetData::MarkedForRetransmit(data) => Ok(legacy::EventData::MarkedForRetransmit(data.into())),
+                EvnetData::ECNStateUpdated(_data) => Err(()),
+                EvnetData::Error(data) => Ok(legacy::EventData::GenericError(data.into())),
+                EvnetData::Warning(data) => Ok(legacy::EventData::GenericWarning(data.into())),
+                EvnetData::Info(data) => Ok(legacy::EventData::GenericInfo(data.into())),
+                EvnetData::Debug(data) => Ok(legacy::EventData::GenericDebug(data.into())),
+                EvnetData::Verbose(data) => Ok(legacy::EventData::GenericVerbose(data.into())),
+            }
+        }
+    }
+
+    impl From<TimeFormat> for legacy::TimeFormat {
+        fn from(value: TimeFormat) -> Self {
+            match value {
+                // note: depending on reference_time
+                //TOOD: check reference_time here
+                TimeFormat::RelativeToEpoch => legacy::TimeFormat::Absolute,
+                TimeFormat::RelativeToPreviousEvent => legacy::TimeFormat::Delta,
+            }
+        }
+    }
+
+    impl From<ProtocolTypeList> for legacy::ProtocolType {
+        fn from(value: ProtocolTypeList) -> Self {
+            value
+                .0
+                .into_iter()
+                .map(|x| x.into())
+                .collect::<Vec<_>>()
+                .into()
+        }
+    }
+
+    impl TryFrom<Event> for legacy::Event {
+        type Error = ();
+        fn try_from(mut event: Event) -> Result<Self, Self::Error> {
+            if let Some(system_info) = event.system_info {
+                let value = serde_json::to_value(system_info).unwrap();
+                event.custom_fields.insert("system_info".to_owned(), value);
+            }
+            if let Some(path) = event.path {
+                let value = serde_json::to_value(path).unwrap();
+                event.custom_fields.insert("path".to_owned(), value);
+            }
+            Ok(build!(legacy::Event {
+                time: event.time,
+                data: { legacy::EventData::try_from(event.data)? },
+                ?time_format: event.time_format,
+                ?protocol_type: event.protocol_types,
+                ?group_id: event.group_id,
+                custom_fields: event.custom_fields
+            }))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use qbase::cid::ConnectionId;
 
     use super::*;
-    use crate::loglevel::Warning;
+    use crate::{loglevel::Warning, quic::connectivity::ConnectionStarted, telemetry::ExportEvent};
 
     #[test]
     fn custom_fields() {
@@ -681,5 +822,54 @@ mod tests {
 }"#;
         assert_eq!(serde_json::to_string_pretty(&event).unwrap(), expect);
         assert_eq!(data.importance(), EventImportance::Base);
+    }
+
+    #[test]
+    fn rollback() {
+        fn group_id() -> GroupID {
+            GroupID::from(ConnectionID::from(ConnectionId::from_slice(&[
+                0xfe, 0xdc, 0xba, 0x09, 0x87, 0x65, 0x43, 0x32,
+            ])))
+        }
+
+        fn protocol_types() -> Vec<String> {
+            vec!["QUIC".to_owned(), "UNKNOW".to_owned()]
+        }
+
+        struct TestBroker;
+
+        impl ExportEvent for TestBroker {
+            fn emit(&self, event: Event) {
+                let legacy = legacy::Event::try_from(event).unwrap();
+                let event = serde_json::to_value(legacy).unwrap();
+
+                let data = serde_json::json!({
+                    "ip_version": "v4",
+                    "src_ip": "127.0.0.1",
+                    "dst_ip": "192.168.31.1",
+                    "protocol": "QUIC",
+                    "src_port": 23456,
+                    "dst_port": 21
+                });
+                // in 10: this callde protocol_types
+                let protocol_type = serde_json::json!(["QUIC", "UNKNOW"]);
+
+                assert_eq!(event["data"], data);
+                assert_eq!(event["protocol_types"], serde_json::Value::Null);
+                assert_eq!(event["protocol_type"], protocol_type);
+                assert_eq!(event["to_router"], true);
+            }
+        }
+
+        span!(
+            Arc::new(TestBroker),
+            group_id = group_id(),
+            protocol_types = protocol_types()
+        )
+        .in_scope(|| {
+            let src = "127.0.0.1:23456".parse().unwrap();
+            let dst = "192.168.31.1:21".parse().unwrap();
+            event!(ConnectionStarted { socket: (src, dst) }, to_router = true)
+        })
     }
 }

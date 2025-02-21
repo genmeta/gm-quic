@@ -440,7 +440,7 @@ pub enum QuicFrame {
         error_code: ApplicationCode,
 
         /// in bytes
-        final_size: Option<u64>,
+        final_size: u64,
 
         /// total frame length, including frame header
         length: Option<u32>,
@@ -485,18 +485,18 @@ pub enum QuicFrame {
         stream_id: u64,
         maximum: u64,
     },
-    MaxStream {
+    MaxStreams {
         stream_type: StreamType,
         maximum: u64,
     },
     DataBlocked {
-        maximum: u64,
+        limit: u64,
     },
     StreamDataBlocked {
         stream_id: u64,
-        maximum: u64,
+        limit: u64,
     },
-    StreamBlocked {
+    StreamsBlocked {
         stream_type: StreamType,
         limit: u64,
     },
@@ -506,16 +506,16 @@ pub enum QuicFrame {
 
         /// mainly used if e.g., for privacy reasons the full
         /// connection_id cannot be logged
-        connection_id_length: u8,
+        connection_id_length: Option<u8>,
         connection_id: ConnectionID,
-        stateless_reset_token: StatelessResetToken,
+        stateless_reset_token: Option<StatelessResetToken>,
     },
     RetireConnectionId {
         sequence_number: u32,
     },
-    PathChanllenge {
+    PathChallenge {
         /// always 64-bit
-        data: HexString,
+        data: Option<HexString>,
     },
     PathResponse {
         /// always 64-bit
@@ -538,8 +538,8 @@ pub enum QuicFrame {
     /// when an endpoint does not want to decode it.  Implementations SHOULD
     /// log at least one format, but MAY log both or none.
     ConnectionClose {
-        error_space: ConenctionCloseErrorSpace,
-        error_code: ConnectionCloseErrorCode,
+        error_space: Option<ConnectionCloseErrorSpace>,
+        error_code: Option<ConnectionCloseErrorCode>,
 
         reason: Option<String>,
         reason_bytes: Option<HexString>,
@@ -554,7 +554,7 @@ pub enum QuicFrame {
         frame_type_bytes: u64,
         raw: Option<RawInfo>,
     },
-    DatagramFrame {
+    Datagram {
         length: Option<u64>,
         raw: Option<RawInfo>,
     },
@@ -599,7 +599,7 @@ impl From<(&DatagramFrame, &Bytes)> for QuicFrame {
     fn from((frame, bytes): (&DatagramFrame, &Bytes)) -> Self {
         let length = frame.encoding_size() + bytes.len();
         let payload_length = bytes.len();
-        QuicFrame::DatagramFrame {
+        QuicFrame::Datagram {
             length: Some(length as _),
             raw: Some(RawInfo {
                 length: Some(length as _),
@@ -612,8 +612,8 @@ impl From<(&DatagramFrame, &Bytes)> for QuicFrame {
 
 impl From<&PathChallengeFrame> for QuicFrame {
     fn from(frame: &PathChallengeFrame) -> Self {
-        QuicFrame::PathChanllenge {
-            data: Bytes::from_owner(frame.to_vec()).into(),
+        QuicFrame::PathChallenge {
+            data: Some(Bytes::from_owner(frame.to_vec()).into()),
         }
     }
 }
@@ -664,14 +664,14 @@ impl From<&ReliableFrame> for QuicFrame {
                 maximum: max_data_frame.max_data(),
             },
             ReliableFrame::DataBlocked(data_blocked_frame) => QuicFrame::DataBlocked {
-                maximum: data_blocked_frame.limit(),
+                limit: data_blocked_frame.limit(),
             },
             ReliableFrame::NewConnectionId(new_connection_id_frame) => QuicFrame::NewConnectionId {
                 sequence_number: new_connection_id_frame.sequence() as u32,
                 retire_prior_to: new_connection_id_frame.retire_prior_to() as u32,
-                connection_id_length: new_connection_id_frame.connection_id().len() as _,
+                connection_id_length: Some(new_connection_id_frame.connection_id().len() as u8),
                 connection_id: (*new_connection_id_frame.connection_id()).into(),
-                stateless_reset_token: (**new_connection_id_frame.reset_token()).into(),
+                stateless_reset_token: Some((**new_connection_id_frame.reset_token()).into()),
             },
             ReliableFrame::RetireConnectionId(retire_connection_id_frame) => {
                 QuicFrame::RetireConnectionId {
@@ -705,7 +705,7 @@ impl From<&StreamCtlFrame> for QuicFrame {
             StreamCtlFrame::ResetStream(reset_stream_frame) => QuicFrame::ResetStream {
                 stream_id: reset_stream_frame.stream_id().id(),
                 error_code: (reset_stream_frame.app_error_code() as u32).into(),
-                final_size: reset_stream_frame.final_size().into(),
+                final_size: reset_stream_frame.final_size(),
                 length: None,
                 payload_length: None,
             },
@@ -720,11 +720,11 @@ impl From<&StreamCtlFrame> for QuicFrame {
                 maximum: max_stream_data_frame.max_stream_data(),
             },
             StreamCtlFrame::MaxStreams(max_streams_frame) => match max_streams_frame {
-                MaxStreamsFrame::Bi(maximum) => QuicFrame::MaxStream {
+                MaxStreamsFrame::Bi(maximum) => QuicFrame::MaxStreams {
                     stream_type: StreamType::Bidirectional,
                     maximum: maximum.into_inner(),
                 },
-                MaxStreamsFrame::Uni(maximum) => QuicFrame::MaxStream {
+                MaxStreamsFrame::Uni(maximum) => QuicFrame::MaxStreams {
                     stream_type: StreamType::Unidirectional,
                     maximum: maximum.into_inner(),
                 },
@@ -732,15 +732,15 @@ impl From<&StreamCtlFrame> for QuicFrame {
             StreamCtlFrame::StreamDataBlocked(stream_data_blocked_frame) => {
                 QuicFrame::StreamDataBlocked {
                     stream_id: stream_data_blocked_frame.stream_id().id(),
-                    maximum: stream_data_blocked_frame.maximum_stream_data(),
+                    limit: stream_data_blocked_frame.maximum_stream_data(),
                 }
             }
             StreamCtlFrame::StreamsBlocked(streams_blocked_frame) => match streams_blocked_frame {
-                StreamsBlockedFrame::Bi(limit) => QuicFrame::StreamBlocked {
+                StreamsBlockedFrame::Bi(limit) => QuicFrame::StreamsBlocked {
                     stream_type: StreamType::Bidirectional,
                     limit: limit.into_inner(),
                 },
-                StreamsBlockedFrame::Uni(limit) => QuicFrame::StreamBlocked {
+                StreamsBlockedFrame::Uni(limit) => QuicFrame::StreamsBlocked {
                     stream_type: StreamType::Unidirectional,
                     limit: limit.into_inner(),
                 },
@@ -752,14 +752,14 @@ impl From<&StreamCtlFrame> for QuicFrame {
 impl From<&ConnectionCloseFrame> for QuicFrame {
     fn from(frame: &ConnectionCloseFrame) -> Self {
         Self::ConnectionClose {
-            error_space: match &frame {
-                ConnectionCloseFrame::App(..) => ConenctionCloseErrorSpace::Application,
-                ConnectionCloseFrame::Quic(..) => ConenctionCloseErrorSpace::Transport,
-            },
+            error_space: Some(match &frame {
+                ConnectionCloseFrame::App(..) => ConnectionCloseErrorSpace::Application,
+                ConnectionCloseFrame::Quic(..) => ConnectionCloseErrorSpace::Transport,
+            }),
             error_code: match &frame {
-                ConnectionCloseFrame::App(frame) => ApplicationCode::from(frame).into(),
+                ConnectionCloseFrame::App(frame) => Some(ApplicationCode::from(frame).into()),
                 ConnectionCloseFrame::Quic(frame) => {
-                    connectivity::ConnectionCode::from(frame).into()
+                    Some(connectivity::ConnectionCode::from(frame).into())
                 }
             },
             reason: match &frame {
@@ -889,7 +889,7 @@ pub enum StreamType {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ConenctionCloseErrorSpace {
+pub enum ConnectionCloseErrorSpace {
     Transport,
     Application,
 }
@@ -923,7 +923,7 @@ pub enum TransportError {
     FinalSizeError,
     FrameEncodingError,
     TransportParameterError,
-    ConnectionIDLimitError,
+    ConnectionIdLimitError,
     ProtocolViolation,
     InvalidToken,
     ApplicationError,
@@ -936,9 +936,7 @@ pub enum TransportError {
 // 8.13.24
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ApplicationError {
-    Unknow,
-}
+pub enum ApplicationError {}
 
 // 8.13.25
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -980,6 +978,387 @@ crate::gen_builder_method! {
     PathEndpointInfoBuilder => PathEndpointInfo;
     PacketHeaderBuilder     => PacketHeader;
     TokenBuilder            => Token;
+}
+
+mod rollback {
+    use super::*;
+    use crate::{build, legacy::quic as legacy};
+
+    impl From<IPAddress> for legacy::IPAddress {
+        #[inline]
+        fn from(value: IPAddress) -> Self {
+            legacy::IPAddress::from(value.0)
+        }
+    }
+
+    impl From<IpVersion> for legacy::IPVersion {
+        #[inline]
+        fn from(value: IpVersion) -> Self {
+            match value {
+                IpVersion::V4 => legacy::IPVersion::V4,
+                IpVersion::V6 => legacy::IPVersion::V6,
+            }
+        }
+    }
+
+    impl From<ConnectionID> for legacy::ConnectionID {
+        #[inline]
+        fn from(value: ConnectionID) -> Self {
+            legacy::ConnectionID::from(HexString::from(Bytes::from(value.0.to_vec())))
+        }
+    }
+
+    impl From<Owner> for legacy::Owner {
+        #[inline]
+        fn from(value: Owner) -> Self {
+            match value {
+                Owner::Local => legacy::Owner::Local,
+                Owner::Remote => legacy::Owner::Remote,
+            }
+        }
+    }
+
+    impl From<PacketType> for legacy::PacketType {
+        #[inline]
+        fn from(value: PacketType) -> Self {
+            match value {
+                PacketType::Initial => legacy::PacketType::Initial,
+                PacketType::Handshake => legacy::PacketType::Handshake,
+                PacketType::ZeroRTT => legacy::PacketType::ZeroRTT,
+                PacketType::OneRTT => legacy::PacketType::OneRTT,
+                PacketType::Retry => legacy::PacketType::Retry,
+                PacketType::VersionNegotiation => legacy::PacketType::VersionNegotiation,
+                PacketType::StatelessReset => legacy::PacketType::StatelessReset,
+                PacketType::Unknown => legacy::PacketType::Unknown,
+            }
+        }
+    }
+
+    impl From<PacketNumberSpace> for legacy::PacketNumberSpace {
+        #[inline]
+        fn from(value: PacketNumberSpace) -> Self {
+            match value {
+                PacketNumberSpace::Initial => legacy::PacketNumberSpace::Initial,
+                PacketNumberSpace::Handshake => legacy::PacketNumberSpace::Handshake,
+                PacketNumberSpace::ApplicationData => legacy::PacketNumberSpace::ApplicationData,
+            }
+        }
+    }
+
+    impl From<TokenType> for legacy::TokenType {
+        #[inline]
+        fn from(value: TokenType) -> Self {
+            match value {
+                TokenType::Retry => legacy::TokenType::Retry,
+                TokenType::Resumption => legacy::TokenType::Resumption,
+            }
+        }
+    }
+
+    impl From<Token> for legacy::Token {
+        #[inline]
+        fn from(value: Token) -> Self {
+            build!(legacy::Token {
+                ?r#type: value.r#type,
+                details: value.details,
+                ?length: value.raw.as_ref().and_then(|raw| raw.length.map(|length| length as u32)),
+                ?data: value.raw.and_then(|raw| raw.data)
+            })
+        }
+    }
+
+    impl From<StatelessResetToken> for legacy::Token {
+        #[inline]
+        fn from(value: StatelessResetToken) -> Self {
+            build!(legacy::Token {
+                r#type: TokenType::Retry,
+                details: HashMap::new(),
+                length: 16u32,
+                data: { Bytes::from_owner(value.0.to_vec()) }
+            })
+        }
+    }
+
+    impl From<PacketHeader> for legacy::PacketHeader {
+        fn from(value: PacketHeader) -> Self {
+            build!(legacy::PacketHeader {
+                packet_type: value.packet_type,
+                ?packet_number: value.packet_number,
+                ?flags: value.flags,
+                ?token: value.token,
+                ?length: value.length,
+                ?version: value.version,
+                ?scil: value.scil,
+                ?dcil: value.dcil,
+                ?scid: value.scid,
+                ?dcid: value.dcid
+            })
+        }
+    }
+
+    impl From<TransportError> for legacy::TransportError {
+        #[inline]
+        fn from(value: TransportError) -> Self {
+            match value {
+                TransportError::NoError => legacy::TransportError::NoError,
+                TransportError::InternalError => legacy::TransportError::InternalError,
+                TransportError::ConnectionRefused => legacy::TransportError::ConnectionRefused,
+                TransportError::FlowControlError => legacy::TransportError::FlowControlError,
+                TransportError::StreamLimitError => legacy::TransportError::StreamLimitError,
+                TransportError::StreamStateError => legacy::TransportError::StreamStateError,
+                TransportError::FinalSizeError => legacy::TransportError::FinalSizeError,
+                TransportError::FrameEncodingError => legacy::TransportError::FrameEncodingError,
+                TransportError::TransportParameterError => {
+                    legacy::TransportError::TransportParameterError
+                }
+                TransportError::ConnectionIdLimitError => {
+                    legacy::TransportError::ConnectionIdLimitError
+                }
+                TransportError::ProtocolViolation => legacy::TransportError::ProtocolViolation,
+                TransportError::InvalidToken => legacy::TransportError::InvalidToken,
+                TransportError::ApplicationError => legacy::TransportError::ApplicationError,
+                TransportError::CryptoBufferExceeded => {
+                    legacy::TransportError::CryptoBufferExceeded
+                }
+                TransportError::KeyUpdateError => legacy::TransportError::KeyUpdateError,
+                TransportError::AeadLimitReached => legacy::TransportError::AeadLimitReached,
+                TransportError::NoViablePath => legacy::TransportError::NoViablePath,
+            }
+        }
+    }
+
+    impl From<StreamType> for legacy::StreamType {
+        #[inline]
+        fn from(value: StreamType) -> Self {
+            match value {
+                StreamType::Unidirectional => legacy::StreamType::Unidirectional,
+                StreamType::Bidirectional => legacy::StreamType::Bidirectional,
+            }
+        }
+    }
+
+    impl From<ConnectionCloseErrorSpace> for legacy::ConnectionCloseErrorSpace {
+        #[inline]
+        fn from(value: ConnectionCloseErrorSpace) -> Self {
+            match value {
+                ConnectionCloseErrorSpace::Transport => {
+                    legacy::ConnectionCloseErrorSpace::Transport
+                }
+                ConnectionCloseErrorSpace::Application => {
+                    legacy::ConnectionCloseErrorSpace::Application
+                }
+            }
+        }
+    }
+
+    impl TryFrom<ConnectionCloseErrorCode> for legacy::ConnectionCloseErrorCode {
+        type Error = ();
+        #[inline]
+        fn try_from(value: ConnectionCloseErrorCode) -> Result<Self, ()> {
+            match value {
+                ConnectionCloseErrorCode::TransportError(error) => Ok(
+                    legacy::ConnectionCloseErrorCode::TransportError(error.into()),
+                ),
+                ConnectionCloseErrorCode::CryptoError(_error) => Err(()),
+                ConnectionCloseErrorCode::ApplicationError(error) => Ok(
+                    legacy::ConnectionCloseErrorCode::ApplicationError(error.into()),
+                ),
+                ConnectionCloseErrorCode::Value(value) => {
+                    Ok(legacy::ConnectionCloseErrorCode::Value(value))
+                }
+            }
+        }
+    }
+
+    impl From<ConnectionCloseTriggerFrameType> for legacy::ConnectionCloseTriggerFrameType {
+        #[inline]
+        fn from(value: ConnectionCloseTriggerFrameType) -> Self {
+            match value {
+                ConnectionCloseTriggerFrameType::Id(id) => {
+                    legacy::ConnectionCloseTriggerFrameType::Id(id)
+                }
+                ConnectionCloseTriggerFrameType::Text(text) => {
+                    legacy::ConnectionCloseTriggerFrameType::Text(text)
+                }
+            }
+        }
+    }
+
+    impl From<QuicFrame> for legacy::QuicFrame {
+        fn from(value: QuicFrame) -> Self {
+            match value {
+                QuicFrame::Padding {
+                    length,
+                    payload_length,
+                } => legacy::QuicFrame::Padding {
+                    length,
+                    payload_length,
+                },
+                QuicFrame::Ping {
+                    length,
+                    payload_length,
+                } => legacy::QuicFrame::Ping {
+                    length,
+                    payload_length,
+                },
+                QuicFrame::Ack {
+                    ack_delay,
+                    acked_ranges,
+                    ect1,
+                    ect0,
+                    ce,
+                    length,
+                    payload_length,
+                } => legacy::QuicFrame::Ack {
+                    ack_delay,
+                    acked_ranges,
+                    ect1,
+                    ect0,
+                    ce,
+                    length,
+                    payload_length,
+                },
+                QuicFrame::ResetStream {
+                    stream_id,
+                    error_code,
+                    final_size,
+                    length,
+                    payload_length,
+                } => legacy::QuicFrame::ResetStream {
+                    stream_id,
+                    error_code: error_code.into(),
+                    final_size,
+                    length,
+                    payload_length,
+                },
+                QuicFrame::StopSending {
+                    stream_id,
+                    error_code,
+                    length,
+                    payload_length,
+                } => legacy::QuicFrame::StopSending {
+                    stream_id,
+                    error_code: error_code.into(),
+                    length,
+                    payload_length,
+                },
+                QuicFrame::Crypto {
+                    offset,
+                    length,
+                    payload_length,
+                    raw: _,
+                } => legacy::QuicFrame::Crypto {
+                    offset,
+                    length,
+                    payload_length,
+                },
+                QuicFrame::NewToken { token } => legacy::QuicFrame::NewToken {
+                    token: token.into(),
+                },
+                QuicFrame::Stream {
+                    stream_id,
+                    offset,
+                    length,
+                    fin,
+                    raw,
+                } => legacy::QuicFrame::Stream {
+                    stream_id,
+                    offset,
+                    length,
+                    fin,
+                    raw,
+                },
+                QuicFrame::MaxData { maximum } => legacy::QuicFrame::MaxData { maximum },
+                QuicFrame::MaxStreamData { stream_id, maximum } => {
+                    legacy::QuicFrame::MaxStreamData { stream_id, maximum }
+                }
+                QuicFrame::MaxStreams {
+                    stream_type,
+                    maximum,
+                } => legacy::QuicFrame::MaxStreams {
+                    stream_type: stream_type.into(),
+                    maximum,
+                },
+                QuicFrame::DataBlocked { limit } => legacy::QuicFrame::DataBlocked { limit },
+                QuicFrame::StreamDataBlocked { stream_id, limit } => {
+                    legacy::QuicFrame::StreamDataBlocked { stream_id, limit }
+                }
+                QuicFrame::StreamsBlocked { stream_type, limit } => {
+                    legacy::QuicFrame::StreamsBlocked {
+                        stream_type: stream_type.into(),
+                        limit,
+                    }
+                }
+                QuicFrame::NewConnectionId {
+                    sequence_number,
+                    retire_prior_to,
+                    connection_id_length,
+                    connection_id,
+                    stateless_reset_token,
+                } => legacy::QuicFrame::NewConnectionId {
+                    sequence_number,
+                    retire_prior_to,
+                    connection_id_length,
+                    connection_id: connection_id.into(),
+                    stateless_reset_token: stateless_reset_token.map(Into::into),
+                },
+                QuicFrame::RetireConnectionId { sequence_number } => {
+                    legacy::QuicFrame::RetireConnectionId { sequence_number }
+                }
+                QuicFrame::PathChallenge { data } => legacy::QuicFrame::PathChallenge { data },
+                QuicFrame::PathResponse { data } => legacy::QuicFrame::PathResponse { data },
+                QuicFrame::ConnectionClose {
+                    error_space,
+                    error_code,
+                    reason,
+                    reason_bytes: _,
+                    trigger_frame_type,
+                } => legacy::QuicFrame::ConnectionClose {
+                    error_space: error_space.map(Into::into),
+                    error_code: error_code.and_then(|error_code| error_code.try_into().ok()),
+                    raw_error_code: match error_code {
+                        Some(ConnectionCloseErrorCode::CryptoError(CryptoError(value))) => {
+                            Some(value as u32)
+                        }
+                        _ => None,
+                    },
+                    reason,
+                    trigger_frame_type: trigger_frame_type.map(Into::into),
+                },
+                QuicFrame::HandshakeDone {} => legacy::QuicFrame::HandshakeDone {},
+                QuicFrame::Unknow {
+                    frame_type_bytes,
+                    raw,
+                } => legacy::QuicFrame::Unknown {
+                    raw_frame_type: frame_type_bytes,
+                    raw_length: raw
+                        .as_ref()
+                        .and_then(|raw| raw.length.map(|length| length as u32)),
+                    raw: raw.and_then(|raw| raw.data),
+                },
+                QuicFrame::Datagram { length, raw } => legacy::QuicFrame::Datagram { length, raw },
+            }
+        }
+    }
+
+    impl From<ApplicationError> for legacy::ApplicationError {
+        #[inline]
+        fn from(value: ApplicationError) -> Self {
+            match value {}
+        }
+    }
+
+    impl From<ApplicationCode> for legacy::ApplicationCode {
+        #[inline]
+        fn from(value: ApplicationCode) -> Self {
+            match value {
+                ApplicationCode::ApplicationError(error) => {
+                    legacy::ApplicationCode::ApplicationError(error.into())
+                }
+                ApplicationCode::Value(value) => legacy::ApplicationCode::Value(value),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
