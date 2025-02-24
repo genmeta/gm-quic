@@ -1,8 +1,8 @@
 use rustls::quic::{HeaderProtectionKey, PacketKey};
 
 use super::{
-    error::Error, take_pn_len, GetPacketNumberLength, KeyPhaseBit, LongSpecificBits, PacketNumber,
-    ShortSpecificBits,
+    GetPacketNumberLength, KeyPhaseBit, LongSpecificBits, PacketNumber, ShortSpecificBits,
+    error::Error, take_pn_len,
 };
 
 /// Removes the header protection of the long packet.

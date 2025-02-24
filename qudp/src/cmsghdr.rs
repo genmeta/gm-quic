@@ -11,7 +11,7 @@ pub(super) struct CmsgHdr<'a, T: MsgHdr> {
 impl<'a, T: MsgHdr> CmsgHdr<'a, T> {
     pub(crate) unsafe fn new(hdr: &'a mut T) -> Self {
         Self {
-            cmsg: hdr.first_cmsg().as_mut(),
+            cmsg: unsafe { hdr.first_cmsg().as_mut() },
             hdr,
             len: 0,
         }
@@ -77,7 +77,7 @@ impl<'a, T: MsgHdr> Iter<'a, T> {
     pub(crate) unsafe fn new(hdr: &'a T) -> Self {
         Self {
             hdr,
-            cmsg: hdr.first_cmsg().as_ref(),
+            cmsg: unsafe { hdr.first_cmsg().as_ref() },
         }
     }
 }
@@ -96,5 +96,5 @@ impl<'a, T: MsgHdr> Iterator for Iter<'a, T> {
 /// `cmsg` must refer to a cmsg containing a payload of type `T`
 pub(crate) unsafe fn decode<T: Copy, C: Cmsg>(cmsg: &C) -> T {
     assert!(mem::align_of::<T>() <= mem::align_of::<C>());
-    ptr::read(cmsg.data() as *const T)
+    unsafe { ptr::read(cmsg.data() as *const T) }
 }

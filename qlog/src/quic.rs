@@ -10,9 +10,9 @@ use qbase::{
         StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
     },
     packet::header::{
+        GetDcid, GetScid,
         long::{HandshakeHeader, InitialHeader, ZeroRttHeader},
         short::OneRttHeader,
-        GetDcid, GetScid,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -294,6 +294,38 @@ impl PacketHeaderBuilder {
         self.packet_type(PacketType::OneRTT)
             .dcil(header.dcid().len() as u8)
             .scid(*header.dcid())
+    }
+}
+
+impl From<&InitialHeader> for PacketHeaderBuilder {
+    fn from(header: &InitialHeader) -> Self {
+        let mut builder = PacketHeader::builder();
+        builder.initial(header);
+        builder
+    }
+}
+
+impl From<&HandshakeHeader> for PacketHeaderBuilder {
+    fn from(header: &HandshakeHeader) -> Self {
+        let mut builder = PacketHeader::builder();
+        builder.handshake(header);
+        builder
+    }
+}
+
+impl From<&ZeroRttHeader> for PacketHeaderBuilder {
+    fn from(header: &ZeroRttHeader) -> Self {
+        let mut builder = PacketHeader::builder();
+        builder.zero_rtt(header);
+        builder
+    }
+}
+
+impl From<&OneRttHeader> for PacketHeaderBuilder {
+    fn from(header: &OneRttHeader) -> Self {
+        let mut builder = PacketHeader::builder();
+        builder.one_rtt(header);
+        builder
     }
 }
 

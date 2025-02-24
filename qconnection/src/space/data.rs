@@ -3,40 +3,31 @@ use std::sync::Arc;
 use bytes::BufMut;
 use futures::{Stream, StreamExt};
 use qbase::{
+    Epoch,
     cid::ConnectionId,
     error::Error,
     frame::{
         ConnectionCloseFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
         ReceiveFrame, SendFrame,
     },
+    packet,
     packet::{
-        self,
-        decrypt::{
-            decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
-        },
+        CipherPacket, MarshalFrame, PacketWriter,
         header::{
-            long::{io::LongHeaderBuilder, ZeroRttHeader},
             GetType, OneRttHeader,
+            long::{ZeroRttHeader, io::LongHeaderBuilder},
         },
         keys::{ArcKeys, ArcOneRttKeys, ArcOneRttPacketKeys, HeaderProtectionKeys},
         number::PacketNumber,
-        r#type::Type,
         signal::SpinBit,
-        CipherPacket, MarshalFrame, PacketWriter,
+        r#type::Type,
     },
     param::CommonParameters,
     sid::{ControlConcurrency, Role},
-    Epoch,
 };
 use qcongestion::{CongestionControl, TrackPackets};
 use qinterface::path::{Pathway, Socket};
-use qlog::{
-    quic::{
-        transport::{PacketDropped, PacketDroppedTrigger, PacketReceived},
-        PacketHeader, QuicFrames,
-    },
-    telemetry::Instrument,
-};
+use qlog::{quic::QuicFrames, telemetry::Instrument};
 use qrecovery::{
     crypto::CryptoStream,
     journal::{ArcRcvdJournal, DataJournal},
@@ -44,23 +35,25 @@ use qrecovery::{
 };
 #[cfg(feature = "unreliable")]
 use qunreliable::DatagramFlow;
-use tokio::sync::{mpsc, Notify};
-use tracing::{trace_span, Instrument as _};
+use tokio::sync::{Notify, mpsc};
+use tracing::{Instrument as _, trace_span};
 
-use super::DecryptedPacket;
+use super::{PlainPacket, ReceivedCipherPacket};
 use crate::{
+    ArcReliableFrameDeque, Components, DataStreams,
     events::{ArcEventBroker, EmitEvent, Event},
     path::{Path, SendBuffer},
-    space::{pipe, AckData, FlowControlledDataStreams},
+    space::{AckData, FlowControlledDataStreams, pipe},
     termination::ClosingState,
     tx::{MiddleAssembledPacket, PacketMemory, Transaction},
-    ArcReliableFrameDeque, Components, DataStreams,
 };
 
-pub type ZeroRttPacket = (ZeroRttHeader, bytes::BytesMut, usize);
-pub type DecryptedZeroRttPacket = DecryptedPacket<ZeroRttHeader>;
-pub type OneRttPacket = (OneRttHeader, bytes::BytesMut, usize);
-pub type DecryptedOneRttPacket = DecryptedPacket<OneRttHeader>;
+pub type ReceivedZeroRttBundle = ((ZeroRttHeader, bytes::BytesMut, usize), Pathway, Socket);
+pub type ReceivedZeroRttPacket = ReceivedCipherPacket<ZeroRttHeader>;
+pub type PlainZeroRttPacket = PlainPacket<ZeroRttHeader>;
+pub type ReceivedOneRttBundle = ((OneRttHeader, bytes::BytesMut, usize), Pathway, Socket);
+pub type ReceivedOneRttPacket = ReceivedCipherPacket<OneRttHeader>;
+pub type PlainOneRttPacket = PlainPacket<OneRttHeader>;
 
 pub struct DataSpace {
     zero_rtt_keys: ArcKeys,
@@ -98,179 +91,34 @@ impl DataSpace {
 
     pub async fn decrypt_0rtt_packet(
         &self,
-        (header, mut payload, payload_offset): ZeroRttPacket,
-    ) -> Option<Result<DecryptedZeroRttPacket, Error>> {
-        let keys = match self.zero_rtt_keys.get_remote_keys().await {
-            Some(keys) => keys,
+        packet: ReceivedZeroRttPacket,
+    ) -> Option<Result<PlainZeroRttPacket, Error>> {
+        match self.zero_rtt_keys.get_remote_keys().await {
+            Some(keys) => packet.decrypt_as_long(
+                keys.remote.header.as_ref(),
+                keys.remote.packet.as_ref(),
+                |pn| self.journal.of_rcvd_packets().decode_pn(pn),
+            ),
             None => {
-                qlog::event!(PacketDropped {
-                    header: PacketHeader { zero_rtt: &header },
-                    raw: payload.freeze(),
-                    trigger: PacketDroppedTrigger::KeyUnavailable,
-                });
-                return None;
+                packet.drop_on_key_unavailable();
+                None
             }
-        };
-        let (hpk, pk) = (keys.remote.header.as_ref(), keys.remote.packet.as_ref());
-
-        let undecoded_pn =
-            match remove_protection_of_long_packet(hpk, payload.as_mut(), payload_offset) {
-                Ok(undecoded) => match undecoded {
-                    Some(undecoded) => undecoded,
-                    None => {
-                        qlog::event!(PacketDropped {
-                            header: PacketHeader { zero_rtt: &header },
-                            raw: payload.freeze(),
-                            trigger: PacketDroppedTrigger::DecryptionFailure,
-                        });
-                        return None;
-                    }
-                },
-                Err(reverse_bits) => {
-                    qlog::event!(PacketDropped {
-                        header: PacketHeader { zero_rtt: &header },
-                        raw: payload.freeze(),
-                        details: Map {
-                            reason: reverse_bits.to_string()
-                        },
-                        trigger: PacketDroppedTrigger::DecryptionFailure,
-                    });
-                    return Some(Err(reverse_bits.into()));
-                }
-            };
-
-        let rcvd_journal = self.journal.of_rcvd_packets();
-        let decoded_pn = match rcvd_journal.decode_pn(undecoded_pn) {
-            Ok(pn) => pn,
-            Err(invalid_pn) => {
-                qlog::event!(PacketDropped {
-                    header: PacketHeader { zero_rtt: &header },
-                    raw: payload.freeze(),
-                    details: Map {
-                        reason: invalid_pn.to_string()
-                    },
-                    trigger: invalid_pn,
-                });
-                return None;
-            }
-        };
-        let body_offset = payload_offset + undecoded_pn.size();
-        let body_length = match decrypt_packet(pk, decoded_pn, payload.as_mut(), body_offset) {
-            Ok(body_length) => body_length,
-            Err(error) => {
-                qlog::event!(PacketDropped {
-                    header: PacketHeader {
-                        zero_rtt: &header,
-                        packet_number: decoded_pn
-                    },
-                    raw: payload.freeze(),
-                    details: Map {
-                        reason: error.to_string()
-                    },
-                    trigger: error
-                });
-                return None;
-            }
-        };
-
-        let decrypted = payload.freeze();
-        Some(Ok(DecryptedPacket {
-            header,
-            decoded_pn,
-            undecoded_pn,
-            decrypted,
-            payload_offset,
-            body_length,
-        }))
+        }
     }
 
     pub async fn decrypt_1rtt_packet(
         &self,
-        (header, mut payload, payload_offset): OneRttPacket,
-    ) -> Option<Result<DecryptedOneRttPacket, Error>> {
-        let (hpk, pk) = match self.one_rtt_keys.get_remote_keys().await {
-            Some((hpk, pk)) => (hpk, pk),
+        packet: ReceivedOneRttPacket,
+    ) -> Option<Result<PlainOneRttPacket, Error>> {
+        match self.one_rtt_keys.get_remote_keys().await {
+            Some((hpk, pk)) => packet.decrypt_as_short(hpk.as_ref(), &pk, |pn| {
+                self.journal.of_rcvd_packets().decode_pn(pn)
+            }),
             None => {
-                qlog::event!(PacketDropped {
-                    header: PacketHeader { one_rtt: &header },
-                    raw: payload.freeze(),
-                    trigger: PacketDroppedTrigger::KeyUnavailable,
-                });
-                return None;
+                packet.drop_on_key_unavailable();
+                None
             }
-        };
-        let (undecoded_pn, key_phase) =
-            match remove_protection_of_short_packet(hpk.as_ref(), payload.as_mut(), payload_offset)
-            {
-                Ok(pair) => match pair {
-                    Some((undecoded_pn, key_phase)) => (undecoded_pn, key_phase),
-                    None => {
-                        qlog::event!(PacketDropped {
-                            header: PacketHeader { one_rtt: &header },
-                            raw: payload.freeze(),
-                            trigger: PacketDroppedTrigger::DecryptionFailure,
-                        });
-                        return None;
-                    }
-                },
-                Err(reverse_bits) => {
-                    qlog::event!(PacketDropped {
-                        header: PacketHeader { one_rtt: &header },
-                        raw: payload.freeze(),
-                        details: Map {
-                            reason: reverse_bits.to_string()
-                        },
-                        trigger: PacketDroppedTrigger::DecryptionFailure,
-                    });
-                    return Some(Err(reverse_bits.into()));
-                }
-            };
-
-        let rcvd_journal = self.journal.of_rcvd_packets();
-        let decoded_pn = match rcvd_journal.decode_pn(undecoded_pn) {
-            Ok(pn) => pn,
-            Err(invalid_pn) => {
-                qlog::event!(PacketDropped {
-                    header: PacketHeader { one_rtt: &header },
-                    raw: payload.freeze(),
-                    details: Map {
-                        reason: invalid_pn.to_string()
-                    },
-                    trigger: invalid_pn,
-                });
-                return None;
-            }
-        };
-        let pk = pk.lock_guard().get_remote(key_phase, decoded_pn);
-        let body_offset = payload_offset + undecoded_pn.size();
-        let body_length =
-            match decrypt_packet(pk.as_ref(), decoded_pn, payload.as_mut(), body_offset) {
-                Ok(body_length) => body_length,
-                Err(error) => {
-                    qlog::event!(PacketDropped {
-                        header: PacketHeader {
-                            one_rtt: &header,
-                            packet_number: decoded_pn
-                        },
-                        raw: payload.freeze(),
-                        details: Map {
-                            reason: error.to_string()
-                        },
-                        trigger: error
-                    });
-                    return None;
-                }
-            };
-        let decrypted = payload.freeze();
-
-        Some(Ok(DecryptedPacket {
-            header,
-            decoded_pn,
-            undecoded_pn,
-            decrypted,
-            body_length,
-            payload_offset,
-        }))
+        }
     }
 
     pub fn try_assemble_0rtt(
@@ -415,8 +263,8 @@ impl DataSpace {
 
 #[tracing::instrument(level = "trace", name = "data_space_packet_handler", skip_all)]
 pub fn spawn_deliver_and_parse(
-    mut zeor_rtt_packets: impl Stream<Item = (ZeroRttPacket, Pathway, Socket)> + Unpin + Send + 'static,
-    mut one_rtt_packets: impl Stream<Item = (OneRttPacket, Pathway, Socket)> + Unpin + Send + 'static,
+    mut zeor_rtt_packets: impl Stream<Item = ReceivedZeroRttBundle> + Unpin + Send + 'static,
+    mut one_rtt_packets: impl Stream<Item = ReceivedOneRttBundle> + Unpin + Send + 'static,
     space: Arc<DataSpace>,
     components: &Components,
     event_broker: ArcEventBroker,
@@ -523,125 +371,108 @@ pub fn spawn_deliver_and_parse(
         }
     };
 
-    tokio::spawn(
+    let parse_zero_rtt = {
+        let components = components.clone();
+        let space = space.clone();
+        let event_broker = event_broker.clone();
+        let dispatch_data_frame = dispatch_data_frame.clone();
+        async move |packet: ReceivedZeroRttPacket, pathway, socket| match space
+            .decrypt_0rtt_packet(packet)
+            .await
         {
-            let components = components.clone();
-            let space = space.clone();
-            let event_broker = event_broker.clone();
-            let dispatch_data_frame = dispatch_data_frame.clone();
-            async move {
-                while let Some((packet, pathway, socket)) = zeor_rtt_packets.next().await {
-                    let packet_size = packet.1.len();
-                    match space.decrypt_0rtt_packet(packet).await {
-                        Some(Ok(packet)) => {
-                            let path = match components.get_or_create_path(socket, pathway, true) {
-                                Some(path) => path,
-                                None => {
-                                    qlog::event!(PacketDropped {
-                                        header: packet.qlog_header(),
-                                        raw: packet.raw_info(),
-                                        details: Map {
-                                            reason: "connection closed"
-                                        },
-                                        trigger: PacketDroppedTrigger::Genera,
-                                    });
-                                    return;
-                                }
-                            };
-                            path.on_rcvd(packet_size);
-
-                            let mut frames = QuicFrames::new();
-                            match FrameReader::new(packet.body(), packet.header.get_type())
-                                .try_fold(false, |is_ack_packet, frame| {
-                                    let (frame, is_ack_eliciting) = frame?;
-                                    frames.extend(Some(&frame));
-                                    dispatch_data_frame(frame, packet.header.get_type(), &path);
-                                    Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
-                                }) {
-                                Ok(is_ack_packet) => {
-                                    qlog::event!(PacketReceived {
-                                        header: packet.qlog_header(),
-                                        frames,
-                                        raw: packet.raw_info()
-                                    });
-                                    space
-                                        .journal
-                                        .of_rcvd_packets()
-                                        .register_pn(packet.decoded_pn);
-                                    path.cc().on_pkt_rcvd(
-                                        Epoch::Data,
-                                        packet.decoded_pn,
-                                        is_ack_packet,
-                                    );
-                                }
-                                Err(error) => event_broker.emit(Event::Failed(error)),
-                            }
-                        }
-                        Some(Err(error)) => event_broker.emit(Event::Failed(error)),
-                        None => continue,
+            Some(Ok(packet)) => {
+                let path = match components.get_or_create_path(socket, pathway, true) {
+                    Some(path) => path,
+                    None => {
+                        packet.drop_on_conenction_closed();
+                        return;
                     }
+                };
+                path.on_rcvd(packet.plain.len());
+
+                let mut frames = QuicFrames::new();
+                match FrameReader::new(packet.body(), packet.header.get_type()).try_fold(
+                    false,
+                    |is_ack_packet, frame| {
+                        let (frame, is_ack_eliciting) = frame?;
+                        frames.extend(Some(&frame));
+                        dispatch_data_frame(frame, packet.header.get_type(), &path);
+                        Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                    },
+                ) {
+                    Ok(is_ack_packet) => {
+                        space
+                            .journal
+                            .of_rcvd_packets()
+                            .register_pn(packet.decoded_pn);
+                        path.cc()
+                            .on_pkt_rcvd(Epoch::Data, packet.decoded_pn, is_ack_packet);
+                        packet.emit_received(frames);
+                    }
+                    Err(error) => event_broker.emit(Event::Failed(error)),
                 }
+            }
+            Some(Err(error)) => event_broker.emit(Event::Failed(error)),
+            None => {}
+        }
+    };
+
+    let parse_one_rtt = {
+        let components = components.clone();
+        async move |packet: ReceivedOneRttPacket, pathway, socket| match space
+            .decrypt_1rtt_packet(packet)
+            .await
+        {
+            Some(Ok(packet)) => {
+                let path = match components.get_or_create_path(socket, pathway, true) {
+                    Some(path) => path,
+                    None => {
+                        packet.drop_on_conenction_closed();
+                        return;
+                    }
+                };
+                path.on_rcvd(packet.plain.len());
+
+                let mut frames = QuicFrames::new();
+                match FrameReader::new(packet.body(), packet.header.get_type()).try_fold(
+                    false,
+                    |is_ack_packet, frame| {
+                        let (frame, is_ack_eliciting) = frame?;
+                        frames.extend(Some(&frame));
+                        dispatch_data_frame(frame, packet.header.get_type(), &path);
+                        Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                    },
+                ) {
+                    Ok(is_ack_packet) => {
+                        space
+                            .journal
+                            .of_rcvd_packets()
+                            .register_pn(packet.decoded_pn);
+                        path.cc()
+                            .on_pkt_rcvd(Epoch::Data, packet.decoded_pn, is_ack_packet);
+                        packet.emit_received(frames);
+                    }
+                    Err(error) => event_broker.emit(Event::Failed(error)),
+                }
+            }
+            Some(Err(error)) => event_broker.emit(Event::Failed(error)),
+            None => {}
+        }
+    };
+
+    tokio::spawn(
+        async move {
+            while let Some((packet, pathway, socket)) = zeor_rtt_packets.next().await {
+                parse_zero_rtt(packet.into(), pathway, socket).await;
             }
         }
         .instrument_in_current()
         .in_current_span(),
     );
     tokio::spawn(
-        {
-            let components = components.clone();
-            let dispatch_data_frame = dispatch_data_frame.clone();
-            async move {
-                while let Some((packet, pathway, socket)) = one_rtt_packets.next().await {
-                    let packet_size = packet.1.len();
-                    match space.decrypt_1rtt_packet(packet).await {
-                        Some(Ok(packet)) => {
-                            let path = match components.get_or_create_path(socket, pathway, true) {
-                                Some(path) => path,
-                                None => {
-                                    qlog::event!(PacketDropped {
-                                        header: packet.qlog_header(),
-                                        raw: packet.raw_info(),
-                                        details: Map {
-                                            reason: "connection closed"
-                                        },
-                                        trigger: PacketDroppedTrigger::Genera,
-                                    });
-                                    return;
-                                }
-                            };
-                            path.on_rcvd(packet_size);
-
-                            let mut frames = QuicFrames::new();
-                            match FrameReader::new(packet.body(), packet.header.get_type())
-                                .try_fold(false, |is_ack_packet, frame| {
-                                    let (frame, is_ack_eliciting) = frame?;
-                                    frames.extend(Some(&frame));
-                                    dispatch_data_frame(frame, packet.header.get_type(), &path);
-                                    Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
-                                }) {
-                                Ok(is_ack_packet) => {
-                                    qlog::event!(PacketReceived {
-                                        header: packet.qlog_header(),
-                                        frames,
-                                        raw: packet.raw_info()
-                                    });
-                                    space
-                                        .journal
-                                        .of_rcvd_packets()
-                                        .register_pn(packet.decoded_pn);
-                                    path.cc().on_pkt_rcvd(
-                                        Epoch::Data,
-                                        packet.decoded_pn,
-                                        is_ack_packet,
-                                    );
-                                }
-                                Err(error) => event_broker.emit(Event::Failed(error)),
-                            }
-                        }
-                        Some(Err(error)) => event_broker.emit(Event::Failed(error)),
-                        None => continue,
-                    }
-                }
+        async move {
+            while let Some((packet, pathway, socket)) = one_rtt_packets.next().await {
+                parse_one_rtt(packet.into(), pathway, socket).await;
             }
         }
         .instrument_in_current()
@@ -705,24 +536,21 @@ impl DataSpace {
 }
 
 impl ClosingDataSpace {
-    pub fn recv_packet(
-        &self,
-        (header, mut bytes, offset): OneRttPacket,
-    ) -> Option<ConnectionCloseFrame> {
-        let (hpk, pk) = &self.keys;
-        let hpk = &hpk.local;
-        let (undecoded_pn, key_phase) =
-            remove_protection_of_short_packet(hpk.as_ref(), bytes.as_mut(), offset).ok()??;
-        let pn = self.rcvd_journal.decode_pn(undecoded_pn).ok()?;
-        let body_offset = offset + undecoded_pn.size();
-        let pk = pk.lock_guard().get_remote(key_phase, pn);
-        let _pkt_len = decrypt_packet(pk.as_ref(), pn, bytes.as_mut(), body_offset).ok()?;
+    pub fn recv_packet(&self, packet: ReceivedOneRttPacket) -> Option<ConnectionCloseFrame> {
+        let packet = packet
+            .decrypt_as_short(self.keys.0.remote.as_ref(), &self.keys.1, |pn| {
+                self.rcvd_journal.decode_pn(pn)
+            })
+            .and_then(Result::ok)?;
 
-        FrameReader::new(bytes.freeze(), header.get_type())
+        let mut farmes = QuicFrames::new();
+        FrameReader::new(packet.body(), packet.header.get_type())
             .filter_map(Result::ok)
-            .find_map(|(f, _ack)| match f {
-                Frame::Close(ccf) => Some(ccf),
-                _ => None,
+            .inspect(|(f, _ack)| farmes.extend(Some(f)))
+            .fold(None, |ccf, (frame, _)| match (ccf, frame) {
+                (ccf @ Some(..), _) => ccf,
+                (None, Frame::Close(ccf)) => Some(ccf),
+                (None, _) => None,
             })
     }
 
@@ -746,14 +574,14 @@ impl ClosingDataSpace {
 }
 
 pub fn spawn_deliver_and_parse_closing(
-    mut packets: impl Stream<Item = (OneRttPacket, Pathway, Socket)> + Unpin + Send + 'static,
+    mut packets: impl Stream<Item = ReceivedOneRttBundle> + Unpin + Send + 'static,
     space: ClosingDataSpace,
     closing_state: Arc<ClosingState>,
     event_broker: ArcEventBroker,
 ) {
     tokio::spawn(async move {
         while let Some((packet, pathway, _socket)) = packets.next().await {
-            if let Some(ccf) = space.recv_packet(packet) {
+            if let Some(ccf) = space.recv_packet(packet.into()) {
                 event_broker.emit(Event::Closed(ccf.clone()));
                 return;
             }

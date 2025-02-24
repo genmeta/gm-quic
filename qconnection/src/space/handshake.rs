@@ -3,50 +3,44 @@ use std::sync::Arc;
 use bytes::BufMut;
 use futures::{Stream, StreamExt};
 use qbase::{
+    Epoch,
     cid::ConnectionId,
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
     packet::{
-        decrypt::{decrypt_packet, remove_protection_of_long_packet},
+        CipherPacket, MarshalFrame, PacketWriter,
         header::{
-            long::{io::LongHeaderBuilder, HandshakeHeader},
             GetDcid, GetType,
+            long::{HandshakeHeader, io::LongHeaderBuilder},
         },
         keys::ArcKeys,
         number::PacketNumber,
-        CipherPacket, MarshalFrame, PacketWriter,
     },
-    Epoch,
 };
 use qcongestion::{CongestionControl, TrackPackets};
 use qinterface::path::{Pathway, Socket};
-use qlog::{
-    quic::{
-        transport::{PacketDropped, PacketDroppedTrigger, PacketReceived},
-        PacketHeader, QuicFrames,
-    },
-    telemetry::Instrument,
-};
+use qlog::{quic::QuicFrames, telemetry::Instrument};
 use qrecovery::{
     crypto::CryptoStream,
     journal::{ArcRcvdJournal, HandshakeJournal},
 };
 use rustls::quic::Keys;
-use tokio::sync::{mpsc, Notify};
-use tracing::{trace_span, Instrument as _};
+use tokio::sync::{Notify, mpsc};
+use tracing::{Instrument as _, trace_span};
 
-use super::{AckHandshake, DecryptedPacket};
+use super::{AckHandshake, PlainPacket, ReceivedCipherPacket};
 use crate::{
+    Components,
     events::{ArcEventBroker, EmitEvent, Event},
     path::Path,
     space::pipe,
     termination::ClosingState,
     tx::{MiddleAssembledPacket, PacketMemory, Transaction},
-    Components,
 };
 
-pub type HandshakePacket = (HandshakeHeader, bytes::BytesMut, usize);
-pub type DecryptedHandshakePacket = DecryptedPacket<HandshakeHeader>;
+pub type ReceivedBundle = ((HandshakeHeader, bytes::BytesMut, usize), Pathway, Socket);
+pub type ReceiveHanshakePacket = ReceivedCipherPacket<HandshakeHeader>;
+pub type PlainHandshakePacket = PlainPacket<HandshakeHeader>;
 
 pub struct HandshakeSpace {
     keys: ArcKeys,
@@ -75,90 +69,19 @@ impl HandshakeSpace {
 
     pub async fn decrypt_packet(
         &self,
-        (header, mut payload, payload_offset): HandshakePacket,
-    ) -> Option<Result<DecryptedHandshakePacket, Error>> {
-        let keys = match self.keys.get_remote_keys().await {
-            Some(keys) => keys,
+        packet: ReceiveHanshakePacket,
+    ) -> Option<Result<PlainHandshakePacket, Error>> {
+        match self.keys.get_remote_keys().await {
+            Some(keys) => packet.decrypt_as_long(
+                keys.remote.header.as_ref(),
+                keys.remote.packet.as_ref(),
+                |pn| self.journal.of_rcvd_packets().decode_pn(pn),
+            ),
             None => {
-                qlog::event!(PacketDropped {
-                    header: PacketHeader { handshake: &header },
-                    raw: payload.freeze(),
-                    trigger: PacketDroppedTrigger::KeyUnavailable,
-                });
-                return None;
+                packet.drop_on_key_unavailable();
+                None
             }
-        };
-        let (hpk, pk) = (keys.remote.header.as_ref(), keys.remote.packet.as_ref());
-
-        let undecoded_pn =
-            match remove_protection_of_long_packet(hpk, payload.as_mut(), payload_offset) {
-                Ok(undecoded) => match undecoded {
-                    Some(undecoded) => undecoded,
-                    None => {
-                        qlog::event!(PacketDropped {
-                            header: PacketHeader { handshake: &header },
-                            raw: payload.freeze(),
-                            trigger: PacketDroppedTrigger::DecryptionFailure,
-                        });
-                        return None;
-                    }
-                },
-                Err(reverse_bits) => {
-                    qlog::event!(PacketDropped {
-                        header: PacketHeader { handshake: &header },
-                        raw: payload.freeze(),
-                        details: Map {
-                            reason: reverse_bits.to_string()
-                        },
-                        trigger: PacketDroppedTrigger::DecryptionFailure,
-                    });
-                    return Some(Err(reverse_bits.into()));
-                }
-            };
-
-        let rcvd_journal = self.journal.of_rcvd_packets();
-        let decoded_pn = match rcvd_journal.decode_pn(undecoded_pn) {
-            Ok(pn) => pn,
-            Err(invalid_pn) => {
-                qlog::event!(PacketDropped {
-                    header: PacketHeader { handshake: &header },
-                    raw: payload.freeze(),
-                    details: Map {
-                        reason: invalid_pn.to_string()
-                    },
-                    trigger: invalid_pn,
-                });
-                return None;
-            }
-        };
-        let body_offset = payload_offset + undecoded_pn.size();
-        let body_length = match decrypt_packet(pk, decoded_pn, payload.as_mut(), body_offset) {
-            Ok(body_length) => body_length,
-            Err(error) => {
-                qlog::event!(PacketDropped {
-                    header: PacketHeader {
-                        handshake: &header,
-                        packet_number: decoded_pn
-                    },
-                    raw: payload.freeze(),
-                    details: Map {
-                        reason: error.to_string()
-                    },
-                    trigger: error
-                });
-                return None;
-            }
-        };
-
-        let decrypted = payload.freeze();
-        Some(Ok(DecryptedPacket {
-            header,
-            decoded_pn,
-            undecoded_pn,
-            decrypted,
-            payload_offset,
-            body_length,
-        }))
+        }
     }
 
     pub fn try_assemble(
@@ -193,7 +116,7 @@ impl HandshakeSpace {
 
 #[tracing::instrument(level = "trace", name = "handshake_packet_handler", skip_all)]
 pub fn spawn_deliver_and_parse(
-    mut packets: impl Stream<Item = (HandshakePacket, Pathway, Socket)> + Unpin + Send + 'static,
+    mut bundles: impl Stream<Item = ReceivedBundle> + Unpin + Send + 'static,
     space: Arc<HandshakeSpace>,
     components: &Components,
     event_broker: ArcEventBroker,
@@ -212,93 +135,84 @@ pub fn spawn_deliver_and_parse(
         event_broker.clone(),
     );
 
+    let dispatch_frame = {
+        let event_broker = event_broker.clone();
+        move |frame: Frame, path: &Path| match frame {
+            Frame::Ack(f) => {
+                path.cc().on_ack(Epoch::Initial, &f);
+                _ = ack_frames_entry.send(f);
+            }
+            Frame::Close(f) => event_broker.emit(Event::Closed(f)),
+            Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
+            Frame::Padding(_) | Frame::Ping(_) => {}
+            _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
+        }
+    };
+
     let components = components.clone();
     let role = components.handshake.role();
     let parameters = components.parameters.clone();
-    tokio::spawn(
-        async move {
-            while let Some((packet, pathway, socket)) = packets.next().await {
-                let dispatch_frame = |frame: Frame, path: &Path| match frame {
-                    Frame::Ack(f) => {
-                        path.cc().on_ack(Epoch::Handshake, &f);
-                        _ = ack_frames_entry.send(f);
+    let parse = async move |packet: ReceiveHanshakePacket, pathway, socket| {
+        match space.decrypt_packet(packet).await {
+            Some(Ok(packet)) => {
+                let path = match components.get_or_create_path(socket, pathway, true) {
+                    Some(path) => path,
+                    None => {
+                        packet.drop_on_conenction_closed();
+                        return;
                     }
-                    Frame::Close(f) => event_broker.emit(Event::Closed(f)),
-                    Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
-                    Frame::Padding(_) | Frame::Ping(_) => {}
-                    _ => unreachable!("unexpected frame: {:?} in handshake packet", frame),
                 };
-                let packet_size = packet.1.len();
-                match space.decrypt_packet(packet).await {
-                    Some(Ok(packet)) => {
-                        let path = match components.get_or_create_path(socket, pathway, true) {
-                            Some(path) => path,
-                            None => {
-                                qlog::event!(PacketDropped {
-                                    header: packet.qlog_header(),
-                                    raw: packet.raw_info(),
-                                    details: Map {
-                                        reason: "connection closed"
-                                    },
-                                    trigger: PacketDroppedTrigger::Genera,
-                                });
-                                return;
-                            }
-                        };
-                        // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
-                        // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
-                        // address to have been validated.
-                        // It may have already been verified using tokens in the Handshake space
-                        path.grant_anti_amplifier();
-                        path.on_rcvd(packet_size);
+                // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
+                // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
+                // address to have been validated.
+                // It may have already been verified using tokens in the Handshake space
+                path.grant_anti_amplifier();
+                path.on_rcvd(packet.plain.len());
 
-                        let mut frames = QuicFrames::new();
-                        match FrameReader::new(packet.body(), packet.header.get_type()).try_fold(
-                            false,
-                            |is_ack_packet, frame| {
-                                let (frame, is_ack_eliciting) = frame?;
-                                frames.extend(Some(&frame));
-                                dispatch_frame(frame, &path);
-                                Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
-                            },
-                        ) {
-                            Ok(is_ack_packet) => {
-                                qlog::event!(PacketReceived {
-                                    header: packet.qlog_header(),
-                                    frames,
-                                    raw: packet.raw_info(),
-                                });
-                                space
-                                    .journal
-                                    .of_rcvd_packets()
-                                    .register_pn(packet.decoded_pn);
-                                path.cc().on_pkt_rcvd(
-                                    Epoch::Handshake,
-                                    packet.decoded_pn,
-                                    is_ack_packet,
-                                );
+                let mut frames = QuicFrames::new();
+                match FrameReader::new(packet.body(), packet.header.get_type()).try_fold(
+                    false,
+                    |is_ack_packet, frame| {
+                        let (frame, is_ack_eliciting) = frame?;
+                        frames.extend(Some(&frame));
+                        dispatch_frame(frame, &path);
+                        Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                    },
+                ) {
+                    Ok(is_ack_packet) => {
+                        space
+                            .journal
+                            .of_rcvd_packets()
+                            .register_pn(packet.decoded_pn);
+                        path.cc()
+                            .on_pkt_rcvd(Epoch::Handshake, packet.decoded_pn, is_ack_packet);
 
-                                // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
-                                // negotiating done.
-                                // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
-                                if role == qbase::sid::Role::Server {
-                                    if let Some(origin_dcid) =
-                                        parameters.server().map(|local_params| {
-                                            local_params.original_destination_connection_id()
-                                        })
-                                    {
-                                        if origin_dcid != *packet.header.dcid() {
-                                            components.proto.del_router_entry(&origin_dcid.into());
-                                        }
-                                    }
+                        // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
+                        // negotiating done.
+                        // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
+                        if role == qbase::sid::Role::Server {
+                            if let Some(origin_dcid) = parameters.server().map(|local_params| {
+                                local_params.original_destination_connection_id()
+                            }) {
+                                if origin_dcid != *packet.header.dcid() {
+                                    components.proto.del_router_entry(&origin_dcid.into());
                                 }
                             }
-                            Err(error) => event_broker.emit(Event::Failed(error)),
                         }
+                        packet.emit_received(frames);
                     }
-                    Some(Err(error)) => event_broker.emit(Event::Failed(error)),
-                    None => continue,
+                    Err(error) => event_broker.emit(Event::Failed(error)),
                 }
+            }
+            Some(Err(error)) => event_broker.emit(Event::Failed(error)),
+            None => {}
+        }
+    };
+
+    tokio::spawn(
+        async move {
+            while let Some((packet, pathway, socket)) = bundles.next().await {
+                parse(packet.into(), pathway, socket).await;
             }
         }
         .instrument_in_current()
@@ -350,25 +264,23 @@ impl HandshakeSpace {
 }
 
 impl ClosingHandshakeSpace {
-    pub fn recv_packet(
-        &self,
-        (header, mut bytes, offset): HandshakePacket,
-    ) -> Option<ConnectionCloseFrame> {
-        let (hpk, pk) = (
-            self.keys.remote.header.as_ref(),
-            self.keys.remote.packet.as_ref(),
-        );
-        let undecoded_pn = remove_protection_of_long_packet(hpk, bytes.as_mut(), offset).ok()??;
+    pub fn recv_packet(&self, packet: ReceiveHanshakePacket) -> Option<ConnectionCloseFrame> {
+        let packet = packet
+            .decrypt_as_long(
+                self.keys.remote.header.as_ref(),
+                self.keys.remote.packet.as_ref(),
+                |pn| self.rcvd_journal.decode_pn(pn),
+            )
+            .and_then(Result::ok)?;
 
-        let pn = self.rcvd_journal.decode_pn(undecoded_pn).ok()?;
-        let body_offset = offset + undecoded_pn.size();
-        let _pkt_len = decrypt_packet(pk, pn, bytes.as_mut(), body_offset).ok()?;
-
-        FrameReader::new(bytes.freeze(), header.get_type())
+        let mut farmes = QuicFrames::new();
+        FrameReader::new(packet.body(), packet.header.get_type())
             .filter_map(Result::ok)
-            .find_map(|(f, _ack)| match f {
-                Frame::Close(ccf) => Some(ccf),
-                _ => None,
+            .inspect(|(f, _ack)| farmes.extend(Some(f)))
+            .fold(None, |ccf, (frame, _)| match (ccf, frame) {
+                (ccf @ Some(..), _) => ccf,
+                (None, Frame::Close(ccf)) => Some(ccf),
+                (None, _) => None,
             })
     }
 
@@ -390,15 +302,15 @@ impl ClosingHandshakeSpace {
 }
 
 pub fn spawn_deliver_and_parse_closing(
-    mut packets: impl Stream<Item = (HandshakePacket, Pathway, Socket)> + Unpin + Send + 'static,
+    mut bundles: impl Stream<Item = ReceivedBundle> + Unpin + Send + 'static,
     space: ClosingHandshakeSpace,
     closing_state: Arc<ClosingState>,
     event_broker: ArcEventBroker,
 ) {
     tokio::spawn(
         async move {
-            while let Some((packet, pathway, _socket)) = packets.next().await {
-                if let Some(ccf) = space.recv_packet(packet) {
+            while let Some((packet, pathway, _socket)) = bundles.next().await {
+                if let Some(ccf) = space.recv_packet(packet.into()) {
                     event_broker.emit(Event::Closed(ccf.clone()));
                     return;
                 }
