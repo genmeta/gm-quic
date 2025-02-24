@@ -8,6 +8,7 @@ use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 use bytes::Bytes;
 use derive_builder::Builder;
 use derive_more::{From, Into};
+use qbase::cid::ConnectionId;
 use quic::ConnectionID;
 use serde::{Deserialize, Serialize};
 
@@ -319,6 +320,12 @@ impl ProtocolType {
 #[serde(transparent)]
 pub struct GroupID(String);
 
+impl From<ConnectionId> for GroupID {
+    fn from(value: ConnectionId) -> Self {
+        Self(format!("{value:x}"))
+    }
+}
+
 impl From<ConnectionID> for GroupID {
     fn from(value: ConnectionID) -> Self {
         Self(format!("{value:x}"))
@@ -591,7 +598,7 @@ macro_rules! build {
         $crate::build!(@field $builder $(, $($remain)* )? );
     };
     (@field $builder:expr, $field:ident: Map        { $($tt:tt)* } $(, $($remain:tt)* )? ) => {
-        $builder.$field($crate::map!{ $($tt)* });
+        $builder.$field($crate::map!{{ $($tt)* }});
         $crate::build!(@field $builder $(, $($remain)* )? );
     };
     (@field $builder:expr, $field:ident: $struct:ty { $($tt:tt)* } $(, $($remain:tt)* )? ) => {
@@ -624,10 +631,11 @@ pub mod macro_support {
 
 #[macro_export]
 macro_rules! map {
-    {$($tt:tt)*}=>{
-        let mut map = ::std::collections::<String, $crate::macro_support::Value>::new();
+    {{$($tt:tt)*}}=>{ {
+        let mut map = ::std::collections::HashMap::<String, $crate::macro_support::Value>::new();
         $crate::map!(@field map, $($tt)*);
-    };
+        map
+    }};
     (@field $map:expr, $field:ident $(, $($remain:tt)* )?) => {
         $map.insert(stringify!($field).to_owned(), $field.into());
         $crate::map!(@field $map $(, $($remain)* )?)

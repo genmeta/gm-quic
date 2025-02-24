@@ -240,6 +240,16 @@ impl Parameters {
         self.requirements.original_destination_connection_id = Some(cid)
     }
 
+    fn get_origin_dcid(&self) -> ConnectionId {
+        match self.role {
+            Role::Client => self
+                .requirements
+                .original_destination_connection_id
+                .expect("Client must chose a origin dcid"),
+            Role::Server => self.server.original_destination_connection_id,
+        }
+    }
+
     fn authenticate_cids(&self) -> Result<(), Error> {
         fn param_error(reason: &'static str) -> Error {
             Error::new(ErrorKind::TransportParameter, FrameType::Crypto, reason)
@@ -467,6 +477,17 @@ impl ArcParameters {
         if let Ok(params) = guard.deref_mut() {
             params.set_original_dcid(cid);
         }
+    }
+
+    /// Gets the original destination connection ID of the connection.
+    ///
+    /// This value is chosen by the client and sent to the server, then
+    /// the server will echo it back to the client.
+    ///
+    /// This value is well suited to be used to identify a connection.
+    pub fn get_origin_dcid(&self) -> Option<ConnectionId> {
+        let guard = self.0.lock().unwrap();
+        guard.as_ref().ok().map(|params| params.get_origin_dcid())
     }
 
     /// Load the local transport parameters into the buffer, which

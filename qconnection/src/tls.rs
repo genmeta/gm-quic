@@ -13,6 +13,7 @@ use qbase::{
     param::ArcParameters,
     Epoch,
 };
+use qlog::telemetry::Instrument;
 use qrecovery::crypto::CryptoStream;
 use rustls::{
     crypto::CryptoProvider,
@@ -20,7 +21,7 @@ use rustls::{
     Side,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{trace_span, Instrument};
+use tracing::Instrument as _;
 
 use crate::{events::Event, prelude::EmitEvent, Components, Handshake, Writer};
 
@@ -250,7 +251,8 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
                     tls_connection.wake_read();
                 }
             }
-            .instrument(trace_span!("crypto_read_task", ?epoch)),
+            .instrument_in_current()
+            .in_current_span(),
         )
     };
 
@@ -315,5 +317,6 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
             read_task.abort();
         }
     }
-    .instrument(trace_span!("crypto_write_task"))
+    .instrument_in_current()
+    .in_current_span()
 }

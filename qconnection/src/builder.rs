@@ -36,10 +36,12 @@ use qlog::{
         transport::ParametersSet,
         Owner,
     },
-    telemetry::Instrument,
+    span,
+    telemetry::{Instrument, Log, Span},
 };
 pub use rustls::crypto::CryptoProvider;
 use tokio::sync::Notify;
+use tracing::Instrument as _;
 
 use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
@@ -303,6 +305,7 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             rcvd_pkt_q,
             sendable,
             defer_idle_timeout: self.defer_idle_timeout,
+            span: None,
         }
     }
 }
@@ -381,6 +384,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             rcvd_pkt_q,
             sendable,
             defer_idle_timeout: self.defer_idle_timeout,
+            span: None,
         }
     }
 }
@@ -397,9 +401,16 @@ pub struct ComponentsReady {
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     defer_idle_timeout: HeartbeatConfig,
     sendable: Arc<Notify>,
+    span: Option<Span>,
 }
 
 impl ComponentsReady {
+    pub fn with_qlog(mut self, logger: &impl Log) -> Self {
+        let origin_dcid = self.parameters.get_origin_dcid().unwrap();
+        self.span = Some(logger.new_trace(origin_dcid.into()));
+        self
+    }
+
     pub fn run_with<EE>(self, event_broker: EE) -> Connection
     where
         EE: EmitEvent + Clone + Send + Sync + 'static,
@@ -422,9 +433,11 @@ impl ComponentsReady {
             state: ConnState::new(),
         };
 
-        tokio::spawn(tls::keys_upgrade(&components));
-        tokio::spawn(accpet_transport_parameters(&components));
-        space::spawn_deliver_and_parse(&components);
+        self.span.unwrap_or_else(|| span!()).in_scope(|| {
+            tokio::spawn(tls::keys_upgrade(&components));
+            tokio::spawn(accpet_transport_parameters(&components));
+            space::spawn_deliver_and_parse(&components);
+        });
 
         Connection(RwLock::new(Ok(components)))
     }
@@ -467,6 +480,8 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
             }
         }
     }
+    .instrument_in_current()
+    .in_current_span()
 }
 
 impl Components {
@@ -507,7 +522,7 @@ impl Components {
                 let burst = path.new_burst(self);
                 let idle_timeout = path.idle_timeout(self);
 
-                let task = tokio::spawn({
+                let task = qlog::span!(@current, path=pathway.to_string()).in_scope(|| {
                     let path = path.clone();
                     let paths = self.paths.clone();
                     let defer_idle_timeout = self.defer_idle_timeout;
@@ -526,13 +541,17 @@ impl Components {
                             _ = burst.launch() => "failed to send packets",
                             _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout ",
                         };
-                        tracing::trace!(reason, "path inactive");
                         // same as [`Components::del_path`]
-                        paths.remove(&pathway);
+                        paths.remove(&pathway, reason);
                     }
-                }.instrument(qlog::span!(@current, path=pathway.to_string())));
+                    .instrument_in_current()
+                    .in_current_span()
+                });
 
-                vacant_entry.insert(PathContext::new(path.clone(), task.abort_handle()));
+                vacant_entry.insert(PathContext::new(
+                    path.clone(),
+                    tokio::spawn(task).abort_handle(),
+                ));
                 tracing::debug!(do_validate, "created new path");
                 Some(path)
             }
@@ -578,6 +597,8 @@ impl Components {
                     new: GranularConnectionStates::Closed,
                 });
             }
+            .instrument_in_current()
+            .in_current_span()
         });
 
         self.spaces
@@ -621,6 +642,8 @@ impl Components {
                     new: GranularConnectionStates::Closed,
                 });
             }
+            .instrument_in_current()
+            .in_current_span()
         });
 
         self.rcvd_pkt_q.close_all();

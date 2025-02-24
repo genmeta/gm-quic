@@ -24,9 +24,12 @@ use qbase::{
 };
 use qcongestion::{CongestionControl, TrackPackets};
 use qinterface::path::{Pathway, Socket};
-use qlog::quic::{
-    transport::{PacketDropped, PacketDroppedTrigger, PacketSent},
-    PacketHeader, QuicFrames,
+use qlog::{
+    quic::{
+        transport::{PacketDropped, PacketDroppedTrigger, PacketSent},
+        PacketHeader, QuicFrames,
+    },
+    telemetry::Instrument,
 };
 use qrecovery::{
     crypto::CryptoStream,
@@ -34,7 +37,7 @@ use qrecovery::{
 };
 use rustls::quic::Keys;
 use tokio::sync::{mpsc, Notify};
-use tracing::{trace_span, Instrument};
+use tracing::{trace_span, Instrument as _};
 
 use super::{pipe, AckInitial, DecryptedPacket};
 use crate::{
@@ -114,7 +117,9 @@ impl InitialSpace {
                     qlog::event!(PacketDropped {
                         header: PacketHeader { initial: &header },
                         raw: payload.freeze(),
-                        details: { [("reason".to_owned(), reverse_bits.to_string().into(),)] },
+                        details: Map {
+                            reason: reverse_bits.to_string()
+                        },
                         trigger: PacketDroppedTrigger::DecryptionFailure,
                     });
                     return Some(Err(reverse_bits.into()));
@@ -128,7 +133,9 @@ impl InitialSpace {
                 qlog::event!(PacketDropped {
                     header: PacketHeader { initial: &header },
                     raw: payload.freeze(),
-                    details: { [("reason".to_owned(), invalid_pn.to_string().into()),] },
+                    details: Map {
+                        reason: invalid_pn.to_string()
+                    },
                     trigger: invalid_pn,
                 });
                 return None;
@@ -144,7 +151,9 @@ impl InitialSpace {
                         packet_number: decoded_pn
                     },
                     raw: payload.freeze(),
-                    details: { [("reason".to_owned(), error.to_string().into()),] },
+                    details: Map {
+                        reason: error.to_string()
+                    },
                     trigger: error
                 });
                 return None;
@@ -247,7 +256,9 @@ pub fn spawn_deliver_and_parse(
                     qlog::event!(PacketDropped {
                         header: PacketHeader { initial: &packet.0 },
                         raw: packet.1.freeze(),
-                        details: { [("reason".to_owned(), "different scid".into(),)] },
+                        details: Map {
+                            reason: "different scid with first initial packet"
+                        },
                         trigger: PacketDroppedTrigger::Rejected,
                     });
                     continue;
@@ -271,8 +282,8 @@ pub fn spawn_deliver_and_parse(
                                 qlog::event!(PacketDropped {
                                     header: packet.qlog_header(),
                                     raw: packet.raw_info(),
-                                    details: {
-                                        [("reason".to_owned(), "connection closed".into())]
+                                    details: Map {
+                                        reason: "connection closed"
                                     },
                                     trigger: PacketDroppedTrigger::Genera,
                                 });
@@ -343,7 +354,8 @@ pub fn spawn_deliver_and_parse(
                 }
             }
         }
-        .instrument(trace_span!("initial")),
+        .instrument_in_current()
+        .in_current_span(),
     );
 }
 
@@ -436,21 +448,24 @@ pub fn spawn_deliver_and_parse_closing(
     closing_state: Arc<ClosingState>,
     event_broker: ArcEventBroker,
 ) {
-    tokio::spawn(async move {
-        while let Some((packet, pathway, _socket)) = packets.next().await {
-            if let Some(ccf) = space.recv_packet(packet) {
-                event_broker.emit(Event::Closed(ccf.clone()));
-                return;
-            }
-            if closing_state.should_send() {
-                _ = closing_state
-                    .try_send_with(pathway, |buf, scid, dcid, ccf| {
-                        space
-                            .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
-                            .map(|packet| packet.size())
-                    })
-                    .await;
+    tokio::spawn(
+        async move {
+            while let Some((packet, pathway, _socket)) = packets.next().await {
+                if let Some(ccf) = space.recv_packet(packet) {
+                    event_broker.emit(Event::Closed(ccf.clone()));
+                    return;
+                }
+                if closing_state.should_send() {
+                    _ = closing_state
+                        .try_send_with(pathway, |buf, scid, dcid, ccf| {
+                            space
+                                .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
+                                .map(|packet| packet.size())
+                        })
+                        .await;
+                }
             }
         }
-    });
+        .instrument_in_current(),
+    );
 }

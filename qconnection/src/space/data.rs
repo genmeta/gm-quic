@@ -30,9 +30,12 @@ use qbase::{
 };
 use qcongestion::{CongestionControl, TrackPackets};
 use qinterface::path::{Pathway, Socket};
-use qlog::quic::{
-    transport::{PacketDropped, PacketDroppedTrigger, PacketReceived},
-    PacketHeader, QuicFrames,
+use qlog::{
+    quic::{
+        transport::{PacketDropped, PacketDroppedTrigger, PacketReceived},
+        PacketHeader, QuicFrames,
+    },
+    telemetry::Instrument,
 };
 use qrecovery::{
     crypto::CryptoStream,
@@ -42,7 +45,7 @@ use qrecovery::{
 #[cfg(feature = "unreliable")]
 use qunreliable::DatagramFlow;
 use tokio::sync::{mpsc, Notify};
-use tracing::{trace_span, Instrument};
+use tracing::{trace_span, Instrument as _};
 
 use super::DecryptedPacket;
 use crate::{
@@ -127,7 +130,9 @@ impl DataSpace {
                     qlog::event!(PacketDropped {
                         header: PacketHeader { zero_rtt: &header },
                         raw: payload.freeze(),
-                        details: { [("reason".to_owned(), reverse_bits.to_string().into(),)] },
+                        details: Map {
+                            reason: reverse_bits.to_string()
+                        },
                         trigger: PacketDroppedTrigger::DecryptionFailure,
                     });
                     return Some(Err(reverse_bits.into()));
@@ -141,7 +146,9 @@ impl DataSpace {
                 qlog::event!(PacketDropped {
                     header: PacketHeader { zero_rtt: &header },
                     raw: payload.freeze(),
-                    details: { [("reason".to_owned(), invalid_pn.to_string().into()),] },
+                    details: Map {
+                        reason: invalid_pn.to_string()
+                    },
                     trigger: invalid_pn,
                 });
                 return None;
@@ -157,7 +164,9 @@ impl DataSpace {
                         packet_number: decoded_pn
                     },
                     raw: payload.freeze(),
-                    details: { [("reason".to_owned(), error.to_string().into()),] },
+                    details: Map {
+                        reason: error.to_string()
+                    },
                     trigger: error
                 });
                 return None;
@@ -208,7 +217,9 @@ impl DataSpace {
                     qlog::event!(PacketDropped {
                         header: PacketHeader { one_rtt: &header },
                         raw: payload.freeze(),
-                        details: { [("reason".to_owned(), reverse_bits.to_string().into(),)] },
+                        details: Map {
+                            reason: reverse_bits.to_string()
+                        },
                         trigger: PacketDroppedTrigger::DecryptionFailure,
                     });
                     return Some(Err(reverse_bits.into()));
@@ -222,7 +233,9 @@ impl DataSpace {
                 qlog::event!(PacketDropped {
                     header: PacketHeader { one_rtt: &header },
                     raw: payload.freeze(),
-                    details: { [("reason".to_owned(), invalid_pn.to_string().into()),] },
+                    details: Map {
+                        reason: invalid_pn.to_string()
+                    },
                     trigger: invalid_pn,
                 });
                 return None;
@@ -240,7 +253,9 @@ impl DataSpace {
                             packet_number: decoded_pn
                         },
                         raw: payload.freeze(),
-                        details: { [("reason".to_owned(), error.to_string().into()),] },
+                        details: Map {
+                            reason: error.to_string()
+                        },
                         trigger: error
                     });
                     return None;
@@ -525,8 +540,8 @@ pub fn spawn_deliver_and_parse(
                                     qlog::event!(PacketDropped {
                                         header: packet.qlog_header(),
                                         raw: packet.raw_info(),
-                                        details: {
-                                            [("reason".to_owned(), "connection closed".into())]
+                                        details: Map {
+                                            reason: "connection closed"
                                         },
                                         trigger: PacketDroppedTrigger::Genera,
                                     });
@@ -568,7 +583,8 @@ pub fn spawn_deliver_and_parse(
                 }
             }
         }
-        .instrument(trace_span!("zeor_rtt_task")),
+        .instrument_in_current()
+        .in_current_span(),
     );
     tokio::spawn(
         {
@@ -585,8 +601,8 @@ pub fn spawn_deliver_and_parse(
                                     qlog::event!(PacketDropped {
                                         header: packet.qlog_header(),
                                         raw: packet.raw_info(),
-                                        details: {
-                                            [("reason".to_owned(), "connection closed".into())]
+                                        details: Map {
+                                            reason: "connection closed"
                                         },
                                         trigger: PacketDroppedTrigger::Genera,
                                     });
@@ -628,7 +644,8 @@ pub fn spawn_deliver_and_parse(
                 }
             }
         }
-        .instrument(trace_span!("one_rtt_task")),
+        .instrument_in_current()
+        .in_current_span(),
     );
 }
 

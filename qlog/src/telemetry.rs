@@ -12,7 +12,21 @@ use std::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::Event;
+use crate::{Event, GroupID};
+
+pub trait Log {
+    fn new_trace(&self, group_id: GroupID) -> Span;
+}
+
+impl<L> Log for L
+where
+    L: Fn(GroupID) -> Span,
+{
+    #[inline]
+    fn new_trace(&self, group_id: GroupID) -> Span {
+        (self)(group_id)
+    }
+}
 
 pub trait ExportEvent: Send + Sync {
     fn emit(&self, event: Event);
@@ -130,6 +144,7 @@ pin_project_lite::pin_project! {
 
 pub trait Instrument {
     fn instrument(self, span: Span) -> Instrumented<Self>;
+
     fn instrument_in_current(self) -> Instrumented<Self>;
 }
 
