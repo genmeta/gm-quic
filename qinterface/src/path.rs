@@ -41,7 +41,7 @@ pub struct Pathway {
 
 impl Display for Pathway {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "({}) -> ({}", self.local, self.remote)
+        write!(f, "({}) -> ({})", self.local, self.remote)
     }
 }
 

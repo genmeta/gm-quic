@@ -53,11 +53,12 @@ impl ArcPaths {
         self.inner.entry(pathway)
     }
 
-    pub fn remove(&self, pathway: &Pathway) {
+    pub fn remove(&self, pathway: &Pathway, reason: &str) {
         if let Some((_, path)) = self.inner.remove(pathway) {
             self.broker
                 .emit(Event::PathInactivated(path.pathway, path.socket));
-            if self.inner.is_empty() {
+            tracing::warn!(%pathway, reason, "removed path");
+            if self.is_empty() {
                 let error =
                     Error::with_default_fty(ErrorKind::NoViablePath, "no viable path exist");
                 self.broker.emit(Event::Failed(error));

@@ -264,7 +264,7 @@ impl Components {
     }
 
     pub fn del_path(&self, pathway: &Pathway) {
-        self.paths.remove(pathway);
+        self.paths.remove(pathway, "application removed");
     }
 }
 
