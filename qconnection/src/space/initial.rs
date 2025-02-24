@@ -363,12 +363,8 @@ impl TrackPackets for InitialSpace {
         }
     }
 
-    fn retire(&self, pns: &mut dyn Iterator<Item = u64>) {
-        let rcvd_journal = self.journal.of_rcvd_packets();
-        let mut write_guard = rcvd_journal.write();
-        for pn in pns {
-            write_guard.retire(pn);
-        }
+    fn rotate(&self, pns: &mut dyn Iterator<Item = u64>) {
+        self.journal.of_rcvd_packets().rotate(pns);
     }
 }
 
