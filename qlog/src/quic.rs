@@ -208,6 +208,16 @@ pub enum PacketNumberSpace {
     ApplicationData,
 }
 
+impl From<qbase::Epoch> for PacketNumberSpace {
+    fn from(value: qbase::Epoch) -> Self {
+        match value {
+            qbase::Epoch::Initial => Self::Initial,
+            qbase::Epoch::Handshake => Self::Handshake,
+            qbase::Epoch::Data => Self::ApplicationData,
+        }
+    }
+}
+
 // 8.8
 #[serde_with::skip_serializing_none]
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
