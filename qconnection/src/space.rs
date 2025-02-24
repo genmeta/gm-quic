@@ -4,26 +4,36 @@ pub mod initial;
 
 use std::{fmt::Debug, sync::Arc};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use qbase::{
     error::Error,
     frame::{
         AckFrame, BeFrame, CryptoFrame, ReceiveFrame, ReliableFrame, StreamCtlFrame, StreamFrame,
     },
-    packet::number::PacketNumber,
+    packet::{
+        decrypt::{
+            decrypt_packet, remove_protection_of_long_packet, remove_protection_of_short_packet,
+        },
+        keys::ArcOneRttPacketKeys,
+        number::PacketNumber,
+    },
 };
-use qlog::quic::PacketHeader;
+use qlog::quic::{
+    PacketHeader, PacketHeaderBuilder, QuicFrame,
+    transport::{PacketDropped, PacketDroppedTrigger, PacketReceived},
+};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
-    journal::{ArcSentJournal, Journal},
+    journal::{ArcSentJournal, InvalidPacketNumber, Journal},
     reliable::GuaranteedFrame,
 };
+use rustls::quic::{HeaderProtectionKey, PacketKey};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
+    Components, DataStreams, FlowController,
     events::{ArcEventBroker, EmitEvent, Event},
     termination::ClosingState,
-    Components, DataStreams, FlowController,
 };
 
 #[derive(Clone)]
@@ -100,71 +110,252 @@ impl Spaces {
     }
 }
 
-pub struct DecryptedPacket<H> {
+pub struct ReceivedCipherPacket<H> {
+    header: H,
+    payload: BytesMut,
+    payload_offset: usize,
+}
+
+impl<H> From<(H, BytesMut, usize)> for ReceivedCipherPacket<H> {
+    fn from((header, payload, payload_offset): (H, BytesMut, usize)) -> Self {
+        Self {
+            header,
+            payload,
+            payload_offset,
+        }
+    }
+}
+
+impl<H> ReceivedCipherPacket<H>
+where
+    PacketHeaderBuilder: for<'a> From<&'a H>,
+{
+    fn qlog_header(&self) -> PacketHeader {
+        PacketHeaderBuilder::from(&self.header).build()
+    }
+
+    fn drop_on_key_unavailable(self) {
+        qlog::event!(PacketDropped {
+            header: self.qlog_header(),
+            raw: self.payload.freeze(),
+            trigger: PacketDroppedTrigger::KeyUnavailable
+        })
+    }
+
+    fn drop_on_remove_header_protection_failure(self) {
+        qlog::event!(PacketDropped {
+            header: self.qlog_header(),
+            raw: self.payload.freeze(),
+            details: Map {
+                reason: "remove header protection failure",
+            },
+            trigger: PacketDroppedTrigger::DecryptionFailure
+        })
+    }
+
+    fn drop_on_decryption_failure(self, error: qbase::packet::error::Error, pn: u64) {
+        qlog::event!(PacketDropped {
+            header: {
+                PacketHeaderBuilder::from(&self.header)
+                    .packet_number(pn)
+                    .build()
+            },
+            raw: self.payload.freeze(),
+            details: Map {
+                reason: "decryption failure",
+                error: error.to_string(),
+            },
+            trigger: PacketDroppedTrigger::DecryptionFailure
+        })
+    }
+
+    fn drop_on_reverse_bit_error(self, error: &qbase::packet::error::Error) {
+        qlog::event!(PacketDropped {
+            header: self.qlog_header(),
+            raw: self.payload.freeze(),
+            details: Map {
+                reason: "reverse bit error",
+                error: error.to_string()
+            },
+            trigger: PacketDroppedTrigger::Invalid,
+        })
+    }
+
+    fn drop_on_invalid_pn(self, invalid_pn: qrecovery::journal::InvalidPacketNumber) {
+        qlog::event!(PacketDropped {
+            header: self.qlog_header(),
+            raw: self.payload.freeze(),
+            details: Map {
+                reason: "invalid packet number",
+                invalid_pn: invalid_pn.to_string()
+            },
+            trigger: PacketDroppedTrigger::Invalid,
+        })
+    }
+
+    fn decrypt_as_long(
+        mut self,
+        hpk: &dyn HeaderProtectionKey,
+        pk: &dyn PacketKey,
+        pn_decoder: impl FnOnce(PacketNumber) -> Result<u64, InvalidPacketNumber>,
+    ) -> Option<Result<PlainPacket<H>, Error>> {
+        let pkt_buf = self.payload.as_mut();
+        let undecoded_pn = match remove_protection_of_long_packet(hpk, pkt_buf, self.payload_offset)
+        {
+            Ok(Some(undecoded_pn)) => undecoded_pn,
+            Ok(None) => {
+                self.drop_on_remove_header_protection_failure();
+                return None;
+            }
+            Err(invalid_reverse_bits) => {
+                self.drop_on_reverse_bit_error(&invalid_reverse_bits);
+                return Some(Err(invalid_reverse_bits.into()));
+            }
+        };
+        let decoded_pn = match pn_decoder(undecoded_pn) {
+            Ok(pn) => pn,
+            Err(invalid_pn) => {
+                self.drop_on_invalid_pn(invalid_pn);
+                return None;
+            }
+        };
+        let body_offset = self.payload_offset + undecoded_pn.size();
+        let body_length = match decrypt_packet(pk, decoded_pn, pkt_buf, body_offset) {
+            Ok(body_length) => body_length,
+            Err(error) => {
+                self.drop_on_decryption_failure(error, decoded_pn);
+                return None;
+            }
+        };
+
+        Some(Ok(PlainPacket {
+            header: self.header,
+            plain: self.payload.freeze(),
+            payload_offset: self.payload_offset,
+            undecoded_pn,
+            decoded_pn,
+            body_length,
+        }))
+    }
+
+    fn decrypt_as_short(
+        mut self,
+        hpk: &dyn HeaderProtectionKey,
+        pk: &ArcOneRttPacketKeys,
+        pn_decoder: impl FnOnce(PacketNumber) -> Result<u64, InvalidPacketNumber>,
+    ) -> Option<Result<PlainPacket<H>, Error>> {
+        let pkt_buf = self.payload.as_mut();
+        let (undecoded_pn, key_phase) =
+            match remove_protection_of_short_packet(hpk, pkt_buf, self.payload_offset) {
+                Ok(Some((undecoded, key_phase))) => (undecoded, key_phase),
+                Ok(None) => {
+                    self.drop_on_remove_header_protection_failure();
+                    return None;
+                }
+                Err(invalid_reverse_bits) => {
+                    self.drop_on_reverse_bit_error(&invalid_reverse_bits);
+                    return Some(Err(invalid_reverse_bits.into()));
+                }
+            };
+        let decoded_pn = match pn_decoder(undecoded_pn) {
+            Ok(pn) => pn,
+            Err(invalid_pn) => {
+                self.drop_on_invalid_pn(invalid_pn);
+                return None;
+            }
+        };
+        let pk = pk.lock_guard().get_remote(key_phase, decoded_pn);
+        let body_offset = self.payload_offset + undecoded_pn.size();
+        let body_length = match decrypt_packet(pk.as_ref(), decoded_pn, pkt_buf, body_offset) {
+            Ok(body_length) => body_length,
+            Err(error) => {
+                self.drop_on_decryption_failure(error, decoded_pn);
+                return None;
+            }
+        };
+
+        Some(Ok(PlainPacket {
+            header: self.header,
+            plain: self.payload.freeze(),
+            payload_offset: self.payload_offset,
+            undecoded_pn,
+            decoded_pn,
+            body_length,
+        }))
+    }
+}
+
+impl initial::ReceivedInitialPacket {
+    pub fn drop_on_scid_unmatch(self) {
+        qlog::event!(PacketDropped {
+            header: self.qlog_header(),
+            raw: self.payload.freeze(),
+            details: Map {
+                reason: "different scid with first initial packet"
+            },
+            trigger: PacketDroppedTrigger::Rejected
+        })
+    }
+}
+
+pub struct PlainPacket<H> {
     header: H,
     decoded_pn: u64,
     undecoded_pn: PacketNumber,
-    decrypted: Bytes,
+    plain: Bytes,
     payload_offset: usize,
     body_length: usize,
 }
 
-impl<H> DecryptedPacket<H> {
+impl<H> PlainPacket<H> {
     pub fn payload_length(&self) -> usize {
         self.undecoded_pn.size() + self.body_length
     }
 
     pub fn body(&self) -> Bytes {
         let packet_offset = self.payload_offset + self.undecoded_pn.size();
-        self.decrypted
+        self.plain
             .slice(packet_offset..packet_offset + self.body_length)
     }
 
     pub fn raw_info(&self) -> qlog::RawInfo {
         qlog::build!(qlog::RawInfo {
-            length: self.decrypted.len() as u64,
+            length: self.plain.len() as u64,
             payload_length: self.payload_length() as u64,
-            data: self.decrypted.clone(),
+            data: self.plain.clone(),
         })
     }
 }
 
-impl initial::DecryptedInitialPacket {
+impl<H> PlainPacket<H>
+where
+    PacketHeaderBuilder: for<'a> From<&'a H>,
+{
     pub fn qlog_header(&self) -> PacketHeader {
-        qlog::build!(PacketHeader {
-            initial: &self.header,
+        let mut builder = PacketHeaderBuilder::from(&self.header);
+        qlog::build! {@field builder,
             packet_number: self.decoded_pn,
-            length: self.payload_length() as u16,
+            length: self.payload_length() as u16
+        };
+        builder.build()
+    }
+
+    pub fn drop_on_conenction_closed(self) {
+        qlog::event!(PacketDropped {
+            header: self.qlog_header(),
+            raw: self.raw_info(),
+            details: Map {
+                reason: "connection closed"
+            },
+            trigger: PacketDroppedTrigger::Genera
         })
     }
-}
 
-impl handshake::DecryptedHandshakePacket {
-    pub fn qlog_header(&self) -> PacketHeader {
-        qlog::build!(PacketHeader {
-            handshake: &self.header,
-            packet_number: self.decoded_pn,
-            length: self.payload_length() as u16,
-        })
-    }
-}
-
-impl data::DecryptedZeroRttPacket {
-    pub fn qlog_header(&self) -> PacketHeader {
-        qlog::build!(PacketHeader {
-            zero_rtt: &self.header,
-            packet_number: self.decoded_pn,
-            length: self.payload_length() as u16,
-        })
-    }
-}
-
-impl data::DecryptedOneRttPacket {
-    pub fn qlog_header(&self) -> PacketHeader {
-        qlog::build!(PacketHeader {
-            one_rtt: &self.header,
-            packet_number: self.decoded_pn,
-            length: self.payload_length() as u16,
+    pub fn emit_received(self, frames: impl Into<Vec<QuicFrame>>) {
+        qlog::event!(PacketReceived {
+            header: self.qlog_header(),
+            frames,
+            raw: self.raw_info(),
         })
     }
 }

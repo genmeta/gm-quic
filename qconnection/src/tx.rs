@@ -9,34 +9,34 @@ use std::{
 use bytes::{BufMut, Bytes};
 use deref_derive::Deref;
 use qbase::{
+    Epoch,
     cid::{BorrowedCid, ConnectionId},
     frame::{
-        io::{WriteDataFrame, WriteFrame},
         AckFrame, BeFrame, CryptoFrame, DatagramFrame, PathChallengeFrame, PathResponseFrame,
         ReliableFrame, StreamFrame,
+        io::{WriteDataFrame, WriteFrame},
     },
     packet::{
+        CipherPacket, MarshalDataFrame, MarshalFrame, MarshalPathFrame, PacketWriter, PlainPacket,
         header::{
-            io::WriteHeader, long::LongHeader, short::OneRttHeader, EncodeHeader, GetDcid, GetScid,
-            GetType,
+            EncodeHeader, GetDcid, GetScid, GetType, io::WriteHeader, long::LongHeader,
+            short::OneRttHeader,
         },
         signal::{KeyPhaseBit, SpinBit},
-        CipherPacket, MarshalDataFrame, MarshalFrame, MarshalPathFrame, PacketWriter, PlainPacket,
     },
     util::{DescribeData, WriteData},
-    Epoch,
 };
 use qcongestion::{ArcCC, CongestionControl};
-use qlog::quic::{transport::PacketSent, QuicFrame};
+use qlog::quic::{QuicFrame, transport::PacketSent};
 use qrecovery::{
     journal::{ArcSentJournal, NewPacketGuard},
     reliable::GuaranteedFrame,
 };
 
 use crate::{
-    path::{AntiAmplifier, Constraints, SendBuffer},
-    space::{data::DataSpace, Spaces},
     ArcDcidCell, ArcReliableFrameDeque, Credit, FlowController,
+    path::{AntiAmplifier, Constraints, SendBuffer},
+    space::{Spaces, data::DataSpace},
 };
 
 pub struct PacketLogger {
@@ -186,7 +186,7 @@ unsafe impl<F> BufMut for PacketMemory<'_, '_, F> {
 
     #[inline]
     unsafe fn advance_mut(&mut self, cnt: usize) {
-        self.writer.advance_mut(cnt);
+        unsafe { self.writer.advance_mut(cnt) };
     }
 
     #[inline]
