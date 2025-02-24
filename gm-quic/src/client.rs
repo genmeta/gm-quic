@@ -9,16 +9,16 @@ use futures::{FutureExt, StreamExt};
 use handy::Usc;
 pub use qconnection::{builder::*, prelude::*};
 use rustls::{
-    client::{ResolvesClientCert, WantsClientCert},
     ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
+    client::{ResolvesClientCert, WantsClientCert},
 };
 use tokio::sync::mpsc;
-use tracing::{trace_span, Instrument};
+use tracing::{Instrument, trace_span};
 
 use crate::{
+    PROTO,
     interfaces::Interfaces,
     util::{ToCertificate, ToPrivateKey},
-    PROTO,
 };
 
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
@@ -379,7 +379,9 @@ impl<T> QuicClientBuilder<T> {
                     );
                     bind_interfaces.remove(&local_addr);
                 }
-                tracing::warn!("all interfaces that client bound were closed unexpectedly, client will not be able to connect to the server");
+                tracing::warn!(
+                    "all interfaces that client bound were closed unexpectedly, client will not be able to connect to the server"
+                );
             }
         });
         Ok(self)

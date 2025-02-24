@@ -18,9 +18,12 @@ use qbase::{
         number::PacketNumber,
     },
 };
-use qlog::quic::{
-    PacketHeader, PacketHeaderBuilder, QuicFrame,
-    transport::{PacketDropped, PacketDroppedTrigger, PacketReceived},
+use qlog::{
+    quic::{
+        PacketHeader, PacketHeaderBuilder, QuicFrame,
+        transport::{PacketDropped, PacketDroppedTrigger, PacketReceived, PacketsAcked},
+    },
+    telemetry::Instrument,
 };
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
@@ -29,6 +32,7 @@ use qrecovery::{
 };
 use rustls::quic::{HeaderProtectionKey, PacketKey};
 use tokio::sync::mpsc::UnboundedReceiver;
+use tracing::Instrument as _;
 
 use crate::{
     Components, DataStreams, FlowController,
@@ -365,14 +369,18 @@ fn pipe<F: Send + Debug + 'static>(
     destination: impl ReceiveFrame<F> + Send + 'static,
     broker: ArcEventBroker,
 ) {
-    tokio::spawn(async move {
-        while let Some(f) = source.recv().await {
-            if let Err(e) = destination.recv_frame(&f) {
-                broker.emit(Event::Failed(e));
-                break;
+    tokio::spawn(
+        async move {
+            while let Some(f) = source.recv().await {
+                if let Err(e) = destination.recv_frame(&f) {
+                    broker.emit(Event::Failed(e));
+                    break;
+                }
             }
         }
-    });
+        .instrument_in_current()
+        .in_current_span(),
+    );
 }
 
 /// When receiving a [`StreamFrame`] or [`StreamCtlFrame`],
@@ -419,7 +427,41 @@ impl ReceiveFrame<StreamCtlFrame> for FlowControlledDataStreams {
     }
 }
 
-type AckInitial = AckHandshake;
+struct AckInitial {
+    sent_journal: ArcSentJournal<CryptoFrame>,
+    crypto_stream_outgoing: CryptoStreamOutgoing,
+}
+
+impl AckInitial {
+    fn new(journal: &Journal<CryptoFrame>, crypto_stream: &CryptoStream) -> Self {
+        Self {
+            sent_journal: journal.of_sent_packets(),
+            crypto_stream_outgoing: crypto_stream.outgoing(),
+        }
+    }
+}
+
+impl ReceiveFrame<AckFrame> for AckInitial {
+    type Output = ();
+
+    fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
+        let mut rotate_guard = self.sent_journal.rotate();
+        rotate_guard.update_largest(ack_frame)?;
+
+        let acked = ack_frame.iter().flat_map(|r| r.rev()).collect::<Vec<_>>();
+        qlog::event!(PacketsAcked {
+            packet_number_space: qbase::Epoch::Initial,
+            packet_nubers: acked.clone(),
+        });
+        for pn in acked {
+            for frame in rotate_guard.on_pkt_acked(pn) {
+                self.crypto_stream_outgoing.on_data_acked(&frame);
+            }
+        }
+
+        Ok(())
+    }
+}
 
 struct AckHandshake {
     sent_journal: ArcSentJournal<CryptoFrame>,
@@ -438,16 +480,21 @@ impl AckHandshake {
 impl ReceiveFrame<AckFrame> for AckHandshake {
     type Output = ();
 
-    #[tracing::instrument(name = "recv_ack_frame", level = "trace", skip(self), ret, err)]
     fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
         let mut rotate_guard = self.sent_journal.rotate();
         rotate_guard.update_largest(ack_frame)?;
 
-        for pn in ack_frame.iter().flat_map(|r| r.rev()) {
+        let acked = ack_frame.iter().flat_map(|r| r.rev()).collect::<Vec<_>>();
+        qlog::event!(PacketsAcked {
+            packet_number_space: qbase::Epoch::Initial,
+            packet_nubers: acked.clone(),
+        });
+        for pn in acked {
             for frame in rotate_guard.on_pkt_acked(pn) {
                 self.crypto_stream_outgoing.on_data_acked(&frame);
             }
         }
+
         Ok(())
     }
 }
@@ -475,15 +522,17 @@ impl AckData {
 impl ReceiveFrame<AckFrame> for AckData {
     type Output = ();
 
-    #[tracing::instrument(name = "recv_ack_frame", level = "trace", skip(self), ret, err)]
     fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
         let mut rotate_guard = self.send_journal.rotate();
         rotate_guard.update_largest(ack_frame)?;
 
-        for pn in ack_frame.iter().flat_map(|r| r.rev()) {
-            tracing::trace!(?pn, "packet acked");
+        let acked = ack_frame.iter().flat_map(|r| r.rev()).collect::<Vec<_>>();
+        qlog::event!(PacketsAcked {
+            packet_number_space: qbase::Epoch::Initial,
+            packet_nubers: acked.clone(),
+        });
+        for pn in acked {
             for frame in rotate_guard.on_pkt_acked(pn) {
-                tracing::trace!(?frame, "frame acked");
                 match frame {
                     GuaranteedFrame::Stream(stream_frame) => {
                         self.data_streams.on_data_acked(stream_frame)
