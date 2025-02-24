@@ -655,7 +655,7 @@ impl RcvdRecords {
         let begin = self.rcvd_queue.front().map(|&(pn, _)| pn).unwrap_or(0);
         let mut retire = begin..=*largest_acked;
         tracing::trace!("retire to {:?}", retire);
-        trackers[self.epoch].retire(&mut retire);
+        trackers[self.epoch].rotate(&mut retire);
         self.rcvd_queue.retain(|&(pn, _)| pn > *largest_acked);
     }
 }
@@ -1061,7 +1061,7 @@ mod tests {
     struct Mock;
     impl TrackPackets for Mock {
         fn may_loss(&self, _: &mut dyn Iterator<Item = u64>) {}
-        fn retire(&self, _: &mut dyn Iterator<Item = u64>) {}
+        fn rotate(&self, _: &mut dyn Iterator<Item = u64>) {}
     }
 
     fn create_congestion_controller_for_test() -> CongestionController {

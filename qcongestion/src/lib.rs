@@ -73,7 +73,7 @@ pub trait TrackPackets: Send + Sync {
     /// Retires a packet record with the specified packet number in recv buffer.
     /// # Parameters
     /// - `pn`: The packet number of the packet record to retire.
-    fn retire(&self, pns: &mut dyn Iterator<Item = u64>);
+    fn rotate(&self, pns: &mut dyn Iterator<Item = u64>);
 }
 
 /// The [`ObserveHandshake`] trait defines the interface for observing the handshake state.

@@ -1,5 +1,5 @@
 use std::{
-    sync::{Arc, RwLock, RwLockWriteGuard},
+    sync::{Arc, RwLock},
     time::Instant,
 };
 
@@ -140,9 +140,9 @@ impl RcvdJournal {
                 // 接下来需要4字节编码
                 len if len == (1 << 14) - 1 => 2, // 4 - 2
                 // 接下来需要8字节编码
-                len if len == (1 << 30) - 1 => 2, // 8 - 4
+                len if len == (1 << 30) - 1 => 4, // 8 - 4
                 // 放不下了，不可能走到这里
-                len if len == (1 << 62) - 1 => usize::MAX, // 8 - 4
+                len if len == (1 << 62) - 1 => panic!("range count too large"),
                 _ => 0,
             }
         }
@@ -207,13 +207,12 @@ impl RcvdJournal {
         Some(buf_len - buf.len())
     }
 
-    fn retire(&mut self, pn: u64) {
-        if let Some(record) = self.queue.get_mut(pn) {
-            record.inactivate();
+    fn rotate(&mut self, pns: impl IntoIterator<Item = u64>) {
+        for pn in pns.into_iter() {
+            if let Some(record) = self.queue.get_mut(pn) {
+                record.inactivate();
+            }
         }
-    }
-
-    fn slide_retired(&mut self) {
         let n = self.queue.iter().take_while(|s| !s.is_active).count();
         self.queue.advance(n)
     }
@@ -296,30 +295,8 @@ impl ArcRcvdJournal {
             .read_ack_frame_util(buf, largest, recv_time)
     }
 
-    pub fn write(&self) -> ArcRcvdPktRecordsWriter<'_> {
-        ArcRcvdPktRecordsWriter {
-            guard: self.inner.write().unwrap(),
-        }
-    }
-}
-
-/// 适合一个Path认为它的ack都被处理了之后，哪些收到的包的状态没用了，
-/// 将其失活，最终再看是否可以将收包队列向前滑动。
-pub struct ArcRcvdPktRecordsWriter<'a> {
-    guard: RwLockWriteGuard<'a, RcvdJournal>,
-}
-
-impl ArcRcvdPktRecordsWriter<'_> {
-    /// 各路径自行反馈哪些数据包过期了，不必再在AckFrame反馈。
-    /// 队首连续的失活状态记录可以滑走，避免收包队列持续增长。
-    pub fn retire(&mut self, pn: u64) {
-        self.guard.retire(pn);
-    }
-}
-
-impl Drop for ArcRcvdPktRecordsWriter<'_> {
-    fn drop(&mut self) {
-        self.guard.slide_retired();
+    pub fn rotate(&self, pns: impl IntoIterator<Item = u64>) {
+        self.inner.write().unwrap().rotate(pns);
     }
 }
 
@@ -353,20 +330,10 @@ mod tests {
 
         assert_eq!(records.decode_pn(PacketNumber::encode(30, 0)), Ok(30));
         records.register_pn(30);
-        {
-            let mut writer = records.write();
-            for i in 5..10 {
-                writer.retire(i);
-            }
-        }
+        records.rotate(5..10);
         assert_eq!(records.inner.read().unwrap().queue.len(), 31);
 
-        {
-            let mut writer = records.write();
-            for i in 0..5 {
-                writer.retire(i);
-            }
-        }
+        records.rotate(0..5);
         assert_eq!(records.inner.read().unwrap().queue.len(), 21);
 
         assert_eq!(
