@@ -12,7 +12,7 @@ mod qudp {
 
     use crate::{
         QuicInterface,
-        path::{Endpoint, Pathway, Socket},
+        path::{EndpointAddr, Pathway, Socket},
     };
 
     struct ReceiveBuffers {
@@ -101,8 +101,8 @@ mod qudp {
             let local = self.local_addr()?;
             let remote = recv_buffer.hdrs[seg_idx].src;
             let socket = Socket::new(local, remote);
-            let local = Endpoint::Direct { addr: local };
-            let remote = Endpoint::Direct { addr: remote };
+            let local = EndpointAddr::Direct { addr: local };
+            let remote = EndpointAddr::Direct { addr: remote };
             let pathway = Pathway::new(local, remote);
 
             Poll::Ready(Ok((bytes_mut, pathway, socket)))
