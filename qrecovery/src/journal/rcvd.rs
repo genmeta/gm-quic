@@ -162,13 +162,14 @@ impl RcvdJournal {
                             // 修正
                             let gap = VarInt::from_u32(gap - 1);
                             let ack = VarInt::from_u32(ack - 1);
-                            if capacity
-                                < range_count_size_increment(range_count)
-                                    + gap.encoding_size()
-                                    + ack.encoding_size()
-                            {
+                            let size = range_count_size_increment(range_count)
+                                + gap.encoding_size()
+                                + ack.encoding_size();
+                            if capacity < size {
+                                // last_is_acked为false，不会被填进去
                                 return Break((0, 0, false));
                             }
+                            capacity -= size;
                             ranges.push((gap, ack));
                             Continue((1, 0, state.is_received))
                         }
@@ -183,11 +184,11 @@ impl RcvdJournal {
         if last_is_acked {
             let gap = VarInt::from_u32(gap - 1);
             let ack = VarInt::from_u32(ack - 1);
-            if capacity
-                > range_count_size_increment(ranges.len())
-                    + gap.encoding_size()
-                    + ack.encoding_size()
-            {
+            let size = range_count_size_increment(ranges.len())
+                + gap.encoding_size()
+                + ack.encoding_size();
+            if capacity > size {
+                // capacity -= size; unnecessary, never read latter
                 ranges.push((gap, ack));
             }
         }
@@ -302,6 +303,7 @@ impl ArcRcvdJournal {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]
