@@ -86,13 +86,16 @@ where
         if let Ok(sending_state) = inner {
             match sending_state {
                 Sender::Ready(s) => {
-                    *sending_state = Sender::ResetSent(s.cancel(err_code));
+                    let reset = s.cancel(err_code);
+                    *sending_state = Sender::ResetSent((s, reset).into());
                 }
                 Sender::Sending(s) => {
-                    *sending_state = Sender::ResetSent(s.cancel(err_code));
+                    let reset = s.cancel(err_code);
+                    *sending_state = Sender::ResetSent((s, reset).into());
                 }
                 Sender::DataSent(s) => {
-                    *sending_state = Sender::ResetSent(s.cancel(err_code));
+                    let reset = s.cancel(err_code);
+                    *sending_state = Sender::ResetSent((s, reset).into());
                 }
                 _ => (),
             }
@@ -113,15 +116,15 @@ impl<TX: Clone> Writer<TX> {
                 io::ErrorKind::Unsupported,
                 "all data has been written",
             ))),
-            Sender::DataRcvd => Poll::Ready(Err(io::Error::new(
+            Sender::DataRcvd(_r) => Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "all data has been received",
             ))),
             Sender::ResetSent(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, reset.read())))
             }
             Sender::ResetRcvd(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, reset.read())))
             }
         }
     }
@@ -137,17 +140,13 @@ impl<TX: Clone> Writer<TX> {
                 let result = s.poll_flush(cx);
                 if result.is_ready() {
                     s.wake_all();
-                    *sending_state = Sender::DataRcvd
+                    *sending_state = Sender::DataRcvd(s.into());
                 }
                 result
             }
-            Sender::DataRcvd => Poll::Ready(Ok(())),
-            Sender::ResetSent(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
-            }
-            Sender::ResetRcvd(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
-            }
+            Sender::DataRcvd(..) => Poll::Ready(Ok(())),
+            Sender::ResetSent(reset) => Poll::Ready(Err(reset.read())),
+            Sender::ResetRcvd(reset) => Poll::Ready(Err(reset.read())),
         }
     }
 
@@ -172,7 +171,7 @@ impl<TX: Clone> Writer<TX> {
                     let mut sent: DataSentSender<TX> = s.into();
                     let shutdown = sent.poll_shutdown(cx);
                     if shutdown.is_ready() {
-                        *sending_state = Sender::DataRcvd;
+                        *sending_state = Sender::DataRcvd(sent.into())
                     } else {
                         *sending_state = Sender::DataSent(sent);
                     }
@@ -186,17 +185,13 @@ impl<TX: Clone> Writer<TX> {
                 // poll任务，则会进到ResetSent或者ResetRcvd中poll，得到的将是BrokenPipe错误
                 if result.is_ready() {
                     s.wake_all();
-                    *sending_state = Sender::DataRcvd;
+                    *sending_state = Sender::DataRcvd(s.into());
                 }
                 result
             }
-            Sender::DataRcvd => Poll::Ready(Ok(())),
-            Sender::ResetSent(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
-            }
-            Sender::ResetRcvd(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
-            }
+            Sender::DataRcvd(..) => Poll::Ready(Ok(())),
+            Sender::ResetSent(reset) => Poll::Ready(Err(reset.read())),
+            Sender::ResetRcvd(reset) => Poll::Ready(Err(reset.read())),
         }
     }
 }
@@ -230,7 +225,7 @@ impl<TX> Drop for Writer<TX> {
             debug_assert!(
                 matches!(
                     sending_state,
-                    Sender::DataRcvd | Sender::ResetSent(_) | Sender::ResetRcvd(_)
+                    Sender::DataRcvd(_) | Sender::ResetSent(_) | Sender::ResetRcvd(_)
                 ),
                 "SendingStream must be shutdowned or cancelled before dropped!"
             );

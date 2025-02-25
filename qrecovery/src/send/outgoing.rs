@@ -122,7 +122,7 @@ impl<TX> Outgoing<TX> {
                 Sender::DataSent(s) => {
                     s.on_data_acked(range, is_fin);
                     if s.is_all_rcvd() {
-                        *sending_state = Sender::DataRcvd;
+                        *sending_state = Sender::DataRcvd(s.into());
                         return true;
                     }
                 }
@@ -176,18 +176,20 @@ impl<TX> Outgoing<TX> {
                 }
                 Sender::Sending(s) => {
                     let final_size = s.stop();
-                    *sending_state = Sender::ResetSent(ResetStreamError::new(
+                    let reset = ResetStreamError::new(
                         VarInt::from_u64(error_code).expect("app error code must not exceed 2^62"),
                         VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
-                    ));
+                    );
+                    *sending_state = Sender::ResetSent((s, reset).into());
                     Some(final_size)
                 }
                 Sender::DataSent(s) => {
                     let final_size = s.stop();
-                    *sending_state = Sender::ResetSent(ResetStreamError::new(
+                    let reset = ResetStreamError::new(
                         VarInt::from_u64(error_code).expect("app error code must not exceed 2^62"),
                         VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
-                    ));
+                    );
+                    *sending_state = Sender::ResetSent((s, reset).into());
                     Some(final_size)
                 }
                 _ => None,
@@ -204,14 +206,11 @@ impl<TX> Outgoing<TX> {
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
             match sending_state {
-                Sender::ResetSent(r) | Sender::ResetRcvd(r) => {
-                    *sending_state = Sender::ResetRcvd(*r)
-                }
-                _ => {
-                    unreachable!(
-                        "If no RESET_STREAM has been sent, how can there be a received acknowledgment?"
-                    );
-                }
+                Sender::ResetSent(r) => *sending_state = Sender::ResetRcvd(r.into()),
+                Sender::ResetRcvd(..) => {}
+                _ => unreachable!(
+                    "If no RESET_STREAM has been sent, how can there be a received acknowledgment?"
+                ),
             }
         }
     }

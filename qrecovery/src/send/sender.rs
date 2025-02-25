@@ -12,6 +12,7 @@ use qbase::{
     util::DescribeData,
     varint::VarInt,
 };
+use qlog::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
 
 use super::sndbuf::SendBuf;
 
@@ -133,6 +134,13 @@ impl<TX> ReadySender<TX> {
 /// 状态转换，ReaderSender => SendingSender
 impl<TX: Clone> From<&mut ReadySender<TX>> for SendingSender<TX> {
     fn from(value: &mut ReadySender<TX>) -> Self {
+        qlog::event!(StreamStateUpdated {
+            stream_id: value.stream_id,
+            stream_type: value.stream_id.dir(),
+            old: GranularStreamStates::Ready,
+            new: GranularStreamStates::Send,
+            stream_side: StreamSide::Sending
+        });
         SendingSender {
             stream_id: value.stream_id,
             sndbuf: std::mem::take(&mut value.sndbuf),
@@ -148,6 +156,13 @@ impl<TX: Clone> From<&mut ReadySender<TX>> for SendingSender<TX> {
 /// 状态转换，ReaderSender => DataSentSender
 impl<TX: Clone> From<&mut ReadySender<TX>> for DataSentSender<TX> {
     fn from(value: &mut ReadySender<TX>) -> Self {
+        qlog::event!(StreamStateUpdated {
+            stream_id: value.stream_id,
+            stream_type: value.stream_id.dir(),
+            old: GranularStreamStates::Send,
+            new: GranularStreamStates::DataSent,
+            stream_side: StreamSide::Sending
+        });
         DataSentSender {
             stream_id: value.stream_id,
             sndbuf: std::mem::take(&mut value.sndbuf),
@@ -199,11 +214,6 @@ impl<TX> SendingSender<TX> {
             let n = std::cmp::min((self.max_stream_data - stream_data) as usize, buf.len());
             Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
         } else {
-            tracing::trace!(
-                stream_data,
-                max_stream_data = self.max_stream_data,
-                "write blocked(SendingSender)"
-            );
             self.writable_waker = Some(cx.waker().clone());
             Poll::Pending
         }
@@ -281,6 +291,13 @@ impl<TX> SendingSender<TX> {
 /// 状态转换，SendingSender => DataSentSender
 impl<TX: Clone> From<&mut SendingSender<TX>> for DataSentSender<TX> {
     fn from(value: &mut SendingSender<TX>) -> Self {
+        qlog::event!(StreamStateUpdated {
+            stream_id: value.stream_id,
+            stream_type: value.stream_id.dir(),
+            old: GranularStreamStates::Send,
+            new: GranularStreamStates::DataSent,
+            stream_side: StreamSide::Sending
+        });
         DataSentSender {
             stream_id: value.stream_id,
             sndbuf: std::mem::take(&mut value.sndbuf),
@@ -413,13 +430,121 @@ impl<TX> DataSentSender<TX> {
 }
 
 #[derive(Debug)]
+pub struct ResetSent {
+    stream_id: StreamId,
+    reset: ResetStreamError,
+}
+
+impl ResetSent {
+    pub fn read(&self) -> io::Error {
+        io::Error::new(io::ErrorKind::BrokenPipe, self.reset)
+    }
+}
+
+impl<TX> From<(&mut ReadySender<TX>, ResetStreamError)> for ResetSent {
+    fn from((sender, reset): (&mut ReadySender<TX>, ResetStreamError)) -> Self {
+        qlog::event!(StreamStateUpdated {
+            stream_id: sender.stream_id,
+            stream_type: sender.stream_id.dir(),
+            old: GranularStreamStates::Ready,
+            new: GranularStreamStates::ResetSent,
+            stream_side: StreamSide::Sending
+        });
+        ResetSent {
+            stream_id: sender.stream_id,
+            reset,
+        }
+    }
+}
+
+impl<TX> From<(&mut SendingSender<TX>, ResetStreamError)> for ResetSent {
+    fn from((sender, reset): (&mut SendingSender<TX>, ResetStreamError)) -> Self {
+        qlog::event!(StreamStateUpdated {
+            stream_id: sender.stream_id,
+            stream_type: sender.stream_id.dir(),
+            old: GranularStreamStates::Send,
+            new: GranularStreamStates::ResetSent,
+            stream_side: StreamSide::Sending
+        });
+        ResetSent {
+            stream_id: sender.stream_id,
+            reset,
+        }
+    }
+}
+
+impl<TX> From<(&mut DataSentSender<TX>, ResetStreamError)> for ResetSent {
+    fn from((sender, reset): (&mut DataSentSender<TX>, ResetStreamError)) -> Self {
+        qlog::event!(StreamStateUpdated {
+            stream_id: sender.stream_id,
+            stream_type: sender.stream_id.dir(),
+            old: GranularStreamStates::DataSent,
+            new: GranularStreamStates::ResetSent,
+            stream_side: StreamSide::Sending
+        });
+        ResetSent {
+            stream_id: sender.stream_id,
+            reset,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DataRcvd(());
+
+impl<TX> From<&mut DataSentSender<TX>> for DataRcvd {
+    fn from(sender: &mut DataSentSender<TX>) -> Self {
+        qlog::event!(StreamStateUpdated {
+            stream_id: sender.stream_id,
+            stream_type: sender.stream_id.dir(),
+            old: GranularStreamStates::DataSent,
+            new: GranularStreamStates::DataReceived,
+            stream_side: StreamSide::Sending
+        });
+        DataRcvd(())
+    }
+}
+
+impl<TX> From<DataSentSender<TX>> for DataRcvd {
+    fn from(mut sender: DataSentSender<TX>) -> Self {
+        (&mut sender).into()
+    }
+}
+
+#[derive(Debug)]
+pub struct ResetRcvd {
+    reset: ResetStreamError,
+}
+
+impl ResetRcvd {
+    pub fn read(&self) -> io::Error {
+        io::Error::new(io::ErrorKind::BrokenPipe, self.reset)
+    }
+}
+
+impl From<&mut ResetSent> for ResetRcvd {
+    fn from(sender: &mut ResetSent) -> Self {
+        qlog::event!(StreamStateUpdated {
+            stream_id: sender.stream_id,
+            stream_type: sender.stream_id.dir(),
+            old: GranularStreamStates::ResetSent,
+            new: GranularStreamStates::ResetReceived,
+            stream_side: StreamSide::Sending
+        });
+        ResetRcvd {
+            reset: sender.reset,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(super) enum Sender<TX> {
     Ready(ReadySender<TX>),
     Sending(SendingSender<TX>),
     DataSent(DataSentSender<TX>),
-    ResetSent(ResetStreamError),
-    DataRcvd,
-    ResetRcvd(ResetStreamError),
+    ResetSent(ResetSent),
+    DataRcvd(DataRcvd),
+    ResetRcvd(ResetRcvd),
 }
 
 impl<TX> Sender<TX> {
@@ -451,6 +576,7 @@ impl<TX> ArcSender<TX> {
 }
 
 impl<TX> ArcSender<TX> {
+    // for accept transport parameter(if 0rtt parameter is used to create the stream)
     pub(crate) fn revise_buffer_size(&self, snd_buf_size: u64) {
         match self.sender().as_mut() {
             Ok(Sender::Ready(s)) => s.update_window(snd_buf_size),

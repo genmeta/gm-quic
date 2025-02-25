@@ -116,19 +116,17 @@ where
             Recver::DataRcvd(r) => {
                 r.poll_read(buf);
                 if r.is_all_read() {
-                    *receiving_state = Recver::DataRead;
+                    *receiving_state = Recver::DataRead(r.into());
                 }
                 Poll::Ready(Ok(()))
             }
-            Recver::DataRead => Poll::Ready(Ok(())),
-            Recver::ResetRcvd(reset) => {
-                let reset = *reset;
-                *receiving_state = Recver::ResetRead(reset);
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, reset)))
+            Recver::DataRead(_r) => Poll::Ready(Ok(())),
+            Recver::ResetRcvd(r) => {
+                let error = r.read();
+                *receiving_state = Recver::ResetRead(r.into());
+                Poll::Ready(Err(error))
             }
-            Recver::ResetRead(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
-            }
+            Recver::ResetRead(r) => Poll::Ready(Err(r.read())),
         }
     }
 }

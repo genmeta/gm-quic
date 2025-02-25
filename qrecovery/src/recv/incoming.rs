@@ -79,11 +79,11 @@ where
             match receiving_state {
                 Recver::Recv(r) => {
                     sync_fresh_data = r.recv_reset(reset_frame)?;
-                    *receiving_state = Recver::ResetRcvd(reset_frame.into());
+                    *receiving_state = Recver::ResetRcvd((r, reset_frame).into());
                 }
                 Recver::SizeKnown(r) => {
                     r.recv_reset(reset_frame)?;
-                    *receiving_state = Recver::ResetRcvd(reset_frame.into());
+                    *receiving_state = Recver::ResetRcvd((r, reset_frame).into());
                 }
                 _ => {
                     tracing::error!("there is sth wrong, ignored recv_reset");
