@@ -1,7 +1,7 @@
 use crate::{
-    cid::{be_connection_id, ConnectionId, WriteConnectionId},
-    token::{be_reset_token, ResetToken, RESET_TOKEN_SIZE},
-    varint::{be_varint, VarInt, WriteVarInt},
+    cid::{ConnectionId, WriteConnectionId, be_connection_id},
+    token::{RESET_TOKEN_SIZE, ResetToken, be_reset_token},
+    varint::{VarInt, WriteVarInt, be_varint},
 };
 
 const NEW_CONNECTION_ID_FRAME_TYPE: u8 = 0x18;
@@ -130,7 +130,7 @@ mod tests {
     use bytes::{BufMut, BytesMut};
 
     use super::*;
-    use crate::frame::{io::WriteFrame, BeFrame, FrameType};
+    use crate::frame::{BeFrame, FrameType, io::WriteFrame};
 
     #[test]
     fn test_new_connection_id_frame() {

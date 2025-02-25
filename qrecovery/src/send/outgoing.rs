@@ -7,7 +7,7 @@ use qbase::{
     packet::MarshalDataFrame,
     sid::StreamId,
     util::DescribeData,
-    varint::{VarInt, VARINT_MAX},
+    varint::{VARINT_MAX, VarInt},
 };
 
 use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
@@ -209,7 +209,7 @@ impl<TX> Outgoing<TX> {
                 }
                 _ => {
                     unreachable!(
-                    "If no RESET_STREAM has been sent, how can there be a received acknowledgment?"
+                        "If no RESET_STREAM has been sent, how can there be a received acknowledgment?"
                     );
                 }
             }

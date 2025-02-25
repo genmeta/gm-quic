@@ -2,7 +2,7 @@ use std::{io, net::SocketAddr, sync::Arc};
 
 use clap::Parser;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{info, info_span, Instrument};
+use tracing::{Instrument, info, info_span};
 
 #[derive(clap::Parser)]
 struct Opt {

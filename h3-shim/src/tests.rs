@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use tracing::{info_span, Instrument};
+use tracing::{Instrument, info_span};
 
 mod client_example {
     use crate as h3_shim;

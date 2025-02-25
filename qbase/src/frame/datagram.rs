@@ -3,7 +3,7 @@ use nom::IResult;
 use super::{BeFrame, FrameType};
 use crate::{
     util::{DescribeData, WriteData},
-    varint::{be_varint, VarInt, WriteVarInt},
+    varint::{VarInt, WriteVarInt, be_varint},
 };
 
 /// DATAGRAM Frame

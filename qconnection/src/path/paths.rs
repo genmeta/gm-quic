@@ -3,8 +3,8 @@ use std::{sync::Arc, time::Duration};
 use dashmap::DashMap;
 use deref_derive::Deref;
 use qbase::{
-    error::{Error, ErrorKind},
     Epoch,
+    error::{Error, ErrorKind},
 };
 use qcongestion::CongestionControl;
 use qinterface::path::Pathway;

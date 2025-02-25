@@ -5,7 +5,7 @@ use std::{
 };
 
 pub use congestion::{ArcCC, CongestionAlgorithm, MSS};
-use qbase::{frame::AckFrame, Epoch};
+use qbase::{Epoch, frame::AckFrame};
 use tokio::{sync::Notify, task::AbortHandle};
 
 mod bbr;

@@ -1,6 +1,6 @@
 use crate::{
-    sid::{be_streamid, StreamId, WriteStreamId},
-    varint::{be_varint, VarInt, WriteVarInt},
+    sid::{StreamId, WriteStreamId, be_streamid},
+    varint::{VarInt, WriteVarInt, be_varint},
 };
 
 /// MAX_STREAM_DATA frame.
@@ -60,7 +60,7 @@ impl super::BeFrame for MaxStreamDataFrame {
 /// Parse a MAX_STREAM_DATA frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_max_stream_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxStreamDataFrame> {
-    use nom::{combinator::map, sequence::pair, Parser};
+    use nom::{Parser, combinator::map, sequence::pair};
     map(
         pair(be_streamid, be_varint),
         |(stream_id, max_stream_data)| MaxStreamDataFrame {
@@ -81,9 +81,9 @@ impl<T: bytes::BufMut> super::io::WriteFrame<MaxStreamDataFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use super::{MaxStreamDataFrame, MAX_STREAM_DATA_FRAME_TYPE};
+    use super::{MAX_STREAM_DATA_FRAME_TYPE, MaxStreamDataFrame};
     use crate::{
-        frame::{io::WriteFrame, BeFrame, FrameType},
+        frame::{BeFrame, FrameType, io::WriteFrame},
         varint::VarInt,
     };
 

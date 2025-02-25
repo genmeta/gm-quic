@@ -174,7 +174,7 @@ pub mod err {
 }
 
 use bytes::BufMut;
-use nom::{bits::streaming::take, combinator::flat_map, error::Error, IResult, Parser};
+use nom::{IResult, Parser, bits::streaming::take, combinator::flat_map, error::Error};
 
 /// Parse a variable-length integer from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.

@@ -11,8 +11,8 @@ use gm_quic::{StreamId, StreamReader, StreamWriter};
 #[cfg(feature = "unreliable")]
 use crate::ext::{RecvDatagram, SendDatagram};
 use crate::{
-    streams::{BidiStream, RecvStream, SendStream},
     Error,
+    streams::{BidiStream, RecvStream, SendStream},
 };
 // 由于数据报的特性，接收流的特征，QuicConnection不允许被Clone
 pub struct QuicConnection {

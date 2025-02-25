@@ -23,7 +23,7 @@ fn complete_frame(
     frame_type: FrameType,
     raw: Bytes,
 ) -> impl Fn(&[u8]) -> nom::IResult<&[u8], Frame> {
-    use nom::{combinator::map, Parser};
+    use nom::{Parser, combinator::map};
     move |input: &[u8]| match frame_type {
         FrameType::Padding => Ok((input, Frame::Padding(PaddingFrame))),
         FrameType::Ping => Ok((input, Frame::Ping(PingFrame))),

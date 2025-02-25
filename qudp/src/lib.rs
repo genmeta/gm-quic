@@ -4,7 +4,7 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     sync::atomic::AtomicU16,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 
 use socket2::{Domain, Socket, Type};

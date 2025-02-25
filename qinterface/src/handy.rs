@@ -11,8 +11,8 @@ mod qudp {
     use bytes::BytesMut;
 
     use crate::{
-        path::{Endpoint, Pathway, Socket},
         QuicInterface,
+        path::{Endpoint, Pathway, Socket},
     };
 
     struct ReceiveBuffers {

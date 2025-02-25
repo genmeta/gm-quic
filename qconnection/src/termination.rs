@@ -1,8 +1,8 @@
 use std::{
     io, mem,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -10,7 +10,7 @@ use std::{
 use qbase::{cid::ConnectionId, error::Error, frame::ConnectionCloseFrame};
 use qinterface::{path::Pathway, queue::RcvdPacketQueue};
 
-use crate::{path::ArcPaths, ArcLocalCids, Components};
+use crate::{ArcLocalCids, Components, path::ArcPaths};
 
 pub struct ClosingState {
     last_recv_time: Mutex<Instant>,

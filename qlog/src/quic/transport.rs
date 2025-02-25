@@ -5,8 +5,8 @@ use qbase::param::{ClientParameters, ServerParameters};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ConnectionID, IPAddress, Owner, PacketHeader, PacketNumberSpace, PathEndpointInfo, QuicFrame,
-    QuicVersion, StatelessResetToken, StreamType, ECN,
+    ConnectionID, ECN, IPAddress, Owner, PacketHeader, PacketNumberSpace, PathEndpointInfo,
+    QuicFrame, QuicVersion, StatelessResetToken, StreamType,
 };
 use crate::{HexString, PathID, RawInfo};
 

@@ -8,7 +8,7 @@ use crate::{
     },
     token::ResetToken,
     util::IndexDeque,
-    varint::{VarInt, VARINT_MAX},
+    varint::{VARINT_MAX, VarInt},
 };
 
 /// Local connection ID management.
@@ -331,10 +331,12 @@ mod tests {
         let retire_frame = RetireConnectionIdFrame::new(VarInt::from_u32(1));
         let cid2 = local_cids.recv_retire_cid_frame(&retire_frame);
         assert!(cid2.is_ok());
-        assert!(!local_cids
-            .issued_cids
-            .active_cids()
-            .contains_key(&issued_cid2));
+        assert!(
+            !local_cids
+                .issued_cids
+                .active_cids()
+                .contains_key(&issued_cid2)
+        );
         assert_eq!(local_cids.cid_deque.get(1), Some(&None));
         // issued new cid while retiring an old one
         assert_eq!(local_cids.cid_deque.len(), 3);
@@ -343,10 +345,12 @@ mod tests {
         let retire_frame = RetireConnectionIdFrame::new(VarInt::from_u32(0));
         let cid1 = local_cids.recv_retire_cid_frame(&retire_frame);
         assert!(cid1.is_ok());
-        assert!(!local_cids
-            .issued_cids
-            .active_cids()
-            .contains_key(&initial_scid));
+        assert!(
+            !local_cids
+                .issued_cids
+                .active_cids()
+                .contains_key(&initial_scid)
+        );
         assert_eq!(local_cids.cid_deque.get(0), None); // have been slided out
 
         assert_eq!(local_cids.cid_deque.len(), 2);

@@ -1,6 +1,6 @@
 use crate::{
-    sid::{be_streamid, StreamId, WriteStreamId},
-    varint::{be_varint, VarInt, WriteVarInt},
+    sid::{StreamId, WriteStreamId, be_streamid},
+    varint::{VarInt, WriteVarInt, be_varint},
 };
 
 /// STREAM_DATA_BLOCKED frame.
@@ -81,9 +81,9 @@ impl<T: bytes::BufMut> super::io::WriteFrame<StreamDataBlockedFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use super::{StreamDataBlockedFrame, STREAM_DATA_BLOCKED_FRAME_TYPE};
+    use super::{STREAM_DATA_BLOCKED_FRAME_TYPE, StreamDataBlockedFrame};
     use crate::{
-        frame::{io::WriteFrame, BeFrame, FrameType},
+        frame::{BeFrame, FrameType, io::WriteFrame},
         varint::VarInt,
     };
 

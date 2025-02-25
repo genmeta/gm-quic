@@ -1,8 +1,8 @@
 use std::ops::RangeInclusive;
 
-use nom::{combinator::map, Parser};
+use nom::{Parser, combinator::map};
 
-use crate::varint::{be_varint, VarInt, WriteVarInt};
+use crate::varint::{VarInt, WriteVarInt, be_varint};
 
 /// ACK Frame
 ///
@@ -249,12 +249,12 @@ impl<T: bytes::BufMut> super::io::WriteFrame<AckFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use nom::{combinator::flat_map, Parser};
+    use nom::{Parser, combinator::flat_map};
 
-    use super::{ack_frame_with_flag, be_ecn_counts, AckFrame, EcnCounts, ACK_FRAME_TYPE};
+    use super::{ACK_FRAME_TYPE, AckFrame, EcnCounts, ack_frame_with_flag, be_ecn_counts};
     use crate::{
-        frame::{io::WriteFrame, BeFrame, FrameType},
-        varint::{be_varint, VarInt},
+        frame::{BeFrame, FrameType, io::WriteFrame},
+        varint::{VarInt, be_varint},
     };
 
     #[test]

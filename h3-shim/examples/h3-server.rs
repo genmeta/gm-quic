@@ -6,7 +6,7 @@ use h3::{error::ErrorLevel, quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
 use qbase::param::ServerParameters;
 use tokio::{fs::File, io::AsyncReadExt};
-use tracing::{error, info, info_span, Instrument};
+use tracing::{Instrument, error, info, info_span};
 
 #[derive(Parser, Debug)]
 #[structopt(name = "server")]

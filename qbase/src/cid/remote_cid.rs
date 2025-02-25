@@ -11,7 +11,7 @@ use crate::{
     frame::{BeFrame, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     token::ResetToken,
     util::IndexDeque,
-    varint::{VarInt, VARINT_MAX},
+    varint::{VARINT_MAX, VarInt},
 };
 
 /// RemoteCids is used to manage the connection IDs issued by the peer,

@@ -2,9 +2,9 @@ use std::ops::Range;
 
 use super::BeFrame;
 use crate::{
-    sid::{be_streamid, StreamId, WriteStreamId},
+    sid::{StreamId, WriteStreamId, be_streamid},
     util::{DescribeData, WriteData},
-    varint::{be_varint, VarInt, WriteVarInt, VARINT_MAX},
+    varint::{VARINT_MAX, VarInt, WriteVarInt, be_varint},
 };
 
 /// STREAM frame.
@@ -268,12 +268,12 @@ where
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use nom::{combinator::flat_map, Parser};
+    use nom::{Parser, combinator::flat_map};
 
-    use super::{stream_frame_with_flag, StreamFrame, STREAM_FRAME_TYPE};
+    use super::{STREAM_FRAME_TYPE, StreamFrame, stream_frame_with_flag};
     use crate::{
-        frame::{io::WriteDataFrame, BeFrame, FrameType},
-        varint::{be_varint, VarInt},
+        frame::{BeFrame, FrameType, io::WriteDataFrame},
+        varint::{VarInt, be_varint},
     };
 
     #[test]
@@ -308,7 +308,9 @@ mod tests {
 
         assert_eq!(
             input,
-            &[b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o', b'r', b'l', b'd', 0,][..]
+            &[
+                b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o', b'r', b'l', b'd', 0,
+            ][..]
         );
         assert_eq!(
             frame,
@@ -340,7 +342,9 @@ mod tests {
 
         assert_eq!(
             input,
-            &[b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o', b'r', b'l', b'd',][..]
+            &[
+                b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o', b'r', b'l', b'd',
+            ][..]
         );
         assert_eq!(
             frame,
@@ -384,7 +388,9 @@ mod tests {
         buf.put_data_frame(&frame, b"hello world");
         assert_eq!(
             buf,
-            vec![0x9, 0x52, 0x34, b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o', b'r', b'l', b'd']
+            vec![
+                0x9, 0x52, 0x34, b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o', b'r', b'l', b'd'
+            ]
         );
     }
 

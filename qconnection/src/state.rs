@@ -1,16 +1,16 @@
 use std::sync::{
-    atomic::{AtomicU8, Ordering},
     Arc,
+    atomic::{AtomicU8, Ordering},
 };
 
 use qinterface::path::Socket;
 use qlog::quic::{
+    Owner,
     connectivity::{
         BaseConnectionStates, ConnectionStarted, ConnectionState as QlogConnectionState,
         ConnectionStateUpdated, GranularConnectionStates,
     },
     transport::ParametersSet,
-    Owner,
 };
 
 use crate::Components;

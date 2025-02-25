@@ -2,7 +2,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use gm_quic::QuicClient;
-use rustls::pki_types::{pem::PemObject, CertificateDer};
+use rustls::pki_types::{CertificateDer, pem::PemObject};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// cargo run --example client -- \

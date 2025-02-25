@@ -1,7 +1,7 @@
 use qbase::{
     packet::{
-        header::{long, short},
         DataHeader, Packet,
+        header::{long, short},
     },
     util::bound_deque::BoundQueue,
 };

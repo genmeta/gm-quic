@@ -9,10 +9,10 @@ mod send {
 
     use bytes::BufMut;
     use qbase::{
-        frame::{io::WriteDataFrame, CryptoFrame},
+        frame::{CryptoFrame, io::WriteDataFrame},
         packet::MarshalDataFrame,
         util::DescribeData,
-        varint::{VarInt, VARINT_MAX},
+        varint::{VARINT_MAX, VarInt},
     };
     use tokio::io::AsyncWrite;
 

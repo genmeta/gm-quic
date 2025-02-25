@@ -1,7 +1,7 @@
 use std::{
     mem::MaybeUninit,
     pin::Pin,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 
 use bytes::Buf;

@@ -82,11 +82,7 @@ impl<const B: u8> From<Toggle<B>> for u8 {
 
 impl<const B: u8> From<bool> for Toggle<B> {
     fn from(value: bool) -> Self {
-        if value {
-            Toggle::One
-        } else {
-            Toggle::Zero
-        }
+        if value { Toggle::One } else { Toggle::Zero }
     }
 }
 

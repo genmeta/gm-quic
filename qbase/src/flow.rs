@@ -1,8 +1,8 @@
 use std::{
     ops::{Deref, DerefMut},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     task::Waker,
 };
@@ -430,24 +430,28 @@ mod tests {
 
         let waker = futures::task::noop_waker();
         controler.register_waker(waker.clone());
-        assert!(!controler
-            .0
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .wakers
-            .is_empty());
+        assert!(
+            !controler
+                .0
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .wakers
+                .is_empty()
+        );
 
         controler.increase_limit(200);
-        assert!(controler
-            .0
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .wakers
-            .is_empty());
+        assert!(
+            controler
+                .0
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .wakers
+                .is_empty()
+        );
 
         let mut credit = controler.credit().unwrap();
         assert_eq!(credit.available(), 100);

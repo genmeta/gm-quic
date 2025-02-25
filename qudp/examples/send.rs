@@ -1,6 +1,6 @@
 use std::io::IoSlice;
 
-use clap::{command, Parser};
+use clap::{Parser, command};
 use qudp::{PacketHeader, UdpSocketController};
 
 #[derive(Parser, Debug)]

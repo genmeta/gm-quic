@@ -52,7 +52,7 @@ impl super::BeFrame for PathChallengeFrame {
 /// Parse a PATH_CHALLENGE frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_path_challenge_frame(input: &[u8]) -> nom::IResult<&[u8], PathChallengeFrame> {
-    use nom::{bytes::streaming::take, combinator::map, Parser};
+    use nom::{Parser, bytes::streaming::take, combinator::map};
     map(take(8usize), PathChallengeFrame::from_slice).parse(input)
 }
 
@@ -79,7 +79,7 @@ mod tests {
 
     #[test]
     fn test_read_path_challenge_frame() {
-        use nom::{combinator::flat_map, Parser};
+        use nom::{Parser, combinator::flat_map};
 
         use super::be_path_challenge_frame;
         use crate::varint::be_varint;

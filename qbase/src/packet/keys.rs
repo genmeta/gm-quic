@@ -170,7 +170,9 @@ impl Future for GetRemoteKeys<'_> {
                     .as_ref()
                     .is_some_and(|waker| !waker.will_wake(cx.waker()))
                 {
-                    unreachable!("Try to get remote keys from multiple tasks! This is a bug, please report it.")
+                    unreachable!(
+                        "Try to get remote keys from multiple tasks! This is a bug, please report it."
+                    )
                 }
                 *waker = Some(cx.waker().clone());
                 Poll::Pending
@@ -260,7 +262,7 @@ impl ArcOneRttPacketKeys {
     /// During the exclusive period of encrypting or decrypting packets,
     /// the keys must not be updated elsewhere.
     pub fn lock_guard(&self) -> MutexGuard<OneRttPacketKeys> {
-        self.0 .0.lock().unwrap()
+        self.0.0.lock().unwrap()
     }
 
     /// Get the length of the tag of the packet key's underlying AEAD algorithm.
@@ -275,7 +277,7 @@ impl ArcOneRttPacketKeys {
     /// Keeping a redundant tag length that can be obtained without locking
     /// will improve lock performance.
     pub fn tag_len(&self) -> usize {
-        self.0 .1
+        self.0.1
     }
 }
 
@@ -399,7 +401,9 @@ impl Future for GetRemoteOneRttKeys<'_> {
                     .as_ref()
                     .is_some_and(|waker| !waker.will_wake(cx.waker()))
                 {
-                    unreachable!("Try to get remote keys from multiple tasks! This is a bug, please report it.")
+                    unreachable!(
+                        "Try to get remote keys from multiple tasks! This is a bug, please report it."
+                    )
                 }
                 *waker = Some(cx.waker().clone());
                 Poll::Pending

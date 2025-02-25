@@ -1,6 +1,6 @@
 use crate::{
     sid::{Dir, MAX_STREAMS_LIMIT},
-    varint::{be_varint, VarInt, WriteVarInt},
+    varint::{VarInt, WriteVarInt, be_varint},
 };
 
 /// MAX_STREAMS frame.
@@ -95,12 +95,12 @@ impl<T: bytes::BufMut> super::io::WriteFrame<MaxStreamsFrame> for T {
 }
 #[cfg(test)]
 mod tests {
-    use nom::{combinator::flat_map, Parser};
+    use nom::{Parser, combinator::flat_map};
 
-    use super::{max_streams_frame_with_dir, MaxStreamsFrame, MAX_STREAMS_FRAME_TYPE};
+    use super::{MAX_STREAMS_FRAME_TYPE, MaxStreamsFrame, max_streams_frame_with_dir};
     use crate::{
-        frame::{io::WriteFrame, BeFrame, FrameType},
-        varint::{be_varint, VarInt},
+        frame::{BeFrame, FrameType, io::WriteFrame},
+        varint::{VarInt, be_varint},
     };
 
     #[test]

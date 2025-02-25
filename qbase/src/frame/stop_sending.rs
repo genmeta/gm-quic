@@ -1,6 +1,6 @@
 use crate::{
-    sid::{be_streamid, StreamId, WriteStreamId},
-    varint::{be_varint, VarInt, WriteVarInt},
+    sid::{StreamId, WriteStreamId, be_streamid},
+    varint::{VarInt, WriteVarInt, be_varint},
 };
 
 /// STOP_SENDING frame.
@@ -65,7 +65,7 @@ impl super::BeFrame for StopSendingFrame {
 /// Parse a STOP_SENDING frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_stop_sending_frame(input: &[u8]) -> nom::IResult<&[u8], StopSendingFrame> {
-    use nom::{combinator::map, Parser};
+    use nom::{Parser, combinator::map};
     map((be_streamid, be_varint), |(stream_id, app_err_code)| {
         StopSendingFrame {
             stream_id,
@@ -85,10 +85,10 @@ impl<T: bytes::BufMut> super::io::WriteFrame<StopSendingFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use super::{be_stop_sending_frame, StopSendingFrame, STOP_SENDING_FRAME_TYPE};
+    use super::{STOP_SENDING_FRAME_TYPE, StopSendingFrame, be_stop_sending_frame};
     use crate::{
-        frame::{io::WriteFrame, BeFrame, FrameType},
-        varint::{be_varint, VarInt},
+        frame::{BeFrame, FrameType, io::WriteFrame},
+        varint::{VarInt, be_varint},
     };
 
     #[test]
@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn test_parse_stop_sending_frame() {
-        use nom::{combinator::flat_map, Parser};
+        use nom::{Parser, combinator::flat_map};
 
         let frame =
             StopSendingFrame::new(VarInt::from_u32(0x1234).into(), VarInt::from_u32(0x5678));

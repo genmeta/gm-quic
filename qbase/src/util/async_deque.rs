@@ -56,7 +56,9 @@ impl<T> AsyncDeque<T> {
                     Poll::Ready(Some(frame))
                 } else if let Some(ref waker) = self.waker {
                     if !waker.will_wake(cx.waker()) {
-                        panic!("Multiple tasks are attempting to wait on the same AsyncDeque. This is a bug, place report it.");
+                        panic!(
+                            "Multiple tasks are attempting to wait on the same AsyncDeque. This is a bug, place report it."
+                        );
                     }
                     // same waker, no need to update again
                     Poll::Pending

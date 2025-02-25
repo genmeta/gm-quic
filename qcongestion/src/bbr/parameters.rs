@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use super::{
-    Bbr, BbrStateMachine, INITIAL_CWND, MINIMUM_WINDOW_PACKETS, MIN_PIPE_CWND_PKTS, MSS,
+    Bbr, BbrStateMachine, INITIAL_CWND, MIN_PIPE_CWND_PKTS, MINIMUM_WINDOW_PACKETS, MSS,
     SEND_QUANTUM_THRESHOLD_PACING_RATE,
 };
 use crate::rtt::INITIAL_RTT;

@@ -9,17 +9,17 @@ pub mod short;
 
 #[doc(hidden)]
 pub use long::{
-    io::{LongHeaderBuilder, WriteSpecific},
     DataHeader, HandshakeHeader, InitialHeader, LongHeader, RetryHeader, VersionNegotiationHeader,
     ZeroRttHeader,
+    io::{LongHeaderBuilder, WriteSpecific},
 };
 #[doc(hidden)]
 pub use short::OneRttHeader;
 
 use super::r#type::{
-    long::{v1, Type as LongType, Version},
-    short::OneRtt,
     Type,
+    long::{Type as LongType, Version, v1},
+    short::OneRtt,
 };
 
 /// Each packet has its type. For more detailed definition on packet types, see [`Type`].
@@ -77,14 +77,14 @@ pub enum Header {
 /// how to write the header into a UDP packet.
 pub mod io {
     use super::{
-        long::{io::LongHeaderBuilder, Handshake, Initial, Retry, VersionNegotiation, ZeroRtt},
         Header, LongHeader, OneRttHeader,
+        long::{Handshake, Initial, Retry, VersionNegotiation, ZeroRtt, io::LongHeaderBuilder},
     };
     use crate::{
         cid::be_connection_id,
         packet::{
             header::short::io::be_one_rtt_header,
-            r#type::{short::OneRtt, Type},
+            r#type::{Type, short::OneRtt},
         },
     };
 
@@ -148,20 +148,20 @@ mod tests {
     use std::ops::Deref;
 
     use super::{
+        Header, LongHeaderBuilder,
         io::be_header,
         long::{Handshake, Initial, Retry, VersionNegotiation, ZeroRtt},
-        Header, LongHeaderBuilder,
     };
     use crate::{
         cid::ConnectionId,
         packet::{
-            header::{io::WriteHeader, GetScid},
+            GetDcid, OneRttHeader, SpinBit,
+            header::{GetScid, io::WriteHeader},
             r#type::{
+                Type,
                 long::{self, Ver1},
                 short::OneRtt,
-                Type,
             },
-            GetDcid, OneRttHeader, SpinBit,
         },
     };
 
@@ -319,7 +319,9 @@ mod tests {
         buf.put_header(&initial_header);
         assert_eq!(
             buf,
-            [0xc0, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x03, 0x01, 0x02, 0x03]
+            [
+                0xc0, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x03, 0x01, 0x02, 0x03
+            ]
         );
 
         // ZeroRtt Header

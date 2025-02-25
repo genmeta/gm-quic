@@ -4,7 +4,7 @@ use nom::Parser;
 
 use crate::{
     util::{DescribeData, WriteData},
-    varint::{be_varint, VarInt, WriteVarInt, VARINT_MAX},
+    varint::{VARINT_MAX, VarInt, WriteVarInt, be_varint},
 };
 
 /// CRYPTO Frame
@@ -125,9 +125,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{CryptoFrame, CRYPTO_FRAME_TYPE};
+    use super::{CRYPTO_FRAME_TYPE, CryptoFrame};
     use crate::{
-        frame::{io::WriteDataFrame, BeFrame},
+        frame::{BeFrame, io::WriteDataFrame},
         varint::VarInt,
     };
 

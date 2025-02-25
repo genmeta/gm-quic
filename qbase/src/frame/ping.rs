@@ -33,8 +33,8 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PingFrame> for T {
 }
 #[cfg(test)]
 mod tests {
-    use super::{PingFrame, PING_FRAME_TYPE};
-    use crate::frame::{io::WriteFrame, BeFrame, FrameType};
+    use super::{PING_FRAME_TYPE, PingFrame};
+    use crate::frame::{BeFrame, FrameType, io::WriteFrame};
 
     #[test]
     fn test_ping_frame() {
@@ -45,7 +45,7 @@ mod tests {
 
     #[test]
     fn test_read_ping_frame() {
-        use nom::{combinator::flat_map, Parser};
+        use nom::{Parser, combinator::flat_map};
 
         use super::be_ping_frame;
         use crate::varint::be_varint;

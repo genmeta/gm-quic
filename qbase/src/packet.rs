@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
-use bytes::{buf::UninitSlice, BufMut, BytesMut};
+use bytes::{BufMut, BytesMut, buf::UninitSlice};
 use deref_derive::{Deref, DerefMut};
 use encrypt::{encode_long_first_byte, encode_short_first_byte, encrypt_packet, protect_header};
 use enum_dispatch::enum_dispatch;
 use getset::CopyGetters;
-use header::{io::WriteHeader, LongHeader};
+use header::{LongHeader, io::WriteHeader};
 
 use crate::{
     cid::ConnectionId,
     frame::{
-        io::{WriteDataFrame, WriteFrame},
         BeFrame, ContainSpec, Spec,
+        io::{WriteDataFrame, WriteFrame},
     },
     util::{DescribeData, WriteData},
     varint::{EncodeBytes, VarInt, WriteVarInt},
@@ -29,16 +29,16 @@ pub use signal::{KeyPhaseBit, SpinBit};
 pub mod r#type;
 #[doc(hidden)]
 pub use r#type::{
-    GetPacketNumberLength, LongSpecificBits, ShortSpecificBits, Type, LONG_RESERVED_MASK,
-    SHORT_RESERVED_MASK,
+    GetPacketNumberLength, LONG_RESERVED_MASK, LongSpecificBits, SHORT_RESERVED_MASK,
+    ShortSpecificBits, Type,
 };
 
 /// Definitions of QUIC packet headers.
 pub mod header;
 #[doc(hidden)]
 pub use header::{
-    long, EncodeHeader, GetDcid, GetType, HandshakeHeader, Header, InitialHeader,
-    LongHeaderBuilder, OneRttHeader, RetryHeader, VersionNegotiationHeader, ZeroRttHeader,
+    EncodeHeader, GetDcid, GetType, HandshakeHeader, Header, InitialHeader, LongHeaderBuilder,
+    OneRttHeader, RetryHeader, VersionNegotiationHeader, ZeroRttHeader, long,
 };
 
 /// The io module provides the functions to parse the QUIC packet.
@@ -49,7 +49,7 @@ pub mod io;
 /// Encoding and decoding of packet number
 pub mod number;
 #[doc(hidden)]
-pub use number::{take_pn_len, PacketNumber, WritePacketNumber};
+pub use number::{PacketNumber, WritePacketNumber, take_pn_len};
 
 /// Include operations such as decrypting QUIC packets, removing header protection,
 /// and parsing the first byte of the packet to get the right packet numbers

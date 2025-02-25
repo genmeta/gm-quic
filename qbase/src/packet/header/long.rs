@@ -235,11 +235,11 @@ pub mod io {
 
     use bytes::BufMut;
     use nom::{
+        Err, Parser,
         bytes::streaming::take,
         combinator::{eof, map},
         multi::{length_data, many_till},
         number::streaming::be_u32,
-        Err, Parser,
     };
 
     use super::*;
@@ -249,10 +249,10 @@ pub mod io {
             header::io::WriteHeader,
             r#type::{
                 io::WritePacketType,
-                long::{v1::Type as LongV1Type, Type as LongType},
+                long::{Type as LongType, v1::Type as LongV1Type},
             },
         },
-        varint::{be_varint, WriteVarInt},
+        varint::{WriteVarInt, be_varint},
     };
 
     /// Parse the version negotiation packet,

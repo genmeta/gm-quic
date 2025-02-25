@@ -2,7 +2,7 @@ use std::task::{Context, Poll};
 
 use gm_quic::{DatagramReader, DatagramWriter};
 
-use crate::{conn::QuicConnection, Error};
+use crate::{Error, conn::QuicConnection};
 
 impl<B: bytes::Buf> h3::quic::SendDatagramExt<B> for QuicConnection {
     type Error = Error;

@@ -1,6 +1,6 @@
 use deref_derive::Deref;
 
-use crate::varint::{be_varint, VarInt, WriteVarInt};
+use crate::varint::{VarInt, WriteVarInt, be_varint};
 
 /// NEW_TOKEN frame.
 ///
@@ -60,9 +60,9 @@ impl NewTokenFrame {
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_new_token_frame(input: &[u8]) -> nom::IResult<&[u8], NewTokenFrame> {
     use nom::{
+        Parser,
         bytes::streaming::take,
         combinator::{flat_map, map},
-        Parser,
     };
     flat_map(be_varint, |length| {
         map(
@@ -82,7 +82,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<NewTokenFrame> for T {
 }
 #[cfg(test)]
 mod tests {
-    use crate::frame::{io::WriteFrame, BeFrame, FrameType};
+    use crate::frame::{BeFrame, FrameType, io::WriteFrame};
 
     #[test]
     fn test_new_token_frame() {

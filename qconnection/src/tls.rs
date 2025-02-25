@@ -8,22 +8,22 @@ use std::{
 };
 
 use qbase::{
+    Epoch,
     cid::ConnectionId,
     error::{Error, ErrorKind},
     param::ArcParameters,
-    Epoch,
 };
 use qlog::telemetry::Instrument;
 use qrecovery::crypto::CryptoStream;
 use rustls::{
+    Side,
     crypto::CryptoProvider,
     quic::{KeyChange, Keys},
-    Side,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::Instrument as _;
 
-use crate::{events::Event, prelude::EmitEvent, Components, Handshake, Writer};
+use crate::{Components, Handshake, Writer, events::Event, prelude::EmitEvent};
 
 type TlsConnection = rustls::quic::Connection;
 

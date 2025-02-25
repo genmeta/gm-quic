@@ -10,9 +10,9 @@ pub mod tx;
 pub mod prelude {
     pub use qbase::{frame::ConnectionCloseFrame, sid::StreamId, varint::VarInt};
     pub use qinterface::{
+        QuicInterface,
         path::{Endpoint, Pathway, Socket},
         router::QuicProto,
-        QuicInterface,
     };
     #[cfg(feature = "unreliable")]
     pub use qunreliable::{DatagramReader, DatagramWriter};
@@ -23,9 +23,9 @@ pub mod prelude {
     }
 
     pub use crate::{
+        Connection, StreamReader, StreamWriter,
         events::{EmitEvent, Event},
         path::idle::HeartbeatConfig,
-        Connection, StreamReader, StreamWriter,
     };
 }
 
