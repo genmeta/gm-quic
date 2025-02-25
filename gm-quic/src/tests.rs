@@ -16,10 +16,14 @@ fn client_stream_unlimited_parameters() -> crate::ClientParameters {
     params
 }
 
-use std::{io, sync::Arc, time::Duration};
+use std::{
+    io,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use echo_server::server_stream_unlimited_parameters;
-use qlog::telemetry::{Instrument, NoopExporter};
+use qlog::telemetry::{Log, handy::*};
 use rustls::RootCertStore;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -28,6 +32,11 @@ use tokio::{
 use tracing::{debug, error, info, info_span};
 
 use crate::ToCertificate;
+
+static LOGGER: LazyLock<Arc<dyn Log + Send + Sync>> = LazyLock::new(|| {
+    Arc::new(NullLogger)
+    // Arc::new(DefaultSeqLogger::new(PathBuf::from("/tmp")))
+});
 
 #[tokio::test]
 async fn set() -> io::Result<()> {
@@ -43,27 +52,10 @@ async fn set() -> io::Result<()> {
         // )
         // .with_ansi(false)
         .init();
-    // let exporter = qlog::legacy::exporter::IoExpoter::new(
-    //     qlog::build!(qlog::legacy::QlogFileSeq {
-    //         trace: qlog::legacy::TraceSeq {}
-    //     }),
-    //     tokio::fs::OpenOptions::new()
-    //         .create(true)
-    //         .write(true)
-    //         .truncate(true)
-    //         .open("/tmp/gm-quic.qlog")
-    //         .await?,
-    // );
 
-    // 其实是一个连接一个，目前暂时没有实现
-    let exporter = NoopExporter;
-
-    let span = qlog::span!(Arc::new(exporter));
-    let _enter = span.enter();
-
-    disable_keep_alive().instrument(span.clone()).await;
-    enable_keep_alive().instrument(span.clone()).await;
-    parallel_stream().instrument(span.clone()).await?;
+    disable_keep_alive().await;
+    enable_keep_alive().await;
+    parallel_stream().await?;
 
     Ok(())
 }
@@ -76,6 +68,7 @@ async fn parallel_stream() -> io::Result<()> {
             include_bytes!("../examples/keychain/localhost/server.key"),
         )
         .with_parameters(server_stream_unlimited_parameters())
+        .with_qlog(LOGGER.clone())
         .listen("0.0.0.0:0")?;
 
     let mut server_addr = server.addresses().into_iter().next().unwrap();
@@ -92,6 +85,7 @@ async fn parallel_stream() -> io::Result<()> {
             .with_root_certificates(roots)
             .without_cert()
             .with_parameters(client_stream_unlimited_parameters())
+            .with_qlog(LOGGER.clone())
             .build(),
     );
 
@@ -173,6 +167,7 @@ async fn disable_keep_alive() {
         )
         .defer_idle_timeout(disabled_keep_alive)
         .with_parameters(parameters)
+        .with_qlog(LOGGER.clone())
         .listen("127.0.0.1:0")
         .unwrap();
     let mut server_addr = server.addresses().into_iter().next().unwrap();
@@ -187,6 +182,7 @@ async fn disable_keep_alive() {
             .with_root_certificates(roots)
             .without_cert()
             .defer_idle_timeout(disabled_keep_alive)
+            .with_qlog(LOGGER.clone())
             .build(),
     );
 
@@ -214,6 +210,7 @@ async fn enable_keep_alive() {
             include_bytes!("../examples/keychain/localhost/server.key"),
         )
         .with_parameters(parameters)
+        .with_qlog(LOGGER.clone())
         .listen("127.0.0.1:0")
         .unwrap();
     let mut server_addr = server.addresses().into_iter().next().unwrap();
@@ -228,6 +225,7 @@ async fn enable_keep_alive() {
             .with_root_certificates(roots)
             .without_cert()
             .defer_idle_timeout(enabled_keep_alive)
+            .with_qlog(LOGGER.clone())
             .build(),
     );
 

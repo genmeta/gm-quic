@@ -9,17 +9,20 @@ use dashmap::DashMap;
 use handy::Usc;
 pub use qconnection::{builder::*, prelude::*};
 use qinterface::util::Channel;
-use qlog::quic::connectivity::ServerListening;
+use qlog::{
+    quic::connectivity::ServerListening,
+    telemetry::{Log, handy::NullLogger},
+};
 use rustls::{
-    server::{danger::ClientCertVerifier, NoClientAuth, ResolvesServerCert, WantsServerCert},
     ConfigBuilder, ServerConfig as TlsServerConfig, WantsVerifier,
+    server::{NoClientAuth, ResolvesServerCert, WantsServerCert, danger::ClientCertVerifier},
 };
 use tokio::sync::mpsc;
 
 use crate::{
+    PROTO,
     interfaces::Interfaces,
     util::{ToCertificate, ToPrivateKey},
-    PROTO,
 };
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
@@ -61,6 +64,7 @@ pub struct QuicServer {
     passive_listening: bool,
     streams_controller:
         Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
+    logger: Arc<dyn Log + Send + Sync>,
     _supported_versions: Vec<u32>,
     tls_config: Arc<TlsServerConfig>,
     token_provider: Option<Arc<dyn TokenProvider>>,
@@ -77,6 +81,7 @@ impl QuicServer {
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            logger: None,
             token_provider: None,
         }
     }
@@ -93,6 +98,7 @@ impl QuicServer {
             parameters: ServerParameters::default(),
             tls_config,
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            logger: None,
             token_provider: None,
         }
     }
@@ -111,6 +117,7 @@ impl QuicServer {
                 .with_protocol_versions(&[&rustls::version::TLS13])
                 .unwrap(),
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            logger: None,
             token_provider: None,
         }
     }
@@ -180,6 +187,7 @@ impl QuicServer {
                 .with_proto(PROTO.clone())
                 .defer_idle_timeout(server.defer_idle_timeout)
                 .with_cids(origin_dcid, clinet_scid)
+                .with_qlog(server.logger.as_ref())
                 .run_with(event_broker),
         );
         PROTO.deliver(packet, pathway, socket).await;
@@ -236,6 +244,7 @@ pub struct QuicServerBuilder<T> {
     tls_config: T,
     streams_controller:
         Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
+    logger: Option<Arc<dyn Log + Send + Sync>>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
@@ -250,6 +259,7 @@ pub struct QuicServerSniBuilder<T> {
     tls_config: T,
     streams_controller:
         Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
+    logger: Option<Arc<dyn Log + Send + Sync>>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
 
@@ -343,6 +353,11 @@ impl<T> QuicServerBuilder<T> {
             ..self
         }
     }
+
+    pub fn with_qlog(mut self, logger: Arc<dyn Log + Send + Sync>) -> Self {
+        self.logger = Some(logger);
+        self
+    }
 }
 
 impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
@@ -361,6 +376,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
                 .tls_config
                 .with_client_cert_verifier(client_cert_verifier),
             streams_controller: self.streams_controller,
+            logger: self.logger,
             token_provider: self.token_provider,
         }
     }
@@ -379,6 +395,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
                 .tls_config
                 .with_client_cert_verifier(Arc::new(NoClientAuth)),
             streams_controller: self.streams_controller,
+            logger: self.logger,
             token_provider: self.token_provider,
         }
     }
@@ -406,6 +423,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
                 .with_single_cert(cert_chain.to_certificate(), key_der.to_private_key())
                 .expect("The private key was wrong encoded or failed validation"),
             streams_controller: self.streams_controller,
+            logger: self.logger,
             token_provider: self.token_provider,
         }
     }
@@ -436,6 +454,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
                 )
                 .expect("The private key was wrong encoded or failed validation"),
             streams_controller: self.streams_controller,
+            logger: self.logger,
             token_provider: self.token_provider,
         }
     }
@@ -454,6 +473,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
                 .with_cert_resolver(Arc::new(VirtualHosts(hosts.clone()))),
             hosts,
             streams_controller: self.streams_controller,
+            logger: self.logger,
             token_provider: self.token_provider,
         }
     }
@@ -572,6 +592,7 @@ impl QuicServerBuilder<TlsServerConfig> {
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
             streams_controller: self.streams_controller,
+            logger: self.logger.unwrap_or_else(|| Arc::new(NullLogger)),
             token_provider: self.token_provider,
         });
 
@@ -585,7 +606,9 @@ impl QuicServerBuilder<TlsServerConfig> {
                     Err(join_error) => join_error.into(),
                 };
                 let local_addr = local_addrs[iface_idx];
-                tracing::error!("interface on {local_addr} that server listened was closed unexpectedly: {error}");
+                tracing::error!(
+                    "interface on {local_addr} that server listened was closed unexpectedly: {error}"
+                );
                 server.shutdown();
             }
         });
@@ -686,6 +709,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
             streams_controller: self.streams_controller,
+            logger: self.logger.unwrap_or_else(|| Arc::new(NullLogger)),
             token_provider: self.token_provider,
         });
 
@@ -699,7 +723,9 @@ impl QuicServerSniBuilder<TlsServerConfig> {
                     Err(join_error) => join_error.into(),
                 };
                 let local_addr = local_addrs[iface_idx];
-                tracing::error!("interface on {local_addr} that server listened was closed unexpectedly: {error}");
+                tracing::error!(
+                    "interface on {local_addr} that server listened was closed unexpectedly: {error}"
+                );
                 server.shutdown();
             }
         });

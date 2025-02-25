@@ -21,7 +21,7 @@ pin-project-lite = { workspace = true }
 qbase = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["hex"] }
-tokio = { workspace = true, features = ["rt", "sync", "io-util"] }
+tokio = { workspace = true, features = ["fs", "rt", "sync", "io-util"] }
 tracing = { workspace = true }
 
 [dev-dependencies]

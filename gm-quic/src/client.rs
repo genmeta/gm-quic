@@ -8,6 +8,7 @@ use dashmap::DashMap;
 use futures::{FutureExt, StreamExt};
 use handy::Usc;
 pub use qconnection::{builder::*, prelude::*};
+use qlog::telemetry::{Log, handy::NullLogger};
 use rustls::{
     ClientConfig as TlsClientConfig, ConfigBuilder, WantsVerifier,
     client::{ResolvesClientCert, WantsClientCert},
@@ -24,8 +25,8 @@ use crate::{
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
 
 /// A quic client that can initiates connections to servers.
+// be different from QuicServer, QuicClient is not arc
 pub struct QuicClient {
-    // be different from QuicServer, QuicClient is not arc
     bind_interfaces: Option<Arc<DashMap<SocketAddr, Arc<dyn QuicInterface>>>>,
     defer_idle_timeout: HeartbeatConfig,
     // TODO: 好像得创建2个quic连接，一个用ipv4，一个用ipv6
@@ -39,6 +40,7 @@ pub struct QuicClient {
     reuse_connection: bool,
     reuse_interfaces: bool,
     streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
+    logger: Arc<dyn Log + Send + Sync>,
     tls_config: Arc<TlsClientConfig>,
     token_sink: Option<Arc<dyn TokenSink>>,
 }
@@ -80,6 +82,7 @@ impl QuicClient {
             parameters: ClientParameters::default(),
             tls_config: TlsClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            logger: None,
             token_sink: None,
         }
     }
@@ -101,6 +104,7 @@ impl QuicClient {
                 .with_protocol_versions(&[&rustls::version::TLS13])
                 .unwrap(),
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            logger: None,
             token_sink: None,
         }
     }
@@ -120,6 +124,7 @@ impl QuicClient {
             parameters: ClientParameters::default(),
             tls_config,
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            logger: None,
             token_sink: None,
         }
     }
@@ -185,6 +190,7 @@ impl QuicClient {
                 .with_proto(PROTO.clone())
                 .defer_idle_timeout(self.defer_idle_timeout)
                 .with_cids(ConnectionId::random_gen(8))
+                .with_qlog(self.logger.as_ref())
                 .run_with(event_broker),
         );
 
@@ -298,6 +304,7 @@ pub struct QuicClientBuilder<T> {
     parameters: ClientParameters,
     tls_config: T,
     streams_controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
+    logger: Option<Arc<dyn Log + Send + Sync>>,
     token_sink: Option<Arc<dyn TokenSink>>,
 }
 
@@ -460,6 +467,11 @@ impl<T> QuicClientBuilder<T> {
         self
     }
 
+    pub fn with_qlog(mut self, logger: Arc<dyn Log + Send + Sync>) -> Self {
+        self.logger = Some(logger);
+        self
+    }
+
     /// Specify the token sink for the client.
     ///
     /// The token sink is used to storage the tokens that the client received from the server. The client will use the
@@ -492,6 +504,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
             parameters: self.parameters,
             tls_config: self.tls_config.with_root_certificates(root_store),
             streams_controller: self.streams_controller,
+            logger: self.logger,
             token_sink: self.token_sink,
         }
     }
@@ -514,6 +527,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsVerifier>> {
             parameters: self.parameters,
             tls_config: self.tls_config.with_webpki_verifier(verifier),
             streams_controller: self.streams_controller,
+            logger: self.logger,
             token_sink: self.token_sink,
         }
     }
@@ -543,6 +557,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
                 .with_client_auth_cert(cert_chain.to_certificate(), key_der.to_private_key())
                 .expect("The private key was wrong encoded or failed validation"),
             streams_controller: self.streams_controller,
+            logger: self.logger,
             token_sink: self.token_sink,
         }
     }
@@ -560,6 +575,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
             parameters: self.parameters,
             tls_config: self.tls_config.with_no_client_auth(),
             streams_controller: self.streams_controller,
+            logger: self.logger,
             token_sink: self.token_sink,
         }
     }
@@ -580,6 +596,7 @@ impl QuicClientBuilder<TlsClientConfigBuilder<WantsClientCert>> {
             parameters: self.parameters,
             tls_config: self.tls_config.with_client_cert_resolver(cert_resolver),
             streams_controller: self.streams_controller,
+            logger: self.logger,
             token_sink: self.token_sink,
         }
     }
@@ -632,6 +649,7 @@ impl QuicClientBuilder<TlsClientConfig> {
             _remembered: None,
             tls_config: Arc::new(self.tls_config),
             streams_controller: self.streams_controller,
+            logger: self.logger.unwrap_or_else(|| Arc::new(NullLogger)),
             token_sink: self.token_sink,
         }
     }

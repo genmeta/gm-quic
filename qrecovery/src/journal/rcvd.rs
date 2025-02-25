@@ -4,10 +4,10 @@ use std::{
 };
 
 use qbase::{
-    frame::{io::WriteFrame, AckFrame},
+    frame::{AckFrame, io::WriteFrame},
     packet::PacketNumber,
     util::IndexDeque,
-    varint::{VarInt, VARINT_MAX},
+    varint::{VARINT_MAX, VarInt},
 };
 use qlog::quic::transport::PacketDroppedTrigger;
 use thiserror::Error;

@@ -9,35 +9,18 @@ use std::{
     task::{Context, Poll},
 };
 
+use handy::NullExporter;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::{Event, GroupID};
+use crate::{Event, GroupID, VantagePointType};
 
 pub trait Log {
-    fn new_trace(&self, group_id: GroupID) -> Span;
-}
-
-impl<L> Log for L
-where
-    L: Fn(GroupID) -> Span,
-{
-    #[inline]
-    fn new_trace(&self, group_id: GroupID) -> Span {
-        (self)(group_id)
-    }
+    fn new_trace(&self, vantage_point: VantagePointType, group_id: GroupID) -> Span;
 }
 
 pub trait ExportEvent: Send + Sync {
     fn emit(&self, event: Event);
-}
-
-pub struct NoopExporter;
-
-impl ExportEvent for NoopExporter {
-    fn emit(&self, event: Event) {
-        _ = event;
-    }
 }
 
 #[derive(Clone)]
@@ -84,7 +67,7 @@ impl PartialEq for Span {
 
 impl Default for Span {
     fn default() -> Self {
-        Self::new(Arc::new(NoopExporter), HashMap::new())
+        Self::new(Arc::new(NullExporter), HashMap::new())
     }
 }
 
@@ -287,13 +270,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        quic::{connectivity::ServerListening, ConnectionID},
         GroupID,
+        quic::{ConnectionID, connectivity::ServerListening},
     };
 
     #[test]
     fn span_fields() {
-        let exporter = Arc::new(NoopExporter);
+        let exporter = Arc::new(NullExporter);
         let _span = span!(exporter.clone());
         let a = 0i32;
         let c = 123456789usize;
