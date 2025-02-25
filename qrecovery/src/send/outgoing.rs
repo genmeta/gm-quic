@@ -9,8 +9,9 @@ use qbase::{
     util::DescribeData,
     varint::{VARINT_MAX, VarInt},
 };
+use qlog::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
 
-use super::sender::{ArcSender, DataSentSender, Sender, SendingSender};
+use super::sender::{ArcSender, Sender, SendingSender};
 
 /// An struct for protocol layer to manage the sending part of a stream.
 #[derive(Debug, Clone)]
@@ -38,7 +39,7 @@ impl<TX: Clone> Outgoing<TX> {
         P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
     {
         let origin_len = packet.remaining_mut();
-        let write = |(offset, is_fresh, data, is_eos): (u64, bool, (&[u8], &[u8]), bool)| {
+        let mut write = |(offset, is_fresh, data, is_eos): (u64, bool, (&[u8], &[u8]), bool)| {
             let mut frame = StreamFrame::new(sid, offset, data.len());
 
             frame.set_eos_flag(is_eos);
@@ -59,19 +60,32 @@ impl<TX: Clone> Outgoing<TX> {
 
         match sending_state {
             Sender::Ready(s) => {
-                let result;
-                if s.is_finished() {
-                    let mut s: DataSentSender<TX> = s.into();
-                    result = s.pick_up(predicate, flow_limit).map(write);
-                    *sending_state = Sender::DataSent(s);
+                let mut s: SendingSender<TX> = s.upgrade();
+                let (result, finished) =
+                    if let Some(payload @ (.., with_eos)) = s.pick_up(predicate, flow_limit) {
+                        (Some(write(payload)), with_eos)
+                    } else {
+                        (None, false)
+                    };
+                if finished {
+                    *sending_state = Sender::DataSent(s.upgrade());
                 } else {
-                    let mut s: SendingSender<TX> = s.into();
-                    result = s.pick_up(predicate, flow_limit).map(write);
                     *sending_state = Sender::Sending(s);
                 }
                 result
             }
-            Sender::Sending(s) => s.pick_up(predicate, flow_limit).map(write),
+            Sender::Sending(s) => {
+                let (result, finished) =
+                    if let Some(payload @ (.., with_eos)) = s.pick_up(predicate, flow_limit) {
+                        (Some(write(payload)), with_eos)
+                    } else {
+                        (None, false)
+                    };
+                if finished {
+                    *sending_state = Sender::DataSent(s.upgrade());
+                }
+                result
+            }
             Sender::DataSent(s) => s.pick_up(predicate, flow_limit).map(write),
             _ => None,
         }
@@ -108,7 +122,7 @@ impl<TX> Outgoing<TX> {
     /// Return `true` if the stream is completely acknowledged, all data has been sent and received.
     ///
     /// [`SendBuf`]: crate::send::SendBuf
-    pub fn on_data_acked(&self, range: &Range<u64>, is_fin: bool) -> bool {
+    pub fn on_data_acked(&self, frame: &StreamFrame) -> bool {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
@@ -117,12 +131,19 @@ impl<TX> Outgoing<TX> {
                     unreachable!("never send data before recv data");
                 }
                 Sender::Sending(s) => {
-                    s.on_data_acked(range);
+                    s.on_data_acked(&frame.range());
                 }
                 Sender::DataSent(s) => {
-                    s.on_data_acked(range, is_fin);
+                    s.on_data_acked(&frame.range(), frame.is_fin());
                     if s.is_all_rcvd() {
-                        *sending_state = Sender::DataRcvd(s.into());
+                        qlog::event!(StreamStateUpdated {
+                            stream_id: frame.stream_id(),
+                            stream_type: frame.stream_id().dir(),
+                            old: GranularStreamStates::DataSent,
+                            new: GranularStreamStates::DataReceived,
+                            stream_side: StreamSide::Sending
+                        });
+                        *sending_state = Sender::DataRcvd;
                         return true;
                     }
                 }
@@ -175,21 +196,21 @@ impl<TX> Outgoing<TX> {
                     unreachable!("never send data before recv data");
                 }
                 Sender::Sending(s) => {
-                    let final_size = s.stop();
+                    let final_size = s.be_stopped();
                     let reset = ResetStreamError::new(
                         VarInt::from_u64(error_code).expect("app error code must not exceed 2^62"),
                         VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
                     );
-                    *sending_state = Sender::ResetSent((s, reset).into());
+                    *sending_state = Sender::ResetSent(reset);
                     Some(final_size)
                 }
                 Sender::DataSent(s) => {
-                    let final_size = s.stop();
+                    let final_size = s.be_stopped();
                     let reset = ResetStreamError::new(
                         VarInt::from_u64(error_code).expect("app error code must not exceed 2^62"),
                         VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
                     );
-                    *sending_state = Sender::ResetSent((s, reset).into());
+                    *sending_state = Sender::ResetSent(reset);
                     Some(final_size)
                 }
                 _ => None,
@@ -201,12 +222,21 @@ impl<TX> Outgoing<TX> {
     /// Called When the [`RESET_STREAM frame`] previously sent to the peer is acknowledged
     ///
     /// [`RESET_STREAM frame`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-reset_stream-frames
-    pub fn on_reset_acked(&self) {
+    pub fn on_reset_acked(&self, sid: StreamId) {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
             match sending_state {
-                Sender::ResetSent(r) => *sending_state = Sender::ResetRcvd(r.into()),
+                Sender::ResetSent(r) => {
+                    qlog::event!(StreamStateUpdated {
+                        stream_id: sid,
+                        stream_type: sid.dir(),
+                        old: GranularStreamStates::ResetSent,
+                        new: GranularStreamStates::ResetReceived,
+                        stream_side: StreamSide::Sending
+                    });
+                    *sending_state = Sender::ResetRcvd(*r);
+                }
                 Sender::ResetRcvd(..) => {}
                 _ => unreachable!(
                     "If no RESET_STREAM has been sent, how can there be a received acknowledgment?"
