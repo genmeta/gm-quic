@@ -27,7 +27,13 @@ use qbase::{
 };
 use qcongestion::{CongestionControl, TrackPackets};
 use qinterface::path::{Netway, Pathway};
-use qlog::{quic::QuicFrames, telemetry::Instrument};
+use qlog::{
+    quic::{
+        PacketHeader, PacketType, QuicFrames,
+        recovery::{PacketLost, PacketLostTrigger},
+    },
+    telemetry::Instrument,
+};
 use qrecovery::{
     crypto::CryptoStream,
     journal::{ArcRcvdJournal, DataJournal},
@@ -36,7 +42,7 @@ use qrecovery::{
 #[cfg(feature = "unreliable")]
 use qunreliable::DatagramFlow;
 use tokio::sync::{Notify, mpsc};
-use tracing::{Instrument as _, trace_span};
+use tracing::Instrument as _;
 
 use super::{PlainPacket, ReceivedCipherPacket};
 use crate::{
@@ -487,30 +493,40 @@ pub fn spawn_deliver_and_parse(
 }
 
 impl TrackPackets for DataSpace {
-    fn may_loss(&self, pns: &mut dyn Iterator<Item = u64>) {
+    fn may_loss(&self, trigger: PacketLostTrigger, pns: &mut dyn Iterator<Item = u64>) {
         let sent_jornal = self.journal.of_sent_packets();
         let crypto_outgoing = self.crypto_stream.outgoing();
         let mut rotate = sent_jornal.rotate();
         for pn in pns {
-            trace_span!("data_packet_may_loss", pn).in_scope(|| {
-                for frame in rotate.may_loss_pkt(pn) {
-                    tracing::trace!(?frame, "frame may lost");
-                    match frame {
-                        GuaranteedFrame::Stream(f) => {
-                            self.streams.may_loss_data(&f);
-                            self.sendable.notify_waiters();
-                        }
-                        GuaranteedFrame::Reliable(f) => {
-                            self.reliable_frames.send_frame([f]);
-                            // self.sendable.notify_waiters();
-                        }
-                        GuaranteedFrame::Crypto(f) => {
-                            crypto_outgoing.may_loss_data(&f);
-                            self.sendable.notify_waiters();
-                        }
+            let mut may_lost_frames = QuicFrames::new();
+            for frame in rotate.may_loss_pkt(pn) {
+                match frame {
+                    GuaranteedFrame::Crypto(frame) => {
+                        may_lost_frames.extend(Some(&Frame::Crypto(frame, bytes::Bytes::new())));
+                        crypto_outgoing.may_loss_data(&frame);
+                        self.sendable.notify_waiters();
                     }
-                }
-            })
+                    GuaranteedFrame::Stream(frame) => {
+                        may_lost_frames.extend(Some(&Frame::Stream(frame, bytes::Bytes::new())));
+                        self.streams.may_loss_data(&frame);
+                        self.sendable.notify_waiters();
+                    }
+                    GuaranteedFrame::Reliable(frame) => {
+                        may_lost_frames.extend(Some(&frame.clone().into()));
+                        self.reliable_frames.send_frame([frame]);
+                        // self.sendable.notify_waiters();
+                    }
+                };
+            }
+            qlog::event!(PacketLost {
+                header: PacketHeader {
+                    // TOOD: 如果只有支持0rtt，这里就不一定是1rtt了
+                    packet_type: PacketType::OneRTT,
+                    packet_number: pn
+                },
+                frames: may_lost_frames,
+                trigger
+            });
         }
     }
 

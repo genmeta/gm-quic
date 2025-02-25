@@ -75,8 +75,9 @@ impl DatagramOutgoing {
         }
 
         let data = writer.datagrams.pop_front().expect("unreachable");
-        let frame_without_len = DatagramFrame::new(None);
-        let frame_with_len = DatagramFrame::new(Some(VarInt::try_from(data.len()).unwrap()));
+        let data_len = VarInt::try_from(data.len()).unwrap();
+        let frame_without_len = DatagramFrame::new(false, data_len);
+        let frame_with_len = DatagramFrame::new(true, data_len);
         let frame = match max_encoding_size {
             // Encode length
             n if n >= frame_with_len.encoding_size() => {
@@ -134,8 +135,9 @@ impl DatagramOutgoing {
         }
 
         let data = writer.datagrams.pop_front().expect("unreachable");
-        let frame_without_len = DatagramFrame::new(None);
-        let frame_with_len = DatagramFrame::new(Some(VarInt::try_from(data.len()).unwrap()));
+        let data_len = VarInt::try_from(data.len()).unwrap();
+        let frame_without_len = DatagramFrame::new(false, data_len);
+        let frame_with_len = DatagramFrame::new(true, data_len);
         match max_encoding_size {
             // Encode length
             n if n >= frame_with_len.encoding_size() => {
@@ -283,7 +285,7 @@ mod tests {
         writer.send_bytes(data.clone()).unwrap();
 
         let mut buffer = [0; 1024];
-        let expected_frame = DatagramFrame::new(Some(VarInt::try_from(data.len()).unwrap()));
+        let expected_frame = DatagramFrame::new(true, VarInt::try_from(data.len()).unwrap());
         assert_eq!(
             outgoing.try_read_datagram(&mut buffer),
             Some((expected_frame, 1 + 1 + data.len()))
@@ -308,13 +310,13 @@ mod tests {
         let mut buffer = [0; 1024];
         assert_eq!(
             outgoing.try_read_datagram(&mut buffer[0..12]),
-            Some((DatagramFrame::new(None), 12))
+            Some((DatagramFrame::new(false, VarInt::from_u32(11)), 12))
         );
 
         let mut expected_buffer = [0; 1024];
         {
             let mut expected_buffer = &mut expected_buffer[..];
-            expected_buffer.put_data_frame(&DatagramFrame::new(None), &data);
+            expected_buffer.put_data_frame(&DatagramFrame::new(false, VarInt::from_u32(12)), &data);
         }
         assert_eq!(buffer, expected_buffer);
     }
@@ -341,19 +343,20 @@ mod tests {
 
         // Will be encoded to 2 bytes
         let data = Bytes::from_static(&[b'a'; 2usize.pow(8 - 2)]);
+        let data_len = VarInt::from_u32(data.len() as u32);
         writer.send_bytes(data.clone()).unwrap();
 
         let mut buffer = [0; 1024];
         assert_eq!(
             outgoing.try_read_datagram(&mut buffer[..data.len() + 2]),
-            Some((DatagramFrame::new(None), data.len() + 2))
+            Some((DatagramFrame::new(false, data_len), data.len() + 2))
         );
 
         let mut expected_buffer = [0; 1024];
         {
             let mut expected_buffer = &mut expected_buffer[..];
             expected_buffer.put_frame(&PaddingFrame);
-            expected_buffer.put_data_frame(&DatagramFrame::new(None), &data);
+            expected_buffer.put_data_frame(&DatagramFrame::new(false, data_len), &data);
         }
 
         assert_eq!(buffer, expected_buffer);

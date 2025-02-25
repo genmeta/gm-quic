@@ -259,7 +259,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use qbase::frame::FrameType;
+    use qbase::{frame::FrameType, varint::VarInt};
 
     use super::*;
 
@@ -277,7 +277,7 @@ mod tests {
 
         incoming
             .recv_datagram(
-                &DatagramFrame::new(None),
+                &DatagramFrame::new(false, VarInt::from_u32(11)),
                 Bytes::from_static(b"hello world"),
             )
             .unwrap();

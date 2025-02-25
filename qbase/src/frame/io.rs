@@ -88,15 +88,18 @@ fn complete_frame(
         FrameType::Datagram(with_len) => {
             let (input, frame) = datagram_frame_with_flag(with_len)(input)?;
             let start = raw.len() - input.len();
-            match frame.length.map(|len| len.into_inner() as usize) {
-                Some(len) if len > input.len() => {
-                    Err(nom::Err::Incomplete(nom::Needed::new(len - input.len())))
+            match frame.encode_len() {
+                true if frame.len().into_inner() > input.len() as u64 => Err(nom::Err::Incomplete(
+                    nom::Needed::new((frame.len().into_inner() - input.len() as u64) as usize),
+                )),
+                true => {
+                    let data = raw.slice(start..start + frame.len().into_inner() as usize);
+                    Ok((
+                        &input[frame.len().into_inner() as usize..],
+                        Frame::Datagram(frame, data),
+                    ))
                 }
-                Some(len) => {
-                    let data = raw.slice(start..start + len);
-                    Ok((&input[len..], Frame::Datagram(frame, data)))
-                }
-                None => {
+                false => {
                     let data = raw.slice(start..);
                     Ok((&[], Frame::Datagram(frame, data)))
                 }
