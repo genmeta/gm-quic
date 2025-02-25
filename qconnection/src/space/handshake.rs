@@ -18,7 +18,7 @@ use qbase::{
     },
 };
 use qcongestion::{CongestionControl, TrackPackets};
-use qinterface::path::{Pathway, Socket};
+use qinterface::path::{Netway, Pathway};
 use qlog::{quic::QuicFrames, telemetry::Instrument};
 use qrecovery::{
     crypto::CryptoStream,
@@ -38,7 +38,7 @@ use crate::{
     tx::{MiddleAssembledPacket, PacketMemory, Transaction},
 };
 
-pub type ReceivedBundle = ((HandshakeHeader, bytes::BytesMut, usize), Pathway, Socket);
+pub type ReceivedBundle = ((HandshakeHeader, bytes::BytesMut, usize), Pathway, Netway);
 pub type ReceiveHanshakePacket = ReceivedCipherPacket<HandshakeHeader>;
 pub type PlainHandshakePacket = PlainPacket<HandshakeHeader>;
 

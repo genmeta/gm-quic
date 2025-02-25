@@ -12,7 +12,7 @@ use std::{
 };
 
 use bytes::BytesMut;
-use path::{Pathway, Socket};
+use path::{Netway, Pathway};
 
 pub trait QuicInterface: Send + Sync {
     fn reversed_bytes(&self, on: Pathway) -> io::Result<usize>;
@@ -31,5 +31,5 @@ pub trait QuicInterface: Send + Sync {
         dst: SocketAddr,
     ) -> Poll<io::Result<usize>>;
 
-    fn poll_recv(&self, cx: &mut Context) -> Poll<io::Result<(BytesMut, Pathway, Socket)>>;
+    fn poll_recv(&self, cx: &mut Context) -> Poll<io::Result<(BytesMut, Pathway, Netway)>>;
 }

@@ -11,7 +11,7 @@ pub mod prelude {
     pub use qbase::{frame::ConnectionCloseFrame, sid::StreamId, varint::VarInt};
     pub use qinterface::{
         QuicInterface,
-        path::{EndpointAddr, Pathway, Socket},
+        path::{EndpointAddr, Netway, Pathway},
         router::QuicProto,
     };
     #[cfg(feature = "unreliable")]
@@ -52,7 +52,7 @@ use qbase::{
     token::ArcTokenRegistry,
 };
 use qinterface::{
-    path::{Pathway, Socket},
+    path::{Netway, Pathway},
     queue::RcvdPacketQueue,
     router::{QuicProto, RouterRegistry},
 };
@@ -261,9 +261,9 @@ impl Components {
         }
     }
 
-    pub fn add_path(&self, socket: Socket, pathway: Pathway) {
+    pub fn add_path(&self, netway: Netway, pathway: Pathway) {
         let _enter = self.span.enter();
-        self.get_or_create_path(socket, pathway, false);
+        self.get_or_create_path(netway, pathway, false);
     }
 
     pub fn del_path(&self, pathway: &Pathway) {
@@ -343,8 +343,8 @@ impl Connection {
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
-    pub fn add_path(&self, socket: Socket, pathway: Pathway) -> io::Result<()> {
-        self.map(|core_conn| core_conn.add_path(socket, pathway))
+    pub fn add_path(&self, netway: Netway, pathway: Pathway) -> io::Result<()> {
+        self.map(|core_conn| core_conn.add_path(netway, pathway))
     }
 
     #[tracing::instrument(level = "trace", skip(self))]

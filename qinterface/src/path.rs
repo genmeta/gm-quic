@@ -9,7 +9,7 @@ pub enum EndpointAddr {
     },
     Relay {
         agent: SocketAddr,
-        inner: SocketAddr,
+        outer: SocketAddr,
     },
 }
 
@@ -17,7 +17,10 @@ impl Display for EndpointAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EndpointAddr::Direct { addr } => write!(f, "{addr}"),
-            EndpointAddr::Relay { agent, inner } => write!(f, "{inner}-{agent}"),
+            EndpointAddr::Relay {
+                agent,
+                outer: inner,
+            } => write!(f, "{inner}-{agent}"),
         }
     }
 }
@@ -28,7 +31,7 @@ impl Deref for EndpointAddr {
     fn deref(&self) -> &Self::Target {
         match self {
             EndpointAddr::Direct { addr } => addr,
-            EndpointAddr::Relay { inner, .. } => inner,
+            EndpointAddr::Relay { outer: inner, .. } => inner,
         }
     }
 }
@@ -70,13 +73,14 @@ impl Pathway {
     }
 }
 
+/// Network way, representing the quadruple of source and destination addresses.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct Socket {
+pub struct Netway {
     src: SocketAddr,
     dst: SocketAddr,
 }
 
-impl Socket {
+impl Netway {
     #[inline]
     pub fn new(src: SocketAddr, dst: SocketAddr) -> Self {
         Self { src, dst }

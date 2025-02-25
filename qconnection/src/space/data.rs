@@ -26,7 +26,7 @@ use qbase::{
     sid::{ControlConcurrency, Role},
 };
 use qcongestion::{CongestionControl, TrackPackets};
-use qinterface::path::{Pathway, Socket};
+use qinterface::path::{Netway, Pathway};
 use qlog::{quic::QuicFrames, telemetry::Instrument};
 use qrecovery::{
     crypto::CryptoStream,
@@ -48,10 +48,10 @@ use crate::{
     tx::{MiddleAssembledPacket, PacketMemory, Transaction},
 };
 
-pub type ReceivedZeroRttBundle = ((ZeroRttHeader, bytes::BytesMut, usize), Pathway, Socket);
+pub type ReceivedZeroRttBundle = ((ZeroRttHeader, bytes::BytesMut, usize), Pathway, Netway);
 pub type ReceivedZeroRttPacket = ReceivedCipherPacket<ZeroRttHeader>;
 pub type PlainZeroRttPacket = PlainPacket<ZeroRttHeader>;
-pub type ReceivedOneRttBundle = ((OneRttHeader, bytes::BytesMut, usize), Pathway, Socket);
+pub type ReceivedOneRttBundle = ((OneRttHeader, bytes::BytesMut, usize), Pathway, Netway);
 pub type ReceivedOneRttPacket = ReceivedCipherPacket<OneRttHeader>;
 pub type PlainOneRttPacket = PlainPacket<OneRttHeader>;
 
