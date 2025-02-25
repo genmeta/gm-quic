@@ -14,7 +14,7 @@ use qbase::{
 use qcongestion::{ArcCC, CongestionControl};
 use qinterface::{
     QuicInterface,
-    path::{Pathway, Socket},
+    path::{Netway, Pathway},
     router::QuicProto,
 };
 use tokio::{sync::Notify, task::AbortHandle, time::Instant};
@@ -31,7 +31,7 @@ pub mod idle;
 pub struct Path {
     interface: Arc<dyn QuicInterface>,
     validated: AtomicBool,
-    socket: Socket,
+    netway: Netway,
     pathway: Pathway,
     cc: (ArcCC, AbortHandle),
     anti_amplifier: AntiAmplifier,
@@ -43,13 +43,13 @@ pub struct Path {
 }
 
 impl Path {
-    pub fn new(proto: &QuicProto, socket: Socket, pathway: Pathway, cc: ArcCC) -> Option<Self> {
-        let interface = proto.get_interface(socket.src()).ok()?;
+    pub fn new(proto: &QuicProto, netway: Netway, pathway: Pathway, cc: ArcCC) -> Option<Self> {
+        let interface = proto.get_interface(netway.src()).ok()?;
         let notify = Arc::new(Notify::new());
         let handle = cc.launch(notify.clone());
         Some(Self {
             interface,
-            socket,
+            netway,
             pathway,
             cc: (cc, handle),
             validated: AtomicBool::new(false),
@@ -111,7 +111,7 @@ impl Path {
         while !segments.is_empty() {
             let sent = core::future::poll_fn(|cx| {
                 self.interface
-                    .poll_send(cx, segments, self.pathway, self.socket.dst())
+                    .poll_send(cx, segments, self.pathway, self.netway.dst())
             })
             .await?;
             segments = &segments[sent..];

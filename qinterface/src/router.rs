@@ -11,7 +11,7 @@ use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::{
     QuicInterface,
-    path::{EndpointAddr, Pathway, Socket},
+    path::{EndpointAddr, Netway, Pathway},
     queue::RcvdPacketQueue,
     util::{Channel, TryRecvError},
 };
@@ -56,7 +56,7 @@ impl Drop for InterfaceContext {
 pub struct QuicProto {
     interfaces: DashMap<SocketAddr, InterfaceContext>,
     router_table: DashMap<Signpost, Arc<RcvdPacketQueue>>,
-    unrouted_packets: Channel<(Packet, Pathway, Socket)>,
+    unrouted_packets: Channel<(Packet, Pathway, Netway)>,
 }
 
 impl fmt::Debug for QuicProto {
@@ -175,7 +175,7 @@ impl QuicProto {
         false
     }
 
-    pub async fn deliver(self: &Arc<Self>, packet: Packet, pathway: Pathway, socket: Socket) {
+    pub async fn deliver(self: &Arc<Self>, packet: Packet, pathway: Pathway, socket: Netway) {
         let dcid = match &packet {
             Packet::VN(vn) => vn.dcid(),
             Packet::Retry(retry) => retry.dcid(),
@@ -208,11 +208,11 @@ impl QuicProto {
         self.unrouted_packets.close();
     }
 
-    pub fn try_recv_unrouted_packet(&self) -> Result<(Packet, Pathway, Socket), TryRecvError> {
+    pub fn try_recv_unrouted_packet(&self) -> Result<(Packet, Pathway, Netway), TryRecvError> {
         self.unrouted_packets.try_recv()
     }
 
-    pub async fn recv_unrouted_packet(&self) -> Option<(Packet, Pathway, Socket)> {
+    pub async fn recv_unrouted_packet(&self) -> Option<(Packet, Pathway, Netway)> {
         self.unrouted_packets.recv().await
     }
 

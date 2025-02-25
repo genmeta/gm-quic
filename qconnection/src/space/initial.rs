@@ -22,7 +22,7 @@ use qbase::{
     token::TokenRegistry,
 };
 use qcongestion::{CongestionControl, TrackPackets};
-use qinterface::path::{Pathway, Socket};
+use qinterface::path::{Netway, Pathway};
 use qlog::{quic::QuicFrames, telemetry::Instrument};
 use qrecovery::{
     crypto::CryptoStream,
@@ -41,7 +41,7 @@ use crate::{
     tx::{MiddleAssembledPacket, PacketMemory, Transaction},
 };
 
-pub type ReceivedBundle = ((InitialHeader, BytesMut, usize), Pathway, Socket);
+pub type ReceivedBundle = ((InitialHeader, BytesMut, usize), Pathway, Netway);
 pub type ReceivedInitialPacket = ReceivedCipherPacket<InitialHeader>;
 pub type PlainInitialPacket = PlainPacket<InitialHeader>;
 
