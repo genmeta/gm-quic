@@ -8,13 +8,13 @@ use std::{
 pub use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
     packet::{
+        DataHeader, Packet,
         header::{GetDcid, GetScid},
         long::DataHeader as LongHeader,
-        DataHeader, Packet,
     },
     param::{ClientParameters, CommonParameters, ServerParameters},
-    sid::{handy::*, ControlConcurrency},
-    token::{handy::*, TokenProvider, TokenSink},
+    sid::{ControlConcurrency, handy::*},
+    token::{TokenProvider, TokenSink, handy::*},
 };
 use qbase::{
     frame::ConnectionCloseFrame,
@@ -29,14 +29,14 @@ use qinterface::{
     router::QuicProto,
 };
 use qlog::{
+    GroupID, VantagePointType,
     quic::{
+        Owner,
         connectivity::{
             ConnectionClosed, ConnectionStateUpdated, GranularConnectionStates, PathAssigned,
         },
         transport::ParametersSet,
-        Owner,
     },
-    span,
     telemetry::{Instrument, Log, Span},
 };
 pub use rustls::crypto::CryptoProvider;
@@ -44,15 +44,15 @@ use tokio::sync::Notify;
 use tracing::Instrument as _;
 
 use crate::{
+    ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
+    FlowController, Handshake, RawHandshake, Termination,
     events::{ArcEventBroker, EmitEvent, Event},
     path::{ArcPaths, Path, PathContext},
     prelude::HeartbeatConfig,
-    space::{self, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace, Spaces},
+    space::{self, Spaces, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace},
     state::ConnState,
     termination::ClosingState,
     tls::{self, ArcTlsSession},
-    ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
-    FlowController, Handshake, RawHandshake, Termination,
 };
 
 impl Connection {
@@ -405,9 +405,13 @@ pub struct ComponentsReady {
 }
 
 impl ComponentsReady {
-    pub fn with_qlog(mut self, logger: &impl Log) -> Self {
+    pub fn with_qlog(mut self, logger: &(impl Log + ?Sized)) -> Self {
+        let vantage_point_type = match self.raw_handshake.role() {
+            sid::Role::Client => VantagePointType::Client,
+            sid::Role::Server => VantagePointType::Server,
+        };
         let origin_dcid = self.parameters.get_origin_dcid().unwrap();
-        self.span = Some(logger.new_trace(origin_dcid.into()));
+        self.span = Some(logger.new_trace(vantage_point_type, origin_dcid.into()));
         self
     }
 
@@ -416,6 +420,7 @@ impl ComponentsReady {
         EE: EmitEvent + Clone + Send + Sync + 'static,
     {
         let event_broker = ArcEventBroker::new(event_broker);
+        let group_id = GroupID::from(self.parameters.get_origin_dcid().unwrap());
         let components = Components {
             parameters: self.parameters,
             tls_session: self.tls_session,
@@ -433,11 +438,13 @@ impl ComponentsReady {
             state: ConnState::new(),
         };
 
-        self.span.unwrap_or_else(|| span!()).in_scope(|| {
-            tokio::spawn(tls::keys_upgrade(&components));
-            tokio::spawn(accpet_transport_parameters(&components));
-            space::spawn_deliver_and_parse(&components);
-        });
+        self.span
+            .unwrap_or_else(|| qlog::span!(@current, group_id))
+            .in_scope(|| {
+                tokio::spawn(tls::keys_upgrade(&components));
+                tokio::spawn(accpet_transport_parameters(&components));
+                space::spawn_deliver_and_parse(&components);
+            });
 
         Connection(RwLock::new(Ok(components)))
     }

@@ -7,7 +7,7 @@ use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 
 use bytes::Bytes;
 use derive_builder::Builder;
-use derive_more::{From, Into};
+use derive_more::{Display, From, Into};
 use qbase::cid::ConnectionId;
 use quic::ConnectionID;
 use serde::{Deserialize, Serialize};
@@ -142,6 +142,17 @@ pub enum VantagePointType {
     Network,
     #[default]
     Unknow,
+}
+
+impl Display for VantagePointType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VantagePointType::Client => write!(f, "client"),
+            VantagePointType::Server => write!(f, "server"),
+            VantagePointType::Network => write!(f, "network"),
+            VantagePointType::Unknow => write!(f, "unknow"),
+        }
+    }
 }
 
 #[serde_with::skip_serializing_none]
@@ -316,7 +327,7 @@ impl ProtocolType {
     }
 }
 
-#[derive(Debug, Clone, From, Into, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Display, Clone, From, Into, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct GroupID(String);
 
