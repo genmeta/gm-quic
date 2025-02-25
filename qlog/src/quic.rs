@@ -929,6 +929,15 @@ pub enum StreamType {
     Bidirectional,
 }
 
+impl From<qbase::sid::Dir> for StreamType {
+    fn from(dir: qbase::sid::Dir) -> Self {
+        match dir {
+            qbase::sid::Dir::Bi => Self::Bidirectional,
+            qbase::sid::Dir::Uni => Self::Unidirectional,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionCloseErrorSpace {

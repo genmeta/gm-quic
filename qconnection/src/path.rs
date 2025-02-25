@@ -107,14 +107,14 @@ impl Path {
         self.anti_amplifier.grant();
     }
 
-    pub async fn send_packets(&self, mut pkts: &[io::IoSlice<'_>]) -> io::Result<()> {
-        while !pkts.is_empty() {
+    pub async fn send_packets(&self, mut segments: &[io::IoSlice<'_>]) -> io::Result<()> {
+        while !segments.is_empty() {
             let sent = core::future::poll_fn(|cx| {
                 self.interface
-                    .poll_send(cx, pkts, self.pathway, self.socket.dst())
+                    .poll_send(cx, segments, self.pathway, self.socket.dst())
             })
             .await?;
-            pkts = &pkts[sent..];
+            segments = &segments[sent..];
         }
         Ok(())
     }

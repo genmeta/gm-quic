@@ -14,6 +14,7 @@ use qbase::{
     sid::StreamId,
     varint::{VARINT_MAX, VarInt},
 };
+use qlog::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
 
 use super::rcvbuf;
 
@@ -99,6 +100,13 @@ impl<TX: Clone> Recv<TX> {
             ));
         }
 
+        qlog::event!(StreamStateUpdated {
+            stream_id: self.stream_id,
+            stream_type: self.stream_id.dir(),
+            old: GranularStreamStates::Receive,
+            new: GranularStreamStates::SizeKnown,
+            stream_side: StreamSide::Receiving
+        });
         Ok(SizeKnown {
             final_size,
             stream_id: self.stream_id,
@@ -211,9 +219,9 @@ where
 }
 
 impl<TX> SizeKnown<TX> {
-    pub(super) fn recv(&mut self, stream_frame: &StreamFrame, buf: Bytes) -> Result<usize, Error> {
+    pub(super) fn recv(&mut self, stream_frame: &StreamFrame, data: Bytes) -> Result<usize, Error> {
         let data_start = stream_frame.offset();
-        let data_end = data_start + buf.len() as u64;
+        let data_end = data_start + data.len() as u64;
         if data_end > self.final_size {
             return Err(Error::new(
                 ErrorKind::FinalSize,
@@ -236,7 +244,7 @@ impl<TX> SizeKnown<TX> {
                 ),
             ));
         }
-        self.rcvbuf.recv(data_start, buf);
+        self.rcvbuf.recv(data_start, data);
         if self.rcvbuf.is_readable() {
             if let Some(waker) = self.read_waker.take() {
                 waker.wake()
@@ -308,8 +316,16 @@ where
     TX: SendFrame<StopSendingFrame> + Clone + Send + 'static,
 {
     fn from(size_known: &mut SizeKnown<TX>) -> Self {
+        qlog::event!(StreamStateUpdated {
+            stream_id: size_known.stream_id,
+            stream_type: size_known.stream_id.dir(),
+            old: GranularStreamStates::SizeKnown,
+            new: GranularStreamStates::DataReceived,
+            stream_side: StreamSide::Receiving
+        });
         size_known.wake_reader();
         DataRcvd {
+            stream_id: size_known.stream_id,
             rcvbuf: std::mem::take(&mut size_known.rcvbuf),
         }
     }
@@ -320,10 +336,7 @@ where
     TX: SendFrame<StopSendingFrame> + Clone + Send + 'static,
 {
     fn from(mut size_known: SizeKnown<TX>) -> Self {
-        size_known.wake_reader();
-        DataRcvd {
-            rcvbuf: size_known.rcvbuf,
-        }
+        (&mut size_known).into()
     }
 }
 
@@ -334,6 +347,7 @@ where
 /// immediately return the available data until the end.
 #[derive(Debug)]
 pub struct DataRcvd {
+    stream_id: StreamId,
     rcvbuf: rcvbuf::RecvBuf,
 }
 
@@ -359,6 +373,90 @@ impl DataRcvd {
     }
 }
 
+#[derive(Debug)]
+pub struct ResetRcvd {
+    stream_id: StreamId,
+    reset: ResetStreamError,
+}
+
+impl ResetRcvd {
+    pub fn read(&self) -> io::Error {
+        io::Error::new(io::ErrorKind::BrokenPipe, self.reset)
+    }
+}
+
+impl<TX> From<(&mut Recv<TX>, &ResetStreamFrame)> for ResetRcvd {
+    fn from((recv, reset): (&mut Recv<TX>, &ResetStreamFrame)) -> Self {
+        qlog::event!(StreamStateUpdated {
+            stream_id: recv.stream_id,
+            stream_type: recv.stream_id.dir(),
+            old: GranularStreamStates::Receive,
+            new: GranularStreamStates::ResetReceived,
+            stream_side: StreamSide::Receiving
+        });
+        ResetRcvd {
+            stream_id: recv.stream_id,
+            reset: reset.into(),
+        }
+    }
+}
+
+impl<TX> From<(&mut SizeKnown<TX>, &ResetStreamFrame)> for ResetRcvd {
+    fn from((size_known, reset): (&mut SizeKnown<TX>, &ResetStreamFrame)) -> Self {
+        qlog::event!(StreamStateUpdated {
+            stream_id: size_known.stream_id,
+            stream_type: size_known.stream_id.dir(),
+            old: GranularStreamStates::Receive,
+            new: GranularStreamStates::ResetReceived,
+            stream_side: StreamSide::Receiving
+        });
+        ResetRcvd {
+            stream_id: size_known.stream_id,
+            reset: reset.into(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DataRead(());
+
+impl From<&mut DataRcvd> for DataRead {
+    fn from(value: &mut DataRcvd) -> Self {
+        qlog::event!(StreamStateUpdated {
+            stream_id: value.stream_id,
+            stream_type: value.stream_id.dir(),
+            old: GranularStreamStates::DataReceived,
+            new: GranularStreamStates::DataRead,
+            stream_side: StreamSide::Receiving
+        });
+        Self(())
+    }
+}
+
+#[derive(Debug)]
+pub struct ResetRead {
+    reset: ResetStreamError,
+}
+
+impl ResetRead {
+    pub fn read(&self) -> io::Error {
+        io::Error::new(io::ErrorKind::BrokenPipe, self.reset)
+    }
+}
+
+impl From<&mut ResetRcvd> for ResetRead {
+    fn from(value: &mut ResetRcvd) -> Self {
+        qlog::event!(StreamStateUpdated {
+            stream_id: value.stream_id,
+            stream_type: value.stream_id.dir(),
+            old: GranularStreamStates::ResetReceived,
+            new: GranularStreamStates::ResetRead,
+            stream_side: StreamSide::Receiving
+        });
+        Self { reset: value.reset }
+    }
+}
+
 /// Receiving stream state machine. In fact, here the state variables such as
 /// is_closed/is_reset are replaced by a state machine. This not only provides
 /// clearer semantics and aligns with the QUIC RFC specification but also
@@ -368,9 +466,9 @@ pub(super) enum Recver<TX> {
     Recv(Recv<TX>),
     SizeKnown(SizeKnown<TX>),
     DataRcvd(DataRcvd),
-    ResetRcvd(ResetStreamError),
-    DataRead,
-    ResetRead(ResetStreamError),
+    ResetRcvd(ResetRcvd),
+    DataRead(DataRead),
+    ResetRead(ResetRead),
 }
 
 impl<TX> Recver<TX> {
