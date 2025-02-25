@@ -19,14 +19,20 @@ use qbase::{
 };
 use qcongestion::{CongestionControl, TrackPackets};
 use qinterface::path::{Netway, Pathway};
-use qlog::{quic::QuicFrames, telemetry::Instrument};
+use qlog::{
+    quic::{
+        PacketHeader, PacketType, QuicFrames,
+        recovery::{PacketLost, PacketLostTrigger},
+    },
+    telemetry::Instrument,
+};
 use qrecovery::{
     crypto::CryptoStream,
     journal::{ArcRcvdJournal, HandshakeJournal},
 };
 use rustls::quic::Keys;
 use tokio::sync::{Notify, mpsc};
-use tracing::{Instrument as _, trace_span};
+use tracing::Instrument as _;
 
 use super::{AckHandshake, PlainPacket, ReceivedCipherPacket};
 use crate::{
@@ -222,18 +228,26 @@ pub fn spawn_deliver_and_parse(
 }
 
 impl TrackPackets for HandshakeSpace {
-    fn may_loss(&self, pns: &mut dyn Iterator<Item = u64>) {
+    fn may_loss(&self, trigger: PacketLostTrigger, pns: &mut dyn Iterator<Item = u64>) {
         let sent_jornal = self.journal.of_sent_packets();
         let outgoing = self.crypto_stream.outgoing();
         let mut rotate = sent_jornal.rotate();
         for pn in pns {
-            trace_span!("handshake_packet_may_loss", pn).in_scope(|| {
-                for frame in rotate.may_loss_pkt(pn) {
-                    tracing::trace!(?frame, "frame may lost");
-                    outgoing.may_loss_data(&frame);
-                    self.sendable.notify_waiters();
-                }
-            })
+            let mut may_lost_frames = QuicFrames::new();
+            for frame in rotate.may_loss_pkt(pn) {
+                // for this convert, empty bytes indicates the raw info is not available
+                may_lost_frames.extend(Some(&Frame::Crypto(frame, bytes::Bytes::new())));
+                outgoing.may_loss_data(&frame);
+                self.sendable.notify_waiters();
+            }
+            qlog::event!(PacketLost {
+                header: PacketHeader {
+                    packet_type: PacketType::Handshake,
+                    packet_number: pn
+                },
+                frames: may_lost_frames,
+                trigger
+            });
         }
     }
 

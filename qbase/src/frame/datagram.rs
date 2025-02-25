@@ -1,3 +1,4 @@
+use bytes::Buf;
 use nom::IResult;
 
 use super::{BeFrame, FrameType};
@@ -21,19 +22,30 @@ use crate::{
 /// for more details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DatagramFrame {
-    pub length: Option<VarInt>,
+    encode_len: bool,
+    len: VarInt,
 }
 
 impl DatagramFrame {
     /// Create a new `DatagramFrame` with the given length.
-    pub fn new(length: Option<VarInt>) -> Self {
-        Self { length }
+    pub fn new(encode_len: bool, len: VarInt) -> Self {
+        Self { encode_len, len }
+    }
+
+    #[inline]
+    pub fn encode_len(&self) -> bool {
+        self.encode_len
+    }
+
+    #[inline]
+    pub fn len(&self) -> VarInt {
+        self.len
     }
 }
 
 impl BeFrame for DatagramFrame {
     fn frame_type(&self) -> FrameType {
-        FrameType::Datagram(self.length.is_some() as _)
+        FrameType::Datagram(self.encode_len as _)
     }
 
     fn max_encoding_size(&self) -> usize {
@@ -41,7 +53,11 @@ impl BeFrame for DatagramFrame {
     }
 
     fn encoding_size(&self) -> usize {
-        1 + self.length.map(VarInt::encoding_size).unwrap_or_default()
+        1 + self
+            .encode_len
+            .then_some(self.len)
+            .map(VarInt::encoding_size)
+            .unwrap_or_default()
     }
 }
 
@@ -50,11 +66,20 @@ impl BeFrame for DatagramFrame {
 pub fn datagram_frame_with_flag(flag: u8) -> impl FnOnce(&[u8]) -> IResult<&[u8], DatagramFrame> {
     move |input| {
         let (remain, len) = if flag == 1 {
-            be_varint(input).map(|(remain, len)| (remain, Some(len)))?
+            be_varint(input)?
         } else {
-            (input, None)
+            let len = VarInt::try_from(input.remaining())
+                .expect("size of datagram frame payload never exceeds limit");
+            (input, len)
         };
-        Ok((remain, DatagramFrame { length: len }))
+        let with_len = flag == 1;
+        Ok((
+            remain,
+            DatagramFrame {
+                encode_len: with_len,
+                len,
+            },
+        ))
     }
 }
 
@@ -65,8 +90,8 @@ where
 {
     fn put_data_frame(&mut self, frame: &DatagramFrame, data: &D) {
         self.put_u8(frame.frame_type().into());
-        if let Some(len) = frame.length {
-            self.put_varint(&len);
+        if frame.encode_len {
+            self.put_varint(&frame.len);
         }
         self.put_data(data);
     }
@@ -80,7 +105,8 @@ mod tests {
     #[test]
     fn test_datagram_frame() {
         let frame = DatagramFrame {
-            length: Some(VarInt::from_u32(3)),
+            encode_len: true,
+            len: VarInt::from_u32(3),
         };
         assert_eq!(frame.frame_type(), FrameType::Datagram(1));
         assert_eq!(frame.max_encoding_size(), 1 + 8);
@@ -91,7 +117,8 @@ mod tests {
     fn test_datagram_frame_with_flag() {
         let input = [0x05, 0x00, 0x00, 0x00, 0x00, 0x00];
         let expected_output = DatagramFrame {
-            length: Some(VarInt::from_u32(5)),
+            encode_len: true,
+            len: VarInt::from_u32(5),
         };
         let (remain, frame) = datagram_frame_with_flag(1)(&input).unwrap();
         assert_eq!(remain, &[0x00, 0x00, 0x00, 0x00, 0x00]);
@@ -101,7 +128,10 @@ mod tests {
     #[test]
     fn test_datagram_frame_with_flag_no_length() {
         let input = b"114514";
-        let expected_output = DatagramFrame { length: None };
+        let expected_output = DatagramFrame {
+            encode_len: false,
+            len: VarInt::from_u32(6),
+        };
         let (remain, frame) = datagram_frame_with_flag(0)(input).unwrap();
         assert_eq!(remain, input);
         assert_eq!(frame, expected_output);
@@ -110,7 +140,8 @@ mod tests {
     #[test]
     fn test_put_datagram_frame_with_length() {
         let frame = DatagramFrame {
-            length: Some(VarInt::from_u32(3)),
+            encode_len: true,
+            len: VarInt::from_u32(3),
         };
         let mut buf = Vec::new();
         buf.put_data_frame(&frame, &[0x01, 0x02, 0x03]);
@@ -119,7 +150,10 @@ mod tests {
 
     #[test]
     fn test_put_datagram_frame_no_length() {
-        let frame = DatagramFrame { length: None };
+        let frame = DatagramFrame {
+            encode_len: false,
+            len: VarInt::from_u32(3),
+        };
         let mut buf = Vec::new();
         buf.put_data_frame(&frame, &[0x01, 0x02, 0x03]);
         assert_eq!(&buf, &[0x30, 0x01, 0x02, 0x03]);
