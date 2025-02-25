@@ -100,6 +100,7 @@ impl InitialSpace {
     ) -> Option<(MiddleAssembledPacket, Option<u64>)> {
         let keys = self.keys.get_local_keys()?;
         let sent_journal = self.journal.of_sent_packets();
+        let need_ack = tx.need_ack(Epoch::Initial);
         let mut packet = PacketMemory::new_long(
             LongHeaderBuilder::with_cid(tx.dcid(), tx.scid())
                 .initial(self.token.lock().unwrap().clone()),
@@ -109,7 +110,7 @@ impl InitialSpace {
         )?;
 
         let mut ack = None;
-        if let Some((largest, rcvd_time)) = tx.need_ack(Epoch::Initial) {
+        if let Some((largest, rcvd_time)) = need_ack {
             let rcvd_journal = self.journal.of_rcvd_packets();
             if let Some(ack_frame) =
                 rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
