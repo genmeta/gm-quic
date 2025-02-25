@@ -16,6 +16,16 @@ use qlog::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated
 
 use super::sndbuf::SendBuf;
 
+fn log_cancel_event(sid: StreamId, from_state: GranularStreamStates) {
+    qlog::event!(StreamStateUpdated {
+        stream_id: sid,
+        stream_type: sid.dir(),
+        old: from_state,
+        new: GranularStreamStates::ResetSent,
+        stream_side: StreamSide::Sending
+    });
+}
+
 /// The "Ready" state represents a newly created stream that is able to accept data from the application.
 /// Stream data might be buffered in this state in preparation for sending.
 /// An implementation might choose to defer allocating a stream ID to a stream until it sends the first
@@ -29,23 +39,6 @@ pub struct ReadySender<TX> {
     broker: TX,
     writable_waker: Option<Waker>,
     max_stream_data: u64,
-}
-
-impl<TX> ReadySender<TX>
-where
-    TX: SendFrame<ResetStreamFrame>,
-{
-    /// 应用层使用，取消发送流
-    pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
-        let final_size = self.sndbuf.sent();
-        let reset_stream_err = ResetStreamError::new(
-            VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
-            VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
-        );
-        self.broker
-            .send_frame([reset_stream_err.combine(self.stream_id)]);
-        reset_stream_err
-    }
 }
 
 impl<TX> ReadySender<TX> {
@@ -109,13 +102,9 @@ impl<TX> ReadySender<TX> {
         Poll::Pending
     }
 
-    pub(super) fn shutdown(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+    pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.shutdown_waker = Some(cx.waker().clone());
-        Ok(())
-    }
-
-    pub(super) fn is_finished(&self) -> bool {
-        self.shutdown_waker.is_some()
+        Poll::Pending
     }
 
     pub(super) fn wake_all(&mut self) {
@@ -132,45 +121,42 @@ impl<TX> ReadySender<TX> {
 }
 
 /// 状态转换，ReaderSender => SendingSender
-impl<TX: Clone> From<&mut ReadySender<TX>> for SendingSender<TX> {
-    fn from(value: &mut ReadySender<TX>) -> Self {
+impl<TX: Clone> ReadySender<TX> {
+    pub(super) fn upgrade(&mut self) -> SendingSender<TX> {
         qlog::event!(StreamStateUpdated {
-            stream_id: value.stream_id,
-            stream_type: value.stream_id.dir(),
+            stream_id: self.stream_id,
+            stream_type: self.stream_id.dir(),
             old: GranularStreamStates::Ready,
             new: GranularStreamStates::Send,
             stream_side: StreamSide::Sending
         });
         SendingSender {
-            stream_id: value.stream_id,
-            sndbuf: std::mem::take(&mut value.sndbuf),
-            flush_waker: value.flush_waker.take(),
-            shutdown_waker: value.shutdown_waker.take(),
-            broker: value.broker.clone(),
-            writable_waker: value.writable_waker.take(),
-            max_stream_data: value.max_stream_data,
+            stream_id: self.stream_id,
+            sndbuf: std::mem::take(&mut self.sndbuf),
+            flush_waker: self.flush_waker.take(),
+            shutdown_waker: self.shutdown_waker.take(),
+            broker: self.broker.clone(),
+            writable_waker: self.writable_waker.take(),
+            max_stream_data: self.max_stream_data,
         }
     }
 }
 
-/// 状态转换，ReaderSender => DataSentSender
-impl<TX: Clone> From<&mut ReadySender<TX>> for DataSentSender<TX> {
-    fn from(value: &mut ReadySender<TX>) -> Self {
-        qlog::event!(StreamStateUpdated {
-            stream_id: value.stream_id,
-            stream_type: value.stream_id.dir(),
-            old: GranularStreamStates::Send,
-            new: GranularStreamStates::DataSent,
-            stream_side: StreamSide::Sending
-        });
-        DataSentSender {
-            stream_id: value.stream_id,
-            sndbuf: std::mem::take(&mut value.sndbuf),
-            flush_waker: value.flush_waker.take(),
-            shutdown_waker: value.shutdown_waker.take(),
-            broker: value.broker.clone(),
-            fin_state: FinState::None,
-        }
+impl<TX> ReadySender<TX>
+where
+    TX: SendFrame<ResetStreamFrame>,
+{
+    /// 应用层使用，取消发送流
+    pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
+        let final_size = self.sndbuf.sent();
+        let reset_stream_err = ResetStreamError::new(
+            VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
+            VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+        );
+        self.broker
+            .send_frame([reset_stream_err.combine(self.stream_id)]);
+        log_cancel_event(self.stream_id, GranularStreamStates::Ready);
+        reset_stream_err
     }
 }
 
@@ -186,22 +172,6 @@ pub struct SendingSender<TX> {
 }
 
 type StreamData<'s> = (u64, bool, (&'s [u8], &'s [u8]), bool);
-
-impl<TX> SendingSender<TX>
-where
-    TX: SendFrame<ResetStreamFrame>,
-{
-    pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
-        let final_size = self.sndbuf.sent();
-        let reset_stream_err = ResetStreamError::new(
-            VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
-            VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
-        );
-        self.broker
-            .send_frame([reset_stream_err.combine(self.stream_id)]);
-        reset_stream_err
-    }
-}
 
 impl<TX> SendingSender<TX> {
     pub(super) fn poll_write(
@@ -233,18 +203,31 @@ impl<TX> SendingSender<TX> {
     where
         P: Fn(u64) -> Option<usize>,
     {
+        let fin = if self.is_finished() {
+            Some(self.sndbuf.written())
+        } else {
+            None
+        };
         self.sndbuf
-            .pick_up(predicate, flow_limit)
-            .map(|(offset, is_fresh, data)| (offset, is_fresh, data, false))
+            .pick_up(&predicate, flow_limit)
+            .map(|(offset, is_fresh, data)| {
+                let is_eos = fin == Some(offset + data.len() as u64);
+                (offset, is_fresh, data, is_eos)
+            })
+            .or_else(|| {
+                if let Some(total_size) = fin {
+                    let _ = predicate(total_size)?;
+                    Some((total_size, false, (&[], &[]), true))
+                } else {
+                    None
+                }
+            })
     }
 
     pub(super) fn on_data_acked(&mut self, range: &Range<u64>) {
         self.sndbuf.on_data_acked(range);
         if self.sndbuf.is_all_rcvd() {
             if let Some(waker) = self.flush_waker.take() {
-                waker.wake();
-            }
-            if let Some(waker) = self.shutdown_waker.take() {
                 waker.wake();
             }
         }
@@ -263,9 +246,13 @@ impl<TX> SendingSender<TX> {
         }
     }
 
-    pub(super) fn shutdown(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+    pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.shutdown_waker = Some(cx.waker().clone());
-        Ok(())
+        Poll::Pending
+    }
+
+    pub(super) fn is_finished(&self) -> bool {
+        self.shutdown_waker.is_some()
     }
 
     pub(super) fn wake_all(&mut self) {
@@ -281,41 +268,48 @@ impl<TX> SendingSender<TX> {
     }
 
     /// 传输层使用
-    pub(super) fn stop(&mut self) -> u64 {
+    pub(super) fn be_stopped(&mut self) -> u64 {
         self.wake_all();
         // Actually, these remaining data is not acked and will not be acked
-        self.sndbuf.written()
+        self.sndbuf.sent()
     }
 }
 
-/// 状态转换，SendingSender => DataSentSender
-impl<TX: Clone> From<&mut SendingSender<TX>> for DataSentSender<TX> {
-    fn from(value: &mut SendingSender<TX>) -> Self {
+impl<TX: Clone> SendingSender<TX> {
+    pub(super) fn upgrade(&mut self) -> DataSentSender<TX> {
         qlog::event!(StreamStateUpdated {
-            stream_id: value.stream_id,
-            stream_type: value.stream_id.dir(),
+            stream_id: self.stream_id,
+            stream_type: self.stream_id.dir(),
             old: GranularStreamStates::Send,
             new: GranularStreamStates::DataSent,
             stream_side: StreamSide::Sending
         });
         DataSentSender {
-            stream_id: value.stream_id,
-            sndbuf: std::mem::take(&mut value.sndbuf),
-            flush_waker: value.flush_waker.take(),
-            shutdown_waker: value.shutdown_waker.take(),
-            broker: value.broker.clone(),
-            fin_state: FinState::None,
+            stream_id: self.stream_id,
+            sndbuf: std::mem::take(&mut self.sndbuf),
+            flush_waker: self.flush_waker.take(),
+            shutdown_waker: self.shutdown_waker.take(),
+            broker: self.broker.clone(),
+            is_fin_acked: false,
         }
     }
 }
 
-/// 表示发送fin标志位的状态。当所有数据都发完但没发过fin的Stream帧时，也应发一个携带fin标志位的空Stream帧
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum FinState {
-    #[default]
-    None, // 未发送过fin的Stream帧
-    Sent, // 已发送过fin的Stream帧
-    Rcvd, // 对端已确认收到fin状态
+impl<TX> SendingSender<TX>
+where
+    TX: SendFrame<ResetStreamFrame>,
+{
+    pub(super) fn cancel(&mut self, err_code: u64) -> ResetStreamError {
+        let final_size = self.sndbuf.sent();
+        let reset_stream_err = ResetStreamError::new(
+            VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
+            VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+        );
+        self.broker
+            .send_frame([reset_stream_err.combine(self.stream_id)]);
+        log_cancel_event(self.stream_id, GranularStreamStates::Send);
+        reset_stream_err
+    }
 }
 
 #[derive(Debug)]
@@ -325,7 +319,72 @@ pub struct DataSentSender<TX> {
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
     broker: TX,
-    fin_state: FinState,
+    is_fin_acked: bool,
+}
+
+impl<TX> DataSentSender<TX> {
+    pub(super) fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Option<StreamData>
+    where
+        P: Fn(u64) -> Option<usize>,
+    {
+        let total_size = self.sndbuf.written();
+        self.sndbuf
+            .pick_up(&predicate, flow_limit)
+            .map(|(offset, is_fresh, data)| {
+                let is_eos = offset + data.len() as u64 == total_size;
+                (offset, is_fresh, data, is_eos)
+            })
+    }
+
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub(super) fn on_data_acked(&mut self, range: &Range<u64>, is_fin: bool) {
+        self.sndbuf.on_data_acked(range);
+        self.is_fin_acked = self.is_fin_acked || is_fin;
+        if self.is_all_rcvd() {
+            if let Some(waker) = self.flush_waker.take() {
+                waker.wake();
+            }
+            if let Some(waker) = self.shutdown_waker.take() {
+                waker.wake();
+            }
+        }
+    }
+
+    #[tracing::instrument(level = "trace", skip(self), ret)]
+    pub(super) fn is_all_rcvd(&self) -> bool {
+        self.sndbuf.is_all_rcvd() && self.is_fin_acked
+    }
+
+    pub(super) fn may_loss_data(&mut self, range: &Range<u64>) {
+        self.sndbuf.may_loss_data(range)
+    }
+
+    pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        debug_assert!(!self.is_all_rcvd());
+        self.flush_waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+
+    pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        debug_assert!(!self.is_all_rcvd());
+        self.shutdown_waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+
+    pub(super) fn wake_all(&mut self) {
+        if let Some(waker) = self.flush_waker.take() {
+            waker.wake();
+        }
+        if let Some(waker) = self.shutdown_waker.take() {
+            waker.wake();
+        }
+    }
+
+    pub(super) fn be_stopped(&mut self) -> u64 {
+        self.wake_all();
+        // Actually, these remaining data is not acked and will not be acked
+        self.sndbuf.written()
+    }
 }
 
 impl<TX> DataSentSender<TX>
@@ -340,200 +399,8 @@ where
         );
         self.broker
             .send_frame([reset_stream_err.combine(self.stream_id)]);
+        log_cancel_event(self.stream_id, GranularStreamStates::DataSent);
         reset_stream_err
-    }
-}
-
-impl<TX> DataSentSender<TX> {
-    pub(super) fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Option<StreamData>
-    where
-        P: Fn(u64) -> Option<usize>,
-    {
-        let total_size = self.sndbuf.written();
-        self.sndbuf
-            .pick_up(&predicate, flow_limit)
-            .map(|(offset, is_fresh, data)| {
-                let is_eos = offset + data.len() as u64 == total_size;
-                if is_eos {
-                    self.fin_state = FinState::Sent;
-                }
-                (offset, is_fresh, data, is_eos)
-            })
-            .or_else(|| {
-                if self.fin_state == FinState::None {
-                    let _ = predicate(total_size)?;
-                    self.fin_state = FinState::Sent;
-                    Some((total_size, false, (&[], &[]), true))
-                } else {
-                    None
-                }
-            })
-    }
-
-    #[tracing::instrument(level = "trace", skip(self))]
-    pub(super) fn on_data_acked(&mut self, range: &Range<u64>, is_fin: bool) {
-        self.sndbuf.on_data_acked(range);
-        if is_fin {
-            self.fin_state = FinState::Rcvd;
-        }
-        if self.is_all_rcvd() {
-            if let Some(waker) = self.flush_waker.take() {
-                waker.wake();
-            }
-            if let Some(waker) = self.shutdown_waker.take() {
-                waker.wake();
-            }
-        }
-    }
-
-    #[tracing::instrument(level = "trace", skip(self), ret)]
-    pub(super) fn is_all_rcvd(&self) -> bool {
-        self.sndbuf.is_all_rcvd() && self.fin_state == FinState::Rcvd
-    }
-
-    pub(super) fn may_loss_data(&mut self, range: &Range<u64>) {
-        self.sndbuf.may_loss_data(range)
-    }
-
-    pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if self.is_all_rcvd() {
-            Poll::Ready(Ok(()))
-        } else {
-            self.flush_waker = Some(cx.waker().clone());
-            Poll::Pending
-        }
-    }
-
-    pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if self.is_all_rcvd() {
-            Poll::Ready(Ok(()))
-        } else {
-            self.shutdown_waker = Some(cx.waker().clone());
-            Poll::Pending
-        }
-    }
-
-    pub(super) fn wake_all(&mut self) {
-        if let Some(waker) = self.flush_waker.take() {
-            waker.wake();
-        }
-        if let Some(waker) = self.shutdown_waker.take() {
-            waker.wake();
-        }
-    }
-
-    pub(super) fn stop(&mut self) -> u64 {
-        self.wake_all();
-        // Actually, these remaining data is not acked and will not be acked
-        self.sndbuf.written()
-    }
-}
-
-#[derive(Debug)]
-pub struct ResetSent {
-    stream_id: StreamId,
-    reset: ResetStreamError,
-}
-
-impl ResetSent {
-    pub fn read(&self) -> io::Error {
-        io::Error::new(io::ErrorKind::BrokenPipe, self.reset)
-    }
-}
-
-impl<TX> From<(&mut ReadySender<TX>, ResetStreamError)> for ResetSent {
-    fn from((sender, reset): (&mut ReadySender<TX>, ResetStreamError)) -> Self {
-        qlog::event!(StreamStateUpdated {
-            stream_id: sender.stream_id,
-            stream_type: sender.stream_id.dir(),
-            old: GranularStreamStates::Ready,
-            new: GranularStreamStates::ResetSent,
-            stream_side: StreamSide::Sending
-        });
-        ResetSent {
-            stream_id: sender.stream_id,
-            reset,
-        }
-    }
-}
-
-impl<TX> From<(&mut SendingSender<TX>, ResetStreamError)> for ResetSent {
-    fn from((sender, reset): (&mut SendingSender<TX>, ResetStreamError)) -> Self {
-        qlog::event!(StreamStateUpdated {
-            stream_id: sender.stream_id,
-            stream_type: sender.stream_id.dir(),
-            old: GranularStreamStates::Send,
-            new: GranularStreamStates::ResetSent,
-            stream_side: StreamSide::Sending
-        });
-        ResetSent {
-            stream_id: sender.stream_id,
-            reset,
-        }
-    }
-}
-
-impl<TX> From<(&mut DataSentSender<TX>, ResetStreamError)> for ResetSent {
-    fn from((sender, reset): (&mut DataSentSender<TX>, ResetStreamError)) -> Self {
-        qlog::event!(StreamStateUpdated {
-            stream_id: sender.stream_id,
-            stream_type: sender.stream_id.dir(),
-            old: GranularStreamStates::DataSent,
-            new: GranularStreamStates::ResetSent,
-            stream_side: StreamSide::Sending
-        });
-        ResetSent {
-            stream_id: sender.stream_id,
-            reset,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct DataRcvd(());
-
-impl<TX> From<&mut DataSentSender<TX>> for DataRcvd {
-    fn from(sender: &mut DataSentSender<TX>) -> Self {
-        qlog::event!(StreamStateUpdated {
-            stream_id: sender.stream_id,
-            stream_type: sender.stream_id.dir(),
-            old: GranularStreamStates::DataSent,
-            new: GranularStreamStates::DataReceived,
-            stream_side: StreamSide::Sending
-        });
-        DataRcvd(())
-    }
-}
-
-impl<TX> From<DataSentSender<TX>> for DataRcvd {
-    fn from(mut sender: DataSentSender<TX>) -> Self {
-        (&mut sender).into()
-    }
-}
-
-#[derive(Debug)]
-pub struct ResetRcvd {
-    reset: ResetStreamError,
-}
-
-impl ResetRcvd {
-    pub fn read(&self) -> io::Error {
-        io::Error::new(io::ErrorKind::BrokenPipe, self.reset)
-    }
-}
-
-impl From<&mut ResetSent> for ResetRcvd {
-    fn from(sender: &mut ResetSent) -> Self {
-        qlog::event!(StreamStateUpdated {
-            stream_id: sender.stream_id,
-            stream_type: sender.stream_id.dir(),
-            old: GranularStreamStates::ResetSent,
-            new: GranularStreamStates::ResetReceived,
-            stream_side: StreamSide::Sending
-        });
-        ResetRcvd {
-            reset: sender.reset,
-        }
     }
 }
 
@@ -542,9 +409,9 @@ pub(super) enum Sender<TX> {
     Ready(ReadySender<TX>),
     Sending(SendingSender<TX>),
     DataSent(DataSentSender<TX>),
-    ResetSent(ResetSent),
-    DataRcvd(DataRcvd),
-    ResetRcvd(ResetRcvd),
+    DataRcvd,
+    ResetSent(ResetStreamError),
+    ResetRcvd(ResetStreamError),
 }
 
 impl<TX> Sender<TX> {
@@ -674,15 +541,14 @@ mod tests {
         let mut ready = ReadySender::new(stream_id, buf_size, broker);
 
         // Test transition to SendingSender
-        let sending = SendingSender::from(&mut ready);
+        let mut sending = ready.upgrade();
         assert_eq!(sending.stream_id, stream_id);
         assert_eq!(sending.max_stream_data, buf_size);
 
         // Test transition to DataSentSender
-        let mut sending = SendingSender::from(&mut ready);
-        let data_sent = DataSentSender::from(&mut sending);
+        let data_sent = sending.upgrade();
         assert_eq!(data_sent.stream_id, stream_id);
-        assert_eq!(data_sent.fin_state, FinState::None);
+        assert!(!data_sent.is_fin_acked);
     }
 
     #[test]
@@ -708,18 +574,13 @@ mod tests {
             flush_waker: None,
             shutdown_waker: None,
             broker,
-            fin_state: FinState::None,
+            is_fin_acked: false,
         };
 
         // Test pick_up with empty buffer
         let predicate = |_| Some(100);
         let result = sender.pick_up(predicate, 1000);
-        assert!(result.is_some());
-        let (offset, is_fresh, data, is_fin) = result.unwrap();
-        assert_eq!(offset, 0);
-        assert!(!is_fresh);
-        assert!(data.0.is_empty() && data.1.is_empty());
-        assert!(is_fin);
+        assert!(result.is_none());
     }
 
     #[tokio::test]
@@ -733,17 +594,17 @@ mod tests {
             flush_waker: None,
             shutdown_waker: None,
             broker,
-            fin_state: FinState::Rcvd,
+            is_fin_acked: false,
         };
 
         let mut cx = Context::from_waker(futures::task::noop_waker_ref());
 
         // Test poll_flush when all data received
         let result = sender.poll_flush(&mut cx);
-        assert!(result.is_ready());
+        assert!(result.is_pending());
 
         // Test poll_shutdown when all data received
-        let result = sender.poll_shutdown(&mut cx);
-        assert!(result.is_ready());
+        let _ = sender.poll_shutdown(&mut cx);
+        assert!(sender.shutdown_waker.is_some());
     }
 }

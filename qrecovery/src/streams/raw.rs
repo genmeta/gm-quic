@@ -252,7 +252,7 @@ where
         if let Ok(set) = self.output.streams().as_mut() {
             let mut is_all_rcvd = false;
             if let Some((o, s)) = set.get(&frame.stream_id()) {
-                is_all_rcvd = o.on_data_acked(&frame.range(), frame.is_fin());
+                is_all_rcvd = o.on_data_acked(&frame);
                 if is_all_rcvd {
                     s.shutdown_send();
                     if s.is_terminated() {
@@ -288,7 +288,7 @@ where
     pub fn on_reset_acked(&self, reset_frame: ResetStreamFrame) {
         if let Ok(set) = self.output.streams().as_mut() {
             if let Some((o, s)) = set.remove(&reset_frame.stream_id()) {
-                o.on_reset_acked();
+                o.on_reset_acked(reset_frame.stream_id());
                 s.shutdown_send();
                 if s.is_terminated() {
                     self.stream_ids

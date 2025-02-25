@@ -9,7 +9,6 @@ use qbase::frame::{ResetStreamFrame, SendFrame};
 use tokio::io::AsyncWrite;
 
 use super::sender::{ArcSender, Sender};
-use crate::send::sender::DataSentSender;
 
 /// The writer part of a QUIC stream.
 ///
@@ -86,113 +85,17 @@ where
         if let Ok(sending_state) = inner {
             match sending_state {
                 Sender::Ready(s) => {
-                    let reset = s.cancel(err_code);
-                    *sending_state = Sender::ResetSent((s, reset).into());
+                    *sending_state = Sender::ResetSent(s.cancel(err_code));
                 }
                 Sender::Sending(s) => {
-                    let reset = s.cancel(err_code);
-                    *sending_state = Sender::ResetSent((s, reset).into());
+                    *sending_state = Sender::ResetSent(s.cancel(err_code));
                 }
                 Sender::DataSent(s) => {
-                    let reset = s.cancel(err_code);
-                    *sending_state = Sender::ResetSent((s, reset).into());
+                    *sending_state = Sender::ResetSent(s.cancel(err_code));
                 }
                 _ => (),
             }
         };
-    }
-}
-
-impl<TX: Clone> Writer<TX> {
-    /// 往sndbuf里面写数据，直到写满MAX_STREAM_DATA，等通告窗口更新再写
-    #[tracing::instrument(level = "trace", skip_all, ret)]
-    pub fn write_or_await(&self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
-        let mut sender = self.0.sender();
-        let sending_state = sender.as_mut().map_err(|e| e.clone())?;
-        match sending_state {
-            Sender::Ready(s) => s.poll_write(cx, buf),
-            Sender::Sending(s) => s.poll_write(cx, buf),
-            Sender::DataSent(_) => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "all data has been written",
-            ))),
-            Sender::DataRcvd(_r) => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "all data has been received",
-            ))),
-            Sender::ResetSent(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, reset.read())))
-            }
-            Sender::ResetRcvd(reset) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, reset.read())))
-            }
-        }
-    }
-
-    #[tracing::instrument(level = "trace", skip_all, ret)]
-    pub fn flush_or_await(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let mut sender = self.0.sender();
-        let sending_state = sender.as_mut().map_err(|e| e.clone())?;
-        match sending_state {
-            Sender::Ready(s) => s.poll_flush(cx),
-            Sender::Sending(s) => s.poll_flush(cx),
-            Sender::DataSent(s) => {
-                let result = s.poll_flush(cx);
-                if result.is_ready() {
-                    s.wake_all();
-                    *sending_state = Sender::DataRcvd(s.into());
-                }
-                result
-            }
-            Sender::DataRcvd(..) => Poll::Ready(Ok(())),
-            Sender::ResetSent(reset) => Poll::Ready(Err(reset.read())),
-            Sender::ResetRcvd(reset) => Poll::Ready(Err(reset.read())),
-        }
-    }
-
-    #[tracing::instrument(level = "trace", skip_all, ret)]
-    pub fn shutdown_or_await(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let mut sender = self.0.sender();
-        let sending_state = sender.as_mut().map_err(|e| e.clone())?;
-        match sending_state {
-            Sender::Ready(s) => {
-                if let Err(e) = s.shutdown(cx) {
-                    Poll::Ready(Err(e))
-                } else {
-                    *sending_state = Sender::DataSent(s.into());
-                    Poll::Pending
-                }
-            }
-            Sender::Sending(s) => {
-                if let Err(e) = s.shutdown(cx) {
-                    Poll::Ready(Err(e))
-                } else {
-                    // it's possible that all data has been sent and received when shutdown called
-                    let mut sent: DataSentSender<TX> = s.into();
-                    let shutdown = sent.poll_shutdown(cx);
-                    if shutdown.is_ready() {
-                        *sending_state = Sender::DataRcvd(sent.into())
-                    } else {
-                        *sending_state = Sender::DataSent(sent);
-                    }
-                    shutdown
-                }
-            }
-            Sender::DataSent(s) => {
-                let result = s.poll_shutdown(cx);
-                // 有一种复杂的情况，就是在DataSent途中，对方发来了STOP_SENDING，我方需立即
-                // reset停止发送，此时状态也轮转到ResetSent中，相当于被动reset，再次唤醒该
-                // poll任务，则会进到ResetSent或者ResetRcvd中poll，得到的将是BrokenPipe错误
-                if result.is_ready() {
-                    s.wake_all();
-                    *sending_state = Sender::DataRcvd(s.into());
-                }
-                result
-            }
-            Sender::DataRcvd(..) => Poll::Ready(Ok(())),
-            Sender::ResetSent(reset) => Poll::Ready(Err(reset.read())),
-            Sender::ResetRcvd(reset) => Poll::Ready(Err(reset.read())),
-        }
     }
 }
 
@@ -205,15 +108,60 @@ impl<TX: Clone> AsyncWrite for Writer<TX> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        self.write_or_await(cx, buf)
+        let mut sender = self.0.sender();
+        let sending_state = sender.as_mut().map_err(|e| e.clone())?;
+        match sending_state {
+            Sender::Ready(s) => s.poll_write(cx, buf),
+            Sender::Sending(s) => s.poll_write(cx, buf),
+            Sender::DataSent(_) => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "all data has been written",
+            ))),
+            Sender::DataRcvd => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "all data has been received",
+            ))),
+            Sender::ResetSent(reset) => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+            }
+            Sender::ResetRcvd(reset) => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+            }
+        }
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.flush_or_await(cx)
+        let mut sender = self.0.sender();
+        let sending_state = sender.as_mut().map_err(|e| e.clone())?;
+        match sending_state {
+            Sender::Ready(s) => s.poll_flush(cx),
+            Sender::Sending(s) => s.poll_flush(cx),
+            Sender::DataSent(s) => s.poll_flush(cx),
+            Sender::DataRcvd => Poll::Ready(Ok(())),
+            Sender::ResetSent(reset) => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+            }
+            Sender::ResetRcvd(reset) => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+            }
+        }
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.shutdown_or_await(cx)
+        let mut sender = self.0.sender();
+        let sending_state = sender.as_mut().map_err(|e| e.clone())?;
+        match sending_state {
+            Sender::Ready(s) => s.poll_shutdown(cx),
+            Sender::Sending(s) => s.poll_shutdown(cx),
+            Sender::DataSent(s) => s.poll_shutdown(cx),
+            Sender::DataRcvd => Poll::Ready(Ok(())),
+            Sender::ResetSent(reset) => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+            }
+            Sender::ResetRcvd(reset) => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
+            }
+        }
     }
 }
 
@@ -225,7 +173,7 @@ impl<TX> Drop for Writer<TX> {
             debug_assert!(
                 matches!(
                     sending_state,
-                    Sender::DataRcvd(_) | Sender::ResetSent(_) | Sender::ResetRcvd(_)
+                    Sender::DataRcvd | Sender::ResetSent(_) | Sender::ResetRcvd(_)
                 ),
                 "SendingStream must be shutdowned or cancelled before dropped!"
             );
