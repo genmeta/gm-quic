@@ -11,7 +11,7 @@ use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::{
     QuicInterface,
-    path::{Endpoint, Pathway, Socket},
+    path::{EndpointAddr, Pathway, Socket},
     queue::RcvdPacketQueue,
     util::{Channel, TryRecvError},
 };
@@ -184,7 +184,7 @@ impl QuicProto {
         let signpost = if !dcid.is_empty() {
             Signpost::from(*dcid)
         } else {
-            use Endpoint::*;
+            use EndpointAddr::*;
             let (Direct { addr } | Relay { agent: addr, .. }) = pathway.local();
             Signpost::from(addr)
         };

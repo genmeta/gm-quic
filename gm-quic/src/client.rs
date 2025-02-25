@@ -171,8 +171,8 @@ impl QuicClient {
         let local_addr = quic_iface.local_addr()?;
         let socket = Socket::new(local_addr, server_addr);
         let pathway = Pathway::new(
-            Endpoint::Direct { addr: local_addr },
-            Endpoint::Direct { addr: server_addr },
+            EndpointAddr::Direct { addr: local_addr },
+            EndpointAddr::Direct { addr: server_addr },
         );
 
         let token_sink = self

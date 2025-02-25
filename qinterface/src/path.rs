@@ -3,7 +3,7 @@ use std::{fmt::Display, net::SocketAddr, ops::Deref};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum Endpoint {
+pub enum EndpointAddr {
     Direct {
         addr: SocketAddr,
     },
@@ -13,30 +13,30 @@ pub enum Endpoint {
     },
 }
 
-impl Display for Endpoint {
+impl Display for EndpointAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Endpoint::Direct { addr } => write!(f, "{}", addr),
-            Endpoint::Relay { agent, inner } => write!(f, "{} <-> {}", agent, inner),
+            EndpointAddr::Direct { addr } => write!(f, "{addr}"),
+            EndpointAddr::Relay { agent, inner } => write!(f, "{inner}-{agent}"),
         }
     }
 }
 
-impl Deref for Endpoint {
+impl Deref for EndpointAddr {
     type Target = SocketAddr;
 
     fn deref(&self) -> &Self::Target {
         match self {
-            Endpoint::Direct { addr } => addr,
-            Endpoint::Relay { inner, .. } => inner,
+            EndpointAddr::Direct { addr } => addr,
+            EndpointAddr::Relay { inner, .. } => inner,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Pathway {
-    local: Endpoint,
-    remote: Endpoint,
+    local: EndpointAddr,
+    remote: EndpointAddr,
 }
 
 impl Display for Pathway {
@@ -47,17 +47,17 @@ impl Display for Pathway {
 
 impl Pathway {
     #[inline]
-    pub fn new(local: Endpoint, remote: Endpoint) -> Self {
+    pub fn new(local: EndpointAddr, remote: EndpointAddr) -> Self {
         Self { local, remote }
     }
 
     #[inline]
-    pub fn local(&self) -> Endpoint {
+    pub fn local(&self) -> EndpointAddr {
         self.local
     }
 
     #[inline]
-    pub fn remote(&self) -> Endpoint {
+    pub fn remote(&self) -> EndpointAddr {
         self.remote
     }
 

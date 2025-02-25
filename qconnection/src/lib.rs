@@ -11,7 +11,7 @@ pub mod prelude {
     pub use qbase::{frame::ConnectionCloseFrame, sid::StreamId, varint::VarInt};
     pub use qinterface::{
         QuicInterface,
-        path::{Endpoint, Pathway, Socket},
+        path::{EndpointAddr, Pathway, Socket},
         router::QuicProto,
     };
     #[cfg(feature = "unreliable")]
