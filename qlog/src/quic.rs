@@ -619,9 +619,26 @@ impl From<(&CryptoFrame, &Bytes)> for QuicFrame {
     }
 }
 
+impl From<&CryptoFrame> for QuicFrame {
+    fn from(frame: &CryptoFrame) -> Self {
+        let length = frame.encoding_size() as u64 + frame.length();
+        let payload_length = frame.length();
+        QuicFrame::Crypto {
+            offset: frame.offset(),
+            length,
+            payload_length: Some(payload_length as u32),
+            raw: Some(RawInfo {
+                length: Some(length),
+                payload_length: Some(payload_length),
+                data: None,
+            }),
+        }
+    }
+}
+
 impl From<(&StreamFrame, &Bytes)> for QuicFrame {
     fn from((frame, bytes): (&StreamFrame, &Bytes)) -> Self {
-        let length = frame.encoding_size() + bytes.len();
+        let length = frame.encoding_size() + frame.len();
         let payload_length = bytes.len();
         QuicFrame::Stream {
             stream_id: frame.stream_id().id(),
@@ -632,6 +649,24 @@ impl From<(&StreamFrame, &Bytes)> for QuicFrame {
                 length: Some(length as _),
                 payload_length: Some(payload_length as _),
                 data: Some(bytes.clone().into()),
+            }),
+        }
+    }
+}
+
+impl From<&StreamFrame> for QuicFrame {
+    fn from(frame: &StreamFrame) -> Self {
+        let length = frame.encoding_size() + frame.len();
+        let payload_length = frame.len();
+        QuicFrame::Stream {
+            stream_id: frame.stream_id().id(),
+            offset: frame.offset(),
+            length: frame.encoding_size() as u64 + frame.len() as u64,
+            fin: frame.is_fin(),
+            raw: Some(RawInfo {
+                length: Some(length as u64),
+                payload_length: Some(payload_length as u64),
+                data: None,
             }),
         }
     }
@@ -648,6 +683,15 @@ impl From<(&DatagramFrame, &Bytes)> for QuicFrame {
                 payload_length: Some(payload_length as _),
                 data: Some(bytes.clone().into()),
             }),
+        }
+    }
+}
+
+impl From<&DatagramFrame> for QuicFrame {
+    fn from(frame: &DatagramFrame) -> Self {
+        QuicFrame::Datagram {
+            length: Some(frame.encoding_size() as u64 + frame.len().into_inner()),
+            raw: None,
         }
     }
 }
@@ -842,6 +886,9 @@ impl From<&Frame> for QuicFrame {
             Frame::Challenge(frame) => frame.into(),
             Frame::Response(frame) => frame.into(),
             Frame::StreamCtl(frame) => frame.into(),
+            Frame::Stream(frame, bytes) if bytes.is_empty() => (frame, bytes).into(),
+            Frame::Crypto(frame, bytes) if bytes.is_empty() => (frame, bytes).into(),
+            Frame::Datagram(frame, bytes) if bytes.is_empty() => (frame, bytes).into(),
             Frame::Stream(frame, bytes) => (frame, bytes).into(),
             Frame::Crypto(frame, bytes) => (frame, bytes).into(),
             Frame::Datagram(frame, bytes) => (frame, bytes).into(),

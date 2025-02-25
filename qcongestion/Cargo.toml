@@ -14,6 +14,7 @@ categories.workspace = true
 [dependencies]
 tracing = { workspace = true }
 qbase = { workspace = true }
+qlog = { workspace = true }
 qrecovery = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }

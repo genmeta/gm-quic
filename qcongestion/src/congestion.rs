@@ -12,6 +12,7 @@ use qbase::{
     handshake::Handshake,
     sid::Role,
 };
+use qlog::quic::recovery::PacketLostTrigger;
 use tokio::{sync::Notify, task::AbortHandle};
 use tracing::{Instrument, trace_span};
 
@@ -190,7 +191,11 @@ impl CongestionController {
 
         let lost_packets = self.remove_loss_packets(space, now);
         if !lost_packets.is_empty() {
-            self.on_packets_lost(lost_packets.into_iter(), space);
+            self.on_packets_lost(
+                PacketLostTrigger::ReorderingThreshold,
+                lost_packets.into_iter(),
+                space,
+            );
         }
         self.algorithm.on_ack(newly_acked_packets, now);
 
@@ -232,10 +237,16 @@ impl CongestionController {
     }
 
     // A.8. Setting the Loss Detection Timer
-    fn on_packets_lost(&mut self, packets: impl Iterator<Item = SentPkt>, epoch: Epoch) {
+    fn on_packets_lost(
+        &mut self,
+        trigger: PacketLostTrigger,
+        packets: impl Iterator<Item = SentPkt>,
+        epoch: Epoch,
+    ) {
         let now = Instant::now();
 
         self.trackers[epoch].may_loss(
+            trigger,
             &mut packets
                 .inspect(|lost| self.algorithm.on_congestion_event(lost, now))
                 .map(|lost| lost.pn),
@@ -267,7 +278,11 @@ impl CongestionController {
         if earliest_loss_time.is_some() {
             let loss_packet = self.remove_loss_packets(space, now);
             assert!(!loss_packet.is_empty());
-            self.on_packets_lost(loss_packet.into_iter(), space);
+            self.on_packets_lost(
+                PacketLostTrigger::TimeThreshold,
+                loss_packet.into_iter(),
+                space,
+            );
             self.set_loss_timer();
             return;
         }
@@ -309,7 +324,10 @@ impl CongestionController {
             .iter()
             .take(self.pto_count as usize);
 
-        self.trackers[pto_epoch].may_loss(&mut retransmit.map(|lost| lost.pn));
+        self.trackers[pto_epoch].may_loss(
+            PacketLostTrigger::PtoExpired,
+            &mut retransmit.map(|lost| lost.pn),
+        );
 
         self.set_loss_timer();
     }
@@ -1060,7 +1078,7 @@ mod tests {
     }
     struct Mock;
     impl TrackPackets for Mock {
-        fn may_loss(&self, _: &mut dyn Iterator<Item = u64>) {}
+        fn may_loss(&self, _: PacketLostTrigger, _: &mut dyn Iterator<Item = u64>) {}
         fn rotate(&self, _: &mut dyn Iterator<Item = u64>) {}
     }
 

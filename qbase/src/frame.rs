@@ -411,6 +411,28 @@ pub enum Frame {
     Datagram(DatagramFrame, Bytes),
 }
 
+impl From<ReliableFrame> for Frame {
+    fn from(frame: ReliableFrame) -> Self {
+        match frame {
+            ReliableFrame::NewToken(new_token_frame) => Frame::NewToken(new_token_frame),
+            ReliableFrame::MaxData(max_data_frame) => Frame::MaxData(max_data_frame),
+            ReliableFrame::DataBlocked(data_blocked_frame) => {
+                Frame::DataBlocked(data_blocked_frame)
+            }
+            ReliableFrame::NewConnectionId(new_connection_id_frame) => {
+                Frame::NewConnectionId(new_connection_id_frame)
+            }
+            ReliableFrame::RetireConnectionId(retire_connection_id_frame) => {
+                Frame::RetireConnectionId(retire_connection_id_frame)
+            }
+            ReliableFrame::HandshakeDone(handshake_done_frame) => {
+                Frame::HandshakeDone(handshake_done_frame)
+            }
+            ReliableFrame::Stream(stream_frame) => Frame::StreamCtl(stream_frame),
+        }
+    }
+}
+
 /// Some modules that need send specific frames can implement `SendFrame` trait directly.
 ///
 /// Alternatively, a temporary buffer that stores certain frames can also implement this trait,

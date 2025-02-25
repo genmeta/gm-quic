@@ -6,6 +6,7 @@ use std::{
 
 pub use congestion::{ArcCC, CongestionAlgorithm, MSS};
 use qbase::{Epoch, frame::AckFrame};
+use qlog::quic::recovery::PacketLostTrigger;
 use tokio::{sync::Notify, task::AbortHandle};
 
 mod bbr;
@@ -68,7 +69,7 @@ pub trait TrackPackets: Send + Sync {
     /// Indicates that a packet with the specified packet number may have been lost.
     /// # Parameters
     /// - `pn`: The packet number of the potentially lost packet.
-    fn may_loss(&self, pns: &mut dyn Iterator<Item = u64>);
+    fn may_loss(&self, trigger: PacketLostTrigger, pns: &mut dyn Iterator<Item = u64>);
 
     /// Retires a packet record with the specified packet number in recv buffer.
     /// # Parameters

@@ -832,7 +832,9 @@ pub enum PacketType {
     Initial,
     Retry,
     Handshake,
+    #[serde(rename = "0RTT")]
     ZeroRTT,
+    #[serde(rename = "1RTT")]
     OneRTT,
     StatelessReset,
     VersionNegotiation,
