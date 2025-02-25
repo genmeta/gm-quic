@@ -168,6 +168,12 @@ impl DataSpace {
         let (hpk, pk) = self.one_rtt_keys.get_local_keys()?;
         let (key_phase, pk) = pk.lock_guard().get_local();
         let sent_journal = self.journal.of_sent_packets();
+        // (1) may_loss被调用时cc已经被锁定，may_loss会尝试锁定sent_journal
+        // (2) PacketMemory会持有sent_journal的guard，而need_ack会尝试锁定cc
+        // 在PacketMemory存在时尝试锁定cc，可能会和 (1) 冲突:
+        //   (1)持有cc，要锁定sent_journal；(2)持有sent_journal要锁定cc
+        // 在多线程的情况下，可能会发生死锁。所以提前调用need_ack，避免交叉导致死锁
+        let need_ack = tx.need_ack(Epoch::Data);
         let mut packet = PacketMemory::new_short(
             OneRttHeader::new(spin, tx.dcid()),
             buf,
@@ -178,7 +184,7 @@ impl DataSpace {
         )?;
 
         let mut ack = None;
-        if let Some((largest, rcvd_time)) = tx.need_ack(Epoch::Data) {
+        if let Some((largest, rcvd_time)) = need_ack {
             let rcvd_journal = self.journal.of_rcvd_packets();
             if let Some(ack_frame) =
                 rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
