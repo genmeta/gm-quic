@@ -6,7 +6,7 @@ use tokio::{
 };
 
 use super::QlogFileSeq;
-use crate::{telemetry::ExportEvent, Event};
+use crate::{Event, telemetry::ExportEvent};
 
 pub struct IoExpoter(mpsc::UnboundedSender<Event>);
 

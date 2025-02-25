@@ -2,17 +2,17 @@ use std::time::Duration;
 
 use deref_derive::{Deref, DerefMut};
 use getset::{CopyGetters, Setters};
-use nom::{combinator::map, Parser};
+use nom::{Parser, combinator::map};
 
 use super::{
-    be_parameter_id, be_preferred_address, ParameterId, PreferredAddress, WirtePreferredAddress,
-    WriteParameterId,
+    ParameterId, PreferredAddress, WirtePreferredAddress, WriteParameterId, be_parameter_id,
+    be_preferred_address,
 };
 use crate::{
-    cid::{be_connection_id_with_len, ConnectionId, WriteConnectionId},
+    cid::{ConnectionId, WriteConnectionId, be_connection_id_with_len},
     sid::MAX_STREAMS_LIMIT,
-    token::{be_reset_token, ResetToken, WriteResetToken},
-    varint::{be_varint, VarInt, WriteVarInt},
+    token::{ResetToken, WriteResetToken, be_reset_token},
+    varint::{VarInt, WriteVarInt, be_varint},
 };
 
 /// Common parameters shared between client and server.
@@ -331,7 +331,7 @@ pub(super) fn be_client_parameters<'b>(
                 return Err(nom::Err::Failure(nom::error::Error::new(
                     input,
                     nom::error::ErrorKind::IsNot,
-                )))
+                )));
             }
         }
     }

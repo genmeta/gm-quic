@@ -1,4 +1,4 @@
-use crate::varint::{be_varint, VarInt, WriteVarInt};
+use crate::varint::{VarInt, WriteVarInt, be_varint};
 
 /// MAX_DATA Frame
 ///
@@ -47,7 +47,7 @@ impl MaxDataFrame {
 /// Parse a MAX_DATA frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_max_data_frame(input: &[u8]) -> nom::IResult<&[u8], MaxDataFrame> {
-    use nom::{combinator::map, Parser};
+    use nom::{Parser, combinator::map};
     map(be_varint, MaxDataFrame::new).parse(input)
 }
 
@@ -60,9 +60,9 @@ impl<T: bytes::BufMut> super::io::WriteFrame<MaxDataFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use super::{MaxDataFrame, MAX_DATA_FRAME_TYPE};
+    use super::{MAX_DATA_FRAME_TYPE, MaxDataFrame};
     use crate::{
-        frame::{io::WriteFrame, BeFrame, FrameType},
+        frame::{BeFrame, FrameType, io::WriteFrame},
         varint::VarInt,
     };
 
@@ -76,7 +76,7 @@ mod tests {
 
     #[test]
     fn test_read_max_data_frame() {
-        use nom::{combinator::flat_map, Parser};
+        use nom::{Parser, combinator::flat_map};
 
         use super::be_max_data_frame;
         use crate::varint::be_varint;

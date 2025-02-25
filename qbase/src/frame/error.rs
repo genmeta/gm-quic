@@ -84,8 +84,8 @@ mod tests {
 
     use super::*;
     use crate::packet::r#type::{
-        long::{Type::V1, Ver1},
         Type,
+        long::{Type::V1, Ver1},
     };
 
     #[test]

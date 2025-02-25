@@ -7,13 +7,13 @@ use std::{
 };
 
 use qbase::{
+    Epoch,
     frame::{AckFrame, EcnCounts, HandshakeDoneFrame, SendFrame},
     handshake::Handshake,
     sid::Role,
-    Epoch,
 };
 use tokio::{sync::Notify, task::AbortHandle};
-use tracing::{trace_span, Instrument};
+use tracing::{Instrument, trace_span};
 
 // todo: remove this in future
 impl<T> ObserveHandshake for Handshake<T>
@@ -34,11 +34,11 @@ where
 }
 
 use crate::{
+    ObserveHandshake, TrackPackets,
     bbr::{self, INITIAL_CWND},
     new_reno::NewReno,
     pacing::{self, Pacer},
     rtt::{ArcRtt, INITIAL_RTT},
-    ObserveHandshake, TrackPackets,
 };
 
 const K_GRANULARITY: Duration = Duration::from_millis(1);

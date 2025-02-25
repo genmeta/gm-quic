@@ -3,7 +3,7 @@ use std::{
     ops::Deref,
 };
 
-use nom::{bytes::streaming::take, number::streaming::be_u8, IResult};
+use nom::{IResult, bytes::streaming::take, number::streaming::be_u8};
 use rand::Rng;
 
 /// The connection id length must not exceed 20 bytes. See [`ConnectionId`].

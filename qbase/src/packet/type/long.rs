@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn test_read_long_type() {
-        use super::{io::parse_long_type, Type};
+        use super::{Type, io::parse_long_type};
 
         let buf = vec![0x00, 0x00, 0x00, 0x01];
         let (remain, ty) = parse_long_type(0xc0)(&buf).unwrap();
@@ -121,7 +121,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_read_long_type_with_wrong_version() {
-        use super::{io::parse_long_type, Type};
+        use super::{Type, io::parse_long_type};
 
         let buf = vec![0x00, 0x00, 0x00, 0x03];
         let (remain, ty) = parse_long_type(0xc0)(&buf).unwrap();

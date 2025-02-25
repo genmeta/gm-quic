@@ -61,7 +61,7 @@ pub mod io {
     use bytes::BufMut;
 
     use super::{GetType, OneRttHeader};
-    use crate::packet::{header::io::WriteHeader, r#type::io::WritePacketType, signal::SpinBit};
+    use crate::packet::{header::io::WriteHeader, signal::SpinBit, r#type::io::WritePacketType};
 
     /// Parse a 1RTT header from the input buffer,
     /// [nom](https://docs.rs/nom/latest/nom/) parser style.
@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn test_read_one_rtt_header() {
         use super::io::be_one_rtt_header;
-        use crate::packet::{header::ConnectionId, SpinBit};
+        use crate::packet::{SpinBit, header::ConnectionId};
 
         let (remain, header) = be_one_rtt_header(SpinBit::One, 0, &[][..]).unwrap();
 

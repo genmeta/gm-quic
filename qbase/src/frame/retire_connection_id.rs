@@ -1,4 +1,4 @@
-use crate::varint::{be_varint, VarInt, WriteVarInt};
+use crate::varint::{VarInt, WriteVarInt, be_varint};
 
 /// RETIRE_CONNECTION_ID frame.
 ///
@@ -47,7 +47,7 @@ impl RetireConnectionIdFrame {
 /// Parse a RETIRE_CONNECTION_ID frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_retire_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], RetireConnectionIdFrame> {
-    use nom::{combinator::map, Parser};
+    use nom::{Parser, combinator::map};
     map(be_varint, RetireConnectionIdFrame::new).parse(input)
 }
 
@@ -60,9 +60,9 @@ impl<T: bytes::BufMut> super::io::WriteFrame<RetireConnectionIdFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use super::{be_retire_connection_id_frame, RetireConnectionIdFrame};
+    use super::{RetireConnectionIdFrame, be_retire_connection_id_frame};
     use crate::{
-        frame::{io::WriteFrame, BeFrame, FrameType},
+        frame::{BeFrame, FrameType, io::WriteFrame},
         varint::VarInt,
     };
 

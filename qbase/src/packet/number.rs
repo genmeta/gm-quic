@@ -52,9 +52,9 @@ impl<T: BufMut> WritePacketNumber for T {
 /// ```
 pub fn take_pn_len(pn_len: u8) -> impl FnMut(&[u8]) -> nom::IResult<&[u8], PacketNumber> {
     use nom::{
-        combinator::map,
-        number::complete::{be_u16, be_u24, be_u32, be_u8},
         Parser,
+        combinator::map,
+        number::complete::{be_u8, be_u16, be_u24, be_u32},
     };
     move |input: &[u8]| match pn_len {
         1 => map(be_u8, PacketNumber::U8).parse(input),

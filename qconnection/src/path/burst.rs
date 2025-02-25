@@ -3,13 +3,13 @@ use std::{
     io,
     ops::ControlFlow,
     pin::pin,
-    sync::{atomic::Ordering, Arc},
+    sync::{Arc, atomic::Ordering},
 };
 
 use tokio::sync::Notify;
 
 use crate::{
-    space::Spaces, tx::Transaction, ArcDcidCell, ArcLocalCids, Components, FlowController,
+    ArcDcidCell, ArcLocalCids, Components, FlowController, space::Spaces, tx::Transaction,
 };
 
 pub struct Burst {

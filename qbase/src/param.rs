@@ -11,7 +11,7 @@ use crate::{
     cid::ConnectionId,
     error::{Error, ErrorKind},
     frame::FrameType,
-    sid::{Role, MAX_STREAMS_LIMIT},
+    sid::{MAX_STREAMS_LIMIT, Role},
 };
 
 mod util;

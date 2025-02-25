@@ -3,8 +3,8 @@ use std::{cmp, io::IoSlice, mem, net::SocketAddr, os::fd::AsRawFd};
 use socket2::SockAddr;
 
 use crate::{
-    cmsghdr::CmsgHdr, io, msg::Message, Io, PacketHeader, UdpSocketController, BATCH_SIZE,
-    DEFAULT_TTL,
+    BATCH_SIZE, DEFAULT_TTL, Io, PacketHeader, UdpSocketController, cmsghdr::CmsgHdr, io,
+    msg::Message,
 };
 
 const OPTION_ON: libc::c_int = 1;

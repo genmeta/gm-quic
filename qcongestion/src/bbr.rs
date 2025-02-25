@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    congestion::{AckedPkt, Algorithm, SentPkt, MSS},
+    congestion::{AckedPkt, Algorithm, MSS, SentPkt},
     delivery_rate::Rate,
     min_max::MinMax,
 };

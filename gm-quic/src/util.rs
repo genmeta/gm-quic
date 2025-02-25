@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 
 pub trait ToCertificate {
     fn to_certificate(self) -> Vec<CertificateDer<'static>>;

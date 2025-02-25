@@ -6,7 +6,7 @@ use super::FrameType;
 use crate::{
     error::ErrorKind,
     frame::be_frame_type,
-    varint::{be_varint, VarInt},
+    varint::{VarInt, be_varint},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,7 +216,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<ConnectionCloseFrame> for T {
 mod tests {
     use crate::{
         error::ErrorKind,
-        frame::{io::WriteFrame, BeFrame, FrameType},
+        frame::{BeFrame, FrameType, io::WriteFrame},
         varint::VarInt,
     };
 
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn test_read_connection_close_frame() {
-        use nom::{combinator::flat_map, Parser};
+        use nom::{Parser, combinator::flat_map};
 
         use super::connection_close_frame_at_layer;
         use crate::varint::be_varint;

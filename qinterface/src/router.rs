@@ -5,15 +5,15 @@ use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
-    packet::{self, header::GetDcid, Packet, PacketReader},
+    packet::{self, Packet, PacketReader, header::GetDcid},
 };
 use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::{
+    QuicInterface,
     path::{Endpoint, Pathway, Socket},
     queue::RcvdPacketQueue,
     util::{Channel, TryRecvError},
-    QuicInterface,
 };
 
 #[derive(Debug, PartialEq, Clone, Copy, Eq, Hash)]

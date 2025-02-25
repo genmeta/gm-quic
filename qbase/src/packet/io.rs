@@ -1,10 +1,10 @@
 use bytes::BytesMut;
-use nom::{multi::length_data, Parser};
+use nom::{Parser, multi::length_data};
 
 use super::{
     error::Error,
     header::io::be_header,
-    r#type::{io::be_packet_type, Type},
+    r#type::{Type, io::be_packet_type},
     *,
 };
 use crate::varint::be_varint;

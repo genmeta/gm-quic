@@ -267,8 +267,8 @@ mod tests {
     use qbase::{
         error::ErrorKind,
         frame::{
-            io::{WriteDataFrame, WriteFrame},
             FrameType, PaddingFrame,
+            io::{WriteDataFrame, WriteFrame},
         },
     };
 

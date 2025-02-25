@@ -54,7 +54,7 @@ pub use ping::PingFrame;
 pub use reset_stream::{ResetStreamError, ResetStreamFrame};
 pub use retire_connection_id::RetireConnectionIdFrame;
 pub use stop_sending::StopSendingFrame;
-pub use stream::{EncodingStrategy, StreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE};
+pub use stream::{EncodingStrategy, STREAM_FRAME_MAX_ENCODING_SIZE, StreamFrame};
 pub use stream_data_blocked::StreamDataBlockedFrame;
 pub use streams_blocked::StreamsBlockedFrame;
 
@@ -501,8 +501,8 @@ impl<T: BufMut> WriteFrame<ReliableFrame> for T {
 mod tests {
     use super::*;
     use crate::packet::r#type::{
-        long::{Type::V1, Ver1},
         Type,
+        long::{Type::V1, Ver1},
     };
 
     #[test]
@@ -527,9 +527,11 @@ mod tests {
     #[test]
     fn test_frame_type_specs() {
         assert!(FrameType::Padding.specs().contain(Spec::NonAckEliciting));
-        assert!(FrameType::Ack(0)
-            .specs()
-            .contain(Spec::CongestionControlFree));
+        assert!(
+            FrameType::Ack(0)
+                .specs()
+                .contain(Spec::CongestionControlFree)
+        );
         assert!(FrameType::Stream(0).specs().contain(Spec::FlowControlled));
         assert!(FrameType::PathChallenge.specs().contain(Spec::ProbeNewPath));
     }

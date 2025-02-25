@@ -3,9 +3,9 @@ use std::net::{SocketAddrV4, SocketAddrV6};
 use getset::{CopyGetters, MutGetters, Setters};
 
 use crate::{
-    cid::{be_connection_id, ConnectionId, WriteConnectionId},
-    token::{be_reset_token, ResetToken, WriteResetToken},
-    varint::{be_varint, VarInt, WriteVarInt},
+    cid::{ConnectionId, WriteConnectionId, be_connection_id},
+    token::{ResetToken, WriteResetToken, be_reset_token},
+    varint::{VarInt, WriteVarInt, be_varint},
 };
 
 /// The parameter id in the transport parameters.
@@ -86,7 +86,7 @@ pub(super) fn be_parameter_id(input: &[u8]) -> nom::IResult<&[u8], ParameterId> 
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Alt,
-            )))
+            )));
         }
     };
     Ok((remain, id))
@@ -148,7 +148,7 @@ impl PreferredAddress {
 /// Parse the preferred address from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_preferred_address(input: &[u8]) -> nom::IResult<&[u8], PreferredAddress> {
-    use nom::{bytes::streaming::take, combinator::map, Parser};
+    use nom::{Parser, bytes::streaming::take, combinator::map};
 
     let (input, address_v4) = map(take(6usize), |buf: &[u8]| {
         let mut addr = [0u8; 4];

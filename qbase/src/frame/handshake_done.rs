@@ -34,7 +34,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<HandshakeDoneFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use crate::frame::{io::WriteFrame, BeFrame, FrameType, HandshakeDoneFrame};
+    use crate::frame::{BeFrame, FrameType, HandshakeDoneFrame, io::WriteFrame};
 
     #[test]
     fn test_handshake_done_frame() {
@@ -45,7 +45,7 @@ mod tests {
 
     #[test]
     fn test_read_handshake_done_frame() {
-        use nom::{combinator::flat_map, Parser};
+        use nom::{Parser, combinator::flat_map};
 
         use super::be_handshake_done_frame;
         use crate::varint::be_varint;

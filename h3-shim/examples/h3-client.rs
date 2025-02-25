@@ -2,9 +2,9 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
 use futures::future;
-use rustls::pki_types::{pem::PemObject, CertificateDer};
+use rustls::pki_types::{CertificateDer, pem::PemObject};
 use tokio::io::AsyncWriteExt;
-use tracing::{error, info, info_span, trace, Instrument};
+use tracing::{Instrument, error, info, info_span, trace};
 
 static ALPN: &[u8] = b"h3";
 

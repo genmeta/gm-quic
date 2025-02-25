@@ -2,7 +2,7 @@ use std::{ops::Deref, sync::Arc};
 
 use bytes::BufMut;
 use deref_derive::Deref;
-use nom::{bytes::complete::take, IResult};
+use nom::{IResult, bytes::complete::take};
 use rand::Rng;
 
 use crate::{

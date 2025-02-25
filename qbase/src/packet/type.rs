@@ -1,6 +1,6 @@
 use deref_derive::Deref;
 
-use super::{error::Error, KeyPhaseBit, PacketNumber};
+use super::{KeyPhaseBit, PacketNumber, error::Error};
 
 /// Definitions of packet types related to long headers
 pub mod long;

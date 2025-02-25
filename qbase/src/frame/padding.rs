@@ -34,8 +34,8 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PaddingFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use super::{be_padding_frame, PaddingFrame, PADDING_FRAME_TYPE};
-    use crate::frame::{io::WriteFrame, BeFrame, FrameType};
+    use super::{PADDING_FRAME_TYPE, PaddingFrame, be_padding_frame};
+    use crate::frame::{BeFrame, FrameType, io::WriteFrame};
 
     #[test]
     fn test_padding_frame() {
@@ -46,7 +46,7 @@ mod tests {
 
     #[test]
     fn test_read_padding_frame() {
-        use nom::{combinator::flat_map, Parser};
+        use nom::{Parser, combinator::flat_map};
 
         use crate::varint::be_varint;
         let buf = vec![PADDING_FRAME_TYPE];

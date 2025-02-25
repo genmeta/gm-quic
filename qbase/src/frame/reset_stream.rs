@@ -1,8 +1,8 @@
 use thiserror::Error;
 
 use crate::{
-    sid::{be_streamid, StreamId, WriteStreamId},
-    varint::{be_varint, VarInt, WriteVarInt},
+    sid::{StreamId, WriteStreamId, be_streamid},
+    varint::{VarInt, WriteVarInt, be_varint},
 };
 
 /// RESET_STREAM frame.
@@ -72,7 +72,7 @@ impl ResetStreamFrame {
 /// Parse a RESET_STREAM frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_reset_stream_frame(input: &[u8]) -> nom::IResult<&[u8], ResetStreamFrame> {
-    use nom::{combinator::map, Parser};
+    use nom::{Parser, combinator::map};
     map(
         (be_streamid, be_varint, be_varint),
         |(stream_id, app_error_code, final_size)| ResetStreamFrame {
@@ -132,12 +132,12 @@ impl From<&ResetStreamFrame> for ResetStreamError {
 
 #[cfg(test)]
 mod tests {
-    use nom::{combinator::flat_map, Parser};
+    use nom::{Parser, combinator::flat_map};
 
-    use super::{ResetStreamError, ResetStreamFrame, RESET_STREAM_FRAME_TYPE};
+    use super::{RESET_STREAM_FRAME_TYPE, ResetStreamError, ResetStreamFrame};
     use crate::{
-        frame::{io::WriteFrame, BeFrame, FrameType},
-        varint::{be_varint, VarInt},
+        frame::{BeFrame, FrameType, io::WriteFrame},
+        varint::{VarInt, be_varint},
     };
 
     #[test]

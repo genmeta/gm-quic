@@ -1,6 +1,6 @@
 use crate::{
     sid::Dir,
-    varint::{be_varint, VarInt, WriteVarInt},
+    varint::{VarInt, WriteVarInt, be_varint},
 };
 
 /// STREAMS_BLOCKED frame.
@@ -88,9 +88,9 @@ impl<T: bytes::BufMut> super::io::WriteFrame<StreamsBlockedFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use super::{StreamsBlockedFrame, STREAMS_BLOCKED_FRAME_TYPE};
+    use super::{STREAMS_BLOCKED_FRAME_TYPE, StreamsBlockedFrame};
     use crate::{
-        frame::{io::WriteFrame, BeFrame, FrameType},
+        frame::{BeFrame, FrameType, io::WriteFrame},
         varint::VarInt,
     };
 
@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn test_read_streams_blocked_frame() {
-        use nom::{combinator::flat_map, Parser};
+        use nom::{Parser, combinator::flat_map};
 
         use super::streams_blocked_frame_with_dir;
         use crate::varint::be_varint;

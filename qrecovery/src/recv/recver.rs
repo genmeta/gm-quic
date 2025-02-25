@@ -12,7 +12,7 @@ use qbase::{
         StopSendingFrame, StreamFrame,
     },
     sid::StreamId,
-    varint::{VarInt, VARINT_MAX},
+    varint::{VARINT_MAX, VarInt},
 };
 
 use super::rcvbuf;
@@ -160,7 +160,8 @@ impl<TX> Recv<TX> {
                 reset_frame.frame_type(),
                 format!(
                     "{} reset with a wrong smaller final size {final_size} than the largest rcvd data offset {}",
-                    reset_frame.stream_id(), self.largest
+                    reset_frame.stream_id(),
+                    self.largest
                 ),
             ));
         }

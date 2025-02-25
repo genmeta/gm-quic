@@ -7,7 +7,7 @@ use std::{
 use bytes::BufMut;
 use enum_dispatch::enum_dispatch;
 use qbase::{
-    frame::{io::WriteFrame, BeFrame, CryptoFrame, ReliableFrame, SendFrame, StreamFrame},
+    frame::{BeFrame, CryptoFrame, ReliableFrame, SendFrame, StreamFrame, io::WriteFrame},
     packet::MarshalFrame,
 };
 

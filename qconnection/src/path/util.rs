@@ -8,7 +8,7 @@ use std::{
 use bytes::BufMut;
 use futures::StreamExt;
 use qbase::{
-    frame::{io::WriteFrame, BeFrame},
+    frame::{BeFrame, io::WriteFrame},
     packet::MarshalPathFrame,
     util::ArcAsyncDeque,
 };

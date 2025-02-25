@@ -1,8 +1,8 @@
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{
-        atomic::{AtomicU8, Ordering},
         Arc, Mutex, MutexGuard,
+        atomic::{AtomicU8, Ordering},
     },
 };
 

@@ -7,9 +7,9 @@ use std::{
 use socket2::SockAddr;
 
 use crate::{
-    cmsghdr::{decode, Cmsg, CmsgHdr, Iter, MsgHdr},
+    BATCH_SIZE, PacketHeader, UdpSocketController,
+    cmsghdr::{Cmsg, CmsgHdr, Iter, MsgHdr, decode},
     unix::Gso,
-    PacketHeader, UdpSocketController, BATCH_SIZE,
 };
 
 pub(crate) const CMSG_LEN: usize = 88;

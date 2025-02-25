@@ -1,4 +1,4 @@
-use crate::varint::{be_varint, VarInt, WriteVarInt};
+use crate::varint::{VarInt, WriteVarInt, be_varint};
 
 /// DATA_BLOCKED Frame
 ///
@@ -47,7 +47,7 @@ impl DataBlockedFrame {
 /// Parse a DATA_BLOCKED frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_data_blocked_frame(input: &[u8]) -> nom::IResult<&[u8], DataBlockedFrame> {
-    use nom::{combinator::map, Parser};
+    use nom::{Parser, combinator::map};
     map(be_varint, DataBlockedFrame::new).parse(input)
 }
 
@@ -60,9 +60,9 @@ impl<T: bytes::BufMut> super::io::WriteFrame<DataBlockedFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use super::{DataBlockedFrame, DATA_BLOCKED_FRAME_TYPE};
+    use super::{DATA_BLOCKED_FRAME_TYPE, DataBlockedFrame};
     use crate::{
-        frame::{io::WriteFrame, BeFrame, FrameType},
+        frame::{BeFrame, FrameType, io::WriteFrame},
         varint::VarInt,
     };
 

@@ -10,8 +10,8 @@ use libc::c_uchar;
 use windows_sys::Win32::Networking::WinSock;
 
 use crate::{
+    DEFAULT_TTL, Io, PacketHeader, UdpSocketController,
     cmsghdr::{self, Cmsg, MsgHdr},
-    Io, PacketHeader, UdpSocketController, DEFAULT_TTL,
 };
 
 const OPTION_ON: libc::c_int = 1;

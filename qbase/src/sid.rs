@@ -2,7 +2,7 @@ use std::{fmt, ops};
 
 use super::{
     frame::MaxStreamsFrame,
-    varint::{be_varint, VarInt, WriteVarInt},
+    varint::{VarInt, WriteVarInt, be_varint},
 };
 use crate::frame::{SendFrame, StreamsBlockedFrame};
 
@@ -134,11 +134,7 @@ impl StreamId {
 
     /// Returns the direction of this stream ID.
     pub fn dir(&self) -> Dir {
-        if self.0 & 2 == 0 {
-            Dir::Bi
-        } else {
-            Dir::Uni
-        }
+        if self.0 & 2 == 0 { Dir::Bi } else { Dir::Uni }
     }
 
     /// Get the actual ID of this stream, removing the lowest 2 bits for direction and role.
@@ -189,7 +185,7 @@ impl From<StreamId> for u64 {
 /// Parse a stream ID from the input bytes,
 /// [nom](https://docs.rs/nom/6.2.1/nom/) parser style.
 pub fn be_streamid(input: &[u8]) -> nom::IResult<&[u8], StreamId> {
-    use nom::{combinator::map, Parser};
+    use nom::{Parser, combinator::map};
     map(be_varint, StreamId::from).parse(input)
 }
 

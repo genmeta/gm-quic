@@ -4,7 +4,7 @@ use std::{
     io,
     pin::Pin,
     sync::{Arc, Mutex},
-    task::{ready, Context, Poll, Waker},
+    task::{Context, Poll, Waker, ready},
 };
 
 use bytes::{BufMut, Bytes};

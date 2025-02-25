@@ -2,8 +2,8 @@ use std::{
     io,
     ops::Deref,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -13,9 +13,9 @@ use qbase::{
 };
 use qcongestion::{ArcCC, CongestionControl};
 use qinterface::{
+    QuicInterface,
     path::{Pathway, Socket},
     router::QuicProto,
-    QuicInterface,
 };
 use tokio::{sync::Notify, task::AbortHandle, time::Instant};
 
