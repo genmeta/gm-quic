@@ -16,7 +16,7 @@ use qlog::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated
 
 use super::sndbuf::SendBuf;
 
-fn log_cancel_event(sid: StreamId, from_state: GranularStreamStates) {
+fn log_reset_event(sid: StreamId, from_state: GranularStreamStates) {
     qlog::event!(StreamStateUpdated {
         stream_id: sid,
         stream_type: sid.dir(),
@@ -120,7 +120,7 @@ impl<TX> ReadySender<TX> {
     }
 }
 
-/// 状态转换，ReaderSender => SendingSender
+/// 状态升级，ReaderSender => SendingSender
 impl<TX: Clone> ReadySender<TX> {
     pub(super) fn upgrade(&mut self) -> SendingSender<TX> {
         qlog::event!(StreamStateUpdated {
@@ -155,7 +155,7 @@ where
         );
         self.broker
             .send_frame([reset_stream_err.combine(self.stream_id)]);
-        log_cancel_event(self.stream_id, GranularStreamStates::Ready);
+        log_reset_event(self.stream_id, GranularStreamStates::Ready);
         reset_stream_err
     }
 }
@@ -203,19 +203,15 @@ impl<TX> SendingSender<TX> {
     where
         P: Fn(u64) -> Option<usize>,
     {
-        let fin = if self.is_finished() {
-            Some(self.sndbuf.written())
-        } else {
-            None
-        };
+        let fin_pos = self.fin_pos();
         self.sndbuf
             .pick_up(&predicate, flow_limit)
             .map(|(offset, is_fresh, data)| {
-                let is_eos = fin == Some(offset + data.len() as u64);
+                let is_eos = fin_pos == Some(offset + data.len() as u64);
                 (offset, is_fresh, data, is_eos)
             })
             .or_else(|| {
-                if let Some(total_size) = fin {
+                if let Some(total_size) = fin_pos {
                     let _ = predicate(total_size)?;
                     Some((total_size, false, (&[], &[]), true))
                 } else {
@@ -251,8 +247,12 @@ impl<TX> SendingSender<TX> {
         Poll::Pending
     }
 
-    pub(super) fn is_finished(&self) -> bool {
-        self.shutdown_waker.is_some()
+    pub(super) fn fin_pos(&self) -> Option<u64> {
+        if self.shutdown_waker.is_some() {
+            Some(self.sndbuf.written())
+        } else {
+            None
+        }
     }
 
     pub(super) fn wake_all(&mut self) {
@@ -307,7 +307,7 @@ where
         );
         self.broker
             .send_frame([reset_stream_err.combine(self.stream_id)]);
-        log_cancel_event(self.stream_id, GranularStreamStates::Send);
+        log_reset_event(self.stream_id, GranularStreamStates::Send);
         reset_stream_err
     }
 }
@@ -399,7 +399,7 @@ where
         );
         self.broker
             .send_frame([reset_stream_err.combine(self.stream_id)]);
-        log_cancel_event(self.stream_id, GranularStreamStates::DataSent);
+        log_reset_event(self.stream_id, GranularStreamStates::DataSent);
         reset_stream_err
     }
 }

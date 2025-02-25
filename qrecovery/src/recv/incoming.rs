@@ -43,7 +43,7 @@ where
                         fresh_data = size_known.recv(stream_frame, body)?;
                         if size_known.is_all_rcvd() {
                             is_into_rcvd = true;
-                            *receiving_state = Recver::DataRcvd(size_known.into());
+                            *receiving_state = Recver::DataRcvd(size_known.upgrade());
                         } else {
                             *receiving_state = Recver::SizeKnown(size_known);
                         }
@@ -55,7 +55,7 @@ where
                     fresh_data = r.recv(stream_frame, body)?;
                     if r.is_all_rcvd() {
                         is_into_rcvd = true;
-                        *receiving_state = Recver::DataRcvd(r.into());
+                        *receiving_state = Recver::DataRcvd(r.upgrade());
                     }
                 }
                 _ => {
@@ -79,11 +79,11 @@ where
             match receiving_state {
                 Recver::Recv(r) => {
                     sync_fresh_data = r.recv_reset(reset_frame)?;
-                    *receiving_state = Recver::ResetRcvd((r, reset_frame).into());
+                    *receiving_state = Recver::ResetRcvd(*reset_frame);
                 }
                 Recver::SizeKnown(r) => {
                     r.recv_reset(reset_frame)?;
-                    *receiving_state = Recver::ResetRcvd((r, reset_frame).into());
+                    *receiving_state = Recver::ResetRcvd(*reset_frame);
                 }
                 _ => {
                     tracing::error!("there is sth wrong, ignored recv_reset");

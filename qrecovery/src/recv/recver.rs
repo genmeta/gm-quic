@@ -174,6 +174,7 @@ impl<TX> Recv<TX> {
             ));
         }
         self.wake_reader();
+        log_reset_event(self.stream_id, GranularStreamStates::Receive);
         Ok((final_size - self.largest) as _)
     }
 
@@ -199,23 +200,6 @@ pub struct SizeKnown<TX> {
     stop_state: Option<u64>,
     broker: TX,
     final_size: u64,
-}
-
-impl<TX> SizeKnown<TX>
-where
-    TX: SendFrame<StopSendingFrame>,
-{
-    /// Abort can be called multiple times at the application level,
-    /// but only the first call is effective.
-    pub(super) fn stop(&mut self, err_code: u64) {
-        if self.stop_state.is_none() {
-            self.stop_state = Some(err_code);
-            self.broker.send_frame([StopSendingFrame::new(
-                self.stream_id,
-                VarInt::from_u64(err_code).expect("app error code must not exceed 2^62!"),
-            )]);
-        }
-    }
 }
 
 impl<TX> SizeKnown<TX> {
@@ -297,6 +281,7 @@ impl<TX> SizeKnown<TX> {
             ));
         }
         self.wake_reader();
+        log_reset_event(self.stream_id, GranularStreamStates::SizeKnown);
         Ok(())
     }
 
@@ -311,32 +296,40 @@ impl<TX> SizeKnown<TX> {
     }
 }
 
-impl<TX> From<&mut SizeKnown<TX>> for DataRcvd
+impl<TX> SizeKnown<TX>
 where
     TX: SendFrame<StopSendingFrame> + Clone + Send + 'static,
 {
-    fn from(size_known: &mut SizeKnown<TX>) -> Self {
+    pub(super) fn upgrade(&mut self) -> DataRcvd {
         qlog::event!(StreamStateUpdated {
-            stream_id: size_known.stream_id,
-            stream_type: size_known.stream_id.dir(),
+            stream_id: self.stream_id,
+            stream_type: self.stream_id.dir(),
             old: GranularStreamStates::SizeKnown,
             new: GranularStreamStates::DataReceived,
             stream_side: StreamSide::Receiving
         });
-        size_known.wake_reader();
+        self.wake_reader();
         DataRcvd {
-            stream_id: size_known.stream_id,
-            rcvbuf: std::mem::take(&mut size_known.rcvbuf),
+            stream_id: self.stream_id,
+            rcvbuf: std::mem::take(&mut self.rcvbuf),
         }
     }
 }
 
-impl<TX> From<SizeKnown<TX>> for DataRcvd
+impl<TX> SizeKnown<TX>
 where
-    TX: SendFrame<StopSendingFrame> + Clone + Send + 'static,
+    TX: SendFrame<StopSendingFrame>,
 {
-    fn from(mut size_known: SizeKnown<TX>) -> Self {
-        (&mut size_known).into()
+    /// Abort can be called multiple times at the application level,
+    /// but only the first call is effective.
+    pub(super) fn stop(&mut self, err_code: u64) {
+        if self.stop_state.is_none() {
+            self.stop_state = Some(err_code);
+            self.broker.send_frame([StopSendingFrame::new(
+                self.stream_id,
+                VarInt::from_u64(err_code).expect("app error code must not exceed 2^62!"),
+            )]);
+        }
     }
 }
 
@@ -373,87 +366,25 @@ impl DataRcvd {
     }
 }
 
-#[derive(Debug)]
-pub struct ResetRcvd {
-    stream_id: StreamId,
-    reset: ResetStreamError,
+fn log_reset_event(stream_id: StreamId, old: GranularStreamStates) {
+    qlog::event!(StreamStateUpdated {
+        stream_id,
+        stream_type: stream_id.dir(),
+        old,
+        new: GranularStreamStates::ResetReceived,
+        stream_side: StreamSide::Receiving
+    });
 }
 
-impl ResetRcvd {
-    pub fn read(&self) -> io::Error {
-        io::Error::new(io::ErrorKind::BrokenPipe, self.reset)
-    }
-}
-
-impl<TX> From<(&mut Recv<TX>, &ResetStreamFrame)> for ResetRcvd {
-    fn from((recv, reset): (&mut Recv<TX>, &ResetStreamFrame)) -> Self {
+impl DataRcvd {
+    pub(super) fn upgrade(&self) {
         qlog::event!(StreamStateUpdated {
-            stream_id: recv.stream_id,
-            stream_type: recv.stream_id.dir(),
-            old: GranularStreamStates::Receive,
-            new: GranularStreamStates::ResetReceived,
-            stream_side: StreamSide::Receiving
-        });
-        ResetRcvd {
-            stream_id: recv.stream_id,
-            reset: reset.into(),
-        }
-    }
-}
-
-impl<TX> From<(&mut SizeKnown<TX>, &ResetStreamFrame)> for ResetRcvd {
-    fn from((size_known, reset): (&mut SizeKnown<TX>, &ResetStreamFrame)) -> Self {
-        qlog::event!(StreamStateUpdated {
-            stream_id: size_known.stream_id,
-            stream_type: size_known.stream_id.dir(),
-            old: GranularStreamStates::Receive,
-            new: GranularStreamStates::ResetReceived,
-            stream_side: StreamSide::Receiving
-        });
-        ResetRcvd {
-            stream_id: size_known.stream_id,
-            reset: reset.into(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct DataRead(());
-
-impl From<&mut DataRcvd> for DataRead {
-    fn from(value: &mut DataRcvd) -> Self {
-        qlog::event!(StreamStateUpdated {
-            stream_id: value.stream_id,
-            stream_type: value.stream_id.dir(),
+            stream_id: self.stream_id,
+            stream_type: self.stream_id.dir(),
             old: GranularStreamStates::DataReceived,
             new: GranularStreamStates::DataRead,
             stream_side: StreamSide::Receiving
         });
-        Self(())
-    }
-}
-
-#[derive(Debug)]
-pub struct ResetRead {
-    reset: ResetStreamError,
-}
-
-impl ResetRead {
-    pub fn read(&self) -> io::Error {
-        io::Error::new(io::ErrorKind::BrokenPipe, self.reset)
-    }
-}
-
-impl From<&mut ResetRcvd> for ResetRead {
-    fn from(value: &mut ResetRcvd) -> Self {
-        qlog::event!(StreamStateUpdated {
-            stream_id: value.stream_id,
-            stream_type: value.stream_id.dir(),
-            old: GranularStreamStates::ResetReceived,
-            new: GranularStreamStates::ResetRead,
-            stream_side: StreamSide::Receiving
-        });
-        Self { reset: value.reset }
     }
 }
 
@@ -466,9 +397,9 @@ pub(super) enum Recver<TX> {
     Recv(Recv<TX>),
     SizeKnown(SizeKnown<TX>),
     DataRcvd(DataRcvd),
-    ResetRcvd(ResetRcvd),
-    DataRead(DataRead),
-    ResetRead(ResetRead),
+    ResetRcvd(ResetStreamFrame),
+    DataRead,
+    ResetRead(ResetStreamError),
 }
 
 impl<TX> Recver<TX> {

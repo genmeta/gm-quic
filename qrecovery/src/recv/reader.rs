@@ -9,6 +9,7 @@ use qbase::{
     frame::{MaxStreamDataFrame, SendFrame, StopSendingFrame},
     varint::VARINT_MAX,
 };
+use qlog::quic::transport::{GranularStreamStates, StreamSide, StreamStateUpdated};
 use tokio::io::{AsyncRead, ReadBuf};
 
 use super::recver::{ArcRecver, Recver};
@@ -116,17 +117,28 @@ where
             Recver::DataRcvd(r) => {
                 r.poll_read(buf);
                 if r.is_all_read() {
-                    *receiving_state = Recver::DataRead(r.into());
+                    r.upgrade();
+                    *receiving_state = Recver::DataRead;
                 }
                 Poll::Ready(Ok(()))
             }
-            Recver::DataRead(_r) => Poll::Ready(Ok(())),
+            Recver::DataRead => Poll::Ready(Ok(())),
             Recver::ResetRcvd(r) => {
-                let error = r.read();
-                *receiving_state = Recver::ResetRead(r.into());
-                Poll::Ready(Err(error))
+                qlog::event!(StreamStateUpdated {
+                    stream_id: r.stream_id(),
+                    stream_type: r.stream_id().dir(),
+                    old: GranularStreamStates::ResetReceived,
+                    new: GranularStreamStates::ResetRead,
+                    stream_side: StreamSide::Receiving
+                });
+                let reset_stream_error = (&*r).into();
+                *receiving_state = Recver::ResetRead(reset_stream_error);
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    reset_stream_error,
+                )))
             }
-            Recver::ResetRead(r) => Poll::Ready(Err(r.read())),
+            Recver::ResetRead(r) => Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *r))),
         }
     }
 }
