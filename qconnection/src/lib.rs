@@ -56,6 +56,7 @@ use qinterface::{
     queue::RcvdPacketQueue,
     router::{QuicProto, RouterRegistry},
 };
+use qlog::telemetry::Span;
 use qrecovery::{
     recv, reliable, send,
     streams::{self, Ext},
@@ -177,6 +178,7 @@ pub struct Components {
     send_notify: Arc<Notify>,
     event_broker: ArcEventBroker,
     state: ConnState,
+    span: Span,
 }
 
 impl Components {
@@ -260,10 +262,12 @@ impl Components {
     }
 
     pub fn add_path(&self, socket: Socket, pathway: Pathway) {
+        let _enter = self.span.enter();
         self.get_or_create_path(socket, pathway, false);
     }
 
     pub fn del_path(&self, pathway: &Pathway) {
+        let _enter = self.span.enter();
         self.paths.remove(pathway, "application removed");
     }
 }

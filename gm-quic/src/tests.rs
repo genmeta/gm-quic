@@ -34,8 +34,9 @@ use tracing::{debug, error, info, info_span};
 use crate::ToCertificate;
 
 static LOGGER: LazyLock<Arc<dyn Log + Send + Sync>> = LazyLock::new(|| {
-    Arc::new(NullLogger)
+    // use std::path::PathBuf;
     // Arc::new(DefaultSeqLogger::new(PathBuf::from("/tmp")))
+    Arc::new(NullLogger)
 });
 
 #[tokio::test]

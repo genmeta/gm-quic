@@ -419,8 +419,9 @@ impl ComponentsReady {
     where
         EE: EmitEvent + Clone + Send + Sync + 'static,
     {
-        let event_broker = ArcEventBroker::new(event_broker);
         let group_id = GroupID::from(self.parameters.get_origin_dcid().unwrap());
+        let span = self.span.unwrap_or_else(|| qlog::span!(@current, group_id));
+        let event_broker = ArcEventBroker::new(event_broker);
         let components = Components {
             parameters: self.parameters,
             tls_session: self.tls_session,
@@ -436,15 +437,14 @@ impl ComponentsReady {
             defer_idle_timeout: self.defer_idle_timeout,
             event_broker,
             state: ConnState::new(),
+            span: span.clone(),
         };
 
-        self.span
-            .unwrap_or_else(|| qlog::span!(@current, group_id))
-            .in_scope(|| {
-                tokio::spawn(tls::keys_upgrade(&components));
-                tokio::spawn(accpet_transport_parameters(&components));
-                space::spawn_deliver_and_parse(&components);
-            });
+        span.in_scope(|| {
+            tokio::spawn(tls::keys_upgrade(&components));
+            tokio::spawn(accpet_transport_parameters(&components));
+            space::spawn_deliver_and_parse(&components);
+        });
 
         Connection(RwLock::new(Ok(components)))
     }
@@ -529,7 +529,7 @@ impl Components {
                 let burst = path.new_burst(self);
                 let idle_timeout = path.idle_timeout(self);
 
-                let task = qlog::span!(@current, path=pathway.to_string()).in_scope(|| {
+                let task = {
                     let path = path.clone();
                     let paths = self.paths.clone();
                     let defer_idle_timeout = self.defer_idle_timeout;
@@ -551,9 +551,11 @@ impl Components {
                         // same as [`Components::del_path`]
                         paths.remove(&pathway, reason);
                     }
-                    .instrument_in_current()
-                    .in_current_span()
-                });
+                };
+
+                let task =
+                    Instrument::instrument(task, qlog::span!(@current, path=pathway.to_string()))
+                        .instrument_in_current();
 
                 vacant_entry.insert(PathContext::new(
                     path.clone(),
@@ -568,8 +570,8 @@ impl Components {
 
 impl Components {
     // 对于server，第一条路径也通过add_path添加
-    #[tracing::instrument(level = "trace", skip(self))]
     pub fn enter_closing(self, ccf: ConnectionCloseFrame) -> Termination {
+        let _enter = self.span.enter();
         qlog::event!(ConnectionClosed {
             owner: Owner::Local,
             ccf: &ccf // TODO: trigger
@@ -614,8 +616,8 @@ impl Components {
         Termination::closing(error, self.cid_registry.local, closing_state)
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
     pub fn enter_draining(self, ccf: ConnectionCloseFrame) -> Termination {
+        let _enter = self.span.enter();
         qlog::event!(ConnectionClosed {
             owner: Owner::Local,
             ccf: &ccf // TODO: trigger

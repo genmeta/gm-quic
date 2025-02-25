@@ -10,7 +10,7 @@ use tokio::{
 };
 
 use super::{ExportEvent, Log, Span};
-use crate::{Event, GroupID, QlogFileSeq, VantagePointType};
+use crate::{Event, GroupID, QlogFileSeq, VantagePoint, VantagePointType};
 
 pub struct NullExporter;
 
@@ -132,7 +132,11 @@ impl<S: TelemetryStorage> Log for DefaultSeqLogger<S> {
 
         let qlog_file_seq = crate::build!(legacy::QlogFileSeq {
             title: file_name,
-            trace: legacy::TraceSeq {}
+            trace: legacy::TraceSeq {
+                vantage_point: VantagePoint {
+                    r#type: vantage_point
+                },
+            }
         });
 
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -147,6 +151,9 @@ impl<S: TelemetryStorage> Log for DefaultSeqLogger<S> {
             log_file.write_u8(b'\n').await?;
 
             while let Some(event) = rx.recv().await {
+                let Ok(event) = legacy::Event::try_from(event) else {
+                    continue;
+                };
                 let event = serde_json::to_string(&event).unwrap();
                 log_file.write_u8(RS).await?;
                 log_file.write_all(event.as_bytes()).await?;
