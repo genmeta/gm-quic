@@ -50,7 +50,6 @@ impl Burst {
     ) -> io::Result<(impl Iterator<Item = &'b mut [u8]> + use<'b>, Transaction)> {
         let max_segments = self.path.interface.max_segments()?;
         let max_segment_size = self.path.interface.max_segment_size()?;
-        tracing::trace!(max_segments, max_segment_size, "prepare buffers");
 
         if buffers.len() < max_segments {
             buffers.resize_with(max_segments, || vec![0; max_segment_size]);
@@ -85,7 +84,6 @@ impl Burst {
     ) -> io::Result<impl Iterator<Item = io::IoSlice<'b>>> {
         let scid = self.local_cids.initial_scid();
         let reversed_size = self.path.interface.reversed_bytes(self.path.pathway)?;
-        tracing::trace!(reversed_size, "load data");
 
         Ok(prepared_buffers
             .map(move |buffer| {
@@ -116,7 +114,6 @@ impl Burst {
                 };
 
                 if packet_size == 0 {
-                    tracing::trace!("no more data, end loading");
                     None
                 } else {
                     Some(io::IoSlice::new(&buffer[..reversed_size + packet_size]))
@@ -162,13 +159,8 @@ impl Burst {
             let buffers = self.load_into_buffers(buffers, transcation)?;
             let segments = self.collect_filled_buffers(buffers)?;
             if !segments.is_empty() {
-                tracing::trace!(
-                    packets = ?segments.iter().map(|seg| seg.len()).collect::<Vec<_>>(),
-                    "send packets"
-                );
                 self.path.send_packets(&segments).await?;
             } else {
-                tracing::trace!(reason = "no data", "sending blocked");
                 tokio::select! {
                     _ = path_sendable.as_mut() => {},
                     _ = conn_sendable.as_mut() => {},

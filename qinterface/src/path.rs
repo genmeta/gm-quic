@@ -16,11 +16,8 @@ pub enum EndpointAddr {
 impl Display for EndpointAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EndpointAddr::Direct { addr } => write!(f, "{addr}"),
-            EndpointAddr::Relay {
-                agent,
-                outer: inner,
-            } => write!(f, "{inner}-{agent}"),
+            EndpointAddr::Direct { addr } => write!(f, "Direct({addr}"),
+            EndpointAddr::Relay { agent, outer } => write!(f, "Agent({agent}->{outer})"),
         }
     }
 }
@@ -44,7 +41,7 @@ pub struct Pathway {
 
 impl Display for Pathway {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "({}) -> ({})", self.local, self.remote)
+        write!(f, "{} -> {}", self.local, self.remote)
     }
 }
 
@@ -78,6 +75,12 @@ impl Pathway {
 pub struct Netway {
     src: SocketAddr,
     dst: SocketAddr,
+}
+
+impl Display for Netway {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} -> {}", self.src, self.dst)
+    }
 }
 
 impl Netway {

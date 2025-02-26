@@ -60,13 +60,19 @@ impl ConnectivityConnectionStarted {
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct ConnectivityConnectionClosed {
     /// which side closed the connection
+    #[builder(default)]
     owner: Option<Owner>,
 
+    #[builder(default)]
     connection_code: Option<ConnectionCode>,
+    #[builder(default)]
     application_code: Option<ApplicationCode>,
+    #[builder(default)]
     internal_code: Option<u32>,
 
+    #[builder(default)]
     reason: Option<String>,
+    #[builder(default)]
     trigger: Option<ConnectivityConnectionClosedTrigger>,
 }
 

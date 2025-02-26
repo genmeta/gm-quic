@@ -237,7 +237,6 @@ impl<TX> SizeKnown<TX> {
         Ok(0)
     }
 
-    #[tracing::instrument(level = "trace", skip(self), ret)]
     pub(super) fn is_all_rcvd(&self) -> bool {
         self.rcvbuf.nread() + self.rcvbuf.available() == self.final_size
     }

@@ -12,9 +12,9 @@ use qbase::{
     handshake::Handshake,
     sid::Role,
 };
-use qlog::quic::recovery::PacketLostTrigger;
+use qlog::{quic::recovery::PacketLostTrigger, telemetry::Instrument};
 use tokio::{sync::Notify, task::AbortHandle};
-use tracing::{Instrument, trace_span};
+use tracing::Instrument as _;
 
 // todo: remove this in future
 impl<T> ObserveHandshake for Handshake<T>
@@ -293,7 +293,6 @@ impl CongestionController {
                 // Client sends an anti-deadlock packet: Initial is padded
                 // to earn more anti-amplification credit,
                 // a Handshake packet proves address ownership.
-                tracing::trace!("Anti-deadlock packet sent");
                 if self.handshake.is_getting_keys() {
                     Epoch::Handshake
                 } else {
@@ -307,16 +306,6 @@ impl CongestionController {
             };
 
         self.pto_count += 1;
-        tracing::trace!(
-            role = %self.handshake.role(),
-            ?pto_epoch,
-            pto_count = self.pto_count,
-            inflight = ?self.sent_packets[pto_epoch]
-                .iter()
-                .map(|pkt| pkt.pn)
-                .collect::<Vec<_>>(),
-            "PTO timeout",
-        );
         // Retransmit frames from the oldest sent packet. However,
         // these packets are not actually declared lost, so have no effect on
         // congestion control, we just retransmit the data they carry.
@@ -499,7 +488,6 @@ impl super::CongestionControl for ArcCC {
         tokio::spawn(
             async move {
                 let mut interval = tokio::time::interval(Duration::from_millis(10));
-                let mut count = 0;
                 loop {
                     interval.tick().await;
                     let now = Instant::now();
@@ -515,21 +503,10 @@ impl super::CongestionControl for ArcCC {
                     if guard.requires_ack() {
                         notify.notify_waiters();
                     }
-                    if count % 100 == 0 {
-                        tracing::trace!(
-                            "{} cc loop count {} requires_ack {} {:?}  pacing rate {:?} send_quota {}",
-                            guard.handshake.role(),
-                            count,
-                            guard.requires_ack(),
-                            guard.rcvd_records[Epoch::Data].requires_ack(guard.max_ack_delay),
-                            guard.algorithm.pacing_rate(),
-                            guard.send_quota(now),
-                        );
-                    }
-                    count += 1;
                 }
             }
-            .instrument(trace_span!("congestion_controller")),
+            .instrument_in_current()
+            .in_current_span(),
         )
         .abort_handle()
     }
@@ -672,7 +649,6 @@ impl RcvdRecords {
 
         let begin = self.rcvd_queue.front().map(|&(pn, _)| pn).unwrap_or(0);
         let mut retire = begin..=*largest_acked;
-        tracing::trace!("retire to {:?}", retire);
         trackers[self.epoch].rotate(&mut retire);
         self.rcvd_queue.retain(|&(pn, _)| pn > *largest_acked);
     }

@@ -38,7 +38,7 @@ impl ArcEventBroker {
 
 impl EmitEvent for ArcEventBroker {
     fn emit(&self, event: Event) {
-        tracing::info!(?event, "emit event");
+        tracing::info!(?event, "event occurs");
         self.0.emit(event);
     }
 }

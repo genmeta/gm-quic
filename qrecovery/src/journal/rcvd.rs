@@ -105,7 +105,6 @@ impl RcvdJournal {
         }
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
     fn gen_ack_frame_util(
         &self,
         largest: u64,
@@ -116,8 +115,7 @@ impl RcvdJournal {
             .queue
             .iter_with_idx()
             .rev()
-            .skip_while(|(pktno, _)| *pktno > largest)
-            .inspect(|(pktno, state)| tracing::trace!(pktno, ?state));
+            .skip_while(|(pktno, _)| *pktno > largest);
 
         // Minimum length with at least ACK frame type, largest, delay, range count, first_range (at least 1 byte for 0)
         let largest = VarInt::from_u64(largest).unwrap();

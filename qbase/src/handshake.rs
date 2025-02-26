@@ -38,19 +38,13 @@ impl ClientHandshake {
     ///
     /// Return whether it is the first time to receive the HANDSHAKE_DONE frame.
     pub fn recv_handshake_done_frame(&self, _frame: &HandshakeDoneFrame) -> bool {
-        let has_done = self.done.swap(true, Ordering::AcqRel);
-        if !has_done {
-            tracing::trace!("Client handshake is done");
-        }
-        !has_done
+        !self.done.swap(true, Ordering::AcqRel)
     }
 
     /// TLS upgrade the handshake keys.
     pub fn on_key_upgrade(&self) {
         let has_keys = self.has_keys.swap(true, Ordering::AcqRel);
-        if !has_keys {
-            tracing::trace!("Client is getting handshake keys");
-        }
+        if !has_keys {}
     }
 }
 
@@ -123,7 +117,6 @@ where
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            tracing::trace!("Server handshake is done");
             self.output.send_frame([HandshakeDoneFrame]);
             true
         } else {
@@ -134,9 +127,7 @@ where
     /// TLS upgrade the handshake keys.
     pub fn on_key_upgrade(&self) {
         let has_keys = self.has_keys.swap(true, Ordering::AcqRel);
-        if !has_keys {
-            tracing::trace!("Server is getting handshake keys");
-        }
+        if !has_keys {}
     }
 }
 

@@ -58,9 +58,7 @@ where
                         *receiving_state = Recver::DataRcvd(r.upgrade());
                     }
                 }
-                _ => {
-                    tracing::trace!(?stream_frame, "ignored stream frame");
-                }
+                _ => {}
             }
         }
         Ok((is_into_rcvd, fresh_data))
@@ -85,10 +83,7 @@ where
                     r.recv_reset(reset_frame)?;
                     *receiving_state = Recver::ResetRcvd(*reset_frame);
                 }
-                _ => {
-                    tracing::error!("there is sth wrong, ignored recv_reset");
-                    unreachable!();
-                }
+                _ => unreachable!(),
             }
         }
         Ok(sync_fresh_data)

@@ -102,7 +102,6 @@ impl<TX> AsyncRead for Reader<TX>
 where
     TX: SendFrame<MaxStreamDataFrame>,
 {
-    #[tracing::instrument(level = "trace", skip_all, ret)]
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,

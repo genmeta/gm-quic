@@ -143,7 +143,6 @@ where
         use core::ops::Bound::*;
 
         if packet.remaining_mut() < STREAM_FRAME_MAX_ENCODING_SIZE {
-            tracing::trace!("remaining space of packet too samll, stop loading stream data");
             return None;
         }
 

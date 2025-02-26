@@ -220,7 +220,6 @@ impl RecvBuf {
     }
 
     /// Returns the length of continuous unread data.
-    #[tracing::instrument(level = "trace", skip(self), ret)]
     pub fn available(&self) -> u64 {
         use core::ops::ControlFlow;
         let (ControlFlow::Continue(continuous_end) | ControlFlow::Break(continuous_end)) =
@@ -236,7 +235,6 @@ impl RecvBuf {
 
     /// Once the received data becomes continuous, it becomes readable. If necessary (if the application
     /// layer is blocked on reading), it is necessary to notify the application layer to read.
-    #[tracing::instrument(level = "debug", skip(self))]
     pub fn is_readable(&self) -> bool {
         !self.segments.is_empty() && self.segments[0].offset == self.nread
     }
@@ -271,7 +269,6 @@ impl RecvBuf {
     /// recvbuf.try_read(&mut dst2);
     /// assert_eq!(dst2.as_ref(), b"6789");
     ///
-    #[tracing::instrument(level = "trace", skip(self, dst), ret)]
     pub fn try_read(&mut self, dst: &mut impl BufMut) -> usize {
         let origin = dst.remaining_mut();
         while let Some(seg) = self.segments.front_mut() {

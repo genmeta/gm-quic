@@ -121,7 +121,6 @@ impl HandshakeSpace {
     }
 }
 
-#[tracing::instrument(level = "trace", name = "handshake_packet_handler", skip_all)]
 pub fn spawn_deliver_and_parse(
     mut bundles: impl Stream<Item = ReceivedBundle> + Unpin + Send + 'static,
     space: Arc<HandshakeSpace>,

@@ -171,10 +171,7 @@ impl<TX> Drop for Writer<TX> {
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
             debug_assert!(
-                matches!(
-                    sending_state,
-                    Sender::DataRcvd | Sender::ResetSent(_) | Sender::ResetRcvd(_)
-                ),
+                !matches!(sending_state, Sender::Ready(_) | Sender::Sending(_)),
                 "SendingStream must be closed gracefully or cancelled before dropped!"
             );
         };

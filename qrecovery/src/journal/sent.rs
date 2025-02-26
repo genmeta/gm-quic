@@ -119,16 +119,8 @@ impl<T> SentJournal<T> {
         let (n, f) = self
             .records
             .iter_with_idx()
-            .take_while(|(idx, s)| {
-                tracing::trace!(idx, state=?s);
-                !matches!(s, SentPktState::Flighting(_))
-            })
+            .take_while(|(_idx, s)| !matches!(s, SentPktState::Flighting(_)))
             .fold((0usize, 0usize), |(n, f), (_, s)| (n + 1, f + s.nframes()));
-        tracing::trace!(
-            from = self.records.offset(),
-            to = self.records.offset() + n as u64,
-            "advanced"
-        );
         self.records.advance(n);
         let _ = self.queue.drain(..f);
     }
@@ -291,11 +283,6 @@ impl<T> Drop for NewPacketGuard<'_, T> {
                 .records
                 .push_back(SentPktState::Flighting(nframes as u16))
                 .expect("packet number never overflow");
-            tracing::trace!(
-                pn = self.inner.records.largest() - 1,
-                records = ?self.inner.records.iter_with_idx().collect::<Vec<_>>(),
-                "packet number consumed",
-            );
         }
     }
 }

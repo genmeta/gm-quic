@@ -138,7 +138,6 @@ mod send {
 
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             // 永远不会关闭，直到Connection级别的关闭
-            tracing::warn!("entered unreachable code");
             Poll::Ready(Ok(()))
         }
     }

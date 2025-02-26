@@ -152,7 +152,6 @@ impl QuicServer {
 
 // internal methods
 impl QuicServer {
-    #[tracing::instrument(skip(packet))]
     pub(crate) async fn try_accpet_connection(packet: Packet, pathway: Pathway, netway: Netway) {
         let Some(server) = SERVER.read().unwrap().upgrade() else {
             return;

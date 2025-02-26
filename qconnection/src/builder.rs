@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     future::Future,
     ops::Deref,
     sync::{Arc, RwLock},
@@ -542,14 +543,14 @@ impl Components {
                                 true
                             }
                         };
-                        let reason = tokio::select! {
-                            false = validate => "failed to validate",
-                            _ = idle_timeout => "idle timeout",
-                            _ = burst.launch() => "failed to send packets",
-                            _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout ",
+                        let reason: Cow<'static, str> = tokio::select! {
+                            false = validate => "failed to validate".into(),
+                            _ = idle_timeout => "idle timeout".into(),
+                            Err(e) = burst.launch() => format!("failed to send packets: {}", e).into(),
+                            _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout".into(),
                         };
                         // same as [`Components::del_path`]
-                        paths.remove(&pathway, reason);
+                        paths.remove(&pathway, reason.as_ref());
                     }
                 };
 
@@ -561,7 +562,7 @@ impl Components {
                     path.clone(),
                     tokio::spawn(task).abort_handle(),
                 ));
-                tracing::debug!(do_validate, "created new path");
+                tracing::info!(%pathway, %netway,is_probed,do_validate, "created new path");
                 Some(path)
             }
         }

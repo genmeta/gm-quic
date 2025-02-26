@@ -48,7 +48,6 @@ impl super::Path {
             if idle_duration > config.duration {
                 core::future::pending::<()>().await;
             } else if idle_duration > config.interval {
-                tracing::trace!("try to defer idle timeout");
                 if !self.validate().await {
                     return;
                 }
@@ -74,15 +73,9 @@ impl super::Path {
                 (d1, d2) => d1.min(d2),
             };
 
-            tracing::trace!(
-                max_idle_timeout = max_idle_timeout.as_secs_f64(),
-                "idle timeout"
-            );
-
             loop {
                 let idle_duration = this.last_recv_time.lock().unwrap().elapsed();
                 if idle_duration > max_idle_timeout {
-                    tracing::trace!("path idle timeout");
                     return;
                 } else {
                     tokio::time::sleep(max_idle_timeout.saturating_sub(idle_duration)).await;

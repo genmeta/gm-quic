@@ -215,7 +215,6 @@ impl ArcTlsSession {
 }
 
 /// Start the TLS handshake, automatically upgrade the keys, and transmit tls data.
-#[tracing::instrument(level = "trace", skip(components))]
 pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send + use<> {
     let crypto_streams: [&CryptoStream; 3] = [
         components.spaces.initial().crypto_stream(),
@@ -299,13 +298,11 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
             if let Some(key_change) = key_upgrade {
                 match key_change {
                     rustls::quic::KeyChange::Handshake { keys } => {
-                        tracing::trace!("handshake keys upgraded");
                         handshake_keys.set_keys(keys);
                         handshake.on_key_upgrade();
                         cur_epoch = Epoch::Handshake;
                     }
                     rustls::quic::KeyChange::OneRtt { keys, next } => {
-                        tracing::trace!("one-rtt keys upgraded");
                         one_rtt_keys.set_keys(keys, next);
                         cur_epoch = Epoch::Data;
                     }

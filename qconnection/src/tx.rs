@@ -271,7 +271,6 @@ where
     PacketWriter<'b>: WriteFrame<PathChallengeFrame>,
 {
     fn dump_path_frame(&mut self, frame: PathChallengeFrame) {
-        tracing::trace!(?frame, pn = self.guard.pn().0, "dump frame");
         self.writer.dump_frame(frame);
         self.logger.record_frame((&frame).into());
         self.guard.record_trivial();
@@ -283,7 +282,6 @@ where
     PacketWriter<'b>: WriteFrame<PathResponseFrame>,
 {
     fn dump_path_frame(&mut self, frame: PathResponseFrame) {
-        tracing::trace!(?frame, pn = self.guard.pn().0, "dump frame");
         self.writer.dump_frame(frame);
         self.logger.record_frame((&frame).into());
         self.guard.record_trivial();
@@ -436,7 +434,6 @@ impl<'a> Future for PrepareTransaction<'a> {
         let send_quota = match self.cc.poll_send(cx, self.expect_quota) {
             Poll::Ready(send_quota) => send_quota,
             Poll::Pending => {
-                tracing::trace!(reason = "send quota to small", "sending blocked");
                 return Poll::Pending;
             }
         };
@@ -444,7 +441,6 @@ impl<'a> Future for PrepareTransaction<'a> {
             Poll::Ready(Some(credit_limit)) => credit_limit,
             Poll::Ready(None) => return Poll::Ready(None),
             Poll::Pending => {
-                tracing::trace!(reason = "credit limit", "sending blocked");
                 return Poll::Pending;
             }
         };
@@ -458,18 +454,10 @@ impl<'a> Future for PrepareTransaction<'a> {
             Poll::Ready(Some(borrowed_dcid)) => borrowed_dcid,
             Poll::Ready(None) => return Poll::Ready(None),
             Poll::Pending => {
-                tracing::trace!(reason = "borrow dcid", "sending blocked");
                 return Poll::Pending;
             }
         };
         let constraints = Constraints::new(credit_limit, send_quota);
-        tracing::trace!(
-            credit_limit,
-            send_quota,
-            borrowed_dcid = ?*borrowed_dcid,
-            flow_limit = flow_limit.available(),
-            "transaction ready"
-        );
 
         Poll::Ready(Some(Transaction {
             scid: self.scid,

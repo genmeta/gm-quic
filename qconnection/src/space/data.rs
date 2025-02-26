@@ -273,7 +273,6 @@ impl DataSpace {
     }
 }
 
-#[tracing::instrument(level = "trace", name = "data_space_packet_handler", skip_all)]
 pub fn spawn_deliver_and_parse(
     mut zeor_rtt_packets: impl Stream<Item = ReceivedZeroRttBundle> + Unpin + Send + 'static,
     mut one_rtt_packets: impl Stream<Item = ReceivedOneRttBundle> + Unpin + Send + 'static,

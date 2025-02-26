@@ -58,7 +58,6 @@ impl<TX> Listener<TX> {
         snd_buf_size: u64,
     ) -> Poll<Result<(StreamId, (Reader<TX>, Writer<TX>)), QuicError>> {
         if let Some((sid, (recever, sender))) = self.bi_streams.pop_front() {
-            tracing::trace!(buf_size = snd_buf_size, ?sid, "reveised buffer size");
             sender.revise_buffer_size(snd_buf_size);
             Poll::Ready(Ok((sid, (Reader(recever), Writer(sender)))))
         } else {

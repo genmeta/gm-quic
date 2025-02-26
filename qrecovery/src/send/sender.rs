@@ -78,11 +78,6 @@ impl<TX> ReadySender<TX> {
             let n = std::cmp::min((self.max_stream_data - stream_data) as usize, buf.len());
             Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
         } else {
-            tracing::trace!(
-                stream_data,
-                max_stream_data = self.max_stream_data,
-                "write blocked(ReadySender)"
-            );
             self.writable_waker = Some(cx.waker().clone());
             Poll::Pending
         }
@@ -350,7 +345,6 @@ impl<TX> DataSentSender<TX> {
         }
     }
 
-    #[tracing::instrument(level = "trace", skip(self), ret)]
     pub(super) fn is_all_rcvd(&self) -> bool {
         self.sndbuf.is_all_rcvd() && self.is_fin_acked
     }

@@ -227,9 +227,6 @@ impl Components {
             let param::Pair { remote, .. } = params.await?;
             let map_bi_stream =
                 |(id, (reader, writer))| (id, (reader, Writer::new(writer, send_notify.clone())));
-            if remote.initial_max_stream_data_bidi_local() == 0 {
-                tracing::trace!("bp2");
-            }
             let bi_stream = streams
                 .accept_bi(remote.initial_max_stream_data_bidi_local().into())
                 .await?;
@@ -275,7 +272,6 @@ impl Components {
 pub struct Connection(RwLock<Result<Components, Termination>>);
 
 impl Connection {
-    #[tracing::instrument(level = "info", skip(self))]
     pub fn enter_closing(&self, ccf: ConnectionCloseFrame) {
         let mut conn = self.0.write().unwrap();
         if let Ok(core_conn) = conn.as_mut() {
@@ -283,7 +279,6 @@ impl Connection {
         }
     }
 
-    #[tracing::instrument(level = "info", skip(self))]
     pub fn enter_draining(&self, ccf: ConnectionCloseFrame) {
         let mut conn = self.0.write().unwrap();
         match conn.as_mut() {
@@ -292,7 +287,6 @@ impl Connection {
         }
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
     pub fn close(&self, reason: Cow<'static, str>, code: u64) {
         let error_code = code.try_into().unwrap();
         self.enter_closing(ConnectionCloseFrame::new_app(error_code, reason));
@@ -306,53 +300,44 @@ impl Connection {
             .map_err(|termination| termination.error().into())
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
     pub async fn open_bi_stream(
         &self,
     ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
         self.map(|core_conn| core_conn.open_bi_stream())?.await
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
     pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, StreamWriter)>> {
         self.map(|core_conn| core_conn.open_uni_stream())?.await
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
     pub async fn accept_bi_stream(
         &self,
     ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
         self.map(|core_conn| core_conn.accept_bi_stream())?.await
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
     pub async fn accept_uni_stream(&self) -> io::Result<Option<(StreamId, StreamReader)>> {
         self.map(|core_conn| core_conn.accept_uni_stream())?.await
     }
 
     #[cfg(feature = "unreliable")]
-    #[tracing::instrument(level = "trace", skip(self))]
     pub fn unreliable_reader(&self) -> io::Result<DatagramReader> {
         self.map(|core_conn| core_conn.unreliable_reader())?
     }
 
     #[cfg(feature = "unreliable")]
-    #[tracing::instrument(level = "trace", skip(self))]
     pub async fn unreliable_writer(&self) -> io::Result<DatagramWriter> {
         self.map(|core_conn| core_conn.unreliable_writer())?.await
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
     pub fn add_path(&self, netway: Netway, pathway: Pathway) -> io::Result<()> {
         self.map(|core_conn| core_conn.add_path(netway, pathway))
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
     pub fn del_path(&self, pathway: &Pathway) -> io::Result<()> {
         self.map(|core_conn| core_conn.del_path(pathway))
     }
 
-    #[tracing::instrument(level = "trace", skip(self), ret)]
     pub fn is_active(&self) -> bool {
         self.0.read().unwrap().is_ok()
     }
