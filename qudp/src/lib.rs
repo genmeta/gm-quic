@@ -118,10 +118,16 @@ impl UdpSocketController {
         hdr: &PacketHeader,
         cx: &mut Context,
     ) -> Poll<io::Result<usize>> {
-        ready!(self.io.poll_send_ready(cx)?);
-        let f = || self.sendmsg(bufs, hdr);
-        let ret = self.io.try_io(Interest::WRITABLE, f);
-        Poll::Ready(ret)
+        loop {
+            ready!(self.io.poll_send_ready(cx)?);
+            let f = || self.sendmsg(bufs, hdr);
+            let ret = self.io.try_io(Interest::WRITABLE, f);
+            if matches!(&ret, Err(e) if e.kind() == io::ErrorKind::WouldBlock) {
+                continue;
+            } else {
+                return Poll::Ready(ret);
+            }
+        }
     }
 
     pub fn poll_recv(
@@ -130,13 +136,16 @@ impl UdpSocketController {
         hdrs: &mut [PacketHeader],
         cx: &mut Context,
     ) -> Poll<io::Result<usize>> {
-        ready!(self.io.poll_recv_ready(cx)?);
-        let f = || self.recvmsg(bufs, hdrs);
-        let ret = self.io.try_io(Interest::READABLE, f);
-        if matches!(&ret, Err(e) if e.kind() == io::ErrorKind::WouldBlock) {
-            return Poll::Ready(Ok(0));
+        loop {
+            ready!(self.io.poll_recv_ready(cx)?);
+            let f = || self.recvmsg(bufs, hdrs);
+            let ret = self.io.try_io(Interest::READABLE, f);
+            if matches!(&ret, Err(e) if e.kind() == io::ErrorKind::WouldBlock) {
+                continue;
+            } else {
+                return Poll::Ready(ret);
+            }
         }
-        Poll::Ready(ret)
     }
 
     pub fn gso_size(&self) -> u16 {
