@@ -185,7 +185,7 @@ impl QuicProto {
             Signpost::from(*dcid)
         } else {
             use EndpointAddr::*;
-            let (Direct { addr } | Relay { agent: addr, .. }) = pathway.local();
+            let (Direct { addr } | Agent { agent: addr, .. }) = pathway.local();
             Signpost::from(addr)
         };
 
