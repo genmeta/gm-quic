@@ -73,13 +73,20 @@ impl<TX> ReadySender<TX> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let stream_data = self.sndbuf.written();
-        if stream_data < self.max_stream_data {
-            let n = std::cmp::min((self.max_stream_data - stream_data) as usize, buf.len());
-            Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
+        if self.shutdown_waker.is_some() {
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "The stream has been shutdown",
+            )))
         } else {
-            self.writable_waker = Some(cx.waker().clone());
-            Poll::Pending
+            let stream_data = self.sndbuf.written();
+            if stream_data < self.max_stream_data {
+                let n = std::cmp::min((self.max_stream_data - stream_data) as usize, buf.len());
+                Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
+            } else {
+                self.writable_waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
         }
     }
 
@@ -174,13 +181,20 @@ impl<TX> SendingSender<TX> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let stream_data = self.sndbuf.written();
-        if stream_data < self.max_stream_data {
-            let n = std::cmp::min((self.max_stream_data - stream_data) as usize, buf.len());
-            Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
+        if self.shutdown_waker.is_some() {
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "The stream has been shutdown",
+            )))
         } else {
-            self.writable_waker = Some(cx.waker().clone());
-            Poll::Pending
+            let stream_data = self.sndbuf.written();
+            if stream_data < self.max_stream_data {
+                let n = std::cmp::min((self.max_stream_data - stream_data) as usize, buf.len());
+                Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
+            } else {
+                self.writable_waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
         }
     }
 
