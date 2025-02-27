@@ -99,8 +99,8 @@ mod qudp {
             let local = self.local_addr()?;
             let remote = recv_buffer.hdrs[seg_idx].src;
             let link = Link::new(local, remote);
-            let local = EndpointAddr::Direct { addr: local };
-            let remote = EndpointAddr::Direct { addr: remote };
+            let local = EndpointAddr::direct(local);
+            let remote = EndpointAddr::direct(remote);
             let pathway = Pathway::new(local, remote);
 
             Poll::Ready(Ok((bytes_mut, pathway, link)))

@@ -21,8 +21,8 @@ use tokio::sync::mpsc;
 
 use crate::{
     PROTO,
+    cert::{ToCertificate, ToPrivateKey},
     interfaces::Interfaces,
-    util::{ToCertificate, ToPrivateKey},
 };
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;

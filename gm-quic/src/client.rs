@@ -18,8 +18,8 @@ use tracing::{Instrument, trace_span};
 
 use crate::{
     PROTO,
+    cert::{ToCertificate, ToPrivateKey},
     interfaces::Interfaces,
-    util::{ToCertificate, ToPrivateKey},
 };
 
 type TlsClientConfigBuilder<T> = ConfigBuilder<TlsClientConfig, T>;
@@ -45,8 +45,7 @@ pub struct QuicClient {
     token_sink: Option<Arc<dyn TokenSink>>,
 }
 
-//                                        (server_name, server_addr)
-static REUSEABLE_CONNECTIONS: LazyLock<DashMap<(String, SocketAddr), Arc<Connection>>> =
+static REUSEABLE_CONNECTIONS: LazyLock<DashMap<String, Arc<Connection>>> =
     LazyLock::new(DashMap::new);
 
 impl QuicClient {
@@ -132,11 +131,11 @@ impl QuicClient {
     fn new_connection(
         &self,
         server_name: String,
-        server_addr: SocketAddr,
+        server_ep: EndpointAddr,
     ) -> io::Result<Arc<Connection>> {
         let quic_iface = match &self.bind_interfaces {
             None => {
-                let quic_iface = if server_addr.is_ipv4() {
+                let quic_iface = if server_ep.addr().is_ipv4() {
                     (self.quic_iface_binder)(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))?
                 } else {
                     (self.quic_iface_binder)(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))?
@@ -144,36 +143,30 @@ impl QuicClient {
                 Interfaces::add(quic_iface.clone())?;
                 quic_iface
             }
-            Some(bind_interfaces) => {
-                let no_available_address = || {
-                    let mut reason = String::from("No address matches the server's address family");
-                    if !self.reuse_interfaces {
-                        reason
-                            .push_str(", or all the bound addresses are used by other connections");
+            Some(bind_interfaces) => bind_interfaces
+                .iter()
+                .map(|entry| *entry.key())
+                .filter(|local_addr| {
+                    local_addr.is_ipv4() == server_ep.addr().is_ipv4()
+                        || local_addr.is_ipv6() == server_ep.addr().is_ipv6()
+                })
+                .find_map(|local_addr| {
+                    if self.reuse_interfaces {
+                        Interfaces::try_acquire_shared(local_addr)
+                    } else {
+                        Interfaces::try_acquire_unique(local_addr)
                     }
-                    io::Error::new(io::ErrorKind::AddrNotAvailable, reason)
-                };
-                bind_interfaces
-                    .iter()
-                    .map(|entry| *entry.key())
-                    .filter(|local_addr| local_addr.is_ipv4() == server_addr.is_ipv4())
-                    .find_map(|local_addr| {
-                        if self.reuse_interfaces {
-                            Interfaces::try_acquire_shared(local_addr)
-                        } else {
-                            Interfaces::try_acquire_unique(local_addr)
-                        }
-                    })
-                    .ok_or_else(no_available_address)?
-            }
+                })
+                .ok_or(io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    "No suitable address available",
+                ))?,
         };
 
         let local_addr = quic_iface.local_addr()?;
-        let link = Link::new(local_addr, server_addr);
-        let pathway = Pathway::new(
-            EndpointAddr::Direct { addr: local_addr },
-            EndpointAddr::Direct { addr: server_addr },
-        );
+        let link = Link::new(local_addr, server_ep.addr());
+        //  TODO: 是否要outer addr，agent addr
+        let pathway = Pathway::new(EndpointAddr::direct(local_addr), server_ep);
 
         let token_sink = self
             .token_sink
@@ -206,17 +199,15 @@ impl QuicClient {
                                 _ = Interfaces::try_free_interface(socket.src())
                             }
                             Event::Failed(error) => {
-                                REUSEABLE_CONNECTIONS
-                                    .remove_if(&(server_name.clone(), server_addr), |_, exist| {
-                                        Arc::ptr_eq(&connection, exist)
-                                    });
+                                REUSEABLE_CONNECTIONS.remove_if(&server_name, |_, exist| {
+                                    Arc::ptr_eq(&connection, exist)
+                                });
                                 connection.enter_closing(error.into())
                             }
                             Event::Closed(ccf) => {
-                                REUSEABLE_CONNECTIONS
-                                    .remove_if(&(server_name.clone(), server_addr), |_, exist| {
-                                        Arc::ptr_eq(&connection, exist)
-                                    });
+                                REUSEABLE_CONNECTIONS.remove_if(&server_name, |_, exist| {
+                                    Arc::ptr_eq(&connection, exist)
+                                });
                                 connection.enter_draining(ccf)
                             }
                             Event::StatelessReset => {}
@@ -265,17 +256,18 @@ impl QuicClient {
     pub fn connect(
         &self,
         server_name: impl Into<String>,
-        server_addr: SocketAddr,
+        server_ep: impl ToEndpointAddr,
     ) -> io::Result<Arc<Connection>> {
         let server_name = server_name.into();
-        trace_span!("connect", %server_name,%server_addr).in_scope(|| {
+        let server_ep = server_ep.to_endpoint_addr();
+        trace_span!("connect", %server_name,%server_ep).in_scope(|| {
             if self.reuse_connection {
                 REUSEABLE_CONNECTIONS
-                    .entry((server_name.clone(), server_addr))
-                    .or_try_insert_with(|| self.new_connection(server_name, server_addr))
+                    .entry(server_name.clone())
+                    .or_try_insert_with(|| self.new_connection(server_name, server_ep))
                     .map(|entry| entry.clone())
             } else {
-                self.new_connection(server_name, server_addr)
+                self.new_connection(server_name, server_ep)
             }
         })
     }

@@ -9,18 +9,18 @@ pub use qconnection::{
 };
 
 pub use crate::{
+    cert::{ToCertificate, ToPrivateKey},
     client::{QuicClient, QuicClientBuilder},
     interfaces::Interfaces,
     server::{QuicServer, QuicServerBuilder, QuicServerSniBuilder},
-    util::{ToCertificate, ToPrivateKey},
 };
 
+mod cert;
 mod client;
 mod interfaces;
 mod server;
 #[cfg(test)]
 mod tests;
-mod util;
 
 pub mod prelude {
     pub use qconnection::prelude::*;
