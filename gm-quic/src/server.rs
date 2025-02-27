@@ -152,12 +152,12 @@ impl QuicServer {
 
 // internal methods
 impl QuicServer {
-    pub(crate) async fn try_accpet_connection(packet: Packet, pathway: Pathway, netway: Netway) {
+    pub(crate) async fn try_accpet_connection(packet: Packet, pathway: Pathway, link: Link) {
         let Some(server) = SERVER.read().unwrap().upgrade() else {
             return;
         };
 
-        if !(server.passive_listening || server.bind_interfaces.contains_key(&netway.src())) {
+        if !(server.passive_listening || server.bind_interfaces.contains_key(&link.src())) {
             return;
         }
 
@@ -169,7 +169,7 @@ impl QuicServer {
             },
             _ => return,
         };
-        tracing::info!("accepting connection from {}", netway.src());
+        tracing::info!("accepting connection from {}", link.src());
 
         let token_provider = server
             .token_provider
@@ -189,7 +189,7 @@ impl QuicServer {
                 .with_qlog(server.logger.as_ref())
                 .run_with(event_broker),
         );
-        PROTO.deliver(packet, pathway, netway).await;
+        PROTO.deliver(packet, pathway, link).await;
         _ = server.listener.send((connection.clone(), pathway));
 
         tokio::spawn(async move {

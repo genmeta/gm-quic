@@ -26,7 +26,7 @@ use qbase::{
     sid::{ControlConcurrency, Role},
 };
 use qcongestion::{CongestionControl, TrackPackets};
-use qinterface::path::{Netway, Pathway};
+use qinterface::path::{Link, Pathway};
 use qlog::{
     quic::{
         PacketHeader, PacketType, QuicFrames,
@@ -54,10 +54,10 @@ use crate::{
     tx::{MiddleAssembledPacket, PacketMemory, Transaction},
 };
 
-pub type ReceivedZeroRttBundle = ((ZeroRttHeader, bytes::BytesMut, usize), Pathway, Netway);
+pub type ReceivedZeroRttBundle = ((ZeroRttHeader, bytes::BytesMut, usize), Pathway, Link);
 pub type ReceivedZeroRttPacket = ReceivedCipherPacket<ZeroRttHeader>;
 pub type PlainZeroRttPacket = PlainPacket<ZeroRttHeader>;
-pub type ReceivedOneRttBundle = ((OneRttHeader, bytes::BytesMut, usize), Pathway, Netway);
+pub type ReceivedOneRttBundle = ((OneRttHeader, bytes::BytesMut, usize), Pathway, Link);
 pub type ReceivedOneRttPacket = ReceivedCipherPacket<OneRttHeader>;
 pub type PlainOneRttPacket = PlainPacket<OneRttHeader>;
 

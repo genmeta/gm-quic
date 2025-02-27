@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use qbase::{error::Error, frame::ConnectionCloseFrame};
-use qinterface::path::{Netway, Pathway};
+use qinterface::path::{Link, Pathway};
 use tokio::sync::mpsc;
 
 /// The events that can be emitted by a quic connection
@@ -10,9 +10,9 @@ pub enum Event {
     // The connection is handshaked
     Handshaked,
     // Received a packet from a new path and successfully decrypted the packet
-    ProbedNewPath(Pathway, Netway),
+    ProbedNewPath(Pathway, Link),
     // Path become inactivated, or removed by application
-    PathInactivated(Pathway, Netway),
+    PathInactivated(Pathway, Link),
     // An Error occurred during the connection, will enter the closing state
     Failed(Error),
     // Received a connection close frame, will enter the draining state

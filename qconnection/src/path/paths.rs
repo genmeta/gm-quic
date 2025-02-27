@@ -56,7 +56,7 @@ impl ArcPaths {
     pub fn remove(&self, pathway: &Pathway, reason: &str) {
         if let Some((_, path)) = self.inner.remove(pathway) {
             self.broker
-                .emit(Event::PathInactivated(path.pathway, path.netway));
+                .emit(Event::PathInactivated(path.pathway, path.link));
             tracing::warn!(%pathway, reason, "removed path");
             if self.is_empty() {
                 let error =

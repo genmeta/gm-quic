@@ -18,7 +18,7 @@ use qbase::{
     },
 };
 use qcongestion::{CongestionControl, TrackPackets};
-use qinterface::path::{Netway, Pathway};
+use qinterface::path::{Link, Pathway};
 use qlog::{
     quic::{
         PacketHeader, PacketType, QuicFrames,
@@ -44,7 +44,7 @@ use crate::{
     tx::{MiddleAssembledPacket, PacketMemory, Transaction},
 };
 
-pub type ReceivedBundle = ((HandshakeHeader, bytes::BytesMut, usize), Pathway, Netway);
+pub type ReceivedBundle = ((HandshakeHeader, bytes::BytesMut, usize), Pathway, Link);
 pub type ReceiveHanshakePacket = ReceivedCipherPacket<HandshakeHeader>;
 pub type PlainHandshakePacket = PlainPacket<HandshakeHeader>;
 

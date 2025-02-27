@@ -25,7 +25,7 @@ use qbase::{
 };
 use qcongestion::{ArcCC, CongestionAlgorithm};
 use qinterface::{
-    path::{Netway, Pathway},
+    path::{Link, Pathway},
     queue::RcvdPacketQueue,
     router::QuicProto,
 };
@@ -495,18 +495,18 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
 impl Components {
     pub fn get_or_create_path(
         &self,
-        netway: Netway,
+        link: Link,
         pathway: Pathway,
         is_probed: bool,
     ) -> Option<Arc<Path>> {
         match self.paths.entry(pathway) {
             dashmap::Entry::Occupied(occupied_entry) => Some(occupied_entry.get().deref().clone()),
             dashmap::Entry::Vacant(vacant_entry) => {
-                let do_validate = !self.state.try_entry_attempted(self, netway);
+                let do_validate = !self.state.try_entry_attempted(self, link);
                 qlog::event!(PathAssigned {
                     path_id: pathway.to_string(),
-                    path_local: netway.src(),
-                    path_remote: netway.dst(),
+                    path_local: link.src(),
+                    path_remote: link.dst(),
                 });
                 let max_ack_delay = self.parameters.local()?.max_ack_delay().into_inner();
 
@@ -521,7 +521,7 @@ impl Components {
                     Box::new(self.handshake.clone()),
                 );
 
-                let path = Arc::new(Path::new(&self.proto, netway, pathway, cc)?);
+                let path = Arc::new(Path::new(&self.proto, link, pathway, cc)?);
 
                 if !is_probed {
                     path.grant_anti_amplifier();
@@ -562,7 +562,7 @@ impl Components {
                     path.clone(),
                     tokio::spawn(task).abort_handle(),
                 ));
-                tracing::info!(%pathway, %netway,is_probed,do_validate, "created new path");
+                tracing::info!(%pathway, %link,is_probed,do_validate, "created new path");
                 Some(path)
             }
         }
