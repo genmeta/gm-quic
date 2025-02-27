@@ -23,6 +23,8 @@ pub mod flow;
 pub mod frame;
 /// Handshake signal for QUIC connections.
 pub mod handshake;
+/// Endpoint address and Pathway.
+pub mod net;
 /// QUIC packets and their codec.
 pub mod packet;
 /// [QUIC transport parameters and their codec](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-encodin).

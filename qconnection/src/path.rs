@@ -10,13 +10,10 @@ use std::{
 use qbase::{
     error::Error,
     frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
+    net::{Link, Pathway},
 };
 use qcongestion::{ArcCC, CongestionControl};
-use qinterface::{
-    QuicInterface,
-    path::{Link, Pathway},
-    router::QuicProto,
-};
+use qinterface::{QuicInterface, router::QuicProto};
 use tokio::{sync::Notify, task::AbortHandle, time::Instant};
 
 mod aa;

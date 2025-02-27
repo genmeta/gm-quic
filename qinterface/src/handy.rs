@@ -9,11 +9,9 @@ mod qudp {
     };
 
     use bytes::BytesMut;
+    use qbase::net::{EndpointAddr, Link, Pathway};
 
-    use crate::{
-        QuicInterface,
-        path::{EndpointAddr, Link, Pathway},
-    };
+    use crate::QuicInterface;
 
     struct ReceiveBuffers {
         undelivered: Range<usize>,

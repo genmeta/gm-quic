@@ -10,6 +10,7 @@ use qbase::{
     cid::ConnectionId,
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
+    net::{Link, Pathway},
     packet::{
         CipherPacket, MarshalFrame, PacketWriter,
         header::{
@@ -22,7 +23,6 @@ use qbase::{
     token::TokenRegistry,
 };
 use qcongestion::{CongestionControl, TrackPackets};
-use qinterface::path::{Link, Pathway};
 use qlog::{
     quic::{
         PacketHeader, PacketType, QuicFrames,

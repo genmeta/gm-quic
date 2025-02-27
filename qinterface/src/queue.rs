@@ -1,12 +1,11 @@
 use qbase::{
+    net::{Link, Pathway},
     packet::{
         DataHeader, Packet,
         header::{long, short},
     },
     util::bound_deque::BoundQueue,
 };
-
-use crate::path::{Link, Pathway};
 
 pub type InitialPacket = (long::InitialHeader, bytes::BytesMut, usize);
 pub type HandshakePacket = (long::HandshakeHeader, bytes::BytesMut, usize);

@@ -8,6 +8,7 @@ use std::{
 
 pub use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
+    net::{Link, Pathway},
     packet::{
         DataHeader, Packet,
         header::{GetDcid, GetScid},
@@ -24,11 +25,7 @@ use qbase::{
     token::ArcTokenRegistry,
 };
 use qcongestion::{ArcCC, CongestionAlgorithm};
-use qinterface::{
-    path::{Link, Pathway},
-    queue::RcvdPacketQueue,
-    router::QuicProto,
-};
+use qinterface::{queue::RcvdPacketQueue, router::QuicProto};
 use qlog::{
     GroupID, VantagePointType,
     quic::{

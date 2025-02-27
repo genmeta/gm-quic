@@ -169,7 +169,7 @@ impl QuicClient {
         };
 
         let local_addr = quic_iface.local_addr()?;
-        let socket = Link::new(local_addr, server_addr);
+        let link = Link::new(local_addr, server_addr);
         let pathway = Pathway::new(
             EndpointAddr::Direct { addr: local_addr },
             EndpointAddr::Direct { addr: server_addr },
@@ -228,7 +228,7 @@ impl QuicClient {
             .instrument(trace_span!("client_connection_driver")),
         );
 
-        connection.add_path(socket, pathway)?;
+        connection.add_path(link, pathway)?;
         Ok(connection)
     }
 

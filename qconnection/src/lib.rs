@@ -8,12 +8,8 @@ pub mod tls;
 pub mod tx;
 
 pub mod prelude {
-    pub use qbase::{frame::ConnectionCloseFrame, sid::StreamId, varint::VarInt};
-    pub use qinterface::{
-        QuicInterface,
-        path::{EndpointAddr, Link, Pathway},
-        router::QuicProto,
-    };
+    pub use qbase::{frame::ConnectionCloseFrame, net::*, sid::StreamId, varint::VarInt};
+    pub use qinterface::{QuicInterface, router::QuicProto};
     #[cfg(feature = "unreliable")]
     pub use qunreliable::{DatagramReader, DatagramWriter};
 
@@ -47,12 +43,12 @@ use prelude::HeartbeatConfig;
 use qbase::{
     cid, flow,
     frame::{ConnectionCloseFrame, ReliableFrame, SendFrame},
+    net::{Link, Pathway},
     param::{self, ArcParameters},
     sid::StreamId,
     token::ArcTokenRegistry,
 };
 use qinterface::{
-    path::{Link, Pathway},
     queue::RcvdPacketQueue,
     router::{QuicProto, RouterRegistry},
 };
