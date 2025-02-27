@@ -6,7 +6,7 @@ use qbase::{
     util::bound_deque::BoundQueue,
 };
 
-use crate::path::{Netway, Pathway};
+use crate::path::{Link, Pathway};
 
 pub type InitialPacket = (long::InitialHeader, bytes::BytesMut, usize);
 pub type HandshakePacket = (long::HandshakeHeader, bytes::BytesMut, usize);
@@ -15,10 +15,10 @@ pub type OneRttPacket = (short::OneRttHeader, bytes::BytesMut, usize);
 
 // 需要一个四元组，pathway + src + dst
 pub struct RcvdPacketQueue {
-    initial: BoundQueue<(InitialPacket, Pathway, Netway)>,
-    handshake: BoundQueue<(HandshakePacket, Pathway, Netway)>,
-    zero_rtt: BoundQueue<(ZeroRttPacket, Pathway, Netway)>,
-    one_rtt: BoundQueue<(OneRttPacket, Pathway, Netway)>,
+    initial: BoundQueue<(InitialPacket, Pathway, Link)>,
+    handshake: BoundQueue<(HandshakePacket, Pathway, Link)>,
+    zero_rtt: BoundQueue<(ZeroRttPacket, Pathway, Link)>,
+    one_rtt: BoundQueue<(OneRttPacket, Pathway, Link)>,
     // pub retry:
 }
 
@@ -38,19 +38,19 @@ impl RcvdPacketQueue {
         }
     }
 
-    pub fn initial(&self) -> &BoundQueue<(InitialPacket, Pathway, Netway)> {
+    pub fn initial(&self) -> &BoundQueue<(InitialPacket, Pathway, Link)> {
         &self.initial
     }
 
-    pub fn handshake(&self) -> &BoundQueue<(HandshakePacket, Pathway, Netway)> {
+    pub fn handshake(&self) -> &BoundQueue<(HandshakePacket, Pathway, Link)> {
         &self.handshake
     }
 
-    pub fn zero_rtt(&self) -> &BoundQueue<(ZeroRttPacket, Pathway, Netway)> {
+    pub fn zero_rtt(&self) -> &BoundQueue<(ZeroRttPacket, Pathway, Link)> {
         &self.zero_rtt
     }
 
-    pub fn one_rtt(&self) -> &BoundQueue<(OneRttPacket, Pathway, Netway)> {
+    pub fn one_rtt(&self) -> &BoundQueue<(OneRttPacket, Pathway, Link)> {
         &self.one_rtt
     }
 
@@ -61,7 +61,7 @@ impl RcvdPacketQueue {
         self.one_rtt.close();
     }
 
-    pub async fn deliver(&self, packet: Packet, pathway: Pathway, socket: Netway) {
+    pub async fn deliver(&self, packet: Packet, pathway: Pathway, socket: Link) {
         match packet {
             Packet::Data(packet) => match packet.header {
                 DataHeader::Long(long::DataHeader::Initial(header)) => {

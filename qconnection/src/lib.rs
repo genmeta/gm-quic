@@ -11,7 +11,7 @@ pub mod prelude {
     pub use qbase::{frame::ConnectionCloseFrame, sid::StreamId, varint::VarInt};
     pub use qinterface::{
         QuicInterface,
-        path::{EndpointAddr, Netway, Pathway},
+        path::{EndpointAddr, Link, Pathway},
         router::QuicProto,
     };
     #[cfg(feature = "unreliable")]
@@ -52,7 +52,7 @@ use qbase::{
     token::ArcTokenRegistry,
 };
 use qinterface::{
-    path::{Netway, Pathway},
+    path::{Link, Pathway},
     queue::RcvdPacketQueue,
     router::{QuicProto, RouterRegistry},
 };
@@ -258,9 +258,9 @@ impl Components {
         }
     }
 
-    pub fn add_path(&self, netway: Netway, pathway: Pathway) {
+    pub fn add_path(&self, link: Link, pathway: Pathway) {
         let _enter = self.span.enter();
-        self.get_or_create_path(netway, pathway, false);
+        self.get_or_create_path(link, pathway, false);
     }
 
     pub fn del_path(&self, pathway: &Pathway) {
@@ -330,8 +330,8 @@ impl Connection {
         self.map(|core_conn| core_conn.unreliable_writer())?.await
     }
 
-    pub fn add_path(&self, netway: Netway, pathway: Pathway) -> io::Result<()> {
-        self.map(|core_conn| core_conn.add_path(netway, pathway))
+    pub fn add_path(&self, link: Link, pathway: Pathway) -> io::Result<()> {
+        self.map(|core_conn| core_conn.add_path(link, pathway))
     }
 
     pub fn del_path(&self, pathway: &Pathway) -> io::Result<()> {

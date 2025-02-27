@@ -12,7 +12,7 @@ mod qudp {
 
     use crate::{
         QuicInterface,
-        path::{EndpointAddr, Netway, Pathway},
+        path::{EndpointAddr, Link, Pathway},
     };
 
     struct ReceiveBuffers {
@@ -77,7 +77,7 @@ mod qudp {
             self.inner.poll_send(ptks, &hdr, cx)
         }
 
-        fn poll_recv(&self, cx: &mut Context) -> Poll<io::Result<(BytesMut, Pathway, Netway)>> {
+        fn poll_recv(&self, cx: &mut Context) -> Poll<io::Result<(BytesMut, Pathway, Link)>> {
             let mut recv_buffer = self.recv_bufs.lock().unwrap();
 
             while recv_buffer.undelivered.is_empty() {
@@ -100,12 +100,12 @@ mod qudp {
             // let local = recv_buffer.hdrs[recv_buffer.unread].dst;
             let local = self.local_addr()?;
             let remote = recv_buffer.hdrs[seg_idx].src;
-            let netway = Netway::new(local, remote);
+            let link = Link::new(local, remote);
             let local = EndpointAddr::Direct { addr: local };
             let remote = EndpointAddr::Direct { addr: remote };
             let pathway = Pathway::new(local, remote);
 
-            Poll::Ready(Ok((bytes_mut, pathway, netway)))
+            Poll::Ready(Ok((bytes_mut, pathway, link)))
         }
     }
 }

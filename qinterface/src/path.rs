@@ -72,18 +72,18 @@ impl Pathway {
 
 /// Network way, representing the quadruple of source and destination addresses.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct Netway {
+pub struct Link {
     src: SocketAddr,
     dst: SocketAddr,
 }
 
-impl Display for Netway {
+impl Display for Link {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} -> {}", self.src, self.dst)
     }
 }
 
-impl Netway {
+impl Link {
     #[inline]
     pub fn new(src: SocketAddr, dst: SocketAddr) -> Self {
         Self { src, dst }

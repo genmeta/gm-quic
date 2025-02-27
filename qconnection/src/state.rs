@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicU8, Ordering},
 };
 
-use qinterface::path::Netway;
+use qinterface::path::Link;
 use qlog::quic::{
     Owner,
     connectivity::{
@@ -28,7 +28,7 @@ impl ConnState {
     /// Returns true if the state was successfully set to `BaseConnectionStates::Attempted`.
     ///
     /// Called when creating paths. If it returns true, it means that the path is the first path to connect.
-    pub fn try_entry_attempted(&self, components: &Components, netway: Netway) -> bool {
+    pub fn try_entry_attempted(&self, components: &Components, link: Link) -> bool {
         let attempted = encode(BaseConnectionStates::Attempted.into());
         let success = self
             .0
@@ -40,7 +40,7 @@ impl ConnState {
                 new: BaseConnectionStates::Attempted,
             });
             qlog::event!(ConnectionStarted {
-                socket: { (netway.src(), netway.dst()) } // cid不在这一层，未知
+                socket: { (link.src(), link.dst()) } // cid不在这一层，未知
             });
             match components.handshake.role() {
                 qbase::sid::Role::Client => qlog::event!(ParametersSet {
