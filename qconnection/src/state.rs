@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicU8, Ordering},
 };
 
-use qinterface::path::Link;
+use qbase::net::Link;
 use qlog::quic::{
     Owner,
     connectivity::{

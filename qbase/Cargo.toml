@@ -22,6 +22,7 @@ tracing = { workspace = true }
 nom = { workspace = true }
 rand = { workspace = true }
 rustls = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]

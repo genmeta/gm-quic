@@ -5,9 +5,9 @@ use deref_derive::Deref;
 use qbase::{
     Epoch,
     error::{Error, ErrorKind},
+    net::Pathway,
 };
 use qcongestion::CongestionControl;
-use qinterface::path::Pathway;
 use tokio::task::AbortHandle;
 
 use super::Path;

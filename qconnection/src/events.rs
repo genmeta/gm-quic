@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
-use qbase::{error::Error, frame::ConnectionCloseFrame};
-use qinterface::path::{Link, Pathway};
+use qbase::{
+    error::Error,
+    frame::ConnectionCloseFrame,
+    net::{Link, Pathway},
+};
 use tokio::sync::mpsc;
 
 /// The events that can be emitted by a quic connection

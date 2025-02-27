@@ -1,6 +1,5 @@
 // handy（qudp）是可选的
 pub mod handy;
-pub mod path;
 pub mod queue;
 pub mod router;
 pub mod util;
@@ -12,7 +11,7 @@ use std::{
 };
 
 use bytes::BytesMut;
-use path::{Link, Pathway};
+use qbase::net::{Link, Pathway};
 
 pub trait QuicInterface: Send + Sync {
     fn reversed_bytes(&self, on: Pathway) -> io::Result<usize>;

@@ -7,8 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use qbase::{cid::ConnectionId, error::Error, frame::ConnectionCloseFrame};
-use qinterface::{path::Pathway, queue::RcvdPacketQueue};
+use qbase::{cid::ConnectionId, error::Error, frame::ConnectionCloseFrame, net::Pathway};
+use qinterface::queue::RcvdPacketQueue;
 
 use crate::{ArcLocalCids, Components, path::ArcPaths};
 

@@ -10,6 +10,7 @@ use qbase::{
         ConnectionCloseFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
         ReceiveFrame, SendFrame,
     },
+    net::{Link, Pathway},
     packet,
     packet::{
         CipherPacket, MarshalFrame, PacketWriter,
@@ -26,7 +27,6 @@ use qbase::{
     sid::{ControlConcurrency, Role},
 };
 use qcongestion::{CongestionControl, TrackPackets};
-use qinterface::path::{Link, Pathway};
 use qlog::{
     quic::{
         PacketHeader, PacketType, QuicFrames,
