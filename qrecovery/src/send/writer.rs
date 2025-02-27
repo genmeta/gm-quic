@@ -115,11 +115,11 @@ impl<TX: Clone> AsyncWrite for Writer<TX> {
             Sender::Sending(s) => s.poll_write(cx, buf),
             Sender::DataSent(_) => Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "all data has been written",
+                "EOS has been sent",
             ))),
             Sender::DataRcvd => Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "all data has been received",
+                "All data has been received",
             ))),
             Sender::ResetSent(reset) => {
                 Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, *reset)))
