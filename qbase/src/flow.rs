@@ -1,7 +1,7 @@
 use std::{
     ops::{Deref, DerefMut},
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     task::Waker,
@@ -107,24 +107,39 @@ impl<TX> ArcSendControler<TX> {
         }
     }
 
-    /// Return the available size of new data bytes that can be sent to peer.
+    // Get some flow control credit to send fresh flow data.
+    /// The returned value may be smaller than the parameter's intended value.
     /// If some QUIC error occured, it would return the error directly.
     ///
     /// # Note
     ///
-    /// After obtaining flow control,
-    /// it is likely that new stream data will be sent subsequently,
-    /// and then updating the flow control.
-    /// During this process,
-    /// other sending tasks must not modify the flow control simultaneously.
-    /// Therefore, the flow controller in the period between obtaining flow control
-    /// and finally updating(or maybe not) the flow control should be exclusive.
-    pub fn credit(&self) -> Result<Credit<'_, TX>, QuicError> {
-        let guard = self.0.lock().unwrap();
-        if let Err(e) = guard.deref() {
-            return Err(e.clone());
+    /// After obtaining the flow control,
+    /// the traffic credit is considered to be consumed immediately.
+    /// The unused flow control quota for this send will be returned to the sending controller.
+    /// This design avoids the sending task’s exclusive access to the sending controller.
+    pub fn credit(&self, quota: usize) -> Result<Credit<'_, TX>, QuicError>
+    where
+        TX: SendFrame<DataBlockedFrame>,
+    {
+        match self.0.lock().unwrap().as_mut() {
+            Ok(inner) => {
+                let avaliable = (inner.max_data - inner.sent_data).min(quota as u64);
+                inner.sent_data += avaliable;
+                if inner.sent_data == inner.max_data && !inner.blocking {
+                    inner.blocking = true;
+                    inner.broker.send_frame([DataBlockedFrame::new(
+                        VarInt::from_u64(inner.max_data).expect(
+                            "max_data of flow controller is very very hard to exceed 2^62 - 1",
+                        ),
+                    )]);
+                }
+                Ok(Credit {
+                    available: avaliable as usize,
+                    controller: self,
+                })
+            }
+            Err(e) => Err(e.clone()),
         }
-        Ok(Credit(guard))
     }
 
     /// Register a waker to be woken up when the flow control limit is increased.
@@ -174,15 +189,15 @@ impl<TX> ReceiveFrame<MaxDataFrame> for ArcSendControler<TX> {
 /// As mentioned in the [`ArcSendControler::credit`] method,
 /// the flow controller in the period between obtaining flow control
 /// and finally updating(or maybe not) the flow control should be exclusive.
-pub struct Credit<'a, TX>(MutexGuard<'a, Result<SendControler<TX>, QuicError>>);
+pub struct Credit<'a, TX> {
+    available: usize,
+    controller: &'a ArcSendControler<TX>,
+}
 
 impl<TX> Credit<'_, TX> {
     /// Return the available amount of new stream data that can be sent.
     pub fn available(&self) -> usize {
-        match self.0.deref() {
-            Ok(inner) => (inner.max_data - inner.sent_data) as usize,
-            Err(_) => unreachable!(),
-        }
+        self.available
     }
 }
 
@@ -192,20 +207,14 @@ where
 {
     /// Updates the amount of new data sent.
     pub fn post_sent(&mut self, amount: usize) {
-        match self.0.deref_mut() {
-            Ok(inner) => {
-                debug_assert!(inner.sent_data + amount as u64 <= inner.max_data);
-                inner.sent_data += amount as u64;
-                if inner.sent_data == inner.max_data && !inner.blocking {
-                    inner.blocking = true;
-                    inner.broker.send_frame([DataBlockedFrame::new(
-                        VarInt::from_u64(inner.max_data).expect(
-                            "max_data of flow controller is very very hard to exceed 2^62 - 1",
-                        ),
-                    )]);
-                }
-            }
-            Err(_) => unreachable!(),
+        self.available -= amount;
+    }
+}
+
+impl<TX> Drop for Credit<'_, TX> {
+    fn drop(&mut self) {
+        if let Ok(inner) = self.controller.0.lock().unwrap().as_mut() {
+            inner.sent_data -= self.available as u64;
         }
     }
 }
@@ -361,13 +370,14 @@ impl<TX: Clone> FlowController<TX> {
         self.sender.increase_limit(snd_wnd);
     }
 
-    /// Returns the connection-level flow controller in the sending direction.
-    ///
-    /// Remember, the flow control for sending is not reentrant.
-    /// Each time sending data, the flow control is locked, not allowing updates,
-    /// nor allowing other sending tasks to acquire it again in the middle.
-    pub fn send_limit(&self) -> Result<Credit<'_, TX>, QuicError> {
-        self.sender.credit()
+    /// Get some flow control credit to send fresh flow data.
+    /// The returned value may be smaller than the parameter's intended value.
+    /// If some QUIC error occured, it would return the error directly.
+    pub fn send_limit(&self, quota: usize) -> Result<Credit<'_, TX>, QuicError>
+    where
+        TX: SendFrame<DataBlockedFrame>,
+    {
+        self.sender.credit(quota)
     }
 
     /// Handles the error event of the QUIC connection.
@@ -412,7 +422,7 @@ mod tests {
     fn test_send_controler() {
         let broker = SendControllerBroker::default();
         let controler = ArcSendControler::new(100, broker.clone());
-        let mut credit = controler.credit().unwrap();
+        let mut credit = controler.credit(200).unwrap();
         assert_eq!(credit.available(), 100);
         credit.post_sent(50);
         assert_eq!(credit.available(), 50);
@@ -424,7 +434,7 @@ mod tests {
         assert_eq!(broker.lock().unwrap().len(), 1);
         assert_eq!(broker.lock().unwrap()[0].limit(), 100);
 
-        let credit = controler.credit().unwrap();
+        let credit = controler.credit(1).unwrap();
         assert_eq!(credit.available(), 0);
         drop(credit);
 
@@ -453,7 +463,7 @@ mod tests {
                 .is_empty()
         );
 
-        let mut credit = controler.credit().unwrap();
+        let mut credit = controler.credit(200).unwrap();
         assert_eq!(credit.available(), 100);
         credit.post_sent(50);
         assert_eq!(credit.available(), 50);
