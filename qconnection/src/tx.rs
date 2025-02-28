@@ -445,7 +445,7 @@ impl<'a> Future for PrepareTransaction<'a> {
             }
         };
 
-        let flow_limit = match self.flow_ctrl.send_limit() {
+        let flow_limit = match self.flow_ctrl.send_limit(send_quota) {
             Ok(flow_limit) => flow_limit,
             Err(_error) => return Poll::Ready(None),
         };
