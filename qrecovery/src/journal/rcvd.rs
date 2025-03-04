@@ -1,12 +1,10 @@
 use std::{
-    collections::HashMap,
     sync::{Arc, RwLock},
     time::Instant,
 };
 
 use qbase::{
     frame::{AckFrame, io::WriteFrame},
-    net::Pathway,
     packet::PacketNumber,
     util::IndexDeque,
     varint::{VARINT_MAX, VarInt},
@@ -47,22 +45,6 @@ impl From<InvalidPacketNumber> for PacketDroppedTrigger {
     }
 }
 
-// 多路径轮转收包记录
-#[derive(Debug, Default)]
-struct Rotation {
-    paths_largest_pn: HashMap<Pathway, u64>,
-}
-
-impl Rotation {
-    fn rotate_to(&mut self, pathway: &Pathway, largest_pn: u64) -> u64 {
-        self.paths_largest_pn.insert(*pathway, largest_pn);
-        if largest_pn == u64::MAX {
-            self.paths_largest_pn.remove(pathway);
-        }
-        self.paths_largest_pn.values().min().copied().unwrap_or(0)
-    }
-}
-
 /// 纯碎的一个收包记录，主要用于：
 /// - 记录包有无收到
 /// - 根据某个largest pktno，生成ack frame（ack frame不能超过buf大小）
@@ -70,14 +52,12 @@ impl Rotation {
 #[derive(Debug, Default)]
 struct RcvdJournal {
     queue: IndexDeque<State, VARINT_MAX>,
-    rotation: Rotation,
 }
 
 impl RcvdJournal {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             queue: IndexDeque::with_capacity(capacity),
-            rotation: Rotation::default(),
         }
     }
 
@@ -208,9 +188,8 @@ impl RcvdJournal {
         Some(buf_len - buf.len())
     }
 
-    fn rotate_to(&mut self, pathway: &Pathway, largest_pn: u64) {
-        let min_pn = self.rotation.rotate_to(pathway, largest_pn);
-        let n = min_pn.saturating_sub(self.queue.offset()) as usize;
+    fn drain_to(&mut self, largest_pn: u64) {
+        let n = largest_pn.saturating_sub(self.queue.offset()) as usize;
         self.queue.advance(n)
     }
 }
@@ -292,8 +271,8 @@ impl ArcRcvdJournal {
             .read_ack_frame_util(buf, largest, recv_time)
     }
 
-    pub fn rotate_to(&self, pathway: Pathway, largest_pn: u64) {
-        self.inner.write().unwrap().rotate_to(&pathway, largest_pn);
+    pub fn drain_to(&self, largest_pn: u64) {
+        self.inner.write().unwrap().drain_to(largest_pn);
     }
 }
 
@@ -320,31 +299,17 @@ mod tests {
             &State { is_received: true }
         );
 
-        let pathway1 = Pathway::new(
-            "127.0.0.1:12345".parse().unwrap(),
-            "127.0.0.1:54321".parse().unwrap(),
-        );
-        let pathway2 = Pathway::new(
-            "127.0.0.1:12346".parse().unwrap(),
-            "127.0.0.1:64321".parse().unwrap(),
-        );
-        assert_eq!(records.decode_pn(PacketNumber::encode(30, 0)), Ok(30));
-        records.register_pn(30);
-        records.rotate_to(pathway1, 20);
-        assert_eq!(records.inner.read().unwrap().queue.len(), 11);
+        records.register_pn(10);
+        records.drain_to(4);
 
-        records.rotate_to(pathway2, 10);
-        assert_eq!(records.inner.read().unwrap().queue.len(), 11);
+        assert_eq!(records.inner.read().unwrap().queue.len(), 7);
 
-        records.rotate_to(pathway2, 25);
-        assert_eq!(records.inner.read().unwrap().queue.len(), 11);
+        records.register_pn(15);
 
-        records.rotate_to(pathway1, 23);
-        assert_eq!(records.inner.read().unwrap().queue.len(), 8);
-        assert_eq!(
-            records.decode_pn(PacketNumber::encode(9, 0)),
-            Err(InvalidPacketNumber::TooOld)
-        );
+        assert_eq!(records.inner.read().unwrap().queue.len(), 12);
+        records.drain_to(15);
+
+        assert_eq!(records.inner.read().unwrap().queue.len(), 1);
     }
 
     #[test]
@@ -368,10 +333,7 @@ mod tests {
             queue.insert(idx, rcvd_state).unwrap();
         }
 
-        let rcvd_jornal = RcvdJournal {
-            queue,
-            rotation: Rotation::default(),
-        };
+        let rcvd_jornal = RcvdJournal { queue };
 
         let ack = rcvd_jornal
             .gen_ack_frame_util(52, Instant::now(), 1000)

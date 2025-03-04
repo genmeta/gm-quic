@@ -116,6 +116,7 @@ impl Path {
 impl Drop for Path {
     fn drop(&mut self) {
         self.response_rcvbuf.dismiss();
+        self.cc().stop();
         self.cc.1.abort();
     }
 }
