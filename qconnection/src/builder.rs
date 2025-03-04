@@ -509,6 +509,7 @@ impl Components {
 
                 let cc = ArcCC::new(
                     pathway,
+                    self.paths.erased(),
                     CongestionAlgorithm::NewReno,
                     Duration::from_micros(max_ack_delay as _),
                     [

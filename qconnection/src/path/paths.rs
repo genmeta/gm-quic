@@ -7,7 +7,7 @@ use qbase::{
     error::{Error, ErrorKind},
     net::Pathway,
 };
-use qcongestion::CongestionControl;
+use qcongestion::{CongestionControl, MiniHeap};
 use tokio::task::AbortHandle;
 
 use super::Path;
@@ -39,6 +39,7 @@ impl PathContext {
 pub struct ArcPaths {
     inner: Arc<DashMap<Pathway, PathContext>>,
     broker: ArcEventBroker,
+    erased: Arc<[MiniHeap; 3]>,
 }
 
 impl ArcPaths {
@@ -46,6 +47,7 @@ impl ArcPaths {
         Self {
             inner: Default::default(),
             broker: event_broker,
+            erased: Default::default(),
         }
     }
 
@@ -75,5 +77,9 @@ impl ArcPaths {
             .iter()
             .map(|p| p.cc().pto_time(Epoch::Data))
             .max()
+    }
+
+    pub fn erased(&self) -> Arc<[MiniHeap; 3]> {
+        self.erased.clone()
     }
 }

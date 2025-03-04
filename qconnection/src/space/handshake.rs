@@ -250,8 +250,8 @@ impl TrackPackets for HandshakeSpace {
         }
     }
 
-    fn rotate_to(&self, pathway: Pathway, pn: u64) {
-        self.journal.of_rcvd_packets().rotate_to(pathway, pn);
+    fn drain_to(&self, pn: u64) {
+        self.journal.of_rcvd_packets().drain_to(pn);
     }
 }
 
