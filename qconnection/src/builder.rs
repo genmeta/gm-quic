@@ -508,6 +508,7 @@ impl Components {
                 let max_ack_delay = self.parameters.local()?.max_ack_delay().into_inner();
 
                 let cc = ArcCC::new(
+                    pathway,
                     CongestionAlgorithm::NewReno,
                     Duration::from_micros(max_ack_delay as _),
                     [
