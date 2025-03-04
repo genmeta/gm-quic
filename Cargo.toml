@@ -32,6 +32,7 @@ keywords = ["async", "quic", "http3"]
 categories = ["network-programming", "asynchronous"]
 
 [workspace.dependencies]
+bitflags = "2"
 bytes = "1"
 cfg-if = "1"
 dashmap = "6"
