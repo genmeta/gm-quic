@@ -297,8 +297,8 @@ impl TrackPackets for InitialSpace {
         }
     }
 
-    fn rotate(&self, pns: &mut dyn Iterator<Item = u64>) {
-        self.journal.of_rcvd_packets().rotate(pns);
+    fn rotate_to(&self, pathway: Pathway, pn: u64) {
+        self.journal.of_rcvd_packets().rotate_to(pathway, pn);
     }
 }
 

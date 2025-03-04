@@ -5,7 +5,7 @@ use std::{
 };
 
 pub use congestion::{ArcCC, CongestionAlgorithm, MSS};
-use qbase::{Epoch, frame::AckFrame};
+use qbase::{Epoch, frame::AckFrame, net::Pathway};
 use qlog::quic::recovery::PacketLostTrigger;
 use tokio::{sync::Notify, task::AbortHandle};
 
@@ -74,7 +74,7 @@ pub trait TrackPackets: Send + Sync {
     /// Retires a packet record with the specified packet number in recv buffer.
     /// # Parameters
     /// - `pn`: The packet number of the packet record to retire.
-    fn rotate(&self, pns: &mut dyn Iterator<Item = u64>);
+    fn rotate_to(&self, pathway: Pathway, pn: u64);
 }
 
 /// The [`ObserveHandshake`] trait defines the interface for observing the handshake state.

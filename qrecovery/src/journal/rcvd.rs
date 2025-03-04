@@ -1,10 +1,12 @@
 use std::{
+    collections::HashMap,
     sync::{Arc, RwLock},
     time::Instant,
 };
 
 use qbase::{
     frame::{AckFrame, io::WriteFrame},
+    net::Pathway,
     packet::PacketNumber,
     util::IndexDeque,
     varint::{VARINT_MAX, VarInt},
@@ -13,32 +15,14 @@ use qlog::quic::transport::PacketDroppedTrigger;
 use thiserror::Error;
 
 /// Packet有收到/没收到2种状态，状态也有有效/失活2种状态，失活的可以滑走
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct State {
-    is_active: bool,
     is_received: bool,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            is_active: true,
-            is_received: false,
-        }
-    }
 }
 
 impl State {
     fn new_rcvd() -> Self {
-        Self {
-            is_active: true,
-            is_received: true,
-        }
-    }
-
-    #[inline]
-    fn inactivate(&mut self) {
-        self.is_active = false;
+        Self { is_received: true }
     }
 }
 
@@ -63,6 +47,22 @@ impl From<InvalidPacketNumber> for PacketDroppedTrigger {
     }
 }
 
+// 多路径轮转收包记录
+#[derive(Debug, Default)]
+struct Rotation {
+    paths_largest_pn: HashMap<Pathway, u64>,
+}
+
+impl Rotation {
+    fn rotate_to(&mut self, pathway: &Pathway, largest_pn: u64) -> u64 {
+        self.paths_largest_pn.insert(*pathway, largest_pn);
+        if largest_pn == u64::MAX {
+            self.paths_largest_pn.remove(pathway);
+        }
+        self.paths_largest_pn.values().min().copied().unwrap_or(0)
+    }
+}
+
 /// 纯碎的一个收包记录，主要用于：
 /// - 记录包有无收到
 /// - 根据某个largest pktno，生成ack frame（ack frame不能超过buf大小）
@@ -70,12 +70,14 @@ impl From<InvalidPacketNumber> for PacketDroppedTrigger {
 #[derive(Debug, Default)]
 struct RcvdJournal {
     queue: IndexDeque<State, VARINT_MAX>,
+    rotation: Rotation,
 }
 
 impl RcvdJournal {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             queue: IndexDeque::with_capacity(capacity),
+            rotation: Rotation::default(),
         }
     }
 
@@ -206,13 +208,9 @@ impl RcvdJournal {
         Some(buf_len - buf.len())
     }
 
-    fn rotate(&mut self, pns: impl IntoIterator<Item = u64>) {
-        for pn in pns.into_iter() {
-            if let Some(record) = self.queue.get_mut(pn) {
-                record.inactivate();
-            }
-        }
-        let n = self.queue.iter().take_while(|s| !s.is_active).count();
+    fn rotate_to(&mut self, pathway: &Pathway, largest_pn: u64) {
+        let min_pn = self.rotation.rotate_to(pathway, largest_pn);
+        let n = min_pn.saturating_sub(self.queue.offset()) as usize;
         self.queue.advance(n)
     }
 }
@@ -294,8 +292,8 @@ impl ArcRcvdJournal {
             .read_ack_frame_util(buf, largest, recv_time)
     }
 
-    pub fn rotate(&self, pns: impl IntoIterator<Item = u64>) {
-        self.inner.write().unwrap().rotate(pns);
+    pub fn rotate_to(&self, pathway: Pathway, largest_pn: u64) {
+        self.inner.write().unwrap().rotate_to(&pathway, largest_pn);
     }
 }
 
@@ -315,27 +313,34 @@ mod tests {
 
         assert_eq!(
             records.inner.read().unwrap().queue.get(0).unwrap(),
-            &State {
-                is_active: true,
-                is_received: false
-            }
+            &State { is_received: false }
         );
         assert_eq!(
             records.inner.read().unwrap().queue.get(1).unwrap(),
-            &State {
-                is_active: true,
-                is_received: true
-            }
+            &State { is_received: true }
         );
 
+        let pathway1 = Pathway::new(
+            "127.0.0.1:12345".parse().unwrap(),
+            "127.0.0.1:54321".parse().unwrap(),
+        );
+        let pathway2 = Pathway::new(
+            "127.0.0.1:12346".parse().unwrap(),
+            "127.0.0.1:64321".parse().unwrap(),
+        );
         assert_eq!(records.decode_pn(PacketNumber::encode(30, 0)), Ok(30));
         records.register_pn(30);
-        records.rotate(5..10);
-        assert_eq!(records.inner.read().unwrap().queue.len(), 31);
+        records.rotate_to(pathway1, 20);
+        assert_eq!(records.inner.read().unwrap().queue.len(), 11);
 
-        records.rotate(0..5);
-        assert_eq!(records.inner.read().unwrap().queue.len(), 21);
+        records.rotate_to(pathway2, 10);
+        assert_eq!(records.inner.read().unwrap().queue.len(), 11);
 
+        records.rotate_to(pathway2, 25);
+        assert_eq!(records.inner.read().unwrap().queue.len(), 11);
+
+        records.rotate_to(pathway1, 23);
+        assert_eq!(records.inner.read().unwrap().queue.len(), 8);
         assert_eq!(
             records.decode_pn(PacketNumber::encode(9, 0)),
             Err(InvalidPacketNumber::TooOld)
@@ -344,14 +349,8 @@ mod tests {
 
     #[test]
     fn gen_ack_frame() {
-        let rcvd_state = State {
-            is_active: true,
-            is_received: true,
-        };
-        let unrcvd_state = State {
-            is_active: true,
-            is_received: false,
-        };
+        let rcvd_state = State { is_received: true };
+        let unrcvd_state = State { is_received: false };
         let mut queue = IndexDeque::with_capacity(45);
         for idx in 1..11 {
             queue.insert(idx, rcvd_state).unwrap();
@@ -369,7 +368,10 @@ mod tests {
             queue.insert(idx, rcvd_state).unwrap();
         }
 
-        let rcvd_jornal = RcvdJournal { queue };
+        let rcvd_jornal = RcvdJournal {
+            queue,
+            rotation: Rotation::default(),
+        };
 
         let ack = rcvd_jornal
             .gen_ack_frame_util(52, Instant::now(), 1000)
