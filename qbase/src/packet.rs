@@ -224,7 +224,8 @@ pub struct PlainPacket {
     in_flight: bool,
     // Packets containing only frames with [`Spec::P`] can be used to
     // probe new network paths during connection migration.
-    _probe_new_path: bool,
+    #[getset(get_copy = "pub")]
+    probe_new_path: bool,
 }
 
 impl PlainPacket {
@@ -295,7 +296,7 @@ impl<'b> PacketWriter<'b> {
             keys,
             ack_eliciting: false,
             in_flight: false,
-            _probe_new_path: false,
+            probe_new_path: false,
         };
         Some(Self { buffer, packet })
     }
@@ -333,7 +334,7 @@ impl<'b> PacketWriter<'b> {
             keys,
             ack_eliciting: false,
             in_flight: false,
-            _probe_new_path: false,
+            probe_new_path: false,
         };
         Some(Self { buffer, packet })
     }
@@ -430,7 +431,7 @@ where
         let specs = frame.frame_type().specs();
         self.ack_eliciting |= !specs.contain(Spec::NonAckEliciting);
         self.in_flight |= !specs.contain(Spec::CongestionControlFree);
-
+        self.probe_new_path |= !specs.contain(Spec::ProbeNewPath);
         self.put_frame(&frame);
         Some(frame)
     }

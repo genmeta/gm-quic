@@ -487,7 +487,7 @@ impl Transaction<'_> {
         let mut written = 0;
         let mut last_level: Option<LevelState> = None;
         let mut last_level_size = 0;
-
+        let mut is_initial = false;
         if let Some((mid_pkt, ack)) = spaces
             .initial()
             .try_assemble(self, &mut datagram[written..])
@@ -495,6 +495,7 @@ impl Transaction<'_> {
             self.constraints
                 .commit(mid_pkt.packet_len(), mid_pkt.in_flight());
             last_level_size = mid_pkt.packet_len();
+            is_initial = true;
             last_level = Some(LevelState {
                 epoch: Epoch::Initial,
                 pkt: mid_pkt,
@@ -594,7 +595,11 @@ impl Transaction<'_> {
         }
 
         if let Some(final_level) = last_level {
-            let packet = final_level.pkt.fill_and_complete(&mut datagram[written..]);
+            let packet = if is_initial || final_level.pkt.probe_new_path() {
+                final_level.pkt.fill_and_complete(&mut datagram[written..])
+            } else {
+                final_level.pkt.complete(&mut datagram[written..])
+            };
 
             written += packet.size();
             self.cc.on_pkt_sent(
@@ -628,7 +633,11 @@ impl Transaction<'_> {
                 buffer,
             )
             .map_or(0, |(packet, ack, fresh_bytes)| {
-                let packet = packet.fill_and_complete(buffer);
+                let packet = if packet.probe_new_path() {
+                    packet.complete(buffer)
+                } else {
+                    packet.fill_and_complete(buffer)
+                };
                 self.constraints.commit(packet.size(), packet.in_flight());
                 self.flow_limit.post_sent(fresh_bytes);
                 self.cc.on_pkt_sent(
