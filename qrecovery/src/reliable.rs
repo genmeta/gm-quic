@@ -8,6 +8,7 @@ use bytes::BufMut;
 use enum_dispatch::enum_dispatch;
 use qbase::{
     frame::{BeFrame, CryptoFrame, ReliableFrame, SendFrame, StreamFrame, io::WriteFrame},
+    net::SendLimiter,
     packet::MarshalFrame,
 };
 
@@ -70,19 +71,23 @@ impl ArcReliableFrameDeque {
         }
     }
 
-    pub fn try_load_frames_into<P>(&self, packet: &mut P)
+    pub fn try_load_frames_into<P>(&self, packet: &mut P) -> Result<(), SendLimiter>
     where
         P: BufMut + MarshalFrame<ReliableFrame>,
     {
         let mut deque = self.0.lock().unwrap();
+        if deque.is_empty() {
+            return Err(SendLimiter::DATA_UNAVAILABLE);
+        }
         while let Some(frame) = deque.front() {
             if frame.max_encoding_size() > packet.remaining_mut()
                 && frame.encoding_size() > packet.remaining_mut()
             {
-                return;
+                return Err(SendLimiter::BUFFER_TOO_SMALL);
             }
             packet.dump_frame(deque.pop_front().unwrap());
         }
+        Ok(())
     }
 }
 

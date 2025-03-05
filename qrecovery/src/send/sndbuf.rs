@@ -5,6 +5,8 @@ use std::{
     ops::Range,
 };
 
+use qbase::net::SendLimiter;
+
 /// To indicate the state of a data segment, it is colored.
 #[derive(Default, PartialEq, Eq, Clone, Copy, Debug)]
 enum Color {
@@ -124,23 +126,36 @@ impl BufMap {
 
     // 挑选Lost/Pending的数据发送。越靠前的数据，越高优先级发送；
     // 丢包重传的数据，相比于Pending数据更靠前，因此具有更高的优先级。
-    fn pick<P>(&mut self, predicate: P, flow_limit: usize) -> Option<(Range<u64>, bool)>
+    fn pick<P>(
+        &mut self,
+        predicate: P,
+        flow_limit: usize,
+    ) -> Result<(Range<u64>, bool), SendLimiter>
     where
         P: Fn(u64) -> Option<usize>,
     {
+        let mut limiter = SendLimiter::DATA_UNAVAILABLE;
         // 先找到第一个能发送的区间，并将该区间染成Flight，返回原State
         self.0
             .iter_mut()
             .enumerate()
             .find(|(.., state)| {
                 // 选择Pending的区间（如果流控允许），或者选择Lost的区间
-                (matches!(state.color(), Color::Pending) && flow_limit != 0)
-                    || matches!(state.color(), Color::Lost)
+                match state.color() {
+                    Color::Pending if flow_limit != 0 => return true,
+                    Color::Lost => return true,
+                    Color::Pending => limiter |= SendLimiter::FLOW_CONTROL,
+                    _ => limiter |= SendLimiter::DATA_UNAVAILABLE,
+                }
+                false
             })
             .and_then(|(idx, state)| {
                 // 如果区间的offset不符合predicate，就不发送这一段
                 // 其实选择到的第一段数据数据的offset已经是最小的了，如果最小的offset都不能发送，那么后面片段肯定也不能发送
-                let available = predicate(state.offset())?;
+                let Some(available) = predicate(state.offset()) else {
+                    limiter |= SendLimiter::BUFFER_TOO_SMALL;
+                    return None;
+                };
 
                 let allowance = if state.color() == Color::Lost {
                     // 重传不受流量控制限制
@@ -180,6 +195,7 @@ impl BufMap {
                 }
                 (start..end, color == Color::Pending)
             })
+            .ok_or(limiter)
     }
 
     // 收到了ack确认，确认的数据不需再发送，对于头部连续确认的数据，就可以删掉。
@@ -610,7 +626,7 @@ impl SendBuf {
     /// * `bool`: whether the data is new(not retransmitted).
     /// * `(&[u8], &[u8])`: the data picked up, duo to the internal buffer is a ring buffer, the data
     ///   picked up is in two parts, the begin of the second slice are the end of the first slice
-    pub fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Option<Data>
+    pub fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Result<Data, SendLimiter>
     where
         P: Fn(u64) -> Option<usize>,
     {
@@ -659,6 +675,8 @@ impl SendBuf {
 
 #[cfg(test)]
 mod tests {
+    use qbase::net::SendLimiter;
+
     use super::{BufMap, Color, State};
 
     #[test]
@@ -708,7 +726,7 @@ mod tests {
     fn test_bufmap_pick() {
         let mut buf_map = BufMap::default();
         let range = buf_map.pick(|_| Some(20), usize::MAX);
-        assert_eq!(range, None);
+        assert_eq!(range, Err(SendLimiter::DATA_UNAVAILABLE));
         assert!(buf_map.0.is_empty());
 
         buf_map.extend_to(200);
@@ -786,7 +804,7 @@ mod tests {
         );
 
         let result = buf_map.pick(|_| Some(130), usize::MAX);
-        assert!(result.is_none());
+        assert!(result.is_err());
         assert_eq!(
             buf_map.0,
             vec![
@@ -802,10 +820,10 @@ mod tests {
         buf_map.extend_to(200);
         assert_eq!(buf_map.sent(), 0);
 
-        buf_map.pick(|_| Some(120), usize::MAX);
+        assert!(buf_map.pick(|_| Some(120), usize::MAX).is_ok());
         assert_eq!(buf_map.sent(), 120);
 
-        buf_map.pick(|_| Some(80), usize::MAX);
+        assert!(buf_map.pick(|_| Some(80), usize::MAX).is_ok());
         assert_eq!(buf_map.sent(), 200);
     }
 
@@ -813,7 +831,7 @@ mod tests {
     fn test_bufmap_recved() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(|_| Some(120), usize::MAX);
+        assert!(buf_map.pick(|_| Some(120), usize::MAX).is_ok());
         buf_map.ack_rcvd(&(0..20));
         assert_eq!(
             buf_map.0,
@@ -888,7 +906,7 @@ mod tests {
             ]
         );
 
-        buf_map.pick(|_| Some(130), usize::MAX);
+        assert!(buf_map.pick(|_| Some(130), usize::MAX).is_ok());
         assert_eq!(
             buf_map.0,
             vec![
@@ -922,7 +940,7 @@ mod tests {
     fn test_bufmap_invalid_recved() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(|_| Some(120), usize::MAX);
+        assert!(buf_map.pick(|_| Some(120), usize::MAX).is_ok());
         buf_map.ack_rcvd(&(20..40));
         buf_map.0.insert(2, State::encode(30, Color::Pending));
         assert_eq!(
@@ -944,7 +962,7 @@ mod tests {
     fn test_bufmap_recved_overflow() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(|_| Some(120), usize::MAX);
+        assert!(buf_map.pick(|_| Some(120), usize::MAX).is_ok());
         assert_eq!(
             buf_map.0,
             vec![
@@ -960,7 +978,7 @@ mod tests {
     fn test_bufmap_recved_over_end() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(|_| Some(200), usize::MAX);
+        assert!(buf_map.pick(|_| Some(200), usize::MAX).is_ok());
         assert_eq!(buf_map.0, vec![State::encode(0, Color::Pending),]);
         buf_map.ack_rcvd(&(0..201));
     }
@@ -969,7 +987,7 @@ mod tests {
     fn test_bufmap_lost() {
         let mut buf_map = BufMap::default();
         buf_map.extend_to(200);
-        buf_map.pick(|_| Some(120), usize::MAX);
+        assert!(buf_map.pick(|_| Some(120), usize::MAX).is_ok());
         assert_eq!(
             buf_map.0,
             vec![

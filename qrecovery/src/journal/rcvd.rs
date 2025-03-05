@@ -4,7 +4,8 @@ use std::{
 };
 
 use qbase::{
-    frame::{AckFrame, io::WriteFrame},
+    frame::AckFrame,
+    net::SendLimiter,
     packet::PacketNumber,
     util::IndexDeque,
     varint::{VARINT_MAX, VarInt},
@@ -92,7 +93,7 @@ impl RcvdJournal {
         largest: u64,
         rcvd_time: Instant,
         mut capacity: usize,
-    ) -> Option<AckFrame> {
+    ) -> Result<AckFrame, SendLimiter> {
         let mut pkts = self
             .queue
             .iter_with_idx()
@@ -106,7 +107,7 @@ impl RcvdJournal {
         // Frame type + Largest Acknowledged + First Ack Range + Ack Range Count
         let min_len = 1 + largest.encoding_size() + delay.encoding_size() + 1 + 1;
         if capacity < min_len {
-            return None;
+            return Err(SendLimiter::BUFFER_TOO_SMALL);
         }
         capacity -= min_len;
 
@@ -172,20 +173,7 @@ impl RcvdJournal {
                 ranges.push((gap, ack));
             }
         }
-        Some(AckFrame::new(largest, delay, first_range, ranges, None))
-    }
-
-    fn read_ack_frame_util(
-        &self,
-        mut buf: &mut [u8],
-        largest: u64,
-        recv_time: Instant,
-    ) -> Option<usize> {
-        // TODO: 未来替换成，不用申请Vec先生成AckFrame，从largest往后开始成对生成
-        let buf_len = buf.len();
-        let ack_frame = self.gen_ack_frame_util(largest, recv_time, buf_len)?;
-        buf.put_frame(&ack_frame);
-        Some(buf_len - buf.len())
+        Ok(AckFrame::new(largest, delay, first_range, ranges, None))
     }
 
     fn drain_to(&mut self, largest_pn: u64) {
@@ -242,33 +230,21 @@ impl ArcRcvdJournal {
         self.inner.write().unwrap().on_rcvd_pn(pn);
     }
 
-    pub fn gen_ack_frame_util(
-        &self,
-        largest: u64,
-        rcvd_time: Instant,
-        capacity: usize,
-    ) -> Option<AckFrame> {
-        self.inner
-            .read()
-            .unwrap()
-            .gen_ack_frame_util(largest, rcvd_time, capacity)
-    }
-
     /// Generate an ack frame which ack the received frames until `largest`.
     ///
     /// This method will write an ack frame into the `buf`. The `Ack Delay` field of the frame is
     /// the argument `recv_time` as microsec, the `Largest Acknowledged` field of the frame is the
     /// `largest` frame, the ranges in ack frame will not exceed `largest`.
-    pub fn read_ack_frame_util(
+    pub fn gen_ack_frame_util(
         &self,
-        buf: &mut [u8],
         largest: u64,
-        recv_time: Instant,
-    ) -> Option<usize> {
+        rcvd_time: Instant,
+        capacity: usize,
+    ) -> Result<AckFrame, SendLimiter> {
         self.inner
             .read()
             .unwrap()
-            .read_ack_frame_util(buf, largest, recv_time)
+            .gen_ack_frame_util(largest, rcvd_time, capacity)
     }
 
     pub fn drain_to(&self, largest_pn: u64) {

@@ -8,6 +8,7 @@ use std::{
 use qbase::{
     error::Error,
     frame::{ResetStreamError, ResetStreamFrame, SendFrame},
+    net::SendLimiter,
     sid::StreamId,
     util::DescribeData,
     varint::VarInt,
@@ -208,7 +209,11 @@ impl<TX> SendingSender<TX> {
         }
     }
 
-    pub(super) fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Option<StreamData>
+    pub(super) fn pick_up<P>(
+        &mut self,
+        predicate: P,
+        flow_limit: usize,
+    ) -> Result<StreamData, SendLimiter>
     where
         P: Fn(u64) -> Option<usize>,
     {
@@ -220,12 +225,12 @@ impl<TX> SendingSender<TX> {
                 let is_eos = fin_pos == Some(offset + data.len() as u64);
                 (offset, is_fresh, data, is_eos)
             })
-            .or_else(|| {
-                if Some(sent) == fin_pos {
-                    let _ = predicate(sent)?;
-                    Some((sent, false, (&[], &[]), true))
+            .or_else(|limiter| {
+                if fin_pos.is_some_and(|fin_pos| fin_pos == sent) {
+                    predicate(sent).ok_or(limiter | SendLimiter::BUFFER_TOO_SMALL)?;
+                    Ok((sent, false, (&[], &[]), true))
                 } else {
-                    None
+                    Err(limiter)
                 }
             })
     }
@@ -333,7 +338,11 @@ pub struct DataSentSender<TX> {
 }
 
 impl<TX> DataSentSender<TX> {
-    pub(super) fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Option<StreamData>
+    pub(super) fn pick_up<P>(
+        &mut self,
+        predicate: P,
+        flow_limit: usize,
+    ) -> Result<StreamData, SendLimiter>
     where
         P: Fn(u64) -> Option<usize>,
     {
@@ -589,7 +598,7 @@ mod tests {
         // Test pick_up with empty buffer
         let predicate = |_| Some(100);
         let result = sender.pick_up(predicate, 1000);
-        assert!(result.is_none());
+        assert!(result.is_err());
     }
 
     #[tokio::test]
