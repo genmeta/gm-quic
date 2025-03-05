@@ -10,7 +10,7 @@ use qbase::{
         ConnectionCloseFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
         ReceiveFrame, SendFrame,
     },
-    net::{Link, Pathway, SendLimiter},
+    net::{DataWakers, Link, Pathway, SendLimiter, StreamWakers},
     packet::{
         self, CipherPacket, MarshalFrame, PacketWriter,
         header::{
@@ -40,7 +40,7 @@ use qrecovery::{
 };
 #[cfg(feature = "unreliable")]
 use qunreliable::DatagramFlow;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
 use super::{PlainPacket, ReceivedCipherPacket};
@@ -69,7 +69,6 @@ pub struct DataSpace {
     datagrams: DatagramFlow,
     journal: DataJournal,
     reliable_frames: ArcReliableFrameDeque,
-    sendable: Arc<Notify>,
 }
 
 impl DataSpace {
@@ -78,19 +77,25 @@ impl DataSpace {
         reliable_frames: ArcReliableFrameDeque,
         local_params: &CommonParameters,
         streams_ctrl: Box<dyn ControlConcurrency>,
-        sendable: Arc<Notify>,
+        stream_wakers: StreamWakers,
+        data_wakers: DataWakers,
     ) -> Self {
-        let streams = DataStreams::new(role, local_params, streams_ctrl, reliable_frames.clone());
         Self {
             zero_rtt_keys: ArcKeys::new_pending(),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
             journal: DataJournal::with_capacity(16),
-            crypto_stream: CryptoStream::new(4096, 4096),
-            reliable_frames,
-            streams,
+            crypto_stream: CryptoStream::new(4096, 4096, data_wakers.clone()),
+            reliable_frames: reliable_frames.clone(),
+            streams: DataStreams::new(
+                role,
+                local_params,
+                streams_ctrl,
+                reliable_frames,
+                stream_wakers,
+                data_wakers.clone(),
+            ),
             #[cfg(feature = "unreliable")]
-            datagrams: DatagramFlow::new(1024),
-            sendable,
+            datagrams: DatagramFlow::new(1024, data_wakers),
         }
     }
 
@@ -170,7 +175,10 @@ impl DataSpace {
             .inspect_err(|l| limiter |= *l)
             .unwrap_or_default();
         #[cfg(feature = "unreliable")]
-        self.datagrams.try_load_data_into(&mut packet);
+        let _ = self
+            .datagrams
+            .try_load_data_into(&mut packet)
+            .inspect_err(|l| limiter |= *l);
 
         // 错误是累积的，只有最后发现确实不能组成一个数据包时才真正返回错误
         Ok((packet.interrupt().map_err(|_| limiter)?, fresh_data))
@@ -208,7 +216,7 @@ impl DataSpace {
         let mut limiter = SendLimiter::empty();
 
         let ack = need_ack
-            .ok_or(SendLimiter::DATA_UNAVAILABLE)
+            .ok_or(SendLimiter::NO_UNLIMITED_DATA)
             .and_then(|(largest, rcvd_time)| {
                 let rcvd_journal = self.journal.of_rcvd_packets();
                 let ack_frame =
@@ -242,7 +250,10 @@ impl DataSpace {
             .inspect_err(|l| limiter = *l)
             .unwrap_or_default();
         #[cfg(feature = "unreliable")]
-        self.datagrams.try_load_data_into(&mut packet);
+        let _ = self
+            .datagrams
+            .try_load_data_into(&mut packet)
+            .inspect_err(|l| limiter |= *l);
 
         Ok((packet.interrupt().map_err(|_| limiter)?, ack, fresh_data))
     }
@@ -429,7 +440,7 @@ pub fn spawn_deliver_and_parse(
             .await
         {
             Some(Ok(packet)) => {
-                let path = match components.get_or_create_path(socket, pathway, true) {
+                let path = match components.get_or_try_create_path(socket, pathway, true) {
                     Some(path) => path,
                     None => {
                         packet.drop_on_conenction_closed();
@@ -472,7 +483,7 @@ pub fn spawn_deliver_and_parse(
             .await
         {
             Some(Ok(packet)) => {
-                let path = match components.get_or_create_path(socket, pathway, true) {
+                let path = match components.get_or_try_create_path(socket, pathway, true) {
                     Some(path) => path,
                     None => {
                         packet.drop_on_conenction_closed();
@@ -540,12 +551,10 @@ impl TrackPackets for DataSpace {
                     GuaranteedFrame::Crypto(frame) => {
                         may_lost_frames.extend(Some(&Frame::Crypto(frame, bytes::Bytes::new())));
                         crypto_outgoing.may_loss_data(&frame);
-                        self.sendable.notify_waiters();
                     }
                     GuaranteedFrame::Stream(frame) => {
                         may_lost_frames.extend(Some(&Frame::Stream(frame, bytes::Bytes::new())));
                         self.streams.may_loss_data(&frame);
-                        self.sendable.notify_waiters();
                     }
                     GuaranteedFrame::Reliable(frame) => {
                         may_lost_frames.extend(Some(&frame.clone().into()));

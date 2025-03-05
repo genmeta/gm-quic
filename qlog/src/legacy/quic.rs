@@ -863,6 +863,7 @@ pub enum PacketNumberSpace {
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct PacketHeader {
     packet_type: PacketType,
+    #[builder(default)]
     packet_number: u64,
 
     /// the bit flags of the packet headers (spin bit, key update bit,

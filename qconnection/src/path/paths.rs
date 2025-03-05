@@ -5,7 +5,7 @@ use deref_derive::Deref;
 use qbase::{
     Epoch,
     error::{Error, ErrorKind},
-    net::Pathway,
+    net::{Pathway, SendWakers},
 };
 use qcongestion::{CongestionControl, MiniHeap};
 use tokio::task::AbortHandle;
@@ -36,27 +36,53 @@ impl PathContext {
 }
 
 #[derive(Clone)]
-pub struct ArcPaths {
-    inner: Arc<DashMap<Pathway, PathContext>>,
+pub struct ArcPathContexts {
+    paths: Arc<DashMap<Pathway, PathContext>>,
+    send_wakers: Arc<SendWakers>,
     broker: ArcEventBroker,
     erased: Arc<[MiniHeap; 3]>,
 }
 
-impl ArcPaths {
-    pub fn new(event_broker: ArcEventBroker) -> Self {
+impl ArcPathContexts {
+    pub fn new(send_wakers: Arc<SendWakers>, broker: ArcEventBroker) -> Self {
         Self {
-            inner: Default::default(),
-            broker: event_broker,
+            paths: Default::default(),
+            send_wakers,
+            broker,
             erased: Default::default(),
         }
     }
 
-    pub fn entry(&self, pathway: Pathway) -> dashmap::Entry<'_, Pathway, PathContext> {
-        self.inner.entry(pathway)
+    pub fn get_or_try_create_with<T>(
+        &self,
+        pathway: Pathway,
+        try_create: impl FnOnce() -> Option<(Arc<Path>, T)>,
+    ) -> Option<Arc<Path>>
+    where
+        T: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        match self.paths.entry(pathway) {
+            dashmap::Entry::Occupied(occupied_entry) => Some(occupied_entry.get().path.clone()),
+            dashmap::Entry::Vacant(vacant_entry) => {
+                let (path, task) = try_create()?;
+                self.send_wakers.insert(pathway, path.send_waker());
+                let paths = self.clone();
+                let task = tokio::spawn(async move {
+                    let reason = task.await.unwrap_err();
+                    paths.remove(&pathway, &reason);
+                })
+                .abort_handle();
+                Some(vacant_entry.insert(PathContext { path, task }).clone())
+            }
+        }
+    }
+
+    pub fn get(&self, pathway: &Pathway) -> Option<Arc<Path>> {
+        self.paths.get(pathway).map(|path_ref| path_ref.clone())
     }
 
     pub fn remove(&self, pathway: &Pathway, reason: &str) {
-        if let Some((_, path)) = self.inner.remove(pathway) {
+        if let Some((_, path)) = self.paths.remove(pathway) {
             self.broker
                 .emit(Event::PathInactivated(path.pathway, path.link));
             tracing::warn!(%pathway, reason, "removed path");
@@ -69,11 +95,11 @@ impl ArcPaths {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.paths.is_empty()
     }
 
     pub fn max_pto_duration(&self) -> Option<Duration> {
-        self.inner
+        self.paths
             .iter()
             .map(|p| p.cc().pto_time(Epoch::Data))
             .max()
@@ -81,5 +107,9 @@ impl ArcPaths {
 
     pub fn erased(&self) -> Arc<[MiniHeap; 3]> {
         self.erased.clone()
+    }
+
+    pub fn send_wakers(&self) -> &SendWakers {
+        &self.send_wakers
     }
 }

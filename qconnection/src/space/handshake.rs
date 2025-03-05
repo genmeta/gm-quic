@@ -7,7 +7,7 @@ use qbase::{
     cid::ConnectionId,
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
-    net::{Link, Pathway, SendLimiter},
+    net::{DataWakers, Link, Pathway, SendLimiter},
     packet::{
         CipherPacket, MarshalFrame, PacketWriter,
         header::{
@@ -31,7 +31,7 @@ use qrecovery::{
     journal::{ArcRcvdJournal, HandshakeJournal},
 };
 use rustls::quic::Keys;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
 use super::{AckHandshake, PlainPacket, ReceivedCipherPacket};
@@ -52,16 +52,14 @@ pub struct HandshakeSpace {
     keys: ArcKeys,
     crypto_stream: CryptoStream,
     journal: HandshakeJournal,
-    sendable: Arc<Notify>,
 }
 
 impl HandshakeSpace {
-    pub fn new(sendable: Arc<Notify>) -> Self {
+    pub fn new(data_wakers: DataWakers) -> Self {
         Self {
             keys: ArcKeys::new_pending(),
-            crypto_stream: CryptoStream::new(4096, 4096),
+            crypto_stream: CryptoStream::new(4096, 4096, data_wakers),
             journal: HandshakeJournal::with_capacity(16),
-            sendable,
         }
     }
 
@@ -107,7 +105,7 @@ impl HandshakeSpace {
         let mut limiter = SendLimiter::empty();
 
         let ack = need_ack
-            .ok_or(SendLimiter::DATA_UNAVAILABLE)
+            .ok_or(SendLimiter::NO_UNLIMITED_DATA)
             .and_then(|(largest, rcvd_time)| {
                 let rcvd_journal = self.journal.of_rcvd_packets();
                 let ack_frame =
@@ -168,7 +166,7 @@ pub fn spawn_deliver_and_parse(
     let parse = async move |packet: ReceiveHanshakePacket, pathway, socket| {
         match space.decrypt_packet(packet).await {
             Some(Ok(packet)) => {
-                let path = match components.get_or_create_path(socket, pathway, true) {
+                let path = match components.get_or_try_create_path(socket, pathway, true) {
                     Some(path) => path,
                     None => {
                         packet.drop_on_conenction_closed();
@@ -244,7 +242,6 @@ impl TrackPackets for HandshakeSpace {
                 // for this convert, empty bytes indicates the raw info is not available
                 may_lost_frames.extend(Some(&Frame::Crypto(frame, bytes::Bytes::new())));
                 outgoing.may_loss_data(&frame);
-                self.sendable.notify_waiters();
             }
             qlog::event!(PacketLost {
                 header: PacketHeader {

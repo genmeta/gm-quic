@@ -10,7 +10,7 @@ mod send {
     use bytes::BufMut;
     use qbase::{
         frame::CryptoFrame,
-        net::SendLimiter,
+        net::{DataWakers, SendLimiter},
         packet::MarshalDataFrame,
         util::DescribeData,
         varint::{VARINT_MAX, VarInt},
@@ -24,6 +24,7 @@ mod send {
         sndbuf: SendBuf,
         writable_waker: Option<Waker>,
         flush_waker: Option<Waker>,
+        data_wakers: DataWakers,
     }
 
     impl Sender {
@@ -57,6 +58,7 @@ mod send {
         }
 
         fn may_loss_data(&mut self, crypto_frame: &CryptoFrame) {
+            self.data_wakers.wake_all();
             self.sndbuf.may_loss_data(&crypto_frame.range())
         }
     }
@@ -75,6 +77,7 @@ mod send {
             let remaining = self.sndbuf.remaining_mut();
             if remaining > 0 {
                 let n = std::cmp::min(remaining, buf.len());
+                self.data_wakers.wake_all();
                 Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
             } else {
                 self.writable_waker = Some(cx.waker().clone());
@@ -161,11 +164,12 @@ mod send {
         }
     }
 
-    pub(super) fn create(capacity: usize) -> ArcSender {
+    pub(super) fn create(capacity: usize, data_wakers: DataWakers) -> ArcSender {
         Arc::new(Mutex::new(Sender {
             sndbuf: SendBuf::with_capacity(capacity),
             writable_waker: None,
             flush_waker: None,
+            data_wakers,
         }))
     }
 }
@@ -257,6 +261,7 @@ mod recv {
     }
 }
 
+use qbase::net::DataWakers;
 pub use recv::{CryptoStreamIncoming, CryptoStreamReader};
 pub use send::{CryptoStreamOutgoing, CryptoStreamWriter};
 
@@ -269,9 +274,9 @@ pub struct CryptoStream {
 
 impl CryptoStream {
     /// Create a new instance of [`CryptoStream`] with the given buffer size.
-    pub fn new(sndbuf_size: usize, _rcvbuf_size: usize) -> Self {
+    pub fn new(sndbuf_size: usize, _rcvbuf_size: usize, data_wakers: DataWakers) -> Self {
         Self {
-            sender: send::create(sndbuf_size),
+            sender: send::create(sndbuf_size, data_wakers),
             recver: recv::create(),
         }
     }
@@ -309,7 +314,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read() {
-        let crypto_stream: CryptoStream = CryptoStream::new(1000_0000, 0);
+        let crypto_stream: CryptoStream = CryptoStream::new(1000_0000, 0, Default::default());
         crypto_stream
             .writer()
             .write_all(b"hello world")

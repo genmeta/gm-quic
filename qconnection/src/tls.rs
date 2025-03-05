@@ -18,7 +18,7 @@ use rustls::quic::KeyChange;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::Instrument as _;
 
-use crate::{Components, Handshake, Writer, events::Event, prelude::EmitEvent};
+use crate::{Components, Handshake, events::Event, prelude::EmitEvent};
 
 type TlsConnection = rustls::quic::Connection;
 
@@ -234,11 +234,7 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
         )
     };
 
-    let epoch_crypto_writer = |epoch: Epoch| {
-        let crypto_stream = crypto_streams[epoch].writer();
-        let send_notify = components.send_notify.clone();
-        Writer::new(crypto_stream, send_notify)
-    };
+    let epoch_crypto_writer = |epoch: Epoch| crypto_streams[epoch].writer();
 
     let crypto_stream_read_tasks = Epoch::EPOCHS.map(epoch_read_task);
     let mut crypto_stream_writers = Epoch::EPOCHS.map(epoch_crypto_writer);

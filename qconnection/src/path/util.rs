@@ -1,5 +1,4 @@
 use std::{
-    ops::Deref,
     pin::Pin,
     sync::Mutex,
     task::{Context, Poll},
@@ -9,7 +8,7 @@ use bytes::BufMut;
 use futures::StreamExt;
 use qbase::{
     frame::{BeFrame, io::WriteFrame},
-    net::SendLimiter,
+    net::{DataWaker, SendLimiter},
     packet::MarshalPathFrame,
     util::ArcAsyncDeque,
 };
@@ -20,16 +19,26 @@ use qbase::{
 /// to wait for a frame to be sent.
 ///
 /// This struct impl [`Default`], and the `new` method is not provided.
-#[derive(Default)]
-pub struct SendBuffer<T>(Mutex<Option<T>>);
+pub struct SendBuffer<T> {
+    item: Mutex<Option<T>>,
+    waker: DataWaker,
+}
 
 impl<T> SendBuffer<T> {
+    pub fn new(waker: DataWaker) -> Self {
+        Self {
+            item: Default::default(),
+            waker,
+        }
+    }
+
     /// Write a frame to the buffer.
     ///
     /// [`SendBuffer`] can only buffer one frame at a time. If you write a new frame to the buffer before the previous
     /// frame is sent, the previous frame will be overwritten.
     pub fn write(&self, frame: T) {
-        *self.0.lock().unwrap() = Some(frame);
+        self.waker.wake();
+        *self.item.lock().unwrap() = Some(frame);
     }
 }
 
@@ -38,34 +47,19 @@ where
     F: BeFrame,
     for<'a> &'a mut [u8]: WriteFrame<F>,
 {
-    /// Try read the frame to be sent from the buffer, and write it to the given `buf`.
-    ///
-    /// Return how many bytes was written.
-    pub fn try_read(&self, mut buf: &mut [u8]) -> usize {
-        let mut guard = self.0.lock().unwrap();
-        if let Some(frame) = guard.deref() {
-            let size = frame.encoding_size();
-            if buf.remaining_mut() >= size {
-                buf.put_frame(frame);
-                *guard = None;
-                return size;
-            }
-        }
-        0
-    }
-
+    /// Try load the frame to be sent into the `packet`.
     pub fn try_load_frames_into<P>(&self, packet: &mut P) -> Result<(), SendLimiter>
     where
         P: BufMut + MarshalPathFrame<F>,
     {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.item.lock().unwrap();
         match guard.as_ref() {
             Some(frame) if packet.remaining_mut() > frame.encoding_size() => {
                 packet.dump_path_frame(guard.take().unwrap());
                 Ok(())
             }
             Some(_large_frame) => Err(SendLimiter::BUFFER_TOO_SMALL),
-            None => Err(SendLimiter::DATA_UNAVAILABLE),
+            None => Err(SendLimiter::NO_UNLIMITED_DATA),
         }
     }
 }

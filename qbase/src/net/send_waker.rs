@@ -14,12 +14,13 @@ use super::Pathway;
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy,PartialEq, Eq)]
     pub struct SendLimiter: u8 {
-        const BUFFER_TOO_SMALL = 1 << 0; // cc
-        const FLOW_CONTROL       = 1 << 1; // flow
-        const DATA_UNAVAILABLE   = 1 << 2; // ack/retran/reliable....
-        const NO_CONNECTION_ID   = 1 << 3; // cid
-        const CREDIT_EXHAUSTED   = 1 << 4; // aa
-        const KEYS_UNAVAILABLE   = 1 << 5; // key(no waker in SendWaker)
+        const BUFFER_TOO_SMALL  = 1 << 0; // cc
+        const FLOW_CONTROL      = 1 << 1; // flow
+        const NO_UNLIMITED_DATA = 1 << 2; // ack/retran/reliable....
+        const NO_STREAM_DATA    = 1 << 3; // ack/retran/reliable....
+        const NO_CONNECTION_ID  = 1 << 4; // cid
+        const CREDIT_EXHAUSTED  = 1 << 5; // aa
+        const KEYS_UNAVAILABLE  = 1 << 6; // key(no waker in SendWaker)
     }
 }
 
@@ -39,7 +40,8 @@ impl SendWaker {
     const REGISTERING: u32 = 1 << (u32::MAX.leading_ones() - 1);
     const WAITING: u32 = 0;
 
-    pub fn wait(&self, cond: SendLimiter, cx: &mut Context) {
+    pub fn wait(&self, cx: &mut Context, cond: SendLimiter) {
+        tracing::warn!("wait for {:?}", cond.iter_names().collect::<Vec<_>>());
         // lock and set the no-wait condition bit to true
         let registering_state = Self::REGISTERING | !(cond.bits() as u32);
         // only one thread will get the lock
@@ -60,15 +62,29 @@ impl SendWaker {
                         let waker = unsafe { (*self.waker.get()).take().unwrap() };
                         self.state.store(Self::WAITING, Release);
                         waker.wake();
+                        tracing::warn!(
+                            "wake indirectly in registering by {:?}",
+                            SendLimiter::from_bits((woken & !Self::REGISTERING) as u8)
+                                .unwrap()
+                                .iter_names()
+                                .collect::<Vec<_>>()
+                        );
                     }
                     _ => {}
                 }
             }
             // lock is got, and the waking state is already registered
             waking if waking & Self::REGISTERING == 0 && waking & cond.bits() as u32 != 0 => {
-                cx.waker().wake_by_ref();
                 // clear the lock bit
                 self.state.store(Self::WAITING, Release);
+                tracing::warn!(
+                    "wake indirectly by {:?}",
+                    SendLimiter::from_bits((waking & !Self::REGISTERING) as u8)
+                        .unwrap()
+                        .iter_names()
+                        .collect::<Vec<_>>()
+                );
+                cx.waker().wake_by_ref();
             }
             // the lock is acquired by other task
             _other_registering => {}
@@ -81,6 +97,7 @@ impl SendWaker {
             // if there is no other thread registering, and the condition is met
             waking if waking & Self::REGISTERING == 0 && waking & by.bits() as u32 == 0 => {
                 if let Some(waker) = unsafe { (*self.waker.get()).take() } {
+                    tracing::warn!("wake directly by {:?}", by.iter_names().collect::<Vec<_>>());
                     waker.wake();
                     self.state.swap(Self::WAITING, AcqRel);
                 }
@@ -107,7 +124,7 @@ impl<const LIMITER: u8> LimiterWaker<LIMITER> {
 
 pub type QuotaWaker = LimiterWaker<{ SendLimiter::BUFFER_TOO_SMALL.bits() }>;
 pub type FlowWaker = LimiterWaker<{ SendLimiter::FLOW_CONTROL.bits() }>;
-pub type DataWaker = LimiterWaker<{ SendLimiter::DATA_UNAVAILABLE.bits() }>;
+pub type DataWaker = LimiterWaker<{ SendLimiter::NO_UNLIMITED_DATA.bits() }>;
 pub type ConnectionIdWaker = LimiterWaker<{ SendLimiter::NO_CONNECTION_ID.bits() }>;
 pub type CreditWaker = LimiterWaker<{ SendLimiter::CREDIT_EXHAUSTED.bits() }>;
 
@@ -151,6 +168,7 @@ impl SendWakers {
     }
 }
 
+#[derive(Default, Debug, Clone)]
 pub struct LimiterWakers<const LIMITER: u8>(Arc<SendWakers>);
 
 impl<const LIMITER: u8> LimiterWakers<LIMITER> {
@@ -162,10 +180,15 @@ impl<const LIMITER: u8> LimiterWakers<LIMITER> {
 }
 
 pub type FlowWakers = LimiterWakers<{ SendLimiter::FLOW_CONTROL.bits() }>;
-pub type DataWakers = LimiterWakers<{ SendLimiter::DATA_UNAVAILABLE.bits() }>;
+pub type StreamWakers = LimiterWakers<{ SendLimiter::NO_STREAM_DATA.bits() }>;
+pub type DataWakers = LimiterWakers<{ SendLimiter::NO_UNLIMITED_DATA.bits() }>;
 
 impl SendWakers {
     pub fn flow_wakers(self: &Arc<Self>) -> FlowWakers {
+        LimiterWakers(self.clone())
+    }
+
+    pub fn stream_wakers(self: &Arc<Self>) -> StreamWakers {
         LimiterWakers(self.clone())
     }
 
@@ -190,7 +213,7 @@ mod tests {
             let wake_times = woken_times.clone();
             core::future::poll_fn(move |cx| {
                 wake_times.fetch_add(1, Release);
-                wakers.wait(SendLimiter::BUFFER_TOO_SMALL, cx);
+                wakers.wait(cx, SendLimiter::BUFFER_TOO_SMALL);
                 Poll::<()>::Pending
             })
         });
@@ -218,7 +241,7 @@ mod tests {
             let wake_times = woken_times.clone();
             core::future::poll_fn(move |cx| {
                 wake_times.fetch_add(1, Release);
-                wakers.wait(SendLimiter::all(), cx);
+                wakers.wait(cx, SendLimiter::all());
                 Poll::<()>::Pending
             })
         });
@@ -253,7 +276,7 @@ mod tests {
             let wake_times = woken_times.clone();
             core::future::poll_fn(move |cx| {
                 wake_times.fetch_add(1, Release);
-                wakers.wait(SendLimiter::BUFFER_TOO_SMALL, cx);
+                wakers.wait(cx, SendLimiter::BUFFER_TOO_SMALL);
                 Poll::<()>::Pending
             })
         });
@@ -278,7 +301,7 @@ mod tests {
             let wait_for = async move |r#for| {
                 core::future::poll_fn(|cx| {
                     let wake_times = wake_times.fetch_add(1, Release);
-                    wakers.wait(r#for, cx);
+                    wakers.wait(cx, r#for);
                     if wake_times % 2 == 1 {
                         Poll::Ready(())
                     } else {
@@ -290,18 +313,18 @@ mod tests {
 
             async move {
                 wait_for(SendLimiter::all()).await;
-                wait_for(SendLimiter::BUFFER_TOO_SMALL | SendLimiter::DATA_UNAVAILABLE).await;
-                wait_for(SendLimiter::DATA_UNAVAILABLE).await;
+                wait_for(SendLimiter::BUFFER_TOO_SMALL | SendLimiter::NO_UNLIMITED_DATA).await;
+                wait_for(SendLimiter::NO_UNLIMITED_DATA).await;
             }
         });
 
         let wait_for_all_cond_state = !SendWaker::REGISTERING & !(SendLimiter::all().bits() as u32);
 
         let wait_for_quota_state = !SendWaker::REGISTERING
-            & !((SendLimiter::BUFFER_TOO_SMALL | SendLimiter::DATA_UNAVAILABLE).bits() as u32);
+            & !((SendLimiter::BUFFER_TOO_SMALL | SendLimiter::NO_UNLIMITED_DATA).bits() as u32);
 
         let wait_for_data_state =
-            !SendWaker::REGISTERING & !(SendLimiter::DATA_UNAVAILABLE.bits() as u32);
+            !SendWaker::REGISTERING & !(SendLimiter::NO_UNLIMITED_DATA.bits() as u32);
 
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 1); // woken(1 = enter)
