@@ -9,7 +9,8 @@ mod send {
 
     use bytes::BufMut;
     use qbase::{
-        frame::{CryptoFrame, io::WriteDataFrame},
+        frame::CryptoFrame,
+        net::SendLimiter,
         packet::MarshalDataFrame,
         util::DescribeData,
         varint::{VARINT_MAX, VarInt},
@@ -26,41 +27,24 @@ mod send {
     }
 
     impl Sender {
-        fn try_read_data(&mut self, mut buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
-            let buf_len = buffer.len();
-            let predicate = |offset: u64| CryptoFrame::estimate_max_capacity(buf_len, offset);
-            if let Some((offset, _is_fresh, data)) = self.sndbuf.pick_up(predicate, usize::MAX) {
-                let frame = CryptoFrame::new(
-                    VarInt::from_u64(offset).unwrap(),
-                    VarInt::try_from(data.len()).unwrap(),
-                );
-                buffer.put_data_frame(&frame, &data);
-                let written = buf_len - buffer.remaining_mut();
-                Some((frame, written))
-            } else {
-                None
-            }
-        }
-
         /// 不再长的像write，因为rust可以多返回值，因此在返回的结果里面将读到的数据返回.
         /// 调用者一定要自行将其写入到buffer中发送。
         /// 一旦这种函数成功使用，try_read_data就可以淘汰了
-        fn try_load_data<P>(&mut self, packet: &mut P) -> bool
+        fn try_load_data<P>(&mut self, packet: &mut P) -> Result<(), SendLimiter>
         where
             P: BufMut + for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])>,
         {
             let max_size = packet.remaining_mut();
             let predicate = |offset: u64| CryptoFrame::estimate_max_capacity(max_size, offset);
-            if let Some((offset, _is_fresh, data)) = self.sndbuf.pick_up(predicate, usize::MAX) {
-                let frame = CryptoFrame::new(
-                    VarInt::from_u64(offset).unwrap(),
-                    VarInt::try_from(data.len()).unwrap(),
-                );
-                packet.dump_frame_with_data(frame, data);
-                true
-            } else {
-                false
-            }
+            self.sndbuf
+                .pick_up(predicate, usize::MAX)
+                .map(|(offset, _is_fresh, data)| {
+                    let frame = CryptoFrame::new(
+                        VarInt::from_u64(offset).unwrap(),
+                        VarInt::try_from(data.len()).unwrap(),
+                    );
+                    packet.dump_frame_with_data(frame, data);
+                })
         }
 
         fn on_data_acked(&mut self, crypto_frame: &CryptoFrame) {
@@ -143,23 +127,24 @@ mod send {
     }
 
     impl CryptoStreamOutgoing {
-        /// Try to read the crypto data into crypto frame and write into the `buffer`.
-        ///
-        /// If the remaining of `buffer` is not enough to put a crypo frame, or there are no data to
-        /// send, this method will return [`None`] and the `buffer` will be changed.
-        ///
-        /// If the write success, the crypto frame and the number of bytes written to the buffer
-        /// will be written.
-        pub fn try_read_data(&self, buffer: &mut [u8]) -> Option<(CryptoFrame, usize)> {
-            self.0.lock().unwrap().try_read_data(buffer)
-        }
-
-        pub fn try_load_data_into<P>(&self, packet: &mut P)
+        /// Try to load the crypto data  into the `packet`.
+        pub fn try_load_data_into<P>(&self, packet: &mut P) -> Result<(), SendLimiter>
         where
             P: BufMut + for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])>,
         {
+            use std::ops::ControlFlow::*;
             let mut inner = self.0.lock().unwrap();
-            while inner.try_load_data(packet) {}
+            let (Continue(result) | Break(result)) =
+                core::iter::from_fn(|| Some(inner.try_load_data(packet))).try_fold(
+                    Err(SendLimiter::empty()),
+                    |result, once| match (result, once) {
+                        (Err(_empty), Ok(())) => Continue(Ok(())),
+                        (Err(_empty), Err(limiter)) => Break(Err(limiter)),
+                        (Ok(()), Ok(())) => Continue(Ok(())),
+                        (Ok(()), Err(_no_more)) => Break(Ok(())),
+                    },
+                );
+            result
         }
 
         /// Called when the crypto frame sent is acknowledged by peer.

@@ -9,6 +9,7 @@ use bytes::BufMut;
 use futures::StreamExt;
 use qbase::{
     frame::{BeFrame, io::WriteFrame},
+    net::SendLimiter,
     packet::MarshalPathFrame,
     util::ArcAsyncDeque,
 };
@@ -53,15 +54,18 @@ where
         0
     }
 
-    pub fn try_load_frames_into<P>(&self, packet: &mut P)
+    pub fn try_load_frames_into<P>(&self, packet: &mut P) -> Result<(), SendLimiter>
     where
         P: BufMut + MarshalPathFrame<F>,
     {
         let mut guard = self.0.lock().unwrap();
-        if let Some(frame) = guard.deref() {
-            if packet.remaining_mut() >= frame.encoding_size() {
+        match guard.as_ref() {
+            Some(frame) if packet.remaining_mut() > frame.encoding_size() => {
                 packet.dump_path_frame(guard.take().unwrap());
+                Ok(())
             }
+            Some(_large_frame) => Err(SendLimiter::BUFFER_TOO_SMALL),
+            None => Err(SendLimiter::DATA_UNAVAILABLE),
         }
     }
 }

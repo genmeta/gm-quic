@@ -4,6 +4,7 @@ use bytes::BufMut;
 use qbase::{
     error::Error as QuicError,
     frame::{ResetStreamError, StreamFrame},
+    net::SendLimiter,
     packet::MarshalDataFrame,
     sid::StreamId,
     util::DescribeData,
@@ -33,7 +34,7 @@ impl<TX: Clone> Outgoing<TX> {
         sid: StreamId,
         flow_limit: usize,
         tokens: usize,
-    ) -> Option<(usize, bool)>
+    ) -> Result<(usize, bool), SendLimiter>
     where
         P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
     {
@@ -55,17 +56,16 @@ impl<TX: Clone> Outgoing<TX> {
                 .map(|capacity| tokens.min(capacity))
         };
         let mut sender = self.0.sender();
-        let sending_state = sender.as_mut().ok()?;
+        let sending_state = sender.as_mut().or(Err(SendLimiter::empty()))?; // other(connection closed)
 
         match sending_state {
             Sender::Ready(s) => {
                 let mut s: SendingSender<TX> = s.upgrade();
-                let (result, finished) =
-                    if let Some(payload @ (.., with_eos)) = s.pick_up(predicate, flow_limit) {
-                        (Some(write(payload)), with_eos)
-                    } else {
-                        (None, false)
-                    };
+                let (result, finished) = s
+                    .pick_up(predicate, flow_limit)
+                    .map(|payload @ (.., with_eos)| (Ok(write(payload)), with_eos))
+                    .map_err(|l| (Err(l), false))
+                    .unwrap_or_else(|x| x);
                 if finished {
                     *sending_state = Sender::DataSent(s.upgrade());
                 } else {
@@ -74,19 +74,18 @@ impl<TX: Clone> Outgoing<TX> {
                 result
             }
             Sender::Sending(s) => {
-                let (result, finished) =
-                    if let Some(payload @ (.., with_eos)) = s.pick_up(predicate, flow_limit) {
-                        (Some(write(payload)), with_eos)
-                    } else {
-                        (None, false)
-                    };
+                let (result, finished) = s
+                    .pick_up(predicate, flow_limit)
+                    .map(|payload @ (.., with_eos)| (Ok(write(payload)), with_eos))
+                    .map_err(|l| (Err(l), false))
+                    .unwrap_or_else(|x| x);
                 if finished {
                     *sending_state = Sender::DataSent(s.upgrade());
                 }
                 result
             }
             Sender::DataSent(s) => s.pick_up(predicate, flow_limit).map(write),
-            _ => None,
+            _ => Err(SendLimiter::DATA_UNAVAILABLE),
         }
     }
 }

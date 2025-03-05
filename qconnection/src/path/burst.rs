@@ -111,7 +111,8 @@ impl Burst {
                         &self.path.response_sndbuf,
                         self.spaces.data(),
                     )
-                };
+                }
+                .unwrap_or_default();
 
                 if packet_size == 0 {
                     None

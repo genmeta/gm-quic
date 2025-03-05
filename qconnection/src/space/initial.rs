@@ -10,7 +10,7 @@ use qbase::{
     cid::ConnectionId,
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
-    net::{Link, Pathway},
+    net::{Link, Pathway, SendLimiter},
     packet::{
         CipherPacket, MarshalFrame, PacketWriter,
         header::{
@@ -103,8 +103,11 @@ impl InitialSpace {
         &self,
         tx: &mut Transaction<'_>,
         buf: &mut [u8],
-    ) -> Option<(MiddleAssembledPacket, Option<u64>)> {
-        let keys = self.keys.get_local_keys()?;
+    ) -> Result<(MiddleAssembledPacket, Option<u64>), SendLimiter> {
+        let keys = self
+            .keys
+            .get_local_keys()
+            .ok_or(SendLimiter::KEYS_UNAVAILABLE)?;
         let sent_journal = self.journal.of_sent_packets();
         let need_ack = tx.need_ack(Epoch::Initial);
         let mut packet = PacketMemory::new_long(
@@ -115,21 +118,27 @@ impl InitialSpace {
             &sent_journal,
         )?;
 
-        let mut ack = None;
-        if let Some((largest, rcvd_time)) = need_ack {
-            let rcvd_journal = self.journal.of_rcvd_packets();
-            if let Some(ack_frame) =
-                rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
-            {
+        let mut limiter = SendLimiter::empty();
+
+        let ack = need_ack
+            .ok_or(SendLimiter::DATA_UNAVAILABLE)
+            .and_then(|(largest, rcvd_time)| {
+                let rcvd_journal = self.journal.of_rcvd_packets();
+                let ack_frame =
+                    rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())?;
                 packet.dump_ack_frame(ack_frame);
-                ack = Some(largest);
-            }
-        }
+                Ok(largest)
+            })
+            .inspect_err(|l| limiter |= *l)
+            .ok();
 
-        let crypto_stream_outgoing = self.crypto_stream.outgoing();
-        crypto_stream_outgoing.try_load_data_into(&mut packet);
+        _ = self
+            .crypto_stream
+            .outgoing()
+            .try_load_data_into(&mut packet)
+            .inspect_err(|l| limiter |= *l);
 
-        Some((packet.interrupt()?, ack))
+        Ok((packet.interrupt().map_err(|_| limiter)?, ack))
     }
 }
 
@@ -354,7 +363,7 @@ impl ClosingInitialSpace {
     ) -> Option<CipherPacket> {
         let header = LongHeaderBuilder::with_cid(scid, dcid).handshake();
         let pn = self.ccf_packet_pn;
-        let mut packet_writer = PacketWriter::new_long(&header, buf, pn, self.keys.clone())?;
+        let mut packet_writer = PacketWriter::new_long(&header, buf, pn, self.keys.clone()).ok()?;
 
         packet_writer.dump_frame(ccf.clone());
 

@@ -12,13 +12,14 @@ use dashmap::DashMap;
 use super::Pathway;
 
 bitflags::bitflags! {
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy,PartialEq, Eq)]
     pub struct SendLimiter: u8 {
-        const INSUFFICIENT_QUOTA = 1 << 0; // cc
+        const BUFFER_TOO_SMALL = 1 << 0; // cc
         const FLOW_CONTROL       = 1 << 1; // flow
         const DATA_UNAVAILABLE   = 1 << 2; // ack/retran/reliable....
         const NO_CONNECTION_ID   = 1 << 3; // cid
         const CREDIT_EXHAUSTED   = 1 << 4; // aa
+        const KEYS_UNAVAILABLE   = 1 << 5; // key(no waker in SendWaker)
     }
 }
 
@@ -36,7 +37,7 @@ impl SendWaker {
     // LoadPacketError 对应的bit设置为1意为该位的条件已经满足，为0表示需要该条件满足
     // 最高位表示正在注册waker，类似AtomicWaker的注册状态
     const REGISTERING: u32 = 1 << (u32::MAX.leading_ones() - 1);
-    const WAITING: u32 = !Self::REGISTERING;
+    const WAITING: u32 = 0;
 
     pub fn wait(&self, cond: SendLimiter, cx: &mut Context) {
         // lock and set the no-wait condition bit to true
@@ -104,7 +105,7 @@ impl<const LIMITER: u8> LimiterWaker<LIMITER> {
     }
 }
 
-pub type QuotaWaker = LimiterWaker<{ SendLimiter::INSUFFICIENT_QUOTA.bits() }>;
+pub type QuotaWaker = LimiterWaker<{ SendLimiter::BUFFER_TOO_SMALL.bits() }>;
 pub type FlowWaker = LimiterWaker<{ SendLimiter::FLOW_CONTROL.bits() }>;
 pub type DataWaker = LimiterWaker<{ SendLimiter::DATA_UNAVAILABLE.bits() }>;
 pub type ConnectionIdWaker = LimiterWaker<{ SendLimiter::NO_CONNECTION_ID.bits() }>;
@@ -189,7 +190,7 @@ mod tests {
             let wake_times = woken_times.clone();
             core::future::poll_fn(move |cx| {
                 wake_times.fetch_add(1, Release);
-                wakers.wait(SendLimiter::INSUFFICIENT_QUOTA, cx);
+                wakers.wait(SendLimiter::BUFFER_TOO_SMALL, cx);
                 Poll::<()>::Pending
             })
         });
@@ -252,13 +253,13 @@ mod tests {
             let wake_times = woken_times.clone();
             core::future::poll_fn(move |cx| {
                 wake_times.fetch_add(1, Release);
-                wakers.wait(SendLimiter::INSUFFICIENT_QUOTA, cx);
+                wakers.wait(SendLimiter::BUFFER_TOO_SMALL, cx);
                 Poll::<()>::Pending
             })
         });
 
         let wait_for_quota_state =
-            !SendWaker::REGISTERING & !(SendLimiter::INSUFFICIENT_QUOTA.bits() as u32);
+            !SendWaker::REGISTERING & !(SendLimiter::BUFFER_TOO_SMALL.bits() as u32);
 
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 2); // woken
@@ -289,7 +290,7 @@ mod tests {
 
             async move {
                 wait_for(SendLimiter::all()).await;
-                wait_for(SendLimiter::INSUFFICIENT_QUOTA | SendLimiter::DATA_UNAVAILABLE).await;
+                wait_for(SendLimiter::BUFFER_TOO_SMALL | SendLimiter::DATA_UNAVAILABLE).await;
                 wait_for(SendLimiter::DATA_UNAVAILABLE).await;
             }
         });
@@ -297,7 +298,7 @@ mod tests {
         let wait_for_all_cond_state = !SendWaker::REGISTERING & !(SendLimiter::all().bits() as u32);
 
         let wait_for_quota_state = !SendWaker::REGISTERING
-            & !((SendLimiter::INSUFFICIENT_QUOTA | SendLimiter::DATA_UNAVAILABLE).bits() as u32);
+            & !((SendLimiter::BUFFER_TOO_SMALL | SendLimiter::DATA_UNAVAILABLE).bits() as u32);
 
         let wait_for_data_state =
             !SendWaker::REGISTERING & !(SendLimiter::DATA_UNAVAILABLE.bits() as u32);
