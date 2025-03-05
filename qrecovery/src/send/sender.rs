@@ -213,6 +213,7 @@ impl<TX> SendingSender<TX> {
         P: Fn(u64) -> Option<usize>,
     {
         let fin_pos = self.fin_pos();
+        let sent = self.sndbuf.sent();
         self.sndbuf
             .pick_up(&predicate, flow_limit)
             .map(|(offset, is_fresh, data)| {
@@ -220,9 +221,9 @@ impl<TX> SendingSender<TX> {
                 (offset, is_fresh, data, is_eos)
             })
             .or_else(|| {
-                if let Some(total_size) = fin_pos {
-                    let _ = predicate(total_size)?;
-                    Some((total_size, false, (&[], &[]), true))
+                if Some(sent) == fin_pos {
+                    let _ = predicate(sent)?;
+                    Some((sent, false, (&[], &[]), true))
                 } else {
                     None
                 }
