@@ -134,7 +134,7 @@ impl BufMap {
     where
         P: Fn(u64) -> Option<usize>,
     {
-        let mut limiter = SendLimiter::DATA_UNAVAILABLE;
+        let mut limiter = SendLimiter::NO_STREAM_DATA | SendLimiter::NO_UNLIMITED_DATA;
         // 先找到第一个能发送的区间，并将该区间染成Flight，返回原State
         self.0
             .iter_mut()
@@ -143,9 +143,12 @@ impl BufMap {
                 // 选择Pending的区间（如果流控允许），或者选择Lost的区间
                 match state.color() {
                     Color::Pending if flow_limit != 0 => return true,
+                    Color::Pending => {
+                        limiter &= !SendLimiter::NO_STREAM_DATA;
+                        limiter |= SendLimiter::FLOW_CONTROL
+                    }
                     Color::Lost => return true,
-                    Color::Pending => limiter |= SendLimiter::FLOW_CONTROL,
-                    _ => limiter |= SendLimiter::DATA_UNAVAILABLE,
+                    _ => {}
                 }
                 false
             })
@@ -726,7 +729,7 @@ mod tests {
     fn test_bufmap_pick() {
         let mut buf_map = BufMap::default();
         let range = buf_map.pick(|_| Some(20), usize::MAX);
-        assert_eq!(range, Err(SendLimiter::DATA_UNAVAILABLE));
+        assert_eq!(range, Err(SendLimiter::NO_UNLIMITED_DATA));
         assert!(buf_map.0.is_empty());
 
         buf_map.extend_to(200);

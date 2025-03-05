@@ -226,7 +226,7 @@ impl<F> PacketMemory<'_, '_, F> {
 
     pub fn interrupt(self) -> Result<MiddleAssembledPacket, SendLimiter> {
         if self.writer.is_empty() {
-            return Err(SendLimiter::DATA_UNAVAILABLE);
+            return Err(SendLimiter::NO_UNLIMITED_DATA);
         }
         Ok(MiddleAssembledPacket {
             packet: self.writer.interrupt().0,

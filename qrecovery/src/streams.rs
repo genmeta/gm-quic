@@ -31,6 +31,7 @@ pub use listener::{AcceptBiStream, AcceptUniStream};
 use qbase::{
     error::Error,
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
+    net::{DataWakers, StreamWakers},
     param::CommonParameters,
     sid::{ControlConcurrency, Role, StreamId},
 };
@@ -85,10 +86,17 @@ where
         local_params: &CommonParameters,
         ctrl: Box<dyn ControlConcurrency>,
         ctrl_frames: TX,
+        stream_wakers: StreamWakers,
+        data_wakers: DataWakers,
     ) -> Self {
-        let raw = raw::DataStreams::new(role, local_params, ctrl, ctrl_frames);
-
-        Self(Arc::new(raw))
+        Self(Arc::new(raw::DataStreams::new(
+            role,
+            local_params,
+            ctrl,
+            ctrl_frames,
+            stream_wakers,
+            data_wakers,
+        )))
     }
 
     /// Create a bidirectional stream, see the method of the same name on `QuicConnection` for more.

@@ -7,6 +7,7 @@ use std::{
 use crate::{
     error::{Error as QuicError, ErrorKind as QuicErrorKind},
     frame::{DataBlockedFrame, FrameType, MaxDataFrame, ReceiveFrame, SendFrame},
+    net::FlowWakers,
     varint::VarInt,
 };
 
@@ -21,27 +22,17 @@ struct SendControler<TX> {
     max_data: u64,
     blocking: bool,
     broker: TX,
-    wakers: Vec<Waker>,
+    wakers: FlowWakers,
 }
 
 impl<TX> SendControler<TX> {
-    fn new(initial_max_data: u64, broker: TX) -> Self {
+    fn new(initial_max_data: u64, broker: TX, flow_wakers: FlowWakers) -> Self {
         Self {
             sent_data: 0,
             max_data: initial_max_data,
             blocking: false,
             broker,
-            wakers: Vec::with_capacity(4),
-        }
-    }
-
-    fn register_waker(&mut self, waker: Waker) {
-        self.wakers.push(waker);
-    }
-
-    fn wake_all(&mut self) {
-        for waker in self.wakers.drain(..) {
-            waker.wake();
+            wakers: flow_wakers,
         }
     }
 
@@ -49,9 +40,7 @@ impl<TX> SendControler<TX> {
         if max_data > self.max_data {
             self.max_data = max_data;
             self.blocking = false;
-            for waker in self.wakers.drain(..) {
-                waker.wake();
-            }
+            self.wakers.wake_all();
         }
     }
 }
@@ -90,10 +79,11 @@ impl<TX> ArcSendControler<TX> {
     ///
     /// `initial_max_data` is allowed to be 0, which is reasonable when creating a
     /// connection without knowing the peer's `iniitial_max_data` setting.
-    pub fn new(initial_max_data: u64, broker: TX) -> Self {
+    pub fn new(initial_max_data: u64, broker: TX, flow_wakers: FlowWakers) -> Self {
         Self(Arc::new(Mutex::new(Ok(SendControler::new(
             initial_max_data,
             broker,
+            flow_wakers,
         )))))
     }
 
@@ -139,32 +129,12 @@ impl<TX> ArcSendControler<TX> {
         }
     }
 
-    /// Register a waker to be woken up when the flow control limit is increased.
-    ///
-    /// When flow control is 0,
-    /// retransmitted stream data can still be sent,
-    /// but new data cannot be sent.
-    /// When the stream has no data to retransmit,
-    /// meaning all old data has been successfully acknowledged.
-    /// Meanwhile, it is necessary to register the waker
-    /// waiting for the receiver's [`MaxDataFrame`]
-    /// to increase the connection-level flow control limit.
-    pub fn register_waker(&self, waker: Waker) {
-        let mut guard = self.0.lock().unwrap();
-        if let Ok(inner) = guard.deref_mut() {
-            inner.register_waker(waker);
-        }
-    }
-
     /// Connection-level Stream Flow Control can only be terminated
     /// if the connection encounters an error
     pub fn on_error(&self, error: &QuicError) {
         let mut guard = self.0.lock().unwrap();
         if guard.deref().is_err() {
             return;
-        }
-        if let Ok(inner) = guard.deref_mut() {
-            inner.wake_all();
         }
         *guard = Err(error.clone());
     }
@@ -212,6 +182,9 @@ impl<TX> Drop for Credit<'_, TX> {
     fn drop(&mut self) {
         if let Ok(inner) = self.controller.0.lock().unwrap().as_mut() {
             inner.sent_data -= self.available as u64;
+            if self.available > 0 {
+                inner.wakers.wake_all();
+            }
         }
     }
 }
@@ -353,9 +326,14 @@ impl<TX: Clone> FlowController<TX> {
     /// Unfortunately, at the beginning, the peer's `initial_max_data` is unknown.
     /// Therefore, peer's `initial_max_data` can be set to 0 initially,
     /// and then updated later after obtaining the peer's `initial_max_data` setting.
-    pub fn new(peer_initial_max_data: u64, local_initial_max_data: u64, broker: TX) -> Self {
+    pub fn new(
+        peer_initial_max_data: u64,
+        local_initial_max_data: u64,
+        broker: TX,
+        flow_wakers: FlowWakers,
+    ) -> Self {
         Self {
-            sender: ArcSendControler::new(peer_initial_max_data, broker.clone()),
+            sender: ArcSendControler::new(peer_initial_max_data, broker.clone(), flow_wakers),
             recver: ArcRecvController::new(local_initial_max_data, broker),
         }
     }
@@ -419,7 +397,7 @@ mod tests {
     #[test]
     fn test_send_controler() {
         let broker = SendControllerBroker::default();
-        let controler = ArcSendControler::new(100, broker.clone());
+        let controler = ArcSendControler::new(100, broker.clone(), Default::default());
         let mut credit = controler.credit(200).unwrap();
         assert_eq!(credit.available(), 100);
         credit.post_sent(50);
@@ -436,30 +414,7 @@ mod tests {
         assert_eq!(credit.available(), 0);
         drop(credit);
 
-        let waker = futures::task::noop_waker();
-        controler.register_waker(waker.clone());
-        assert!(
-            !controler
-                .0
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .wakers
-                .is_empty()
-        );
-
         controler.increase_limit(200);
-        assert!(
-            controler
-                .0
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .wakers
-                .is_empty()
-        );
 
         let mut credit = controler.credit(200).unwrap();
         assert_eq!(credit.available(), 100);

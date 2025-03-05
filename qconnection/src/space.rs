@@ -486,7 +486,7 @@ impl ReceiveFrame<AckFrame> for AckHandshake {
 
         let acked = ack_frame.iter().flat_map(|r| r.rev()).collect::<Vec<_>>();
         qlog::event!(PacketsAcked {
-            packet_number_space: qbase::Epoch::Initial,
+            packet_number_space: qbase::Epoch::Handshake,
             packet_nubers: acked.clone(),
         });
         for pn in acked {
@@ -528,7 +528,7 @@ impl ReceiveFrame<AckFrame> for AckData {
 
         let acked = ack_frame.iter().flat_map(|r| r.rev()).collect::<Vec<_>>();
         qlog::event!(PacketsAcked {
-            packet_number_space: qbase::Epoch::Initial,
+            packet_number_space: qbase::Epoch::Data,
             packet_nubers: acked.clone(),
         });
         for pn in acked {

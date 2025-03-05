@@ -7,7 +7,7 @@ use qbase::{
         BeFrame, FrameType, ReceiveFrame, ResetStreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
         SendFrame, StreamCtlFrame, StreamFrame,
     },
-    net::SendLimiter,
+    net::{DataWakers, SendLimiter, StreamWakers},
     packet::MarshalDataFrame,
     param::CommonParameters,
     sid::{
@@ -123,6 +123,9 @@ where
     input: ArcInput<Ext<TX>>,
     // 对方主动创建的流
     listener: ArcListener<Ext<TX>>,
+
+    stream_wakers: StreamWakers,
+    data_wakers: DataWakers,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
@@ -191,7 +194,7 @@ where
         //     output.cursor = Some((sid, tokens - data_len));
         //     Some(if is_fresh { data_len } else { 0 })
         // })
-        let mut limiter = SendLimiter::DATA_UNAVAILABLE;
+        let mut limiter = SendLimiter::NO_UNLIMITED_DATA;
         for (sid, (outgoing, _s), tokens) in streams {
             match outgoing.try_load_data_into(packet, sid, flow_limit, tokens) {
                 Ok((data_len, is_fresh)) => {
@@ -517,6 +520,8 @@ where
         local_params: &CommonParameters,
         ctrl: Box<dyn ControlConcurrency>,
         ctrl_frames: TX,
+        stream_wakers: StreamWakers,
+        data_wakers: DataWakers,
     ) -> Self {
         let max_bi_streams = local_params.initial_max_streams_bidi().into();
         let max_uni_streams = local_params.initial_max_streams_uni().into();
@@ -536,6 +541,8 @@ where
             input: ArcInput::default(),
             listener: ArcListener::new(),
             ctrl_frames,
+            stream_wakers,
+            data_wakers,
         }
     }
 
@@ -660,7 +667,13 @@ where
     }
 
     fn create_sender(&self, sid: StreamId, buf_size: u64) -> ArcSender<Ext<TX>> {
-        ArcSender::new(sid, buf_size, Ext(self.ctrl_frames.clone()))
+        ArcSender::new(
+            sid,
+            buf_size,
+            Ext(self.ctrl_frames.clone()),
+            self.stream_wakers.clone(),
+            self.data_wakers.clone(),
+        )
     }
 
     fn create_recver(&self, sid: StreamId, buf_size: u64) -> ArcRecver<Ext<TX>> {

@@ -10,7 +10,7 @@ use qbase::{
     cid::ConnectionId,
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
-    net::{Link, Pathway, SendLimiter},
+    net::{DataWakers, Link, Pathway, SendLimiter},
     packet::{
         CipherPacket, MarshalFrame, PacketWriter,
         header::{
@@ -35,7 +35,7 @@ use qrecovery::{
     journal::{ArcRcvdJournal, InitialJournal},
 };
 use rustls::quic::Keys;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
 use super::{AckInitial, PlainPacket, ReceivedCipherPacket, pipe};
@@ -56,21 +56,19 @@ pub struct InitialSpace {
     crypto_stream: CryptoStream,
     token: Mutex<Vec<u8>>,
     journal: InitialJournal,
-    sendable: Arc<Notify>,
 }
 
 impl InitialSpace {
     // Initial keys应该是预先知道的，或者传入dcid，可以构造出来
-    pub fn new(keys: rustls::quic::Keys, token: Vec<u8>, sendable: Arc<Notify>) -> Self {
+    pub fn new(keys: rustls::quic::Keys, token: Vec<u8>, data_wakers: DataWakers) -> Self {
         let journal = InitialJournal::with_capacity(16);
-        let crypto_stream = CryptoStream::new(4096, 4096);
+        let crypto_stream = CryptoStream::new(4096, 4096, data_wakers);
 
         Self {
             token: Mutex::new(token),
             keys: ArcKeys::with_keys(keys),
             journal,
             crypto_stream,
-            sendable,
         }
     }
 
@@ -121,7 +119,7 @@ impl InitialSpace {
         let mut limiter = SendLimiter::empty();
 
         let ack = need_ack
-            .ok_or(SendLimiter::DATA_UNAVAILABLE)
+            .ok_or(SendLimiter::NO_UNLIMITED_DATA)
             .and_then(|(largest, rcvd_time)| {
                 let rcvd_journal = self.journal.of_rcvd_packets();
                 let ack_frame =
@@ -209,7 +207,7 @@ pub fn spawn_deliver_and_parse(
         let packet_size = packet.payload.len();
         match space.decrypt_packet(packet).await {
             Some(Ok(packet)) => {
-                let path = match components.get_or_create_path(socket, pathway, true) {
+                let path = match components.get_or_try_create_path(socket, pathway, true) {
                     Some(path) => path,
                     None => {
                         packet.drop_on_conenction_closed();
@@ -293,7 +291,6 @@ impl TrackPackets for InitialSpace {
                 // for this convert, empty bytes indicates the raw info is not available
                 may_lost_frames.extend(Some(&Frame::Crypto(frame, bytes::Bytes::new())));
                 outgoing.may_loss_data(&frame);
-                self.sendable.notify_waiters();
             }
             qlog::event!(PacketLost {
                 header: PacketHeader {

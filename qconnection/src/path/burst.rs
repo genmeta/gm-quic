@@ -2,11 +2,12 @@ use std::{
     convert::Infallible,
     io,
     ops::ControlFlow,
-    pin::pin,
     sync::{Arc, atomic::Ordering},
+    task::{Context, Poll, ready},
 };
 
-use tokio::sync::Notify;
+use futures::FutureExt;
+use qbase::net::SendLimiter;
 
 use crate::{
     ArcDcidCell, ArcLocalCids, Components, FlowController, space::Spaces, tx::Transaction,
@@ -19,7 +20,6 @@ pub struct Burst {
     spin: bool,
     flow_ctrl: FlowController,
     spaces: Spaces,
-    conn_send_notify: Arc<Notify>,
 }
 
 impl super::Path {
@@ -30,7 +30,6 @@ impl super::Path {
         let path = self.clone();
         let spin = false;
         let spaces = components.spaces.clone();
-        let conn_send_notify = components.send_notify.clone();
         Burst {
             path,
             local_cids,
@@ -38,16 +37,16 @@ impl super::Path {
             spin,
             flow_ctrl,
             spaces,
-            conn_send_notify,
         }
     }
 }
 
 impl Burst {
-    async fn prepare<'b>(
+    fn poll_prepare<'b>(
         &self,
+        cx: &mut Context<'_>,
         buffers: &'b mut Vec<Vec<u8>>,
-    ) -> io::Result<(impl Iterator<Item = &'b mut [u8]> + use<'b>, Transaction)> {
+    ) -> Poll<io::Result<(impl Iterator<Item = &'b mut [u8]> + use<'b>, Transaction)>> {
         let max_segments = self.path.interface.max_segments()?;
         let max_segment_size = self.path.interface.max_segment_size()?;
 
@@ -63,31 +62,37 @@ impl Burst {
         });
 
         let scid = self.local_cids.initial_scid();
-        let transaction = Transaction::prepare(
-            scid.unwrap_or_default(),
-            &self.dcid,
-            self.path.cc(),
-            &self.path.anti_amplifier,
-            &self.flow_ctrl,
-            max_segment_size,
+        let transaction = ready!(
+            Transaction::prepare(
+                scid.unwrap_or_default(),
+                &self.dcid,
+                self.path.cc(),
+                &self.path.anti_amplifier,
+                &self.flow_ctrl,
+                max_segment_size,
+            )
+            .poll_unpin(cx)
         )
-        .await
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"))?;
 
-        Ok((buffers, transaction))
+        Poll::Ready(Ok((buffers, transaction)))
     }
 
     fn load_into_buffers<'b>(
         &'b self,
         prepared_buffers: impl Iterator<Item = &'b mut [u8]> + 'b,
         mut transaction: Transaction<'b>,
-    ) -> io::Result<impl Iterator<Item = io::IoSlice<'b>>> {
+    ) -> io::Result<Result<Vec<usize>, SendLimiter>> {
         let scid = self.local_cids.initial_scid();
         let reversed_size = self.path.interface.reversed_bytes(self.path.pathway)?;
+        use core::ops::ControlFlow::*;
+        // dont acquire max_segment_size here because it may have changed and is different from when the buffer was prepared
+        // let max_segment_size = self.path.interface.max_segment_size()?;
+        let max_segments = self.path.interface.max_segments()?;
 
-        Ok(prepared_buffers
+        let (ControlFlow::Break(result) | ControlFlow::Continue(result)) = prepared_buffers
             .map(move |buffer| {
-                let packet_size = if scid.is_some() {
+                let load_result = if scid.is_some() {
                     transaction.load_spaces(
                         &mut buffer[reversed_size..],
                         &self.spaces,
@@ -111,64 +116,61 @@ impl Burst {
                         &self.path.response_sndbuf,
                         self.spaces.data(),
                     )
-                }
-                .unwrap_or_default();
-
-                if packet_size == 0 {
-                    None
-                } else {
-                    Some(io::IoSlice::new(&buffer[..reversed_size + packet_size]))
-                }
+                };
+                debug_assert_ne!(load_result, Ok(0));
+                load_result
+                    .map(|packet_size| io::IoSlice::new(&buffer[..reversed_size + packet_size]))
             })
-            // (0..10).filter_map(|x| x % 2 == 0) ==> [0, 2, 4, 6, 8].iter()
-            // what we want is [0].iter(), so we need to take_while(Option::is_some).flatten()
-            .take_while(Option::is_some)
-            .flatten())
-    }
-
-    fn collect_filled_buffers<'b>(
-        &self,
-        mut filled_buffers: impl Iterator<Item = io::IoSlice<'b>>,
-    ) -> io::Result<Vec<io::IoSlice<'b>>> {
-        // dont acquire max_segment_size here because it may have changed and is different from when the buffer was prepared
-        // let max_segment_size = self.path.interface.max_segment_size()?;
-        let max_segments = self.path.interface.max_segments()?;
-        let (ControlFlow::Break((filled_buffers, _)) | ControlFlow::Continue((filled_buffers, _))) =
-            filled_buffers.try_fold(
-                (Vec::with_capacity(max_segments), 0),
-                |(mut filled_buffers, last_segment_size), io_slice| {
-                    filled_buffers.push(io_slice);
-                    // If one segment is smaller than the last, it is the last segment
-                    if io_slice.len() < last_segment_size {
-                        ControlFlow::Break((filled_buffers, io_slice.len()))
-                    } else {
-                        ControlFlow::Continue((filled_buffers, io_slice.len()))
+            .try_fold(
+                Ok(Vec::with_capacity(max_segments)),
+                |segments, load_result| match (segments, load_result) {
+                    (Ok(segments), Err(limiter)) if segments.is_empty() => Break(Err(limiter)),
+                    (Ok(segments), Err(_limiter)) => Break(Ok(segments)),
+                    (Ok(mut segments), Ok(segment))
+                        if segments.len() < segments.last().copied().unwrap_or_default() =>
+                    {
+                        segments.push(segment.len());
+                        Break(Ok(segments))
                     }
+                    (Ok(mut segments), Ok(segment)) => {
+                        segments.push(segment.len());
+                        Continue(Ok(segments))
+                    }
+                    (Err(_), _) => unreachable!(),
                 },
             );
-        Ok(filled_buffers)
+        Ok(result)
+    }
+
+    fn poll_burst<'b>(
+        &'b self,
+        cx: &mut Context<'_>,
+        buffers: &'b mut Vec<Vec<u8>>,
+    ) -> Poll<io::Result<Vec<usize>>> {
+        let (buffers, transcation) = ready!(self.poll_prepare(cx, buffers))?;
+        match self.load_into_buffers(buffers, transcation)? {
+            Ok(segments) => {
+                debug_assert!(!segments.is_empty());
+                Poll::Ready(Ok(segments))
+            }
+            Err(limiter) => {
+                self.path.send_waker.wait(cx, limiter);
+                Poll::Pending
+            }
+        }
     }
 
     pub async fn launch(self) -> io::Result<Infallible> {
         let mut buffers = vec![];
-        let mut path_sendable = pin!(self.path.sendable.notified());
-        let mut conn_sendable = pin!(self.conn_send_notify.notified());
         loop {
-            path_sendable.as_mut().enable();
-            conn_sendable.as_mut().enable();
-            let (buffers, transcation) = self.prepare(&mut buffers).await?;
-            let buffers = self.load_into_buffers(buffers, transcation)?;
-            let segments = self.collect_filled_buffers(buffers)?;
-            if !segments.is_empty() {
-                self.path.send_packets(&segments).await?;
-            } else {
-                tokio::select! {
-                    _ = path_sendable.as_mut() => {},
-                    _ = conn_sendable.as_mut() => {},
-                }
-                path_sendable.set(self.path.sendable.notified());
-                conn_sendable.set(self.conn_send_notify.notified());
-            }
+            let segment_lens =
+                core::future::poll_fn(|cx| self.poll_burst(cx, &mut buffers)).await?;
+            let segments = segment_lens
+                .into_iter()
+                .enumerate()
+                .map(|(seg_idx, seg_len)| io::IoSlice::new(&buffers[seg_idx][..seg_len]))
+                .collect::<Vec<_>>();
+            self.path.send_packets(&segments).await?;
         }
     }
 }

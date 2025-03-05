@@ -8,7 +8,7 @@ use std::{
 use qbase::{
     error::Error,
     frame::{ResetStreamError, ResetStreamFrame, SendFrame},
-    net::SendLimiter,
+    net::{DataWakers, SendLimiter, StreamWakers},
     sid::StreamId,
     util::DescribeData,
     varint::VarInt,
@@ -38,12 +38,20 @@ pub struct ReadySender<TX> {
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
     broker: TX,
-    writable_waker: Option<Waker>,
+    stream_wakers: StreamWakers,
     max_stream_data: u64,
+    writable_waker: Option<Waker>,
+    data_wakers: DataWakers,
 }
 
 impl<TX> ReadySender<TX> {
-    pub(super) fn new(stream_id: StreamId, buf_size: u64, broker: TX) -> ReadySender<TX> {
+    pub(super) fn new(
+        stream_id: StreamId,
+        buf_size: u64,
+        broker: TX,
+        stream_wakers: StreamWakers,
+        data_wakers: DataWakers,
+    ) -> ReadySender<TX> {
         ReadySender {
             stream_id,
             sndbuf: SendBuf::with_capacity(buf_size as usize),
@@ -52,6 +60,8 @@ impl<TX> ReadySender<TX> {
             broker,
             writable_waker: None,
             max_stream_data: buf_size,
+            stream_wakers,
+            data_wakers,
         }
     }
 
@@ -63,6 +73,7 @@ impl<TX> ReadySender<TX> {
         let written = self.sndbuf.written();
         if written < self.max_stream_data {
             let n = std::cmp::min((self.max_stream_data - written) as usize, buf.len());
+            self.stream_wakers.wake_all();
             Ok(self.sndbuf.write(&buf[..n]))
         } else {
             Err(io::ErrorKind::WouldBlock.into())
@@ -83,6 +94,7 @@ impl<TX> ReadySender<TX> {
             let stream_data = self.sndbuf.written();
             if stream_data < self.max_stream_data {
                 let n = std::cmp::min((self.max_stream_data - stream_data) as usize, buf.len());
+                self.stream_wakers.wake_all();
                 Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
             } else {
                 self.writable_waker = Some(cx.waker().clone());
@@ -106,6 +118,7 @@ impl<TX> ReadySender<TX> {
     }
 
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.data_wakers.wake_all();
         self.shutdown_waker = Some(cx.waker().clone());
         Poll::Pending
     }
@@ -141,6 +154,8 @@ impl<TX: Clone> ReadySender<TX> {
             broker: self.broker.clone(),
             writable_waker: self.writable_waker.take(),
             max_stream_data: self.max_stream_data,
+            stream_wakers: self.stream_wakers.clone(),
+            data_wakers: self.data_wakers.clone(),
         }
     }
 }
@@ -172,6 +187,8 @@ pub struct SendingSender<TX> {
     broker: TX,
     writable_waker: Option<Waker>,
     max_stream_data: u64,
+    stream_wakers: StreamWakers,
+    data_wakers: DataWakers,
 }
 
 type StreamData<'s> = (u64, bool, (&'s [u8], &'s [u8]), bool);
@@ -191,6 +208,7 @@ impl<TX> SendingSender<TX> {
             let stream_data = self.sndbuf.written();
             if stream_data < self.max_stream_data {
                 let n = std::cmp::min((self.max_stream_data - stream_data) as usize, buf.len());
+                self.stream_wakers.wake_all();
                 Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
             } else {
                 self.writable_waker = Some(cx.waker().clone());
@@ -245,6 +263,7 @@ impl<TX> SendingSender<TX> {
     }
 
     pub(super) fn may_loss_data(&mut self, range: &Range<u64>) {
+        self.data_wakers.wake_all();
         self.sndbuf.may_loss_data(range)
     }
 
@@ -258,6 +277,7 @@ impl<TX> SendingSender<TX> {
     }
 
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.data_wakers.wake_all();
         self.shutdown_waker = Some(cx.waker().clone());
         Poll::Pending
     }
@@ -306,6 +326,7 @@ impl<TX: Clone> SendingSender<TX> {
             shutdown_waker: self.shutdown_waker.take(),
             broker: self.broker.clone(),
             is_fin_acked: false,
+            data_wakers: self.data_wakers.clone(),
         }
     }
 }
@@ -335,6 +356,8 @@ pub struct DataSentSender<TX> {
     shutdown_waker: Option<Waker>,
     broker: TX,
     is_fin_acked: bool,
+    // retran/fin
+    data_wakers: DataWakers,
 }
 
 impl<TX> DataSentSender<TX> {
@@ -374,6 +397,7 @@ impl<TX> DataSentSender<TX> {
     }
 
     pub(super) fn may_loss_data(&mut self, range: &Range<u64>) {
+        self.data_wakers.wake_all();
         self.sndbuf.may_loss_data(range)
     }
 
@@ -385,6 +409,7 @@ impl<TX> DataSentSender<TX> {
 
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         debug_assert!(!self.is_all_rcvd());
+        self.data_wakers.wake_all();
         self.shutdown_waker = Some(cx.waker().clone());
         Poll::Pending
     }
@@ -433,8 +458,20 @@ pub(super) enum Sender<TX> {
 }
 
 impl<TX> Sender<TX> {
-    pub fn new(stream_id: StreamId, buf_size: u64, broker: TX) -> Self {
-        Sender::Ready(ReadySender::new(stream_id, buf_size, broker))
+    pub fn new(
+        stream_id: StreamId,
+        buf_size: u64,
+        broker: TX,
+        stream_wakers: StreamWakers,
+        data_wakers: DataWakers,
+    ) -> Self {
+        Sender::Ready(ReadySender::new(
+            stream_id,
+            buf_size,
+            broker,
+            stream_wakers,
+            data_wakers,
+        ))
     }
 }
 
@@ -453,9 +490,19 @@ pub struct ArcSender<TX>(Arc<Mutex<Result<Sender<TX>, Error>>>);
 
 impl<TX> ArcSender<TX> {
     #[doc(hidden)]
-    pub(crate) fn new(stream_id: StreamId, buf_size: u64, broker: TX) -> Self {
+    pub(crate) fn new(
+        stream_id: StreamId,
+        buf_size: u64,
+        broker: TX,
+        stream_wakers: StreamWakers,
+        data_wakers: DataWakers,
+    ) -> Self {
         ArcSender(Arc::new(Mutex::new(Ok(Sender::new(
-            stream_id, buf_size, broker,
+            stream_id,
+            buf_size,
+            broker,
+            stream_wakers,
+            data_wakers,
         )))))
     }
 }
@@ -494,7 +541,13 @@ mod tests {
         let stream_id = StreamId::new(Role::Client, Dir::Bi, 0);
         let buf_size = 1000;
         let broker = MockBroker::default();
-        ArcSender::new(stream_id, buf_size, broker)
+        ArcSender::new(
+            stream_id,
+            buf_size,
+            broker,
+            Default::default(),
+            Default::default(),
+        )
     }
 
     #[test]
@@ -502,7 +555,13 @@ mod tests {
         let stream_id = StreamId::new(Role::Client, Dir::Bi, 0);
         let buf_size = 1000;
         let broker = MockBroker::default();
-        let sender = ReadySender::new(stream_id, buf_size, broker);
+        let sender = ReadySender::new(
+            stream_id,
+            buf_size,
+            broker,
+            Default::default(),
+            Default::default(),
+        );
 
         assert_eq!(sender.stream_id, stream_id);
         assert_eq!(sender.max_stream_data, buf_size);
@@ -516,7 +575,13 @@ mod tests {
         let stream_id = StreamId::new(Role::Client, Dir::Bi, 0);
         let buf_size = 10;
         let broker = MockBroker::default();
-        let mut sender = ReadySender::new(stream_id, buf_size, broker);
+        let mut sender = ReadySender::new(
+            stream_id,
+            buf_size,
+            broker,
+            Default::default(),
+            Default::default(),
+        );
 
         let data = b"hello";
         let result = sender.write(data);
@@ -535,7 +600,13 @@ mod tests {
         let stream_id = StreamId::new(Role::Client, Dir::Bi, 0);
         let buf_size = 10;
         let broker = MockBroker::default();
-        let mut sender = ReadySender::new(stream_id, buf_size, broker);
+        let mut sender = ReadySender::new(
+            stream_id,
+            buf_size,
+            broker,
+            Default::default(),
+            Default::default(),
+        );
 
         let data = b"test";
         let mut cx = Context::from_waker(futures::task::noop_waker_ref());
@@ -556,7 +627,13 @@ mod tests {
         let stream_id = StreamId::new(Role::Client, Dir::Bi, 0);
         let buf_size = 1000;
         let broker = MockBroker::default();
-        let mut ready = ReadySender::new(stream_id, buf_size, broker);
+        let mut ready = ReadySender::new(
+            stream_id,
+            buf_size,
+            broker,
+            Default::default(),
+            Default::default(),
+        );
 
         // Test transition to SendingSender
         let mut sending = ready.upgrade();
@@ -593,6 +670,7 @@ mod tests {
             shutdown_waker: None,
             broker,
             is_fin_acked: false,
+            data_wakers: Default::default(),
         };
 
         // Test pick_up with empty buffer
@@ -613,6 +691,7 @@ mod tests {
             shutdown_waker: None,
             broker,
             is_fin_acked: false,
+            data_wakers: Default::default(),
         };
 
         let mut cx = Context::from_waker(futures::task::noop_waker_ref());

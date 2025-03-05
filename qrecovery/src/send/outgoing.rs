@@ -85,7 +85,7 @@ impl<TX: Clone> Outgoing<TX> {
                 result
             }
             Sender::DataSent(s) => s.pick_up(predicate, flow_limit).map(write),
-            _ => Err(SendLimiter::DATA_UNAVAILABLE),
+            _ => Err(SendLimiter::NO_UNLIMITED_DATA),
         }
     }
 }
