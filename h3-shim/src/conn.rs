@@ -184,8 +184,7 @@ impl<B: bytes::Buf> h3::quic::OpenStreams<B> for OpenStreams {
 type BoxStream<T> = Pin<Box<dyn Stream<Item = T> + Send + Sync>>;
 
 fn sid_exceed_limit_error() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Other,
+    io::Error::other(
         "the stream IDs in the `dir` direction exceed 2^60, this is very very hard to happen.",
     )
 }

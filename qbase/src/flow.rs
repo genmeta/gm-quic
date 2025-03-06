@@ -1,9 +1,6 @@
 use std::{
     ops::{Deref, DerefMut},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex},
     task::Waker,
 };
 
@@ -222,10 +219,10 @@ impl<TX> Drop for Credit<'_, TX> {
 /// Receiver's flow controller for managing the flow limit of incoming stream data.
 #[derive(Debug, Default)]
 struct RecvController<TX> {
-    rcvd_data: AtomicU64,
-    max_data: AtomicU64,
+    rcvd_data: u64,
+    max_data: u64,
     step: u64,
-    is_closed: AtomicBool,
+    is_closed: bool,
     broker: TX,
 }
 
@@ -233,17 +230,17 @@ impl<TX> RecvController<TX> {
     /// Creates a new [`RecvController`] with the specified `initial_max_data`.
     fn new(initial_max_data: u64, broker: TX) -> Self {
         Self {
-            rcvd_data: AtomicU64::new(0),
-            max_data: AtomicU64::new(initial_max_data),
+            rcvd_data: 0,
+            max_data: initial_max_data,
             step: initial_max_data / 2,
-            is_closed: AtomicBool::new(false),
+            is_closed: false,
             broker,
         }
     }
 
     /// Terminate the receiver's flow control.
-    fn terminate(&self) {
-        if !self.is_closed.swap(true, Ordering::Release) {}
+    fn terminate(&mut self) {
+        self.is_closed = true;
     }
 }
 
@@ -256,19 +253,17 @@ where
     /// The data must be new, old retransmitted data does not count. Whether the data is
     /// new or not will be determined by each stream after delivering the data packet to them.
     /// The amount of new data will be passed as the `amount` parameter.
-    fn on_new_rcvd(&self, frame_type: FrameType, amount: usize) -> Result<usize, QuicError> {
-        debug_assert!(!self.is_closed.load(Ordering::Relaxed));
+    fn on_new_rcvd(&mut self, frame_type: FrameType, amount: usize) -> Result<usize, QuicError> {
+        debug_assert!(!self.is_closed);
 
-        self.rcvd_data.fetch_add(amount as u64, Ordering::Release);
-        let rcvd_data = self.rcvd_data.load(Ordering::Acquire);
-        let max_data = self.max_data.load(Ordering::Acquire);
-        if rcvd_data <= max_data {
-            if rcvd_data + self.step >= max_data {
-                self.max_data.fetch_add(self.step, Ordering::Release);
-                self.broker.send_frame([MaxDataFrame::new(
-                    VarInt::from_u64(self.max_data.load(Ordering::Acquire))
-                        .expect("max_data of flow controller is very very hard to exceed 2^62 - 1"),
-                )])
+        self.rcvd_data += amount as u64;
+        if self.rcvd_data <= self.max_data {
+            if self.rcvd_data + self.step >= self.max_data {
+                self.max_data += self.step;
+                self.broker
+                    .send_frame([MaxDataFrame::new(VarInt::from_u64(self.max_data).expect(
+                        "max_data of flow controller is very very hard to exceed 2^62 - 1",
+                    ))])
             }
             Ok(amount)
         } else {
@@ -276,7 +271,7 @@ where
             Err(QuicError::new(
                 QuicErrorKind::FlowControl,
                 frame_type,
-                format!("flow control overflow: {}", rcvd_data - max_data),
+                format!("flow control overflow: {}", self.rcvd_data - self.max_data),
             ))
         }
     }
@@ -299,17 +294,20 @@ where
 /// to expand the receive window since more receive buffer space is freed up,
 /// and to inform the sender that more data can be sent.
 #[derive(Debug, Default, Clone)]
-pub struct ArcRecvController<TX>(Arc<RecvController<TX>>);
+pub struct ArcRecvController<TX>(Arc<Mutex<RecvController<TX>>>);
 
 impl<TX> ArcRecvController<TX> {
     /// Creates a new [`ArcRecvController`] with local `initial_max_data` transport parameter.
     pub fn new(initial_max_data: u64, broker: TX) -> Self {
-        Self(Arc::new(RecvController::new(initial_max_data, broker)))
+        Self(Arc::new(Mutex::new(RecvController::new(
+            initial_max_data,
+            broker,
+        ))))
     }
 
     /// Terminate the receiver's flow control if QUIC connection error occurs.
     pub fn terminate(&self) {
-        self.0.terminate();
+        self.0.lock().unwrap().terminate();
     }
 }
 
@@ -323,7 +321,7 @@ where
     /// As mentioned in [`ArcSendControler`], if the flow control limit is exceeded,
     /// a [`QuicError`] error will be returned.
     pub fn on_new_rcvd(&self, frame_type: FrameType, amount: usize) -> Result<usize, QuicError> {
-        self.0.on_new_rcvd(frame_type, amount)
+        self.0.lock().unwrap().on_new_rcvd(frame_type, amount)
     }
 }
 
