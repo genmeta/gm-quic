@@ -729,7 +729,10 @@ mod tests {
     fn test_bufmap_pick() {
         let mut buf_map = BufMap::default();
         let range = buf_map.pick(|_| Some(20), usize::MAX);
-        assert_eq!(range, Err(SendLimiter::NO_UNLIMITED_DATA));
+        assert_eq!(
+            range,
+            Err(SendLimiter::NO_UNLIMITED_DATA | SendLimiter::NO_STREAM_DATA)
+        );
         assert!(buf_map.0.is_empty());
 
         buf_map.extend_to(200);

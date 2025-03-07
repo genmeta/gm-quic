@@ -1,7 +1,6 @@
 use std::{
     ops::{Deref, DerefMut},
     sync::{Arc, Mutex},
-    task::Waker,
 };
 
 use crate::{

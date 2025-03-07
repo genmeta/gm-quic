@@ -38,7 +38,7 @@ impl EndpointAddr {
 impl fmt::Display for EndpointAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            EndpointAddr::Direct { addr } => write!(f, "Direct({addr}"),
+            EndpointAddr::Direct { addr } => write!(f, "Direct({addr})"),
             EndpointAddr::Agent { agent, outer } => write!(f, "Agent({agent}-{outer})"),
         }
     }
