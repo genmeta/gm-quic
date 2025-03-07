@@ -647,21 +647,25 @@ pub fn spawn_deliver_and_parse_closing(
     closing_state: Arc<ClosingState>,
     event_broker: ArcEventBroker,
 ) {
-    tokio::spawn(async move {
-        while let Some((packet, pathway, _socket)) = packets.next().await {
-            if let Some(ccf) = space.recv_packet(packet.into()) {
-                event_broker.emit(Event::Closed(ccf.clone()));
-                return;
-            }
-            if closing_state.should_send() {
-                _ = closing_state
-                    .try_send_with(pathway, |buf, _scid, dcid, ccf| {
-                        space
-                            .try_assemble_ccf_packet(dcid?, ccf, buf)
-                            .map(|packet| packet.size())
-                    })
-                    .await;
+    tokio::spawn(
+        async move {
+            while let Some((packet, pathway, _socket)) = packets.next().await {
+                if let Some(ccf) = space.recv_packet(packet.into()) {
+                    event_broker.emit(Event::Closed(ccf.clone()));
+                    return;
+                }
+                if closing_state.should_send() {
+                    _ = closing_state
+                        .try_send_with(pathway, |buf, _scid, dcid, ccf| {
+                            space
+                                .try_assemble_ccf_packet(dcid?, ccf, buf)
+                                .map(|packet| packet.size())
+                        })
+                        .await;
+                }
             }
         }
-    });
+        .instrument_in_current()
+        .in_current_span(),
+    );
 }

@@ -27,19 +27,19 @@ pub enum GuaranteedFrame {
 ///
 /// Like its name, it is just a queue. [`DataStreams`] or other components that need to send reliable
 /// frames write frames to this queue by calling [`SendFrame::send_frame`]. The transport layer can
-/// read the frames in the queue and encode them into the send buffer by calling [`try_read`].
+/// load the frames from the queue into the packet by calling [`try_load_frames_into`].
 ///
 /// # Example
 /// ```rust, no_run
 /// use qbase::frame::{HandshakeDoneFrame, SendFrame};
 /// use qrecovery::reliable::ArcReliableFrameDeque;
-///
-/// let mut reliable_frame_deque = ArcReliableFrameDeque::with_capacity(10);
+/// # let data_wakers = Default::default();
+/// let mut reliable_frame_deque = ArcReliableFrameDeque::with_capacity_and_wakers(10, data_wakers);
 /// reliable_frame_deque.send_frame([HandshakeDoneFrame]);
 /// ```
 ///
-/// [`try_read`]: ArcReliableFrameDeque::try_read
 /// [`DataStreams`]: crate::streams::DataStreams
+/// [`try_load_frames_into`]: ArcReliableFrameDeque::try_load_frames_into
 #[derive(Debug, Default, Clone)]
 pub struct ArcReliableFrameDeque {
     frames: Arc<Mutex<VecDeque<ReliableFrame>>>,

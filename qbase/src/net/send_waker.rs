@@ -41,7 +41,6 @@ impl SendWaker {
     const WAITING: u32 = 0;
 
     pub fn wait(&self, cx: &mut Context, cond: SendLimiter) {
-        tracing::warn!("wait for {:?}", cond.iter_names().collect::<Vec<_>>());
         // lock and set the no-wait condition bit to true
         let registering_state = Self::REGISTERING | !(cond.bits() as u32);
         // only one thread will get the lock
@@ -59,16 +58,9 @@ impl SendWaker {
                 match self.state.fetch_and(!Self::REGISTERING, AcqRel) {
                     // the condition is met when the waker may be none, wake the task here
                     woken if woken & cond.bits() as u32 != 0 => {
-                        let waker = unsafe { (*self.waker.get()).take().unwrap() };
                         self.state.store(Self::WAITING, Release);
+                        let waker = unsafe { (*self.waker.get()).take().unwrap() };
                         waker.wake();
-                        tracing::warn!(
-                            "wake indirectly in registering by {:?}",
-                            SendLimiter::from_bits((woken & !Self::REGISTERING) as u8)
-                                .unwrap()
-                                .iter_names()
-                                .collect::<Vec<_>>()
-                        );
                     }
                     _ => {}
                 }
@@ -77,13 +69,6 @@ impl SendWaker {
             waking if waking & Self::REGISTERING == 0 && waking & cond.bits() as u32 != 0 => {
                 // clear the lock bit
                 self.state.store(Self::WAITING, Release);
-                tracing::warn!(
-                    "wake indirectly by {:?}",
-                    SendLimiter::from_bits((waking & !Self::REGISTERING) as u8)
-                        .unwrap()
-                        .iter_names()
-                        .collect::<Vec<_>>()
-                );
                 cx.waker().wake_by_ref();
             }
             // the lock is acquired by other task
@@ -97,9 +82,8 @@ impl SendWaker {
             // if there is no other thread registering, and the condition is met
             waking if waking & Self::REGISTERING == 0 && waking & by.bits() as u32 == 0 => {
                 if let Some(waker) = unsafe { (*self.waker.get()).take() } {
-                    tracing::warn!("wake directly by {:?}", by.iter_names().collect::<Vec<_>>());
-                    waker.wake();
                     self.state.swap(Self::WAITING, AcqRel);
+                    waker.wake();
                 }
                 // the condition is in need but the waker is none: woken by other task
             }

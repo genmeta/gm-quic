@@ -343,6 +343,7 @@ pub fn spawn_deliver_and_parse_closing(
                 }
             }
         }
-        .instrument_in_current(),
+        .instrument_in_current()
+        .in_current_span(),
     );
 }

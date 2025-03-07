@@ -34,9 +34,8 @@ use tracing::{debug, error, info, info_span};
 use crate::ToCertificate;
 
 static LOGGER: LazyLock<Arc<dyn Log + Send + Sync>> = LazyLock::new(|| {
-    use std::path::PathBuf;
-    Arc::new(DefaultSeqLogger::new(PathBuf::from("/tmp")))
-    // Arc::new(NullLogger)
+    // Arc::new(DefaultSeqLogger::new(std::path::PathBuf::from("/tmp")))
+    Arc::new(NullLogger)
 });
 
 #[tokio::test]
@@ -57,6 +56,7 @@ async fn set() -> io::Result<()> {
     disable_keep_alive().await;
     enable_keep_alive().await;
     parallel_stream().await?;
+    limited_streams().await?;
 
     Ok(())
 }
@@ -74,7 +74,7 @@ async fn parallel_stream() -> io::Result<()> {
 
     let mut server_addr = server.addresses().into_iter().next().unwrap();
     server_addr.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
-    let running_server = tokio::spawn(echo_server::launch(server));
+    tokio::spawn(echo_server::launch(server.clone()));
 
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(
@@ -90,7 +90,7 @@ async fn parallel_stream() -> io::Result<()> {
             .build(),
     );
 
-    const CONNECTIONS: usize = 1;
+    const CONNECTIONS: usize = 2;
     const STREAMS: usize = 16;
     const DATA: &[u8] = include_bytes!("tests.rs");
 
@@ -149,8 +149,105 @@ async fn parallel_stream() -> io::Result<()> {
         .await
         .into_iter()
         .collect::<Result<(), _>>()?;
-    // server.shutdown()
-    running_server.abort();
+    server.shutdown();
+    Ok(())
+}
+
+async fn limited_streams() -> io::Result<()> {
+    fn client_stream_limited_parameters() -> crate::ClientParameters {
+        let mut params = crate::ClientParameters::default();
+
+        params.set_initial_max_streams_bidi(2);
+        params.set_initial_max_streams_uni(0);
+        params.set_initial_max_data((1u32 << 10).into());
+        params.set_initial_max_stream_data_uni((1u32 << 10).into());
+        params.set_initial_max_stream_data_bidi_local((1u32 << 10).into());
+        params.set_initial_max_stream_data_bidi_remote((1u32 << 10).into());
+
+        params
+    }
+
+    fn server_stream_limited_parameters() -> crate::ServerParameters {
+        let mut params = crate::ServerParameters::default();
+
+        params.set_initial_max_streams_bidi(2);
+        params.set_initial_max_streams_uni(0);
+        params.set_initial_max_data((1u32 << 10).into());
+        params.set_initial_max_stream_data_uni((1u32 << 10).into());
+        params.set_initial_max_stream_data_bidi_local((1u32 << 10).into());
+        params.set_initial_max_stream_data_bidi_remote((1u32 << 10).into());
+
+        params
+    }
+
+    let server = crate::QuicServer::builder()
+        .without_cert_verifier()
+        .with_single_cert(
+            include_bytes!("../examples/keychain/localhost/server.cert"),
+            include_bytes!("../examples/keychain/localhost/server.key"),
+        )
+        .with_parameters(server_stream_limited_parameters())
+        .with_qlog(LOGGER.clone())
+        .listen("0.0.0.0:0")?;
+
+    let mut server_addr = server.addresses().into_iter().next().unwrap();
+    server_addr.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
+    tokio::spawn(echo_server::launch(server.clone()));
+
+    let mut roots = RootCertStore::empty();
+    roots.add_parsable_certificates(
+        include_bytes!("../examples/keychain/localhost/ca.cert").to_certificate(),
+    );
+
+    let client = Arc::new(
+        crate::QuicClient::builder()
+            .with_root_certificates(roots)
+            .without_cert()
+            .with_parameters(client_stream_limited_parameters())
+            .with_qlog(LOGGER.clone())
+            .build(),
+    );
+
+    const STREAMS: usize = 4;
+    const DATA: &[u8] = include_bytes!("tests.rs");
+
+    let connection = info_span!("client").in_scope(|| client.connect("localhost", server_addr))?;
+    let mut streams = JoinSet::new();
+
+    for stream_idx in 0..STREAMS {
+        let (sid, (mut reader, mut writer)) = connection.open_bi_stream().await?.unwrap();
+        streams.spawn(tracing::Instrument::instrument(
+            async move {
+                debug!(%sid, "opened stream");
+
+                writer.write_all(DATA).await?;
+                writer.shutdown().await?;
+                debug!(%sid, "sender shutdowned, wait for server to echo");
+
+                let mut data = Vec::new();
+                reader.read_to_end(&mut data).await?;
+
+                if data != DATA {
+                    error!("server incorrectly echoed");
+                    return Err(io::Error::other("server incorrectly echoed"));
+                }
+
+                info!(%sid, "server correctly echoed");
+
+                io::Result::Ok(())
+            },
+            info_span!("stream", stream_idx),
+        ));
+    }
+
+    streams
+        .join_all()
+        .await
+        .into_iter()
+        .collect::<Result<(), _>>()?;
+    connection.close("done".into(), 0);
+
+    server.shutdown();
     Ok(())
 }
 
