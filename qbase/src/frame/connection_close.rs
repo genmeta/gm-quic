@@ -202,7 +202,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<ConnectionCloseFrame> for T {
                 use crate::varint::WriteVarInt;
                 self.put_u8(CONNECTION_CLOSE_FRAME_TYPE | QUIC_LAYER);
                 self.put_varint(&frame.error_kind.into());
-                self.put_u8(frame.frame_type.into());
+                self.put_varint(&frame.frame_type.into());
                 self.put_varint(&VarInt::from_u32(frame.reason.len() as u32));
                 let remaining = self.remaining_mut();
                 let reason = frame.reason.as_bytes();

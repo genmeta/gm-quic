@@ -14,6 +14,7 @@ use qbase::{
         long::{HandshakeHeader, InitialHeader, ZeroRttHeader},
         short::OneRttHeader,
     },
+    varint::VarInt,
 };
 use serde::{Deserialize, Serialize};
 
@@ -856,7 +857,7 @@ impl From<&ConnectionCloseFrame> for QuicFrame {
             reason_bytes: None,
             trigger_frame_type: match &frame {
                 ConnectionCloseFrame::Quic(frame) => {
-                    Some((u8::from(frame.frame_type()) as u64).into())
+                    Some((VarInt::from(frame.frame_type()).into_inner()).into())
                 }
                 ConnectionCloseFrame::App(..) => None,
             },

@@ -260,68 +260,68 @@ impl FrameType {
     }
 }
 
-impl TryFrom<u8> for FrameType {
+impl TryFrom<VarInt> for FrameType {
     type Error = Error;
 
-    fn try_from(frame_type: u8) -> Result<Self, Self::Error> {
-        Ok(match frame_type {
+    fn try_from(frame_type: VarInt) -> Result<Self, Self::Error> {
+        Ok(match frame_type.into_inner() {
             0x00 => FrameType::Padding,
             0x01 => FrameType::Ping,
             // The last bit is the ECN flag.
-            ty @ (0x02 | 0x03) => FrameType::Ack(ty & 0b1),
+            ty @ (0x02 | 0x03) => FrameType::Ack(ty as u8 & 0b1),
             0x04 => FrameType::ResetStream,
             0x05 => FrameType::StopSending,
             0x06 => FrameType::Crypto,
             0x07 => FrameType::NewToken,
             // The last three bits are the offset, length, and fin flag bits respectively.
-            ty @ 0x08..=0x0f => FrameType::Stream(ty & 0b111),
+            ty @ 0x08..=0x0f => FrameType::Stream(ty as u8 & 0b111),
             0x10 => FrameType::MaxData,
             0x11 => FrameType::MaxStreamData,
             // The last bit is the direction flag bit, 0 indicates bidirectional, 1 indicates unidirectional.
-            ty @ (0x12 | 0x13) => FrameType::MaxStreams(ty & 0b1),
+            ty @ (0x12 | 0x13) => FrameType::MaxStreams(ty as u8 & 0b1),
             0x14 => FrameType::DataBlocked,
             0x15 => FrameType::StreamDataBlocked,
             // The last bit is the direction flag bit, 0 indicates bidirectional, 1 indicates unidirectional.
-            ty @ (0x16 | 0x17) => FrameType::StreamsBlocked(ty & 0b1),
+            ty @ (0x16 | 0x17) => FrameType::StreamsBlocked(ty as u8 & 0b1),
             0x18 => FrameType::NewConnectionId,
             0x19 => FrameType::RetireConnectionId,
             0x1a => FrameType::PathChallenge,
             0x1b => FrameType::PathResponse,
             // The last bit is the layer flag bit, 0 indicates application layer, 1 indicates transport layer.
-            ty @ (0x1c | 0x1d) => FrameType::ConnectionClose(ty & 0x1),
+            ty @ (0x1c | 0x1d) => FrameType::ConnectionClose(ty as u8 & 0x1),
             0x1e => FrameType::HandshakeDone,
             // The last bit is the length flag bit, 0 the length field is absent and the Datagram Data
             // field extends to the end of the packet, 1 the length field is present.
-            ty @ (0x30 | 0x31) => FrameType::Datagram(ty & 1),
-            _ => return Err(Self::Error::InvalidType(VarInt::from(frame_type))),
+            ty @ (0x30 | 0x31) => FrameType::Datagram(ty as u8 & 1),
+            _ => return Err(Self::Error::InvalidType(frame_type)),
         })
     }
 }
 
-impl From<FrameType> for u8 {
+impl From<FrameType> for VarInt {
     fn from(frame_type: FrameType) -> Self {
         match frame_type {
-            FrameType::Padding => 0x00,
-            FrameType::Ping => 0x01,
-            FrameType::Ack(ecn) => 0x02 | ecn,
-            FrameType::ResetStream => 0x04,
-            FrameType::StopSending => 0x05,
-            FrameType::Crypto => 0x06,
-            FrameType::NewToken => 0x07,
-            FrameType::Stream(flag) => 0x08 | flag,
-            FrameType::MaxData => 0x10,
-            FrameType::MaxStreamData => 0x11,
-            FrameType::MaxStreams(dir) => 0x12 | dir,
-            FrameType::DataBlocked => 0x14,
-            FrameType::StreamDataBlocked => 0x15,
-            FrameType::StreamsBlocked(dir) => 0x16 | dir,
-            FrameType::NewConnectionId => 0x18,
-            FrameType::RetireConnectionId => 0x19,
-            FrameType::PathChallenge => 0x1a,
-            FrameType::PathResponse => 0x1b,
-            FrameType::ConnectionClose(layer) => 0x1c | layer,
-            FrameType::HandshakeDone => 0x1e,
-            FrameType::Datagram(with_len) => 0x30 | with_len,
+            FrameType::Padding => VarInt::from_u32(0x00),
+            FrameType::Ping => VarInt::from_u32(0x01),
+            FrameType::Ack(ecn) => VarInt::from(0x02 | ecn),
+            FrameType::ResetStream => VarInt::from_u32(0x04),
+            FrameType::StopSending => VarInt::from_u32(0x05),
+            FrameType::Crypto => VarInt::from_u32(0x06),
+            FrameType::NewToken => VarInt::from_u32(0x07),
+            FrameType::Stream(flag) => VarInt::from(0x08 | flag),
+            FrameType::MaxData => VarInt::from_u32(0x10),
+            FrameType::MaxStreamData => VarInt::from_u32(0x11),
+            FrameType::MaxStreams(dir) => VarInt::from(0x12 | dir),
+            FrameType::DataBlocked => VarInt::from_u32(0x14),
+            FrameType::StreamDataBlocked => VarInt::from_u32(0x15),
+            FrameType::StreamsBlocked(dir) => VarInt::from(0x16 | dir),
+            FrameType::NewConnectionId => VarInt::from_u32(0x18),
+            FrameType::RetireConnectionId => VarInt::from_u32(0x19),
+            FrameType::PathChallenge => VarInt::from_u32(0x1a),
+            FrameType::PathResponse => VarInt::from_u32(0x1b),
+            FrameType::ConnectionClose(layer) => VarInt::from(0x1c | layer),
+            FrameType::HandshakeDone => VarInt::from_u32(0x1e),
+            FrameType::Datagram(with_len) => VarInt::from(0x30 | with_len),
         }
     }
 }
@@ -329,7 +329,12 @@ impl From<FrameType> for u8 {
 /// Parse the frame type from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub fn be_frame_type(input: &[u8]) -> nom::IResult<&[u8], FrameType, Error> {
-    let (remain, frame_type) = nom::number::complete::be_u8(input)?;
+    let (remain, frame_type) = crate::varint::be_varint(input).map_err(|_| {
+        nom::Err::Error(Error::IncompleteType(format!(
+            "Incomplete frame type from input: {:?}",
+            input
+        )))
+    })?;
     let frame_type = FrameType::try_from(frame_type).map_err(nom::Err::Error)?;
     Ok((remain, frame_type))
 }
@@ -541,7 +546,7 @@ mod tests {
         ];
 
         for frame_type in frame_types {
-            let byte: u8 = frame_type.into();
+            let byte: VarInt = frame_type.into();
             assert_eq!(FrameType::try_from(byte).unwrap(), frame_type);
         }
     }
@@ -592,6 +597,6 @@ mod tests {
 
     #[test]
     fn test_invalid_frame_type() {
-        assert!(FrameType::try_from(0xFF).is_err());
+        assert!(FrameType::try_from(VarInt::from_u32(0xFF)).is_err());
     }
 }
