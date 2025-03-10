@@ -3,6 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use qlog::quic::recovery::RecoveryMetricsUpdated;
+
 pub const INITIAL_RTT: Duration = Duration::from_millis(333);
 const GRANULARITY: Duration = Duration::from_millis(1);
 const TIME_THRESHOLD: f32 = 1.125;
@@ -15,6 +17,17 @@ pub struct Rtt {
     smoothed_rtt: Duration,
     rttvar: Duration,
     min_rtt: Duration,
+}
+
+impl From<&Rtt> for RecoveryMetricsUpdated {
+    fn from(rtt: &Rtt) -> Self {
+        qlog::build!(RecoveryMetricsUpdated {
+            smoothed_rtt: rtt.smoothed_rtt.as_secs_f32() * 1000.0,
+            min_rtt: rtt.min_rtt.as_secs_f32() * 1000.0,
+            latest_rtt: rtt.latest_rtt.as_secs_f32() * 1000.0,
+            rtt_variance: rtt.rttvar.as_secs_f32() * 1000.0,
+        })
+    }
 }
 
 impl Default for Rtt {
@@ -43,30 +56,32 @@ impl Rtt {
             self.smoothed_rtt = latest_rtt;
             self.rttvar = latest_rtt / 2;
             self.first_rtt_sample = Some(Instant::now());
-            return;
-        }
-
-        // min_rtt ignores acknowledgment delay.
-        self.min_rtt = std::cmp::min(self.min_rtt, latest_rtt);
-
-        // Limit ack_delay by max_ack_delay after handshake confirmation.
-        if is_handshake_confirmed {
-            ack_delay = std::cmp::min(ack_delay, self.max_ack_delay);
-        }
-
-        // Adjust for acknowledgment delay if plausible.
-        let mut adjusted_rtt = latest_rtt;
-        if latest_rtt >= self.min_rtt + ack_delay {
-            adjusted_rtt = latest_rtt - ack_delay;
-        }
-
-        let abs_diff = if self.smoothed_rtt > adjusted_rtt {
-            self.smoothed_rtt - adjusted_rtt
         } else {
-            adjusted_rtt - self.smoothed_rtt
-        };
-        self.rttvar = self.rttvar.mul_f32(0.75) + abs_diff.mul_f32(0.25);
-        self.smoothed_rtt = self.smoothed_rtt.mul_f32(0.875) + adjusted_rtt.mul_f32(0.125);
+            // min_rtt ignores acknowledgment delay.
+            self.min_rtt = std::cmp::min(self.min_rtt, latest_rtt);
+
+            // Limit ack_delay by max_ack_delay after handshake confirmation.
+            if is_handshake_confirmed {
+                ack_delay = std::cmp::min(ack_delay, self.max_ack_delay);
+            }
+
+            // Adjust for acknowledgment delay if plausible.
+            let mut adjusted_rtt = latest_rtt;
+            if latest_rtt >= self.min_rtt + ack_delay {
+                adjusted_rtt = latest_rtt - ack_delay;
+            }
+
+            let abs_diff = if self.smoothed_rtt > adjusted_rtt {
+                self.smoothed_rtt - adjusted_rtt
+            } else {
+                adjusted_rtt - self.smoothed_rtt
+            };
+            self.rttvar = self.rttvar.mul_f32(0.75) + abs_diff.mul_f32(0.25);
+            self.smoothed_rtt = self.smoothed_rtt.mul_f32(0.875) + adjusted_rtt.mul_f32(0.125);
+        }
+
+        let event = RecoveryMetricsUpdated::from(&*self);
+        qlog::event!(event);
     }
 
     fn loss_delay(&self) -> Duration {
