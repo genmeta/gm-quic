@@ -3,6 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use qlog::quic::recovery::RecoveryMetricsUpdated;
+
 use crate::{
     congestion::{AckedPkt, Algorithm, MSS, SentPkt},
     delivery_rate::Rate,
@@ -140,6 +142,24 @@ pub(crate) struct Bbr {
     pub bytes_in_flight: u64,
 }
 
+impl From<&Bbr> for RecoveryMetricsUpdated {
+    fn from(value: &Bbr) -> Self {
+        qlog::build!(RecoveryMetricsUpdated {
+            congestion_window: value.cwnd,
+            bytes_in_flight: value.bytes_in_flight,
+            pacing_rate: value.pacing_rate,
+            custom_fields: Map {
+                // AI补全
+                delivery_rate: value.delivery_rate.sample_delivery_rate(),
+                packet_delivered: value.packet_delivered,
+                newly_acked_bytes: value.newly_acked_bytes,
+                newly_lost_bytes: value.newly_lost_bytes,
+                bytes_lost_in_total: value.bytes_lost_in_total,
+            }
+        })
+    }
+}
+
 impl Bbr {
     pub fn new() -> Self {
         let now = Instant::now();
@@ -196,6 +216,9 @@ impl Algorithm for Bbr {
 
         self.bytes_in_flight += sent.size as u64;
         self.on_transmit();
+
+        let event = RecoveryMetricsUpdated::from(&*self);
+        qlog::event!(event);
     }
 
     //  todo: VecDeque 是否有必要
@@ -230,11 +253,14 @@ impl Algorithm for Bbr {
         }
 
         self.update_control_parameters();
+
+        let event = RecoveryMetricsUpdated::from(&*self);
+        qlog::event!(event);
     }
 
     fn on_congestion_event(&mut self, _: &SentPkt, _: Instant) {
         // todo: enter_recovery
-        // update newly lost bytes, set BBR.packet_conservation = true
+        // update newly lost bytes, set BBR.packet_conservation = true, and emit qlog
     }
 
     fn cwnd(&self) -> u64 {

@@ -1,5 +1,7 @@
 use std::{collections::VecDeque, time::Instant};
 
+use qlog::quic::recovery::RecoveryMetricsUpdated;
+
 use crate::congestion::{AckedPkt, Algorithm, MSS};
 
 // The upper bound for the initial window will be
@@ -19,6 +21,18 @@ pub(super) struct NewReno {
     bytes_acked: u64,
     // The time at which the most recent loss recovery period started.
     recovery_start_time: Option<Instant>,
+}
+
+impl From<&NewReno> for RecoveryMetricsUpdated {
+    fn from(reno: &NewReno) -> Self {
+        qlog::build!(RecoveryMetricsUpdated {
+            congestion_window: reno.cwnd,
+            ssthresh: reno.ssthresh,
+            custom_fields: Map {
+                bytes_acked: reno.bytes_acked,
+            }
+        })
+    }
 }
 
 impl NewReno {
@@ -71,6 +85,9 @@ impl Algorithm for NewReno {
         for acked in packet {
             self.on_per_ack(&acked);
         }
+
+        let event = RecoveryMetricsUpdated::from(&*self);
+        qlog::event!(event);
     }
 
     fn on_congestion_event(&mut self, lost: &crate::congestion::SentPkt, now: std::time::Instant) {
@@ -83,6 +100,9 @@ impl Algorithm for NewReno {
 
         self.bytes_acked = (self.bytes_acked as f64 * LOSS_REDUCTION_FACTOR) as u64;
         self.ssthresh = self.cwnd;
+
+        let event = RecoveryMetricsUpdated::from(&*self);
+        qlog::event!(event);
     }
 
     fn cwnd(&self) -> u64 {
