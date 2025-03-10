@@ -164,9 +164,8 @@ impl MiddleAssembledPacket {
 
     pub fn complete(mut self, buffer: &mut [u8]) -> CipherPacket {
         let mut writer = self.packet.writer(buffer);
-        let packet_len = writer.packet_len();
-        if packet_len < 20 {
-            let padding_len = 20 - packet_len;
+        if writer.payload_len() + writer.tag_len() < 20 {
+            let padding_len = 20 - writer.payload_len() - writer.tag_len();
             writer.pad(padding_len);
             self.logger.record_frame(QuicFrame::Padding {
                 length: Some(padding_len as u32),
@@ -434,16 +433,12 @@ impl<'a> Future for PrepareTransaction<'a> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let send_quota = match self.cc.poll_send(cx, self.expect_quota) {
             Poll::Ready(send_quota) => send_quota,
-            Poll::Pending => {
-                return Poll::Pending;
-            }
+            Poll::Pending => return Poll::Pending,
         };
         let credit_limit = match self.anti_amplifier.poll_balance(cx) {
             Poll::Ready(Some(credit_limit)) => credit_limit,
             Poll::Ready(None) => return Poll::Ready(None),
-            Poll::Pending => {
-                return Poll::Pending;
-            }
+            Poll::Pending => return Poll::Pending,
         };
 
         let flow_limit = match self.flow_ctrl.send_limit(send_quota) {
@@ -454,9 +449,7 @@ impl<'a> Future for PrepareTransaction<'a> {
         let borrowed_dcid = match self.dcid.poll_borrow_cid(cx) {
             Poll::Ready(Some(borrowed_dcid)) => borrowed_dcid,
             Poll::Ready(None) => return Poll::Ready(None),
-            Poll::Pending => {
-                return Poll::Pending;
-            }
+            Poll::Pending => return Poll::Pending,
         };
         let constraints = Constraints::new(credit_limit, send_quota);
 
