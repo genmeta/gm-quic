@@ -308,7 +308,7 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             rcvd_pkt_q,
             send_wakers,
             defer_idle_timeout: self.defer_idle_timeout,
-            span: None,
+            qlog_span: None,
         }
     }
 }
@@ -394,7 +394,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             rcvd_pkt_q,
             send_wakers,
             defer_idle_timeout: self.defer_idle_timeout,
-            span: None,
+            qlog_span: None,
         }
     }
 }
@@ -411,7 +411,7 @@ pub struct ComponentsReady {
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     defer_idle_timeout: HeartbeatConfig,
     send_wakers: Arc<SendWakers>,
-    span: Option<Span>,
+    qlog_span: Option<Span>,
 }
 
 impl ComponentsReady {
@@ -421,7 +421,7 @@ impl ComponentsReady {
             sid::Role::Server => VantagePointType::Server,
         };
         let origin_dcid = self.parameters.get_origin_dcid().unwrap();
-        self.span = Some(logger.new_trace(vantage_point_type, origin_dcid.into()));
+        self.qlog_span = Some(logger.new_trace(vantage_point_type, origin_dcid.into()));
         self
     }
 
@@ -429,8 +429,15 @@ impl ComponentsReady {
     where
         EE: EmitEvent + Clone + Send + Sync + 'static,
     {
+        // telemetry
+        let role = self.raw_handshake.role();
         let group_id = GroupID::from(self.parameters.get_origin_dcid().unwrap());
-        let span = self.span.unwrap_or_else(|| qlog::span!(@current, group_id));
+
+        let tracing_span = tracing::info_span!("connection",%role, odcid = %group_id);
+        let qlog_span = self
+            .qlog_span
+            .unwrap_or_else(|| qlog::span!(@current, group_id));
+
         let event_broker = ArcEventBroker::new(event_broker);
         let components = Components {
             parameters: self.parameters,
@@ -446,16 +453,21 @@ impl ComponentsReady {
             defer_idle_timeout: self.defer_idle_timeout,
             event_broker,
             state: ConnState::new(),
-            span: span.clone(),
         };
 
-        span.in_scope(|| {
-            tokio::spawn(tls::keys_upgrade(&components));
-            tokio::spawn(accpet_transport_parameters(&components));
-            space::spawn_deliver_and_parse(&components);
+        tracing_span.in_scope(|| {
+            qlog_span.in_scope(|| {
+                tokio::spawn(tls::keys_upgrade(&components));
+                tokio::spawn(accpet_transport_parameters(&components));
+                space::spawn_deliver_and_parse(&components);
+            })
         });
 
-        Connection(RwLock::new(Ok(components)))
+        Connection {
+            state: RwLock::new(Ok(components)),
+            qlog_span,
+            tracing_span,
+        }
     }
 }
 
@@ -573,7 +585,6 @@ impl Components {
 impl Components {
     // 对于server，第一条路径也通过add_path添加
     pub fn enter_closing(self, ccf: ConnectionCloseFrame) -> Termination {
-        let _enter = self.span.enter();
         qlog::event!(ConnectionClosed {
             owner: Owner::Local,
             ccf: &ccf // TODO: trigger
@@ -619,7 +630,6 @@ impl Components {
     }
 
     pub fn enter_draining(self, ccf: ConnectionCloseFrame) -> Termination {
-        let _enter = self.span.enter();
         qlog::event!(ConnectionClosed {
             owner: Owner::Local,
             ccf: &ccf // TODO: trigger

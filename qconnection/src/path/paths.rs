@@ -8,7 +8,9 @@ use qbase::{
     net::{Pathway, SendWakers},
 };
 use qcongestion::{CongestionControl, MiniHeap};
+use qlog::telemetry::Instrument;
 use tokio::task::AbortHandle;
+use tracing::Instrument as _;
 
 use super::Path;
 use crate::{
@@ -67,10 +69,14 @@ impl ArcPathContexts {
                 let (path, task) = try_create()?;
                 self.send_wakers.insert(pathway, path.send_waker());
                 let paths = self.clone();
-                let task = tokio::spawn(async move {
-                    let reason = task.await.unwrap_err();
-                    paths.remove(&pathway, &reason);
-                })
+                let task = tokio::spawn(
+                    async move {
+                        let reason = task.await.unwrap_err();
+                        paths.remove(&pathway, &reason);
+                    }
+                    .instrument_in_current()
+                    .in_current_span(),
+                )
                 .abort_handle();
                 Some(vacant_entry.insert(PathContext { path, task }).clone())
             }

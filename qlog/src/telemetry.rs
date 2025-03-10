@@ -71,20 +71,20 @@ impl Default for Span {
     }
 }
 
-pub struct SpanGuard {
+pub struct Entered {
     previous: Option<Span>,
 }
 
 mod current_span {
     use std::cell::RefCell;
 
-    use super::{Span, SpanGuard};
+    use super::{Entered, Span};
 
     thread_local! {
         pub static CURRENT_SPAN: RefCell<Span> = RefCell::new(Span::default());
     }
 
-    impl Drop for SpanGuard {
+    impl Drop for Entered {
         fn drop(&mut self) {
             if let Some(previous) = &self.previous {
                 CURRENT_SPAN.with(|span| {
@@ -95,7 +95,7 @@ mod current_span {
     }
 
     impl Span {
-        pub fn enter(&self) -> SpanGuard {
+        pub fn enter(&self) -> Entered {
             let previous = CURRENT_SPAN.with(|current| {
                 if &*current.borrow() == self {
                     None
@@ -103,7 +103,7 @@ mod current_span {
                     Some(current.replace(self.clone()))
                 }
             });
-            SpanGuard { previous }
+            Entered { previous }
         }
 
         pub fn in_scope<T>(&self, f: impl FnOnce() -> T) -> T {

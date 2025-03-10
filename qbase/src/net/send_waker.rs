@@ -66,7 +66,7 @@ impl SendWaker {
                 }
             }
             // lock is got, and the waking state is already registered
-            waking if waking & Self::REGISTERING == 0 && waking & cond.bits() as u32 != 0 => {
+            woken if woken & Self::REGISTERING == 0 && woken & cond.bits() as u32 != 0 => {
                 // clear the lock bit
                 self.state.store(Self::WAITING, Release);
                 cx.waker().wake_by_ref();
@@ -80,7 +80,7 @@ impl SendWaker {
         // set the condition bit to true
         match self.state.fetch_or(by.bits() as u32, AcqRel) {
             // if there is no other thread registering, and the condition is met
-            waking if waking & Self::REGISTERING == 0 && waking & by.bits() as u32 == 0 => {
+            waiting if waiting & Self::REGISTERING == 0 && waiting & by.bits() as u32 == 0 => {
                 if let Some(waker) = unsafe { (*self.waker.get()).take() } {
                     self.state.swap(Self::WAITING, AcqRel);
                     waker.wake();
@@ -89,7 +89,7 @@ impl SendWaker {
             }
             // if registering: wake will be handled by `Self::wait`
             // if condition is not in need: nothing happens
-            _registring => {}
+            _not_woken => {}
         }
     }
 }

@@ -306,7 +306,7 @@ impl<TX> ReceiveFrame<DataBlockedFrame> for ArcRecvController<TX> {
     type Output = ();
 
     fn recv_frame(&self, _frame: &DataBlockedFrame) -> Result<Self::Output, QuicError> {
-        // Do nothing, just print a log
+        // Do nothing
         Ok(())
     }
 }
