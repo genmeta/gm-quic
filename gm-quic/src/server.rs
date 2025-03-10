@@ -170,7 +170,6 @@ impl QuicServer {
             },
             _ => return,
         };
-        tracing::info!("accepting connection from {}", link.src());
 
         let token_provider = server
             .token_provider
@@ -209,7 +208,10 @@ impl QuicServer {
                     }
                 }
             }
-            .instrument(trace_span!("server connection driver")),
+            .instrument(trace_span!(
+                "server connection driver",
+                odcid = format_args!("{origin_dcid:x}")
+            )),
         );
     }
 

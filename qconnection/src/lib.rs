@@ -49,7 +49,6 @@ use qinterface::{
     queue::RcvdPacketQueue,
     router::{QuicProto, RouterRegistry},
 };
-use qlog::telemetry::Span;
 use qrecovery::{
     recv,
     reliable::ArcReliableFrameDeque,
@@ -93,7 +92,6 @@ pub struct Components {
     defer_idle_timeout: HeartbeatConfig,
     event_broker: ArcEventBroker,
     state: ConnState,
-    span: Span,
 }
 
 impl Components {
@@ -164,32 +162,57 @@ impl Components {
     }
 
     pub fn add_path(&self, link: Link, pathway: Pathway) {
-        let _enter = self.span.enter();
         self.get_or_try_create_path(link, pathway, false);
     }
 
     pub fn del_path(&self, pathway: &Pathway) {
-        let _enter = self.span.enter();
         self.paths.remove(pathway, "application removed");
     }
 }
 
-pub struct Connection(RwLock<Result<Components, Termination>>);
+type ConnectionState = RwLock<Result<Components, Termination>>;
+
+pub struct Connection {
+    state: ConnectionState,
+    qlog_span: qlog::telemetry::Span,
+    tracing_span: tracing::Span,
+}
 
 impl Connection {
+    fn map_state<T>(&self, op: impl FnOnce(&ConnectionState) -> T) -> T {
+        let _qlog_span = self.qlog_span.enter();
+        let _tracing_span = self.tracing_span.enter();
+        op(&self.state)
+    }
+
+    fn try_map_components<T>(&self, op: impl Fn(&Components) -> T) -> io::Result<T> {
+        self.map_state(|state| {
+            state
+                .read()
+                .unwrap()
+                .as_ref()
+                .map(op)
+                .map_err(|termination| termination.error().into())
+        })
+    }
+
     pub fn enter_closing(&self, ccf: ConnectionCloseFrame) {
-        let mut conn = self.0.write().unwrap();
-        if let Ok(core_conn) = conn.as_mut() {
-            *conn = Err(core_conn.clone().enter_closing(ccf));
-        }
+        self.map_state(|state| {
+            let mut conn = state.write().unwrap();
+            if let Ok(components) = conn.as_mut() {
+                *conn = Err(components.clone().enter_closing(ccf));
+            }
+        })
     }
 
     pub fn enter_draining(&self, ccf: ConnectionCloseFrame) {
-        let mut conn = self.0.write().unwrap();
-        match conn.as_mut() {
-            Ok(core_conn) => *conn = Err(core_conn.clone().enter_draining(ccf)),
-            Err(termination) => termination.enter_draining(),
-        }
+        self.map_state(|state| {
+            let mut conn = state.write().unwrap();
+            match conn.as_mut() {
+                Ok(core_conn) => *conn = Err(core_conn.clone().enter_draining(ccf)),
+                Err(termination) => termination.enter_draining(),
+            }
+        })
     }
 
     pub fn close(&self, reason: Cow<'static, str>, code: u64) {
@@ -197,60 +220,56 @@ impl Connection {
         self.enter_closing(ConnectionCloseFrame::new_app(error_code, reason));
     }
 
-    fn map<T>(&self, op: impl Fn(&Components) -> T) -> io::Result<T> {
-        let guard = self.0.read().unwrap();
-        guard
-            .as_ref()
-            .map(op)
-            .map_err(|termination| termination.error().into())
-    }
-
     pub async fn open_bi_stream(
         &self,
     ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
-        self.map(|core_conn| core_conn.open_bi_stream())?.await
+        self.try_map_components(|core_conn| core_conn.open_bi_stream())?
+            .await
     }
 
     pub async fn open_uni_stream(&self) -> io::Result<Option<(StreamId, StreamWriter)>> {
-        self.map(|core_conn| core_conn.open_uni_stream())?.await
+        self.try_map_components(|core_conn| core_conn.open_uni_stream())?
+            .await
     }
 
     pub async fn accept_bi_stream(
         &self,
     ) -> io::Result<Option<(StreamId, (StreamReader, StreamWriter))>> {
-        self.map(|core_conn| core_conn.accept_bi_stream())?.await
+        self.try_map_components(|core_conn| core_conn.accept_bi_stream())?
+            .await
     }
 
     pub async fn accept_uni_stream(&self) -> io::Result<Option<(StreamId, StreamReader)>> {
-        self.map(|core_conn| core_conn.accept_uni_stream())?.await
+        self.try_map_components(|core_conn| core_conn.accept_uni_stream())?
+            .await
     }
 
     #[cfg(feature = "unreliable")]
     pub fn unreliable_reader(&self) -> io::Result<DatagramReader> {
-        self.map(|core_conn| core_conn.unreliable_reader())?
+        self.try_map_components(|core_conn| core_conn.unreliable_reader())?
     }
 
     #[cfg(feature = "unreliable")]
     pub async fn unreliable_writer(&self) -> io::Result<DatagramWriter> {
-        self.map(|core_conn| core_conn.unreliable_writer())?.await
+        self.try_map_components(|core_conn| core_conn.unreliable_writer())?
+            .await
     }
 
     pub fn add_path(&self, link: Link, pathway: Pathway) -> io::Result<()> {
-        self.map(|core_conn| core_conn.add_path(link, pathway))
+        self.try_map_components(|core_conn| core_conn.add_path(link, pathway))
     }
 
     pub fn del_path(&self, pathway: &Pathway) -> io::Result<()> {
-        self.map(|core_conn| core_conn.del_path(pathway))
+        self.try_map_components(|core_conn| core_conn.del_path(pathway))
     }
 
     pub fn is_active(&self) -> bool {
-        self.0.read().unwrap().is_ok()
+        self.try_map_components(|_| true).unwrap_or_default()
     }
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        let state = self.0.read().unwrap();
-        assert!(state.is_err(), "Connection must be closed before drop");
+        assert!(!self.is_active(), "Connection must be closed before drop");
     }
 }
