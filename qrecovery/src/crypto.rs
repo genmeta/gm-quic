@@ -10,7 +10,7 @@ mod send {
     use bytes::BufMut;
     use qbase::{
         frame::CryptoFrame,
-        net::{DataWakers, SendLimiter},
+        net::{Signals, TransportWakers},
         packet::MarshalDataFrame,
         util::DescribeData,
         varint::{VARINT_MAX, VarInt},
@@ -24,14 +24,14 @@ mod send {
         sndbuf: SendBuf,
         writable_waker: Option<Waker>,
         flush_waker: Option<Waker>,
-        data_wakers: DataWakers,
+        tx_wakers: TransportWakers,
     }
 
     impl Sender {
         /// 不再长的像write，因为rust可以多返回值，因此在返回的结果里面将读到的数据返回.
         /// 调用者一定要自行将其写入到buffer中发送。
         /// 一旦这种函数成功使用，try_read_data就可以淘汰了
-        fn try_load_data<P>(&mut self, packet: &mut P) -> Result<(), SendLimiter>
+        fn try_load_data<P>(&mut self, packet: &mut P) -> Result<(), Signals>
         where
             P: BufMut + for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])>,
         {
@@ -58,7 +58,7 @@ mod send {
         }
 
         fn may_loss_data(&mut self, crypto_frame: &CryptoFrame) {
-            self.data_wakers.wake_all();
+            self.tx_wakers.wake_all();
             self.sndbuf.may_loss_data(&crypto_frame.range())
         }
     }
@@ -77,7 +77,7 @@ mod send {
             let remaining = self.sndbuf.remaining_mut();
             if remaining > 0 {
                 let n = std::cmp::min(remaining, buf.len());
-                self.data_wakers.wake_all();
+                self.tx_wakers.wake_all();
                 Poll::Ready(Ok(self.sndbuf.write(&buf[..n])))
             } else {
                 self.writable_waker = Some(cx.waker().clone());
@@ -131,7 +131,7 @@ mod send {
 
     impl CryptoStreamOutgoing {
         /// Try to load the crypto data  into the `packet`.
-        pub fn try_load_data_into<P>(&self, packet: &mut P) -> Result<(), SendLimiter>
+        pub fn try_load_data_into<P>(&self, packet: &mut P) -> Result<(), Signals>
         where
             P: BufMut + for<'b> MarshalDataFrame<CryptoFrame, (&'b [u8], &'b [u8])>,
         {
@@ -139,7 +139,7 @@ mod send {
             let mut inner = self.0.lock().unwrap();
             let (Continue(result) | Break(result)) =
                 core::iter::from_fn(|| Some(inner.try_load_data(packet))).try_fold(
-                    Err(SendLimiter::empty()),
+                    Err(Signals::empty()),
                     |result, once| match (result, once) {
                         (Err(_empty), Ok(())) => Continue(Ok(())),
                         (Err(_empty), Err(limiter)) => Break(Err(limiter)),
@@ -164,12 +164,12 @@ mod send {
         }
     }
 
-    pub(super) fn create(capacity: usize, data_wakers: DataWakers) -> ArcSender {
+    pub(super) fn create(capacity: usize, tx_wakers: TransportWakers) -> ArcSender {
         Arc::new(Mutex::new(Sender {
             sndbuf: SendBuf::with_capacity(capacity),
             writable_waker: None,
             flush_waker: None,
-            data_wakers,
+            tx_wakers,
         }))
     }
 }
@@ -261,7 +261,7 @@ mod recv {
     }
 }
 
-use qbase::net::DataWakers;
+use qbase::net::TransportWakers;
 pub use recv::{CryptoStreamIncoming, CryptoStreamReader};
 pub use send::{CryptoStreamOutgoing, CryptoStreamWriter};
 
@@ -274,9 +274,9 @@ pub struct CryptoStream {
 
 impl CryptoStream {
     /// Create a new instance of [`CryptoStream`] with the given buffer size.
-    pub fn new(sndbuf_size: usize, _rcvbuf_size: usize, data_wakers: DataWakers) -> Self {
+    pub fn new(sndbuf_size: usize, _rcvbuf_size: usize, tx_wakers: TransportWakers) -> Self {
         Self {
-            sender: send::create(sndbuf_size, data_wakers),
+            sender: send::create(sndbuf_size, tx_wakers),
             recver: recv::create(),
         }
     }

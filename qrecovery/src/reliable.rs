@@ -8,7 +8,7 @@ use bytes::BufMut;
 use enum_dispatch::enum_dispatch;
 use qbase::{
     frame::{BeFrame, CryptoFrame, ReliableFrame, SendFrame, StreamFrame},
-    net::{DataWakers, SendLimiter},
+    net::{Signals, TransportWakers},
     packet::MarshalFrame,
 };
 
@@ -43,12 +43,12 @@ pub enum GuaranteedFrame {
 #[derive(Debug, Default, Clone)]
 pub struct ArcReliableFrameDeque {
     frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
-    wakers: DataWakers,
+    wakers: TransportWakers,
 }
 
 impl ArcReliableFrameDeque {
     /// Create a new empty deque with at least the specified capacity.
-    pub fn with_capacity_and_wakers(capacity: usize, wakers: DataWakers) -> Self {
+    pub fn with_capacity_and_wakers(capacity: usize, wakers: TransportWakers) -> Self {
         Self {
             frames: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
             wakers,
@@ -60,19 +60,19 @@ impl ArcReliableFrameDeque {
     }
 
     /// Try to load the frame in deque and encode it into the `packet`.
-    pub fn try_load_frames_into<P>(&self, packet: &mut P) -> Result<(), SendLimiter>
+    pub fn try_load_frames_into<P>(&self, packet: &mut P) -> Result<(), Signals>
     where
         P: BufMut + MarshalFrame<ReliableFrame>,
     {
         let mut deque = self.frames_guard();
         if deque.is_empty() {
-            return Err(SendLimiter::NO_UNLIMITED_DATA);
+            return Err(Signals::TRANSPORT);
         }
         while let Some(frame) = deque.front() {
             if frame.max_encoding_size() > packet.remaining_mut()
                 && frame.encoding_size() > packet.remaining_mut()
             {
-                return Err(SendLimiter::BUFFER_TOO_SMALL);
+                return Err(Signals::CONGESTION);
             }
             packet.dump_frame(deque.pop_front().unwrap());
         }

@@ -7,7 +7,7 @@ use qbase::{
         BeFrame, FrameType, ReceiveFrame, ResetStreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
         SendFrame, StreamCtlFrame, StreamFrame,
     },
-    net::{DataWakers, SendLimiter, StreamWakers},
+    net::{Signals, TransportWakers, WrittenWakers},
     packet::MarshalDataFrame,
     param::CommonParameters,
     sid::{
@@ -124,8 +124,8 @@ where
     // 对方主动创建的流
     listener: ArcListener<Ext<TX>>,
 
-    stream_wakers: StreamWakers,
-    data_wakers: DataWakers,
+    written_wakers: WrittenWakers,
+    tx_wakers: TransportWakers,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
@@ -143,7 +143,7 @@ where
         &self,
         packet: &mut P,
         flow_limit: usize,
-    ) -> Result<usize, SendLimiter>
+    ) -> Result<usize, Signals>
     where
         P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
     {
@@ -151,11 +151,11 @@ where
         use core::ops::Bound::*;
 
         if packet.remaining_mut() < STREAM_FRAME_MAX_ENCODING_SIZE {
-            return Err(SendLimiter::BUFFER_TOO_SMALL);
+            return Err(Signals::CONGESTION);
         }
 
         let mut guard = self.output.streams();
-        let output = guard.as_mut().map_err(|_| SendLimiter::empty())?; // connection closed
+        let output = guard.as_mut().map_err(|_| Signals::empty())?; // connection closed
 
         // 该tokens是令牌桶算法的token，为了多条Stream的公平性，给每个流定期地发放tokens，不累积
         // 各流轮流按令牌桶算法发放的tokens来整理数据去发送
@@ -194,17 +194,17 @@ where
         //     output.cursor = Some((sid, tokens - data_len));
         //     Some(if is_fresh { data_len } else { 0 })
         // })
-        let mut limiter = SendLimiter::NO_UNLIMITED_DATA;
+        let mut signals = Signals::TRANSPORT;
         for (sid, (outgoing, _s), tokens) in streams {
             match outgoing.try_load_data_into(packet, sid, flow_limit, tokens) {
                 Ok((data_len, is_fresh)) => {
                     output.cursor = Some((sid, tokens - data_len));
                     return Ok(if is_fresh { data_len } else { 0 });
                 }
-                Err(l) => limiter |= l,
+                Err(s) => signals |= s,
             }
         }
-        Err(limiter)
+        Err(signals)
     }
 
     /// Try to load data from streams into the packet.
@@ -245,7 +245,7 @@ where
         &self,
         packet: &mut P,
         mut flow_limit: usize,
-    ) -> Result<usize, SendLimiter>
+    ) -> Result<usize, Signals>
     where
         P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
     {
@@ -257,13 +257,11 @@ where
                     .inspect(|fresh| flow_limit -= *fresh),
             )
         })
-        .try_fold(Err(SendLimiter::empty()), |result, once| {
-            match (result, once) {
-                (Ok(sum), Ok(fresh)) => Continue(Ok(sum + fresh)),
-                (Ok(sum), Err(_no_more)) => Break(Ok(sum)),
-                (Err(_), Ok(n)) => Continue(Ok(n)),
-                (Err(_), Err(limiter)) => Break(Err(limiter)),
-            }
+        .try_fold(Err(Signals::empty()), |result, once| match (result, once) {
+            (Ok(sum), Ok(fresh)) => Continue(Ok(sum + fresh)),
+            (Ok(sum), Err(_no_more)) => Break(Ok(sum)),
+            (Err(_), Ok(n)) => Continue(Ok(n)),
+            (Err(_), Err(limiter)) => Break(Err(limiter)),
         });
         result
     }
@@ -520,8 +518,8 @@ where
         local_params: &CommonParameters,
         ctrl: Box<dyn ControlConcurrency>,
         ctrl_frames: TX,
-        stream_wakers: StreamWakers,
-        data_wakers: DataWakers,
+        written_wakers: WrittenWakers,
+        tx_wakers: TransportWakers,
     ) -> Self {
         let max_bi_streams = local_params.initial_max_streams_bidi().into();
         let max_uni_streams = local_params.initial_max_streams_uni().into();
@@ -541,8 +539,8 @@ where
             input: ArcInput::default(),
             listener: ArcListener::new(),
             ctrl_frames,
-            stream_wakers,
-            data_wakers,
+            written_wakers,
+            tx_wakers,
         }
     }
 
@@ -671,8 +669,8 @@ where
             sid,
             buf_size,
             Ext(self.ctrl_frames.clone()),
-            self.stream_wakers.clone(),
-            self.data_wakers.clone(),
+            self.written_wakers.clone(),
+            self.tx_wakers.clone(),
         )
     }
 

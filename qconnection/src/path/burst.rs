@@ -7,7 +7,7 @@ use std::{
 };
 
 use futures::FutureExt;
-use qbase::net::SendLimiter;
+use qbase::net::Signals;
 
 use crate::{
     ArcDcidCell, ArcLocalCids, Components, FlowController, space::Spaces, tx::Transaction,
@@ -82,7 +82,7 @@ impl Burst {
         &'b self,
         prepared_buffers: impl Iterator<Item = &'b mut [u8]> + 'b,
         mut transaction: Transaction<'b>,
-    ) -> io::Result<Result<Vec<usize>, SendLimiter>> {
+    ) -> io::Result<Result<Vec<usize>, Signals>> {
         let scid = self.local_cids.initial_scid();
         let reversed_size = self.path.interface.reversed_bytes(self.path.pathway)?;
         use core::ops::ControlFlow::*;
@@ -153,8 +153,8 @@ impl Burst {
                 debug_assert!(!segments.is_empty());
                 Poll::Ready(Ok(segments))
             }
-            Err(limiter) => {
-                self.path.send_waker.wait(cx, limiter);
+            Err(signals) => {
+                self.path.send_waker.wait_for(cx, signals);
                 Poll::Pending
             }
         }

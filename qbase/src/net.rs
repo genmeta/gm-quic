@@ -1,4 +1,4 @@
 mod addr;
-mod send_waker;
+mod waker;
 pub use addr::*;
-pub use send_waker::*;
+pub use waker::*;

@@ -10,7 +10,7 @@ use qbase::{
         ConnectionCloseFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
         ReceiveFrame, SendFrame,
     },
-    net::{DataWakers, Link, Pathway, SendLimiter, StreamWakers},
+    net::{Link, Pathway, Signals, TransportWakers, WrittenWakers},
     packet::{
         self, CipherPacket, MarshalFrame, PacketWriter,
         header::{
@@ -77,8 +77,8 @@ impl DataSpace {
         reliable_frames: ArcReliableFrameDeque,
         local_params: &CommonParameters,
         streams_ctrl: Box<dyn ControlConcurrency>,
-        stream_wakers: StreamWakers,
-        data_wakers: DataWakers,
+        stream_wakers: WrittenWakers,
+        data_wakers: TransportWakers,
     ) -> Self {
         Self {
             zero_rtt_keys: ArcKeys::new_pending(),
@@ -136,15 +136,12 @@ impl DataSpace {
         tx: &mut Transaction<'_>,
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         buf: &mut [u8],
-    ) -> Result<(MiddleAssembledPacket, usize), SendLimiter> {
+    ) -> Result<(MiddleAssembledPacket, usize), Signals> {
         if self.one_rtt_keys.get_local_keys().is_some() {
-            return Err(SendLimiter::empty()); // not error, just skip 0rtt
+            return Err(Signals::empty()); // not error, just skip 0rtt
         }
 
-        let keys = self
-            .zero_rtt_keys
-            .get_local_keys()
-            .ok_or(SendLimiter::KEYS_UNAVAILABLE)?;
+        let keys = self.zero_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
         let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketMemory::new_long(
             LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).zero_rtt(),
@@ -153,7 +150,7 @@ impl DataSpace {
             &sent_journal,
         )?;
 
-        let mut limiter = SendLimiter::empty();
+        let mut limiter = Signals::empty();
 
         _ = path_challenge_frames
             .try_load_frames_into(&mut packet)
@@ -191,11 +188,8 @@ impl DataSpace {
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
         buf: &mut [u8],
-    ) -> Result<(MiddleAssembledPacket, Option<u64>, usize), SendLimiter> {
-        let (hpk, pk) = self
-            .one_rtt_keys
-            .get_local_keys()
-            .ok_or(SendLimiter::KEYS_UNAVAILABLE)?;
+    ) -> Result<(MiddleAssembledPacket, Option<u64>, usize), Signals> {
+        let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
         let (key_phase, pk) = pk.lock_guard().get_local();
         let sent_journal = self.journal.of_sent_packets();
         // (1) may_loss被调用时cc已经被锁定，may_loss会尝试锁定sent_journal
@@ -213,10 +207,10 @@ impl DataSpace {
             &sent_journal,
         )?;
 
-        let mut limiter = SendLimiter::empty();
+        let mut limiter = Signals::empty();
 
         let ack = need_ack
-            .ok_or(SendLimiter::NO_UNLIMITED_DATA)
+            .ok_or(Signals::TRANSPORT)
             .and_then(|(largest, rcvd_time)| {
                 let rcvd_journal = self.journal.of_rcvd_packets();
                 let ack_frame =
@@ -265,11 +259,8 @@ impl DataSpace {
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
         buf: &mut [u8],
-    ) -> Result<MiddleAssembledPacket, SendLimiter> {
-        let (hpk, pk) = self
-            .one_rtt_keys
-            .get_local_keys()
-            .ok_or(SendLimiter::KEYS_UNAVAILABLE)?;
+    ) -> Result<MiddleAssembledPacket, Signals> {
+        let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
         let (key_phase, pk) = pk.lock_guard().get_local();
         let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketMemory::new_short(
@@ -281,16 +272,16 @@ impl DataSpace {
             &sent_journal,
         )?;
 
-        let mut limiter = SendLimiter::empty();
+        let mut signals = Signals::empty();
         _ = path_challenge_frames
             .try_load_frames_into(&mut packet)
-            .inspect_err(|l| limiter |= *l);
+            .inspect_err(|s| signals |= *s);
         _ = path_response_frames
             .try_load_frames_into(&mut packet)
-            .inspect_err(|l| limiter |= *l);
+            .inspect_err(|s| signals |= *s);
         // 其实还应该加上NCID，但是从ReliableFrameDeque分拣太复杂了
 
-        packet.interrupt().map_err(|_| limiter)
+        packet.interrupt().map_err(|_| signals)
     }
 
     pub fn is_one_rtt_ready(&self) -> bool {

@@ -13,7 +13,7 @@ use crate::{
         BeFrame, ContainSpec, Spec,
         io::{WriteDataFrame, WriteFrame},
     },
-    net::SendLimiter,
+    net::Signals,
     util::{DescribeData, WriteData},
     varint::{EncodeBytes, VarInt, WriteVarInt},
 };
@@ -269,7 +269,7 @@ impl<'b> PacketWriter<'b> {
         buffer: &'b mut [u8],
         pn: (u64, PacketNumber),
         keys: Arc<rustls::quic::Keys>,
-    ) -> Result<Self, SendLimiter>
+    ) -> Result<Self, Signals>
     where
         S: EncodeHeader,
         for<'a> &'a mut [u8]: WriteHeader<LongHeader<S>>,
@@ -277,7 +277,7 @@ impl<'b> PacketWriter<'b> {
         let hdr_len = header.size();
         let len_encoding = header.length_encoding();
         if buffer.len() < hdr_len + len_encoding + 20 {
-            return Err(SendLimiter::BUFFER_TOO_SMALL);
+            return Err(Signals::CONGESTION);
         }
 
         let (mut hdr_buf, mut payload_buf) = buffer.split_at_mut(hdr_len + len_encoding);
@@ -313,10 +313,10 @@ impl<'b> PacketWriter<'b> {
         hpk: Arc<dyn rustls::quic::HeaderProtectionKey>,
         pk: Arc<dyn rustls::quic::PacketKey>,
         key_phase: KeyPhaseBit,
-    ) -> Result<Self, SendLimiter> {
+    ) -> Result<Self, Signals> {
         let hdr_len = header.size();
         if buffer.len() < hdr_len + 20 {
-            return Err(SendLimiter::BUFFER_TOO_SMALL);
+            return Err(Signals::CONGESTION);
         }
 
         let (mut hdr_buf, mut payload_buf) = buffer.split_at_mut(hdr_len);
