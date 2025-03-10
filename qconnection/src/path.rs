@@ -10,7 +10,7 @@ use std::{
 use qbase::{
     error::Error,
     frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
-    net::{Link, Pathway, SendWaker},
+    net::{ArcSendWaker, Link, Pathway},
 };
 use qcongestion::{ArcCC, CongestionControl};
 use qinterface::{QuicInterface, router::QuicProto};
@@ -36,14 +36,14 @@ pub struct Path {
     challenge_sndbuf: SendBuffer<PathChallengeFrame>,
     response_sndbuf: SendBuffer<PathResponseFrame>,
     response_rcvbuf: RecvBuffer<PathResponseFrame>,
-    send_waker: Arc<SendWaker>,
+    tx_waker: ArcSendWaker,
 }
 
 impl Path {
     pub fn new(proto: &QuicProto, link: Link, pathway: Pathway, cc: ArcCC) -> Option<Self> {
         let interface = proto.get_interface(link.src()).ok()?;
-        let send_waker = Arc::new(SendWaker::new());
-        let handle = cc.launch_with_waker(send_waker.for_transport());
+        let tx_waker = ArcSendWaker::new();
+        let handle = cc.launch_with_waker(tx_waker.clone());
         Some(Self {
             interface,
             link,
@@ -52,10 +52,10 @@ impl Path {
             validated: AtomicBool::new(false),
             anti_amplifier: Default::default(),
             last_recv_time: Instant::now().into(),
-            challenge_sndbuf: SendBuffer::new(send_waker.for_transport()),
-            response_sndbuf: SendBuffer::new(send_waker.for_transport()),
+            challenge_sndbuf: SendBuffer::new(tx_waker.clone()),
+            response_sndbuf: SendBuffer::new(tx_waker.clone()),
             response_rcvbuf: Default::default(),
-            send_waker,
+            tx_waker,
         })
     }
 
@@ -90,8 +90,8 @@ impl Path {
         self.interface.deref()
     }
 
-    pub fn send_waker(&self) -> &Arc<SendWaker> {
-        &self.send_waker
+    pub fn tx_waker(&self) -> &ArcSendWaker {
+        &self.tx_waker
     }
 
     pub fn on_rcvd(&self, amount: usize) {

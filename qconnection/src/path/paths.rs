@@ -5,7 +5,7 @@ use deref_derive::Deref;
 use qbase::{
     Epoch,
     error::{Error, ErrorKind},
-    net::{Pathway, SendWakers},
+    net::{ArcSendWakers, Pathway},
 };
 use qcongestion::{CongestionControl, MiniHeap};
 use qlog::telemetry::Instrument;
@@ -40,16 +40,16 @@ impl PathContext {
 #[derive(Clone)]
 pub struct ArcPathContexts {
     paths: Arc<DashMap<Pathway, PathContext>>,
-    send_wakers: Arc<SendWakers>,
+    tx_wakers: ArcSendWakers,
     broker: ArcEventBroker,
     erased: Arc<[MiniHeap; 3]>,
 }
 
 impl ArcPathContexts {
-    pub fn new(send_wakers: Arc<SendWakers>, broker: ArcEventBroker) -> Self {
+    pub fn new(tx_wakers: ArcSendWakers, broker: ArcEventBroker) -> Self {
         Self {
             paths: Default::default(),
-            send_wakers,
+            tx_wakers,
             broker,
             erased: Default::default(),
         }
@@ -67,7 +67,7 @@ impl ArcPathContexts {
             dashmap::Entry::Occupied(occupied_entry) => Some(occupied_entry.get().path.clone()),
             dashmap::Entry::Vacant(vacant_entry) => {
                 let (path, task) = try_create()?;
-                self.send_wakers.insert(pathway, path.send_waker());
+                self.tx_wakers.insert(pathway, path.tx_waker());
                 let paths = self.clone();
                 let task = tokio::spawn(
                     async move {
@@ -113,9 +113,5 @@ impl ArcPathContexts {
 
     pub fn erased(&self) -> Arc<[MiniHeap; 3]> {
         self.erased.clone()
-    }
-
-    pub fn send_wakers(&self) -> &SendWakers {
-        &self.send_wakers
     }
 }

@@ -10,7 +10,7 @@ use qbase::{
     cid::ConnectionId,
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
-    net::{Link, Pathway, Signals, TransportWakers},
+    net::{ArcSendWakers, Link, Pathway, Signals},
     packet::{
         CipherPacket, MarshalFrame, PacketWriter,
         header::{
@@ -60,9 +60,9 @@ pub struct InitialSpace {
 
 impl InitialSpace {
     // Initial keys应该是预先知道的，或者传入dcid，可以构造出来
-    pub fn new(keys: rustls::quic::Keys, token: Vec<u8>, data_wakers: TransportWakers) -> Self {
+    pub fn new(keys: rustls::quic::Keys, token: Vec<u8>, tx_wakers: ArcSendWakers) -> Self {
         let journal = InitialJournal::with_capacity(16);
-        let crypto_stream = CryptoStream::new(4096, 4096, data_wakers);
+        let crypto_stream = CryptoStream::new(4096, 4096, tx_wakers);
 
         Self {
             token: Mutex::new(token),

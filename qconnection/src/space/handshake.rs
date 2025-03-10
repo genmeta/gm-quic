@@ -7,7 +7,7 @@ use qbase::{
     cid::ConnectionId,
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
-    net::{Link, Pathway, Signals, TransportWakers},
+    net::{ArcSendWakers, Link, Pathway, Signals},
     packet::{
         CipherPacket, MarshalFrame, PacketWriter,
         header::{
@@ -55,10 +55,10 @@ pub struct HandshakeSpace {
 }
 
 impl HandshakeSpace {
-    pub fn new(data_wakers: TransportWakers) -> Self {
+    pub fn new(tx_wakers: ArcSendWakers) -> Self {
         Self {
             keys: ArcKeys::new_pending(),
-            crypto_stream: CryptoStream::new(4096, 4096, data_wakers),
+            crypto_stream: CryptoStream::new(4096, 4096, tx_wakers),
             journal: HandshakeJournal::with_capacity(16),
         }
     }

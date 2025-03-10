@@ -10,7 +10,7 @@ use qbase::{
         ConnectionCloseFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
         ReceiveFrame, SendFrame,
     },
-    net::{Link, Pathway, Signals, TransportWakers, WrittenWakers},
+    net::{ArcSendWakers, Link, Pathway, Signals},
     packet::{
         self, CipherPacket, MarshalFrame, PacketWriter,
         header::{
@@ -77,25 +77,23 @@ impl DataSpace {
         reliable_frames: ArcReliableFrameDeque,
         local_params: &CommonParameters,
         streams_ctrl: Box<dyn ControlConcurrency>,
-        stream_wakers: WrittenWakers,
-        data_wakers: TransportWakers,
+        tx_wakers: ArcSendWakers,
     ) -> Self {
         Self {
             zero_rtt_keys: ArcKeys::new_pending(),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
             journal: DataJournal::with_capacity(16),
-            crypto_stream: CryptoStream::new(4096, 4096, data_wakers.clone()),
+            crypto_stream: CryptoStream::new(4096, 4096, tx_wakers.clone()),
             reliable_frames: reliable_frames.clone(),
             streams: DataStreams::new(
                 role,
                 local_params,
                 streams_ctrl,
                 reliable_frames,
-                stream_wakers,
-                data_wakers.clone(),
+                tx_wakers.clone(),
             ),
             #[cfg(feature = "unreliable")]
-            datagrams: DatagramFlow::new(1024, data_wakers),
+            datagrams: DatagramFlow::new(1024, tx_wakers),
         }
     }
 

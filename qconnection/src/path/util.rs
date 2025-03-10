@@ -8,7 +8,7 @@ use bytes::BufMut;
 use futures::StreamExt;
 use qbase::{
     frame::{BeFrame, io::WriteFrame},
-    net::{Signals, TransportWaker},
+    net::{ArcSendWaker, Signals},
     packet::MarshalPathFrame,
     util::ArcAsyncDeque,
 };
@@ -21,14 +21,14 @@ use qbase::{
 /// This struct impl [`Default`], and the `new` method is not provided.
 pub struct SendBuffer<T> {
     item: Mutex<Option<T>>,
-    waker: TransportWaker,
+    tx_waker: ArcSendWaker,
 }
 
 impl<T> SendBuffer<T> {
-    pub fn new(waker: TransportWaker) -> Self {
+    pub fn new(tx_waker: ArcSendWaker) -> Self {
         Self {
             item: Default::default(),
-            waker,
+            tx_waker,
         }
     }
 
@@ -37,7 +37,7 @@ impl<T> SendBuffer<T> {
     /// [`SendBuffer`] can only buffer one frame at a time. If you write a new frame to the buffer before the previous
     /// frame is sent, the previous frame will be overwritten.
     pub fn write(&self, frame: T) {
-        self.waker.wake();
+        self.tx_waker.wake_by(Signals::TRANSPORT);
         *self.item.lock().unwrap() = Some(frame);
     }
 }
@@ -54,11 +54,14 @@ where
     {
         let mut guard = self.item.lock().unwrap();
         match guard.as_ref() {
-            Some(frame) if packet.remaining_mut() > frame.encoding_size() => {
-                packet.dump_path_frame(guard.take().unwrap());
-                Ok(())
+            Some(frame) => {
+                if packet.remaining_mut() > frame.encoding_size() {
+                    packet.dump_path_frame(guard.take().unwrap());
+                    Ok(())
+                } else {
+                    Err(Signals::CONGESTION)
+                }
             }
-            Some(_large_frame) => Err(Signals::CONGESTION),
             None => Err(Signals::TRANSPORT),
         }
     }
