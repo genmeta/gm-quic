@@ -10,7 +10,7 @@ use qbase::{
     cid::ConnectionId,
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
-    net::{DataWakers, Link, Pathway, SendLimiter},
+    net::{Link, Pathway, Signals, TransportWakers},
     packet::{
         CipherPacket, MarshalFrame, PacketWriter,
         header::{
@@ -60,7 +60,7 @@ pub struct InitialSpace {
 
 impl InitialSpace {
     // Initial keys应该是预先知道的，或者传入dcid，可以构造出来
-    pub fn new(keys: rustls::quic::Keys, token: Vec<u8>, data_wakers: DataWakers) -> Self {
+    pub fn new(keys: rustls::quic::Keys, token: Vec<u8>, data_wakers: TransportWakers) -> Self {
         let journal = InitialJournal::with_capacity(16);
         let crypto_stream = CryptoStream::new(4096, 4096, data_wakers);
 
@@ -101,11 +101,8 @@ impl InitialSpace {
         &self,
         tx: &mut Transaction<'_>,
         buf: &mut [u8],
-    ) -> Result<(MiddleAssembledPacket, Option<u64>), SendLimiter> {
-        let keys = self
-            .keys
-            .get_local_keys()
-            .ok_or(SendLimiter::KEYS_UNAVAILABLE)?;
+    ) -> Result<(MiddleAssembledPacket, Option<u64>), Signals> {
+        let keys = self.keys.get_local_keys().ok_or(Signals::KEYS)?;
         let sent_journal = self.journal.of_sent_packets();
         let need_ack = tx.need_ack(Epoch::Initial);
         let mut packet = PacketMemory::new_long(
@@ -116,10 +113,10 @@ impl InitialSpace {
             &sent_journal,
         )?;
 
-        let mut limiter = SendLimiter::empty();
+        let mut signals = Signals::empty();
 
         let ack = need_ack
-            .ok_or(SendLimiter::NO_UNLIMITED_DATA)
+            .ok_or(Signals::TRANSPORT)
             .and_then(|(largest, rcvd_time)| {
                 let rcvd_journal = self.journal.of_rcvd_packets();
                 let ack_frame =
@@ -127,16 +124,16 @@ impl InitialSpace {
                 packet.dump_ack_frame(ack_frame);
                 Ok(largest)
             })
-            .inspect_err(|l| limiter |= *l)
+            .inspect_err(|s| signals |= *s)
             .ok();
 
         _ = self
             .crypto_stream
             .outgoing()
             .try_load_data_into(&mut packet)
-            .inspect_err(|l| limiter |= *l);
+            .inspect_err(|s| signals |= *s);
 
-        Ok((packet.interrupt().map_err(|_| limiter)?, ack))
+        Ok((packet.interrupt().map_err(|_| signals)?, ack))
     }
 }
 

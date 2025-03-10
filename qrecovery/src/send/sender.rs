@@ -8,7 +8,7 @@ use std::{
 use qbase::{
     error::Error,
     frame::{ResetStreamError, ResetStreamFrame, SendFrame},
-    net::{DataWakers, SendLimiter, StreamWakers},
+    net::{Signals, TransportWakers, WrittenWakers},
     sid::StreamId,
     util::DescribeData,
     varint::VarInt,
@@ -38,10 +38,10 @@ pub struct ReadySender<TX> {
     flush_waker: Option<Waker>,
     shutdown_waker: Option<Waker>,
     broker: TX,
-    stream_wakers: StreamWakers,
+    stream_wakers: WrittenWakers,
     max_stream_data: u64,
     writable_waker: Option<Waker>,
-    data_wakers: DataWakers,
+    data_wakers: TransportWakers,
 }
 
 impl<TX> ReadySender<TX> {
@@ -49,8 +49,8 @@ impl<TX> ReadySender<TX> {
         stream_id: StreamId,
         buf_size: u64,
         broker: TX,
-        stream_wakers: StreamWakers,
-        data_wakers: DataWakers,
+        stream_wakers: WrittenWakers,
+        data_wakers: TransportWakers,
     ) -> ReadySender<TX> {
         ReadySender {
             stream_id,
@@ -187,8 +187,8 @@ pub struct SendingSender<TX> {
     broker: TX,
     writable_waker: Option<Waker>,
     max_stream_data: u64,
-    stream_wakers: StreamWakers,
-    data_wakers: DataWakers,
+    stream_wakers: WrittenWakers,
+    data_wakers: TransportWakers,
 }
 
 type StreamData<'s> = (u64, bool, (&'s [u8], &'s [u8]), bool);
@@ -231,7 +231,7 @@ impl<TX> SendingSender<TX> {
         &mut self,
         predicate: P,
         flow_limit: usize,
-    ) -> Result<StreamData, SendLimiter>
+    ) -> Result<StreamData, Signals>
     where
         P: Fn(u64) -> Option<usize>,
     {
@@ -245,7 +245,7 @@ impl<TX> SendingSender<TX> {
             })
             .or_else(|limiter| {
                 if fin_pos.is_some_and(|fin_pos| fin_pos == sent) {
-                    predicate(sent).ok_or(limiter | SendLimiter::BUFFER_TOO_SMALL)?;
+                    predicate(sent).ok_or(limiter | Signals::CONGESTION)?;
                     Ok((sent, false, (&[], &[]), true))
                 } else {
                     Err(limiter)
@@ -357,7 +357,7 @@ pub struct DataSentSender<TX> {
     broker: TX,
     is_fin_acked: bool,
     // retran/fin
-    data_wakers: DataWakers,
+    data_wakers: TransportWakers,
 }
 
 impl<TX> DataSentSender<TX> {
@@ -365,7 +365,7 @@ impl<TX> DataSentSender<TX> {
         &mut self,
         predicate: P,
         flow_limit: usize,
-    ) -> Result<StreamData, SendLimiter>
+    ) -> Result<StreamData, Signals>
     where
         P: Fn(u64) -> Option<usize>,
     {
@@ -462,8 +462,8 @@ impl<TX> Sender<TX> {
         stream_id: StreamId,
         buf_size: u64,
         broker: TX,
-        stream_wakers: StreamWakers,
-        data_wakers: DataWakers,
+        stream_wakers: WrittenWakers,
+        data_wakers: TransportWakers,
     ) -> Self {
         Sender::Ready(ReadySender::new(
             stream_id,
@@ -494,8 +494,8 @@ impl<TX> ArcSender<TX> {
         stream_id: StreamId,
         buf_size: u64,
         broker: TX,
-        stream_wakers: StreamWakers,
-        data_wakers: DataWakers,
+        stream_wakers: WrittenWakers,
+        data_wakers: TransportWakers,
     ) -> Self {
         ArcSender(Arc::new(Mutex::new(Ok(Sender::new(
             stream_id,

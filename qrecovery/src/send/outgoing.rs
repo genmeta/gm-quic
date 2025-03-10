@@ -4,7 +4,7 @@ use bytes::BufMut;
 use qbase::{
     error::Error as QuicError,
     frame::{ResetStreamError, StreamFrame},
-    net::SendLimiter,
+    net::Signals,
     packet::MarshalDataFrame,
     sid::StreamId,
     util::DescribeData,
@@ -34,7 +34,7 @@ impl<TX: Clone> Outgoing<TX> {
         sid: StreamId,
         flow_limit: usize,
         tokens: usize,
-    ) -> Result<(usize, bool), SendLimiter>
+    ) -> Result<(usize, bool), Signals>
     where
         P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
     {
@@ -56,7 +56,7 @@ impl<TX: Clone> Outgoing<TX> {
                 .map(|capacity| tokens.min(capacity))
         };
         let mut sender = self.0.sender();
-        let sending_state = sender.as_mut().or(Err(SendLimiter::empty()))?; // other(connection closed)
+        let sending_state = sender.as_mut().or(Err(Signals::empty()))?; // other(connection closed)
 
         match sending_state {
             Sender::Ready(s) => {
@@ -85,7 +85,7 @@ impl<TX: Clone> Outgoing<TX> {
                 result
             }
             Sender::DataSent(s) => s.pick_up(predicate, flow_limit).map(write),
-            _ => Err(SendLimiter::NO_UNLIMITED_DATA),
+            _ => Err(Signals::TRANSPORT),
         }
     }
 }

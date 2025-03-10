@@ -9,7 +9,7 @@ use bytes::{BufMut, Bytes};
 use qbase::{
     error::Error,
     frame::{BeFrame, DatagramFrame},
-    net::{DataWakers, SendLimiter},
+    net::{Signals, TransportWakers},
     packet::MarshalDataFrame,
     varint::VarInt,
 };
@@ -18,14 +18,14 @@ use qbase::{
 struct RawDatagramWriter {
     /// The queue that stores the datagram frame to send.
     datagrams: VecDeque<Bytes>,
-    data_wakers: DataWakers,
+    tx_wakers: TransportWakers,
 }
 
 impl RawDatagramWriter {
-    fn new(data_wakers: DataWakers) -> Self {
+    fn new(data_wakers: TransportWakers) -> Self {
         Self {
             datagrams: VecDeque::new(),
-            data_wakers,
+            tx_wakers: data_wakers,
         }
     }
 }
@@ -35,10 +35,8 @@ impl RawDatagramWriter {
 pub struct DatagramOutgoing(Arc<Mutex<Result<RawDatagramWriter, Error>>>);
 
 impl DatagramOutgoing {
-    pub fn new(data_wakers: DataWakers) -> DatagramOutgoing {
-        DatagramOutgoing(Arc::new(Mutex::new(Ok(RawDatagramWriter::new(
-            data_wakers,
-        )))))
+    pub fn new(tx_wakers: TransportWakers) -> DatagramOutgoing {
+        DatagramOutgoing(Arc::new(Mutex::new(Ok(RawDatagramWriter::new(tx_wakers)))))
     }
 
     /// Try to reate a new instance of [`DatagramWriter`].
@@ -122,23 +120,23 @@ impl DatagramOutgoing {
     /// Because no frame can be put after the datagram frame without length,
     /// padding frames will be put before the datagram frame.
     /// In this case, the packet will be filled.
-    pub fn try_load_data_into<P>(&self, packet: &mut P) -> Result<(), SendLimiter>
+    pub fn try_load_data_into<P>(&self, packet: &mut P) -> Result<(), Signals>
     where
         P: BufMut + MarshalDataFrame<DatagramFrame, Bytes>,
     {
         let mut guard = self.0.lock().unwrap();
         let Ok(writer) = guard.as_mut() else {
-            return Err(SendLimiter::empty()); // connection closed
+            return Err(Signals::empty()); // connection closed
         };
         let Some(datagram) = writer.datagrams.front() else {
-            return Err(SendLimiter::NO_UNLIMITED_DATA);
+            return Err(Signals::TRANSPORT);
         };
 
         let available = packet.remaining_mut();
 
         let max_encoding_size = available.saturating_sub(datagram.len());
         if max_encoding_size == 0 {
-            return Err(SendLimiter::BUFFER_TOO_SMALL);
+            return Err(Signals::CONGESTION);
         }
 
         let data = writer.datagrams.pop_front().expect("unreachable");
@@ -216,7 +214,7 @@ impl DatagramWriter {
                         "datagram frame size exceeds the limit",
                     ));
                 }
-                writer.data_wakers.wake_all();
+                writer.tx_wakers.wake_all();
                 writer.datagrams.push_back(data.clone());
                 Ok(())
             }

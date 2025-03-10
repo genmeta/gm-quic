@@ -16,7 +16,7 @@ use qbase::{
         ReliableFrame, StreamFrame,
         io::{WriteDataFrame, WriteFrame},
     },
-    net::SendLimiter,
+    net::Signals,
     packet::{
         CipherPacket, MarshalDataFrame, MarshalFrame, MarshalPathFrame, PacketWriter, PlainPacket,
         header::{
@@ -83,7 +83,7 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
         buffer: &'b mut [u8],
         keys: Arc<rustls::quic::Keys>,
         journal: &'s ArcSentJournal<F>,
-    ) -> Result<Self, SendLimiter>
+    ) -> Result<Self, Signals>
     where
         S: EncodeHeader + 'static,
         LongHeader<S>: GetType,
@@ -117,7 +117,7 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
         pk: Arc<dyn rustls::quic::PacketKey>,
         key_phase: KeyPhaseBit,
         journal: &'s ArcSentJournal<F>,
-    ) -> Result<Self, SendLimiter> {
+    ) -> Result<Self, Signals> {
         let guard = journal.new_packet();
         let pn = guard.pn();
         Ok(Self {
@@ -223,9 +223,9 @@ impl<F> PacketMemory<'_, '_, F> {
         });
     }
 
-    pub fn interrupt(self) -> Result<MiddleAssembledPacket, SendLimiter> {
+    pub fn interrupt(self) -> Result<MiddleAssembledPacket, Signals> {
         if self.writer.is_empty() {
-            return Err(SendLimiter::NO_UNLIMITED_DATA);
+            return Err(Signals::TRANSPORT);
         }
         Ok(MiddleAssembledPacket {
             packet: self.writer.interrupt().0,
@@ -477,12 +477,12 @@ impl Transaction<'_> {
         spin: SpinBit,
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
-    ) -> Result<usize, SendLimiter> {
+    ) -> Result<usize, Signals> {
         let mut written = 0;
         let mut last_level: Option<LevelState> = None;
         let mut last_level_size = 0;
         let mut containing_initial = false;
-        let mut limiter = SendLimiter::empty();
+        let mut limiter = Signals::empty();
 
         if let Ok((mid_pkt, ack)) = spaces
             .initial()
@@ -632,7 +632,7 @@ impl Transaction<'_> {
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
         data_space: &DataSpace,
-    ) -> Result<usize, SendLimiter> {
+    ) -> Result<usize, Signals> {
         let buffer = self.constraints.constrain(buf);
         data_space
             .try_assemble_1rtt(
@@ -669,7 +669,7 @@ impl Transaction<'_> {
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
         data_space: &DataSpace,
-    ) -> Result<usize, SendLimiter> {
+    ) -> Result<usize, Signals> {
         let buffer = self.constraints.constrain(buf);
         data_space
             .try_assemble_validation(

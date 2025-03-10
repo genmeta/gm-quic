@@ -6,7 +6,7 @@ use std::{
 use crate::{
     error::{Error as QuicError, ErrorKind as QuicErrorKind},
     frame::{DataBlockedFrame, FrameType, MaxDataFrame, ReceiveFrame, SendFrame},
-    net::FlowWakers,
+    net::FlowControlWakers,
     varint::VarInt,
 };
 
@@ -21,17 +21,17 @@ struct SendControler<TX> {
     max_data: u64,
     blocking: bool,
     broker: TX,
-    wakers: FlowWakers,
+    wakers: FlowControlWakers,
 }
 
 impl<TX> SendControler<TX> {
-    fn new(initial_max_data: u64, broker: TX, flow_wakers: FlowWakers) -> Self {
+    fn new(initial_max_data: u64, broker: TX, wakers: FlowControlWakers) -> Self {
         Self {
             sent_data: 0,
             max_data: initial_max_data,
             blocking: false,
             broker,
-            wakers: flow_wakers,
+            wakers,
         }
     }
 
@@ -78,11 +78,11 @@ impl<TX> ArcSendControler<TX> {
     ///
     /// `initial_max_data` is allowed to be 0, which is reasonable when creating a
     /// connection without knowing the peer's `iniitial_max_data` setting.
-    pub fn new(initial_max_data: u64, broker: TX, flow_wakers: FlowWakers) -> Self {
+    pub fn new(initial_max_data: u64, broker: TX, wakers: FlowControlWakers) -> Self {
         Self(Arc::new(Mutex::new(Ok(SendControler::new(
             initial_max_data,
             broker,
-            flow_wakers,
+            wakers,
         )))))
     }
 
@@ -329,7 +329,7 @@ impl<TX: Clone> FlowController<TX> {
         peer_initial_max_data: u64,
         local_initial_max_data: u64,
         broker: TX,
-        flow_wakers: FlowWakers,
+        flow_wakers: FlowControlWakers,
     ) -> Self {
         Self {
             sender: ArcSendControler::new(peer_initial_max_data, broker.clone(), flow_wakers),

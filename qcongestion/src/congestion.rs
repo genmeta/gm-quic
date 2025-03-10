@@ -10,7 +10,7 @@ use qbase::{
     Epoch,
     frame::{AckFrame, EcnCounts, HandshakeDoneFrame, SendFrame},
     handshake::Handshake,
-    net::{DataWaker, Pathway},
+    net::{Pathway, TransportWaker},
     sid::Role,
 };
 use qlog::{quic::recovery::PacketLostTrigger, telemetry::Instrument};
@@ -497,7 +497,7 @@ impl ArcCC {
 }
 
 impl super::CongestionControl for ArcCC {
-    fn launch(&self, data_waker: DataWaker) -> AbortHandle {
+    fn launch_with_waker(&self, tx_waker: TransportWaker) -> AbortHandle {
         let cc = self.clone();
         tokio::spawn(
             async move {
@@ -515,7 +515,7 @@ impl super::CongestionControl for ArcCC {
                         }
                     }
                     if guard.requires_ack() {
-                        data_waker.wake();
+                        tx_waker.wake();
                     }
                 }
             }

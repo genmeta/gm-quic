@@ -238,7 +238,7 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
 
         let send_wakers = Arc::new(SendWakers::new());
         let reliable_frames =
-            ArcReliableFrameDeque::with_capacity_and_wakers(8, send_wakers.data_wakers());
+            ArcReliableFrameDeque::with_capacity_and_wakers(8, send_wakers.transport_wakers());
 
         let rcvd_pkt_q = Arc::new(RcvdPacketQueue::new());
 
@@ -276,23 +276,23 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             remembered.map_or(0, |p| p.initial_max_data().into_inner()),
             client_params.initial_max_data().into_inner(),
             reliable_frames.clone(),
-            send_wakers.flow_wakers(),
+            send_wakers.flow_ctrl_wakers(),
         );
 
         let spaces = Spaces::new(
             InitialSpace::new(
                 initial_keys,
                 self.foundation.token,
-                send_wakers.data_wakers(),
+                send_wakers.transport_wakers(),
             ),
-            HandshakeSpace::new(send_wakers.data_wakers()),
+            HandshakeSpace::new(send_wakers.transport_wakers()),
             DataSpace::new(
                 sid::Role::Client,
                 reliable_frames.clone(),
                 client_params,
                 self.streams_ctrl,
-                send_wakers.stream_wakers(),
-                send_wakers.data_wakers(),
+                send_wakers.written_wakers(),
+                send_wakers.transport_wakers(),
             ),
         );
 
@@ -322,7 +322,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         let server_params = &mut self.foundation.server_params;
         let send_wakers = Arc::new(SendWakers::new());
         let reliable_frames =
-            ArcReliableFrameDeque::with_capacity_and_wakers(8, send_wakers.data_wakers());
+            ArcReliableFrameDeque::with_capacity_and_wakers(8, send_wakers.transport_wakers());
 
         let rcvd_pkt_q = Arc::new(RcvdPacketQueue::new());
 
@@ -362,23 +362,23 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             0,
             server_params.initial_max_data().into_inner(),
             reliable_frames.clone(),
-            send_wakers.flow_wakers(),
+            send_wakers.flow_ctrl_wakers(),
         );
 
         let spaces = Spaces::new(
             InitialSpace::new(
                 initial_keys,
                 Vec::with_capacity(0),
-                send_wakers.data_wakers(),
+                send_wakers.transport_wakers(),
             ),
-            HandshakeSpace::new(send_wakers.data_wakers()),
+            HandshakeSpace::new(send_wakers.transport_wakers()),
             DataSpace::new(
                 sid::Role::Server,
                 reliable_frames.clone(),
                 server_params,
                 self.streams_ctrl,
-                send_wakers.stream_wakers(),
-                send_wakers.data_wakers(),
+                send_wakers.written_wakers(),
+                send_wakers.transport_wakers(),
             ),
         );
 

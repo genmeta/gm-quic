@@ -5,7 +5,7 @@ use std::{
     ops::Range,
 };
 
-use qbase::net::SendLimiter;
+use qbase::net::Signals;
 
 /// To indicate the state of a data segment, it is colored.
 #[derive(Default, PartialEq, Eq, Clone, Copy, Debug)]
@@ -126,15 +126,11 @@ impl BufMap {
 
     // 挑选Lost/Pending的数据发送。越靠前的数据，越高优先级发送；
     // 丢包重传的数据，相比于Pending数据更靠前，因此具有更高的优先级。
-    fn pick<P>(
-        &mut self,
-        predicate: P,
-        flow_limit: usize,
-    ) -> Result<(Range<u64>, bool), SendLimiter>
+    fn pick<P>(&mut self, predicate: P, flow_limit: usize) -> Result<(Range<u64>, bool), Signals>
     where
         P: Fn(u64) -> Option<usize>,
     {
-        let mut limiter = SendLimiter::NO_STREAM_DATA | SendLimiter::NO_UNLIMITED_DATA;
+        let mut signals = Signals::WRITTEN | Signals::TRANSPORT;
         // 先找到第一个能发送的区间，并将该区间染成Flight，返回原State
         self.0
             .iter_mut()
@@ -144,8 +140,8 @@ impl BufMap {
                 match state.color() {
                     Color::Pending if flow_limit != 0 => return true,
                     Color::Pending => {
-                        limiter &= !SendLimiter::NO_STREAM_DATA;
-                        limiter |= SendLimiter::FLOW_CONTROL
+                        signals &= !Signals::WRITTEN;
+                        signals |= Signals::FLOW_CONTROL
                     }
                     Color::Lost => return true,
                     _ => {}
@@ -156,7 +152,7 @@ impl BufMap {
                 // 如果区间的offset不符合predicate，就不发送这一段
                 // 其实选择到的第一段数据数据的offset已经是最小的了，如果最小的offset都不能发送，那么后面片段肯定也不能发送
                 let Some(available) = predicate(state.offset()) else {
-                    limiter |= SendLimiter::BUFFER_TOO_SMALL;
+                    signals |= Signals::CONGESTION;
                     return None;
                 };
 
@@ -198,7 +194,7 @@ impl BufMap {
                 }
                 (start..end, color == Color::Pending)
             })
-            .ok_or(limiter)
+            .ok_or(signals)
     }
 
     // 收到了ack确认，确认的数据不需再发送，对于头部连续确认的数据，就可以删掉。
@@ -629,7 +625,7 @@ impl SendBuf {
     /// * `bool`: whether the data is new(not retransmitted).
     /// * `(&[u8], &[u8])`: the data picked up, duo to the internal buffer is a ring buffer, the data
     ///   picked up is in two parts, the begin of the second slice are the end of the first slice
-    pub fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Result<Data, SendLimiter>
+    pub fn pick_up<P>(&mut self, predicate: P, flow_limit: usize) -> Result<Data, Signals>
     where
         P: Fn(u64) -> Option<usize>,
     {
@@ -678,7 +674,7 @@ impl SendBuf {
 
 #[cfg(test)]
 mod tests {
-    use qbase::net::SendLimiter;
+    use qbase::net::Signals;
 
     use super::{BufMap, Color, State};
 
@@ -729,10 +725,7 @@ mod tests {
     fn test_bufmap_pick() {
         let mut buf_map = BufMap::default();
         let range = buf_map.pick(|_| Some(20), usize::MAX);
-        assert_eq!(
-            range,
-            Err(SendLimiter::NO_UNLIMITED_DATA | SendLimiter::NO_STREAM_DATA)
-        );
+        assert_eq!(range, Err(Signals::TRANSPORT | Signals::WRITTEN));
         assert!(buf_map.0.is_empty());
 
         buf_map.extend_to(200);

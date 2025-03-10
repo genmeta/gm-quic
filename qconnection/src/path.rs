@@ -43,7 +43,7 @@ impl Path {
     pub fn new(proto: &QuicProto, link: Link, pathway: Pathway, cc: ArcCC) -> Option<Self> {
         let interface = proto.get_interface(link.src()).ok()?;
         let send_waker = Arc::new(SendWaker::new());
-        let handle = cc.launch(send_waker.data_waker());
+        let handle = cc.launch_with_waker(send_waker.for_transport());
         Some(Self {
             interface,
             link,
@@ -52,8 +52,8 @@ impl Path {
             validated: AtomicBool::new(false),
             anti_amplifier: Default::default(),
             last_recv_time: Instant::now().into(),
-            challenge_sndbuf: SendBuffer::new(send_waker.data_waker()),
-            response_sndbuf: SendBuffer::new(send_waker.data_waker()),
+            challenge_sndbuf: SendBuffer::new(send_waker.for_transport()),
+            response_sndbuf: SendBuffer::new(send_waker.for_transport()),
             response_rcvbuf: Default::default(),
             send_waker,
         })

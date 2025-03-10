@@ -8,7 +8,7 @@ use bytes::BufMut;
 use futures::StreamExt;
 use qbase::{
     frame::{BeFrame, io::WriteFrame},
-    net::{DataWaker, SendLimiter},
+    net::{Signals, TransportWaker},
     packet::MarshalPathFrame,
     util::ArcAsyncDeque,
 };
@@ -21,11 +21,11 @@ use qbase::{
 /// This struct impl [`Default`], and the `new` method is not provided.
 pub struct SendBuffer<T> {
     item: Mutex<Option<T>>,
-    waker: DataWaker,
+    waker: TransportWaker,
 }
 
 impl<T> SendBuffer<T> {
-    pub fn new(waker: DataWaker) -> Self {
+    pub fn new(waker: TransportWaker) -> Self {
         Self {
             item: Default::default(),
             waker,
@@ -48,7 +48,7 @@ where
     for<'a> &'a mut [u8]: WriteFrame<F>,
 {
     /// Try load the frame to be sent into the `packet`.
-    pub fn try_load_frames_into<P>(&self, packet: &mut P) -> Result<(), SendLimiter>
+    pub fn try_load_frames_into<P>(&self, packet: &mut P) -> Result<(), Signals>
     where
         P: BufMut + MarshalPathFrame<F>,
     {
@@ -58,8 +58,8 @@ where
                 packet.dump_path_frame(guard.take().unwrap());
                 Ok(())
             }
-            Some(_large_frame) => Err(SendLimiter::BUFFER_TOO_SMALL),
-            None => Err(SendLimiter::NO_UNLIMITED_DATA),
+            Some(_large_frame) => Err(Signals::CONGESTION),
+            None => Err(Signals::TRANSPORT),
         }
     }
 }

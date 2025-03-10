@@ -7,7 +7,7 @@ use qbase::{
     cid::ConnectionId,
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
-    net::{DataWakers, Link, Pathway, SendLimiter},
+    net::{Link, Pathway, Signals, TransportWakers},
     packet::{
         CipherPacket, MarshalFrame, PacketWriter,
         header::{
@@ -55,7 +55,7 @@ pub struct HandshakeSpace {
 }
 
 impl HandshakeSpace {
-    pub fn new(data_wakers: DataWakers) -> Self {
+    pub fn new(data_wakers: TransportWakers) -> Self {
         Self {
             keys: ArcKeys::new_pending(),
             crypto_stream: CryptoStream::new(4096, 4096, data_wakers),
@@ -92,20 +92,17 @@ impl HandshakeSpace {
         &self,
         tx: &mut Transaction<'_>,
         buf: &mut [u8],
-    ) -> Result<(MiddleAssembledPacket, Option<u64>), SendLimiter> {
-        let keys = self
-            .keys
-            .get_local_keys()
-            .ok_or(SendLimiter::KEYS_UNAVAILABLE)?;
+    ) -> Result<(MiddleAssembledPacket, Option<u64>), Signals> {
+        let keys = self.keys.get_local_keys().ok_or(Signals::KEYS)?;
         let sent_journal = self.journal.of_sent_packets();
         let header = LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).handshake();
         let need_ack = tx.need_ack(Epoch::Handshake);
         let mut packet = PacketMemory::new_long(header, buf, keys, &sent_journal)?;
 
-        let mut limiter = SendLimiter::empty();
+        let mut signals = Signals::empty();
 
         let ack = need_ack
-            .ok_or(SendLimiter::NO_UNLIMITED_DATA)
+            .ok_or(Signals::TRANSPORT)
             .and_then(|(largest, rcvd_time)| {
                 let rcvd_journal = self.journal.of_rcvd_packets();
                 let ack_frame =
@@ -113,16 +110,16 @@ impl HandshakeSpace {
                 packet.dump_ack_frame(ack_frame);
                 Ok(largest)
             })
-            .inspect_err(|l| limiter |= *l)
+            .inspect_err(|s| signals |= *s)
             .ok();
 
         _ = self
             .crypto_stream
             .outgoing()
             .try_load_data_into(&mut packet)
-            .inspect_err(|l| limiter |= *l);
+            .inspect_err(|s| signals |= *s);
 
-        Ok((packet.interrupt().map_err(|_| limiter)?, ack))
+        Ok((packet.interrupt().map_err(|_| signals)?, ack))
     }
 }
 

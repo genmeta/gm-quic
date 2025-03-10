@@ -5,7 +5,7 @@ use std::{
 
 use qbase::{
     frame::AckFrame,
-    net::SendLimiter,
+    net::Signals,
     packet::PacketNumber,
     util::IndexDeque,
     varint::{VARINT_MAX, VarInt},
@@ -93,7 +93,7 @@ impl RcvdJournal {
         largest: u64,
         rcvd_time: Instant,
         mut capacity: usize,
-    ) -> Result<AckFrame, SendLimiter> {
+    ) -> Result<AckFrame, Signals> {
         let mut pkts = self
             .queue
             .iter_with_idx()
@@ -107,7 +107,7 @@ impl RcvdJournal {
         // Frame type + Largest Acknowledged + First Ack Range + Ack Range Count
         let min_len = 1 + largest.encoding_size() + delay.encoding_size() + 1 + 1;
         if capacity < min_len {
-            return Err(SendLimiter::BUFFER_TOO_SMALL);
+            return Err(Signals::CONGESTION);
         }
         capacity -= min_len;
 
@@ -240,7 +240,7 @@ impl ArcRcvdJournal {
         largest: u64,
         rcvd_time: Instant,
         capacity: usize,
-    ) -> Result<AckFrame, SendLimiter> {
+    ) -> Result<AckFrame, Signals> {
         self.inner
             .read()
             .unwrap()

@@ -8,7 +8,7 @@ use dashmap::DashMap;
 use qbase::{
     Epoch,
     frame::AckFrame,
-    net::{DataWaker, Pathway},
+    net::{Pathway, TransportWaker},
 };
 use qlog::quic::recovery::PacketLostTrigger;
 use tokio::task::AbortHandle;
@@ -24,7 +24,7 @@ mod rtt;
 /// The [`CongestionControl`] trait defines the interface for congestion control algorithms.
 pub trait CongestionControl {
     /// Performs a periodic tick to drive the congestion control algorithm.
-    fn launch(&self, data_waker: DataWaker) -> AbortHandle;
+    fn launch_with_waker(&self, waker: TransportWaker) -> AbortHandle;
 
     /// Polls whether packets can be sent and returns the amount of data that can be sent.
     /// # Returns
