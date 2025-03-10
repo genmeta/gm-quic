@@ -89,7 +89,7 @@ where
     D: DescribeData,
 {
     fn put_data_frame(&mut self, frame: &DatagramFrame, data: &D) {
-        self.put_u8(frame.frame_type().into());
+        self.put_varint(&frame.frame_type().into());
         if frame.encode_len {
             self.put_varint(&frame.len);
         }
