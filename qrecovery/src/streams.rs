@@ -31,7 +31,7 @@ pub use listener::{AcceptBiStream, AcceptUniStream};
 use qbase::{
     error::Error,
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
-    net::{TransportWakers, WrittenWakers},
+    net::ArcSendWakers,
     param::CommonParameters,
     sid::{ControlConcurrency, Role, StreamId},
 };
@@ -86,15 +86,13 @@ where
         local_params: &CommonParameters,
         ctrl: Box<dyn ControlConcurrency>,
         ctrl_frames: TX,
-        written_wakers: WrittenWakers,
-        tx_wakers: TransportWakers,
+        tx_wakers: ArcSendWakers,
     ) -> Self {
         Self(Arc::new(raw::DataStreams::new(
             role,
             local_params,
             ctrl,
             ctrl_frames,
-            written_wakers,
             tx_wakers,
         )))
     }

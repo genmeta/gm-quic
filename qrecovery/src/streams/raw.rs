@@ -7,7 +7,7 @@ use qbase::{
         BeFrame, FrameType, ReceiveFrame, ResetStreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
         SendFrame, StreamCtlFrame, StreamFrame,
     },
-    net::{Signals, TransportWakers, WrittenWakers},
+    net::{ArcSendWakers, Signals},
     packet::MarshalDataFrame,
     param::CommonParameters,
     sid::{
@@ -123,9 +123,7 @@ where
     input: ArcInput<Ext<TX>>,
     // 对方主动创建的流
     listener: ArcListener<Ext<TX>>,
-
-    written_wakers: WrittenWakers,
-    tx_wakers: TransportWakers,
+    tx_wakers: ArcSendWakers,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
@@ -518,8 +516,7 @@ where
         local_params: &CommonParameters,
         ctrl: Box<dyn ControlConcurrency>,
         ctrl_frames: TX,
-        written_wakers: WrittenWakers,
-        tx_wakers: TransportWakers,
+        tx_wakers: ArcSendWakers,
     ) -> Self {
         let max_bi_streams = local_params.initial_max_streams_bidi().into();
         let max_uni_streams = local_params.initial_max_streams_uni().into();
@@ -539,7 +536,6 @@ where
             input: ArcInput::default(),
             listener: ArcListener::new(),
             ctrl_frames,
-            written_wakers,
             tx_wakers,
         }
     }
@@ -669,7 +665,6 @@ where
             sid,
             buf_size,
             Ext(self.ctrl_frames.clone()),
-            self.written_wakers.clone(),
             self.tx_wakers.clone(),
         )
     }

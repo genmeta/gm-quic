@@ -7,7 +7,7 @@ use std::io;
 use qbase::{
     error::Error,
     frame::{DatagramFrame, ReceiveFrame},
-    net::{Signals, TransportWakers},
+    net::{ArcSendWakers, Signals},
 };
 pub use writer::*;
 
@@ -29,7 +29,7 @@ impl DatagramFlow {
     ///
     /// [`max_datagram_frame_size`]: https://www.rfc-editor.org/rfc/rfc9221.html#name-transport-parameter
     #[inline]
-    pub fn new(local_max_datagram_frame_size: u64, tx_wakers: TransportWakers) -> Self {
+    pub fn new(local_max_datagram_frame_size: u64, tx_wakers: ArcSendWakers) -> Self {
         Self {
             incoming: DatagramIncoming::new(local_max_datagram_frame_size as _),
             outgoing: DatagramOutgoing::new(tx_wakers),

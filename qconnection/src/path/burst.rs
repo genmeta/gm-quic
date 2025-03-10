@@ -154,7 +154,7 @@ impl Burst {
                 Poll::Ready(Ok(segments))
             }
             Err(signals) => {
-                self.path.send_waker.wait_for(cx, signals);
+                self.path.tx_waker.wait_for(cx, signals);
                 Poll::Pending
             }
         }

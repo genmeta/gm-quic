@@ -8,6 +8,7 @@ use std::{
 };
 
 use dashmap::DashMap;
+use deref_derive::Deref;
 
 use super::Pathway;
 
@@ -19,7 +20,7 @@ bitflags::bitflags! {
         const TRANSPORT = 1 << 2; // ack/retran/reliable....
         const WRITTEN = 1 << 3; // ack/retran/reliable....
         const CONNECTION_ID = 1 << 4; // cid
-        const CREDIT_EXHAUSTED = 1 << 5; // aa
+        const CREDIT = 1 << 5; // aa
         const KEYS  = 1 << 6; // key(no waker in SendWaker)
     }
 }
@@ -97,89 +98,49 @@ impl SendWaker {
 unsafe impl Send for SendWaker {}
 unsafe impl Sync for SendWaker {}
 
-pub struct ArcSendWaker<const SIGNALS: u8>(Arc<SendWaker>);
+#[derive(Debug, Default, Clone)]
+pub struct ArcSendWaker(Arc<SendWaker>);
 
-impl<const SIGNALS: u8> ArcSendWaker<SIGNALS> {
-    pub fn wake(&self) {
-        self.0
-            .wake_by(Signals::from_bits(SIGNALS).expect("invalid limiter"));
-    }
-}
-
-pub type CongestionWaker = ArcSendWaker<{ Signals::CONGESTION.bits() }>;
-pub type FlowControlWaker = ArcSendWaker<{ Signals::FLOW_CONTROL.bits() }>;
-pub type TransportWaker = ArcSendWaker<{ Signals::TRANSPORT.bits() }>;
-pub type DcidWaker = ArcSendWaker<{ Signals::CONNECTION_ID.bits() }>;
-pub type CreditWaker = ArcSendWaker<{ Signals::CREDIT_EXHAUSTED.bits() }>;
-
-impl SendWaker {
-    pub fn for_congestion(self: &Arc<Self>) -> CongestionWaker {
-        ArcSendWaker(self.clone())
+impl ArcSendWaker {
+    pub fn new() -> Self {
+        Self(Arc::new(SendWaker::new()))
     }
 
-    pub fn for_flow_ctrl(self: &Arc<Self>) -> FlowControlWaker {
-        ArcSendWaker(self.clone())
+    pub fn wait_for(&self, cx: &mut Context, signals: Signals) {
+        self.0.wait_for(cx, signals);
     }
 
-    pub fn for_transport(self: &Arc<Self>) -> TransportWaker {
-        ArcSendWaker(self.clone())
-    }
-
-    pub fn dcid_waker(self: &Arc<Self>) -> DcidWaker {
-        ArcSendWaker(self.clone())
-    }
-
-    pub fn credit_waker(self: &Arc<Self>) -> CreditWaker {
-        ArcSendWaker(self.clone())
+    pub fn wake_by(&self, signals: Signals) {
+        self.0.wake_by(signals);
     }
 }
 
 /// connection level send wakers
 #[derive(Debug, Default)]
-pub struct SendWakers(DashMap<Pathway, Arc<SendWaker>>);
+pub struct SendWakers(DashMap<Pathway, ArcSendWaker>);
 
 impl SendWakers {
     pub fn new() -> Self {
         Self(DashMap::new())
     }
 
-    pub fn insert(&self, pathway: Pathway, waker: &Arc<SendWaker>) {
+    pub fn insert(&self, pathway: Pathway, waker: &ArcSendWaker) {
         self.0.entry(pathway).or_insert_with(|| waker.clone());
     }
 
     pub fn remove(&self, pathway: &Pathway) {
         self.0.remove(pathway);
     }
-}
 
-#[derive(Default, Debug, Clone)]
-pub struct ArcSendWakers<const SIGNALS: u8>(Arc<SendWakers>);
-
-impl<const SIGNALS: u8> ArcSendWakers<SIGNALS> {
-    pub fn wake_all(&self) {
-        for waker in self.0.0.iter() {
-            waker.wake_by(Signals::from_bits(SIGNALS).expect("invalid limiter"));
+    pub fn wake_all_by(&self, signals: Signals) {
+        for waker in self.0.iter() {
+            waker.wake_by(signals);
         }
     }
 }
 
-pub type FlowControlWakers = ArcSendWakers<{ Signals::FLOW_CONTROL.bits() }>;
-pub type WrittenWakers = ArcSendWakers<{ Signals::WRITTEN.bits() }>;
-pub type TransportWakers = ArcSendWakers<{ Signals::TRANSPORT.bits() }>;
-
-impl SendWakers {
-    pub fn flow_ctrl_wakers(self: &Arc<Self>) -> FlowControlWakers {
-        ArcSendWakers(self.clone())
-    }
-
-    pub fn written_wakers(self: &Arc<Self>) -> WrittenWakers {
-        ArcSendWakers(self.clone())
-    }
-
-    pub fn transport_wakers(self: &Arc<Self>) -> TransportWakers {
-        ArcSendWakers(self.clone())
-    }
-}
+#[derive(Default, Debug, Clone, Deref)]
+pub struct ArcSendWakers(Arc<SendWakers>);
 
 #[cfg(test)]
 mod tests {
@@ -202,15 +163,15 @@ mod tests {
             })
         });
 
-        waker.for_flow_ctrl().wake();
+        waker.wake_by(Signals::FLOW_CONTROL);
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 1); // not woken
 
-        waker.for_transport().wake();
+        waker.wake_by(Signals::TRANSPORT);
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 1); // not woken
 
-        waker.for_congestion().wake();
+        waker.wake_by(Signals::CONGESTION);
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 2); // woken
     }
@@ -232,17 +193,17 @@ mod tests {
 
         let wait_for_all_cond_state = !SendWaker::REGISTERING & !(Signals::all().bits() as u32);
 
-        waker.for_flow_ctrl().wake();
+        waker.wake_by(Signals::FLOW_CONTROL);
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 2); // woken
         assert_eq!(waker.state.load(Acquire), wait_for_all_cond_state);
 
-        waker.for_transport().wake();
+        waker.wake_by(Signals::TRANSPORT);
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 3); // woken
         assert_eq!(waker.state.load(Acquire), wait_for_all_cond_state);
 
-        waker.for_congestion().wake();
+        waker.wake_by(Signals::CONGESTION);
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 4); // woken
         assert_eq!(waker.state.load(Acquire), wait_for_all_cond_state);
@@ -253,7 +214,7 @@ mod tests {
         let waker = Arc::new(SendWaker::new());
         let woken_times = Arc::new(AtomicUsize::new(0));
 
-        waker.for_congestion().wake(); // pre set woken state
+        waker.wake_by(Signals::CONGESTION); // pre set woken state
 
         tokio::spawn({
             let waker = waker.clone();
@@ -312,25 +273,25 @@ mod tests {
         assert_eq!(woken_times.load(Acquire), 1); // woken(1 = enter)
         assert_eq!(waker.state.load(Acquire), wait_for_all_cond_state);
 
-        waker.for_transport().wake(); // all condition will be met
+        waker.wake_by(Signals::TRANSPORT); // all condition will be met
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 3); // woken(3 = enter+wake+enter)
         assert_eq!(waker.state.load(Acquire), wait_for_quota_state);
 
-        waker.for_congestion().wake(); // quota\data will be met
+        waker.wake_by(Signals::CONGESTION); // quota\data will be met
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 5); // woken(5 = enter+wake+enter+wake+enter)
         assert_eq!(waker.state.load(Acquire), wait_for_data_state);
 
-        waker.for_congestion().wake(); // only data will be met
+        waker.wake_by(Signals::CONGESTION); // only data will be met
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 5); // not woken
 
-        waker.for_flow_ctrl().wake(); // only data will be met
+        waker.wake_by(Signals::FLOW_CONTROL); // only data will be met
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 5); // not woken
 
-        waker.for_transport().wake(); // only data will be met
+        waker.wake_by(Signals::TRANSPORT); // only data will be met
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 6); // woken(6 = [enter+wake]*3)
         assert_eq!(waker.state.load(Acquire), wait_for_data_state);

@@ -9,7 +9,7 @@ use bytes::{BufMut, Bytes};
 use qbase::{
     error::Error,
     frame::{BeFrame, DatagramFrame},
-    net::{Signals, TransportWakers},
+    net::{ArcSendWakers, Signals},
     packet::MarshalDataFrame,
     varint::VarInt,
 };
@@ -18,14 +18,14 @@ use qbase::{
 struct RawDatagramWriter {
     /// The queue that stores the datagram frame to send.
     datagrams: VecDeque<Bytes>,
-    tx_wakers: TransportWakers,
+    tx_wakers: ArcSendWakers,
 }
 
 impl RawDatagramWriter {
-    fn new(data_wakers: TransportWakers) -> Self {
+    fn new(tx_wakers: ArcSendWakers) -> Self {
         Self {
             datagrams: VecDeque::new(),
-            tx_wakers: data_wakers,
+            tx_wakers,
         }
     }
 }
@@ -35,7 +35,7 @@ impl RawDatagramWriter {
 pub struct DatagramOutgoing(Arc<Mutex<Result<RawDatagramWriter, Error>>>);
 
 impl DatagramOutgoing {
-    pub fn new(tx_wakers: TransportWakers) -> DatagramOutgoing {
+    pub fn new(tx_wakers: ArcSendWakers) -> DatagramOutgoing {
         DatagramOutgoing(Arc::new(Mutex::new(Ok(RawDatagramWriter::new(tx_wakers)))))
     }
 
@@ -214,7 +214,7 @@ impl DatagramWriter {
                         "datagram frame size exceeds the limit",
                     ));
                 }
-                writer.tx_wakers.wake_all();
+                writer.tx_wakers.wake_all_by(Signals::TRANSPORT);
                 writer.datagrams.push_back(data.clone());
                 Ok(())
             }

@@ -8,7 +8,7 @@ use bytes::BufMut;
 use enum_dispatch::enum_dispatch;
 use qbase::{
     frame::{BeFrame, CryptoFrame, ReliableFrame, SendFrame, StreamFrame},
-    net::{Signals, TransportWakers},
+    net::{ArcSendWakers, Signals},
     packet::MarshalFrame,
 };
 
@@ -43,15 +43,15 @@ pub enum GuaranteedFrame {
 #[derive(Debug, Default, Clone)]
 pub struct ArcReliableFrameDeque {
     frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
-    wakers: TransportWakers,
+    tx_wakers: ArcSendWakers,
 }
 
 impl ArcReliableFrameDeque {
     /// Create a new empty deque with at least the specified capacity.
-    pub fn with_capacity_and_wakers(capacity: usize, wakers: TransportWakers) -> Self {
+    pub fn with_capacity_and_wakers(capacity: usize, tx_wakers: ArcSendWakers) -> Self {
         Self {
             frames: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
-            wakers,
+            tx_wakers,
         }
     }
 
@@ -85,7 +85,7 @@ where
     T: Into<ReliableFrame>,
 {
     fn send_frame<I: IntoIterator<Item = T>>(&self, iter: I) {
-        self.wakers.wake_all();
+        self.tx_wakers.wake_all_by(Signals::TRANSPORT);
         self.frames_guard().extend(iter.into_iter().map(Into::into));
     }
 }

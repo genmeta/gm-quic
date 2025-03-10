@@ -18,7 +18,7 @@ pub use qbase::{
 };
 use qbase::{
     frame::ConnectionCloseFrame,
-    net::SendWakers,
+    net::ArcSendWakers,
     param::{self, ArcParameters},
     sid,
     token::ArcTokenRegistry,
@@ -236,9 +236,8 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
         let client_params = &mut self.foundation.client_params;
         let remembered = &self.foundation.remembered;
 
-        let send_wakers = Arc::new(SendWakers::new());
-        let reliable_frames =
-            ArcReliableFrameDeque::with_capacity_and_wakers(8, send_wakers.transport_wakers());
+        let tx_wakers = ArcSendWakers::default();
+        let reliable_frames = ArcReliableFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
 
         let rcvd_pkt_q = Arc::new(RcvdPacketQueue::new());
 
@@ -276,23 +275,18 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             remembered.map_or(0, |p| p.initial_max_data().into_inner()),
             client_params.initial_max_data().into_inner(),
             reliable_frames.clone(),
-            send_wakers.flow_ctrl_wakers(),
+            tx_wakers.clone(),
         );
 
         let spaces = Spaces::new(
-            InitialSpace::new(
-                initial_keys,
-                self.foundation.token,
-                send_wakers.transport_wakers(),
-            ),
-            HandshakeSpace::new(send_wakers.transport_wakers()),
+            InitialSpace::new(initial_keys, self.foundation.token, tx_wakers.clone()),
+            HandshakeSpace::new(tx_wakers.clone()),
             DataSpace::new(
                 sid::Role::Client,
                 reliable_frames.clone(),
                 client_params,
                 self.streams_ctrl,
-                send_wakers.written_wakers(),
-                send_wakers.transport_wakers(),
+                tx_wakers.clone(),
             ),
         );
 
@@ -306,7 +300,7 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             spaces,
             proto: self.proto,
             rcvd_pkt_q,
-            send_wakers,
+            tx_wakers,
             defer_idle_timeout: self.defer_idle_timeout,
             qlog_span: None,
         }
@@ -320,9 +314,8 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         client_scid: ConnectionId,
     ) -> ComponentsReady {
         let server_params = &mut self.foundation.server_params;
-        let send_wakers = Arc::new(SendWakers::new());
-        let reliable_frames =
-            ArcReliableFrameDeque::with_capacity_and_wakers(8, send_wakers.transport_wakers());
+        let tx_wakers = ArcSendWakers::default();
+        let reliable_frames = ArcReliableFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
 
         let rcvd_pkt_q = Arc::new(RcvdPacketQueue::new());
 
@@ -362,23 +355,18 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             0,
             server_params.initial_max_data().into_inner(),
             reliable_frames.clone(),
-            send_wakers.flow_ctrl_wakers(),
+            tx_wakers.clone(),
         );
 
         let spaces = Spaces::new(
-            InitialSpace::new(
-                initial_keys,
-                Vec::with_capacity(0),
-                send_wakers.transport_wakers(),
-            ),
-            HandshakeSpace::new(send_wakers.transport_wakers()),
+            InitialSpace::new(initial_keys, Vec::with_capacity(0), tx_wakers.clone()),
+            HandshakeSpace::new(tx_wakers.clone()),
             DataSpace::new(
                 sid::Role::Server,
                 reliable_frames.clone(),
                 server_params,
                 self.streams_ctrl,
-                send_wakers.written_wakers(),
-                send_wakers.transport_wakers(),
+                tx_wakers.clone(),
             ),
         );
 
@@ -392,7 +380,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             spaces,
             proto: self.proto,
             rcvd_pkt_q,
-            send_wakers,
+            tx_wakers,
             defer_idle_timeout: self.defer_idle_timeout,
             qlog_span: None,
         }
@@ -410,7 +398,7 @@ pub struct ComponentsReady {
     proto: Arc<QuicProto>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     defer_idle_timeout: HeartbeatConfig,
-    send_wakers: Arc<SendWakers>,
+    tx_wakers: ArcSendWakers,
     qlog_span: Option<Span>,
 }
 
@@ -449,7 +437,7 @@ impl ComponentsReady {
             spaces: self.spaces,
             proto: self.proto,
             rcvd_pkt_q: self.rcvd_pkt_q,
-            paths: ArcPathContexts::new(self.send_wakers, event_broker.clone()),
+            paths: ArcPathContexts::new(self.tx_wakers, event_broker.clone()),
             defer_idle_timeout: self.defer_idle_timeout,
             event_broker,
             state: ConnState::new(),
