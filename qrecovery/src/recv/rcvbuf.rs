@@ -77,7 +77,7 @@ impl RecvBuf {
         self.largest_offset
     }
 
-    /// Receive a fragment of data, return the new data's size.
+    /// Receive a fragment of data, returns the consumption of the flow limit
     ///
     /// # Example
     ///
@@ -92,10 +92,10 @@ impl RecvBuf {
     /// assert_eq!(recvbuf.recv(0, Bytes::from("hell")), 4);
     /// // recvbuf: "hell"
     /// // new:     "hell"
-    /// assert_eq!(recvbuf.recv(7, Bytes::from("world")), 5);
+    /// assert_eq!(recvbuf.recv(7, Bytes::from("world")), 8);
     /// // recvbuf: "hell" "world"
     /// // new:            "world"
-    /// assert_eq!(recvbuf.recv(3, Bytes::from("lo, ")), 3);
+    /// assert_eq!(recvbuf.recv(3, Bytes::from("lo, ")), 0);
     /// // recvbuf: "hello, world"
     /// // new:         "o, "
     /// assert_eq!(recvbuf.recv(7, Bytes::from("world!")), 1);
@@ -106,7 +106,7 @@ impl RecvBuf {
     /// assert_eq!(received.as_ref(), b"hello, world!");
     /// ```
     pub fn recv(&mut self, offset: u64, mut data: Bytes) -> u64 {
-        let mut written = 0;
+        let previous_largest = self.largest_offset;
 
         // advance data that already read
         let mut start = offset.max(self.nread);
@@ -152,7 +152,6 @@ impl RecvBuf {
                         Some(..) | None => core::mem::take(&mut data),
                     };
                     let segment = Segment::new_with_data(start, uncovered);
-                    written += segment.data.len() as u64;
                     start += segment.data.len() as u64;
                     self.largest_offset = self.largest_offset.max(segment.end());
                     self.segments.push_front(segment);
@@ -207,7 +206,6 @@ impl RecvBuf {
                     };
 
                     let segment = Segment::new_with_data(start, uncovered);
-                    written += segment.data.len() as u64;
                     start += segment.data.len() as u64;
                     self.largest_offset = self.largest_offset.max(segment.end());
                     self.segments.insert(seg_index, segment);
@@ -216,7 +214,7 @@ impl RecvBuf {
             // 进入新的循环（也可递归）
         }
 
-        written
+        self.largest_offset - previous_largest
     }
 
     /// Returns the length of continuous unread data.
@@ -297,13 +295,13 @@ mod tests {
     fn test_no_overlap() {
         let mut buf = RecvBuf::default();
         assert_eq!(buf.recv(0, Bytes::from("hello")), 5);
-        assert_eq!(buf.recv(6, Bytes::from("world")), 5);
+        assert_eq!(buf.recv(6, Bytes::from("world")), 6);
 
         assert_eq!(buf.segments.len(), 2);
         assert_eq!(buf.segments[0].offset, 0);
         assert_eq!(buf.segments[1].offset, 6);
 
-        assert_eq!(buf.recv(5, Bytes::from(" ")), 1);
+        assert_eq!(buf.recv(5, Bytes::from(" ")), 0);
         assert_eq!(buf.segments.len(), 3);
         assert_eq!(buf.segments[0].offset, 0);
         assert_eq!(buf.segments[1].offset, 5);
@@ -328,8 +326,8 @@ mod tests {
     fn test_right_partially_overlap() {
         let mut buf = RecvBuf::default();
         assert_eq!(buf.recv(0, Bytes::from("hello")), 5);
-        assert_eq!(buf.recv(6, Bytes::from("world!")), 6);
-        assert_eq!(buf.recv(5, Bytes::from(" wor")), 1); // overlap right
+        assert_eq!(buf.recv(6, Bytes::from("world!")), 7);
+        assert_eq!(buf.recv(5, Bytes::from(" wor")), 0); // overlap right
 
         assert_eq!(buf.segments.len(), 3);
         assert_eq!(buf.segments[0].offset, 0);
@@ -355,8 +353,8 @@ mod tests {
     fn test_fully_overlap_right() {
         let mut buf = RecvBuf::default();
         assert_eq!(buf.recv(0, Bytes::from("hello")), 5);
-        assert_eq!(buf.recv(6, Bytes::from("world")), 5);
-        assert_eq!(buf.recv(5, Bytes::from(" world!")), 2); // fully overlap right
+        assert_eq!(buf.recv(6, Bytes::from("world")), 6);
+        assert_eq!(buf.recv(5, Bytes::from(" world!")), 1); // fully overlap right
 
         assert_eq!(buf.segments.len(), 4);
         assert_eq!(buf.segments[0].offset, 0);
@@ -395,8 +393,8 @@ mod tests {
     fn test_left_right_partially_overlap() {
         let mut buf = RecvBuf::default();
         assert_eq!(buf.recv(0, Bytes::from("012345")), 6);
-        assert_eq!(buf.recv(7, Bytes::from("789")), 3);
-        assert_eq!(buf.recv(6, Bytes::from("6")), 1); // left and right partially overlapped this
+        assert_eq!(buf.recv(7, Bytes::from("789")), 4);
+        assert_eq!(buf.recv(6, Bytes::from("6")), 0); // left and right partially overlapped this
 
         assert_eq!(buf.segments.len(), 3);
         assert_eq!(buf.segments[0].offset, 0);
@@ -422,14 +420,14 @@ mod tests {
     fn test_recvbuf_read() {
         let mut rcvbuf = RecvBuf::default();
         assert_eq!(rcvbuf.recv(0, Bytes::from("hello")), 5);
-        assert_eq!(rcvbuf.recv(6, Bytes::from("world")), 5);
+        assert_eq!(rcvbuf.recv(6, Bytes::from("world")), 6);
 
         let mut dst = [0u8; 20];
         let mut buf = &mut dst[..];
         rcvbuf.try_read(&mut buf);
         assert_eq!(buf.remaining_mut(), 15);
 
-        assert_eq!(rcvbuf.recv(5, Bytes::from(" ")), 1);
+        assert_eq!(rcvbuf.recv(5, Bytes::from(" ")), 0);
         rcvbuf.try_read(&mut buf);
 
         assert_eq!(buf.remaining_mut(), 9);
