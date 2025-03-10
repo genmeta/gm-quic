@@ -5,7 +5,7 @@ use std::{
 
 use qbase::{
     frame::AckFrame,
-    net::Signals,
+    net::tx::Signals,
     packet::PacketNumber,
     util::IndexDeque,
     varint::{VARINT_MAX, VarInt},

@@ -7,7 +7,7 @@ use qbase::{
         BeFrame, FrameType, ReceiveFrame, ResetStreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
         SendFrame, StreamCtlFrame, StreamFrame,
     },
-    net::{ArcSendWakers, Signals},
+    net::tx::{ArcSendWakers, Signals},
     packet::MarshalDataFrame,
     param::CommonParameters,
     sid::{

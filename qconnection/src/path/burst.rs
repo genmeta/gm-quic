@@ -7,7 +7,7 @@ use std::{
 };
 
 use futures::FutureExt;
-use qbase::net::Signals;
+use qbase::net::tx::Signals;
 
 use crate::{
     ArcDcidCell, ArcLocalCids, Components, FlowController, space::Spaces, tx::Transaction,

@@ -7,7 +7,7 @@ use std::io;
 use qbase::{
     error::Error,
     frame::{DatagramFrame, ReceiveFrame},
-    net::{ArcSendWakers, Signals},
+    net::tx::{ArcSendWakers, Signals},
 };
 pub use writer::*;
 

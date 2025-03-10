@@ -31,7 +31,7 @@ pub use listener::{AcceptBiStream, AcceptUniStream};
 use qbase::{
     error::Error,
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
-    net::ArcSendWakers,
+    net::tx::ArcSendWakers,
     param::CommonParameters,
     sid::{ControlConcurrency, Role, StreamId},
 };

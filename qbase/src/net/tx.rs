@@ -10,7 +10,7 @@ use std::{
 use dashmap::DashMap;
 use deref_derive::Deref;
 
-use super::Pathway;
+use super::route::Pathway;
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy,PartialEq, Eq)]

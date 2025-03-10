@@ -10,7 +10,10 @@ use qbase::{
         ConnectionCloseFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
         ReceiveFrame, SendFrame,
     },
-    net::{ArcSendWakers, Link, Pathway, Signals},
+    net::{
+        route::{Link, Pathway},
+        tx::{ArcSendWakers, Signals},
+    },
     packet::{
         self, CipherPacket, MarshalFrame, PacketWriter,
         header::{

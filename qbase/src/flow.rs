@@ -6,7 +6,7 @@ use std::{
 use crate::{
     error::{Error as QuicError, ErrorKind as QuicErrorKind},
     frame::{DataBlockedFrame, FrameType, MaxDataFrame, ReceiveFrame, SendFrame},
-    net::{ArcSendWakers, Signals},
+    net::tx::{ArcSendWakers, Signals},
     varint::VarInt,
 };
 

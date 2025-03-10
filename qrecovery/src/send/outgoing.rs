@@ -4,7 +4,7 @@ use bytes::BufMut;
 use qbase::{
     error::Error as QuicError,
     frame::{ResetStreamError, StreamFrame},
-    net::Signals,
+    net::tx::Signals,
     packet::MarshalDataFrame,
     sid::StreamId,
     util::DescribeData,

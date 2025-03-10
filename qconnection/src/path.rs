@@ -10,7 +10,10 @@ use std::{
 use qbase::{
     error::Error,
     frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
-    net::{ArcSendWaker, Link, Pathway},
+    net::{
+        route::{Link, Pathway},
+        tx::ArcSendWaker,
+    },
 };
 use qcongestion::{ArcCC, CongestionControl};
 use qinterface::{QuicInterface, router::QuicProto};

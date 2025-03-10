@@ -13,7 +13,7 @@ use crate::{
         BeFrame, ContainSpec, Spec,
         io::{WriteDataFrame, WriteFrame},
     },
-    net::Signals,
+    net::tx::Signals,
     util::{DescribeData, WriteData},
     varint::{EncodeBytes, VarInt, WriteVarInt},
 };

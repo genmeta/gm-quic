@@ -10,7 +10,7 @@ mod send {
     use bytes::BufMut;
     use qbase::{
         frame::CryptoFrame,
-        net::{ArcSendWakers, Signals},
+        net::tx::{ArcSendWakers, Signals},
         packet::MarshalDataFrame,
         util::DescribeData,
         varint::{VARINT_MAX, VarInt},
@@ -261,7 +261,7 @@ mod recv {
     }
 }
 
-use qbase::net::ArcSendWakers;
+use qbase::net::tx::ArcSendWakers;
 pub use recv::{CryptoStreamIncoming, CryptoStreamReader};
 pub use send::{CryptoStreamOutgoing, CryptoStreamWriter};
 

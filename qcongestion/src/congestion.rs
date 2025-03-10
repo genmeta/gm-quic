@@ -10,7 +10,10 @@ use qbase::{
     Epoch,
     frame::{AckFrame, EcnCounts, HandshakeDoneFrame, SendFrame},
     handshake::Handshake,
-    net::{ArcSendWaker, Pathway, Signals},
+    net::{
+        route::Pathway,
+        tx::{ArcSendWaker, Signals},
+    },
     sid::Role,
 };
 use qlog::{quic::recovery::PacketLostTrigger, telemetry::Instrument};

@@ -11,7 +11,7 @@ use std::{
 };
 
 use bytes::BytesMut;
-use qbase::net::{Link, Pathway};
+use qbase::net::route::{Link, Pathway};
 
 pub trait QuicInterface: Send + Sync {
     fn reversed_bytes(&self, on: Pathway) -> io::Result<usize>;

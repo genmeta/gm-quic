@@ -7,7 +7,10 @@ use qbase::{
     cid::ConnectionId,
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
-    net::{ArcSendWakers, Link, Pathway, Signals},
+    net::{
+        route::{Link, Pathway},
+        tx::{ArcSendWakers, Signals},
+    },
     packet::{
         CipherPacket, MarshalFrame, PacketWriter,
         header::{

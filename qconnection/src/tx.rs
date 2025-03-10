@@ -16,7 +16,7 @@ use qbase::{
         ReliableFrame, StreamFrame,
         io::{WriteDataFrame, WriteFrame},
     },
-    net::Signals,
+    net::tx::Signals,
     packet::{
         CipherPacket, MarshalDataFrame, MarshalFrame, MarshalPathFrame, PacketWriter, PlainPacket,
         header::{
