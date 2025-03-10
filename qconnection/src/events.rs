@@ -3,7 +3,7 @@ use std::sync::Arc;
 use qbase::{
     error::Error,
     frame::ConnectionCloseFrame,
-    net::{Link, Pathway},
+    net::route::{Link, Pathway},
 };
 use tokio::sync::mpsc;
 

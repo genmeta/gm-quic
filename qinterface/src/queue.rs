@@ -1,5 +1,5 @@
 use qbase::{
-    net::{Link, Pathway},
+    net::route::{Link, Pathway},
     packet::{
         DataHeader, Packet,
         header::{long, short},

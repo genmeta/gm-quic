@@ -8,7 +8,7 @@ use bytes::BufMut;
 use futures::StreamExt;
 use qbase::{
     frame::{BeFrame, io::WriteFrame},
-    net::{ArcSendWaker, Signals},
+    net::tx::{ArcSendWaker, Signals},
     packet::MarshalPathFrame,
     util::ArcAsyncDeque,
 };

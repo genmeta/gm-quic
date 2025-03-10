@@ -5,7 +5,7 @@ use deref_derive::Deref;
 use qbase::{
     Epoch,
     error::{Error, ErrorKind},
-    net::{ArcSendWakers, Pathway},
+    net::{route::Pathway, tx::ArcSendWakers},
 };
 use qcongestion::{CongestionControl, MiniHeap};
 use qlog::telemetry::Instrument;

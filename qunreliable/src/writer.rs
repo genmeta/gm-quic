@@ -9,7 +9,7 @@ use bytes::{BufMut, Bytes};
 use qbase::{
     error::Error,
     frame::{BeFrame, DatagramFrame},
-    net::{ArcSendWakers, Signals},
+    net::tx::{ArcSendWakers, Signals},
     packet::MarshalDataFrame,
     varint::VarInt,
 };

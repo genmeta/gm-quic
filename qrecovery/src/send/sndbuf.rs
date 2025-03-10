@@ -5,7 +5,7 @@ use std::{
     ops::Range,
 };
 
-use qbase::net::Signals;
+use qbase::net::tx::Signals;
 
 /// To indicate the state of a data segment, it is colored.
 #[derive(Default, PartialEq, Eq, Clone, Copy, Debug)]
@@ -674,7 +674,7 @@ impl SendBuf {
 
 #[cfg(test)]
 mod tests {
-    use qbase::net::Signals;
+    use qbase::net::tx::Signals;
 
     use super::{BufMap, Color, State};
 

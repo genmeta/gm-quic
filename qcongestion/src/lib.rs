@@ -8,7 +8,7 @@ use dashmap::DashMap;
 use qbase::{
     Epoch,
     frame::AckFrame,
-    net::{ArcSendWaker, Pathway},
+    net::{route::Pathway, tx::ArcSendWaker},
 };
 use qlog::quic::recovery::PacketLostTrigger;
 use tokio::task::AbortHandle;

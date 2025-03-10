@@ -8,7 +8,7 @@ use bytes::BufMut;
 use enum_dispatch::enum_dispatch;
 use qbase::{
     frame::{BeFrame, CryptoFrame, ReliableFrame, SendFrame, StreamFrame},
-    net::{ArcSendWakers, Signals},
+    net::tx::{ArcSendWakers, Signals},
     packet::MarshalFrame,
 };
 

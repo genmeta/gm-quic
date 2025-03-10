@@ -8,7 +8,7 @@ use std::{
 use qbase::{
     error::Error,
     frame::{ResetStreamError, ResetStreamFrame, SendFrame},
-    net::{ArcSendWakers, Signals},
+    net::tx::{ArcSendWakers, Signals},
     sid::StreamId,
     util::DescribeData,
     varint::VarInt,

@@ -6,7 +6,7 @@ use std::{
 
 pub use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
-    net::{Link, Pathway},
+    net::route::{Link, Pathway},
     packet::{
         DataHeader, Packet,
         header::{GetDcid, GetScid},
@@ -18,7 +18,7 @@ pub use qbase::{
 };
 use qbase::{
     frame::ConnectionCloseFrame,
-    net::ArcSendWakers,
+    net::tx::ArcSendWakers,
     param::{self, ArcParameters},
     sid,
     token::ArcTokenRegistry,
