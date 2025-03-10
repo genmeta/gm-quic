@@ -10,10 +10,9 @@ use qbase::{
         ConnectionCloseFrame, Frame, FrameReader, PathChallengeFrame, PathResponseFrame,
         ReceiveFrame, SendFrame,
     },
-    net::{Link, Pathway},
-    packet,
+    net::{DataWakers, Link, Pathway, SendLimiter, StreamWakers},
     packet::{
-        CipherPacket, MarshalFrame, PacketWriter,
+        self, CipherPacket, MarshalFrame, PacketWriter,
         header::{
             GetType, OneRttHeader,
             long::{ZeroRttHeader, io::LongHeaderBuilder},
@@ -41,7 +40,7 @@ use qrecovery::{
 };
 #[cfg(feature = "unreliable")]
 use qunreliable::DatagramFlow;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
 use super::{PlainPacket, ReceivedCipherPacket};
@@ -70,7 +69,6 @@ pub struct DataSpace {
     datagrams: DatagramFlow,
     journal: DataJournal,
     reliable_frames: ArcReliableFrameDeque,
-    sendable: Arc<Notify>,
 }
 
 impl DataSpace {
@@ -79,19 +77,25 @@ impl DataSpace {
         reliable_frames: ArcReliableFrameDeque,
         local_params: &CommonParameters,
         streams_ctrl: Box<dyn ControlConcurrency>,
-        sendable: Arc<Notify>,
+        stream_wakers: StreamWakers,
+        data_wakers: DataWakers,
     ) -> Self {
-        let streams = DataStreams::new(role, local_params, streams_ctrl, reliable_frames.clone());
         Self {
             zero_rtt_keys: ArcKeys::new_pending(),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
             journal: DataJournal::with_capacity(16),
-            crypto_stream: CryptoStream::new(4096, 4096),
-            reliable_frames,
-            streams,
+            crypto_stream: CryptoStream::new(4096, 4096, data_wakers.clone()),
+            reliable_frames: reliable_frames.clone(),
+            streams: DataStreams::new(
+                role,
+                local_params,
+                streams_ctrl,
+                reliable_frames,
+                stream_wakers,
+                data_wakers.clone(),
+            ),
             #[cfg(feature = "unreliable")]
-            datagrams: DatagramFlow::new(1024),
-            sendable,
+            datagrams: DatagramFlow::new(1024, data_wakers),
         }
     }
 
@@ -132,12 +136,15 @@ impl DataSpace {
         tx: &mut Transaction<'_>,
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         buf: &mut [u8],
-    ) -> Option<(MiddleAssembledPacket, usize)> {
+    ) -> Result<(MiddleAssembledPacket, usize), SendLimiter> {
         if self.one_rtt_keys.get_local_keys().is_some() {
-            return None;
+            return Err(SendLimiter::empty()); // not error, just skip 0rtt
         }
 
-        let keys = self.zero_rtt_keys.get_local_keys()?;
+        let keys = self
+            .zero_rtt_keys
+            .get_local_keys()
+            .ok_or(SendLimiter::KEYS_UNAVAILABLE)?;
         let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketMemory::new_long(
             LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).zero_rtt(),
@@ -146,21 +153,35 @@ impl DataSpace {
             &sent_journal,
         )?;
 
-        path_challenge_frames.try_load_frames_into(&mut packet);
-        // TODO: 可以封装在CryptoStream中，当成一个函数
-        //      crypto_stream.try_load_data_into(&mut packet);
-        let crypto_stream_outgoing = self.crypto_stream.outgoing();
-        crypto_stream_outgoing.try_load_data_into(&mut packet);
+        let mut limiter = SendLimiter::empty();
+
+        _ = path_challenge_frames
+            .try_load_frames_into(&mut packet)
+            .inspect_err(|l| limiter |= *l);
+        _ = self
+            .crypto_stream
+            .outgoing()
+            .try_load_data_into(&mut packet)
+            .inspect_err(|l| limiter |= *l);
         // try to load reliable frames into this 0RTT packet to send
-        self.reliable_frames.try_load_frames_into(&mut packet);
+        _ = self
+            .reliable_frames
+            .try_load_frames_into(&mut packet)
+            .inspect_err(|l| limiter |= *l);
         // try to load stream frames into this 0RTT packet to send
         let fresh_data = self
             .streams
-            .try_load_data_into(&mut packet, tx.flow_limit());
+            .try_load_data_into(&mut packet, tx.flow_limit())
+            .inspect_err(|l| limiter |= *l)
+            .unwrap_or_default();
         #[cfg(feature = "unreliable")]
-        self.datagrams.try_load_data_into(&mut packet);
+        let _ = self
+            .datagrams
+            .try_load_data_into(&mut packet)
+            .inspect_err(|l| limiter |= *l);
 
-        Some((packet.interrupt()?, fresh_data))
+        // 错误是累积的，只有最后发现确实不能组成一个数据包时才真正返回错误
+        Ok((packet.interrupt().map_err(|_| limiter)?, fresh_data))
     }
 
     pub fn try_assemble_1rtt(
@@ -170,8 +191,11 @@ impl DataSpace {
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
         buf: &mut [u8],
-    ) -> Option<(MiddleAssembledPacket, Option<u64>, usize)> {
-        let (hpk, pk) = self.one_rtt_keys.get_local_keys()?;
+    ) -> Result<(MiddleAssembledPacket, Option<u64>, usize), SendLimiter> {
+        let (hpk, pk) = self
+            .one_rtt_keys
+            .get_local_keys()
+            .ok_or(SendLimiter::KEYS_UNAVAILABLE)?;
         let (key_phase, pk) = pk.lock_guard().get_local();
         let sent_journal = self.journal.of_sent_packets();
         // (1) may_loss被调用时cc已经被锁定，may_loss会尝试锁定sent_journal
@@ -189,33 +213,49 @@ impl DataSpace {
             &sent_journal,
         )?;
 
-        let mut ack = None;
-        if let Some((largest, rcvd_time)) = need_ack {
-            let rcvd_journal = self.journal.of_rcvd_packets();
-            if let Some(ack_frame) =
-                rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
-            {
-                packet.dump_ack_frame(ack_frame);
-                ack = Some(largest);
-            }
-        }
+        let mut limiter = SendLimiter::empty();
 
-        path_challenge_frames.try_load_frames_into(&mut packet);
-        path_response_frames.try_load_frames_into(&mut packet);
-        // TODO: 可以封装在CryptoStream中，当成一个函数
-        //      crypto_stream.try_load_data_into(&mut packet);
-        let crypto_stream_outgoing = self.crypto_stream.outgoing();
-        crypto_stream_outgoing.try_load_data_into(&mut packet);
+        let ack = need_ack
+            .ok_or(SendLimiter::NO_UNLIMITED_DATA)
+            .and_then(|(largest, rcvd_time)| {
+                let rcvd_journal = self.journal.of_rcvd_packets();
+                let ack_frame =
+                    rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())?;
+                packet.dump_ack_frame(ack_frame);
+                Ok(largest)
+            })
+            .inspect_err(|l| limiter |= *l)
+            .ok();
+
+        _ = path_challenge_frames
+            .try_load_frames_into(&mut packet)
+            .inspect_err(|l| limiter |= *l);
+        _ = path_response_frames
+            .try_load_frames_into(&mut packet)
+            .inspect_err(|l| limiter |= *l);
+        _ = self
+            .crypto_stream
+            .outgoing()
+            .try_load_data_into(&mut packet)
+            .inspect_err(|l| limiter = *l);
         // try to load reliable frames into this 1RTT packet to send
-        self.reliable_frames.try_load_frames_into(&mut packet);
+        _ = self
+            .reliable_frames
+            .try_load_frames_into(&mut packet)
+            .inspect_err(|l| limiter |= *l);
         // try to load stream frames into this 1RTT packet to send
         let fresh_data = self
             .streams
-            .try_load_data_into(&mut packet, tx.flow_limit());
+            .try_load_data_into(&mut packet, tx.flow_limit())
+            .inspect_err(|l| limiter = *l)
+            .unwrap_or_default();
         #[cfg(feature = "unreliable")]
-        self.datagrams.try_load_data_into(&mut packet);
+        let _ = self
+            .datagrams
+            .try_load_data_into(&mut packet)
+            .inspect_err(|l| limiter |= *l);
 
-        Some((packet.interrupt()?, ack, fresh_data))
+        Ok((packet.interrupt().map_err(|_| limiter)?, ack, fresh_data))
     }
 
     pub fn try_assemble_validation(
@@ -225,8 +265,11 @@ impl DataSpace {
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
         buf: &mut [u8],
-    ) -> Option<MiddleAssembledPacket> {
-        let (hpk, pk) = self.one_rtt_keys.get_local_keys()?;
+    ) -> Result<MiddleAssembledPacket, SendLimiter> {
+        let (hpk, pk) = self
+            .one_rtt_keys
+            .get_local_keys()
+            .ok_or(SendLimiter::KEYS_UNAVAILABLE)?;
         let (key_phase, pk) = pk.lock_guard().get_local();
         let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketMemory::new_short(
@@ -238,11 +281,16 @@ impl DataSpace {
             &sent_journal,
         )?;
 
-        path_challenge_frames.try_load_frames_into(&mut packet);
-        path_response_frames.try_load_frames_into(&mut packet);
+        let mut limiter = SendLimiter::empty();
+        _ = path_challenge_frames
+            .try_load_frames_into(&mut packet)
+            .inspect_err(|l| limiter |= *l);
+        _ = path_response_frames
+            .try_load_frames_into(&mut packet)
+            .inspect_err(|l| limiter |= *l);
         // 其实还应该加上NCID，但是从ReliableFrameDeque分拣太复杂了
 
-        packet.interrupt()
+        packet.interrupt().map_err(|_| limiter)
     }
 
     pub fn is_one_rtt_ready(&self) -> bool {
@@ -392,7 +440,7 @@ pub fn spawn_deliver_and_parse(
             .await
         {
             Some(Ok(packet)) => {
-                let path = match components.get_or_create_path(socket, pathway, true) {
+                let path = match components.get_or_try_create_path(socket, pathway, true) {
                     Some(path) => path,
                     None => {
                         packet.drop_on_conenction_closed();
@@ -435,7 +483,7 @@ pub fn spawn_deliver_and_parse(
             .await
         {
             Some(Ok(packet)) => {
-                let path = match components.get_or_create_path(socket, pathway, true) {
+                let path = match components.get_or_try_create_path(socket, pathway, true) {
                     Some(path) => path,
                     None => {
                         packet.drop_on_conenction_closed();
@@ -503,12 +551,10 @@ impl TrackPackets for DataSpace {
                     GuaranteedFrame::Crypto(frame) => {
                         may_lost_frames.extend(Some(&Frame::Crypto(frame, bytes::Bytes::new())));
                         crypto_outgoing.may_loss_data(&frame);
-                        self.sendable.notify_waiters();
                     }
                     GuaranteedFrame::Stream(frame) => {
                         may_lost_frames.extend(Some(&Frame::Stream(frame, bytes::Bytes::new())));
                         self.streams.may_loss_data(&frame);
-                        self.sendable.notify_waiters();
                     }
                     GuaranteedFrame::Reliable(frame) => {
                         may_lost_frames.extend(Some(&frame.clone().into()));
@@ -585,8 +631,9 @@ impl ClosingDataSpace {
         let (key_phase, pk) = pk.lock_guard().get_local();
         let header = OneRttHeader::new(Default::default(), dcid);
         let pn = self.ccf_packet_pn;
+        // 装填ccf时ccf不在乎Limiter
         let mut packet_writer =
-            PacketWriter::new_short(&header, buf, pn, hpk.local.clone(), pk, key_phase)?;
+            PacketWriter::new_short(&header, buf, pn, hpk.local.clone(), pk, key_phase).ok()?;
 
         packet_writer.dump_frame(ccf.clone());
 
@@ -600,21 +647,25 @@ pub fn spawn_deliver_and_parse_closing(
     closing_state: Arc<ClosingState>,
     event_broker: ArcEventBroker,
 ) {
-    tokio::spawn(async move {
-        while let Some((packet, pathway, _socket)) = packets.next().await {
-            if let Some(ccf) = space.recv_packet(packet.into()) {
-                event_broker.emit(Event::Closed(ccf.clone()));
-                return;
-            }
-            if closing_state.should_send() {
-                _ = closing_state
-                    .try_send_with(pathway, |buf, _scid, dcid, ccf| {
-                        space
-                            .try_assemble_ccf_packet(dcid?, ccf, buf)
-                            .map(|packet| packet.size())
-                    })
-                    .await;
+    tokio::spawn(
+        async move {
+            while let Some((packet, pathway, _socket)) = packets.next().await {
+                if let Some(ccf) = space.recv_packet(packet.into()) {
+                    event_broker.emit(Event::Closed(ccf.clone()));
+                    return;
+                }
+                if closing_state.should_send() {
+                    _ = closing_state
+                        .try_send_with(pathway, |buf, _scid, dcid, ccf| {
+                            space
+                                .try_assemble_ccf_packet(dcid?, ccf, buf)
+                                .map(|packet| packet.size())
+                        })
+                        .await;
+                }
             }
         }
-    });
+        .instrument_in_current()
+        .in_current_span(),
+    );
 }

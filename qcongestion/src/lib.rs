@@ -1,14 +1,17 @@
 use std::{
-    sync::Arc,
     task::{Context, Poll},
     time::{Duration, Instant},
 };
 
 pub use congestion::{ArcCC, CongestionAlgorithm, MSS};
 use dashmap::DashMap;
-use qbase::{Epoch, frame::AckFrame, net::Pathway};
+use qbase::{
+    Epoch,
+    frame::AckFrame,
+    net::{DataWaker, Pathway},
+};
 use qlog::quic::recovery::PacketLostTrigger;
-use tokio::{sync::Notify, task::AbortHandle};
+use tokio::task::AbortHandle;
 
 mod bbr;
 mod congestion;
@@ -21,7 +24,7 @@ mod rtt;
 /// The [`CongestionControl`] trait defines the interface for congestion control algorithms.
 pub trait CongestionControl {
     /// Performs a periodic tick to drive the congestion control algorithm.
-    fn launch(&self, notify: Arc<Notify>) -> AbortHandle;
+    fn launch(&self, data_waker: DataWaker) -> AbortHandle;
 
     /// Polls whether packets can be sent and returns the amount of data that can be sent.
     /// # Returns

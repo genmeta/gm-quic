@@ -146,10 +146,8 @@ impl<TX> Recv<TX> {
                 ),
             ));
         }
-        self.rcvbuf.recv(data_start, body);
-        let mut fresh_data = 0;
+        let fresh_data = self.rcvbuf.recv(data_start, body);
         if self.largest < data_end {
-            fresh_data = data_end - self.largest;
             self.largest = data_end;
         }
         if self.rcvbuf.is_readable() {
@@ -228,13 +226,13 @@ impl<TX> SizeKnown<TX> {
                 ),
             ));
         }
-        self.rcvbuf.recv(data_start, data);
+        let fresh = self.rcvbuf.recv(data_start, data);
         if self.rcvbuf.is_readable() {
             if let Some(waker) = self.read_waker.take() {
                 waker.wake()
             }
         }
-        Ok(0)
+        Ok(fresh as usize)
     }
 
     pub(super) fn is_all_rcvd(&self) -> bool {

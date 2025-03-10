@@ -1,7 +1,5 @@
 use std::{
-    borrow::Cow,
     future::Future,
-    ops::Deref,
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -20,6 +18,7 @@ pub use qbase::{
 };
 use qbase::{
     frame::ConnectionCloseFrame,
+    net::SendWakers,
     param::{self, ArcParameters},
     sid,
     token::ArcTokenRegistry,
@@ -38,14 +37,13 @@ use qlog::{
     telemetry::{Instrument, Log, Span},
 };
 pub use rustls::crypto::CryptoProvider;
-use tokio::sync::Notify;
 use tracing::Instrument as _;
 
 use crate::{
     ArcLocalCids, ArcReliableFrameDeque, ArcRemoteCids, CidRegistry, Components, Connection,
     FlowController, Handshake, RawHandshake, Termination,
     events::{ArcEventBroker, EmitEvent, Event},
-    path::{ArcPaths, Path, PathContext},
+    path::{ArcPathContexts, Path},
     prelude::HeartbeatConfig,
     space::{self, Spaces, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace},
     state::ConnState,
@@ -238,8 +236,9 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
         let client_params = &mut self.foundation.client_params;
         let remembered = &self.foundation.remembered;
 
-        let sendable = Arc::new(Notify::new());
-        let reliable_frames = ArcReliableFrameDeque::with_capacity_and_notify(8, sendable.clone());
+        let send_wakers = Arc::new(SendWakers::new());
+        let reliable_frames =
+            ArcReliableFrameDeque::with_capacity_and_wakers(8, send_wakers.data_wakers());
 
         let rcvd_pkt_q = Arc::new(RcvdPacketQueue::new());
 
@@ -277,17 +276,23 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             remembered.map_or(0, |p| p.initial_max_data().into_inner()),
             client_params.initial_max_data().into_inner(),
             reliable_frames.clone(),
+            send_wakers.flow_wakers(),
         );
 
         let spaces = Spaces::new(
-            InitialSpace::new(initial_keys, self.foundation.token, sendable.clone()),
-            HandshakeSpace::new(sendable.clone()),
+            InitialSpace::new(
+                initial_keys,
+                self.foundation.token,
+                send_wakers.data_wakers(),
+            ),
+            HandshakeSpace::new(send_wakers.data_wakers()),
             DataSpace::new(
                 sid::Role::Client,
                 reliable_frames.clone(),
                 client_params,
                 self.streams_ctrl,
-                sendable.clone(),
+                send_wakers.stream_wakers(),
+                send_wakers.data_wakers(),
             ),
         );
 
@@ -301,9 +306,9 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             spaces,
             proto: self.proto,
             rcvd_pkt_q,
-            sendable,
+            send_wakers,
             defer_idle_timeout: self.defer_idle_timeout,
-            span: None,
+            qlog_span: None,
         }
     }
 }
@@ -315,8 +320,9 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         client_scid: ConnectionId,
     ) -> ComponentsReady {
         let server_params = &mut self.foundation.server_params;
-        let sendable = Arc::new(Notify::new());
-        let reliable_frames = ArcReliableFrameDeque::with_capacity_and_notify(8, sendable.clone());
+        let send_wakers = Arc::new(SendWakers::new());
+        let reliable_frames =
+            ArcReliableFrameDeque::with_capacity_and_wakers(8, send_wakers.data_wakers());
 
         let rcvd_pkt_q = Arc::new(RcvdPacketQueue::new());
 
@@ -356,17 +362,23 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             0,
             server_params.initial_max_data().into_inner(),
             reliable_frames.clone(),
+            send_wakers.flow_wakers(),
         );
 
         let spaces = Spaces::new(
-            InitialSpace::new(initial_keys, Vec::with_capacity(0), sendable.clone()),
-            HandshakeSpace::new(sendable.clone()),
+            InitialSpace::new(
+                initial_keys,
+                Vec::with_capacity(0),
+                send_wakers.data_wakers(),
+            ),
+            HandshakeSpace::new(send_wakers.data_wakers()),
             DataSpace::new(
                 sid::Role::Server,
                 reliable_frames.clone(),
                 server_params,
                 self.streams_ctrl,
-                sendable.clone(),
+                send_wakers.stream_wakers(),
+                send_wakers.data_wakers(),
             ),
         );
 
@@ -380,9 +392,9 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             spaces,
             proto: self.proto,
             rcvd_pkt_q,
-            sendable,
+            send_wakers,
             defer_idle_timeout: self.defer_idle_timeout,
-            span: None,
+            qlog_span: None,
         }
     }
 }
@@ -398,8 +410,8 @@ pub struct ComponentsReady {
     proto: Arc<QuicProto>,
     rcvd_pkt_q: Arc<RcvdPacketQueue>,
     defer_idle_timeout: HeartbeatConfig,
-    sendable: Arc<Notify>,
-    span: Option<Span>,
+    send_wakers: Arc<SendWakers>,
+    qlog_span: Option<Span>,
 }
 
 impl ComponentsReady {
@@ -409,7 +421,7 @@ impl ComponentsReady {
             sid::Role::Server => VantagePointType::Server,
         };
         let origin_dcid = self.parameters.get_origin_dcid().unwrap();
-        self.span = Some(logger.new_trace(vantage_point_type, origin_dcid.into()));
+        self.qlog_span = Some(logger.new_trace(vantage_point_type, origin_dcid.into()));
         self
     }
 
@@ -417,8 +429,15 @@ impl ComponentsReady {
     where
         EE: EmitEvent + Clone + Send + Sync + 'static,
     {
+        // telemetry
+        let role = self.raw_handshake.role();
         let group_id = GroupID::from(self.parameters.get_origin_dcid().unwrap());
-        let span = self.span.unwrap_or_else(|| qlog::span!(@current, group_id));
+
+        let tracing_span = tracing::info_span!("connection",%role, odcid = %group_id);
+        let qlog_span = self
+            .qlog_span
+            .unwrap_or_else(|| qlog::span!(@current, group_id));
+
         let event_broker = ArcEventBroker::new(event_broker);
         let components = Components {
             parameters: self.parameters,
@@ -430,21 +449,25 @@ impl ComponentsReady {
             spaces: self.spaces,
             proto: self.proto,
             rcvd_pkt_q: self.rcvd_pkt_q,
-            paths: ArcPaths::new(event_broker.clone()),
-            send_notify: self.sendable,
+            paths: ArcPathContexts::new(self.send_wakers, event_broker.clone()),
             defer_idle_timeout: self.defer_idle_timeout,
             event_broker,
             state: ConnState::new(),
-            span: span.clone(),
         };
 
-        span.in_scope(|| {
-            tokio::spawn(tls::keys_upgrade(&components));
-            tokio::spawn(accpet_transport_parameters(&components));
-            space::spawn_deliver_and_parse(&components);
+        tracing_span.in_scope(|| {
+            qlog_span.in_scope(|| {
+                tokio::spawn(tls::keys_upgrade(&components));
+                tokio::spawn(accpet_transport_parameters(&components));
+                space::spawn_deliver_and_parse(&components);
+            })
         });
 
-        Connection(RwLock::new(Ok(components)))
+        Connection {
+            state: RwLock::new(Ok(components)),
+            qlog_span,
+            tracing_span,
+        }
     }
 }
 
@@ -490,15 +513,13 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
 }
 
 impl Components {
-    pub fn get_or_create_path(
+    pub fn get_or_try_create_path(
         &self,
         link: Link,
         pathway: Pathway,
         is_probed: bool,
     ) -> Option<Arc<Path>> {
-        match self.paths.entry(pathway) {
-            dashmap::Entry::Occupied(occupied_entry) => Some(occupied_entry.get().deref().clone()),
-            dashmap::Entry::Vacant(vacant_entry) => {
+        self.paths.get_or_try_create_with (pathway,||{
                 let do_validate = !self.state.try_entry_attempted(self, link);
                 qlog::event!(PathAssigned {
                     path_id: pathway.to_string(),
@@ -531,7 +552,6 @@ impl Components {
 
                 let task = {
                     let path = path.clone();
-                    let paths = self.paths.clone();
                     let defer_idle_timeout = self.defer_idle_timeout;
                     async move {
                         let validate = async {
@@ -542,14 +562,13 @@ impl Components {
                                 true
                             }
                         };
-                        let reason: Cow<'static, str> = tokio::select! {
+                        let reason: String = tokio::select! {
                             false = validate => "failed to validate".into(),
                             _ = idle_timeout => "idle timeout".into(),
-                            Err(e) = burst.launch() => format!("failed to send packets: {}", e).into(),
+                            Err(e) = burst.launch() => format!("failed to send packets: {}", e),
                             _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout".into(),
                         };
-                        // same as [`Components::del_path`]
-                        paths.remove(&pathway, reason.as_ref());
+                        Err(reason)
                     }
                 };
 
@@ -557,21 +576,15 @@ impl Components {
                     Instrument::instrument(task, qlog::span!(@current, path=pathway.to_string()))
                         .instrument_in_current();
 
-                vacant_entry.insert(PathContext::new(
-                    path.clone(),
-                    tokio::spawn(task).abort_handle(),
-                ));
                 tracing::info!(%pathway, %link,is_probed,do_validate, "created new path");
-                Some(path)
-            }
-        }
+                Some((path,task))
+        })
     }
 }
 
 impl Components {
     // 对于server，第一条路径也通过add_path添加
     pub fn enter_closing(self, ccf: ConnectionCloseFrame) -> Termination {
-        let _enter = self.span.enter();
         qlog::event!(ConnectionClosed {
             owner: Owner::Local,
             ccf: &ccf // TODO: trigger
@@ -617,7 +630,6 @@ impl Components {
     }
 
     pub fn enter_draining(self, ccf: ConnectionCloseFrame) -> Termination {
-        let _enter = self.span.enter();
         qlog::event!(ConnectionClosed {
             owner: Owner::Local,
             ccf: &ccf // TODO: trigger

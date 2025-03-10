@@ -16,6 +16,7 @@ use qbase::{
         ReliableFrame, StreamFrame,
         io::{WriteDataFrame, WriteFrame},
     },
+    net::SendLimiter,
     packet::{
         CipherPacket, MarshalDataFrame, MarshalFrame, MarshalPathFrame, PacketWriter, PlainPacket,
         header::{
@@ -82,7 +83,7 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
         buffer: &'b mut [u8],
         keys: Arc<rustls::quic::Keys>,
         journal: &'s ArcSentJournal<F>,
-    ) -> Option<Self>
+    ) -> Result<Self, SendLimiter>
     where
         S: EncodeHeader + 'static,
         LongHeader<S>: GetType,
@@ -90,7 +91,7 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
     {
         let guard = journal.new_packet();
         let pn = guard.pn();
-        Some(Self {
+        Ok(Self {
             guard,
             writer: PacketWriter::new_long(&header, buffer, pn, keys)?,
             logger: PacketLogger {
@@ -116,10 +117,10 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
         pk: Arc<dyn rustls::quic::PacketKey>,
         key_phase: KeyPhaseBit,
         journal: &'s ArcSentJournal<F>,
-    ) -> Option<Self> {
+    ) -> Result<Self, SendLimiter> {
         let guard = journal.new_packet();
         let pn = guard.pn();
-        Some(Self {
+        Ok(Self {
             guard,
             writer: PacketWriter::new_short(&header, buffer, pn, hpk, pk, key_phase)?,
             logger: PacketLogger {
@@ -163,9 +164,8 @@ impl MiddleAssembledPacket {
 
     pub fn complete(mut self, buffer: &mut [u8]) -> CipherPacket {
         let mut writer = self.packet.writer(buffer);
-        let packet_len = writer.packet_len();
-        if packet_len < 20 {
-            let padding_len = 20 - packet_len;
+        if writer.payload_len() + writer.tag_len() < 20 {
+            let padding_len = 20 - writer.payload_len() - writer.tag_len();
             writer.pad(padding_len);
             self.logger.record_frame(QuicFrame::Padding {
                 length: Some(padding_len as u32),
@@ -223,11 +223,11 @@ impl<F> PacketMemory<'_, '_, F> {
         });
     }
 
-    pub fn interrupt(self) -> Option<MiddleAssembledPacket> {
+    pub fn interrupt(self) -> Result<MiddleAssembledPacket, SendLimiter> {
         if self.writer.is_empty() {
-            return None;
+            return Err(SendLimiter::NO_UNLIMITED_DATA);
         }
-        Some(MiddleAssembledPacket {
+        Ok(MiddleAssembledPacket {
             packet: self.writer.interrupt().0,
             logger: self.logger,
         })
@@ -433,16 +433,12 @@ impl<'a> Future for PrepareTransaction<'a> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let send_quota = match self.cc.poll_send(cx, self.expect_quota) {
             Poll::Ready(send_quota) => send_quota,
-            Poll::Pending => {
-                return Poll::Pending;
-            }
+            Poll::Pending => return Poll::Pending,
         };
         let credit_limit = match self.anti_amplifier.poll_balance(cx) {
             Poll::Ready(Some(credit_limit)) => credit_limit,
             Poll::Ready(None) => return Poll::Ready(None),
-            Poll::Pending => {
-                return Poll::Pending;
-            }
+            Poll::Pending => return Poll::Pending,
         };
 
         let flow_limit = match self.flow_ctrl.send_limit(send_quota) {
@@ -453,9 +449,7 @@ impl<'a> Future for PrepareTransaction<'a> {
         let borrowed_dcid = match self.dcid.poll_borrow_cid(cx) {
             Poll::Ready(Some(borrowed_dcid)) => borrowed_dcid,
             Poll::Ready(None) => return Poll::Ready(None),
-            Poll::Pending => {
-                return Poll::Pending;
-            }
+            Poll::Pending => return Poll::Pending,
         };
         let constraints = Constraints::new(credit_limit, send_quota);
 
@@ -483,14 +477,17 @@ impl Transaction<'_> {
         spin: SpinBit,
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
-    ) -> usize {
+    ) -> Result<usize, SendLimiter> {
         let mut written = 0;
         let mut last_level: Option<LevelState> = None;
         let mut last_level_size = 0;
         let mut containing_initial = false;
-        if let Some((mid_pkt, ack)) = spaces
+        let mut limiter = SendLimiter::empty();
+
+        if let Ok((mid_pkt, ack)) = spaces
             .initial()
             .try_assemble(self, &mut datagram[written..])
+            .inspect_err(|l| limiter |= *l)
         {
             self.constraints
                 .commit(mid_pkt.packet_len(), mid_pkt.in_flight());
@@ -505,11 +502,15 @@ impl Transaction<'_> {
 
         let is_one_rtt_ready = spaces.data().is_one_rtt_ready();
         if !is_one_rtt_ready {
-            if let Some((mid_pkt, fresh_data)) = spaces.data().try_assemble_0rtt(
-                self,
-                path_challenge_frames,
-                &mut datagram[written + last_level_size..],
-            ) {
+            if let Ok((mid_pkt, fresh_data)) = spaces
+                .data()
+                .try_assemble_0rtt(
+                    self,
+                    path_challenge_frames,
+                    &mut datagram[written + last_level_size..],
+                )
+                .inspect_err(|l| limiter |= *l)
+            {
                 if let Some(last_level) = last_level.take() {
                     let packet = last_level.pkt.complete(&mut datagram[written..]);
                     written += packet.size();
@@ -535,9 +536,10 @@ impl Transaction<'_> {
             }
         }
 
-        if let Some((mid_pkt, ack)) = spaces
+        if let Ok((mid_pkt, ack)) = spaces
             .handshake()
             .try_assemble(self, &mut datagram[written + last_level_size..])
+            .inspect_err(|l| limiter |= *l)
         {
             if let Some(last_level) = last_level.take() {
                 let packet = last_level.pkt.complete(&mut datagram[written..]);
@@ -563,13 +565,17 @@ impl Transaction<'_> {
         }
 
         if is_one_rtt_ready {
-            if let Some((mid_pkt, ack, fresh_data)) = spaces.data().try_assemble_1rtt(
-                self,
-                spin,
-                path_challenge_frames,
-                path_response_frames,
-                &mut datagram[written + last_level_size..],
-            ) {
+            if let Ok((mid_pkt, ack, fresh_data)) = spaces
+                .data()
+                .try_assemble_1rtt(
+                    self,
+                    spin,
+                    path_challenge_frames,
+                    path_response_frames,
+                    &mut datagram[written + last_level_size..],
+                )
+                .inspect_err(|l| limiter |= *l)
+            {
                 if let Some(last_level) = last_level.take() {
                     let packet = last_level.pkt.complete(&mut datagram[written..]);
                     written += packet.size();
@@ -612,7 +618,11 @@ impl Transaction<'_> {
             );
         }
 
-        written
+        if written != 0 {
+            Ok(written)
+        } else {
+            Err(limiter)
+        }
     }
 
     pub fn load_one_rtt(
@@ -622,7 +632,7 @@ impl Transaction<'_> {
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
         data_space: &DataSpace,
-    ) -> usize {
+    ) -> Result<usize, SendLimiter> {
         let buffer = self.constraints.constrain(buf);
         data_space
             .try_assemble_1rtt(
@@ -632,7 +642,7 @@ impl Transaction<'_> {
                 path_response_frames,
                 buffer,
             )
-            .map_or(0, |(packet, ack, fresh_bytes)| {
+            .map(|(packet, ack, fresh_bytes)| {
                 let packet = if packet.probe_new_path() {
                     packet.complete(buffer)
                 } else {
@@ -659,7 +669,7 @@ impl Transaction<'_> {
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
         data_space: &DataSpace,
-    ) -> usize {
+    ) -> Result<usize, SendLimiter> {
         let buffer = self.constraints.constrain(buf);
         data_space
             .try_assemble_validation(
@@ -669,7 +679,7 @@ impl Transaction<'_> {
                 path_response_frames,
                 buffer,
             )
-            .map_or(0, |packet| {
+            .map(|packet| {
                 let packet = packet.fill_and_complete(buffer);
                 self.cc.on_pkt_sent(
                     Epoch::Data,

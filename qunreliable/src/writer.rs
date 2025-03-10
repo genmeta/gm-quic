@@ -9,6 +9,7 @@ use bytes::{BufMut, Bytes};
 use qbase::{
     error::Error,
     frame::{BeFrame, DatagramFrame},
+    net::{DataWakers, SendLimiter},
     packet::MarshalDataFrame,
     varint::VarInt,
 };
@@ -17,12 +18,14 @@ use qbase::{
 struct RawDatagramWriter {
     /// The queue that stores the datagram frame to send.
     datagrams: VecDeque<Bytes>,
+    data_wakers: DataWakers,
 }
 
 impl RawDatagramWriter {
-    fn new() -> Self {
+    fn new(data_wakers: DataWakers) -> Self {
         Self {
             datagrams: VecDeque::new(),
+            data_wakers,
         }
     }
 }
@@ -32,8 +35,10 @@ impl RawDatagramWriter {
 pub struct DatagramOutgoing(Arc<Mutex<Result<RawDatagramWriter, Error>>>);
 
 impl DatagramOutgoing {
-    pub fn new() -> DatagramOutgoing {
-        DatagramOutgoing(Arc::new(Mutex::new(Ok(RawDatagramWriter::new()))))
+    pub fn new(data_wakers: DataWakers) -> DatagramOutgoing {
+        DatagramOutgoing(Arc::new(Mutex::new(Ok(RawDatagramWriter::new(
+            data_wakers,
+        )))))
     }
 
     /// Try to reate a new instance of [`DatagramWriter`].
@@ -117,21 +122,23 @@ impl DatagramOutgoing {
     /// Because no frame can be put after the datagram frame without length,
     /// padding frames will be put before the datagram frame.
     /// In this case, the packet will be filled.
-    pub fn try_load_data_into<P>(&self, packet: &mut P)
+    pub fn try_load_data_into<P>(&self, packet: &mut P) -> Result<(), SendLimiter>
     where
         P: BufMut + MarshalDataFrame<DatagramFrame, Bytes>,
     {
         let mut guard = self.0.lock().unwrap();
-        let Ok(writer) = guard.as_mut() else { return };
+        let Ok(writer) = guard.as_mut() else {
+            return Err(SendLimiter::empty()); // connection closed
+        };
         let Some(datagram) = writer.datagrams.front() else {
-            return;
+            return Err(SendLimiter::NO_UNLIMITED_DATA);
         };
 
         let available = packet.remaining_mut();
 
         let max_encoding_size = available.saturating_sub(datagram.len());
         if max_encoding_size == 0 {
-            return;
+            return Err(SendLimiter::BUFFER_TOO_SMALL);
         }
 
         let data = writer.datagrams.pop_front().expect("unreachable");
@@ -149,6 +156,7 @@ impl DatagramOutgoing {
                 packet.dump_frame_with_data(frame_without_len, data);
             }
         }
+        Ok(())
     }
 
     /// When a connection error occurs, set the internal state to an error state.
@@ -160,12 +168,6 @@ impl DatagramOutgoing {
         if writer.is_ok() {
             **writer = Err(error.clone());
         }
-    }
-}
-
-impl Default for DatagramOutgoing {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -214,6 +216,7 @@ impl DatagramWriter {
                         "datagram frame size exceeds the limit",
                     ));
                 }
+                writer.data_wakers.wake_all();
                 writer.datagrams.push_back(data.clone());
                 Ok(())
             }
@@ -278,7 +281,7 @@ mod tests {
 
     #[test]
     fn test_datagram_writer_with_length() {
-        let outgoing = DatagramOutgoing::new();
+        let outgoing = DatagramOutgoing::new(Default::default());
         let writer = outgoing.new_writer(1024).unwrap();
 
         let data = Bytes::from_static(b"hello world");
@@ -301,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_datagram_writer_without_length() {
-        let outgoing = DatagramOutgoing::new();
+        let outgoing = DatagramOutgoing::new(Default::default());
         let writer = outgoing.new_writer(1024).unwrap();
 
         let data = Bytes::from_static(b"hello world");
@@ -323,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_datagram_writer_unwritten() {
-        let outgoing = DatagramOutgoing::new();
+        let outgoing = DatagramOutgoing::new(Default::default());
         let writer = outgoing.new_writer(1024).unwrap();
 
         let data = Bytes::from_static(b"hello world");
@@ -338,7 +341,7 @@ mod tests {
 
     #[test]
     fn test_datagram_writer_padding_first() {
-        let outgoing = DatagramOutgoing::new();
+        let outgoing = DatagramOutgoing::new(Default::default());
         let writer = outgoing.new_writer(1024).unwrap();
 
         // Will be encoded to 2 bytes
@@ -364,13 +367,13 @@ mod tests {
 
     #[test]
     fn test_datagram_writer_exceeds_limit() {
-        let outgoing = DatagramOutgoing::new();
+        let outgoing = DatagramOutgoing::new(Default::default());
         assert!(outgoing.new_writer(0).is_err());
     }
 
     #[test]
     fn test_datagram_writer_on_conn_error() {
-        let outgoing = DatagramOutgoing::new();
+        let outgoing = DatagramOutgoing::new(Default::default());
         let writer = outgoing.new_writer(1024).unwrap();
 
         outgoing.on_conn_error(&Error::new(

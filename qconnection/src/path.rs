@@ -10,11 +10,11 @@ use std::{
 use qbase::{
     error::Error,
     frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
-    net::{Link, Pathway},
+    net::{Link, Pathway, SendWaker},
 };
 use qcongestion::{ArcCC, CongestionControl};
 use qinterface::{QuicInterface, router::QuicProto};
-use tokio::{sync::Notify, task::AbortHandle, time::Instant};
+use tokio::{task::AbortHandle, time::Instant};
 
 mod aa;
 mod paths;
@@ -36,14 +36,14 @@ pub struct Path {
     challenge_sndbuf: SendBuffer<PathChallengeFrame>,
     response_sndbuf: SendBuffer<PathResponseFrame>,
     response_rcvbuf: RecvBuffer<PathResponseFrame>,
-    sendable: Arc<Notify>,
+    send_waker: Arc<SendWaker>,
 }
 
 impl Path {
     pub fn new(proto: &QuicProto, link: Link, pathway: Pathway, cc: ArcCC) -> Option<Self> {
         let interface = proto.get_interface(link.src()).ok()?;
-        let notify = Arc::new(Notify::new());
-        let handle = cc.launch(notify.clone());
+        let send_waker = Arc::new(SendWaker::new());
+        let handle = cc.launch(send_waker.data_waker());
         Some(Self {
             interface,
             link,
@@ -52,10 +52,10 @@ impl Path {
             validated: AtomicBool::new(false),
             anti_amplifier: Default::default(),
             last_recv_time: Instant::now().into(),
-            challenge_sndbuf: Default::default(),
-            response_sndbuf: Default::default(),
+            challenge_sndbuf: SendBuffer::new(send_waker.data_waker()),
+            response_sndbuf: SendBuffer::new(send_waker.data_waker()),
             response_rcvbuf: Default::default(),
-            sendable: notify,
+            send_waker,
         })
     }
 
@@ -68,7 +68,6 @@ impl Path {
         for _ in 0..3 {
             let pto = self.cc().pto_time(qbase::Epoch::Data);
             self.challenge_sndbuf.write(challenge);
-            self.sendable.notify_waiters();
             match tokio::time::timeout(pto, self.response_rcvbuf.receive()).await {
                 Ok(Some(response)) if *response == *challenge => {
                     self.anti_amplifier.grant();
@@ -89,6 +88,10 @@ impl Path {
 
     pub fn interface(&self) -> &dyn QuicInterface {
         self.interface.deref()
+    }
+
+    pub fn send_waker(&self) -> &Arc<SendWaker> {
+        &self.send_waker
     }
 
     pub fn on_rcvd(&self, amount: usize) {
@@ -125,7 +128,6 @@ impl ReceiveFrame<PathChallengeFrame> for Path {
     type Output = ();
 
     fn recv_frame(&self, frame: &PathChallengeFrame) -> Result<Self::Output, Error> {
-        self.sendable.notify_waiters();
         self.response_sndbuf.write((*frame).into());
         Ok(())
     }

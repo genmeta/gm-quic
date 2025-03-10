@@ -7,6 +7,7 @@ use qbase::{
         BeFrame, FrameType, ReceiveFrame, ResetStreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
         SendFrame, StreamCtlFrame, StreamFrame,
     },
+    net::{DataWakers, SendLimiter, StreamWakers},
     packet::MarshalDataFrame,
     param::CommonParameters,
     sid::{
@@ -122,6 +123,9 @@ where
     input: ArcInput<Ext<TX>>,
     // 对方主动创建的流
     listener: ArcListener<Ext<TX>>,
+
+    stream_wakers: StreamWakers,
+    data_wakers: DataWakers,
 }
 
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
@@ -135,7 +139,11 @@ where
     /// Try to load data from streams into the `packet`,
     /// with a `flow_limit` which limits the max size of fresh data.
     /// Returns the size of fresh data.
-    fn try_load_data_into_once<P>(&self, packet: &mut P, flow_limit: usize) -> Option<usize>
+    fn try_load_data_into_once<P>(
+        &self,
+        packet: &mut P,
+        flow_limit: usize,
+    ) -> Result<usize, SendLimiter>
     where
         P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
     {
@@ -143,11 +151,11 @@ where
         use core::ops::Bound::*;
 
         if packet.remaining_mut() < STREAM_FRAME_MAX_ENCODING_SIZE {
-            return None;
+            return Err(SendLimiter::BUFFER_TOO_SMALL);
         }
 
         let mut guard = self.output.streams();
-        let output = guard.as_mut().ok()?;
+        let output = guard.as_mut().map_err(|_| SendLimiter::empty())?; // connection closed
 
         // 该tokens是令牌桶算法的token，为了多条Stream的公平性，给每个流定期地发放tokens，不累积
         // 各流轮流按令牌桶算法发放的tokens来整理数据去发送
@@ -186,15 +194,17 @@ where
         //     output.cursor = Some((sid, tokens - data_len));
         //     Some(if is_fresh { data_len } else { 0 })
         // })
+        let mut limiter = SendLimiter::NO_UNLIMITED_DATA;
         for (sid, (outgoing, _s), tokens) in streams {
-            if let Some((data_len, is_fresh)) =
-                outgoing.try_load_data_into(packet, sid, flow_limit, tokens)
-            {
-                output.cursor = Some((sid, tokens - data_len));
-                return Some(if is_fresh { data_len } else { 0 });
+            match outgoing.try_load_data_into(packet, sid, flow_limit, tokens) {
+                Ok((data_len, is_fresh)) => {
+                    output.cursor = Some((sid, tokens - data_len));
+                    return Ok(if is_fresh { data_len } else { 0 });
+                }
+                Err(l) => limiter |= l,
             }
         }
-        None
+        Err(limiter)
     }
 
     /// Try to load data from streams into the packet.
@@ -231,17 +241,31 @@ where
     /// * [`usize`]: The number of new data writen to the buffer.
     ///
     /// [`write`]: tokio::io::AsyncWriteExt::write
-    pub fn try_load_data_into<P>(&self, packet: &mut P, flow_limit: usize) -> usize
+    pub fn try_load_data_into<P>(
+        &self,
+        packet: &mut P,
+        mut flow_limit: usize,
+    ) -> Result<usize, SendLimiter>
     where
         P: BufMut + for<'a> MarshalDataFrame<StreamFrame, (&'a [u8], &'a [u8])>,
     {
-        core::iter::repeat(()) // while true
-            .scan(flow_limit, |flow_limit, ()| {
-                let fresh_bytes = self.try_load_data_into_once(packet, *flow_limit)?;
-                *flow_limit -= fresh_bytes;
-                Some(fresh_bytes)
-            })
-            .sum()
+        use core::ops::ControlFlow::*;
+        // 取唯一一个最新的错误（如果有），或者返回DATA_UNAVAILABLE
+        let (Continue(result) | Break(result)) = core::iter::from_fn(|| {
+            Some(
+                self.try_load_data_into_once(packet, flow_limit)
+                    .inspect(|fresh| flow_limit -= *fresh),
+            )
+        })
+        .try_fold(Err(SendLimiter::empty()), |result, once| {
+            match (result, once) {
+                (Ok(sum), Ok(fresh)) => Continue(Ok(sum + fresh)),
+                (Ok(sum), Err(_no_more)) => Break(Ok(sum)),
+                (Err(_), Ok(n)) => Continue(Ok(n)),
+                (Err(_), Err(limiter)) => Break(Err(limiter)),
+            }
+        });
+        result
     }
 
     /// Called when the stream frame acked.
@@ -496,6 +520,8 @@ where
         local_params: &CommonParameters,
         ctrl: Box<dyn ControlConcurrency>,
         ctrl_frames: TX,
+        stream_wakers: StreamWakers,
+        data_wakers: DataWakers,
     ) -> Self {
         let max_bi_streams = local_params.initial_max_streams_bidi().into();
         let max_uni_streams = local_params.initial_max_streams_uni().into();
@@ -515,6 +541,8 @@ where
             input: ArcInput::default(),
             listener: ArcListener::new(),
             ctrl_frames,
+            stream_wakers,
+            data_wakers,
         }
     }
 
@@ -639,7 +667,13 @@ where
     }
 
     fn create_sender(&self, sid: StreamId, buf_size: u64) -> ArcSender<Ext<TX>> {
-        ArcSender::new(sid, buf_size, Ext(self.ctrl_frames.clone()))
+        ArcSender::new(
+            sid,
+            buf_size,
+            Ext(self.ctrl_frames.clone()),
+            self.stream_wakers.clone(),
+            self.data_wakers.clone(),
+        )
     }
 
     fn create_recver(&self, sid: StreamId, buf_size: u64) -> ArcRecver<Ext<TX>> {

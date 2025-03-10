@@ -7,7 +7,7 @@ use qbase::{
     cid::ConnectionId,
     error::Error,
     frame::{ConnectionCloseFrame, Frame, FrameReader},
-    net::{Link, Pathway},
+    net::{DataWakers, Link, Pathway, SendLimiter},
     packet::{
         CipherPacket, MarshalFrame, PacketWriter,
         header::{
@@ -31,7 +31,7 @@ use qrecovery::{
     journal::{ArcRcvdJournal, HandshakeJournal},
 };
 use rustls::quic::Keys;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
 use super::{AckHandshake, PlainPacket, ReceivedCipherPacket};
@@ -52,16 +52,14 @@ pub struct HandshakeSpace {
     keys: ArcKeys,
     crypto_stream: CryptoStream,
     journal: HandshakeJournal,
-    sendable: Arc<Notify>,
 }
 
 impl HandshakeSpace {
-    pub fn new(sendable: Arc<Notify>) -> Self {
+    pub fn new(data_wakers: DataWakers) -> Self {
         Self {
             keys: ArcKeys::new_pending(),
-            crypto_stream: CryptoStream::new(4096, 4096),
+            crypto_stream: CryptoStream::new(4096, 4096, data_wakers),
             journal: HandshakeJournal::with_capacity(16),
-            sendable,
         }
     }
 
@@ -94,30 +92,37 @@ impl HandshakeSpace {
         &self,
         tx: &mut Transaction<'_>,
         buf: &mut [u8],
-    ) -> Option<(MiddleAssembledPacket, Option<u64>)> {
-        let keys = self.keys.get_local_keys()?;
+    ) -> Result<(MiddleAssembledPacket, Option<u64>), SendLimiter> {
+        let keys = self
+            .keys
+            .get_local_keys()
+            .ok_or(SendLimiter::KEYS_UNAVAILABLE)?;
         let sent_journal = self.journal.of_sent_packets();
         let header = LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).handshake();
         let need_ack = tx.need_ack(Epoch::Handshake);
         let mut packet = PacketMemory::new_long(header, buf, keys, &sent_journal)?;
 
-        let mut ack = None;
-        if let Some((largest, rcvd_time)) = need_ack {
-            let rcvd_journal = self.journal.of_rcvd_packets();
-            if let Some(ack_frame) =
-                rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())
-            {
+        let mut limiter = SendLimiter::empty();
+
+        let ack = need_ack
+            .ok_or(SendLimiter::NO_UNLIMITED_DATA)
+            .and_then(|(largest, rcvd_time)| {
+                let rcvd_journal = self.journal.of_rcvd_packets();
+                let ack_frame =
+                    rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())?;
                 packet.dump_ack_frame(ack_frame);
-                ack = Some(largest);
-            }
-        }
+                Ok(largest)
+            })
+            .inspect_err(|l| limiter |= *l)
+            .ok();
 
-        // TODO: 可以封装在CryptoStream中，当成一个函数
-        //      crypto_stream.try_load_data_into(&mut packet);
-        let crypto_stream_outgoing = self.crypto_stream.outgoing();
-        crypto_stream_outgoing.try_load_data_into(&mut packet);
+        _ = self
+            .crypto_stream
+            .outgoing()
+            .try_load_data_into(&mut packet)
+            .inspect_err(|l| limiter |= *l);
 
-        Some((packet.interrupt()?, ack))
+        Ok((packet.interrupt().map_err(|_| limiter)?, ack))
     }
 }
 
@@ -161,7 +166,7 @@ pub fn spawn_deliver_and_parse(
     let parse = async move |packet: ReceiveHanshakePacket, pathway, socket| {
         match space.decrypt_packet(packet).await {
             Some(Ok(packet)) => {
-                let path = match components.get_or_create_path(socket, pathway, true) {
+                let path = match components.get_or_try_create_path(socket, pathway, true) {
                     Some(path) => path,
                     None => {
                         packet.drop_on_conenction_closed();
@@ -237,7 +242,6 @@ impl TrackPackets for HandshakeSpace {
                 // for this convert, empty bytes indicates the raw info is not available
                 may_lost_frames.extend(Some(&Frame::Crypto(frame, bytes::Bytes::new())));
                 outgoing.may_loss_data(&frame);
-                self.sendable.notify_waiters();
             }
             qlog::event!(PacketLost {
                 header: PacketHeader {
@@ -307,7 +311,7 @@ impl ClosingHandshakeSpace {
     ) -> Option<CipherPacket> {
         let header = LongHeaderBuilder::with_cid(scid, dcid).handshake();
         let pn = self.ccf_packet_pn;
-        let mut packet_writer = PacketWriter::new_long(&header, buf, pn, self.keys.clone())?;
+        let mut packet_writer = PacketWriter::new_long(&header, buf, pn, self.keys.clone()).ok()?;
 
         packet_writer.dump_frame(ccf.clone());
 
@@ -339,6 +343,7 @@ pub fn spawn_deliver_and_parse_closing(
                 }
             }
         }
-        .instrument_in_current(),
+        .instrument_in_current()
+        .in_current_span(),
     );
 }

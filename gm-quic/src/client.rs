@@ -175,6 +175,7 @@ impl QuicClient {
 
         let (event_broker, mut events) = mpsc::unbounded_channel();
 
+        let origin_dcid = ConnectionId::random_gen(8);
         let connection = Arc::new(
             Connection::with_token_sink(server_name.clone(), token_sink)
                 .with_parameters(self.parameters, None)
@@ -182,7 +183,7 @@ impl QuicClient {
                 .with_streams_ctrl(&self.streams_controller)
                 .with_proto(PROTO.clone())
                 .defer_idle_timeout(self.defer_idle_timeout)
-                .with_cids(ConnectionId::random_gen(8))
+                .with_cids(origin_dcid)
                 .with_qlog(self.logger.as_ref())
                 .run_with(event_broker),
         );
@@ -216,7 +217,10 @@ impl QuicClient {
                     }
                 }
             }
-            .instrument(trace_span!("client_connection_driver")),
+            .instrument(trace_span!(
+                "client_connection_driver",
+                odcid = format_args!("{origin_dcid:x}")
+            )),
         );
 
         connection.add_path(link, pathway)?;
@@ -260,16 +264,14 @@ impl QuicClient {
     ) -> io::Result<Arc<Connection>> {
         let server_name = server_name.into();
         let server_ep = server_ep.to_endpoint_addr();
-        trace_span!("connect", %server_name,%server_ep).in_scope(|| {
-            if self.reuse_connection {
-                REUSEABLE_CONNECTIONS
-                    .entry(server_name.clone())
-                    .or_try_insert_with(|| self.new_connection(server_name, server_ep))
-                    .map(|entry| entry.clone())
-            } else {
-                self.new_connection(server_name, server_ep)
-            }
-        })
+        if self.reuse_connection {
+            REUSEABLE_CONNECTIONS
+                .entry(server_name.clone())
+                .or_try_insert_with(|| self.new_connection(server_name, server_ep))
+                .map(|entry| entry.clone())
+        } else {
+            self.new_connection(server_name, server_ep)
+        }
     }
 }
 

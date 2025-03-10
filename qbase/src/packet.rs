@@ -13,6 +13,7 @@ use crate::{
         BeFrame, ContainSpec, Spec,
         io::{WriteDataFrame, WriteFrame},
     },
+    net::SendLimiter,
     util::{DescribeData, WriteData},
     varint::{EncodeBytes, VarInt, WriteVarInt},
 };
@@ -268,7 +269,7 @@ impl<'b> PacketWriter<'b> {
         buffer: &'b mut [u8],
         pn: (u64, PacketNumber),
         keys: Arc<rustls::quic::Keys>,
-    ) -> Option<Self>
+    ) -> Result<Self, SendLimiter>
     where
         S: EncodeHeader,
         for<'a> &'a mut [u8]: WriteHeader<LongHeader<S>>,
@@ -276,7 +277,7 @@ impl<'b> PacketWriter<'b> {
         let hdr_len = header.size();
         let len_encoding = header.length_encoding();
         if buffer.len() < hdr_len + len_encoding + 20 {
-            return None;
+            return Err(SendLimiter::BUFFER_TOO_SMALL);
         }
 
         let (mut hdr_buf, mut payload_buf) = buffer.split_at_mut(hdr_len + len_encoding);
@@ -298,7 +299,7 @@ impl<'b> PacketWriter<'b> {
             in_flight: false,
             probe_new_path: false,
         };
-        Some(Self { buffer, packet })
+        Ok(Self { buffer, packet })
     }
 
     pub fn buffer(&self) -> &[u8] {
@@ -312,10 +313,10 @@ impl<'b> PacketWriter<'b> {
         hpk: Arc<dyn rustls::quic::HeaderProtectionKey>,
         pk: Arc<dyn rustls::quic::PacketKey>,
         key_phase: KeyPhaseBit,
-    ) -> Option<Self> {
+    ) -> Result<Self, SendLimiter> {
         let hdr_len = header.size();
         if buffer.len() < hdr_len + 20 {
-            return None;
+            return Err(SendLimiter::BUFFER_TOO_SMALL);
         }
 
         let (mut hdr_buf, mut payload_buf) = buffer.split_at_mut(hdr_len);
@@ -336,7 +337,7 @@ impl<'b> PacketWriter<'b> {
             in_flight: false,
             probe_new_path: false,
         };
-        Some(Self { buffer, packet })
+        Ok(Self { buffer, packet })
     }
 
     pub fn interrupt(self) -> (PlainPacket, &'b mut [u8]) {

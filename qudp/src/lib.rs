@@ -94,6 +94,7 @@ impl UdpSocketController {
             return Err(io::Error::new(io::ErrorKind::AddrInUse, e));
         }
 
+        socket.set_nonblocking(true)?;
         let io = tokio::net::UdpSocket::from_std(socket.into())?;
 
         // TODO: 会报错
