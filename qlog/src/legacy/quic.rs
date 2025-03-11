@@ -364,6 +364,7 @@ pub struct TransportPacketReceived {
     header: PacketHeader,
 
     /// see appendix for the definitions
+    #[builder(default)]
     frames: Option<Vec<QuicFrame>>,
 
     #[serde(default)]
@@ -375,7 +376,6 @@ pub struct TransportPacketReceived {
     retry_token: Option<Token>,
 
     /// only if header.packet_type === "stateless_reset"
-    #[serde(default)]
     #[builder(default)]
     /// Is always 128 bits in length.
     stateless_reset_token: Option<HexString>,
@@ -401,8 +401,12 @@ pub enum TransportPacketReceivedTrigger {
 }
 
 #[serde_with::skip_serializing_none]
-#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct TransportPacketDropped {
     /// primarily packet_type should be filled here,
     /// as other fields might not be parseable
@@ -432,19 +436,20 @@ pub enum TransportpacketDroppedTrigger {
 }
 
 #[serde_with::skip_serializing_none]
-#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct TransportPacketBuffered {
     /// primarily packet_type and possible packet_number should be
     /// filled here as other elements might not be available yet
-    #[builder(default)]
     header: Option<PacketHeader>,
 
-    #[builder(default)]
     raw: Option<RawInfo>,
     datagram_id: Option<u32>,
 
-    #[builder(default)]
     trigger: Option<TransportPacketBufferedTrigger>,
 }
 
@@ -460,20 +465,26 @@ pub enum TransportPacketBufferedTrigger {
 }
 
 #[serde_with::skip_serializing_none]
-#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct TransportPacketsAcked {
-    #[builder(default)]
     packet_number_space: Option<PacketNumberSpace>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[builder(default)]
     packet_numbers: Vec<u64>,
 }
 
 #[serde_with::skip_serializing_none]
-#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct TransportDatagramsSent {
     /// to support passing multiple at once
     count: Option<u16>,
@@ -481,11 +492,9 @@ pub struct TransportDatagramsSent {
     /// RawInfo:length field indicates total length of the datagrams
     /// including UDP header length
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[builder(default)]
     raw: Vec<RawInfo>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[builder(default)]
     datagram_ids: Vec<u32>,
 }
 
@@ -510,10 +519,13 @@ pub struct TransportDatagramsReceived {
 }
 
 #[serde_with::skip_serializing_none]
-#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct TransportDatagramDropped {
-    #[builder(default)]
     raw: Option<RawInfo>,
 }
 
@@ -587,25 +599,23 @@ pub struct TransportFramesProcessed {
 }
 
 #[serde_with::skip_serializing_none]
-#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
+#[derive(Builder, Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[builder(
+    default,
+    setter(into, strip_option),
+    build_fn(private, name = "fallible_build")
+)]
 pub struct TransportDataMoved {
-    #[builder(default)]
     stream_id: Option<u64>,
-    #[builder(default)]
     offset: Option<u64>,
 
     /// byte length of the moved data
-    #[builder(default)]
     length: Option<u64>,
 
-    #[builder(default)]
     from: Option<StreamDataLocation>,
-    #[builder(default)]
     to: Option<StreamDataLocation>,
 
     /// raw bytes that were transferred
-    #[builder(default)]
     data: Option<HexString>,
 }
 
@@ -662,8 +672,7 @@ pub struct RecoveryParametersSet {
     /// Additionally, this event can contain any number of unspecified fields
     /// to support different recovery approaches.
     #[builder(default)]
-    #[serde(flatten)]
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    #[serde(flatten, skip_serializing_if = "HashMap::is_empty")]
     custom_fields: HashMap<String, serde_json::Value>,
 }
 
