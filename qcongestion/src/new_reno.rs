@@ -85,6 +85,7 @@ impl Algorithm for NewReno {
         for acked in packet {
             self.on_per_ack(&acked);
         }
+        tracing::debug!(target: "debug_congestion", cwnd = self.cwnd, ssthresh = self.ssthresh, bytes_acked = self.bytes_acked);
 
         let event = RecoveryMetricsUpdated::from(&*self);
         qlog::event!(event);
@@ -96,10 +97,16 @@ impl Algorithm for NewReno {
         }
         self.recovery_start_time = Some(now);
         self.cwnd = (self.cwnd as f64 * LOSS_REDUCTION_FACTOR) as u64;
+        tracing::debug!(target: "debug_congestion", cwnd = self.cwnd);
         self.cwnd = self.cwnd.max(2 * MSS as u64);
+        tracing::debug!(target: "debug_congestion", cwnd = self.cwnd);
 
         self.bytes_acked = (self.bytes_acked as f64 * LOSS_REDUCTION_FACTOR) as u64;
+        tracing::debug!(target: "debug_congestion", bytes_acked = self.bytes_acked);
         self.ssthresh = self.cwnd;
+        tracing::debug!(target: "debug_congestion", ssthresh = self.ssthresh);
+
+        tracing::debug!(target: "debug_congestion", lost_packet_sequence_numbers = lost.pn);
 
         let event = RecoveryMetricsUpdated::from(&*self);
         qlog::event!(event);

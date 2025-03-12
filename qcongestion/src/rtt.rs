@@ -80,6 +80,8 @@ impl Rtt {
             self.smoothed_rtt = self.smoothed_rtt.mul_f32(0.875) + adjusted_rtt.mul_f32(0.125);
         }
 
+        tracing::debug!(target: "debug_congestion", rtt = self.smoothed_rtt.as_secs_f64() * 1000.0);
+
         let event = RecoveryMetricsUpdated::from(&*self);
         qlog::event!(event);
     }

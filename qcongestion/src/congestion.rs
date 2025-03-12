@@ -145,6 +145,7 @@ impl CongestionController {
         sent_bytes: usize,
         now: Instant,
     ) {
+        tracing::debug!(target: "debug_congestion", send_sequence_numbers = pn);
         let mut sent = SentPkt::new(pn, sent_bytes, now);
         if in_flight {
             if ack_eliciting {
@@ -629,6 +630,7 @@ impl RcvdRecords {
     }
 
     fn on_pkt_rcvd(&mut self, pn: u64) {
+        tracing::debug!(target: "debug_congestion", receive_sequence_numbers = pn);
         // An endpoint MUST acknowledge all ack-eliciting Initial and Handshake packets immediately
         if self.epoch == Epoch::Initial || self.epoch == Epoch::Handshake {
             self.ack_immedietly = true;
