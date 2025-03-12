@@ -121,24 +121,25 @@ impl Burst {
                 load_result
                     .map(|packet_size| io::IoSlice::new(&buffer[..reversed_size + packet_size]))
             })
+            .inspect(|seg| tracing::info!(target: "burst", load_result = ?seg.as_ref().map(|seg| seg.len())))
             .try_fold(
-                Ok(Vec::with_capacity(max_segments)),
+                Vec::with_capacity(max_segments),
                 |segments, load_result| match (segments, load_result) {
-                    (Ok(segments), Err(limiter)) if segments.is_empty() => Break(Err(limiter)),
-                    (Ok(segments), Err(_limiter)) => Break(Ok(segments)),
-                    (Ok(mut segments), Ok(segment))
-                        if segments.len() < segments.last().copied().unwrap_or_default() =>
+                    (segments, Err(limiter)) if segments.is_empty() => Break(Err(limiter)),
+                    (segments, Err(_limiter)) => Break(Ok(segments)),
+                    (mut segments, Ok(segment))
+                        if segment.len() < segments.last().copied().unwrap_or_default() =>
                     {
                         segments.push(segment.len());
                         Break(Ok(segments))
                     }
-                    (Ok(mut segments), Ok(segment)) => {
+                    (mut segments, Ok(segment)) => {
                         segments.push(segment.len());
-                        Continue(Ok(segments))
+                        Continue(segments)
                     }
-                    (Err(_), _) => unreachable!(),
                 },
-            );
+            )
+            .map_continue(Ok);
         Ok(result)
     }
 
@@ -150,6 +151,7 @@ impl Burst {
         let (buffers, transcation) = ready!(self.poll_prepare(cx, buffers))?;
         match self.load_into_buffers(buffers, transcation)? {
             Ok(segments) => {
+                tracing::info!(target: "burst", len=segments.len(),"loaded segments");
                 debug_assert!(!segments.is_empty());
                 Poll::Ready(Ok(segments))
             }
@@ -171,6 +173,7 @@ impl Burst {
                 .map(|(seg_idx, seg_len)| io::IoSlice::new(&buffers[seg_idx][..seg_len]))
                 .collect::<Vec<_>>();
             self.path.send_packets(&segments).await?;
+            tracing::info!(target: "burst", "sent all");
         }
     }
 }

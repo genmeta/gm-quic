@@ -452,7 +452,7 @@ impl<'a> Future for PrepareTransaction<'a> {
             Poll::Pending => return Poll::Pending,
         };
         let constraints = Constraints::new(credit_limit, send_quota);
-
+        tracing::info!(target: "burst", "get quota: {send_quota}");
         Poll::Ready(Some(Transaction {
             scid: self.scid,
             dcid: borrowed_dcid,

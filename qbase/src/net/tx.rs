@@ -35,13 +35,12 @@ impl SendWaker {
     pub fn new() -> Self {
         Self::default()
     }
-
     // LoadPacketError 对应的bit设置为1意为该位的条件已经满足，为0表示需要该条件满足
     // 最高位表示正在注册waker，类似AtomicWaker的注册状态
     const REGISTERING: u32 = 1 << (u32::MAX.leading_ones() - 1);
     const WAITING: u32 = 0;
-
     pub fn wait_for(&self, cx: &mut Context, signals: Signals) {
+        tracing::debug!(target: "send_waker", "wait for {signals:?}");
         // lock and set the no-wait condition bit to true
         let registering_state = Self::REGISTERING | !(signals.bits() as u32);
         // only one thread will get the lock
@@ -54,7 +53,6 @@ impl SendWaker {
                         _ => *self.waker.get() = Some(cx.waker().clone()),
                     }
                 }
-
                 // clear the lock bit
                 match self.state.fetch_and(!Self::REGISTERING, AcqRel) {
                     // the condition is met when the waker may be none, wake the task here
@@ -62,6 +60,7 @@ impl SendWaker {
                         self.state.store(Self::WAITING, Release);
                         let waker = unsafe { (*self.waker.get()).take().unwrap() };
                         waker.wake();
+                        tracing::debug!(target: "send_waker", "woken in registering by {:?}",Signals::from_bits_retain((woken & signals.bits() as u32) as u8));
                     }
                     _ => {}
                 }
@@ -71,12 +70,12 @@ impl SendWaker {
                 // clear the lock bit
                 self.state.store(Self::WAITING, Release);
                 cx.waker().wake_by_ref();
+                tracing::debug!(target: "send_waker", "woken before registering by {:?}",Signals::from_bits_retain((woken & signals.bits() as u32) as u8));
             }
             // the lock is acquired by other task
             _other_registering => {}
         }
     }
-
     fn wake_by(&self, signals: Signals) {
         // set the condition bit to true
         match self.state.fetch_or(signals.bits() as u32, AcqRel) {
@@ -85,12 +84,20 @@ impl SendWaker {
                 if let Some(waker) = unsafe { (*self.waker.get()).take() } {
                     self.state.swap(Self::WAITING, AcqRel);
                     waker.wake();
+                    tracing::debug!(target: "send_waker", "wake by {:?}",signals);
+                } else {
+                    tracing::debug!(target: "send_waker", "try to wake with {:?} but no waker",signals);
                 }
                 // the condition is in need but the waker is none: woken by other task
             }
             // if registering: wake will be handled by `Self::wait`
             // if condition is not in need: nothing happens
-            _not_woken => {}
+            _not_woken => {
+                tracing::debug!(target: "send_waker", "not woken {:?} with {:?}, registering: {} ",
+                    Signals::from_bits_retain((_not_woken & signals.bits() as u32) as u8),
+                    signals, _not_woken & Self::REGISTERING != 0,
+                );
+            }
         }
     }
 }
