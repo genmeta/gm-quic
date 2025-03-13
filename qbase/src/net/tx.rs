@@ -1,13 +1,13 @@
 use std::{
     cell::UnsafeCell,
+    collections::HashMap,
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicU32, Ordering::*},
     },
     task::{Context, Waker},
 };
 
-use dashmap::DashMap;
 use deref_derive::Deref;
 
 use super::route::Pathway;
@@ -117,25 +117,31 @@ impl ArcSendWaker {
 
 /// connection level send wakers
 #[derive(Debug, Default)]
-pub struct SendWakers(DashMap<Pathway, ArcSendWaker>);
+pub struct SendWakers(RwLock<HashMap<Pathway, ArcSendWaker>>);
 
 impl SendWakers {
     pub fn new() -> Self {
-        Self(DashMap::new())
+        Default::default()
     }
 
     pub fn insert(&self, pathway: Pathway, waker: &ArcSendWaker) {
-        self.0.entry(pathway).or_insert_with(|| waker.clone());
+        self.0
+            .write()
+            .unwrap()
+            .entry(pathway)
+            .or_insert_with(|| waker.clone());
     }
 
     pub fn remove(&self, pathway: &Pathway) {
-        self.0.remove(pathway);
+        self.0.write().unwrap().remove(pathway);
     }
 
     pub fn wake_all_by(&self, signals: Signals) {
-        for waker in self.0.iter() {
-            waker.wake_by(signals);
-        }
+        self.0
+            .read()
+            .unwrap()
+            .values()
+            .for_each(|waker| waker.wake_by(signals));
     }
 }
 
