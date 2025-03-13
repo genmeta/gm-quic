@@ -1,10 +1,11 @@
 use std::{
+    collections::HashMap,
+    sync::Mutex,
     task::{Context, Poll},
     time::{Duration, Instant},
 };
 
 pub use congestion::{ArcCC, CongestionAlgorithm, MSS};
-use dashmap::DashMap;
 use qbase::{
     Epoch,
     frame::AckFrame,
@@ -100,20 +101,17 @@ pub trait ObserveHandshake: Send + Sync {
 
 #[derive(Debug, Default)]
 pub struct MiniHeap {
-    drain_pns: DashMap<Pathway, u64>,
+    drain_pns: Mutex<HashMap<Pathway, u64>>,
 }
 
 impl MiniHeap {
     pub fn update(&self, pathway: &Pathway, pn: u64) -> u64 {
-        self.drain_pns.insert(*pathway, pn);
-        self.drain_pns
-            .iter()
-            .map(|item| *item.value())
-            .min()
-            .unwrap_or(0)
+        let mut drain_pns = self.drain_pns.lock().unwrap();
+        drain_pns.insert(*pathway, pn);
+        *drain_pns.values().min().unwrap_or(&0)
     }
 
     pub fn remove(&self, pathway: &Pathway) {
-        self.drain_pns.remove(pathway);
+        self.drain_pns.lock().unwrap().remove(pathway);
     }
 }
