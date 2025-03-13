@@ -57,6 +57,82 @@ impl<TX> Output<TX> {
             cursor: None,
         }
     }
+
+    pub fn tokens_bucket(
+        &mut self,
+    ) -> impl Iterator<Item = (StreamId, &(Outgoing<TX>, IOState), usize)> {
+        // todo: use core::range instead in newer version of rust 2024
+        use core::ops::Bound::*;
+
+        // 该tokens是令牌桶算法的token，为了多条Stream的公平性，给每个流定期地发放tokens，不累积
+        // 各流轮流按令牌桶算法发放的tokens来整理数据去发送
+        const DEFAULT_TOKENS: usize = 4096;
+
+        enum TokenBucketIter<E, I, F> {
+            ExcludeCurrent(E),
+            IncludeCurrent(I),
+            FullRange(F),
+        }
+
+        impl<E, I, F, Item> Iterator for TokenBucketIter<E, I, F>
+        where
+            E: Iterator<Item = Item>,
+            I: Iterator<Item = Item>,
+            F: Iterator<Item = Item>,
+        {
+            type Item = Item;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                match self {
+                    TokenBucketIter::ExcludeCurrent(iter) => iter.next(),
+                    TokenBucketIter::IncludeCurrent(iter) => iter.next(),
+                    TokenBucketIter::FullRange(iter) => iter.next(),
+                }
+            }
+
+            fn find_map<B, M>(&mut self, f: M) -> Option<B>
+            where
+                Self: Sized,
+                M: FnMut(Self::Item) -> Option<B>,
+            {
+                match self {
+                    TokenBucketIter::ExcludeCurrent(iter) => iter.find_map(f),
+                    TokenBucketIter::IncludeCurrent(iter) => iter.find_map(f),
+                    TokenBucketIter::FullRange(iter) => iter.find_map(f),
+                }
+            }
+        }
+
+        match &self.cursor {
+            // [sid+1..] + [..=sid]
+            Some((sid, tokens)) if *tokens == 0 => TokenBucketIter::ExcludeCurrent(
+                self.outgoings
+                    .range((Excluded(sid), Unbounded))
+                    .chain(self.outgoings.range(..=sid))
+                    .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+            ),
+            // [sid] + [sid+1..] + [..sid]
+            Some((sid, tokens)) => TokenBucketIter::IncludeCurrent(
+                Option::into_iter(
+                    self.outgoings
+                        .get(sid)
+                        .map(|outgoing| (*sid, outgoing, *tokens)),
+                )
+                .chain(
+                    self.outgoings
+                        .range((Excluded(sid), Unbounded))
+                        .chain(self.outgoings.range(..sid))
+                        .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+                ),
+            ),
+            // [..]
+            None => TokenBucketIter::FullRange(
+                self.outgoings
+                    .range(..)
+                    .map(|(sid, outgoing)| (*sid, outgoing, DEFAULT_TOKENS)),
+            ),
+        }
+    }
 }
 
 /// ArcOutput里面包含一个Result类型，一旦发生quic error，就会被替换为Err
