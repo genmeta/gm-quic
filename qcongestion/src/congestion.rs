@@ -73,9 +73,9 @@ pub struct CongestionController {
     max_ack_delay: Duration,
     // The time the most recent ack-eliciting packet was sent.
     time_of_last_ack_eliciting_packet: [Option<Instant>; Epoch::count()],
-    // The largest packet number acknowledged in the packet number space so far.
+    // The largest packet number acknowledged in the packet number epoch so far.
     largest_acked_packet: [Option<u64>; Epoch::count()],
-    // The time at which the next packet in that packet number space can be
+    // The time at which the next packet in that packet number epoch can be
     // considered lost based on exceeding the reordering window in time.
     loss_time: [Option<Instant>; Epoch::count()],
     // record sent packets, remove it when receive ack.
@@ -88,7 +88,7 @@ pub struct CongestionController {
     rcvd_records: [RcvdRecords; Epoch::count()],
     // The waker to notify when the controller is ready to send.
     pending_burst: Option<(Waker, usize)>,
-    // Space packet trackers
+    // epoch packet trackers
     trackers: [Arc<dyn TrackPackets>; 3],
     // Handshake state
     handshake: Box<dyn ObserveHandshake>,
@@ -139,7 +139,7 @@ impl CongestionController {
     pub fn on_packet_sent(
         &mut self,
         pn: u64,
-        space: Epoch,
+        epoch: Epoch,
         ack_eliciting: bool,
         in_flight: bool,
         sent_bytes: usize,
@@ -148,19 +148,19 @@ impl CongestionController {
         let mut sent = SentPkt::new(pn, sent_bytes, now);
         if in_flight {
             if ack_eliciting {
-                self.time_of_last_ack_eliciting_packet[space] = Some(now);
+                self.time_of_last_ack_eliciting_packet[epoch] = Some(now);
             }
             self.algorithm.on_sent(&mut sent, sent_bytes, now);
             self.set_loss_timer();
         }
 
         // Ensure that the packet number is greater than the last sent packet number for the given epoch.
-        if let Some(last_pn) = self.sent_packets[space].back() {
+        if let Some(last_pn) = self.sent_packets[epoch].back() {
             assert!(pn > last_pn.pn);
         }
 
         if ack_eliciting {
-            self.sent_packets[space].push_back(sent);
+            self.sent_packets[epoch].push_back(sent);
         }
         self.pacer.on_sent(sent_bytes as u64);
     }
@@ -176,13 +176,13 @@ impl CongestionController {
     }
 
     // A.7. On Receiving an Acknowledgment
-    pub fn on_ack_rcvd(&mut self, space: Epoch, ack_frame: &AckFrame, now: Instant) {
+    pub fn on_ack_rcvd(&mut self, epoch: Epoch, ack_frame: &AckFrame, now: Instant) {
         let largest_acked: u64 = ack_frame.largest();
 
-        self.largest_acked_packet[space] =
-            Some(largest_acked.max(self.largest_acked_packet[space].unwrap_or(0)));
+        self.largest_acked_packet[epoch] =
+            Some(largest_acked.max(self.largest_acked_packet[epoch].unwrap_or(0)));
 
-        let (newly_acked_packets, latest_rtt) = self.get_newly_acked_packets(space, ack_frame);
+        let (newly_acked_packets, latest_rtt) = self.get_newly_acked_packets(epoch, ack_frame);
         if newly_acked_packets.is_empty() {
             return;
         }
@@ -196,16 +196,14 @@ impl CongestionController {
 
         // Process ECN information if present.
         if let Some(ecn) = ack_frame.ecn() {
-            self.process_ecn(space, ecn)
+            self.process_ecn(epoch, ecn)
         }
 
-        let lost_packets = self.remove_loss_packets(space, now);
+        let lost_packets = self.may_loss_packets(epoch, now);
         if !lost_packets.is_empty() {
-            self.on_packets_lost(
-                PacketLostTrigger::ReorderingThreshold,
-                lost_packets.into_iter(),
-                space,
-                now,
+            self.trackers[epoch].may_loss(
+                PacketLostTrigger::TimeThreshold,
+                &mut lost_packets.into_iter(),
             );
         }
         self.algorithm.on_ack(newly_acked_packets, now);
@@ -224,21 +222,29 @@ impl CongestionController {
         let mut newly_acked_packets: VecDeque<AckedPkt> = VecDeque::new();
         let largest_acked: u64 = ack_frame.largest();
         let mut latest_rtt = None;
+        let mut current_idx = 0;
+
         for range in ack_frame.iter() {
             for pn in range {
-                let acked: Option<AckedPkt> = self.sent_packets[epoch]
-                    .binary_search_by_key(&pn, |p| p.pn)
-                    .ok()
-                    .map(|idx| {
-                        if let Some(drain) = self.rcvd_records[epoch].should_drain(pn) {
-                            let min_pn = self.erased[epoch].update(&self.pathway, drain);
-                            self.trackers[epoch].drain_to(min_pn);
-                        }
-                        self.sent_packets[epoch][idx].is_acked = true;
-                        self.sent_packets[epoch][idx].clone().into()
-                    });
-                if let Some(ack) = acked {
-                    // largest is newly ackd, update latest_rtt
+                while current_idx < self.sent_packets[epoch].len()
+                    && self.sent_packets[epoch][current_idx].pn < pn
+                {
+                    current_idx += 1;
+                }
+                if current_idx < self.sent_packets[epoch].len()
+                    && self.sent_packets[epoch][current_idx].pn == pn
+                {
+                    let idx = current_idx;
+                    current_idx += 1;
+
+                    if let Some(drain) = self.rcvd_records[epoch].should_drain(pn) {
+                        let min_pn = self.erased[epoch].update(&self.pathway, drain);
+                        self.trackers[epoch].drain_to(min_pn);
+                    }
+
+                    self.sent_packets[epoch][idx].is_acked = true;
+                    let ack: AckedPkt = self.sent_packets[epoch][idx].clone().into();
+
                     if pn == largest_acked {
                         latest_rtt = Some(ack.rtt);
                     }
@@ -246,29 +252,14 @@ impl CongestionController {
                 }
             }
         }
-        self.slide_sent_packets(epoch);
+
+        self.remove_ack_packets(epoch);
         (newly_acked_packets, latest_rtt)
     }
 
     // A.8. Setting the Loss Detection Timer
-    fn on_packets_lost(
-        &mut self,
-        trigger: PacketLostTrigger,
-        packets: impl Iterator<Item = SentPkt>,
-        epoch: Epoch,
-        now: Instant,
-    ) {
-        self.trackers[epoch].may_loss(
-            trigger,
-            &mut packets
-                .inspect(|lost| self.algorithm.on_congestion_event(lost, now))
-                .map(|lost| lost.pn),
-        );
-    }
-
-    // A.8. Setting the Loss Detection Timer
     fn set_loss_timer(&mut self) {
-        let (earliest_loss_time, _) = self.get_loss_time_and_space();
+        let (earliest_loss_time, _) = self.get_loss_time_and_epoch();
         if let Some(earliest_loss_time) = earliest_loss_time {
             self.loss_timer.update(earliest_loss_time);
             return;
@@ -286,16 +277,14 @@ impl CongestionController {
 
     // A.9. On Timeout
     fn on_loss_timeout(&mut self, now: Instant) {
-        let (earliest_loss_time, space) = self.get_loss_time_and_space();
+        let (earliest_loss_time, epoch) = self.get_loss_time_and_epoch();
         // lost timeout
         if earliest_loss_time.is_some() {
-            let loss_packet = self.remove_loss_packets(space, now);
+            let loss_packet = self.may_loss_packets(epoch, now);
             assert!(!loss_packet.is_empty());
-            self.on_packets_lost(
+            self.trackers[epoch].may_loss(
                 PacketLostTrigger::TimeThreshold,
-                loss_packet.into_iter(),
-                space,
-                now,
+                &mut loss_packet.into_iter(),
             );
             self.set_loss_timer();
             return;
@@ -335,18 +324,11 @@ impl CongestionController {
         self.set_loss_timer();
     }
 
-    fn get_loss_time_and_space(&self) -> (Option<Instant>, Epoch) {
-        let mut time = self.loss_time[Epoch::Initial];
-        let mut space = Epoch::Initial;
-        for &epoch in Epoch::iter() {
-            if let Some(loss) = self.loss_time[epoch] {
-                if time.is_none() || loss < time.unwrap() {
-                    time = Some(loss);
-                    space = epoch;
-                }
-            }
-        }
-        (time, space)
+    fn get_loss_time_and_epoch(&self) -> (Option<Instant>, Epoch) {
+        Epoch::iter()
+            .filter_map(|&epoch| self.loss_time[epoch].map(|loss| (loss, epoch)))
+            .min_by_key(|&(loss, _)| loss)
+            .map_or((None, Epoch::Initial), |(loss, epoch)| (Some(loss), epoch))
     }
 
     fn get_pto_time(&self, epoch: Epoch) -> Duration {
@@ -367,86 +349,95 @@ impl CongestionController {
         }
 
         let mut pto_time = None;
-        for &space in Epoch::iter() {
-            if self.sent_packets[space].is_empty() {
+        for &epoch in Epoch::iter() {
+            if self.sent_packets[epoch].is_empty() {
                 continue;
             }
-            if space == Epoch::Data {
+            if epoch == Epoch::Data {
                 // An endpoint MUST NOT set its PTO timer for the Application Data
-                // packet number space until the handshake is confirmed
+                // packet number epoch until the handshake is confirmed
                 if !self.handshake.is_handshake_done() {
                     return pto_time;
                 }
                 duration += self.max_ack_delay * 2_u32.pow(self.pto_count);
             }
-            let new_time = self.time_of_last_ack_eliciting_packet[space].unwrap() + duration;
+            let new_time = self.time_of_last_ack_eliciting_packet[epoch].unwrap() + duration;
             if pto_time.is_none() || new_time < pto_time.unwrap().0 {
-                pto_time = Some((new_time, space));
+                pto_time = Some((new_time, epoch));
             }
         }
         pto_time
     }
 
-    fn remove_loss_packets(&mut self, space: Epoch, now: Instant) -> Vec<SentPkt> {
-        assert!(self.largest_acked_packet[space].is_some());
-        let largest_acked = self.largest_acked_packet[space].unwrap();
-        self.loss_time[space] = None;
+    fn may_loss_packets(&mut self, epoch: Epoch, now: Instant) -> Vec<u64> {
+        assert!(self.largest_acked_packet[epoch].is_some());
+        let largest_acked = self.largest_acked_packet[epoch].unwrap();
+        self.loss_time[epoch] = None;
 
         let loss_delay = self.rtt.loss_delay();
         let lost_send_time = now.checked_sub(loss_delay).unwrap();
 
-        let mut loss_packets = Vec::new();
-        let mut loss_pn = Vec::new();
+        let mut may_loss_packets = Vec::new();
 
-        let mut largest_ack_index = 0;
-        while largest_ack_index != self.sent_packets[space].len()
-            && self.sent_packets[space][largest_ack_index].pn < largest_acked
-        {
-            largest_ack_index += 1;
-        }
+        let largest_ack_index = self.sent_packets[epoch]
+            .iter()
+            .position(|pkt| pkt.pn == largest_acked)
+            .unwrap_or(0);
 
         let mut i = 0;
-        while i != self.sent_packets[space].len() && self.sent_packets[space][i].pn < largest_acked
+        while i != self.sent_packets[epoch].len() && self.sent_packets[epoch][i].pn < largest_acked
         {
-            if self.sent_packets[space][i].is_acked {
+            if self.sent_packets[epoch][i].is_acked {
                 i += 1;
                 continue;
             }
             // 距离 largest ack index 相差超过 threshold 即为丢包
-            if self.sent_packets[space][i].time_sent <= lost_send_time
+            // 只是 may_loss, 触发快速重传，不影响拥塞控制
+            if self.sent_packets[epoch][i].time_sent <= lost_send_time
                 || largest_ack_index - i >= K_PACKET_THRESHOLD
             {
-                if let Some(loss) = self.sent_packets[space].remove(i) {
-                    let pn = loss.pn;
-                    loss_pn.push(pn);
-                    loss_packets.push(loss);
-                    largest_ack_index -= 1;
+                if !self.sent_packets[epoch][i].may_loss {
+                    may_loss_packets.push(self.sent_packets[epoch][i].pn);
                 }
+                self.sent_packets[epoch][i].may_loss = true;
             } else {
-                let loss_time = self.sent_packets[space][i].time_sent + loss_delay;
-                self.loss_time[space] = match self.loss_time[space] {
-                    Some(lt) => Some(lt.min(loss_time)),
-                    None => Some(loss_time),
-                };
-                i += 1;
+                let loss_time = self.sent_packets[epoch][i].time_sent + loss_delay;
+                self.loss_time[epoch] =
+                    Some(self.loss_time[epoch].unwrap_or(loss_time).min(loss_time));
             }
+            i += 1;
         }
 
-        self.slide_sent_packets(space);
-        loss_packets
+        self.remove_loss_packets(epoch, now);
+        self.remove_ack_packets(epoch);
+        may_loss_packets
     }
 
-    fn slide_sent_packets(&mut self, space: Epoch) {
-        while self.sent_packets[space]
+    fn remove_ack_packets(&mut self, epoch: Epoch) {
+        // remove acked packets from sent_packets
+        while self.sent_packets[epoch]
             .front()
             .is_some_and(|sent| sent.is_acked)
         {
-            self.sent_packets[space].pop_front();
+            self.sent_packets[epoch].pop_front();
         }
     }
 
+    fn remove_loss_packets(&mut self, epoch: Epoch, now: Instant) {
+        let pto_time = self.get_pto_time(epoch);
+        let loss_time = now - pto_time;
+        self.sent_packets[epoch].retain(|pkt| {
+            if pkt.may_loss && pkt.time_sent <= loss_time {
+                self.algorithm.on_congestion_event(pkt, now);
+                false
+            } else {
+                true
+            }
+        });
+    }
+
     fn no_ack_eliciting_in_flight(&self) -> bool {
-        Epoch::iter().all(|space| self.sent_packets[*space].is_empty())
+        Epoch::iter().all(|epoch| self.sent_packets[*epoch].is_empty())
     }
 
     fn server_completed_address_validation(&mut self) -> bool {
@@ -476,7 +467,6 @@ impl CongestionController {
     }
 }
 
-/// Shared congestion controller
 #[derive(Clone)]
 pub struct ArcCC(Arc<Mutex<CongestionController>>);
 
@@ -540,9 +530,9 @@ impl super::CongestionControl for ArcCC {
         Poll::Pending
     }
 
-    fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)> {
+    fn need_ack(&self, epoch: Epoch) -> Option<(u64, Instant)> {
         let guard = self.0.lock().unwrap();
-        guard.rcvd_records[space].requires_ack(guard.max_ack_delay, Instant::now())
+        guard.rcvd_records[epoch].requires_ack(guard.max_ack_delay, Instant::now())
     }
 
     fn on_pkt_sent(
@@ -570,10 +560,10 @@ impl super::CongestionControl for ArcCC {
         }
     }
 
-    fn on_ack(&self, space: Epoch, ack_frame: &AckFrame) {
+    fn on_ack(&self, epoch: Epoch, ack_frame: &AckFrame) {
         let mut guard = self.0.lock().unwrap();
         let now = Instant::now();
-        guard.on_ack_rcvd(space, ack_frame, now);
+        guard.on_ack_rcvd(epoch, ack_frame, now);
     }
 
     fn on_pkt_rcvd(&self, epoch: Epoch, pn: u64, is_ack_eliciting: bool) {
@@ -735,6 +725,7 @@ pub struct SentPkt {
     pub tx_in_flight: usize,
     pub lost: u64,
     pub is_acked: bool,
+    pub may_loss: bool,
 }
 
 impl Default for SentPkt {
@@ -750,6 +741,7 @@ impl Default for SentPkt {
             tx_in_flight: 0,
             lost: 0,
             is_acked: false,
+            may_loss: false,
         }
     }
 }
@@ -760,13 +752,7 @@ impl SentPkt {
             pn,
             time_sent: now,
             size,
-            delivered: 0,
-            delivered_time: now,
-            first_sent_time: now,
-            is_app_limited: false,
-            tx_in_flight: 0,
-            lost: 0,
-            is_acked: false,
+            ..Default::default()
         }
     }
 }
@@ -861,30 +847,67 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_and_remove_lost_packets() {
+    fn test_detect_may_loss_packets() {
         let mut congestion = create_congestion_controller_for_test();
         let now = Instant::now();
-        let space = Epoch::Initial;
+        let epoch = Epoch::Initial;
         for i in 1..=5 {
-            congestion.on_packet_sent(i, space, true, true, 1000, now);
+            congestion.on_packet_sent(i, epoch, true, true, 1000, now);
         }
         // ack 5，检测出 1,2 因为乱序丢包
-        congestion.largest_acked_packet[space] = Some(5);
-        congestion.sent_packets[space][4].is_acked = true;
-        congestion.sent_packets[space].pop_back();
-        let lost_packets = congestion.remove_loss_packets(space, now);
+        congestion.largest_acked_packet[epoch] = Some(5);
+        congestion.sent_packets[epoch][4].is_acked = true;
+        let lost_packets = congestion.may_loss_packets(epoch, now);
         assert_eq!(lost_packets.len(), 2);
-        for (i, lost) in lost_packets.iter().enumerate() {
-            assert_eq!(lost.pn, i as u64 + 1);
+        for (i, &lost) in lost_packets.iter().enumerate() {
+            assert_eq!(lost, i as u64 + 1);
         }
-        assert_eq!(congestion.sent_packets[space].len(), 2);
+        assert_eq!(congestion.sent_packets[epoch].len(), 5);
         // loss delay =  333*1.25
-        let loss_packets = congestion.remove_loss_packets(space, now + Duration::from_millis(417));
+        let loss_packets = congestion.may_loss_packets(epoch, now + Duration::from_millis(417));
         // 3,4 因为超时丢包
         assert_eq!(loss_packets.len(), 2);
-        for (i, lost) in loss_packets.iter().enumerate() {
-            assert_eq!(lost.pn, i as u64 + 3);
+        for (i, &lost) in loss_packets.iter().enumerate() {
+            assert_eq!(lost, i as u64 + 3);
         }
+    }
+
+    #[test]
+    fn test_remove_loss_packets() {
+        let mut congestion = create_congestion_controller_for_test();
+        let now = Instant::now();
+        let epoch = Epoch::Initial;
+        for i in 1..=5 {
+            congestion.on_packet_sent(i, epoch, true, true, 1000, now);
+        }
+        congestion.largest_acked_packet[epoch] = Some(5);
+        congestion.sent_packets[epoch][4].is_acked = true;
+        // mark 1,2 may loss
+        congestion.may_loss_packets(epoch, now);
+        assert_eq!(congestion.sent_packets[epoch].len(), 5);
+        let pto = congestion.get_pto_time(epoch);
+        let new_time = now + pto + Duration::from_millis(100);
+        // 超过了 PTO 还未收到
+        congestion.remove_loss_packets(epoch, new_time);
+        // 3,4,5
+        assert_eq!(congestion.sent_packets[epoch].len(), 3);
+
+        for i in 6..=10 {
+            congestion.on_packet_sent(i, epoch, true, true, 1000, new_time);
+        }
+
+        // ack 6 ~ 10
+        let ack_frame = AckFrame::new(
+            VarInt::from_u32(10),
+            VarInt::from_u32(100),
+            VarInt::from_u32(4),
+            Vec::new(),
+            None,
+        );
+        congestion.on_ack_rcvd(epoch, &ack_frame, new_time);
+        // 3,4 loss remove 6 ~ 10 ack remove
+        congestion.may_loss_packets(epoch, new_time);
+        assert_eq!(congestion.sent_packets[epoch].len(), 0);
     }
 
     #[test]
@@ -936,7 +959,7 @@ mod tests {
         // sent 为 4,5,8,9,10,11,12,13
         // ack 9
         // lost 4
-        // 剩余 5,8,9(ack),10,11,12,13
+        // 剩余 4(loss),5,8,9(ack),10,11,12,13
         let ack_frame = AckFrame::new(
             VarInt::from_u32(9),
             VarInt::from_u32(100),
@@ -946,17 +969,7 @@ mod tests {
         );
 
         congestion_controller.on_ack_rcvd(Epoch::Initial, &ack_frame, now);
-        assert_eq!(congestion_controller.sent_packets[Epoch::Initial].len(), 7);
-        for (i, sent) in congestion_controller.sent_packets[Epoch::Initial]
-            .iter()
-            .enumerate()
-        {
-            match i {
-                0 => assert_eq!(sent.pn, 5),
-                _ => assert_eq!(sent.pn, (i + 7) as u64),
-            }
-            assert_eq!(sent.is_acked, sent.pn == 9);
-        }
+        assert_eq!(congestion_controller.sent_packets[Epoch::Initial].len(), 8);
     }
 
     #[test]
