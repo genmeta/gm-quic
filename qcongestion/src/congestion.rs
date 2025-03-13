@@ -205,6 +205,7 @@ impl CongestionController {
                 PacketLostTrigger::ReorderingThreshold,
                 lost_packets.into_iter(),
                 space,
+                now,
             );
         }
         self.algorithm.on_ack(newly_acked_packets, now);
@@ -255,9 +256,8 @@ impl CongestionController {
         trigger: PacketLostTrigger,
         packets: impl Iterator<Item = SentPkt>,
         epoch: Epoch,
+        now: Instant,
     ) {
-        let now = Instant::now();
-
         self.trackers[epoch].may_loss(
             trigger,
             &mut packets
@@ -295,6 +295,7 @@ impl CongestionController {
                 PacketLostTrigger::TimeThreshold,
                 loss_packet.into_iter(),
                 space,
+                now,
             );
             self.set_loss_timer();
             return;
@@ -457,10 +458,10 @@ impl CongestionController {
     }
 
     #[inline]
-    fn requires_ack(&self) -> bool {
+    fn requires_ack(&self, now: Instant) -> bool {
         self.rcvd_records
             .iter()
-            .any(|record| record.requires_ack(self.max_ack_delay).is_some())
+            .any(|record| record.requires_ack(self.max_ack_delay, now).is_some())
     }
 
     #[inline]
@@ -517,7 +518,7 @@ impl super::CongestionControl for ArcCC {
                             guard.pending_burst.take().unwrap().0.wake();
                         }
                     }
-                    if guard.requires_ack() {
+                    if guard.requires_ack(now) {
                         tx_waker.wake_by(Signals::TRANSPORT);
                     }
                 }
@@ -541,7 +542,7 @@ impl super::CongestionControl for ArcCC {
 
     fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)> {
         let guard = self.0.lock().unwrap();
-        guard.rcvd_records[space].requires_ack(guard.max_ack_delay)
+        guard.rcvd_records[space].requires_ack(guard.max_ack_delay, Instant::now())
     }
 
     fn on_pkt_sent(
@@ -656,16 +657,18 @@ impl RcvdRecords {
 
     /// Checks whether an ACK frame needs to be sent.
     /// Returns [`Some`] if it's time to send an ACK based on the maximum delay.
-    fn requires_ack(&self, max_delay: Duration) -> Option<(u64, Instant)> {
+    fn requires_ack(&self, max_delay: Duration, now: Instant) -> Option<(u64, Instant)> {
         let largest_pn = self.rcvd_queue.back().map(|&(pn, time)| (pn, time));
         if self.ack_immedietly {
             return largest_pn;
         }
 
         let largest_ack_sent = self.last_ack_sent.map(|x| x.1).unwrap_or(0);
-        let now = Instant::now();
-        for (pn, rec_time) in self.rcvd_queue.iter() {
-            if now - *rec_time >= max_delay && pn > &largest_ack_sent {
+        let pos = self
+            .rcvd_queue
+            .partition_point(|&(x, _)| x <= largest_ack_sent);
+        for (_pn, rec_time) in self.rcvd_queue.iter().skip(pos) {
+            if now - *rec_time >= max_delay {
                 return largest_pn;
             }
         }
@@ -961,14 +964,22 @@ mod tests {
         let max_ack_delay = Duration::from_millis(100);
         let mut ack_reocrd = RcvdRecords::new(Epoch::Initial);
         ack_reocrd.on_pkt_rcvd(1);
-        assert!(ack_reocrd.requires_ack(max_ack_delay).is_some());
+        assert!(
+            ack_reocrd
+                .requires_ack(max_ack_delay, Instant::now())
+                .is_some()
+        );
 
         ack_reocrd.on_pkt_rcvd(1);
         assert_eq!(ack_reocrd.rcvd_queue.len(), 1);
 
         ack_reocrd.on_ack_sent(1, 1);
 
-        assert!(ack_reocrd.requires_ack(max_ack_delay).is_none());
+        assert!(
+            ack_reocrd
+                .requires_ack(max_ack_delay, Instant::now())
+                .is_none()
+        );
 
         ack_reocrd.on_pkt_rcvd(3);
         assert_eq!(
@@ -989,7 +1000,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0, 1, 3]
         );
-        assert_eq!(ack_reocrd.requires_ack(max_ack_delay).unwrap().0, 3);
+        assert_eq!(
+            ack_reocrd
+                .requires_ack(max_ack_delay, Instant::now())
+                .unwrap()
+                .0,
+            3
+        );
 
         ack_reocrd.on_pkt_rcvd(5);
         ack_reocrd.on_pkt_rcvd(7);
@@ -1001,7 +1018,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0, 1, 3, 5, 7]
         );
-        assert_eq!(ack_reocrd.requires_ack(max_ack_delay).unwrap().0, 7);
+        assert_eq!(
+            ack_reocrd
+                .requires_ack(max_ack_delay, Instant::now())
+                .unwrap()
+                .0,
+            7
+        );
 
         // pn 2 ack 0,1,3,5,7
         ack_reocrd.on_ack_sent(2, 7);
@@ -1059,19 +1082,31 @@ mod tests {
         ack_reocrd.on_pkt_rcvd(9);
         ack_reocrd.on_pkt_rcvd(8);
 
-        assert_eq!(ack_reocrd.requires_ack(max_ack_delay).unwrap().0, 10);
+        assert_eq!(
+            ack_reocrd
+                .requires_ack(max_ack_delay, Instant::now())
+                .unwrap()
+                .0,
+            10
+        );
         ack_reocrd.on_ack_sent(1, 10);
 
         ack_reocrd.on_pkt_rcvd(7);
         ack_reocrd.on_pkt_rcvd(6);
         ack_reocrd.on_pkt_rcvd(5);
-        assert_eq!(ack_reocrd.requires_ack(max_ack_delay).unwrap().0, 10);
+        assert_eq!(
+            ack_reocrd
+                .requires_ack(max_ack_delay, Instant::now())
+                .unwrap()
+                .0,
+            10
+        );
         ack_reocrd.on_ack_sent(2, 10);
-        assert_eq!(ack_reocrd.requires_ack(max_ack_delay), None);
+        assert_eq!(ack_reocrd.requires_ack(max_ack_delay, Instant::now()), None);
 
         // ack 1, retire pn <= 10 - 3
         ack_reocrd.should_drain(1);
-        assert_eq!(ack_reocrd.requires_ack(max_ack_delay), None);
+        assert_eq!(ack_reocrd.requires_ack(max_ack_delay, Instant::now()), None);
         assert_eq!(
             ack_reocrd
                 .rcvd_queue
@@ -1087,7 +1122,13 @@ mod tests {
         // ack 2，对面可能判定 4 为丢包，retire pn <= 10 - 3
         ack_reocrd.should_drain(2);
 
-        assert_eq!(ack_reocrd.requires_ack(max_ack_delay).unwrap().0, 10);
+        assert_eq!(
+            ack_reocrd
+                .requires_ack(max_ack_delay, Instant::now())
+                .unwrap()
+                .0,
+            10
+        );
         assert_eq!(
             ack_reocrd
                 .rcvd_queue

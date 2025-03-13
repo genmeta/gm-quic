@@ -106,12 +106,13 @@ pub struct MiniHeap {
 
 impl MiniHeap {
     pub fn update(&self, pathway: &Pathway, pn: u64) -> u64 {
-        let mut drain_pns = self.drain_pns.lock().unwrap();
-        drain_pns.insert(*pathway, pn);
-        *drain_pns.values().min().unwrap_or(&0)
+        let mut guard = self.drain_pns.lock().unwrap();
+        guard.insert(*pathway, pn);
+        guard.iter().map(|(_, &pn)| pn).min().unwrap_or(0)
     }
 
     pub fn remove(&self, pathway: &Pathway) {
-        self.drain_pns.lock().unwrap().remove(pathway);
+        let mut guard = self.drain_pns.lock().unwrap();
+        guard.remove(pathway);
     }
 }
