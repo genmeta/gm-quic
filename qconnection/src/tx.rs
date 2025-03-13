@@ -28,7 +28,7 @@ use qbase::{
     util::{DescribeData, WriteData},
 };
 use qcongestion::{ArcCC, CongestionControl};
-use qlog::quic::{QuicFrame, transport::PacketSent};
+use qlog::quic::{QuicFrame, QuicFramesCollector, transport::PacketSent};
 use qrecovery::{
     journal::{ArcSentJournal, NewPacketGuard},
     reliable::GuaranteedFrame,
@@ -42,12 +42,12 @@ use crate::{
 
 pub struct PacketLogger {
     header: qlog::quic::PacketHeaderBuilder,
-    frames: Vec<QuicFrame>,
+    frames: QuicFramesCollector<PacketSent>,
 }
 
 impl PacketLogger {
-    pub fn record_frame(&mut self, frame: QuicFrame) {
-        self.frames.push(frame);
+    pub fn record_frame(&mut self, frame: impl Into<QuicFrame>) {
+        self.frames.extend([frame]);
     }
 
     pub fn emit_sent(mut self, packet: &PacketWriter) {
@@ -105,7 +105,7 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
                     builder.dcid(*header.dcid());
                     builder
                 },
-                frames: vec![],
+                frames: QuicFramesCollector::new(),
             },
         })
     }
@@ -132,7 +132,7 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
                     builder.dcid(*header.dcid());
                     builder
                 },
-                frames: vec![],
+                frames: QuicFramesCollector::new(),
             },
         })
     }
@@ -207,7 +207,7 @@ unsafe impl<F> BufMut for PacketMemory<'_, '_, F> {
 
 impl<F> PacketMemory<'_, '_, F> {
     pub fn dump_ack_frame(&mut self, frame: AckFrame) {
-        self.logger.record_frame((&frame).into());
+        self.logger.record_frame(&frame);
         self.writer.dump_frame(frame);
         self.guard.record_trivial();
     }
@@ -259,7 +259,7 @@ where
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
-                self.logger.record_frame((&frame, &data).into());
+                self.logger.record_frame((&frame, &data));
                 self.guard.record_frame(frame);
                 None
             })
@@ -272,7 +272,7 @@ where
 {
     fn dump_path_frame(&mut self, frame: PathChallengeFrame) {
         self.writer.dump_frame(frame);
-        self.logger.record_frame((&frame).into());
+        self.logger.record_frame(&frame);
         self.guard.record_trivial();
     }
 }
@@ -283,7 +283,7 @@ where
 {
     fn dump_path_frame(&mut self, frame: PathResponseFrame) {
         self.writer.dump_frame(frame);
-        self.logger.record_frame((&frame).into());
+        self.logger.record_frame(&frame);
         self.guard.record_trivial();
     }
 }
@@ -296,7 +296,7 @@ where
     fn dump_frame(&mut self, frame: F) -> Option<F> {
         self.writer.dump_frame(frame).and_then(|frame| {
             let reliable_frame = frame.into();
-            self.logger.record_frame((&reliable_frame).into());
+            self.logger.record_frame(&reliable_frame);
             self.guard
                 .record_frame(GuaranteedFrame::Reliable(reliable_frame));
             None
@@ -313,7 +313,7 @@ where
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
-                self.logger.record_frame((&frame, &data).into());
+                self.logger.record_frame((&frame, &data));
                 self.guard.record_frame(GuaranteedFrame::Crypto(frame));
                 None
             })
@@ -329,7 +329,7 @@ where
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
-                self.logger.record_frame((&frame, &data).into());
+                self.logger.record_frame((&frame, &data));
                 self.guard.record_frame(GuaranteedFrame::Stream(frame));
                 None
             })
@@ -345,7 +345,7 @@ where
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
-                self.logger.record_frame((&frame, &data).into());
+                self.logger.record_frame((&frame, &data));
                 self.guard.record_trivial();
                 None
             })

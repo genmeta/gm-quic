@@ -172,7 +172,7 @@ pub mod macro_support {
     use serde::Serialize;
 
     use super::*;
-    use crate::{EventBuilder, SpecificEventData};
+    use crate::{BeSpecificEventData, EventBuilder};
 
     pub fn modify_event_builder_costom_fields(
         builder: &mut EventBuilder,
@@ -200,7 +200,7 @@ pub mod macro_support {
         })
     }
 
-    pub fn build_and_emit_event<D: SpecificEventData>(
+    pub fn build_and_emit_event<D: BeSpecificEventData>(
         build_data: impl FnOnce() -> D,
         build_event: impl FnOnce(D) -> Event,
     ) {

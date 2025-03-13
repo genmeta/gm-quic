@@ -24,8 +24,9 @@ use qbase::{
 use qcongestion::{CongestionControl, TrackPackets};
 use qlog::{
     quic::{
-        PacketHeader, PacketType, QuicFrames,
+        PacketHeader, PacketType, QuicFramesCollector,
         recovery::{PacketLost, PacketLostTrigger},
+        transport::PacketReceived,
     },
     telemetry::Instrument,
 };
@@ -180,7 +181,7 @@ pub fn spawn_deliver_and_parse(
                 path.grant_anti_amplifier();
                 path.on_rcvd(packet.plain.len());
 
-                let mut frames = QuicFrames::new();
+                let mut frames = QuicFramesCollector::<PacketReceived>::new();
                 match FrameReader::new(packet.body(), packet.header.get_type()).try_fold(
                     false,
                     |is_ack_packet, frame| {
@@ -237,7 +238,7 @@ impl TrackPackets for HandshakeSpace {
         let outgoing = self.crypto_stream.outgoing();
         let mut rotate = sent_jornal.rotate();
         for pn in pns {
-            let mut may_lost_frames = QuicFrames::new();
+            let mut may_lost_frames = QuicFramesCollector::<PacketLost>::new();
             for frame in rotate.may_loss_pkt(pn) {
                 // for this convert, empty bytes indicates the raw info is not available
                 may_lost_frames.extend(Some(&Frame::Crypto(frame, bytes::Bytes::new())));
@@ -291,15 +292,17 @@ impl ClosingHandshakeSpace {
             )
             .and_then(Result::ok)?;
 
-        let mut farmes = QuicFrames::new();
-        FrameReader::new(packet.body(), packet.header.get_type())
+        let mut frames = QuicFramesCollector::<PacketReceived>::new();
+        let ccf = FrameReader::new(packet.body(), packet.header.get_type())
             .filter_map(Result::ok)
-            .inspect(|(f, _ack)| farmes.extend(Some(f)))
+            .inspect(|(f, _ack)| frames.extend(Some(f)))
             .fold(None, |ccf, (frame, _)| match (ccf, frame) {
                 (ccf @ Some(..), _) => ccf,
                 (None, Frame::Close(ccf)) => Some(ccf),
                 (None, _) => None,
-            })
+            });
+        packet.emit_received(frames);
+        ccf
     }
 
     pub fn try_assemble_ccf_packet(

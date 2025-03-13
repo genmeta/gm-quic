@@ -1,4 +1,6 @@
-use std::{collections::HashMap, fmt::Display, net::SocketAddr, time::Duration};
+use std::{
+    collections::HashMap, fmt::Display, marker::PhantomData, net::SocketAddr, time::Duration,
+};
 
 use bytes::Bytes;
 use derive_builder::Builder;
@@ -24,7 +26,7 @@ pub mod recovery;
 pub mod security;
 pub mod transport;
 
-use crate::{HexString, RawInfo};
+use crate::{BeSpecificEventData, HexString, RawInfo};
 
 // 8.1
 #[derive(Debug, Clone, From, Into, PartialEq, Eq)]
@@ -893,19 +895,37 @@ impl From<&Frame> for QuicFrame {
 }
 
 /// A collection of automatically and efficiently converting raw quic frames into qlog quic frames.
-#[derive(Default)]
-pub struct QuicFrames(Vec<QuicFrame>);
+pub struct QuicFramesCollector<E> {
+    event: PhantomData<E>,
+    frames: Vec<QuicFrame>,
+}
 
-impl QuicFrames {
+impl<E> QuicFramesCollector<E> {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            event: PhantomData,
+            frames: Vec::new(),
+        }
     }
 }
 
-impl<'f> Extend<&'f Frame> for QuicFrames {
-    fn extend<T: IntoIterator<Item = &'f Frame>>(&mut self, iter: T) {
-        for frame in iter {
-            if let Some(last) = self.0.last_mut() {
+impl<E> Default for QuicFramesCollector<E> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<E, F> Extend<F> for QuicFramesCollector<E>
+where
+    E: BeSpecificEventData,
+    F: Into<QuicFrame>,
+{
+    fn extend<T: IntoIterator<Item = F>>(&mut self, iter: T) {
+        if !crate::telemetry::Span::current().filter_event(E::scheme()) {
+            return;
+        }
+        for frame in iter.into_iter().map(Into::into) {
+            if let Some(last) = self.frames.last_mut() {
                 match last {
                     QuicFrame::Padding {
                         length,
@@ -930,14 +950,14 @@ impl<'f> Extend<&'f Frame> for QuicFrames {
                     _ => {}
                 }
             }
-            self.0.push(frame.into());
+            self.frames.push(frame);
         }
     }
 }
 
-impl From<QuicFrames> for Vec<QuicFrame> {
-    fn from(value: QuicFrames) -> Self {
-        value.0
+impl<E> From<QuicFramesCollector<E>> for Vec<QuicFrame> {
+    fn from(value: QuicFramesCollector<E>) -> Self {
+        value.frames
     }
 }
 
