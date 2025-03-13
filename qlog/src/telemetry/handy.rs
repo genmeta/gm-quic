@@ -18,6 +18,10 @@ impl ExportEvent for NullExporter {
     fn emit(&self, event: Event) {
         _ = event;
     }
+
+    fn filter(&self, _: &'static str) -> bool {
+        false
+    }
 }
 
 pub struct IoExpoter(mpsc::UnboundedSender<Event>);

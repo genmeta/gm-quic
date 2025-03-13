@@ -456,6 +456,12 @@ pub enum EvnetData {
     Verbose(loglevel::Verbose),
 }
 
+pub trait SpecificEventData {
+    fn scheme() -> &'static str;
+
+    fn importance() -> EventImportance;
+}
+
 #[enum_dispatch::enum_dispatch]
 pub trait BeEventData {
     fn scheme(&self) -> &'static str;
@@ -463,17 +469,29 @@ pub trait BeEventData {
     fn importance(&self) -> EventImportance;
 }
 
+impl<S: SpecificEventData> BeEventData for S {
+    #[inline]
+    fn scheme(&self) -> &'static str {
+        S::scheme()
+    }
+
+    #[inline]
+    fn importance(&self) -> EventImportance {
+        S::importance()
+    }
+}
+
 macro_rules! imp_be_events {
     ( $($importance:ident $event:ty => $prefix:ident $schme:literal ;)* ) => {
         $( imp_be_events!{@impl_one $importance $event => $prefix $schme ; } )*
     };
     (@impl_one $importance:ident $event:ty => urn $schme:literal ; ) => {
-        impl BeEventData for $event {
-            fn scheme(&self) -> &'static str {
+        impl SpecificEventData for $event {
+            fn scheme() -> &'static str {
                 const { concat!["urn:ietf:params:qlog:events:",$schme] }
             }
 
-            fn importance(&self) -> EventImportance {
+            fn importance() -> EventImportance {
                 const { EventImportance::$importance }
             }
         }

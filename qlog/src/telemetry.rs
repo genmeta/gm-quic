@@ -21,6 +21,11 @@ pub trait Log {
 
 pub trait ExportEvent: Send + Sync {
     fn emit(&self, event: Event);
+
+    fn filter(&self, scheme: &'static str) -> bool {
+        _ = scheme;
+        true
+    }
 }
 
 #[derive(Clone)]
@@ -155,7 +160,7 @@ pub mod macro_support {
     use serde::Serialize;
 
     use super::*;
-    use crate::EventBuilder;
+    use crate::{EventBuilder, SpecificEventData};
 
     pub fn modify_event_builder_costom_fields(
         builder: &mut EventBuilder,
@@ -183,7 +188,14 @@ pub mod macro_support {
         })
     }
 
-    pub fn emit_event(event: Event) {
+    pub fn build_and_emit_event<D: SpecificEventData>(
+        build_data: impl FnOnce() -> D,
+        build_event: impl FnOnce(D) -> Event,
+    ) {
+        if !current_span::CURRENT_SPAN.with(|span| span.borrow().exporter.filter(D::scheme())) {
+            return;
+        }
+        let event = build_event(build_data());
         current_span::CURRENT_SPAN.with(|span| span.borrow().emit(event));
     }
 
@@ -228,21 +240,25 @@ macro_rules! event {
         $crate::event!($crate::build!($event_type { $($evnet_field)* }) $(, $($tt)* )?);
     }};
     ($event_data:expr                       $(, $($tt:tt)* )?) => {{
-        let mut __event_builder = $crate::Event::builder();
-        // as_millis_f64 is nightly only
-        let __time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64()
-            * 1000.0;
-        __event_builder.time(__time);
-        __event_builder.data($event_data);
-        $crate::event!(@load_known __event_builder, path: $crate::PathID);
-        $crate::event!(@load_known __event_builder, protocol_types: $crate::ProtocolTypeList);
-        $crate::event!(@load_known __event_builder, group_id: $crate::GroupID);
-        $crate::event!(@field __event_builder $(, $($tt)* )?);
-        // emit the event to the current span
-        $crate::telemetry::macro_support::emit_event(__event_builder.build());
+        let __build_data = || $event_data;
+        let __build_event = |__even_data| {
+            let mut __event_builder = $crate::Event::builder();
+            // as_millis_f64 is nightly only
+            let __time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64()
+                * 1000.0;
+            __event_builder.time(__time);
+            __event_builder.data(__even_data);
+            $crate::event!(@load_known __event_builder, path: $crate::PathID);
+            $crate::event!(@load_known __event_builder, protocol_types: $crate::ProtocolTypeList);
+            $crate::event!(@load_known __event_builder, group_id: $crate::GroupID);
+            $crate::event!(@field __event_builder $(, $($tt)* )?);
+
+            __event_builder.build()
+        };
+        $crate::telemetry::macro_support::build_and_emit_event(__build_data, __build_event);
     }};
     (@load_known $event_builder:expr, $name:ident: $type:ty) => {
         if let Some(__value) = $crate::telemetry::macro_support::try_load_current_span::<$type>(stringify!($name)) {
