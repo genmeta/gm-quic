@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use bytes::{BufMut, Bytes};
+use bytes::BufMut;
 use deref_derive::Deref;
 use qbase::{
     Epoch,
@@ -63,7 +63,7 @@ impl PacketLogger {
             raw: qlog::RawInfo {
                 length: packet.packet_len() as u64,
                 payload_length: { packet.packet_len() + packet.tag_len() } as u64,
-                data: { Bytes::from(packet.buffer().to_vec()) },
+                data: packet.buffer(),
             },
             // TODO: trigger
         })
@@ -251,11 +251,11 @@ impl<F> PacketMemory<'_, '_, F> {
 /// 对IH空间有效
 impl<'b, D> MarshalDataFrame<CryptoFrame, D> for PacketMemory<'b, '_, CryptoFrame>
 where
-    D: DescribeData,
-    PacketWriter<'b>: WriteData<Bytes> + WriteDataFrame<CryptoFrame, Bytes>,
+    D: DescribeData + Clone,
+    PacketWriter<'b>: WriteData<D> + WriteDataFrame<CryptoFrame, D>,
 {
     fn dump_frame_with_data(&mut self, frame: CryptoFrame, data: D) -> Option<CryptoFrame> {
-        let data = data.to_bytes();
+        // no matter to clone, currently, except for datagrams, all other `D`s impl Copy
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
@@ -306,11 +306,10 @@ where
 
 impl<'b, D> MarshalDataFrame<CryptoFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
 where
-    D: DescribeData,
-    PacketWriter<'b>: WriteData<Bytes> + WriteDataFrame<CryptoFrame, Bytes>,
+    D: DescribeData + Clone,
+    PacketWriter<'b>: WriteData<D> + WriteDataFrame<CryptoFrame, D>,
 {
     fn dump_frame_with_data(&mut self, frame: CryptoFrame, data: D) -> Option<CryptoFrame> {
-        let data = data.to_bytes();
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
@@ -323,11 +322,10 @@ where
 
 impl<'b, D> MarshalDataFrame<StreamFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
 where
-    D: DescribeData,
-    PacketWriter<'b>: WriteData<Bytes> + WriteDataFrame<StreamFrame, Bytes>,
+    D: DescribeData + Clone,
+    PacketWriter<'b>: WriteData<D> + WriteDataFrame<StreamFrame, D>,
 {
     fn dump_frame_with_data(&mut self, frame: StreamFrame, data: D) -> Option<StreamFrame> {
-        let data = data.to_bytes();
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
@@ -340,11 +338,10 @@ where
 
 impl<'b, D> MarshalDataFrame<DatagramFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
 where
-    D: DescribeData,
-    PacketWriter<'b>: WriteData<Bytes> + WriteDataFrame<DatagramFrame, Bytes>,
+    D: DescribeData + Clone,
+    PacketWriter<'b>: WriteData<D> + WriteDataFrame<DatagramFrame, D>,
 {
     fn dump_frame_with_data(&mut self, frame: DatagramFrame, data: D) -> Option<DatagramFrame> {
-        let data = data.to_bytes();
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {

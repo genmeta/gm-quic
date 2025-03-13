@@ -326,7 +326,7 @@ impl<H> PlainPacket<H> {
         qlog::build!(qlog::RawInfo {
             length: self.plain.len() as u64,
             payload_length: self.payload_length() as u64,
-            data: self.plain.clone(),
+            data: &self.plain,
         })
     }
 }

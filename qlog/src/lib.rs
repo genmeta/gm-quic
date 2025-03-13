@@ -8,7 +8,7 @@ use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 use bytes::Bytes;
 use derive_builder::Builder;
 use derive_more::{Display, From, Into};
-use qbase::cid::ConnectionId;
+use qbase::{cid::ConnectionId, util::DescribeData};
 use quic::ConnectionID;
 use serde::{Deserialize, Serialize};
 
@@ -568,16 +568,27 @@ pub struct RawInfo {
     payload_length: Option<u64>,
     /// the (potentially truncated) contents of the full entity,
     /// including headers and possibly trailers
+    #[builder(setter(custom))]
     data: Option<HexString>,
 }
 
-impl From<Bytes> for RawInfo {
-    fn from(value: Bytes) -> Self {
-        Self {
-            length: Some(value.len() as u64),
-            payload_length: None,
-            data: Some(HexString::from(value)),
-        }
+impl RawInfoBuilder {
+    /// the (potentially truncated) contents of the full entity,
+    /// including headers and possibly trailers
+    pub fn data<D: DescribeData>(&mut self, data: D) -> &mut Self {
+        self.data = telemetry::Span::current()
+            .filter_raw_data()
+            .then(|| Some(data.to_bytes().into()));
+        self
+    }
+}
+
+impl<D: DescribeData> From<D> for RawInfo {
+    fn from(data: D) -> Self {
+        build!(RawInfo {
+            length: data.len() as u64,
+            data: data
+        })
     }
 }
 

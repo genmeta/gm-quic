@@ -14,6 +14,7 @@ use qbase::{
         long::{HandshakeHeader, InitialHeader, ZeroRttHeader},
         short::OneRttHeader,
     },
+    util::DescribeData,
     varint::VarInt,
 };
 use serde::{Deserialize, Serialize};
@@ -368,19 +369,13 @@ impl<H: 'static> TryFrom<&qbase::packet::header::LongHeader<H>> for Token {
         if let Some(initial) = header.downcast_ref::<InitialHeader>() {
             return Ok(crate::build!(Token {
                 r#type: TokenType::Retry,
-                raw: RawInfo {
-                    length: initial.token().len() as u64,
-                    data: { Bytes::from_owner(initial.token().to_vec()) },
-                },
+                raw: initial.token(),
             }));
         }
         if let Some(retry) = header.downcast_ref::<RetryHeader>() {
             return Ok(crate::build!(Token {
                 r#type: TokenType::Retry,
-                raw: RawInfo {
-                    length: retry.token().len() as u64,
-                    data: { Bytes::from_owner(retry.token().to_vec()) },
-                },
+                raw: retry.token(),
             }));
         }
         Err(())
@@ -603,19 +598,19 @@ pub enum QuicFrame {
     },
 }
 
-impl From<(&CryptoFrame, &Bytes)> for QuicFrame {
-    fn from((frame, bytes): (&CryptoFrame, &Bytes)) -> Self {
-        let length = frame.encoding_size() + bytes.len();
-        let payload_length = bytes.len();
+impl<D: DescribeData> From<(&CryptoFrame, D)> for QuicFrame {
+    fn from((frame, data): (&CryptoFrame, D)) -> Self {
+        let length = frame.encoding_size() + data.len();
+        let payload_length = data.len();
         QuicFrame::Crypto {
             offset: frame.offset(),
             length: length as _,
             payload_length: Some(payload_length as _),
-            raw: Some(RawInfo {
-                length: Some(length as _),
-                payload_length: Some(payload_length as _),
-                data: Some(bytes.clone().into()),
-            }),
+            raw: Some(crate::build!(RawInfo {
+                length: length as u64,
+                payload_length: payload_length as u64,
+                data: data,
+            })),
         }
     }
 }
@@ -637,20 +632,20 @@ impl From<&CryptoFrame> for QuicFrame {
     }
 }
 
-impl From<(&StreamFrame, &Bytes)> for QuicFrame {
-    fn from((frame, bytes): (&StreamFrame, &Bytes)) -> Self {
+impl<D: DescribeData> From<(&StreamFrame, D)> for QuicFrame {
+    fn from((frame, data): (&StreamFrame, D)) -> Self {
         let length = frame.encoding_size() + frame.len();
-        let payload_length = bytes.len();
+        let payload_length = data.len();
         QuicFrame::Stream {
             stream_id: frame.stream_id().id(),
             offset: frame.offset(),
             length: length as _,
             fin: frame.is_fin(),
-            raw: Some(RawInfo {
-                length: Some(length as _),
-                payload_length: Some(payload_length as _),
-                data: Some(bytes.clone().into()),
-            }),
+            raw: Some(crate::build!(RawInfo {
+                length: length as u64,
+                payload_length: payload_length as u64,
+                data: data,
+            })),
         }
     }
 }
@@ -673,17 +668,17 @@ impl From<&StreamFrame> for QuicFrame {
     }
 }
 
-impl From<(&DatagramFrame, &Bytes)> for QuicFrame {
-    fn from((frame, bytes): (&DatagramFrame, &Bytes)) -> Self {
-        let length = frame.encoding_size() + bytes.len();
-        let payload_length = bytes.len();
+impl<D: DescribeData> From<(&DatagramFrame, D)> for QuicFrame {
+    fn from((frame, data): (&DatagramFrame, D)) -> Self {
+        let length = frame.encoding_size() + data.len();
+        let payload_length = data.len();
         QuicFrame::Datagram {
             length: Some(length as _),
-            raw: Some(RawInfo {
-                length: Some(length as _),
-                payload_length: Some(payload_length as _),
-                data: Some(bytes.clone().into()),
-            }),
+            raw: Some(crate::build!(RawInfo {
+                length: length as u64,
+                payload_length: payload_length as u64,
+                data: data,
+            })),
         }
     }
 }
@@ -779,7 +774,7 @@ impl From<&NewTokenFrame> for QuicFrame {
                 raw: RawInfo {
                     length: value.encoding_size() as u64,
                     payload_length: value.token().len() as u64,
-                    data: { Bytes::from_owner(value.token().to_vec()) },
+                    data: value.token(),
                 },
             }),
         }

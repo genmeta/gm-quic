@@ -22,9 +22,13 @@ pub trait Log {
 pub trait ExportEvent: Send + Sync {
     fn emit(&self, event: Event);
 
-    fn filter(&self, scheme: &'static str) -> bool {
+    fn filter_event(&self, scheme: &'static str) -> bool {
         _ = scheme;
         true
+    }
+
+    fn filter_raw_data(&self) -> bool {
+        false
     }
 }
 
@@ -53,6 +57,14 @@ impl Span {
 
     pub fn emit(&self, event: Event) {
         self.exporter.emit(event);
+    }
+
+    pub fn filter_event(&self, scheme: &'static str) -> bool {
+        self.exporter.filter_event(scheme)
+    }
+
+    pub fn filter_raw_data(&self) -> bool {
+        self.exporter.filter_raw_data()
     }
 
     pub fn load<T: DeserializeOwned>(&self, name: &'static str) -> T {
@@ -192,7 +204,7 @@ pub mod macro_support {
         build_data: impl FnOnce() -> D,
         build_event: impl FnOnce(D) -> Event,
     ) {
-        if !current_span::CURRENT_SPAN.with(|span| span.borrow().exporter.filter(D::scheme())) {
+        if current_span::CURRENT_SPAN.with(|span| !span.borrow().filter_event(D::scheme())) {
             return;
         }
         let event = build_event(build_data());

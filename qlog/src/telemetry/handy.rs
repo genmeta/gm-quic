@@ -19,7 +19,11 @@ impl ExportEvent for NullExporter {
         _ = event;
     }
 
-    fn filter(&self, _: &'static str) -> bool {
+    fn filter_event(&self, _: &'static str) -> bool {
+        false
+    }
+
+    fn filter_raw_data(&self) -> bool {
         false
     }
 }
