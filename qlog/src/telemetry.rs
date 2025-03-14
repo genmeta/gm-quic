@@ -32,6 +32,32 @@ pub trait ExportEvent: Send + Sync {
     }
 }
 
+pub mod filter {
+    #[inline]
+    #[cfg(feature = "enabled")]
+    pub fn event(scheme: &'static str) -> bool {
+        super::current_span::CURRENT_SPAN.with(|span| span.borrow().filter_event(scheme))
+    }
+
+    #[inline]
+    #[cfg(not(feature = "enabled"))]
+    pub fn event(_scheme: &'static str) -> bool {
+        false
+    }
+
+    #[inline]
+    #[cfg(all(feature = "enabled", feature = "raw_data"))]
+    pub fn raw_data() -> bool {
+        super::current_span::CURRENT_SPAN.with(|span| span.borrow().filter_raw_data())
+    }
+
+    #[inline]
+    #[cfg(not(all(feature = "enabled", feature = "raw_data")))]
+    pub fn raw_data() -> bool {
+        false
+    }
+}
+
 #[derive(Clone)]
 pub struct Span {
     exporter: Arc<dyn ExportEvent>,
@@ -48,6 +74,7 @@ impl Debug for Span {
 }
 
 impl Span {
+    #[inline]
     pub fn new(exporter: Arc<dyn ExportEvent>, fields: HashMap<&'static str, Value>) -> Self {
         Self {
             exporter,
@@ -55,22 +82,27 @@ impl Span {
         }
     }
 
+    #[inline]
     pub fn emit(&self, event: Event) {
         self.exporter.emit(event);
     }
 
+    #[inline]
     pub fn filter_event(&self, scheme: &'static str) -> bool {
         self.exporter.filter_event(scheme)
     }
 
+    #[inline]
     pub fn filter_raw_data(&self) -> bool {
         self.exporter.filter_raw_data()
     }
 
+    #[inline]
     pub fn load<T: DeserializeOwned>(&self, name: &'static str) -> T {
         serde_json::from_value(self.fields[name].clone()).unwrap()
     }
 
+    #[inline]
     pub fn try_load<T: DeserializeOwned>(&self, name: &'static str) -> Option<T> {
         serde_json::from_value(self.fields.get(name)?.clone()).ok()
     }
@@ -204,7 +236,7 @@ pub mod macro_support {
         build_data: impl FnOnce() -> D,
         build_event: impl FnOnce(D) -> Event,
     ) {
-        if current_span::CURRENT_SPAN.with(|span| !span.borrow().filter_event(D::scheme())) {
+        if !filter::event(D::scheme()) {
             return;
         }
         let event = build_event(build_data());

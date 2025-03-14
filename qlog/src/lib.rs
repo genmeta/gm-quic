@@ -576,9 +576,7 @@ impl RawInfoBuilder {
     /// the (potentially truncated) contents of the full entity,
     /// including headers and possibly trailers
     pub fn data<D: DescribeData>(&mut self, data: D) -> &mut Self {
-        self.data = telemetry::Span::current()
-            .filter_raw_data()
-            .then(|| Some(data.to_bytes().into()));
+        self.data = telemetry::filter::raw_data().then(|| Some(data.to_bytes().into()));
         self
     }
 }
