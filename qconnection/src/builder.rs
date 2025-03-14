@@ -330,7 +330,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             .add_router_entry(original_dcid.into(), rcvd_pkt_q.clone());
         server_params.set_original_destination_connection_id(original_dcid);
         let parameters = ArcParameters::new_server(*server_params);
-        parameters.initial_scid_from_peer_need_equal(client_scid);
+        _ = parameters.initial_scid_from_peer_need_equal(client_scid);
 
         let initial_keys = initial_keys_with(
             self.tls_config.crypto_provider(),

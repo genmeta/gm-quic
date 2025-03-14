@@ -426,110 +426,96 @@ pub fn spawn_deliver_and_parse(
     let parse_zero_rtt = {
         let components = components.clone();
         let space = space.clone();
-        let event_broker = event_broker.clone();
         let dispatch_data_frame = dispatch_data_frame.clone();
-        async move |packet: ReceivedZeroRttPacket, pathway, socket| match space
-            .decrypt_0rtt_packet(packet)
-            .await
-        {
-            Some(Ok(packet)) => {
+        async move |packet: ReceivedZeroRttPacket, pathway, socket| {
+            if let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? {
                 let path = match components.get_or_try_create_path(socket, pathway, true) {
                     Some(path) => path,
                     None => {
                         packet.drop_on_conenction_closed();
-                        return;
+                        return Ok(());
                     }
                 };
-                path.on_rcvd(packet.plain.len());
 
                 let mut frames = QuicFramesCollector::<PacketReceived>::new();
-                match FrameReader::new(packet.body(), packet.header.get_type()).try_fold(
-                    false,
-                    |is_ack_packet, frame| {
+                let is_ack_packet = FrameReader::new(packet.body(), packet.header.get_type())
+                    .try_fold(false, |is_ack_packet, frame| {
                         let (frame, is_ack_eliciting) = frame?;
                         frames.extend(Some(&frame));
                         dispatch_data_frame(frame, packet.header.get_type(), &path);
                         Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
-                    },
-                ) {
-                    Ok(is_ack_packet) => {
-                        space
-                            .journal
-                            .of_rcvd_packets()
-                            .register_pn(packet.decoded_pn);
-                        path.cc()
-                            .on_pkt_rcvd(Epoch::Data, packet.decoded_pn, is_ack_packet);
-                        packet.emit_received(frames);
-                    }
-                    Err(error) => event_broker.emit(Event::Failed(error)),
-                }
-            }
-            Some(Err(error)) => event_broker.emit(Event::Failed(error)),
-            None => {}
+                    })?;
+
+                space
+                    .journal
+                    .of_rcvd_packets()
+                    .register_pn(packet.decoded_pn);
+                path.cc()
+                    .on_pkt_rcvd(Epoch::Data, packet.decoded_pn, is_ack_packet);
+                packet.emit_received(frames);
+            };
+
+            Result::<(), Error>::Ok(())
         }
     };
 
     let parse_one_rtt = {
         let components = components.clone();
-        async move |packet: ReceivedOneRttPacket, pathway, socket| match space
-            .decrypt_1rtt_packet(packet)
-            .await
-        {
-            Some(Ok(packet)) => {
+        async move |packet: ReceivedOneRttPacket, pathway, socket| {
+            if let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? {
                 let path = match components.get_or_try_create_path(socket, pathway, true) {
                     Some(path) => path,
                     None => {
                         packet.drop_on_conenction_closed();
-                        return;
+                        return Ok(());
                     }
                 };
                 path.on_rcvd(packet.plain.len());
 
                 let mut frames = QuicFramesCollector::<PacketReceived>::new();
-                match FrameReader::new(packet.body(), packet.header.get_type()).try_fold(
-                    false,
-                    |is_ack_packet, frame| {
+                let is_ack_packet = FrameReader::new(packet.body(), packet.header.get_type())
+                    .try_fold(false, |is_ack_packet, frame| {
                         let (frame, is_ack_eliciting) = frame?;
                         frames.extend(Some(&frame));
                         dispatch_data_frame(frame, packet.header.get_type(), &path);
                         Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
-                    },
-                ) {
-                    Ok(is_ack_packet) => {
-                        space
-                            .journal
-                            .of_rcvd_packets()
-                            .register_pn(packet.decoded_pn);
-                        path.cc()
-                            .on_pkt_rcvd(Epoch::Data, packet.decoded_pn, is_ack_packet);
-                        packet.emit_received(frames);
-                    }
-                    Err(error) => event_broker.emit(Event::Failed(error)),
-                }
+                    })?;
+                space
+                    .journal
+                    .of_rcvd_packets()
+                    .register_pn(packet.decoded_pn);
+                path.cc()
+                    .on_pkt_rcvd(Epoch::Data, packet.decoded_pn, is_ack_packet);
+                packet.emit_received(frames);
             }
-            Some(Err(error)) => event_broker.emit(Event::Failed(error)),
-            None => {}
+            Result::<(), Error>::Ok(())
         }
     };
 
-    tokio::spawn(
+    tokio::spawn({
+        let event_broker = event_broker.clone();
         async move {
             while let Some((packet, pathway, socket)) = zeor_rtt_packets.next().await {
-                parse_zero_rtt(packet.into(), pathway, socket).await;
+                if let Err(error) = parse_zero_rtt(packet.into(), pathway, socket).await {
+                    event_broker.emit(Event::Failed(error));
+                };
             }
         }
         .instrument_in_current()
-        .in_current_span(),
-    );
-    tokio::spawn(
+        .in_current_span()
+    });
+    tokio::spawn({
+        let event_broker = event_broker.clone();
         async move {
             while let Some((packet, pathway, socket)) = one_rtt_packets.next().await {
-                parse_one_rtt(packet.into(), pathway, socket).await;
+                if let Err(error) = parse_one_rtt(packet.into(), pathway, socket).await {
+                    event_broker.emit(Event::Failed(error));
+                };
             }
         }
         .instrument_in_current()
-        .in_current_span(),
-    );
+        .in_current_span()
+    });
 }
 
 impl TrackPackets for DataSpace {

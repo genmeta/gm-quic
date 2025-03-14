@@ -203,77 +203,73 @@ pub fn spawn_deliver_and_parse(
             .is_some_and(|scid| scid != *packet.header.scid())
         {
             packet.drop_on_scid_unmatch();
-            return;
+            return Ok(());
         }
         let packet_size = packet.payload.len();
-        match space.decrypt_packet(packet).await {
-            Some(Ok(packet)) => {
-                let path = match components.get_or_try_create_path(socket, pathway, true) {
-                    Some(path) => path,
-                    None => {
-                        packet.drop_on_conenction_closed();
-                        return;
+
+        if let Some(packet) = space.decrypt_packet(packet).await.transpose()? {
+            let path = match components.get_or_try_create_path(socket, pathway, true) {
+                Some(path) => path,
+                None => {
+                    packet.drop_on_conenction_closed();
+                    return Ok(());
+                }
+            };
+            path.on_rcvd(packet_size);
+
+            let mut frames = QuicFramesCollector::<PacketReceived>::new();
+            let is_ack_packet = FrameReader::new(packet.body(), packet.header.get_type())
+                .try_fold(false, |is_ack_packet, frame| {
+                    let (frame, is_ack_eliciting) = frame?;
+                    frames.extend(Some(&frame));
+                    dispatch_frame(frame, &path);
+                    Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                })?;
+
+            space
+                .journal
+                .of_rcvd_packets()
+                .register_pn(packet.decoded_pn);
+            path.cc()
+                .on_pkt_rcvd(Epoch::Initial, packet.decoded_pn, is_ack_packet);
+            if parameters.initial_scid_from_peer().is_none() {
+                remote_cids.revise_initial_dcid(*packet.header.scid());
+                parameters.initial_scid_from_peer_need_equal(*packet.header.scid())?;
+            }
+            // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
+            // A server might wish to validate the client address before starting the cryptographic handshake.
+            // QUIC uses a token in the Initial packet to provide address validation prior to completing the handshake.
+            // This token is delivered to the client during connection establishment with a Retry packet (see Section 8.1.2)
+            // or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
+            if !packet.header.token().is_empty() {
+                validate(packet.header.token(), &path);
+            }
+
+            // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
+            // negotiating done.
+            // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
+            if role == qbase::sid::Role::Server {
+                if let Some(origin_dcid) = parameters
+                    .server()
+                    .map(|local_params| local_params.original_destination_connection_id())
+                {
+                    if origin_dcid != *packet.header.dcid() {
+                        components.proto.del_router_entry(&origin_dcid.into());
                     }
-                };
-                path.on_rcvd(packet_size);
-
-                let mut frames = QuicFramesCollector::<PacketReceived>::new();
-                match FrameReader::new(packet.body(), packet.header.get_type()).try_fold(
-                    false,
-                    |is_ack_packet, frame| {
-                        let (frame, is_ack_eliciting) = frame?;
-                        frames.extend(Some(&frame));
-                        dispatch_frame(frame, &path);
-                        Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
-                    },
-                ) {
-                    Ok(is_ack_packet) => {
-                        space
-                            .journal
-                            .of_rcvd_packets()
-                            .register_pn(packet.decoded_pn);
-                        path.cc()
-                            .on_pkt_rcvd(Epoch::Initial, packet.decoded_pn, is_ack_packet);
-                        if parameters.initial_scid_from_peer().is_none() {
-                            remote_cids.revise_initial_dcid(*packet.header.scid());
-                            parameters.initial_scid_from_peer_need_equal(*packet.header.scid());
-                        }
-                        // See [RFC 9000 section 8.1](https://www.rfc-editor.org/rfc/rfc9000.html#name-address-validation-during-c)
-                        // A server might wish to validate the client address before starting the cryptographic handshake.
-                        // QUIC uses a token in the Initial packet to provide address validation prior to completing the handshake.
-                        // This token is delivered to the client during connection establishment with a Retry packet (see Section 8.1.2)
-                        // or in a previous connection using the NEW_TOKEN frame (see Section 8.1.3).
-                        if !packet.header.token().is_empty() {
-                            validate(packet.header.token(), &path);
-                        }
-
-                        // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
-                        // negotiating done.
-                        // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
-                        if role == qbase::sid::Role::Server {
-                            if let Some(origin_dcid) = parameters.server().map(|local_params| {
-                                local_params.original_destination_connection_id()
-                            }) {
-                                if origin_dcid != *packet.header.dcid() {
-                                    components.proto.del_router_entry(&origin_dcid.into());
-                                }
-                            }
-                        }
-
-                        packet.emit_received(frames);
-                    }
-                    Err(error) => event_broker.emit(Event::Failed(error)),
                 }
             }
-            Some(Err(error)) => event_broker.emit(Event::Failed(error)),
-            None => {}
+
+            packet.emit_received(frames);
         }
+        Result::<(), Error>::Ok(())
     };
 
     tokio::spawn(
         async move {
             while let Some((packet, pathway, socket)) = packets.next().await {
-                parse(packet.into(), pathway, socket).await;
+                if let Err(error) = parse(packet.into(), pathway, socket).await {
+                    event_broker.emit(Event::Failed(error));
+                };
             }
         }
         .instrument_in_current()

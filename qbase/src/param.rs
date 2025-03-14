@@ -206,9 +206,14 @@ impl Parameters {
         })?;
         self.state = Self::CLIENT_READY | Self::SERVER_READY;
         self.validate_remote_params()?;
-        self.authenticate_cids()?;
+        // Because TLS and packet parsing are in parallel,
+        // the scid of the peer end may not be set when the transmission parameters of the peer are obtained.
+        // Therefore, if the scid of the other end is not set, authentication will not be performed first,
+        // and authentication will be performed when it is set.
+        if self.authenticate_cids()? {
+            self.wake_all();
+        }
 
-        self.wake_all();
         Ok(())
     }
 
@@ -226,8 +231,20 @@ impl Parameters {
         }
     }
 
-    fn initial_scid_from_peer_need_equal(&mut self, cid: ConnectionId) {
-        self.requirements.initial_source_connection_id = Some(cid)
+    fn initial_scid_from_peer_need_equal(&mut self, cid: ConnectionId) -> Result<(), Error> {
+        let do_validata =
+            self.requirements.initial_source_connection_id.is_none() && self.remote().is_some();
+        self.requirements.initial_source_connection_id = Some(cid);
+        if do_validata {
+            // Because TLS and packet parsing are in parallel,
+            // the scid of the peer end may not be set when the transmission parameters of the peer are obtained.
+            // Therefore, if the scid of the other end is not set, authentication will not be performed first,
+            // and authentication will be performed when it is set.
+            let authenticated = self.authenticate_cids()?;
+            debug_assert!(authenticated);
+            self.wake_all();
+        }
+        Ok(())
     }
 
     fn retry_scid_from_server_need_equal(&mut self, cid: ConnectionId) {
@@ -250,9 +267,17 @@ impl Parameters {
         }
     }
 
-    fn authenticate_cids(&self) -> Result<(), Error> {
+    fn authenticate_cids(&self) -> Result<bool, Error> {
         fn param_error(reason: &'static str) -> Error {
             Error::new(ErrorKind::TransportParameter, FrameType::Crypto, reason)
+        }
+
+        // Because TLS and packet parsing are in parallel,
+        // the scid of the peer end may not be set when the transmission parameters of the peer are obtained.
+        // Therefore, if the scid of the other end is not set, authentication will not be performed first,
+        // and authentication will be performed when it is set.
+        if self.requirements.initial_source_connection_id.is_none() {
+            return Ok(false);
         }
 
         match self.role {
@@ -261,18 +286,22 @@ impl Parameters {
                     != self
                         .requirements
                         .initial_source_connection_id
-                        .expect("The initial_source_connection_id transport parameter MUST be present in the Initial packet from the server")
+                        .expect("unreachable")
                 {
-                    return Err(param_error("Initial Source Connection ID from server mismatch"));
+                    return Err(param_error(
+                        "Initial Source Connection ID from server mismatch",
+                    ));
                 }
                 if self.server.retry_source_connection_id
                     != self.requirements.retry_source_connection_id
                 {
                     return Err(param_error("Retry Source Connection ID mismatch"));
                 }
-                if self.server.original_destination_connection_id != self.requirements
+                if self.server.original_destination_connection_id
+                    != self
+                        .requirements
                         .original_destination_connection_id
-                        .expect("The original_destination_connection_id transport parameter MUST be present in the Initial packet from the server")
+                        .expect("unreachable")
                 {
                     return Err(param_error("Original Destination Connection ID mismatch"));
                 }
@@ -282,14 +311,16 @@ impl Parameters {
                     != self
                         .requirements
                         .initial_source_connection_id
-                        .expect("The initial_source_connection_id transport parameter MUST be present in the Initial packet from the client")
+                        .expect("unreachable")
                 {
-                    return Err(param_error("Initial Source Connection ID from client mismatch"));
+                    return Err(param_error(
+                        "Initial Source Connection ID from client mismatch",
+                    ));
                 }
             }
         }
 
-        Ok(())
+        Ok(true)
     }
 
     fn validate_remote_params(&self) -> Result<(), Error> {
@@ -509,11 +540,16 @@ impl ArcParameters {
     /// packet from the peer, the initial_source_connection_id in
     /// the remote transport parameters must equal the source connection
     /// id in the received Initial packet.
-    pub fn initial_scid_from_peer_need_equal(&self, cid: ConnectionId) {
+    ///
+    /// If the peer's transmission parameters have not been verified,
+    /// it will be verified here. If verification fails, this method will
+    /// return Err.
+    pub fn initial_scid_from_peer_need_equal(&self, cid: ConnectionId) -> Result<(), Error> {
         let mut guard = self.0.lock().unwrap();
         if let Ok(params) = guard.deref_mut() {
-            params.initial_scid_from_peer_need_equal(cid);
+            params.initial_scid_from_peer_need_equal(cid)?;
         }
+        Ok(())
     }
 
     /// After receiving the Retry packet from the server, the
@@ -624,7 +660,7 @@ mod tests {
         let mut params = Parameters::new_client(client_params, None);
 
         let server_cid = ConnectionId::from_slice(b"server_test");
-        params.initial_scid_from_peer_need_equal(server_cid);
+        _ = params.initial_scid_from_peer_need_equal(server_cid);
 
         let original_cid = ConnectionId::from_slice(b"original");
         params.original_dcid_from_server_need_equal(original_cid);
