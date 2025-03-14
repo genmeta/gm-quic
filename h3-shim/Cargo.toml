@@ -25,7 +25,6 @@ unreliable = ["qconnection/unreliable"]
 clap = { workspace = true, features = ["derive"] }
 http = { workspace = true }
 rustls = { workspace = true, features = ["ring"] }
-rustls-native-certs = { workspace = true }
 tokio = { workspace = true, features = ["io-std", "fs"] }
 tracing = { workspace = true }
 
