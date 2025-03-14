@@ -2,9 +2,9 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
 use futures::future;
-use rustls::pki_types::{CertificateDer, pem::PemObject};
+use gm_quic::ToCertificate;
 use tokio::io::AsyncWriteExt;
-use tracing::{Instrument, error, info, info_span, trace};
+use tracing::{Instrument, info, info_span, trace};
 
 static ALPN: &[u8] = b"h3";
 
@@ -34,7 +34,6 @@ pub struct Opt {
 async fn main() -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
         .with_writer(std::io::stdout)
         .init();
     // console_subscriber::init();
@@ -63,32 +62,8 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
         .ok_or("dns found no addresses")?;
     info!("DNS lookup for {:?}: {:?}", uri, addr);
 
-    // create quinn client endpoint
-
-    // load CA certificates stored in the system
     let mut roots = rustls::RootCertStore::empty();
-    let cert_result = rustls_native_certs::load_native_certs();
-    for err in cert_result.errors {
-        error!("failed to load trust anchor: {}", err);
-    }
-    for cert in cert_result.certs {
-        if let Err(e) = roots.add(cert) {
-            error!("failed to parse trust anchor: {}", e);
-        }
-    }
-    // load certificate of CA who issues the server certificate
-    // NOTE that this should be used for dev only
-    if let Err(e) = roots.add(CertificateDer::from_pem_file(opt.ca).unwrap()) {
-        panic!("failed to parse trust anchor: {}", e);
-    }
-
-    let mut params = h3_shim::ClientParameters::default();
-    params.set_initial_max_streams_bidi(100);
-    params.set_initial_max_streams_uni(100);
-    params.set_initial_max_data((1u32 << 20).into());
-    params.set_initial_max_stream_data_uni((1u32 << 20).into());
-    params.set_initial_max_stream_data_bidi_local((1u32 << 20).into());
-    params.set_initial_max_stream_data_bidi_remote((1u32 << 20).into());
+    roots.add_parsable_certificates(opt.ca.to_certificate());
 
     trace!(bind = ?opt.bind, "build QuicClient");
     let quic_client = ::gm_quic::QuicClient::builder()
@@ -96,7 +71,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
         .without_cert()
         .with_keylog(opt.key_log_file)
         .with_alpns([ALPN.into()])
-        .with_parameters(params)
+        .with_parameters(client_parameters())
         .bind(&opt.bind[..])?
         .build();
     info!(%addr, "connecting to server");
@@ -159,4 +134,15 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
     request.await??;
 
     Ok(())
+}
+
+fn client_parameters() -> gm_quic::ClientParameters {
+    let mut params = gm_quic::ClientParameters::default();
+    params.set_initial_max_streams_bidi(100);
+    params.set_initial_max_streams_uni(100);
+    params.set_initial_max_data((1u32 << 20).into());
+    params.set_initial_max_stream_data_uni((1u32 << 20).into());
+    params.set_initial_max_stream_data_bidi_local((1u32 << 20).into());
+    params.set_initial_max_stream_data_bidi_remote((1u32 << 20).into());
+    params
 }
