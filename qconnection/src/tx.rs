@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use bytes::{BufMut, Bytes};
+use bytes::BufMut;
 use deref_derive::Deref;
 use qbase::{
     Epoch,
@@ -28,7 +28,7 @@ use qbase::{
     util::{DescribeData, WriteData},
 };
 use qcongestion::{ArcCC, CongestionControl};
-use qlog::quic::{QuicFrame, transport::PacketSent};
+use qlog::quic::{QuicFrame, QuicFramesCollector, transport::PacketSent};
 use qrecovery::{
     journal::{ArcSentJournal, NewPacketGuard},
     reliable::GuaranteedFrame,
@@ -42,12 +42,12 @@ use crate::{
 
 pub struct PacketLogger {
     header: qlog::quic::PacketHeaderBuilder,
-    frames: Vec<QuicFrame>,
+    frames: QuicFramesCollector<PacketSent>,
 }
 
 impl PacketLogger {
-    pub fn record_frame(&mut self, frame: QuicFrame) {
-        self.frames.push(frame);
+    pub fn record_frame(&mut self, frame: impl Into<QuicFrame>) {
+        self.frames.extend([frame]);
     }
 
     pub fn emit_sent(mut self, packet: &PacketWriter) {
@@ -63,7 +63,7 @@ impl PacketLogger {
             raw: qlog::RawInfo {
                 length: packet.packet_len() as u64,
                 payload_length: { packet.packet_len() + packet.tag_len() } as u64,
-                data: { Bytes::from(packet.buffer().to_vec()) },
+                data: packet.buffer(),
             },
             // TODO: trigger
         })
@@ -105,7 +105,7 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
                     builder.dcid(*header.dcid());
                     builder
                 },
-                frames: vec![],
+                frames: QuicFramesCollector::new(),
             },
         })
     }
@@ -132,7 +132,7 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
                     builder.dcid(*header.dcid());
                     builder
                 },
-                frames: vec![],
+                frames: QuicFramesCollector::new(),
             },
         })
     }
@@ -207,7 +207,7 @@ unsafe impl<F> BufMut for PacketMemory<'_, '_, F> {
 
 impl<F> PacketMemory<'_, '_, F> {
     pub fn dump_ack_frame(&mut self, frame: AckFrame) {
-        self.logger.record_frame((&frame).into());
+        self.logger.record_frame(&frame);
         self.writer.dump_frame(frame);
         self.guard.record_trivial();
     }
@@ -251,15 +251,15 @@ impl<F> PacketMemory<'_, '_, F> {
 /// 对IH空间有效
 impl<'b, D> MarshalDataFrame<CryptoFrame, D> for PacketMemory<'b, '_, CryptoFrame>
 where
-    D: DescribeData,
-    PacketWriter<'b>: WriteData<Bytes> + WriteDataFrame<CryptoFrame, Bytes>,
+    D: DescribeData + Clone,
+    PacketWriter<'b>: WriteData<D> + WriteDataFrame<CryptoFrame, D>,
 {
     fn dump_frame_with_data(&mut self, frame: CryptoFrame, data: D) -> Option<CryptoFrame> {
-        let data = data.to_bytes();
+        // no matter to clone, currently, except for datagrams, all other `D`s impl Copy
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
-                self.logger.record_frame((&frame, &data).into());
+                self.logger.record_frame((&frame, &data));
                 self.guard.record_frame(frame);
                 None
             })
@@ -272,7 +272,7 @@ where
 {
     fn dump_path_frame(&mut self, frame: PathChallengeFrame) {
         self.writer.dump_frame(frame);
-        self.logger.record_frame((&frame).into());
+        self.logger.record_frame(&frame);
         self.guard.record_trivial();
     }
 }
@@ -283,7 +283,7 @@ where
 {
     fn dump_path_frame(&mut self, frame: PathResponseFrame) {
         self.writer.dump_frame(frame);
-        self.logger.record_frame((&frame).into());
+        self.logger.record_frame(&frame);
         self.guard.record_trivial();
     }
 }
@@ -296,7 +296,7 @@ where
     fn dump_frame(&mut self, frame: F) -> Option<F> {
         self.writer.dump_frame(frame).and_then(|frame| {
             let reliable_frame = frame.into();
-            self.logger.record_frame((&reliable_frame).into());
+            self.logger.record_frame(&reliable_frame);
             self.guard
                 .record_frame(GuaranteedFrame::Reliable(reliable_frame));
             None
@@ -306,15 +306,14 @@ where
 
 impl<'b, D> MarshalDataFrame<CryptoFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
 where
-    D: DescribeData,
-    PacketWriter<'b>: WriteData<Bytes> + WriteDataFrame<CryptoFrame, Bytes>,
+    D: DescribeData + Clone,
+    PacketWriter<'b>: WriteData<D> + WriteDataFrame<CryptoFrame, D>,
 {
     fn dump_frame_with_data(&mut self, frame: CryptoFrame, data: D) -> Option<CryptoFrame> {
-        let data = data.to_bytes();
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
-                self.logger.record_frame((&frame, &data).into());
+                self.logger.record_frame((&frame, &data));
                 self.guard.record_frame(GuaranteedFrame::Crypto(frame));
                 None
             })
@@ -323,15 +322,14 @@ where
 
 impl<'b, D> MarshalDataFrame<StreamFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
 where
-    D: DescribeData,
-    PacketWriter<'b>: WriteData<Bytes> + WriteDataFrame<StreamFrame, Bytes>,
+    D: DescribeData + Clone,
+    PacketWriter<'b>: WriteData<D> + WriteDataFrame<StreamFrame, D>,
 {
     fn dump_frame_with_data(&mut self, frame: StreamFrame, data: D) -> Option<StreamFrame> {
-        let data = data.to_bytes();
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
-                self.logger.record_frame((&frame, &data).into());
+                self.logger.record_frame((&frame, &data));
                 self.guard.record_frame(GuaranteedFrame::Stream(frame));
                 None
             })
@@ -340,15 +338,14 @@ where
 
 impl<'b, D> MarshalDataFrame<DatagramFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
 where
-    D: DescribeData,
-    PacketWriter<'b>: WriteData<Bytes> + WriteDataFrame<DatagramFrame, Bytes>,
+    D: DescribeData + Clone,
+    PacketWriter<'b>: WriteData<D> + WriteDataFrame<DatagramFrame, D>,
 {
     fn dump_frame_with_data(&mut self, frame: DatagramFrame, data: D) -> Option<DatagramFrame> {
-        let data = data.to_bytes();
         self.writer
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
-                self.logger.record_frame((&frame, &data).into());
+                self.logger.record_frame((&frame, &data));
                 self.guard.record_trivial();
                 None
             })

@@ -25,7 +25,7 @@ impl DescribeData for (&[u8], &[u8]) {
     }
 }
 
-impl DescribeData for &[u8] {
+impl DescribeData for [u8] {
     #[inline]
     fn len(&self) -> usize {
         <[u8]>::len(self)
@@ -59,6 +59,23 @@ impl<const N: usize> DescribeData for [u8; N] {
     }
 }
 
+impl DescribeData for Vec<u8> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+
+    #[inline]
+    fn to_bytes(&self) -> Bytes {
+        Bytes::copy_from_slice(self)
+    }
+}
+
 impl DescribeData for Bytes {
     #[inline]
     fn len(&self) -> usize {
@@ -73,6 +90,23 @@ impl DescribeData for Bytes {
     #[inline]
     fn to_bytes(&self) -> Bytes {
         self.clone()
+    }
+}
+
+impl<D: DescribeData + ?Sized> DescribeData for &D {
+    #[inline]
+    fn len(&self) -> usize {
+        D::len(*self)
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        D::is_empty(*self)
+    }
+
+    #[inline]
+    fn to_bytes(&self) -> Bytes {
+        D::to_bytes(*self)
     }
 }
 

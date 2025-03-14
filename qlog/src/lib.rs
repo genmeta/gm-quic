@@ -8,7 +8,7 @@ use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 use bytes::Bytes;
 use derive_builder::Builder;
 use derive_more::{Display, From, Into};
-use qbase::cid::ConnectionId;
+use qbase::{cid::ConnectionId, util::DescribeData};
 use quic::ConnectionID;
 use serde::{Deserialize, Serialize};
 
@@ -456,6 +456,12 @@ pub enum EvnetData {
     Verbose(loglevel::Verbose),
 }
 
+pub trait BeSpecificEventData {
+    fn scheme() -> &'static str;
+
+    fn importance() -> EventImportance;
+}
+
 #[enum_dispatch::enum_dispatch]
 pub trait BeEventData {
     fn scheme(&self) -> &'static str;
@@ -463,17 +469,29 @@ pub trait BeEventData {
     fn importance(&self) -> EventImportance;
 }
 
+impl<S: BeSpecificEventData> BeEventData for S {
+    #[inline]
+    fn scheme(&self) -> &'static str {
+        S::scheme()
+    }
+
+    #[inline]
+    fn importance(&self) -> EventImportance {
+        S::importance()
+    }
+}
+
 macro_rules! imp_be_events {
     ( $($importance:ident $event:ty => $prefix:ident $schme:literal ;)* ) => {
         $( imp_be_events!{@impl_one $importance $event => $prefix $schme ; } )*
     };
     (@impl_one $importance:ident $event:ty => urn $schme:literal ; ) => {
-        impl BeEventData for $event {
-            fn scheme(&self) -> &'static str {
+        impl BeSpecificEventData for $event {
+            fn scheme() -> &'static str {
                 const { concat!["urn:ietf:params:qlog:events:",$schme] }
             }
 
-            fn importance(&self) -> EventImportance {
+            fn importance() -> EventImportance {
                 const { EventImportance::$importance }
             }
         }
@@ -550,16 +568,25 @@ pub struct RawInfo {
     payload_length: Option<u64>,
     /// the (potentially truncated) contents of the full entity,
     /// including headers and possibly trailers
+    #[builder(setter(custom))]
     data: Option<HexString>,
 }
 
-impl From<Bytes> for RawInfo {
-    fn from(value: Bytes) -> Self {
-        Self {
-            length: Some(value.len() as u64),
-            payload_length: None,
-            data: Some(HexString::from(value)),
-        }
+impl RawInfoBuilder {
+    /// the (potentially truncated) contents of the full entity,
+    /// including headers and possibly trailers
+    pub fn data<D: DescribeData>(&mut self, data: D) -> &mut Self {
+        self.data = telemetry::filter::raw_data().then(|| Some(data.to_bytes().into()));
+        self
+    }
+}
+
+impl<D: DescribeData> From<D> for RawInfo {
+    fn from(data: D) -> Self {
+        build!(RawInfo {
+            length: data.len() as u64,
+            data: data
+        })
     }
 }
 

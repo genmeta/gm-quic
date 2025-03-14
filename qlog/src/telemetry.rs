@@ -21,6 +21,41 @@ pub trait Log {
 
 pub trait ExportEvent: Send + Sync {
     fn emit(&self, event: Event);
+
+    fn filter_event(&self, scheme: &'static str) -> bool {
+        _ = scheme;
+        true
+    }
+
+    fn filter_raw_data(&self) -> bool {
+        false
+    }
+}
+
+pub mod filter {
+    #[inline]
+    #[cfg(feature = "enabled")]
+    pub fn event(scheme: &'static str) -> bool {
+        super::current_span::CURRENT_SPAN.with(|span| span.borrow().filter_event(scheme))
+    }
+
+    #[inline]
+    #[cfg(not(feature = "enabled"))]
+    pub fn event(_scheme: &'static str) -> bool {
+        false
+    }
+
+    #[inline]
+    #[cfg(all(feature = "enabled", feature = "raw_data"))]
+    pub fn raw_data() -> bool {
+        super::current_span::CURRENT_SPAN.with(|span| span.borrow().filter_raw_data())
+    }
+
+    #[inline]
+    #[cfg(not(all(feature = "enabled", feature = "raw_data")))]
+    pub fn raw_data() -> bool {
+        false
+    }
 }
 
 #[derive(Clone)]
@@ -39,6 +74,7 @@ impl Debug for Span {
 }
 
 impl Span {
+    #[inline]
     pub fn new(exporter: Arc<dyn ExportEvent>, fields: HashMap<&'static str, Value>) -> Self {
         Self {
             exporter,
@@ -46,14 +82,27 @@ impl Span {
         }
     }
 
+    #[inline]
     pub fn emit(&self, event: Event) {
         self.exporter.emit(event);
     }
 
+    #[inline]
+    pub fn filter_event(&self, scheme: &'static str) -> bool {
+        self.exporter.filter_event(scheme)
+    }
+
+    #[inline]
+    pub fn filter_raw_data(&self) -> bool {
+        self.exporter.filter_raw_data()
+    }
+
+    #[inline]
     pub fn load<T: DeserializeOwned>(&self, name: &'static str) -> T {
         serde_json::from_value(self.fields[name].clone()).unwrap()
     }
 
+    #[inline]
     pub fn try_load<T: DeserializeOwned>(&self, name: &'static str) -> Option<T> {
         serde_json::from_value(self.fields.get(name)?.clone()).ok()
     }
@@ -155,7 +204,7 @@ pub mod macro_support {
     use serde::Serialize;
 
     use super::*;
-    use crate::EventBuilder;
+    use crate::{BeSpecificEventData, EventBuilder};
 
     pub fn modify_event_builder_costom_fields(
         builder: &mut EventBuilder,
@@ -183,7 +232,14 @@ pub mod macro_support {
         })
     }
 
-    pub fn emit_event(event: Event) {
+    pub fn build_and_emit_event<D: BeSpecificEventData>(
+        build_data: impl FnOnce() -> D,
+        build_event: impl FnOnce(D) -> Event,
+    ) {
+        if !filter::event(D::scheme()) {
+            return;
+        }
+        let event = build_event(build_data());
         current_span::CURRENT_SPAN.with(|span| span.borrow().emit(event));
     }
 
@@ -228,21 +284,25 @@ macro_rules! event {
         $crate::event!($crate::build!($event_type { $($evnet_field)* }) $(, $($tt)* )?);
     }};
     ($event_data:expr                       $(, $($tt:tt)* )?) => {{
-        let mut __event_builder = $crate::Event::builder();
-        // as_millis_f64 is nightly only
-        let __time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64()
-            * 1000.0;
-        __event_builder.time(__time);
-        __event_builder.data($event_data);
-        $crate::event!(@load_known __event_builder, path: $crate::PathID);
-        $crate::event!(@load_known __event_builder, protocol_types: $crate::ProtocolTypeList);
-        $crate::event!(@load_known __event_builder, group_id: $crate::GroupID);
-        $crate::event!(@field __event_builder $(, $($tt)* )?);
-        // emit the event to the current span
-        $crate::telemetry::macro_support::emit_event(__event_builder.build());
+        let __build_data = || $event_data;
+        let __build_event = |__even_data| {
+            let mut __event_builder = $crate::Event::builder();
+            // as_millis_f64 is nightly only
+            let __time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64()
+                * 1000.0;
+            __event_builder.time(__time);
+            __event_builder.data(__even_data);
+            $crate::event!(@load_known __event_builder, path: $crate::PathID);
+            $crate::event!(@load_known __event_builder, protocol_types: $crate::ProtocolTypeList);
+            $crate::event!(@load_known __event_builder, group_id: $crate::GroupID);
+            $crate::event!(@field __event_builder $(, $($tt)* )?);
+
+            __event_builder.build()
+        };
+        $crate::telemetry::macro_support::build_and_emit_event(__build_data, __build_event);
     }};
     (@load_known $event_builder:expr, $name:ident: $type:ty) => {
         if let Some(__value) = $crate::telemetry::macro_support::try_load_current_span::<$type>(stringify!($name)) {

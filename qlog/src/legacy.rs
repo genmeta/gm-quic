@@ -8,7 +8,7 @@ use derive_more::{From, Into};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{GroupID, HexString, VantagePoint};
+use crate::{GroupID, VantagePoint};
 
 pub const QLOG_VERSION: &str = "0.3";
 
@@ -298,23 +298,6 @@ pub struct CommonFields {
 #[serde_with::skip_serializing_none]
 #[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
-pub struct RawInfo {
-    /// the full byte length of the entity (e.g., packet or frame),
-    /// including possible headers and trailers
-    length: Option<u64>,
-
-    /// the byte length of the entity's payload,
-    /// excluding possible headers or trailers
-    payload_length: Option<u64>,
-
-    /// the (potentially truncated) contents of the full entity,
-    /// including headers and possibly trailers
-    data: Option<HexString>,
-}
-
-#[serde_with::skip_serializing_none]
-#[derive(Builder, Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[builder(setter(into, strip_option), build_fn(private, name = "fallible_build"))]
 pub struct GenericError {
     code: Option<u64>,
     message: Option<String>,
@@ -376,7 +359,6 @@ crate::gen_builder_method! {
     TraceSeqBuilder => TraceSeq;
     ConfigurationBuilder => Configuration;
     EventBuilder => Event;
-    RawInfoBuilder => RawInfo;
     GenericErrorBuilder => GenericError;
     GenericWarningBuilder => GenericWarning;
     GenericInfoBuilder => GenericInfo;

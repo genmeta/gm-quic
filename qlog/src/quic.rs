@@ -1,4 +1,6 @@
-use std::{collections::HashMap, fmt::Display, net::SocketAddr, time::Duration};
+use std::{
+    collections::HashMap, fmt::Display, marker::PhantomData, net::SocketAddr, time::Duration,
+};
 
 use bytes::Bytes;
 use derive_builder::Builder;
@@ -14,6 +16,7 @@ use qbase::{
         long::{HandshakeHeader, InitialHeader, ZeroRttHeader},
         short::OneRttHeader,
     },
+    util::DescribeData,
     varint::VarInt,
 };
 use serde::{Deserialize, Serialize};
@@ -23,7 +26,7 @@ pub mod recovery;
 pub mod security;
 pub mod transport;
 
-use crate::{HexString, RawInfo};
+use crate::{BeSpecificEventData, HexString, RawInfo};
 
 // 8.1
 #[derive(Debug, Clone, From, Into, PartialEq, Eq)]
@@ -368,19 +371,13 @@ impl<H: 'static> TryFrom<&qbase::packet::header::LongHeader<H>> for Token {
         if let Some(initial) = header.downcast_ref::<InitialHeader>() {
             return Ok(crate::build!(Token {
                 r#type: TokenType::Retry,
-                raw: RawInfo {
-                    length: initial.token().len() as u64,
-                    data: { Bytes::from_owner(initial.token().to_vec()) },
-                },
+                raw: initial.token(),
             }));
         }
         if let Some(retry) = header.downcast_ref::<RetryHeader>() {
             return Ok(crate::build!(Token {
                 r#type: TokenType::Retry,
-                raw: RawInfo {
-                    length: retry.token().len() as u64,
-                    data: { Bytes::from_owner(retry.token().to_vec()) },
-                },
+                raw: retry.token(),
             }));
         }
         Err(())
@@ -603,19 +600,19 @@ pub enum QuicFrame {
     },
 }
 
-impl From<(&CryptoFrame, &Bytes)> for QuicFrame {
-    fn from((frame, bytes): (&CryptoFrame, &Bytes)) -> Self {
-        let length = frame.encoding_size() + bytes.len();
-        let payload_length = bytes.len();
+impl<D: DescribeData> From<(&CryptoFrame, D)> for QuicFrame {
+    fn from((frame, data): (&CryptoFrame, D)) -> Self {
+        let length = frame.encoding_size() + data.len();
+        let payload_length = data.len();
         QuicFrame::Crypto {
             offset: frame.offset(),
             length: length as _,
             payload_length: Some(payload_length as _),
-            raw: Some(RawInfo {
-                length: Some(length as _),
-                payload_length: Some(payload_length as _),
-                data: Some(bytes.clone().into()),
-            }),
+            raw: Some(crate::build!(RawInfo {
+                length: length as u64,
+                payload_length: payload_length as u64,
+                data: data,
+            })),
         }
     }
 }
@@ -637,20 +634,20 @@ impl From<&CryptoFrame> for QuicFrame {
     }
 }
 
-impl From<(&StreamFrame, &Bytes)> for QuicFrame {
-    fn from((frame, bytes): (&StreamFrame, &Bytes)) -> Self {
+impl<D: DescribeData> From<(&StreamFrame, D)> for QuicFrame {
+    fn from((frame, data): (&StreamFrame, D)) -> Self {
         let length = frame.encoding_size() + frame.len();
-        let payload_length = bytes.len();
+        let payload_length = data.len();
         QuicFrame::Stream {
             stream_id: frame.stream_id().id(),
             offset: frame.offset(),
             length: length as _,
             fin: frame.is_fin(),
-            raw: Some(RawInfo {
-                length: Some(length as _),
-                payload_length: Some(payload_length as _),
-                data: Some(bytes.clone().into()),
-            }),
+            raw: Some(crate::build!(RawInfo {
+                length: length as u64,
+                payload_length: payload_length as u64,
+                data: data,
+            })),
         }
     }
 }
@@ -673,17 +670,17 @@ impl From<&StreamFrame> for QuicFrame {
     }
 }
 
-impl From<(&DatagramFrame, &Bytes)> for QuicFrame {
-    fn from((frame, bytes): (&DatagramFrame, &Bytes)) -> Self {
-        let length = frame.encoding_size() + bytes.len();
-        let payload_length = bytes.len();
+impl<D: DescribeData> From<(&DatagramFrame, D)> for QuicFrame {
+    fn from((frame, data): (&DatagramFrame, D)) -> Self {
+        let length = frame.encoding_size() + data.len();
+        let payload_length = data.len();
         QuicFrame::Datagram {
             length: Some(length as _),
-            raw: Some(RawInfo {
-                length: Some(length as _),
-                payload_length: Some(payload_length as _),
-                data: Some(bytes.clone().into()),
-            }),
+            raw: Some(crate::build!(RawInfo {
+                length: length as u64,
+                payload_length: payload_length as u64,
+                data: data,
+            })),
         }
     }
 }
@@ -779,7 +776,7 @@ impl From<&NewTokenFrame> for QuicFrame {
                 raw: RawInfo {
                     length: value.encoding_size() as u64,
                     payload_length: value.token().len() as u64,
-                    data: { Bytes::from_owner(value.token().to_vec()) },
+                    data: value.token(),
                 },
             }),
         }
@@ -898,19 +895,37 @@ impl From<&Frame> for QuicFrame {
 }
 
 /// A collection of automatically and efficiently converting raw quic frames into qlog quic frames.
-#[derive(Default)]
-pub struct QuicFrames(Vec<QuicFrame>);
+pub struct QuicFramesCollector<E> {
+    event: PhantomData<E>,
+    frames: Vec<QuicFrame>,
+}
 
-impl QuicFrames {
+impl<E> QuicFramesCollector<E> {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            event: PhantomData,
+            frames: Vec::new(),
+        }
     }
 }
 
-impl<'f> Extend<&'f Frame> for QuicFrames {
-    fn extend<T: IntoIterator<Item = &'f Frame>>(&mut self, iter: T) {
-        for frame in iter {
-            if let Some(last) = self.0.last_mut() {
+impl<E> Default for QuicFramesCollector<E> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<E, F> Extend<F> for QuicFramesCollector<E>
+where
+    E: BeSpecificEventData,
+    F: Into<QuicFrame>,
+{
+    fn extend<T: IntoIterator<Item = F>>(&mut self, iter: T) {
+        if !crate::telemetry::Span::current().filter_event(E::scheme()) {
+            return;
+        }
+        for frame in iter.into_iter().map(Into::into) {
+            if let Some(last) = self.frames.last_mut() {
                 match last {
                     QuicFrame::Padding {
                         length,
@@ -935,14 +950,14 @@ impl<'f> Extend<&'f Frame> for QuicFrames {
                     _ => {}
                 }
             }
-            self.0.push(frame.into());
+            self.frames.push(frame);
         }
     }
 }
 
-impl From<QuicFrames> for Vec<QuicFrame> {
-    fn from(value: QuicFrames) -> Self {
-        value.0
+impl<E> From<QuicFramesCollector<E>> for Vec<QuicFrame> {
+    fn from(value: QuicFramesCollector<E>) -> Self {
+        value.frames
     }
 }
 

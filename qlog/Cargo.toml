@@ -26,3 +26,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "io-std"] }
+
+[features]
+enabled = []
+raw_data = []
