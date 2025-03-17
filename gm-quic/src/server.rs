@@ -18,7 +18,6 @@ use rustls::{
     server::{NoClientAuth, ResolvesServerCert, WantsServerCert, danger::ClientCertVerifier},
 };
 use tokio::sync::mpsc;
-use tracing::{Instrument, trace_span};
 
 use crate::{
     PROTO,
@@ -192,27 +191,21 @@ impl QuicServer {
         PROTO.deliver(packet, pathway, link).await;
         _ = server.listener.send((connection.clone(), pathway));
 
-        tokio::spawn(
-            async move {
-                while let Some(event) = events.recv().await {
-                    match event {
-                        Event::Handshaked => {}
-                        Event::ProbedNewPath(..) => {}
-                        Event::PathInactivated(_, socket) => {
-                            _ = Interfaces::try_free_interface(socket.src())
-                        }
-                        Event::Failed(error) => connection.enter_closing(error.into()),
-                        Event::Closed(ccf) => connection.enter_draining(ccf),
-                        Event::StatelessReset => {}
-                        Event::Terminated => { /* Todo: connections set */ }
+        tokio::spawn(async move {
+            while let Some(event) = events.recv().await {
+                match event {
+                    Event::Handshaked => {}
+                    Event::ProbedNewPath(..) => {}
+                    Event::PathInactivated(_, socket) => {
+                        _ = Interfaces::try_free_interface(socket.src())
                     }
+                    Event::Failed(error) => connection.enter_closing(error.into()),
+                    Event::Closed(ccf) => connection.enter_draining(ccf),
+                    Event::StatelessReset => { /* TOOD: stateless reset */ }
+                    Event::Terminated => return,
                 }
             }
-            .instrument(trace_span!(
-                "server connection driver",
-                odcid = format_args!("{origin_dcid:x}")
-            )),
-        );
+        });
     }
 
     pub fn shutdown(&self) {

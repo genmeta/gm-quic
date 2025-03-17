@@ -14,7 +14,6 @@ use rustls::{
     client::{ResolvesClientCert, WantsClientCert},
 };
 use tokio::sync::mpsc;
-use tracing::{Instrument, trace_span};
 
 use crate::{
     PROTO,
@@ -188,40 +187,34 @@ impl QuicClient {
                 .run_with(event_broker),
         );
 
-        tokio::spawn(
-            {
-                let connection = connection.clone();
-                async move {
-                    while let Some(event) = events.recv().await {
-                        match event {
-                            Event::Handshaked => {}
-                            Event::ProbedNewPath(_, _) => {}
-                            Event::PathInactivated(_pathway, socket) => {
-                                _ = Interfaces::try_free_interface(socket.src())
-                            }
-                            Event::Failed(error) => {
-                                REUSEABLE_CONNECTIONS.remove_if(&server_name, |_, exist| {
-                                    Arc::ptr_eq(&connection, exist)
-                                });
-                                connection.enter_closing(error.into())
-                            }
-                            Event::Closed(ccf) => {
-                                REUSEABLE_CONNECTIONS.remove_if(&server_name, |_, exist| {
-                                    Arc::ptr_eq(&connection, exist)
-                                });
-                                connection.enter_draining(ccf)
-                            }
-                            Event::StatelessReset => {}
-                            Event::Terminated => {}
+        tokio::spawn({
+            let connection = connection.clone();
+            async move {
+                while let Some(event) = events.recv().await {
+                    match event {
+                        Event::Handshaked => {}
+                        Event::ProbedNewPath(_, _) => {}
+                        Event::PathInactivated(_pathway, socket) => {
+                            _ = Interfaces::try_free_interface(socket.src())
                         }
+                        Event::Failed(error) => {
+                            REUSEABLE_CONNECTIONS.remove_if(&server_name, |_, exist| {
+                                Arc::ptr_eq(&connection, exist)
+                            });
+                            connection.enter_closing(error.into())
+                        }
+                        Event::Closed(ccf) => {
+                            REUSEABLE_CONNECTIONS.remove_if(&server_name, |_, exist| {
+                                Arc::ptr_eq(&connection, exist)
+                            });
+                            connection.enter_draining(ccf)
+                        }
+                        Event::StatelessReset => { /* TOOD: stateless reset */ }
+                        Event::Terminated => return,
                     }
                 }
             }
-            .instrument(trace_span!(
-                "client_connection_driver",
-                odcid = format_args!("{origin_dcid:x}")
-            )),
-        );
+        });
 
         connection.add_path(link, pathway)?;
         Ok(connection)
