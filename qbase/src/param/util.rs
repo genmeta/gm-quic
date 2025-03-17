@@ -30,6 +30,7 @@ pub enum ParameterId {
     RetrySourceConnectionId,
     MaxDatagramFrameSize,
     GreaseQuicBit,
+    Value(VarInt),
 }
 
 impl From<ParameterId> for VarInt {
@@ -54,42 +55,42 @@ impl From<ParameterId> for VarInt {
             ParameterId::RetrySourceConnectionId => 0x10,
             ParameterId::MaxDatagramFrameSize => 0x20,
             ParameterId::GreaseQuicBit => 0x2a_b2,
+            ParameterId::Value(id) => return id,
         })
+    }
+}
+
+impl From<VarInt> for ParameterId {
+    fn from(id: VarInt) -> Self {
+        match id.into_inner() {
+            0x00 => ParameterId::OriginalDestinationConnectionId,
+            0x01 => ParameterId::MaxIdleTimeout,
+            0x02 => ParameterId::StatelssResetToken,
+            0x03 => ParameterId::MaxUdpPayloadSize,
+            0x04 => ParameterId::InitialMaxData,
+            0x05 => ParameterId::InitialMaxStreamDataBidiLocal,
+            0x06 => ParameterId::InitialMaxStreamDataBidiRemote,
+            0x07 => ParameterId::InitialMaxStreamDataUni,
+            0x08 => ParameterId::InitialMaxStreamsBidi,
+            0x09 => ParameterId::InitialMaxStreamsUni,
+            0x0a => ParameterId::AckDelayExponent,
+            0x0b => ParameterId::MaxAckDelay,
+            0x0c => ParameterId::DisableActiveMigration,
+            0x0d => ParameterId::PreferredAddress,
+            0x0e => ParameterId::ActiveConnectionIdLimit,
+            0x0f => ParameterId::InitialSourceConnectionId,
+            0x10 => ParameterId::RetrySourceConnectionId,
+            0x20 => ParameterId::MaxDatagramFrameSize,
+            0x2a_b2 => ParameterId::GreaseQuicBit,
+            _ => ParameterId::Value(id),
+        }
     }
 }
 
 /// Parse the parameter id from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
 pub(super) fn be_parameter_id(input: &[u8]) -> nom::IResult<&[u8], ParameterId> {
-    let (remain, id) = be_varint(input)?;
-    let id = match id.into_inner() {
-        0x00 => ParameterId::OriginalDestinationConnectionId,
-        0x01 => ParameterId::MaxIdleTimeout,
-        0x02 => ParameterId::StatelssResetToken,
-        0x03 => ParameterId::MaxUdpPayloadSize,
-        0x04 => ParameterId::InitialMaxData,
-        0x05 => ParameterId::InitialMaxStreamDataBidiLocal,
-        0x06 => ParameterId::InitialMaxStreamDataBidiRemote,
-        0x07 => ParameterId::InitialMaxStreamDataUni,
-        0x08 => ParameterId::InitialMaxStreamsBidi,
-        0x09 => ParameterId::InitialMaxStreamsUni,
-        0x0a => ParameterId::AckDelayExponent,
-        0x0b => ParameterId::MaxAckDelay,
-        0x0c => ParameterId::DisableActiveMigration,
-        0x0d => ParameterId::PreferredAddress,
-        0x0e => ParameterId::ActiveConnectionIdLimit,
-        0x0f => ParameterId::InitialSourceConnectionId,
-        0x10 => ParameterId::RetrySourceConnectionId,
-        0x20 => ParameterId::MaxDatagramFrameSize,
-        0x2a_b2 => ParameterId::GreaseQuicBit,
-        _ => {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Alt,
-            )));
-        }
-    };
-    Ok((remain, id))
+    be_varint(input).map(|(remain, id)| (remain, id.into()))
 }
 
 /// A [`bytes::BufMut`] extension trait, makes buffer more friendly

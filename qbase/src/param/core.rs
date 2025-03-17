@@ -481,6 +481,9 @@ pub(super) fn be_server_parameters<'b>(
                 (input, params.max_datagram_frame_size) = be_varint(remain)?
             }
             ParameterId::GreaseQuicBit => (input, params.grease_quic_bit) = (remain, true),
+            ParameterId::Value(_unknow) => {
+                (input, _) = nom::bytes::streaming::take(len.into_inner())(remain)?
+            }
         }
     }
     Ok((input, ()))
