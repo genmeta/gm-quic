@@ -10,7 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-h3 = "0.0.6"
+h3 = "0.0.7"
 bytes = { workspace = true }
 futures = { workspace = true }
 gm-quic = { workspace = true }
