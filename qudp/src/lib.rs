@@ -41,8 +41,6 @@ pub struct PacketHeader {
     pub ecn: Option<u8>,
     // packet segment size
     pub seg_size: u16,
-    // use gso
-    gso: bool,
 }
 
 impl PacketHeader {
@@ -53,7 +51,6 @@ impl PacketHeader {
             ttl,
             ecn,
             seg_size,
-            ..Default::default()
         }
     }
 }
@@ -64,10 +61,6 @@ impl Default for PacketHeader {
             dst: SocketAddr::from(([0, 0, 0, 0], 0)),
             ttl: DEFAULT_TTL as u8,
             ecn: None,
-            #[cfg(feature = "gso")]
-            gso: true,
-            #[cfg(not(feature = "gso"))]
-            gso: false,
             seg_size: 0,
         }
     }

@@ -20,6 +20,7 @@ qcongestion = { workspace = true }
 qlog = { workspace = true }
 qrecovery = { workspace = true }
 rustls = { workspace = true }
+smallvec = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tracing = { workspace = true }
 qinterface = { workspace = true }

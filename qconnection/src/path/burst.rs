@@ -169,7 +169,7 @@ impl Burst {
                 .into_iter()
                 .enumerate()
                 .map(|(seg_idx, seg_len)| io::IoSlice::new(&buffers[seg_idx][..seg_len]))
-                .collect::<Vec<_>>();
+                .collect::<smallvec::SmallVec<[_; 64]>>();
             self.path.send_packets(&segments).await?;
         }
     }

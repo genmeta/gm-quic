@@ -16,6 +16,7 @@ cfg-if = { workspace = true }
 libc = "0.2"
 log = { workspace = true }
 socket2 = { workspace = true }
+smallvec = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 
 [target.'cfg(windows)'.dependencies]

@@ -291,7 +291,6 @@ impl Io for UdpSocketController {
             ttl: DEFAULT_TTL as u8,
             ecn: Some(ecn_bits as u8),
             seg_size: len as u16,
-            gso: false,
         };
 
         Ok(1)

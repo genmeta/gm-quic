@@ -79,14 +79,17 @@ mod qudp {
             let mut recv_buffer = self.recv_bufs.lock().unwrap();
 
             while recv_buffer.undelivered.is_empty() {
-                let ReceiveBuffers { bufs, hdrs, .. } = &mut *recv_buffer;
-                // 想不vec!也行，但是那样就得处理自引用结构之类的...，太复杂而了
-                // 之后可以考虑用small_vec这样的库，array小于一个阈值就放在栈上，更可接受
+                let ReceiveBuffers {
+                    bufs,
+                    hdrs,
+                    undelivered,
+                    ..
+                } = &mut *recv_buffer;
                 let mut io_slices = bufs
                     .iter_mut()
                     .map(|buf| io::IoSliceMut::new(&mut buf[..]))
-                    .collect::<Vec<_>>(); // :(
-                recv_buffer.undelivered =
+                    .collect::<smallvec::SmallVec<[_; 64]>>();
+                *undelivered =
                     0..core::task::ready!(self.inner.poll_recv(&mut io_slices, hdrs, cx)?);
             }
 

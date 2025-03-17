@@ -1,4 +1,4 @@
-use std::{cmp, io::IoSlice, mem, net::SocketAddr, os::fd::AsRawFd};
+use std::{io::IoSlice, mem, net::SocketAddr, os::fd::AsRawFd};
 
 use socket2::SockAddr;
 
@@ -103,14 +103,6 @@ impl Io for UdpSocketController {
     fn sendmsg(&self, bufs: &[IoSlice<'_>], send_hdr: &PacketHeader) -> io::Result<usize> {
         let io = socket2::SockRef::from(&self.io);
 
-        let gso_size = if send_hdr.gso {
-            let max_gso = self.max_gso_segments();
-            let max_payloads = u16::MAX / send_hdr.seg_size;
-            cmp::min(max_gso, max_payloads)
-        } else {
-            1
-        };
-
         let dst: SockAddr = if self.local_addr()?.is_ipv6() && !io.only_v6()? {
             match send_hdr.dst.ip() {
                 std::net::IpAddr::V4(ip) => SocketAddr::new(
@@ -125,10 +117,15 @@ impl Io for UdpSocketController {
         };
 
         #[cfg(feature = "gso")]
-        return sendmmsg(&self.io, bufs, send_hdr, &dst, gso_size);
+        {
+            let max_gso = self.max_gso_segments();
+            let max_payloads = u16::MAX / send_hdr.seg_size;
+            let gso_size = std::cmp::min(max_gso, max_payloads);
+            sendmmsg(&self.io, bufs, send_hdr, &dst, gso_size)
+        }
 
         #[cfg(not(feature = "gso"))]
-        return sendmsg(&self.io, bufs, send_hdr, &dst, gso_size);
+        sendmsg(&self.io, bufs, send_hdr, &dst)
     }
 
     fn recvmsg(
@@ -182,31 +179,21 @@ pub(super) fn sendmmsg(
     dst: &SockAddr,
     gso_size: u16,
 ) -> io::Result<usize> {
-    use std::iter;
-    let mut iovecs: Vec<Vec<IoSlice>> = iter::repeat_with(|| Vec::with_capacity(gso_size as usize))
-        .take(BATCH_SIZE)
-        .collect();
-
     let mut message = Message::default();
     message.prepare_sent(send_hdr, dst, gso_size, BATCH_SIZE);
 
     let mut sent_packets = 0;
     for batch in bufs.chunks(gso_size as usize * BATCH_SIZE) {
-        let mut mmsg_batch_size: usize = 0;
-        let mut packet_count = 0;
+        let mut mmsg_batch_size = 0;
         for (i, gso_batch) in batch.chunks(gso_size as usize).enumerate() {
             mmsg_batch_size += 1;
             let hdr = &mut message.hdrs[i].msg_hdr;
-            let iovec = &mut iovecs[i];
-            packet_count += gso_batch.len();
-            iovec.clear();
-            iovec.extend(gso_batch.iter().map(|payload| IoSlice::new(payload)));
-            hdr.msg_iov = iovec.as_ptr() as *mut _;
-            hdr.msg_iovlen = iovec.len() as _;
+            hdr.msg_iov = gso_batch.as_ptr() as *mut _;
+            hdr.msg_iovlen = gso_batch.len() as _;
         }
 
         let mut msgvec = message.hdrs.as_mut_ptr();
-        let mut vlen = mmsg_batch_size as u32;
+        let mut vlen = mmsg_batch_size;
         loop {
             let ret =
                 to_result(unsafe { libc::sendmmsg(io.as_raw_fd(), msgvec, vlen, 0) } as isize);
@@ -216,14 +203,15 @@ pub(super) fn sendmmsg(
                 // msgvec; if this is less than vlen, the caller can retry with a
                 // further sendmmsg() call to send the remaining messages.
                 Ok(n) => {
-                    sent_packets += packet_count;
-                    if n != vlen as usize {
-                        log::warn!("sendmmsg : only {} messages sent out of {}", n, vlen);
-                        vlen = n as u32 - vlen;
-                        msgvec = message.hdrs[n..].as_mut_ptr();
-                        continue;
+                    sent_packets += message.hdrs[(mmsg_batch_size - vlen) as usize..][..n]
+                        .iter()
+                        .map(|hdr| hdr.msg_hdr.msg_iovlen)
+                        .sum::<usize>();
+                    if n == vlen as usize {
+                        break;
                     }
-                    break;
+                    vlen -= n as u32;
+                    msgvec = message.hdrs[(mmsg_batch_size - vlen) as usize..].as_mut_ptr();
                 }
                 Err(e) => match e.raw_os_error() {
                     Some(libc::EINTR) => continue,
@@ -244,24 +232,21 @@ pub(super) fn sendmsg(
     bufs: &[IoSlice<'_>],
     send_hdr: &PacketHeader,
     dst: &SockAddr,
-    gso_size: u16,
 ) -> io::Result<usize> {
     let mut msg = Message::default();
-    msg.prepare_sent(send_hdr, dst, gso_size, 1);
+    msg.prepare_sent(send_hdr, dst, 1, 1);
 
     let mut sent_packets = 0;
-    for batch in bufs.chunks(gso_size as usize) {
-        let mut iovec: Vec<IoSlice> = Vec::with_capacity(gso_size as usize);
-        iovec.extend(batch.iter().map(|buf| IoSlice::new(buf)));
-
+    for batch in bufs {
+        let batch = [*batch];
         let hdr = &mut msg.hdrs[0];
-        hdr.msg_iov = iovec.as_ptr() as *mut _;
-        hdr.msg_iovlen = iovec.len() as _;
+        hdr.msg_iov = batch.as_ptr() as *mut _;
+        hdr.msg_iovlen = 1;
 
         loop {
             let ret = to_result(unsafe { libc::sendmsg(io.as_raw_fd(), hdr, 0) });
             match ret {
-                Ok(_n) => {
+                Ok(_bytes_sent) => {
                     sent_packets += 1;
                     break;
                 }
@@ -297,13 +282,14 @@ unsafe fn recvmmsg(
     use std::ptr;
     let timeout = ptr::null_mut::<libc::timespec>();
     loop {
-        let ret = libc::syscall(libc::SYS_recvmmsg, sockfd, msgvec, vlen, flags, timeout);
+        let ret =
+            unsafe { libc::syscall(libc::SYS_recvmmsg, sockfd, msgvec, vlen, flags, timeout) };
         match to_result(ret as isize) {
             Ok(n) => return Ok(Rcvd::MsgCount(n)),
             Err(e) => {
                 // ENOSYS indicates that recvmmsg is not supported
                 if let Some(libc::ENOSYS) = e.raw_os_error() {
-                    return recvmsg(sockfd, &mut (*msgvec).msg_hdr);
+                    return recvmsg(sockfd, &mut (unsafe { *msgvec }).msg_hdr);
                 }
                 handle_io_error!(e, Rcvd::MsgCount(0))
             }
