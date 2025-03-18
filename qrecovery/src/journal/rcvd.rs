@@ -104,15 +104,15 @@ impl RcvdJournal {
         let largest = VarInt::from_u64(largest).unwrap();
         let delay = rcvd_time.elapsed().as_micros() as u64;
         let delay = VarInt::from_u64(delay).unwrap();
+        let first_range = pkts.by_ref().take_while(|(_, s)| s.is_received).count() - 1;
+        let first_range = VarInt::try_from(first_range).unwrap();
         // Frame type + Largest Acknowledged + First Ack Range + Ack Range Count
-        let min_len = 1 + largest.encoding_size() + delay.encoding_size() + 1 + 1;
+        let min_len =
+            1 + largest.encoding_size() + delay.encoding_size() + first_range.encoding_size() + 1;
         if capacity < min_len {
             return Err(Signals::CONGESTION);
         }
         capacity -= min_len;
-
-        let first_range = pkts.by_ref().take_while(|(_, s)| s.is_received).count() - 1;
-        let first_range = VarInt::try_from(first_range).unwrap();
 
         fn range_count_size_increment(range_count: usize) -> usize {
             match range_count {
