@@ -2,6 +2,7 @@ use std::{
     future::Future,
     io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
+    os::fd::AsFd,
     pin::Pin,
     sync::atomic::AtomicU16,
     task::{Context, Poll, ready},
@@ -16,7 +17,6 @@ cfg_if::cfg_if! {
     if #[cfg(unix)]{
         #[path = "unix.rs"]
         mod unix;
-        mod msg;
         #[cfg(feature = "gso")]
         pub const BATCH_SIZE: usize = 64;
         #[cfg(not(feature = "gso"))]
@@ -30,8 +30,6 @@ cfg_if::cfg_if! {
     }
 }
 
-mod cmsghdr;
-
 #[derive(Clone, Copy, Debug)]
 pub struct PacketHeader {
     pub src: SocketAddr,
@@ -41,8 +39,6 @@ pub struct PacketHeader {
     pub ecn: Option<u8>,
     // packet segment size
     pub seg_size: u16,
-    // use gso
-    gso: bool,
 }
 
 impl PacketHeader {
@@ -53,7 +49,6 @@ impl PacketHeader {
             ttl,
             ecn,
             seg_size,
-            ..Default::default()
         }
     }
 }
@@ -64,10 +59,6 @@ impl Default for PacketHeader {
             dst: SocketAddr::from(([0, 0, 0, 0], 0)),
             ttl: DEFAULT_TTL as u8,
             ecn: None,
-            #[cfg(feature = "gso")]
-            gso: true,
-            #[cfg(not(feature = "gso"))]
-            gso: false,
             seg_size: 0,
         }
     }
@@ -89,24 +80,19 @@ impl UdpSocketController {
         };
 
         let socket = Socket::new(domain, Type::DGRAM, None)?;
+        socket.set_nonblocking(true)?;
+        Self::config(&socket, domain)?;
         if let Err(e) = socket.bind(&addr.into()) {
-            log::error!("Failed to bind socket: {}", e);
+            tracing::error!("Failed to bind socket: {}", e);
             return Err(io::Error::new(io::ErrorKind::AddrInUse, e));
         }
-
-        socket.set_nonblocking(true)?;
         let io = tokio::net::UdpSocket::from_std(socket.into())?;
-
-        // TODO: 会报错
-        // io.set_ttl(DEFAULT_TTL as u32)?;
-
-        let socket = Self {
+        let usc = Self {
             io,
             gso_size: 1.into(),
             gro_size: 1.into(),
         };
-        socket.config()?;
-        Ok(socket)
+        Ok(usc)
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -159,13 +145,11 @@ impl UdpSocketController {
 }
 
 pub trait Io {
-    fn config(&self) -> io::Result<()>;
+    fn config<T: AsFd>(io: T, family: Domain) -> io::Result<()>;
 
     fn sendmsg(&self, bufs: &[IoSlice<'_>], hdr: &PacketHeader) -> io::Result<usize>;
 
     fn recvmsg(&self, bufs: &mut [IoSliceMut<'_>], hdr: &mut [PacketHeader]) -> io::Result<usize>;
-
-    fn setsockopt(&self, level: libc::c_int, name: libc::c_int, value: libc::c_int);
 }
 
 impl UdpSocketController {

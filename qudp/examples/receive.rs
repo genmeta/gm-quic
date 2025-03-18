@@ -10,8 +10,8 @@ struct Args {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Trace)
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::level_filters::LevelFilter::TRACE)
         .init();
 
     let args = Args::parse();
@@ -22,15 +22,16 @@ async fn main() {
     loop {
         match receiver.recv().await {
             Ok(n) => {
-                log::info!(
-                    "received {} packets, dst {}, src {}",
+                tracing::info!(
+                    "received {} packets, dst {}, src {} len {}",
                     n,
                     receiver.headers[0].dst,
-                    receiver.headers[0].src
+                    receiver.headers[0].src,
+                    receiver.headers[0].seg_size
                 );
             }
             Err(e) => {
-                log::error!("receive failed: {}", e);
+                tracing::error!("receive failed: {}", e);
             }
         }
     }
