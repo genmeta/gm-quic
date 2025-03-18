@@ -1,421 +1,302 @@
-use std::{cmp, io::IoSlice, mem, net::SocketAddr, os::fd::AsRawFd};
-
-use socket2::SockAddr;
-
-use crate::{
-    BATCH_SIZE, DEFAULT_TTL, Io, PacketHeader, UdpSocketController, cmsghdr::CmsgHdr, io,
-    msg::Message,
+use std::{
+    io::{self, IoSlice, IoSliceMut},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    os::fd::{AsFd, AsRawFd},
 };
 
-const OPTION_ON: libc::c_int = 1;
-const OPTION_OFF: libc::c_int = 0;
+use nix::{
+    cmsg_space,
+    sys::socket::{
+        ControlMessageOwned, MsgFlags, RecvMsg, SockaddrIn, SockaddrIn6, SockaddrLike,
+        SockaddrStorage,
+        sockopt::{self},
+    },
+};
+use socket2::Domain;
+use tracing::info;
 
-pub trait Gso: Io {
-    fn max_gso_segments(&self) -> u16;
+use crate::{BATCH_SIZE, DEFAULT_TTL, Io, PacketHeader, UdpSocketController};
 
-    fn set_segment_size(encoder: &mut CmsgHdr<libc::msghdr>, segment_size: u16);
-}
-
-pub trait Gro: Io {
-    #[allow(unused)] // TODO: use GRO
-    fn max_gro_segments(&self) -> u16;
-}
-
-macro_rules! handle_io_error {
-    ($e:expr, $n:expr) => {
-        match $e.raw_os_error() {
-            Some(libc::EINTR) => continue,
-            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "openbsd",))]
-            Some(libc::EWOULDBLOCK)
-            | Some(libc::EBADF)
-            | Some(libc::EPIPE)
-            | Some(libc::ENOTCONN) => return Err($e),
-            #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "openbsd",)))]
-            Some(libc::EWOULDBLOCK)
-            | Some(libc::EBADE)
-            | Some(libc::EPIPE)
-            | Some(libc::ENOTCONN) => return Err($e),
-            _ => break,
-        }
-    };
-}
+const OPTION_ON: bool = true;
+const OPTION_OFF: bool = false;
 
 impl Io for UdpSocketController {
-    fn config(&self) -> io::Result<()> {
-        let io = socket2::SockRef::from(&self.io);
-        io.set_nonblocking(true)?;
+    fn config<T: AsFd>(io: T, family: Domain) -> io::Result<()> {
+        nix::sys::socket::setsockopt(&io, sockopt::RcvBuf, &(2 * 1024 * 1024))?;
+        match family {
+            Domain::IPV4 => {
+                #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios"))]
+                {
+                    nix::sys::socket::setsockopt(&io, sockopt::IpDontFrag, OPTION_ON);
+                    nix::sys::socket::setsockopt(&io, sockopt::Ipv4RecvDstAddr, OPTION_ON);
+                }
 
-        let addr = io.local_addr()?;
-        let is_ipv4 = addr.family() == libc::AF_INET as libc::sa_family_t;
-        self.setsockopt(libc::SOL_SOCKET, libc::SO_RCVBUF, 2 * 1024 * 1024);
-        if is_ipv4 || !io.only_v6()? {
-            //  If enabled, the IP_TOS ancillary message is passed with
-            //  incoming packets.  It contains a byte which specifies the
-            //  Type of Service/Precedence field of the packet header.
-            self.setsockopt(libc::IPPROTO_IP, libc::IP_RECVTOS, OPTION_ON);
-        }
-
-        if is_ipv4 {
-            #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios"))]
-            {
-                // IP_DONTFRAG  may	 be used to set	the Don't Fragment flag	on IP packets.
-                self.setsockopt(libc::IPPROTO_IP, libc::IP_DONTFRAG, OPTION_ON);
-                // If the IP_RECVDSTADDR	option	is enabled on a	SOCK_DGRAM socket, the
-                // recvmsg(2) call will return the destination IP address for a UDP	 datagram.
-                self.setsockopt(libc::IPPROTO_IP, libc::IP_RECVDSTADDR, OPTION_ON);
+                nix::sys::socket::setsockopt(&io, sockopt::Ipv4PacketInfo, &OPTION_ON)?;
+                nix::sys::socket::setsockopt(&io, sockopt::Ipv4Ttl, &DEFAULT_TTL)?;
             }
-            self.setsockopt(libc::IPPROTO_IP, libc::IP_PKTINFO, OPTION_ON);
-            self.setsockopt(libc::IPPROTO_IP, libc::IP_TTL, DEFAULT_TTL);
-            // When this flag is set, pass a IP_TTL control message with
-            // the time-to-live field of the received packet as a 32 bit
-            // integer.  Not supported for SOCK_STREAM sockets.
-            self.setsockopt(libc::IPPROTO_IP, libc::IP_RECVTTL, OPTION_ON);
+            Domain::IPV6 => {
+                nix::sys::socket::setsockopt(&io, sockopt::Ipv6V6Only, &OPTION_OFF)?;
+                nix::sys::socket::setsockopt(&io, sockopt::Ipv6RecvPacketInfo, &OPTION_ON)?;
+                nix::sys::socket::setsockopt(&io, sockopt::Ipv6DontFrag, &OPTION_ON)?;
+                nix::sys::socket::setsockopt(&io, sockopt::Ipv6Ttl, &DEFAULT_TTL)?;
+            }
+            _ => {
+                todo!("support unix socket")
+            }
         }
-        // Options standardized in RFC 3542
-        else {
-            //  If this flag is set to false (zero), then the socket can
-            //  be used to send and receive packets to and from an IPv6
-            //  address or an IPv4-mapped IPv6 address.
-            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, OPTION_OFF);
-            // Set delivery of the IPV6_PKTINFO control message on incoming datagrams.
-            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_RECVPKTINFO, OPTION_ON);
-            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_RECVTCLASS, OPTION_ON);
-            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_DONTFRAG, OPTION_ON);
-            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_PKTINFO, OPTION_ON);
-            // The received hop limit is returned as ancillary data by recvmsg()
-            // only if the application has enabled the IPV6_RECVHOPLIMIT socket option
-            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_RECVHOPLIMIT, OPTION_ON);
-            self.setsockopt(libc::IPPROTO_IP, libc::IP_RECVTTL, OPTION_ON);
-            self.setsockopt(libc::IPPROTO_IPV6, libc::IPV6_UNICAST_HOPS, DEFAULT_TTL);
-        }
-
-        use core::sync::atomic::Ordering::Release;
-        self.gso_size.store(self.max_gso_segments(), Release);
-        self.gro_size.store(self.max_gro_segments(), Release);
-
         Ok(())
     }
 
-    fn setsockopt(&self, level: libc::c_int, name: libc::c_int, value: libc::c_int) {
-        let _ = setsockopt(&self.io.as_raw_fd(), level, name, value);
-    }
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "netbsd"
+    ))]
+    fn sendmsg(&self, slices: &[IoSlice<'_>], send_hdr: &PacketHeader) -> io::Result<usize> {
+        use nix::sys::socket::{ControlMessage, MsgFlags, SockaddrIn, SockaddrIn6};
+        let mut sent_packet = 0;
+        for batch in slices.chunks(BATCH_SIZE) {
+            let batch_size = batch.len();
+            let buffers: Vec<_> = batch
+                .iter()
+                .take(batch_size)
+                .map(std::slice::from_ref)
+                .collect();
 
-    fn sendmsg(&self, bufs: &[IoSlice<'_>], send_hdr: &PacketHeader) -> io::Result<usize> {
-        let io = socket2::SockRef::from(&self.io);
+            let (cmsgs, cmsg_buffer) = {
+                let mut cmsgs = Vec::new();
+                #[allow(unused_assignments)]
+                let mut buffer = None;
+                #[cfg(feature = "gso")]
+                {
+                    cmsgs.push(ControlMessage::UdpGsoSegments(&send_hdr.seg_size));
+                    buffer = Some(cmsg_space!(libc::c_int));
+                }
+                (cmsgs, buffer)
+            };
 
-        let gso_size = if send_hdr.gso {
-            let max_gso = self.max_gso_segments();
-            let max_payloads = u16::MAX / send_hdr.seg_size;
-            cmp::min(max_gso, max_payloads)
-        } else {
-            1
-        };
-
-        let dst: SockAddr = if self.local_addr()?.is_ipv6() && !io.only_v6()? {
-            match send_hdr.dst.ip() {
-                std::net::IpAddr::V4(ip) => SocketAddr::new(
-                    std::net::IpAddr::V6(ip.to_ipv6_mapped()),
-                    send_hdr.dst.port(),
-                )
-                .into(),
-                std::net::IpAddr::V6(_) => send_hdr.dst.into(),
+            macro_rules! send_batch {
+                ($ty:ty, $addr:expr) => {{
+                    let sock_addr = <$ty>::from($addr);
+                    let addrs = vec![Some(sock_addr); batch_size];
+                    let mut data =
+                        nix::sys::socket::MultiHeaders::<$ty>::preallocate(batch_size, cmsg_buffer);
+                    match nix::sys::socket::sendmmsg(
+                        self.io.as_raw_fd(),
+                        &mut data,
+                        &buffers,
+                        &addrs,
+                        &cmsgs,
+                        MsgFlags::empty(),
+                    ) {
+                        Ok(results) => sent_packet += results.into_iter().count(),
+                        Err(e) => tracing::warn!("sendmsg error: {}", e),
+                    }
+                }};
             }
-        } else {
-            send_hdr.dst.into()
-        };
 
-        #[cfg(feature = "gso")]
-        return sendmmsg(&self.io, bufs, send_hdr, &dst, gso_size);
-
-        #[cfg(not(feature = "gso"))]
-        return sendmsg(&self.io, bufs, send_hdr, &dst, gso_size);
+            match send_hdr.dst {
+                SocketAddr::V4(v4) => send_batch!(SockaddrIn, v4),
+                SocketAddr::V6(v6) => send_batch!(SockaddrIn6, v6),
+            }
+        }
+        Ok(sent_packet)
     }
 
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "watchos",
+        target_os = "tvos"
+    ))]
+    fn sendmsg(&self, slices: &[IoSlice<'_>], send_hdr: &PacketHeader) -> io::Result<usize> {
+        use nix::sys::socket::{ControlMessage, MsgFlags, SockaddrIn, SockaddrIn6};
+        let mut sent_packet = 0;
+        for slice in slices.iter() {
+            let mut cmsgs: Vec<ControlMessage> = Vec::new();
+            #[cfg(feature = "gso")]
+            cmsgs.push(ControlMessage::UdpGsoSegments(&send_hdr.seg_size));
+
+            macro_rules! send_batch {
+                ($ty:ty, $addr:expr) => {{
+                    let sock_addr = <$ty>::from($addr);
+                    match nix::sys::socket::sendmsg(
+                        self.io.as_raw_fd(),
+                        &[*slice],
+                        &cmsgs,
+                        MsgFlags::empty(),
+                        Some(&sock_addr),
+                    ) {
+                        Ok(_sent_bytes) => sent_packet += 1,
+                        Err(e) => tracing::warn!("sendmsg error: {}", e),
+                    }
+                }};
+            }
+
+            match send_hdr.dst {
+                SocketAddr::V4(v4) => send_batch!(SockaddrIn, v4),
+                SocketAddr::V6(v6) => send_batch!(SockaddrIn6, v6),
+            }
+        }
+        Ok(sent_packet)
+    }
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "netbsd"
+    ))]
     fn recvmsg(
         &self,
         bufs: &mut [std::io::IoSliceMut<'_>],
         recv_hdrs: &mut [PacketHeader],
     ) -> io::Result<usize> {
-        let mut msg = Message::default();
-        let max_msg_count = (bufs.len()).min(BATCH_SIZE);
+        use nix::sys::socket::recvmmsg;
+        let mut msgs = std::collections::LinkedList::new();
+        msgs.extend(bufs.iter_mut().map(|buf| [IoSliceMut::new(&mut buf[..])]));
 
-        msg.prepare_recv(bufs, max_msg_count);
-        let ret: io::Result<Rcvd>;
-        #[cfg(feature = "gso")]
-        {
-            ret = unsafe {
-                recvmmsg(
-                    self.io.as_raw_fd(),
-                    msg.hdrs.as_mut_ptr(),
-                    max_msg_count as _,
-                )
-            };
-        }
-
-        #[cfg(not(feature = "gso"))]
-        {
-            ret = recvmsg(self.io.as_raw_fd(), &mut msg.hdrs[0]);
-        }
-        let msg_count = match ret {
-            Ok(rcvd) => match rcvd {
-                Rcvd::MsgCount(n) => n,
-                Rcvd::MsgSize(n) => {
-                    recv_hdrs[0].seg_size = n as u16;
-                    1
-                }
-            },
-            Err(e) => {
-                return Err(e);
-            }
-        };
-
-        msg.decode_recv(recv_hdrs, msg_count, self.local_addr()?.port());
-        Ok(msg_count)
-    }
-}
-
-#[cfg(feature = "gso")]
-pub(super) fn sendmmsg(
-    io: &impl AsRawFd,
-    bufs: &[IoSlice<'_>],
-    send_hdr: &PacketHeader,
-    dst: &SockAddr,
-    gso_size: u16,
-) -> io::Result<usize> {
-    use std::iter;
-    let mut iovecs: Vec<Vec<IoSlice>> = iter::repeat_with(|| Vec::with_capacity(gso_size as usize))
-        .take(BATCH_SIZE)
+        let cmsg_buffer = cmsg_space!(libc::in_pktinfo, libc::in6_pktinfo, libc::c_int);
+        let mut data = nix::sys::socket::MultiHeaders::<SockaddrStorage>::preallocate(
+            BATCH_SIZE,
+            Some(cmsg_buffer),
+        );
+        let res: Vec<RecvMsg<SockaddrStorage>> = recvmmsg(
+            self.io.as_raw_fd(),
+            &mut data,
+            &mut msgs,
+            MsgFlags::MSG_DONTWAIT,
+            None,
+        )?
         .collect();
 
-    let mut message = Message::default();
-    message.prepare_sent(send_hdr, dst, gso_size, BATCH_SIZE);
+        let mut count = 0;
+        for recv_msg in res {
+            let sockaddr = recv_msg.address.unwrap();
+            let src_addr = sockaddr.to_socketaddr();
+            let mut recv_hdr = PacketHeader {
+                src: src_addr,
+                dst: recv_hdrs[count].dst,
+                ttl: 0,
+                ecn: None,
+                seg_size: recv_msg.bytes as u16,
+            };
 
-    let mut sent_packets = 0;
-    for batch in bufs.chunks(gso_size as usize * BATCH_SIZE) {
-        let mut mmsg_batch_size: usize = 0;
-        let mut packet_count = 0;
-        for (i, gso_batch) in batch.chunks(gso_size as usize).enumerate() {
-            mmsg_batch_size += 1;
-            let hdr = &mut message.hdrs[i].msg_hdr;
-            let iovec = &mut iovecs[i];
-            packet_count += gso_batch.len();
-            iovec.clear();
-            iovec.extend(gso_batch.iter().map(|payload| IoSlice::new(payload)));
-            hdr.msg_iov = iovec.as_ptr() as *mut _;
-            hdr.msg_iovlen = iovec.len() as _;
+            let cmsgs = recv_msg.cmsgs().unwrap();
+            for cmsg in cmsgs {
+                parse_cmsg(cmsg, &mut recv_hdr);
+            }
+            recv_hdr.dst.set_port(self.local_addr()?.port());
+            recv_hdrs[count] = recv_hdr;
+            count += 1;
         }
+        Ok(count)
+    }
 
-        let mut msgvec = message.hdrs.as_mut_ptr();
-        let mut vlen = mmsg_batch_size as u32;
-        loop {
-            let ret =
-                to_result(unsafe { libc::sendmmsg(io.as_raw_fd(), msgvec, vlen, 0) } as isize);
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "watchos",
+        target_os = "tvos"
+    ))]
+    fn recvmsg(
+        &self,
+        bufs: &mut [std::io::IoSliceMut<'_>],
+        recv_hdrs: &mut [PacketHeader],
+    ) -> io::Result<usize> {
+        use nix::sys::socket::{SockaddrIn, SockaddrIn6, recvmsg};
+        use tracing::warn;
 
-            match ret {
-                // On success, sendmmsg() returns the number of messages sent from
-                // msgvec; if this is less than vlen, the caller can retry with a
-                // further sendmmsg() call to send the remaining messages.
-                Ok(n) => {
-                    sent_packets += packet_count;
-                    if n != vlen as usize {
-                        log::warn!("sendmmsg : only {} messages sent out of {}", n, vlen);
-                        vlen = n as u32 - vlen;
-                        msgvec = message.hdrs[n..].as_mut_ptr();
-                        continue;
+        let mut cmsg_space = cmsg_space!(libc::in_pktinfo, libc::in6_pktinfo, libc::c_int);
+        let result = recvmsg::<SockaddrStorage>(
+            self.io.as_raw_fd(),
+            bufs,
+            Some(&mut cmsg_space),
+            MsgFlags::empty(),
+        );
+
+        match result {
+            Ok(recv_msg) => {
+                if let Ok(cmsgs) = recv_msg.cmsgs() {
+                    for cmsg in cmsgs {
+                        parse_cmsg(cmsg, &mut recv_hdrs[0]);
                     }
-                    break;
                 }
-                Err(e) => match e.raw_os_error() {
-                    Some(libc::EINTR) => continue,
-                    Some(libc::EWOULDBLOCK) if sent_packets > 0 => return Ok(sent_packets),
-                    Some(libc::EWOULDBLOCK) if sent_packets == 0 => return Err(e),
-                    Some(libc::EBADE) | Some(libc::EPIPE) | Some(libc::ENOTCONN) => return Err(e),
-                    _ => break,
-                },
+                recv_hdrs[0].src = recv_msg.address.unwrap().to_socketaddr();
+                recv_hdrs[0].seg_size = recv_msg.bytes as u16;
+                Ok(1)
             }
-        }
-    }
-    Ok(sent_packets)
-}
-
-#[cfg(not(feature = "gso"))]
-pub(super) fn sendmsg(
-    io: &impl AsRawFd,
-    bufs: &[IoSlice<'_>],
-    send_hdr: &PacketHeader,
-    dst: &SockAddr,
-    gso_size: u16,
-) -> io::Result<usize> {
-    let mut msg = Message::default();
-    msg.prepare_sent(send_hdr, dst, gso_size, 1);
-
-    let mut sent_packets = 0;
-    for batch in bufs.chunks(gso_size as usize) {
-        let mut iovec: Vec<IoSlice> = Vec::with_capacity(gso_size as usize);
-        iovec.extend(batch.iter().map(|buf| IoSlice::new(buf)));
-
-        let hdr = &mut msg.hdrs[0];
-        hdr.msg_iov = iovec.as_ptr() as *mut _;
-        hdr.msg_iovlen = iovec.len() as _;
-
-        loop {
-            let ret = to_result(unsafe { libc::sendmsg(io.as_raw_fd(), hdr, 0) });
-            match ret {
-                Ok(_n) => {
-                    sent_packets += 1;
-                    break;
-                }
-                Err(e) => match e.raw_os_error() {
-                    Some(libc::EINTR) => continue,
-                    Some(libc::EWOULDBLOCK) if sent_packets > 0 => return Ok(sent_packets),
-                    Some(libc::EWOULDBLOCK) if sent_packets == 0 => return Err(e),
-                    Some(libc::EBADF) | Some(libc::EPIPE) | Some(libc::ENOTCONN) => return Err(e),
-                    _ => break,
-                },
-            }
-        }
-    }
-
-    Ok(sent_packets)
-}
-
-#[allow(dead_code)]
-enum Rcvd {
-    MsgCount(usize),
-    MsgSize(usize),
-}
-
-/// recvmmsg wrapper with ENOSYS handling
-#[cfg(feature = "gso")]
-unsafe fn recvmmsg(
-    sockfd: libc::c_int,
-    msgvec: *mut libc::mmsghdr,
-    vlen: libc::c_uint,
-) -> io::Result<Rcvd> {
-    let flags = 0;
-
-    use std::ptr;
-    let timeout = ptr::null_mut::<libc::timespec>();
-    loop {
-        let ret = libc::syscall(libc::SYS_recvmmsg, sockfd, msgvec, vlen, flags, timeout);
-        match to_result(ret as isize) {
-            Ok(n) => return Ok(Rcvd::MsgCount(n)),
             Err(e) => {
-                // ENOSYS indicates that recvmmsg is not supported
-                if let Some(libc::ENOSYS) = e.raw_os_error() {
-                    return recvmsg(sockfd, &mut (*msgvec).msg_hdr);
-                }
-                handle_io_error!(e, Rcvd::MsgCount(0))
+                warn!("recv error {:?}", e);
+                let kind = if e == nix::errno::Errno::EINTR {
+                    io::ErrorKind::WouldBlock
+                } else {
+                    io::ErrorKind::Other
+                };
+                Err(io::Error::new(kind, e))
             }
         }
     }
-    Ok(Rcvd::MsgCount(0))
 }
 
-fn recvmsg(sockfd: libc::c_int, msghdr: *mut libc::msghdr) -> io::Result<Rcvd> {
-    let flags = 0;
-    loop {
-        let ret = to_result(unsafe { libc::recvmsg(sockfd, msghdr, flags) });
-        match ret {
-            Ok(n) => return Ok(Rcvd::MsgSize(n)),
-            Err(e) => handle_io_error!(e, Rcvd::MsgSize(0)),
-        };
-    }
-    Ok(Rcvd::MsgSize(0))
-}
-
-fn to_result(code: isize) -> io::Result<usize> {
-    if code == -1 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(code as usize)
-    }
-}
-
-#[cfg(feature = "gso")]
-static GSO_GRO_SIZE: std::sync::LazyLock<(u16, u16)> = std::sync::LazyLock::new(|| {
-    const GSO_SIZE: libc::c_int = 1500;
-    let socket = match std::net::UdpSocket::bind("[::]:0")
-        .or_else(|_| std::net::UdpSocket::bind("127.0.0.1:0"))
-    {
-        Ok(socket) => socket,
-        Err(_) => return (1, 1),
-    };
-    let gso_size = match setsockopt(&socket, libc::SOL_UDP, libc::UDP_SEGMENT, GSO_SIZE) {
-        Ok(()) => 64,
-        Err(_) => 1,
-    };
-    let gro_size = match setsockopt(&socket, libc::SOL_UDP, libc::UDP_GRO, OPTION_ON) {
-        Ok(()) => 64,
-        Err(_) => 1,
-    };
-    (gso_size, gro_size)
-});
-
-#[cfg(feature = "gso")]
-impl Gso for UdpSocketController {
-    fn max_gso_segments(&self) -> u16 {
-        GSO_GRO_SIZE.0
-    }
-
-    fn set_segment_size(cmsg: &mut CmsgHdr<libc::msghdr>, segment_size: u16) {
-        cmsg.append(libc::SOL_UDP, libc::UDP_SEGMENT, segment_size);
-    }
-}
-
-#[cfg(feature = "gso")]
-impl Gro for UdpSocketController {
-    fn max_gro_segments(&self) -> u16 {
-        GSO_GRO_SIZE.1
-    }
-}
-
-#[cfg(not(feature = "gso"))]
-impl Gso for UdpSocketController {
-    fn max_gso_segments(&self) -> u16 {
-        1
-    }
-
-    fn set_segment_size(_: &mut CmsgHdr<libc::msghdr>, _: u16) {
-        log::error!("set_segment_size is not supported on this platform");
-    }
-}
-
-#[cfg(not(feature = "gso"))]
-impl Gro for UdpSocketController {
-    fn max_gro_segments(&self) -> u16 {
-        1
-    }
-}
-
-fn setsockopt(
-    socket: &impl AsRawFd,
-    level: libc::c_int,
-    name: libc::c_int,
-    value: libc::c_int,
-) -> io::Result<()> {
-    let result = unsafe {
-        libc::setsockopt(
-            socket.as_raw_fd(),
-            level,
-            name,
-            &value as *const _ as _,
-            mem::size_of_val(&value) as _,
-        )
-    };
-
-    match result {
-        0 => Ok(()),
-        _ => {
-            let err = io::Error::last_os_error();
-            log::error!(
-                "set socket option level: {} name: {} value {} error: {}",
-                level,
-                name,
-                value,
-                err
-            );
-            Err(err)
+fn parse_cmsg(cmsg: ControlMessageOwned, hdr: &mut PacketHeader) {
+    match cmsg {
+        ControlMessageOwned::Ipv4PacketInfo(pktinfo) => {
+            let ip = IpAddr::V4(Ipv4Addr::from(pktinfo.ipi_addr.s_addr.to_ne_bytes()));
+            hdr.dst.set_ip(ip);
         }
+        ControlMessageOwned::Ipv6PacketInfo(pktinfo6) => {
+            let ip = IpAddr::V6(Ipv6Addr::from(pktinfo6.ipi6_addr.s6_addr));
+            hdr.dst.set_ip(ip);
+        }
+        ControlMessageOwned::UdpGroSegments(segments) => {
+            hdr.seg_size = segments as u16;
+            info!("Received UDP GRO segment size: {}", segments);
+        }
+        _ => {
+            info!("Unsupported control message: {:?}", cmsg);
+        }
+    }
+}
+
+trait ToSocketAddr {
+    fn to_socketaddr(&self) -> SocketAddr;
+}
+
+impl ToSocketAddr for SockaddrStorage {
+    fn to_socketaddr(&self) -> SocketAddr {
+        match self.family() {
+            Some(nix::sys::socket::AddressFamily::Inet) => {
+                let sockaddr_in = self.as_sockaddr_in().unwrap();
+                let v4_addr = SocketAddrV4::new(sockaddr_in.ip(), sockaddr_in.port());
+                SocketAddr::V4(v4_addr)
+            }
+            Some(nix::sys::socket::AddressFamily::Inet6) => {
+                let sockaddr_in6 = self.as_sockaddr_in6().unwrap();
+                let v6_addr = SocketAddrV6::new(
+                    sockaddr_in6.ip(),
+                    sockaddr_in6.port(),
+                    sockaddr_in6.flowinfo(),
+                    sockaddr_in6.scope_id(),
+                );
+                SocketAddr::V6(v6_addr)
+            }
+            _ => panic!("Unsupported address family"),
+        }
+    }
+}
+
+impl ToSocketAddr for SockaddrIn {
+    fn to_socketaddr(&self) -> SocketAddr {
+        let v4_addr = SocketAddrV4::new(self.ip(), self.port());
+        SocketAddr::V4(v4_addr)
+    }
+}
+
+impl ToSocketAddr for SockaddrIn6 {
+    fn to_socketaddr(&self) -> SocketAddr {
+        let v6_addr = SocketAddrV6::new(self.ip(), self.port(), self.flowinfo(), self.scope_id());
+        SocketAddr::V6(v6_addr)
     }
 }

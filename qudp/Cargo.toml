@@ -14,9 +14,10 @@ categories.workspace = true
 bytes = { workspace = true }
 cfg-if = { workspace = true }
 libc = "0.2"
-log = { workspace = true }
+tracing = {workspace = true}
 socket2 = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
+nix = {workspace = true}
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -30,6 +31,10 @@ clap = { workspace = true }
 env_logger = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros"] }
 
+[dev-dependencies.tracing-subscriber]
+workspace = true
+features = ["fmt", "ansi", "env-filter", "time", "tracing-log"]
+
 [[example]]
 name = "send"
 path = "examples/send.rs"
@@ -39,4 +44,5 @@ name = "receive"
 path = "examples/receive.rs"
 
 [features]
+default = ["gso"]
 gso = []

@@ -24,8 +24,8 @@ struct Args {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Trace)
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::level_filters::LevelFilter::TRACE)
         .init();
 
     let args = Args::parse();
@@ -38,14 +38,14 @@ async fn main() {
         dst,
         64,
         None,
-        args.msg_size as u16,
+        1200,
     );
 
     let payload = vec![8u8; args.msg_size];
     let payloads = vec![IoSlice::new(&payload[..]); args.msg_count];
 
     match socket.send(&payloads, send_hdr).await {
-        Ok(n) => log::info!("sent {} packets, dest: {}", n, dst),
-        Err(e) => log::error!("send failed: {}", e),
+        Ok(n) => tracing::info!("sent {} packets, dest: {}", n, dst),
+        Err(e) => tracing::error!("send failed: {}", e),
     }
 }
