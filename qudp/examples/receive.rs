@@ -4,7 +4,7 @@ use qudp::UdpSocketController;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(short,long, default_value_t = String::from("[::1]:12345"))]
+    #[arg(short,long, default_value_t = String::from("127.0.0.1:12345"))]
     bind: String,
 }
 

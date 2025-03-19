@@ -1,79 +1,16 @@
 use std::{
     ffi::c_int,
     io, mem,
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     os::windows::io::AsRawSocket,
     ptr,
 };
 
 use libc::c_uchar;
-use windows_sys::Win32::Networking::WinSock;
+use socket2::Socket;
+use windows_sys::Win32::Networking::WinSock::{self, SOCKET};
 
-use crate::{
-    DEFAULT_TTL, Io, PacketHeader, UdpSocketController,
-    cmsghdr::{self, Cmsg, MsgHdr},
-};
-
-const OPTION_ON: libc::c_int = 1;
-
-impl MsgHdr for WinSock::WSAMSG {
-    type ControlMessage = WinSock::CMSGHDR;
-
-    fn first_cmsg(&self) -> *mut Self::ControlMessage {
-        if self.Control.len as usize >= mem::size_of::<WinSock::CMSGHDR>() {
-            self.Control.buf as *mut WinSock::CMSGHDR
-        } else {
-            ptr::null_mut::<WinSock::CMSGHDR>()
-        }
-    }
-
-    fn next(&self, cmsg: &Self::ControlMessage) -> *mut Self::ControlMessage {
-        let next =
-            (cmsg as *const _ as usize + cmsghdr_align(cmsg.cmsg_len)) as *mut WinSock::CMSGHDR;
-        let max = self.Control.buf as usize + self.Control.len as usize;
-        if unsafe { next.offset(1) } as usize > max {
-            ptr::null_mut()
-        } else {
-            next
-        }
-    }
-
-    fn set_len(&mut self, len: usize) {
-        self.Control.len = len as _;
-    }
-
-    fn capacity(&self) -> usize {
-        self.Control.len as _
-    }
-}
-
-impl Cmsg for WinSock::CMSGHDR {
-    fn cmsg_len(length: usize) -> usize {
-        cmsgdata_align(mem::size_of::<Self>()) + length
-    }
-
-    fn space(length: usize) -> usize {
-        cmsgdata_align(mem::size_of::<Self>() + cmsghdr_align(length))
-    }
-
-    fn data(&self) -> *mut libc::c_uchar {
-        (self as *const _ as usize + cmsgdata_align(mem::size_of::<Self>())) as *mut c_uchar
-    }
-
-    fn set(&mut self, level: libc::c_int, ty: libc::c_int, len: usize) {
-        self.cmsg_level = level as _;
-        self.cmsg_type = ty as _;
-        self.cmsg_len = len as _;
-    }
-}
-
-const fn cmsghdr_align(length: usize) -> usize {
-    (length + mem::align_of::<WinSock::CMSGHDR>() - 1) & !(mem::align_of::<WinSock::CMSGHDR>() - 1)
-}
-
-fn cmsgdata_align(length: usize) -> usize {
-    (length + mem::align_of::<usize>() - 1) & !(mem::align_of::<usize>() - 1)
-}
+use crate::{DEFAULT_TTL, Io, PacketHeader, UdpSocketController};
 
 const CMSG_LEN: usize = 128;
 #[derive(Copy, Clone)]
@@ -81,27 +18,35 @@ const CMSG_LEN: usize = 128;
 pub(crate) struct Aligned<T>(pub(crate) T);
 
 impl Io for UdpSocketController {
-    fn config(&self) -> std::io::Result<()> {
-        let io = socket2::SockRef::from(&self.io);
-        io.set_nonblocking(true)?;
+    fn config(socket: &Socket, addr: SocketAddr) -> std::io::Result<()> {
+        const OPTION_ON: c_int = 1;
+        const OPTION_OFF: c_int = 0;
+        let io = socket.as_raw_socket().try_into().unwrap();
 
-        let addr = io.local_addr()?;
-        let is_ipv6 = addr.is_ipv6();
-
-        let is_ipv4 = addr.is_ipv4();
-        self.setsockopt(WinSock::SOL_SOCKET, WinSock::SO_RCVBUF, 2 * 1024 * 1024);
-        if is_ipv4 {
-            self.setsockopt(WinSock::IPPROTO_IP, WinSock::IP_RECVTOS, OPTION_ON);
-            self.setsockopt(WinSock::IPPROTO_IP, WinSock::IP_PKTINFO, OPTION_ON);
-            self.setsockopt(WinSock::IPPROTO_IP, WinSock::IP_RECVTTL, OPTION_ON);
-            self.setsockopt(WinSock::IPPROTO_IP, WinSock::IP_RECVDSTADDR, OPTION_ON);
-            self.setsockopt(WinSock::IPPROTO_IP, WinSock::IP_TTL, DEFAULT_TTL);
+        setsockopt(io, WinSock::SOL_SOCKET, WinSock::SO_RCVBUF, 2 * 1024 * 1024);
+        match addr {
+            SocketAddr::V4(_) => {
+                setsockopt(io, WinSock::IPPROTO_IP, WinSock::IP_RECVTOS, OPTION_ON);
+                setsockopt(io, WinSock::IPPROTO_IP, WinSock::IP_PKTINFO, OPTION_ON);
+                setsockopt(io, WinSock::IPPROTO_IP, WinSock::IP_RECVTTL, OPTION_ON);
+                setsockopt(io, WinSock::IPPROTO_IP, WinSock::IP_RECVDSTADDR, OPTION_ON);
+                setsockopt(io, WinSock::IPPROTO_IP, WinSock::IP_TTL, DEFAULT_TTL);
+            }
+            SocketAddr::V6(_) => {
+                setsockopt(io, WinSock::IPPROTO_IPV6, WinSock::IPV6_V6ONLY, OPTION_OFF);
+                setsockopt(io, WinSock::IPPROTO_IPV6, WinSock::IPV6_HOPLIMIT, OPTION_ON);
+                setsockopt(
+                    io,
+                    WinSock::IPPROTO_IPV6,
+                    WinSock::IPV6_RECVTCLASS,
+                    OPTION_ON,
+                );
+                setsockopt(io, WinSock::IPPROTO_IPV6, WinSock::IPV6_PKTINFO, OPTION_ON);
+            }
         }
-
-        if is_ipv6 {
-            self.setsockopt(WinSock::IPPROTO_IPV6, WinSock::IPV6_HOPLIMIT, OPTION_ON);
-            self.setsockopt(WinSock::IPPROTO_IPV6, WinSock::IPV6_RECVTCLASS, OPTION_ON);
-            self.setsockopt(WinSock::IPPROTO_IPV6, WinSock::IPV6_PKTINFO, OPTION_ON);
+        if let Err(e) = socket.bind(&addr.into()) {
+            tracing::error!("Failed to bind socket: {}", e);
+            return Err(io::Error::new(io::ErrorKind::AddrInUse, e));
         }
         Ok(())
     }
@@ -111,13 +56,11 @@ impl Io for UdpSocketController {
         bufs: &[std::io::IoSlice<'_>],
         hdr: &crate::PacketHeader,
     ) -> std::io::Result<usize> {
-        let mut ctrl_buf = Aligned([0; CMSG_LEN]);
-
-        // FIXME: Ipv6 mapped address should be supported
         let dst = socket2::SockAddr::from(hdr.dst);
         let mut count = 0;
 
         for buf in bufs {
+            let mut ctrl_buf = Aligned([0; CMSG_LEN]);
             let mut data = WinSock::WSABUF {
                 buf: buf.as_ptr() as *mut _,
                 len: buf.len() as _,
@@ -137,8 +80,8 @@ impl Io for UdpSocketController {
                 dwFlags: 0,
             };
 
-            let mut cmsghdr = unsafe { cmsghdr::CmsgHdr::new(&mut wsa_msg) };
-
+            let mut cmsg = unsafe { first_cmsg(&mut wsa_msg).as_mut() };
+            let mut cmsg_len = 0;
             if !hdr.src.ip().is_unspecified() {
                 let src = socket2::SockAddr::from(hdr.src);
                 match src.family() {
@@ -149,7 +92,15 @@ impl Io for UdpSocketController {
                             ipi_addr: src_ip.sin_addr,
                             ipi_ifindex: 0,
                         };
-                        cmsghdr.append(WinSock::IPPROTO_IP, WinSock::IP_PKTINFO, pktinfo);
+
+                        cmsg = append_cmsg(
+                            &wsa_msg,
+                            cmsg,
+                            WinSock::IPPROTO_IP,
+                            WinSock::IP_PKTINFO,
+                            pktinfo,
+                            &mut cmsg_len,
+                        );
                     }
                     WinSock::AF_INET6 => {
                         let src_ip =
@@ -158,7 +109,15 @@ impl Io for UdpSocketController {
                             ipi6_addr: src_ip.sin6_addr,
                             ipi6_ifindex: unsafe { src_ip.Anonymous.sin6_scope_id },
                         };
-                        cmsghdr.append(WinSock::IPPROTO_IPV6, WinSock::IPV6_PKTINFO, pktinfo);
+
+                        cmsg = append_cmsg(
+                            &wsa_msg,
+                            cmsg,
+                            WinSock::IPPROTO_IPV6,
+                            WinSock::IPV6_PKTINFO,
+                            pktinfo,
+                            &mut cmsg_len,
+                        );
                     }
                     _ => {
                         return Err(io::Error::from(io::ErrorKind::InvalidInput));
@@ -166,16 +125,37 @@ impl Io for UdpSocketController {
                 }
             }
 
-            let ecn = hdr.ecn.map_or(0, |x| x as c_int);
-            // True for IPv4 or IPv4-Mapped IPv6
-            let is_ipv4 = hdr.dst.is_ipv4()
-                || matches!(hdr.dst.ip(), IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());
-            if is_ipv4 {
-                cmsghdr.append(WinSock::IPPROTO_IP, WinSock::IP_ECN, ecn);
-            } else {
-                cmsghdr.append(WinSock::IPPROTO_IPV6, WinSock::IPV6_ECN, ecn);
+            if let Some(ecn) = hdr.ecn {
+                let is_ipv4 = hdr.dst.is_ipv4()
+                    || matches!(hdr.dst.ip(), IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());
+                if is_ipv4 {
+                    _ = append_cmsg(
+                        &wsa_msg,
+                        cmsg,
+                        WinSock::IPPROTO_IP,
+                        WinSock::IP_ECN,
+                        ecn,
+                        &mut cmsg_len,
+                    );
+                } else {
+                    _ = append_cmsg(
+                        &wsa_msg,
+                        cmsg,
+                        WinSock::IPPROTO_IPV6,
+                        WinSock::IPV6_TCLASS,
+                        ecn,
+                        &mut cmsg_len,
+                    );
+                }
             }
-            cmsghdr.finish();
+
+            wsa_msg.Control.len = cmsg_len as _;
+            if cmsg_len == 0 {
+                wsa_msg.Control = WinSock::WSABUF {
+                    buf: ptr::null_mut(),
+                    len: 0,
+                };
+            }
 
             let mut len = 0;
             let ret = unsafe {
@@ -252,33 +232,29 @@ impl Io for UdpSocketController {
 
         let mut ecn_bits = 0;
         let mut dst_ip = None;
-        let cmsg_iter = unsafe { cmsghdr::Iter::new(&wsa_msg) };
-        for cmsg in cmsg_iter {
+        let mut cmsg: Option<&mut WinSock::CMSGHDR> = unsafe { first_cmsg(&mut wsa_msg).as_mut() };
+        while let Some(cur_cmsg) = cmsg {
             // [header (len)][data][padding(len + sizeof(data))] -> [header][data][padding]
-            match (cmsg.cmsg_level, cmsg.cmsg_type) {
+            match (cur_cmsg.cmsg_level, cur_cmsg.cmsg_type) {
                 (WinSock::IPPROTO_IP, WinSock::IP_PKTINFO) => {
-                    let pktinfo =
-                        unsafe { cmsghdr::decode::<WinSock::IN_PKTINFO, WinSock::CMSGHDR>(cmsg) };
-                    // Addr is stored in big endian format
+                    let pktinfo = cmsg_decode::<WinSock::IN_PKTINFO>(cur_cmsg);
                     let ip4 = Ipv4Addr::from(u32::from_be(unsafe { pktinfo.ipi_addr.S_un.S_addr }));
                     dst_ip = Some(ip4.into());
                 }
                 (WinSock::IPPROTO_IPV6, WinSock::IPV6_PKTINFO) => {
-                    let pktinfo =
-                        unsafe { cmsghdr::decode::<WinSock::IN6_PKTINFO, WinSock::CMSGHDR>(cmsg) };
+                    let pktinfo = cmsg_decode::<WinSock::IN6_PKTINFO>(cur_cmsg);
                     // Addr is stored in big endian format
                     dst_ip = Some(IpAddr::from(unsafe { pktinfo.ipi6_addr.u.Byte }));
                 }
                 (WinSock::IPPROTO_IP, WinSock::IP_ECN) => {
-                    // ECN is a C integer https://learn.microsoft.com/en-us/windows/win32/winsock/winsock-ecn
-                    ecn_bits = unsafe { cmsghdr::decode::<c_int, WinSock::CMSGHDR>(cmsg) };
+                    ecn_bits = cmsg_decode::<c_int>(cur_cmsg);
                 }
                 (WinSock::IPPROTO_IPV6, WinSock::IPV6_ECN) => {
-                    // ECN is a C integer https://learn.microsoft.com/en-us/windows/win32/winsock/winsock-ecn
-                    ecn_bits = unsafe { cmsghdr::decode::<c_int, WinSock::CMSGHDR>(cmsg) };
+                    ecn_bits = cmsg_decode::<c_int>(cur_cmsg);
                 }
                 _ => {}
             }
+            cmsg = unsafe { next_cmsg(&wsa_msg, cur_cmsg).as_mut() };
         }
         let dst = if let Some(ip) = dst_ip {
             crate::SocketAddr::new(ip, self.local_addr()?.port())
@@ -291,30 +267,92 @@ impl Io for UdpSocketController {
             ttl: DEFAULT_TTL as u8,
             ecn: Some(ecn_bits as u8),
             seg_size: len as u16,
-            gso: false,
         };
-
         Ok(1)
     }
+}
 
-    fn setsockopt(&self, level: libc::c_int, name: libc::c_int, value: libc::c_int) {
-        unsafe {
-            WinSock::setsockopt(
-                self.io.as_raw_socket() as usize,
-                level,
-                name,
-                &value as *const _ as _,
-                mem::size_of_val(&value) as _,
-            )
-        };
+fn append_cmsg<'a, V: Copy>(
+    msg: &'a WinSock::WSAMSG,
+    mut cmsg: Option<&'a mut WinSock::CMSGHDR>,
+    level: libc::c_int,
+    ty: libc::c_int,
+    data: V,
+    cmsg_len: &mut usize,
+) -> Option<&'a mut WinSock::CMSGHDR> {
+    let space = cmsg_space(mem::size_of_val(&data));
+    let next = cmsg.take().expect("no available cmsghdr");
+    next.cmsg_level = level as _;
+    next.cmsg_type = ty as _;
+    next.cmsg_len = cmsg_data_len(mem::size_of_val(&data)) as _;
+    unsafe {
+        ptr::write(cmsg_data(next) as *const V as *mut V, data);
     }
+    *cmsg_len += space;
+    unsafe { next_cmsg(msg, next).as_mut() }
+}
+
+fn cmsg_decode<T: Copy>(cmsg: &mut WinSock::CMSGHDR) -> T {
+    unsafe { ptr::read(cmsg_data(cmsg) as *const T) }
+}
+
+const fn cmsghdr_align(length: usize) -> usize {
+    (length + mem::align_of::<WinSock::CMSGHDR>() - 1) & !(mem::align_of::<WinSock::CMSGHDR>() - 1)
+}
+
+fn cmsgdata_align(length: usize) -> usize {
+    (length + mem::align_of::<usize>() - 1) & !(mem::align_of::<usize>() - 1)
+}
+
+fn cmsg_data_len(len: usize) -> usize {
+    mem::size_of::<WinSock::CMSGHDR>() + len
+}
+
+fn cmsg_space(len: usize) -> usize {
+    let total = mem::size_of::<WinSock::CMSGHDR>() + len;
+    let align = mem::align_of::<WinSock::CMSGHDR>();
+    (total + align - 1) & !(align - 1)
+}
+
+unsafe fn first_cmsg(msg: &mut WinSock::WSAMSG) -> *mut WinSock::CMSGHDR {
+    if msg.Control.len as usize >= mem::size_of::<WinSock::CMSGHDR>() {
+        msg.Control.buf as *mut WinSock::CMSGHDR
+    } else {
+        ptr::null_mut::<WinSock::CMSGHDR>()
+    }
+}
+
+fn next_cmsg(msg: &WinSock::WSAMSG, cmsg: &WinSock::CMSGHDR) -> *mut WinSock::CMSGHDR {
+    let next = (cmsg as *const _ as usize + cmsghdr_align(cmsg.cmsg_len)) as *mut WinSock::CMSGHDR;
+    let max = msg.Control.buf as usize + msg.Control.len as usize;
+    if unsafe { next.offset(1) } as usize > max {
+        ptr::null_mut()
+    } else {
+        next
+    }
+}
+
+fn cmsg_data(cmsg: &mut WinSock::CMSGHDR) -> *mut libc::c_uchar {
+    (cmsg as *const _ as usize + cmsgdata_align(mem::size_of::<WinSock::CMSGHDR>())) as *mut c_uchar
+}
+
+fn setsockopt(io: SOCKET, level: libc::c_int, name: libc::c_int, value: libc::c_int) {
+    unsafe {
+        WinSock::setsockopt(
+            io,
+            level,
+            name,
+            &value as *const _ as _,
+            mem::size_of_val(&value) as _,
+        )
+    };
 }
 
 static WSARECVMSG_PTR: std::sync::LazyLock<WinSock::LPFN_WSARECVMSG> =
     std::sync::LazyLock::new(|| {
         let s = unsafe { WinSock::socket(WinSock::AF_INET as _, WinSock::SOCK_DGRAM as _, 0) };
         if s == WinSock::INVALID_SOCKET {
-            log::warn!(
+            tracing::warn!(
                 "failed to create socket for WSARecvMsg function pointer: {}",
                 io::Error::last_os_error()
             );
@@ -342,12 +380,12 @@ static WSARECVMSG_PTR: std::sync::LazyLock<WinSock::LPFN_WSARECVMSG> =
         };
 
         if ret == -1 {
-            log::warn!(
+            tracing::warn!(
                 "failed to get WSARecvMsg function pointer: {}",
                 io::Error::last_os_error()
             );
         } else if len as usize != mem::size_of::<WinSock::LPFN_WSARECVMSG>() {
-            log::warn!(
+            tracing::warn!(
                 "WSARecvMsg function pointer size mismatch: expected {}, got {}",
                 mem::size_of::<WinSock::LPFN_WSARECVMSG>(),
                 len
