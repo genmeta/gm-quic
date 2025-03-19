@@ -194,7 +194,6 @@ struct RecvController<TX> {
     rcvd_data: u64,
     max_data: u64,
     step: u64,
-    is_closed: bool,
     broker: TX,
 }
 
@@ -205,14 +204,8 @@ impl<TX> RecvController<TX> {
             rcvd_data: 0,
             max_data: initial_max_data,
             step: initial_max_data / 2,
-            is_closed: false,
             broker,
         }
-    }
-
-    /// Terminate the receiver's flow control.
-    fn terminate(&mut self) {
-        self.is_closed = true;
     }
 }
 
@@ -226,8 +219,6 @@ where
     /// new or not will be determined by each stream after delivering the data packet to them.
     /// The amount of new data will be passed as the `amount` parameter.
     fn on_new_rcvd(&mut self, frame_type: FrameType, amount: usize) -> Result<usize, QuicError> {
-        debug_assert!(!self.is_closed);
-
         self.rcvd_data += amount as u64;
         if self.rcvd_data <= self.max_data {
             if self.rcvd_data + self.step >= self.max_data {
@@ -275,11 +266,6 @@ impl<TX> ArcRecvController<TX> {
             initial_max_data,
             broker,
         ))))
-    }
-
-    /// Terminate the receiver's flow control if QUIC connection error occurs.
-    pub fn terminate(&self) {
-        self.0.lock().unwrap().terminate();
     }
 }
 
@@ -362,7 +348,6 @@ impl<TX: Clone> FlowController<TX> {
     /// and the connection-level stream flow controller in the receiving direction terminate.
     pub fn on_conn_error(&self, error: &QuicError) {
         self.sender.on_error(error);
-        self.recver.terminate();
     }
 }
 
