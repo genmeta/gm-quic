@@ -1,19 +1,23 @@
 use std::task::{Context, Poll};
 
 use gm_quic::{DatagramReader, DatagramWriter};
+use h3_datagram::{
+    datagram::Datagram,
+    quic_traits::{RecvDatagramExt, SendDatagramExt},
+};
 
 use crate::{Error, conn::QuicConnection};
 
-impl<B: bytes::Buf> h3::quic::SendDatagramExt<B> for QuicConnection {
+impl<B: bytes::Buf> SendDatagramExt<B> for QuicConnection {
     type Error = Error;
 
     #[inline]
-    fn send_datagram(&mut self, data: h3::ext::Datagram<B>) -> Result<(), Self::Error> {
+    fn send_datagram(&mut self, data: Datagram<B>) -> Result<(), Self::Error> {
         self.send_datagram.send_datagram(data)
     }
 }
 
-impl h3::quic::RecvDatagramExt for QuicConnection {
+impl RecvDatagramExt for QuicConnection {
     type Buf = bytes::Bytes;
 
     type Error = Error;
@@ -32,10 +36,10 @@ impl h3::quic::RecvDatagramExt for QuicConnection {
 
 pub struct SendDatagram(pub(crate) Result<DatagramWriter, Error>);
 
-impl<B: bytes::Buf> h3::quic::SendDatagramExt<B> for SendDatagram {
+impl<B: bytes::Buf> SendDatagramExt<B> for SendDatagram {
     type Error = Error;
 
-    fn send_datagram(&mut self, data: h3::ext::Datagram<B>) -> Result<(), Self::Error> {
+    fn send_datagram(&mut self, data: Datagram<B>) -> Result<(), Self::Error> {
         let writer = match &mut self.0 {
             Ok(writer) => writer,
             Err(e) => return Err(e.clone()),
@@ -51,7 +55,7 @@ impl<B: bytes::Buf> h3::quic::SendDatagramExt<B> for SendDatagram {
 
 pub struct RecvDatagram(pub(crate) Result<DatagramReader, Error>);
 
-impl h3::quic::RecvDatagramExt for RecvDatagram {
+impl RecvDatagramExt for RecvDatagram {
     type Buf = bytes::Bytes;
 
     type Error = Error;
