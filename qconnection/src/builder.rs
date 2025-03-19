@@ -518,7 +518,6 @@ impl Components {
 
                 let cc = ArcCC::new(
                     pathway,
-                    self.paths.erased(),
                     CongestionAlgorithm::NewReno,
                     Duration::from_micros(max_ack_delay as _),
                     [
@@ -597,7 +596,7 @@ impl Components {
         tokio::spawn({
             let local_cids = self.cid_registry.local.clone();
             let event_broker = self.event_broker.clone();
-            let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
+            let pto_duration = self.paths.max_pto().unwrap_or_default();
             async move {
                 tokio::time::sleep(pto_duration * 3).await;
                 local_cids.clear();
@@ -641,7 +640,7 @@ impl Components {
         tokio::spawn({
             let local_cids = self.cid_registry.local.clone();
             let event_broker = self.event_broker.clone();
-            let pto_duration = self.paths.max_pto_duration().unwrap_or_default();
+            let pto_duration = self.paths.max_pto().unwrap_or_default();
             async move {
                 tokio::time::sleep(pto_duration * 3).await;
                 local_cids.clear();
