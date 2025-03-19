@@ -2,29 +2,21 @@ use std::{
     future::Future,
     io::{self, IoSlice, IoSliceMut},
     net::SocketAddr,
-    os::fd::AsFd,
     pin::Pin,
-    sync::atomic::AtomicU16,
     task::{Context, Poll, ready},
 };
 
 use socket2::{Domain, Socket, Type};
 use tokio::io::Interest;
-
 const DEFAULT_TTL: libc::c_int = 64;
-
+pub const BATCH_SIZE: usize = 64;
 cfg_if::cfg_if! {
     if #[cfg(unix)]{
         #[path = "unix.rs"]
         mod unix;
-        #[cfg(feature = "gso")]
-        pub const BATCH_SIZE: usize = 64;
-        #[cfg(not(feature = "gso"))]
-        pub const BATCH_SIZE: usize = 1;
     } else if #[cfg(windows)] {
         #[path = "windows.rs"]
         mod windows;
-        pub const BATCH_SIZE: usize = 1;
     } else {
         compile_error!("Unsupported platform");
     }
@@ -67,8 +59,6 @@ impl Default for PacketHeader {
 #[derive(Debug)]
 pub struct UdpSocketController {
     io: tokio::net::UdpSocket,
-    gso_size: AtomicU16,
-    gro_size: AtomicU16,
 }
 
 impl UdpSocketController {
@@ -81,17 +71,9 @@ impl UdpSocketController {
 
         let socket = Socket::new(domain, Type::DGRAM, None)?;
         socket.set_nonblocking(true)?;
-        Self::config(&socket, domain)?;
-        if let Err(e) = socket.bind(&addr.into()) {
-            tracing::error!("Failed to bind socket: {}", e);
-            return Err(io::Error::new(io::ErrorKind::AddrInUse, e));
-        }
+        Self::config(&socket, addr)?;
         let io = tokio::net::UdpSocket::from_std(socket.into())?;
-        let usc = Self {
-            io,
-            gso_size: 1.into(),
-            gro_size: 1.into(),
-        };
+        let usc = Self { io };
         Ok(usc)
     }
 
@@ -103,18 +85,22 @@ impl UdpSocketController {
         &self,
         bufs: &[IoSlice<'_>],
         hdr: &PacketHeader,
-        cx: &mut Context,
+        cx: &mut Context<'_>,
     ) -> Poll<io::Result<usize>> {
-        loop {
+        let mut sent = 0;
+        while sent < bufs.len() {
             ready!(self.io.poll_send_ready(cx)?);
-            let f = || self.sendmsg(bufs, hdr);
-            let ret = self.io.try_io(Interest::WRITABLE, f);
-            if matches!(&ret, Err(e) if e.kind() == io::ErrorKind::WouldBlock) {
-                continue;
-            } else {
-                return Poll::Ready(ret);
+            let current_bufs = &bufs[sent..];
+            match self
+                .io
+                .try_io(Interest::WRITABLE, || self.sendmsg(current_bufs, hdr))
+            {
+                Ok(n) => sent += n,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(e) => return Poll::Ready(Err(e)),
             }
         }
+        Poll::Ready(Ok(sent))
     }
 
     pub fn poll_recv(
@@ -134,18 +120,10 @@ impl UdpSocketController {
             }
         }
     }
-
-    pub fn gso_size(&self) -> u16 {
-        self.gso_size.load(core::sync::atomic::Ordering::Acquire)
-    }
-
-    pub fn gro_size(&self) -> u16 {
-        self.gro_size.load(core::sync::atomic::Ordering::Acquire)
-    }
 }
 
 pub trait Io {
-    fn config<T: AsFd>(io: T, family: Domain) -> io::Result<()>;
+    fn config(io: &socket2::Socket, addr: SocketAddr) -> io::Result<()>;
 
     fn sendmsg(&self, bufs: &[IoSlice<'_>], hdr: &PacketHeader) -> io::Result<usize>;
 

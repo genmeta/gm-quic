@@ -1,5 +1,5 @@
 use std::{
-    io::{self, IoSlice, IoSliceMut},
+    io::{self, IoSlice},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     os::fd::{AsFd, AsRawFd},
 };
@@ -7,42 +7,47 @@ use std::{
 use nix::{
     cmsg_space,
     sys::socket::{
-        ControlMessageOwned, MsgFlags, RecvMsg, SockaddrIn, SockaddrIn6, SockaddrLike,
-        SockaddrStorage,
+        ControlMessageOwned, SockaddrLike, SockaddrStorage,
         sockopt::{self},
     },
 };
-use socket2::Domain;
-use tracing::info;
+use socket2::Socket;
 
-use crate::{BATCH_SIZE, DEFAULT_TTL, Io, PacketHeader, UdpSocketController};
+use crate::{DEFAULT_TTL, Io, PacketHeader, UdpSocketController};
 
 const OPTION_ON: bool = true;
 const OPTION_OFF: bool = false;
 
 impl Io for UdpSocketController {
-    fn config<T: AsFd>(io: T, family: Domain) -> io::Result<()> {
+    fn config(socket: &Socket, addr: SocketAddr) -> io::Result<()> {
+        let io = socket.as_fd();
         nix::sys::socket::setsockopt(&io, sockopt::RcvBuf, &(2 * 1024 * 1024))?;
-        match family {
-            Domain::IPV4 => {
+        match addr {
+            SocketAddr::V4(_) => {
                 #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "ios"))]
                 {
-                    nix::sys::socket::setsockopt(&io, sockopt::IpDontFrag, OPTION_ON);
-                    nix::sys::socket::setsockopt(&io, sockopt::Ipv4RecvDstAddr, OPTION_ON);
+                    nix::sys::socket::setsockopt(&io, sockopt::IpDontFrag, &OPTION_ON)?;
+                    nix::sys::socket::setsockopt(&io, sockopt::Ipv4RecvDstAddr, &OPTION_ON)?;
                 }
-
-                nix::sys::socket::setsockopt(&io, sockopt::Ipv4PacketInfo, &OPTION_ON)?;
+                #[cfg(any(
+                    target_os = "android",
+                    target_os = "linux",
+                    target_os = "freebsd",
+                    target_os = "netbsd"
+                ))]
                 nix::sys::socket::setsockopt(&io, sockopt::Ipv4Ttl, &DEFAULT_TTL)?;
+                nix::sys::socket::setsockopt(&io, sockopt::Ipv4PacketInfo, &OPTION_ON)?;
             }
-            Domain::IPV6 => {
+            SocketAddr::V6(_) => {
                 nix::sys::socket::setsockopt(&io, sockopt::Ipv6V6Only, &OPTION_OFF)?;
                 nix::sys::socket::setsockopt(&io, sockopt::Ipv6RecvPacketInfo, &OPTION_ON)?;
                 nix::sys::socket::setsockopt(&io, sockopt::Ipv6DontFrag, &OPTION_ON)?;
                 nix::sys::socket::setsockopt(&io, sockopt::Ipv6Ttl, &DEFAULT_TTL)?;
             }
-            _ => {
-                todo!("support unix socket")
-            }
+        }
+        if let Err(e) = socket.bind(&addr.into()) {
+            tracing::error!("Failed to bind socket: {}", e);
+            return Err(io::Error::new(io::ErrorKind::AddrInUse, e));
         }
         Ok(())
     }
@@ -53,50 +58,59 @@ impl Io for UdpSocketController {
         target_os = "freebsd",
         target_os = "netbsd"
     ))]
-    fn sendmsg(&self, slices: &[IoSlice<'_>], send_hdr: &PacketHeader) -> io::Result<usize> {
-        use nix::sys::socket::{ControlMessage, MsgFlags, SockaddrIn, SockaddrIn6};
+    fn sendmsg(&self, buffers: &[IoSlice<'_>], hdr: &PacketHeader) -> io::Result<usize> {
+        use nix::sys::socket::{MsgFlags, SockaddrIn, SockaddrIn6};
+
+        use super::BATCH_SIZE;
         let mut sent_packet = 0;
-        for batch in slices.chunks(BATCH_SIZE) {
-            let batch_size = batch.len();
-            let buffers: Vec<_> = batch
+        loop {
+            let slices: Vec<_> = buffers
                 .iter()
-                .take(batch_size)
+                .skip(sent_packet)
+                .take(BATCH_SIZE)
                 .map(std::slice::from_ref)
                 .collect();
 
-            let (cmsgs, cmsg_buffer) = {
-                let mut cmsgs = Vec::new();
-                #[allow(unused_assignments)]
-                let mut buffer = None;
-                #[cfg(feature = "gso")]
-                {
-                    cmsgs.push(ControlMessage::UdpGsoSegments(&send_hdr.seg_size));
-                    buffer = Some(cmsg_space!(libc::c_int));
-                }
-                (cmsgs, buffer)
-            };
+            let batch_size = slices.len();
+            if batch_size == 0 {
+                break;
+            }
+            #[cfg(feature = "gso")]
+            let (cmsgs, space) = (
+                vec![nix::sys::socket::ControlMessage::UdpGsoSegments(
+                    &hdr.seg_size,
+                )],
+                Some(cmsg_space!(libc::c_int)),
+            );
+            #[cfg(not(feature = "gso"))]
+            let (cmsgs, space) = (Vec::new(), None);
 
             macro_rules! send_batch {
                 ($ty:ty, $addr:expr) => {{
                     let sock_addr = <$ty>::from($addr);
-                    let addrs = vec![Some(sock_addr); batch_size];
+                    let addrs = vec![Some(sock_addr); BATCH_SIZE];
                     let mut data =
-                        nix::sys::socket::MultiHeaders::<$ty>::preallocate(batch_size, cmsg_buffer);
+                        nix::sys::socket::MultiHeaders::<$ty>::preallocate(BATCH_SIZE, space);
                     match nix::sys::socket::sendmmsg(
                         self.io.as_raw_fd(),
                         &mut data,
-                        &buffers,
+                        &slices,
                         &addrs,
                         &cmsgs,
                         MsgFlags::empty(),
                     ) {
-                        Ok(results) => sent_packet += results.into_iter().count(),
-                        Err(e) => tracing::warn!("sendmsg error: {}", e),
+                        Ok(ret) => sent_packet += ret.into_iter().count(),
+                        Err(e) if e == nix::errno::Errno::EINVAL => continue,
+                        Err(_) if sent_packet > 0 => return Ok(sent_packet),
+                        Err(e) if e == nix::errno::Errno::EAGAIN => {
+                            return Err(io::Error::new(io::ErrorKind::WouldBlock, e));
+                        }
+                        Err(e) => return Err(e.into()),
                     }
                 }};
             }
 
-            match send_hdr.dst {
+            match hdr.dst {
                 SocketAddr::V4(v4) => send_batch!(SockaddrIn, v4),
                 SocketAddr::V6(v6) => send_batch!(SockaddrIn6, v6),
             }
@@ -111,25 +125,26 @@ impl Io for UdpSocketController {
         target_os = "tvos"
     ))]
     fn sendmsg(&self, slices: &[IoSlice<'_>], send_hdr: &PacketHeader) -> io::Result<usize> {
-        use nix::sys::socket::{ControlMessage, MsgFlags, SockaddrIn, SockaddrIn6};
+        use nix::sys::socket::{MsgFlags, SockaddrIn, SockaddrIn6};
         let mut sent_packet = 0;
         for slice in slices.iter() {
-            let mut cmsgs: Vec<ControlMessage> = Vec::new();
-            #[cfg(feature = "gso")]
-            cmsgs.push(ControlMessage::UdpGsoSegments(&send_hdr.seg_size));
-
             macro_rules! send_batch {
                 ($ty:ty, $addr:expr) => {{
                     let sock_addr = <$ty>::from($addr);
                     match nix::sys::socket::sendmsg(
                         self.io.as_raw_fd(),
                         &[*slice],
-                        &cmsgs,
+                        &[],
                         MsgFlags::empty(),
                         Some(&sock_addr),
                     ) {
-                        Ok(_sent_bytes) => sent_packet += 1,
-                        Err(e) => tracing::warn!("sendmsg error: {}", e),
+                        Ok(_send_bytes) => sent_packet += 1,
+                        Err(e) if e == nix::errno::Errno::EINVAL => continue,
+                        Err(_) if sent_packet > 0 => return Ok(sent_packet),
+                        Err(e) if e == nix::errno::Errno::EAGAIN => {
+                            return Err(io::Error::new(io::ErrorKind::WouldBlock, e));
+                        }
+                        Err(e) => return Err(e.into()),
                     }
                 }};
             }
@@ -153,28 +168,41 @@ impl Io for UdpSocketController {
         bufs: &mut [std::io::IoSliceMut<'_>],
         recv_hdrs: &mut [PacketHeader],
     ) -> io::Result<usize> {
-        use nix::sys::socket::recvmmsg;
-        let mut msgs = std::collections::LinkedList::new();
-        msgs.extend(bufs.iter_mut().map(|buf| [IoSliceMut::new(&mut buf[..])]));
+        use nix::sys::socket::{MsgFlags, recvmmsg};
+
+        use super::BATCH_SIZE;
+        let mut msgs: Vec<_> = bufs
+            .iter_mut()
+            .map(|buf| [std::io::IoSliceMut::new(&mut buf[..])])
+            .collect();
 
         let cmsg_buffer = cmsg_space!(libc::in_pktinfo, libc::in6_pktinfo, libc::c_int);
         let mut data = nix::sys::socket::MultiHeaders::<SockaddrStorage>::preallocate(
             BATCH_SIZE,
             Some(cmsg_buffer),
         );
-        let res: Vec<RecvMsg<SockaddrStorage>> = recvmmsg(
+
+        let res = match recvmmsg(
             self.io.as_raw_fd(),
             &mut data,
             &mut msgs,
             MsgFlags::MSG_DONTWAIT,
             None,
-        )?
-        .collect();
+        ) {
+            Ok(results) => results.collect::<Vec<_>>(),
+            Err(e) => {
+                if matches!(e, nix::errno::Errno::EAGAIN | nix::errno::Errno::EINTR) {
+                    return Err(io::Error::new(io::ErrorKind::WouldBlock, e));
+                }
+                return Err(e.into());
+            }
+        };
 
+        let local_port = self.local_addr()?.port();
         let mut count = 0;
+
         for recv_msg in res {
-            let sockaddr = recv_msg.address.unwrap();
-            let src_addr = sockaddr.to_socketaddr();
+            let src_addr = recv_msg.address.unwrap().to_socketaddr();
             let mut recv_hdr = PacketHeader {
                 src: src_addr,
                 dst: recv_hdrs[count].dst,
@@ -182,15 +210,14 @@ impl Io for UdpSocketController {
                 ecn: None,
                 seg_size: recv_msg.bytes as u16,
             };
-
-            let cmsgs = recv_msg.cmsgs().unwrap();
-            for cmsg in cmsgs {
+            for cmsg in recv_msg.cmsgs().unwrap() {
                 parse_cmsg(cmsg, &mut recv_hdr);
             }
-            recv_hdr.dst.set_port(self.local_addr()?.port());
+            recv_hdr.dst.set_port(local_port);
             recv_hdrs[count] = recv_hdr;
             count += 1;
         }
+
         Ok(count)
     }
 
@@ -205,9 +232,7 @@ impl Io for UdpSocketController {
         bufs: &mut [std::io::IoSliceMut<'_>],
         recv_hdrs: &mut [PacketHeader],
     ) -> io::Result<usize> {
-        use nix::sys::socket::{SockaddrIn, SockaddrIn6, recvmsg};
-        use tracing::warn;
-
+        use nix::sys::socket::{MsgFlags, recvmsg};
         let mut cmsg_space = cmsg_space!(libc::in_pktinfo, libc::in6_pktinfo, libc::c_int);
         let result = recvmsg::<SockaddrStorage>(
             self.io.as_raw_fd(),
@@ -223,18 +248,16 @@ impl Io for UdpSocketController {
                         parse_cmsg(cmsg, &mut recv_hdrs[0]);
                     }
                 }
+                recv_hdrs[0].dst.set_port(self.local_addr()?.port());
                 recv_hdrs[0].src = recv_msg.address.unwrap().to_socketaddr();
                 recv_hdrs[0].seg_size = recv_msg.bytes as u16;
                 Ok(1)
             }
             Err(e) => {
-                warn!("recv error {:?}", e);
-                let kind = if e == nix::errno::Errno::EINTR {
-                    io::ErrorKind::WouldBlock
-                } else {
-                    io::ErrorKind::Other
-                };
-                Err(io::Error::new(kind, e))
+                if matches!(e, nix::errno::Errno::EAGAIN | nix::errno::Errno::EINTR) {
+                    return Err(io::Error::new(io::ErrorKind::WouldBlock, e));
+                }
+                Err(e.into())
             }
         }
     }
@@ -250,13 +273,7 @@ fn parse_cmsg(cmsg: ControlMessageOwned, hdr: &mut PacketHeader) {
             let ip = IpAddr::V6(Ipv6Addr::from(pktinfo6.ipi6_addr.s6_addr));
             hdr.dst.set_ip(ip);
         }
-        ControlMessageOwned::UdpGroSegments(segments) => {
-            hdr.seg_size = segments as u16;
-            info!("Received UDP GRO segment size: {}", segments);
-        }
-        _ => {
-            info!("Unsupported control message: {:?}", cmsg);
-        }
+        _ => {}
     }
 }
 
@@ -284,19 +301,5 @@ impl ToSocketAddr for SockaddrStorage {
             }
             _ => panic!("Unsupported address family"),
         }
-    }
-}
-
-impl ToSocketAddr for SockaddrIn {
-    fn to_socketaddr(&self) -> SocketAddr {
-        let v4_addr = SocketAddrV4::new(self.ip(), self.port());
-        SocketAddr::V4(v4_addr)
-    }
-}
-
-impl ToSocketAddr for SockaddrIn6 {
-    fn to_socketaddr(&self) -> SocketAddr {
-        let v6_addr = SocketAddrV6::new(self.ip(), self.port(), self.flowinfo(), self.scope_id());
-        SocketAddr::V6(v6_addr)
     }
 }

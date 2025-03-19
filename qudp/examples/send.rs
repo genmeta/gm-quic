@@ -6,20 +6,17 @@ use qudp::{PacketHeader, UdpSocketController};
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(long, default_value_t = String::from("[::]:0"))]
+    #[arg(long, default_value_t = String::from("127.0.0.1:0"))]
     src: String,
 
-    #[arg(long, default_value_t = String::from("[::1]:12345"))]
+    #[arg(long, default_value_t = String::from("127.0.0.1:12345"))]
     dst: String,
 
-    #[arg(long, default_value_t = 1200)]
+    #[arg(long, default_value_t = 3600)]
     msg_size: usize,
 
     #[arg(long, default_value_t = 100)]
     msg_count: usize,
-
-    #[arg(long, default_value_t = false)]
-    gso: bool,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -38,14 +35,14 @@ async fn main() {
         dst,
         64,
         None,
-        1200,
+        args.msg_size as u16,
     );
 
     let payload = vec![8u8; args.msg_size];
     let payloads = vec![IoSlice::new(&payload[..]); args.msg_count];
 
     match socket.send(&payloads, send_hdr).await {
-        Ok(n) => tracing::info!("sent {} packets, dest: {}", n, dst),
+        Ok(n) => tracing::info!("sent {} packets, bytes: {}", n, n * args.msg_size),
         Err(e) => tracing::error!("send failed: {}", e),
     }
 }

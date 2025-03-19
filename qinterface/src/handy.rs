@@ -10,6 +10,7 @@ mod qudp {
 
     use bytes::BytesMut;
     use qbase::net::route::{EndpointAddr, Link, Pathway};
+    use qudp::BATCH_SIZE;
 
     use crate::QuicInterface;
 
@@ -37,7 +38,7 @@ mod qudp {
     impl Usc {
         pub fn bind(addr: SocketAddr) -> io::Result<Self> {
             let usc = qudp::UdpSocketController::new(addr)?;
-            let bufs = ReceiveBuffers::empty(usc.gro_size()).into();
+            let bufs = ReceiveBuffers::empty(BATCH_SIZE as _).into();
             Ok(Self {
                 inner: usc,
                 recv_bufs: bufs,
@@ -55,7 +56,7 @@ mod qudp {
         }
 
         fn max_segments(&self) -> io::Result<usize> {
-            Ok(self.inner.gso_size() as _)
+            Ok(BATCH_SIZE)
         }
 
         fn max_segment_size(&self) -> io::Result<usize> {
