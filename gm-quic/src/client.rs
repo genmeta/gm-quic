@@ -617,7 +617,8 @@ impl QuicClientBuilder<TlsClientConfig> {
     }
 
     /// Build the QuicClient, ready to initiates connect to the servers.
-    pub fn build(self) -> QuicClient {
+    pub fn build(mut self) -> QuicClient {
+        self.tls_config.resumption = rustls::client::Resumption::disabled();
         let bind_interfaces = if self.bind_interfaces.is_empty() {
             None
         } else {
