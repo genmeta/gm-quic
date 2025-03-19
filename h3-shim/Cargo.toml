@@ -11,6 +11,7 @@ categories.workspace = true
 
 [dependencies]
 h3 = "0.0.7"
+h3-datagram = "0.0.1"
 bytes = { workspace = true }
 futures = { workspace = true }
 gm-quic = { workspace = true }
