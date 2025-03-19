@@ -430,8 +430,8 @@ pub fn spawn_deliver_and_parse(
         async move |packet: ReceivedZeroRttPacket, pathway, socket| {
             if let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? {
                 let path = match components.get_or_try_create_path(socket, pathway, true) {
-                    Some(path) => path,
-                    None => {
+                    Ok(path) => path,
+                    Err(_) => {
                         packet.drop_on_conenction_closed();
                         return Ok(());
                     }
@@ -445,6 +445,7 @@ pub fn spawn_deliver_and_parse(
                         dispatch_data_frame(frame, packet.header.get_type(), &path);
                         Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                     })?;
+                packet.emit_received(frames);
 
                 space
                     .journal
@@ -452,7 +453,6 @@ pub fn spawn_deliver_and_parse(
                     .register_pn(packet.decoded_pn);
                 path.cc()
                     .on_pkt_rcvd(Epoch::Data, packet.decoded_pn, is_ack_packet);
-                packet.emit_received(frames);
             };
 
             Result::<(), Error>::Ok(())
@@ -464,8 +464,8 @@ pub fn spawn_deliver_and_parse(
         async move |packet: ReceivedOneRttPacket, pathway, socket| {
             if let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? {
                 let path = match components.get_or_try_create_path(socket, pathway, true) {
-                    Some(path) => path,
-                    None => {
+                    Ok(path) => path,
+                    Err(_) => {
                         packet.drop_on_conenction_closed();
                         return Ok(());
                     }
@@ -480,13 +480,14 @@ pub fn spawn_deliver_and_parse(
                         dispatch_data_frame(frame, packet.header.get_type(), &path);
                         Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                     })?;
+                packet.emit_received(frames);
+
                 space
                     .journal
                     .of_rcvd_packets()
                     .register_pn(packet.decoded_pn);
                 path.cc()
                     .on_pkt_rcvd(Epoch::Data, packet.decoded_pn, is_ack_packet);
-                packet.emit_received(frames);
             }
             Result::<(), Error>::Ok(())
         }

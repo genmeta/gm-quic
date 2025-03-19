@@ -355,7 +355,7 @@ where
         })
     }
 
-    pub fn emit_received(self, frames: impl Into<Vec<QuicFrame>>) {
+    pub fn emit_received(&self, frames: impl Into<Vec<QuicFrame>>) {
         qlog::event!(PacketReceived {
             header: self.qlog_header(),
             frames,

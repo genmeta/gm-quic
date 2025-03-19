@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    io,
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -313,7 +314,6 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         original_dcid: ConnectionId,
         client_scid: ConnectionId,
     ) -> ComponentsReady {
-        let server_params = &mut self.foundation.server_params;
         let tx_wakers = ArcSendWakers::default();
         let reliable_frames = ArcReliableFrameDeque::with_capacity_and_wakers(8, tx_wakers.clone());
 
@@ -323,6 +323,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
         let router_registry: qinterface::router::RouterRegistry<ArcReliableFrameDeque> =
             self.proto.registry(rcvd_pkt_q.clone(), issued_cids);
 
+        let server_params = &mut self.foundation.server_params;
         let initial_scid = router_registry.gen_unique_cid();
         server_params.set_initial_source_connection_id(initial_scid);
 
@@ -470,14 +471,24 @@ fn accpet_transport_parameters(components: &Components) -> impl Future<Output = 
         use qbase::frame::{MaxStreamsFrame, ReceiveFrame, StreamCtlFrame};
         if let Ok(param::Pair { remote, .. }) = params.clone().await {
             match role {
-                sid::Role::Client => qlog::event!(ParametersSet {
-                    owner: Owner::Remote,
-                    server_parameters: params.server().expect("unreachable"),
-                }),
-                sid::Role::Server => qlog::event!(ParametersSet {
-                    owner: Owner::Local,
-                    client_parameters: params.client().expect("unreachable"),
-                }),
+                sid::Role::Client => {
+                    let Ok(server_parameters) = params.server() else {
+                        return;
+                    };
+                    qlog::event!(ParametersSet {
+                        owner: Owner::Remote,
+                        server_parameters: server_parameters.expect("unreachable"),
+                    })
+                }
+                sid::Role::Server => {
+                    let Ok(client_parameters) = params.client() else {
+                        return;
+                    };
+                    qlog::event!(ParametersSet {
+                        owner: Owner::Remote,
+                        client_parameters: client_parameters.expect("unreachable"),
+                    })
+                }
             }
 
             // pretend to receive the MAX_STREAM frames
@@ -506,9 +517,9 @@ impl Components {
         link: Link,
         pathway: Pathway,
         is_probed: bool,
-    ) -> Option<Arc<Path>> {
+    ) -> io::Result<Arc<Path>> {
         self.paths.get_or_try_create_with (pathway,||{
-                let do_validate = !self.state.try_entry_attempted(self, link);
+                let do_validate = !self.state.try_entry_attempted(self, link)?;
                 qlog::event!(PathAssigned {
                     path_id: pathway.to_string(),
                     path_local: link.src(),
@@ -564,7 +575,7 @@ impl Components {
                         .instrument_in_current();
 
                 tracing::info!(%pathway, %link,is_probed,do_validate, "created new path");
-                Some((path,task))
+                Ok((path,task))
         })
     }
 }
@@ -586,7 +597,7 @@ impl Components {
         self.flow_ctrl.on_conn_error(&error);
         self.tls_session.on_conn_error(&error);
         if self.handshake.role() == sid::Role::Server {
-            let local_parameters = self.parameters.server().unwrap();
+            let local_parameters = self.parameters.server().unwrap().unwrap();
             let origin_dcid = local_parameters.original_destination_connection_id();
             self.proto.del_router_entry(&origin_dcid.into());
         }
@@ -631,7 +642,7 @@ impl Components {
         self.flow_ctrl.on_conn_error(&error);
         self.tls_session.on_conn_error(&error);
         if self.handshake.role() == sid::Role::Server {
-            let local_parameters = self.parameters.server().unwrap();
+            let local_parameters = self.parameters.server().unwrap().unwrap();
             let origin_dcid = local_parameters.original_destination_connection_id();
             self.proto.del_router_entry(&origin_dcid.into());
         }

@@ -204,13 +204,13 @@ impl Parameters {
                 ne.to_string(),
             )
         })?;
-        self.state = Self::CLIENT_READY | Self::SERVER_READY;
         self.validate_remote_params()?;
         // Because TLS and packet parsing are in parallel,
         // the scid of the peer end may not be set when the transmission parameters of the peer are obtained.
         // Therefore, if the scid of the other end is not set, authentication will not be performed first,
         // and authentication will be performed when it is set.
         if self.authenticate_cids()? {
+            self.state = Self::CLIENT_READY | Self::SERVER_READY;
             self.wake_all();
         }
 
@@ -242,6 +242,7 @@ impl Parameters {
             // and authentication will be performed when it is set.
             let authenticated = self.authenticate_cids()?;
             debug_assert!(authenticated);
+            self.state = Self::CLIENT_READY | Self::SERVER_READY;
             self.wake_all();
         }
         Ok(())
@@ -410,56 +411,52 @@ impl ArcParameters {
     }
 
     /// Returns the client side transport parameters.
-    /// Returns None if some connection error occurred,
-    ///  or parameters have not be received(only for the server).
+    /// Returns Err if some connection error occurred,
+    ///  or None of parameters have not be received(only for the server).
     ///
     /// - For the client, this equal to [`Self::local`];
     /// - For the server, this equal to [`Self::remote`].
-    pub fn client(&self) -> Option<ClientParameters> {
+    pub fn client(&self) -> Result<Option<ClientParameters>, Error> {
         let guard = self.0.lock().unwrap();
-        guard.as_ref().ok()?.client()
+        Ok(guard.as_ref().map_err(Clone::clone)?.client())
     }
 
     /// Returns the server side transport parameters.
-    /// Returns None if some connection error occurred,
-    ///  or parameters have not be received(only for the client).
+    /// Returns Err if some connection error occurred,
+    ///  or None if parameters have not be received(only for the client).
     ///
     /// - For the client, this equal to [`Self::remote`];
     /// - For the server, this equal to [`Self::local`].
-    pub fn server(&self) -> Option<ServerParameters> {
+    pub fn server(&self) -> Result<Option<ServerParameters>, Error> {
         let guard = self.0.lock().unwrap();
-        guard.as_ref().ok()?.server()
+        Ok(guard.as_ref().map_err(Clone::clone)?.server())
     }
 
     /// Returns the local transport parameters.
-    /// Returns None if some connection error occurred.
+    /// Returns Err if some connection error occurred.
     ///
     /// - For the client, the local transport parameters are client
     ///   transport parameters;
     /// - For the server, the local transport parameters are server
     ///   transport parameters.
-    pub fn local(&self) -> Option<CommonParameters> {
+    pub fn local(&self) -> Result<CommonParameters, Error> {
         let guard = self.0.lock().unwrap();
-        match guard.deref() {
-            Ok(params) => Some(*params.local()),
-            Err(_) => None,
-        }
+        let params = guard.as_ref().map_err(Clone::clone)?;
+        Ok(*params.local())
     }
 
     /// Returns the remote transport parameters.
     /// Returns None if the remote transport parameters have not
-    /// been received or some connection error occurred.
+    /// been received or Err if some connection error occurred.
     ///
     /// - For the client, the local transport parameters are server
     ///   transport parameters;
     /// - For the server, the local transport parameters are client
     ///   transport parameters.
-    pub fn remote(&self) -> Option<CommonParameters> {
+    pub fn remote(&self) -> Result<Option<CommonParameters>, Error> {
         let guard = self.0.lock().unwrap();
-        match guard.deref() {
-            Ok(params) => params.remote().cloned(),
-            Err(_) => None,
-        }
+        let params = guard.as_ref().map_err(Clone::clone)?;
+        Ok(params.remote().copied())
     }
 
     /// Returns the remembered server transport parameters if exist,
@@ -468,12 +465,10 @@ impl ArcParameters {
     ///
     /// It is meaningful only for the client, to send early data
     /// with 0Rtt packets before receving the server transport params.
-    pub fn remembered(&self) -> Option<CommonParameters> {
+    pub fn remembered(&self) -> Result<Option<CommonParameters>, Error> {
         let guard = self.0.lock().unwrap();
-        match guard.deref() {
-            Ok(params) => params.remembered().cloned(),
-            Err(_) => None,
-        }
+        let params = guard.as_ref().map_err(Clone::clone)?;
+        Ok(params.remembered().copied())
     }
 
     /// Sets the initial source connection ID in local transport parameters.
@@ -516,9 +511,10 @@ impl ArcParameters {
     /// the server will echo it back to the client.
     ///
     /// This value is well suited to be used to identify a connection.
-    pub fn get_origin_dcid(&self) -> Option<ConnectionId> {
+    pub fn get_origin_dcid(&self) -> Result<ConnectionId, Error> {
         let guard = self.0.lock().unwrap();
-        guard.as_ref().ok().map(|params| params.get_origin_dcid())
+        let params = guard.as_ref().map_err(Clone::clone)?;
+        Ok(params.get_origin_dcid())
     }
 
     /// Load the local transport parameters into the buffer, which
@@ -530,10 +526,10 @@ impl ArcParameters {
         }
     }
 
-    pub fn initial_scid_from_peer(&self) -> Option<ConnectionId> {
+    pub fn initial_scid_from_peer(&self) -> Result<Option<ConnectionId>, Error> {
         let guard = self.0.lock().unwrap();
-        let parameters = guard.as_ref().ok()?;
-        parameters.requirements.initial_source_connection_id
+        let parameters = guard.as_ref().map_err(Clone::clone)?;
+        Ok(parameters.requirements.initial_source_connection_id)
     }
 
     /// No matter the client or server, after receiving the Initial
@@ -684,10 +680,10 @@ mod tests {
         assert!(local.max_udp_payload_size.into_inner() >= 1200);
 
         // Test remote params before receiving
-        assert!(arc_params.remote().is_none());
+        assert_eq!(arc_params.remote(), Ok(None));
 
         // Test remembered params
-        assert!(arc_params.remembered().is_none());
+        assert_eq!(arc_params.remembered(), Ok(None));
 
         // Test loading local params
         let mut buf = Vec::new();
@@ -745,7 +741,7 @@ mod tests {
         );
         arc_params.on_conn_error(&error);
 
-        assert!(arc_params.local().is_none());
-        assert!(arc_params.remote().is_none());
+        assert!(arc_params.local().is_err());
+        assert!(arc_params.remote().is_err());
     }
 }
