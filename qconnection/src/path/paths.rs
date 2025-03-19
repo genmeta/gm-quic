@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{io, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use deref_derive::Deref;
@@ -58,13 +58,13 @@ impl ArcPathContexts {
     pub fn get_or_try_create_with<T>(
         &self,
         pathway: Pathway,
-        try_create: impl FnOnce() -> Option<(Arc<Path>, T)>,
-    ) -> Option<Arc<Path>>
+        try_create: impl FnOnce() -> io::Result<(Arc<Path>, T)>,
+    ) -> io::Result<Arc<Path>>
     where
         T: Future<Output = Result<(), String>> + Send + 'static,
     {
         match self.paths.entry(pathway) {
-            dashmap::Entry::Occupied(occupied_entry) => Some(occupied_entry.get().path.clone()),
+            dashmap::Entry::Occupied(occupied_entry) => Ok(occupied_entry.get().path.clone()),
             dashmap::Entry::Vacant(vacant_entry) => {
                 let (path, task) = try_create()?;
                 self.tx_wakers.insert(pathway, path.tx_waker());
@@ -78,7 +78,7 @@ impl ArcPathContexts {
                     .in_current_span(),
                 )
                 .abort_handle();
-                Some(vacant_entry.insert(PathContext { path, task }).clone())
+                Ok(vacant_entry.insert(PathContext { path, task }).clone())
             }
         }
     }

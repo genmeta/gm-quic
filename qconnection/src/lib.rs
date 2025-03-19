@@ -8,7 +8,10 @@ pub mod tls;
 pub mod tx;
 
 pub mod prelude {
-    pub use qbase::{frame::ConnectionCloseFrame, net::route::*, sid::StreamId, varint::VarInt};
+    pub use qbase::{
+        cid::ConnectionId, frame::ConnectionCloseFrame, net::route::*, sid::StreamId,
+        varint::VarInt,
+    };
     pub use qinterface::{QuicInterface, router::QuicProto};
     #[cfg(feature = "unreliable")]
     pub use qunreliable::{DatagramReader, DatagramWriter};
@@ -161,12 +164,17 @@ impl Components {
         }
     }
 
-    pub fn add_path(&self, link: Link, pathway: Pathway) {
-        self.get_or_try_create_path(link, pathway, false);
+    pub fn add_path(&self, link: Link, pathway: Pathway) -> io::Result<()> {
+        self.get_or_try_create_path(link, pathway, false)
+            .map(|_| ())
     }
 
     pub fn del_path(&self, pathway: &Pathway) {
         self.paths.remove(pathway, "application removed");
+    }
+
+    pub fn origin_dcid(&self) -> io::Result<cid::ConnectionId> {
+        Ok(self.parameters.get_origin_dcid()?)
     }
 }
 
@@ -256,7 +264,7 @@ impl Connection {
     }
 
     pub fn add_path(&self, link: Link, pathway: Pathway) -> io::Result<()> {
-        self.try_map_components(|core_conn| core_conn.add_path(link, pathway))
+        self.try_map_components(|core_conn| core_conn.add_path(link, pathway))?
     }
 
     pub fn del_path(&self, pathway: &Pathway) -> io::Result<()> {
@@ -265,6 +273,10 @@ impl Connection {
 
     pub fn is_active(&self) -> bool {
         self.try_map_components(|_| true).unwrap_or_default()
+    }
+
+    pub fn origin_dcid(&self) -> io::Result<cid::ConnectionId> {
+        self.try_map_components(|core_conn| core_conn.origin_dcid())?
     }
 }
 

@@ -276,7 +276,7 @@ impl PacketHeaderBuilder {
             .scil(header.scid().len() as u8)
             .scid(*header.scid())
             .dcil(header.dcid().len() as u8)
-            .scid(*header.dcid())
+            .dcid(*header.dcid())
     }
 
     /// Helper method used to set the fields of the handshake header,
@@ -287,7 +287,7 @@ impl PacketHeaderBuilder {
             .scil(header.scid().len() as u8)
             .scid(*header.scid())
             .dcil(header.dcid().len() as u8)
-            .scid(*header.dcid())
+            .dcid(*header.dcid())
     }
 
     /// Helper method used to set the fields of the 0rtt header,
@@ -298,7 +298,7 @@ impl PacketHeaderBuilder {
             .scil(header.scid().len() as u8)
             .scid(*header.scid())
             .dcil(header.dcid().len() as u8)
-            .scid(*header.dcid())
+            .dcid(*header.dcid())
     }
 
     /// Helper method used to set the fields of the 1rtt header,
@@ -307,7 +307,7 @@ impl PacketHeaderBuilder {
     pub fn one_rtt(&mut self, header: &OneRttHeader) -> &mut Self {
         self.packet_type(PacketType::OneRTT)
             .dcil(header.dcid().len() as u8)
-            .scid(*header.dcid())
+            .dcid(*header.dcid())
     }
 }
 

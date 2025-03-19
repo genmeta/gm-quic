@@ -199,7 +199,7 @@ pub fn spawn_deliver_and_parse(
         // unpredictable outcomes that might otherwise result from stateless processing of multiple Initial packets
         // with different Source Connection IDs.
         if parameters
-            .initial_scid_from_peer()
+            .initial_scid_from_peer()?
             .is_some_and(|scid| scid != *packet.header.scid())
         {
             packet.drop_on_scid_unmatch();
@@ -209,8 +209,8 @@ pub fn spawn_deliver_and_parse(
 
         if let Some(packet) = space.decrypt_packet(packet).await.transpose()? {
             let path = match components.get_or_try_create_path(socket, pathway, true) {
-                Some(path) => path,
-                None => {
+                Ok(path) => path,
+                Err(_) => {
                     packet.drop_on_conenction_closed();
                     return Ok(());
                 }
@@ -225,6 +225,7 @@ pub fn spawn_deliver_and_parse(
                     dispatch_frame(frame, &path);
                     Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                 })?;
+            packet.emit_received(frames);
 
             space
                 .journal
@@ -232,7 +233,7 @@ pub fn spawn_deliver_and_parse(
                 .register_pn(packet.decoded_pn);
             path.cc()
                 .on_pkt_rcvd(Epoch::Initial, packet.decoded_pn, is_ack_packet);
-            if parameters.initial_scid_from_peer().is_none() {
+            if parameters.initial_scid_from_peer()?.is_none() {
                 remote_cids.revise_initial_dcid(*packet.header.scid());
                 parameters.initial_scid_from_peer_need_equal(*packet.header.scid())?;
             }
@@ -250,7 +251,7 @@ pub fn spawn_deliver_and_parse(
             // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
             if role == qbase::sid::Role::Server {
                 if let Some(origin_dcid) = parameters
-                    .server()
+                    .server()?
                     .map(|local_params| local_params.original_destination_connection_id())
                 {
                     if origin_dcid != *packet.header.dcid() {
@@ -258,8 +259,6 @@ pub fn spawn_deliver_and_parse(
                     }
                 }
             }
-
-            packet.emit_received(frames);
         }
         Result::<(), Error>::Ok(())
     };

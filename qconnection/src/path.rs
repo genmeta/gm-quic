@@ -43,11 +43,11 @@ pub struct Path {
 }
 
 impl Path {
-    pub fn new(proto: &QuicProto, link: Link, pathway: Pathway, cc: ArcCC) -> Option<Self> {
-        let interface = proto.get_interface(link.src()).ok()?;
+    pub fn new(proto: &QuicProto, link: Link, pathway: Pathway, cc: ArcCC) -> io::Result<Self> {
+        let interface = proto.get_interface(link.src())?;
         let tx_waker = ArcSendWaker::new();
         let handle = cc.launch_with_waker(tx_waker.clone());
-        Some(Self {
+        Ok(Self {
             interface,
             link,
             pathway,
