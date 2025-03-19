@@ -39,7 +39,7 @@ where
 }
 
 use crate::{
-    MiniHeap, ObserveHandshake, TrackPackets,
+    Feedback, ObserveHandshake,
     bbr::{self, INITIAL_CWND},
     new_reno::NewReno,
     pacing::{self, Pacer},
@@ -62,7 +62,6 @@ pub enum CongestionAlgorithm {
 /// See [Appendix A](https://datatracker.ietf.org/doc/html/rfc9002#name-loss-recovery-pseudocode)
 pub struct CongestionController {
     pathway: Pathway,
-    erased: Arc<[MiniHeap; 3]>,
     algorithm: Box<dyn Algorithm + Send>,
     // The Round-Trip Time (RTT) estimator.
     rtt: ArcRtt,
@@ -89,7 +88,7 @@ pub struct CongestionController {
     // The waker to notify when the controller is ready to send.
     pending_burst: Option<(Waker, usize)>,
     // epoch packet trackers
-    trackers: [Arc<dyn TrackPackets>; 3],
+    trackers: [Arc<dyn Feedback>; 3],
     // Handshake state
     handshake: Box<dyn ObserveHandshake>,
 }
@@ -98,10 +97,9 @@ impl CongestionController {
     // A.4. Initialization
     fn new(
         pathway: Pathway,
-        erased: Arc<[MiniHeap; 3]>,
         algorithm: CongestionAlgorithm,
         max_ack_delay: Duration,
-        trackers: [Arc<dyn TrackPackets>; 3],
+        trackers: [Arc<dyn Feedback>; 3],
         handshake: Box<dyn ObserveHandshake>,
     ) -> Self {
         let algorithm: Box<dyn Algorithm> = match algorithm {
@@ -112,7 +110,6 @@ impl CongestionController {
         let now = Instant::now();
         CongestionController {
             pathway,
-            erased,
             algorithm,
             rtt: ArcRtt::new(),
             loss_timer: LossDetectionTimer::default(),
@@ -237,9 +234,8 @@ impl CongestionController {
                     let idx = current_idx;
                     current_idx += 1;
 
-                    if let Some(drain) = self.rcvd_records[epoch].should_drain(pn) {
-                        let min_pn = self.erased[epoch].update(&self.pathway, drain);
-                        self.trackers[epoch].drain_to(min_pn);
+                    if let Some(largest_pn) = self.rcvd_records[epoch].should_drain(pn) {
+                        self.trackers[epoch].expire_rvd_by_path(self.pathway, largest_pn);
                     }
 
                     self.sent_packets[epoch][idx].is_acked = true;
@@ -473,15 +469,13 @@ pub struct ArcCC(Arc<Mutex<CongestionController>>);
 impl ArcCC {
     pub fn new(
         pathway: Pathway,
-        erased: Arc<[MiniHeap; 3]>,
         algorithm: CongestionAlgorithm,
         max_ack_delay: Duration,
-        trackers: [Arc<dyn TrackPackets>; 3],
+        trackers: [Arc<dyn Feedback>; 3],
         handshake: Box<dyn ObserveHandshake>,
     ) -> Self {
         ArcCC(Arc::new(Mutex::new(CongestionController::new(
             pathway,
-            erased,
             algorithm,
             max_ack_delay,
             trackers,
@@ -550,12 +544,6 @@ impl super::CongestionControl for ArcCC {
 
         guard.last_sent_time = now;
         if let Some(largest_acked) = ack {
-            let record = &guard.rcvd_records[epoch];
-            // send ack for the first time
-            if record.last_ack_sent.is_none() {
-                let begin = record.rcvd_queue.front().map(|&(pn, _)| pn).unwrap_or(0);
-                guard.erased[epoch].update(&guard.pathway, begin);
-            }
             guard.rcvd_records[epoch].on_ack_sent(pn, largest_acked);
         }
     }
@@ -576,7 +564,7 @@ impl super::CongestionControl for ArcCC {
         guard.on_datagram_rcvd(now);
     }
 
-    fn pto_time(&self, epoch: Epoch) -> Duration {
+    fn get_pto(&self, epoch: Epoch) -> Duration {
         self.0.lock().unwrap().get_pto_time(epoch)
     }
 
@@ -590,8 +578,6 @@ impl super::CongestionControl for ArcCC {
                 .map(|pkt| pkt.pn);
             guard.trackers[*epoch]
                 .may_loss(PacketLostTrigger::PtoExpired, &mut loss_pns.into_iter());
-            // remove from paths erased
-            guard.erased[*epoch].remove(&guard.pathway);
         }
     }
 }
@@ -1152,9 +1138,9 @@ mod tests {
         );
     }
     struct Mock;
-    impl TrackPackets for Mock {
+    impl Feedback for Mock {
         fn may_loss(&self, _: PacketLostTrigger, _: &mut dyn Iterator<Item = u64>) {}
-        fn drain_to(&self, _: u64) {}
+        fn expire_rvd_by_path(&self, _pathway: Pathway, _pn: u64) {}
     }
 
     fn create_congestion_controller_for_test() -> CongestionController {
@@ -1163,10 +1149,8 @@ mod tests {
             "127.0.0.1:12345".parse().unwrap(),
             "127.0.0.1:54321".parse().unwrap(),
         );
-        let erased: Arc<[MiniHeap; 3]> = Default::default();
         CongestionController::new(
             pathway,
-            erased,
             CongestionAlgorithm::Bbr,
             Duration::from_millis(100),
             [Arc::new(Mock), Arc::new(Mock), Arc::new(Mock)],

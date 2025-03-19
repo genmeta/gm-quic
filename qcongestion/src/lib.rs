@@ -1,6 +1,4 @@
 use std::{
-    collections::HashMap,
-    sync::Mutex,
     task::{Context, Poll},
     time::{Duration, Instant},
 };
@@ -60,21 +58,21 @@ pub trait CongestionControl {
     /// Records the receipt of a packet, which may influence future packet transmissions.
     /// # Parameters
     /// - `pn`: The packet number of the received packet.
-    /// - `is_ack_elicition`: A boolean indicating whether the received packet is ack-eliciting.
-    fn on_pkt_rcvd(&self, space: Epoch, pn: u64, is_ack_elicition: bool);
+    /// - `is_ack_eliciting`: A boolean indicating whether the received packet is ack-eliciting.
+    fn on_pkt_rcvd(&self, space: Epoch, pn: u64, is_ack_eliciting: bool);
 
     /// Retrieves the current path's PTO duration.
     /// # Returns
     /// The current PTO duration for the given epoch.
-    fn pto_time(&self, epoch: Epoch) -> Duration;
+    fn get_pto(&self, epoch: Epoch) -> Duration;
 
     /// Stops the congestion control algorithm.
     /// mark all inflights as lost
     fn stop(&self);
 }
 
-/// The [`TrackPackets`] trait defines the interface for packet tracking
-pub trait TrackPackets: Send + Sync {
+/// The [`Feedback`] trait defines the interface for packet tracking
+pub trait Feedback: Send + Sync {
     /// Indicates that a packet with the specified packet number may have been lost.
     /// # Parameters
     /// - `pn`: The packet number of the potentially lost packet.
@@ -82,9 +80,8 @@ pub trait TrackPackets: Send + Sync {
 
     /// Attempts to roll the receive packet record to the specified packet number in the provided pathway.
     /// # Parameters
-    /// - `pathway`: The identifier of the pathway where the packet record is updated.
     /// - `pn`: The target packet number to which the packet record should be advanced.
-    fn drain_to(&self, pn: u64);
+    fn expire_rvd_by_path(&self, pathway: Pathway, pn: u64);
 }
 
 /// The [`ObserveHandshake`] trait defines the interface for observing the handshake state.
@@ -97,22 +94,4 @@ pub trait ObserveHandshake: Send + Sync {
 
     /// Checks if the connection is currently receiving keys.
     fn is_getting_keys(&self) -> bool;
-}
-
-#[derive(Debug, Default)]
-pub struct MiniHeap {
-    drain_pns: Mutex<HashMap<Pathway, u64>>,
-}
-
-impl MiniHeap {
-    pub fn update(&self, pathway: &Pathway, pn: u64) -> u64 {
-        let mut guard = self.drain_pns.lock().unwrap();
-        guard.insert(*pathway, pn);
-        guard.iter().map(|(_, &pn)| pn).min().unwrap_or(0)
-    }
-
-    pub fn remove(&self, pathway: &Pathway) {
-        let mut guard = self.drain_pns.lock().unwrap();
-        guard.remove(pathway);
-    }
 }

@@ -7,7 +7,7 @@ use qbase::{
     error::{Error, ErrorKind},
     net::{route::Pathway, tx::ArcSendWakers},
 };
-use qcongestion::{CongestionControl, MiniHeap};
+use qcongestion::CongestionControl;
 use qlog::telemetry::Instrument;
 use tokio::task::AbortHandle;
 use tracing::Instrument as _;
@@ -42,7 +42,6 @@ pub struct ArcPathContexts {
     paths: Arc<DashMap<Pathway, PathContext>>,
     tx_wakers: ArcSendWakers,
     broker: ArcEventBroker,
-    erased: Arc<[MiniHeap; 3]>,
 }
 
 impl ArcPathContexts {
@@ -51,7 +50,6 @@ impl ArcPathContexts {
             paths: Default::default(),
             tx_wakers,
             broker,
-            erased: Default::default(),
         }
     }
 
@@ -89,6 +87,7 @@ impl ArcPathContexts {
 
     pub fn remove(&self, pathway: &Pathway, reason: &str) {
         if let Some((_, path)) = self.paths.remove(pathway) {
+            // TODO: 各个space也得能remove_path
             self.broker
                 .emit(Event::PathInactivated(path.pathway, path.link));
             tracing::warn!(%pathway, reason, "removed path");
@@ -104,14 +103,7 @@ impl ArcPathContexts {
         self.paths.is_empty()
     }
 
-    pub fn max_pto_duration(&self) -> Option<Duration> {
-        self.paths
-            .iter()
-            .map(|p| p.cc().pto_time(Epoch::Data))
-            .max()
-    }
-
-    pub fn erased(&self) -> Arc<[MiniHeap; 3]> {
-        self.erased.clone()
+    pub fn max_pto(&self) -> Option<Duration> {
+        self.paths.iter().map(|p| p.cc().get_pto(Epoch::Data)).max()
     }
 }
