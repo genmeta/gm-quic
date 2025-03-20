@@ -48,7 +48,7 @@ use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
     path::Path,
     termination::ClosingState,
-    tx::{MiddleAssembledPacket, PacketMemory, Transaction},
+    tx::{PacketBuffer, PaddablePacket, Transaction},
 };
 
 pub type ReceivedBundle = ((InitialHeader, BytesMut, usize), Pathway, Link);
@@ -105,11 +105,11 @@ impl InitialSpace {
         &self,
         tx: &mut Transaction<'_>,
         buf: &mut [u8],
-    ) -> Result<(MiddleAssembledPacket, Option<u64>), Signals> {
+    ) -> Result<(PaddablePacket, Option<u64>), Signals> {
         let keys = self.keys.get_local_keys().ok_or(Signals::KEYS)?;
         let sent_journal = self.journal.of_sent_packets();
         let need_ack = tx.need_ack(Epoch::Initial);
-        let mut packet = PacketMemory::new_long(
+        let mut packet = PacketBuffer::new_long(
             LongHeaderBuilder::with_cid(tx.dcid(), tx.scid())
                 .initial(self.token.lock().unwrap().clone()),
             buf,
@@ -137,7 +137,13 @@ impl InitialSpace {
             .try_load_data_into(&mut packet)
             .inspect_err(|s| signals |= *s);
 
-        Ok((packet.interrupt().map_err(|_| signals)?, ack))
+        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Initial);
+        Ok((
+            packet
+                .prepare_with_time(retran_timeout, expire_timeout)
+                .map_err(|_| signals)?,
+            ack,
+        ))
     }
 }
 

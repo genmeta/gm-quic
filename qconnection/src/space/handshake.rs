@@ -45,7 +45,7 @@ use crate::{
     path::Path,
     space::pipe,
     termination::ClosingState,
-    tx::{MiddleAssembledPacket, PacketMemory, Transaction},
+    tx::{PacketBuffer, PaddablePacket, Transaction},
 };
 
 pub type ReceivedBundle = ((HandshakeHeader, bytes::BytesMut, usize), Pathway, Link);
@@ -96,12 +96,12 @@ impl HandshakeSpace {
         &self,
         tx: &mut Transaction<'_>,
         buf: &mut [u8],
-    ) -> Result<(MiddleAssembledPacket, Option<u64>), Signals> {
+    ) -> Result<(PaddablePacket, Option<u64>), Signals> {
         let keys = self.keys.get_local_keys().ok_or(Signals::KEYS)?;
         let sent_journal = self.journal.of_sent_packets();
         let header = LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).handshake();
         let need_ack = tx.need_ack(Epoch::Handshake);
-        let mut packet = PacketMemory::new_long(header, buf, keys, &sent_journal)?;
+        let mut packet = PacketBuffer::new_long(header, buf, keys, &sent_journal)?;
 
         let mut signals = Signals::empty();
 
@@ -123,7 +123,13 @@ impl HandshakeSpace {
             .try_load_data_into(&mut packet)
             .inspect_err(|s| signals |= *s);
 
-        Ok((packet.interrupt().map_err(|_| signals)?, ack))
+        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Handshake);
+        Ok((
+            packet
+                .prepare_with_time(retran_timeout, expire_timeout)
+                .map_err(|_| signals)?,
+            ack,
+        ))
     }
 }
 
@@ -147,14 +153,14 @@ pub fn spawn_deliver_and_parse(
         event_broker.clone(),
     );
 
-    let handsahke_status = components.inform_cc.clone();
+    let inform_cc = components.inform_cc.clone();
     let dispatch_frame = {
         let event_broker = event_broker.clone();
         move |frame: Frame, path: &Path| match frame {
             Frame::Ack(f) => {
                 path.cc().on_ack_rcvd(Epoch::Handshake, &f);
                 _ = ack_frames_entry.send(f);
-                handsahke_status.received_handshake_ack();
+                inform_cc.received_handshake_ack();
             }
             Frame::Close(f) => event_broker.emit(Event::Closed(f)),
             Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),
@@ -166,9 +172,9 @@ pub fn spawn_deliver_and_parse(
     let components = components.clone();
     let role = components.handshake.role();
     let parameters = components.parameters.clone();
-    let parse = async move |packet: ReceiveHanshakePacket, pathway, socket| {
+    let parse = async move |packet: ReceiveHanshakePacket, pathway, link| {
         if let Some(packet) = space.decrypt_packet(packet).await.transpose()? {
-            let path = match components.get_or_try_create_path(socket, pathway, true) {
+            let path = match components.get_or_try_create_path(link, pathway, true) {
                 Ok(path) => path,
                 Err(_) => {
                     packet.drop_on_conenction_closed();
@@ -215,8 +221,8 @@ pub fn spawn_deliver_and_parse(
 
     tokio::spawn(
         async move {
-            while let Some((packet, pathway, socket)) = bundles.next().await {
-                if let Err(error) = parse(packet.into(), pathway, socket).await {
+            while let Some((packet, pathway, link)) = bundles.next().await {
+                if let Err(error) = parse(packet.into(), pathway, link).await {
                     event_broker.emit(Event::Failed(error));
                 };
             }
