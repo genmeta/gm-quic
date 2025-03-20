@@ -5,7 +5,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub use congestion::{ArcCC, CongestionAlgorithm, MSS};
 use qbase::{
     Epoch,
     frame::AckFrame,
@@ -14,16 +13,22 @@ use qbase::{
 use qlog::quic::recovery::PacketLostTrigger;
 use tokio::task::AbortHandle;
 
-mod bbr;
+mod algorithm;
+pub use algorithm::Algorithm;
 mod congestion;
+pub use congestion::ArcCC;
 mod delivery_rate;
 mod min_max;
-mod new_reno;
 mod pacing;
+mod packets;
 mod rtt;
+mod status;
 
-/// The [`CongestionControl`] trait defines the interface for congestion control algorithms.
-pub trait CongestionControl {
+///  default datagram size in bytes.
+pub const MSS: usize = 1200;
+
+/// The [`Transport`] trait defines the interface for congestion control algorithms.
+pub trait Transport {
     /// Performs a periodic tick to drive the congestion control algorithm.
     fn launch_with_waker(&self, tx_waker: ArcSendWaker) -> AbortHandle;
 
@@ -31,11 +36,6 @@ pub trait CongestionControl {
     /// # Returns
     /// A [`Poll`] indicating readiness to send and the amount of data that can be sent.
     fn poll_send(&self, cx: &mut Context<'_>, expect_quota: usize) -> Poll<usize>;
-
-    /// Checks if an AckFrame should be sent in the next packet for the given epoch.
-    /// # Returns
-    /// An [`Option`] containing the largest packet ID and the time it was received if an AckFrame is needed.
-    fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)>;
 
     /// Records the sending of a packet, which may affect congestion control state.
     /// # Parameters
@@ -54,14 +54,19 @@ pub trait CongestionControl {
         ack: Option<u64>,
     );
 
-    /// Updates the congestion control state upon receiving an AckFrame.
-    fn on_ack(&self, space: Epoch, ack_frame: &AckFrame);
-
     /// Records the receipt of a packet, which may influence future packet transmissions.
     /// # Parameters
     /// - `pn`: The packet number of the received packet.
     /// - `is_ack_elicition`: A boolean indicating whether the received packet is ack-eliciting.
     fn on_pkt_rcvd(&self, space: Epoch, pn: u64, is_ack_elicition: bool);
+
+    /// Checks if an AckFrame should be sent in the next packet for the given epoch.
+    /// # Returns
+    /// An [`Option`] containing the largest packet ID and the time it was received if an AckFrame is needed.
+    fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)>;
+
+    /// Updates the congestion control state upon receiving an AckFrame.
+    fn on_ack_rcvd(&self, space: Epoch, ack_frame: &AckFrame);
 
     /// Retrieves the current path's PTO duration.
     /// # Returns
@@ -85,34 +90,4 @@ pub trait TrackPackets: Send + Sync {
     /// - `pathway`: The identifier of the pathway where the packet record is updated.
     /// - `pn`: The target packet number to which the packet record should be advanced.
     fn drain_to(&self, pn: u64);
-}
-
-/// The [`ObserveHandshake`] trait defines the interface for observing the handshake state.
-pub trait ObserveHandshake: Send + Sync {
-    /// Retrieves the role of the connection.
-    fn role(&self) -> qbase::sid::Role;
-
-    /// Checks if the handshake is complete.
-    fn is_handshake_done(&self) -> bool;
-
-    /// Checks if the connection is currently receiving keys.
-    fn is_getting_keys(&self) -> bool;
-}
-
-#[derive(Debug, Default)]
-pub struct MiniHeap {
-    drain_pns: Mutex<HashMap<Pathway, u64>>,
-}
-
-impl MiniHeap {
-    pub fn update(&self, pathway: &Pathway, pn: u64) -> u64 {
-        let mut guard = self.drain_pns.lock().unwrap();
-        guard.insert(*pathway, pn);
-        guard.iter().map(|(_, &pn)| pn).min().unwrap_or(0)
-    }
-
-    pub fn remove(&self, pathway: &Pathway) {
-        let mut guard = self.drain_pns.lock().unwrap();
-        guard.remove(pathway);
-    }
 }

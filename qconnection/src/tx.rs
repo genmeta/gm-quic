@@ -27,7 +27,7 @@ use qbase::{
     },
     util::{DescribeData, WriteData},
 };
-use qcongestion::{ArcCC, CongestionControl};
+use qcongestion::{ArcCC, Transport};
 use qlog::quic::{QuicFrame, QuicFramesCollector, transport::PacketSent};
 use qrecovery::{
     journal::{ArcSentJournal, NewPacketGuard},

@@ -24,7 +24,7 @@ use qbase::{
     sid::{self, ProductStreamsConcurrencyController},
     token::ArcTokenRegistry,
 };
-use qcongestion::{ArcCC, CongestionAlgorithm};
+use qcongestion::{Algorithm, ArcCC};
 use qinterface::{queue::RcvdPacketQueue, router::QuicProto};
 use qlog::{
     GroupID, VantagePointType,
@@ -529,8 +529,7 @@ impl Components {
 
                 let cc = ArcCC::new(
                     pathway,
-                    self.paths.erased(),
-                    CongestionAlgorithm::NewReno,
+                    Algorithm::NewReno,
                     Duration::from_micros(max_ack_delay as _),
                     [
                         self.spaces.initial().clone(),
