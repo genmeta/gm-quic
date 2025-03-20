@@ -54,7 +54,7 @@ use crate::{
     path::{Path, SendBuffer},
     space::{AckData, FlowControlledDataStreams, pipe},
     termination::ClosingState,
-    tx::{MiddleAssembledPacket, PacketMemory, Transaction},
+    tx::{PacketBuffer, PaddablePacket, Transaction},
 };
 
 pub type ReceivedZeroRttBundle = ((ZeroRttHeader, bytes::BytesMut, usize), Pathway, Link);
@@ -138,14 +138,14 @@ impl DataSpace {
         tx: &mut Transaction<'_>,
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         buf: &mut [u8],
-    ) -> Result<(MiddleAssembledPacket, usize), Signals> {
+    ) -> Result<(PaddablePacket, usize), Signals> {
         if self.one_rtt_keys.get_local_keys().is_some() {
             return Err(Signals::empty()); // not error, just skip 0rtt
         }
 
         let keys = self.zero_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
         let sent_journal = self.journal.of_sent_packets();
-        let mut packet = PacketMemory::new_long(
+        let mut packet = PacketBuffer::new_long(
             LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).zero_rtt(),
             buf,
             keys,
@@ -180,7 +180,13 @@ impl DataSpace {
             .inspect_err(|l| limiter |= *l);
 
         // 错误是累积的，只有最后发现确实不能组成一个数据包时才真正返回错误
-        Ok((packet.interrupt().map_err(|_| limiter)?, fresh_data))
+        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
+        Ok((
+            packet
+                .prepare_with_time(retran_timeout, expire_timeout)
+                .map_err(|_| limiter)?,
+            fresh_data,
+        ))
     }
 
     pub fn try_assemble_1rtt(
@@ -190,7 +196,7 @@ impl DataSpace {
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
         buf: &mut [u8],
-    ) -> Result<(MiddleAssembledPacket, Option<u64>, usize), Signals> {
+    ) -> Result<(PaddablePacket, Option<u64>, usize), Signals> {
         let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
         let (key_phase, pk) = pk.lock_guard().get_local();
         let sent_journal = self.journal.of_sent_packets();
@@ -200,7 +206,7 @@ impl DataSpace {
         //   (1)持有cc，要锁定sent_journal；(2)持有sent_journal要锁定cc
         // 在多线程的情况下，可能会发生死锁。所以提前调用need_ack，避免交叉导致死锁
         let need_ack = tx.need_ack(Epoch::Data);
-        let mut packet = PacketMemory::new_short(
+        let mut packet = PacketBuffer::new_short(
             OneRttHeader::new(spin, tx.dcid()),
             buf,
             hpk,
@@ -245,13 +251,21 @@ impl DataSpace {
             .try_load_data_into(&mut packet, tx.flow_limit())
             .inspect_err(|l| limiter = *l)
             .unwrap_or_default();
+
         #[cfg(feature = "unreliable")]
         let _ = self
             .datagrams
             .try_load_data_into(&mut packet)
             .inspect_err(|l| limiter |= *l);
 
-        Ok((packet.interrupt().map_err(|_| limiter)?, ack, fresh_data))
+        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
+        Ok((
+            packet
+                .prepare_with_time(retran_timeout, expire_timeout)
+                .map_err(|_| limiter)?,
+            ack,
+            fresh_data,
+        ))
     }
 
     pub fn try_assemble_validation(
@@ -261,11 +275,11 @@ impl DataSpace {
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
         path_response_frames: &SendBuffer<PathResponseFrame>,
         buf: &mut [u8],
-    ) -> Result<MiddleAssembledPacket, Signals> {
+    ) -> Result<PaddablePacket, Signals> {
         let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
         let (key_phase, pk) = pk.lock_guard().get_local();
         let sent_journal = self.journal.of_sent_packets();
-        let mut packet = PacketMemory::new_short(
+        let mut packet = PacketBuffer::new_short(
             OneRttHeader::new(spin, tx.dcid()),
             buf,
             hpk,
@@ -283,7 +297,10 @@ impl DataSpace {
             .inspect_err(|s| signals |= *s);
         // 其实还应该加上NCID，但是从ReliableFrameDeque分拣太复杂了
 
-        packet.interrupt().map_err(|_| signals)
+        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
+        packet
+            .prepare_with_time(retran_timeout, expire_timeout)
+            .map_err(|_| signals)
     }
 
     pub fn is_one_rtt_ready(&self) -> bool {

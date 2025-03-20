@@ -2,6 +2,7 @@ use std::{
     collections::VecDeque,
     ops::DerefMut,
     sync::{Arc, Mutex, MutexGuard},
+    time::{Duration, Instant},
 };
 
 use deref_derive::{Deref, DerefMut};
@@ -17,44 +18,111 @@ use qbase::{
 /// - Flighting: 数据包正在传输中
 /// - Acked: 数据包已经被确认
 /// - Lost: 数据包丢失
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum SentPktState {
-    Flighting(u16),
-    Acked(u16),
-    Lost(u16),
+    #[allow(dead_code)]
+    #[default]
+    Skipped,
+    Flighting {
+        nframes: usize,
+        sent_time: Instant,
+        expire_time: Instant,
+        retran_time: Instant,
+    },
+    Retransmitted {
+        nframes: usize,
+        sent_time: Instant,
+        expire_time: Instant,
+    },
+    Acked {
+        nframes: usize,
+        sent_time: Instant,
+        expire_time: Instant,
+    },
 }
 
 impl SentPktState {
+    #[allow(dead_code)]
+    fn skipped() -> Self {
+        Self::Skipped
+    }
+
+    fn new(nframes: usize, sent_time: Instant, retran_time: Instant, expire_time: Instant) -> Self {
+        Self::Flighting {
+            nframes,
+            sent_time,
+            retran_time,
+            expire_time,
+        }
+    }
+
     fn nframes(&self) -> usize {
         match self {
-            SentPktState::Flighting(n) => *n as usize,
-            SentPktState::Acked(n) => *n as usize,
-            SentPktState::Lost(n) => *n as usize,
+            SentPktState::Skipped => 0,
+            SentPktState::Flighting { nframes, .. } => *nframes,
+            SentPktState::Retransmitted { nframes, .. } => *nframes,
+            SentPktState::Acked { nframes, .. } => *nframes,
         }
     }
 
     fn be_acked(&mut self) -> usize {
         match *self {
-            SentPktState::Flighting(n) => {
-                *self = SentPktState::Acked(n);
-                n as usize
+            SentPktState::Skipped => unreachable!("impossible, beware of fraud"),
+            SentPktState::Flighting {
+                nframes,
+                sent_time,
+                expire_time,
+                ..
+            } => {
+                *self = SentPktState::Acked {
+                    nframes,
+                    sent_time,
+                    expire_time,
+                };
+                nframes
             }
-            SentPktState::Acked(_) => 0,
-            SentPktState::Lost(n) => {
-                *self = SentPktState::Acked(n);
-                n as usize
+            SentPktState::Retransmitted {
+                nframes,
+                sent_time,
+                expire_time,
+                ..
+            } => {
+                *self = SentPktState::Acked {
+                    nframes,
+                    sent_time,
+                    expire_time,
+                };
+                nframes
             }
+            SentPktState::Acked { .. } => 0,
         }
     }
 
-    fn maybe_loss(&mut self) -> usize {
+    fn maybe_lost(&mut self) -> usize {
         match *self {
-            SentPktState::Flighting(n) => {
-                *self = SentPktState::Lost(n);
-                n as usize
+            SentPktState::Flighting {
+                nframes,
+                sent_time,
+                expire_time,
+                ..
+            } => {
+                *self = SentPktState::Retransmitted {
+                    nframes,
+                    sent_time,
+                    expire_time,
+                };
+                nframes
             }
-            SentPktState::Acked(_) => 0,
-            SentPktState::Lost(_) => 0,
+            _ => unreachable!(),
+        }
+    }
+
+    fn should_remain_after(&self, now: &Instant) -> bool {
+        match self {
+            SentPktState::Skipped => false,
+            SentPktState::Flighting { expire_time, .. } => expire_time > now,
+            SentPktState::Retransmitted { expire_time, .. } => expire_time > now,
+            SentPktState::Acked { expire_time, .. } => expire_time > now,
         }
     }
 }
@@ -68,7 +136,7 @@ struct SentJournal<T> {
     #[deref]
     queue: VecDeque<T>,
     // 记录着每个包的内容，其实是一个数字，该数字对应着queue中的record数量
-    records: IndexDeque<SentPktState, VARINT_MAX>,
+    sent_packets: IndexDeque<SentPktState, VARINT_MAX>,
     largest_acked_pktno: u64,
 }
 
@@ -76,12 +144,12 @@ impl<T: Clone> SentJournal<T> {
     fn on_pkt_acked(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ {
         let mut len = 0;
         let offset = self
-            .records
+            .sent_packets
             .iter_with_idx()
             .take_while(|(pkt_idx, _)| *pkt_idx < pn)
             .map(|(_, s)| s.nframes())
             .sum::<usize>();
-        if let Some(s) = self.records.get_mut(pn) {
+        if let Some(s) = self.sent_packets.get_mut(pn) {
             len = s.be_acked();
         }
         self.queue
@@ -92,13 +160,13 @@ impl<T: Clone> SentJournal<T> {
     fn may_loss_pkt(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ {
         let mut len = 0;
         let offset = self
-            .records
+            .sent_packets
             .iter_with_idx()
             .take_while(|(pkt_idx, _)| *pkt_idx < pn)
             .map(|(_, s)| s.nframes())
             .sum::<usize>();
-        if let Some(s) = self.records.get_mut(pn) {
-            len = s.maybe_loss();
+        if let Some(s) = self.sent_packets.get_mut(pn) {
+            len = s.maybe_lost();
         }
         self.queue
             .range_mut(offset..offset + len)
@@ -110,18 +178,19 @@ impl<T> SentJournal<T> {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             queue: VecDeque::with_capacity(capacity * 4),
-            records: IndexDeque::with_capacity(capacity),
+            sent_packets: IndexDeque::with_capacity(capacity),
             largest_acked_pktno: 0,
         }
     }
 
-    fn drain_acked_and_lost(&mut self) {
+    fn resize(&mut self) {
+        let now = tokio::time::Instant::now().into_std();
         let (n, f) = self
-            .records
+            .sent_packets
             .iter_with_idx()
-            .take_while(|(_idx, s)| !matches!(s, SentPktState::Flighting(_)))
+            .take_while(|(_idx, s)| !s.should_remain_after(&now))
             .fold((0usize, 0usize), |(n, f), (_, s)| (n + 1, f + s.nframes()));
-        self.records.advance(n);
+        self.sent_packets.advance(n);
         let _ = self.queue.drain(..f);
     }
 }
@@ -190,7 +259,7 @@ impl<T: Clone> SentRotateGuard<'_, T> {
     ///
     /// [`Largest Acknowleged`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-ack-frames
     pub fn update_largest(&mut self, ack_frame: &AckFrame) -> Result<(), Error> {
-        if ack_frame.largest() > self.largest_pn() {
+        if ack_frame.largest() > self.inner.sent_packets.largest() {
             return Err(Error::new(
                 ErrorKind::ProtocolViolation,
                 ack_frame.frame_type(),
@@ -212,16 +281,11 @@ impl<T: Clone> SentRotateGuard<'_, T> {
     pub fn may_loss_pkt(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ + use<'_, T> {
         self.inner.may_loss_pkt(pn)
     }
-
-    /// Return the packet number of the last packet sent(the largest packet number).
-    pub fn largest_pn(&self) -> u64 {
-        self.inner.records.largest()
-    }
 }
 
 impl<T> Drop for SentRotateGuard<'_, T> {
     fn drop(&mut self) {
-        self.inner.drain_acked_and_lost();
+        self.inner.resize();
     }
 }
 
@@ -252,7 +316,7 @@ impl<T> NewPacketGuard<'_, T> {
     ///
     /// [encoded]: https://www.rfc-editor.org/rfc/rfc9000.html#name-sample-packet-number-encodi
     pub fn pn(&self) -> (u64, PacketNumber) {
-        let pn = self.inner.records.largest();
+        let pn = self.inner.sent_packets.largest();
         let encoded_pn = PacketNumber::encode(pn, self.inner.largest_acked_pktno);
         (pn, encoded_pn)
     }
@@ -273,15 +337,19 @@ impl<T> NewPacketGuard<'_, T> {
     pub fn record_frame(&mut self, frame: T) {
         self.inner.deref_mut().push_back(frame);
     }
-}
 
-impl<T> Drop for NewPacketGuard<'_, T> {
-    fn drop(&mut self) {
+    pub fn build_with_time(mut self, retran_timeout: Duration, expire_timeout: Duration) {
         let nframes = self.inner.queue.len() - self.origin_len;
         if self.necessary || nframes > 0 {
+            let sent_time = tokio::time::Instant::now().into_std();
             self.inner
-                .records
-                .push_back(SentPktState::Flighting(nframes as u16))
+                .sent_packets
+                .push_back(SentPktState::new(
+                    nframes,
+                    sent_time,
+                    sent_time + retran_timeout,
+                    sent_time + expire_timeout,
+                ))
                 .expect("packet number never overflow");
         }
     }
