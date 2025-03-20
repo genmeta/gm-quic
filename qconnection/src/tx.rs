@@ -70,14 +70,14 @@ impl PacketLogger {
     }
 }
 
-pub struct PacketMemory<'b, 's, F> {
+pub struct PacketBuffer<'b, 's, F> {
     writer: PacketWriter<'b>,
     // 不同空间的send guard类型不一样
-    guard: NewPacketGuard<'s, F>,
+    clerk: NewPacketGuard<'s, F>,
     logger: PacketLogger,
 }
 
-impl<'b, 's, F> PacketMemory<'b, 's, F> {
+impl<'b, 's, F> PacketBuffer<'b, 's, F> {
     pub fn new_long<S>(
         header: LongHeader<S>,
         buffer: &'b mut [u8],
@@ -92,7 +92,7 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
         let guard = journal.new_packet();
         let pn = guard.pn();
         Ok(Self {
-            guard,
+            clerk: guard,
             writer: PacketWriter::new_long(&header, buffer, pn, keys)?,
             logger: PacketLogger {
                 header: {
@@ -121,7 +121,7 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
         let guard = journal.new_packet();
         let pn = guard.pn();
         Ok(Self {
-            guard,
+            clerk: guard,
             writer: PacketWriter::new_short(&header, buffer, pn, hpk, pk, key_phase)?,
             logger: PacketLogger {
                 header: {
@@ -139,13 +139,13 @@ impl<'b, 's, F> PacketMemory<'b, 's, F> {
 }
 
 #[derive(Deref)]
-pub struct MiddleAssembledPacket {
+pub struct PaddablePacket {
     #[deref]
     packet: PlainPacket,
     logger: PacketLogger,
 }
 
-impl MiddleAssembledPacket {
+impl PaddablePacket {
     pub fn fill_and_complete(mut self, buffer: &mut [u8]) -> CipherPacket {
         let mut writer = self.packet.writer(buffer);
 
@@ -178,7 +178,7 @@ impl MiddleAssembledPacket {
     }
 }
 
-unsafe impl<F> BufMut for PacketMemory<'_, '_, F> {
+unsafe impl<F> BufMut for PacketBuffer<'_, '_, F> {
     #[inline]
     fn remaining_mut(&self) -> usize {
         self.writer.remaining_mut()
@@ -205,11 +205,11 @@ unsafe impl<F> BufMut for PacketMemory<'_, '_, F> {
     }
 }
 
-impl<F> PacketMemory<'_, '_, F> {
+impl<F> PacketBuffer<'_, '_, F> {
     pub fn dump_ack_frame(&mut self, frame: AckFrame) {
         self.logger.record_frame(&frame);
         self.writer.dump_frame(frame);
-        self.guard.record_trivial();
+        self.clerk.record_trivial();
     }
 
     pub fn pad(&mut self, len: usize) {
@@ -223,18 +223,30 @@ impl<F> PacketMemory<'_, '_, F> {
         });
     }
 
-    pub fn interrupt(self) -> Result<MiddleAssembledPacket, Signals> {
+    pub fn prepare_with_time(
+        self,
+        sent_time: Instant,
+        retran_time: Instant,
+        expire_time: Instant,
+    ) -> Result<PaddablePacket, Signals> {
         if self.writer.is_empty() {
             return Err(Signals::TRANSPORT);
         }
-        Ok(MiddleAssembledPacket {
+        self.clerk
+            .build_with_time(sent_time, retran_time, expire_time);
+        Ok(PaddablePacket {
             packet: self.writer.interrupt().0,
             logger: self.logger,
         })
     }
 
     // 其实never used，但是还是给它留一个位置
-    pub fn complete(mut self) -> Option<CipherPacket> {
+    pub fn ready_with_send_time(
+        mut self,
+        sent_time: Instant,
+        retran_time: Instant,
+        expire_time: Instant,
+    ) -> Option<CipherPacket> {
         let packet_len = self.writer.packet_len();
         if packet_len == 0 {
             return None;
@@ -242,6 +254,8 @@ impl<F> PacketMemory<'_, '_, F> {
         if packet_len < 20 {
             self.pad(20 - packet_len);
         }
+        self.clerk
+            .build_with_time(sent_time, retran_time, expire_time);
 
         self.logger.emit_sent(&self.writer);
         Some(self.writer.encrypt_and_protect())
@@ -249,7 +263,7 @@ impl<F> PacketMemory<'_, '_, F> {
 }
 
 /// 对IH空间有效
-impl<'b, D> MarshalDataFrame<CryptoFrame, D> for PacketMemory<'b, '_, CryptoFrame>
+impl<'b, D> MarshalDataFrame<CryptoFrame, D> for PacketBuffer<'b, '_, CryptoFrame>
 where
     D: DescribeData + Clone,
     PacketWriter<'b>: WriteData<D> + WriteDataFrame<CryptoFrame, D>,
@@ -260,35 +274,35 @@ where
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
                 self.logger.record_frame((&frame, &data));
-                self.guard.record_frame(frame);
+                self.clerk.record_frame(frame);
                 None
             })
     }
 }
 
-impl<'b> MarshalPathFrame<PathChallengeFrame> for PacketMemory<'b, '_, GuaranteedFrame>
+impl<'b> MarshalPathFrame<PathChallengeFrame> for PacketBuffer<'b, '_, GuaranteedFrame>
 where
     PacketWriter<'b>: WriteFrame<PathChallengeFrame>,
 {
     fn dump_path_frame(&mut self, frame: PathChallengeFrame) {
         self.writer.dump_frame(frame);
         self.logger.record_frame(&frame);
-        self.guard.record_trivial();
+        self.clerk.record_trivial();
     }
 }
 
-impl<'b> MarshalPathFrame<PathResponseFrame> for PacketMemory<'b, '_, GuaranteedFrame>
+impl<'b> MarshalPathFrame<PathResponseFrame> for PacketBuffer<'b, '_, GuaranteedFrame>
 where
     PacketWriter<'b>: WriteFrame<PathResponseFrame>,
 {
     fn dump_path_frame(&mut self, frame: PathResponseFrame) {
         self.writer.dump_frame(frame);
         self.logger.record_frame(&frame);
-        self.guard.record_trivial();
+        self.clerk.record_trivial();
     }
 }
 
-impl<'b, F> MarshalFrame<F> for PacketMemory<'b, '_, GuaranteedFrame>
+impl<'b, F> MarshalFrame<F> for PacketBuffer<'b, '_, GuaranteedFrame>
 where
     F: BeFrame + Into<ReliableFrame>,
     PacketWriter<'b>: WriteFrame<F>,
@@ -297,14 +311,14 @@ where
         self.writer.dump_frame(frame).and_then(|frame| {
             let reliable_frame = frame.into();
             self.logger.record_frame(&reliable_frame);
-            self.guard
+            self.clerk
                 .record_frame(GuaranteedFrame::Reliable(reliable_frame));
             None
         })
     }
 }
 
-impl<'b, D> MarshalDataFrame<CryptoFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
+impl<'b, D> MarshalDataFrame<CryptoFrame, D> for PacketBuffer<'b, '_, GuaranteedFrame>
 where
     D: DescribeData + Clone,
     PacketWriter<'b>: WriteData<D> + WriteDataFrame<CryptoFrame, D>,
@@ -314,13 +328,13 @@ where
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
                 self.logger.record_frame((&frame, &data));
-                self.guard.record_frame(GuaranteedFrame::Crypto(frame));
+                self.clerk.record_frame(GuaranteedFrame::Crypto(frame));
                 None
             })
     }
 }
 
-impl<'b, D> MarshalDataFrame<StreamFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
+impl<'b, D> MarshalDataFrame<StreamFrame, D> for PacketBuffer<'b, '_, GuaranteedFrame>
 where
     D: DescribeData + Clone,
     PacketWriter<'b>: WriteData<D> + WriteDataFrame<StreamFrame, D>,
@@ -330,13 +344,13 @@ where
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
                 self.logger.record_frame((&frame, &data));
-                self.guard.record_frame(GuaranteedFrame::Stream(frame));
+                self.clerk.record_frame(GuaranteedFrame::Stream(frame));
                 None
             })
     }
 }
 
-impl<'b, D> MarshalDataFrame<DatagramFrame, D> for PacketMemory<'b, '_, GuaranteedFrame>
+impl<'b, D> MarshalDataFrame<DatagramFrame, D> for PacketBuffer<'b, '_, GuaranteedFrame>
 where
     D: DescribeData + Clone,
     PacketWriter<'b>: WriteData<D> + WriteDataFrame<DatagramFrame, D>,
@@ -346,7 +360,7 @@ where
             .dump_frame_with_data(frame, data.clone())
             .and_then(|frame| {
                 self.logger.record_frame((&frame, &data));
-                self.guard.record_trivial();
+                self.clerk.record_trivial();
                 None
             })
     }
@@ -462,7 +476,7 @@ impl<'a> Future for PrepareTransaction<'a> {
 
 struct LevelState {
     epoch: Epoch,
-    pkt: MiddleAssembledPacket,
+    pkt: PaddablePacket,
     ack: Option<u64>,
 }
 

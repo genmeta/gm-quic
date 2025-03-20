@@ -30,11 +30,6 @@ pub trait CongestionControl {
     /// A [`Poll`] indicating readiness to send and the amount of data that can be sent.
     fn poll_send(&self, cx: &mut Context<'_>, expect_quota: usize) -> Poll<usize>;
 
-    /// Checks if an AckFrame should be sent in the next packet for the given epoch.
-    /// # Returns
-    /// An [`Option`] containing the largest packet ID and the time it was received if an AckFrame is needed.
-    fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)>;
-
     /// Records the sending of a packet, which may affect congestion control state.
     /// # Parameters
     /// - `pn`: The packet number of the sent packet.
@@ -60,6 +55,11 @@ pub trait CongestionControl {
     /// - `pn`: The packet number of the received packet.
     /// - `is_ack_eliciting`: A boolean indicating whether the received packet is ack-eliciting.
     fn on_pkt_rcvd(&self, space: Epoch, pn: u64, is_ack_eliciting: bool);
+
+    /// Checks if an AckFrame should be sent in the next packet for the given epoch.
+    /// # Returns
+    /// An [`Option`] containing the largest packet ID and the time it was received if an AckFrame is needed.
+    fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)>;
 
     /// Retrieves the current path's PTO duration.
     /// # Returns
