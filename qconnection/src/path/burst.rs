@@ -127,7 +127,7 @@ impl Burst {
                     (Ok(segments), Err(limiter)) if segments.is_empty() => Break(Err(limiter)),
                     (Ok(segments), Err(_limiter)) => Break(Ok(segments)),
                     (Ok(mut segments), Ok(segment))
-                        if segments.len() < segments.last().copied().unwrap_or_default() =>
+                        if segment.len() < segments.last().copied().unwrap_or_default() =>
                     {
                         segments.push(segment.len());
                         Break(Ok(segments))
