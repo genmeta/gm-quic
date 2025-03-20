@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::congestion::{AckedPkt, SentPkt};
+use crate::packets::{AckedPackets, SentPacket};
 
 #[derive(Debug)]
 pub struct Rate {
@@ -37,7 +37,12 @@ impl Default for Rate {
 
 impl Rate {
     // 3.2. Transmitting or retransmitting a data packet
-    pub fn on_packet_sent(&mut self, pkt: &mut SentPkt, bytes_in_flight: usize, bytes_lost: u64) {
+    pub fn on_packet_sent(
+        &mut self,
+        pkt: &mut SentPacket,
+        bytes_in_flight: usize,
+        bytes_lost: u64,
+    ) {
         // No packets in flight.
         if bytes_in_flight == 0 {
             self.first_sent_time = pkt.time_sent;
@@ -51,11 +56,11 @@ impl Rate {
         pkt.tx_in_flight = bytes_in_flight;
         pkt.lost = bytes_lost;
 
-        self.last_sent_packet = pkt.pn;
+        self.last_sent_packet = pkt.packet_number;
     }
 
     // Update the delivery rate sample when a packet is acked.
-    pub fn update_rate_sample(&mut self, pkt: &AckedPkt, now: Instant) {
+    pub fn update_rate_sample(&mut self, pkt: &AckedPackets, now: Instant) {
         self.delivered += pkt.size;
         self.delivered_time = now;
 
@@ -150,17 +155,17 @@ mod tests {
 
         let now = Instant::now();
 
-        let mut sents: Vec<SentPkt> = (0..5)
-            .map(|i| SentPkt {
-                pn: i,
-                size: 100,
+        let mut sents: Vec<SentPacket> = (0..5)
+            .map(|i| SentPacket {
+                packet_number: i,
+                sent_bytes: 100,
                 time_sent: now,
                 ..Default::default()
             })
             .collect();
 
         for sent in &mut sents {
-            let pkt_num = sent.pn;
+            let pkt_num = sent.packet_number;
             rate.on_packet_sent(sent, (pkt_num * 100) as usize, 0);
         }
 
@@ -169,7 +174,7 @@ mod tests {
 
         for _ in 0..3 {
             let sent = sents.pop().unwrap();
-            let mut acked: AckedPkt = sent.into();
+            let mut acked: AckedPackets = sent.into();
             acked.rtt = delay;
             rate.update_rate_sample(&acked, recv_ack_time);
             rate.generate_rate_sample();

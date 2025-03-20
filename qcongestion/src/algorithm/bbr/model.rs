@@ -3,7 +3,7 @@ use std::time::Instant;
 // 4.1.  Maintaining the Network Path Model
 // This model includes two estimated parameters: self.BtlBw, and self.RTprop.
 use super::{Bbr, RTPROP_FILTER_LEN};
-use crate::congestion::AckedPkt;
+use crate::packets::AckedPackets;
 
 impl Bbr {
     // 4.1.1.3.  Tracking Time for the self.BtlBw Max Filter
@@ -15,7 +15,7 @@ impl Bbr {
     }
 
     // Upon receiving an ACK for a given data packet:
-    fn update_round(&mut self, packet: &AckedPkt) {
+    fn update_round(&mut self, packet: &AckedPackets) {
         if packet.delivered >= self.next_round_delivered {
             self.next_round_delivered = self.delivery_rate.delivered();
             self.round_count += 1;
@@ -27,7 +27,7 @@ impl Bbr {
     }
 
     // 4.1.1.5.  Updating the BBR.BtlBw Max Filter
-    pub(super) fn update_btlbw(&mut self, packet: &AckedPkt) {
+    pub(super) fn update_btlbw(&mut self, packet: &AckedPackets) {
         self.update_round(packet);
 
         if self.delivery_rate.sample_delivery_rate() >= self.btlbw

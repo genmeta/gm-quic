@@ -196,7 +196,9 @@ mod tests {
 
     use std::time::{Duration, Instant};
 
-    use crate::bbr::{BbrStateMachine, HIGH_GAIN, INITIAL_CWND, MSS, tests::simulate_round_trip};
+    use crate::algorithm::bbr::{
+        BbrStateMachine, HIGH_GAIN, INITIAL_CWND, MSS, tests::simulate_round_trip,
+    };
 
     #[test]
     fn test_bbr_init() {

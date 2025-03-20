@@ -6,14 +6,16 @@ use std::{
 use qlog::quic::recovery::RecoveryMetricsUpdated;
 
 use crate::{
-    congestion::{AckedPkt, Algorithm, MSS, SentPkt},
+    MSS,
+    algorithm::Transport,
     delivery_rate::Rate,
     min_max::MinMax,
+    packets::{AckedPackets, SentPackets},
 };
 
-mod model;
-mod parameters;
-mod state;
+pub(crate) mod model;
+pub(crate) mod parameters;
+pub(crate) mod state;
 
 // RTpropFilterLen: A constant specifying the length of the RTProp min
 // filter window, RTpropFilterLen is `10` secs.
@@ -206,15 +208,15 @@ impl Bbr {
     }
 }
 
-impl Algorithm for Bbr {
-    fn on_sent(&mut self, sent: &mut SentPkt, _: usize, _: Instant) {
+impl Transport for Bbr {
+    fn on_sent(&mut self, sent: &mut SentPackets, _: usize) {
         self.delivery_rate.on_packet_sent(
             sent,
             self.bytes_in_flight as usize,
             self.bytes_lost_in_total,
         );
 
-        self.bytes_in_flight += sent.size as u64;
+        self.bytes_in_flight += sent.sent_bytes as u64;
         self.on_transmit();
 
         let event = RecoveryMetricsUpdated::from(&*self);
@@ -222,7 +224,9 @@ impl Algorithm for Bbr {
     }
 
     //  todo: VecDeque 是否有必要
-    fn on_ack(&mut self, packets: VecDeque<AckedPkt>, now: Instant) {
+    fn on_ack(&mut self, packets: VecDeque<AckedPackets>) {
+        let now = tokio::time::Instant::now().into_std();
+
         self.newly_acked_bytes = 0;
         self.newly_lost_bytes = 0;
         self.packet_delivered = 0;
@@ -258,7 +262,7 @@ impl Algorithm for Bbr {
         qlog::event!(event);
     }
 
-    fn on_congestion_event(&mut self, _: &SentPkt, _: Instant) {
+    fn on_congestion_event(&mut self, _: &SentPackets) {
         // todo: enter_recovery
         // update newly lost bytes, set BBR.packet_conservation = true, and emit qlog
     }
@@ -279,7 +283,7 @@ impl Bbr {
     }
 
     // 3.5.2.  Per-ACK Steps
-    fn update_model_and_state(&mut self, ack: &mut AckedPkt) {
+    fn update_model_and_state(&mut self, ack: &mut AckedPackets) {
         self.update_btlbw(ack);
         self.check_cycle_phase();
         self.check_full_pipe();
@@ -308,8 +312,11 @@ mod tests {
     };
 
     use crate::{
-        bbr::{BbrStateMachine, HIGH_GAIN, INITIAL_CWND, MSS},
-        congestion::{AckedPkt, Algorithm, SentPkt},
+        algorithm::{
+            Transport,
+            bbr::{BbrStateMachine, HIGH_GAIN, INITIAL_CWND, MSS},
+        },
+        packets::{AckedPackets, SentPackets},
         rtt::INITIAL_RTT,
     };
 
@@ -332,13 +339,12 @@ mod tests {
     #[test]
     fn test_bbr_sent() {
         let mut bbr = super::Bbr::new();
-        let now = Instant::now();
         for _ in 0..10 {
-            let mut sent = SentPkt {
-                size: MSS,
+            let mut sent = SentPackets {
+                sent_bytes: MSS,
                 ..Default::default()
             };
-            bbr.on_sent(&mut sent, MSS, now);
+            bbr.on_sent(&mut sent, MSS);
         }
         assert_eq!(bbr.bytes_in_flight, 10 * MSS as u64);
     }
@@ -393,20 +399,20 @@ mod tests {
     ) {
         let mut acks = VecDeque::with_capacity(end - start);
         for i in start..end {
-            let mut sent: SentPkt = SentPkt {
-                pn: i as u64,
-                size: packet_size,
+            let mut sent: SentPackets = SentPackets {
+                packet_number: i as u64,
+                sent_bytes: packet_size,
                 time_sent: start_time,
                 ..Default::default()
             };
-            bbr.on_sent(&mut sent, 0, start_time);
+            bbr.on_sent(&mut sent, 0);
 
-            let mut ack: AckedPkt = sent.into();
+            let mut ack: AckedPackets = sent.into();
             ack.rtt = rtt;
             acks.push_back(ack);
         }
 
-        let ack_time = start_time + rtt;
-        bbr.on_ack(acks, ack_time);
+        // let ack_time = start_time + rtt;
+        bbr.on_ack(acks);
     }
 }
