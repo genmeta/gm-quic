@@ -90,6 +90,12 @@ impl Rtt {
             GRANULARITY,
         )
     }
+
+    /// duration = (smoothed_rtt + max(4 * rttvar, kGranularity))
+    ///     * (2 ^ pto_count)
+    fn base_pto(&self, pto_count: u32) -> Duration {
+        self.smoothed_rtt + std::cmp::max(4 * self.rttvar, GRANULARITY) * (1 << pto_count)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -118,6 +124,10 @@ impl ArcRtt {
 
     pub fn rttvar(&self) -> Duration {
         self.0.lock().unwrap().rttvar
+    }
+
+    pub fn base_pto(&self, pto_count: u32) -> Duration {
+        self.0.lock().unwrap().base_pto(pto_count)
     }
 }
 

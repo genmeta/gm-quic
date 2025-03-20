@@ -28,7 +28,7 @@ use qbase::{
     param::CommonParameters,
     sid::{ControlStreamsConcurrency, Role},
 };
-use qcongestion::{CongestionControl, TrackPackets};
+use qcongestion::{Feedback, Transport};
 use qlog::{
     quic::{
         PacketHeader, PacketType, QuicFramesCollector,
@@ -402,7 +402,7 @@ pub fn spawn_deliver_and_parse(
         let event_broker = event_broker.clone();
         move |frame: Frame, pty: packet::Type, path: &Path| match frame {
             Frame::Ack(f) => {
-                path.cc().on_ack(Epoch::Data, &f);
+                path.cc().on_ack_rcvd(Epoch::Data, &f);
                 _ = ack_frames_entry.send(f)
             }
             Frame::NewToken(f) => _ = new_token_frames_entry.send(f),

@@ -7,7 +7,7 @@ use qbase::{
     error::{Error, ErrorKind},
     net::{route::Pathway, tx::ArcSendWakers},
 };
-use qcongestion::{CongestionControl, MiniHeap};
+use qcongestion::Transport;
 use qlog::telemetry::Instrument;
 use tokio::task::AbortHandle;
 use tracing::Instrument as _;

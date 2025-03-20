@@ -15,7 +15,7 @@ use qbase::{
         tx::ArcSendWaker,
     },
 };
-use qcongestion::{ArcCC, CongestionControl};
+use qcongestion::{ArcCC, Transport};
 use qinterface::{QuicInterface, router::QuicProto};
 use tokio::{task::AbortHandle, time::Instant};
 
