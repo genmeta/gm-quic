@@ -81,7 +81,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn std::error::Error + Send + Sync
 
     let quic_server = ::gm_quic::QuicServer::builder()
         .with_supported_versions([1u32])
-        .without_cert_verifier()
+        .without_client_cert_verifier()
         .with_parameters(server_parameters())
         .enable_sni()
         .add_host("localhost", cert.as_path(), key.as_path())

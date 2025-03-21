@@ -88,14 +88,14 @@ let quic_client = QuicClient::builder()
     // currently only supporting V1.
     .prefer_versions([1u32])                
     // .with_parameter(&client_parameters)      // If not set, the default parameters will be used
-    // .witl_streams_controller(controller)     // Specify the streams controller for the client
+    // .witl_stream_strategy_factory(controller)     // Specify the streams controller for the client
     // .with_token_sink(token_sink)             // Manage Tokens issued by various servers
     .with_root_certificates(root_certificates)
     // .with_webpki_verifier(verifier)          // More advanced ways to verify server certificates
     .without_cert()                             // Generally, clients do not need to set certificates
     // Specify how client bind interfaces
     // The default interface is the high-performance udp implementation provided by qudp.
-    // .with_iface_binder(binder)
+    // .with_iface_factory(binder)
     // Let the client only use the interface on specified address.
     // By default, a new interface will be used every time initiates a connection.
     // like 0.0.0.0:0 or [::]:0
@@ -114,7 +114,7 @@ let quic_server = QuicServer::builder()
     // Keep the accepted connection alive when it is idle
     .defer_idle_timeout(HeartbeatConfig::new(Durnation::from_secs(30)))       
     .with_supported_versions([1u32])
-    .without_cert_verifier()      // Generally, client identity is not verified
+    .without_client_cert_verifier()      // Generally, client identity is not verified
     .enable_sni()
     .add_host("www.genmeta.net", www_cert, www_key)
     .add_host("developer.genmeta.net", dev_cert, dev_key)

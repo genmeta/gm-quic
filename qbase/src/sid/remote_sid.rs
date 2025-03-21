@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
-use super::{ControlConcurrency, Dir, Role, StreamId};
+use super::{ControlStreamConcurrency, Dir, Role, StreamId};
 use crate::{
     frame::{MaxStreamsFrame, ReceiveFrame, SendFrame, StreamsBlockedFrame},
     varint::VarInt,
@@ -53,11 +53,11 @@ impl Iterator for NeedCreate {
 /// Remote stream IDs management.
 #[derive(Debug)]
 struct RemoteStreamIds<MAX> {
-    role: Role,                        // The role of the peer
-    max: [u64; 2],                     // The maximum stream ID that limit peer to create
-    unallocated: [StreamId; 2],        // The stream ID that peer has not used
-    ctrl: Box<dyn ControlConcurrency>, // The strategy to control the concurrency of streams
-    max_tx: MAX,                       // The channel to send the MAX_STREAMS frame to peer
+    role: Role,                              // The role of the peer
+    max: [u64; 2],                           // The maximum stream ID that limit peer to create
+    unallocated: [StreamId; 2],              // The stream ID that peer has not used
+    ctrl: Box<dyn ControlStreamConcurrency>, // The strategy to control the concurrency of streams
+    max_tx: MAX,                             // The channel to send the MAX_STREAMS frame to peer
 }
 
 impl<MAX> RemoteStreamIds<MAX>
@@ -71,7 +71,7 @@ where
         max_bi: u64,
         max_uni: u64,
         max_tx: MAX,
-        ctrl: Box<dyn ControlConcurrency>,
+        ctrl: Box<dyn ControlStreamConcurrency>,
     ) -> Self {
         Self {
             role,
@@ -180,7 +180,7 @@ where
         max_bi: u64,
         max_uni: u64,
         max_tx: MAX,
-        ctrl: Box<dyn ControlConcurrency>,
+        ctrl: Box<dyn ControlStreamConcurrency>,
     ) -> Self {
         Self(Arc::new(Mutex::new(RemoteStreamIds::new(
             role, max_bi, max_uni, max_tx, ctrl,

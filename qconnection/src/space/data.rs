@@ -26,7 +26,7 @@ use qbase::{
         r#type::Type,
     },
     param::CommonParameters,
-    sid::{ControlConcurrency, Role},
+    sid::{ControlStreamConcurrency, Role},
 };
 use qcongestion::{CongestionControl, TrackPackets};
 use qlog::{
@@ -80,7 +80,7 @@ impl DataSpace {
         role: Role,
         reliable_frames: ArcReliableFrameDeque,
         local_params: &CommonParameters,
-        streams_ctrl: Box<dyn ControlConcurrency>,
+        streams_ctrl: Box<dyn ControlStreamConcurrency>,
         tx_wakers: ArcSendWakers,
     ) -> Self {
         Self {

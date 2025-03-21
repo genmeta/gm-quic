@@ -109,7 +109,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn chennel() {
+    async fn channel() {
         let ch = Arc::new(Channel::new());
         let ch2 = ch.clone();
         assert_eq!(ch.send(0), Ok(()));

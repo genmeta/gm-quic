@@ -63,7 +63,7 @@ async fn set() -> io::Result<()> {
 
 async fn parallel_stream() -> io::Result<()> {
     let server = crate::QuicServer::builder()
-        .without_cert_verifier()
+        .without_client_cert_verifier()
         .with_single_cert(
             include_bytes!("../examples/keychain/localhost/server.cert"),
             include_bytes!("../examples/keychain/localhost/server.key"),
@@ -181,7 +181,7 @@ async fn limited_streams() -> io::Result<()> {
     }
 
     let server = crate::QuicServer::builder()
-        .without_cert_verifier()
+        .without_client_cert_verifier()
         .with_single_cert(
             include_bytes!("../examples/keychain/localhost/server.cert"),
             include_bytes!("../examples/keychain/localhost/server.key"),
@@ -252,18 +252,19 @@ async fn limited_streams() -> io::Result<()> {
 }
 
 async fn disable_keep_alive() {
-    let disabled_keep_alive = crate::HeartbeatConfig::disabled();
+    // disabled by default
+    // let disabled_keep_alive = crate::HeartbeatConfig::ZERO;
 
     let mut parameters = crate::ServerParameters::default();
     parameters.set_max_idle_timeout(Duration::from_millis(500));
 
     let server = crate::QuicServer::builder()
-        .without_cert_verifier()
+        .without_client_cert_verifier()
         .with_single_cert(
             include_bytes!("../examples/keychain/localhost/server.cert"),
             include_bytes!("../examples/keychain/localhost/server.key"),
         )
-        .defer_idle_timeout(disabled_keep_alive)
+        // .defer_idle_timeout(disabled_keep_alive)
         .with_parameters(parameters)
         .with_qlog(LOGGER.clone())
         .listen("127.0.0.1:0")
@@ -279,7 +280,7 @@ async fn disable_keep_alive() {
         crate::QuicClient::builder()
             .with_root_certificates(roots)
             .without_cert()
-            .defer_idle_timeout(disabled_keep_alive)
+            // .defer_idle_timeout(disabled_keep_alive)
             .with_qlog(LOGGER.clone())
             .build(),
     );
@@ -302,7 +303,7 @@ async fn enable_keep_alive() {
     parameters.set_max_idle_timeout(Duration::from_millis(500));
 
     let server = crate::QuicServer::builder()
-        .without_cert_verifier()
+        .without_client_cert_verifier()
         .with_single_cert(
             include_bytes!("../examples/keychain/localhost/server.cert"),
             include_bytes!("../examples/keychain/localhost/server.key"),
@@ -334,3 +335,6 @@ async fn enable_keep_alive() {
     assert!(connection.is_active());
     server.shutdown();
 }
+
+#[test]
+fn feature() {}

@@ -372,7 +372,7 @@ mod tests {
                 });
                 assert_eq!(event["data"], event_data_json);
                 assert_eq!(event["group_id"], String::from(group_id()));
-                assert_eq!(event["passive_listening"], true);
+                assert_eq!(event["use_strict_mode"], true);
             }
         }
 
@@ -388,7 +388,7 @@ mod tests {
                     ip_v4: "127.0.0.1".to_owned(),
                     port_v4: 8080u16,
                 }),
-                passive_listening = true
+                use_strict_mode = true
             );
         });
     }

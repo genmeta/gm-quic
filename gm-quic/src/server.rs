@@ -7,7 +7,7 @@ use std::{
 
 use dashmap::DashMap;
 use handy::Usc;
-pub use qconnection::{builder::*, prelude::*};
+use qconnection::builder::*;
 use qinterface::util::Channel;
 use qlog::{
     quic::connectivity::ServerListening,
@@ -19,11 +19,7 @@ use rustls::{
 };
 use tokio::sync::mpsc;
 
-use crate::{
-    PROTO,
-    cert::{ToCertificate, ToPrivateKey},
-    interfaces::Interfaces,
-};
+use crate::*;
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
 
@@ -61,9 +57,9 @@ pub struct QuicServer {
     defer_idle_timeout: HeartbeatConfig,
     listener: Arc<Channel<(Arc<Connection>, Pathway)>>,
     parameters: ServerParameters,
-    passive_listening: bool,
-    streams_controller:
-        Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
+    use_strict_mode: bool,
+    stream_strategy_factory:
+        Box<dyn ProductStreamConcurrencyController<Controller = Box<dyn ControlStreamConcurrency>>>,
     logger: Arc<dyn Log + Send + Sync>,
     _supported_versions: Vec<u32>,
     tls_config: Arc<TlsServerConfig>,
@@ -74,13 +70,15 @@ impl QuicServer {
     /// Start to build a QuicServer.
     pub fn builder() -> QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
         QuicServerBuilder {
-            passive_listening: false,
+            use_strict_mode: false,
             supported_versions: Vec::with_capacity(2),
             defer_idle_timeout: HeartbeatConfig::default(),
-            quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
+            quic_iface_factory: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?) as _)),
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
-            streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            stream_strategy_factory: Box::new(move |bi, uni| {
+                Box::new(ConsistentConcurrency::new(bi, uni)) as _
+            }),
             logger: None,
             token_provider: None,
         }
@@ -91,13 +89,15 @@ impl QuicServer {
     /// This is useful when you want to customize the TLS configuration, or integrate qm-quic with other crates.
     pub fn builder_with_tls(tls_config: TlsServerConfig) -> QuicServerBuilder<TlsServerConfig> {
         QuicServerBuilder {
-            passive_listening: false,
+            use_strict_mode: false,
             supported_versions: Vec::with_capacity(2),
-            quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
+            quic_iface_factory: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?) as _)),
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ServerParameters::default(),
             tls_config,
-            streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            stream_strategy_factory: Box::new(move |bi, uni| {
+                Box::new(ConsistentConcurrency::new(bi, uni)) as _
+            }),
             logger: None,
             token_provider: None,
         }
@@ -108,15 +108,17 @@ impl QuicServer {
         provider: Arc<rustls::crypto::CryptoProvider>,
     ) -> QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
         QuicServerBuilder {
-            passive_listening: false,
+            use_strict_mode: false,
             supported_versions: Vec::with_capacity(2),
-            quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
+            quic_iface_factory: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?) as _)),
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
                 .unwrap(),
-            streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            stream_strategy_factory: Box::new(move |bi, uni| {
+                Box::new(ConsistentConcurrency::new(bi, uni)) as _
+            }),
             logger: None,
             token_provider: None,
         }
@@ -142,7 +144,7 @@ impl QuicServer {
     /// If all listening udp sockets are closed, this method will return an error.
     pub async fn accept(&self) -> io::Result<(Arc<Connection>, Pathway)> {
         let no_address_listening = || {
-            debug_assert!(!self.passive_listening);
+            debug_assert!(!self.use_strict_mode);
             let reason = "one of the listening interface was closed unexpectedly";
             io::Error::new(io::ErrorKind::AddrNotAvailable, reason)
         };
@@ -157,11 +159,11 @@ impl QuicServer {
             return;
         };
 
-        if !(server.passive_listening || server.bind_interfaces.contains_key(&link.src())) {
+        if server.use_strict_mode && !server.bind_interfaces.contains_key(&link.src()) {
             return;
         }
 
-        let (clinet_scid, origin_dcid) = match &packet {
+        let (client_scid, origin_dcid) = match &packet {
             Packet::Data(data_packet) => match &data_packet.header {
                 DataHeader::Long(LongHeader::Initial(hdr)) => (*hdr.scid(), *hdr.dcid()),
                 DataHeader::Long(LongHeader::ZeroRtt(hdr)) => (*hdr.scid(), *hdr.dcid()),
@@ -181,10 +183,10 @@ impl QuicServer {
             Connection::with_token_provider(token_provider)
                 .with_parameters(server.parameters)
                 .with_tls_config(server.tls_config.clone())
-                .with_streams_ctrl(&server.streams_controller)
+                .with_stream_concurrency_strategy(server.stream_strategy_factory.as_ref())
                 .with_proto(PROTO.clone())
                 .defer_idle_timeout(server.defer_idle_timeout)
-                .with_cids(origin_dcid, clinet_scid)
+                .with_cids(origin_dcid, client_scid)
                 .with_qlog(server.logger.as_ref())
                 .run_with(event_broker),
         );
@@ -235,13 +237,13 @@ struct Host {
 /// The builder for the quic server.
 pub struct QuicServerBuilder<T> {
     supported_versions: Vec<u32>,
-    passive_listening: bool,
-    quic_iface_binder: Box<dyn Fn(SocketAddr) -> io::Result<Arc<dyn QuicInterface>> + Send + Sync>,
+    use_strict_mode: bool,
+    quic_iface_factory: Box<dyn ProductQuicInterface<QuicInterface = Arc<dyn QuicInterface>>>,
     defer_idle_timeout: HeartbeatConfig,
     parameters: ServerParameters,
     tls_config: T,
-    streams_controller:
-        Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
+    stream_strategy_factory:
+        Box<dyn ProductStreamConcurrencyController<Controller = Box<dyn ControlStreamConcurrency>>>,
     logger: Option<Arc<dyn Log + Send + Sync>>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
@@ -249,14 +251,14 @@ pub struct QuicServerBuilder<T> {
 /// The builder for the quic server with SNI enabled.
 pub struct QuicServerSniBuilder<T> {
     supported_versions: Vec<u32>,
-    passive_listening: bool,
+    use_strict_mode: bool,
     hosts: Arc<DashMap<String, Host>>,
-    quic_iface_binder: Box<dyn Fn(SocketAddr) -> io::Result<Arc<dyn QuicInterface>> + Send + Sync>,
+    quic_iface_factory: Box<dyn ProductQuicInterface<QuicInterface = Arc<dyn QuicInterface>>>,
     defer_idle_timeout: HeartbeatConfig,
     parameters: ServerParameters,
     tls_config: T,
-    streams_controller:
-        Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
+    stream_strategy_factory:
+        Box<dyn ProductStreamConcurrencyController<Controller = Box<dyn ControlStreamConcurrency>>>,
     logger: Option<Arc<dyn Log + Send + Sync>>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
@@ -281,7 +283,7 @@ impl<T> QuicServerBuilder<T> {
         self
     }
 
-    /// Specify the streams controller for the client.
+    /// Specify the streams concurrency strategy controller for the server.
     ///
     /// The streams controller is used to control the concurrency of data streams. `controller` is a closure that accept
     /// (initial maximum number of bidirectional streams, initial maximum number of unidirectional streams) configured in
@@ -290,11 +292,12 @@ impl<T> QuicServerBuilder<T> {
     /// If you call this multiple times, only the last `controller` will be used.
     ///
     /// [transport parameters](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-definit)
-    pub fn with_streams_controller(
+    pub fn with_stream_concurrency_strategy(
         mut self,
-        controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
+        strategy_factory: impl ProductStreamConcurrencyController + 'static,
     ) -> Self {
-        self.streams_controller = controller;
+        self.stream_strategy_factory =
+            Box::new(move |bidi, uni| Box::new(strategy_factory.init(bidi, uni)) as _);
         self
     }
 
@@ -324,16 +327,22 @@ impl<T> QuicServerBuilder<T> {
         self
     }
 
-    /// Accept connections from addresses that are not listened to.
+    /// Accept connections from addresses that server not listened to.
     ///
-    /// Passive listening is that the server will accept all connections from all bound address, not only the given
-    /// listening addresses.
+    /// ## If the strict mode is not used (default)
     ///
-    /// For example, you started a client and connected to a remote server. If the passive listening is enabled, the
-    /// server will accept the connections that connected to the addresses that client used. This is useful in some
-    /// cases, such as the server is behind a NAT.
-    pub fn enable_passive_listening(mut self) -> Self {
-        self.passive_listening = true;
+    /// QuicServer will not only accept connections from the address it is bound to, it will also accept connections
+    /// from all addresses that gm-quic is bound to (such as the address that [`QuicClient`] is bound to).
+    ///
+    /// For example, you started a client and connected to a remote server. If the strict mode is not used,
+    /// the server can accept the connections that connected to the addresses that client used.
+    /// This is useful in some cases, such as the server is behind a NAT.
+    ///
+    /// ## If the strict mode is used
+    ///
+    /// The server will *only* accept connections from the given addresses that successfully bound.
+    pub fn use_strict_mode(mut self) -> Self {
+        self.use_strict_mode = true;
         self
     }
 
@@ -341,13 +350,9 @@ impl<T> QuicServerBuilder<T> {
     ///
     /// The default quic interface is [`Usc`] that support GSO and GRO,
     /// and the binder is [`Usc::bind`].
-    pub fn with_iface_binder<QI, Binder>(self, binder: Binder) -> Self
-    where
-        QI: QuicInterface + 'static,
-        Binder: Fn(SocketAddr) -> io::Result<QI> + Send + Sync + 'static,
-    {
+    pub fn with_iface_factory<F>(self, factory: impl ProductQuicInterface + 'static) -> Self {
         Self {
-            quic_iface_binder: Box::new(move |addr| Ok(Arc::new(binder(addr)?))),
+            quic_iface_factory: Box::new(move |addr| Ok(Arc::new(factory.bind(addr)?) as _)),
             ..self
         }
     }
@@ -360,39 +365,39 @@ impl<T> QuicServerBuilder<T> {
 
 impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
     /// Choose how to verify client certificates.
-    pub fn with_cert_verifier(
+    pub fn with_client_cert_verifier(
         self,
         client_cert_verifier: Arc<dyn ClientCertVerifier>,
     ) -> QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerBuilder {
-            passive_listening: self.passive_listening,
+            use_strict_mode: self.use_strict_mode,
             supported_versions: self.supported_versions,
-            quic_iface_binder: self.quic_iface_binder,
+            quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
                 .with_client_cert_verifier(client_cert_verifier),
-            streams_controller: self.streams_controller,
+            stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,
             token_provider: self.token_provider,
         }
     }
 
     /// Disable client authentication.
-    pub fn without_cert_verifier(
+    pub fn without_client_cert_verifier(
         self,
     ) -> QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerBuilder {
-            passive_listening: self.passive_listening,
+            use_strict_mode: self.use_strict_mode,
             supported_versions: self.supported_versions,
-            quic_iface_binder: self.quic_iface_binder,
+            quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
                 .with_client_cert_verifier(Arc::new(NoClientAuth)),
-            streams_controller: self.streams_controller,
+            stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,
             token_provider: self.token_provider,
         }
@@ -411,16 +416,16 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         key_der: impl ToPrivateKey,
     ) -> QuicServerBuilder<TlsServerConfig> {
         QuicServerBuilder {
-            passive_listening: self.passive_listening,
+            use_strict_mode: self.use_strict_mode,
             supported_versions: self.supported_versions,
-            quic_iface_binder: self.quic_iface_binder,
+            quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
                 .with_single_cert(cert_chain.to_certificate(), key_der.to_private_key())
                 .expect("The private key was wrong encoded or failed validation"),
-            streams_controller: self.streams_controller,
+            stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,
             token_provider: self.token_provider,
         }
@@ -438,9 +443,9 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         ocsp: Vec<u8>,
     ) -> QuicServerBuilder<TlsServerConfig> {
         QuicServerBuilder {
-            passive_listening: self.passive_listening,
+            use_strict_mode: self.use_strict_mode,
             supported_versions: self.supported_versions,
-            quic_iface_binder: self.quic_iface_binder,
+            quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
@@ -451,7 +456,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
                     ocsp,
                 )
                 .expect("The private key was wrong encoded or failed validation"),
-            streams_controller: self.streams_controller,
+            stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,
             token_provider: self.token_provider,
         }
@@ -461,16 +466,16 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
     pub fn enable_sni(self) -> QuicServerSniBuilder<TlsServerConfig> {
         let hosts = Arc::new(DashMap::new());
         QuicServerSniBuilder {
-            passive_listening: self.passive_listening,
+            use_strict_mode: self.use_strict_mode,
             supported_versions: self.supported_versions,
-            quic_iface_binder: self.quic_iface_binder,
+            quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
                 .tls_config
                 .with_cert_resolver(Arc::new(VirtualHosts(hosts.clone()))),
             hosts,
-            streams_controller: self.streams_controller,
+            stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,
             token_provider: self.token_provider,
         }
@@ -517,36 +522,38 @@ impl QuicServerBuilder<TlsServerConfig> {
     /// If you never call this method, we will not do ALPN with the client.
     ///
     /// [alpn-protocol-ids](https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml#alpn-protocol-ids)
-    pub fn with_alpns(mut self, alpn: impl IntoIterator<Item = Vec<u8>>) -> Self {
-        self.tls_config.alpn_protocols.extend(alpn);
+    pub fn with_alpns(mut self, alpn: impl IntoIterator<Item = impl Into<Vec<u8>>>) -> Self {
+        self.tls_config
+            .alpn_protocols
+            .extend(alpn.into_iter().map(Into::into));
         self
     }
 
     /// Start to listen for incoming connections.
     ///
-    /// Once listen is called, the server will start to accept incoming connections, do the handshake automatically, and
-    /// you can get the incoming connection by calling the [`QuicServer::accept`] method.
+    /// The server will bind to all the addresses you provide and accept QUIC connections from them.
     ///
-    /// Note that there can be only one server running at the same time, so this method will return an error if there is
-    /// already a server running.
+    /// If *any* address fails to bind, this method will immediately return an error and the server will not be started.
     ///
-    /// When the `QuicServer` is dropped, the server will stop listening for incoming connections, and you can start a
-    /// new server by calling the [`QuicServerBuilder::listen`] method again.
+    /// The server will automatically perform the QUIC protocol handshake, and you can get the connection accepted by
+    /// the server by calling the [`QuicServer::accept`] method (even though the handshake may not have been completed yet)
     ///
-    /// ## If the passive listening is not enabled
+    /// Note that there can be only one server running at the same time,
+    /// so this method will return an error if there is already a server running.
     ///
-    /// This method will try to bind all of the given addresses. The server will *only* accept connections from the given
-    /// addresses that successfully bound.
+    /// When the `QuicServer` is dropped, the server will stop listening for incoming connections,
+    /// and you can start a new server by calling the [`QuicServerBuilder::listen`] method again.
     ///
-    /// If all given addresses are failed to bind, this method will return an error.
+    /// ## If the strict mode is used
     ///
-    /// ## If the passive listening is enabled
+    /// The server will *only* accept connections from the given addresses that successfully bound.
     ///
-    /// This method will also attempt to bind to the given address, but the server will accept connections from *all*
-    /// addresses that gm-quic has already bound to, such as those used by other local clients to connect to the remote
-    /// server.
+    /// ## If the strict mode is not used (default)
     ///
-    /// Although all given addresses are failed to bind, the server can still accept connections from other addresses.
+    /// QuicServer will not only accept connections from the address it is bound to, it will also accept connections
+    /// from all addresses that gm-quic is bound to (such as the address that [`QuicClient`] is bound to).
+    ///
+    /// If you're not using strict mode, you can even have quicServer not bind to any address here.
     pub fn listen(self, addresses: impl ToSocketAddrs) -> io::Result<Arc<QuicServer>> {
         let mut server = SERVER.write().unwrap();
         if let Some(server) = server.upgrade() {
@@ -566,30 +573,36 @@ impl QuicServerBuilder<TlsServerConfig> {
                     if bind_interfaces.contains_key(&address) {
                         return io::Result::Ok((bind_interfaces, recv_tasks, local_addrs));
                     }
-                    let interface = (self.quic_iface_binder)(address)?;
+                    let interface = self.quic_iface_factory.bind(address)?;
                     let local_addr = interface.local_addr()?;
                     recv_tasks.push(Interfaces::add(interface.clone())?);
                     local_addrs.push(local_addr);
                     bind_interfaces.insert(local_addr, interface);
+                    qlog::event!(
+                        ServerListening {
+                            socket_addr: local_addr,
+                        },
+                        use_strict_mode = self.use_strict_mode,
+                    );
                     Ok((bind_interfaces, recv_tasks, local_addrs))
                 },
             )?;
 
-        if bind_interfaces.is_empty() && !self.passive_listening {
-            let error = "no address provided, and passive listening is not enabled";
+        if bind_interfaces.is_empty() && self.use_strict_mode {
+            let error = "no address provided, and strict mode is used";
             let error = io::Error::new(io::ErrorKind::AddrNotAvailable, error);
             return Err(error);
         }
 
         let quic_server = Arc::new(QuicServer {
             bind_interfaces,
-            passive_listening: self.passive_listening,
+            use_strict_mode: self.use_strict_mode,
             listener: Default::default(),
             _supported_versions: self.supported_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
-            streams_controller: self.streams_controller,
+            stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger.unwrap_or_else(|| Arc::new(NullLogger)),
             token_provider: self.token_provider,
         });
@@ -600,7 +613,7 @@ impl QuicServerBuilder<TlsServerConfig> {
                 let (result, iface_idx, _) = futures::future::select_all(iface_recv_tasks).await;
                 let error = match result {
                     Ok(error) => error,
-                    Err(join_error) if join_error.is_cancelled() => return,
+                    Err(_join_error) if server.listener.is_closed() => return,
                     Err(join_error) => join_error.into(),
                 };
                 let local_addr = local_addrs[iface_idx];
@@ -622,43 +635,51 @@ impl QuicServerSniBuilder<TlsServerConfig> {
     /// If you call this multiple times, all the `alpn_protocol` will be used.
     ///
     /// If you never call this method, we will not do ALPN negotiation with the client.
-    pub fn with_alpns(mut self, alpn: impl IntoIterator<Item = Vec<u8>>) -> Self {
-        self.tls_config.alpn_protocols.extend(alpn);
+    pub fn with_alpns(mut self, alpn: impl IntoIterator<Item = impl Into<Vec<u8>>>) -> Self {
+        self.tls_config
+            .alpn_protocols
+            .extend(alpn.into_iter().map(Into::into));
         self
     }
 
     /// Start to listen for incoming connections.
     ///
-    /// Once listen is called, the server will start to accept incoming connections, do the handshake automatically, and
-    /// you can get the incoming connection by calling the [`QuicServer::accept`] method.
+    /// The server will bind to all the addresses you provide and accept QUIC connections from them.
     ///
-    /// ### Bind interfaces
+    /// If *any* address fails to bind, this method will immediately return an error and the server will not be started.
     ///
-    /// All addresses need to be successfully bound before the Server will start.
-    /// Errors occurring in the binding address will be returned immediately
+    /// The server will automatically perform the QUIC protocol handshake, and you can get the connection accepted by
+    /// the server by calling the [`QuicServer::accept`] method (even though the handshake may not have been completed yet)
     ///
-    /// After the server is started, if any interface that the server is listening to is closed (meaning
-    /// [`QuicInterface::poll_recv`] returns an error), the Server will be shut down immediately and free all bound
-    /// interfaces, the [`QuicServer::accept`] method will return [`Err`].
+    /// Note that there can be only one server running at the same time,
+    /// so this method will return an error if there is already a server running.
     ///
-    /// ### Server is unique
-    ///
-    /// If the passive listening is enabled, the server will accept connections from all address that gm-quic has
-    /// already bound to, such as those used by other local clients to connect to the remote server.
-    ///
-    /// Note that there can be only one server running at the same time, so this method will return an error if there is
-    /// already a server running.
-    ///
-    /// When the [`QuicServer`] is dropped, the server will be shut down immediately and free all bound interfaces,
+    /// When the `QuicServer` is dropped, the server will stop listening for incoming connections,
     /// and you can start a new server by calling the [`QuicServerBuilder::listen`] method again.
     ///
+    /// ## If the strict mode is used
+    ///
+    /// The server will *only* accept connections from the given addresses that successfully bound.
+    ///
+    /// ## If the strict mode is not used (default)
+    ///
+    /// QuicServer will not only accept connections from the address it is bound to, it will also accept connections
+    /// from all addresses that gm-quic is bound to (such as the address that [`QuicClient`] is bound to).
+    ///
+    /// For example, you started a client and connected to a remote server. If the strict mode is not used,
+    /// the server can accept the connections that connected to the addresses that client used.
+    /// This is useful in some cases, such as the server is behind a NAT.
+    ///
+    /// If you're not using strict mode, you can even have quicServer not bind to any address here.
     pub fn listen(self, addresses: impl ToSocketAddrs) -> io::Result<Arc<QuicServer>> {
         let mut server = SERVER.write().unwrap();
-        if server.strong_count() != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                "There is already a server running",
-            ));
+        if let Some(server) = server.upgrade() {
+            if !server.listener.is_closed() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "There is already a active server running",
+                ));
+            }
         }
 
         // 不接受出现错误，出现错误直接让listen返回Err
@@ -669,44 +690,36 @@ impl QuicServerSniBuilder<TlsServerConfig> {
                     if bind_interfaces.contains_key(&address) {
                         return io::Result::Ok((bind_interfaces, recv_tasks, local_addrs));
                     }
-                    let interface = (self.quic_iface_binder)(address)?;
+                    let interface = self.quic_iface_factory.bind(address)?;
                     let local_addr = interface.local_addr()?;
                     recv_tasks.push(Interfaces::add(interface.clone())?);
                     local_addrs.push(local_addr);
                     bind_interfaces.insert(local_addr, interface);
                     qlog::event!(
-                        match address {
-                            SocketAddr::V4(address) => qlog::build!(ServerListening {
-                                ip_v4: address.ip().to_string(),
-                                port_v4: address.port(),
-                            }),
-                            SocketAddr::V6(address) => qlog::build!(ServerListening {
-                                ip_v4: address.ip().to_string(),
-                                port_v4: address.port(),
-                            }),
+                        ServerListening {
+                            socket_addr: local_addr,
                         },
-                        // 那些被passive_listening的地址就没法打印这个事件了
-                        passive_listening = self.passive_listening,
+                        use_strict_mode = self.use_strict_mode,
                     );
                     Ok((bind_interfaces, recv_tasks, local_addrs))
                 },
             )?;
 
-        if bind_interfaces.is_empty() && !self.passive_listening {
-            let error = "no address provided, and passive listening is not enabled";
+        if bind_interfaces.is_empty() && self.use_strict_mode {
+            let error = "no address provided, and strict mode is used";
             let error = io::Error::new(io::ErrorKind::AddrNotAvailable, error);
             return Err(error);
         }
 
         let quic_server = Arc::new(QuicServer {
             bind_interfaces,
-            passive_listening: self.passive_listening,
+            use_strict_mode: self.use_strict_mode,
             listener: Default::default(),
             _supported_versions: self.supported_versions,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
-            streams_controller: self.streams_controller,
+            stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger.unwrap_or_else(|| Arc::new(NullLogger)),
             token_provider: self.token_provider,
         });
@@ -717,7 +730,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
                 let (result, iface_idx, _) = futures::future::select_all(iface_recv_tasks).await;
                 let error = match result {
                     Ok(error) => error,
-                    Err(join_error) if join_error.is_cancelled() => return,
+                    Err(_join_error) if server.listener.is_closed() => return,
                     Err(join_error) => join_error.into(),
                 };
                 let local_addr = local_addrs[iface_idx];
