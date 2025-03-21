@@ -19,9 +19,6 @@ pub struct Opt {
     )]
     pub ca: PathBuf,
 
-    #[structopt(name = "keylog", long)]
-    pub key_log_file: bool,
-
     #[structopt(long, short = 'b', default_value = "[::]:0")]
     pub bind: Vec<SocketAddr>,
 
@@ -69,7 +66,6 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
     let quic_client = ::gm_quic::QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()
-        .with_keylog(opt.key_log_file)
         .with_alpns([ALPN])
         .with_parameters(client_parameters())
         .bind(&opt.bind[..])?

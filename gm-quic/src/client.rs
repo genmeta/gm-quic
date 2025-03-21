@@ -614,10 +614,8 @@ impl QuicClientBuilder<TlsClientConfig> {
     /// The keylog file will be in the file that environment veriable `SSLKEYLOGFILE` pointed to.
     ///
     /// Read [`rustls::KeyLogFile`] for more information.
-    pub fn with_keylog(mut self, flag: bool) -> Self {
-        if flag {
-            self.tls_config.key_log = Arc::new(rustls::KeyLogFile::new());
-        }
+    pub fn enable_sslkeylog(mut self) -> Self {
+        self.tls_config.key_log = Arc::new(rustls::KeyLogFile::new());
         self
     }
 
