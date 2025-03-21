@@ -73,12 +73,13 @@ let quic_client = QuicClient::builder()
     .reuse_connection()
     // 自动在连接空闲时发送数据包保持连接活跃
     .defer_idle_timeout(HeartbeatConfig::new(Durnation::from_secs(30)))       
-    .prefer_versions([1u32])                // QUIC的版本协商机制，会优先使用靠前的版本，目前仅支持V1
-    // .with_parameter(&client_parameters)  // 不设置即为使用默认参数
-    // .with_token_sink(token_sink)         // 管理各服务器颁发的Token
+    .prefer_versions([1u32])                      // QUIC的版本协商机制，会优先使用靠前的版本，目前仅支持V1
+    // .with_parameter(&client_parameters)        // 不设置即为使用默认参数
+    // .with_stream_concurrency_strategy(factory) // 指定流并发策略
+    // .with_token_sink(token_sink)               // 管理各服务器颁发的Token
     .with_root_certificates(root_certificates)
-    // .with_webpki_verifier(verifier)      // 更高级地验证服务端证书的办法
-    .without_cert()                         // 一般客户端不必设置证书
+    // .with_webpki_verifier(verifier)            // 更高级地验证服务端证书的办法
+    .without_cert()                               // 一般客户端不必设置证书
     // 指定客户端怎么绑定接口
     // 默认的接口为qudp提供的高性能实现
     // .with_iface_factory(binder)
@@ -93,7 +94,7 @@ let quic_client_conn = quic_client
     .unwrap();
 ```
 
-QUIC服务端支持SNI（Server Name Indication），可以设置多台Server的名字、证书等信息，同时`gm-quic`开放了根据新连接的Initial数据包，如何返回Retry数据包的自定义负载均衡接口，该接口可利用QUIC本身的特性让多台主机间的负载均衡地调度。
+QUIC服务端支持SNI（Server Name Indication），可以设置多台Server的名字、证书等信息。
 
 ```rust
 let quic_server = QuicServer::builder()

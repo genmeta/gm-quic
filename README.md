@@ -88,7 +88,7 @@ let quic_client = QuicClient::builder()
     // currently only supporting V1.
     .prefer_versions([1u32])                
     // .with_parameter(&client_parameters)      // If not set, the default parameters will be used
-    // .witl_stream_strategy_factory(controller)     // Specify the streams controller for the client
+    // .with_stream_concurrency_strategy(factory)     // Specify the streams concurrency strategy for the client
     // .with_token_sink(token_sink)             // Manage Tokens issued by various servers
     .with_root_certificates(root_certificates)
     // .with_webpki_verifier(verifier)          // More advanced ways to verify server certificates
@@ -107,7 +107,7 @@ let quic_client_conn = quic_client
     .unwrap();
 ```
 
-The QUIC server provides SNI(Server Name Indication) support in TLS, allowing the configuration of multiple server names and certificates. Additionally, `gm-quic` provides a custom load balancing interface that let developers determine how to return Retry packets based on the Initial packet of a new connection. This interface leverages the inherent features of QUIC to schedule across multiple hosts balancely.
+The QUIC server provides SNI(Server Name Indication) support in TLS, allowing the configuration of multiple server names and certificates. 
 
 ```rust
 let quic_server = QuicServer::builder()
