@@ -11,12 +11,14 @@ pub use qconnection::{
 pub use crate::{
     cert::{ToCertificate, ToPrivateKey},
     client::{QuicClient, QuicClientBuilder},
+    fractor::ProductQuicInterface,
     interfaces::Interfaces,
     server::{QuicServer, QuicServerBuilder, QuicServerSniBuilder},
 };
 
 mod cert;
 mod client;
+mod fractor;
 mod interfaces;
 mod server;
 #[cfg(test)]
