@@ -95,7 +95,7 @@ let quic_client = QuicClient::builder()
     .without_cert()                             // Generally, clients do not need to set certificates
     // Specify how client bind interfaces
     // The default interface is the high-performance udp implementation provided by qudp.
-    // .with_iface_binder(binder)
+    // .with_iface_factory(binder)
     // Let the client only use the interface on specified address.
     // By default, a new interface will be used every time initiates a connection.
     // like 0.0.0.0:0 or [::]:0

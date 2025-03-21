@@ -81,7 +81,7 @@ let quic_client = QuicClient::builder()
     .without_cert()                         // 一般客户端不必设置证书
     // 指定客户端怎么绑定接口
     // 默认的接口为qudp提供的高性能实现
-    // .with_iface_binder(binder)
+    // .with_iface_factory(binder)
     // 令client只使用给定的地址
     // 默认client每次建立连接时会创建一个新的接口，绑定系统随机分配的地址端口
     // 即绑定0.0.0.0:0 或 [::]:0

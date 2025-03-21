@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use crate::{
     PROTO,
     cert::{ToCertificate, ToPrivateKey},
+    fractor::ProductQuicInterface,
     interfaces::Interfaces,
 };
 
@@ -77,7 +78,7 @@ impl QuicServer {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
             defer_idle_timeout: HeartbeatConfig::default(),
-            quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
+            quic_iface_factory: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?) as _)),
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
             streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
@@ -93,7 +94,7 @@ impl QuicServer {
         QuicServerBuilder {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
-            quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
+            quic_iface_factory: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?) as _)),
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ServerParameters::default(),
             tls_config,
@@ -110,7 +111,7 @@ impl QuicServer {
         QuicServerBuilder {
             passive_listening: false,
             supported_versions: Vec::with_capacity(2),
-            quic_iface_binder: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?))),
+            quic_iface_factory: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?) as _)),
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_provider(provider)
@@ -236,7 +237,7 @@ struct Host {
 pub struct QuicServerBuilder<T> {
     supported_versions: Vec<u32>,
     passive_listening: bool,
-    quic_iface_binder: Box<dyn Fn(SocketAddr) -> io::Result<Arc<dyn QuicInterface>> + Send + Sync>,
+    quic_iface_factory: Box<dyn ProductQuicInterface<QuicInterface = Arc<dyn QuicInterface>>>,
     defer_idle_timeout: HeartbeatConfig,
     parameters: ServerParameters,
     tls_config: T,
@@ -251,7 +252,7 @@ pub struct QuicServerSniBuilder<T> {
     supported_versions: Vec<u32>,
     passive_listening: bool,
     hosts: Arc<DashMap<String, Host>>,
-    quic_iface_binder: Box<dyn Fn(SocketAddr) -> io::Result<Arc<dyn QuicInterface>> + Send + Sync>,
+    quic_iface_factory: Box<dyn ProductQuicInterface<QuicInterface = Arc<dyn QuicInterface>>>,
     defer_idle_timeout: HeartbeatConfig,
     parameters: ServerParameters,
     tls_config: T,
@@ -341,13 +342,12 @@ impl<T> QuicServerBuilder<T> {
     ///
     /// The default quic interface is [`Usc`] that support GSO and GRO,
     /// and the binder is [`Usc::bind`].
-    pub fn with_iface_binder<QI, Binder>(self, binder: Binder) -> Self
+    pub fn with_iface_factory<F>(self, factory: F) -> Self
     where
-        QI: QuicInterface + 'static,
-        Binder: Fn(SocketAddr) -> io::Result<QI> + Send + Sync + 'static,
+        F: ProductQuicInterface + 'static,
     {
         Self {
-            quic_iface_binder: Box::new(move |addr| Ok(Arc::new(binder(addr)?))),
+            quic_iface_factory: Box::new(move |addr| Ok(Arc::new(factory.bind(addr)?) as _)),
             ..self
         }
     }
@@ -367,7 +367,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
         QuicServerBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
-            quic_iface_binder: self.quic_iface_binder,
+            quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
@@ -386,7 +386,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
         QuicServerBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
-            quic_iface_binder: self.quic_iface_binder,
+            quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
@@ -413,7 +413,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
-            quic_iface_binder: self.quic_iface_binder,
+            quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
@@ -440,7 +440,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
-            quic_iface_binder: self.quic_iface_binder,
+            quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
@@ -463,7 +463,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerSniBuilder {
             passive_listening: self.passive_listening,
             supported_versions: self.supported_versions,
-            quic_iface_binder: self.quic_iface_binder,
+            quic_iface_factory: self.quic_iface_factory,
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: self
@@ -566,7 +566,7 @@ impl QuicServerBuilder<TlsServerConfig> {
                     if bind_interfaces.contains_key(&address) {
                         return io::Result::Ok((bind_interfaces, recv_tasks, local_addrs));
                     }
-                    let interface = (self.quic_iface_binder)(address)?;
+                    let interface = self.quic_iface_factory.bind(address)?;
                     let local_addr = interface.local_addr()?;
                     recv_tasks.push(Interfaces::add(interface.clone())?);
                     local_addrs.push(local_addr);
@@ -669,7 +669,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
                     if bind_interfaces.contains_key(&address) {
                         return io::Result::Ok((bind_interfaces, recv_tasks, local_addrs));
                     }
-                    let interface = (self.quic_iface_binder)(address)?;
+                    let interface = self.quic_iface_factory.bind(address)?;
                     let local_addr = interface.local_addr()?;
                     recv_tasks.push(Interfaces::add(interface.clone())?);
                     local_addrs.push(local_addr);
