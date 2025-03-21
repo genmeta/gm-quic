@@ -3,7 +3,6 @@ use qbase::{
     frame::{HandshakeDoneFrame, ReceiveFrame, SendFrame},
     sid::Role,
 };
-use qcongestion::ObserveHandshake;
 
 use crate::events::{ArcEventBroker, EmitEvent, Event};
 
@@ -41,23 +40,6 @@ where
 
     pub fn role(&self) -> Role {
         self.inner.role()
-    }
-}
-
-impl<T> ObserveHandshake for Handshake<T>
-where
-    T: SendFrame<HandshakeDoneFrame> + Clone + Send + Sync,
-{
-    fn role(&self) -> qbase::sid::Role {
-        self.inner.role()
-    }
-
-    fn is_handshake_done(&self) -> bool {
-        self.inner.is_handshake_done()
-    }
-
-    fn is_getting_keys(&self) -> bool {
-        self.inner.is_getting_keys()
     }
 }
 

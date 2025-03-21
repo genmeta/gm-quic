@@ -1,15 +1,16 @@
 use std::{
     sync::{Arc, Mutex},
-    task::Waker,
     time::{Duration, Instant},
 };
 
 use qbase::{
     Epoch,
-    frame::{AckFrame, EcnCounts},
-    net::route::Pathway,
+    frame::AckFrame,
+    net::tx::{ArcSendWaker, Signals},
 };
-use qlog::quic::recovery::PacketLostTrigger;
+use qlog::{quic::recovery::PacketLostTrigger, telemetry::Instrument};
+use tokio::task::AbortHandle;
+use tracing::Instrument as _;
 
 use crate::{
     Algorithm, Feedback, MSS, MiniHeap, ObserveHandshake, TrackPackets,
@@ -21,15 +22,13 @@ use crate::{
     status::ConnectionStatus,
 };
 
-const K_GRANULARITY: Duration = Duration::from_millis(1);
-const K_PACKET_THRESHOLD: usize = 3;
-const K_TIME_THRESHOLD: f32 = 1.125f32;
+const INIT_CWND: usize = 10 * MSS;
+const PACKET_THRESHOLD: usize = 3;
 
 /// Imple RFC 9002 Appendix A. Loss Recovery
 /// See [Appendix A](https://datatracker.ietf.org/doc/html/rfc9002#name-loss-recovery-pseudocode)
 pub struct CongestionController {
-    pathway: Pathway,
-    algorithm: Box<dyn Control + Send>,
+    algorithm: Box<dyn Control>,
     // The Round-Trip Time (RTT) estimator.
     rtt: ArcRtt,
     loss_detection_timer: Option<Instant>,
@@ -40,47 +39,43 @@ pub struct CongestionController {
     packet_spaces: [PacketSpace; Epoch::count()],
     // pacer is used to control the burst rate
     pacer: pacing::Pacer,
-    // The time the last packet was sent.
-    last_sent_time: Instant,
     // The waker to notify when the controller is ready to send.
-    pending_burst: Option<(Waker, usize)>,
+    pending_burst: Option<usize>,
     // epoch packet trackers
     trackers: [Arc<dyn Feedback>; 3],
+    need_send_ack_eliciting_packets: [usize; Epoch::count()],
     conn_status: Arc<ConnectionStatus>,
 }
 
 impl CongestionController {
     /// A.4. Initialization
     fn init(
-        pathway: Pathway,
         algorithm: Algorithm,
         max_ack_delay: Duration,
         trackers: [Arc<dyn Feedback>; 3],
         conn_status: Arc<ConnectionStatus>,
     ) -> Self {
         let algorithm: Box<dyn Control> = match algorithm {
-            Algorithm::Bbr => Box::new(bbr::Bbr::new()),
+            Algorithm::Bbr => todo!("implement BBR"),
             Algorithm::NewReno => Box::new(NewReno::new()),
         };
 
         let now = Instant::now();
         CongestionController {
-            pathway,
-            erased,
             algorithm,
             rtt: ArcRtt::new(),
             loss_detection_timer: None,
             pto_count: 0,
             max_ack_delay,
             packet_spaces: [
-                PacketSpace::with_epoch(Epoch::Initial),
-                PacketSpace::with_epoch(Epoch::Handshake),
-                PacketSpace::with_epoch(Epoch::Data),
+                PacketSpace::with_epoch(Epoch::Initial, max_ack_delay),
+                PacketSpace::with_epoch(Epoch::Handshake, max_ack_delay),
+                PacketSpace::with_epoch(Epoch::Data, max_ack_delay),
             ],
-            pacer: Pacer::new(INITIAL_RTT, INITIAL_CWND, MSS, now, None),
-            last_sent_time: now,
+            pacer: Pacer::new(INITIAL_RTT, INIT_CWND, MSS, now, None),
             pending_burst: None,
             trackers,
+            need_send_ack_eliciting_packets: [0; Epoch::count()],
             conn_status,
         }
     }
@@ -109,16 +104,18 @@ impl CongestionController {
         sent_bytes: usize,
     ) {
         let now = tokio::time::Instant::now().into_std();
-        let mut sent = SentPacket::new(packet_number, now, ack_eliciting, in_flight, sent_bytes);
+        let sent = SentPacket::new(packet_number, now, ack_eliciting, in_flight, sent_bytes);
         if in_flight {
             if ack_eliciting {
                 self.packet_spaces[epoch].time_of_last_ack_eliciting_packet = Some(now);
+                self.need_send_ack_eliciting_packets[epoch] =
+                    self.need_send_ack_eliciting_packets[epoch].saturating_sub(1);
             }
-            self.algorithm.on_sent(&mut sent, sent_bytes);
+            self.algorithm.on_packet_sent_cc(&sent);
             self.set_loss_detection_timer();
         }
         self.packet_spaces[epoch].sent_packets.push_back(sent);
-        self.pacer.on_sent(sent_bytes as u64);
+        self.pacer.on_sent(sent_bytes);
     }
 
     /// A.6. On Receiving a Datagram
@@ -136,7 +133,7 @@ impl CongestionController {
         if self.conn_status.is_at_anti_amplification_limit() {
             let now = tokio::time::Instant::now().into_std();
             self.set_loss_detection_timer();
-            if self.loss_detection_timer.map_or(false, |t| t < now) {
+            if self.loss_detection_timer.is_some_and(|t| t < now) {
                 // Execute PTO if it would have expired while the amplification limit applied.
                 self.on_loss_detection_timeout();
             }
@@ -150,7 +147,7 @@ impl CongestionController {
     ///   else:
     ///     largest_acked_packet[pn_space] =
     ///         max(largest_acked_packet[pn_space], ack.largest_acked)
-
+    ///
     ///   // DetectAndRemoveAckedPackets finds packets that are newly
     ///   // acknowledged and removes them from sent_packets.
     ///   newly_acked_packets =
@@ -185,7 +182,7 @@ impl CongestionController {
     pub fn on_ack_rcvd(&mut self, epoch: Epoch, ack_frame: &AckFrame, now: Instant) {
         self.packet_spaces[epoch].update_largest_acked_packet(ack_frame.largest());
 
-        match self.packet_spaces[epoch].on_ack_rcvd(ack_frame, &self.algorithm) {
+        match self.packet_spaces[epoch].on_ack_rcvd(ack_frame, &mut self.algorithm) {
             None => return,
             Some(newly_acked_packets) => {
                 let (largest_pn, largest_time_sent) = newly_acked_packets.largest;
@@ -196,18 +193,20 @@ impl CongestionController {
                         self.conn_status.is_handshake_confirmed(),
                     );
                 }
+                // Process ECN information if present.
+                if let Some(_ecn) = ack_frame.ecn() {
+                    self.process_ecn(ack_frame, &largest_time_sent, epoch)
+                }
             }
-        }
-
-        // Process ECN information if present.
-        if let Some(ecn) = ack_frame.ecn() {
-            self.process_ecn(epoch, ecn)
         }
 
         self.trackers[epoch].may_loss(
             PacketLostTrigger::TimeThreshold,
-            &mut self.packet_spaces[epoch]
-                .detect_lost_packets(self.rtt.loss_delay(), K_PACKET_THRESHOLD),
+            &mut self.packet_spaces[epoch].detect_lost_packets(
+                self.rtt.loss_delay(),
+                PACKET_THRESHOLD,
+                &mut self.algorithm,
+            ),
         );
 
         if self.peer_completed_address_validation() {
@@ -292,8 +291,11 @@ impl CongestionController {
         if let Some((_, epoch)) = self.get_loss_time_and_epoch() {
             self.trackers[epoch].may_loss(
                 PacketLostTrigger::TimeThreshold,
-                &mut self.packet_spaces[epoch]
-                    .detect_lost_packets(self.rtt.loss_delay(), K_PACKET_THRESHOLD),
+                &mut self.packet_spaces[epoch].detect_lost_packets(
+                    self.rtt.loss_delay(),
+                    PACKET_THRESHOLD,
+                    &mut self.algorithm,
+                ),
             );
             self.set_loss_detection_timer();
             return;
@@ -394,7 +396,7 @@ impl CongestionController {
                 .time_of_last_ack_eliciting_packet
                 .unwrap()
                 + duration;
-            if pto_time.map_or(true, |(timeout, _)| t < timeout) {
+            if pto_time.is_none_or(|(timeout, _)| t < timeout) {
                 pto_time = Some((t, epoch));
             }
         }
@@ -419,28 +421,41 @@ impl CongestionController {
             || self.conn_status.is_handshake_confirmed()
     }
 
-    fn process_ecn(&mut self, _: Epoch, _: EcnCounts) {
-        todo!()
+    fn process_ecn(&mut self, ack: &AckFrame, sent_time: &Instant, epoch: Epoch) {
+        self.algorithm.process_ecn(ack, sent_time, epoch);
     }
 
-    fn send_ack_eliciting_packet(&self, _epoch: Epoch, _count: usize) {
-        todo!()
-    }
-
-    #[inline]
-    fn requires_ack(&self, now: Instant) -> bool {
-        todo!()
+    fn send_ack_eliciting_packet(&mut self, epoch: Epoch, count: usize) {
+        self.need_send_ack_eliciting_packets[epoch] += count;
     }
 
     #[inline]
-    fn send_quota(&mut self, now: Instant) -> usize {
+    fn need_ack(&self) -> bool {
+        Epoch::iter().any(|&epoch| self.packet_spaces[epoch].rcvd_packets.need_ack().is_some())
+    }
+
+    #[inline]
+    fn send_quota(&mut self) -> usize {
+        let now = tokio::time::Instant::now().into_std();
         self.pacer.schedule(
             self.rtt.smoothed_rtt(),
-            self.algorithm.cwnd(),
+            self.algorithm.congestion_window(),
             MSS,
             now,
             self.algorithm.pacing_rate(),
         )
+    }
+
+    fn discard_epoch(&mut self, epoch: Epoch) {
+        self.packet_spaces[epoch].discard(&mut self.algorithm);
+    }
+
+    fn get_pto(&self, epoch: Epoch) -> Duration {
+        let mut pto_time = self.rtt.base_pto(self.pto_count);
+        if epoch == Epoch::Data {
+            pto_time += self.max_ack_delay * (1 << self.pto_count);
+        }
+        pto_time
     }
 }
 
@@ -449,15 +464,12 @@ pub struct ArcCC(Arc<Mutex<CongestionController>>);
 
 impl ArcCC {
     pub fn new(
-        pathway: Pathway,
         algorithm: Algorithm,
         max_ack_delay: Duration,
         trackers: [Arc<dyn Feedback>; 3],
         conn_status: Arc<ConnectionStatus>,
     ) -> Self {
         ArcCC(Arc::new(Mutex::new(CongestionController::init(
-            pathway,
-            erased,
             algorithm,
             max_ack_delay,
             trackers,
@@ -466,8 +478,7 @@ impl ArcCC {
     }
 }
 
-/*
-impl super::CongestionControl for ArcCC {
+impl super::Transport for ArcCC {
     fn launch_with_waker(&self, tx_waker: ArcSendWaker) -> AbortHandle {
         let cc = self.clone();
         tokio::spawn(
@@ -477,15 +488,16 @@ impl super::CongestionControl for ArcCC {
                     interval.tick().await;
                     let now = Instant::now();
                     let mut guard = cc.0.lock().unwrap();
-                    if guard.loss_detection_timer.is_timeout(now) {
-                        guard.on_loss_detection_timeout(now);
+                    if guard.loss_detection_timer.is_some_and(|t| t <= now) {
+                        guard.on_loss_detection_timeout();
                     }
-                    if let Some(&(.., expect_quota)) = guard.pending_burst.as_ref() {
-                        if guard.send_quota(now) >= expect_quota {
-                            guard.pending_burst.take().unwrap().0.wake();
+                    if let Some(expect_quota) = guard.pending_burst {
+                        if guard.send_quota() >= expect_quota {
+                            guard.pending_burst = None;
+                            tx_waker.wake_by(Signals::CONGESTION);
                         }
                     }
-                    if guard.requires_ack(now) {
+                    if guard.need_ack() {
                         tx_waker.wake_by(Signals::TRANSPORT);
                     }
                 }
@@ -496,20 +508,29 @@ impl super::CongestionControl for ArcCC {
         .abort_handle()
     }
 
-    fn poll_send(&self, cx: &mut Context<'_>, expect_quota: usize) -> Poll<usize> {
+    fn send_quota(&self, expect_quota: usize) -> Result<usize, Signals> {
         let mut guard = self.0.lock().unwrap();
-        let now = Instant::now();
-        let send_quota = guard.send_quota(now);
+        let send_quota = guard.send_quota();
         if send_quota >= expect_quota {
-            return Poll::Ready(send_quota);
+            Ok(send_quota)
+        } else {
+            guard.pending_burst = Some(expect_quota);
+            Err(Signals::CONGESTION)
         }
-        guard.pending_burst = Some((cx.waker().clone(), expect_quota));
-        Poll::Pending
+    }
+
+    fn retransmit_and_expire_time(&self, epoch: Epoch) -> (Duration, Duration) {
+        let guard = self.0.lock().unwrap();
+        (
+            // 尽量让路径先发起重传
+            guard.rtt.loss_delay() + guard.rtt.rttvar(),
+            guard.get_pto(epoch),
+        )
     }
 
     fn need_ack(&self, epoch: Epoch) -> Option<(u64, Instant)> {
         let guard = self.0.lock().unwrap();
-        guard.rcvd_records[epoch].requires_ack(guard.max_ack_delay, Instant::now())
+        guard.packet_spaces[epoch].rcvd_packets.need_ack()
     }
 
     fn on_pkt_sent(
@@ -522,18 +543,12 @@ impl super::CongestionControl for ArcCC {
         ack: Option<u64>,
     ) {
         let mut guard = self.0.lock().unwrap();
-        let now = Instant::now();
-        guard.on_packet_sent(pn, epoch, is_ack_eliciting, in_flight, sent_bytes, now);
+        guard.on_packet_sent(pn, epoch, is_ack_eliciting, in_flight, sent_bytes);
 
-        guard.last_sent_time = now;
         if let Some(largest_acked) = ack {
-            let record = &guard.rcvd_records[epoch];
-            // send ack for the first time
-            if record.last_ack_sent.is_none() {
-                let begin = record.rcvd_queue.front().map(|&(pn, _)| pn).unwrap_or(0);
-                guard.erased[epoch].update(&guard.pathway, begin);
-            }
-            guard.rcvd_records[epoch].on_ack_sent(pn, largest_acked);
+            guard.packet_spaces[epoch]
+                .rcvd_packets
+                .on_ack_sent(pn, largest_acked);
         }
     }
 
@@ -548,31 +563,27 @@ impl super::CongestionControl for ArcCC {
             return;
         }
         let mut guard = self.0.lock().unwrap();
-        guard.rcvd_records[epoch].on_pkt_rcvd(pn);
-        let now = Instant::now();
-        guard.on_datagram_rcvd(now);
+        guard.packet_spaces[epoch].rcvd_packets.on_pkt_rcvd(pn);
+        guard.on_datagram_rcvd();
     }
 
     fn get_pto(&self, epoch: Epoch) -> Duration {
-        self.0.lock().unwrap().current_pto(epoch)
+        let guard = self.0.lock().unwrap();
+        guard.get_pto(epoch)
     }
 
-    fn stop(&self) {
+    fn discard_epoch(&self, epoch: Epoch) {
+        let mut guard = self.0.lock().unwrap();
+        guard.discard_epoch(epoch);
+    }
+
+    fn need_send_ack_eliciting(&self, epoch: Epoch) -> usize {
         let guard = self.0.lock().unwrap();
-        for epoch in &[Epoch::Initial, Epoch::Handshake, Epoch::Data] {
-            // mark all inflights as lost
-            let loss_pns = guard.sent_packets[*epoch]
-                .iter()
-                .filter(|&pkt| (!pkt.is_acked))
-                .map(|pkt| pkt.pn);
-            guard.trackers[*epoch]
-                .may_loss(PacketLostTrigger::PtoExpired, &mut loss_pns.into_iter());
-            // remove from paths erased
-            guard.erased[*epoch].remove(&guard.pathway);
-        }
+        guard.need_send_ack_eliciting_packets[epoch]
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use qbase::varint::VarInt;
