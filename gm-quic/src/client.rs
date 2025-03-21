@@ -600,8 +600,10 @@ impl QuicClientBuilder<TlsClientConfig> {
     /// If you call this multiple times, all the `alpn_protocol` will be used.
     ///
     /// [alpn-protocol-ids](https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml#alpn-protocol-ids)
-    pub fn with_alpns(mut self, alpns: impl IntoIterator<Item = Vec<u8>>) -> Self {
-        self.tls_config.alpn_protocols.extend(alpns);
+    pub fn with_alpns(mut self, alpns: impl IntoIterator<Item = impl Into<Vec<u8>>>) -> Self {
+        self.tls_config
+            .alpn_protocols
+            .extend(alpns.into_iter().map(Into::into));
         self
     }
 

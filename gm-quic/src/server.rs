@@ -516,8 +516,10 @@ impl QuicServerBuilder<TlsServerConfig> {
     /// If you never call this method, we will not do ALPN with the client.
     ///
     /// [alpn-protocol-ids](https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml#alpn-protocol-ids)
-    pub fn with_alpns(mut self, alpn: impl IntoIterator<Item = Vec<u8>>) -> Self {
-        self.tls_config.alpn_protocols.extend(alpn);
+    pub fn with_alpns(mut self, alpn: impl IntoIterator<Item = impl Into<Vec<u8>>>) -> Self {
+        self.tls_config
+            .alpn_protocols
+            .extend(alpn.into_iter().map(Into::into));
         self
     }
 
