@@ -43,7 +43,7 @@ async fn run(options: Opt) -> Result<(), Box<dyn std::error::Error>> {
 
     let server = QuicServer::builder()
         .with_supported_versions([0x00000001u32])
-        .without_cert_verifier()
+        .without_client_cert_verifier()
         .with_single_cert(options.cert.as_path(), options.key.as_path())
         .listen(options.bind)?;
 
