@@ -100,7 +100,7 @@ let quic_server = QuicServer::builder()
     // 同client
     .defer_idle_timeout(HeartbeatConfig::new(Durnation::from_secs(30)))       
     .with_supported_versions([1u32])
-    .without_cert_verifier()  // 一般不验证客户端身份
+    .without_client_cert_verifier()  // 一般不验证客户端身份
     .enable_sni()
     .add_host("www.genmeta.net", www_cert, www_key)
     .add_host("developer.genmeta.net", dev_cert, dev_key)
