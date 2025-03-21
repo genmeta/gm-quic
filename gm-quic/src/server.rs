@@ -163,7 +163,7 @@ impl QuicServer {
             return;
         }
 
-        let (clinet_scid, origin_dcid) = match &packet {
+        let (client_scid, origin_dcid) = match &packet {
             Packet::Data(data_packet) => match &data_packet.header {
                 DataHeader::Long(LongHeader::Initial(hdr)) => (*hdr.scid(), *hdr.dcid()),
                 DataHeader::Long(LongHeader::ZeroRtt(hdr)) => (*hdr.scid(), *hdr.dcid()),
@@ -186,7 +186,7 @@ impl QuicServer {
                 .with_stream_concurrency_strategy(server.stream_strategy_factory.as_ref())
                 .with_proto(PROTO.clone())
                 .defer_idle_timeout(server.defer_idle_timeout)
-                .with_cids(origin_dcid, clinet_scid)
+                .with_cids(origin_dcid, client_scid)
                 .with_qlog(server.logger.as_ref())
                 .run_with(event_broker),
         );
@@ -359,7 +359,7 @@ impl<T> QuicServerBuilder<T> {
 
 impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
     /// Choose how to verify client certificates.
-    pub fn with_cert_verifier(
+    pub fn with_client_cert_verifier(
         self,
         client_cert_verifier: Arc<dyn ClientCertVerifier>,
     ) -> QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
@@ -379,7 +379,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
     }
 
     /// Disable client authentication.
-    pub fn without_cert_verifier(
+    pub fn without_client_cert_verifier(
         self,
     ) -> QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
         QuicServerBuilder {

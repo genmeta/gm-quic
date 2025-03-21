@@ -16,7 +16,7 @@ pub async fn main() -> io::Result<()> {
     tracing_subscriber::fmt().init();
 
     let server = gm_quic::QuicServer::builder()
-        .without_cert_verifier()
+        .without_client_cert_verifier()
         .with_single_cert(
             include_bytes!("keychain/localhost/server.cert"),
             include_bytes!("keychain/localhost/server.key"),
