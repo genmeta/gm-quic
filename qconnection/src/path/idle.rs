@@ -6,7 +6,7 @@ use crate::Components;
 
 /// Keep alive configuration.
 ///
-/// default: `300s` timeout, `10s` interval
+/// default: disabled.
 ///
 /// That is, path validation is initiated every 10 seconds when the path is idle.
 /// the path is deactivated if the validation fails.
@@ -20,24 +20,26 @@ pub struct HeartbeatConfig {
 
 impl Default for HeartbeatConfig {
     fn default() -> Self {
-        Self::new(Duration::from_secs(300))
+        const { Self::ZERO }
     }
 }
 
 impl HeartbeatConfig {
-    pub fn new(time: Duration) -> Self {
+    /// Disabled
+    pub const ZERO: Self = Self {
+        duration: Duration::ZERO,
+        interval: Duration::ZERO,
+    };
+
+    pub const fn new(time: Duration) -> Self {
         Self::new_with_interval(time, Duration::from_secs(10))
     }
 
-    pub fn new_with_interval(time: Duration, interval: Duration) -> Self {
+    pub const fn new_with_interval(time: Duration, interval: Duration) -> Self {
         Self {
             duration: time,
             interval,
         }
-    }
-
-    pub fn disabled() -> Self {
-        Self::new_with_interval(Duration::MAX, Duration::MAX)
     }
 }
 
