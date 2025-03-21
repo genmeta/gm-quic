@@ -26,7 +26,6 @@ async fn h3_test() {
 
     let client_opt = client_example::Opt {
         ca: PathBuf::from("examples/ca.cert"),
-        key_log_file: true,
         bind: vec!["127.0.0.1:0".parse().unwrap(), "[::1]:0".parse().unwrap()],
         uri: "https://localhost:4433/Cargo.toml".to_string(),
     };

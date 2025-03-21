@@ -13,8 +13,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[command(version, about, long_about = None)]
 struct Arguments {
     #[arg(long)]
-    keylog: bool,
-    #[arg(long)]
     domain: String,
     #[arg(long)]
     addr: SocketAddr,
@@ -63,7 +61,7 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
         .prefer_versions([0x00000001u32])
         .with_root_certificates(Arc::new(root_cert_store))
         .without_cert()
-        .with_keylog(args.keylog)
+        .enable_sslkeylog()
         .with_alpns([b"hq-29".as_ref()].iter().map(|s| s.to_vec()))
         .build();
 
