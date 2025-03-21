@@ -114,7 +114,7 @@ let quic_server = QuicServer::builder()
     // Keep the accepted connection alive when it is idle
     .defer_idle_timeout(HeartbeatConfig::new(Durnation::from_secs(30)))       
     .with_supported_versions([1u32])
-    .without_cert_verifier()      // Generally, client identity is not verified
+    .without_client_cert_verifier()      // Generally, client identity is not verified
     .enable_sni()
     .add_host("www.genmeta.net", www_cert, www_key)
     .add_host("developer.genmeta.net", dev_cert, dev_key)

@@ -33,6 +33,15 @@ pub struct ServerListening {
     retry_required: Option<bool>,
 }
 
+impl ServerListeningBuilder {
+    pub fn socket_addr(&mut self, socket_addr: SocketAddr) -> &mut Self {
+        match socket_addr {
+            SocketAddr::V4(addr) => self.ip_v4(addr.ip().to_string()).port_v4(addr.port()),
+            SocketAddr::V6(addr) => self.ip_v6(addr.ip().to_string()).port_v6(addr.port()),
+        }
+    }
+}
+
 /// The connection_started event is used for both attempting (client-
 /// perspective) and accepting (server-perspective) new connections. Note
 /// that while there is overlap with the connection_state_updated event,
