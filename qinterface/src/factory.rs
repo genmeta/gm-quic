@@ -1,6 +1,6 @@
 use std::{io, net::SocketAddr};
 
-use qinterface::QuicInterface;
+use crate::QuicInterface;
 
 pub trait ProductQuicInterface: Send + Sync {
     type QuicInterface: QuicInterface;

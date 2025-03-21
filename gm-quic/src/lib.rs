@@ -2,33 +2,28 @@ use std::sync::{Arc, LazyLock};
 
 pub use qconnection::{
     builder::{
-        ClientParameters, ConnectionId, ConsistentConcurrency, ControlConcurrency,
+        ClientParameters, ConnectionId, ConsistentConcurrency, ControlStreamConcurrency,
         DemandConcurrency, NoopTokenRegistry, ServerParameters, TokenProvider, TokenSink,
     },
     prelude::*,
 };
+pub use qinterface::factory::ProductQuicInterface;
 
 pub use crate::{
     cert::{ToCertificate, ToPrivateKey},
     client::{QuicClient, QuicClientBuilder},
-    fractor::ProductQuicInterface,
     interfaces::Interfaces,
     server::{QuicServer, QuicServerBuilder, QuicServerSniBuilder},
 };
 
 mod cert;
 mod client;
-mod fractor;
 mod interfaces;
 mod server;
 #[cfg(test)]
 mod tests;
 
-pub mod prelude {
-    pub use qconnection::prelude::*;
-}
-
-static PROTO: LazyLock<Arc<prelude::QuicProto>> = LazyLock::new(|| {
+static PROTO: LazyLock<Arc<QuicProto>> = LazyLock::new(|| {
     let proto = Arc::new(QuicProto::new());
     tokio::spawn({
         let proto = proto.clone();

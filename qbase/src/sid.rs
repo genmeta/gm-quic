@@ -215,7 +215,7 @@ impl<T: bytes::BufMut> WriteStreamId for T {
 ///
 /// See [controlling concurrency](https://www.rfc-editor.org/rfc/rfc9000.html#name-controlling-concurrency).
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
-pub trait ControlConcurrency: fmt::Debug + Send + Sync {
+pub trait ControlStreamConcurrency: fmt::Debug + Send + Sync {
     /// Called back upon accepting a new `dir` direction streams with stream id `sid` from peer,
     /// all previous inexistent `dir` direction streams should be opened by peer will also be created.
     ///
@@ -245,6 +245,39 @@ pub trait ControlConcurrency: fmt::Debug + Send + Sync {
     /// If None is returned, it means there is no need to increase
     /// the MAX_STREAMS for the time being.
     fn on_streams_blocked(&mut self, dir: Dir, max_streams: u64) -> Option<u64>;
+}
+
+impl<C: ?Sized + ControlStreamConcurrency> ControlStreamConcurrency for Box<C> {
+    fn on_accept_streams(&mut self, dir: Dir, sid: u64) -> Option<u64> {
+        self.as_mut().on_accept_streams(dir, sid)
+    }
+
+    fn on_end_of_stream(&mut self, dir: Dir, sid: u64) -> Option<u64> {
+        self.as_mut().on_end_of_stream(dir, sid)
+    }
+
+    fn on_streams_blocked(&mut self, dir: Dir, max_streams: u64) -> Option<u64> {
+        self.as_mut().on_streams_blocked(dir, max_streams)
+    }
+}
+
+pub trait ProductStreamConcurrencyController: Send + Sync {
+    type Controller: ControlStreamConcurrency;
+
+    fn init(&self, init_max_bidi_streams: u64, init_max_uni_streams: u64) -> Self::Controller;
+}
+
+impl<F, C> ProductStreamConcurrencyController for F
+where
+    F: Fn(u64, u64) -> C + Send + Sync,
+    C: ControlStreamConcurrency,
+{
+    type Controller = C;
+
+    #[inline]
+    fn init(&self, init_max_bidi_streams: u64, init_max_uni_streams: u64) -> Self::Controller {
+        (self)(init_max_bidi_streams, init_max_uni_streams)
+    }
 }
 
 pub mod handy;
@@ -279,7 +312,7 @@ where
         max_bi_streams: u64,
         max_uni_streams: u64,
         sid_frames_tx: T,
-        ctrl: Box<dyn ControlConcurrency>,
+        ctrl: Box<dyn ControlStreamConcurrency>,
     ) -> Self {
         // 缺省为0
         let local = ArcLocalStreamIds::new(role, 0, 0, sid_frames_tx.clone());

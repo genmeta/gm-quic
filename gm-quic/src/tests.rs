@@ -335,3 +335,6 @@ async fn enable_keep_alive() {
     assert!(connection.is_active());
     server.shutdown();
 }
+
+#[test]
+fn feature() {}
