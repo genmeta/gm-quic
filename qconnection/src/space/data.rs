@@ -28,7 +28,7 @@ use qbase::{
     param::CommonParameters,
     sid::{ControlConcurrency, Role},
 };
-use qcongestion::{Transport, Feedback};
+use qcongestion::{Feedback, Transport};
 use qlog::{
     quic::{
         PacketHeader, PacketType, QuicFramesCollector,
@@ -560,6 +560,8 @@ impl Feedback for DataSpace {
             .of_rcvd_packets()
             .expire_all_before_by_path(pathway, pn);
     }
+
+    fn send_ack_eliciting_packet(&self, count: usize) {}
 }
 
 #[derive(Clone)]

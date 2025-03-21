@@ -2,27 +2,27 @@ use std::time::{Duration, Instant};
 
 //  The burst  interval in milliseconds
 const BURST_INTERVAL: Duration = Duration::from_millis(10);
-const MIN_BURST_SIZE: u64 = 10;
-const MAX_BURST_SIZE: u64 = 1280;
+const MIN_BURST_SIZE: usize = 10;
+const MAX_BURST_SIZE: usize = 1280;
 // Using a value for N that is small, but at least 1 (for example, 1.25)
 // ensures that variations in RTT do not result in underutilization of the congestion window.
 const N: f64 = 1.25;
 
 pub(super) struct Pacer {
-    capacity: u64,
-    cwnd: u64,
-    tokens: u64,
+    capacity: usize,
+    cwnd: usize,
+    tokens: usize,
     last_burst_time: Instant,
-    rate: Option<u64>,
+    rate: Option<usize>,
 }
 
 impl Pacer {
     pub(super) fn new(
         smoothed_rtt: Duration,
-        cwnd: u64,
+        cwnd: usize,
         mtu: usize,
         now: Instant,
-        rate: Option<u64>,
+        rate: Option<usize>,
     ) -> Self {
         let capacity = Pacer::calculate_capacity(smoothed_rtt, cwnd, mtu, rate);
 
@@ -35,7 +35,7 @@ impl Pacer {
         }
     }
 
-    pub(super) fn on_sent(&mut self, packet_size: u64) {
+    pub(super) fn on_sent(&mut self, packet_size: usize) {
         self.tokens = self.tokens.saturating_sub(packet_size);
     }
 
@@ -43,10 +43,10 @@ impl Pacer {
     pub(super) fn schedule(
         &mut self,
         srtt: Duration,
-        cwnd: u64,
+        cwnd: usize,
         mtu: usize,
         now: Instant,
-        rate: Option<u64>,
+        rate: Option<usize>,
     ) -> usize {
         // Update capacity if cwnd or rate has changed
         if self.cwnd != cwnd || rate != self.rate {
@@ -56,39 +56,46 @@ impl Pacer {
 
         self.cwnd = cwnd;
         self.rate = rate;
-        if self.tokens > mtu as u64 {
-            return self.tokens as usize;
+        if self.tokens > mtu {
+            return self.tokens;
         }
 
         let rate = match rate {
             Some(r) => r,
             // RFC 9002 7.7. Pacing
             // rate = N * congestion_window / smoothed_rtt
-            None => (N * cwnd as f64 / srtt.as_secs_f64()) as u64,
+            None => (N * cwnd as f64 / srtt.as_secs_f64()) as usize,
         };
 
         // Update the last_burst_time and tokens
         let elapsed = now.duration_since(self.last_burst_time);
+        // TODO: 时间间隔有上限
+        // elapsed.max(srtt.as_secs_f64() * 2);
         let new_token = elapsed.as_secs_f64() * rate as f64;
         self.tokens = self
             .tokens
-            .saturating_add(new_token as u64)
+            .saturating_add(new_token as usize)
             .min(self.capacity);
         self.last_burst_time = now;
 
-        self.tokens as usize
+        self.tokens
     }
 
-    fn calculate_capacity(smoothed_rtt: Duration, cwnd: u64, mtu: usize, rate: Option<u64>) -> u64 {
+    fn calculate_capacity(
+        smoothed_rtt: Duration,
+        cwnd: usize,
+        mtu: usize,
+        rate: Option<usize>,
+    ) -> usize {
         let rtt = smoothed_rtt.as_nanos().max(1);
 
         let capacity = match rate {
             // Use the provided rate to calculate the capacity
-            Some(r) => (r as f64 * BURST_INTERVAL.as_secs_f64()) as u64,
+            Some(r) => (r as f64 * BURST_INTERVAL.as_secs_f64()) as usize,
             // Use cwnd and smoothed_rtt to calculate the capacity
-            None => ((cwnd as u128 * BURST_INTERVAL.as_nanos()) / rtt) as u64,
+            None => ((cwnd as u128 * BURST_INTERVAL.as_nanos()) / rtt) as usize,
         };
-        capacity.clamp(MIN_BURST_SIZE * mtu as u64, MAX_BURST_SIZE * mtu as u64)
+        capacity.clamp(MIN_BURST_SIZE * mtu, MAX_BURST_SIZE * mtu)
     }
 }
 

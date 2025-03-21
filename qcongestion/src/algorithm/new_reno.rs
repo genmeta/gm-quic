@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, time::Instant, usize};
+use std::time::Instant;
 
 use qbase::{Epoch, frame::AckFrame};
 use qlog::quic::recovery::RecoveryMetricsUpdated;
@@ -6,15 +6,17 @@ use qlog::quic::recovery::RecoveryMetricsUpdated;
 use crate::{
     MSS,
     algorithm::Control,
-    packets::{AckedPackets, SentPacket},
+    packets::{SentPacket, State},
 };
 
 // The upper bound for the initial window will be
 // min (10*MSS, max (2*MSS, 14600))
 // See https://datatracker.ietf.org/doc/html/rfc6928#autoid-3
-const INIT_CWND: usize = 10 * MSS as usize;
+const INIT_CWND: usize = 10 * MSS;
+// The RECOMMENDED value is 2 * max_datagram_size.
+// See https://datatracker.ietf.org/doc/html/rfc9002#name-initial-and-minimum-congest
+const MININUM_WINDOW: usize = 2 * MSS;
 const INFINITRE_SSTHRESH: usize = usize::MAX;
-const LOSS_REDUCTION_FACTOR: f64 = 0.5;
 
 pub(crate) struct NewReno {
     max_datagram_size: usize,
@@ -23,25 +25,19 @@ pub(crate) struct NewReno {
     congestion_window: usize,
     congestion_recovery_start_time: Option<Instant>,
     ssthresh: usize,
-
-    // The number of bytes that have been ACKed.
-    // https://datatracker.ietf.org/doc/html/rfc3465#autoid-3
-    bytes_acked: u64,
 }
 
 impl From<&NewReno> for RecoveryMetricsUpdated {
     fn from(reno: &NewReno) -> Self {
         qlog::build!(RecoveryMetricsUpdated {
-            congestion_window: reno.cwnd,
-            ssthresh: reno.ssthresh,
-            custom_fields: Map {
-                bytes_acked: reno.bytes_acked,
-            }
+            congestion_window: reno.congestion_window as u64,
+            ssthresh: reno.ssthresh as u64,
         })
     }
 }
 
 impl NewReno {
+    /// B.3. Initialization
     pub(crate) fn new() -> Self {
         NewReno {
             max_datagram_size: MSS,
@@ -50,16 +46,17 @@ impl NewReno {
             bytes_in_flight: 0,
             congestion_recovery_start_time: None,
             ssthresh: INFINITRE_SSTHRESH,
-            bytes_acked: 0,
         }
     }
 
+    /// B.4. On Packet Sent
     /// OnPacketSentCC(sent_bytes):
     /// . bytes_in_flight += sent_bytes
     fn on_packet_sent_cc(&mut self, sent_bytes: usize) {
         self.bytes_in_flight += sent_bytes;
     }
 
+    /// B.5. On Packet Acknowledgment
     /// InCongestionRecovery(sent_time):
     ///   return sent_time <= congestion_recovery_start_time
     fn in_congestion_recovery(&self, sent_time: &Instant) -> bool {
@@ -89,16 +86,14 @@ impl NewReno {
     ///       max_datagram_size * acked_packet.sent_bytes
     ///       / congestion_window
     fn on_packet_acked(&mut self, acked_packet: &SentPacket) {
-        if !acked_packet.in_flight {
+        if !acked_packet.count_for_cc {
             return;
         }
-
-        self.bytes_in_flight -= acked_packet.sent_bytes;
-
-        if self.is_app_or_flow_control_limited() {
-            return;
+        // 如果不是 inflight 状态，说明已经丢包重传了
+        if acked_packet.state == State::Inflight {
+            self.bytes_in_flight = self.bytes_in_flight.saturating_sub(acked_packet.sent_bytes);
         }
-
+        // 如果是 Retranmit 状态，又被 ack， 把拥塞窗口加回来
         if self.in_congestion_recovery(&acked_packet.time_sent) {
             return;
         }
@@ -110,11 +105,11 @@ impl NewReno {
         }
     }
 
+    /// B.6. On New Congestion Event
     /// OnCongestionEvent(sent_time):
     ///   // No reaction if already in a recovery period.
     ///   if (InCongestionRecovery(sent_time)):
     ///     return
-
     ///   // Enter recovery period.
     ///   congestion_recovery_start_time = now()
     ///   ssthresh = congestion_window * kLossReductionFactor
@@ -129,11 +124,13 @@ impl NewReno {
         let now = tokio::time::Instant::now().into_std();
         self.congestion_recovery_start_time = Some(now);
         // WARN: will be zero
-        self.ssthresh = self.congestion_window >> 1;
+        self.ssthresh = self.congestion_window - 1;
+        self.congestion_window = self.ssthresh.max(MININUM_WINDOW);
         // A packet can be sent to speed up loss recovery.
         // self.maybe_send_packet(1);
     }
 
+    /// B.7. Process ECN Information
     /// ProcessECN(ack, pn_space):
     ///   // If the ECN-CE counter reported by the peer has increased,
     ///   // this could be a new congestion event.
@@ -150,6 +147,7 @@ impl NewReno {
         }
     }
 
+    /// B.8. On Packets Lost
     /// OnPacketsLost(lost_packets):
     ///   sent_time_of_last_loss = 0
     ///   // Remove lost packets from bytes_in_flight.
@@ -161,7 +159,6 @@ impl NewReno {
     ///   // Congestion event if in-flight packets were lost
     ///   if (sent_time_of_last_loss != 0):
     ///     OnCongestionEvent(sent_time_of_last_loss)
-
     ///   // Reset the congestion window if the loss of these
     ///   // packets indicates persistent congestion.
     ///   // Only consider packets sent after getting an RTT sample.
@@ -174,11 +171,13 @@ impl NewReno {
     ///   if (InPersistentCongestion(pc_lost)):
     ///     congestion_window = kMinimumWindow
     ///     congestion_recovery_start_time = 0
-    fn on_packets_lost(&mut self, lost_packets: impl IntoIterator<Item = SentPacket>) {
+    fn on_packets_lost(&mut self, lost_packets: &mut dyn Iterator<Item = &SentPacket>) {
+        // 1. may loss
+        // 2. pc_lost
         let mut sent_time_last_loss: Option<Instant> = None;
         for lost_packet in lost_packets {
-            if lost_packet.in_flight {
-                self.bytes_in_flight -= lost_packet.sent_bytes;
+            if lost_packet.count_for_cc {
+                self.bytes_in_flight = self.bytes_in_flight.saturating_sub(lost_packet.sent_bytes);
                 sent_time_last_loss = sent_time_last_loss
                     .map(|t| t.max(lost_packet.time_sent))
                     .or(Some(lost_packet.time_sent));
@@ -187,6 +186,7 @@ impl NewReno {
         if let Some(time) = sent_time_last_loss {
             self.on_congestion_event(&time);
         }
+        // todo: pc loss
     }
 
     /// RemoveFromBytesInFlight(discarded_packets):
@@ -196,10 +196,10 @@ impl NewReno {
     ///      bytes_in_flight -= size
     fn remove_from_bytes_in_flight(
         &mut self,
-        discard_packets: impl IntoIterator<Item = SentPacket>,
+        discard_packets: &mut dyn Iterator<Item = &SentPacket>,
     ) {
         for packet in discard_packets {
-            if packet.in_flight {
+            if packet.count_for_cc && packet.state != State::Retransmitted {
                 self.bytes_in_flight -= packet.sent_bytes;
             }
         }
@@ -207,43 +207,34 @@ impl NewReno {
 }
 
 impl Control for NewReno {
-    fn on_sent(&mut self, _: &mut SentPacket, _: usize) {}
-
-    fn on_ack(&mut self, packet: VecDeque<AckedPackets>) {
-        for acked in packet {
-            self.on_per_ack(&acked);
-        }
-
-        let event = RecoveryMetricsUpdated::from(&*self);
-        qlog::event!(event);
+    fn on_packet_sent_cc(&mut self, packet: &SentPacket) {
+        self.on_packet_sent_cc(packet.sent_bytes);
     }
 
-    fn on_congestion_event(&mut self, lost: &SentPacket) {
-        if self.in_congestion_recovery(&lost.time_sent) {
-            return;
-        }
-
-        let now = tokio::time::Instant::now().into_std();
-        self.recovery_start_time = Some(now);
-        self.cwnd = (self.cwnd as f64 * LOSS_REDUCTION_FACTOR) as u64;
-        self.cwnd = self.cwnd.max(2 * MSS as u64);
-
-        self.bytes_acked = (self.bytes_acked as f64 * LOSS_REDUCTION_FACTOR) as u64;
-        self.ssthresh = self.cwnd;
-
-        let event = RecoveryMetricsUpdated::from(&*self);
-        qlog::event!(event);
+    fn on_packet_acked(&mut self, acked_packet: &SentPacket) {
+        self.on_packet_acked(acked_packet);
     }
 
-    fn cwnd(&self) -> u64 {
-        self.cwnd
+    fn on_packets_lost(&mut self, lost_packets: &mut dyn Iterator<Item = &SentPacket>) {
+        self.on_packets_lost(lost_packets);
     }
 
-    fn pacing_rate(&self) -> Option<u64> {
+    fn congestion_window(&self) -> usize {
+        self.congestion_window
+    }
+
+    fn pacing_rate(&self) -> Option<usize> {
         None
     }
-}
 
+    fn remove_from_bytes_in_flight(&mut self, packets: &mut dyn Iterator<Item = &SentPacket>) {
+        self.remove_from_bytes_in_flight(packets);
+    }
+
+    fn process_ecn(&mut self, ack: &AckFrame, sent_time: &Instant, epoch: Epoch) {
+        self.process_ecn(ack, sent_time, epoch);
+    }
+}
 /*
 #[cfg(test)]
 mod tests {
