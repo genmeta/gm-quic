@@ -10,6 +10,3 @@ pub use future::{Future, Get};
 
 mod index_deque;
 pub use index_deque::{IndexDeque, IndexError};
-
-mod map;
-pub use map::{ArcMinAware, MinAware};

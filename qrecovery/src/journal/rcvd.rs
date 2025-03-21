@@ -5,9 +5,9 @@ use std::{
 
 use qbase::{
     frame::AckFrame,
-    net::{route::Pathway, tx::Signals},
+    net::tx::Signals,
     packet::PacketNumber,
-    util::{IndexDeque, MinAware},
+    util::IndexDeque,
     varint::{VARINT_MAX, VarInt},
 };
 use qlog::quic::transport::PacketDroppedTrigger;
@@ -50,17 +50,15 @@ impl From<InvalidPacketNumber> for PacketDroppedTrigger {
 /// - 记录包有无收到
 /// - 根据某个largest pktno，生成ack frame（ack frame不能超过buf大小）
 /// - 确定记录不再需要，可以被丢弃，滑走
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct RcvdJournal {
     queue: IndexDeque<State, VARINT_MAX>,
-    min_map: MinAware<Pathway, u64>,
 }
 
 impl RcvdJournal {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             queue: IndexDeque::with_capacity(capacity),
-            min_map: MinAware::new(),
         }
     }
 
@@ -178,28 +176,16 @@ impl RcvdJournal {
         Ok(AckFrame::new(largest, delay, first_range, ranges, None))
     }
 
-    fn expire_all_before(&mut self, largest_pn: u64) {
+    fn drain_to(&mut self, largest_pn: u64) {
         let n = largest_pn.saturating_sub(self.queue.offset()) as usize;
         self.queue.advance(n)
-    }
-
-    fn expire_all_before_by_path(&mut self, pathway: Pathway, largest_pn: u64) {
-        let largest_pn = self.min_map.insert(pathway, largest_pn);
-        self.expire_all_before(largest_pn);
-    }
-
-    fn remove_path(&mut self, pathway: &Pathway) {
-        if let Some(largest_pn) = self.min_map.remove(pathway) {
-            let n = largest_pn.saturating_sub(self.queue.offset()) as usize;
-            self.queue.advance(n)
-        }
     }
 }
 
 /// Records for received packets, decode the packet number and generate ack frames.
 // 接收数据包队列，各处共享的，判断包是否收到以及生成ack frame，只需要读锁；
 // 记录新收到的数据包，或者失活旧数据包并滑走，才需要写锁。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ArcRcvdJournal {
     inner: Arc<RwLock<RcvdJournal>>,
 }
@@ -261,29 +247,19 @@ impl ArcRcvdJournal {
             .gen_ack_frame_util(largest, rcvd_time, capacity)
     }
 
-    pub fn expire_all_before(&self, largest_pn: u64) {
-        self.inner.write().unwrap().expire_all_before(largest_pn);
-    }
-
-    pub fn expire_all_before_by_path(&self, pathway: Pathway, largest_pn: u64) {
-        self.inner
-            .write()
-            .unwrap()
-            .expire_all_before_by_path(pathway, largest_pn);
-    }
-
-    pub fn remove_path(&self, pathway: &Pathway) {
-        self.inner.write().unwrap().remove_path(pathway);
+    pub fn drain_to(&self, largest_pn: u64) {
+        self.inner.write().unwrap().drain_to(largest_pn);
     }
 }
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]
     fn test_rcvd_pkt_records() {
-        let records = ArcRcvdJournal::with_capacity(2);
+        let records = ArcRcvdJournal::default();
         assert_eq!(records.decode_pn(PacketNumber::encode(1, 0)), Ok(1));
         assert_eq!(records.inner.read().unwrap().queue.len(), 0);
 
@@ -300,13 +276,15 @@ mod tests {
         );
 
         records.register_pn(10);
-        records.expire_all_before(4);
+        records.drain_to(4);
+
         assert_eq!(records.inner.read().unwrap().queue.len(), 7);
 
         records.register_pn(15);
-        assert_eq!(records.inner.read().unwrap().queue.len(), 12);
 
-        records.expire_all_before(15);
+        assert_eq!(records.inner.read().unwrap().queue.len(), 12);
+        records.drain_to(15);
+
         assert_eq!(records.inner.read().unwrap().queue.len(), 1);
     }
 
@@ -331,10 +309,7 @@ mod tests {
             queue.insert(idx, rcvd_state).unwrap();
         }
 
-        let rcvd_jornal = RcvdJournal {
-            queue,
-            min_map: MinAware::new(),
-        };
+        let rcvd_jornal = RcvdJournal { queue };
 
         let ack = rcvd_jornal
             .gen_ack_frame_util(52, Instant::now(), 1000)
