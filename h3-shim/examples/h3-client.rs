@@ -70,7 +70,7 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
         .with_root_certificates(roots)
         .without_cert()
         .with_keylog(opt.key_log_file)
-        .with_alpns([ALPN.into()])
+        .with_alpns([ALPN])
         .with_parameters(client_parameters())
         .bind(&opt.bind[..])?
         .build();
