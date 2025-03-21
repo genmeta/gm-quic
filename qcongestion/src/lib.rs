@@ -1,14 +1,12 @@
-use std::{
-    collections::HashMap,
-    sync::Mutex,
-    task::{Context, Poll},
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use qbase::{
     Epoch,
     frame::AckFrame,
-    net::{route::Pathway, tx::ArcSendWaker},
+    net::{
+        route::Pathway,
+        tx::{ArcSendWaker, Signals},
+    },
 };
 use qlog::quic::recovery::PacketLostTrigger;
 use tokio::task::AbortHandle;
@@ -17,8 +15,6 @@ mod algorithm;
 pub use algorithm::Algorithm;
 mod congestion;
 pub use congestion::ArcCC;
-mod delivery_rate;
-mod min_max;
 mod pacing;
 mod packets;
 mod rtt;
@@ -32,10 +28,9 @@ pub trait Transport {
     /// Performs a periodic tick to drive the congestion control algorithm.
     fn launch_with_waker(&self, tx_waker: ArcSendWaker) -> AbortHandle;
 
-    /// Polls whether packets can be sent and returns the amount of data that can be sent.
-    /// # Returns
-    /// A [`Poll`] indicating readiness to send and the amount of data that can be sent.
-    fn poll_send(&self, cx: &mut Context<'_>, expect_quota: usize) -> Poll<usize>;
+    fn send_quota(&self, expect_quota: usize) -> Result<usize, Signals>;
+
+    fn retransmit_and_expire_time(&self, epoch: Epoch) -> (Duration, Duration);
 
     /// Records the sending of a packet, which may affect congestion control state.
     /// # Parameters
@@ -65,6 +60,8 @@ pub trait Transport {
     /// An [`Option`] containing the largest packet ID and the time it was received if an AckFrame is needed.
     fn need_ack(&self, space: Epoch) -> Option<(u64, Instant)>;
 
+    fn need_send_ack_eliciting(&self, space: Epoch) -> usize;
+
     /// Updates the congestion control state upon receiving an AckFrame.
     fn on_ack_rcvd(&self, space: Epoch, ack_frame: &AckFrame);
 
@@ -73,9 +70,7 @@ pub trait Transport {
     /// The current PTO duration for the given epoch.
     fn pto_time(&self, epoch: Epoch) -> Duration;
 
-    /// Stops the congestion control algorithm.
-    /// mark all inflights as lost
-    fn stop(&self);
+    fn discard_epoch(&self, epoch: Epoch);
 }
 
 /// The [`TrackPackets`] trait defines the interface for packet tracking
@@ -89,5 +84,7 @@ pub trait TrackPackets: Send + Sync {
     /// # Parameters
     /// - `pathway`: The identifier of the pathway where the packet record is updated.
     /// - `pn`: The target packet number to which the packet record should be advanced.
-    fn drain_to(&self, pn: u64);
+    fn expire_rvd_by_path(&self, pathway: Pathway, pn: u64);
+
+    fn send_ack_eliciting_packet(&self, count: usize);
 }

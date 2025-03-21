@@ -558,6 +558,8 @@ impl TrackPackets for DataSpace {
     fn drain_to(&self, pn: u64) {
         self.journal.of_rcvd_packets().drain_to(pn);
     }
+
+    fn send_ack_eliciting_packet(&self, count: usize) {}
 }
 
 #[derive(Clone)]

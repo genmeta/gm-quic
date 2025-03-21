@@ -1,6 +1,8 @@
-use std::collections::VecDeque;
+use std::time::Instant;
 
-use crate::packets::{AckedPackets, SentPacket};
+use qbase::{Epoch, frame::AckFrame};
+
+use crate::packets::SentPacket;
 
 // pub(crate) mod bbr;
 pub(crate) mod new_reno;
@@ -12,13 +14,17 @@ pub enum Algorithm {
 }
 
 pub trait Control: Send {
-    fn on_sent(&mut self, sent: &mut SentPacket, sent_bytes: usize);
+    fn on_packet_sent_cc(&mut self, packet: &SentPacket);
 
-    fn on_ack(&mut self, packet: VecDeque<AckedPackets>);
+    fn on_packet_acked(&mut self, acked_packet: &SentPacket);
 
-    fn on_congestion_event(&mut self, lost: &SentPacket);
+    fn on_packets_lost(&mut self, lost_packets: &mut dyn Iterator<Item = &SentPacket>);
 
-    fn cwnd(&self) -> u64;
+    fn process_ecn(&mut self, ack: &AckFrame, sent_time: &Instant, epoch: Epoch);
 
-    fn pacing_rate(&self) -> Option<u64>;
+    fn congestion_window(&self) -> usize;
+
+    fn pacing_rate(&self) -> Option<usize>;
+
+    fn remove_from_bytes_in_flight(&mut self, packets: &mut dyn Iterator<Item = &SentPacket>);
 }
