@@ -13,7 +13,7 @@ pub use sent::*;
 /// The generic `T` is the generic on [`ArcSentJournal`].
 ///
 /// See [`ArcSentJournal`] and [`ArcRcvdJournal`] for more.
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct Journal<T> {
     sent: ArcSentJournal<T>,
     rcvd: ArcRcvdJournal,

@@ -69,7 +69,7 @@ impl Path {
     pub async fn validate(&self) -> bool {
         let challenge = PathChallengeFrame::random();
         for _ in 0..3 {
-            let pto = self.cc().get_pto(qbase::Epoch::Data);
+            let pto = self.cc().pto_time(qbase::Epoch::Data);
             self.challenge_sndbuf.write(challenge);
             match tokio::time::timeout(pto, self.response_rcvbuf.receive()).await {
                 Ok(Some(response)) if *response == *challenge => {

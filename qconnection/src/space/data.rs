@@ -28,7 +28,7 @@ use qbase::{
     param::CommonParameters,
     sid::{ControlConcurrency, Role},
 };
-use qcongestion::{CongestionControl, Feedback};
+use qcongestion::{CongestionControl, TrackPackets};
 use qlog::{
     quic::{
         PacketHeader, PacketType, QuicFramesCollector,
@@ -519,7 +519,7 @@ pub fn spawn_deliver_and_parse(
     });
 }
 
-impl Feedback for DataSpace {
+impl TrackPackets for DataSpace {
     fn may_loss(&self, trigger: PacketLostTrigger, pns: &mut dyn Iterator<Item = u64>) {
         let sent_jornal = self.journal.of_sent_packets();
         let crypto_outgoing = self.crypto_stream.outgoing();
@@ -555,10 +555,8 @@ impl Feedback for DataSpace {
         }
     }
 
-    fn expire_rvd_by_path(&self, pathway: Pathway, pn: u64) {
-        self.journal
-            .of_rcvd_packets()
-            .expire_all_before_by_path(pathway, pn);
+    fn drain_to(&self, pn: u64) {
+        self.journal.of_rcvd_packets().drain_to(pn);
     }
 }
 
