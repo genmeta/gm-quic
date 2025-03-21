@@ -33,7 +33,7 @@ use qbase::{
     frame::{ReceiveFrame, SendFrame, StreamCtlFrame, StreamFrame},
     net::tx::ArcSendWakers,
     param::CommonParameters,
-    sid::{ControlConcurrency, Role, StreamId},
+    sid::{ControlStreamConcurrency, Role, StreamId},
 };
 
 use crate::{recv::Reader, send::Writer};
@@ -84,7 +84,7 @@ where
     pub fn new(
         role: Role,
         local_params: &CommonParameters,
-        ctrl: Box<dyn ControlConcurrency>,
+        ctrl: Box<dyn ControlStreamConcurrency>,
         ctrl_frames: TX,
         tx_wakers: ArcSendWakers,
     ) -> Self {

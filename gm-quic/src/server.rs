@@ -7,7 +7,7 @@ use std::{
 
 use dashmap::DashMap;
 use handy::Usc;
-pub use qconnection::{builder::*, prelude::*};
+use qconnection::builder::*;
 use qinterface::util::Channel;
 use qlog::{
     quic::connectivity::ServerListening,
@@ -19,12 +19,7 @@ use rustls::{
 };
 use tokio::sync::mpsc;
 
-use crate::{
-    PROTO,
-    cert::{ToCertificate, ToPrivateKey},
-    fractor::ProductQuicInterface,
-    interfaces::Interfaces,
-};
+use crate::*;
 
 type TlsServerConfigBuilder<T> = ConfigBuilder<TlsServerConfig, T>;
 
@@ -63,8 +58,8 @@ pub struct QuicServer {
     listener: Arc<Channel<(Arc<Connection>, Pathway)>>,
     parameters: ServerParameters,
     passive_listening: bool,
-    streams_controller:
-        Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
+    stream_strategy_factory:
+        Box<dyn ProductStreamConcurrencyController<Controller = Box<dyn ControlStreamConcurrency>>>,
     logger: Arc<dyn Log + Send + Sync>,
     _supported_versions: Vec<u32>,
     tls_config: Arc<TlsServerConfig>,
@@ -81,7 +76,9 @@ impl QuicServer {
             quic_iface_factory: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?) as _)),
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
-            streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            stream_strategy_factory: Box::new(move |bi, uni| {
+                Box::new(ConsistentConcurrency::new(bi, uni)) as _
+            }),
             logger: None,
             token_provider: None,
         }
@@ -98,7 +95,9 @@ impl QuicServer {
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ServerParameters::default(),
             tls_config,
-            streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            stream_strategy_factory: Box::new(move |bi, uni| {
+                Box::new(ConsistentConcurrency::new(bi, uni)) as _
+            }),
             logger: None,
             token_provider: None,
         }
@@ -117,7 +116,9 @@ impl QuicServer {
             tls_config: TlsServerConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
                 .unwrap(),
-            streams_controller: Box::new(|bi, uni| Box::new(ConsistentConcurrency::new(bi, uni))),
+            stream_strategy_factory: Box::new(move |bi, uni| {
+                Box::new(ConsistentConcurrency::new(bi, uni)) as _
+            }),
             logger: None,
             token_provider: None,
         }
@@ -182,7 +183,7 @@ impl QuicServer {
             Connection::with_token_provider(token_provider)
                 .with_parameters(server.parameters)
                 .with_tls_config(server.tls_config.clone())
-                .with_streams_ctrl(&server.streams_controller)
+                .with_stream_concurrency_strategy(server.stream_strategy_factory.as_ref())
                 .with_proto(PROTO.clone())
                 .defer_idle_timeout(server.defer_idle_timeout)
                 .with_cids(origin_dcid, clinet_scid)
@@ -241,8 +242,8 @@ pub struct QuicServerBuilder<T> {
     defer_idle_timeout: HeartbeatConfig,
     parameters: ServerParameters,
     tls_config: T,
-    streams_controller:
-        Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
+    stream_strategy_factory:
+        Box<dyn ProductStreamConcurrencyController<Controller = Box<dyn ControlStreamConcurrency>>>,
     logger: Option<Arc<dyn Log + Send + Sync>>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
@@ -256,8 +257,8 @@ pub struct QuicServerSniBuilder<T> {
     defer_idle_timeout: HeartbeatConfig,
     parameters: ServerParameters,
     tls_config: T,
-    streams_controller:
-        Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync + 'static>,
+    stream_strategy_factory:
+        Box<dyn ProductStreamConcurrencyController<Controller = Box<dyn ControlStreamConcurrency>>>,
     logger: Option<Arc<dyn Log + Send + Sync>>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
@@ -282,7 +283,7 @@ impl<T> QuicServerBuilder<T> {
         self
     }
 
-    /// Specify the streams controller for the client.
+    /// Specify the streams concurrency strategy controller for the server.
     ///
     /// The streams controller is used to control the concurrency of data streams. `controller` is a closure that accept
     /// (initial maximum number of bidirectional streams, initial maximum number of unidirectional streams) configured in
@@ -291,11 +292,12 @@ impl<T> QuicServerBuilder<T> {
     /// If you call this multiple times, only the last `controller` will be used.
     ///
     /// [transport parameters](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-definit)
-    pub fn with_streams_controller(
+    pub fn with_stream_concurrency_strategy(
         mut self,
-        controller: Box<dyn Fn(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync>,
+        strategy_factory: impl ProductStreamConcurrencyController + 'static,
     ) -> Self {
-        self.streams_controller = controller;
+        self.stream_strategy_factory =
+            Box::new(move |bidi, uni| Box::new(strategy_factory.init(bidi, uni)) as _);
         self
     }
 
@@ -342,10 +344,7 @@ impl<T> QuicServerBuilder<T> {
     ///
     /// The default quic interface is [`Usc`] that support GSO and GRO,
     /// and the binder is [`Usc::bind`].
-    pub fn with_iface_factory<F>(self, factory: F) -> Self
-    where
-        F: ProductQuicInterface + 'static,
-    {
+    pub fn with_iface_factory<F>(self, factory: impl ProductQuicInterface + 'static) -> Self {
         Self {
             quic_iface_factory: Box::new(move |addr| Ok(Arc::new(factory.bind(addr)?) as _)),
             ..self
@@ -373,7 +372,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             tls_config: self
                 .tls_config
                 .with_client_cert_verifier(client_cert_verifier),
-            streams_controller: self.streams_controller,
+            stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,
             token_provider: self.token_provider,
         }
@@ -392,7 +391,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
             tls_config: self
                 .tls_config
                 .with_client_cert_verifier(Arc::new(NoClientAuth)),
-            streams_controller: self.streams_controller,
+            stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,
             token_provider: self.token_provider,
         }
@@ -420,7 +419,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
                 .tls_config
                 .with_single_cert(cert_chain.to_certificate(), key_der.to_private_key())
                 .expect("The private key was wrong encoded or failed validation"),
-            streams_controller: self.streams_controller,
+            stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,
             token_provider: self.token_provider,
         }
@@ -451,7 +450,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
                     ocsp,
                 )
                 .expect("The private key was wrong encoded or failed validation"),
-            streams_controller: self.streams_controller,
+            stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,
             token_provider: self.token_provider,
         }
@@ -470,7 +469,7 @@ impl QuicServerBuilder<TlsServerConfigBuilder<WantsServerCert>> {
                 .tls_config
                 .with_cert_resolver(Arc::new(VirtualHosts(hosts.clone()))),
             hosts,
-            streams_controller: self.streams_controller,
+            stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger,
             token_provider: self.token_provider,
         }
@@ -589,7 +588,7 @@ impl QuicServerBuilder<TlsServerConfig> {
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
-            streams_controller: self.streams_controller,
+            stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger.unwrap_or_else(|| Arc::new(NullLogger)),
             token_provider: self.token_provider,
         });
@@ -706,7 +705,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             defer_idle_timeout: self.defer_idle_timeout,
             parameters: self.parameters,
             tls_config: Arc::new(self.tls_config),
-            streams_controller: self.streams_controller,
+            stream_strategy_factory: self.stream_strategy_factory,
             logger: self.logger.unwrap_or_else(|| Arc::new(NullLogger)),
             token_provider: self.token_provider,
         });

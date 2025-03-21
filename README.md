@@ -88,7 +88,7 @@ let quic_client = QuicClient::builder()
     // currently only supporting V1.
     .prefer_versions([1u32])                
     // .with_parameter(&client_parameters)      // If not set, the default parameters will be used
-    // .witl_streams_controller(controller)     // Specify the streams controller for the client
+    // .witl_stream_strategy_factory(controller)     // Specify the streams controller for the client
     // .with_token_sink(token_sink)             // Manage Tokens issued by various servers
     .with_root_certificates(root_certificates)
     // .with_webpki_verifier(verifier)          // More advanced ways to verify server certificates

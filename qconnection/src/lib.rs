@@ -9,7 +9,10 @@ pub mod tx;
 
 pub mod prelude {
     pub use qbase::{
-        cid::ConnectionId, frame::ConnectionCloseFrame, net::route::*, sid::StreamId,
+        cid::ConnectionId,
+        frame::ConnectionCloseFrame,
+        net::route::*,
+        sid::{ControlStreamConcurrency, ProductStreamConcurrencyController, StreamId},
         varint::VarInt,
     };
     pub use qinterface::{QuicInterface, router::QuicProto};

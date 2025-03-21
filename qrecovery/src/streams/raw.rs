@@ -11,7 +11,7 @@ use qbase::{
     packet::MarshalDataFrame,
     param::CommonParameters,
     sid::{
-        ControlConcurrency, Dir, Role, StreamId, StreamIds,
+        ControlStreamConcurrency, Dir, Role, StreamId, StreamIds,
         remote_sid::{AcceptSid, ExceedLimitError},
     },
     varint::VarInt,
@@ -514,7 +514,7 @@ where
     pub(super) fn new(
         role: Role,
         local_params: &CommonParameters,
-        ctrl: Box<dyn ControlConcurrency>,
+        ctrl: Box<dyn ControlStreamConcurrency>,
         ctrl_frames: TX,
         tx_wakers: ArcSendWakers,
     ) -> Self {

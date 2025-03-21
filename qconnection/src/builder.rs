@@ -14,14 +14,14 @@ pub use qbase::{
         long::DataHeader as LongHeader,
     },
     param::{ClientParameters, CommonParameters, ServerParameters},
-    sid::{ControlConcurrency, handy::*},
+    sid::{ControlStreamConcurrency, handy::*},
     token::{TokenProvider, TokenSink, handy::*},
 };
 use qbase::{
     frame::ConnectionCloseFrame,
     net::tx::ArcSendWakers,
     param::{self, ArcParameters},
-    sid,
+    sid::{self, ProductStreamConcurrencyController},
     token::ArcTokenRegistry,
 };
 use qcongestion::{ArcCC, CongestionAlgorithm};
@@ -136,7 +136,7 @@ impl ServerFoundation {
 pub struct TlsReady<Foundation, Config> {
     foundation: Foundation,
     tls_config: Config,
-    streams_ctrl: Box<dyn ControlConcurrency>,
+    streams_ctrl: Box<dyn ControlStreamConcurrency>,
 }
 
 fn initial_keys_with(
@@ -160,15 +160,16 @@ fn initial_keys_with(
 }
 
 impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
-    pub fn with_streams_ctrl(
-        self,
-        gen_streams_ctrl: impl FnOnce(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync,
-    ) -> Self {
+    pub fn with_stream_concurrency_strategy<F>(self, strategy_factory: &F) -> Self
+    where
+        F: ?Sized
+            + ProductStreamConcurrencyController<Controller = Box<dyn ControlStreamConcurrency>>,
+    {
         let client_params = &self.foundation.client_params;
-        let max_bidi_streams = client_params.initial_max_streams_bidi().into_inner();
-        let max_uni_streams = client_params.initial_max_streams_uni().into_inner();
+        let init_max_bidi_streams = client_params.initial_max_streams_bidi().into_inner();
+        let init_max_uni_streams = client_params.initial_max_streams_uni().into_inner();
         TlsReady {
-            streams_ctrl: gen_streams_ctrl(max_bidi_streams, max_uni_streams),
+            streams_ctrl: strategy_factory.init(init_max_bidi_streams, init_max_uni_streams),
             ..self
         }
     }
@@ -188,15 +189,16 @@ impl TlsReady<ClientFoundation, Arc<rustls::ClientConfig>> {
 }
 
 impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
-    pub fn with_streams_ctrl(
-        self,
-        gen_streams_ctrl: impl FnOnce(u64, u64) -> Box<dyn ControlConcurrency> + Send + Sync,
-    ) -> Self {
+    pub fn with_stream_concurrency_strategy<F>(self, strategy_factory: &F) -> Self
+    where
+        F: ?Sized
+            + ProductStreamConcurrencyController<Controller = Box<dyn ControlStreamConcurrency>>,
+    {
         let server_params = &self.foundation.server_params;
-        let max_bidi_streams = server_params.initial_max_streams_bidi().into_inner();
-        let max_uni_streams = server_params.initial_max_streams_uni().into_inner();
+        let init_max_bidi_streams = server_params.initial_max_streams_bidi().into_inner();
+        let init_max_uni_streams = server_params.initial_max_streams_uni().into_inner();
         TlsReady {
-            streams_ctrl: gen_streams_ctrl(max_bidi_streams, max_uni_streams),
+            streams_ctrl: strategy_factory.init(init_max_bidi_streams, init_max_uni_streams),
             ..self
         }
     }
@@ -218,7 +220,7 @@ impl TlsReady<ServerFoundation, Arc<rustls::ServerConfig>> {
 pub struct ProtoReady<Foundation, Config> {
     foundation: Foundation,
     tls_config: Config,
-    streams_ctrl: Box<dyn ControlConcurrency>,
+    streams_ctrl: Box<dyn ControlStreamConcurrency>,
     proto: Arc<QuicProto>,
     defer_idle_timeout: HeartbeatConfig,
 }
