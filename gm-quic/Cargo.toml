@@ -38,7 +38,7 @@ tokio = { workspace = true, features = ["fs", "io-std"] }
 
 [dev-dependencies.tracing-subscriber]
 workspace = true
-features = ["fmt", "ansi", "env-filter", "time", "tracing-log"]
+features = ["env-filter", "time"]
 
 [[example]]
 name = "http_client"
