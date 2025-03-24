@@ -147,7 +147,7 @@ pub fn spawn_deliver_and_parse(
         event_broker.clone(),
     );
 
-    let handsahke_status = components.handshake_status.clone();
+    let handsahke_status = components.inform_cc.clone();
     let dispatch_frame = {
         let event_broker = event_broker.clone();
         move |frame: Frame, path: &Path| match frame {

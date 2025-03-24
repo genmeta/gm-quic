@@ -193,7 +193,7 @@ impl CongestionController {
                     );
                 }
                 // Process ECN information if present.
-                if let Some(_ecn) = ack_frame.ecn() {
+                if ack_frame.ecn().is_some() {
                     self.process_ecn(ack_frame, &largest_time_sent, epoch)
                 }
             }

@@ -99,7 +99,7 @@ pub struct Components {
     defer_idle_timeout: HeartbeatConfig,
     event_broker: ArcEventBroker,
     state: ConnState,
-    handshake_status: Arc<HandshakeStatus>,
+    inform_cc: Arc<HandshakeStatus>,
 }
 
 impl Components {
