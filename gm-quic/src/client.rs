@@ -29,13 +29,12 @@ pub struct QuicClient {
     _enable_happy_eyepballs: bool,
     parameters: ClientParameters,
     _prefer_versions: Vec<u32>,
-    quic_iface_factory: Box<dyn ProductQuicInterface<QuicInterface = Arc<dyn QuicInterface>>>,
+    quic_iface_factory: Box<dyn ProductQuicInterface>,
     // TODO: 要改成一个加载上次连接的parameters的函数，根据server name
     _remembered: Option<CommonParameters>,
     reuse_connection: bool,
     reuse_address: bool,
-    stream_strategy_factory:
-        Box<dyn ProductStreamConcurrencyController<Controller = Box<dyn ControlStreamConcurrency>>>,
+    stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Arc<dyn Log + Send + Sync>,
     tls_config: Arc<TlsClientConfig>,
     token_sink: Option<Arc<dyn TokenSink>>,
@@ -72,13 +71,11 @@ impl QuicClient {
             reuse_connection: false,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
-            quic_iface_factory: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?) as _)),
+            quic_iface_factory: Box::new(Usc::bind),
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ClientParameters::default(),
             tls_config: TlsClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
-            stream_strategy_factory: Box::new(move |bi, uni| {
-                Box::new(ConsistentConcurrency::new(bi, uni)) as _
-            }),
+            stream_strategy_factory: Box::new(ConsistentConcurrency::new),
             logger: None,
             token_sink: None,
         }
@@ -94,15 +91,13 @@ impl QuicClient {
             reuse_connection: false,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
-            quic_iface_factory: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?) as _)),
+            quic_iface_factory: Box::new(Usc::bind),
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ClientParameters::default(),
             tls_config: TlsClientConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
                 .unwrap(),
-            stream_strategy_factory: Box::new(move |bi, uni| {
-                Box::new(ConsistentConcurrency::new(bi, uni)) as _
-            }),
+            stream_strategy_factory: Box::new(ConsistentConcurrency::new),
             logger: None,
             token_sink: None,
         }
@@ -119,12 +114,10 @@ impl QuicClient {
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
             defer_idle_timeout: HeartbeatConfig::default(),
-            quic_iface_factory: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?) as _)),
+            quic_iface_factory: Box::new(Usc::bind),
             parameters: ClientParameters::default(),
             tls_config,
-            stream_strategy_factory: Box::new(move |bi, uni| {
-                Box::new(ConsistentConcurrency::new(bi, uni)) as _
-            }),
+            stream_strategy_factory: Box::new(ConsistentConcurrency::new),
             logger: None,
             token_sink: None,
         }
@@ -184,7 +177,7 @@ impl QuicClient {
             Connection::with_token_sink(server_name.clone(), token_sink)
                 .with_parameters(self.parameters, None)
                 .with_tls_config(self.tls_config.clone())
-                .with_stream_concurrency_strategy(self.stream_strategy_factory.as_ref())
+                .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
                 .with_proto(PROTO.clone())
                 .defer_idle_timeout(self.defer_idle_timeout)
                 .with_cids(origin_dcid)
@@ -291,12 +284,11 @@ pub struct QuicClientBuilder<T> {
     reuse_connection: bool,
     enable_happy_eyepballs: bool,
     prefer_versions: Vec<u32>,
-    quic_iface_factory: Box<dyn ProductQuicInterface<QuicInterface = Arc<dyn QuicInterface>>>,
+    quic_iface_factory: Box<dyn ProductQuicInterface>,
     defer_idle_timeout: HeartbeatConfig,
     parameters: ClientParameters,
     tls_config: T,
-    stream_strategy_factory:
-        Box<dyn ProductStreamConcurrencyController<Controller = Box<dyn ControlStreamConcurrency>>>,
+    stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Option<Arc<dyn Log + Send + Sync>>,
     token_sink: Option<Arc<dyn TokenSink>>,
 }
@@ -311,7 +303,7 @@ impl<T> QuicClientBuilder<T> {
     /// and the factory is [`Usc::bind`].
     pub fn with_iface_factory<F>(self, factory: impl ProductQuicInterface + 'static) -> Self {
         Self {
-            quic_iface_factory: Box::new(move |addr| Ok(Arc::new(factory.bind(addr)?) as _)),
+            quic_iface_factory: Box::new(factory),
             ..self
         }
     }
@@ -448,12 +440,11 @@ impl<T> QuicClientBuilder<T> {
     /// If you call this multiple times, only the last `controller` will be used.
     ///
     /// [transport parameters](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-definit)
-    pub fn with_stream_concurrency_strategy(
+    pub fn with_streams_concurrency_strategy(
         mut self,
-        strategy_factory: impl ProductStreamConcurrencyController + 'static,
+        strategy_factory: impl ProductStreamsConcurrencyController + 'static,
     ) -> Self {
-        self.stream_strategy_factory =
-            Box::new(move |bidi, uni| Box::new(strategy_factory.init(bidi, uni)) as _);
+        self.stream_strategy_factory = Box::new(strategy_factory);
         self
     }
 

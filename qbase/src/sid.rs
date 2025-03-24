@@ -215,7 +215,7 @@ impl<T: bytes::BufMut> WriteStreamId for T {
 ///
 /// See [controlling concurrency](https://www.rfc-editor.org/rfc/rfc9000.html#name-controlling-concurrency).
 /// of [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) for more details.
-pub trait ControlStreamConcurrency: fmt::Debug + Send + Sync {
+pub trait ControlStreamsConcurrency: fmt::Debug + Send + Sync {
     /// Called back upon accepting a new `dir` direction streams with stream id `sid` from peer,
     /// all previous inexistent `dir` direction streams should be opened by peer will also be created.
     ///
@@ -247,7 +247,7 @@ pub trait ControlStreamConcurrency: fmt::Debug + Send + Sync {
     fn on_streams_blocked(&mut self, dir: Dir, max_streams: u64) -> Option<u64>;
 }
 
-impl<C: ?Sized + ControlStreamConcurrency> ControlStreamConcurrency for Box<C> {
+impl<C: ?Sized + ControlStreamsConcurrency> ControlStreamsConcurrency for Box<C> {
     fn on_accept_streams(&mut self, dir: Dir, sid: u64) -> Option<u64> {
         self.as_mut().on_accept_streams(dir, sid)
     }
@@ -261,22 +261,26 @@ impl<C: ?Sized + ControlStreamConcurrency> ControlStreamConcurrency for Box<C> {
     }
 }
 
-pub trait ProductStreamConcurrencyController: Send + Sync {
-    type Controller: ControlStreamConcurrency;
-
-    fn init(&self, init_max_bidi_streams: u64, init_max_uni_streams: u64) -> Self::Controller;
+pub trait ProductStreamsConcurrencyController: Send + Sync {
+    fn init(
+        &self,
+        init_max_bidi_streams: u64,
+        init_max_uni_streams: u64,
+    ) -> Box<dyn ControlStreamsConcurrency>;
 }
 
-impl<F, C> ProductStreamConcurrencyController for F
+impl<F, C> ProductStreamsConcurrencyController for F
 where
     F: Fn(u64, u64) -> C + Send + Sync,
-    C: ControlStreamConcurrency,
+    C: ControlStreamsConcurrency + 'static,
 {
-    type Controller = C;
-
     #[inline]
-    fn init(&self, init_max_bidi_streams: u64, init_max_uni_streams: u64) -> Self::Controller {
-        (self)(init_max_bidi_streams, init_max_uni_streams)
+    fn init(
+        &self,
+        init_max_bidi_streams: u64,
+        init_max_uni_streams: u64,
+    ) -> Box<dyn ControlStreamsConcurrency> {
+        Box::new((self)(init_max_bidi_streams, init_max_uni_streams))
     }
 }
 
@@ -312,7 +316,7 @@ where
         max_bi_streams: u64,
         max_uni_streams: u64,
         sid_frames_tx: T,
-        ctrl: Box<dyn ControlStreamConcurrency>,
+        ctrl: Box<dyn ControlStreamsConcurrency>,
     ) -> Self {
         // 缺省为0
         let local = ArcLocalStreamIds::new(role, 0, 0, sid_frames_tx.clone());

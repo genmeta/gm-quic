@@ -1,22 +1,18 @@
-use std::{io, net::SocketAddr};
+use std::{io, net::SocketAddr, sync::Arc};
 
 use crate::QuicInterface;
 
 pub trait ProductQuicInterface: Send + Sync {
-    type QuicInterface: QuicInterface;
-
-    fn bind(&self, addr: SocketAddr) -> io::Result<Self::QuicInterface>;
+    fn bind(&self, addr: SocketAddr) -> io::Result<Arc<dyn QuicInterface>>;
 }
 
-impl<F, Qi> ProductQuicInterface for F
+impl<F, Q> ProductQuicInterface for F
 where
-    F: Fn(SocketAddr) -> io::Result<Qi> + Send + Sync,
-    Qi: QuicInterface,
+    F: Fn(SocketAddr) -> io::Result<Q> + Send + Sync,
+    Q: QuicInterface + 'static,
 {
-    type QuicInterface = Qi;
-
     #[inline]
-    fn bind(&self, addr: SocketAddr) -> io::Result<Self::QuicInterface> {
-        (self)(addr)
+    fn bind(&self, addr: SocketAddr) -> io::Result<Arc<dyn QuicInterface>> {
+        Ok(Arc::new((self)(addr)?))
     }
 }

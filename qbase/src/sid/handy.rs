@@ -1,4 +1,4 @@
-use super::{ControlStreamConcurrency, Dir};
+use super::{ControlStreamsConcurrency, Dir};
 
 /// Consistent concurrency strategy increase limits as streams are closed,
 /// to keep the number of streams available to peers roughly consistent.
@@ -15,7 +15,7 @@ impl ConsistentConcurrency {
     }
 }
 
-impl ControlStreamConcurrency for ConsistentConcurrency {
+impl ControlStreamsConcurrency for ConsistentConcurrency {
     fn on_accept_streams(&mut self, _dir: Dir, _sid: u64) -> Option<u64> {
         None
     }
@@ -38,7 +38,7 @@ impl ControlStreamConcurrency for ConsistentConcurrency {
 #[derive(Debug)]
 pub struct DemandConcurrency;
 
-impl ControlStreamConcurrency for DemandConcurrency {
+impl ControlStreamsConcurrency for DemandConcurrency {
     fn on_accept_streams(&mut self, _dir: Dir, _sid: u64) -> Option<u64> {
         None
     }

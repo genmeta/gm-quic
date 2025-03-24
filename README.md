@@ -88,7 +88,7 @@ let quic_client = QuicClient::builder()
     // currently only supporting V1.
     .prefer_versions([1u32])                
     // .with_parameter(&client_parameters)      // If not set, the default parameters will be used
-    // .with_stream_concurrency_strategy(factory)     // Specify the streams concurrency strategy for the client
+    // .with_streams_concurrency_strategy(factory)     // Specify the streams concurrency strategy for the client
     // .with_token_sink(token_sink)             // Manage Tokens issued by various servers
     .with_root_certificates(root_certificates)
     // .with_webpki_verifier(verifier)          // More advanced ways to verify server certificates
