@@ -51,6 +51,7 @@ use qbase::{
     sid::StreamId,
     token::ArcTokenRegistry,
 };
+use qcongestion::HandshakeStatus;
 use qinterface::{
     queue::RcvdPacketQueue,
     router::{QuicProto, RouterRegistry},
@@ -98,6 +99,7 @@ pub struct Components {
     defer_idle_timeout: HeartbeatConfig,
     event_broker: ArcEventBroker,
     state: ConnState,
+    handshake_status: Arc<HandshakeStatus>,
 }
 
 impl Components {

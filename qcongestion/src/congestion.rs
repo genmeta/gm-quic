@@ -581,6 +581,11 @@ impl super::Transport for ArcCC {
         let guard = self.0.lock().unwrap();
         guard.need_send_ack_eliciting_packets[epoch]
     }
+
+    fn grant_anti_amplifier(&self) {
+        let guard = self.0.lock().unwrap();
+        guard.conn_status.release_anti_amplification_limit();
+    }
 }
 
 /*
