@@ -13,9 +13,8 @@ use tokio::task::AbortHandle;
 use tracing::Instrument as _;
 
 use crate::{
-    Algorithm, Feedback, MSS, MiniHeap, ObserveHandshake, TrackPackets,
+    Algorithm, Feedback, MSS,
     algorithm::{Control, new_reno::NewReno},
-    new_reno::NewReno,
     pacing::{self, Pacer},
     packets::{PacketSpace, SentPacket},
     rtt::{ArcRtt, INITIAL_RTT},
@@ -340,33 +339,33 @@ impl CongestionController {
             .min_by_key(|(loss_time, _)| *loss_time)
     }
 
-    /// GetPtoTimeAndSpace():
-    ///   duration = (smoothed_rtt + max(4 * rttvar, kGranularity))
-    ///       * (2 ^ pto_count)
-    ///   // Anti-deadlock PTO starts from the current time
-    ///   if (no ack-eliciting packets in flight):
-    ///     assert(!PeerCompletedAddressValidation())
-    ///     if (has handshake keys):
-    ///       return (now() + duration), Handshake
-    ///     else:
-    ///       return (now() + duration), Initial
-    ///   pto_timeout = infinite
-    ///   pto_space = Initial
-    ///   for space in [ Initial, Handshake, ApplicationData ]:
-    ///     if (no ack-eliciting packets in flight in space):
-    ///         continue;
-    ///     if (space == ApplicationData):
-    ///       // Skip Application Data until handshake confirmed.
-    ///       if (handshake is not confirmed):
-    ///         return pto_timeout, pto_space
-    ///       // Include max_ack_delay and backoff for Application Data.
-    ///       duration += max_ack_delay * (2 ^ pto_count)
-    ///
-    ///     t = time_of_last_ack_eliciting_packet[space] + duration
-    ///     if (t < pto_timeout):
-    ///       pto_timeout = t
-    ///       pto_space = space
-    ///   return pto_timeout, pto_space
+    // GetPtoTimeAndSpace():
+    //   duration = (smoothed_rtt + max(4 * rttvar, kGranularity))
+    //       * (2 ^ pto_count)
+    //   // Anti-deadlock PTO starts from the current time
+    //   if (no ack-eliciting packets in flight):
+    //     assert(!PeerCompletedAddressValidation())
+    //     if (has handshake keys):
+    //       return (now() + duration), Handshake
+    //     else:
+    //       return (now() + duration), Initial
+    //   pto_timeout = infinite
+    //   pto_space = Initial
+    //   for space in [ Initial, Handshake, ApplicationData ]:
+    //     if (no ack-eliciting packets in flight in space):
+    //         continue;
+    //     if (space == ApplicationData):
+    //       // Skip Application Data until handshake confirmed.
+    //       if (handshake is not confirmed):
+    //         return pto_timeout, pto_space
+    //       // Include max_ack_delay and backoff for Application Data.
+    //       duration += max_ack_delay * (2 ^ pto_count)
+    //
+    //     t = time_of_last_ack_eliciting_packet[space] + duration
+    //     if (t < pto_timeout):
+    //       pto_timeout = t
+    //       pto_space = space
+    //   return pto_timeout, pto_space
     fn get_pto_time_and_epoch(&self) -> Option<(Instant, Epoch)> {
         let mut duration = self.rtt.base_pto(self.pto_count);
         let now = tokio::time::Instant::now().into_std();
@@ -550,12 +549,21 @@ impl super::Transport for ArcCC {
                 .rcvd_packets
                 .on_ack_sent(pn, largest_acked);
         }
+        // See [Section 17.2.2.1](https://www.rfc-editor.org/rfc/rfc9000#name-abandoning-initial-packets)
+        if epoch == Epoch::Handshake && !guard.conn_status.is_server() {
+            guard.discard_epoch(Epoch::Initial);
+        }
     }
 
     fn on_ack_rcvd(&self, epoch: Epoch, ack_frame: &AckFrame) {
         let mut guard = self.0.lock().unwrap();
         let now = Instant::now();
         guard.on_ack_rcvd(epoch, ack_frame, now);
+
+        // See [Section 17.2.2.1](https://www.rfc-editor.org/rfc/rfc9000#name-abandoning-initial-packets)
+        if epoch == Epoch::Handshake && guard.conn_status.is_server() {
+            guard.discard_epoch(Epoch::Initial);
+        }
     }
 
     fn on_pkt_rcvd(&self, epoch: Epoch, pn: u64, is_ack_eliciting: bool) {
@@ -588,371 +596,5 @@ impl super::Transport for ArcCC {
     }
 }
 
-/*
 #[cfg(test)]
-mod tests {
-    use qbase::varint::VarInt;
-    use qrecovery::reliable::ArcReliableFrameDeque;
-
-    use super::*;
-
-    #[test]
-    fn test_on_packet_sent_multiple_packets() {
-        let mut congestion = create_congestion_controller_for_test();
-        let now = Instant::now();
-        for i in 1..=5 {
-            congestion.on_packet_sent(i, Epoch::Initial, true, true, 1000, now);
-        }
-        assert_eq!(congestion.sent_packets[Epoch::Initial].len(), 5);
-        for (i, sent) in congestion.sent_packets[Epoch::Initial].iter().enumerate() {
-            assert_eq!(sent.pn, i as u64 + 1);
-            assert_eq!(sent.size, 1000);
-            assert_eq!(sent.time_sent, now);
-        }
-    }
-
-    #[test]
-    fn test_on_packet_sent_different_epochs() {
-        let mut congestion = create_congestion_controller_for_test();
-        let now = Instant::now();
-        congestion.on_packet_sent(1, Epoch::Initial, true, true, 1000, now);
-        congestion.on_packet_sent(2, Epoch::Handshake, true, true, 1000, now);
-        congestion.on_packet_sent(3, Epoch::Data, true, true, 1000, now);
-        assert_eq!(congestion.sent_packets[Epoch::Initial].len(), 1);
-        assert_eq!(congestion.sent_packets[Epoch::Handshake].len(), 1);
-        assert_eq!(congestion.sent_packets[Epoch::Data].len(), 1);
-        for epoch in &[Epoch::Initial, Epoch::Handshake, Epoch::Data] {
-            let sent = &congestion.sent_packets[*epoch][0];
-            assert_eq!(sent.pn, *epoch as u64 + 1);
-            assert_eq!(sent.size, 1000);
-            assert_eq!(sent.time_sent, now);
-        }
-    }
-
-    #[test]
-    fn test_detect_may_loss_packets() {
-        let mut congestion = create_congestion_controller_for_test();
-        let now = Instant::now();
-        let epoch = Epoch::Initial;
-        for i in 1..=5 {
-            congestion.on_packet_sent(i, epoch, true, true, 1000, now);
-        }
-        // ack 5，检测出 1,2 因为乱序丢包
-        congestion.largest_acked_packet[epoch] = Some(5);
-        congestion.sent_packets[epoch][4].is_acked = true;
-        let lost_packets = congestion.may_loss_packets(epoch, now);
-        assert_eq!(lost_packets.len(), 2);
-        for (i, &lost) in lost_packets.iter().enumerate() {
-            assert_eq!(lost, i as u64 + 1);
-        }
-        assert_eq!(congestion.sent_packets[epoch].len(), 5);
-        // loss delay =  333*1.25
-        let loss_packets = congestion.may_loss_packets(epoch, now + Duration::from_millis(417));
-        // 3,4 因为超时丢包
-        assert_eq!(loss_packets.len(), 2);
-        for (i, &lost) in loss_packets.iter().enumerate() {
-            assert_eq!(lost, i as u64 + 3);
-        }
-    }
-
-    #[test]
-    fn test_remove_loss_packets() {
-        let mut congestion = create_congestion_controller_for_test();
-        let now = Instant::now();
-        let epoch = Epoch::Initial;
-        for i in 1..=5 {
-            congestion.on_packet_sent(i, epoch, true, true, 1000, now);
-        }
-        congestion.largest_acked_packet[epoch] = Some(5);
-        congestion.sent_packets[epoch][4].is_acked = true;
-        // mark 1,2 may loss
-        congestion.may_loss_packets(epoch, now);
-        assert_eq!(congestion.sent_packets[epoch].len(), 5);
-        let pto = congestion.current_pto(epoch);
-        let new_time = now + pto + Duration::from_millis(100);
-        // 超过了 PTO 还未收到
-        congestion.remove_loss_packets(epoch, new_time);
-        // 3,4,5
-        assert_eq!(congestion.sent_packets[epoch].len(), 3);
-
-        for i in 6..=10 {
-            congestion.on_packet_sent(i, epoch, true, true, 1000, new_time);
-        }
-
-        // ack 6 ~ 10
-        let ack_frame = AckFrame::new(
-            VarInt::from_u32(10),
-            VarInt::from_u32(100),
-            VarInt::from_u32(4),
-            Vec::new(),
-            None,
-        );
-        congestion.on_ack_rcvd(epoch, &ack_frame, new_time);
-        // 3,4 loss remove 6 ~ 10 ack remove
-        congestion.may_loss_packets(epoch, new_time);
-        assert_eq!(congestion.sent_packets[epoch].len(), 0);
-    }
-
-    #[test]
-    fn test_on_ack_received() {
-        let now = Instant::now();
-        let mut congestion_controller = create_congestion_controller_for_test();
-
-        // 发送 1 ~ 5
-        for i in 1..=5 {
-            congestion_controller.on_packet_sent(
-                i,
-                Epoch::Initial,
-                true, // ack_eliciting
-                true, // in_flight
-                1000, // sent_bytes
-                now,
-            );
-        }
-        // ack 1 ~ 3
-        let ack_frame = AckFrame::new(
-            VarInt::from_u32(3),
-            VarInt::from_u32(100),
-            VarInt::from_u32(2),
-            Vec::new(),
-            None,
-        );
-        congestion_controller.on_ack_rcvd(Epoch::Initial, &ack_frame, now);
-        // 验证前三个数据包已被移除，剩下的数据包还在
-        assert_eq!(congestion_controller.sent_packets[Epoch::Initial].len(), 2);
-        for (i, sent) in congestion_controller.sent_packets[Epoch::Initial]
-            .iter()
-            .enumerate()
-        {
-            assert_eq!(sent.pn, i as u64 + 4);
-        }
-
-        // 发送 8 ~ 13
-        for i in 8..=13 {
-            congestion_controller.on_packet_sent(
-                i,
-                Epoch::Initial,
-                true, // ack_eliciting
-                true, // in_flight
-                1000, // sent_bytes
-                now,
-            );
-        }
-
-        // sent 为 4,5,8,9,10,11,12,13
-        // ack 9
-        // lost 4
-        // 剩余 4(loss),5,8,9(ack),10,11,12,13
-        let ack_frame = AckFrame::new(
-            VarInt::from_u32(9),
-            VarInt::from_u32(100),
-            VarInt::from_u32(0),
-            Vec::new(),
-            None,
-        );
-
-        congestion_controller.on_ack_rcvd(Epoch::Initial, &ack_frame, now);
-        assert_eq!(congestion_controller.sent_packets[Epoch::Initial].len(), 8);
-    }
-
-    #[test]
-    fn test_ack_record() {
-        let max_ack_delay = Duration::from_millis(100);
-        let mut ack_reocrd = RcvdRecords::new(Epoch::Initial);
-        ack_reocrd.on_pkt_rcvd(1);
-        assert!(
-            ack_reocrd
-                .requires_ack(max_ack_delay, Instant::now())
-                .is_some()
-        );
-
-        ack_reocrd.on_pkt_rcvd(1);
-        assert_eq!(ack_reocrd.rcvd_queue.len(), 1);
-
-        ack_reocrd.on_ack_sent(1, 1);
-
-        assert!(
-            ack_reocrd
-                .requires_ack(max_ack_delay, Instant::now())
-                .is_none()
-        );
-
-        ack_reocrd.on_pkt_rcvd(3);
-        assert_eq!(
-            ack_reocrd
-                .rcvd_queue
-                .iter()
-                .map(|&(pn, _)| pn)
-                .collect::<Vec<_>>(),
-            vec![1, 3]
-        );
-
-        ack_reocrd.on_pkt_rcvd(0);
-        assert_eq!(
-            ack_reocrd
-                .rcvd_queue
-                .iter()
-                .map(|&(pn, _)| pn)
-                .collect::<Vec<_>>(),
-            vec![0, 1, 3]
-        );
-        assert_eq!(
-            ack_reocrd
-                .requires_ack(max_ack_delay, Instant::now())
-                .unwrap()
-                .0,
-            3
-        );
-
-        ack_reocrd.on_pkt_rcvd(5);
-        ack_reocrd.on_pkt_rcvd(7);
-        assert_eq!(
-            ack_reocrd
-                .rcvd_queue
-                .iter()
-                .map(|&(pn, _)| pn)
-                .collect::<Vec<_>>(),
-            vec![0, 1, 3, 5, 7]
-        );
-        assert_eq!(
-            ack_reocrd
-                .requires_ack(max_ack_delay, Instant::now())
-                .unwrap()
-                .0,
-            7
-        );
-
-        // pn 2 ack 0,1,3,5,7
-        ack_reocrd.on_ack_sent(2, 7);
-        ack_reocrd.on_pkt_rcvd(9);
-        assert_eq!(
-            ack_reocrd
-                .rcvd_queue
-                .iter()
-                .map(|&(pn, _)| pn)
-                .collect::<Vec<_>>(),
-            vec![0, 1, 3, 5, 7, 9]
-        );
-
-        // recv pn 2 ack, retire pn <= 7 - 3
-        ack_reocrd.should_drain(2);
-        assert_eq!(
-            ack_reocrd
-                .rcvd_queue
-                .iter()
-                .map(|&(pn, _)| pn)
-                .collect::<Vec<_>>(),
-            vec![5, 7, 9]
-        );
-
-        ack_reocrd.on_ack_sent(3, 9);
-        ack_reocrd.on_pkt_rcvd(8);
-        ack_reocrd.on_pkt_rcvd(11);
-        assert_eq!(
-            ack_reocrd
-                .rcvd_queue
-                .iter()
-                .map(|&(pn, _)| pn)
-                .collect::<Vec<_>>(),
-            vec![5, 7, 8, 9, 11]
-        );
-        // recv pn 3 ack, retire pn <= 9 - 3
-
-        ack_reocrd.should_drain(3);
-        assert_eq!(
-            ack_reocrd
-                .rcvd_queue
-                .iter()
-                .map(|&(pn, _)| pn)
-                .collect::<Vec<_>>(),
-            vec![7, 8, 9, 11]
-        );
-    }
-
-    #[test]
-    fn test_ack_record_reversed() {
-        let max_ack_delay = Duration::from_millis(100);
-        let mut ack_reocrd = RcvdRecords::new(Epoch::Initial);
-
-        ack_reocrd.on_pkt_rcvd(10);
-        ack_reocrd.on_pkt_rcvd(9);
-        ack_reocrd.on_pkt_rcvd(8);
-
-        assert_eq!(
-            ack_reocrd
-                .requires_ack(max_ack_delay, Instant::now())
-                .unwrap()
-                .0,
-            10
-        );
-        ack_reocrd.on_ack_sent(1, 10);
-
-        ack_reocrd.on_pkt_rcvd(7);
-        ack_reocrd.on_pkt_rcvd(6);
-        ack_reocrd.on_pkt_rcvd(5);
-        assert_eq!(
-            ack_reocrd
-                .requires_ack(max_ack_delay, Instant::now())
-                .unwrap()
-                .0,
-            10
-        );
-        ack_reocrd.on_ack_sent(2, 10);
-        assert_eq!(ack_reocrd.requires_ack(max_ack_delay, Instant::now()), None);
-
-        // ack 1, retire pn <= 10 - 3
-        ack_reocrd.should_drain(1);
-        assert_eq!(ack_reocrd.requires_ack(max_ack_delay, Instant::now()), None);
-        assert_eq!(
-            ack_reocrd
-                .rcvd_queue
-                .iter()
-                .map(|&(pn, _)| pn)
-                .collect::<Vec<_>>(),
-            vec![8, 9, 10]
-        );
-
-        // 4 属于迟到的包，可能被对面判定为丢包
-        ack_reocrd.on_pkt_rcvd(4);
-
-        // ack 2，对面可能判定 4 为丢包，retire pn <= 10 - 3
-        ack_reocrd.should_drain(2);
-
-        assert_eq!(
-            ack_reocrd
-                .requires_ack(max_ack_delay, Instant::now())
-                .unwrap()
-                .0,
-            10
-        );
-        assert_eq!(
-            ack_reocrd
-                .rcvd_queue
-                .iter()
-                .map(|&(pn, _)| pn)
-                .collect::<Vec<_>>(),
-            vec![8, 9, 10]
-        );
-    }
-    struct Mock;
-    impl TrackPackets for Mock {
-        fn may_loss(&self, _: PacketLostTrigger, _: &mut dyn Iterator<Item = u64>) {}
-        fn drain_to(&self, _: u64) {}
-    }
-
-    fn create_congestion_controller_for_test() -> CongestionController {
-        let output = ArcReliableFrameDeque::with_capacity_and_wakers(10, Default::default());
-        let pathway = Pathway::new(
-            "127.0.0.1:12345".parse().unwrap(),
-            "127.0.0.1:54321".parse().unwrap(),
-        );
-        CongestionController::init(
-            pathway,
-            Algorithm::Bbr,
-            Duration::from_millis(100),
-            [Arc::new(Mock), Arc::new(Mock), Arc::new(Mock)],
-            Box::new(Handshake::new(qbase::sid::Role::Client, output)),
-        )
-    }
-}
-*/
+mod tests {}

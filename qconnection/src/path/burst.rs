@@ -144,15 +144,15 @@ impl Burst {
         cx: &mut Context<'_>,
         buffers: &'b mut Vec<Vec<u8>>,
     ) -> Poll<io::Result<Vec<usize>>> {
-        let (buffers, transcation) = match self.prepare(buffers) {
-            Ok(Some(buffers_and_transaction)) => buffers_and_transaction,
+        let (buffers, transaction) = match self.prepare(buffers) {
+            Ok(Some((buffers, transaction))) => (buffers, transaction),
             Ok(None) => return Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe))),
             Err(siginals) => {
                 self.path.tx_waker.wait_for(cx, siginals);
                 return Poll::Pending;
             }
         };
-        match self.load_into_buffers(buffers, transcation)? {
+        match self.load_into_buffers(buffers, transaction)? {
             Ok(segments) => {
                 debug_assert!(!segments.is_empty());
                 Poll::Ready(Ok(segments))

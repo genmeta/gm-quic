@@ -230,7 +230,7 @@ pub fn spawn_deliver_and_parse(
     );
 }
 
-impl TrackPackets for HandshakeSpace {
+impl Feedback for HandshakeSpace {
     fn may_loss(&self, trigger: PacketLostTrigger, pns: &mut dyn Iterator<Item = u64>) {
         let sent_jornal = self.journal.of_sent_packets();
         let outgoing = self.crypto_stream.outgoing();
@@ -251,10 +251,6 @@ impl TrackPackets for HandshakeSpace {
                 trigger
             });
         }
-    }
-
-    fn drain_to(&self, pn: u64) {
-        self.journal.of_rcvd_packets().drain_to(pn);
     }
 }
 

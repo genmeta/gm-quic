@@ -60,7 +60,7 @@ impl<const N: usize> AntiAmplifier<N> {
                         }
                     }
                 } else {
-                    Err(Signals::CREDIT)
+                    Ok(Some(credit))
                 }
             }
             _ => unreachable!(),
@@ -112,53 +112,47 @@ impl<const N: usize> AntiAmplifier<N> {
 
 #[cfg(test)]
 mod tests {
-    use std::task::Context;
-
-    use futures::task::noop_waker_ref;
-
     use super::*;
+    #[test]
+    fn test_deposit_and_poll_apply() {
+        let anti_amplifier = AntiAmplifier::<3>::default();
+        let waker = ArcSendWaker::new();
+        // Initially, no credit
+        assert_eq!(anti_amplifier.balance(waker.clone()), Err(Signals::CREDIT));
 
-    // #[test]
-    // fn test_deposit_and_poll_apply() {
-    //     let anti_amplifier = AntiAmplifier::<3>::default();
-    //     let mut cx = Context::from_waker(noop_waker_ref());
+        // Deposit 1 unit of data, should add 3 units of credit
+        anti_amplifier.on_rcvd(1);
+        assert_eq!(anti_amplifier.credit.load(Ordering::Acquire), 3);
 
-    //     // Initially, no credit
-    //     assert_eq!(anti_amplifier.poll_balance(&mut cx), Poll::Pending);
+        // Apply for 2 units of data, should return 2 units
+        assert_eq!(anti_amplifier.balance(waker.clone()), Ok(Some(3)));
+        assert_eq!(anti_amplifier.credit.load(Ordering::Acquire), 3);
 
-    //     // Deposit 1 unit of data, should add 3 units of credit
-    //     anti_amplifier.on_rcvd(1);
-    //     assert_eq!(anti_amplifier.credit.load(Ordering::Acquire), 3);
+        anti_amplifier.on_sent(3);
 
-    //     // Apply for 2 units of data, should return 2 units
-    //     assert_eq!(anti_amplifier.poll_balance(&mut cx), Poll::Ready(Some(3)));
-    //     assert_eq!(anti_amplifier.credit.load(Ordering::Acquire), 3);
+        // No credit left, should return Pending
+        assert_eq!(anti_amplifier.balance(waker.clone()), Err(Signals::CREDIT));
+    }
 
-    //     anti_amplifier.on_sent(3);
+    #[test]
+    fn test_multiple_deposits() {
+        let anti_amplifier = AntiAmplifier::<3>::default();
 
-    //     // No credit left, should return Pending
-    //     assert_eq!(anti_amplifier.poll_balance(&mut cx), Poll::Pending);
-    // }
+        // Deposit 1 unit of data, should add 3 units of credit
+        anti_amplifier.on_rcvd(1);
+        assert_eq!(anti_amplifier.credit.load(Ordering::Acquire), 3);
 
-    // #[test]
-    // fn test_multiple_deposits() {
-    //     let anti_amplifier = AntiAmplifier::<3>::default();
-    //     let mut cx = Context::from_waker(noop_waker_ref());
+        // Deposit another 1 unit of data, should add another 3 units of credit
+        anti_amplifier.on_rcvd(1);
+        assert_eq!(anti_amplifier.credit.load(Ordering::Acquire), 6);
 
-    //     // Deposit 1 unit of data, should add 3 units of credit
-    //     anti_amplifier.on_rcvd(1);
-    //     assert_eq!(anti_amplifier.credit.load(Ordering::Acquire), 3);
+        let waker = ArcSendWaker::new();
+        // Apply for 5 units of data, should return 5 units
+        assert_eq!(anti_amplifier.balance(waker.clone()), Ok(Some(6)));
+        assert_eq!(anti_amplifier.credit.load(Ordering::Acquire), 6);
 
-    //     // Deposit another 1 unit of data, should add another 3 units of credit
-    //     anti_amplifier.on_rcvd(1);
-    //     assert_eq!(anti_amplifier.credit.load(Ordering::Acquire), 6);
-
-    //     // Apply for 5 units of data, should return 5 units
-    //     assert_eq!(anti_amplifier.poll_balance(&mut cx), Poll::Ready(Some(6)));
-    //     assert_eq!(anti_amplifier.credit.load(Ordering::Acquire), 6);
-
-    //     // Post sent 5 units, should reduce credit by 5
-    //     anti_amplifier.on_sent(5);
-    //     assert_eq!(anti_amplifier.credit.load(Ordering::Acquire), 1);
-    // }
+        // Post sent 5 units, should reduce credit by 5
+        anti_amplifier.on_sent(5);
+        assert_eq!(anti_amplifier.credit.load(Ordering::Acquire), 1);
+    }
 }

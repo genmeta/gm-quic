@@ -42,7 +42,6 @@ pub struct ArcPathContexts {
     paths: Arc<DashMap<Pathway, PathContext>>,
     tx_wakers: ArcSendWakers,
     broker: ArcEventBroker,
-    erased: Arc<[MiniHeap; 3]>,
 }
 
 impl ArcPathContexts {
@@ -51,7 +50,6 @@ impl ArcPathContexts {
             paths: Default::default(),
             tx_wakers,
             broker,
-            erased: Default::default(),
         }
     }
 
@@ -105,13 +103,12 @@ impl ArcPathContexts {
     }
 
     pub fn max_pto_duration(&self) -> Option<Duration> {
-        self.paths
-            .iter()
-            .map(|p| p.cc().pto_time(Epoch::Data))
-            .max()
+        self.paths.iter().map(|p| p.cc().get_pto(Epoch::Data)).max()
     }
 
-    pub fn erased(&self) -> Arc<[MiniHeap; 3]> {
-        self.erased.clone()
+    pub fn on_handshake_confirmed(&self) {
+        self.paths.iter().for_each(|p| {
+            p.cc().discard_epoch(Epoch::Handshake);
+        });
     }
 }
