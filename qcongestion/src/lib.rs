@@ -19,6 +19,8 @@ mod pacing;
 mod packets;
 mod rtt;
 mod status;
+pub use status::ConnectionStatus;
+pub use status::HandshakeStatus;
 
 ///  default datagram size in bytes.
 pub const MSS: usize = 1200;
@@ -71,6 +73,8 @@ pub trait Transport {
     fn pto_time(&self, epoch: Epoch) -> Duration;
 
     fn discard_epoch(&self, epoch: Epoch);
+
+    fn grant_anti_amplifier(&self);
 }
 
 /// The [`TrackPackets`] trait defines the interface for packet tracking
@@ -85,6 +89,4 @@ pub trait TrackPackets: Send + Sync {
     /// - `pathway`: The identifier of the pathway where the packet record is updated.
     /// - `pn`: The target packet number to which the packet record should be advanced.
     fn expire_rvd_by_path(&self, pathway: Pathway, pn: u64);
-
-    fn send_ack_eliciting_packet(&self, count: usize);
 }

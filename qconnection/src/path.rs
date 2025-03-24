@@ -104,6 +104,7 @@ impl Path {
 
     pub fn grant_anti_amplifier(&self) {
         self.anti_amplifier.grant();
+        self.cc().grant_anti_amplifier();
     }
 
     pub async fn send_packets(&self, mut segments: &[io::IoSlice<'_>]) -> io::Result<()> {
@@ -122,7 +123,6 @@ impl Path {
 impl Drop for Path {
     fn drop(&mut self) {
         self.response_rcvbuf.dismiss();
-        self.cc().stop();
         self.cc.1.abort();
     }
 }

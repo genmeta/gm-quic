@@ -147,12 +147,14 @@ pub fn spawn_deliver_and_parse(
         event_broker.clone(),
     );
 
+    let handsahke_status = components.handshake_status.clone();
     let dispatch_frame = {
         let event_broker = event_broker.clone();
         move |frame: Frame, path: &Path| match frame {
             Frame::Ack(f) => {
                 path.cc().on_ack_rcvd(Epoch::Handshake, &f);
                 _ = ack_frames_entry.send(f);
+                handsahke_status.received_handshake_ack();
             }
             Frame::Close(f) => event_broker.emit(Event::Closed(f)),
             Frame::Crypto(f, bytes) => _ = crypto_frames_entry.send((f, bytes)),

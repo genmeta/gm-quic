@@ -24,7 +24,7 @@ use qbase::{
     sid::{self, ProductStreamsConcurrencyController},
     token::ArcTokenRegistry,
 };
-use qcongestion::{Algorithm, ArcCC};
+use qcongestion::{Algorithm, ArcCC, ConnectionStatus, HandshakeStatus};
 use qinterface::{queue::RcvdPacketQueue, router::QuicProto};
 use qlog::{
     GroupID, VantagePointType,
@@ -427,6 +427,7 @@ impl ComponentsReady {
             .qlog_span
             .unwrap_or_else(|| qlog::span!(@current, group_id));
 
+        let is_server = role == sid::Role::Server;
         let event_broker = ArcEventBroker::new(event_broker);
         let components = Components {
             parameters: self.parameters,
@@ -442,6 +443,7 @@ impl ComponentsReady {
             defer_idle_timeout: self.defer_idle_timeout,
             event_broker,
             state: ConnState::new(),
+            handshake_status: Arc::new(HandshakeStatus::new(is_server)),
         };
 
         tracing_span.in_scope(|| {
@@ -527,16 +529,16 @@ impl Components {
                 });
                 let max_ack_delay = self.parameters.local()?.max_ack_delay().into_inner();
 
+                let conn_status = ConnectionStatus::new(self.handshake_status.clone());
                 let cc = ArcCC::new(
-                    pathway,
                     Algorithm::NewReno,
                     Duration::from_micros(max_ack_delay as _),
                     [
                         self.spaces.initial().clone(),
                         self.spaces.handshake().clone(),
                         self.spaces.data().clone(),
-                    ],
-                    Box::new(self.handshake.clone()),
+                    ]
+                    ,Arc::new(conn_status),
                 );
 
                 let path = Arc::new(Path::new(&self.proto, link, pathway, cc)?);
