@@ -124,7 +124,7 @@ impl NewReno {
         let now = tokio::time::Instant::now().into_std();
         self.congestion_recovery_start_time = Some(now);
         // WARN: will be zero
-        self.ssthresh = self.congestion_window - 1;
+        self.ssthresh = self.congestion_window - MSS;
         self.congestion_window = self.ssthresh.max(MININUM_WINDOW);
         // A packet can be sent to speed up loss recovery.
         // self.maybe_send_packet(1);
@@ -171,7 +171,11 @@ impl NewReno {
     ///   if (InPersistentCongestion(pc_lost)):
     ///     congestion_window = kMinimumWindow
     ///     congestion_recovery_start_time = 0
-    fn on_packets_lost(&mut self, lost_packets: &mut dyn Iterator<Item = &SentPacket>) {
+    fn on_packets_lost(
+        &mut self,
+        lost_packets: &mut dyn Iterator<Item = &SentPacket>,
+        persistent_lost: bool,
+    ) {
         // 1. may loss
         // 2. pc_lost
         let mut sent_time_last_loss: Option<Instant> = None;
@@ -186,7 +190,12 @@ impl NewReno {
         if let Some(time) = sent_time_last_loss {
             self.on_congestion_event(&time);
         }
-        // todo: pc loss
+        if persistent_lost {
+            // WARN: will be zero
+            self.ssthresh = self.congestion_window >> 1;
+            self.congestion_window = self.ssthresh.max(MININUM_WINDOW);
+            self.congestion_recovery_start_time = None;
+        }
     }
 
     /// RemoveFromBytesInFlight(discarded_packets):
@@ -215,8 +224,12 @@ impl Control for NewReno {
         self.on_packet_acked(acked_packet);
     }
 
-    fn on_packets_lost(&mut self, lost_packets: &mut dyn Iterator<Item = &SentPacket>) {
-        self.on_packets_lost(lost_packets);
+    fn on_packets_lost(
+        &mut self,
+        lost_packets: &mut dyn Iterator<Item = &SentPacket>,
+        persistent_lost: bool,
+    ) {
+        self.on_packets_lost(lost_packets, persistent_lost);
     }
 
     fn congestion_window(&self) -> usize {
