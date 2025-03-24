@@ -1,10 +1,4 @@
-use std::{
-    future::Future,
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-    time::Instant,
-};
+use std::{sync::Arc, time::Instant};
 
 use bytes::BufMut;
 use deref_derive::Deref;
@@ -16,7 +10,7 @@ use qbase::{
         ReliableFrame, StreamFrame,
         io::{WriteDataFrame, WriteFrame},
     },
-    net::tx::Signals,
+    net::tx::{ArcSendWaker, Signals},
     packet::{
         CipherPacket, MarshalDataFrame, MarshalFrame, MarshalPathFrame, PacketWriter, PlainPacket,
         header::{
@@ -35,7 +29,7 @@ use qrecovery::{
 };
 
 use crate::{
-    ArcDcidCell, ArcReliableFrameDeque, Credit, FlowController,
+    ArcDcidCell, ArcReliableFrameDeque, Credit,
     path::{AntiAmplifier, Constraints, SendBuffer},
     space::{Spaces, data::DataSpace},
 };
@@ -368,15 +362,29 @@ impl<'a> Transaction<'a> {
         anti_amplifier: &'a AntiAmplifier,
         flow_ctrl: &'a crate::FlowController,
         expect_quota: usize,
-    ) -> PrepareTransaction<'a> {
-        PrepareTransaction {
-            scid,
-            dcid,
-            cc,
-            anti_amplifier,
-            flow_ctrl,
-            expect_quota,
+        tx_waker: ArcSendWaker,
+    ) -> Result<Option<Self>, Signals> {
+        let send_quota = cc.send_quota(expect_quota)?;
+        let credit_limit = anti_amplifier.balance(tx_waker.clone())?;
+        if credit_limit.is_none() {
+            return Ok(None);
         }
+        let flow_limit = match flow_ctrl.send_limit(send_quota) {
+            Ok(flow_limit) => flow_limit,
+            Err(_error) => return Ok(None),
+        };
+        let borriwed_dcid = match dcid.borrow_cid(tx_waker)? {
+            Some(borriwed_dcid) => borriwed_dcid,
+            None => return Ok(None),
+        };
+        let constraints = Constraints::new(credit_limit.unwrap(), send_quota);
+        Ok(Some(Self {
+            scid,
+            dcid: borriwed_dcid,
+            cc,
+            flow_limit,
+            constraints,
+        }))
     }
 
     pub fn scid(&self) -> ConnectionId {
@@ -412,51 +420,6 @@ impl<'a> Transaction<'a> {
             packet.in_flight(),
             ack,
         );
-    }
-}
-
-pub struct PrepareTransaction<'a> {
-    scid: ConnectionId,
-    dcid: &'a ArcDcidCell,
-    cc: &'a ArcCC,
-    anti_amplifier: &'a AntiAmplifier,
-    flow_ctrl: &'a FlowController,
-    expect_quota: usize,
-}
-
-impl<'a> Future for PrepareTransaction<'a> {
-    type Output = Option<Transaction<'a>>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let send_quota = match self.cc.poll_send(cx, self.expect_quota) {
-            Poll::Ready(send_quota) => send_quota,
-            Poll::Pending => return Poll::Pending,
-        };
-        let credit_limit = match self.anti_amplifier.poll_balance(cx) {
-            Poll::Ready(Some(credit_limit)) => credit_limit,
-            Poll::Ready(None) => return Poll::Ready(None),
-            Poll::Pending => return Poll::Pending,
-        };
-
-        let flow_limit = match self.flow_ctrl.send_limit(send_quota) {
-            Ok(flow_limit) => flow_limit,
-            Err(_error) => return Poll::Ready(None),
-        };
-
-        let borrowed_dcid = match self.dcid.poll_borrow_cid(cx) {
-            Poll::Ready(Some(borrowed_dcid)) => borrowed_dcid,
-            Poll::Ready(None) => return Poll::Ready(None),
-            Poll::Pending => return Poll::Pending,
-        };
-        let constraints = Constraints::new(credit_limit, send_quota);
-
-        Poll::Ready(Some(Transaction {
-            scid: self.scid,
-            dcid: borrowed_dcid,
-            cc: self.cc,
-            flow_limit,
-            constraints,
-        }))
     }
 }
 
