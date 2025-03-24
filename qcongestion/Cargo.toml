@@ -19,3 +19,6 @@ qrecovery = { workspace = true }
 rand = { workspace = true }
 dashmap = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

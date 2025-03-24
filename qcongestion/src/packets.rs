@@ -149,6 +149,7 @@ impl RcvdRecords {
     /// Updates the last ACK sent information and resets the `need_ack` flag.
     pub(crate) fn on_ack_sent(&mut self, _pn: u64, _largest_acked: u64) {
         self.largest_rcvd_packet = None;
+        self.latest_rcvd_time = None;
         self.ack_immedietly = false;
     }
 }
@@ -187,21 +188,36 @@ impl PacketSpace {
         ack_frame: &AckFrame,
         algorithm: &mut Box<dyn Control>,
     ) -> Option<NewlyAckedPackets> {
+        if self.sent_packets.is_empty() {
+            return None;
+        }
         let mut include_ack_eliciting = false;
         let mut largest_acked = None;
+        let mut index = self
+            .sent_packets
+            .binary_search_by(|p| p.packet_number.cmp(&ack_frame.largest()))
+            .unwrap_or_else(|i| i.saturating_sub(1));
+
         for range in ack_frame.iter() {
-            for pn in range {
-                if let Some(sent) = self
-                    .sent_packets
-                    .iter_mut()
-                    .find(|sent| sent.packet_number == pn && sent.state != State::Acked)
+            for pn in range.rev() {
+                while index > 0 && self.sent_packets[index].packet_number > pn {
+                    index = index.saturating_sub(1);
+                }
+                if self.sent_packets[index].packet_number == pn
+                    && self.sent_packets[index].state != State::Acked
                 {
-                    algorithm.on_packet_acked(sent);
-                    sent.state = State::Acked;
-                    include_ack_eliciting |= sent.ack_eliciting;
+                    algorithm.on_packet_acked(&self.sent_packets[index]);
+                    self.sent_packets[index].state = State::Acked;
+                    include_ack_eliciting |= self.sent_packets[index].ack_eliciting;
                     largest_acked = largest_acked
-                        .map(|(n, t)| if n < pn { (pn, sent.time_sent) } else { (n, t) })
-                        .or(Some((pn, sent.time_sent)));
+                        .map(|(n, t)| {
+                            if n < pn {
+                                (pn, self.sent_packets[index].time_sent)
+                            } else {
+                                (n, t)
+                            }
+                        })
+                        .or(Some((pn, self.sent_packets[index].time_sent)));
                 }
             }
         }
@@ -240,9 +256,9 @@ impl PacketSpace {
         let largest_acked = self.largest_acked_packet.unwrap_or(0);
         let largest_index = self
             .sent_packets
-            .iter()
-            .position(|sent| sent.packet_number >= largest_acked)
-            .unwrap_or(0);
+            .binary_search_by(|p| p.packet_number.cmp(&largest_acked))
+            .unwrap_or_else(|i| i.saturating_sub(1));
+
         let loss: Vec<_> = self
             .sent_packets
             .iter_mut()
@@ -273,7 +289,7 @@ impl PacketSpace {
             .map(|(idx, _)| idx)
             .try_fold((None, 0), |(prev, count), &idx| {
                 let lost_count = prev.map_or(0, |p| (idx - p == 1) as usize * (count + 1));
-                if lost_count >= PERSISTENT_LOSS_THRESHOLD {
+                if lost_count + 1 >= PERSISTENT_LOSS_THRESHOLD {
                     Err(())
                 } else {
                     Ok((Some(idx), lost_count))
@@ -285,8 +301,9 @@ impl PacketSpace {
             .into_iter()
             .map(|(_, pkt)| (pkt.packet_number, pkt))
             .unzip();
-
-        algorithm.on_packets_lost(&mut loss_packet.into_iter(), persistent_lost);
+        if !loss_packet.is_empty() {
+            algorithm.on_packets_lost(&mut loss_packet.into_iter(), persistent_lost);
+        }
         packet_numbers.into_iter()
     }
 
@@ -299,5 +316,107 @@ impl PacketSpace {
         self.sent_packets.clear();
         self.time_of_last_ack_eliciting_packet = None;
         self.loss_time = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use std::vec;
+
+    use super::*;
+    use crate::{MSS, algorithm::new_reno::NewReno};
+
+    #[test]
+    fn test_packet_space() {
+        let mut packet_space = PacketSpace::with_epoch(Epoch::Initial, Duration::from_millis(100));
+
+        for i in 0..10 {
+            packet_space.sent_packets.push_back(SentPacket::new(
+                i,
+                Instant::now(),
+                true,
+                true,
+                MSS,
+            ));
+        }
+
+        // ack 9 ~ 4, 1 ~ 0 loss 2,3
+        let ack_frame = AckFrame::new(
+            9_u32.into(),
+            100_u32.into(),
+            5_u32.into(),
+            vec![(1_u32.into(), 1_u32.into())],
+            None,
+        );
+
+        let mut reno: Box<dyn Control> = Box::new(NewReno::new());
+        packet_space.on_ack_rcvd(&ack_frame, &mut reno);
+        // init 12000, ack 8 packet 12000 + 8 * MSS = 21600
+        assert_eq!(reno.congestion_window(), 21600);
+        packet_space.largest_acked_packet = Some(ack_frame.largest());
+        let loss = packet_space.detect_lost_packets(Duration::from_millis(100), 3, &mut reno);
+        assert_eq!(loss.collect::<Vec<_>>(), vec![2, 3]);
+        // loss 2, 3 cwnd = 21600 - MSS
+        assert_eq!(reno.congestion_window(), 20400);
+
+        for i in 10..15 {
+            packet_space.sent_packets.push_back(SentPacket::new(
+                i,
+                Instant::now(),
+                true,
+                true,
+                MSS,
+            ));
+        }
+        for i in 20..25 {
+            packet_space.sent_packets.push_back(SentPacket::new(
+                i,
+                Instant::now(),
+                false,
+                true,
+                MSS,
+            ));
+        }
+
+        // ack 24 ~ 20 13
+        // loss 10, 11,12,14
+        let ack_frame = AckFrame::new(
+            24_u32.into(),
+            100_u32.into(),
+            5_u32.into(),
+            vec![(4_u32.into(), 0_u32.into())],
+            None,
+        );
+
+        packet_space.on_ack_rcvd(&ack_frame, &mut reno);
+        packet_space.largest_acked_packet = Some(ack_frame.largest());
+        assert_eq!(reno.congestion_window(), 20817);
+        packet_space.largest_acked_packet = Some(ack_frame.largest());
+        let loss = packet_space.detect_lost_packets(Duration::from_millis(100), 3, &mut reno);
+        assert_eq!(loss.collect::<Vec<_>>(), vec![10, 11, 12, 14]);
+        assert_eq!(reno.congestion_window(), (20817 - 1200) / 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_rcvd_records() {
+        let mut rcvd_records = RcvdRecords::new(Epoch::Data, Duration::from_millis(100));
+        for i in 0..10 {
+            rcvd_records.on_pkt_rcvd(i);
+        }
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_millis(100)).await;
+        assert_eq!(rcvd_records.need_ack().unwrap().0, 9);
+        rcvd_records.on_ack_sent(9, 9);
+        assert_eq!(rcvd_records.need_ack(), None);
+
+        tokio::time::resume();
+        rcvd_records.on_pkt_rcvd(10);
+        assert_eq!(rcvd_records.need_ack(), None);
+        rcvd_records.on_pkt_rcvd(15);
+        assert_eq!(rcvd_records.need_ack(), None);
+        rcvd_records.on_pkt_rcvd(11);
+        assert_eq!(rcvd_records.need_ack().unwrap().0, 15);
     }
 }

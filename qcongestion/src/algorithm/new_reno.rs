@@ -176,8 +176,6 @@ impl NewReno {
         lost_packets: &mut dyn Iterator<Item = &SentPacket>,
         persistent_lost: bool,
     ) {
-        // 1. may loss
-        // 2. pc_lost
         let mut sent_time_last_loss: Option<Instant> = None;
         for lost_packet in lost_packets {
             if lost_packet.count_for_cc {
@@ -190,6 +188,7 @@ impl NewReno {
         if let Some(time) = sent_time_last_loss {
             self.on_congestion_event(&time);
         }
+
         if persistent_lost {
             // WARN: will be zero
             self.ssthresh = self.congestion_window >> 1;

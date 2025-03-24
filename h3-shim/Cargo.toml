@@ -31,7 +31,7 @@ tracing = { workspace = true }
 
 [dev-dependencies.tracing-subscriber]
 workspace = true
-features = ["fmt", "ansi", "env-filter", "time", "tracing-log"]
+features = [ "env-filter", "time"]
 
 [[example]]
 name = "h3-server"
