@@ -12,7 +12,7 @@ pub mod prelude {
         cid::ConnectionId,
         frame::ConnectionCloseFrame,
         net::route::*,
-        sid::{ControlStreamConcurrency, ProductStreamConcurrencyController, StreamId},
+        sid::{ControlStreamsConcurrency, ProductStreamsConcurrencyController, StreamId},
         varint::VarInt,
     };
     pub use qinterface::{QuicInterface, router::QuicProto};

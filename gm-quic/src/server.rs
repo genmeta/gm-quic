@@ -58,8 +58,7 @@ pub struct QuicServer {
     listener: Arc<Channel<(Arc<Connection>, Pathway)>>,
     parameters: ServerParameters,
     use_strict_mode: bool,
-    stream_strategy_factory:
-        Box<dyn ProductStreamConcurrencyController<Controller = Box<dyn ControlStreamConcurrency>>>,
+    stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Arc<dyn Log + Send + Sync>,
     _supported_versions: Vec<u32>,
     tls_config: Arc<TlsServerConfig>,
@@ -73,12 +72,10 @@ impl QuicServer {
             use_strict_mode: false,
             supported_versions: Vec::with_capacity(2),
             defer_idle_timeout: HeartbeatConfig::default(),
-            quic_iface_factory: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?) as _)),
+            quic_iface_factory: Box::new(Usc::bind),
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
-            stream_strategy_factory: Box::new(move |bi, uni| {
-                Box::new(ConsistentConcurrency::new(bi, uni)) as _
-            }),
+            stream_strategy_factory: Box::new(ConsistentConcurrency::new),
             logger: None,
             token_provider: None,
         }
@@ -91,13 +88,11 @@ impl QuicServer {
         QuicServerBuilder {
             use_strict_mode: false,
             supported_versions: Vec::with_capacity(2),
-            quic_iface_factory: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?) as _)),
+            quic_iface_factory: Box::new(Usc::bind),
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ServerParameters::default(),
             tls_config,
-            stream_strategy_factory: Box::new(move |bi, uni| {
-                Box::new(ConsistentConcurrency::new(bi, uni)) as _
-            }),
+            stream_strategy_factory: Box::new(ConsistentConcurrency::new),
             logger: None,
             token_provider: None,
         }
@@ -110,15 +105,13 @@ impl QuicServer {
         QuicServerBuilder {
             use_strict_mode: false,
             supported_versions: Vec::with_capacity(2),
-            quic_iface_factory: Box::new(|addr| Ok(Arc::new(Usc::bind(addr)?) as _)),
+            quic_iface_factory: Box::new(Usc::bind),
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_provider(provider)
                 .with_protocol_versions(&[&rustls::version::TLS13])
                 .unwrap(),
-            stream_strategy_factory: Box::new(move |bi, uni| {
-                Box::new(ConsistentConcurrency::new(bi, uni)) as _
-            }),
+            stream_strategy_factory: Box::new(ConsistentConcurrency::new),
             logger: None,
             token_provider: None,
         }
@@ -183,7 +176,7 @@ impl QuicServer {
             Connection::with_token_provider(token_provider)
                 .with_parameters(server.parameters)
                 .with_tls_config(server.tls_config.clone())
-                .with_stream_concurrency_strategy(server.stream_strategy_factory.as_ref())
+                .with_streams_concurrency_strategy(server.stream_strategy_factory.as_ref())
                 .with_proto(PROTO.clone())
                 .defer_idle_timeout(server.defer_idle_timeout)
                 .with_cids(origin_dcid, client_scid)
@@ -238,12 +231,11 @@ struct Host {
 pub struct QuicServerBuilder<T> {
     supported_versions: Vec<u32>,
     use_strict_mode: bool,
-    quic_iface_factory: Box<dyn ProductQuicInterface<QuicInterface = Arc<dyn QuicInterface>>>,
+    quic_iface_factory: Box<dyn ProductQuicInterface>,
     defer_idle_timeout: HeartbeatConfig,
     parameters: ServerParameters,
     tls_config: T,
-    stream_strategy_factory:
-        Box<dyn ProductStreamConcurrencyController<Controller = Box<dyn ControlStreamConcurrency>>>,
+    stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Option<Arc<dyn Log + Send + Sync>>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
@@ -253,12 +245,11 @@ pub struct QuicServerSniBuilder<T> {
     supported_versions: Vec<u32>,
     use_strict_mode: bool,
     hosts: Arc<DashMap<String, Host>>,
-    quic_iface_factory: Box<dyn ProductQuicInterface<QuicInterface = Arc<dyn QuicInterface>>>,
+    quic_iface_factory: Box<dyn ProductQuicInterface>,
     defer_idle_timeout: HeartbeatConfig,
     parameters: ServerParameters,
     tls_config: T,
-    stream_strategy_factory:
-        Box<dyn ProductStreamConcurrencyController<Controller = Box<dyn ControlStreamConcurrency>>>,
+    stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
     logger: Option<Arc<dyn Log + Send + Sync>>,
     token_provider: Option<Arc<dyn TokenProvider>>,
 }
@@ -292,12 +283,11 @@ impl<T> QuicServerBuilder<T> {
     /// If you call this multiple times, only the last `controller` will be used.
     ///
     /// [transport parameters](https://www.rfc-editor.org/rfc/rfc9000.html#name-transport-parameter-definit)
-    pub fn with_stream_concurrency_strategy(
+    pub fn with_streams_concurrency_strategy(
         mut self,
-        strategy_factory: impl ProductStreamConcurrencyController + 'static,
+        strategy_factory: impl ProductStreamsConcurrencyController + 'static,
     ) -> Self {
-        self.stream_strategy_factory =
-            Box::new(move |bidi, uni| Box::new(strategy_factory.init(bidi, uni)) as _);
+        self.stream_strategy_factory = Box::new(strategy_factory);
         self
     }
 
@@ -352,7 +342,7 @@ impl<T> QuicServerBuilder<T> {
     /// and the binder is [`Usc::bind`].
     pub fn with_iface_factory<F>(self, factory: impl ProductQuicInterface + 'static) -> Self {
         Self {
-            quic_iface_factory: Box::new(move |addr| Ok(Arc::new(factory.bind(addr)?) as _)),
+            quic_iface_factory: Box::new(factory),
             ..self
         }
     }
