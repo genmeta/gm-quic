@@ -3,10 +3,9 @@ use std::{
     io,
     ops::ControlFlow,
     sync::{Arc, atomic::Ordering},
-    task::{Context, Poll, ready},
+    task::{Context, Poll},
 };
 
-use futures::FutureExt;
 use qbase::net::tx::Signals;
 
 use crate::{
@@ -42,13 +41,12 @@ impl super::Path {
 }
 
 impl Burst {
-    fn poll_prepare<'b>(
+    fn prepare<'b>(
         &self,
-        cx: &mut Context<'_>,
         buffers: &'b mut Vec<Vec<u8>>,
-    ) -> Poll<io::Result<(impl Iterator<Item = &'b mut [u8]> + use<'b>, Transaction)>> {
-        let max_segments = self.path.interface.max_segments()?;
-        let max_segment_size = self.path.interface.max_segment_size()?;
+    ) -> Result<Option<(impl Iterator<Item = &'b mut [u8]> + use<'b>, Transaction)>, Signals> {
+        let max_segments = self.path.interface.max_segments().unwrap();
+        let max_segment_size = self.path.interface.max_segment_size().unwrap();
 
         if buffers.len() < max_segments {
             buffers.resize_with(max_segments, || vec![0; max_segment_size]);
@@ -62,20 +60,19 @@ impl Burst {
         });
 
         let scid = self.local_cids.initial_scid();
-        let transaction = ready!(
-            Transaction::prepare(
-                scid.unwrap_or_default(),
-                &self.dcid,
-                self.path.cc(),
-                &self.path.anti_amplifier,
-                &self.flow_ctrl,
-                max_segment_size,
-            )
-            .poll_unpin(cx)
-        )
-        .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"))?;
-
-        Poll::Ready(Ok((buffers, transaction)))
+        let transaction = Transaction::prepare(
+            scid.unwrap_or_default(),
+            &self.dcid,
+            self.path.cc(),
+            &self.path.anti_amplifier,
+            &self.flow_ctrl,
+            max_segment_size,
+            self.path.tx_waker.clone(),
+        )?;
+        if transaction.is_none() {
+            return Ok(None);
+        }
+        Ok(Some((buffers, transaction.unwrap())))
     }
 
     fn load_into_buffers<'b>(
@@ -147,7 +144,14 @@ impl Burst {
         cx: &mut Context<'_>,
         buffers: &'b mut Vec<Vec<u8>>,
     ) -> Poll<io::Result<Vec<usize>>> {
-        let (buffers, transcation) = ready!(self.poll_prepare(cx, buffers))?;
+        let (buffers, transcation) = match self.prepare(buffers) {
+            Ok(Some(buffers_and_transaction)) => buffers_and_transaction,
+            Ok(None) => return Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe))),
+            Err(siginals) => {
+                self.path.tx_waker.wait_for(cx, siginals);
+                return Poll::Pending;
+            }
+        };
         match self.load_into_buffers(buffers, transcation)? {
             Ok(segments) => {
                 debug_assert!(!segments.is_empty());
