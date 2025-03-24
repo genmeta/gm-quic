@@ -8,34 +8,6 @@ use qbase::{Epoch, frame::AckFrame};
 
 use crate::algorithm::Control;
 
-// #[derive(Clone, Debug)]
-// pub struct BbrPackets {
-//     pub(crate) pn: u64,
-//     pub(crate) time_sent: Instant,
-//     pub(crate) size: usize,
-//     pub(crate) rtt: Duration,
-//     pub(crate) delivered: usize,
-//     pub(crate) delivered_time: Instant,
-//     pub(crate) first_sent_time: Instant,
-//     pub(crate) is_app_limited: bool,
-// }
-
-// impl From<SentPacket> for BbrPackets {
-//     fn from(sent: SentPacket) -> Self {
-//         let now = Instant::now();
-//         BbrPackets {
-//             pn: sent.packet_number,
-//             time_sent: sent.time_sent,
-//             size: sent.sent_bytes,
-//             rtt: now - sent.time_sent,
-//             delivered: sent.delivered,
-//             delivered_time: sent.delivered_time,
-//             first_sent_time: sent.first_sent_time,
-//             is_app_limited: sent.is_app_limited,
-//         }
-//     }
-// }
-
 #[derive(Default, PartialEq, Eq, Clone, Debug)]
 pub(crate) enum State {
     #[default]
@@ -271,7 +243,7 @@ impl PacketSpace {
             .iter()
             .position(|sent| sent.packet_number >= largest_acked)
             .unwrap_or(0);
-        let mut loss = self
+        let loss: Vec<_> = self
             .sent_packets
             .iter_mut()
             .enumerate()
@@ -280,7 +252,7 @@ impl PacketSpace {
             .map(move |(idx, unacked)| {
                 if unacked.time_sent < lost_sent_time || largest_index >= idx + packet_threshold {
                     unacked.state = State::Retransmitted;
-                    Ok(&*unacked)
+                    Ok((idx, &*unacked))
                 } else {
                     Err(unacked.time_sent + loss_delay)
                 }
@@ -292,10 +264,30 @@ impl PacketSpace {
                     false
                 }
             })
-            .map(|result| result.unwrap());
+            .map(|result| result.unwrap())
+            .collect();
 
-        algorithm.on_packets_lost(&mut loss.by_ref());
-        loss.map(|pkt| pkt.packet_number)
+        const PERSISTENT_LOSS_THRESHOLD: usize = 3;
+        let persistent_lost = loss
+            .iter()
+            .map(|(idx, _)| idx)
+            .try_fold((None, 0), |(prev, count), &idx| {
+                let lost_count = prev.map_or(0, |p| (idx - p == 1) as usize * (count + 1));
+                if lost_count >= PERSISTENT_LOSS_THRESHOLD {
+                    Err(())
+                } else {
+                    Ok((Some(idx), lost_count))
+                }
+            })
+            .is_err();
+
+        let (packet_numbers, loss_packet): (Vec<_>, Vec<_>) = loss
+            .into_iter()
+            .map(|(_, pkt)| (pkt.packet_number, pkt))
+            .unzip();
+
+        algorithm.on_packets_lost(&mut loss_packet.into_iter(), persistent_lost);
+        packet_numbers.into_iter()
     }
 
     pub(crate) fn discard(&mut self, algorithm: &mut Box<dyn Control>) {
