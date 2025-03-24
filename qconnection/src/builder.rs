@@ -443,7 +443,7 @@ impl ComponentsReady {
             defer_idle_timeout: self.defer_idle_timeout,
             event_broker,
             state: ConnState::new(),
-            handshake_status: Arc::new(HandshakeStatus::new(is_server)),
+            inform_cc: Arc::new(HandshakeStatus::new(is_server)),
         };
 
         tracing_span.in_scope(|| {
@@ -529,7 +529,7 @@ impl Components {
                 });
                 let max_ack_delay = self.parameters.local()?.max_ack_delay().into_inner();
 
-                let conn_status = ConnectionStatus::new(self.handshake_status.clone());
+                let inform_cc = ConnectionStatus::new(self.inform_cc.clone());
                 let cc = ArcCC::new(
                     Algorithm::NewReno,
                     Duration::from_micros(max_ack_delay as _),
@@ -538,7 +538,7 @@ impl Components {
                         self.spaces.handshake().clone(),
                         self.spaces.data().clone(),
                     ]
-                    ,Arc::new(conn_status),
+                    ,Arc::new(inform_cc),
                 );
 
                 let path = Arc::new(Path::new(&self.proto, link, pathway, cc)?);

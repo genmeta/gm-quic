@@ -18,7 +18,7 @@ use rustls::quic::KeyChange;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::Instrument as _;
 
-use crate::{Components, Handshake, events::Event, prelude::EmitEvent};
+use crate::{Components, events::Event, prelude::EmitEvent};
 
 type TlsConnection = rustls::quic::Connection;
 
@@ -81,11 +81,10 @@ struct ReadAndProcess<'r> {
     tls_conn: &'r Mutex<Result<TlsSession, Error>>,
     messages: &'r mut Vec<u8>,
     parameters: &'r ArcParameters,
-    handshake: &'r Handshake,
 }
 
 impl futures::Future for ReadAndProcess<'_> {
-    type Output = Result<Option<KeyChange>, Error>;
+    type Output = Result<(Option<KeyChange>, bool), Error>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -101,13 +100,9 @@ impl futures::Future for ReadAndProcess<'_> {
             return Poll::Pending;
         }
 
-        if !tls_conn.is_handshaking() {
-            this.handshake.done();
-        }
-
         tls_conn.try_get_parameters(this.parameters)?;
 
-        Poll::Ready(Ok(key_change))
+        Poll::Ready(Ok((key_change, !tls_conn.is_handshaking())))
     }
 }
 
@@ -166,14 +161,12 @@ impl ArcTlsSession {
         &'r self,
         buf: &'r mut Vec<u8>,
         parameters: &'r ArcParameters,
-        handshake: &'r Handshake,
     ) -> ReadAndProcess<'r> {
         buf.clear();
         ReadAndProcess {
             tls_conn: &self.0,
             messages: buf,
             parameters,
-            handshake,
         }
     }
 
@@ -245,15 +238,15 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
     let handshake = components.handshake.clone();
     let parameters = components.parameters.clone();
     let event_broker = components.event_broker.clone();
-    let handshake_status = components.handshake_status.clone();
+    let inform_cc = components.inform_cc.clone();
     let paths = components.paths.clone();
 
     async move {
         let mut messages = Vec::with_capacity(1500);
         let mut cur_epoch = Epoch::Initial;
         loop {
-            let key_upgrade = match tls_session
-                .read_and_process(&mut messages, &parameters, &handshake)
+            let (key_upgrade, is_handshake_done) = match tls_session
+                .read_and_process(&mut messages, &parameters)
                 .await
             {
                 Ok(results) => results,
@@ -277,16 +270,21 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
                     rustls::quic::KeyChange::Handshake { keys } => {
                         handshake_keys.set_keys(keys);
                         handshake.on_key_upgrade();
-                        handshake_status.got_handshake_key();
+                        inform_cc.got_handshake_key();
                         cur_epoch = Epoch::Handshake;
                     }
                     rustls::quic::KeyChange::OneRtt { keys, next } => {
                         one_rtt_keys.set_keys(keys, next);
-                        handshake_status.handshake_confirmed();
                         paths.on_handshake_confirmed();
                         cur_epoch = Epoch::Data;
                     }
                 }
+            }
+
+            if is_handshake_done {
+                handshake.done();
+                inform_cc.handshake_confirmed();
+                paths.on_handshake_confirmed();
             }
         }
 
