@@ -54,9 +54,9 @@ async fn set() -> io::Result<()> {
         .init();
 
     disable_keep_alive().await;
-    // enable_keep_alive().await;
-    // parallel_stream().await?;
-    // limited_streams().await?;
+    enable_keep_alive().await;
+    parallel_stream().await?;
+    limited_streams().await?;
 
     Ok(())
 }

@@ -246,6 +246,7 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
     let parameters = components.parameters.clone();
     let event_broker = components.event_broker.clone();
     let handshake_status = components.handshake_status.clone();
+    let paths = components.paths.clone();
 
     async move {
         let mut messages = Vec::with_capacity(1500);
@@ -282,6 +283,7 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
                     rustls::quic::KeyChange::OneRtt { keys, next } => {
                         one_rtt_keys.set_keys(keys, next);
                         handshake_status.handshake_confirmed();
+                        paths.on_handshake_confirmed();
                         cur_epoch = Epoch::Data;
                     }
                 }

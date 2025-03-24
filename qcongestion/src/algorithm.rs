@@ -7,7 +7,7 @@ use crate::packets::SentPacket;
 // pub(crate) mod bbr;
 pub(crate) mod new_reno;
 
-/// The [`CongestionAlgorithm`] enum represents different congestion control algorithms that can be used.
+/// The [`Algorithm`] enum represents different congestion control algorithms that can be used.
 pub enum Algorithm {
     Bbr,
     NewReno,

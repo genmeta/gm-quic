@@ -3,10 +3,7 @@ use std::time::{Duration, Instant};
 use qbase::{
     Epoch,
     frame::AckFrame,
-    net::{
-        route::Pathway,
-        tx::{ArcSendWaker, Signals},
-    },
+    net::tx::{ArcSendWaker, Signals},
 };
 use qlog::quic::recovery::PacketLostTrigger;
 use tokio::task::AbortHandle;
@@ -19,8 +16,7 @@ mod pacing;
 mod packets;
 mod rtt;
 mod status;
-pub use status::ConnectionStatus;
-pub use status::HandshakeStatus;
+pub use status::{ConnectionStatus, HandshakeStatus};
 
 ///  default datagram size in bytes.
 pub const MSS: usize = 1200;
@@ -70,23 +66,17 @@ pub trait Transport {
     /// Retrieves the current path's PTO duration.
     /// # Returns
     /// The current PTO duration for the given epoch.
-    fn pto_time(&self, epoch: Epoch) -> Duration;
+    fn get_pto(&self, epoch: Epoch) -> Duration;
 
     fn discard_epoch(&self, epoch: Epoch);
 
     fn grant_anti_amplifier(&self);
 }
 
-/// The [`TrackPackets`] trait defines the interface for packet tracking
-pub trait TrackPackets: Send + Sync {
+/// The [`Feedback`] trait defines the interface for packet tracking
+pub trait Feedback: Send + Sync {
     /// Indicates that a packet with the specified packet number may have been lost.
     /// # Parameters
     /// - `pn`: The packet number of the potentially lost packet.
     fn may_loss(&self, trigger: PacketLostTrigger, pns: &mut dyn Iterator<Item = u64>);
-
-    /// Attempts to roll the receive packet record to the specified packet number in the provided pathway.
-    /// # Parameters
-    /// - `pathway`: The identifier of the pathway where the packet record is updated.
-    /// - `pn`: The target packet number to which the packet record should be advanced.
-    fn expire_rvd_by_path(&self, pathway: Pathway, pn: u64);
 }

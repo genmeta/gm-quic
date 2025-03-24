@@ -409,7 +409,13 @@ pub fn spawn_deliver_and_parse(
             Frame::MaxData(f) => _ = max_data_frames_entry.send(f),
             Frame::NewConnectionId(f) => _ = new_cid_frames_entry.send(f),
             Frame::RetireConnectionId(f) => _ = retire_cid_frames_entry.send(f),
-            Frame::HandshakeDone(f) => _ = handshake_done_frames_entry.send(f),
+            Frame::HandshakeDone(f) => {
+                _ = {
+                    // See [Section 4.1.2](https://datatracker.ietf.org/doc/html/rfc9001#handshake-confirmed)
+                    path.cc().discard_epoch(Epoch::Handshake);
+                    handshake_done_frames_entry.send(f)
+                }
+            }
             Frame::DataBlocked(f) => _ = data_blocked_frames_entry.send(f),
             Frame::Challenge(f) => _ = path.recv_frame(&f),
             Frame::Response(f) => _ = path.recv_frame(&f),
@@ -519,7 +525,7 @@ pub fn spawn_deliver_and_parse(
     });
 }
 
-impl TrackPackets for DataSpace {
+impl Feedback for DataSpace {
     fn may_loss(&self, trigger: PacketLostTrigger, pns: &mut dyn Iterator<Item = u64>) {
         let sent_jornal = self.journal.of_sent_packets();
         let crypto_outgoing = self.crypto_stream.outgoing();
@@ -553,10 +559,6 @@ impl TrackPackets for DataSpace {
                 trigger
             });
         }
-    }
-
-    fn drain_to(&self, pn: u64) {
-        self.journal.of_rcvd_packets().drain_to(pn);
     }
 }
 
