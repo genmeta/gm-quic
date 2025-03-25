@@ -174,7 +174,7 @@ impl QuicServer {
 
         let connection = Arc::new(
             Connection::with_token_provider(token_provider)
-                .with_parameters(server.parameters)
+                .with_parameters(server.parameters.clone())
                 .with_tls_config(server.tls_config.clone())
                 .with_streams_concurrency_strategy(server.stream_strategy_factory.as_ref())
                 .with_proto(PROTO.clone())

@@ -1,6 +1,6 @@
 use std::{future::Future, sync::Arc, time::Duration};
 
-use qbase::param::{self};
+use qbase::param::ParameterId;
 
 use crate::Components;
 
@@ -66,10 +66,13 @@ impl super::Path {
         let parameters = components.parameters.clone();
         let this = self.clone();
         async move {
-            let Ok(param::Pair { local, remote }) = parameters.await else {
+            let (Ok(local_max_idle_timeout), Ok(remote_max_idle_timeout)) = (
+                parameters.get_local_as(ParameterId::MaxIdleTimeout),
+                parameters.get_remote_as(ParameterId::MaxIdleTimeout).await,
+            ) else {
                 return;
             };
-            let max_idle_timeout = match (local.max_idle_timeout(), remote.max_idle_timeout()) {
+            let max_idle_timeout = match (local_max_idle_timeout, remote_max_idle_timeout) {
                 (Duration::ZERO, Duration::ZERO) => Duration::MAX,
                 (Duration::ZERO, d) | (d, Duration::ZERO) => d,
                 (d1, d2) => d1.min(d2),

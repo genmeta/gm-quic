@@ -7,6 +7,7 @@ use std::{
 use dashmap::DashMap;
 use futures::{FutureExt, StreamExt};
 use handy::Usc;
+use qbase::param::RememberedParameters;
 use qconnection::builder::*;
 use qlog::telemetry::{Log, handy::NullLogger};
 use rustls::{
@@ -31,7 +32,7 @@ pub struct QuicClient {
     _prefer_versions: Vec<u32>,
     quic_iface_factory: Box<dyn ProductQuicInterface>,
     // TODO: 要改成一个加载上次连接的parameters的函数，根据server name
-    _remembered: Option<CommonParameters>,
+    _remembered: Option<RememberedParameters>,
     reuse_connection: bool,
     reuse_address: bool,
     stream_strategy_factory: Box<dyn ProductStreamsConcurrencyController>,
@@ -175,7 +176,7 @@ impl QuicClient {
         let origin_dcid = ConnectionId::random_gen(8);
         let connection = Arc::new(
             Connection::with_token_sink(server_name.clone(), token_sink)
-                .with_parameters(self.parameters, None)
+                .with_parameters(self.parameters.clone(), None)
                 .with_tls_config(self.tls_config.clone())
                 .with_streams_concurrency_strategy(self.stream_strategy_factory.as_ref())
                 .with_proto(PROTO.clone())

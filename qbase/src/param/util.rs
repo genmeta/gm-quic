@@ -1,15 +1,24 @@
-use std::net::{SocketAddrV4, SocketAddrV6};
+use std::{
+    collections::HashMap,
+    fmt::Debug,
+    net::{SocketAddrV4, SocketAddrV6},
+    time::Duration,
+};
 
+use bytes::Bytes;
+use derive_more::{From, TryInto};
 use getset::{CopyGetters, MutGetters, Setters};
+use nom::Parser;
 
 use crate::{
-    cid::{ConnectionId, WriteConnectionId, be_connection_id},
+    cid::{ConnectionId, WriteConnectionId, be_connection_id, be_connection_id_with_len},
+    error::Error,
     token::{ResetToken, WriteResetToken, be_reset_token},
     varint::{VarInt, WriteVarInt, be_varint},
 };
 
 /// The parameter id in the transport parameters.
-#[derive(Debug, PartialEq, Clone, Copy, Eq)]
+#[derive(Debug, PartialEq, Clone, Copy, Eq, Hash)]
 pub enum ParameterId {
     OriginalDestinationConnectionId,
     MaxIdleTimeout,
@@ -31,6 +40,12 @@ pub enum ParameterId {
     MaxDatagramFrameSize,
     GreaseQuicBit,
     Value(VarInt),
+}
+
+impl std::fmt::LowerHex for ParameterId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:x}", VarInt::from(*self).into_inner())
+    }
 }
 
 impl From<ParameterId> for VarInt {
@@ -199,6 +214,212 @@ impl<T: bytes::BufMut> WirtePreferredAddress for T {
         self.put_connection_id(&addr.connection_id);
         self.put_reset_token(&addr.stateless_reset_token);
     }
+}
+
+#[derive(Debug, Clone, From, TryInto)]
+pub enum ParameterValue {
+    // for custom
+    Bytes(Bytes),
+    ConnectionId(ConnectionId),
+    Duration(Duration),
+    Flag(bool),
+    PreferredAddress(PreferredAddress),
+    ResetToken(ResetToken),
+    VarInt(VarInt),
+}
+
+pub fn be_parameter(input: &[u8]) -> nom::IResult<&[u8], (ParameterId, ParameterValue)> {
+    use nom::{bytes::streaming::take, combinator::map};
+
+    let (remain, id) = be_parameter_id(input)?;
+    let (remain, len) = be_varint(remain)?;
+    let (remain, value) = match id {
+        // cid
+        ParameterId::OriginalDestinationConnectionId
+        | ParameterId::InitialSourceConnectionId
+        | ParameterId::RetrySourceConnectionId => {
+            let parser = |input| be_connection_id_with_len(input, len.into_inner() as usize);
+            map(parser, ParameterValue::ConnectionId).parse(remain)?
+        }
+        // duration
+        ParameterId::MaxIdleTimeout | ParameterId::MaxAckDelay => map(be_varint, |varint| {
+            let millis = varint.into_inner();
+            Duration::from_millis(millis).into()
+        })
+        .parse(remain)?,
+        // flag
+        ParameterId::DisableActiveMigration | ParameterId::GreaseQuicBit => (remain, true.into()),
+        // varint
+        ParameterId::StatelssResetToken
+        | ParameterId::MaxUdpPayloadSize
+        | ParameterId::InitialMaxData
+        | ParameterId::InitialMaxStreamDataBidiLocal
+        | ParameterId::InitialMaxStreamDataBidiRemote
+        | ParameterId::InitialMaxStreamDataUni
+        | ParameterId::InitialMaxStreamsBidi
+        | ParameterId::InitialMaxStreamsUni
+        | ParameterId::AckDelayExponent
+        | ParameterId::ActiveConnectionIdLimit
+        | ParameterId::MaxDatagramFrameSize => {
+            map(be_varint, ParameterValue::VarInt).parse(remain)?
+        }
+        // prefer address
+        ParameterId::PreferredAddress => {
+            map(be_preferred_address, ParameterValue::PreferredAddress).parse(remain)?
+        }
+        ParameterId::Value(_) => map(take(len.into_inner() as usize), |bytes| {
+            Bytes::copy_from_slice(bytes).into()
+        })
+        .parse(remain)?,
+    };
+
+    Ok((remain, (id, value)))
+}
+
+/// A trait for writing parameters to the buffer.
+pub trait WriteParameter {
+    fn put_bytes_parameter(&mut self, id: ParameterId, bytes: &Bytes);
+
+    fn put_cid_parameter(&mut self, id: ParameterId, cid: &ConnectionId);
+
+    fn put_duration_parameter(&mut self, id: ParameterId, dur: &Duration) {
+        let value = VarInt::from_u128(dur.as_millis()).expect("Duration too large");
+        self.put_varint_parameter(id, &value);
+    }
+
+    fn put_flag_parameter(&mut self, id: ParameterId, flag: &bool);
+
+    fn put_preferred_address_parameter(&mut self, id: ParameterId, addr: &PreferredAddress);
+
+    fn put_reset_token_parameter(&mut self, id: ParameterId, token: &ResetToken);
+
+    fn put_varint_parameter(&mut self, id: ParameterId, value: &VarInt);
+
+    fn put_parameter(&mut self, id: ParameterId, value: &ParameterValue) {
+        match value {
+            ParameterValue::Bytes(bytes) => self.put_bytes_parameter(id, bytes),
+            ParameterValue::ConnectionId(cid) => self.put_cid_parameter(id, cid),
+            ParameterValue::Duration(dur) => self.put_duration_parameter(id, dur),
+            ParameterValue::Flag(flag) => self.put_flag_parameter(id, flag),
+            ParameterValue::PreferredAddress(addr) => {
+                self.put_preferred_address_parameter(id, addr)
+            }
+            ParameterValue::ResetToken(token) => self.put_reset_token_parameter(id, token),
+            ParameterValue::VarInt(varint) => self.put_varint_parameter(id, varint),
+        }
+    }
+}
+
+/// A [`bytes::BufMut`] extension trait, makes buffer more friendly
+/// to write parameters.
+impl<T: bytes::BufMut> WriteParameter for T {
+    fn put_bytes_parameter(&mut self, id: ParameterId, bytes: &Bytes) {
+        self.put_parameter_id(id);
+        self.put_varint(&VarInt::try_from(bytes.len()).expect("param too large"));
+        self.put_slice(bytes);
+    }
+
+    fn put_cid_parameter(&mut self, id: ParameterId, cid: &ConnectionId) {
+        self.put_parameter_id(id);
+        self.put_connection_id(cid);
+    }
+
+    fn put_flag_parameter(&mut self, id: ParameterId, flag: &bool) {
+        if *flag {
+            self.put_parameter_id(id);
+            self.put_varint(&VarInt::from_u32(0));
+        }
+    }
+
+    fn put_preferred_address_parameter(&mut self, id: ParameterId, addr: &PreferredAddress) {
+        self.put_parameter_id(id);
+        self.put_varint(&VarInt::try_from(addr.encoding_size()).expect("param too large"));
+        self.put_preferred_address(addr);
+    }
+
+    fn put_reset_token_parameter(&mut self, id: ParameterId, token: &ResetToken) {
+        self.put_parameter_id(id);
+        self.put_varint(&VarInt::try_from(token.encoding_size()).expect("param too large"));
+        self.put_reset_token(token);
+    }
+
+    fn put_varint_parameter(&mut self, id: ParameterId, value: &VarInt) {
+        self.put_parameter_id(id);
+        self.put_varint(&VarInt::try_from(value.encoding_size()).expect("param too large"));
+        self.put_varint(value);
+    }
+}
+
+pub trait StoreParameter {
+    fn get(&self, id: ParameterId) -> Option<ParameterValue>;
+
+    fn set(&mut self, id: ParameterId, value: ParameterValue) -> Result<(), Error>;
+}
+
+pub type GeneralParameters = HashMap<ParameterId, ParameterValue>;
+
+impl StoreParameter for GeneralParameters {
+    fn get(&self, id: ParameterId) -> Option<ParameterValue> {
+        self.get(&id).cloned()
+    }
+
+    fn set(&mut self, id: ParameterId, value: ParameterValue) -> Result<(), Error> {
+        self.insert(id, value);
+        Ok(())
+    }
+}
+
+pub trait StoreParameterExt: StoreParameter {
+    #[inline]
+    fn get_as<V>(&self, id: ParameterId) -> Option<V>
+    where
+        V: TryFrom<ParameterValue>,
+        <V as TryFrom<ParameterValue>>::Error: Debug,
+    {
+        self.get(id).map(|v| v.try_into().expect("type mismatch"))
+    }
+
+    #[inline]
+    fn get_as_ensured<V>(&self, id: ParameterId) -> V
+    where
+        V: TryFrom<ParameterValue>,
+        <V as TryFrom<ParameterValue>>::Error: Debug,
+    {
+        self.get_as(id).expect("parameter not found")
+    }
+
+    #[inline]
+    fn set_as<V>(&mut self, id: ParameterId, value: V) -> Result<(), Error>
+    where
+        ParameterValue: From<V>,
+    {
+        self.set(id, value.into())
+    }
+}
+
+impl<S: ?Sized + StoreParameter> StoreParameterExt for S {}
+
+pub trait WriteParameters {
+    fn put_parameters(&mut self, params: &GeneralParameters);
+}
+
+impl<T: bytes::BufMut> WriteParameters for T {
+    fn put_parameters(&mut self, params: &GeneralParameters) {
+        for (id, value) in params {
+            self.put_parameter(*id, value);
+        }
+    }
+}
+
+pub fn be_parameters(mut input: &[u8]) -> nom::IResult<&[u8], GeneralParameters> {
+    let mut map = GeneralParameters::new();
+    while !input.is_empty() {
+        let (id, value);
+        (input, (id, value)) = be_parameter(input)?;
+        map.insert(id, value);
+    }
+
+    Ok((input, map))
 }
 
 #[cfg(test)]

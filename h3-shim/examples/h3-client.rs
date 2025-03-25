@@ -134,11 +134,13 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
 
 fn client_parameters() -> gm_quic::ClientParameters {
     let mut params = gm_quic::ClientParameters::default();
-    params.set_initial_max_streams_bidi(100);
-    params.set_initial_max_streams_uni(100);
-    params.set_initial_max_data((1u32 << 20).into());
-    params.set_initial_max_stream_data_uni((1u32 << 20).into());
-    params.set_initial_max_stream_data_bidi_local((1u32 << 20).into());
-    params.set_initial_max_stream_data_bidi_remote((1u32 << 20).into());
+
+    params.set_initial_max_streams_bidi(100u32);
+    params.set_initial_max_streams_uni(100u32);
+    params.set_initial_max_data(1u32 << 20);
+    params.set_initial_max_stream_data_uni(1u32 << 20);
+    params.set_initial_max_stream_data_bidi_local(1u32 << 20);
+    params.set_initial_max_stream_data_bidi_remote(1u32 << 20);
+
     params
 }
