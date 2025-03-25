@@ -15,7 +15,7 @@ use qbase::{
         tx::{ArcSendWakers, Signals},
     },
     packet::{
-        self, CipherPacket, MarshalFrame, PacketWriter,
+        self, FinalPacketLayout, MarshalFrame, PacketWriter,
         header::{
             GetType, OneRttHeader,
             long::{ZeroRttHeader, io::LongHeaderBuilder},
@@ -47,7 +47,7 @@ use qunreliable::DatagramFlow;
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
-use super::{PlainPacket, ReceivedCipherPacket};
+use super::{CipherPacket, PlainPacket};
 use crate::{
     ArcReliableFrameDeque, Components, DataStreams,
     events::{ArcEventBroker, EmitEvent, Event},
@@ -57,11 +57,11 @@ use crate::{
     tx::{PacketBuffer, PaddablePacket, Transaction},
 };
 
-pub type ReceivedZeroRttBundle = ((ZeroRttHeader, bytes::BytesMut, usize), Pathway, Link);
-pub type ReceivedZeroRttPacket = ReceivedCipherPacket<ZeroRttHeader>;
+pub type ReceivedZeroRttPacket = ((ZeroRttHeader, bytes::BytesMut, usize), Pathway, Link);
+pub type CipherZeroRttPacket = CipherPacket<ZeroRttHeader>;
 pub type PlainZeroRttPacket = PlainPacket<ZeroRttHeader>;
-pub type ReceivedOneRttBundle = ((OneRttHeader, bytes::BytesMut, usize), Pathway, Link);
-pub type ReceivedOneRttPacket = ReceivedCipherPacket<OneRttHeader>;
+pub type ReceivedOneRttPacket = ((OneRttHeader, bytes::BytesMut, usize), Pathway, Link);
+pub type CipherOneRttPacket = CipherPacket<OneRttHeader>;
 pub type PlainOneRttPacket = PlainPacket<OneRttHeader>;
 
 pub struct DataSpace {
@@ -103,10 +103,10 @@ impl DataSpace {
 
     pub async fn decrypt_0rtt_packet(
         &self,
-        packet: ReceivedZeroRttPacket,
+        packet: CipherZeroRttPacket,
     ) -> Option<Result<PlainZeroRttPacket, Error>> {
         match self.zero_rtt_keys.get_remote_keys().await {
-            Some(keys) => packet.decrypt_as_long(
+            Some(keys) => packet.decrypt_long_packet(
                 keys.remote.header.as_ref(),
                 keys.remote.packet.as_ref(),
                 |pn| self.journal.of_rcvd_packets().decode_pn(pn),
@@ -120,10 +120,10 @@ impl DataSpace {
 
     pub async fn decrypt_1rtt_packet(
         &self,
-        packet: ReceivedOneRttPacket,
+        packet: CipherOneRttPacket,
     ) -> Option<Result<PlainOneRttPacket, Error>> {
         match self.one_rtt_keys.get_remote_keys().await {
-            Some((hpk, pk)) => packet.decrypt_as_short(hpk.as_ref(), &pk, |pn| {
+            Some((hpk, pk)) => packet.decrypt_short_packet(hpk.as_ref(), &pk, |pn| {
                 self.journal.of_rcvd_packets().decode_pn(pn)
             }),
             None => {
@@ -332,8 +332,8 @@ impl DataSpace {
 }
 
 pub fn spawn_deliver_and_parse(
-    mut zeor_rtt_packets: impl Stream<Item = ReceivedZeroRttBundle> + Unpin + Send + 'static,
-    mut one_rtt_packets: impl Stream<Item = ReceivedOneRttBundle> + Unpin + Send + 'static,
+    mut zeor_rtt_packets: impl Stream<Item = ReceivedZeroRttPacket> + Unpin + Send + 'static,
+    mut one_rtt_packets: impl Stream<Item = ReceivedOneRttPacket> + Unpin + Send + 'static,
     space: Arc<DataSpace>,
     components: &Components,
     event_broker: ArcEventBroker,
@@ -453,7 +453,7 @@ pub fn spawn_deliver_and_parse(
         let components = components.clone();
         let space = space.clone();
         let dispatch_data_frame = dispatch_data_frame.clone();
-        async move |packet: ReceivedZeroRttPacket, pathway, socket| {
+        async move |packet: CipherZeroRttPacket, pathway, socket| {
             if let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? {
                 let path = match components.get_or_try_create_path(socket, pathway, true) {
                     Ok(path) => path,
@@ -487,7 +487,7 @@ pub fn spawn_deliver_and_parse(
 
     let parse_one_rtt = {
         let components = components.clone();
-        async move |packet: ReceivedOneRttPacket, pathway, socket| {
+        async move |packet: CipherOneRttPacket, pathway, socket| {
             if let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? {
                 let path = match components.get_or_try_create_path(socket, pathway, true) {
                     Ok(path) => path,
@@ -608,9 +608,9 @@ impl DataSpace {
 }
 
 impl ClosingDataSpace {
-    pub fn recv_packet(&self, packet: ReceivedOneRttPacket) -> Option<ConnectionCloseFrame> {
+    pub fn recv_packet(&self, packet: CipherOneRttPacket) -> Option<ConnectionCloseFrame> {
         let packet = packet
-            .decrypt_as_short(self.keys.0.remote.as_ref(), &self.keys.1, |pn| {
+            .decrypt_short_packet(self.keys.0.remote.as_ref(), &self.keys.1, |pn| {
                 self.rcvd_journal.decode_pn(pn)
             })
             .and_then(Result::ok)?;
@@ -633,7 +633,7 @@ impl ClosingDataSpace {
         dcid: ConnectionId,
         ccf: &ConnectionCloseFrame,
         buf: &mut [u8],
-    ) -> Option<CipherPacket> {
+    ) -> Option<FinalPacketLayout> {
         let (hpk, pk) = &self.keys;
         let (key_phase, pk) = pk.lock_guard().get_local();
         let header = OneRttHeader::new(Default::default(), dcid);
@@ -649,7 +649,7 @@ impl ClosingDataSpace {
 }
 
 pub fn spawn_deliver_and_parse_closing(
-    mut packets: impl Stream<Item = ReceivedOneRttBundle> + Unpin + Send + 'static,
+    mut packets: impl Stream<Item = ReceivedOneRttPacket> + Unpin + Send + 'static,
     space: ClosingDataSpace,
     closing_state: Arc<ClosingState>,
     event_broker: ArcEventBroker,
@@ -666,7 +666,7 @@ pub fn spawn_deliver_and_parse_closing(
                         .try_send_with(pathway, |buf, _scid, dcid, ccf| {
                             space
                                 .try_assemble_ccf_packet(dcid?, ccf, buf)
-                                .map(|packet| packet.size())
+                                .map(|layout| layout.sent_bytes())
                         })
                         .await;
                 }
