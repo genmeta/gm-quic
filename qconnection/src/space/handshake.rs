@@ -12,7 +12,7 @@ use qbase::{
         tx::{ArcSendWakers, Signals},
     },
     packet::{
-        CipherPacket, MarshalFrame, PacketWriter,
+        FinalPacketLayout, MarshalFrame, PacketWriter,
         header::{
             GetDcid, GetType,
             long::{HandshakeHeader, io::LongHeaderBuilder},
@@ -38,7 +38,7 @@ use rustls::quic::Keys;
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
-use super::{AckHandshakeSpace, PlainPacket, ReceivedCipherPacket};
+use super::{AckHandshakeSpace, CipherPacket, PlainPacket};
 use crate::{
     Components,
     events::{ArcEventBroker, EmitEvent, Event},
@@ -48,8 +48,8 @@ use crate::{
     tx::{PacketBuffer, PaddablePacket, Transaction},
 };
 
-pub type ReceivedBundle = ((HandshakeHeader, bytes::BytesMut, usize), Pathway, Link);
-pub type ReceivedHanshakePacket = ReceivedCipherPacket<HandshakeHeader>;
+pub type ReceivedHandshakePacket = ((HandshakeHeader, bytes::BytesMut, usize), Pathway, Link);
+pub type CipherHanshakePacket = CipherPacket<HandshakeHeader>;
 pub type PlainHandshakePacket = PlainPacket<HandshakeHeader>;
 
 pub struct HandshakeSpace {
@@ -77,10 +77,10 @@ impl HandshakeSpace {
 
     pub async fn decrypt_packet(
         &self,
-        packet: ReceivedHanshakePacket,
+        packet: CipherHanshakePacket,
     ) -> Option<Result<PlainHandshakePacket, Error>> {
         match self.keys.get_remote_keys().await {
-            Some(keys) => packet.decrypt_as_long(
+            Some(keys) => packet.decrypt_long_packet(
                 keys.remote.header.as_ref(),
                 keys.remote.packet.as_ref(),
                 |pn| self.journal.of_rcvd_packets().decode_pn(pn),
@@ -134,7 +134,7 @@ impl HandshakeSpace {
 }
 
 pub fn spawn_deliver_and_parse(
-    mut bundles: impl Stream<Item = ReceivedBundle> + Unpin + Send + 'static,
+    mut bundles: impl Stream<Item = ReceivedHandshakePacket> + Unpin + Send + 'static,
     space: Arc<HandshakeSpace>,
     components: &Components,
     event_broker: ArcEventBroker,
@@ -172,7 +172,7 @@ pub fn spawn_deliver_and_parse(
     let components = components.clone();
     let role = components.handshake.role();
     let parameters = components.parameters.clone();
-    let parse = async move |packet: ReceivedHanshakePacket, pathway, link| {
+    let parse = async move |packet: CipherHanshakePacket, pathway, link| {
         if let Some(packet) = space.decrypt_packet(packet).await.transpose()? {
             let path = match components.get_or_try_create_path(link, pathway, true) {
                 Ok(path) => path,
@@ -279,9 +279,9 @@ impl HandshakeSpace {
 }
 
 impl ClosingHandshakeSpace {
-    pub fn recv_packet(&self, packet: ReceivedHanshakePacket) -> Option<ConnectionCloseFrame> {
+    pub fn recv_packet(&self, packet: CipherHanshakePacket) -> Option<ConnectionCloseFrame> {
         let packet = packet
-            .decrypt_as_long(
+            .decrypt_long_packet(
                 self.keys.remote.header.as_ref(),
                 self.keys.remote.packet.as_ref(),
                 |pn| self.rcvd_journal.decode_pn(pn),
@@ -307,7 +307,7 @@ impl ClosingHandshakeSpace {
         dcid: ConnectionId,
         ccf: &ConnectionCloseFrame,
         buf: &mut [u8],
-    ) -> Option<CipherPacket> {
+    ) -> Option<FinalPacketLayout> {
         let header = LongHeaderBuilder::with_cid(scid, dcid).handshake();
         let pn = self.ccf_packet_pn;
         let mut packet_writer = PacketWriter::new_long(&header, buf, pn, self.keys.clone()).ok()?;
@@ -319,7 +319,7 @@ impl ClosingHandshakeSpace {
 }
 
 pub fn spawn_deliver_and_parse_closing(
-    mut bundles: impl Stream<Item = ReceivedBundle> + Unpin + Send + 'static,
+    mut bundles: impl Stream<Item = ReceivedHandshakePacket> + Unpin + Send + 'static,
     space: ClosingHandshakeSpace,
     closing_state: Arc<ClosingState>,
     event_broker: ArcEventBroker,
@@ -336,7 +336,7 @@ pub fn spawn_deliver_and_parse_closing(
                         .try_send_with(pathway, |buf, scid, dcid, ccf| {
                             space
                                 .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
-                                .map(|packet| packet.size())
+                                .map(|layout| layout.sent_bytes())
                         })
                         .await;
                 }

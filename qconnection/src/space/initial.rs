@@ -15,7 +15,7 @@ use qbase::{
         tx::{ArcSendWakers, Signals},
     },
     packet::{
-        CipherPacket, MarshalFrame, PacketWriter,
+        FinalPacketLayout, MarshalFrame, PacketWriter,
         header::{
             GetDcid, GetScid, GetType,
             long::{InitialHeader, io::LongHeaderBuilder},
@@ -42,7 +42,7 @@ use rustls::quic::Keys;
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
-use super::{AckInitialSpace, PlainPacket, ReceivedCipherPacket, pipe};
+use super::{AckInitialSpace, CipherPacket, PlainPacket, pipe};
 use crate::{
     Components,
     events::{ArcEventBroker, EmitEvent, Event},
@@ -51,8 +51,8 @@ use crate::{
     tx::{PacketBuffer, PaddablePacket, Transaction},
 };
 
-pub type ReceivedBundle = ((InitialHeader, BytesMut, usize), Pathway, Link);
-pub type ReceivedInitialPacket = ReceivedCipherPacket<InitialHeader>;
+pub type ReceivedInitialPacket = ((InitialHeader, BytesMut, usize), Pathway, Link);
+pub type CipherInitialPacket = CipherPacket<InitialHeader>;
 pub type PlainInitialPacket = PlainPacket<InitialHeader>;
 
 pub struct InitialSpace {
@@ -86,10 +86,10 @@ impl InitialSpace {
 
     pub async fn decrypt_packet(
         &self,
-        packet: ReceivedInitialPacket,
+        packet: CipherInitialPacket,
     ) -> Option<Result<PlainInitialPacket, Error>> {
         match self.keys.get_remote_keys().await {
-            Some(keys) => packet.decrypt_as_long(
+            Some(keys) => packet.decrypt_long_packet(
                 keys.remote.header.as_ref(),
                 keys.remote.packet.as_ref(),
                 |pn| self.journal.of_rcvd_packets().decode_pn(pn),
@@ -148,7 +148,7 @@ impl InitialSpace {
 }
 
 pub fn spawn_deliver_and_parse(
-    mut packets: impl Stream<Item = ReceivedBundle> + Unpin + Send + 'static,
+    mut packets: impl Stream<Item = ReceivedInitialPacket> + Unpin + Send + 'static,
     space: Arc<InitialSpace>,
     components: &Components,
     event_broker: ArcEventBroker,
@@ -199,7 +199,7 @@ pub fn spawn_deliver_and_parse(
     let role = components.handshake.role();
     let parameters = components.parameters.clone();
     let remote_cids = components.cid_registry.remote.clone();
-    let parse = async move |packet: ReceivedInitialPacket, pathway, socket| {
+    let parse = async move |packet: CipherInitialPacket, pathway, socket| {
         // rfc9000 7.2:
         // if subsequent Initial packets include a different Source Connection ID, they MUST be discarded. This avoids
         // unpredictable outcomes that might otherwise result from stateless processing of multiple Initial packets
@@ -325,9 +325,9 @@ impl InitialSpace {
 }
 
 impl ClosingInitialSpace {
-    pub fn recv_packet(&self, packet: ReceivedInitialPacket) -> Option<ConnectionCloseFrame> {
+    pub fn recv_packet(&self, packet: CipherInitialPacket) -> Option<ConnectionCloseFrame> {
         let packet = packet
-            .decrypt_as_long(
+            .decrypt_long_packet(
                 self.keys.remote.header.as_ref(),
                 self.keys.remote.packet.as_ref(),
                 |pn| self.rcvd_journal.decode_pn(pn),
@@ -353,7 +353,7 @@ impl ClosingInitialSpace {
         dcid: ConnectionId,
         ccf: &ConnectionCloseFrame,
         buf: &mut [u8],
-    ) -> Option<CipherPacket> {
+    ) -> Option<FinalPacketLayout> {
         let header = LongHeaderBuilder::with_cid(scid, dcid).handshake();
         let pn = self.ccf_packet_pn;
         let mut packet_writer = PacketWriter::new_long(&header, buf, pn, self.keys.clone()).ok()?;
@@ -365,7 +365,7 @@ impl ClosingInitialSpace {
 }
 
 pub fn spawn_deliver_and_parse_closing(
-    mut packets: impl Stream<Item = ReceivedBundle> + Unpin + Send + 'static,
+    mut packets: impl Stream<Item = ReceivedInitialPacket> + Unpin + Send + 'static,
     space: ClosingInitialSpace,
     closing_state: Arc<ClosingState>,
     event_broker: ArcEventBroker,
@@ -382,7 +382,7 @@ pub fn spawn_deliver_and_parse_closing(
                         .try_send_with(pathway, |buf, scid, dcid, ccf| {
                             space
                                 .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
-                                .map(|packet| packet.size())
+                                .map(|layout| layout.sent_bytes())
                         })
                         .await;
                 }

@@ -15,7 +15,8 @@ use qbase::{
     },
     net::tx::{ArcSendWaker, Signals},
     packet::{
-        CipherPacket, MarshalDataFrame, MarshalFrame, MarshalPathFrame, PacketWriter, PlainPacket,
+        FinalPacketLayout, MarshalDataFrame, MarshalFrame, MarshalPathFrame, PacketLayout,
+        PacketWriter,
         header::{
             EncodeHeader, GetDcid, GetScid, GetType, io::WriteHeader, long::LongHeader,
             short::OneRttHeader,
@@ -138,13 +139,13 @@ impl<'b, 's, F> PacketBuffer<'b, 's, F> {
 #[derive(Deref)]
 pub struct PaddablePacket {
     #[deref]
-    packet: PlainPacket,
+    layout: PacketLayout,
     logger: PacketLogger,
 }
 
 impl PaddablePacket {
-    pub fn fill_and_complete(mut self, buffer: &mut [u8]) -> CipherPacket {
-        let mut writer = self.packet.writer(buffer);
+    pub fn fill_and_complete(mut self, buffer: &mut [u8]) -> FinalPacketLayout {
+        let mut writer = self.layout.writer(buffer);
 
         let padding_len = writer.remaining_mut();
         if padding_len > 0 {
@@ -159,8 +160,8 @@ impl PaddablePacket {
         writer.encrypt_and_protect()
     }
 
-    pub fn complete(mut self, buffer: &mut [u8]) -> CipherPacket {
-        let mut writer = self.packet.writer(buffer);
+    pub fn complete(mut self, buffer: &mut [u8]) -> FinalPacketLayout {
+        let mut writer = self.layout.writer(buffer);
         if writer.payload_len() + writer.tag_len() < 20 {
             let padding_len = 20 - writer.payload_len() - writer.tag_len();
             writer.pad(padding_len);
@@ -230,7 +231,7 @@ impl<F> PacketBuffer<'_, '_, F> {
         }
         self.clerk.build_with_time(retran_timeout, expire_timeout);
         Ok(PaddablePacket {
-            packet: self.writer.interrupt().0,
+            layout: self.writer.interrupt().0,
             logger: self.logger,
         })
     }
@@ -240,7 +241,7 @@ impl<F> PacketBuffer<'_, '_, F> {
         mut self,
         retran_timeout: Duration,
         expire_timeout: Duration,
-    ) -> Option<CipherPacket> {
+    ) -> Option<FinalPacketLayout> {
         let packet_len = self.writer.packet_len();
         if packet_len == 0 {
             return None;
@@ -423,18 +424,19 @@ impl<'a> Transaction<'a> {
     pub fn commit(
         &mut self,
         epoch: Epoch,
-        packet: CipherPacket,
+        final_layout: FinalPacketLayout,
         fresh_data: usize,
         ack: Option<u64>,
     ) {
-        self.constraints.commit(packet.size(), packet.in_flight());
+        self.constraints
+            .commit(final_layout.sent_bytes(), final_layout.in_flight());
         self.flow_limit.post_sent(fresh_data);
         self.cc.on_pkt_sent(
             epoch,
-            packet.pn(),
-            packet.is_ack_eliciting(),
-            packet.size(),
-            packet.in_flight(),
+            final_layout.pn(),
+            final_layout.is_ack_eliciting(),
+            final_layout.sent_bytes(),
+            final_layout.in_flight(),
             ack,
         );
     }
@@ -489,14 +491,14 @@ impl Transaction<'_> {
                 .inspect_err(|l| limiter |= *l)
             {
                 if let Some(last_level) = last_level.take() {
-                    let packet = last_level.pkt.complete(&mut datagram[written..]);
-                    written += packet.size();
+                    let final_layout = last_level.pkt.complete(&mut datagram[written..]);
+                    written += final_layout.sent_bytes();
                     self.cc.on_pkt_sent(
                         last_level.epoch,
-                        packet.pn(),
-                        packet.is_ack_eliciting(),
-                        packet.size(),
-                        packet.in_flight(),
+                        final_layout.pn(),
+                        final_layout.is_ack_eliciting(),
+                        final_layout.sent_bytes(),
+                        final_layout.in_flight(),
                         last_level.ack,
                     );
                 }
@@ -519,14 +521,14 @@ impl Transaction<'_> {
             .inspect_err(|l| limiter |= *l)
         {
             if let Some(last_level) = last_level.take() {
-                let packet = last_level.pkt.complete(&mut datagram[written..]);
-                written += packet.size();
+                let final_layout = last_level.pkt.complete(&mut datagram[written..]);
+                written += final_layout.sent_bytes();
                 self.cc.on_pkt_sent(
                     last_level.epoch,
-                    packet.pn(),
-                    packet.is_ack_eliciting(),
-                    packet.size(),
-                    packet.in_flight(),
+                    final_layout.pn(),
+                    final_layout.is_ack_eliciting(),
+                    final_layout.sent_bytes(),
+                    final_layout.in_flight(),
                     last_level.ack,
                 );
             }
@@ -554,14 +556,14 @@ impl Transaction<'_> {
                 .inspect_err(|l| limiter |= *l)
             {
                 if let Some(last_level) = last_level.take() {
-                    let packet = last_level.pkt.complete(&mut datagram[written..]);
-                    written += packet.size();
+                    let final_layout = last_level.pkt.complete(&mut datagram[written..]);
+                    written += final_layout.sent_bytes();
                     self.cc.on_pkt_sent(
                         last_level.epoch,
-                        packet.pn(),
-                        packet.is_ack_eliciting(),
-                        packet.size(),
-                        packet.in_flight(),
+                        final_layout.pn(),
+                        final_layout.is_ack_eliciting(),
+                        final_layout.sent_bytes(),
+                        final_layout.in_flight(),
                         last_level.ack,
                     );
                 }
@@ -578,19 +580,19 @@ impl Transaction<'_> {
         }
 
         if let Some(final_level) = last_level {
-            let packet = if containing_initial || final_level.pkt.probe_new_path() {
+            let final_layout = if containing_initial || final_level.pkt.probe_new_path() {
                 final_level.pkt.fill_and_complete(&mut datagram[written..])
             } else {
                 final_level.pkt.complete(&mut datagram[written..])
             };
 
-            written += packet.size();
+            written += final_layout.sent_bytes();
             self.cc.on_pkt_sent(
                 final_level.epoch,
-                packet.pn(),
-                packet.is_ack_eliciting(),
-                packet.size(),
-                packet.in_flight(),
+                final_layout.pn(),
+                final_layout.is_ack_eliciting(),
+                final_layout.sent_bytes(),
+                final_layout.in_flight(),
                 final_level.ack,
             );
         }
@@ -620,22 +622,23 @@ impl Transaction<'_> {
                 buffer,
             )
             .map(|(packet, ack, fresh_bytes)| {
-                let packet = if packet.probe_new_path() {
+                let final_layout = if packet.probe_new_path() {
                     packet.complete(buffer)
                 } else {
                     packet.fill_and_complete(buffer)
                 };
-                self.constraints.commit(packet.size(), packet.in_flight());
+                self.constraints
+                    .commit(final_layout.sent_bytes(), final_layout.in_flight());
                 self.flow_limit.post_sent(fresh_bytes);
                 self.cc.on_pkt_sent(
                     Epoch::Data,
-                    packet.pn(),
-                    packet.is_ack_eliciting(),
-                    packet.size(),
-                    packet.in_flight(),
+                    final_layout.pn(),
+                    final_layout.is_ack_eliciting(),
+                    final_layout.sent_bytes(),
+                    final_layout.in_flight(),
                     ack,
                 );
-                packet.size()
+                final_layout.sent_bytes()
             })
     }
 
@@ -657,16 +660,16 @@ impl Transaction<'_> {
                 buffer,
             )
             .map(|packet| {
-                let packet = packet.fill_and_complete(buffer);
+                let final_layout = packet.fill_and_complete(buffer);
                 self.cc.on_pkt_sent(
                     Epoch::Data,
-                    packet.pn(),
-                    packet.is_ack_eliciting(),
-                    packet.size(),
-                    packet.in_flight(),
+                    final_layout.pn(),
+                    final_layout.is_ack_eliciting(),
+                    final_layout.sent_bytes(),
+                    final_layout.in_flight(),
                     None,
                 );
-                packet.size()
+                final_layout.sent_bytes()
             })
     }
 }

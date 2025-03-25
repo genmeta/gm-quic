@@ -114,13 +114,13 @@ impl Spaces {
     }
 }
 
-pub struct ReceivedCipherPacket<H> {
+pub struct CipherPacket<H> {
     header: H,
     payload: BytesMut,
     payload_offset: usize,
 }
 
-impl<H> From<(H, BytesMut, usize)> for ReceivedCipherPacket<H> {
+impl<H> From<(H, BytesMut, usize)> for CipherPacket<H> {
     fn from((header, payload, payload_offset): (H, BytesMut, usize)) -> Self {
         Self {
             header,
@@ -130,7 +130,7 @@ impl<H> From<(H, BytesMut, usize)> for ReceivedCipherPacket<H> {
     }
 }
 
-impl<H> ReceivedCipherPacket<H>
+impl<H> CipherPacket<H>
 where
     PacketHeaderBuilder: for<'a> From<&'a H>,
 {
@@ -197,7 +197,7 @@ where
         })
     }
 
-    fn decrypt_as_long(
+    fn decrypt_long_packet(
         mut self,
         hpk: &dyn HeaderProtectionKey,
         pk: &dyn PacketKey,
@@ -242,7 +242,7 @@ where
         }))
     }
 
-    fn decrypt_as_short(
+    fn decrypt_short_packet(
         mut self,
         hpk: &dyn HeaderProtectionKey,
         pk: &ArcOneRttPacketKeys,
@@ -289,7 +289,7 @@ where
     }
 }
 
-impl initial::ReceivedInitialPacket {
+impl initial::CipherInitialPacket {
     pub fn drop_on_scid_unmatch(self) {
         qlog::event!(PacketDropped {
             header: self.qlog_header(),

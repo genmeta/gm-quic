@@ -199,7 +199,7 @@ impl Keys {
 }
 
 #[derive(CopyGetters)]
-pub struct PlainPacket {
+pub struct PacketLayout {
     hdr_len: usize,
     len_encoding: usize,
     pn: (u64, PacketNumber),
@@ -229,12 +229,12 @@ pub struct PlainPacket {
     probe_new_path: bool,
 }
 
-impl PlainPacket {
+impl PacketLayout {
     pub fn writer(mut self, buffer: &mut [u8]) -> PacketWriter {
         self.end = buffer.len() - self.keys.pk().tag_len();
         assert!(self.end >= self.cursor);
         PacketWriter {
-            packet: self,
+            layout: self,
             buffer,
         }
     }
@@ -259,7 +259,7 @@ impl PlainPacket {
 #[derive(Deref, DerefMut)]
 pub struct PacketWriter<'b> {
     #[deref]
-    packet: PlainPacket,
+    layout: PacketLayout,
     buffer: &'b mut [u8],
 }
 
@@ -288,7 +288,7 @@ impl<'b> PacketWriter<'b> {
         let cursor = hdr_len + len_encoding + encoded_pn.size();
         let keys = Keys::LongHeaderPacket { keys };
         let end = buffer.len() - keys.pk().tag_len();
-        let packet = PlainPacket {
+        let layout = PacketLayout {
             hdr_len,
             len_encoding,
             pn,
@@ -299,11 +299,11 @@ impl<'b> PacketWriter<'b> {
             in_flight: false,
             probe_new_path: false,
         };
-        Ok(Self { buffer, packet })
+        Ok(Self { buffer, layout })
     }
 
     pub fn buffer(&self) -> &[u8] {
-        &self.buffer[..self.packet.packet_len()]
+        &self.buffer[..self.layout.packet_len()]
     }
 
     pub fn new_short(
@@ -326,7 +326,7 @@ impl<'b> PacketWriter<'b> {
         let cursor = hdr_len + encoded_pn.size();
         let keys = Keys::ShortHeaderPacket { hpk, pk, key_phase };
         let end = buffer.len() - keys.pk().tag_len();
-        let packet = PlainPacket {
+        let packet = PacketLayout {
             hdr_len,
             len_encoding: 0,
             pn,
@@ -337,11 +337,14 @@ impl<'b> PacketWriter<'b> {
             in_flight: false,
             probe_new_path: false,
         };
-        Ok(Self { buffer, packet })
+        Ok(Self {
+            buffer,
+            layout: packet,
+        })
     }
 
-    pub fn interrupt(self) -> (PlainPacket, &'b mut [u8]) {
-        (self.packet, self.buffer)
+    pub fn interrupt(self) -> (PacketLayout, &'b mut [u8]) {
+        (self.layout, self.buffer)
     }
 
     pub fn pad(&mut self, cnt: usize) {
@@ -362,8 +365,8 @@ impl<'b> PacketWriter<'b> {
         self.cursor == self.hdr_len + self.len_encoding + self.pn.1.size()
     }
 
-    pub fn encrypt_and_protect(self) -> CipherPacket {
-        let (packet, buffer) = (self.packet, self.buffer);
+    pub fn encrypt_and_protect(self) -> FinalPacketLayout {
+        let (packet, buffer) = (self.layout, self.buffer);
         let payload_len = packet.payload_len();
         let tag_len = packet.keys.pk().tag_len();
 
@@ -402,9 +405,9 @@ impl<'b> PacketWriter<'b> {
             let hpk = packet.keys.hpk();
             protect_header(hpk, &mut buffer[..pkt_size], payload_offset, pn_len);
         }
-        CipherPacket {
+        FinalPacketLayout {
             pn: actual_pn,
-            size: pkt_size,
+            sent_bytes: pkt_size,
             is_ack_eliciting: packet.ack_eliciting,
             in_flight: packet.in_flight,
         }
@@ -412,11 +415,11 @@ impl<'b> PacketWriter<'b> {
 }
 
 #[derive(Debug, CopyGetters, Clone, Copy)]
-pub struct CipherPacket {
+pub struct FinalPacketLayout {
     #[getset(get_copy = "pub")]
     pn: u64,
     #[getset(get_copy = "pub")]
-    size: usize,
+    sent_bytes: usize,
     #[getset(get_copy = "pub")]
     is_ack_eliciting: bool,
     #[getset(get_copy = "pub")]
@@ -567,12 +570,12 @@ mod tests {
         assert!(writer.is_ack_eliciting());
         assert!(writer.in_flight());
 
-        let packet = writer.encrypt_and_protect();
-        assert!(packet.is_ack_eliciting());
-        assert!(packet.in_flight());
-        assert_eq!(packet.size(), 68);
+        let final_packet_layout = writer.encrypt_and_protect();
+        assert!(final_packet_layout.is_ack_eliciting());
+        assert!(final_packet_layout.in_flight());
+        assert_eq!(final_packet_layout.sent_bytes(), 68);
         assert_eq!(
-            &buffer[..packet.size()],
+            &buffer[..final_packet_layout.sent_bytes()],
             [
                 // initial packet:
                 // header form (1) = 1,, long header

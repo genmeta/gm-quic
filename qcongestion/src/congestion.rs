@@ -466,13 +466,13 @@ impl ArcCC {
         algorithm: Algorithm,
         max_ack_delay: Duration,
         trackers: [Arc<dyn Feedback>; 3],
-        conn_status: Arc<PathStatus>,
+        path_status: Arc<PathStatus>,
     ) -> Self {
         ArcCC(Arc::new(Mutex::new(CongestionController::init(
             algorithm,
             max_ack_delay,
             trackers,
-            conn_status,
+            path_status,
         ))))
     }
 }
