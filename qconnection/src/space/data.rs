@@ -29,6 +29,7 @@ use qbase::{
     sid::{ControlStreamsConcurrency, Role},
 };
 use qcongestion::{Feedback, Transport};
+use qinterface::packet::{CipherPacket, PlainPacket};
 use qlog::{
     quic::{
         PacketHeader, PacketType, QuicFramesCollector,
@@ -47,7 +48,6 @@ use qunreliable::DatagramFlow;
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
-use super::{CipherPacket, PlainPacket};
 use crate::{
     ArcReliableFrameDeque, Components, DataStreams,
     events::{ArcEventBroker, EmitEvent, Event},
@@ -57,12 +57,13 @@ use crate::{
     tx::{PacketBuffer, PaddablePacket, Transaction},
 };
 
-pub type ReceivedZeroRttPacket = ((ZeroRttHeader, bytes::BytesMut, usize), Pathway, Link);
 pub type CipherZeroRttPacket = CipherPacket<ZeroRttHeader>;
 pub type PlainZeroRttPacket = PlainPacket<ZeroRttHeader>;
-pub type ReceivedOneRttPacket = ((OneRttHeader, bytes::BytesMut, usize), Pathway, Link);
+pub type ReceivedZeroRttPacket = (CipherZeroRttPacket, Pathway, Link);
+
 pub type CipherOneRttPacket = CipherPacket<OneRttHeader>;
 pub type PlainOneRttPacket = PlainPacket<OneRttHeader>;
+pub type ReceivedOneRttPacket = (CipherOneRttPacket, Pathway, Link);
 
 pub struct DataSpace {
     zero_rtt_keys: ArcKeys,
@@ -449,84 +450,80 @@ pub fn spawn_deliver_and_parse(
         }
     };
 
-    let parse_zero_rtt = {
-        let components = components.clone();
-        let space = space.clone();
-        let dispatch_data_frame = dispatch_data_frame.clone();
-        async move |packet: CipherZeroRttPacket, pathway, socket| {
-            if let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? {
-                let path = match components.get_or_try_create_path(socket, pathway, true) {
-                    Ok(path) => path,
-                    Err(_) => {
-                        packet.drop_on_conenction_closed();
-                        return Ok(());
-                    }
+    let parse_zero_rtt =
+        {
+            let components = components.clone();
+            let space = space.clone();
+            let dispatch_data_frame = dispatch_data_frame.clone();
+            async move |packet: CipherZeroRttPacket, pathway, socket| {
+                if let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? {
+                    let path = match components.get_or_try_create_path(socket, pathway, true) {
+                        Ok(path) => path,
+                        Err(_) => {
+                            packet.drop_on_conenction_closed();
+                            return Ok(());
+                        }
+                    };
+
+                    let mut frames = QuicFramesCollector::<PacketReceived>::new();
+                    let is_ack_packet = FrameReader::new(packet.body(), packet.get_type())
+                        .try_fold(false, |is_ack_packet, frame| {
+                            let (frame, is_ack_eliciting) = frame?;
+                            frames.extend(Some(&frame));
+                            dispatch_data_frame(frame, packet.get_type(), &path);
+                            Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                        })?;
+                    packet.log_received(frames);
+
+                    space.journal.of_rcvd_packets().register_pn(packet.pn());
+                    path.cc()
+                        .on_pkt_rcvd(Epoch::Data, packet.pn(), is_ack_packet);
                 };
 
-                let mut frames = QuicFramesCollector::<PacketReceived>::new();
-                let is_ack_packet = FrameReader::new(packet.body(), packet.header.get_type())
-                    .try_fold(false, |is_ack_packet, frame| {
-                        let (frame, is_ack_eliciting) = frame?;
-                        frames.extend(Some(&frame));
-                        dispatch_data_frame(frame, packet.header.get_type(), &path);
-                        Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
-                    })?;
-                packet.log_received(frames);
-
-                space
-                    .journal
-                    .of_rcvd_packets()
-                    .register_pn(packet.decoded_pn);
-                path.cc()
-                    .on_pkt_rcvd(Epoch::Data, packet.decoded_pn, is_ack_packet);
-            };
-
-            Result::<(), Error>::Ok(())
-        }
-    };
-
-    let parse_one_rtt = {
-        let components = components.clone();
-        async move |packet: CipherOneRttPacket, pathway, socket| {
-            if let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? {
-                let path = match components.get_or_try_create_path(socket, pathway, true) {
-                    Ok(path) => path,
-                    Err(_) => {
-                        packet.drop_on_conenction_closed();
-                        return Ok(());
-                    }
-                };
-                path.on_rcvd(packet.plain.len());
-                components
-                    .handshake
-                    .server_done_and_discard_spaces(&components.paths);
-
-                let mut frames = QuicFramesCollector::<PacketReceived>::new();
-                let is_ack_packet = FrameReader::new(packet.body(), packet.header.get_type())
-                    .try_fold(false, |is_ack_packet, frame| {
-                        let (frame, is_ack_eliciting) = frame?;
-                        frames.extend(Some(&frame));
-                        dispatch_data_frame(frame, packet.header.get_type(), &path);
-                        Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
-                    })?;
-                packet.log_received(frames);
-
-                space
-                    .journal
-                    .of_rcvd_packets()
-                    .register_pn(packet.decoded_pn);
-                path.cc()
-                    .on_pkt_rcvd(Epoch::Data, packet.decoded_pn, is_ack_packet);
+                Result::<(), Error>::Ok(())
             }
-            Result::<(), Error>::Ok(())
-        }
-    };
+        };
+
+    let parse_one_rtt =
+        {
+            let components = components.clone();
+            async move |packet: CipherOneRttPacket, pathway, socket| {
+                if let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? {
+                    let path = match components.get_or_try_create_path(socket, pathway, true) {
+                        Ok(path) => path,
+                        Err(_) => {
+                            packet.drop_on_conenction_closed();
+                            return Ok(());
+                        }
+                    };
+                    path.on_rcvd(packet.size());
+                    components
+                        .handshake
+                        .server_done_and_discard_spaces(&components.paths);
+
+                    let mut frames = QuicFramesCollector::<PacketReceived>::new();
+                    let is_ack_packet = FrameReader::new(packet.body(), packet.get_type())
+                        .try_fold(false, |is_ack_packet, frame| {
+                            let (frame, is_ack_eliciting) = frame?;
+                            frames.extend(Some(&frame));
+                            dispatch_data_frame(frame, packet.get_type(), &path);
+                            Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                        })?;
+                    packet.log_received(frames);
+
+                    space.journal.of_rcvd_packets().register_pn(packet.pn());
+                    path.cc()
+                        .on_pkt_rcvd(Epoch::Data, packet.pn(), is_ack_packet);
+                }
+                Result::<(), Error>::Ok(())
+            }
+        };
 
     tokio::spawn({
         let event_broker = event_broker.clone();
         async move {
             while let Some((packet, pathway, socket)) = zeor_rtt_packets.next().await {
-                if let Err(error) = parse_zero_rtt(packet.into(), pathway, socket).await {
+                if let Err(error) = parse_zero_rtt(packet, pathway, socket).await {
                     event_broker.emit(Event::Failed(error));
                 };
             }
@@ -538,7 +535,7 @@ pub fn spawn_deliver_and_parse(
         let event_broker = event_broker.clone();
         async move {
             while let Some((packet, pathway, socket)) = one_rtt_packets.next().await {
-                if let Err(error) = parse_one_rtt(packet.into(), pathway, socket).await {
+                if let Err(error) = parse_one_rtt(packet, pathway, socket).await {
                     event_broker.emit(Event::Failed(error));
                 };
             }
@@ -616,7 +613,7 @@ impl ClosingDataSpace {
             .and_then(Result::ok)?;
 
         let mut frames = QuicFramesCollector::<PacketReceived>::new();
-        let ccf = FrameReader::new(packet.body(), packet.header.get_type())
+        let ccf = FrameReader::new(packet.body(), packet.get_type())
             .filter_map(Result::ok)
             .inspect(|(f, _ack)| frames.extend(Some(f)))
             .fold(None, |ccf, (frame, _)| match (ccf, frame) {
@@ -657,7 +654,7 @@ pub fn spawn_deliver_and_parse_closing(
     tokio::spawn(
         async move {
             while let Some((packet, pathway, _socket)) = packets.next().await {
-                if let Some(ccf) = space.recv_packet(packet.into()) {
+                if let Some(ccf) = space.recv_packet(packet) {
                     event_broker.emit(Event::Closed(ccf.clone()));
                     return;
                 }

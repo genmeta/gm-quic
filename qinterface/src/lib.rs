@@ -1,6 +1,7 @@
 // handy（qudp）是可选的
 pub mod factory;
 pub mod handy;
+pub mod packet;
 pub mod queue;
 pub mod router;
 pub mod util;
