@@ -25,7 +25,7 @@ use qbase::{
         signal::SpinBit,
         r#type::Type,
     },
-    param::CommonParameters,
+    param::StoreParameter,
     sid::{ControlStreamsConcurrency, Role},
 };
 use qcongestion::{Feedback, Transport};
@@ -79,7 +79,7 @@ impl DataSpace {
     pub fn new(
         role: Role,
         reliable_frames: ArcReliableFrameDeque,
-        local_params: &CommonParameters,
+        local_params: &impl StoreParameter,
         streams_ctrl: Box<dyn ControlStreamsConcurrency>,
         tx_wakers: ArcSendWakers,
     ) -> Self {

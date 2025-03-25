@@ -47,9 +47,10 @@ use qbase::{
     cid, flow,
     frame::ConnectionCloseFrame,
     net::route::{Link, Pathway},
-    param::{self, ArcParameters},
+    param::{ArcParameters, ParameterId},
     sid::StreamId,
     token::ArcTokenRegistry,
+    varint::VarInt,
 };
 use qcongestion::HandshakeStatus;
 use qinterface::{
@@ -110,10 +111,10 @@ impl Components {
         let params = self.parameters.clone();
         let streams = self.spaces.data().streams().clone();
         async move {
-            let param::Pair { remote, .. } = params.await?;
-            Ok(streams
-                .open_bi(remote.initial_max_stream_data_bidi_remote().into())
-                .await?)
+            let snd_wnd_size = params
+                .get_remote_as::<VarInt>(ParameterId::InitialMaxStreamDataBidiRemote)
+                .await?;
+            Ok(streams.open_bi(snd_wnd_size.into_inner()).await?)
         }
     }
 
@@ -123,10 +124,10 @@ impl Components {
         let params = self.parameters.clone();
         let streams = self.spaces.data().streams().clone();
         async move {
-            let param::Pair { remote, .. } = params.await?;
-            Ok(streams
-                .open_uni(remote.initial_max_stream_data_uni().into())
-                .await?)
+            let snd_wnd_size = params
+                .get_remote_as::<VarInt>(ParameterId::InitialMaxStreamDataUni)
+                .await?;
+            Ok(streams.open_uni(snd_wnd_size.into_inner()).await?)
         }
     }
 
@@ -137,11 +138,10 @@ impl Components {
         let params = self.parameters.clone();
         let streams = self.spaces.data().streams().clone();
         async move {
-            let param::Pair { remote, .. } = params.await?;
-            let bi_stream = streams
-                .accept_bi(remote.initial_max_stream_data_bidi_local().into())
+            let snd_wnd_size = params
+                .get_remote_as::<VarInt>(ParameterId::InitialMaxStreamDataBidiLocal)
                 .await?;
-            Ok(Some(bi_stream))
+            Ok(Some(streams.accept_bi(snd_wnd_size.into_inner()).await?))
         }
     }
 
@@ -164,8 +164,10 @@ impl Components {
         let params = self.parameters.clone();
         let datagrams = self.spaces.data().datagrams().clone();
         async move {
-            let param::Pair { remote, .. } = params.await?;
-            datagrams.writer(remote.max_datagram_frame_size().into())
+            let max_datagram_frame_size = params
+                .get_remote_as::<VarInt>(ParameterId::MaxDatagramFrameSize)
+                .await?;
+            datagrams.writer(max_datagram_frame_size.into_inner())
         }
     }
 

@@ -6,12 +6,12 @@ mod echo_server {
 fn client_stream_unlimited_parameters() -> crate::ClientParameters {
     let mut params = crate::ClientParameters::default();
 
-    params.set_initial_max_streams_bidi(100);
-    params.set_initial_max_streams_uni(100);
-    params.set_initial_max_data((1u32 << 20).into());
-    params.set_initial_max_stream_data_uni((1u32 << 20).into());
-    params.set_initial_max_stream_data_bidi_local((1u32 << 20).into());
-    params.set_initial_max_stream_data_bidi_remote((1u32 << 20).into());
+    params.set_initial_max_streams_bidi(100u32);
+    params.set_initial_max_streams_uni(100u32);
+    params.set_initial_max_data(1u32 << 20);
+    params.set_initial_max_stream_data_uni(1u32 << 20);
+    params.set_initial_max_stream_data_bidi_local(1u32 << 20);
+    params.set_initial_max_stream_data_bidi_remote(1u32 << 20);
 
     params
 }
@@ -157,12 +157,12 @@ async fn limited_streams() -> io::Result<()> {
     fn client_stream_limited_parameters() -> crate::ClientParameters {
         let mut params = crate::ClientParameters::default();
 
-        params.set_initial_max_streams_bidi(2);
-        params.set_initial_max_streams_uni(0);
-        params.set_initial_max_data((1u32 << 10).into());
-        params.set_initial_max_stream_data_uni((1u32 << 10).into());
-        params.set_initial_max_stream_data_bidi_local((1u32 << 10).into());
-        params.set_initial_max_stream_data_bidi_remote((1u32 << 10).into());
+        params.set_initial_max_streams_bidi(2u32);
+        params.set_initial_max_streams_uni(0u32);
+        params.set_initial_max_data(1u32 << 10);
+        params.set_initial_max_stream_data_uni(1u32 << 10);
+        params.set_initial_max_stream_data_bidi_local(1u32 << 10);
+        params.set_initial_max_stream_data_bidi_remote(1u32 << 10);
 
         params
     }
@@ -170,12 +170,12 @@ async fn limited_streams() -> io::Result<()> {
     fn server_stream_limited_parameters() -> crate::ServerParameters {
         let mut params = crate::ServerParameters::default();
 
-        params.set_initial_max_streams_bidi(2);
-        params.set_initial_max_streams_uni(0);
-        params.set_initial_max_data((1u32 << 10).into());
-        params.set_initial_max_stream_data_uni((1u32 << 10).into());
-        params.set_initial_max_stream_data_bidi_local((1u32 << 10).into());
-        params.set_initial_max_stream_data_bidi_remote((1u32 << 10).into());
+        params.set_initial_max_streams_bidi(2u32);
+        params.set_initial_max_streams_uni(0u32);
+        params.set_initial_max_data(1u32 << 10);
+        params.set_initial_max_stream_data_uni(1u32 << 10);
+        params.set_initial_max_stream_data_bidi_local(1u32 << 10);
+        params.set_initial_max_stream_data_bidi_remote(1u32 << 10);
 
         params
     }

@@ -177,13 +177,13 @@ pub struct ParametersSet {
 
 impl ParametersSetBuilder {
     /// helper method to set all client parameters at once
-    pub fn client_parameters(&mut self, params: ClientParameters) -> &mut Self {
+    pub fn client_parameters(&mut self, params: &ClientParameters) -> &mut Self {
         self.initial_source_connection_id(params.initial_source_connection_id())
             .disable_active_migration(params.disable_active_migration())
             .max_idle_timeout(params.max_idle_timeout().as_millis() as u64)
             .max_udp_payload_size(params.max_udp_payload_size().into_inner() as u32)
             .ack_delay_exponent(params.ack_delay_exponent().into_inner() as u16)
-            .max_ack_delay(params.max_ack_delay().into_inner() as u16)
+            .max_ack_delay(params.max_ack_delay().as_millis() as u16)
             .active_connection_id_limit(params.active_connection_id_limit().into_inner() as u32)
             .initial_max_data(params.initial_max_data().into_inner())
             .initial_max_stream_data_bidi_local(
@@ -200,14 +200,14 @@ impl ParametersSetBuilder {
     }
 
     /// helper method to set all server parameters at once
-    pub fn server_parameters(&mut self, params: ServerParameters) -> &mut Self {
+    pub fn server_parameters(&mut self, params: &ServerParameters) -> &mut Self {
         self.original_destination_connection_id(params.original_destination_connection_id())
             .initial_source_connection_id(params.initial_source_connection_id())
             .disable_active_migration(params.disable_active_migration())
             .max_idle_timeout(params.max_idle_timeout().as_millis() as u64)
             .max_udp_payload_size(params.max_udp_payload_size().into_inner() as u32)
             .ack_delay_exponent(params.ack_delay_exponent().into_inner() as u16)
-            .max_ack_delay(params.max_ack_delay().into_inner() as u16)
+            .max_ack_delay(params.max_ack_delay().as_millis() as u16)
             .active_connection_id_limit(params.active_connection_id_limit().into_inner() as u32)
             .initial_max_data(params.initial_max_data().into_inner())
             .initial_max_stream_data_bidi_local(

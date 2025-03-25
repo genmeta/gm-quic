@@ -9,7 +9,7 @@ use qbase::{
     },
     net::tx::{ArcSendWakers, Signals},
     packet::MarshalDataFrame,
-    param::CommonParameters,
+    param::{ParameterId, StoreParameter, StoreParameterExt},
     sid::{
         ControlStreamsConcurrency, Dir, Role, StreamId, StreamIds,
         remote_sid::{AcceptSid, ExceedLimitError},
@@ -513,25 +513,32 @@ where
 {
     pub(super) fn new(
         role: Role,
-        local_params: &CommonParameters,
+        local_params: &impl StoreParameter,
         ctrl: Box<dyn ControlStreamsConcurrency>,
         ctrl_frames: TX,
         tx_wakers: ArcSendWakers,
     ) -> Self {
-        let max_bi_streams = local_params.initial_max_streams_bidi().into();
-        let max_uni_streams = local_params.initial_max_streams_uni().into();
+        use ParameterId::*;
+        let max_bi_streams = local_params.get_as_ensured::<VarInt>(InitialMaxStreamsBidi);
+        let max_uni_streams = local_params.get_as_ensured::<VarInt>(InitialMaxStreamsUni);
+        let uni_stream_rcvbuf_size = local_params.get_as_ensured::<VarInt>(InitialMaxStreamDataUni);
+        let local_bi_stream_rcvbuf_size =
+            local_params.get_as_ensured::<VarInt>(InitialMaxStreamDataBidiLocal);
+        let remote_bi_stream_rcvbuf_size =
+            local_params.get_as_ensured::<VarInt>(InitialMaxStreamDataBidiRemote);
+
         Self {
             role,
             stream_ids: StreamIds::new(
                 role,
-                max_bi_streams,
-                max_uni_streams,
+                max_bi_streams.into_inner(),
+                max_uni_streams.into_inner(),
                 Ext(ctrl_frames.clone()),
                 ctrl,
             ),
-            uni_stream_rcvbuf_size: local_params.initial_max_stream_data_uni().into(),
-            local_bi_stream_rcvbuf_size: local_params.initial_max_stream_data_bidi_local().into(),
-            remote_bi_stream_rcvbuf_size: local_params.initial_max_stream_data_bidi_remote().into(),
+            uni_stream_rcvbuf_size: uni_stream_rcvbuf_size.into_inner(),
+            local_bi_stream_rcvbuf_size: local_bi_stream_rcvbuf_size.into_inner(),
+            remote_bi_stream_rcvbuf_size: remote_bi_stream_rcvbuf_size.into_inner(),
             output: ArcOutput::new(),
             input: ArcInput::default(),
             listener: ArcListener::new(),

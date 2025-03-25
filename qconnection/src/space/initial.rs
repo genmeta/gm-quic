@@ -250,13 +250,9 @@ pub fn spawn_deliver_and_parse(
             // negotiating done.
             // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
             if role == qbase::sid::Role::Server {
-                if let Some(origin_dcid) = parameters
-                    .server()?
-                    .map(|local_params| local_params.original_destination_connection_id())
-                {
-                    if origin_dcid != *packet.header.dcid() {
-                        components.proto.del_router_entry(&origin_dcid.into());
-                    }
+                let origin_dcid = parameters.get_origin_dcid()?;
+                if origin_dcid != *packet.header.dcid() {
+                    components.proto.del_router_entry(&origin_dcid.into());
                 }
             }
         }

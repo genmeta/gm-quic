@@ -43,20 +43,18 @@ impl ConnState {
                 socket: { (link.src(), link.dst()) } // cid不在这一层，未知
             });
             match components.handshake.role() {
-                qbase::sid::Role::Client => {
-                    let client_parameters = components.parameters.client()?;
+                qbase::sid::Role::Client => components.parameters.map_client_parameters(|p| {
                     qlog::event!(ParametersSet {
                         owner: Owner::Local,
-                        client_parameters: client_parameters.expect("unreachable"),
+                        client_parameters: p,
                     })
-                }
-                qbase::sid::Role::Server => {
-                    let server_parameters = components.parameters.server()?;
+                }),
+                qbase::sid::Role::Server => components.parameters.map_server_parameters(|p| {
                     qlog::event!(ParametersSet {
                         owner: Owner::Local,
-                        server_parameters: server_parameters.expect("unreachable"),
+                        server_parameters: p,
                     })
-                }
+                }),
             }
         }
         Ok(success)

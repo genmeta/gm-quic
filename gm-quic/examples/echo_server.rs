@@ -34,12 +34,12 @@ pub async fn main() -> io::Result<()> {
 pub fn server_stream_unlimited_parameters() -> gm_quic::ServerParameters {
     let mut params = gm_quic::ServerParameters::default();
 
-    params.set_initial_max_streams_bidi(100);
-    params.set_initial_max_streams_uni(100);
-    params.set_initial_max_data((1u32 << 20).into());
-    params.set_initial_max_stream_data_uni((1u32 << 20).into());
-    params.set_initial_max_stream_data_bidi_local((1u32 << 20).into());
-    params.set_initial_max_stream_data_bidi_remote((1u32 << 20).into());
+    params.set_initial_max_streams_bidi(100u32);
+    params.set_initial_max_streams_uni(100u32);
+    params.set_initial_max_data(1u32 << 20);
+    params.set_initial_max_stream_data_uni(1u32 << 20);
+    params.set_initial_max_stream_data_bidi_local(1u32 << 20);
+    params.set_initial_max_stream_data_bidi_remote(1u32 << 20);
 
     params
 }
