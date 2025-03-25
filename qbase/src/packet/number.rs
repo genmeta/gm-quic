@@ -1,4 +1,5 @@
 use bytes::BufMut;
+use thiserror::Error;
 
 /// An encoded or undecoded packet number
 ///
@@ -13,6 +14,16 @@ pub enum PacketNumber {
     U16(u16),
     U24(u32),
     U32(u32),
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum InvalidPacketNumber {
+    #[error("packet number too old")]
+    TooOld,
+    #[error("packet number too large")]
+    TooLarge,
+    #[error("packet with this number has been received")]
+    Duplicate,
 }
 
 /// Implement this trait for buffer, which can be used to write the packet number into the buffer.

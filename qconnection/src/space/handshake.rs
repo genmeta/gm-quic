@@ -22,6 +22,7 @@ use qbase::{
     },
 };
 use qcongestion::{Feedback, Transport};
+use qinterface::packet::{CipherPacket, PlainPacket};
 use qlog::{
     quic::{
         PacketHeader, PacketType, QuicFramesCollector,
@@ -38,7 +39,7 @@ use rustls::quic::Keys;
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
-use super::{AckHandshakeSpace, CipherPacket, PlainPacket};
+use super::AckHandshakeSpace;
 use crate::{
     Components,
     events::{ArcEventBroker, EmitEvent, Event},
@@ -48,9 +49,9 @@ use crate::{
     tx::{PacketBuffer, PaddablePacket, Transaction},
 };
 
-pub type ReceivedHandshakePacket = ((HandshakeHeader, bytes::BytesMut, usize), Pathway, Link);
 pub type CipherHanshakePacket = CipherPacket<HandshakeHeader>;
 pub type PlainHandshakePacket = PlainPacket<HandshakeHeader>;
+pub type ReceivedPacket = (CipherHanshakePacket, Pathway, Link);
 
 pub struct HandshakeSpace {
     keys: ArcKeys,
@@ -134,7 +135,7 @@ impl HandshakeSpace {
 }
 
 pub fn spawn_deliver_and_parse(
-    mut bundles: impl Stream<Item = ReceivedHandshakePacket> + Unpin + Send + 'static,
+    mut bundles: impl Stream<Item = ReceivedPacket> + Unpin + Send + 'static,
     space: Arc<HandshakeSpace>,
     components: &Components,
     event_broker: ArcEventBroker,
@@ -186,31 +187,30 @@ pub fn spawn_deliver_and_parse(
             // address to have been validated.
             // It may have already been verified using tokens in the Handshake space
             path.grant_anti_amplifier();
-            path.on_rcvd(packet.plain.len());
+            path.on_rcvd(packet.size());
 
             let mut frames = QuicFramesCollector::<PacketReceived>::new();
-            let is_ack_packet = FrameReader::new(packet.body(), packet.header.get_type())
-                .try_fold(false, |is_ack_packet, frame| {
+            let is_ack_packet = FrameReader::new(packet.body(), packet.get_type()).try_fold(
+                false,
+                |is_ack_packet, frame| {
                     let (frame, is_ack_eliciting) = frame?;
                     frames.extend(Some(&frame));
                     dispatch_frame(frame, &path);
                     Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
-                })?;
+                },
+            )?;
             packet.log_received(frames);
 
-            space
-                .journal
-                .of_rcvd_packets()
-                .register_pn(packet.decoded_pn);
+            space.journal.of_rcvd_packets().register_pn(packet.pn());
             path.cc()
-                .on_pkt_rcvd(Epoch::Handshake, packet.decoded_pn, is_ack_packet);
+                .on_pkt_rcvd(Epoch::Handshake, packet.pn(), is_ack_packet);
 
             // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
             // negotiating done.
             // https://www.rfc-editor.org/rfc/rfc9000.html#name-negotiating-connection-ids
             if role == qbase::sid::Role::Server {
                 let origin_dcid = parameters.get_origin_dcid()?;
-                if origin_dcid != *packet.header.dcid() {
+                if origin_dcid != *packet.dcid() {
                     components.proto.del_router_entry(&origin_dcid.into());
                 }
             }
@@ -222,7 +222,7 @@ pub fn spawn_deliver_and_parse(
     tokio::spawn(
         async move {
             while let Some((packet, pathway, link)) = bundles.next().await {
-                if let Err(error) = parse(packet.into(), pathway, link).await {
+                if let Err(error) = parse(packet, pathway, link).await {
                     event_broker.emit(Event::Failed(error));
                 };
             }
@@ -289,7 +289,7 @@ impl ClosingHandshakeSpace {
             .and_then(Result::ok)?;
 
         let mut frames = QuicFramesCollector::<PacketReceived>::new();
-        let ccf = FrameReader::new(packet.body(), packet.header.get_type())
+        let ccf = FrameReader::new(packet.body(), packet.get_type())
             .filter_map(Result::ok)
             .inspect(|(f, _ack)| frames.extend(Some(f)))
             .fold(None, |ccf, (frame, _)| match (ccf, frame) {
@@ -319,7 +319,7 @@ impl ClosingHandshakeSpace {
 }
 
 pub fn spawn_deliver_and_parse_closing(
-    mut bundles: impl Stream<Item = ReceivedHandshakePacket> + Unpin + Send + 'static,
+    mut bundles: impl Stream<Item = ReceivedPacket> + Unpin + Send + 'static,
     space: ClosingHandshakeSpace,
     closing_state: Arc<ClosingState>,
     event_broker: ArcEventBroker,
@@ -327,7 +327,7 @@ pub fn spawn_deliver_and_parse_closing(
     tokio::spawn(
         async move {
             while let Some((packet, pathway, _socket)) = bundles.next().await {
-                if let Some(ccf) = space.recv_packet(packet.into()) {
+                if let Some(ccf) = space.recv_packet(packet) {
                     event_broker.emit(Event::Closed(ccf.clone()));
                     return;
                 }

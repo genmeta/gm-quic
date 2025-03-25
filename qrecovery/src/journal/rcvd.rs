@@ -6,12 +6,10 @@ use std::{
 use qbase::{
     frame::AckFrame,
     net::tx::Signals,
-    packet::PacketNumber,
+    packet::{InvalidPacketNumber, PacketNumber},
     util::IndexDeque,
     varint::{VARINT_MAX, VarInt},
 };
-use qlog::quic::transport::PacketDroppedTrigger;
-use thiserror::Error;
 
 /// Packet有收到/没收到2种状态，状态也有有效/失活2种状态，失活的可以滑走
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -22,27 +20,6 @@ struct State {
 impl State {
     fn new_rcvd() -> Self {
         Self { is_received: true }
-    }
-}
-
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum InvalidPacketNumber {
-    #[error("packet number too old")]
-    TooOld,
-    #[error("packet number too large")]
-    TooLarge,
-    #[error("packet with this number has been received")]
-    HasRcvd,
-}
-
-impl From<InvalidPacketNumber> for PacketDroppedTrigger {
-    fn from(value: InvalidPacketNumber) -> Self {
-        match value {
-            InvalidPacketNumber::TooOld | InvalidPacketNumber::TooLarge => {
-                PacketDroppedTrigger::Genera
-            }
-            InvalidPacketNumber::HasRcvd => PacketDroppedTrigger::Duplicate,
-        }
     }
 }
 
@@ -73,7 +50,7 @@ impl RcvdJournal {
             is_received: true, ..
         }) = self.queue.get(pn)
         {
-            return Err(InvalidPacketNumber::HasRcvd);
+            return Err(InvalidPacketNumber::Duplicate);
         }
         Ok(pn)
     }

@@ -437,6 +437,16 @@ pub enum PacketDroppedTrigger {
     Genera,
 }
 
+impl From<qbase::packet::InvalidPacketNumber> for PacketDroppedTrigger {
+    fn from(value: qbase::packet::InvalidPacketNumber) -> Self {
+        match value {
+            qbase::packet::InvalidPacketNumber::TooOld
+            | qbase::packet::InvalidPacketNumber::TooLarge => PacketDroppedTrigger::Genera,
+            qbase::packet::InvalidPacketNumber::Duplicate => PacketDroppedTrigger::Duplicate,
+        }
+    }
+}
+
 impl From<qbase::packet::error::Error> for PacketDroppedTrigger {
     fn from(error: qbase::packet::error::Error) -> Self {
         match error {
