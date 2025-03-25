@@ -365,7 +365,7 @@ impl<'a> Transaction<'a> {
         tx_waker: ArcSendWaker,
     ) -> Result<Option<Self>, Signals> {
         let send_quota = cc.send_quota(expect_quota)?;
-        let credit_limit = anti_amplifier.balance(tx_waker.clone())?;
+        let credit_limit = anti_amplifier.balance()?;
         if credit_limit.is_none() {
             return Ok(None);
         }

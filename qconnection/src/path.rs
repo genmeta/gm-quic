@@ -53,7 +53,7 @@ impl Path {
             pathway,
             cc: (cc, handle),
             validated: AtomicBool::new(false),
-            anti_amplifier: Default::default(),
+            anti_amplifier: AntiAmplifier::new(tx_waker.clone()),
             last_recv_time: Instant::now().into(),
             challenge_sndbuf: SendBuffer::new(tx_waker.clone()),
             response_sndbuf: SendBuffer::new(tx_waker.clone()),
