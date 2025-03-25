@@ -42,7 +42,7 @@ use rustls::quic::Keys;
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
-use super::{AckInitial, PlainPacket, ReceivedCipherPacket, pipe};
+use super::{AckInitialSpace, PlainPacket, ReceivedCipherPacket, pipe};
 use crate::{
     Components,
     events::{ArcEventBroker, EmitEvent, Event},
@@ -101,7 +101,7 @@ impl InitialSpace {
         }
     }
 
-    pub fn try_assemble(
+    pub fn try_assemble_packet(
         &self,
         tx: &mut Transaction<'_>,
         buf: &mut [u8],
@@ -163,7 +163,7 @@ pub fn spawn_deliver_and_parse(
     );
     pipe(
         rcvd_ack_frames,
-        AckInitial::new(&space.journal, &space.crypto_stream),
+        AckInitialSpace::new(&space.journal, &space.crypto_stream),
         event_broker.clone(),
     );
 
@@ -231,7 +231,7 @@ pub fn spawn_deliver_and_parse(
                     dispatch_frame(frame, &path);
                     Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                 })?;
-            packet.emit_received(frames);
+            packet.log_received(frames);
 
             space
                 .journal
@@ -343,7 +343,7 @@ impl ClosingInitialSpace {
                 (None, Frame::Close(ccf)) => Some(ccf),
                 (None, _) => None,
             });
-        packet.emit_received(frames);
+        packet.log_received(frames);
         ccf
     }
 

@@ -18,7 +18,7 @@ use crate::{
     pacing::{self, Pacer},
     packets::{PacketSpace, SentPacket},
     rtt::{ArcRtt, INITIAL_RTT},
-    status::ConnectionStatus,
+    status::PathStatus,
 };
 
 const INIT_CWND: usize = 10 * MSS;
@@ -43,7 +43,7 @@ pub struct CongestionController {
     // epoch packet trackers
     trackers: [Arc<dyn Feedback>; 3],
     need_send_ack_eliciting_packets: [usize; Epoch::count()],
-    conn_status: Arc<ConnectionStatus>,
+    path_status: Arc<PathStatus>,
 }
 
 impl CongestionController {
@@ -52,7 +52,7 @@ impl CongestionController {
         algorithm: Algorithm,
         max_ack_delay: Duration,
         trackers: [Arc<dyn Feedback>; 3],
-        conn_status: Arc<ConnectionStatus>,
+        path_status: Arc<PathStatus>,
     ) -> Self {
         let algorithm: Box<dyn Control> = match algorithm {
             Algorithm::Bbr => todo!("implement BBR"),
@@ -75,7 +75,7 @@ impl CongestionController {
             pending_burst: None,
             trackers,
             need_send_ack_eliciting_packets: [0; Epoch::count()],
-            conn_status,
+            path_status,
         }
     }
 
@@ -129,7 +129,7 @@ impl CongestionController {
     ///       OnLossDetectionTimeout()
     pub fn on_datagram_rcvd(&mut self) {
         // If this datagram unblocks the server, arm the PTO timer to avoid deadlock.
-        if self.conn_status.is_at_anti_amplification_limit() {
+        if self.path_status.is_at_anti_amplification_limit() {
             let now = tokio::time::Instant::now().into_std();
             self.set_loss_detection_timer();
             if self.loss_detection_timer.is_some_and(|t| t < now) {
@@ -189,7 +189,7 @@ impl CongestionController {
                     self.rtt.update(
                         now - largest_time_sent,
                         Duration::from_micros(ack_frame.delay()),
-                        self.conn_status.is_handshake_confirmed(),
+                        self.path_status.is_handshake_confirmed(),
                     );
                 }
                 // Process ECN information if present.
@@ -243,7 +243,7 @@ impl CongestionController {
             return;
         }
 
-        if self.conn_status.is_at_anti_amplification_limit() {
+        if self.path_status.is_at_anti_amplification_limit() {
             self.loss_detection_timer = None;
             return;
         }
@@ -302,7 +302,7 @@ impl CongestionController {
 
         if self.no_ack_eliciting_in_flight() {
             assert!(!self.peer_completed_address_validation());
-            if self.conn_status.has_handshake_key() {
+            if self.path_status.has_handshake_key() {
                 // Send an anti-deadlock packet: Initial is padded
                 // to earn more anti-amplification credit,
                 // a Handshake packet proves address ownership.
@@ -371,7 +371,7 @@ impl CongestionController {
         let now = tokio::time::Instant::now().into_std();
         if self.no_ack_eliciting_in_flight() {
             assert!(!self.peer_completed_address_validation());
-            if self.conn_status.has_handshake_key() {
+            if self.path_status.has_handshake_key() {
                 return Some((now + duration, Epoch::Handshake));
             } else {
                 return Some((now + duration, Epoch::Initial));
@@ -386,7 +386,7 @@ impl CongestionController {
             if epoch == Epoch::Data {
                 // An endpoint MUST NOT set its PTO timer for the Application Data
                 // packet number epoch until the handshake is confirmed
-                if !self.conn_status.is_handshake_confirmed() {
+                if !self.path_status.is_handshake_confirmed() {
                     return pto_time;
                 }
                 duration += self.max_ack_delay * (1 << self.pto_count);
@@ -415,9 +415,9 @@ impl CongestionController {
     ///   return has received Handshake ACK ||
     ///        handshake confirmed
     fn peer_completed_address_validation(&self) -> bool {
-        self.conn_status.is_server()
-            || self.conn_status.has_received_handshake_ack()
-            || self.conn_status.is_handshake_confirmed()
+        self.path_status.is_server()
+            || self.path_status.has_received_handshake_ack()
+            || self.path_status.is_handshake_confirmed()
     }
 
     fn process_ecn(&mut self, ack: &AckFrame, sent_time: &Instant, epoch: Epoch) {
@@ -466,7 +466,7 @@ impl ArcCC {
         algorithm: Algorithm,
         max_ack_delay: Duration,
         trackers: [Arc<dyn Feedback>; 3],
-        conn_status: Arc<ConnectionStatus>,
+        conn_status: Arc<PathStatus>,
     ) -> Self {
         ArcCC(Arc::new(Mutex::new(CongestionController::init(
             algorithm,
@@ -550,7 +550,7 @@ impl super::Transport for ArcCC {
                 .on_ack_sent(pn, largest_acked);
         }
         // See [Section 17.2.2.1](https://www.rfc-editor.org/rfc/rfc9000#name-abandoning-initial-packets)
-        if epoch == Epoch::Handshake && !guard.conn_status.is_server() {
+        if epoch == Epoch::Handshake && !guard.path_status.is_server() {
             guard.discard_epoch(Epoch::Initial);
         }
     }
@@ -561,7 +561,7 @@ impl super::Transport for ArcCC {
         guard.on_ack_rcvd(epoch, ack_frame, now);
 
         // See [Section 17.2.2.1](https://www.rfc-editor.org/rfc/rfc9000#name-abandoning-initial-packets)
-        if epoch == Epoch::Handshake && guard.conn_status.is_server() {
+        if epoch == Epoch::Handshake && guard.path_status.is_server() {
             guard.discard_epoch(Epoch::Initial);
         }
     }
@@ -592,7 +592,7 @@ impl super::Transport for ArcCC {
 
     fn grant_anti_amplifier(&self) {
         let guard = self.0.lock().unwrap();
-        guard.conn_status.release_anti_amplification_limit();
+        guard.path_status.release_anti_amplification_limit();
     }
 }
 

@@ -25,7 +25,7 @@ use qbase::{
     token::ArcTokenRegistry,
     varint::VarInt,
 };
-use qcongestion::{Algorithm, ArcCC, ConnectionStatus, HandshakeStatus};
+use qcongestion::{Algorithm, ArcCC, HandshakeStatus, PathStatus};
 use qinterface::{queue::RcvdPacketQueue, router::QuicProto};
 use qlog::{
     GroupID, VantagePointType,
@@ -431,11 +431,12 @@ impl ComponentsReady {
             .unwrap_or_else(|| qlog::span!(@current, group_id));
 
         let is_server = role == sid::Role::Server;
+        let inform_cc = Arc::new(HandshakeStatus::new(is_server));
         let event_broker = ArcEventBroker::new(event_broker);
         let components = Components {
             parameters: self.parameters,
             tls_session: self.tls_session,
-            handshake: Handshake::new(self.raw_handshake, event_broker.clone()),
+            handshake: Handshake::new(self.raw_handshake, inform_cc, event_broker.clone()),
             token_registry: self.token_registry,
             cid_registry: self.cid_registry,
             flow_ctrl: self.flow_ctrl,
@@ -446,7 +447,6 @@ impl ComponentsReady {
             defer_idle_timeout: self.defer_idle_timeout,
             event_broker,
             state: ConnState::new(),
-            inform_cc: Arc::new(HandshakeStatus::new(is_server)),
         };
 
         tracing_span.in_scope(|| {
@@ -544,7 +544,7 @@ impl Components {
                 });
                 let max_ack_delay = self.parameters.get_local_as::<Duration>(ParameterId::MaxAckDelay)?;
 
-                let inform_cc = ConnectionStatus::new(self.inform_cc.clone());
+                let path_status = PathStatus::new(self.handshake.status());
                 let cc = ArcCC::new(
                     Algorithm::NewReno,
                     max_ack_delay,
@@ -553,7 +553,7 @@ impl Components {
                         self.spaces.handshake().clone(),
                         self.spaces.data().clone(),
                     ]
-                    ,Arc::new(inform_cc),
+                    ,Arc::new(path_status),
                 );
 
                 let path = Arc::new(Path::new(&self.proto, link, pathway, cc)?);

@@ -16,7 +16,7 @@ mod pacing;
 mod packets;
 mod rtt;
 mod status;
-pub use status::{ConnectionStatus, HandshakeStatus};
+pub use status::{HandshakeStatus, PathStatus};
 
 ///  default datagram size in bytes.
 pub const MSS: usize = 1200;

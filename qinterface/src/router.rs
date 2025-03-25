@@ -225,11 +225,11 @@ impl QuicProto {
         self.router_table.remove(signpost);
     }
 
-    pub fn registry<ISSUED>(
+    pub fn registry<T>(
         self: &Arc<Self>,
         rcvd_pkts_buf: Arc<RcvdPacketQueue>,
-        issued_cids: ISSUED,
-    ) -> RouterRegistry<ISSUED> {
+        issued_cids: T,
+    ) -> RouterRegistry<T> {
         RouterRegistry {
             router_iface: self.clone(),
             rcvd_pkts_buf,
@@ -239,10 +239,10 @@ impl QuicProto {
 }
 
 #[derive(Clone)]
-pub struct RouterRegistry<ISSUED> {
+pub struct RouterRegistry<TX> {
     router_iface: Arc<QuicProto>,
     rcvd_pkts_buf: Arc<RcvdPacketQueue>,
-    issued_cids: ISSUED,
+    issued_cids: TX,
 }
 
 impl<T> GenUniqueCid for RouterRegistry<T>
@@ -266,27 +266,27 @@ where
     }
 }
 
-impl<T> RetireCid for RouterRegistry<T>
+impl<TX> RetireCid for RouterRegistry<TX>
 where
-    T: Send + Sync + 'static,
+    TX: Send + Sync + 'static,
 {
     fn retire_cid(&self, cid: ConnectionId) {
         self.router_iface.del_router_entry(&Signpost::from(cid));
     }
 }
 
-impl<T> SendFrame<NewConnectionIdFrame> for RouterRegistry<T>
+impl<TX> SendFrame<NewConnectionIdFrame> for RouterRegistry<TX>
 where
-    T: SendFrame<NewConnectionIdFrame>,
+    TX: SendFrame<NewConnectionIdFrame>,
 {
     fn send_frame<I: IntoIterator<Item = NewConnectionIdFrame>>(&self, iter: I) {
         self.issued_cids.send_frame(iter);
     }
 }
 
-impl<T> ReceiveFrame<RetireConnectionIdFrame> for RouterRegistry<T>
+impl<RX> ReceiveFrame<RetireConnectionIdFrame> for RouterRegistry<RX>
 where
-    T: ReceiveFrame<RetireConnectionIdFrame, Output = ()>,
+    RX: ReceiveFrame<RetireConnectionIdFrame, Output = ()>,
 {
     type Output = ();
 

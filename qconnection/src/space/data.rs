@@ -52,7 +52,7 @@ use crate::{
     ArcReliableFrameDeque, Components, DataStreams,
     events::{ArcEventBroker, EmitEvent, Event},
     path::{Path, SendBuffer},
-    space::{AckData, FlowControlledDataStreams, pipe},
+    space::{AckDataSpace, FlowControlledDataStreams, pipe},
     termination::ClosingState,
     tx::{PacketBuffer, PaddablePacket, Transaction},
 };
@@ -133,7 +133,7 @@ impl DataSpace {
         }
     }
 
-    pub fn try_assemble_0rtt(
+    pub fn try_assemble_0rtt_packet(
         &self,
         tx: &mut Transaction<'_>,
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
@@ -189,7 +189,7 @@ impl DataSpace {
         ))
     }
 
-    pub fn try_assemble_1rtt(
+    pub fn try_assemble_1rtt_packet(
         &self,
         tx: &mut Transaction<'_>,
         spin: SpinBit,
@@ -268,7 +268,7 @@ impl DataSpace {
         ))
     }
 
-    pub fn try_assemble_validation(
+    pub fn try_assemble_probe_packet(
         &self,
         tx: &mut Transaction<'_>,
         spin: SpinBit,
@@ -380,7 +380,9 @@ pub fn spawn_deliver_and_parse(
     );
     pipe(
         rcvd_handshake_done_frames,
-        components.handshake.clone(),
+        components
+            .handshake
+            .client_done_and_discard_spaces(components.paths.clone()),
         event_broker.clone(),
     );
     pipe(
@@ -406,7 +408,7 @@ pub fn spawn_deliver_and_parse(
     );
     pipe(
         rcvd_ack_frames,
-        AckData::new(&space.journal, &space.streams, &space.crypto_stream),
+        AckDataSpace::new(&space.journal, &space.streams, &space.crypto_stream),
         event_broker.clone(),
     );
     pipe(
@@ -429,6 +431,7 @@ pub fn spawn_deliver_and_parse(
             Frame::HandshakeDone(f) => {
                 _ = {
                     // See [Section 4.1.2](https://datatracker.ietf.org/doc/html/rfc9001#handshake-confirmed)
+                    path.cc().discard_epoch(Epoch::Initial);
                     path.cc().discard_epoch(Epoch::Handshake);
                     handshake_done_frames_entry.send(f)
                 }
@@ -468,7 +471,7 @@ pub fn spawn_deliver_and_parse(
                         dispatch_data_frame(frame, packet.header.get_type(), &path);
                         Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                     })?;
-                packet.emit_received(frames);
+                packet.log_received(frames);
 
                 space
                     .journal
@@ -494,6 +497,9 @@ pub fn spawn_deliver_and_parse(
                     }
                 };
                 path.on_rcvd(packet.plain.len());
+                components
+                    .handshake
+                    .server_done_and_discard_spaces(&components.paths);
 
                 let mut frames = QuicFramesCollector::<PacketReceived>::new();
                 let is_ack_packet = FrameReader::new(packet.body(), packet.header.get_type())
@@ -503,7 +509,7 @@ pub fn spawn_deliver_and_parse(
                         dispatch_data_frame(frame, packet.header.get_type(), &path);
                         Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                     })?;
-                packet.emit_received(frames);
+                packet.log_received(frames);
 
                 space
                     .journal
@@ -618,7 +624,7 @@ impl ClosingDataSpace {
                 (None, Frame::Close(ccf)) => Some(ccf),
                 (None, _) => None,
             });
-        packet.emit_received(frames);
+        packet.log_received(frames);
         ccf
     }
 

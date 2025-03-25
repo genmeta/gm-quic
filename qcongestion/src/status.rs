@@ -37,12 +37,12 @@ impl HandshakeStatus {
     }
 }
 
-pub struct ConnectionStatus {
+pub struct PathStatus {
     handshake: Arc<HandshakeStatus>,
     is_at_anti_amplification_limit: AtomicBool,
 }
 
-impl ConnectionStatus {
+impl PathStatus {
     pub fn new(handshake: Arc<HandshakeStatus>) -> Self {
         Self {
             handshake,
