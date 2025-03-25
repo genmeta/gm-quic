@@ -182,16 +182,9 @@ impl Parameters {
     }
 
     fn parse_and_validate_remote_params(&mut self, input: &[u8]) -> Result<(), Error> {
-        let (_, general_parems) = be_parameters(input).map_err(|ne| {
-            Error::new(
-                ErrorKind::TransportParameter,
-                FrameType::Crypto,
-                ne.to_string(),
-            )
-        })?;
         match self.role() {
-            Role::Client => self.server = general_parems.try_into()?,
-            Role::Server => self.client = general_parems.try_into()?,
+            Role::Client => self.server = be_server_parameters(input)?,
+            Role::Server => self.client = be_client_parameters(input)?,
         }
         Ok(())
     }

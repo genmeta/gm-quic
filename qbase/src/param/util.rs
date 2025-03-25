@@ -411,17 +411,6 @@ impl<T: bytes::BufMut> WriteParameters for T {
     }
 }
 
-pub fn be_parameters(mut input: &[u8]) -> nom::IResult<&[u8], GeneralParameters> {
-    let mut map = GeneralParameters::new();
-    while !input.is_empty() {
-        let (id, value);
-        (input, (id, value)) = be_parameter(input)?;
-        map.insert(id, value);
-    }
-
-    Ok((input, map))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

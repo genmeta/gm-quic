@@ -7,7 +7,10 @@ use crate::{
     cid::ConnectionId,
     error::{Error, ErrorKind},
     frame::FrameType,
-    param::{ParameterId, ParameterValue, PreferredAddress, StoreParameter, StoreParameterExt},
+    param::{
+        ParameterId, ParameterValue, PreferredAddress, StoreParameter, StoreParameterExt,
+        be_parameter,
+    },
     token::ResetToken,
     varint::VarInt,
 };
@@ -233,41 +236,47 @@ parameters! {
     }
 }
 
-impl TryFrom<GeneralParameters> for ClientParameters {
-    type Error = Error;
-
-    fn try_from(params: GeneralParameters) -> Result<Self, Self::Error> {
-        fn must_exist(id: ParameterId) -> Error {
-            parameter_error(id, "must exist in ClientParameters")
-        }
-
-        for id in [ParameterId::InitialSourceConnectionId] {
-            if !params.contains_key(&id) {
-                return Err(must_exist(id));
-            }
-        }
-
-        fn must_not_exist(id: ParameterId) -> Error {
-            parameter_error(id, "should not exist in ClientParameters")
-        }
-
-        for id in [
-            ParameterId::OriginalDestinationConnectionId,
-            ParameterId::RetrySourceConnectionId,
-            ParameterId::StatelssResetToken,
-            ParameterId::PreferredAddress,
-        ] {
-            if params.contains_key(&id) {
-                return Err(must_not_exist(id));
-            }
-        }
-
-        let mut client_params = ClientParameters::default();
-        for (id, value) in params {
-            client_params.set(id, value)?;
-        }
-        Ok(client_params)
+pub fn be_client_parameters(mut input: &[u8]) -> Result<ClientParameters, Error> {
+    fn map_nom_error(ne: impl ToString) -> Error {
+        Error::new(
+            ErrorKind::TransportParameter,
+            FrameType::Crypto,
+            ne.to_string(),
+        )
     }
+    let mut params = ClientParameters::default();
+    while !input.is_empty() {
+        let (id, value);
+        (input, (id, value)) = be_parameter(input).map_err(map_nom_error)?;
+        params.set(id, value)?;
+    }
+
+    fn must_exist(id: ParameterId) -> Error {
+        parameter_error(id, "must exist in ClientParameters")
+    }
+
+    for id in [ParameterId::InitialSourceConnectionId] {
+        if !params.0.contains_key(&id) {
+            return Err(must_exist(id));
+        }
+    }
+
+    fn must_not_exist(id: ParameterId) -> Error {
+        parameter_error(id, "should not exist in ClientParameters")
+    }
+
+    for id in [
+        ParameterId::OriginalDestinationConnectionId,
+        ParameterId::RetrySourceConnectionId,
+        ParameterId::StatelssResetToken,
+        ParameterId::PreferredAddress,
+    ] {
+        if params.0.contains_key(&id) {
+            return Err(must_not_exist(id));
+        }
+    }
+
+    Ok(params)
 }
 
 parameters! {
@@ -352,29 +361,35 @@ parameters! {
     }
 }
 
-impl TryFrom<GeneralParameters> for ServerParameters {
-    type Error = Error;
-
-    fn try_from(params: GeneralParameters) -> Result<Self, Self::Error> {
-        fn must_exist(id: ParameterId) -> Error {
-            parameter_error(id, "must exist in ServerParameters")
-        }
-
-        for id in [
-            ParameterId::OriginalDestinationConnectionId,
-            ParameterId::InitialSourceConnectionId,
-        ] {
-            if !params.contains_key(&id) {
-                return Err(must_exist(id));
-            }
-        }
-
-        let mut server_params = ServerParameters::default();
-        for (id, value) in params {
-            server_params.set(id, value)?;
-        }
-        Ok(server_params)
+pub fn be_server_parameters(mut input: &[u8]) -> Result<ServerParameters, Error> {
+    fn map_nom_error(ne: impl ToString) -> Error {
+        Error::new(
+            ErrorKind::TransportParameter,
+            FrameType::Crypto,
+            ne.to_string(),
+        )
     }
+    let mut params = ServerParameters::default();
+    while !input.is_empty() {
+        let (id, value);
+        (input, (id, value)) = be_parameter(input).map_err(map_nom_error)?;
+        params.set(id, value)?;
+    }
+
+    fn must_exist(id: ParameterId) -> Error {
+        parameter_error(id, "must exist in ServerParameters")
+    }
+
+    for id in [
+        ParameterId::OriginalDestinationConnectionId,
+        ParameterId::InitialSourceConnectionId,
+    ] {
+        if !params.0.contains_key(&id) {
+            return Err(must_exist(id));
+        }
+    }
+
+    Ok(params)
 }
 
 pub type RememberedParameters = GeneralParameters;
@@ -382,7 +397,6 @@ pub type RememberedParameters = GeneralParameters;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::param::be_parameters;
 
     #[test]
     fn test_client_parameters_default() {
@@ -470,8 +484,7 @@ mod tests {
             32, 4, 128, 0, 255, 255, // max_datagram_frame_size
             0, 0, // original_destination_connection_id
         ];
-        let (_, params) = be_parameters(input).unwrap();
-        let params = ServerParameters::try_from(params).unwrap();
+        let params = be_server_parameters(input).unwrap();
         assert_eq!(params.initial_max_streams_bidi().into_inner(), 8);
         assert_eq!(params.initial_max_streams_uni().into_inner(), 2);
     }
@@ -493,8 +506,7 @@ mod tests {
             15, 0, // initial_source_connection_id
             32, 4, 128, 0, 255, 255, // max_datagram_frame_size
         ];
-        let (_, params) = be_parameters(empty_input).unwrap();
-        let params = ClientParameters::try_from(params).unwrap();
+        let params = be_client_parameters(empty_input).unwrap();
         assert_eq!(params.max_ack_delay().as_millis(), 60);
         assert_eq!(params.active_connection_id_limit().into_inner(), 10);
     }
