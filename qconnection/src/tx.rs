@@ -47,7 +47,7 @@ impl PacketLogger {
         self.frames.extend([frame]);
     }
 
-    pub fn emit_sent(mut self, packet: &PacketWriter) {
+    pub fn log_sent(mut self, packet: &PacketWriter) {
         // TODO: 如果以后涉及到组装VN，Retry，这里的逻辑得改
         if !packet.is_short_header() {
             self.header
@@ -155,7 +155,7 @@ impl PaddablePacket {
             });
         }
 
-        self.logger.emit_sent(&writer);
+        self.logger.log_sent(&writer);
         writer.encrypt_and_protect()
     }
 
@@ -170,7 +170,7 @@ impl PaddablePacket {
             });
         }
 
-        self.logger.emit_sent(&writer);
+        self.logger.log_sent(&writer);
         writer.encrypt_and_protect()
     }
 }
@@ -250,7 +250,7 @@ impl<F> PacketBuffer<'_, '_, F> {
         }
         self.clerk.build_with_time(retran_timeout, expire_timeout);
 
-        self.logger.emit_sent(&self.writer);
+        self.logger.log_sent(&self.writer);
         Some(self.writer.encrypt_and_protect())
     }
 }
@@ -463,7 +463,7 @@ impl Transaction<'_> {
 
         if let Ok((mid_pkt, ack)) = spaces
             .initial()
-            .try_assemble(self, &mut datagram[written..])
+            .try_assemble_packet(self, &mut datagram[written..])
             .inspect_err(|l| limiter |= *l)
         {
             self.constraints
@@ -481,7 +481,7 @@ impl Transaction<'_> {
         if !is_one_rtt_ready {
             if let Ok((mid_pkt, fresh_data)) = spaces
                 .data()
-                .try_assemble_0rtt(
+                .try_assemble_0rtt_packet(
                     self,
                     path_challenge_frames,
                     &mut datagram[written + last_level_size..],
@@ -515,7 +515,7 @@ impl Transaction<'_> {
 
         if let Ok((mid_pkt, ack)) = spaces
             .handshake()
-            .try_assemble(self, &mut datagram[written + last_level_size..])
+            .try_assemble_packet(self, &mut datagram[written + last_level_size..])
             .inspect_err(|l| limiter |= *l)
         {
             if let Some(last_level) = last_level.take() {
@@ -544,7 +544,7 @@ impl Transaction<'_> {
         if is_one_rtt_ready {
             if let Ok((mid_pkt, ack, fresh_data)) = spaces
                 .data()
-                .try_assemble_1rtt(
+                .try_assemble_1rtt_packet(
                     self,
                     spin,
                     path_challenge_frames,
@@ -612,7 +612,7 @@ impl Transaction<'_> {
     ) -> Result<usize, Signals> {
         let buffer = self.constraints.constrain(buf);
         data_space
-            .try_assemble_1rtt(
+            .try_assemble_1rtt_packet(
                 self,
                 spin,
                 path_challenge_frames,
@@ -649,7 +649,7 @@ impl Transaction<'_> {
     ) -> Result<usize, Signals> {
         let buffer = self.constraints.constrain(buf);
         data_space
-            .try_assemble_validation(
+            .try_assemble_probe_packet(
                 self,
                 spin,
                 path_challenge_frames,

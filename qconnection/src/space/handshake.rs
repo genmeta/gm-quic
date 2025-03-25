@@ -38,7 +38,7 @@ use rustls::quic::Keys;
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
-use super::{AckHandshake, PlainPacket, ReceivedCipherPacket};
+use super::{AckHandshakeSpace, PlainPacket, ReceivedCipherPacket};
 use crate::{
     Components,
     events::{ArcEventBroker, EmitEvent, Event},
@@ -49,7 +49,7 @@ use crate::{
 };
 
 pub type ReceivedBundle = ((HandshakeHeader, bytes::BytesMut, usize), Pathway, Link);
-pub type ReceiveHanshakePacket = ReceivedCipherPacket<HandshakeHeader>;
+pub type ReceivedHanshakePacket = ReceivedCipherPacket<HandshakeHeader>;
 pub type PlainHandshakePacket = PlainPacket<HandshakeHeader>;
 
 pub struct HandshakeSpace {
@@ -77,7 +77,7 @@ impl HandshakeSpace {
 
     pub async fn decrypt_packet(
         &self,
-        packet: ReceiveHanshakePacket,
+        packet: ReceivedHanshakePacket,
     ) -> Option<Result<PlainHandshakePacket, Error>> {
         match self.keys.get_remote_keys().await {
             Some(keys) => packet.decrypt_as_long(
@@ -92,7 +92,7 @@ impl HandshakeSpace {
         }
     }
 
-    pub fn try_assemble(
+    pub fn try_assemble_packet(
         &self,
         tx: &mut Transaction<'_>,
         buf: &mut [u8],
@@ -149,11 +149,11 @@ pub fn spawn_deliver_and_parse(
     );
     pipe(
         rcvd_ack_frames,
-        AckHandshake::new(&space.journal, &space.crypto_stream),
+        AckHandshakeSpace::new(&space.journal, &space.crypto_stream),
         event_broker.clone(),
     );
 
-    let inform_cc = components.inform_cc.clone();
+    let inform_cc = components.handshake.status();
     let dispatch_frame = {
         let event_broker = event_broker.clone();
         move |frame: Frame, path: &Path| match frame {
@@ -172,7 +172,7 @@ pub fn spawn_deliver_and_parse(
     let components = components.clone();
     let role = components.handshake.role();
     let parameters = components.parameters.clone();
-    let parse = async move |packet: ReceiveHanshakePacket, pathway, link| {
+    let parse = async move |packet: ReceivedHanshakePacket, pathway, link| {
         if let Some(packet) = space.decrypt_packet(packet).await.transpose()? {
             let path = match components.get_or_try_create_path(link, pathway, true) {
                 Ok(path) => path,
@@ -196,7 +196,7 @@ pub fn spawn_deliver_and_parse(
                     dispatch_frame(frame, &path);
                     Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
                 })?;
-            packet.emit_received(frames);
+            packet.log_received(frames);
 
             space
                 .journal
@@ -279,7 +279,7 @@ impl HandshakeSpace {
 }
 
 impl ClosingHandshakeSpace {
-    pub fn recv_packet(&self, packet: ReceiveHanshakePacket) -> Option<ConnectionCloseFrame> {
+    pub fn recv_packet(&self, packet: ReceivedHanshakePacket) -> Option<ConnectionCloseFrame> {
         let packet = packet
             .decrypt_as_long(
                 self.keys.remote.header.as_ref(),
@@ -297,7 +297,7 @@ impl ClosingHandshakeSpace {
                 (None, Frame::Close(ccf)) => Some(ccf),
                 (None, _) => None,
             });
-        packet.emit_received(frames);
+        packet.log_received(frames);
         ccf
     }
 

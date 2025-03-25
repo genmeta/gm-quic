@@ -106,8 +106,9 @@ impl ArcPathContexts {
         self.paths.iter().map(|p| p.cc().get_pto(Epoch::Data)).max()
     }
 
-    pub fn on_handshake_confirmed(&self) {
+    pub fn discard_initial_and_handshake_space(&self) {
         self.paths.iter().for_each(|p| {
+            p.cc().discard_epoch(Epoch::Initial);
             p.cc().discard_epoch(Epoch::Handshake);
         });
     }

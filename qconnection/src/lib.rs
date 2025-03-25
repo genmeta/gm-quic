@@ -52,7 +52,6 @@ use qbase::{
     token::ArcTokenRegistry,
     varint::VarInt,
 };
-use qcongestion::HandshakeStatus;
 use qinterface::{
     queue::RcvdPacketQueue,
     router::{QuicProto, RouterRegistry},
@@ -100,7 +99,6 @@ pub struct Components {
     defer_idle_timeout: HeartbeatConfig,
     event_broker: ArcEventBroker,
     state: ConnState,
-    inform_cc: Arc<HandshakeStatus>,
 }
 
 impl Components {

@@ -355,7 +355,7 @@ where
         })
     }
 
-    pub fn emit_received(&self, frames: impl Into<Vec<QuicFrame>>) {
+    pub fn log_received(&self, frames: impl Into<Vec<QuicFrame>>) {
         qlog::event!(PacketReceived {
             header: self.qlog_header(),
             frames,
@@ -427,12 +427,12 @@ impl ReceiveFrame<StreamCtlFrame> for FlowControlledDataStreams {
     }
 }
 
-struct AckInitial {
+struct AckInitialSpace {
     sent_journal: ArcSentJournal<CryptoFrame>,
     crypto_stream_outgoing: CryptoStreamOutgoing,
 }
 
-impl AckInitial {
+impl AckInitialSpace {
     fn new(journal: &Journal<CryptoFrame>, crypto_stream: &CryptoStream) -> Self {
         Self {
             sent_journal: journal.of_sent_packets(),
@@ -441,7 +441,7 @@ impl AckInitial {
     }
 }
 
-impl ReceiveFrame<AckFrame> for AckInitial {
+impl ReceiveFrame<AckFrame> for AckInitialSpace {
     type Output = ();
 
     fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
@@ -463,12 +463,12 @@ impl ReceiveFrame<AckFrame> for AckInitial {
     }
 }
 
-struct AckHandshake {
+struct AckHandshakeSpace {
     sent_journal: ArcSentJournal<CryptoFrame>,
     crypto_stream_outgoing: CryptoStreamOutgoing,
 }
 
-impl AckHandshake {
+impl AckHandshakeSpace {
     fn new(journal: &Journal<CryptoFrame>, crypto_stream: &CryptoStream) -> Self {
         Self {
             sent_journal: journal.of_sent_packets(),
@@ -477,7 +477,7 @@ impl AckHandshake {
     }
 }
 
-impl ReceiveFrame<AckFrame> for AckHandshake {
+impl ReceiveFrame<AckFrame> for AckHandshakeSpace {
     type Output = ();
 
     fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {
@@ -499,13 +499,13 @@ impl ReceiveFrame<AckFrame> for AckHandshake {
     }
 }
 
-struct AckData {
+struct AckDataSpace {
     send_journal: ArcSentJournal<GuaranteedFrame>,
     data_streams: DataStreams,
     crypto_stream_outgoing: CryptoStreamOutgoing,
 }
 
-impl AckData {
+impl AckDataSpace {
     fn new(
         journal: &Journal<GuaranteedFrame>,
         data_streams: &DataStreams,
@@ -519,7 +519,7 @@ impl AckData {
     }
 }
 
-impl ReceiveFrame<AckFrame> for AckData {
+impl ReceiveFrame<AckFrame> for AckDataSpace {
     type Output = ();
 
     fn recv_frame(&self, ack_frame: &AckFrame) -> Result<Self::Output, Error> {

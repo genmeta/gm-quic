@@ -238,14 +238,13 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
     let handshake = components.handshake.clone();
     let parameters = components.parameters.clone();
     let event_broker = components.event_broker.clone();
-    let inform_cc = components.inform_cc.clone();
     let paths = components.paths.clone();
 
     async move {
         let mut messages = Vec::with_capacity(1500);
         let mut cur_epoch = Epoch::Initial;
         loop {
-            let (key_upgrade, is_handshake_done) = match tls_session
+            let (key_upgrade, is_tls_done) = match tls_session
                 .read_and_process(&mut messages, &parameters)
                 .await
             {
@@ -269,22 +268,19 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
                 match key_change {
                     rustls::quic::KeyChange::Handshake { keys } => {
                         handshake_keys.set_keys(keys);
-                        handshake.on_key_upgrade();
-                        inform_cc.got_handshake_key();
+                        handshake.got_handshake_key();
                         cur_epoch = Epoch::Handshake;
                     }
                     rustls::quic::KeyChange::OneRtt { keys, next } => {
                         one_rtt_keys.set_keys(keys, next);
-                        paths.on_handshake_confirmed();
                         cur_epoch = Epoch::Data;
                     }
                 }
             }
 
-            if is_handshake_done {
-                handshake.done();
-                inform_cc.handshake_confirmed();
-                paths.on_handshake_confirmed();
+            if is_tls_done {
+                // only server is handshake confirmed, client is confirmed after receiving the first HANDSHAKE_DONE frame
+                handshake.server_done_and_discard_spaces(&paths);
             }
         }
 
