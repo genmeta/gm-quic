@@ -1,5 +1,5 @@
 use bytes::{Bytes, BytesMut};
-use deref_derive::Deref;
+use derive_more::Deref;
 use qbase::{
     error::Error,
     packet::{

@@ -15,9 +15,7 @@ categories.workspace = true
 tracing = { workspace = true }
 qbase = { workspace = true }
 qlog = { workspace = true }
-qrecovery = { workspace = true }
 rand = { workspace = true }
-dashmap = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 
 [dev-dependencies]

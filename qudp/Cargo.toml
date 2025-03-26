@@ -14,10 +14,10 @@ categories.workspace = true
 bytes = { workspace = true }
 cfg-if = { workspace = true }
 libc = "0.2"
-tracing = {workspace = true}
+tracing = { workspace = true }
 socket2 = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
-nix = {workspace = true}
+nix = { version = "0.29.0", features = ["socket", "uio", "net"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -28,7 +28,6 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 clap = { workspace = true }
-env_logger = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros"] }
 
 [dev-dependencies.tracing-subscriber]

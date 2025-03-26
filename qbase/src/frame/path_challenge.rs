@@ -1,4 +1,4 @@
-use deref_derive::Deref;
+use derive_more::Deref;
 
 /// PATH_CHALLENGE frame.
 ///

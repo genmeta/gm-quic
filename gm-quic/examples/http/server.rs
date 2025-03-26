@@ -9,7 +9,7 @@ use gm_quic::QuicServer;
 //      --bind 127.0.0.1:4433
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct Opt {
+struct Options {
     #[clap(long, required = true)]
     cert: PathBuf,
     #[clap(long, required = true)]
@@ -18,29 +18,15 @@ struct Opt {
     bind: SocketAddr,
 }
 
-fn main() {
-    let opt = Opt::parse();
-    let code = {
-        match run(opt) {
-            Err(e) => {
-                eprintln!("ERROR: {e}");
-                1
-            }
-            _ => 0,
-        }
-    };
-    ::std::process::exit(code);
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt().init();
+    run(Options::parse())
+        .await
+        .inspect_err(|error| tracing::error!(?error))
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn run(options: Opt) -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Trace)
-        .init();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("Failed to install rustls crypto provider");
-
+async fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let server = QuicServer::builder()
         .with_supported_versions([0x00000001u32])
         .without_client_cert_verifier()
@@ -48,7 +34,7 @@ async fn run(options: Opt) -> Result<(), Box<dyn std::error::Error>> {
         .listen(options.bind)?;
 
     while let Ok((_conn, pathway)) = server.accept().await {
-        log::trace!("New connection from {:?}", pathway.remote());
+        tracing::info!("New connection from {:?}", pathway.remote());
     }
     Ok(())
 }

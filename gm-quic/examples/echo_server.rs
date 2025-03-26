@@ -5,7 +5,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{Instrument, info, info_span};
 
 #[derive(clap::Parser)]
-struct Opt {
+struct Options {
     #[arg(long, default_value = "0.0.0.0:0")]
     bind: SocketAddr,
 }
@@ -22,7 +22,7 @@ pub async fn main() -> io::Result<()> {
             include_bytes!("keychain/localhost/server.key"),
         )
         .with_parameters(server_stream_unlimited_parameters())
-        .listen(Opt::parse().bind)?;
+        .listen(Options::parse().bind)?;
 
     info!("listening on {:?}", server.addresses());
 

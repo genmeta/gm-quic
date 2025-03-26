@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-use deref_derive::Deref;
+use derive_more::Deref;
 
 /// PATH_RESPONSE Frame.
 ///

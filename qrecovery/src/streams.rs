@@ -26,7 +26,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use deref_derive::Deref;
+use derive_more::Deref;
 pub use listener::{AcceptBiStream, AcceptUniStream};
 use qbase::{
     error::Error,

@@ -1,4 +1,4 @@
-use deref_derive::{Deref, DerefMut};
+use derive_more::{Deref, DerefMut};
 
 use super::*;
 use crate::{cid::ConnectionId, varint::VarInt};
@@ -28,6 +28,7 @@ pub struct LongHeader<T> {
     dcid: ConnectionId,
     scid: ConnectionId,
     #[deref]
+    #[deref_mut]
     specific: T,
 }
 

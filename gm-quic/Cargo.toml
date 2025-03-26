@@ -14,7 +14,7 @@ categories.workspace = true
 [dependencies]
 bytes = { workspace = true }
 dashmap = { workspace = true }
-deref-derive = { workspace = true }
+derive_more = { workspace = true, features = ["deref"] }
 futures = { workspace = true }
 qbase = { workspace = true }
 qcongestion = { workspace = true }
@@ -30,10 +30,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 clap = { workspace = true }
-env_logger = { workspace = true }
 rustls = { workspace = true, features = ["ring"] }
-url = { workspace = true }
-log = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-std"] }
 
 [dev-dependencies.tracing-subscriber]

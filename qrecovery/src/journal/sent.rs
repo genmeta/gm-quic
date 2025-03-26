@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use deref_derive::{Deref, DerefMut};
+use derive_more::{Deref, DerefMut};
 use qbase::{
     error::{Error, ErrorKind},
     frame::{AckFrame, BeFrame},
@@ -134,6 +134,7 @@ impl SentPktState {
 #[derive(Debug, Default, Deref, DerefMut)]
 struct SentJournal<T> {
     #[deref]
+    #[deref_mut]
     queue: VecDeque<T>,
     // 记录着每个包的内容，其实是一个数字，该数字对应着queue中的record数量
     sent_packets: IndexDeque<SentPktState, VARINT_MAX>,

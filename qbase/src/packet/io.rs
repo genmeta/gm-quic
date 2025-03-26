@@ -152,6 +152,7 @@ impl PacketLayout {
 #[derive(Deref, DerefMut)]
 pub struct PacketWriter<'b> {
     #[deref]
+    #[deref_mut]
     layout: PacketLayout,
     buffer: &'b mut [u8],
 }

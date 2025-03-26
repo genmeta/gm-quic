@@ -1,7 +1,7 @@
 use std::{io, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
-use deref_derive::Deref;
+use derive_more::Deref;
 use qbase::{
     Epoch,
     error::{Error, ErrorKind},

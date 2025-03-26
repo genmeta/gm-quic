@@ -1,7 +1,7 @@
 use std::{ops::Deref, sync::Arc};
 
 use bytes::BufMut;
-use deref_derive::Deref;
+use derive_more::Deref;
 use nom::{IResult, bytes::complete::take};
 use rand::Rng;
 
