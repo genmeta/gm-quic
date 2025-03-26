@@ -64,7 +64,7 @@ impl HandshakeSpace {
         Self {
             keys: ArcKeys::new_pending(),
             crypto_stream: CryptoStream::new(4096, 4096, tx_wakers),
-            journal: HandshakeJournal::with_capacity(16),
+            journal: HandshakeJournal::with_capacity(16, None),
         }
     }
 
@@ -107,11 +107,19 @@ impl HandshakeSpace {
         let mut signals = Signals::empty();
 
         let ack = need_ack
+            .or_else(|| {
+                let rcvd_journal = self.journal.of_rcvd_packets();
+                rcvd_journal.trigger_ack_frame()
+            })
             .ok_or(Signals::TRANSPORT)
             .and_then(|(largest, rcvd_time)| {
                 let rcvd_journal = self.journal.of_rcvd_packets();
-                let ack_frame =
-                    rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())?;
+                let ack_frame = rcvd_journal.gen_ack_frame_util(
+                    packet.pn(),
+                    largest,
+                    rcvd_time,
+                    packet.remaining_mut(),
+                )?;
                 packet.dump_ack_frame(ack_frame);
                 Ok(largest)
             })
@@ -175,9 +183,11 @@ pub fn spawn_deliver_and_parse(
     let inform_cc = components.handshake.status();
     let dispatch_frame = {
         let event_broker = event_broker.clone();
+        let rcvd_joural = space.journal.of_rcvd_packets();
         move |frame: Frame, path: &Path| match frame {
             Frame::Ack(f) => {
                 path.cc().on_ack_rcvd(Epoch::Handshake, &f);
+                rcvd_joural.on_rcvd_ack(&f);
                 _ = ack_frames_entry.send(f);
                 inform_cc.received_handshake_ack();
             }
@@ -218,7 +228,12 @@ pub fn spawn_deliver_and_parse(
             )?;
             packet.log_received(frames);
 
-            space.journal.of_rcvd_packets().register_pn(packet.pn());
+            let pto = path.cc().get_pto(Epoch::Handshake);
+            space.journal.of_rcvd_packets().register_pn(
+                packet.pn(),
+                packet_contains != PacketContains::NonAckEliciting,
+                pto,
+            );
             path.on_packet_rcvd(
                 Epoch::Handshake,
                 packet.pn(),

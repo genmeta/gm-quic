@@ -1,4 +1,6 @@
 //! The space that reliably transmites frames.
+use std::time::Duration;
+
 use qbase::frame::CryptoFrame;
 
 use crate::reliable::GuaranteedFrame;
@@ -21,10 +23,10 @@ pub struct Journal<T> {
 
 impl<T> Journal<T> {
     /// Create a [`Journal`] containing records with the given `capacity`.
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub fn with_capacity(capacity: usize, max_ack_delay: Option<Duration>) -> Self {
         Self {
             sent: ArcSentJournal::with_capacity(capacity),
-            rcvd: ArcRcvdJournal::with_capacity(capacity),
+            rcvd: ArcRcvdJournal::with_capacity(capacity, max_ack_delay),
         }
     }
 
@@ -65,7 +67,7 @@ mod tests {
     #[test]
     fn test_initial_space() {
         use super::*;
-        let space = InitialJournal::with_capacity(10);
+        let space = InitialJournal::with_capacity(10, None);
         // assert_eq!(AsRef::<ArcSentJournal<_>>::as_ref(&space).lock_guard().len(), 0);
         assert_eq!(
             AsRef::<ArcRcvdJournal>::as_ref(&space).decode_pn(PacketNumber::encode(0, 0)),

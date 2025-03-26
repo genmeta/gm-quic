@@ -66,7 +66,7 @@ pub struct InitialSpace {
 impl InitialSpace {
     // Initial keys应该是预先知道的，或者传入dcid，可以构造出来
     pub fn new(keys: rustls::quic::Keys, token: Vec<u8>, tx_wakers: ArcSendWakers) -> Self {
-        let journal = InitialJournal::with_capacity(16);
+        let journal = InitialJournal::with_capacity(16, None);
         let crypto_stream = CryptoStream::new(4096, 4096, tx_wakers);
 
         Self {
@@ -121,11 +121,19 @@ impl InitialSpace {
         let mut signals = Signals::empty();
 
         let ack = need_ack
+            .or_else(|| {
+                let rcvd_journal = self.journal.of_rcvd_packets();
+                rcvd_journal.trigger_ack_frame()
+            })
             .ok_or(Signals::TRANSPORT)
             .and_then(|(largest, rcvd_time)| {
                 let rcvd_journal = self.journal.of_rcvd_packets();
-                let ack_frame =
-                    rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())?;
+                let ack_frame = rcvd_journal.gen_ack_frame_util(
+                    packet.pn(),
+                    largest,
+                    rcvd_time,
+                    packet.remaining_mut(),
+                )?;
                 packet.dump_ack_frame(ack_frame);
                 Ok(largest)
             })
@@ -193,9 +201,11 @@ pub fn spawn_deliver_and_parse(
 
     let dispatch_frame = {
         let event_broker = event_broker.clone();
+        let rcvd_joural = space.journal.of_rcvd_packets();
         move |frame: Frame, path: &Path| match frame {
             Frame::Ack(f) => {
                 path.cc().on_ack_rcvd(Epoch::Initial, &f);
+                rcvd_joural.on_rcvd_ack(&f);
                 _ = ack_frames_entry.send(f);
             }
             Frame::Close(f) => event_broker.emit(Event::Closed(f)),
@@ -257,7 +267,12 @@ pub fn spawn_deliver_and_parse(
             )?;
             packet.log_received(frames);
 
-            space.journal.of_rcvd_packets().register_pn(packet.pn());
+            let pto = path.cc().get_pto(Epoch::Initial);
+            space.journal.of_rcvd_packets().register_pn(
+                packet.pn(),
+                packet_contains != PacketContains::NonAckEliciting,
+                pto,
+            );
             path.on_packet_rcvd(Epoch::Initial, packet.pn(), packet.size(), packet_contains);
             if parameters.initial_scid_from_peer()?.is_none() {
                 remote_cids.revise_initial_dcid(*packet.scid());
