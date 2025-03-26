@@ -5,7 +5,10 @@ use qbase::{
     frame::ConnectionCloseFrame,
     net::route::{Link, Pathway},
 };
+use qlog::quic::connectivity::GranularConnectionStates;
 use tokio::sync::mpsc;
+
+use crate::state::ConnState;
 
 /// The events that can be emitted by a quic connection
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,24 +34,56 @@ pub trait EmitEvent: Send + Sync {
 }
 
 #[derive(Clone)]
-pub struct ArcEventBroker(Arc<dyn EmitEvent>);
+pub struct ArcEventBroker {
+    conn_state: ConnState,
+    raw_broker: Arc<dyn EmitEvent>,
+}
 
 impl ArcEventBroker {
-    pub fn new<E: EmitEvent + 'static>(event_broker: E) -> Self {
-        Self(Arc::new(event_broker))
+    pub fn new<E: EmitEvent + 'static>(conn_state: ConnState, event_broker: E) -> Self {
+        Self {
+            conn_state,
+            raw_broker: Arc::new(event_broker),
+        }
     }
 }
 
 impl EmitEvent for ArcEventBroker {
     fn emit(&self, event: Event) {
+        match &event {
+            Event::Handshaked => {
+                let handshaked_state = GranularConnectionStates::HandshakeConfirmed;
+                if self.conn_state.update(handshaked_state.into()).is_none() {
+                    return;
+                }
+            }
+            Event::Failed(..) => {
+                let closing_state = GranularConnectionStates::Closing;
+                if self.conn_state.update(closing_state.into()).is_none() {
+                    return;
+                }
+            }
+            Event::Closed(..) => {
+                let draining_state = GranularConnectionStates::Draining;
+                if self.conn_state.update(draining_state.into()).is_none() {
+                    return;
+                }
+            }
+            Event::Terminated => {
+                let terminated_state = GranularConnectionStates::Closed;
+                self.conn_state.update(terminated_state.into());
+            }
+            Event::StatelessReset => todo!("unsupported"),
+            _ => { /* path create/inactive: no need */ }
+        };
         tracing::info!(?event, "event occurs");
-        self.0.emit(event);
+        self.raw_broker.emit(event);
     }
 }
 
 impl EmitEvent for mpsc::UnboundedSender<Event> {
     fn emit(&self, event: Event) {
-        let _ = self.send(event);
+        _ = self.send(event);
     }
 }
 

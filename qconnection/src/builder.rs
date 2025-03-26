@@ -432,7 +432,8 @@ impl ComponentsReady {
 
         let is_server = role == sid::Role::Server;
         let inform_cc = Arc::new(HandshakeStatus::new(is_server));
-        let event_broker = ArcEventBroker::new(event_broker);
+        let conn_state = ConnState::new();
+        let event_broker = ArcEventBroker::new(conn_state.clone(), event_broker);
         let components = Components {
             parameters: self.parameters,
             tls_session: self.tls_session,
@@ -446,7 +447,7 @@ impl ComponentsReady {
             paths: ArcPathContexts::new(self.tx_wakers, event_broker.clone()),
             defer_idle_timeout: self.defer_idle_timeout,
             event_broker,
-            state: ConnState::new(),
+            state: conn_state,
         };
 
         tracing_span.in_scope(|| {
@@ -544,7 +545,6 @@ impl Components {
                 });
                 let max_ack_delay = self.parameters.get_local_as::<Duration>(ParameterId::MaxAckDelay)?;
 
-                let path_status = PathStatus::new(self.handshake.status());
                 let cc = ArcCC::new(
                     Algorithm::NewReno,
                     max_ack_delay,
@@ -552,8 +552,8 @@ impl Components {
                         self.spaces.initial().clone(),
                         self.spaces.handshake().clone(),
                         self.spaces.data().clone(),
-                    ]
-                    ,Arc::new(path_status),
+                    ],
+                    PathStatus::new(self.handshake.status()),
                 );
 
                 let path = Arc::new(Path::new(&self.proto, link, pathway, cc)?);
@@ -604,11 +604,6 @@ impl Components {
             owner: Owner::Local,
             ccf: &ccf // TODO: trigger
         });
-        qlog::event!(ConnectionStateUpdated {
-            ?old: self.state.load(),
-            new: GranularConnectionStates::Closing,
-        });
-
         let error = ccf.clone().into();
         self.spaces.data().on_conn_error(&error);
         self.flow_ctrl.on_conn_error(&error);
@@ -651,11 +646,6 @@ impl Components {
             owner: Owner::Local,
             ccf: &ccf // TODO: trigger
         });
-        qlog::event!(ConnectionStateUpdated {
-            ?old: self.state.load(),
-            new: GranularConnectionStates::Draining,
-        });
-
         let error = ccf.into();
         self.spaces.data().on_conn_error(&error);
         self.flow_ctrl.on_conn_error(&error);

@@ -36,6 +36,7 @@ impl ConnState {
             .is_ok();
 
         if success {
+            // same as Self::update
             qlog::event!(ConnectionStateUpdated {
                 new: BaseConnectionStates::Attempted,
             });
@@ -60,16 +61,32 @@ impl ConnState {
         Ok(success)
     }
 
+    /// Try to update the connection state, return the old state if successful.
     pub fn update(&self, state: QlogConnectionState) -> Option<QlogConnectionState> {
-        decode(self.0.swap(encode(state), Ordering::Release))
-    }
-
-    pub fn set(&self, state: QlogConnectionState) {
-        self.0.store(encode(state), Ordering::Release);
-    }
-
-    pub fn load(&self) -> Option<QlogConnectionState> {
-        decode(self.0.load(Ordering::Acquire))
+        let new_state_code = encode(state);
+        let mut old_state_code = self.0.load(Ordering::Acquire);
+        loop {
+            if new_state_code <= old_state_code {
+                return None;
+            }
+            match self.0.compare_exchange(
+                old_state_code,
+                new_state_code,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_old_state_code) => {
+                    let old_state = decode(old_state_code)
+                        .expect("conenction failed before first path initialized");
+                    qlog::event!(ConnectionStateUpdated {
+                        new: state,
+                        old: old_state
+                    });
+                    return Some(old_state);
+                }
+                Err(current_state_code) => old_state_code = current_state_code,
+            }
+        }
     }
 }
 
@@ -85,6 +102,7 @@ macro_rules! mapping {
         pub fn encode(state: QlogConnectionState) -> u8 {
             match state {
                 $( $a::$b($c::$d) => $number, )*
+                _ => unreachable!("base closed and granular closed are repeated, use the base one"),
             }
         }
     };
@@ -92,14 +110,13 @@ macro_rules! mapping {
 
 mapping! {
     QlogConnectionState::Base(BaseConnectionStates::Attempted) => 1,
-    QlogConnectionState::Base(BaseConnectionStates::HandshakeStarted) => 2,
-    QlogConnectionState::Base(BaseConnectionStates::HandshakeComplete) => 3,
-    QlogConnectionState::Base(BaseConnectionStates::Closed) => 4,
-    QlogConnectionState::Granular(GranularConnectionStates::PeerValidated) => 5,
-    QlogConnectionState::Granular(GranularConnectionStates::EarlyWrite) => 6,
+    QlogConnectionState::Base(BaseConnectionStates::HandshakeStarted) => 2, // miss
+    QlogConnectionState::Base(BaseConnectionStates::HandshakeComplete) => 3, // miss
+    QlogConnectionState::Granular(GranularConnectionStates::PeerValidated) => 5, // miss
+    QlogConnectionState::Granular(GranularConnectionStates::EarlyWrite) => 6, // miss
     QlogConnectionState::Granular(GranularConnectionStates::HandshakeConfirmed) => 7,
-    // infact, unreliable
     QlogConnectionState::Granular(GranularConnectionStates::Closing) => 8,
     QlogConnectionState::Granular(GranularConnectionStates::Draining) => 9,
-    QlogConnectionState::Granular(GranularConnectionStates::Closed) => 10,
+    // QlogConnectionState::Granular(GranularConnectionStates::Closed) => 10,
+    QlogConnectionState::Base(BaseConnectionStates::Closed) => 10,
 }
