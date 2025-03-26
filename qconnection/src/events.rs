@@ -76,7 +76,7 @@ impl EmitEvent for ArcEventBroker {
             Event::StatelessReset => todo!("unsupported"),
             _ => { /* path create/inactive: no need */ }
         };
-        tracing::info!(?event, "event occurs");
+        tracing::info!(status = ?event, "connection");
         self.raw_broker.emit(event);
     }
 }

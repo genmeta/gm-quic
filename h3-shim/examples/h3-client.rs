@@ -52,12 +52,12 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
         .await?
         .next()
         .ok_or("dns found no addresses")?;
-    info!("DNS lookup for {:?}: {:?}", uri, addr);
+    info!("resolved {:?} to address: {:?}", uri, addr);
 
     let mut roots = rustls::RootCertStore::empty();
     roots.add_parsable_certificates(options.ca.to_certificate());
 
-    trace!(bind = ?options.bind, "build QuicClient");
+    trace!(bind = ?options.bind, "QuicClient");
     let quic_client = ::gm_quic::QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()
@@ -65,14 +65,13 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
         .with_parameters(client_parameters())
         .bind(&options.bind[..])?
         .build();
-    info!(%addr, "connecting to server");
+    info!(%addr, "connect to server");
     let conn = quic_client.connect(auth.host(), addr)?;
 
     // create h3 client
 
     let gm_quic_conn = h3_shim::QuicConnection::new(conn).await;
-    let (mut conn, mut send_request) = h3::client::new(gm_quic_conn).await?;
-    info!("handshake done");
+    let (mut conn, mut h3_client) = h3::client::new(gm_quic_conn).await?;
     let driver = async move {
         future::poll_fn(|cx| conn.poll_close(cx)).await?;
         // tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -86,32 +85,24 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
     //             So we "move" it.
     //                  vvvv
     let request = async move {
-        info!(%uri,"sending request ...");
+        info!(%uri, "request");
 
-        let req = http::Request::builder().uri(uri).body(())?;
+        let request = http::Request::builder().uri(uri).body(())?;
 
         // sending request results in a bidirectional stream,
         // which is also used for receiving response
-        let mut stream = send_request.send_request(req).await?;
-
-        // finish on the sending side
-        info!("waiting for peer to receive the request");
+        let mut stream = h3_client.send_request(request).await?;
+        // shutdown on the sending side, no more data for the GET request
         stream.finish().await?;
 
-        info!("receiving response ...");
-        let resp = stream.recv_response().await?;
-        info!("response: {:?} {}", resp.version(), resp.status());
-        info!("headers: {:#?}", resp.headers());
+        let response = stream.recv_response().await?;
+        info!(?response, "received");
 
         // `recv_data()` must be called after `recv_response()` for
         // receiving potential response body
-        let mut out = tokio::io::stdout();
         while let Some(mut chunk) = stream.recv_data().await? {
-            out.write_all_buf(&mut chunk).await?;
-            out.flush().await?;
+            tokio::io::stdout().write_all_buf(&mut chunk).await?;
         }
-
-        info!("all data received");
 
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         Ok::<_, Box<dyn std::error::Error + 'static + Send + Sync>>(())

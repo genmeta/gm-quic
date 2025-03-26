@@ -111,12 +111,16 @@ pub enum PacketContains {
 }
 
 impl PacketContains {
-    pub fn compose(self, frame_type: FrameType) -> Self {
+    pub fn include(self, frame_type: FrameType) -> Self {
         match frame_type {
-            FrameType::Ping if self == PacketContains::NonAckEliciting => Self::JustPing,
+            FrameType::Ping if self != PacketContains::EffectivePayload => Self::JustPing,
             fty if fty.is_ack_eliciting() => Self::EffectivePayload,
             _ => self,
         }
+    }
+
+    pub fn ack_eliciting(self) -> bool {
+        self != Self::NonAckEliciting
     }
 }
 

@@ -599,7 +599,7 @@ impl Components {
                     Instrument::instrument(task, qlog::span!(@current, path=pathway.to_string()))
                         .instrument_in_current();
 
-                tracing::info!(%pathway, %link,is_probed,do_validate, "created new path");
+                tracing::info!(%pathway, %link, is_probed, do_validate, "add new path:");
                 Ok((path,task))
         })
     }

@@ -262,7 +262,7 @@ pub fn spawn_deliver_and_parse(
                     let (frame, frame_type) = frame?;
                     frames.extend(Some(&frame));
                     dispatch_frame(frame, &path);
-                    Result::<_, Error>::Ok(packet_contains.compose(frame_type))
+                    Result::<_, Error>::Ok(packet_contains.include(frame_type))
                 },
             )?;
             packet.log_received(frames);
