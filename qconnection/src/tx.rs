@@ -10,7 +10,7 @@ use qbase::{
     cid::{BorrowedCid, ConnectionId},
     frame::{
         AckFrame, BeFrame, CryptoFrame, DatagramFrame, PathChallengeFrame, PathResponseFrame,
-        ReliableFrame, StreamFrame,
+        PingFrame, ReliableFrame, StreamFrame,
         io::{WriteDataFrame, WriteFrame},
     },
     net::tx::{ArcSendWaker, Signals},
@@ -207,6 +207,15 @@ impl<F> PacketBuffer<'_, '_, F> {
     pub fn dump_ack_frame(&mut self, frame: AckFrame) {
         self.logger.record_frame(&frame);
         self.writer.dump_frame(frame);
+        self.clerk.record_trivial();
+    }
+
+    pub fn dump_ping_frame(&mut self) {
+        self.logger.record_frame(QuicFrame::Ping {
+            length: Some(1),
+            payload_length: Some(1),
+        });
+        self.writer.dump_frame(PingFrame);
         self.clerk.record_trivial();
     }
 
@@ -451,7 +460,7 @@ struct LevelState {
 impl Transaction<'_> {
     pub fn load_spaces(
         &mut self,
-        datagram: &mut [u8],
+        buf: &mut [u8],
         spaces: &Spaces,
         spin: SpinBit,
         path_challenge_frames: &SendBuffer<PathChallengeFrame>,
@@ -461,12 +470,12 @@ impl Transaction<'_> {
         let mut last_level: Option<LevelState> = None;
         let mut last_level_size = 0;
         let mut containing_initial = false;
-        let mut limiter = Signals::empty();
+        let mut signals = Signals::empty();
 
         if let Ok((mid_pkt, ack)) = spaces
             .initial()
-            .try_assemble_packet(self, &mut datagram[written..])
-            .inspect_err(|l| limiter |= *l)
+            .try_assemble_packet(self, &mut buf[written..])
+            .inspect_err(|s| signals |= *s)
         {
             self.constraints
                 .commit(mid_pkt.packet_len(), mid_pkt.in_flight());
@@ -486,12 +495,12 @@ impl Transaction<'_> {
                 .try_assemble_0rtt_packet(
                     self,
                     path_challenge_frames,
-                    &mut datagram[written + last_level_size..],
+                    &mut buf[written + last_level_size..],
                 )
-                .inspect_err(|l| limiter |= *l)
+                .inspect_err(|s| signals |= *s)
             {
                 if let Some(last_level) = last_level.take() {
-                    let final_layout = last_level.pkt.complete(&mut datagram[written..]);
+                    let final_layout = last_level.pkt.complete(&mut buf[written..]);
                     written += final_layout.sent_bytes();
                     self.cc.on_pkt_sent(
                         last_level.epoch,
@@ -517,11 +526,11 @@ impl Transaction<'_> {
 
         if let Ok((mid_pkt, ack)) = spaces
             .handshake()
-            .try_assemble_packet(self, &mut datagram[written + last_level_size..])
-            .inspect_err(|l| limiter |= *l)
+            .try_assemble_packet(self, &mut buf[written + last_level_size..])
+            .inspect_err(|s| signals |= *s)
         {
             if let Some(last_level) = last_level.take() {
-                let final_layout = last_level.pkt.complete(&mut datagram[written..]);
+                let final_layout = last_level.pkt.complete(&mut buf[written..]);
                 written += final_layout.sent_bytes();
                 self.cc.on_pkt_sent(
                     last_level.epoch,
@@ -551,12 +560,12 @@ impl Transaction<'_> {
                     spin,
                     path_challenge_frames,
                     path_response_frames,
-                    &mut datagram[written + last_level_size..],
+                    &mut buf[written + last_level_size..],
                 )
-                .inspect_err(|l| limiter |= *l)
+                .inspect_err(|s| signals |= *s)
             {
                 if let Some(last_level) = last_level.take() {
-                    let final_layout = last_level.pkt.complete(&mut datagram[written..]);
+                    let final_layout = last_level.pkt.complete(&mut buf[written..]);
                     written += final_layout.sent_bytes();
                     self.cc.on_pkt_sent(
                         last_level.epoch,
@@ -581,9 +590,9 @@ impl Transaction<'_> {
 
         if let Some(final_level) = last_level {
             let final_layout = if containing_initial || final_level.pkt.probe_new_path() {
-                final_level.pkt.fill_and_complete(&mut datagram[written..])
+                final_level.pkt.fill_and_complete(&mut buf[written..])
             } else {
-                final_level.pkt.complete(&mut datagram[written..])
+                final_level.pkt.complete(&mut buf[written..])
             };
 
             written += final_layout.sent_bytes();
@@ -600,7 +609,7 @@ impl Transaction<'_> {
         if written != 0 {
             Ok(written)
         } else {
-            Err(limiter)
+            Err(signals)
         }
     }
 
@@ -671,5 +680,36 @@ impl Transaction<'_> {
                 );
                 final_layout.sent_bytes()
             })
+    }
+
+    pub fn load_ping(
+        &mut self,
+        buf: &mut [u8],
+        spin: SpinBit,
+        spaces: &Spaces,
+    ) -> Result<usize, Signals> {
+        for epoch in [Epoch::Data, Epoch::Handshake, Epoch::Initial] {
+            if self.cc.need_send_ack_eliciting(epoch) == 0 {
+                continue;
+            }
+            let middle_assembled_packet = match epoch {
+                Epoch::Initial => spaces.initial().try_assemble_ping_packet(self, buf),
+                Epoch::Handshake => spaces.handshake().try_assemble_ping_packet(self, buf),
+                Epoch::Data => spaces.data().try_assemble_ping_packet(self, spin, buf),
+            };
+            return middle_assembled_packet.map(|packet| {
+                let final_layout = packet.complete(buf);
+                self.cc.on_pkt_sent(
+                    epoch,
+                    final_layout.pn(),
+                    final_layout.is_ack_eliciting(),
+                    final_layout.sent_bytes(),
+                    final_layout.in_flight(),
+                    None,
+                );
+                final_layout.sent_bytes()
+            });
+        }
+        Err(Signals::PING)
     }
 }

@@ -109,7 +109,7 @@ fn complete_frame(
 }
 
 /// Parse a frame type from the raw bytes, [nom](https://docs.rs/nom/latest/nom/) parser style.
-pub fn be_frame(raw: &Bytes, packet_type: Type) -> Result<(usize, Frame, bool), Error> {
+pub fn be_frame(raw: &Bytes, packet_type: Type) -> Result<(usize, Frame, FrameType), Error> {
     let input = raw.as_ref();
     let (remain, frame_type) = be_frame_type(input)?;
     if !frame_type.belongs_to(packet_type) {
@@ -131,11 +131,7 @@ pub fn be_frame(raw: &Bytes, packet_type: Type) -> Result<(usize, Frame, bool), 
         }
         _ => unreachable!("parsing frame never fails"),
     })?;
-    Ok((
-        input.len() - remain.len(),
-        frame,
-        frame_type.is_ack_eliciting(),
-    ))
+    Ok((input.len() - remain.len(), frame, frame_type))
 }
 
 /// A [`bytes::BufMut`] extension trait, makes buffer more friendly

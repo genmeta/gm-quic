@@ -11,13 +11,14 @@ use super::route::Pathway;
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy,PartialEq, Eq)]
     pub struct Signals: u8 {
-        const CONGESTION  = 1 << 0; // cc
-        const FLOW_CONTROL = 1 << 1; // flow
-        const TRANSPORT = 1 << 2; // ack/retran/reliable....
-        const WRITTEN = 1 << 3; // fresh stream
+        const CONGESTION    = 1 << 0; // cc
+        const FLOW_CONTROL  = 1 << 1; // flow
+        const TRANSPORT     = 1 << 2; // ack/retran/reliable....
+        const WRITTEN       = 1 << 3; // fresh stream
         const CONNECTION_ID = 1 << 4; // cid
-        const CREDIT = 1 << 5; // aa
-        const KEYS  = 1 << 6; // key(no waker in SendWaker)
+        const CREDIT        = 1 << 5; // aa
+        const KEYS          = 1 << 6; // key(no waker in SendWaker)
+        const PING          = 1 << 7; // packet which contains ping frames only
     }
 }
 

@@ -477,7 +477,7 @@ impl FrameReader {
 }
 
 impl Iterator for FrameReader {
-    type Item = Result<(Frame, bool), Error>;
+    type Item = Result<(Frame, FrameType), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.payload.is_empty() {
@@ -485,9 +485,9 @@ impl Iterator for FrameReader {
         }
 
         match io::be_frame(&self.payload, self.packet_type) {
-            Ok((consumed, frame, is_ack_eliciting)) => {
+            Ok((consumed, frame, frame_type)) => {
                 self.payload.advance(consumed);
-                Some(Ok((frame, is_ack_eliciting)))
+                Some(Ok((frame, frame_type)))
             }
             Err(e) => {
                 self.payload.clear(); // no longer parsing
@@ -582,14 +582,14 @@ mod tests {
         let mut reader = FrameReader::new(buf.freeze(), packet_type);
 
         // Read PADDING frame
-        let (frame, is_ack) = reader.next().unwrap().unwrap();
+        let (frame, frame_type) = reader.next().unwrap().unwrap();
         assert!(matches!(frame, Frame::Padding(_)));
-        assert!(!is_ack);
+        assert!(!frame_type.is_ack_eliciting());
 
         // Read PING frame
-        let (frame, is_ack) = reader.next().unwrap().unwrap();
+        let (frame, frame_type) = reader.next().unwrap().unwrap();
         assert!(matches!(frame, Frame::Ping(_)));
-        assert!(is_ack);
+        assert!(frame_type.is_ack_eliciting());
 
         // No more frames
         assert!(reader.next().is_none());

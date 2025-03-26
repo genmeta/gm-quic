@@ -12,7 +12,7 @@ use qbase::{
         tx::{ArcSendWakers, Signals},
     },
     packet::{
-        FinalPacketLayout, MarshalFrame, PacketWriter,
+        FinalPacketLayout, MarshalFrame, PacketContains, PacketWriter,
         header::{
             GetDcid, GetType,
             long::{HandshakeHeader, io::LongHeaderBuilder},
@@ -132,6 +132,24 @@ impl HandshakeSpace {
             ack,
         ))
     }
+
+    pub fn try_assemble_ping_packet(
+        &self,
+        tx: &mut Transaction<'_>,
+        buf: &mut [u8],
+    ) -> Result<PaddablePacket, Signals> {
+        let keys = self.keys.get_local_keys().ok_or(Signals::KEYS)?;
+        let sent_journal = self.journal.of_sent_packets();
+        let header = LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).handshake();
+        let mut packet = PacketBuffer::new_long(header, buf, keys, &sent_journal)?;
+
+        packet.dump_ping_frame();
+
+        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Handshake);
+        packet
+            .prepare_with_time(retran_timeout, expire_timeout)
+            .map_err(|_| unreachable!("packet is not empty"))
+    }
 }
 
 pub fn spawn_deliver_and_parse(
@@ -187,23 +205,26 @@ pub fn spawn_deliver_and_parse(
             // address to have been validated.
             // It may have already been verified using tokens in the Handshake space
             path.grant_anti_amplification();
-            path.on_packet_rcvd(packet.size());
 
             let mut frames = QuicFramesCollector::<PacketReceived>::new();
-            let is_ack_packet = FrameReader::new(packet.body(), packet.get_type()).try_fold(
-                false,
-                |is_ack_packet, frame| {
-                    let (frame, is_ack_eliciting) = frame?;
+            let packet_contains = FrameReader::new(packet.body(), packet.get_type()).try_fold(
+                PacketContains::default(),
+                |packet_contains, frame| {
+                    let (frame, frame_type) = frame?;
                     frames.extend(Some(&frame));
                     dispatch_frame(frame, &path);
-                    Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                    Result::<_, Error>::Ok(packet_contains.compose(frame_type))
                 },
             )?;
             packet.log_received(frames);
 
             space.journal.of_rcvd_packets().register_pn(packet.pn());
-            path.cc()
-                .on_pkt_rcvd(Epoch::Handshake, packet.pn(), is_ack_packet);
+            path.on_packet_rcvd(
+                Epoch::Handshake,
+                packet.pn(),
+                packet.size(),
+                packet_contains,
+            );
 
             // the origin dcid doesnot own a sequences number, so remove its router entry after the connection id
             // negotiating done.

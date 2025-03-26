@@ -239,12 +239,12 @@ impl<TX> SendingSender<TX> {
                 let is_eos = fin_pos == Some(offset + data.len() as u64);
                 (offset, is_fresh, data, is_eos)
             })
-            .or_else(|limiter| {
+            .or_else(|signals| {
                 if fin_pos.is_some_and(|fin_pos| fin_pos == sent) {
-                    predicate(sent).ok_or(limiter | Signals::CONGESTION)?;
+                    predicate(sent).ok_or(signals | Signals::CONGESTION)?;
                     Ok((sent, false, (&[], &[]), true))
                 } else {
-                    Err(limiter)
+                    Err(signals)
                 }
             })
     }

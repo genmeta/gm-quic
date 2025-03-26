@@ -259,7 +259,7 @@ where
             (Ok(sum), Ok(fresh)) => Continue(Ok(sum + fresh)),
             (Ok(sum), Err(_no_more)) => Break(Ok(sum)),
             (Err(_), Ok(n)) => Continue(Ok(n)),
-            (Err(_), Err(limiter)) => Break(Err(limiter)),
+            (Err(_), Err(signals)) => Break(Err(signals)),
         });
         result
     }

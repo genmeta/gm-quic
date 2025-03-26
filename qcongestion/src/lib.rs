@@ -1,10 +1,6 @@
 use std::time::{Duration, Instant};
 
-use qbase::{
-    Epoch,
-    frame::AckFrame,
-    net::tx::{ArcSendWaker, Signals},
-};
+use qbase::{Epoch, frame::AckFrame, net::tx::Signals};
 use qlog::quic::recovery::PacketLostTrigger;
 use tokio::task::AbortHandle;
 
@@ -24,7 +20,7 @@ pub const MSS: usize = 1200;
 /// The [`Transport`] trait defines the interface for congestion control algorithms.
 pub trait Transport {
     /// Performs a periodic tick to drive the congestion control algorithm.
-    fn launch_with_waker(&self, tx_waker: ArcSendWaker) -> AbortHandle;
+    fn launch(&self) -> AbortHandle;
 
     fn send_quota(&self, expect_quota: usize) -> Result<usize, Signals>;
 

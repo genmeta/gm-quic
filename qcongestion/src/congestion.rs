@@ -44,6 +44,7 @@ pub struct CongestionController {
     trackers: [Arc<dyn Feedback>; 3],
     need_send_ack_eliciting_packets: [usize; Epoch::count()],
     path_status: PathStatus,
+    tx_waker: ArcSendWaker,
 }
 
 impl CongestionController {
@@ -53,6 +54,7 @@ impl CongestionController {
         max_ack_delay: Duration,
         trackers: [Arc<dyn Feedback>; 3],
         handshake_status: Arc<HandshakeStatus>,
+        tx_waker: ArcSendWaker,
     ) -> Self {
         let algorithm: Box<dyn Control> = match algorithm {
             Algorithm::Bbr => todo!("implement BBR"),
@@ -76,6 +78,7 @@ impl CongestionController {
             trackers,
             need_send_ack_eliciting_packets: [0; Epoch::count()],
             path_status: PathStatus::new(handshake_status),
+            tx_waker,
         }
     }
 
@@ -425,6 +428,7 @@ impl CongestionController {
     }
 
     fn send_ack_eliciting_packet(&mut self, epoch: Epoch, count: usize) {
+        self.tx_waker.wake_by(Signals::PING);
         self.need_send_ack_eliciting_packets[epoch] += count;
     }
 
@@ -467,18 +471,20 @@ impl ArcCC {
         max_ack_delay: Duration,
         trackers: [Arc<dyn Feedback>; 3],
         handshake_status: Arc<HandshakeStatus>,
+        tx_waker: ArcSendWaker,
     ) -> Self {
         ArcCC(Arc::new(Mutex::new(CongestionController::init(
             algorithm,
             max_ack_delay,
             trackers,
             handshake_status,
+            tx_waker,
         ))))
     }
 }
 
 impl super::Transport for ArcCC {
-    fn launch_with_waker(&self, tx_waker: ArcSendWaker) -> AbortHandle {
+    fn launch(&self) -> AbortHandle {
         let cc = self.clone();
         tokio::spawn(
             async move {
@@ -493,11 +499,11 @@ impl super::Transport for ArcCC {
                     if let Some(expect_quota) = guard.pending_burst {
                         if guard.send_quota() >= expect_quota {
                             guard.pending_burst = None;
-                            tx_waker.wake_by(Signals::CONGESTION);
+                            guard.tx_waker.wake_by(Signals::CONGESTION);
                         }
                     }
                     if guard.need_ack() {
-                        tx_waker.wake_by(Signals::TRANSPORT);
+                        guard.tx_waker.wake_by(Signals::TRANSPORT);
                     }
                 }
             }

@@ -10,7 +10,7 @@ use header::{LongHeader, io::WriteHeader};
 use crate::{
     cid::ConnectionId,
     frame::{
-        BeFrame, ContainSpec, Spec,
+        BeFrame, ContainSpec, FrameType, Spec,
         io::{WriteDataFrame, WriteFrame},
     },
     net::tx::Signals,
@@ -99,6 +99,24 @@ pub struct DataPacket {
 impl GetType for DataPacket {
     fn get_type(&self) -> Type {
         self.header.get_type()
+    }
+}
+
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
+pub enum PacketContains {
+    #[default]
+    NonAckEliciting,
+    JustPing,
+    EffectivePayload,
+}
+
+impl PacketContains {
+    pub fn compose(self, frame_type: FrameType) -> Self {
+        match frame_type {
+            FrameType::Ping if self == PacketContains::NonAckEliciting => Self::JustPing,
+            fty if fty.is_ack_eliciting() => Self::EffectivePayload,
+            _ => self,
+        }
     }
 }
 

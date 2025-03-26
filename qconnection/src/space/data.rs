@@ -15,7 +15,7 @@ use qbase::{
         tx::{ArcSendWakers, Signals},
     },
     packet::{
-        self, FinalPacketLayout, MarshalFrame, PacketWriter,
+        self, FinalPacketLayout, MarshalFrame, PacketContains, PacketWriter,
         header::{
             GetType, OneRttHeader,
             long::{ZeroRttHeader, io::LongHeaderBuilder},
@@ -153,39 +153,39 @@ impl DataSpace {
             &sent_journal,
         )?;
 
-        let mut limiter = Signals::empty();
+        let mut signals = Signals::empty();
 
         _ = path_challenge_frames
             .try_load_frames_into(&mut packet)
-            .inspect_err(|l| limiter |= *l);
+            .inspect_err(|s| signals |= *s);
         _ = self
             .crypto_stream
             .outgoing()
             .try_load_data_into(&mut packet)
-            .inspect_err(|l| limiter |= *l);
+            .inspect_err(|s| signals |= *s);
         // try to load reliable frames into this 0RTT packet to send
         _ = self
             .reliable_frames
             .try_load_frames_into(&mut packet)
-            .inspect_err(|l| limiter |= *l);
+            .inspect_err(|s| signals |= *s);
         // try to load stream frames into this 0RTT packet to send
         let fresh_data = self
             .streams
             .try_load_data_into(&mut packet, tx.flow_limit())
-            .inspect_err(|l| limiter |= *l)
+            .inspect_err(|s| signals |= *s)
             .unwrap_or_default();
         #[cfg(feature = "unreliable")]
         let _ = self
             .datagrams
             .try_load_data_into(&mut packet)
-            .inspect_err(|l| limiter |= *l);
+            .inspect_err(|s| signals |= *s);
 
         // 错误是累积的，只有最后发现确实不能组成一个数据包时才真正返回错误
         let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         Ok((
             packet
                 .prepare_with_time(retran_timeout, expire_timeout)
-                .map_err(|_| limiter)?,
+                .map_err(|_| signals)?,
             fresh_data,
         ))
     }
@@ -216,7 +216,7 @@ impl DataSpace {
             &sent_journal,
         )?;
 
-        let mut limiter = Signals::empty();
+        let mut signals = Signals::empty();
 
         let ack = need_ack
             .ok_or(Signals::TRANSPORT)
@@ -227,43 +227,43 @@ impl DataSpace {
                 packet.dump_ack_frame(ack_frame);
                 Ok(largest)
             })
-            .inspect_err(|l| limiter |= *l)
+            .inspect_err(|s| signals |= *s)
             .ok();
 
         _ = path_challenge_frames
             .try_load_frames_into(&mut packet)
-            .inspect_err(|l| limiter |= *l);
+            .inspect_err(|s| signals |= *s);
         _ = path_response_frames
             .try_load_frames_into(&mut packet)
-            .inspect_err(|l| limiter |= *l);
+            .inspect_err(|s| signals |= *s);
         _ = self
             .crypto_stream
             .outgoing()
             .try_load_data_into(&mut packet)
-            .inspect_err(|l| limiter = *l);
+            .inspect_err(|s| signals |= *s);
         // try to load reliable frames into this 1RTT packet to send
         _ = self
             .reliable_frames
             .try_load_frames_into(&mut packet)
-            .inspect_err(|l| limiter |= *l);
+            .inspect_err(|s| signals |= *s);
         // try to load stream frames into this 1RTT packet to send
         let fresh_data = self
             .streams
             .try_load_data_into(&mut packet, tx.flow_limit())
-            .inspect_err(|l| limiter = *l)
+            .inspect_err(|s| signals |= *s)
             .unwrap_or_default();
 
         #[cfg(feature = "unreliable")]
         let _ = self
             .datagrams
             .try_load_data_into(&mut packet)
-            .inspect_err(|l| limiter |= *l);
+            .inspect_err(|s| signals |= *s);
 
         let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         Ok((
             packet
                 .prepare_with_time(retran_timeout, expire_timeout)
-                .map_err(|_| limiter)?,
+                .map_err(|_| signals)?,
             ack,
             fresh_data,
         ))
@@ -296,12 +296,38 @@ impl DataSpace {
         _ = path_response_frames
             .try_load_frames_into(&mut packet)
             .inspect_err(|s| signals |= *s);
-        // 其实还应该加上NCID，但是从ReliableFrameDeque分拣太复杂了
+        // 其实还应该加上NCIDF，但是从ReliableFrameDeque分拣太复杂了
 
         let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         packet
             .prepare_with_time(retran_timeout, expire_timeout)
             .map_err(|_| signals)
+    }
+
+    pub fn try_assemble_ping_packet(
+        &self,
+        tx: &mut Transaction<'_>,
+        spin: SpinBit,
+        buf: &mut [u8],
+    ) -> Result<PaddablePacket, Signals> {
+        let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
+        let (key_phase, pk) = pk.lock_guard().get_local();
+        let sent_journal = self.journal.of_sent_packets();
+        let mut packet = PacketBuffer::new_short(
+            OneRttHeader::new(spin, tx.dcid()),
+            buf,
+            hpk,
+            pk,
+            key_phase,
+            &sent_journal,
+        )?;
+
+        packet.dump_ping_frame();
+
+        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
+        packet
+            .prepare_with_time(retran_timeout, expire_timeout)
+            .map_err(|_| unreachable!("packet is not empty"))
     }
 
     pub fn is_one_rtt_ready(&self) -> bool {
@@ -464,18 +490,17 @@ pub fn spawn_deliver_and_parse(
                     };
 
                     let mut frames = QuicFramesCollector::<PacketReceived>::new();
-                    let is_ack_packet = FrameReader::new(packet.body(), packet.get_type())
-                        .try_fold(false, |is_ack_packet, frame| {
-                            let (frame, is_ack_eliciting) = frame?;
+                    let packet_contains = FrameReader::new(packet.body(), packet.get_type())
+                        .try_fold(PacketContains::default(), |packet_contains, frame| {
+                            let (frame, frame_type) = frame?;
                             frames.extend(Some(&frame));
                             dispatch_data_frame(frame, packet.get_type(), &path);
-                            Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                            Result::<_, Error>::Ok(packet_contains.compose(frame_type))
                         })?;
                     packet.log_received(frames);
 
                     space.journal.of_rcvd_packets().register_pn(packet.pn());
-                    path.cc()
-                        .on_pkt_rcvd(Epoch::Data, packet.pn(), is_ack_packet);
+                    path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_contains);
                 };
 
                 Result::<(), Error>::Ok(())
@@ -494,24 +519,22 @@ pub fn spawn_deliver_and_parse(
                             return Ok(());
                         }
                     };
-                    path.on_packet_rcvd(packet.size());
                     components
                         .handshake
                         .discard_spaces_on_server_handshake_done(&components.paths);
 
                     let mut frames = QuicFramesCollector::<PacketReceived>::new();
-                    let is_ack_packet = FrameReader::new(packet.body(), packet.get_type())
-                        .try_fold(false, |is_ack_packet, frame| {
-                            let (frame, is_ack_eliciting) = frame?;
+                    let packet_contains = FrameReader::new(packet.body(), packet.get_type())
+                        .try_fold(PacketContains::default(), |packet_contains, frame| {
+                            let (frame, frame_type) = frame?;
                             frames.extend(Some(&frame));
                             dispatch_data_frame(frame, packet.get_type(), &path);
-                            Result::<bool, Error>::Ok(is_ack_packet || is_ack_eliciting)
+                            Result::<_, Error>::Ok(packet_contains.compose(frame_type))
                         })?;
                     packet.log_received(frames);
 
                     space.journal.of_rcvd_packets().register_pn(packet.pn());
-                    path.cc()
-                        .on_pkt_rcvd(Epoch::Data, packet.pn(), is_ack_packet);
+                    path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_contains);
                 }
                 Result::<(), Error>::Ok(())
             }
