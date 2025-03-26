@@ -82,14 +82,14 @@ pub async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Sen
         .add_host("localhost", cert.as_path(), key.as_path())
         .with_alpns([ALPN.to_vec()])
         .listen(&options.listen[..])?;
-    info!("listening on {:?}", quic_server.addresses());
+    info!("listen on {:?}", quic_server.addresses());
 
     // handle incoming connections and requests
     while let Ok((new_conn, _pathway)) = quic_server.accept().await {
         let h3_conn =
             match h3::server::Connection::new(h3_shim::QuicConnection::new(new_conn).await).await {
                 Ok(h3_conn) => {
-                    info!("new connection established");
+                    info!("accept a new quic connection");
                     h3_conn
                 }
                 Err(error) => {
@@ -126,11 +126,11 @@ async fn handle_connection<T>(
 {
     loop {
         match connection.accept().await {
-            Ok(Some((req, stream))) => {
-                info!("new request: {:#?}", req);
+            Ok(Some((request, stream))) => {
+                info!(?request, "handle");
                 let serve_root = serve_root.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_request(req, stream, serve_root).await {
+                    if let Err(e) = handle_request(request, stream, serve_root).await {
                         error!("handling request failed: {}", e);
                     }
                 });
@@ -146,7 +146,7 @@ async fn handle_connection<T>(
 
 #[tracing::instrument(skip_all)]
 async fn handle_request<T>(
-    req: Request<()>,
+    request: Request<()>,
     mut stream: RequestStream<T, Bytes>,
     serve_root: Arc<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>>
@@ -154,9 +154,9 @@ where
     T: BidiStream<Bytes>,
 {
     let (status, to_serve) = match serve_root.deref() {
-        _ if req.uri().path().contains("..") => (StatusCode::NOT_FOUND, None),
+        _ if request.uri().path().contains("..") => (StatusCode::NOT_FOUND, None),
         root => {
-            let to_serve = root.join(req.uri().path().strip_prefix('/').unwrap_or(""));
+            let to_serve = root.join(request.uri().path().strip_prefix('/').unwrap_or(""));
             match File::open(&to_serve).await {
                 Ok(file) => (StatusCode::OK, Some(file)),
                 Err(e) => {

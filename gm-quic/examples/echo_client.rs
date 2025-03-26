@@ -6,7 +6,7 @@ use rustls::RootCertStore;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tracing::info;
 
-#[derive(clap::Parser)]
+#[derive(Parser)]
 struct Options {
     #[arg(long)]
     server: SocketAddr,
@@ -34,8 +34,8 @@ pub async fn main() -> io::Result<()> {
 
     loop {
         let (sid, (mut reader, mut writer)) = connection.open_bi_stream().await?.unwrap();
-
         info!(%sid, "opened bidi stream");
+
         stdout.write_all(b">").await?;
         stdout.flush().await?;
 
@@ -46,7 +46,6 @@ pub async fn main() -> io::Result<()> {
         writer.write_all(line.as_bytes()).await?;
         writer.shutdown().await?;
 
-        info!("wait for server to echo");
         let mut echo = String::new();
         reader.read_to_string(&mut echo).await?;
         info!("server echoed: `{echo}`");

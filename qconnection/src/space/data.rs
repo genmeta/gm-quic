@@ -495,7 +495,7 @@ pub fn spawn_deliver_and_parse(
                             let (frame, frame_type) = frame?;
                             frames.extend(Some(&frame));
                             dispatch_data_frame(frame, packet.get_type(), &path);
-                            Result::<_, Error>::Ok(packet_contains.compose(frame_type))
+                            Result::<_, Error>::Ok(packet_contains.include(frame_type))
                         })?;
                     packet.log_received(frames);
 
@@ -529,7 +529,7 @@ pub fn spawn_deliver_and_parse(
                             let (frame, frame_type) = frame?;
                             frames.extend(Some(&frame));
                             dispatch_data_frame(frame, packet.get_type(), &path);
-                            Result::<_, Error>::Ok(packet_contains.compose(frame_type))
+                            Result::<_, Error>::Ok(packet_contains.include(frame_type))
                         })?;
                     packet.log_received(frames);
 

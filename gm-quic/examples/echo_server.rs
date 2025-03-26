@@ -24,7 +24,7 @@ pub async fn main() -> io::Result<()> {
         .with_parameters(server_stream_unlimited_parameters())
         .listen(Options::parse().bind)?;
 
-    info!("listening on {:?}", server.addresses());
+    info!("listen on {:?}", server.addresses());
 
     launch(server).await?;
 
@@ -62,18 +62,17 @@ pub async fn launch(server: Arc<gm_quic::QuicServer>) -> io::Result<()> {
     ) -> io::Result<()> {
         let mut message = String::new();
         reader.read_to_string(&mut message).await?;
-        tracing::info!("fully received message");
+        info!(?message, "received");
 
         writer.write_all(message.as_bytes()).await?;
         writer.shutdown().await?;
-        tracing::info!("successfully echoed message");
 
         io::Result::Ok(())
     }
 
     loop {
         let (connection, pathway) = server.accept().await?;
-        tracing::info!(source = ?pathway.remote(), "accepted new connection");
+        info!(source = ?pathway.remote(), "accepted new connection");
         tokio::spawn(handle_connection(connection, *pathway.remote()));
     }
 }

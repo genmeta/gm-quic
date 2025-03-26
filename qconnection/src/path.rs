@@ -116,8 +116,8 @@ impl Path {
         if packet_contains == PacketContains::EffectivePayload {
             *self.last_active_time.lock().unwrap() = Instant::now();
         }
-        let is_ack_elicition = packet_contains != PacketContains::NonAckEliciting;
-        self.cc().on_pkt_rcvd(epoch, pn, is_ack_elicition);
+        self.cc()
+            .on_pkt_rcvd(epoch, pn, packet_contains.ack_eliciting());
     }
 
     pub fn grant_anti_amplification(&self) {
