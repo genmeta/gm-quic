@@ -280,7 +280,7 @@ pub fn keys_upgrade(components: &Components) -> impl Future<Output = ()> + Send 
 
             if is_tls_done {
                 // only server is handshake confirmed, client is confirmed after receiving the first HANDSHAKE_DONE frame
-                handshake.server_done_and_discard_spaces(&paths);
+                handshake.discard_spaces_on_server_handshake_done(&paths);
             }
         }
 

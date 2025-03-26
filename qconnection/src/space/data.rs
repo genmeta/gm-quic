@@ -59,11 +59,11 @@ use crate::{
 
 pub type CipherZeroRttPacket = CipherPacket<ZeroRttHeader>;
 pub type PlainZeroRttPacket = PlainPacket<ZeroRttHeader>;
-pub type ReceivedZeroRttPacket = (CipherZeroRttPacket, Pathway, Link);
+pub type ReceivedZeroRttFrom = (CipherZeroRttPacket, Pathway, Link);
 
 pub type CipherOneRttPacket = CipherPacket<OneRttHeader>;
 pub type PlainOneRttPacket = PlainPacket<OneRttHeader>;
-pub type ReceivedOneRttPacket = (CipherOneRttPacket, Pathway, Link);
+pub type ReceivedOneRttFrom = (CipherOneRttPacket, Pathway, Link);
 
 pub struct DataSpace {
     zero_rtt_keys: ArcKeys,
@@ -333,8 +333,8 @@ impl DataSpace {
 }
 
 pub fn spawn_deliver_and_parse(
-    mut zeor_rtt_packets: impl Stream<Item = ReceivedZeroRttPacket> + Unpin + Send + 'static,
-    mut one_rtt_packets: impl Stream<Item = ReceivedOneRttPacket> + Unpin + Send + 'static,
+    mut zeor_rtt_packets: impl Stream<Item = ReceivedZeroRttFrom> + Unpin + Send + 'static,
+    mut one_rtt_packets: impl Stream<Item = ReceivedOneRttFrom> + Unpin + Send + 'static,
     space: Arc<DataSpace>,
     components: &Components,
     event_broker: ArcEventBroker,
@@ -383,7 +383,7 @@ pub fn spawn_deliver_and_parse(
         rcvd_handshake_done_frames,
         components
             .handshake
-            .client_done_and_discard_spaces(components.paths.clone()),
+            .discard_spaces_on_client_handshake_done(components.paths.clone()),
         event_broker.clone(),
     );
     pipe(
@@ -432,8 +432,6 @@ pub fn spawn_deliver_and_parse(
             Frame::HandshakeDone(f) => {
                 _ = {
                     // See [Section 4.1.2](https://datatracker.ietf.org/doc/html/rfc9001#handshake-confirmed)
-                    path.cc().discard_epoch(Epoch::Initial);
-                    path.cc().discard_epoch(Epoch::Handshake);
                     handshake_done_frames_entry.send(f)
                 }
             }
@@ -455,9 +453,9 @@ pub fn spawn_deliver_and_parse(
             let components = components.clone();
             let space = space.clone();
             let dispatch_data_frame = dispatch_data_frame.clone();
-            async move |packet: CipherZeroRttPacket, pathway, socket| {
+            async move |packet: CipherZeroRttPacket, pathway, link| {
                 if let Some(packet) = space.decrypt_0rtt_packet(packet).await.transpose()? {
-                    let path = match components.get_or_try_create_path(socket, pathway, true) {
+                    let path = match components.get_or_try_create_path(link, pathway, true) {
                         Ok(path) => path,
                         Err(_) => {
                             packet.drop_on_conenction_closed();
@@ -487,9 +485,9 @@ pub fn spawn_deliver_and_parse(
     let parse_one_rtt =
         {
             let components = components.clone();
-            async move |packet: CipherOneRttPacket, pathway, socket| {
+            async move |packet: CipherOneRttPacket, pathway, link| {
                 if let Some(packet) = space.decrypt_1rtt_packet(packet).await.transpose()? {
-                    let path = match components.get_or_try_create_path(socket, pathway, true) {
+                    let path = match components.get_or_try_create_path(link, pathway, true) {
                         Ok(path) => path,
                         Err(_) => {
                             packet.drop_on_conenction_closed();
@@ -499,7 +497,7 @@ pub fn spawn_deliver_and_parse(
                     path.on_rcvd(packet.size());
                     components
                         .handshake
-                        .server_done_and_discard_spaces(&components.paths);
+                        .discard_spaces_on_server_handshake_done(&components.paths);
 
                     let mut frames = QuicFramesCollector::<PacketReceived>::new();
                     let is_ack_packet = FrameReader::new(packet.body(), packet.get_type())
@@ -549,10 +547,10 @@ impl Feedback for DataSpace {
     fn may_loss(&self, trigger: PacketLostTrigger, pns: &mut dyn Iterator<Item = u64>) {
         let sent_jornal = self.journal.of_sent_packets();
         let crypto_outgoing = self.crypto_stream.outgoing();
-        let mut rotate = sent_jornal.rotate();
+        let mut sent_packets = sent_jornal.rotate();
         for pn in pns {
             let mut may_lost_frames = QuicFramesCollector::<PacketLost>::new();
-            for frame in rotate.may_loss_pkt(pn) {
+            for frame in sent_packets.may_loss_packet(pn) {
                 match frame {
                     GuaranteedFrame::Crypto(frame) => {
                         may_lost_frames.extend(Some(&Frame::Crypto(frame, bytes::Bytes::new())));
@@ -646,7 +644,7 @@ impl ClosingDataSpace {
 }
 
 pub fn spawn_deliver_and_parse_closing(
-    mut packets: impl Stream<Item = ReceivedOneRttPacket> + Unpin + Send + 'static,
+    mut packets: impl Stream<Item = ReceivedOneRttFrom> + Unpin + Send + 'static,
     space: ClosingDataSpace,
     closing_state: Arc<ClosingState>,
     event_broker: ArcEventBroker,
