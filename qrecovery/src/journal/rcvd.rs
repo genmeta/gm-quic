@@ -14,9 +14,9 @@ use qbase::{
 
 /// 收包记录有以下几种状态
 /// - Empty：收包记录为空，未收到该包
-/// - PacketReceived：收到数据包，最晚 ack 时刻，淘汰时刻, 如果路径没有驱动 ack，由这里驱动
-/// - AckSent：已发送ACK应答，淘汰时刻，确认了这个包的包号，如果set里的任意包号被确认了，则转换成 AckConfirmed 状态
-/// - AckConfirmed：淘汰时刻
+/// - PacketReceived：（收包时间，最晚ack时间，过期时间）, 如果路径没有驱动 ack，由这里驱动
+/// - AckSent：（ack_eliciting，收包时间,淘汰时间，确认了这个包的包号集合），如果set里的任意包号被确认了，则转换成 AckConfirmed 状态
+/// - AckConfirmed：（ack_eliciting，收包时间，淘汰时间）
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 enum State {
     #[default]
@@ -48,14 +48,6 @@ impl State {
         }
     }
 
-    // 是否要触发发送ack 帧， 判断从未发过 ack，且到达了最晚 ack 时间
-    fn should_trigger_immediate_ack(&self, now: Instant) -> bool {
-        match self {
-            State::PacketReceived(_, Some(ack_time), _) => now > *ack_time,
-            _ => false,
-        }
-    }
-
     fn is_expired(&self, now: Instant) -> bool {
         match self {
             State::Empty => true,
@@ -76,6 +68,7 @@ struct RcvdJournal {
     queue: IndexDeque<State, VARINT_MAX>,
     max_ack_delay: Option<Duration>,
     packet_include_ack: HashSet<u64>,
+    earliest_not_ack_time: Option<(u64, Instant)>,
 }
 
 impl RcvdJournal {
@@ -84,6 +77,7 @@ impl RcvdJournal {
             queue: IndexDeque::with_capacity(capacity),
             max_ack_delay,
             packet_include_ack: HashSet::new(),
+            earliest_not_ack_time: None,
         }
     }
 
@@ -116,12 +110,15 @@ impl RcvdJournal {
         };
         let expire_time = now + pto * 3;
         if let Some(record) = self.queue.get_mut(pn) {
-            // todo: 应该判断是否处于 Idle 状态
+            assert!(matches!(record, State::Empty));
             *record = State::PacketReceived(now, ack_time, expire_time);
         } else {
             self.queue
                 .insert(pn, State::PacketReceived(now, ack_time, expire_time))
                 .expect("packet number never exceed limit");
+        }
+        if self.earliest_not_ack_time.is_none() {
+            self.earliest_not_ack_time = Some((pn, now));
         }
     }
 
@@ -255,34 +252,31 @@ impl RcvdJournal {
             }
         }
         self.packet_include_ack.insert(pn);
+        if let Some((pn, _)) = self.earliest_not_ack_time {
+            if largest >= pn {
+                self.earliest_not_ack_time = None;
+            }
+        }
         Ok(AckFrame::new(largest, delay, first_range, ranges, None))
     }
 
     fn trigger_ack_frame(&self) -> Option<(u64, Instant)> {
         let now = tokio::time::Instant::now().into_std();
-
-        if self
-            .queue
-            .iter()
-            .any(|record| record.should_trigger_immediate_ack(now))
-        {
-            let largest = self.queue.largest();
-            let state = self.queue.get(largest);
-            if let Some(state) = state {
-                if let State::Empty = state {
-                    return None;
-                }
-                if let Some(recv_time) = match state {
-                    State::PacketReceived(recv_time, _, _)
-                    | State::AckSent(_, recv_time, _, _)
-                    | State::AckConfirmed(_, recv_time, _) => Some(*recv_time),
-                    _ => None,
-                } {
-                    return Some((largest, recv_time));
-                }
-            }
+        let (_, earliest_not_ack_time) = self.earliest_not_ack_time?;
+        let max_ack_delay = self.max_ack_delay.unwrap_or_default();
+        if earliest_not_ack_time + max_ack_delay >= now {
+            return None;
         }
-        None
+        let largest = self.queue.largest();
+        let state = self.queue.get(largest)?;
+        let recv_time = match state {
+            State::PacketReceived(rt, _, _)
+            | State::AckSent(_, rt, _, _)
+            | State::AckConfirmed(_, rt, _) => *rt,
+            _ => return None,
+        };
+
+        Some((largest, recv_time))
     }
 }
 
@@ -418,39 +412,44 @@ mod tests {
         assert!(matches!(record, State::AckConfirmed(_, _, _)));
     }
 
-    // #[test]
-    // fn gen_ack_frame() {
-    //     let rcvd_state = State { is_received: true };
-    //     let unrcvd_state = State { is_received: false };
-    //     let mut queue = IndexDeque::with_capacity(45);
-    //     for idx in 1..11 {
-    //         queue.insert(idx, rcvd_state).unwrap();
-    //     }
-    //     for idx in 11..12 {
-    //         queue.insert(idx, unrcvd_state).unwrap();
-    //     }
-    //     for idx in 12..45 {
-    //         queue.insert(idx, rcvd_state).unwrap();
-    //     }
-    //     for idx in 45..50 {
-    //         queue.insert(idx, unrcvd_state).unwrap();
-    //     }
-    //     for idx in 50..55 {
-    //         queue.insert(idx, rcvd_state).unwrap();
-    //     }
+    #[test]
+    fn gen_ack_frame() {
+        let rcvd_state = State::PacketReceived(Instant::now(), None, Instant::now());
+        let unrcvd_state = State::Empty;
+        let mut queue = IndexDeque::with_capacity(45);
+        for idx in 1..11 {
+            queue.insert(idx, rcvd_state.clone()).unwrap();
+        }
+        for idx in 11..12 {
+            queue.insert(idx, unrcvd_state.clone()).unwrap();
+        }
+        for idx in 12..45 {
+            queue.insert(idx, rcvd_state.clone()).unwrap();
+        }
+        for idx in 45..50 {
+            queue.insert(idx, unrcvd_state.clone()).unwrap();
+        }
+        for idx in 50..55 {
+            queue.insert(idx, rcvd_state.clone()).unwrap();
+        }
 
-    //     let rcvd_jornal = RcvdJournal { queue };
+        let mut rcvd_jornal = RcvdJournal {
+            queue,
+            max_ack_delay: None,
+            packet_include_ack: Default::default(),
+            earliest_not_ack_time: None,
+        };
 
-    //     let ack = rcvd_jornal
-    //         .gen_ack_frame_util(52, Instant::now(), 1000)
-    //         .unwrap();
-    //     assert_eq!(
-    //         ack.ranges(),
-    //         &vec![
-    //             (VarInt::from_u32(50 - 45 - 1), VarInt::from_u32(45 - 12 - 1)),
-    //             (VarInt::from_u32(12 - 11 - 1), VarInt::from_u32(11 - 1 - 1))
-    //         ]
-    //     );
-    //     assert_eq!(ack.first_range(), 2)
-    // }
+        let ack = rcvd_jornal
+            .gen_ack_frame_util(0, 52, Instant::now(), 1000)
+            .unwrap();
+        assert_eq!(
+            ack.ranges(),
+            &vec![
+                (VarInt::from_u32(50 - 45 - 1), VarInt::from_u32(45 - 12 - 1)),
+                (VarInt::from_u32(12 - 11 - 1), VarInt::from_u32(11 - 1 - 1))
+            ]
+        );
+        assert_eq!(ack.first_range(), 2)
+    }
 }
