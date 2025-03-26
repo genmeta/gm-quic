@@ -43,7 +43,7 @@ pub struct CongestionController {
     // epoch packet trackers
     trackers: [Arc<dyn Feedback>; 3],
     need_send_ack_eliciting_packets: [usize; Epoch::count()],
-    path_status: Arc<PathStatus>,
+    path_status: PathStatus,
 }
 
 impl CongestionController {
@@ -52,7 +52,7 @@ impl CongestionController {
         algorithm: Algorithm,
         max_ack_delay: Duration,
         trackers: [Arc<dyn Feedback>; 3],
-        path_status: Arc<PathStatus>,
+        path_status: PathStatus,
     ) -> Self {
         let algorithm: Box<dyn Control> = match algorithm {
             Algorithm::Bbr => todo!("implement BBR"),
@@ -466,7 +466,7 @@ impl ArcCC {
         algorithm: Algorithm,
         max_ack_delay: Duration,
         trackers: [Arc<dyn Feedback>; 3],
-        path_status: Arc<PathStatus>,
+        path_status: PathStatus,
     ) -> Self {
         ArcCC(Arc::new(Mutex::new(CongestionController::init(
             algorithm,
