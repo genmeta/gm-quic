@@ -103,13 +103,13 @@ async fn parallel_stream() -> io::Result<()> {
                 let connection = connection.clone();
                 tracing::Instrument::instrument(
                     async move {
-                        let (stream_id, (mut reader, mut writer)) =
+                        let (_stream_id, (mut reader, mut writer)) =
                             connection.open_bi_stream().await?.unwrap();
-                        debug!(%stream_id, "opened stream");
+                        debug!("opened stream");
 
                         writer.write_all(DATA).await?;
                         writer.shutdown().await?;
-                        debug!(%stream_id, "sender shutdowned, wait for server to echo");
+                        debug!("sender shutdowned, wait for server to echo");
 
                         let mut data = Vec::new();
                         reader.read_to_end(&mut data).await?;
@@ -119,7 +119,7 @@ async fn parallel_stream() -> io::Result<()> {
                             return Err(io::Error::other("server incorrectly echoed"));
                         }
 
-                        info!(%stream_id, "server correctly echoed");
+                        info!("server correctly echoed");
 
                         io::Result::Ok(())
                     },

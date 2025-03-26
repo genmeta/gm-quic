@@ -639,7 +639,7 @@ impl<D: DescribeData> From<(&StreamFrame, D)> for QuicFrame {
         let length = frame.encoding_size() + frame.len();
         let payload_length = data.len();
         QuicFrame::Stream {
-            stream_id: frame.stream_id().id(),
+            stream_id: frame.stream_id().into(),
             offset: frame.offset(),
             length: length as _,
             fin: frame.is_fin(),
@@ -657,7 +657,7 @@ impl From<&StreamFrame> for QuicFrame {
         let length = frame.encoding_size() + frame.len();
         let payload_length = frame.len();
         QuicFrame::Stream {
-            stream_id: frame.stream_id().id(),
+            stream_id: frame.stream_id().into(),
             offset: frame.offset(),
             length: frame.encoding_size() as u64 + frame.len() as u64,
             fin: frame.is_fin(),

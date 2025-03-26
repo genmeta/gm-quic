@@ -512,7 +512,7 @@ pub fn spawn_deliver_and_parse(
 
                     space.journal.of_rcvd_packets().register_pn(
                         packet.pn(),
-                        packet_contains != PacketContains::NonAckEliciting,
+                        packet_contains.ack_eliciting(),
                         path.cc().get_pto(Epoch::Data),
                     );
                     path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_contains);
@@ -550,7 +550,7 @@ pub fn spawn_deliver_and_parse(
 
                     space.journal.of_rcvd_packets().register_pn(
                         packet.pn(),
-                        packet_contains != PacketContains::NonAckEliciting,
+                        packet_contains.ack_eliciting(),
                         path.cc().get_pto(Epoch::Data),
                     );
                     path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_contains);

@@ -228,11 +228,10 @@ pub fn spawn_deliver_and_parse(
             )?;
             packet.log_received(frames);
 
-            let pto = path.cc().get_pto(Epoch::Handshake);
             space.journal.of_rcvd_packets().register_pn(
                 packet.pn(),
                 packet_contains != PacketContains::NonAckEliciting,
-                pto,
+                path.cc().get_pto(Epoch::Handshake),
             );
             path.on_packet_rcvd(
                 Epoch::Handshake,

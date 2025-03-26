@@ -285,7 +285,7 @@ macro_rules! event {
     }};
     ($event_data:expr                       $(, $($tt:tt)* )?) => {{
         let __build_data = || $event_data;
-        let __build_event = |__even_data| {
+        let __build_event = |__event_data| {
             let mut __event_builder = $crate::Event::builder();
             // as_millis_f64 is nightly only
             let __time = std::time::SystemTime::now()
@@ -294,7 +294,7 @@ macro_rules! event {
                 .as_secs_f64()
                 * 1000.0;
             __event_builder.time(__time);
-            __event_builder.data(__even_data);
+            __event_builder.data(__event_data);
             $crate::event!(@load_known __event_builder, path: $crate::PathID);
             $crate::event!(@load_known __event_builder, protocol_types: $crate::ProtocolTypeList);
             $crate::event!(@load_known __event_builder, group_id: $crate::GroupID);

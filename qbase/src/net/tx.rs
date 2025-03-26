@@ -26,7 +26,7 @@ bitflags::bitflags! {
 pub struct SendWaker {
     waker: Option<Waker>,
     // Signals 对应的bit设置为1意为该位的条件已经满足，为0表示需要该条件满足
-    state: u32,
+    state: u8,
 }
 
 impl SendWaker {
@@ -34,11 +34,11 @@ impl SendWaker {
         Self::default()
     }
 
-    const WAITING: u32 = 0;
+    const WAITING: u8 = 0;
 
     pub fn wait_for(&mut self, cx: &mut Context, signals: Signals) {
-        if self.state & signals.bits() as u32 == 0 {
-            self.state = !(signals.bits() as u32);
+        if self.state & signals.bits() == 0 {
+            self.state = !signals.bits();
             match self.waker.as_ref() {
                 Some(old_waker) if old_waker.will_wake(cx.waker()) => {}
                 _ => self.waker = Some(cx.waker().clone()),
@@ -50,14 +50,14 @@ impl SendWaker {
     }
 
     fn wake_by(&mut self, signals: Signals) {
-        if self.state & signals.bits() as u32 != signals.bits() as u32 {
+        if self.state & signals.bits() != signals.bits() {
             if let Some(waker) = self.waker.take() {
                 self.state = Self::WAITING;
                 waker.wake();
                 return;
             }
         }
-        self.state |= signals.bits() as u32;
+        self.state |= signals.bits();
     }
 }
 
@@ -122,7 +122,7 @@ mod tests {
     };
 
     impl ArcSendWaker {
-        fn state(&self) -> u32 {
+        fn state(&self) -> u8 {
             self.0.lock().unwrap().state
         }
     }
@@ -172,7 +172,7 @@ mod tests {
             })
         });
 
-        let wait_for_all_cond_state = !(Signals::all().bits() as u32);
+        let wait_for_all_cond_state = !Signals::all().bits();
 
         waker.wake_by(Signals::FLOW_CONTROL);
         tokio::task::yield_now().await;
@@ -207,7 +207,7 @@ mod tests {
             })
         });
 
-        let wait_for_quota_state = !(Signals::CONGESTION.bits() as u32);
+        let wait_for_quota_state = !Signals::CONGESTION.bits();
 
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 2); // woken
@@ -243,11 +243,11 @@ mod tests {
             }
         });
 
-        let wait_for_all_cond_state = !(Signals::all().bits() as u32);
+        let wait_for_all_cond_state = !Signals::all().bits();
 
-        let wait_for_quota_state = !((Signals::CONGESTION | Signals::TRANSPORT).bits() as u32);
+        let wait_for_quota_state = !(Signals::CONGESTION | Signals::TRANSPORT).bits();
 
-        let wait_for_data_state = !(Signals::TRANSPORT.bits() as u32);
+        let wait_for_data_state = !Signals::TRANSPORT.bits();
 
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 1); // woken(1 = enter)
@@ -294,16 +294,16 @@ mod tests {
 
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 1); //  wake
-        assert_eq!(waker.state(), !(Signals::TRANSPORT.bits() as u32));
+        assert_eq!(waker.state(), !Signals::TRANSPORT.bits());
 
         waker.wake_by(Signals::TRANSPORT);
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 2); // enter + wake
-        assert_eq!(waker.state(), !(Signals::TRANSPORT.bits() as u32));
+        assert_eq!(waker.state(), !Signals::TRANSPORT.bits());
 
         waker.wake_by(Signals::CONGESTION | Signals::TRANSPORT);
         tokio::task::yield_now().await;
         assert_eq!(woken_times.load(Acquire), 3); // enter + wake * 2
-        assert_eq!(waker.state(), !(Signals::TRANSPORT.bits() as u32));
+        assert_eq!(waker.state(), !Signals::TRANSPORT.bits());
     }
 }
