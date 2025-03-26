@@ -64,7 +64,7 @@ impl<TX: Clone> Outgoing<TX> {
                 let (result, finished) = s
                     .pick_up(predicate, flow_limit)
                     .map(|payload @ (.., with_eos)| (Ok(write(payload)), with_eos))
-                    .map_err(|l| (Err(l), false))
+                    .map_err(|s| (Err(s), false))
                     .unwrap_or_else(|x| x);
                 if finished {
                     *sending_state = Sender::DataSent(s.upgrade());
@@ -77,7 +77,7 @@ impl<TX: Clone> Outgoing<TX> {
                 let (result, finished) = s
                     .pick_up(predicate, flow_limit)
                     .map(|payload @ (.., with_eos)| (Ok(write(payload)), with_eos))
-                    .map_err(|l| (Err(l), false))
+                    .map_err(|s| (Err(s), false))
                     .unwrap_or_else(|x| x);
                 if finished {
                     *sending_state = Sender::DataSent(s.upgrade());

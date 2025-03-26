@@ -5,7 +5,7 @@ use qbase::{
     frame::ConnectionCloseFrame,
     net::route::{Link, Pathway},
 };
-use qlog::quic::connectivity::GranularConnectionStates;
+use qlog::quic::connectivity::{BaseConnectionStates, GranularConnectionStates};
 use tokio::sync::mpsc;
 
 use crate::state::ConnState;
@@ -70,7 +70,7 @@ impl EmitEvent for ArcEventBroker {
                 }
             }
             Event::Terminated => {
-                let terminated_state = GranularConnectionStates::Closed;
+                let terminated_state = BaseConnectionStates::Closed;
                 self.conn_state.update(terminated_state.into());
             }
             Event::StatelessReset => todo!("unsupported"),

@@ -53,8 +53,8 @@ async fn set() -> io::Result<()> {
         // .with_ansi(false)
         .init();
 
-    disable_keep_alive().await;
-    enable_keep_alive().await;
+    // disable_keep_alive().await;
+    // enable_keep_alive().await;
     parallel_stream().await?;
     limited_streams().await?;
 
@@ -251,6 +251,7 @@ async fn limited_streams() -> io::Result<()> {
     Ok(())
 }
 
+#[allow(unused)]
 async fn disable_keep_alive() {
     // disabled by default
     // let disabled_keep_alive = crate::HeartbeatConfig::ZERO;
@@ -293,6 +294,7 @@ async fn disable_keep_alive() {
     server.shutdown();
 }
 
+#[allow(unused)]
 async fn enable_keep_alive() {
     let enabled_keep_alive = crate::HeartbeatConfig::new_with_interval(
         Duration::from_millis(2000),

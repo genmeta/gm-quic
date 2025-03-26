@@ -46,7 +46,7 @@ impl HeartbeatConfig {
 impl super::Path {
     pub async fn defer_idle_timeout(&self, config: HeartbeatConfig) {
         loop {
-            let idle_duration = self.last_recv_time.lock().unwrap().elapsed();
+            let idle_duration = self.last_active_time.lock().unwrap().elapsed();
             if idle_duration > config.duration {
                 core::future::pending::<()>().await;
             } else if idle_duration > config.interval {
@@ -79,7 +79,7 @@ impl super::Path {
             };
 
             loop {
-                let idle_duration = this.last_recv_time.lock().unwrap().elapsed();
+                let idle_duration = this.last_active_time.lock().unwrap().elapsed();
                 if idle_duration > max_idle_timeout {
                     return;
                 } else {

@@ -19,7 +19,7 @@ pub use qbase::{
 };
 use qbase::{
     frame::ConnectionCloseFrame,
-    net::tx::ArcSendWakers,
+    net::tx::{ArcSendWaker, ArcSendWakers},
     param::{ArcParameters, ParameterId, RememberedParameters},
     sid::{self, ProductStreamsConcurrencyController},
     token::ArcTokenRegistry,
@@ -545,6 +545,7 @@ impl Components {
                 });
                 let max_ack_delay = self.parameters.get_local_as::<Duration>(ParameterId::MaxAckDelay)?;
 
+                let path_tx_waker = ArcSendWaker::new();
                 let cc = ArcCC::new(
                     Algorithm::NewReno,
                     max_ack_delay,
@@ -552,11 +553,13 @@ impl Components {
                         self.spaces.initial().clone(),
                         self.spaces.handshake().clone(),
                         self.spaces.data().clone(),
+
                     ],
                     self.handshake.status(),
+                    path_tx_waker.clone()
                 );
 
-                let path = Arc::new(Path::new(&self.proto, link, pathway, cc)?);
+                let path = Arc::new(Path::new(&self.proto, link, pathway, cc,path_tx_waker)?);
 
                 if !is_probed {
                     path.grant_anti_amplification();

@@ -89,7 +89,7 @@ impl Burst {
 
         let (ControlFlow::Break(result) | ControlFlow::Continue(result)) = prepared_buffers
             .map(move |buffer| {
-                let load_result = if scid.is_some() {
+                if scid.is_some() {
                     transaction.load_spaces(
                         &mut buffer[reversed_size..],
                         &self.spaces,
@@ -113,16 +113,19 @@ impl Burst {
                         &self.path.response_sndbuf,
                         self.spaces.data(),
                     )
-                };
-                debug_assert_ne!(load_result, Ok(0));
-                load_result
-                    .map(|packet_size| io::IoSlice::new(&buffer[..reversed_size + packet_size]))
+                }
+                .or_else(|signals| {
+                    transaction
+                        .load_ping(&mut buffer[reversed_size..], self.spin.into(), &self.spaces)
+                        .map_err(|s| s | signals)
+                })
+                .map(|packet_size| io::IoSlice::new(&buffer[..reversed_size + packet_size]))
             })
             .try_fold(
                 Ok(Vec::with_capacity(max_segments)),
                 |segments, load_result| match (segments, load_result) {
-                    (Ok(segments), Err(limiter)) if segments.is_empty() => Break(Err(limiter)),
-                    (Ok(segments), Err(_limiter)) => Break(Ok(segments)),
+                    (Ok(segments), Err(signals)) if segments.is_empty() => Break(Err(signals)),
+                    (Ok(segments), Err(_signals)) => Break(Ok(segments)),
                     (Ok(mut segments), Ok(segment))
                         if segment.len() < segments.last().copied().unwrap_or_default() =>
                     {

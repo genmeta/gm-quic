@@ -142,7 +142,7 @@ mod send {
                     Err(Signals::empty()),
                     |result, once| match (result, once) {
                         (Err(_empty), Ok(())) => Continue(Ok(())),
-                        (Err(_empty), Err(limiter)) => Break(Err(limiter)),
+                        (Err(_empty), Err(signals)) => Break(Err(signals)),
                         (Ok(()), Ok(())) => Continue(Ok(())),
                         (Ok(()), Err(_no_more)) => Break(Ok(())),
                     },
