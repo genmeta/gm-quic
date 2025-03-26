@@ -49,6 +49,7 @@ impl DatagramIncoming {
         let mut guard = self.0.lock().unwrap();
         let reader = guard.as_mut().map_err(|e| e.clone())?;
         if reader.local_max_size == 0 {
+            tracing::error!("   Cause by: DatagramIncoming::new_reader local_max_size is 0");
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "Unreliable Datagram Extension was disenabled by local parameters",
@@ -70,12 +71,13 @@ impl DatagramIncoming {
         let mut guard = self.0.lock().unwrap();
         let reader = guard.as_mut().map_err(|e| e.clone())?;
         if (frame.encoding_size() + data.len()) > reader.local_max_size {
+            tracing::error!("   Cause by: DatagramIncoming::recv_datagram");
             return Err(Error::new(
                 ErrorKind::ProtocolViolation,
                 frame.frame_type(),
                 format!(
                     "datagram size {} exceeds the maximum size {}",
-                    data.len(),
+                    frame.encoding_size() + data.len(),
                     reader.local_max_size
                 ),
             ));

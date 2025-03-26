@@ -6,7 +6,7 @@ use std::{
 
 use super::ConnectionId;
 use crate::{
-    error::Error,
+    error::{Error, ErrorKind},
     frame::{BeFrame, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
     net::tx::{ArcSendWaker, Signals},
     token::ResetToken,
@@ -94,8 +94,9 @@ where
         let retire_prior_to = frame.retire_prior_to();
         let active_len = seq.saturating_sub(retire_prior_to);
         if active_len > self.active_cid_limit {
+            tracing::error!("   Cause by: received a new issued connection id frame from peer");
             return Err(Error::new(
-                crate::error::ErrorKind::ConnectionIdLimit,
+                ErrorKind::ConnectionIdLimit,
                 frame.frame_type(),
                 format!(
                     "{active_len} exceed active_cid_limit {}",

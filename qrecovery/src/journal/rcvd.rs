@@ -91,12 +91,19 @@ impl RcvdJournal {
         let expected_pn = self.queue.largest();
         let pn = pkt_number.decode(expected_pn);
         if pn < self.queue.offset() {
+            tracing::error!(
+                "   Cause by: the decoded packet number {pn} < {}",
+                self.queue.offset()
+            );
             return Err(InvalidPacketNumber::TooOld);
         }
 
         match self.queue.get(pn) {
             Some(State::Empty) | None => Ok(pn),
-            _ => Err(InvalidPacketNumber::Duplicate),
+            _ => {
+                tracing::error!("   Cause by: the decoded packet number {pn} has already received");
+                Err(InvalidPacketNumber::Duplicate)
+            }
         }
     }
 

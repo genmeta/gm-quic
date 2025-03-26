@@ -90,6 +90,9 @@ pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnec
     // than that in the Sequence Number field MUST be treated as a connection error of type
     // FRAME_ENCODING_ERROR.
     if retire_prior_to > sequence {
+        tracing::error!(
+            "   Cause by: too large retire_prior_to {retire_prior_to} in NEW_CONNECTION_ID frame"
+        );
         return Err(nom::Err::Error(nom::error::make_error(
             input,
             nom::error::ErrorKind::Verify,
@@ -97,6 +100,7 @@ pub fn be_new_connection_id_frame(input: &[u8]) -> nom::IResult<&[u8], NewConnec
     }
     let (remain, cid) = be_connection_id(remain)?;
     if cid.is_empty() {
+        tracing::error!("   Cause by: zero length connection id in NEW_CONNECTION_ID frame");
         return Err(nom::Err::Error(nom::error::make_error(
             input,
             nom::error::ErrorKind::Verify,

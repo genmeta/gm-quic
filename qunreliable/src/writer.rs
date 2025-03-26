@@ -49,6 +49,7 @@ impl DatagramOutgoing {
         let mut guard = self.0.lock().unwrap();
         let _writer = guard.as_mut().map_err(|e| e.clone())?;
         if max_datagram_frame_size == 0 {
+            tracing::error!("   Cause by: DatagramOutgoing::new_writer");
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "Unreliable Datagram Extension was disenabled by peer's parameters",
@@ -209,9 +210,14 @@ impl DatagramWriter {
             Ok(writer) => {
                 // Only consider the smallest encoding method: 1 byte
                 if (1 + data.len()) > self.max_datagram_frame_size {
+                    tracing::error!("   Cause by: DatagramWriter::send_bytes");
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "datagram frame size exceeds the limit",
+                        format!(
+                            "data size {} exceeds the limit {}",
+                            data.len(),
+                            self.max_datagram_frame_size
+                        ),
                     ));
                 }
                 writer.tx_wakers.wake_all_by(Signals::TRANSPORT);

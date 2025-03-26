@@ -54,6 +54,7 @@ pub fn be_connection_id(input: &[u8]) -> IResult<&[u8], ConnectionId> {
 /// The connection ID length is limited to 20 bytes, or it will return an error.
 pub fn be_connection_id_with_len(input: &[u8], len: usize) -> IResult<&[u8], ConnectionId> {
     if len > MAX_CID_SIZE {
+        tracing::error!("   Cause by: parse connection id with too large length");
         return Err(nom::Err::Error(nom::error::make_error(
             input,
             nom::error::ErrorKind::TooLarge,

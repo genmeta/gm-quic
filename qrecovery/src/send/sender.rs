@@ -168,6 +168,10 @@ where
             VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
             VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
         );
+        tracing::error!(
+            "Error: {} is canceled by app layer, with error code {err_code}",
+            self.stream_id
+        );
         self.broker
             .send_frame([reset_stream_err.combine(self.stream_id)]);
         log_reset_event(self.stream_id, GranularStreamStates::Ready);
@@ -337,6 +341,10 @@ where
             VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
             VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
         );
+        tracing::error!(
+            "Error: {} is canceled by app layer, with error code {err_code}",
+            self.stream_id
+        );
         self.broker
             .send_frame([reset_stream_err.combine(self.stream_id)]);
         log_reset_event(self.stream_id, GranularStreamStates::Send);
@@ -435,6 +443,10 @@ where
         let reset_stream_err = ResetStreamError::new(
             VarInt::from_u64(err_code).expect("app error code must not exceed 2^62"),
             VarInt::from_u64(final_size).expect("final size must not exceed 2^62"),
+        );
+        tracing::error!(
+            "Error: {} is canceled by app layer, with error code {err_code}",
+            self.stream_id
         );
         self.broker
             .send_frame([reset_stream_err.combine(self.stream_id)]);
