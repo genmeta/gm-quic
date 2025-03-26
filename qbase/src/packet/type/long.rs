@@ -1,4 +1,4 @@
-use deref_derive::Deref;
+use derive_more::Deref;
 
 /// Supports IQuic version 1, if other versions are supported in the future, add them here.
 pub mod v1;

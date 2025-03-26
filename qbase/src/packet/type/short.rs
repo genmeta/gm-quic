@@ -1,5 +1,5 @@
 use bytes::BufMut;
-use deref_derive::Deref;
+use derive_more::Deref;
 
 use crate::packet::SpinBit;
 

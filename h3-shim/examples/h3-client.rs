@@ -10,7 +10,7 @@ static ALPN: &[u8] = b"h3";
 
 #[derive(Parser, Debug)]
 #[structopt(name = "server")]
-pub struct Opt {
+pub struct Options {
     #[structopt(
         long,
         short,
@@ -34,19 +34,14 @@ async fn main() -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
         .with_writer(std::io::stdout)
         .init();
     // console_subscriber::init();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("Failed to install rustls crypto provider");
 
-    let opt = Opt::parse();
-
-    run(opt).await
+    run(Options::parse()).await
 }
 
-pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
+pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
     // DNS lookup
 
-    let uri = opt.uri.parse::<http::Uri>()?;
+    let uri = options.uri.parse::<http::Uri>()?;
     if uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
         return Err("uri scheme must be 'https'")?;
     }
@@ -60,15 +55,15 @@ pub async fn run(opt: Opt) -> Result<(), Box<dyn core::error::Error + Send + Syn
     info!("DNS lookup for {:?}: {:?}", uri, addr);
 
     let mut roots = rustls::RootCertStore::empty();
-    roots.add_parsable_certificates(opt.ca.to_certificate());
+    roots.add_parsable_certificates(options.ca.to_certificate());
 
-    trace!(bind = ?opt.bind, "build QuicClient");
+    trace!(bind = ?options.bind, "build QuicClient");
     let quic_client = ::gm_quic::QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()
         .with_alpns([ALPN])
         .with_parameters(client_parameters())
-        .bind(&opt.bind[..])?
+        .bind(&options.bind[..])?
         .build();
     info!(%addr, "connecting to server");
     let conn = quic_client.connect(auth.host(), addr)?;

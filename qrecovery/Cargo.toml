@@ -13,7 +13,7 @@ categories.workspace = true
 
 [dependencies]
 bytes = { workspace = true }
-deref-derive = { workspace = true }
+derive_more = { workspace = true, features = ["deref"] }
 enum_dispatch = { workspace = true }
 futures = { workspace = true }
 qbase = { workspace = true }

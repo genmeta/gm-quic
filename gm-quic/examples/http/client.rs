@@ -11,7 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 ///     --addr 127.0.0.1:4433
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct Arguments {
+struct Options {
     #[arg(long)]
     domain: String,
     #[arg(long)]
@@ -22,32 +22,18 @@ struct Arguments {
     bind: SocketAddr,
 }
 
-fn main() {
-    let args = Arguments::parse();
-    let code = {
-        match run(args) {
-            Err(e) => {
-                eprintln!("ERROR: {e}");
-                1
-            }
-            _ => 0,
-        }
-    };
-    ::std::process::exit(code);
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt().init();
+    run(Options::parse())
+        .await
+        .inspect_err(|error| tracing::error!(?error))
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Trace)
-        .init();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("Failed to install rustls crypto provider");
-
+async fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut root_cert_store = rustls::RootCertStore::empty();
 
-    let root = std::fs::read(args.root).expect("failed to read certificate file");
+    let root = std::fs::read(options.root).expect("failed to read certificate file");
     let root_cert = match CertificateDer::from_pem_slice(&root) {
         Ok(root_cert) => vec![root_cert],
         Err(_) => vec![CertificateDer::from(root)],
@@ -56,7 +42,7 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
     root_cert_store.add_parsable_certificates(root_cert);
 
     let client = QuicClient::builder()
-        .bind(args.bind)?
+        .bind(options.bind)?
         .reuse_connection()
         .prefer_versions([0x00000001u32])
         .with_root_certificates(Arc::new(root_cert_store))
@@ -65,7 +51,7 @@ async fn run(args: Arguments) -> Result<(), Box<dyn std::error::Error>> {
         .with_alpns([b"hq-29".as_ref()].iter().map(|s| s.to_vec()))
         .build();
 
-    let quic_conn = client.connect(args.domain, args.addr).unwrap();
+    let quic_conn = client.connect(options.domain, options.addr).unwrap();
     loop {
         let mut input = String::new();
         _ = std::io::stdin().read_line(&mut input).unwrap();

@@ -365,7 +365,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use deref_derive::{Deref, DerefMut};
+    use derive_more::{Deref, DerefMut};
 
     use super::*;
 

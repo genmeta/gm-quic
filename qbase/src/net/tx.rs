@@ -4,7 +4,7 @@ use std::{
     task::{Context, Waker},
 };
 
-use deref_derive::Deref;
+use derive_more::Deref;
 
 use super::route::Pathway;
 

@@ -7,7 +7,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tracing::info;
 
 #[derive(clap::Parser)]
-struct Opt {
+struct Options {
     #[arg(long)]
     server: SocketAddr,
 }
@@ -16,7 +16,7 @@ struct Opt {
 pub async fn main() -> io::Result<()> {
     tracing_subscriber::fmt().init();
 
-    let server_addr = Opt::parse().server;
+    let server_addr = Options::parse().server;
 
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(include_bytes!("keychain/localhost/ca.cert").to_certificate());

@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use deref_derive::{Deref, DerefMut};
+use derive_more::{Deref, DerefMut};
 use qbase::{error::Error as QuicError, sid::StreamId};
 
 use crate::{recv::Incoming, send::Outgoing};
@@ -46,6 +46,7 @@ impl IOState {
 #[derive(Debug, Clone, Deref, DerefMut)]
 pub(super) struct Output<TX> {
     #[deref]
+    #[deref_mut]
     pub(super) outgoings: BTreeMap<StreamId, (Outgoing<TX>, IOState)>,
     pub(super) cursor: Option<(StreamId, usize)>,
 }

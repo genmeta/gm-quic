@@ -238,7 +238,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use deref_derive::Deref;
+    use derive_more::Deref;
 
     use super::*;
     use crate::{sid::handy::ConsistentConcurrency, util::ArcAsyncDeque};

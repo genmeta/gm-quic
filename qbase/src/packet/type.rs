@@ -1,4 +1,4 @@
-use deref_derive::Deref;
+use derive_more::Deref;
 
 use super::{KeyPhaseBit, PacketNumber, error::Error};
 

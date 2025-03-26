@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use bytes::{BufMut, BytesMut, buf::UninitSlice};
-use deref_derive::{Deref, DerefMut};
+use derive_more::{Deref, DerefMut};
 use encrypt::{encode_long_first_byte, encode_short_first_byte, encrypt_packet, protect_header};
 use enum_dispatch::enum_dispatch;
 use getset::CopyGetters;
@@ -89,6 +89,7 @@ pub enum DataHeader {
 #[derive(Debug, Clone, Deref, DerefMut)]
 pub struct DataPacket {
     #[deref]
+    #[deref_mut]
     pub header: DataHeader,
     pub bytes: BytesMut,
     // payload_offset

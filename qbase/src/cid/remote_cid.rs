@@ -412,8 +412,8 @@ where
         &self,
         tx_waker: ArcSendWaker,
     ) -> Result<Option<BorrowedCid<RETIRED>>, Signals> {
-        self.0.lock().unwrap().borrow_cid(tx_waker).map(|opt| {
-            opt.map(|cid| BorrowedCid {
+        self.0.lock().unwrap().borrow_cid(tx_waker).map(|cid| {
+            cid.map(|cid| BorrowedCid {
                 cid_cell: &self.0,
                 cid,
             })
@@ -461,7 +461,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use deref_derive::Deref;
+    use derive_more::Deref;
 
     use super::*;
 
