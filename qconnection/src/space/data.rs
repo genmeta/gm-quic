@@ -146,6 +146,7 @@ impl DataSpace {
         }
 
         let keys = self.zero_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
+        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketBuffer::new_long(
             LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).zero_rtt(),
@@ -182,7 +183,6 @@ impl DataSpace {
             .inspect_err(|s| signals |= *s);
 
         // 错误是累积的，只有最后发现确实不能组成一个数据包时才真正返回错误
-        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         Ok((
             packet
                 .prepare_with_time(retran_timeout, expire_timeout)
@@ -208,6 +208,7 @@ impl DataSpace {
         //   (1)持有cc，要锁定sent_journal；(2)持有sent_journal要锁定cc
         // 在多线程的情况下，可能会发生死锁。所以提前调用need_ack，避免交叉导致死锁
         let need_ack = tx.need_ack(Epoch::Data);
+        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         let mut packet = PacketBuffer::new_short(
             OneRttHeader::new(spin, tx.dcid()),
             buf,
@@ -268,7 +269,6 @@ impl DataSpace {
             .try_load_data_into(&mut packet)
             .inspect_err(|s| signals |= *s);
 
-        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         Ok((
             packet
                 .prepare_with_time(retran_timeout, expire_timeout)
@@ -288,6 +288,7 @@ impl DataSpace {
     ) -> Result<PaddablePacket, Signals> {
         let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
         let (key_phase, pk) = pk.lock_guard().get_local();
+        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketBuffer::new_short(
             OneRttHeader::new(spin, tx.dcid()),
@@ -307,7 +308,6 @@ impl DataSpace {
             .inspect_err(|s| signals |= *s);
         // 其实还应该加上NCIDF，但是从ReliableFrameDeque分拣太复杂了
 
-        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         packet
             .prepare_with_time(retran_timeout, expire_timeout)
             .map_err(|_| signals)
@@ -321,6 +321,7 @@ impl DataSpace {
     ) -> Result<PaddablePacket, Signals> {
         let (hpk, pk) = self.one_rtt_keys.get_local_keys().ok_or(Signals::KEYS)?;
         let (key_phase, pk) = pk.lock_guard().get_local();
+        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         let sent_journal = self.journal.of_sent_packets();
         let mut packet = PacketBuffer::new_short(
             OneRttHeader::new(spin, tx.dcid()),
@@ -333,7 +334,6 @@ impl DataSpace {
 
         packet.dump_ping_frame();
 
-        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Data);
         packet
             .prepare_with_time(retran_timeout, expire_timeout)
             .map_err(|_| unreachable!("packet is not empty"))
