@@ -30,6 +30,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 clap = { workspace = true }
+qlog = { workspace = true, features = ["enabled"] }
 rustls = { workspace = true, features = ["ring"] }
 tokio = { workspace = true, features = ["fs", "io-std"] }
 

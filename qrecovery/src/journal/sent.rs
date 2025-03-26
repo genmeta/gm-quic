@@ -117,12 +117,19 @@ impl SentPktState {
         }
     }
 
-    fn should_remain_after(&self, now: &Instant) -> bool {
+    fn should_remain_after(&self, pn: u64, now: &Instant) -> bool {
         match self {
             SentPktState::Skipped => false,
-            SentPktState::Flighting { expire_time, .. } => expire_time > now,
-            SentPktState::Retransmitted { expire_time, .. } => expire_time > now,
-            SentPktState::Acked { expire_time, .. } => expire_time > now,
+            SentPktState::Flighting { .. } => true,
+            SentPktState::Retransmitted { expire_time, .. } => {
+                if expire_time > now {
+                    true
+                } else {
+                    tracing::debug!("retransmitted packet {pn} is expired without ack");
+                    false
+                }
+            }
+            SentPktState::Acked { .. } => false,
         }
     }
 }
@@ -189,7 +196,7 @@ impl<T> SentJournal<T> {
         let (n, f) = self
             .sent_packets
             .iter_with_idx()
-            .take_while(|(_idx, s)| !s.should_remain_after(&now))
+            .take_while(|(pn, s)| !s.should_remain_after(*pn, &now))
             .fold((0usize, 0usize), |(n, f), (_, s)| (n + 1, f + s.nframes()));
         self.sent_packets.advance(n);
         let _ = self.queue.drain(..f);

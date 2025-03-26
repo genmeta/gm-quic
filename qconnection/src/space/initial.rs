@@ -267,11 +267,10 @@ pub fn spawn_deliver_and_parse(
             )?;
             packet.log_received(frames);
 
-            let pto = path.cc().get_pto(Epoch::Initial);
             space.journal.of_rcvd_packets().register_pn(
                 packet.pn(),
                 packet_contains != PacketContains::NonAckEliciting,
-                pto,
+                path.cc().get_pto(Epoch::Initial),
             );
             path.on_packet_rcvd(Epoch::Initial, packet.pn(), packet.size(), packet_contains);
             if parameters.initial_scid_from_peer()?.is_none() {

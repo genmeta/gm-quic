@@ -62,7 +62,6 @@ pub async fn launch(server: Arc<gm_quic::QuicServer>) -> io::Result<()> {
     ) -> io::Result<()> {
         let mut message = String::new();
         reader.read_to_string(&mut message).await?;
-        info!(?message, "received");
 
         writer.write_all(message.as_bytes()).await?;
         writer.shutdown().await?;
