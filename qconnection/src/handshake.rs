@@ -43,7 +43,7 @@ where
         }
     }
 
-    pub fn server_done_and_discard_spaces(&self, paths: &ArcPathContexts) -> bool {
+    pub fn discard_spaces_on_server_handshake_done(&self, paths: &ArcPathContexts) -> bool {
         let is_server_done = self.inner.done();
         if is_server_done {
             self.inform_cc.handshake_confirmed();
@@ -61,7 +61,7 @@ where
         self.inform_cc.clone()
     }
 
-    pub fn client_done_and_discard_spaces(
+    pub fn discard_spaces_on_client_handshake_done(
         &self,
         paths: ArcPathContexts,
     ) -> HandshakeDoneReceiver<T> {

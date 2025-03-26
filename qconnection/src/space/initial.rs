@@ -54,7 +54,7 @@ use crate::{
 
 pub type CipherInitialPacket = CipherPacket<InitialHeader>;
 pub type PlainInitialPacket = PlainPacket<InitialHeader>;
-pub type ReceivedPacket = (CipherInitialPacket, Pathway, Link);
+pub type ReceivedFrom = (CipherInitialPacket, Pathway, Link);
 
 pub struct InitialSpace {
     keys: ArcKeys,
@@ -149,7 +149,7 @@ impl InitialSpace {
 }
 
 pub fn spawn_deliver_and_parse(
-    mut packets: impl Stream<Item = ReceivedPacket> + Unpin + Send + 'static,
+    mut packets: impl Stream<Item = ReceivedFrom> + Unpin + Send + 'static,
     space: Arc<InitialSpace>,
     components: &Components,
     event_broker: ArcEventBroker,
@@ -200,7 +200,7 @@ pub fn spawn_deliver_and_parse(
     let role = components.handshake.role();
     let parameters = components.parameters.clone();
     let remote_cids = components.cid_registry.remote.clone();
-    let parse = async move |packet: CipherInitialPacket, pathway, socket| {
+    let parse = async move |packet: CipherInitialPacket, pathway, link| {
         // rfc9000 7.2:
         // if subsequent Initial packets include a different Source Connection ID, they MUST be discarded. This avoids
         // unpredictable outcomes that might otherwise result from stateless processing of multiple Initial packets
@@ -215,7 +215,7 @@ pub fn spawn_deliver_and_parse(
         let packet_size = packet.payload_len();
 
         if let Some(packet) = space.decrypt_packet(packet).await.transpose()? {
-            let path = match components.get_or_try_create_path(socket, pathway, true) {
+            let path = match components.get_or_try_create_path(link, pathway, true) {
                 Ok(path) => path,
                 Err(_) => {
                     packet.drop_on_conenction_closed();
@@ -267,8 +267,8 @@ pub fn spawn_deliver_and_parse(
 
     tokio::spawn(
         async move {
-            while let Some((packet, pathway, socket)) = packets.next().await {
-                if let Err(error) = parse(packet, pathway, socket).await {
+            while let Some((packet, pathway, link)) = packets.next().await {
+                if let Err(error) = parse(packet, pathway, link).await {
                     event_broker.emit(Event::Failed(error));
                 };
             }
@@ -282,10 +282,10 @@ impl Feedback for InitialSpace {
     fn may_loss(&self, trigger: PacketLostTrigger, pns: &mut dyn Iterator<Item = u64>) {
         let sent_jornal = self.journal.of_sent_packets();
         let outgoing = self.crypto_stream.outgoing();
-        let mut rotate = sent_jornal.rotate();
+        let mut sent_packets = sent_jornal.rotate();
         for pn in pns {
             let mut may_lost_frames = QuicFramesCollector::<PacketLost>::new();
-            for frame in rotate.may_loss_pkt(pn) {
+            for frame in sent_packets.may_loss_packet(pn) {
                 // for this convert, empty bytes indicates the raw info is not available
                 may_lost_frames.extend(Some(&Frame::Crypto(frame, bytes::Bytes::new())));
                 outgoing.may_loss_data(&frame);
@@ -365,7 +365,7 @@ impl ClosingInitialSpace {
 }
 
 pub fn spawn_deliver_and_parse_closing(
-    mut packets: impl Stream<Item = ReceivedPacket> + Unpin + Send + 'static,
+    mut packets: impl Stream<Item = ReceivedFrom> + Unpin + Send + 'static,
     space: ClosingInitialSpace,
     closing_state: Arc<ClosingState>,
     event_broker: ArcEventBroker,

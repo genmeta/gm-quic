@@ -51,7 +51,7 @@ use crate::{
 
 pub type CipherHanshakePacket = CipherPacket<HandshakeHeader>;
 pub type PlainHandshakePacket = PlainPacket<HandshakeHeader>;
-pub type ReceivedPacket = (CipherHanshakePacket, Pathway, Link);
+pub type ReceivedFrom = (CipherHanshakePacket, Pathway, Link);
 
 pub struct HandshakeSpace {
     keys: ArcKeys,
@@ -135,7 +135,7 @@ impl HandshakeSpace {
 }
 
 pub fn spawn_deliver_and_parse(
-    mut bundles: impl Stream<Item = ReceivedPacket> + Unpin + Send + 'static,
+    mut bundles: impl Stream<Item = ReceivedFrom> + Unpin + Send + 'static,
     space: Arc<HandshakeSpace>,
     components: &Components,
     event_broker: ArcEventBroker,
@@ -236,10 +236,10 @@ impl Feedback for HandshakeSpace {
     fn may_loss(&self, trigger: PacketLostTrigger, pns: &mut dyn Iterator<Item = u64>) {
         let sent_jornal = self.journal.of_sent_packets();
         let outgoing = self.crypto_stream.outgoing();
-        let mut rotate = sent_jornal.rotate();
+        let mut sent_packets = sent_jornal.rotate();
         for pn in pns {
             let mut may_lost_frames = QuicFramesCollector::<PacketLost>::new();
-            for frame in rotate.may_loss_pkt(pn) {
+            for frame in sent_packets.may_loss_packet(pn) {
                 // for this convert, empty bytes indicates the raw info is not available
                 may_lost_frames.extend(Some(&Frame::Crypto(frame, bytes::Bytes::new())));
                 outgoing.may_loss_data(&frame);
@@ -319,7 +319,7 @@ impl ClosingHandshakeSpace {
 }
 
 pub fn spawn_deliver_and_parse_closing(
-    mut bundles: impl Stream<Item = ReceivedPacket> + Unpin + Send + 'static,
+    mut bundles: impl Stream<Item = ReceivedFrom> + Unpin + Send + 'static,
     space: ClosingHandshakeSpace,
     closing_state: Arc<ClosingState>,
     event_broker: ArcEventBroker,
