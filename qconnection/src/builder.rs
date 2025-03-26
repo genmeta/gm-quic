@@ -273,6 +273,8 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
             tx_wakers.clone(),
         );
 
+        let max_ack_delay = client_params.max_ack_delay();
+
         let spaces = Spaces::new(
             InitialSpace::new(initial_keys, self.foundation.token, tx_wakers.clone()),
             HandshakeSpace::new(tx_wakers.clone()),
@@ -282,6 +284,7 @@ impl ProtoReady<ClientFoundation, Arc<rustls::ClientConfig>> {
                 &client_params,
                 self.streams_ctrl,
                 tx_wakers.clone(),
+                max_ack_delay,
             ),
         );
 
@@ -355,6 +358,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
             tx_wakers.clone(),
         );
 
+        let max_ack_delay = server_params.max_ack_delay();
         let spaces = Spaces::new(
             InitialSpace::new(initial_keys, Vec::with_capacity(0), tx_wakers.clone()),
             HandshakeSpace::new(tx_wakers.clone()),
@@ -364,6 +368,7 @@ impl ProtoReady<ServerFoundation, Arc<rustls::ServerConfig>> {
                 &server_params,
                 self.streams_ctrl,
                 tx_wakers.clone(),
+                max_ack_delay,
             ),
         );
 

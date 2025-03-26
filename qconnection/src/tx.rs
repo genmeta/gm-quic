@@ -69,6 +69,7 @@ impl PacketLogger {
 }
 
 pub struct PacketBuffer<'b, 's, F> {
+    pn: u64,
     writer: PacketWriter<'b>,
     // 不同空间的send guard类型不一样
     clerk: NewPacketGuard<'s, F>,
@@ -90,6 +91,7 @@ impl<'b, 's, F> PacketBuffer<'b, 's, F> {
         let guard = journal.new_packet();
         let pn = guard.pn();
         Ok(Self {
+            pn: pn.0,
             clerk: guard,
             writer: PacketWriter::new_long(&header, buffer, pn, keys)?,
             logger: PacketLogger {
@@ -119,6 +121,7 @@ impl<'b, 's, F> PacketBuffer<'b, 's, F> {
         let guard = journal.new_packet();
         let pn = guard.pn();
         Ok(Self {
+            pn: pn.0,
             clerk: guard,
             writer: PacketWriter::new_short(&header, buffer, pn, hpk, pk, key_phase)?,
             logger: PacketLogger {
@@ -262,6 +265,10 @@ impl<F> PacketBuffer<'_, '_, F> {
 
         self.logger.log_sent(&self.writer);
         Some(self.writer.encrypt_and_protect())
+    }
+
+    pub fn pn(&self) -> u64 {
+        self.pn
     }
 }
 

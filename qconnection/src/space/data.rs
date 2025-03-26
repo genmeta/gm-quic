@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use bytes::BufMut;
 use futures::{Stream, StreamExt};
@@ -83,11 +83,12 @@ impl DataSpace {
         local_params: &impl StoreParameter,
         streams_ctrl: Box<dyn ControlStreamsConcurrency>,
         tx_wakers: ArcSendWakers,
+        max_ack_delay: Duration,
     ) -> Self {
         Self {
             zero_rtt_keys: ArcKeys::new_pending(),
             one_rtt_keys: ArcOneRttKeys::new_pending(),
-            journal: DataJournal::with_capacity(16),
+            journal: DataJournal::with_capacity(16, Some(max_ack_delay)),
             crypto_stream: CryptoStream::new(4096, 4096, tx_wakers.clone()),
             reliable_frames: reliable_frames.clone(),
             streams: DataStreams::new(
@@ -219,11 +220,19 @@ impl DataSpace {
         let mut signals = Signals::empty();
 
         let ack = need_ack
+            .or_else(|| {
+                let rcvd_journal = self.journal.of_rcvd_packets();
+                rcvd_journal.trigger_ack_frame()
+            })
             .ok_or(Signals::TRANSPORT)
             .and_then(|(largest, rcvd_time)| {
                 let rcvd_journal = self.journal.of_rcvd_packets();
-                let ack_frame =
-                    rcvd_journal.gen_ack_frame_util(largest, rcvd_time, packet.remaining_mut())?;
+                let ack_frame = rcvd_journal.gen_ack_frame_util(
+                    packet.pn(),
+                    largest,
+                    rcvd_time,
+                    packet.remaining_mut(),
+                )?;
                 packet.dump_ack_frame(ack_frame);
                 Ok(largest)
             })
@@ -446,9 +455,11 @@ pub fn spawn_deliver_and_parse(
 
     let dispatch_data_frame = {
         let event_broker = event_broker.clone();
+        let rcvd_joural = space.journal.of_rcvd_packets();
         move |frame: Frame, pty: packet::Type, path: &Path| match frame {
             Frame::Ack(f) => {
                 path.cc().on_ack_rcvd(Epoch::Data, &f);
+                rcvd_joural.on_rcvd_ack(&f);
                 _ = ack_frames_entry.send(f)
             }
             Frame::NewToken(f) => _ = new_token_frames_entry.send(f),
@@ -499,7 +510,11 @@ pub fn spawn_deliver_and_parse(
                         })?;
                     packet.log_received(frames);
 
-                    space.journal.of_rcvd_packets().register_pn(packet.pn());
+                    space.journal.of_rcvd_packets().register_pn(
+                        packet.pn(),
+                        packet_contains != PacketContains::NonAckEliciting,
+                        path.cc().get_pto(Epoch::Data),
+                    );
                     path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_contains);
                 };
 
@@ -533,7 +548,11 @@ pub fn spawn_deliver_and_parse(
                         })?;
                     packet.log_received(frames);
 
-                    space.journal.of_rcvd_packets().register_pn(packet.pn());
+                    space.journal.of_rcvd_packets().register_pn(
+                        packet.pn(),
+                        packet_contains != PacketContains::NonAckEliciting,
+                        path.cc().get_pto(Epoch::Data),
+                    );
                     path.on_packet_rcvd(Epoch::Data, packet.pn(), packet.size(), packet_contains);
                 }
                 Result::<(), Error>::Ok(())
