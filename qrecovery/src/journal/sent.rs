@@ -261,6 +261,9 @@ impl<T: Clone> SentRotateGuard<'_, T> {
     /// [`Largest Acknowleged`]: https://www.rfc-editor.org/rfc/rfc9000.html#name-ack-frames
     pub fn update_largest(&mut self, ack_frame: &AckFrame) -> Result<(), Error> {
         if ack_frame.largest() > self.inner.sent_packets.largest() {
+            tracing::error!(
+                "   Cause by: received an invalid ack frame whose largest pn is larger than the largest pn sent"
+            );
             return Err(Error::new(
                 ErrorKind::ProtocolViolation,
                 ack_frame.frame_type(),

@@ -27,6 +27,7 @@ pub enum Error {
 
 impl From<Error> for TransportError {
     fn from(e: Error) -> Self {
+        tracing::error!("   Cause by: parse frame error {e}");
         match e {
             // An endpoint MUST treat receipt of a packet containing no frames as a connection error of type PROTOCOL_VIOLATION.
             Error::NoFrames => {
@@ -52,8 +53,9 @@ impl From<Error> for TransportError {
 }
 
 impl From<nom::Err<Error>> for Error {
-    fn from(value: nom::Err<Error>) -> Self {
-        match value {
+    fn from(error: nom::Err<Error>) -> Self {
+        tracing::error!("   Cause by: nom error {error}");
+        match error {
             nom::Err::Incomplete(_needed) => {
                 unreachable!("Because the parsing of QUIC packets and frames is not stream-based.")
             }

@@ -94,6 +94,7 @@ where
         debug_assert_eq!(sid.role(), self.role);
         let idx = sid.dir() as usize;
         if sid.id() > self.max[idx] {
+            tracing::error!("   Cause by: accepted {sid}");
             return Err(ExceedLimitError(sid, self.max[idx]));
         }
         let cur = &mut self.unallocated[idx];

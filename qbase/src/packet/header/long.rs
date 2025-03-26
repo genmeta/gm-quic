@@ -267,6 +267,7 @@ pub mod io {
     /// [nom](https://docs.rs/nom/latest/nom/) parser style.
     pub fn be_retry(input: &[u8]) -> nom::IResult<&[u8], Retry> {
         if input.len() < 16 {
+            tracing::error!("   Cause by: the retry packet's length is too small");
             return Err(Err::Incomplete(nom::Needed::new(16)));
         }
         let token_length = input.len() - 16;

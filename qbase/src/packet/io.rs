@@ -27,6 +27,7 @@ fn be_payload(
     let payload_len = payload.len();
     if payload_len < 20 {
         // The payload needs at least 20 bytes to have enough samples to remove the packet header protection.
+        tracing::error!("   Cause by: parsing {:?} packet", pkty);
         return Err(Error::UnderSampling(payload.len()));
     }
     let packet_length = datagram.len() - remain.len();
@@ -77,6 +78,7 @@ pub fn be_packet(datagram: &mut BytesMut, dcid_len: usize) -> Result<Packet, Err
         Header::OneRtt(header) => {
             if remain.len() < 20 {
                 // The payload needs at least 20 bytes to have enough samples to remove the packet header protection.
+                tracing::error!("   Cause by: parsing 1-RTT packet");
                 return Err(Error::UnderSampling(remain.len()));
             }
             let bytes = datagram.clone();

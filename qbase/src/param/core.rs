@@ -252,6 +252,7 @@ pub fn be_client_parameters(mut input: &[u8]) -> Result<ClientParameters, Error>
     }
 
     fn must_exist(id: ParameterId) -> Error {
+        tracing::error!("   Cause by: validating parameters");
         parameter_error(id, "must exist in ClientParameters")
     }
 
@@ -262,6 +263,7 @@ pub fn be_client_parameters(mut input: &[u8]) -> Result<ClientParameters, Error>
     }
 
     fn must_not_exist(id: ParameterId) -> Error {
+        tracing::error!("   Cause by: validating parameters");
         parameter_error(id, "should not exist in ClientParameters")
     }
 
@@ -377,6 +379,7 @@ pub fn be_server_parameters(mut input: &[u8]) -> Result<ServerParameters, Error>
     }
 
     fn must_exist(id: ParameterId) -> Error {
+        tracing::error!("   Cause by: validate parameters");
         parameter_error(id, "must exist in ServerParameters")
     }
 

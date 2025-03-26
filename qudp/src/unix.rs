@@ -46,7 +46,7 @@ impl Io for UdpSocketController {
             }
         }
         if let Err(e) = socket.bind(&addr.into()) {
-            tracing::error!("Failed to bind socket: {}", e);
+            tracing::error!("   Cause by: failing to bind socket address");
             return Err(io::Error::new(io::ErrorKind::AddrInUse, e));
         }
         Ok(())
@@ -144,7 +144,10 @@ impl Io for UdpSocketController {
                         Err(e) if e == nix::errno::Errno::EAGAIN => {
                             return Err(io::Error::new(io::ErrorKind::WouldBlock, e));
                         }
-                        Err(e) => return Err(e.into()),
+                        Err(e) => {
+                            tracing::error!("   Cause by: failing to sendmsg {e}");
+                            return Err(e.into());
+                        }
                     }
                 }};
             }
@@ -255,6 +258,7 @@ impl Io for UdpSocketController {
             }
             Err(e) => {
                 if matches!(e, nix::errno::Errno::EAGAIN | nix::errno::Errno::EINTR) {
+                    // actually, it's not an error, just a signal to retry
                     return Err(io::Error::new(io::ErrorKind::WouldBlock, e));
                 }
                 Err(e.into())

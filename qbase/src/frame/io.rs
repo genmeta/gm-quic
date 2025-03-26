@@ -113,6 +113,7 @@ pub fn be_frame(raw: &Bytes, packet_type: Type) -> Result<(usize, Frame, FrameTy
     let input = raw.as_ref();
     let (remain, frame_type) = be_frame_type(input)?;
     if !frame_type.belongs_to(packet_type) {
+        tracing::error!("   Cause by: parsed an wrong frame");
         return Err(Error::WrongType(frame_type, packet_type));
     }
 
