@@ -99,6 +99,7 @@ impl HandshakeSpace {
         buf: &mut [u8],
     ) -> Result<(PaddablePacket, Option<u64>), Signals> {
         let keys = self.keys.get_local_keys().ok_or(Signals::KEYS)?;
+        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Handshake);
         let sent_journal = self.journal.of_sent_packets();
         let header = LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).handshake();
         let need_ack = tx.need_ack(Epoch::Handshake);
@@ -132,7 +133,6 @@ impl HandshakeSpace {
             .try_load_data_into(&mut packet)
             .inspect_err(|s| signals |= *s);
 
-        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Handshake);
         Ok((
             packet
                 .prepare_with_time(retran_timeout, expire_timeout)
@@ -147,13 +147,13 @@ impl HandshakeSpace {
         buf: &mut [u8],
     ) -> Result<PaddablePacket, Signals> {
         let keys = self.keys.get_local_keys().ok_or(Signals::KEYS)?;
+        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Handshake);
         let sent_journal = self.journal.of_sent_packets();
         let header = LongHeaderBuilder::with_cid(tx.dcid(), tx.scid()).handshake();
         let mut packet = PacketBuffer::new_long(header, buf, keys, &sent_journal)?;
 
         packet.dump_ping_frame();
 
-        let (retran_timeout, expire_timeout) = tx.retransmit_and_expire_time(Epoch::Handshake);
         packet
             .prepare_with_time(retran_timeout, expire_timeout)
             .map_err(|_| unreachable!("packet is not empty"))
