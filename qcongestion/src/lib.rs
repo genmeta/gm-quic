@@ -16,7 +16,7 @@ mod pacing;
 mod packets;
 mod rtt;
 mod status;
-pub use status::{HandshakeStatus, PathStatus};
+pub use status::HandshakeStatus;
 
 ///  default datagram size in bytes.
 pub const MSS: usize = 1200;
@@ -70,7 +70,7 @@ pub trait Transport {
 
     fn discard_epoch(&self, epoch: Epoch);
 
-    fn grant_anti_amplifier(&self);
+    fn grant_anti_amplification(&self);
 }
 
 /// The [`Feedback`] trait defines the interface for packet tracking

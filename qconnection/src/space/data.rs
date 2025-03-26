@@ -496,7 +496,7 @@ pub fn spawn_deliver_and_parse(
                             return Ok(());
                         }
                     };
-                    path.on_rcvd(packet.size());
+                    path.on_packet_rcvd(packet.size());
                     components
                         .handshake
                         .server_done_and_discard_spaces(&components.paths);

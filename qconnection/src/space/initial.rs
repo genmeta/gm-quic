@@ -189,7 +189,7 @@ pub fn spawn_deliver_and_parse(
             if let TokenRegistry::Server(provider) = token_registry.deref() {
                 if let Some(server_name) = tls_session.server_name() {
                     if provider.verify_token(server_name, initial_token) {
-                        path.grant_anti_amplifier();
+                        path.grant_anti_amplification();
                     }
                 }
             }
@@ -222,7 +222,7 @@ pub fn spawn_deliver_and_parse(
                     return Ok(());
                 }
             };
-            path.on_rcvd(packet_size);
+            path.on_packet_rcvd(packet_size);
 
             let mut frames = QuicFramesCollector::<PacketReceived>::new();
             let is_ack_packet = FrameReader::new(packet.body(), packet.get_type()).try_fold(

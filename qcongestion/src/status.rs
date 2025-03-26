@@ -37,49 +37,44 @@ impl HandshakeStatus {
     }
 }
 
-pub struct PathStatus {
+pub(crate) struct PathStatus {
     handshake: Arc<HandshakeStatus>,
     is_at_anti_amplification_limit: AtomicBool,
 }
 
 impl PathStatus {
-    pub fn new(handshake: Arc<HandshakeStatus>) -> Self {
+    pub(crate) fn new(handshake: Arc<HandshakeStatus>) -> Self {
         Self {
             handshake,
             is_at_anti_amplification_limit: AtomicBool::new(true),
         }
     }
 
-    pub fn is_server(&self) -> bool {
+    pub(crate) fn is_server(&self) -> bool {
         self.handshake.is_server.load(Ordering::Relaxed)
     }
 
-    pub fn has_handshake_key(&self) -> bool {
+    pub(crate) fn has_handshake_key(&self) -> bool {
         self.handshake.has_handshake_key.load(Ordering::Relaxed)
     }
 
-    pub fn has_received_handshake_ack(&self) -> bool {
+    pub(crate) fn has_received_handshake_ack(&self) -> bool {
         self.handshake
             .has_received_handshake_ack
             .load(Ordering::Relaxed)
     }
 
-    pub fn is_handshake_confirmed(&self) -> bool {
+    pub(crate) fn is_handshake_confirmed(&self) -> bool {
         self.handshake
             .is_handshake_confirmed
             .load(Ordering::Relaxed)
     }
 
-    pub fn is_at_anti_amplification_limit(&self) -> bool {
+    pub(crate) fn is_at_anti_amplification_limit(&self) -> bool {
         self.is_at_anti_amplification_limit.load(Ordering::Relaxed)
     }
 
-    pub fn enter_anti_amplification_limit(&self) {
-        self.is_at_anti_amplification_limit
-            .store(true, Ordering::Release);
-    }
-
-    pub fn release_anti_amplification_limit(&self) {
+    pub(crate) fn release_anti_amplification_limit(&self) {
         self.is_at_anti_amplification_limit
             .store(false, Ordering::Release);
     }
