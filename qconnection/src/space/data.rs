@@ -494,7 +494,7 @@ pub fn spawn_deliver_and_parse(
                             return Ok(());
                         }
                     };
-                    path.on_rcvd(packet.size());
+                    path.on_packet_rcvd(packet.size());
                     components
                         .handshake
                         .discard_spaces_on_server_handshake_done(&components.paths);

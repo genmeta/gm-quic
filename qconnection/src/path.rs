@@ -5,6 +5,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Instant,
 };
 
 use qbase::{
@@ -17,7 +18,7 @@ use qbase::{
 };
 use qcongestion::{ArcCC, Transport};
 use qinterface::{QuicInterface, router::QuicProto};
-use tokio::{task::AbortHandle, time::Instant};
+use tokio::task::AbortHandle;
 
 mod aa;
 mod paths;
@@ -97,14 +98,14 @@ impl Path {
         &self.tx_waker
     }
 
-    pub fn on_rcvd(&self, amount: usize) {
+    pub fn on_packet_rcvd(&self, amount: usize) {
         self.anti_amplifier.on_rcvd(amount);
-        *self.last_recv_time.lock().unwrap() = Instant::now();
+        *self.last_recv_time.lock().unwrap() = tokio::time::Instant::now().into_std();
     }
 
-    pub fn grant_anti_amplifier(&self) {
+    pub fn grant_anti_amplification(&self) {
         self.anti_amplifier.grant();
-        self.cc().grant_anti_amplifier();
+        self.cc().grant_anti_amplification();
     }
 
     pub async fn send_packets(&self, mut segments: &[io::IoSlice<'_>]) -> io::Result<()> {

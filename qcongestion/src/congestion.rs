@@ -13,7 +13,7 @@ use tokio::task::AbortHandle;
 use tracing::Instrument as _;
 
 use crate::{
-    Algorithm, Feedback, MSS,
+    Algorithm, Feedback, HandshakeStatus, MSS,
     algorithm::{Control, new_reno::NewReno},
     pacing::{self, Pacer},
     packets::{PacketSpace, SentPacket},
@@ -52,7 +52,7 @@ impl CongestionController {
         algorithm: Algorithm,
         max_ack_delay: Duration,
         trackers: [Arc<dyn Feedback>; 3],
-        path_status: PathStatus,
+        handshake_status: Arc<HandshakeStatus>,
     ) -> Self {
         let algorithm: Box<dyn Control> = match algorithm {
             Algorithm::Bbr => todo!("implement BBR"),
@@ -75,7 +75,7 @@ impl CongestionController {
             pending_burst: None,
             trackers,
             need_send_ack_eliciting_packets: [0; Epoch::count()],
-            path_status,
+            path_status: PathStatus::new(handshake_status),
         }
     }
 
@@ -466,13 +466,13 @@ impl ArcCC {
         algorithm: Algorithm,
         max_ack_delay: Duration,
         trackers: [Arc<dyn Feedback>; 3],
-        path_status: PathStatus,
+        handshake_status: Arc<HandshakeStatus>,
     ) -> Self {
         ArcCC(Arc::new(Mutex::new(CongestionController::init(
             algorithm,
             max_ack_delay,
             trackers,
-            path_status,
+            handshake_status,
         ))))
     }
 }
@@ -590,7 +590,7 @@ impl super::Transport for ArcCC {
         guard.need_send_ack_eliciting_packets[epoch]
     }
 
-    fn grant_anti_amplifier(&self) {
+    fn grant_anti_amplification(&self) {
         let guard = self.0.lock().unwrap();
         guard.path_status.release_anti_amplification_limit();
     }

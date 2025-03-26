@@ -25,7 +25,7 @@ use qbase::{
     token::ArcTokenRegistry,
     varint::VarInt,
 };
-use qcongestion::{Algorithm, ArcCC, HandshakeStatus, PathStatus};
+use qcongestion::{Algorithm, ArcCC, HandshakeStatus};
 use qinterface::{queue::RcvdPacketQueue, router::QuicProto};
 use qlog::{
     GroupID, VantagePointType,
@@ -553,13 +553,13 @@ impl Components {
                         self.spaces.handshake().clone(),
                         self.spaces.data().clone(),
                     ],
-                    PathStatus::new(self.handshake.status()),
+                    self.handshake.status(),
                 );
 
                 let path = Arc::new(Path::new(&self.proto, link, pathway, cc)?);
 
                 if !is_probed {
-                    path.grant_anti_amplifier();
+                    path.grant_anti_amplification();
                 }
 
                 let burst = path.new_burst(self);

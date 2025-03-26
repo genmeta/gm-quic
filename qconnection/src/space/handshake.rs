@@ -186,8 +186,8 @@ pub fn spawn_deliver_and_parse(
             // Once an endpoint has successfully processed a Handshake packet from the peer, it can consider the peer
             // address to have been validated.
             // It may have already been verified using tokens in the Handshake space
-            path.grant_anti_amplifier();
-            path.on_rcvd(packet.size());
+            path.grant_anti_amplification();
+            path.on_packet_rcvd(packet.size());
 
             let mut frames = QuicFramesCollector::<PacketReceived>::new();
             let is_ack_packet = FrameReader::new(packet.body(), packet.get_type()).try_fold(
