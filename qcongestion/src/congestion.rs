@@ -449,8 +449,21 @@ impl CongestionController {
         )
     }
 
+    //OnPacketNumberSpaceDiscarded(pn_space):
+    //   assert(pn_space != ApplicationData)
+    //   RemoveFromBytesInFlight(sent_packets[pn_space])
+    //   sent_packets[pn_space].clear()
+    //   // Reset the loss detection and PTO timer
+    //   time_of_last_ack_eliciting_packet[pn_space] = 0
+    //   loss_time[pn_space] = 0
+    //   pto_count = 0
+    //   SetLossDetectionTimer()
     fn discard_epoch(&mut self, epoch: Epoch) {
+        assert!(epoch != Epoch::Data);
         self.packet_spaces[epoch].discard(&mut self.algorithm);
+        self.loss_detection_timer = None;
+        self.pto_count = 0;
+        self.set_loss_detection_timer();
     }
 
     fn get_pto(&self, epoch: Epoch) -> Duration {
