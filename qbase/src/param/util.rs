@@ -249,9 +249,11 @@ pub fn be_parameter(input: &[u8]) -> nom::IResult<&[u8], (ParameterId, Parameter
         .parse(remain)?,
         // flag
         ParameterId::DisableActiveMigration | ParameterId::GreaseQuicBit => (remain, true.into()),
+        ParameterId::StatelssResetToken => {
+            map(be_reset_token, ParameterValue::ResetToken).parse(remain)?
+        }
         // varint
-        ParameterId::StatelssResetToken
-        | ParameterId::MaxUdpPayloadSize
+        ParameterId::MaxUdpPayloadSize
         | ParameterId::InitialMaxData
         | ParameterId::InitialMaxStreamDataBidiLocal
         | ParameterId::InitialMaxStreamDataBidiRemote
