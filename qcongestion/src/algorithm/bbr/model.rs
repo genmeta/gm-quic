@@ -42,8 +42,7 @@ impl Bbr {
     // 4.1.2.2.  BBR.RTprop Min Filter
     pub(super) fn update_rtprop(&mut self) {
         let sample_rtt = self.delivery_rate.sample_rtt();
-
-        let now = Instant::now();
+        let now = tokio::time::Instant::now().into_std();
         self.is_rtprop_expired =
             now.saturating_duration_since(self.rtprop_stamp) > RTPROP_FILTER_LEN;
 

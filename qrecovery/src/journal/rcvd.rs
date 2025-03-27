@@ -161,7 +161,7 @@ impl RcvdJournal {
     ) -> Result<AckFrame, Signals> {
         let mut pkts = self
             .queue
-            .iter_mut_with_idx()
+            .enumerate_mut()
             .rev()
             .skip_while(|(pktno, _)| *pktno > largest);
 

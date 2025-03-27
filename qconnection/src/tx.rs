@@ -481,7 +481,7 @@ impl Transaction<'_> {
 
         if let Ok((mid_pkt, ack)) = spaces
             .initial()
-            .try_assemble_packet(self, &mut buf[written..])
+            .try_assemble_initial_packet(self, &mut buf[written..])
             .inspect_err(|s| signals |= *s)
         {
             self.constraints

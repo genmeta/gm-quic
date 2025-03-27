@@ -25,7 +25,7 @@ pub struct ClosingState {
 impl ClosingState {
     pub fn new(ccf: ConnectionCloseFrame, components: &Components) -> Self {
         Self {
-            last_recv_time: Mutex::new(Instant::now()),
+            last_recv_time: Mutex::new(tokio::time::Instant::now().into_std()),
             rcvd_packets: AtomicUsize::new(0),
             scid: components.cid_registry.local.initial_scid(),
             dcid: components.cid_registry.remote.latest_dcid(),
@@ -37,10 +37,17 @@ impl ClosingState {
 
     pub fn should_send(&self) -> bool {
         let mut last_recv_time_guard = self.last_recv_time.lock().unwrap();
-        let received_packets = self.rcvd_packets.fetch_add(1, Ordering::AcqRel);
-        let since_last_rcvd =
-            core::mem::replace(&mut *last_recv_time_guard, Instant::now()).elapsed();
-        since_last_rcvd > Duration::from_secs(1) || received_packets % 3 == 0
+        self.rcvd_packets.fetch_add(1, Ordering::AcqRel);
+
+        if self.rcvd_packets.load(Ordering::Acquire) >= 3
+            || last_recv_time_guard.elapsed() > Duration::from_secs(1)
+        {
+            *last_recv_time_guard = tokio::time::Instant::now().into_std();
+            self.rcvd_packets.store(0, Ordering::Release);
+            true
+        } else {
+            false
+        }
     }
 
     pub async fn try_send_with<W>(&self, pathway: Pathway, write: W)

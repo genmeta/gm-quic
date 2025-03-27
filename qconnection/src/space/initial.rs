@@ -102,7 +102,7 @@ impl InitialSpace {
         }
     }
 
-    pub fn try_assemble_packet(
+    pub fn try_assemble_initial_packet(
         &self,
         tx: &mut Transaction<'_>,
         buf: &mut [u8],

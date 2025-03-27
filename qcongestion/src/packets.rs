@@ -26,19 +26,6 @@ pub struct SentPacket {
     pub(crate) count_for_cc: bool,
 }
 
-impl Default for SentPacket {
-    fn default() -> Self {
-        SentPacket {
-            packet_number: 0,
-            time_sent: Instant::now(),
-            ack_eliciting: true,
-            sent_bytes: 0,
-            state: State::Inflight,
-            count_for_cc: false,
-        }
-    }
-}
-
 impl SentPacket {
     pub(crate) fn new(
         packet_number: u64,
@@ -53,7 +40,7 @@ impl SentPacket {
             ack_eliciting,
             count_for_cc,
             sent_bytes,
-            ..Default::default()
+            state: State::Inflight,
         }
     }
 }
@@ -330,6 +317,7 @@ mod tests {
     #[test]
     fn test_packet_space() {
         let mut packet_space = PacketSpace::with_epoch(Epoch::Initial, Duration::from_millis(100));
+        // let now = tokio::time::Instant::now().into_std();
 
         for i in 0..10 {
             packet_space.sent_packets.push_back(SentPacket::new(

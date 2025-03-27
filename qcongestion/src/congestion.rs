@@ -61,7 +61,7 @@ impl CongestionController {
             Algorithm::NewReno => Box::new(NewReno::new()),
         };
 
-        let now = Instant::now();
+        let now = tokio::time::Instant::now().into_std();
         CongestionController {
             algorithm,
             rtt: ArcRtt::new(),
@@ -504,7 +504,7 @@ impl super::Transport for ArcCC {
                 let mut interval = tokio::time::interval(Duration::from_millis(10));
                 loop {
                     interval.tick().await;
-                    let now = Instant::now();
+                    let now = tokio::time::Instant::now().into_std();
                     let mut guard = cc.0.lock().unwrap();
                     if guard.loss_detection_timer.is_some_and(|t| t <= now) {
                         guard.on_loss_detection_timeout();
@@ -576,7 +576,7 @@ impl super::Transport for ArcCC {
 
     fn on_ack_rcvd(&self, epoch: Epoch, ack_frame: &AckFrame) {
         let mut guard = self.0.lock().unwrap();
-        let now = Instant::now();
+        let now = tokio::time::Instant::now().into_std();
         guard.on_ack_rcvd(epoch, ack_frame, now);
 
         // See [Section 17.2.2.1](https://www.rfc-editor.org/rfc/rfc9000#name-abandoning-initial-packets)

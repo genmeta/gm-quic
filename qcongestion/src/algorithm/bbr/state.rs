@@ -14,7 +14,7 @@ const PACING_GAIN_CYCLE: [f64; GAIN_CYCLE_LEN] = [1.25, 0.75, 1.0, 1.0, 1.0, 1.0
 impl Bbr {
     pub(super) fn init(&mut self) {
         self.rtprop = INITIAL_RTT;
-        self.rtprop_stamp = Instant::now();
+        self.rtprop_stamp = tokio::time::Instant::now().into_std();
         self.probe_rtt_done_stamp = None;
         self.probe_rtt_round_done = false;
         self.packet_conservation = false;
@@ -97,14 +97,14 @@ impl Bbr {
     }
 
     fn advance_cycle_phase(&mut self) {
-        self.cycle_stamp = Instant::now();
+        self.cycle_stamp = tokio::time::Instant::now().into_std();
         self.cycle_index = (self.cycle_index + 1) % GAIN_CYCLE_LEN;
         self.pacing_gain = PACING_GAIN_CYCLE[self.cycle_index];
     }
 
     // 是否要进入下一阶段
     fn is_next_cycle_phase(&mut self) -> bool {
-        let now = Instant::now();
+        let now = tokio::time::Instant::now().into_std();
         let is_full_length = now.saturating_duration_since(self.cycle_stamp) > self.rtprop;
 
         // pacing_gain == 1.0 持续 rtprop
@@ -163,7 +163,7 @@ impl Bbr {
         // C.app_limited = (BW.delivered + packets_in_flight) ? : 1
         self.delivery_rate.update_app_limited(true);
 
-        let now = Instant::now();
+        let now = tokio::time::Instant::now().into_std();
         if let Some(probe_rtt_done_stamp) = self.probe_rtt_done_stamp {
             if self.is_round_start {
                 self.probe_rtt_round_done = true;
@@ -223,7 +223,7 @@ mod tests {
     fn test_bbr_check_full_pipe() {
         let mut bbr = super::Bbr::new();
 
-        let mut now = Instant::now();
+        let mut now = tokio::time::Instant::now().into_std();
         let rtt = Duration::from_millis(100);
         simulate_round_trip(&mut bbr, now, rtt, 0, 10, MSS);
         now += Duration::from_secs(1);
