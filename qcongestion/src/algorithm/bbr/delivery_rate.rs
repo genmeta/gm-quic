@@ -21,7 +21,7 @@ pub struct Rate {
 
 impl Default for Rate {
     fn default() -> Self {
-        let now = Instant::now();
+        let now = tokio::time::Instant::now().into_std();
 
         Rate {
             delivered: 0,

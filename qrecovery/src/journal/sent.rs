@@ -117,6 +117,25 @@ impl SentPktState {
         }
     }
 
+    fn should_retransmit_after(&mut self, now: &Instant) -> bool {
+        match *self {
+            SentPktState::Flighting {
+                sent_time,
+                retran_time,
+                expire_time,
+                ..
+            } if retran_time < *now => {
+                *self = SentPktState::Retransmitted {
+                    nframes: self.nframes(),
+                    sent_time,
+                    expire_time,
+                };
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn should_remain_after(&self, pn: u64, now: &Instant) -> bool {
         match self {
             SentPktState::Skipped => false,
@@ -149,11 +168,11 @@ struct SentJournal<T> {
 }
 
 impl<T: Clone> SentJournal<T> {
-    fn on_pkt_acked(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ {
+    fn on_packet_acked(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ {
         let mut len = 0;
         let offset = self
             .sent_packets
-            .iter_with_idx()
+            .enumerate()
             .take_while(|(pkt_idx, _)| *pkt_idx < pn)
             .map(|(_, s)| s.nframes())
             .sum::<usize>();
@@ -165,11 +184,12 @@ impl<T: Clone> SentJournal<T> {
             .map(|f| f.clone())
     }
 
-    fn may_loss_pkt(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ {
+    fn may_loss_packet(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ {
         let mut len = 0;
         let offset = self
             .sent_packets
-            .iter_with_idx()
+            .enumerate()
+            // TODO(optimize): 调用者是一种遍历，每次都从头take_while，可以优化
             .take_while(|(pkt_idx, _)| *pkt_idx < pn)
             .map(|(_, s)| s.nframes())
             .sum::<usize>();
@@ -179,6 +199,24 @@ impl<T: Clone> SentJournal<T> {
         self.queue
             .range_mut(offset..offset + len)
             .map(|f| f.clone())
+    }
+
+    fn fast_retransmit(&mut self) -> impl Iterator<Item = T> + '_ {
+        tracing::debug!("fast retransmit");
+        self.resize();
+
+        let now = tokio::time::Instant::now().into_std();
+        self.sent_packets
+            .enumerate_mut()
+            .take_while(|(pn, _)| *pn < self.largest_acked_pktno)
+            .scan(0, move |sum, (_, s)| {
+                let start = *sum;
+                *sum += s.nframes();
+                Some((s.should_retransmit_after(&now), start..*sum))
+            })
+            .filter(|(should_retran, _)| *should_retran)
+            .flat_map(|(_, r)| self.queue.range(r))
+            .cloned()
     }
 }
 
@@ -195,11 +233,11 @@ impl<T> SentJournal<T> {
         let now = tokio::time::Instant::now().into_std();
         let (n, f) = self
             .sent_packets
-            .iter_with_idx()
+            .enumerate()
             .take_while(|(pn, s)| !s.should_remain_after(*pn, &now))
             .fold((0usize, 0usize), |(n, f), (_, s)| (n + 1, f + s.nframes()));
         self.sent_packets.advance(n);
-        let _ = self.queue.drain(..f);
+        _ = self.queue.drain(..f);
     }
 }
 
@@ -284,13 +322,17 @@ impl<T: Clone> SentRotateGuard<'_, T> {
     }
 
     /// Called when the packet sent is acked by peer, return the frames in that packet.
-    pub fn on_pkt_acked(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ + use<'_, T> {
-        self.inner.on_pkt_acked(pn)
+    pub fn on_packet_acked(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ + use<'_, T> {
+        self.inner.on_packet_acked(pn)
     }
 
     /// Called when the packet sent may lost, reutrn the frames in that packet.
     pub fn may_loss_packet(&mut self, pn: u64) -> impl Iterator<Item = T> + '_ + use<'_, T> {
-        self.inner.may_loss_pkt(pn)
+        self.inner.may_loss_packet(pn)
+    }
+
+    pub fn fast_retransmit(&mut self) -> impl Iterator<Item = T> + '_ + use<'_, T> {
+        self.inner.fast_retransmit()
     }
 }
 

@@ -55,7 +55,7 @@ impl Rtt {
             self.min_rtt = latest_rtt;
             self.smoothed_rtt = latest_rtt;
             self.rttvar = latest_rtt / 2;
-            self.first_rtt_sample = Some(Instant::now());
+            self.first_rtt_sample = Some(tokio::time::Instant::now().into_std());
         } else {
             // min_rtt ignores acknowledgment delay.
             self.min_rtt = std::cmp::min(self.min_rtt, latest_rtt);

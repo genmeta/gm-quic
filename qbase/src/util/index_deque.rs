@@ -290,11 +290,11 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
     /// deque.push_back(1).unwrap();
     /// deque.push_back(2).unwrap();
     /// deque.push_back(3).unwrap();
-    /// for (idx, num) in deque.iter_with_idx() {
+    /// for (idx, num) in deque.enumerate() {
     ///    assert_eq!(idx + 1, *num);
     /// }
     /// ```
-    pub fn iter_with_idx(&self) -> impl DoubleEndedIterator<Item = (u64, &T)> {
+    pub fn enumerate(&self) -> impl DoubleEndedIterator<Item = (u64, &T)> {
         self.deque
             .iter()
             .enumerate()
@@ -313,13 +313,13 @@ impl<T, const LIMIT: u64> IndexDeque<T, LIMIT> {
     /// deque.push_back(1).unwrap();
     /// deque.push_back(2).unwrap();
     /// deque.push_back(3).unwrap();
-    /// for (idx, num) in deque.iter_mut_with_idx() {
+    /// for (idx, num) in deque.enumerate_mut() {
     ///     *num = *num + idx;
     /// }
     /// let b: &[_] = &[(0, &mut 1), (1, &mut 3), (2, &mut 5)];
-    /// assert_eq!(deque.iter_mut_with_idx().collect::<Vec<(u64, &mut u64)>>().as_slice(), b);
+    /// assert_eq!(deque.enumerate_mut().collect::<Vec<(u64, &mut u64)>>().as_slice(), b);
     /// ```
-    pub fn iter_mut_with_idx(&mut self) -> impl DoubleEndedIterator<Item = (u64, &mut T)> {
+    pub fn enumerate_mut(&mut self) -> impl DoubleEndedIterator<Item = (u64, &mut T)> {
         self.deque
             .iter_mut()
             .enumerate()
@@ -550,7 +550,7 @@ mod tests {
         deque.advance(5);
         assert_eq!(deque.offset, 5);
 
-        deque.iter_with_idx().for_each(|(idx, item)| {
+        deque.enumerate().for_each(|(idx, item)| {
             assert_eq!(idx, *item);
         });
     }
@@ -575,7 +575,7 @@ mod tests {
             assert_eq!(deque.push_back(i), Ok(i));
         }
         deque.reset_offset(10);
-        deque.iter_with_idx().for_each(|(idx, item)| {
+        deque.enumerate().for_each(|(idx, item)| {
             assert_eq!(idx, *item + 10);
         });
     }
@@ -591,7 +591,7 @@ mod tests {
         }
         assert_eq!(deque.offset, 5);
         deque.reset_offset(3);
-        deque.iter_with_idx().for_each(|(idx, item)| {
+        deque.enumerate().for_each(|(idx, item)| {
             assert_eq!(idx + 2, *item);
         });
     }

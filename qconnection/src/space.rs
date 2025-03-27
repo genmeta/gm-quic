@@ -196,7 +196,7 @@ impl ReceiveFrame<AckFrame> for AckInitialSpace {
             packet_nubers: acked.clone(),
         });
         for pn in acked {
-            for frame in rotate_guard.on_pkt_acked(pn) {
+            for frame in rotate_guard.on_packet_acked(pn) {
                 self.crypto_stream_outgoing.on_data_acked(&frame);
             }
         }
@@ -232,7 +232,7 @@ impl ReceiveFrame<AckFrame> for AckHandshakeSpace {
             packet_nubers: acked.clone(),
         });
         for pn in acked {
-            for frame in rotate_guard.on_pkt_acked(pn) {
+            for frame in rotate_guard.on_packet_acked(pn) {
                 self.crypto_stream_outgoing.on_data_acked(&frame);
             }
         }
@@ -274,7 +274,7 @@ impl ReceiveFrame<AckFrame> for AckDataSpace {
             packet_nubers: acked.clone(),
         });
         for pn in acked {
-            for frame in rotate_guard.on_pkt_acked(pn) {
+            for frame in rotate_guard.on_packet_acked(pn) {
                 match frame {
                     GuaranteedFrame::Stream(stream_frame) => {
                         self.data_streams.on_data_acked(stream_frame)
