@@ -49,8 +49,14 @@ pub fn be_packet(datagram: &mut BytesMut, dcid_len: usize) -> Result<Packet, Err
         _ => unreachable!("parsing packet header never generates error or failure"),
     })?;
     match header {
-        Header::VN(header) => Ok(Packet::VN(header)),
-        Header::Retry(header) => Ok(Packet::Retry(header)),
+        Header::VN(header) => {
+            datagram.clear();
+            Ok(Packet::VN(header))
+        }
+        Header::Retry(header) => {
+            datagram.clear();
+            Ok(Packet::Retry(header))
+        }
         Header::Initial(header) => {
             let (bytes, offset) = be_payload(pkty, datagram, remain.len())?;
             Ok(Packet::Data(DataPacket {
