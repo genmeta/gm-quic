@@ -143,14 +143,17 @@ pub enum Packet {
 /// copies cheaply until it is read by the application layer.
 #[derive(Debug)]
 pub struct PacketReader {
-    raw: BytesMut,
+    raw_bytes: BytesMut,
     dcid_len: usize,
     // TODO: 添加level，各种包类型顺序不能错乱，否则失败
 }
 
 impl PacketReader {
-    pub fn new(raw: BytesMut, dcid_len: usize) -> Self {
-        Self { raw, dcid_len }
+    pub fn new(raw_bytes: BytesMut, dcid_len: usize) -> Self {
+        Self {
+            raw_bytes,
+            dcid_len,
+        }
     }
 }
 
@@ -158,14 +161,14 @@ impl Iterator for PacketReader {
     type Item = Result<Packet, error::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.raw.is_empty() {
+        if self.raw_bytes.is_empty() {
             return None;
         }
 
-        match io::be_packet(&mut self.raw, self.dcid_len) {
+        match io::be_packet(&mut self.raw_bytes, self.dcid_len) {
             Ok(packet) => Some(Ok(packet)),
             Err(e) => {
-                self.raw.clear(); // no longer parsing
+                self.raw_bytes.clear(); // no longer parsing
                 Some(Err(e))
             }
         }
