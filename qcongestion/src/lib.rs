@@ -12,9 +12,9 @@ mod pacing;
 mod packets;
 mod rtt;
 mod status;
-pub use status::HandshakeStatus;
+pub use status::{HandshakeStatus, PathStatus};
 
-///  default datagram size in bytes.
+/// default datagram size in bytes.
 pub const MSS: usize = 1200;
 
 /// The [`Transport`] trait defines the interface for congestion control algorithms.
@@ -22,7 +22,7 @@ pub trait Transport {
     /// Performs a periodic tick to drive the congestion control algorithm.
     fn launch(&self) -> AbortHandle;
 
-    fn send_quota(&self, expect_quota: usize) -> Result<usize, Signals>;
+    fn send_quota(&self) -> Result<usize, Signals>;
 
     fn retransmit_and_expire_time(&self, epoch: Epoch) -> (Duration, Duration);
 

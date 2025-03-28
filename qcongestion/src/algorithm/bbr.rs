@@ -8,7 +8,7 @@ use min_max::MinMax;
 use qlog::quic::recovery::RecoveryMetricsUpdated;
 
 use super::Control;
-use crate::{MSS, packets::AckedPackets};
+use crate::packets::AckedPackets;
 
 mod delivery_rate;
 mod min_max;
@@ -16,6 +16,7 @@ pub(crate) mod model;
 pub(crate) mod parameters;
 pub(crate) mod state;
 
+const MSS: usize = 1200;
 // RTpropFilterLen: A constant specifying the length of the RTProp min
 // filter window, RTpropFilterLen is `10` secs.
 const RTPROP_FILTER_LEN: Duration = Duration::from_secs(10);

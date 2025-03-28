@@ -19,13 +19,13 @@ pub use qbase::{
 };
 use qbase::{
     frame::ConnectionCloseFrame,
-    net::tx::{ArcSendWaker, ArcSendWakers},
+    net::tx::ArcSendWakers,
     param::{ArcParameters, ParameterId, RememberedParameters},
     sid::{self, ProductStreamsConcurrencyController},
     token::ArcTokenRegistry,
     varint::VarInt,
 };
-use qcongestion::{Algorithm, ArcCC, HandshakeStatus};
+use qcongestion::HandshakeStatus;
 use qinterface::{queue::RcvdPacketQueue, router::QuicProto};
 use qlog::{
     GroupID, VantagePointType,
@@ -550,21 +550,12 @@ impl Components {
                 });
                 let max_ack_delay = self.parameters.get_local_as::<Duration>(ParameterId::MaxAckDelay)?;
 
-                let path_tx_waker = ArcSendWaker::new();
-                let cc = ArcCC::new(
-                    Algorithm::NewReno,
-                    max_ack_delay,
-                    [
-                        self.spaces.initial().clone(),
-                        self.spaces.handshake().clone(),
-                        self.spaces.data().clone(),
+                let path = Arc::new(Path::new(&self.proto, link, pathway, max_ack_delay,[
+                    self.spaces.initial().clone(),
+                    self.spaces.handshake().clone(),
+                    self.spaces.data().clone(),
 
-                    ],
-                    self.handshake.status(),
-                    path_tx_waker.clone()
-                );
-
-                let path = Arc::new(Path::new(&self.proto, link, pathway, cc,path_tx_waker)?);
+                ], self.handshake.status())?);
 
                 if !is_probed {
                     path.grant_anti_amplification();

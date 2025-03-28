@@ -66,7 +66,6 @@ impl Burst {
             self.path.cc(),
             &self.path.anti_amplifier,
             &self.flow_ctrl,
-            self.path.mtu() as usize,
             self.path.tx_waker.clone(),
         )?;
         if transaction.is_none() {

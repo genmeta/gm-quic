@@ -1,25 +1,23 @@
-use std::time::Instant;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU16, Ordering},
+    },
+    time::Instant,
+};
 
 use qbase::{Epoch, frame::AckFrame};
 use qlog::quic::recovery::RecoveryMetricsUpdated;
 
 use crate::{
-    MSS,
     algorithm::Control,
     packets::{SentPacket, State},
 };
 
-// The upper bound for the initial window will be
-// min (10*MSS, max (2*MSS, 14600))
-// See https://datatracker.ietf.org/doc/html/rfc6928#autoid-3
-const INIT_CWND: usize = 10 * MSS;
-// The RECOMMENDED value is 2 * max_datagram_size.
-// See https://datatracker.ietf.org/doc/html/rfc9002#name-initial-and-minimum-congest
-const MININUM_WINDOW: usize = 2 * MSS;
 const INFINITRE_SSTHRESH: usize = usize::MAX;
 
 pub(crate) struct NewReno {
-    max_datagram_size: usize,
+    max_datagram_size: Arc<AtomicU16>,
     ecn_ce_counters: [u64; Epoch::count()],
     bytes_in_flight: usize,
     congestion_window: usize,
@@ -38,11 +36,16 @@ impl From<&NewReno> for RecoveryMetricsUpdated {
 
 impl NewReno {
     /// B.3. Initialization
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(max_datagram_size: Arc<AtomicU16>) -> Self {
+        // The upper bound for the initial window will be
+        // min (10*MSS, max (2*MSS, 14600))
+        // See https://datatracker.ietf.org/doc/html/rfc6928#autoid-3
+        let mtu = max_datagram_size.load(Ordering::Relaxed);
+        let initial_window = (mtu * 10).min((mtu * 2).max(14600));
         NewReno {
-            max_datagram_size: MSS,
+            max_datagram_size,
             ecn_ce_counters: [0, 0, 0],
-            congestion_window: INIT_CWND,
+            congestion_window: initial_window as usize,
             bytes_in_flight: 0,
             congestion_recovery_start_time: None,
             ssthresh: INFINITRE_SSTHRESH,
@@ -101,7 +104,7 @@ impl NewReno {
             self.congestion_window += acked_packet.sent_bytes;
         } else {
             self.congestion_window +=
-                self.max_datagram_size * acked_packet.sent_bytes / self.congestion_window;
+                self.max_datagram_size() * acked_packet.sent_bytes / self.congestion_window;
         }
     }
 
@@ -124,8 +127,10 @@ impl NewReno {
         let now = tokio::time::Instant::now().into_std();
         self.congestion_recovery_start_time = Some(now);
         // WARN: will be zero
-        self.ssthresh = self.congestion_window - MSS;
-        self.congestion_window = self.ssthresh.max(MININUM_WINDOW);
+        self.ssthresh = self.congestion_window - self.max_datagram_size();
+        // The RECOMMENDED value is 2 * max_datagram_size.
+        // See https://datatracker.ietf.org/doc/html/rfc9002#name-initial-and-minimum-congest
+        self.congestion_window = self.ssthresh.max(2 * self.max_datagram_size());
         // A packet can be sent to speed up loss recovery.
         // self.maybe_send_packet(1);
     }
@@ -192,7 +197,7 @@ impl NewReno {
         if persistent_lost {
             // WARN: will be zero
             self.ssthresh = self.congestion_window >> 1;
-            self.congestion_window = self.ssthresh.max(MININUM_WINDOW);
+            self.congestion_window = self.ssthresh.max(2 * self.max_datagram_size());
             self.congestion_recovery_start_time = None;
         }
     }
@@ -211,6 +216,10 @@ impl NewReno {
                 self.bytes_in_flight -= packet.sent_bytes;
             }
         }
+    }
+
+    fn max_datagram_size(&self) -> usize {
+        self.max_datagram_size.load(Ordering::Relaxed) as usize
     }
 }
 

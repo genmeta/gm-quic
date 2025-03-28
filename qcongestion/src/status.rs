@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU16, Ordering},
 };
 
 #[derive(Debug)]
@@ -37,16 +37,18 @@ impl HandshakeStatus {
     }
 }
 
-pub(crate) struct PathStatus {
+pub struct PathStatus {
     handshake: Arc<HandshakeStatus>,
     is_at_anti_amplification_limit: AtomicBool,
+    pub(super) pmtu: Arc<AtomicU16>,
 }
 
 impl PathStatus {
-    pub(crate) fn new(handshake: Arc<HandshakeStatus>) -> Self {
+    pub fn new(handshake: Arc<HandshakeStatus>, pmut: Arc<AtomicU16>) -> Self {
         Self {
             handshake,
             is_at_anti_amplification_limit: AtomicBool::new(true),
+            pmtu: pmut,
         }
     }
 
@@ -77,5 +79,9 @@ impl PathStatus {
     pub(crate) fn release_anti_amplification_limit(&self) {
         self.is_at_anti_amplification_limit
             .store(false, Ordering::Release);
+    }
+
+    pub(crate) fn mtu(&self) -> usize {
+        self.pmtu.load(Ordering::Relaxed) as usize
     }
 }
