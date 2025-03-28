@@ -5,7 +5,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU16, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use qbase::{
@@ -19,7 +19,7 @@ use qbase::{
     },
     packet::PacketContains,
 };
-use qcongestion::{ArcCC, Transport};
+use qcongestion::{Algorithm, ArcCC, Feedback, HandshakeStatus, MSS, PathStatus, Transport};
 use qinterface::{QuicInterface, router::QuicProto};
 use tokio::task::AbortHandle;
 
@@ -52,10 +52,22 @@ impl Path {
         proto: &QuicProto,
         link: Link,
         pathway: Pathway,
-        cc: ArcCC,
-        tx_waker: ArcSendWaker,
+        max_ack_delay: Duration,
+        feedbacks: [Arc<dyn Feedback>; 3],
+        handshake_status: Arc<HandshakeStatus>,
     ) -> io::Result<Self> {
         let interface = proto.get_interface(link.src())?;
+        let pmtu = Arc::new(AtomicU16::new(MSS as u16));
+        let path_status = PathStatus::new(handshake_status, pmtu.clone());
+        let tx_waker = ArcSendWaker::new();
+
+        let cc = ArcCC::new(
+            Algorithm::NewReno,
+            max_ack_delay,
+            feedbacks,
+            path_status,
+            tx_waker.clone(),
+        );
         let handle = cc.launch();
         Ok(Self {
             interface,
@@ -69,7 +81,7 @@ impl Path {
             response_sndbuf: SendBuffer::new(tx_waker.clone()),
             response_rcvbuf: Default::default(),
             tx_waker,
-            pmtu: Arc::new(AtomicU16::new(1200)),
+            pmtu,
         })
     }
 

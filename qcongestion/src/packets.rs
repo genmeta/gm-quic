@@ -312,7 +312,7 @@ mod tests {
     use std::vec;
 
     use super::*;
-    use crate::{MSS, algorithm::new_reno::NewReno};
+    use crate::algorithm::new_reno::NewReno;
 
     #[test]
     fn test_packet_space() {
@@ -325,7 +325,7 @@ mod tests {
                 Instant::now(),
                 true,
                 true,
-                MSS,
+                1200,
             ));
         }
 
@@ -338,7 +338,7 @@ mod tests {
             None,
         );
 
-        let mut reno: Box<dyn Control> = Box::new(NewReno::new());
+        let mut reno: Box<dyn Control> = Box::new(NewReno::new(1200));
         packet_space.on_ack_rcvd(&ack_frame, &mut reno);
         // init 12000, ack 8 packet 12000 + 8 * MSS = 21600
         assert_eq!(reno.congestion_window(), 21600);
@@ -354,7 +354,7 @@ mod tests {
                 Instant::now(),
                 true,
                 true,
-                MSS,
+                1200,
             ));
         }
         for i in 20..25 {
@@ -363,7 +363,7 @@ mod tests {
                 Instant::now(),
                 false,
                 true,
-                MSS,
+                1200,
             ));
         }
 

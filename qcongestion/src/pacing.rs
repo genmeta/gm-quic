@@ -56,9 +56,6 @@ impl Pacer {
 
         self.cwnd = cwnd;
         self.rate = rate;
-        if self.tokens > mtu {
-            return self.tokens;
-        }
 
         let rate = match rate {
             Some(r) => r,
@@ -169,19 +166,19 @@ mod tests {
         update_time += BURST_INTERVAL * 2;
         let packet_size = pacer.schedule(srtt, cwnd, mtu, update_time, None);
 
-        assert_eq!(pacer.tokens, 180_000);
-        assert_eq!(packet_size, 180_000);
+        assert_eq!(pacer.tokens, 200_000);
+        assert_eq!(packet_size, 200_000);
         pacer.on_sent(1500 * 13);
 
-        assert_eq!(pacer.tokens, 160_500);
+        assert_eq!(pacer.tokens, 180_500);
 
         // add token
         update_time += BURST_INTERVAL;
         let packet_size = pacer.schedule(srtt, cwnd, mtu, update_time, None);
 
         assert_eq!(pacer.capacity, 200_000);
-        assert_eq!(pacer.tokens, 160_500);
-        assert_eq!(packet_size, 160_500);
+        assert_eq!(pacer.tokens, 200_000);
+        assert_eq!(packet_size, 200_000);
 
         // change cwnd, change capacity
         cwnd = 1_500_000; // 1.5 MB
@@ -217,7 +214,7 @@ mod tests {
         assert_eq!(pacer.capacity, 15_000);
         update_time += BURST_INTERVAL;
         let size = pacer.schedule(srtt, cwnd, mtu, update_time, rate);
-        assert_eq!(pacer.tokens, 10_000);
-        assert_eq!(size, 10_000);
+        assert_eq!(pacer.tokens, 15_000);
+        assert_eq!(size, 15_000);
     }
 }
