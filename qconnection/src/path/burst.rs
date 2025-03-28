@@ -45,8 +45,8 @@ impl Burst {
         &self,
         buffers: &'b mut Vec<Vec<u8>>,
     ) -> Result<Option<(impl Iterator<Item = &'b mut [u8]> + use<'b>, Transaction)>, Signals> {
-        let max_segments = self.path.interface.max_segments().unwrap();
-        let max_segment_size = self.path.interface.max_segment_size().unwrap();
+        let max_segments = self.path.interface.max_segments();
+        let max_segment_size = self.path.interface.max_segment_size();
 
         if buffers.len() < max_segments {
             buffers.resize_with(max_segments, || vec![0; max_segment_size]);
@@ -66,7 +66,7 @@ impl Burst {
             self.path.cc(),
             &self.path.anti_amplifier,
             &self.flow_ctrl,
-            max_segment_size,
+            self.path.mtu() as usize,
             self.path.tx_waker.clone(),
         )?;
         if transaction.is_none() {
@@ -80,15 +80,16 @@ impl Burst {
         prepared_buffers: impl Iterator<Item = &'b mut [u8]> + 'b,
         mut transaction: Transaction<'b>,
     ) -> io::Result<Result<Vec<usize>, Signals>> {
-        let scid = self.local_cids.initial_scid();
-        let reversed_size = self.path.interface.reversed_bytes(self.path.pathway)?;
         use core::ops::ControlFlow::*;
-        // dont acquire max_segment_size here because it may have changed and is different from when the buffer was prepared
-        // let max_segment_size = self.path.interface.max_segment_size()?;
-        let max_segments = self.path.interface.max_segments()?;
+
+        let scid = self.local_cids.initial_scid();
+        let reversed_size = 0; // TODO
+        let max_segments = self.path.interface.max_segments();
 
         let (ControlFlow::Break(result) | ControlFlow::Continue(result)) = prepared_buffers
-            .map(move |buffer| {
+            .map(move |segment| {
+                let buffer_size = segment.len().min(self.path.mtu() as _);
+                let buffer = &mut segment[..buffer_size];
                 if scid.is_some() {
                     transaction.load_spaces(
                         &mut buffer[reversed_size..],

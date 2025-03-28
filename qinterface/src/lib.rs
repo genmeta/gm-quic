@@ -12,25 +12,26 @@ use std::{
     task::{Context, Poll},
 };
 
-use bytes::BytesMut;
-use qbase::net::route::{Link, Pathway};
+use qbase::net::route::PacketHeader;
 
 pub trait QuicInterface: Send + Sync {
-    fn reversed_bytes(&self, on: Pathway) -> io::Result<usize>;
-
     fn local_addr(&self) -> io::Result<SocketAddr>;
 
-    fn max_segment_size(&self) -> io::Result<usize>;
+    fn max_segment_size(&self) -> usize;
 
-    fn max_segments(&self) -> io::Result<usize>;
+    fn max_segments(&self) -> usize;
 
     fn poll_send(
         &self,
         cx: &mut Context,
         ptks: &[io::IoSlice],
-        way: Pathway,
-        dst: SocketAddr,
+        hdr: PacketHeader,
     ) -> Poll<io::Result<usize>>;
 
-    fn poll_recv(&self, cx: &mut Context) -> Poll<io::Result<(BytesMut, Pathway, Link)>>;
+    fn poll_recv(
+        &self,
+        cx: &mut Context,
+        pkts: &mut [io::IoSliceMut],
+        hdrs: &mut [PacketHeader],
+    ) -> Poll<io::Result<usize>>;
 }

@@ -3,7 +3,7 @@ use std::{
     ops::Deref,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
     },
     time::Instant,
 };
@@ -13,6 +13,7 @@ use qbase::{
     error::Error,
     frame::{PathChallengeFrame, PathResponseFrame, ReceiveFrame},
     net::{
+        PacketHeader,
         route::{Link, Pathway},
         tx::ArcSendWaker,
     },
@@ -43,6 +44,7 @@ pub struct Path {
     response_sndbuf: SendBuffer<PathResponseFrame>,
     response_rcvbuf: RecvBuffer<PathResponseFrame>,
     tx_waker: ArcSendWaker,
+    pmtu: Arc<AtomicU16>,
 }
 
 impl Path {
@@ -67,6 +69,7 @@ impl Path {
             response_sndbuf: SendBuffer::new(tx_waker.clone()),
             response_rcvbuf: Default::default(),
             tx_waker,
+            pmtu: Arc::new(AtomicU16::new(1200)),
         })
     }
 
@@ -125,13 +128,15 @@ impl Path {
         self.cc().grant_anti_amplification();
     }
 
+    pub fn mtu(&self) -> u16 {
+        self.pmtu.load(Ordering::Acquire)
+    }
+
     pub async fn send_packets(&self, mut segments: &[io::IoSlice<'_>]) -> io::Result<()> {
         while !segments.is_empty() {
-            let sent = core::future::poll_fn(|cx| {
-                self.interface
-                    .poll_send(cx, segments, self.pathway, self.link.dst())
-            })
-            .await?;
+            let hdr = PacketHeader::new(self.pathway, self.link, 64, None, self.mtu() as _);
+            let sent =
+                core::future::poll_fn(|cx| self.interface.poll_send(cx, segments, hdr)).await?;
             segments = &segments[sent..];
         }
         Ok(())

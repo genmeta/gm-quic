@@ -1,11 +1,15 @@
 use std::{fmt, io, net::SocketAddr, sync::Arc};
 
+use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
 use qbase::{
     cid::{ConnectionId, GenUniqueCid, RetireCid},
     error::Error,
     frame::{NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame},
-    net::route::{EndpointAddr, Link, Pathway},
+    net::{
+        PacketHeader,
+        route::{EndpointAddr, Link, Pathway},
+    },
     packet::{self, Packet, PacketReader, header::GetDcid},
 };
 use tokio::task::{AbortHandle, JoinHandle};
@@ -98,7 +102,7 @@ impl QuicProto {
         self: &Arc<Self>,
         local_addr: SocketAddr,
         interface: Arc<dyn QuicInterface>,
-    ) -> JoinHandle<io::Error> {
+    ) -> JoinHandle<io::Result<()>> {
         let entry = self
             .interfaces
             .entry(local_addr)
@@ -107,34 +111,54 @@ impl QuicProto {
         let this = self.clone();
         let recv_task = tokio::spawn(async move {
             let mut rcvd_pkts = Vec::with_capacity(3);
+
+            let mut recv_bufs: Vec<BytesMut> = vec![];
+            let mut recv_hdrs: Vec<PacketHeader> = vec![];
+
             loop {
                 // way: local -> peer
-                let recv = core::future::poll_fn(|cx| {
+                let receive = core::future::poll_fn(|cx| {
                     let interface = this.interfaces.get(&local_addr).ok_or_else(|| {
                         io::Error::new(io::ErrorKind::BrokenPipe, "interface already be removed")
                     })?;
-                    interface.inner.poll_recv(cx)
+                    let max_segments = interface.inner.max_segments();
+                    let max_segment_size = interface.inner.max_segment_size();
+                    recv_bufs.resize_with(max_segments, || {
+                        Bytes::from_owner(vec![0u8; max_segment_size]).into()
+                    });
+                    let mut bufs = recv_bufs
+                        .iter_mut()
+                        .map(|b| {
+                            b.resize(max_segment_size, 0);
+                            io::IoSliceMut::new(b.as_mut())
+                        })
+                        .collect::<Vec<_>>();
+                    recv_hdrs.resize_with(max_segments, PacketHeader::empty);
+                    interface.inner.poll_recv(cx, &mut bufs, &mut recv_hdrs)
                 });
-                let (datagram, pathway, socket) = match recv.await {
-                    Ok(t) => t,
-                    Err(e) => return e,
-                };
-                let datagram_size = datagram.len();
-                // todo: parse packets with any length of dcid
-                rcvd_pkts.extend(PacketReader::new(datagram, 8).flatten());
 
-                // rfc9000 14.1
-                // A server MUST discard an Initial packet that is carried in a UDP datagram with a payload that is smaller than
-                // the smallest allowed maximum datagram size of 1200 bytes. A server MAY also immediately close the
-                // connection by sending a CONNECTION_CLOSE frame with an error code of PROTOCOL_VIOLATION; see
-                // Section 10.2.3.
-                let is_initial_packet = |pkt: &Packet| matches!(pkt, Packet::Data(packet) if matches!(packet.header, packet::DataHeader::Long(packet::long::DataHeader::Initial(..))));
-
-                for packet in rcvd_pkts
-                    .drain(..)
-                    .filter(|pkt| !(is_initial_packet(pkt) && datagram_size < 1200))
+                for (datagram, header) in receive
+                    .await
+                    .map(|rcvd| recv_bufs.drain(..rcvd).zip(recv_hdrs.drain(..rcvd)))?
+                    .map(|(mut seg, hdr)| (seg.split_to(seg.len().min(hdr.seg_size() as _)), hdr))
                 {
-                    this.deliver(packet, pathway, socket).await;
+                    let datagram_size = datagram.len();
+                    // todo: parse packets with any length of dcid, but this doesn't seem to matter because the DCID of the perr is chosen by ourselves
+                    rcvd_pkts.extend(PacketReader::new(datagram, 8).flatten());
+
+                    // rfc9000 14.1
+                    // A server MUST discard an Initial packet that is carried in a UDP datagram with a payload that is smaller than
+                    // the smallest allowed maximum datagram size of 1200 bytes. A server MAY also immediately close the
+                    // connection by sending a CONNECTION_CLOSE frame with an error code of PROTOCOL_VIOLATION; see
+                    // Section 10.2.3.
+                    let is_initial_packet = |pkt: &Packet| matches!(pkt, Packet::Data(packet) if matches!(packet.header, packet::DataHeader::Long(packet::long::DataHeader::Initial(..))));
+
+                    for packet in rcvd_pkts
+                        .drain(..)
+                        .filter(|pkt| !(is_initial_packet(pkt) && datagram_size < 1200))
+                    {
+                        this.deliver(packet, header.pathway(), header.link()).await;
+                    }
                 }
             }
         });
@@ -175,7 +199,7 @@ impl QuicProto {
         false
     }
 
-    pub async fn deliver(self: &Arc<Self>, packet: Packet, pathway: Pathway, socket: Link) {
+    pub async fn deliver(self: &Arc<Self>, packet: Packet, pathway: Pathway, link: Link) {
         let dcid = match &packet {
             Packet::VN(vn) => vn.dcid(),
             Packet::Retry(retry) => retry.dcid(),
@@ -190,10 +214,10 @@ impl QuicProto {
         };
 
         if let Some(rcvd_pkt_q) = self.router_table.get(&signpost).map(|queue| queue.clone()) {
-            _ = rcvd_pkt_q.deliver(packet, pathway, socket).await;
+            _ = rcvd_pkt_q.deliver(packet, pathway, link).await;
             return;
         }
-        _ = self.unrouted_packets.send((packet, pathway, socket));
+        _ = self.unrouted_packets.send((packet, pathway, link));
     }
 
     /// Dismiss all unrouted packets.

@@ -62,11 +62,8 @@ impl ClosingState {
         let Some(path) = self.paths.get(&pathway) else {
             return;
         };
-        let Ok(mss) = path.interface().max_segment_size() else {
-            return;
-        };
 
-        let mut datagram = vec![0; mss];
+        let mut datagram = vec![0; path.mtu() as _];
         match write(&mut datagram, self.scid, self.dcid, &self.ccf) {
             Some(written) if written > 0 => {
                 _ = path

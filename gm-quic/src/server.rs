@@ -6,7 +6,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use handy::Usc;
+use handy::UdpSocketController;
 use qconnection::builder::*;
 use qinterface::util::Channel;
 use qlog::{
@@ -72,7 +72,7 @@ impl QuicServer {
             use_strict_mode: false,
             supported_versions: Vec::with_capacity(2),
             defer_idle_timeout: HeartbeatConfig::default(),
-            quic_iface_factory: Box::new(Usc::bind),
+            quic_iface_factory: Box::new(UdpSocketController::bind),
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
             stream_strategy_factory: Box::new(ConsistentConcurrency::new),
@@ -88,7 +88,7 @@ impl QuicServer {
         QuicServerBuilder {
             use_strict_mode: false,
             supported_versions: Vec::with_capacity(2),
-            quic_iface_factory: Box::new(Usc::bind),
+            quic_iface_factory: Box::new(UdpSocketController::bind),
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ServerParameters::default(),
             tls_config,
@@ -105,7 +105,7 @@ impl QuicServer {
         QuicServerBuilder {
             use_strict_mode: false,
             supported_versions: Vec::with_capacity(2),
-            quic_iface_factory: Box::new(Usc::bind),
+            quic_iface_factory: Box::new(UdpSocketController::bind),
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ServerParameters::default(),
             tls_config: TlsServerConfig::builder_with_provider(provider)
@@ -338,8 +338,8 @@ impl<T> QuicServerBuilder<T> {
 
     /// Specify how [`QuicServerBuilder::listen`] binds to the interface.
     ///
-    /// The default quic interface is [`Usc`] that support GSO and GRO,
-    /// and the binder is [`Usc::bind`].
+    /// The default quic interface is [`UdpSocketController`] that support GSO and GRO,
+    /// and the binder is [`UdpSocketController::bind`].
     pub fn with_iface_factory<F>(self, factory: impl ProductQuicInterface + 'static) -> Self {
         Self {
             quic_iface_factory: Box::new(factory),
@@ -602,7 +602,7 @@ impl QuicServerBuilder<TlsServerConfig> {
             async move {
                 let (result, iface_idx, _) = futures::future::select_all(iface_recv_tasks).await;
                 let error = match result {
-                    Ok(error) => error,
+                    Ok(error) => error.expect_err("recv task loop never finish without error"),
                     Err(_join_error) if server.listener.is_closed() => return,
                     Err(join_error) => join_error.into(),
                 };
@@ -719,7 +719,7 @@ impl QuicServerSniBuilder<TlsServerConfig> {
             async move {
                 let (result, iface_idx, _) = futures::future::select_all(iface_recv_tasks).await;
                 let error = match result {
-                    Ok(error) => error,
+                    Ok(error) => error.expect_err("recv task loop never finish without error"),
                     Err(_join_error) if server.listener.is_closed() => return,
                     Err(join_error) => join_error.into(),
                 };

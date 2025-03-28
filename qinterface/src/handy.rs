@@ -3,111 +3,72 @@ mod qudp {
     use std::{
         io,
         net::SocketAddr,
-        ops::Range,
-        sync::Mutex,
-        task::{Context, Poll},
+        task::{Context, Poll, ready},
     };
 
-    use bytes::BytesMut;
-    use qbase::net::route::{EndpointAddr, Link, Pathway};
-    use qudp::BATCH_SIZE;
+    use qbase::net::{Link, Pathway, ToEndpointAddr};
+    use qudp::{BATCH_SIZE, UdpSocketController};
 
-    use crate::QuicInterface;
+    use crate::{PacketHeader, QuicInterface};
 
-    struct ReceiveBuffers {
-        undelivered: Range<usize>,
-        bufs: Vec<BytesMut>,
-        hdrs: Vec<qudp::PacketHeader>,
-    }
-
-    impl ReceiveBuffers {
-        fn empty(gro_size: u16) -> Self {
-            Self {
-                undelivered: 0..0, // empty range
-                bufs: vec![bytes::BytesMut::zeroed(1200); gro_size as _],
-                hdrs: vec![qudp::PacketHeader::default(); gro_size as _],
-            }
-        }
-    }
-
-    pub struct Usc {
-        inner: qudp::UdpSocketController,
-        recv_bufs: Mutex<ReceiveBuffers>,
-    }
-
-    impl Usc {
-        pub fn bind(addr: SocketAddr) -> io::Result<Self> {
-            let usc = qudp::UdpSocketController::new(addr)?;
-            let bufs = ReceiveBuffers::empty(BATCH_SIZE as _).into();
-            Ok(Self {
-                inner: usc,
-                recv_bufs: bufs,
-            })
-        }
-    }
-
-    impl QuicInterface for Usc {
-        fn reversed_bytes(&self, _on: Pathway) -> io::Result<usize> {
-            Ok(0)
-        }
-
+    impl QuicInterface for UdpSocketController {
         fn local_addr(&self) -> io::Result<SocketAddr> {
-            self.inner.local_addr()
+            UdpSocketController::local_addr(self)
         }
 
-        fn max_segments(&self) -> io::Result<usize> {
-            Ok(BATCH_SIZE)
+        fn max_segments(&self) -> usize {
+            BATCH_SIZE
         }
 
-        fn max_segment_size(&self) -> io::Result<usize> {
-            Ok(1200)
+        fn max_segment_size(&self) -> usize {
+            1500
         }
 
         fn poll_send(
             &self,
             cx: &mut Context,
             ptks: &[io::IoSlice],
-            _way: Pathway,
-            dst: SocketAddr,
+            hdr: PacketHeader,
         ) -> Poll<io::Result<usize>> {
-            let src = self.local_addr()?;
-            let hdr = qudp::PacketHeader::new(src, dst, 64, None, self.max_segment_size()? as _);
-
-            self.inner.poll_send(ptks, &hdr, cx)
+            debug_assert_eq!(hdr.ecn(), None);
+            debug_assert_eq!(hdr.link().src(), self.local_addr()?);
+            let hdr = qudp::PacketHeader::new(
+                hdr.link().src(),
+                hdr.link().dst(),
+                hdr.ttl(),
+                hdr.ecn(),
+                hdr.seg_size(),
+            );
+            UdpSocketController::poll_send(self, cx, ptks, &hdr)
         }
 
-        fn poll_recv(&self, cx: &mut Context) -> Poll<io::Result<(BytesMut, Pathway, Link)>> {
-            let mut recv_buffer = self.recv_bufs.lock().unwrap();
+        fn poll_recv(
+            &self,
+            cx: &mut Context,
+            pkts: &mut [io::IoSliceMut],
+            qbase_hdrs: &mut [PacketHeader],
+        ) -> Poll<io::Result<usize>> {
+            let mut hdrs = Vec::with_capacity(qbase_hdrs.len());
+            hdrs.resize_with(qbase_hdrs.len(), qudp::PacketHeader::default);
+            let rcvd = ready!(UdpSocketController::poll_recv(self, cx, pkts, &mut hdrs))?;
 
-            while recv_buffer.undelivered.is_empty() {
-                let ReceiveBuffers { bufs, hdrs, .. } = &mut *recv_buffer;
-                // 想不vec!也行，但是那样就得处理自引用结构之类的...，太复杂而了
-                // 之后可以考虑用small_vec这样的库，array小于一个阈值就放在栈上，更可接受
-                let mut io_slices = bufs
-                    .iter_mut()
-                    .map(|buf| io::IoSliceMut::new(&mut buf[..]))
-                    .collect::<Vec<_>>(); // :(
-                recv_buffer.undelivered =
-                    0..core::task::ready!(self.inner.poll_recv(&mut io_slices, hdrs, cx)?);
+            for (idx, qudp_hdr) in hdrs[..rcvd].iter().enumerate() {
+                let dst = self.local_addr()?;
+                let way = Pathway::new(qudp_hdr.src.to_endpoint_addr(), dst.to_endpoint_addr());
+                let link = Link::new(qudp_hdr.src, self.local_addr()?);
+                qbase_hdrs[idx] = PacketHeader::new(
+                    way.flip(),
+                    link.flip(),
+                    qudp_hdr.ttl,
+                    qudp_hdr.ecn,
+                    qudp_hdr.seg_size,
+                );
             }
 
-            let seg_idx = recv_buffer.undelivered.start;
-            recv_buffer.undelivered.start += 1;
-
-            let mut bytes_mut = recv_buffer.bufs[seg_idx].clone();
-            bytes_mut.truncate(recv_buffer.hdrs[seg_idx].seg_size as _);
-            // let local = recv_buffer.hdrs[recv_buffer.unread].dst;
-            let local = self.local_addr()?;
-            let remote = recv_buffer.hdrs[seg_idx].src;
-            let link = Link::new(local, remote);
-            let local = EndpointAddr::direct(local);
-            let remote = EndpointAddr::direct(remote);
-            let pathway = Pathway::new(local, remote);
-
-            Poll::Ready(Ok((bytes_mut, pathway, link)))
+            Poll::Ready(Ok(rcvd))
         }
     }
 }
 
 #[cfg(feature = "qudp")]
-pub use qudp::Usc;
+pub use ::qudp::UdpSocketController;

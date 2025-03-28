@@ -27,7 +27,7 @@ async fn main() {
 
     let args = Args::parse();
     let addr = args.src.parse().unwrap();
-    let socket = UdpSocketController::new(addr).expect("failed to create socket");
+    let socket = UdpSocketController::bind(addr).expect("failed to create socket");
     let dst = args.dst.parse().unwrap();
 
     let send_hdr = PacketHeader::new(
