@@ -62,7 +62,7 @@ pub struct UdpSocketController {
 }
 
 impl UdpSocketController {
-    pub fn new(addr: SocketAddr) -> io::Result<Self> {
+    pub fn bind(addr: SocketAddr) -> io::Result<Self> {
         let domain = if addr.is_ipv4() {
             Domain::IPV4
         } else {
@@ -83,9 +83,9 @@ impl UdpSocketController {
 
     pub fn poll_send(
         &self,
+        cx: &mut Context<'_>,
         bufs: &[IoSlice<'_>],
         hdr: &PacketHeader,
-        cx: &mut Context<'_>,
     ) -> Poll<io::Result<usize>> {
         let mut sent = 0;
         while sent < bufs.len() {
@@ -105,9 +105,9 @@ impl UdpSocketController {
 
     pub fn poll_recv(
         &self,
+        cx: &mut Context,
         bufs: &mut [IoSliceMut<'_>],
         hdrs: &mut [PacketHeader],
-        cx: &mut Context,
     ) -> Poll<io::Result<usize>> {
         loop {
             ready!(self.io.poll_recv_ready(cx)?);
@@ -163,7 +163,7 @@ impl Future for Send<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        this.usc.poll_send(this.iovecs, &this.header, cx)
+        this.usc.poll_send(cx, this.iovecs, &this.header)
     }
 }
 
@@ -182,7 +182,7 @@ impl Receiver<'_> {
             .map(|b| IoSliceMut::new(b))
             .collect::<Vec<_>>();
 
-        self.usc.poll_recv(&mut bufs, &mut self.headers, cx)
+        self.usc.poll_recv(cx, &mut bufs, &mut self.headers)
     }
 
     #[inline]

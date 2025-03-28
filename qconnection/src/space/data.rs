@@ -272,6 +272,7 @@ impl DataSpace {
         Ok((
             packet
                 .prepare_with_time(retran_timeout, expire_timeout)
+                .inspect(|_| tracing::info!("load 1rtt"))
                 .map_err(|_| signals)?,
             ack,
             fresh_data,
@@ -310,6 +311,7 @@ impl DataSpace {
 
         packet
             .prepare_with_time(retran_timeout, expire_timeout)
+            .inspect(|_| tracing::info!("load 1rtt"))
             .map_err(|_| signals)
     }
 
@@ -336,6 +338,7 @@ impl DataSpace {
 
         packet
             .prepare_with_time(retran_timeout, expire_timeout)
+            .inspect(|_| tracing::info!("load 1rtt"))
             .map_err(|_| unreachable!("packet is not empty"))
     }
 
@@ -547,6 +550,8 @@ pub fn spawn_deliver_and_parse(
                             Result::<_, Error>::Ok(packet_contains.include(frame_type))
                         })?;
                     packet.log_received(frames);
+
+                    tracing::info!("deliver 1rtt");
 
                     space.journal.of_rcvd_packets().register_pn(
                         packet.pn(),

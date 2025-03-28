@@ -181,6 +181,56 @@ impl Link {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PacketHeader {
+    pathway: Pathway,
+    link: Link,
+    ttl: u8,
+    ecn: Option<u8>,
+    seg_size: u16,
+}
+
+impl PacketHeader {
+    pub fn new(pathway: Pathway, link: Link, ttl: u8, ecn: Option<u8>, seg_size: u16) -> Self {
+        Self {
+            pathway,
+            link,
+            ttl,
+            ecn,
+            seg_size,
+        }
+    }
+
+    /// Create a new empty packet header for receive packets.
+    pub fn empty() -> Self {
+        let src = SocketAddr::from(([0, 0, 0, 0], 0));
+        let dst = SocketAddr::from(([0, 0, 0, 0], 0));
+        let way = Pathway::new(src.to_endpoint_addr(), dst.to_endpoint_addr());
+        let link = Link::new(src, dst);
+        Self::new(way, link, 0, None, 0)
+    }
+
+    pub fn pathway(&self) -> Pathway {
+        self.pathway
+    }
+
+    pub fn link(&self) -> Link {
+        self.link
+    }
+
+    pub fn ttl(&self) -> u8 {
+        self.ttl
+    }
+
+    pub fn ecn(&self) -> Option<u8> {
+        self.ecn
+    }
+
+    pub fn seg_size(&self) -> u16 {
+        self.seg_size
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

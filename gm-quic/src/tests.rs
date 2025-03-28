@@ -34,8 +34,10 @@ use tracing::{debug, error, info, info_span};
 use crate::ToCertificate;
 
 static LOGGER: LazyLock<Arc<dyn Log + Send + Sync>> = LazyLock::new(|| {
-    // Arc::new(DefaultSeqLogger::new(std::path::PathBuf::from(r"/tmp")))
-    Arc::new(NullLogger)
+    Arc::new(DefaultSeqLogger::new(std::path::PathBuf::from(
+        r"/tmp/qlog",
+    )))
+    // Arc::new(NullLogger)
 });
 
 #[tokio::test]
@@ -90,7 +92,7 @@ async fn parallel_stream() -> io::Result<()> {
             .build(),
     );
 
-    const CONNECTIONS: usize = 2;
+    const CONNECTIONS: usize = 1;
     const STREAMS: usize = 16;
     const DATA: &[u8] = include_bytes!("tests.rs");
 

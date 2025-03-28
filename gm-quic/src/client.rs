@@ -6,7 +6,7 @@ use std::{
 
 use dashmap::DashMap;
 use futures::{FutureExt, StreamExt};
-use handy::Usc;
+use handy::UdpSocketController;
 use qbase::param::RememberedParameters;
 use qconnection::builder::*;
 use qlog::telemetry::{Log, handy::NullLogger};
@@ -72,7 +72,7 @@ impl QuicClient {
             reuse_connection: false,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
-            quic_iface_factory: Box::new(Usc::bind),
+            quic_iface_factory: Box::new(UdpSocketController::bind),
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ClientParameters::default(),
             tls_config: TlsClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]),
@@ -92,7 +92,7 @@ impl QuicClient {
             reuse_connection: false,
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
-            quic_iface_factory: Box::new(Usc::bind),
+            quic_iface_factory: Box::new(UdpSocketController::bind),
             defer_idle_timeout: HeartbeatConfig::default(),
             parameters: ClientParameters::default(),
             tls_config: TlsClientConfig::builder_with_provider(provider)
@@ -115,7 +115,7 @@ impl QuicClient {
             enable_happy_eyepballs: false,
             prefer_versions: vec![1],
             defer_idle_timeout: HeartbeatConfig::default(),
-            quic_iface_factory: Box::new(Usc::bind),
+            quic_iface_factory: Box::new(UdpSocketController::bind),
             parameters: ClientParameters::default(),
             tls_config,
             stream_strategy_factory: Box::new(ConsistentConcurrency::new),
@@ -300,8 +300,8 @@ impl<T> QuicClientBuilder<T> {
     /// The given factory will be used by [`Self::bind`],
     /// and/or [`QuicClient::connect`] if no interface bound when client built.
     ///
-    /// The default quic interface is [`Usc`] that support GSO and GRO,
-    /// and the factory is [`Usc::bind`].
+    /// The default quic interface is [`UdpSocketController`] that support GSO and GRO,
+    /// and the factory is [`UdpSocketController::bind`].
     pub fn with_iface_factory<F>(self, factory: impl ProductQuicInterface + 'static) -> Self {
         Self {
             quic_iface_factory: Box::new(factory),
@@ -313,7 +313,7 @@ impl<T> QuicClientBuilder<T> {
     ///
     /// If the bind failed, the error will be returned immediately.
     ///
-    /// The default quic interface is [`Usc`] that support GSO and GRO.
+    /// The default quic interface is [`UdpSocketController`] that support GSO and GRO.
     /// You can let the client bind custom interfaces by calling the [`Self::with_iface_factory`] method.
     ///
     /// If you dont bind any address, each time the client initiates a new connection,
@@ -359,7 +359,7 @@ impl<T> QuicClientBuilder<T> {
                 while let Some((result, local_addr)) = iface_recv_tasks.next().await {
                     let error = match result {
                         // Ok(result) => result.into_err(),
-                        Ok(error) => error,
+                        Ok(error) => error.expect_err("recv task loop never finish without error"),
                         Err(join_error) if join_error.is_cancelled() => return,
                         Err(join_error) => join_error.into(),
                     };

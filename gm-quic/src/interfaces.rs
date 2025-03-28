@@ -15,7 +15,7 @@ static INTERFACES: LazyLock<DashMap<SocketAddr, AbortHandle>> = LazyLock::new(De
 pub enum Interfaces {}
 
 impl Interfaces {
-    pub fn add(quic_iface: Arc<dyn QuicInterface>) -> io::Result<JoinHandle<io::Error>> {
+    pub fn add(quic_iface: Arc<dyn QuicInterface>) -> io::Result<JoinHandle<io::Result<()>>> {
         let local_addr = quic_iface.local_addr()?;
         let entry = INTERFACES.entry(local_addr);
         if let dashmap::Entry::Occupied(..) = &entry {
