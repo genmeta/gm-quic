@@ -391,10 +391,9 @@ impl<'a> Transaction<'a> {
         cc: &'a ArcCC,
         anti_amplifier: &'a AntiAmplifier,
         flow_ctrl: &'a crate::FlowController,
-        expect_quota: usize,
         tx_waker: ArcSendWaker,
     ) -> Result<Option<Self>, Signals> {
-        let send_quota = cc.send_quota(expect_quota)?;
+        let send_quota = cc.send_quota()?;
         let credit_limit = anti_amplifier.balance()?;
         if credit_limit.is_none() {
             return Ok(None);

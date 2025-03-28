@@ -13,7 +13,7 @@ use tokio::task::AbortHandle;
 use tracing::Instrument as _;
 
 use crate::{
-    Algorithm, Feedback, HandshakeStatus, MSS,
+    Algorithm, Feedback, MSS,
     algorithm::{Control, new_reno::NewReno},
     pacing::{self, Pacer},
     packets::{PacketSpace, SentPacket},
@@ -21,7 +21,7 @@ use crate::{
     status::PathStatus,
 };
 
-const INIT_CWND: usize = 10 * MSS;
+const INIT_CWND: usize = MSS * 10;
 const PACKET_THRESHOLD: usize = 3;
 
 /// Imple RFC 9002 Appendix A. Loss Recovery
@@ -39,7 +39,7 @@ pub struct CongestionController {
     // pacer is used to control the burst rate
     pacer: pacing::Pacer,
     // The waker to notify when the controller is ready to send.
-    pending_burst: Option<usize>,
+    pending_burst: bool,
     // epoch packet trackers
     trackers: [Arc<dyn Feedback>; 3],
     need_send_ack_eliciting_packets: [usize; Epoch::count()],
@@ -53,12 +53,12 @@ impl CongestionController {
         algorithm: Algorithm,
         max_ack_delay: Duration,
         trackers: [Arc<dyn Feedback>; 3],
-        handshake_status: Arc<HandshakeStatus>,
+        path_status: PathStatus,
         tx_waker: ArcSendWaker,
     ) -> Self {
         let algorithm: Box<dyn Control> = match algorithm {
             Algorithm::Bbr => todo!("implement BBR"),
-            Algorithm::NewReno => Box::new(NewReno::new()),
+            Algorithm::NewReno => Box::new(NewReno::new(path_status.pmtu.clone())),
         };
 
         let now = tokio::time::Instant::now().into_std();
@@ -73,11 +73,11 @@ impl CongestionController {
                 PacketSpace::with_epoch(Epoch::Handshake, max_ack_delay),
                 PacketSpace::with_epoch(Epoch::Data, max_ack_delay),
             ],
-            pacer: Pacer::new(INITIAL_RTT, INIT_CWND, MSS, now, None),
-            pending_burst: None,
+            pacer: Pacer::new(INITIAL_RTT, INIT_CWND, path_status.mtu(), now, None),
+            pending_burst: false,
             trackers,
             need_send_ack_eliciting_packets: [0; Epoch::count()],
-            path_status: PathStatus::new(handshake_status),
+            path_status,
             tx_waker,
         }
     }
@@ -443,7 +443,7 @@ impl CongestionController {
         self.pacer.schedule(
             self.rtt.smoothed_rtt(),
             self.algorithm.congestion_window(),
-            MSS,
+            self.path_status.mtu(),
             now,
             self.algorithm.pacing_rate(),
         )
@@ -483,14 +483,14 @@ impl ArcCC {
         algorithm: Algorithm,
         max_ack_delay: Duration,
         trackers: [Arc<dyn Feedback>; 3],
-        handshake_status: Arc<HandshakeStatus>,
+        path_status: PathStatus,
         tx_waker: ArcSendWaker,
     ) -> Self {
         ArcCC(Arc::new(Mutex::new(CongestionController::init(
             algorithm,
             max_ack_delay,
             trackers,
-            handshake_status,
+            path_status,
             tx_waker,
         ))))
     }
@@ -509,11 +509,9 @@ impl super::Transport for ArcCC {
                     if guard.loss_detection_timer.is_some_and(|t| t <= now) {
                         guard.on_loss_detection_timeout();
                     }
-                    if let Some(expect_quota) = guard.pending_burst {
-                        if guard.send_quota() >= expect_quota {
-                            guard.pending_burst = None;
-                            guard.tx_waker.wake_by(Signals::CONGESTION);
-                        }
+                    if guard.pending_burst && guard.send_quota() >= guard.path_status.mtu() {
+                        guard.pending_burst = false;
+                        guard.tx_waker.wake_by(Signals::CONGESTION);
                     }
                     if guard.need_ack() {
                         guard.tx_waker.wake_by(Signals::TRANSPORT);
@@ -526,13 +524,13 @@ impl super::Transport for ArcCC {
         .abort_handle()
     }
 
-    fn send_quota(&self, expect_quota: usize) -> Result<usize, Signals> {
+    fn send_quota(&self) -> Result<usize, Signals> {
         let mut guard = self.0.lock().unwrap();
         let send_quota = guard.send_quota();
-        if send_quota >= expect_quota {
+        if send_quota >= guard.path_status.mtu() {
             Ok(send_quota)
         } else {
-            guard.pending_burst = Some(expect_quota);
+            guard.pending_burst = true;
             Err(Signals::CONGESTION)
         }
     }
