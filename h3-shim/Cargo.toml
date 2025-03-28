@@ -23,6 +23,7 @@ qconnection = { workspace = true }
 unreliable = ["qconnection/unreliable"]
 
 [dev-dependencies]
+libc = "0.2"
 indicatif = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 http = { workspace = true }
