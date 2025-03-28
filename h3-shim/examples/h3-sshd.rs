@@ -1,10 +1,10 @@
-use libc::c_int;
 use std::{ffi::CString, net::SocketAddr, path::PathBuf, ptr};
 
 use bytes::{Buf, Bytes};
 use clap::Parser;
 use h3::{error::ErrorLevel, quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
+use libc::c_int;
 use tracing::{error, info};
 
 #[derive(Parser, Debug)]
