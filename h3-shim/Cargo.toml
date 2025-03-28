@@ -40,3 +40,9 @@ name = "h3-server"
 
 [[example]]
 name = "h3-client"
+
+[[example]]
+name = "h3-sshd"
+
+[[example]]
+name = "h3-ssh"
