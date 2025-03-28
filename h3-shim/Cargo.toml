@@ -23,6 +23,7 @@ qconnection = { workspace = true }
 unreliable = ["qconnection/unreliable"]
 
 [dev-dependencies]
+libc = "0.2"
 clap = { workspace = true, features = ["derive"] }
 http = { workspace = true }
 rustls = { workspace = true, features = ["ring"] }
@@ -31,7 +32,7 @@ tracing = { workspace = true }
 
 [dev-dependencies.tracing-subscriber]
 workspace = true
-features = [ "env-filter", "time"]
+features = ["env-filter", "time"]
 
 [[example]]
 name = "h3-server"
