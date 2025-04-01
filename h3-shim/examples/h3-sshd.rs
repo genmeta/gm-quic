@@ -1,6 +1,9 @@
 use std::{
     ffi::{CStr, CString},
+    fs::File,
+    io::Write,
     net::SocketAddr,
+    os::fd::{AsRawFd, FromRawFd},
     path::PathBuf,
     ptr,
 };
@@ -10,7 +13,18 @@ use clap::Parser;
 use h3::{error::ErrorLevel, quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
 use libc::c_int;
+use serde::{Deserialize, Serialize};
 use tracing::{error, info};
+
+// 定义客户端与服务器通信的消息结构
+#[derive(Serialize, Deserialize, Debug)]
+enum TerminalMessage {
+    Text(String),
+    WindowSize { rows: u16, cols: u16 },
+    Signal(i32),
+    ControlSequence(String),
+    Heartbeat,
+}
 
 #[derive(Parser, Debug)]
 #[structopt(name = "server")]
@@ -240,19 +254,18 @@ where
     // 主进程
     unsafe { libc::close(slave) };
     // 设置master fd为非阻塞模式
-    unsafe {
+    let pty_master = unsafe {
         let flags = libc::fcntl(master, libc::F_GETFL);
         libc::fcntl(master, libc::F_SETFL, flags | libc::O_NONBLOCK);
-    }
+        std::fs::File::from_raw_fd(master as _)
+    };
 
-    copy_between_pty_and_stream(master, stream).await;
-
-    unsafe { libc::close(master) };
+    copy_between_pty_and_stream(pty_master, stream).await;
 
     Ok(())
 }
 
-async fn copy_between_pty_and_stream<T>(master_fd: c_int, stream: RequestStream<T, Bytes>)
+async fn copy_between_pty_and_stream<T>(mut pty_master: File, stream: RequestStream<T, Bytes>)
 where
     T: BidiStream<Bytes>,
     <T as h3::quic::BidiStream<bytes::Bytes>>::SendStream: Send + 'static,
@@ -261,6 +274,7 @@ where
     let (mut sender, mut recver) = stream.split();
 
     // 启动读取PTY任务
+    let master_fd = pty_master.as_raw_fd();
     let read_task = tokio::spawn(async move {
         let mut read_buf = [0u8; 8192];
         loop {
@@ -296,32 +310,63 @@ where
 
     // 启动写入PTY任务
     let write_task = tokio::spawn(async move {
+        let mut read_buffer = Vec::new();
         while let Ok(Some(data)) = recver.recv_data().await {
             let buf = data.chunk();
-            let mut written = 0;
-            while written < buf.len() {
-                match unsafe {
-                    libc::write(
-                        master_fd,
-                        buf[written..].as_ptr() as *const _,
-                        buf.len() - written,
-                    )
-                } {
-                    -1 => {
-                        let err = std::io::Error::last_os_error();
-                        if err.kind() == std::io::ErrorKind::WouldBlock {
-                            tokio::task::yield_now().await;
-                            continue;
+            read_buffer.extend_from_slice(buf);
+
+            let mut buf = std::io::Cursor::new(&read_buffer);
+            let mut de = serde_json::Deserializer::from_reader(&mut buf);
+            loop {
+                match TerminalMessage::deserialize(&mut de) {
+                    Ok(msg) => {
+                        match msg {
+                            TerminalMessage::Text(text) => {
+                                // 将文本写入PTY
+                                if let Err(e) = pty_master.write_all(text.as_bytes()) {
+                                    eprintln!("写入PTY失败: {}", e);
+                                    recver.stop_sending(h3::error::Code::H3_INTERNAL_ERROR);
+                                    return;
+                                }
+                            }
+                            TerminalMessage::WindowSize { rows, cols } => {
+                                // 设置PTY窗口大小
+                                unsafe {
+                                    let winsz = libc::winsize {
+                                        ws_row: rows as u16,
+                                        ws_col: cols as u16,
+                                        ws_xpixel: 0,
+                                        ws_ypixel: 0,
+                                    };
+                                    libc::ioctl(pty_master.as_raw_fd(), libc::TIOCSWINSZ, &winsz);
+                                }
+                            }
+                            TerminalMessage::Signal(signal) => {
+                                // 将信号转换为对应的控制字符写入PTY
+                                let ctrl_char = match signal {
+                                    2 => "\x03", // Ctrl+C (SIGINT)
+                                    3 => "\x1A", // Ctrl+Z (SIGTSTP)
+                                    _ => return,
+                                };
+                                if let Err(e) = pty_master.write_all(ctrl_char.as_bytes()) {
+                                    eprintln!("写入PTY控制字符失败: {}", e);
+                                    recver.stop_sending(h3::error::Code::H3_INTERNAL_ERROR);
+                                    return;
+                                }
+                            }
+                            _ => {}
                         }
-                        error!("写入PTY失败: {}", err);
-                        recver.stop_sending(h3::error::Code::H3_INTERNAL_ERROR);
-                        return;
                     }
-                    n if n > 0 => written += n as usize,
-                    _ => {
-                        error!("写入PTY时发生未知错误");
-                        recver.stop_sending(h3::error::Code::H3_INTERNAL_ERROR);
-                        return;
+                    Err(e) if e.is_eof() => {
+                        // 保存未处理完的数据
+                        let pos = buf.position() as usize;
+                        read_buffer.drain(..pos);
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("JSON解析错误: {}", e);
+                        read_buffer.clear();
+                        break;
                     }
                 }
             }
