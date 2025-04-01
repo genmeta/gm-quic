@@ -1,4 +1,9 @@
-use std::{ffi::CString, net::SocketAddr, path::PathBuf, ptr};
+use std::{
+    ffi::{CStr, CString},
+    net::SocketAddr,
+    path::PathBuf,
+    ptr,
+};
 
 use bytes::{Buf, Bytes};
 use clap::Parser;
@@ -176,17 +181,49 @@ where
             libc::login_tty(slave);
 
             // 设置用户
-            let pw = libc::getpwnam(CString::new("luffy").unwrap().as_ptr());
+            let username = CString::new("luffy").unwrap();
+            let pw = libc::getpwnam(username.as_ptr());
             if pw.is_null() {
-                // TODO: 用户不存在, send_stream
+                eprintln!("User not found");
                 libc::exit(1);
             }
-            libc::setgid((*pw).pw_gid);
-            libc::setuid((*pw).pw_uid);
+            // 设置补充组
+            libc::initgroups((*pw).pw_name, (*pw).pw_gid as _);
+            // 设置gid和uid
+            if libc::setgid((*pw).pw_gid) != 0 || libc::setuid((*pw).pw_uid) != 0 {
+                eprintln!("Failed to setuid/setgid");
+                libc::exit(1);
+            }
+
+            // 设置环境变量
+            let home = CStr::from_ptr((*pw).pw_dir).to_string_lossy();
+            let shell = CStr::from_ptr((*pw).pw_shell).to_string_lossy();
+            libc::setenv(
+                CString::new("HOME").unwrap().as_ptr(),
+                CString::new(home.as_bytes()).unwrap().as_ptr(),
+                1,
+            );
+            libc::setenv(CString::new("USER").unwrap().as_ptr(), username.as_ptr(), 1);
+            libc::setenv(
+                CString::new("SHELL").unwrap().as_ptr(),
+                CString::new(shell.as_bytes()).unwrap().as_ptr(),
+                1,
+            );
+
+            // 切换工作目录
+            if libc::chdir((*pw).pw_dir) != 0 {
+                libc::exit(1);
+            }
+
+            println!(
+                "当前用户: {}, 当前的shell: {}",
+                CStr::from_ptr((*pw).pw_name).to_str().unwrap(),
+                CStr::from_ptr((*pw).pw_shell).to_str().unwrap()
+            );
 
             // 执行shell
             let shell = CString::new(
-                std::ffi::CStr::from_ptr((*pw).pw_shell)
+                CStr::from_ptr((*pw).pw_shell)
                     .to_str()
                     .unwrap_or("/bin/bash"),
             )
