@@ -7,9 +7,9 @@ use derive_builder::Builder;
 use derive_more::{From, Into, LowerHex};
 use qbase::{
     frame::{
-        AckFrame, AppCloseFrame, BeFrame, ConnectionCloseFrame, CryptoFrame, DatagramFrame, Frame,
-        MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame, ReliableFrame,
-        StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
+        AckFrame, AppCloseFrame, ConnectionCloseFrame, CryptoFrame, DatagramFrame, EncodeFrame,
+        Frame, MaxStreamsFrame, NewTokenFrame, PathChallengeFrame, PathResponseFrame,
+        ReliableFrame, StreamCtlFrame, StreamFrame, StreamsBlockedFrame,
     },
     packet::header::{
         GetDcid, GetScid,

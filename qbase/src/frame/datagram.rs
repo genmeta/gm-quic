@@ -1,7 +1,7 @@
 use bytes::Buf;
 use nom::IResult;
 
-use super::{BeFrame, FrameType};
+use super::{FrameType, GetFrameType};
 use crate::{
     util::{DescribeData, WriteData},
     varint::{VarInt, WriteVarInt, be_varint},
@@ -43,11 +43,13 @@ impl DatagramFrame {
     }
 }
 
-impl BeFrame for DatagramFrame {
+impl GetFrameType for DatagramFrame {
     fn frame_type(&self) -> FrameType {
         FrameType::Datagram(self.encode_len as _)
     }
+}
 
+impl super::EncodeFrame for DatagramFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8
     }
@@ -100,7 +102,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::io::WriteDataFrame;
+    use crate::frame::{EncodeFrame, io::WriteDataFrame};
 
     #[test]
     fn test_datagram_frame() {

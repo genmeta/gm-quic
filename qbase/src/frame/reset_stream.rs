@@ -27,11 +27,13 @@ pub struct ResetStreamFrame {
 
 const RESET_STREAM_FRAME_TYPE: u8 = 0x04;
 
-impl super::BeFrame for ResetStreamFrame {
+impl super::GetFrameType for ResetStreamFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::ResetStream
     }
+}
 
+impl super::EncodeFrame for ResetStreamFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8 + 8 + 8
     }
@@ -137,7 +139,7 @@ mod tests {
 
     use super::{RESET_STREAM_FRAME_TYPE, ResetStreamError, ResetStreamFrame};
     use crate::{
-        frame::{BeFrame, FrameType, io::WriteFrame},
+        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
         varint::{VarInt, be_varint},
     };
 

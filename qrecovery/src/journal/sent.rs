@@ -8,7 +8,7 @@ use std::{
 use derive_more::{Deref, DerefMut};
 use qbase::{
     error::{Error, ErrorKind},
-    frame::{AckFrame, BeFrame},
+    frame::{AckFrame, GetFrameType},
     packet::PacketNumber,
     util::IndexDeque,
     varint::VARINT_MAX,
@@ -311,7 +311,7 @@ impl<T: Clone> SentRotateGuard<'_, T> {
             );
             return Err(Error::new(
                 ErrorKind::ProtocolViolation,
-                ack_frame.frame_type(),
+                ack_frame.frame_type().into(),
                 "ack frame largest pn is larger than the largest pn sent",
             ));
         }

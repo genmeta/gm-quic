@@ -10,7 +10,7 @@ use header::{LongHeader, io::WriteHeader};
 use crate::{
     cid::ConnectionId,
     frame::{
-        BeFrame, ContainSpec, FrameType, Spec,
+        ContainSpec, FrameFeture, FrameType, Spec,
         io::{WriteDataFrame, WriteFrame},
     },
     net::tx::Signals,

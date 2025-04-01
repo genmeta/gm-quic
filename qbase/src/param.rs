@@ -229,7 +229,11 @@ impl Parameters {
 
     fn authenticate_cids(&self) -> Result<bool, Error> {
         fn param_error(reason: &'static str) -> Error {
-            Error::new(ErrorKind::TransportParameter, FrameType::Crypto, reason)
+            Error::new(
+                ErrorKind::TransportParameter,
+                FrameType::Crypto.into(),
+                reason,
+            )
         }
 
         // Because TLS and packet parsing are in parallel,
@@ -337,7 +341,7 @@ impl ArcParameters {
             .ok_or_else(|| {
                 Error::new(
                     ErrorKind::TransportParameter,
-                    FrameType::Crypto,
+                    FrameType::Crypto.into(),
                     format!("access unknow parameter 0x{id:x}",),
                 )
             }),
@@ -370,7 +374,7 @@ impl ArcParameters {
                 .ok_or_else(|| {
                     Error::new(
                         ErrorKind::TransportParameter,
-                        FrameType::Crypto,
+                        FrameType::Crypto.into(),
                         format!("access unknow parameter 0x{id:x}",),
                     )
                 })
@@ -617,7 +621,7 @@ mod tests {
             result,
             Err(Error::new(
                 ErrorKind::TransportParameter,
-                FrameType::Crypto,
+                FrameType::Crypto.into(),
                 "parameter 0x3: Invalid parameter value: out of bound 1200..=65527",
             ))
         );
@@ -645,7 +649,7 @@ mod tests {
         // Simulate connection error
         let error = Error::new(
             ErrorKind::TransportParameter,
-            FrameType::Crypto,
+            FrameType::Crypto.into(),
             "test error",
         );
         arc_params.on_conn_error(&error);

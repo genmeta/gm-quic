@@ -1,7 +1,8 @@
 use std::ops::Range;
 
-use super::BeFrame;
+use super::GetFrameType;
 use crate::{
+    frame::EncodeFrame,
     sid::{StreamId, WriteStreamId, be_streamid},
     util::{DescribeData, WriteData},
     varint::{VARINT_MAX, VarInt, WriteVarInt, be_varint},
@@ -42,11 +43,13 @@ const OFF_BIT: u8 = 0x04;
 const LEN_BIT: u8 = 0x02;
 const FIN_BIT: u8 = 0x01;
 
-impl BeFrame for StreamFrame {
+impl GetFrameType for StreamFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Stream(self.flag)
     }
+}
 
+impl super::EncodeFrame for StreamFrame {
     fn max_encoding_size(&self) -> usize {
         STREAM_FRAME_MAX_ENCODING_SIZE
     }
@@ -273,7 +276,7 @@ mod tests {
 
     use super::{STREAM_FRAME_TYPE, StreamFrame, stream_frame_with_flag};
     use crate::{
-        frame::{BeFrame, FrameType, io::WriteDataFrame},
+        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteDataFrame},
         varint::{VarInt, be_varint},
     };
 

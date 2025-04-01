@@ -33,14 +33,16 @@ impl MaxStreamsFrame {
     }
 }
 
-impl super::BeFrame for MaxStreamsFrame {
+impl super::GetFrameType for MaxStreamsFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::MaxStreams(match self {
             MaxStreamsFrame::Bi(_) => 0,
             MaxStreamsFrame::Uni(_) => 1,
         })
     }
+}
 
+impl super::EncodeFrame for MaxStreamsFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8
     }
@@ -99,7 +101,7 @@ mod tests {
 
     use super::{MAX_STREAMS_FRAME_TYPE, MaxStreamsFrame, max_streams_frame_with_dir};
     use crate::{
-        frame::{BeFrame, FrameType, io::WriteFrame},
+        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
         varint::{VarInt, be_varint},
     };
 

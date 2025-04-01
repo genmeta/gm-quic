@@ -8,7 +8,7 @@ use bytes::{BufMut, Bytes};
 use qbase::{
     error::{Error, ErrorKind},
     frame::{
-        BeFrame, MaxStreamDataFrame, ResetStreamError, ResetStreamFrame, SendFrame,
+        GetFrameType, MaxStreamDataFrame, ResetStreamError, ResetStreamFrame, SendFrame,
         StopSendingFrame, StreamFrame,
     },
     sid::StreamId,
@@ -94,7 +94,7 @@ impl<TX: Clone> Recv<TX> {
             );
             return Err(Error::new(
                 ErrorKind::FinalSize,
-                stream_frame.frame_type(),
+                stream_frame.frame_type().into(),
                 format!(
                     "{} received a wrong smaller final size {} than the largest rcvd data offset {}",
                     stream_frame.stream_id(),
@@ -146,7 +146,7 @@ impl<TX> Recv<TX> {
             );
             return Err(Error::new(
                 ErrorKind::FlowControl,
-                stream_frame.frame_type(),
+                stream_frame.frame_type().into(),
                 format!(
                     "{} send {data_end} bytes which exceeds the stream data limit {}",
                     stream_frame.stream_id(),
@@ -175,7 +175,7 @@ impl<TX> Recv<TX> {
             );
             return Err(Error::new(
                 ErrorKind::FinalSize,
-                reset_frame.frame_type(),
+                reset_frame.frame_type().into(),
                 format!(
                     "{} reset with a wrong smaller final size {final_size} than the largest rcvd data offset {}",
                     reset_frame.stream_id(),
@@ -223,7 +223,7 @@ impl<TX> SizeKnown<TX> {
             );
             return Err(Error::new(
                 ErrorKind::FinalSize,
-                stream_frame.frame_type(),
+                stream_frame.frame_type().into(),
                 format!(
                     "{} send {data_end} bytes which exceeds the final_size {}",
                     stream_frame.stream_id(),
@@ -238,7 +238,7 @@ impl<TX> SizeKnown<TX> {
             );
             return Err(Error::new(
                 ErrorKind::FinalSize,
-                stream_frame.frame_type(),
+                stream_frame.frame_type().into(),
                 format!(
                     "{} change the final size from {} to {data_end}",
                     stream_frame.stream_id(),
@@ -293,7 +293,7 @@ impl<TX> SizeKnown<TX> {
             );
             return Err(Error::new(
                 ErrorKind::FinalSize,
-                reset_frame.frame_type(),
+                reset_frame.frame_type().into(),
                 format!(
                     "{} change the final size from {} to {final_size}",
                     reset_frame.stream_id(),

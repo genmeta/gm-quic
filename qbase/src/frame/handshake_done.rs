@@ -1,3 +1,5 @@
+use super::EncodeFrame;
+
 /// HandshakeDone frame
 ///
 /// ```text
@@ -13,11 +15,13 @@ pub struct HandshakeDoneFrame;
 
 const HANDSHAKE_DONE_FRAME_TYPE: u8 = 0x1e;
 
-impl super::BeFrame for HandshakeDoneFrame {
+impl super::GetFrameType for HandshakeDoneFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::HandshakeDone
     }
 }
+
+impl EncodeFrame for HandshakeDoneFrame {}
 
 /// Parse a HANDSHAKE_DONE frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
@@ -34,7 +38,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<HandshakeDoneFrame> for T {
 
 #[cfg(test)]
 mod tests {
-    use crate::frame::{BeFrame, FrameType, HandshakeDoneFrame, io::WriteFrame};
+    use crate::frame::{EncodeFrame, FrameType, GetFrameType, HandshakeDoneFrame, io::WriteFrame};
 
     #[test]
     fn test_handshake_done_frame() {

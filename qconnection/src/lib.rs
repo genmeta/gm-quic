@@ -46,7 +46,7 @@ use path::ArcPathContexts;
 use prelude::HeartbeatConfig;
 use qbase::{
     cid, flow,
-    frame::ConnectionCloseFrame,
+    frame::{ConnectionCloseFrame, ReliableFrame},
     net::route::{Link, Pathway},
     param::{ArcParameters, ParameterId},
     sid::StreamId,
@@ -58,9 +58,7 @@ use qinterface::{
     router::{QuicProto, RouterRegistry},
 };
 use qrecovery::{
-    recv,
-    reliable::ArcReliableFrameDeque,
-    send,
+    recv, reliable, send,
     streams::{self, Ext},
 };
 #[cfg(feature = "unreliable")]
@@ -70,6 +68,7 @@ use state::ConnState;
 use termination::Termination;
 use tls::ArcTlsSession;
 
+pub type ArcReliableFrameDeque = reliable::ArcReliableFrameDeque<ReliableFrame>;
 pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
 pub type ArcRemoteCids = cid::ArcRemoteCids<ArcReliableFrameDeque>;
 pub type CidRegistry = cid::Registry<ArcLocalCids, ArcRemoteCids>;

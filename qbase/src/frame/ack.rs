@@ -39,11 +39,13 @@ const ACK_FRAME_TYPE: u8 = 0x02;
 
 const ECN_OPT: u8 = 0x1;
 
-impl super::BeFrame for AckFrame {
+impl super::GetFrameType for AckFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Ack(if self.ecn.is_some() { 1 } else { 0 })
     }
+}
 
+impl super::EncodeFrame for AckFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8 + 8 + 8 + 8 + self.ranges.len() * 16 + if self.ecn.is_some() { 24 } else { 0 }
     }
@@ -253,7 +255,7 @@ mod tests {
 
     use super::{ACK_FRAME_TYPE, AckFrame, EcnCounts, ack_frame_with_flag, be_ecn_counts};
     use crate::{
-        frame::{BeFrame, FrameType, io::WriteFrame},
+        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
         varint::{VarInt, be_varint},
     };
 

@@ -40,13 +40,13 @@ impl From<Error> for TransportError {
                 Self::with_default_fty(TransportErrorKind::FrameEncoding, e.to_string())
             }
             Error::WrongType(fty, _) => {
-                Self::new(TransportErrorKind::FrameEncoding, fty, e.to_string())
+                Self::new(TransportErrorKind::FrameEncoding, fty.into(), e.to_string())
             }
             Error::IncompleteFrame(fty, _) => {
-                Self::new(TransportErrorKind::FrameEncoding, fty, e.to_string())
+                Self::new(TransportErrorKind::FrameEncoding, fty.into(), e.to_string())
             }
             Error::ParseError(fty, _) => {
-                Self::new(TransportErrorKind::FrameEncoding, fty, e.to_string())
+                Self::new(TransportErrorKind::FrameEncoding, fty.into(), e.to_string())
             }
         }
     }

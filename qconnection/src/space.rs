@@ -8,7 +8,8 @@ use bytes::Bytes;
 use qbase::{
     error::Error,
     frame::{
-        AckFrame, BeFrame, CryptoFrame, ReceiveFrame, ReliableFrame, StreamCtlFrame, StreamFrame,
+        AckFrame, CryptoFrame, GetFrameType, ReceiveFrame, ReliableFrame, StreamCtlFrame,
+        StreamFrame,
     },
 };
 use qlog::{quic::transport::PacketsAcked, telemetry::Instrument};

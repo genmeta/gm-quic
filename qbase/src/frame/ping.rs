@@ -13,11 +13,13 @@ pub struct PingFrame;
 
 const PING_FRAME_TYPE: u8 = 0x01;
 
-impl super::BeFrame for PingFrame {
+impl super::GetFrameType for PingFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Ping
     }
 }
+
+impl super::EncodeFrame for PingFrame {}
 
 /// Parse a PING frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
@@ -34,7 +36,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PingFrame> for T {
 #[cfg(test)]
 mod tests {
     use super::{PING_FRAME_TYPE, PingFrame};
-    use crate::frame::{BeFrame, FrameType, io::WriteFrame};
+    use crate::frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame};
 
     #[test]
     fn test_ping_frame() {

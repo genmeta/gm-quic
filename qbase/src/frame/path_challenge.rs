@@ -35,11 +35,13 @@ impl PathChallengeFrame {
 
 const PATH_CHALLENGE_FRAME_TYPE: u8 = 0x1a;
 
-impl super::BeFrame for PathChallengeFrame {
+impl super::GetFrameType for PathChallengeFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::PathChallenge
     }
+}
 
+impl super::EncodeFrame for PathChallengeFrame {
     fn max_encoding_size(&self) -> usize {
         1 + self.data.len()
     }
@@ -66,9 +68,11 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PathChallengeFrame> for T {
 
 #[cfg(test)]
 mod tests {
+    use crate::frame::EncodeFrame;
+
     #[test]
     fn test_path_challenge_frame() {
-        use crate::frame::{BeFrame, FrameType};
+        use crate::frame::{FrameType, GetFrameType};
         let frame = super::PathChallengeFrame::from_slice(&[
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
         ]);

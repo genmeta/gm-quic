@@ -10,7 +10,7 @@ use std::{
 use bytes::{BufMut, Bytes};
 use qbase::{
     error::{Error, ErrorKind},
-    frame::{BeFrame, DatagramFrame},
+    frame::{DatagramFrame, EncodeFrame, GetFrameType},
 };
 
 #[derive(Debug)]
@@ -74,7 +74,7 @@ impl DatagramIncoming {
             tracing::error!("   Cause by: DatagramIncoming::recv_datagram");
             return Err(Error::new(
                 ErrorKind::ProtocolViolation,
-                frame.frame_type(),
+                frame.frame_type().into(),
                 format!(
                     "datagram size {} exceeds the maximum size {}",
                     frame.encoding_size() + data.len(),
@@ -292,7 +292,7 @@ mod tests {
         let incoming = DatagramIncoming::new(1024);
         let error = Error::new(
             ErrorKind::ProtocolViolation,
-            FrameType::Datagram(0),
+            FrameType::Datagram(0).into(),
             "protocol violation",
         );
         incoming.on_conn_error(&error);

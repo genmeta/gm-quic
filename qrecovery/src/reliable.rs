@@ -7,7 +7,7 @@ use std::{
 use bytes::BufMut;
 use enum_dispatch::enum_dispatch;
 use qbase::{
-    frame::{BeFrame, CryptoFrame, ReliableFrame, SendFrame, StreamFrame},
+    frame::{CryptoFrame, EncodeFrame, FrameFeture, ReliableFrame, SendFrame, StreamFrame},
     net::tx::{ArcSendWakers, Signals},
     packet::MarshalFrame,
 };
@@ -16,11 +16,12 @@ use qbase::{
 ///
 /// The bundle of [`StreamFrame`], [`CryptoFrame`] and [`ReliableFrame`].
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame)]
+#[enum_dispatch(EncodeFrame, GetFrameType)]
 pub enum GuaranteedFrame {
     Stream(StreamFrame),
     Crypto(CryptoFrame),
     Reliable(ReliableFrame),
+    // Add ExtensionFrame here if needed.
 }
 
 /// A deque for data space to send reliable frames.
@@ -31,22 +32,28 @@ pub enum GuaranteedFrame {
 ///
 /// # Example
 /// ```rust, no_run
-/// use qbase::frame::{HandshakeDoneFrame, SendFrame};
+/// use qbase::frame::{HandshakeDoneFrame, SendFrame, ReliableFrame};
 /// use qrecovery::reliable::ArcReliableFrameDeque;
 /// # let data_wakers = Default::default();
-/// let mut reliable_frame_deque = ArcReliableFrameDeque::with_capacity_and_wakers(10, data_wakers);
+/// let mut reliable_frame_deque = ArcReliableFrameDeque::<ReliableFrame>::with_capacity_and_wakers(10, data_wakers);
 /// reliable_frame_deque.send_frame([HandshakeDoneFrame]);
 /// ```
 ///
 /// [`DataStreams`]: crate::streams::DataStreams
 /// [`try_load_frames_into`]: ArcReliableFrameDeque::try_load_frames_into
 #[derive(Debug, Default, Clone)]
-pub struct ArcReliableFrameDeque {
-    frames: Arc<Mutex<VecDeque<ReliableFrame>>>,
+pub struct ArcReliableFrameDeque<F>
+where
+    F: EncodeFrame + FrameFeture,
+{
+    frames: Arc<Mutex<VecDeque<F>>>,
     tx_wakers: ArcSendWakers,
 }
 
-impl ArcReliableFrameDeque {
+impl<F> ArcReliableFrameDeque<F>
+where
+    F: EncodeFrame + FrameFeture,
+{
     /// Create a new empty deque with at least the specified capacity.
     pub fn with_capacity_and_wakers(capacity: usize, tx_wakers: ArcSendWakers) -> Self {
         Self {
@@ -55,14 +62,14 @@ impl ArcReliableFrameDeque {
         }
     }
 
-    fn frames_guard(&self) -> MutexGuard<'_, VecDeque<ReliableFrame>> {
+    fn frames_guard(&self) -> MutexGuard<'_, VecDeque<F>> {
         self.frames.lock().unwrap()
     }
 
     /// Try to load the frame in deque and encode it into the `packet`.
     pub fn try_load_frames_into<P>(&self, packet: &mut P) -> Result<(), Signals>
     where
-        P: BufMut + MarshalFrame<ReliableFrame>,
+        P: BufMut + MarshalFrame<F>,
     {
         let mut deque = self.frames_guard();
         if deque.is_empty() {
@@ -80,9 +87,10 @@ impl ArcReliableFrameDeque {
     }
 }
 
-impl<T> SendFrame<T> for ArcReliableFrameDeque
+impl<T, F> SendFrame<T> for ArcReliableFrameDeque<F>
 where
-    T: Into<ReliableFrame>,
+    F: EncodeFrame + FrameFeture,
+    T: Into<F>,
 {
     fn send_frame<I: IntoIterator<Item = T>>(&self, iter: I) {
         self.tx_wakers.wake_all_by(Signals::TRANSPORT);

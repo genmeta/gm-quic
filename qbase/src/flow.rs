@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    error::{Error as QuicError, ErrorKind as QuicErrorKind},
+    error::{Error as QuicError, ErrorFrameType, ErrorKind as QuicErrorKind},
     frame::{DataBlockedFrame, FrameType, MaxDataFrame, ReceiveFrame, SendFrame},
     net::tx::{ArcSendWakers, Signals},
     varint::VarInt,
@@ -233,7 +233,7 @@ where
             // Err(Overflow((rcvd_data - max_data) as usize))
             Err(QuicError::new(
                 QuicErrorKind::FlowControl,
-                frame_type,
+                ErrorFrameType::V1(frame_type),
                 format!("flow control overflow: {}", self.rcvd_data - self.max_data),
             ))
         }

@@ -4,7 +4,8 @@ use super::{ConnectionId, GenUniqueCid, RetireCid};
 use crate::{
     error::{Error, ErrorKind},
     frame::{
-        BeFrame, FrameType, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame, SendFrame,
+        FrameType, GetFrameType, NewConnectionIdFrame, ReceiveFrame, RetireConnectionIdFrame,
+        SendFrame,
     },
     token::ResetToken,
     util::IndexDeque,
@@ -74,7 +75,7 @@ where
             tracing::error!("   Cause by: setting new active connection id limit");
             return Err(Error::new(
                 ErrorKind::TransportParameter,
-                FrameType::Crypto,
+                FrameType::Crypto.into(),
                 format!("active connection id limit {} < 2", active_cid_limit),
             ));
         }
@@ -104,7 +105,7 @@ where
             tracing::error!("   Cause by: received a invalid RetireConnectionIdFrame");
             return Err(Error::new(
                 ErrorKind::ConnectionIdLimit,
-                frame.frame_type(),
+                frame.frame_type().into(),
                 format!(
                     "Sequence({seq}) in RetireConnectionIdFrame exceeds the largest one({}) issued by us",
                     self.cid_deque.largest().saturating_sub(1)

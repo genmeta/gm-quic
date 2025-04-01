@@ -165,6 +165,12 @@ impl From<ErrorKind> for VarInt {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+pub enum ErrorFrameType {
+    V1(FrameType),
+    Ext(VarInt),
+}
+
 /// QUIC transport error.
 ///
 /// Its definition conforms to the usage of [`ConnectionCloseFrame`].
@@ -173,8 +179,23 @@ impl From<ErrorKind> for VarInt {
 #[error("{kind} in {frame_type:?}, reason: {reason}")]
 pub struct Error {
     kind: ErrorKind,
-    frame_type: FrameType,
+    frame_type: ErrorFrameType,
     reason: Cow<'static, str>,
+}
+
+impl From<FrameType> for ErrorFrameType {
+    fn from(value: FrameType) -> Self {
+        Self::V1(value)
+    }
+}
+
+impl From<ErrorFrameType> for VarInt {
+    fn from(val: ErrorFrameType) -> Self {
+        match val {
+            ErrorFrameType::V1(frame) => frame.into(),
+            ErrorFrameType::Ext(value) => value,
+        }
+    }
 }
 
 /// App specific error.
@@ -190,7 +211,7 @@ impl Error {
     /// The frame type is the one that triggered this error.
     pub fn new<T: Into<Cow<'static, str>>>(
         kind: ErrorKind,
-        frame_type: FrameType,
+        frame_type: ErrorFrameType,
         reason: T,
     ) -> Self {
         Self {
@@ -205,7 +226,7 @@ impl Error {
     pub fn with_default_fty<T: Into<Cow<'static, str>>>(kind: ErrorKind, reason: T) -> Self {
         Self {
             kind,
-            frame_type: FrameType::Padding,
+            frame_type: FrameType::Padding.into(),
             reason: reason.into(),
         }
     }
@@ -216,7 +237,7 @@ impl Error {
     }
 
     /// Return the frame type that triggered this error.
-    pub fn frame_type(&self) -> FrameType {
+    pub fn frame_type(&self) -> ErrorFrameType {
         self.frame_type
     }
 }
@@ -332,17 +353,21 @@ mod tests {
 
     #[test]
     fn test_error_creation() {
-        let err = Error::new(ErrorKind::Internal, FrameType::Ping, "test error");
+        let err = Error::new(ErrorKind::Internal, FrameType::Ping.into(), "test error");
         assert_eq!(err.kind(), ErrorKind::Internal);
-        assert_eq!(err.frame_type(), FrameType::Ping);
+        assert_eq!(err.frame_type(), FrameType::Ping.into());
 
         let err = Error::with_default_fty(ErrorKind::Application, "default frame type");
-        assert_eq!(err.frame_type(), FrameType::Padding);
+        assert_eq!(err.frame_type(), FrameType::Padding.into());
     }
 
     #[test]
     fn test_error_conversion() {
-        let err = Error::new(ErrorKind::Internal, FrameType::Ping, "test conversion");
+        let err = Error::new(
+            ErrorKind::Internal,
+            FrameType::Ping.into(),
+            "test conversion",
+        );
 
         // Test Error to ConnectionCloseFrame
         let frame: ConnectionCloseFrame = err.clone().into();

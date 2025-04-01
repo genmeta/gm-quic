@@ -18,11 +18,13 @@ pub struct MaxDataFrame {
 
 const MAX_DATA_FRAME_TYPE: u8 = 0x10;
 
-impl super::BeFrame for MaxDataFrame {
+impl super::GetFrameType for MaxDataFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::MaxData
     }
+}
 
+impl super::EncodeFrame for MaxDataFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8
     }
@@ -62,7 +64,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<MaxDataFrame> for T {
 mod tests {
     use super::{MAX_DATA_FRAME_TYPE, MaxDataFrame};
     use crate::{
-        frame::{BeFrame, FrameType, io::WriteFrame},
+        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
         varint::VarInt,
     };
 

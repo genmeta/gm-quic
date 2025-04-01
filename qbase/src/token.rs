@@ -7,7 +7,7 @@ use rand::Rng;
 
 use crate::{
     error::{Error, ErrorKind},
-    frame::{BeFrame, NewTokenFrame, ReceiveFrame},
+    frame::{GetFrameType, NewTokenFrame, ReceiveFrame},
 };
 
 pub const RESET_TOKEN_SIZE: usize = 16;
@@ -99,7 +99,7 @@ impl ReceiveFrame<NewTokenFrame> for ArcTokenRegistry {
             }
             TokenRegistry::Server(_) => Err(Error::new(
                 ErrorKind::ProtocolViolation,
-                frame.frame_type(),
+                frame.frame_type().into(),
                 "Server received NewTokenFrame",
             )),
         }
