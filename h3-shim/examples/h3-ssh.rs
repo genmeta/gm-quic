@@ -1,25 +1,16 @@
-use std::{
-    io::Write,
-    net::SocketAddr,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{io::Write, net::SocketAddr, path::PathBuf, time::Duration};
 
 use bytes::Buf;
 use clap::Parser;
 use crossterm::{
-    event::{
-        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
-        KeyModifiers,
-    },
+    event::{self, Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
     execute,
-    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{self},
 };
+use futures::{SinkExt, channel::mpsc};
 use futures::{StreamExt, future};
 use gm_quic::ToCertificate;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 use tracing::{info, trace};
 
 static ALPN: &[u8] = b"h3";
@@ -67,8 +58,7 @@ async fn main() -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
 pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
     // DNS lookup
     // 初始化终端
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
     terminal::enable_raw_mode()?;
 
     // 创建通道用于异步通信
@@ -76,32 +66,109 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
 
     // 启动事件监听任务
     let event_task = tokio::spawn({
-        let tx = tx.clone();
+        let mut tx = tx.clone();
         async move {
+            let (cols, rows) = terminal::size().unwrap();
+            _ = tx
+                .send(TerminalMessage::WindowSize {
+                    rows: rows as u16,
+                    cols: cols as u16,
+                })
+                .await;
             let mut events = EventStream::new();
             while let Some(Ok(event)) = events.next().await {
                 match event {
+                    Event::Resize(cols, rows) => {
+                        _ = tx
+                            .send(TerminalMessage::WindowSize {
+                                rows: rows as u16,
+                                cols: cols as u16,
+                            })
+                            .await;
+                    }
                     Event::Key(KeyEvent {
                         code, modifiers, ..
                     }) => {
-                        match (code, modifiers) {
+                        let result = match (code, modifiers) {
+                            // Control 组合键
                             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                                tx.send(TerminalMessage::Signal(2)).await.unwrap(); // SIGINT
+                                tx.send(TerminalMessage::Signal(2)).await
                             }
-                            (KeyCode::Char(c), _) => {
-                                tx.send(TerminalMessage::Text(c.to_string())).await.unwrap();
+                            (KeyCode::Char('z'), KeyModifiers::CONTROL) => {
+                                tx.send(TerminalMessage::Signal(20)).await
                             }
-                            (KeyCode::Enter, _) => {
-                                tx.send(TerminalMessage::Text("\n".to_string()))
+                            (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+                                tx.send(TerminalMessage::ControlSequence("\x04".to_string()))
                                     .await
-                                    .unwrap();
+                            }
+                            // 普通字符输入
+                            (KeyCode::Char(c), _) => {
+                                while let Ok(true) = event::poll(Duration::from_millis(0)) {
+                                    let _ = event::read();
+                                }
+                                tx.send(TerminalMessage::Text(c.to_string())).await
+                            }
+                            // 特殊键
+                            (KeyCode::Enter, _) => {
+                                while let Ok(true) = event::poll(Duration::from_millis(0)) {
+                                    let _ = event::read();
+                                }
+                                tx.send(TerminalMessage::Text("\n".to_string())).await
+                            }
+                            (KeyCode::Tab, _) => {
+                                tx.send(TerminalMessage::Text("\t".to_string())).await
+                            }
+                            (KeyCode::Backspace, _) => {
+                                tx.send(TerminalMessage::ControlSequence("\x7f".to_string()))
+                                    .await
+                            }
+                            (KeyCode::Delete, _) => {
+                                tx.send(TerminalMessage::ControlSequence("\x1b[3~".to_string()))
+                                    .await
                             }
                             (KeyCode::Esc, _) => {
                                 tx.send(TerminalMessage::ControlSequence("\x1b".to_string()))
                                     .await
-                                    .unwrap();
                             }
-                            _ => {}
+                            // 方向键
+                            (KeyCode::Up, _) => {
+                                tx.send(TerminalMessage::ControlSequence("\x1b[A".to_string()))
+                                    .await
+                            }
+                            (KeyCode::Down, _) => {
+                                tx.send(TerminalMessage::ControlSequence("\x1b[B".to_string()))
+                                    .await
+                            }
+                            (KeyCode::Right, _) => {
+                                tx.send(TerminalMessage::ControlSequence("\x1b[C".to_string()))
+                                    .await
+                            }
+                            (KeyCode::Left, _) => {
+                                tx.send(TerminalMessage::ControlSequence("\x1b[D".to_string()))
+                                    .await
+                            }
+                            // Home/End 键
+                            (KeyCode::Home, _) => {
+                                tx.send(TerminalMessage::ControlSequence("\x1b[H".to_string()))
+                                    .await
+                            }
+                            (KeyCode::End, _) => {
+                                tx.send(TerminalMessage::ControlSequence("\x1b[F".to_string()))
+                                    .await
+                            }
+                            // Page Up/Down
+                            (KeyCode::PageUp, _) => {
+                                tx.send(TerminalMessage::ControlSequence("\x1b[5~".to_string()))
+                                    .await
+                            }
+                            (KeyCode::PageDown, _) => {
+                                tx.send(TerminalMessage::ControlSequence("\x1b[6~".to_string()))
+                                    .await
+                            }
+                            _ => Ok(()),
+                        };
+                        if result.is_err() {
+                            break;
                         }
                     }
                     _ => {}
@@ -111,9 +178,10 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
     });
 
     // 启动窗口大小监控任务
-    let window_size = Arc::new(Mutex::new(terminal::size().unwrap()));
+    /*
+    let window_size = Arc::new(Mutex::new((80, 40)));
     let window_task = {
-        let tx = tx.clone();
+        let mut tx = tx.clone();
         let window_size_clone = window_size.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(100));
@@ -134,6 +202,7 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
             }
         })
     };
+    */
 
     let uri = options.uri.parse::<http::Uri>()?;
     if uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
@@ -157,6 +226,7 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
         .without_cert()
         .with_alpns([ALPN])
         .with_parameters(client_parameters())
+        .enable_sslkeylog()
         .bind(&options.bind[..])?
         .build();
     info!(%addr, "connect to server");
@@ -187,13 +257,18 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
         let mut interval = tokio::time::interval(Duration::from_secs(30));
         loop {
             tokio::select! {
-                msg = rx.recv() => {
+                msg = rx.next() => {
                     if let Some(msg) = msg {
                         let serialized = serde_json::to_vec(&msg).unwrap();
                         if let Err(e) = sender.send_data(serialized.into()).await {
                             eprintln!("Write error: {}", e);
                             break;
                         }
+                    } else {
+                        if let Err(e) = sender.finish().await {
+                            eprintln!("Finish error: {}", e);
+                        }
+                        break;
                     }
                 }
                 _ = interval.tick() => {
@@ -207,27 +282,45 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
         }
     });
 
-    let recv_task = tokio::spawn(async move {
-        let stdout = std::io::stdout();
-        while let Some(chunk) = receiver.recv_data().await? {
-            let response = String::from_utf8_lossy(chunk.chunk());
-            execute!(stdout.lock(), crossterm::style::Print(response)).unwrap();
-            stdout.lock().flush().unwrap();
+    let recv_task = tokio::spawn({
+        let mut tx = tx.clone();
+        async move {
+            let stdout = std::io::stdout();
+            loop {
+                match receiver.recv_data().await {
+                    Ok(Some(chunk)) => {
+                        let response = String::from_utf8_lossy(chunk.chunk());
+                        execute!(stdout.lock(), crossterm::style::Print(response)).unwrap();
+                        stdout.lock().flush().unwrap();
+                    }
+                    Ok(None) => {
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("Read error: {}", e);
+                        receiver.stop_sending(h3::error::Code::H3_NO_ERROR);
+                        break;
+                    }
+                }
+            }
+            // 接收关闭了，连带着发送也关闭
+            tx.close_channel();
         }
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     });
 
     // 等待所有任务完成（通常不会主动退出）
     tokio::select! {
-        _ = send_task => (),
-        _ = recv_task => (),
         _ = event_task => (),
-        _ = window_task => (),
+        // _ = window_task => (),
         _ = conn_close_monitor => (),
     }
 
+    if let Err(e) = tokio::try_join!(send_task, recv_task) {
+        eprintln!("Error: {}", e);
+    }
+
     // 清理
-    execute!(stdout.lock(), LeaveAlternateScreen, DisableMouseCapture)?;
+    // execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal::disable_raw_mode()?;
 
     Ok(())

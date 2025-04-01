@@ -354,7 +354,34 @@ where
                                     return;
                                 }
                             }
-                            _ => {}
+                            TerminalMessage::ControlSequence(seq) => {
+                                // 处理各种控制序列
+                                let sequence = match seq.as_str() {
+                                    "\x04" => "\x04",       // Ctrl+D (EOF)
+                                    "\x7f" => "\x7f",       // Backspace
+                                    "\x1b[3~" => "\x1b[3~", // Delete
+                                    "\x1b" => "\x1b",       // Esc
+                                    "\x1b[A" => "\x1b[A",   // Up
+                                    "\x1b[B" => "\x1b[B",   // Down
+                                    "\x1b[C" => "\x1b[C",   // Right
+                                    "\x1b[D" => "\x1b[D",   // Left
+                                    "\x1b[H" => "\x1b[H",   // Home
+                                    "\x1b[F" => "\x1b[F",   // End
+                                    "\x1b[5~" => "\x1b[5~", // Page Up
+                                    "\x1b[6~" => "\x1b[6~", // Page Down
+                                    "\t" => "\t",           // Tab
+                                    _ => continue,
+                                };
+                                if let Err(e) = pty_master.write_all(sequence.as_bytes()) {
+                                    error!("写入PTY控制序列失败: {}", e);
+                                    recver.stop_sending(h3::error::Code::H3_INTERNAL_ERROR);
+                                    return;
+                                }
+                            }
+                            TerminalMessage::Heartbeat => {
+                                // 心跳包,不需要处理
+                                continue;
+                            }
                         }
                     }
                     Err(e) if e.is_eof() => {
@@ -364,6 +391,7 @@ where
                         break;
                     }
                     Err(e) => {
+                        // TODO: fetal error
                         eprintln!("JSON解析错误: {}", e);
                         read_buffer.clear();
                         break;
