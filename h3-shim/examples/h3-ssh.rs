@@ -1,12 +1,38 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{
+    io::Write,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
+use bytes::Buf;
 use clap::Parser;
-use futures::future;
+use crossterm::{
+    event::{
+        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
+        KeyModifiers,
+    },
+    execute,
+    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use futures::{StreamExt, future};
 use gm_quic::ToCertificate;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{Instrument, info, info_span, trace};
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+use tracing::{info, trace};
 
 static ALPN: &[u8] = b"h3";
+
+// 定义客户端与服务器通信的消息结构
+#[derive(Serialize, Deserialize, Debug)]
+enum TerminalMessage {
+    Text(String),
+    WindowSize { rows: u16, cols: u16 },
+    Signal(i32),
+    ControlSequence(String),
+    Heartbeat,
+}
 
 #[derive(Parser, Debug)]
 #[structopt(name = "server")]
@@ -40,6 +66,74 @@ async fn main() -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
 
 pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
     // DNS lookup
+    // 初始化终端
+    let mut stdout = std::io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    terminal::enable_raw_mode()?;
+
+    // 创建通道用于异步通信
+    let (tx, mut rx) = mpsc::channel::<TerminalMessage>(32);
+
+    // 启动事件监听任务
+    let event_task = tokio::spawn({
+        let tx = tx.clone();
+        async move {
+            let mut events = EventStream::new();
+            while let Some(Ok(event)) = events.next().await {
+                match event {
+                    Event::Key(KeyEvent {
+                        code, modifiers, ..
+                    }) => {
+                        match (code, modifiers) {
+                            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                                tx.send(TerminalMessage::Signal(2)).await.unwrap(); // SIGINT
+                            }
+                            (KeyCode::Char(c), _) => {
+                                tx.send(TerminalMessage::Text(c.to_string())).await.unwrap();
+                            }
+                            (KeyCode::Enter, _) => {
+                                tx.send(TerminalMessage::Text("\n".to_string()))
+                                    .await
+                                    .unwrap();
+                            }
+                            (KeyCode::Esc, _) => {
+                                tx.send(TerminalMessage::ControlSequence("\x1b".to_string()))
+                                    .await
+                                    .unwrap();
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    });
+
+    // 启动窗口大小监控任务
+    let window_size = Arc::new(Mutex::new(terminal::size().unwrap()));
+    let window_task = {
+        let tx = tx.clone();
+        let window_size_clone = window_size.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(100));
+            loop {
+                interval.tick().await;
+                let current_size = terminal::size().unwrap();
+                let prev_size = *window_size_clone.lock().unwrap();
+                if current_size != prev_size {
+                    let (cols, rows) = current_size;
+                    tx.send(TerminalMessage::WindowSize {
+                        rows: rows as u16,
+                        cols: cols as u16,
+                    })
+                    .await
+                    .unwrap();
+                    *window_size_clone.lock().unwrap() = current_size;
+                }
+            }
+        })
+    };
 
     let uri = options.uri.parse::<http::Uri>()?;
     if uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
@@ -72,76 +166,69 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
 
     let gm_quic_conn = h3_shim::QuicConnection::new(conn).await;
     let (mut conn, mut h3_client) = h3::client::new(gm_quic_conn).await?;
-    let driver = async move {
+    let conn_close_monitor = async move {
         future::poll_fn(|cx| conn.poll_close(cx)).await?;
         // tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         Ok::<_, Box<dyn std::error::Error + 'static + Send + Sync>>(())
     };
 
-    // In the following block, we want to take ownership of `send_request`:
-    // the connection will be closed only when all `SendRequest`s instances
-    // are dropped.
-    //
-    //             So we "move" it.
-    //                  vvvv
-    let request = async move {
-        info!(%uri, "request");
+    info!(%uri, "request");
+    let request = http::Request::builder().method("PUT").uri(uri).body(())?;
 
-        let request = http::Request::builder().method("PUT").uri(uri).body(())?;
+    // sending request results in a bidirectional stream,
+    // which is also used for receiving response
+    let mut stream = h3_client.send_request(request).await?;
+    let response = stream.recv_response().await?;
+    info!(?response, "received");
 
-        // sending request results in a bidirectional stream,
-        // which is also used for receiving response
-        let mut stream = h3_client.send_request(request).await?;
-        let response = stream.recv_response().await?;
-        info!(?response, "received");
-
-        let (mut sender, mut receiver) = stream.split();
-        // read from stdin and write to the stream
-        let send_task = tokio::spawn(async move {
-            let mut stdin = tokio::io::stdin();
-            let mut buf = vec![0; 1024];
-            loop {
-                match stdin.read(&mut buf).await {
-                    Ok(0) => break, // EOF
-                    Ok(n) => {
-                        sender.send_data(buf[..n].to_vec().into()).await?;
+    let (mut sender, mut receiver) = stream.split();
+    // read from stdin and write to the stream
+    let send_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            tokio::select! {
+                msg = rx.recv() => {
+                    if let Some(msg) = msg {
+                        let serialized = serde_json::to_vec(&msg).unwrap();
+                        if let Err(e) = sender.send_data(serialized.into()).await {
+                            eprintln!("Write error: {}", e);
+                            break;
+                        }
                     }
-                    Err(e) => {
-                        // shutdown on the sending side, no more data for the GET request
-                        _ = sender
-                            .finish()
-                            .await
-                            .inspect_err(|e| tracing::error!("failed to finish stream: {}", e));
-                        return Err(e.into());
+                }
+                _ = interval.tick() => {
+                    let serialized = serde_json::to_vec(&TerminalMessage::Heartbeat).unwrap();
+                    if let Err(e) = sender.send_data(serialized.into()).await {
+                        eprintln!("Heartbeat channel error: {}", e);
+                        break;
                     }
                 }
             }
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-        });
+        }
+    });
 
-        let recv_task = tokio::spawn(async move {
-            let mut stdout = tokio::io::stdout();
-            while let Some(mut chunk) = receiver.recv_data().await? {
-                stdout.write_all_buf(&mut chunk).await?;
-                stdout.flush().await?;
-            }
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-        });
+    let recv_task = tokio::spawn(async move {
+        let stdout = std::io::stdout();
+        while let Some(chunk) = receiver.recv_data().await? {
+            let response = String::from_utf8_lossy(chunk.chunk());
+            execute!(stdout.lock(), crossterm::style::Print(response)).unwrap();
+            stdout.lock().flush().unwrap();
+        }
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
 
-        // 等待两个任务完成
-        let (send_result, recv_result) = tokio::join!(send_task, recv_task);
-        send_result??;
-        recv_result??;
-
-        Ok::<_, Box<dyn std::error::Error + 'static + Send + Sync>>(())
+    // 等待所有任务完成（通常不会主动退出）
+    tokio::select! {
+        _ = send_task => (),
+        _ = recv_task => (),
+        _ = event_task => (),
+        _ = window_task => (),
+        _ = conn_close_monitor => (),
     }
-    .instrument(info_span!("ssh"));
 
-    let derive = tokio::spawn(driver);
-    let request = tokio::spawn(request);
-
-    derive.await??;
-    request.await??;
+    // 清理
+    execute!(stdout.lock(), LeaveAlternateScreen, DisableMouseCapture)?;
+    terminal::disable_raw_mode()?;
 
     Ok(())
 }
