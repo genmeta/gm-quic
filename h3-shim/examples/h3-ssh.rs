@@ -123,6 +123,7 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
             let mut stdout = tokio::io::stdout();
             while let Some(mut chunk) = receiver.recv_data().await? {
                 stdout.write_all_buf(&mut chunk).await?;
+                stdout.flush().await?;
             }
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         });
