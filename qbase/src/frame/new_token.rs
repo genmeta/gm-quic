@@ -22,11 +22,13 @@ pub struct NewTokenFrame {
 
 const NEW_TOKEN_FRAME_TYPE: u8 = 0x07;
 
-impl super::BeFrame for NewTokenFrame {
+impl super::GetFrameType for NewTokenFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::NewToken
     }
+}
 
+impl super::EncodeFrame for NewTokenFrame {
     fn max_encoding_size(&self) -> usize {
         // token's length could not exceed 20
         1 + 1 + self.token.len()
@@ -82,7 +84,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<NewTokenFrame> for T {
 }
 #[cfg(test)]
 mod tests {
-    use crate::frame::{BeFrame, FrameType, io::WriteFrame};
+    use crate::frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame};
 
     #[test]
     fn test_new_token_frame() {

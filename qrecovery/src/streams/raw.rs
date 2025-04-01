@@ -4,7 +4,7 @@ use bytes::BufMut;
 use qbase::{
     error::{Error as QuicError, ErrorKind},
     frame::{
-        BeFrame, FrameType, ReceiveFrame, ResetStreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
+        FrameType, GetFrameType, ReceiveFrame, ResetStreamFrame, STREAM_FRAME_MAX_ENCODING_SIZE,
         SendFrame, StreamCtlFrame, StreamFrame,
     },
     net::tx::{ArcSendWakers, Signals},
@@ -129,7 +129,7 @@ where
 fn wrapper_error(fty: FrameType) -> impl FnOnce(ExceedLimitError) -> QuicError {
     move |e| {
         tracing::error!("   Cause by: {e}");
-        QuicError::new(ErrorKind::StreamLimit, fty, e.to_string())
+        QuicError::new(ErrorKind::StreamLimit, fty.into(), e.to_string())
     }
 }
 
@@ -343,7 +343,7 @@ where
                 tracing::error!("   Cause by: {sid} received invalid {:?}", stream_frame);
                 return Err(QuicError::new(
                     ErrorKind::StreamState,
-                    stream_frame.frame_type(),
+                    stream_frame.frame_type().into(),
                     format!("local {sid} cannot receive STREAM_FRAME"),
                 ));
             }
@@ -389,7 +389,7 @@ where
                         tracing::error!("   Cause by: {sid} received invalid {:?}", reset);
                         return Err(QuicError::new(
                             ErrorKind::StreamState,
-                            reset.frame_type(),
+                            reset.frame_type().into(),
                             format!("local {sid} cannot receive RESET_STREAM frame"),
                         ));
                     }
@@ -413,7 +413,7 @@ where
                         tracing::error!("   Cause by: {sid} received invalid {:?}", stop_sending);
                         return Err(QuicError::new(
                             ErrorKind::StreamState,
-                            stop_sending.frame_type(),
+                            stop_sending.frame_type().into(),
                             format!("remote {sid} must not send STOP_SENDING_FRAME"),
                         ));
                     }
@@ -448,7 +448,7 @@ where
                         );
                         return Err(QuicError::new(
                             ErrorKind::StreamState,
-                            max_stream_data.frame_type(),
+                            max_stream_data.frame_type().into(),
                             format!("remote {sid} must not send MAX_STREAM_DATA_FRAME"),
                         ));
                     }
@@ -480,7 +480,7 @@ where
                         );
                         return Err(QuicError::new(
                             ErrorKind::StreamState,
-                            stream_data_blocked.frame_type(),
+                            stream_data_blocked.frame_type().into(),
                             format!("local {sid} cannot receive STREAM_DATA_BLOCKED_FRAME"),
                         ));
                     }

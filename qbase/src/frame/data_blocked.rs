@@ -18,11 +18,13 @@ pub struct DataBlockedFrame {
 
 const DATA_BLOCKED_FRAME_TYPE: u8 = 0x14;
 
-impl super::BeFrame for DataBlockedFrame {
+impl super::GetFrameType for DataBlockedFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Crypto
     }
+}
 
+impl super::EncodeFrame for DataBlockedFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8
     }
@@ -62,7 +64,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<DataBlockedFrame> for T {
 mod tests {
     use super::{DATA_BLOCKED_FRAME_TYPE, DataBlockedFrame};
     use crate::{
-        frame::{BeFrame, FrameType, io::WriteFrame},
+        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
         varint::VarInt,
     };
 

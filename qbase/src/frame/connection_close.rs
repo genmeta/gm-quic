@@ -4,7 +4,7 @@ use nom::bytes::complete::take;
 
 use super::FrameType;
 use crate::{
-    error::ErrorKind,
+    error::{ErrorFrameType, ErrorKind},
     frame::be_frame_type,
     varint::{VarInt, be_varint},
 };
@@ -30,7 +30,7 @@ impl AppCloseFrame {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuicCloseFrame {
     error_kind: ErrorKind,
-    frame_type: FrameType,
+    frame_type: ErrorFrameType,
     reason: Cow<'static, str>,
 }
 
@@ -41,7 +41,7 @@ impl QuicCloseFrame {
     }
 
     /// Return the frame type of the frame.
-    pub fn frame_type(&self) -> FrameType {
+    pub fn frame_type(&self) -> ErrorFrameType {
         self.frame_type
     }
 
@@ -76,14 +76,16 @@ const CONNECTION_CLOSE_FRAME_TYPE: u8 = 0x1c;
 const QUIC_LAYER: u8 = 1;
 const APP_LAYER: u8 = 0;
 
-impl super::BeFrame for ConnectionCloseFrame {
+impl super::GetFrameType for ConnectionCloseFrame {
     fn frame_type(&self) -> FrameType {
         match self {
             ConnectionCloseFrame::App(_) => FrameType::ConnectionClose(APP_LAYER),
             ConnectionCloseFrame::Quic(_) => FrameType::ConnectionClose(QUIC_LAYER),
         }
     }
+}
 
+impl super::EncodeFrame for ConnectionCloseFrame {
     fn max_encoding_size(&self) -> usize {
         // reason's length could not exceed 16KB, so it can be encoded in 2 bytes.
         match self {
@@ -114,7 +116,7 @@ impl ConnectionCloseFrame {
     /// Create a new `ConnectionCloseFrame` at QUIC layer.
     pub fn new_quic(
         error_kind: ErrorKind,
-        frame_type: FrameType,
+        frame_type: ErrorFrameType,
         reason: impl Into<Cow<'static, str>>,
     ) -> Self {
         Self::Quic(QuicCloseFrame {
@@ -160,7 +162,7 @@ fn be_quic_close_frame(input: &[u8]) -> nom::IResult<&[u8], QuicCloseFrame> {
         remain,
         QuicCloseFrame {
             error_kind,
-            frame_type,
+            frame_type: frame_type.into(),
             reason: Cow::Owned(cow),
         },
     ))
@@ -216,7 +218,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<ConnectionCloseFrame> for T {
 mod tests {
     use crate::{
         error::ErrorKind,
-        frame::{BeFrame, FrameType, io::WriteFrame},
+        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
         varint::VarInt,
     };
 
@@ -269,7 +271,7 @@ mod tests {
         let mut buf = Vec::<u8>::new();
         let frame = super::ConnectionCloseFrame::new_quic(
             ErrorKind::FlowControl,
-            FrameType::Stream(0b110),
+            FrameType::Stream(0b110).into(),
             "wrong",
         );
         buf.put_frame(&frame);

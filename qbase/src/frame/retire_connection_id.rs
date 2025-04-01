@@ -18,11 +18,13 @@ pub struct RetireConnectionIdFrame {
 
 const RETIRE_CONNECTION_ID_FRAME_TYPE: u8 = 0x19;
 
-impl super::BeFrame for RetireConnectionIdFrame {
+impl super::GetFrameType for RetireConnectionIdFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::RetireConnectionId
     }
+}
 
+impl super::EncodeFrame for RetireConnectionIdFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8
     }
@@ -62,7 +64,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<RetireConnectionIdFrame> for T {
 mod tests {
     use super::{RetireConnectionIdFrame, be_retire_connection_id_frame};
     use crate::{
-        frame::{BeFrame, FrameType, io::WriteFrame},
+        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
         varint::VarInt,
     };
 

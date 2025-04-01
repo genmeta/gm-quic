@@ -9,8 +9,8 @@ use qbase::{
     Epoch,
     cid::{BorrowedCid, ConnectionId},
     frame::{
-        AckFrame, BeFrame, CryptoFrame, DatagramFrame, PathChallengeFrame, PathResponseFrame,
-        PingFrame, ReliableFrame, StreamFrame,
+        AckFrame, CryptoFrame, DatagramFrame, EncodeFrame, FrameFeture, PathChallengeFrame,
+        PathResponseFrame, PingFrame, ReliableFrame, StreamFrame,
         io::{WriteDataFrame, WriteFrame},
     },
     net::tx::{ArcSendWaker, Signals},
@@ -314,7 +314,7 @@ where
 
 impl<'b, F> MarshalFrame<F> for PacketBuffer<'b, '_, GuaranteedFrame>
 where
-    F: BeFrame + Into<ReliableFrame>,
+    F: EncodeFrame + FrameFeture + Into<ReliableFrame>,
     PacketWriter<'b>: WriteFrame<F>,
 {
     fn dump_frame(&mut self, frame: F) -> Option<F> {

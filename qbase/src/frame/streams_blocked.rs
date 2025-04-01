@@ -33,14 +33,16 @@ impl StreamsBlockedFrame {
     }
 }
 
-impl super::BeFrame for StreamsBlockedFrame {
+impl super::GetFrameType for StreamsBlockedFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::StreamsBlocked(match self {
             StreamsBlockedFrame::Bi(_) => 0,
             StreamsBlockedFrame::Uni(_) => 1,
         })
     }
+}
 
+impl super::EncodeFrame for StreamsBlockedFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8
     }
@@ -90,7 +92,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<StreamsBlockedFrame> for T {
 mod tests {
     use super::{STREAMS_BLOCKED_FRAME_TYPE, StreamsBlockedFrame};
     use crate::{
-        frame::{BeFrame, FrameType, io::WriteFrame},
+        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
         varint::VarInt,
     };
 

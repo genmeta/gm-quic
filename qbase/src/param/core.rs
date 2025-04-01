@@ -18,7 +18,7 @@ use crate::{
 fn parameter_error(id: ParameterId, ne: impl std::fmt::Display) -> Error {
     Error::new(
         ErrorKind::TransportParameter,
-        FrameType::Crypto,
+        FrameType::Crypto.into(),
         format!("parameter 0x{id:x}: {ne}"),
     )
 }
@@ -240,7 +240,7 @@ pub fn be_client_parameters(mut input: &[u8]) -> Result<ClientParameters, Error>
     fn map_nom_error(ne: impl ToString) -> Error {
         Error::new(
             ErrorKind::TransportParameter,
-            FrameType::Crypto,
+            FrameType::Crypto.into(),
             ne.to_string(),
         )
     }
@@ -367,7 +367,7 @@ pub fn be_server_parameters(mut input: &[u8]) -> Result<ServerParameters, Error>
     fn map_nom_error(ne: impl ToString) -> Error {
         Error::new(
             ErrorKind::TransportParameter,
-            FrameType::Crypto,
+            FrameType::Crypto.into(),
             ne.to_string(),
         )
     }

@@ -8,7 +8,7 @@ use std::{
 use bytes::{BufMut, Bytes};
 use qbase::{
     error::Error,
-    frame::{BeFrame, DatagramFrame},
+    frame::{DatagramFrame, EncodeFrame},
     net::tx::{ArcSendWakers, Signals},
     packet::MarshalDataFrame,
     varint::VarInt,
@@ -382,7 +382,7 @@ mod tests {
 
         outgoing.on_conn_error(&Error::new(
             ErrorKind::ProtocolViolation,
-            FrameType::Datagram(0),
+            FrameType::Datagram(0).into(),
             "test",
         ));
         let writer_guard = writer.writer.lock().unwrap();

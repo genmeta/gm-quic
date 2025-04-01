@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use bytes::{Buf, BufMut, Bytes};
+use derive_more::{Deref, DerefMut};
 use enum_dispatch::enum_dispatch;
 use io::WriteFrame;
 
@@ -19,7 +20,7 @@ mod max_streams;
 mod new_connection_id;
 mod new_token;
 mod padding;
-mod path_challenge;
+pub mod path_challenge;
 mod path_response;
 mod ping;
 mod reset_stream;
@@ -60,10 +61,13 @@ pub use streams_blocked::StreamsBlockedFrame;
 
 /// Define the basic behaviors for all kinds of frames
 #[enum_dispatch]
-pub trait BeFrame: Debug {
+pub trait GetFrameType: Debug {
     /// Return the type of frame
     fn frame_type(&self) -> FrameType;
+}
 
+#[enum_dispatch]
+pub trait EncodeFrame {
     /// Return the max number of bytes needed to encode this value
     ///
     /// Calculate the maximum size by summing up the maximum length of each field.
@@ -178,9 +182,32 @@ pub enum FrameType {
     Datagram(u8),
 }
 
-impl FrameType {
+#[enum_dispatch]
+pub trait FrameFeture {
     /// Return whether a frame type belongs to the given packet_type
-    pub fn belongs_to(&self, packet_type: Type) -> bool {
+    fn belongs_to(&self, packet_type: Type) -> bool;
+    /// Return the specs of the frame type
+    fn specs(&self) -> u8;
+    /// Return if the frame type is ack-eliciting
+    fn is_ack_eliciting(&self) -> bool;
+}
+
+impl<T: GetFrameType> FrameFeture for T {
+    fn belongs_to(&self, packet_type: Type) -> bool {
+        self.frame_type().belongs_to(packet_type)
+    }
+
+    fn specs(&self) -> u8 {
+        self.frame_type().specs()
+    }
+
+    fn is_ack_eliciting(&self) -> bool {
+        self.frame_type().is_ack_eliciting()
+    }
+}
+
+impl FrameFeture for FrameType {
+    fn belongs_to(&self, packet_type: Type) -> bool {
         use crate::packet::r#type::{
             long::{Type::V1, Ver1},
             short::OneRtt,
@@ -229,8 +256,7 @@ impl FrameType {
         }
     }
 
-    /// Return the specs of the frame type
-    pub fn specs(&self) -> u8 {
+    fn specs(&self) -> u8 {
         let (n, c, p, f) = (
             Spec::NonAckEliciting as u8,
             Spec::CongestionControlFree as u8,
@@ -251,8 +277,7 @@ impl FrameType {
         }
     }
 
-    /// Return if the frame type is ack-eliciting
-    pub fn is_ack_eliciting(&self) -> bool {
+    fn is_ack_eliciting(&self) -> bool {
         !matches!(
             self,
             Self::Padding | Self::Ack(..) | Self::ConnectionClose(..)
@@ -293,6 +318,7 @@ impl TryFrom<VarInt> for FrameType {
             // The last bit is the length flag bit, 0 the length field is absent and the Datagram Data
             // field extends to the end of the packet, 1 the length field is present.
             ty @ (0x30 | 0x31) => FrameType::Datagram(ty as u8 & 1),
+            // May be extension frame
             _ => return Err(Self::Error::InvalidType(frame_type)),
         })
     }
@@ -341,7 +367,7 @@ pub fn be_frame_type(input: &[u8]) -> nom::IResult<&[u8], FrameType, Error> {
 
 /// Sum type of all the stream related frames except [`StreamFrame`].
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame)]
+#[enum_dispatch(EncodeFrame, GetFrameType)]
 pub enum StreamCtlFrame {
     /// RESET_STREAM frame, see [`ResetStreamFrame`].
     ResetStream(ResetStreamFrame),
@@ -359,7 +385,7 @@ pub enum StreamCtlFrame {
 
 /// Sum type of all the reliable frames.
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(BeFrame)]
+#[enum_dispatch(EncodeFrame, GetFrameType)]
 pub enum ReliableFrame {
     /// NEW_TOKEN frame, see [`NewTokenFrame`].
     NewToken(NewTokenFrame),
@@ -461,7 +487,10 @@ pub trait ReceiveFrame<T> {
 }
 
 /// Reads frames from a buffer until the packet buffer is empty.
+#[derive(Deref, DerefMut)]
 pub struct FrameReader {
+    #[deref]
+    #[deref_mut]
     payload: Bytes,
     packet_type: Type,
 }
@@ -489,10 +518,7 @@ impl Iterator for FrameReader {
                 self.payload.advance(consumed);
                 Some(Ok((frame, frame_type)))
             }
-            Err(e) => {
-                self.payload.clear(); // no longer parsing
-                Some(Err(e))
-            }
+            Err(e) => Some(Err(e)),
         }
     }
 }
@@ -526,10 +552,19 @@ impl<T: BufMut> WriteFrame<ReliableFrame> for T {
 
 #[cfg(test)]
 mod tests {
+    use nom::Parser;
+
     use super::*;
-    use crate::packet::r#type::{
-        Type,
-        long::{Type::V1, Ver1},
+    use crate::{
+        packet::{
+            PacketContains,
+            r#type::{
+                Type,
+                long::{Type::V1, Ver1},
+                short::OneRtt,
+            },
+        },
+        varint::{WriteVarInt, be_varint},
     };
 
     #[test]
@@ -598,5 +633,111 @@ mod tests {
     #[test]
     fn test_invalid_frame_type() {
         assert!(FrameType::try_from(VarInt::from_u32(0xFF)).is_err());
+    }
+
+    #[test]
+    fn test_extetion_frame_type() {
+        use crate::varint::WriteVarInt;
+
+        #[derive(Debug, Clone, Eq, PartialEq)]
+        struct AddAddressFrame {
+            pub seq_num: VarInt,
+            pub tire: VarInt,
+            pub nat_type: VarInt,
+        }
+
+        fn be_add_address_frame(input: &[u8]) -> nom::IResult<&[u8], AddAddressFrame> {
+            use nom::{combinator::verify, sequence::preceded};
+            preceded(
+                verify(be_varint, |typ| typ == &VarInt::from_u32(0xff)),
+                (be_varint, be_varint, be_varint),
+            )
+            .map(|(seq_num, tire, nat_type)| AddAddressFrame {
+                seq_num,
+                tire,
+                nat_type,
+            })
+            .parse(input)
+        }
+
+        fn parse_address_frame(input: &[u8]) -> Result<(usize, AddAddressFrame), Error> {
+            let origin = input.len();
+            let (remain, frame) = be_add_address_frame(input).map_err(|_| {
+                Error::IncompleteType(format!("Incomplete frame type from input: {:?}", input))
+            })?;
+            let consumed = origin - remain.len();
+            Ok((consumed, frame))
+        }
+
+        impl<T: bytes::BufMut> super::io::WriteFrame<AddAddressFrame> for T {
+            fn put_frame(&mut self, frame: &AddAddressFrame) {
+                self.put_varint(&0xff_u32.into());
+                self.put_varint(&frame.seq_num);
+                self.put_varint(&frame.tire);
+                self.put_varint(&frame.nat_type);
+            }
+        }
+
+        let mut buf = bytes::BytesMut::new();
+        let add_address_frame = AddAddressFrame {
+            seq_num: VarInt::from_u32(0x01),
+            tire: VarInt::from_u32(0x02),
+            nat_type: VarInt::from_u32(0x03),
+        };
+        buf.put_frame(&add_address_frame);
+        buf.put_frame(&PaddingFrame);
+        buf.put_frame(&PaddingFrame);
+        buf.put_frame(&add_address_frame);
+        buf.put_varint(&0xfe_u32.into());
+        let mut padding_count = 0;
+        let mut add_address_count = 0;
+        let mut reader = FrameReader::new(buf.freeze(), Type::Short(OneRtt(0.into())));
+        loop {
+            match reader.next() {
+                Some(Ok((frame, typ))) => {
+                    assert!(matches!(frame, Frame::Padding(_)));
+                    assert_eq!(typ, FrameType::Padding);
+                    padding_count += 1;
+                }
+                Some(Err(_e)) => {
+                    // Parse Extension frame
+                    if let Ok((consum, frame)) = parse_address_frame(&reader) {
+                        reader.advance(consum);
+                        assert_eq!(frame, add_address_frame);
+                        add_address_count += 1;
+                    } else {
+                        reader.clear();
+                    }
+                }
+                None => break,
+            };
+        }
+        assert_eq!(padding_count, 2);
+        assert_eq!(add_address_count, 2);
+    }
+
+    #[test]
+    fn test_handless_extension_frame() {
+        let mut buf = bytes::BytesMut::new();
+        buf.put_frame(&PaddingFrame);
+        buf.put_frame(&PaddingFrame);
+        // error frame type
+        buf.put_varint(&0xfe_u32.into());
+        buf.put_frame(&PaddingFrame);
+
+        let mut padding_count = 0;
+        let _ = FrameReader::new(buf.freeze(), Type::Short(OneRtt(0.into()))).try_fold(
+            PacketContains::default(),
+            |packet_contains, frame| {
+                let (frame, frame_type) = frame?;
+
+                assert!(matches!(frame, Frame::Padding(_)));
+                assert_eq!(frame_type, FrameType::Padding);
+                padding_count += 1;
+                Result::<_, Error>::Ok(packet_contains)
+            },
+        );
+
+        assert_eq!(padding_count, 2);
     }
 }

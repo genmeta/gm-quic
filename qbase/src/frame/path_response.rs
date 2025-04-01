@@ -36,11 +36,13 @@ impl From<super::PathChallengeFrame> for PathResponseFrame {
 
 const PATH_RESPONSE_FRAME_TYPE: u8 = 0x1b;
 
-impl super::BeFrame for PathResponseFrame {
+impl super::GetFrameType for PathResponseFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::PathResponse
     }
+}
 
+impl super::EncodeFrame for PathResponseFrame {
     fn max_encoding_size(&self) -> usize {
         1 + self.data.len()
     }
@@ -67,7 +69,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PathResponseFrame> for T {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{BeFrame, FrameType, io::WriteFrame};
+    use crate::frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame};
 
     #[test]
     fn test_path_response_frame() {

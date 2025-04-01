@@ -13,11 +13,13 @@ pub struct PaddingFrame;
 
 const PADDING_FRAME_TYPE: u8 = 0x00;
 
-impl super::BeFrame for PaddingFrame {
+impl super::GetFrameType for PaddingFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Padding
     }
 }
+
+impl super::EncodeFrame for PaddingFrame {}
 
 /// Parse a PADDING frame from the input buffer,
 /// [nom](https://docs.rs/nom/latest/nom/) parser style.
@@ -35,7 +37,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<PaddingFrame> for T {
 #[cfg(test)]
 mod tests {
     use super::{PADDING_FRAME_TYPE, PaddingFrame, be_padding_frame};
-    use crate::frame::{BeFrame, FrameType, io::WriteFrame};
+    use crate::frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame};
 
     #[test]
     fn test_padding_frame() {

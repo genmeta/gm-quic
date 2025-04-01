@@ -28,11 +28,13 @@ pub struct CryptoFrame {
 
 const CRYPTO_FRAME_TYPE: u8 = 0x06;
 
-impl super::BeFrame for CryptoFrame {
+impl super::GetFrameType for CryptoFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::Crypto
     }
+}
 
+impl super::EncodeFrame for CryptoFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8 + 8
     }
@@ -128,7 +130,7 @@ where
 mod tests {
     use super::{CRYPTO_FRAME_TYPE, CryptoFrame};
     use crate::{
-        frame::{BeFrame, io::WriteDataFrame},
+        frame::{EncodeFrame, GetFrameType, io::WriteDataFrame},
         varint::VarInt,
     };
 

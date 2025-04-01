@@ -23,11 +23,13 @@ pub struct StreamDataBlockedFrame {
 
 const STREAM_DATA_BLOCKED_FRAME_TYPE: u8 = 0x15;
 
-impl super::BeFrame for StreamDataBlockedFrame {
+impl super::GetFrameType for StreamDataBlockedFrame {
     fn frame_type(&self) -> super::FrameType {
         super::FrameType::StreamDataBlocked
     }
+}
 
+impl super::EncodeFrame for StreamDataBlockedFrame {
     fn max_encoding_size(&self) -> usize {
         1 + 8 + 8
     }
@@ -83,7 +85,7 @@ impl<T: bytes::BufMut> super::io::WriteFrame<StreamDataBlockedFrame> for T {
 mod tests {
     use super::{STREAM_DATA_BLOCKED_FRAME_TYPE, StreamDataBlockedFrame};
     use crate::{
-        frame::{BeFrame, FrameType, io::WriteFrame},
+        frame::{EncodeFrame, FrameType, GetFrameType, io::WriteFrame},
         varint::VarInt,
     };
 

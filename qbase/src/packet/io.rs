@@ -330,11 +330,11 @@ pub struct FinalPacketLayout {
 
 impl<F> MarshalFrame<F> for PacketWriter<'_>
 where
-    F: BeFrame,
+    F: FrameFeture,
     Self: WriteFrame<F>,
 {
     fn dump_frame(&mut self, frame: F) -> Option<F> {
-        let specs = frame.frame_type().specs();
+        let specs = frame.specs();
         self.ack_eliciting |= !specs.contain(Spec::NonAckEliciting);
         self.in_flight |= !specs.contain(Spec::CongestionControlFree);
         self.probe_new_path |= specs.contain(Spec::ProbeNewPath);
@@ -345,7 +345,6 @@ where
 
 impl<F, D> MarshalDataFrame<F, D> for PacketWriter<'_>
 where
-    F: BeFrame,
     D: DescribeData,
     Self: WriteData<D> + WriteDataFrame<F, D>,
 {
