@@ -23,15 +23,16 @@ qconnection = { workspace = true }
 unreliable = ["qconnection/unreliable"]
 
 [dev-dependencies]
+indicatif = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 http = { workspace = true }
-rustls = { workspace = true, features = ["ring"] }
+rustls = { workspace = true, features = ["logging", "ring"] }
 tokio = { workspace = true, features = ["io-std", "fs"] }
 tracing = { workspace = true }
 
 [dev-dependencies.tracing-subscriber]
 workspace = true
-features = [ "env-filter", "time"]
+features = ["env-filter", "time"]
 
 [[example]]
 name = "h3-server"

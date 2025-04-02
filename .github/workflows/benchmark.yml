@@ -1,0 +1,61 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:  # Allows manual triggering
+  schedule:
+    - cron: '0 2 * * *'  # UTC 2:00 AM = Beijing 10:00 AM
+
+jobs:
+  linux-benchmark:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install latest stable
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y python3-matplotlib
+      - name: Run benchmarks
+        run: |
+          python3 benchmark/launch.py run
+      - name: Zip benchmark results
+        run: |
+          cd benchmark
+          zip -r benchmark-results.zip output/
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark/benchmark-results.zip
+
+  macos-benchmark:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install latest stable
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install matplotlib
+      - name: Run benchmarks
+        run: |
+          python3 benchmark/launch.py run
+      - name: Zip benchmark results
+        run: |
+          cd benchmark
+          zip -r benchmark-results.zip output/
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark/benchmark-results.zip

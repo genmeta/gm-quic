@@ -21,6 +21,7 @@ pub mod prelude {
 
     #[allow(unused_imports)]
     pub mod handy {
+        pub use qbase::{sid::handy::*, token::handy::*};
         pub use qinterface::handy::*;
     }
 
