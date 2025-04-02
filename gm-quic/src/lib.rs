@@ -3,7 +3,7 @@ use std::sync::{Arc, LazyLock};
 pub use qconnection::{
     builder::{
         ClientParameters, ConnectionId, ConsistentConcurrency, ControlStreamsConcurrency,
-        DemandConcurrency, NoopTokenRegistry, ServerParameters, TokenProvider, TokenSink,
+        ServerParameters, TokenProvider, TokenSink,
     },
     prelude::*,
 };

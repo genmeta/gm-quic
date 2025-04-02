@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, ops::Deref, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, ops::Deref, path::PathBuf, sync::Arc, time::Duration};
 
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
@@ -113,6 +113,7 @@ fn server_parameters() -> gm_quic::ServerParameters {
     params.set_initial_max_stream_data_uni(1u32 << 20);
     params.set_initial_max_stream_data_bidi_local(1u32 << 20);
     params.set_initial_max_stream_data_bidi_remote(1u32 << 20);
+    params.set_max_idle_timeout(Duration::from_secs(30));
 
     params
 }

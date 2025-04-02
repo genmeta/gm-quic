@@ -1,10 +1,9 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::path::PathBuf;
 
 use clap::Parser;
 use futures::future;
 use gm_quic::ToCertificate;
 use tokio::io::AsyncWriteExt;
-use tracing::{Instrument, info, info_span, trace};
 
 static ALPN: &[u8] = b"h3";
 
@@ -19,16 +18,18 @@ pub struct Options {
     )]
     pub ca: PathBuf,
 
-    #[structopt(long, short = 'b', default_value = "[::]:0")]
-    pub bind: Vec<SocketAddr>,
-
-    #[structopt(default_value = "https://localhost:4433/Cargo.lock")]
+    #[structopt(
+        default_value = "https://localhost:4433/Cargo.lock",
+        help = "URI to request"
+    )]
     pub uri: String,
 }
 
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
 #[cfg_attr(test, allow(unused))]
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
+async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stdout)
@@ -38,7 +39,7 @@ async fn main() -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
     run(Options::parse()).await
 }
 
-pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
+pub async fn run(options: Options) -> Result<()> {
     // DNS lookup
 
     let uri = options.uri.parse::<http::Uri>()?;
@@ -47,45 +48,33 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
     }
 
     let auth = uri.authority().ok_or("uri must have a host")?.clone();
-    let port = auth.port_u16().unwrap_or(443);
-    let addr = tokio::net::lookup_host((auth.host(), port))
+    let addr = tokio::net::lookup_host((auth.host(), auth.port_u16().unwrap_or(443)))
         .await?
         .next()
         .ok_or("dns found no addresses")?;
-    info!("resolved {:?} to address: {:?}", uri, addr);
+    tracing::info!("DNS lookup for {:?}: {:?}", auth.host(), addr);
 
     let mut roots = rustls::RootCertStore::empty();
     roots.add_parsable_certificates(options.ca.to_certificate());
 
-    trace!(bind = ?options.bind, "QuicClient");
     let quic_client = ::gm_quic::QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()
         .with_alpns([ALPN])
         .with_parameters(client_parameters())
-        .bind(&options.bind[..])?
         .build();
-    info!(%addr, "connect to server");
+    tracing::info!(%addr, "connect to server");
     let conn = quic_client.connect(auth.host(), addr)?;
-
-    // create h3 client
 
     let gm_quic_conn = h3_shim::QuicConnection::new(conn).await;
     let (mut conn, mut h3_client) = h3::client::new(gm_quic_conn).await?;
     let driver = async move {
         future::poll_fn(|cx| conn.poll_close(cx)).await?;
-        // tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        Ok::<_, Box<dyn std::error::Error + 'static + Send + Sync>>(())
+        Result::Ok(())
     };
 
-    // In the following block, we want to take ownership of `send_request`:
-    // the connection will be closed only when all `SendRequest`s instances
-    // are dropped.
-    //
-    //             So we "move" it.
-    //                  vvvv
     let request = async move {
-        info!(%uri, "request");
+        tracing::info!(%uri, "request");
 
         let request = http::Request::builder().uri(uri).body(())?;
 
@@ -96,7 +85,7 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
         stream.finish().await?;
 
         let response = stream.recv_response().await?;
-        info!(?response, "received");
+        tracing::info!(?response, "received");
 
         // `recv_data()` must be called after `recv_response()` for
         // receiving potential response body
@@ -104,16 +93,10 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
             tokio::io::stdout().write_all_buf(&mut chunk).await?;
         }
 
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        Ok::<_, Box<dyn std::error::Error + 'static + Send + Sync>>(())
-    }
-    .instrument(info_span!("request"));
+        Result::Ok(())
+    };
 
-    let derive = tokio::spawn(driver);
-    let request = tokio::spawn(request);
-
-    derive.await??;
-    request.await??;
+    tokio::try_join!(driver, request,)?;
 
     Ok(())
 }

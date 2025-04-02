@@ -43,5 +43,4 @@ name = "receive"
 path = "examples/receive.rs"
 
 [features]
-default = ["gso"]
 gso = []

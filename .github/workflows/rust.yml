@@ -19,7 +19,6 @@ jobs:
         with:
           toolchain: stable
           override: true
-          components: rustfmt
       - name: Build
         run: cargo build --verbose
       - name: Run tests
@@ -34,7 +33,6 @@ jobs:
         with:
           toolchain: stable
           override: true
-          components: rustfmt
       - name: Build
         run: cargo build --verbose
       - name: Run tests
@@ -49,7 +47,6 @@ jobs:
         with:
           toolchain: stable
           override: true
-          components: rustfmt
       - name: Build
         run: cargo build --verbose
       - name: Run tests
