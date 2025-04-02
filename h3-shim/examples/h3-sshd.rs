@@ -161,7 +161,7 @@ where
 
 #[tracing::instrument(skip_all)]
 async fn handle_request<T>(
-    _request: Request<()>,
+    request: Request<()>,
     mut stream: RequestStream<T, Bytes>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
@@ -169,6 +169,38 @@ where
     <T as h3::quic::BidiStream<bytes::Bytes>>::SendStream: Send + 'static,
     <T as h3::quic::BidiStream<bytes::Bytes>>::RecvStream: Send + 'static,
 {
+    if request.method() != http::Method::PUT {
+        let resp = http::Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .body(())?;
+        stream.send_response(resp).await?;
+        stream.finish().await?;
+        return Err("Method not allowed".into());
+    }
+    let path = request.uri().path();
+    let Some(username) = path.strip_prefix("/ssh/") else {
+        let resp = http::Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(())?;
+        stream.send_response(resp).await?;
+        stream.finish().await?;
+        return Err("No username".into());
+    };
+    // 权宜之计：密码放在query中，是不够安全的，因http的日志可能会记录下来
+    let password = request.uri().query().and_then(|q| {
+        q.split('&')
+            .find(|pair| pair.starts_with("password="))
+            .map(|pair| pair.split('=').nth(1).unwrap_or_default())
+    });
+    let Some(passwd) = password else {
+        let resp = http::Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body(())?;
+        stream.send_response(resp).await?;
+        stream.finish().await?;
+        return Err("No password".into());
+    };
+
     let resp = http::Response::builder().status(StatusCode::OK).body(())?;
     stream.send_response(resp).await?;
 
@@ -195,12 +227,20 @@ where
             libc::login_tty(slave);
 
             // 设置用户
-            let username = CString::new("luffy").unwrap();
-            let pw = libc::getpwnam(username.as_ptr());
+            let user = CString::new(username).unwrap();
+            let pw = libc::getpwnam(user.as_ptr());
             if pw.is_null() {
-                eprintln!("User not found");
+                println!("User not found");
                 libc::exit(1);
             }
+
+            // 暂且先用这种方式校验权限，这种方式不够安全
+            // 后续改成quic连接级的证书校验
+            if !verify_password(username, passwd) {
+                println!("Authentication failed");
+                libc::exit(1);
+            }
+
             // 设置补充组
             libc::initgroups((*pw).pw_name, (*pw).pw_gid as _);
             // 设置gid和uid
@@ -217,7 +257,7 @@ where
                 CString::new(home.as_bytes()).unwrap().as_ptr(),
                 1,
             );
-            libc::setenv(CString::new("USER").unwrap().as_ptr(), username.as_ptr(), 1);
+            libc::setenv(CString::new("USER").unwrap().as_ptr(), user.as_ptr(), 1);
             libc::setenv(
                 CString::new("SHELL").unwrap().as_ptr(),
                 CString::new(shell.as_bytes()).unwrap().as_ptr(),
@@ -228,12 +268,6 @@ where
             if libc::chdir((*pw).pw_dir) != 0 {
                 libc::exit(1);
             }
-
-            println!(
-                "当前用户: {}, 当前的shell: {}",
-                CStr::from_ptr((*pw).pw_name).to_str().unwrap(),
-                CStr::from_ptr((*pw).pw_shell).to_str().unwrap()
-            );
 
             // 执行shell
             let shell = CString::new(
@@ -406,4 +440,45 @@ where
         _ = read_task => {}
         _ = write_task => {}
     }
+}
+
+#[cfg(target_os = "linux")]
+fn verify_password(username: &str, password: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    use std::io::{BufRead, BufReader};
+
+    let mut password_hash = None;
+
+    // 读取 /etc/shadow 获取密码哈希
+    if let Ok(shadow_file) = File::open("/etc/shadow") {
+        let reader = BufReader::new(shadow_file);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                let fields: Vec<&str> = line.split(':').collect();
+                if fields.len() >= 2 && fields[0] == username {
+                    password_hash = Some(fields[1].to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    // 验证密码
+    if let Some(hash) = password_hash {
+        return pwhash::unix::verify(password, &hash);
+    }
+
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn verify_password(username: &str, password: &str) -> bool {
+    // macOS上可以使用`dscl`命令来验证密码
+    let mut auth = pam::Authenticator::with_password("login").expect("Init pam failed");
+    auth.get_handler().set_credentials(username, password);
+    if let Err(e) = auth.authenticate() {
+        println!("Authentication failed: {}", e);
+        return false;
+    }
+    true
 }
