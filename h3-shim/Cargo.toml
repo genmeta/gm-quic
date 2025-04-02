@@ -21,6 +21,10 @@ qconnection = { workspace = true }
 
 [features]
 unreliable = ["qconnection/unreliable"]
+unix-sshd = []
+
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.features]
+default = ["unix-sshd"]
 
 [dev-dependencies]
 libc = "0.2"
@@ -34,6 +38,12 @@ rustls = { workspace = true, features = ["logging", "ring"] }
 tokio = { workspace = true, features = ["io-std", "fs"] }
 tracing = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+pam = "0.7"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+pwhash = "1"
+
 [dev-dependencies.tracing-subscriber]
 workspace = true
 features = ["env-filter", "time"]
@@ -46,6 +56,7 @@ name = "h3-client"
 
 [[example]]
 name = "h3-sshd"
+required-features = ["unix-sshd"]
 
 [[example]]
 name = "h3-ssh"

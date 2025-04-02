@@ -7,8 +7,7 @@ use crossterm::{
     execute,
     terminal::{self},
 };
-use futures::{SinkExt, channel::mpsc};
-use futures::{StreamExt, future};
+use futures::{SinkExt, StreamExt, channel::mpsc, future};
 use gm_quic::ToCertificate;
 use serde::{Deserialize, Serialize};
 use tracing::{info, trace};
@@ -34,13 +33,22 @@ pub struct Options {
         default_value = "h3-shim/examples/ca.cert",
         help = "Certificate of CA who issues the server certificate"
     )]
-    pub ca: PathBuf,
+    ca: PathBuf,
 
     #[structopt(long, short = 'b', default_value = "[::]:0")]
-    pub bind: Vec<SocketAddr>,
+    bind: Vec<SocketAddr>,
+    #[structopt(long, short = 'H', help = "host:port")]
+    host: String,
 
-    #[structopt(default_value = "https://localhost:4433/Cargo.lock")]
-    pub uri: String,
+    #[structopt(long, short = 'u', help = "Username for SSH authentication")]
+    username: String,
+    #[structopt(
+        long,
+        short = 'p',
+        default_value = None,
+        help = "Password for SSH authentication"
+    )]
+    password: Option<String>,
 }
 
 #[cfg_attr(test, allow(unused))]
@@ -177,37 +185,19 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
         }
     });
 
-    // 启动窗口大小监控任务
-    /*
-    let window_size = Arc::new(Mutex::new((80, 40)));
-    let window_task = {
-        let mut tx = tx.clone();
-        let window_size_clone = window_size.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(100));
-            loop {
-                interval.tick().await;
-                let current_size = terminal::size().unwrap();
-                let prev_size = *window_size_clone.lock().unwrap();
-                if current_size != prev_size {
-                    let (cols, rows) = current_size;
-                    tx.send(TerminalMessage::WindowSize {
-                        rows: rows as u16,
-                        cols: cols as u16,
-                    })
-                    .await
-                    .unwrap();
-                    *window_size_clone.lock().unwrap() = current_size;
-                }
-            }
-        })
-    };
-    */
-
-    let uri = options.uri.parse::<http::Uri>()?;
-    if uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
-        return Err("uri scheme must be 'https'")?;
-    }
+    let path_and_query = format!(
+        "/ssh/{}{}",
+        options.username,
+        options
+            .password
+            .map_or("".to_string(), |p| format!("?password={}", p)),
+    );
+    let uri = http::Uri::builder()
+        .scheme("https")
+        .authority(options.host)
+        .path_and_query(path_and_query)
+        .build()
+        .map_err(|e| format!("failed to build uri: {}", e))?;
 
     let auth = uri.authority().ok_or("uri must have a host")?.clone();
     let port = auth.port_u16().unwrap_or(443);
@@ -233,7 +223,6 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
     let conn = quic_client.connect(auth.host(), addr)?;
 
     // create h3 client
-
     let gm_quic_conn = h3_shim::QuicConnection::new(conn).await;
     let (mut conn, mut h3_client) = h3::client::new(gm_quic_conn).await?;
     let conn_close_monitor = async move {
