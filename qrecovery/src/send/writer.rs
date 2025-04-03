@@ -170,10 +170,21 @@ impl<TX> Drop for Writer<TX> {
         let mut sender = self.0.sender();
         let inner = sender.deref_mut();
         if let Ok(sending_state) = inner {
-            debug_assert!(
-                !matches!(sending_state, Sender::Ready(_) | Sender::Sending(_)),
-                "SendingStream must be closed gracefully or cancelled before dropped!"
-            );
+            match sending_state {
+                Sender::Ready(s) => {
+                    tracing::warn!(
+                        "The sending {} is not closed before dropped!",
+                        s.stream_id(),
+                    );
+                }
+                Sender::Sending(s) => {
+                    tracing::warn!(
+                        "The sending {} is not closed before dropped!",
+                        s.stream_id(),
+                    );
+                }
+                _ => (),
+            }
         };
     }
 }
