@@ -18,8 +18,8 @@ pub async fn main() -> io::Result<()> {
     let server = gm_quic::QuicServer::builder()
         .without_client_cert_verifier()
         .with_single_cert(
-            include_bytes!("keychain/localhost/server.cert"),
-            include_bytes!("keychain/localhost/server.key"),
+            include_bytes!("../../test/keychain/localhost/server.cert"),
+            include_bytes!("../../test/keychain/localhost/server.key"),
         )
         .with_parameters(server_stream_unlimited_parameters())
         .listen(Options::parse().bind)?;

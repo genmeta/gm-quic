@@ -19,7 +19,9 @@ pub async fn main() -> io::Result<()> {
     let server_addr = Options::parse().server;
 
     let mut roots = RootCertStore::empty();
-    roots.add_parsable_certificates(include_bytes!("keychain/localhost/ca.cert").to_certificate());
+    roots.add_parsable_certificates(
+        include_bytes!("../../test/keychain/localhost/ca.cert").to_certificate(),
+    );
 
     let client = gm_quic::QuicClient::builder()
         .with_root_certificates(roots)
