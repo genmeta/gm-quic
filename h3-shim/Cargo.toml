@@ -23,7 +23,7 @@ qconnection = { workspace = true }
 unreliable = ["qconnection/unreliable"]
 unix-sshd = []
 
-[target.'cfg(any(target_os = "macos", target_os = "linux"))'.features]
+[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.features]
 default = ["unix-sshd"]
 
 [dev-dependencies]
@@ -42,7 +42,7 @@ tracing = { workspace = true }
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 pam = "0.7"
 
-[target.'cfg(target_os = "linux")'.dev-dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dev-dependencies]
 pwhash = "1"
 
 [dev-dependencies.tracing-subscriber]
