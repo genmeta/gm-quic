@@ -177,28 +177,50 @@ where
         stream.finish().await?;
         return Err("Method not allowed".into());
     }
-    let path = request.uri().path();
-    let Some(username) = path.strip_prefix("/ssh/") else {
+    // 从 Authorization 头获取认证信息
+    let auth_header = match request.headers().get("Authorization") {
+        Some(value) => value.to_str().unwrap_or_default(),
+        None => {
+            let resp = http::Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(())?;
+            stream.send_response(resp).await?;
+            stream.finish().await?;
+            return Err("Missing Authorization header".into());
+        }
+    };
+
+    // 解析 Basic Auth
+    use base64::Engine;
+    let credentials = match auth_header.strip_prefix("Basic ") {
+        Some(b64) => match base64::engine::general_purpose::STANDARD.decode(b64) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            Err(_) => {
+                let resp = http::Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(())?;
+                stream.send_response(resp).await?;
+                stream.finish().await?;
+                return Err("Invalid Authorization header".into());
+            }
+        },
+        None => {
+            let resp = http::Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(())?;
+            stream.send_response(resp).await?;
+            stream.finish().await?;
+            return Err("Invalid Authorization header".into());
+        }
+    };
+
+    let Some((username, password)) = credentials.split_once(':') else {
         let resp = http::Response::builder()
             .status(StatusCode::BAD_REQUEST)
             .body(())?;
         stream.send_response(resp).await?;
         stream.finish().await?;
-        return Err("No username".into());
-    };
-    // 权宜之计：密码放在query中，是不够安全的，因http的日志可能会记录下来
-    let password = request.uri().query().and_then(|q| {
-        q.split('&')
-            .find(|pair| pair.starts_with("password="))
-            .map(|pair| pair.split('=').nth(1).unwrap_or_default())
-    });
-    let Some(passwd) = password else {
-        let resp = http::Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .body(())?;
-        stream.send_response(resp).await?;
-        stream.finish().await?;
-        return Err("No password".into());
+        return Err("Invalid Authorization header".into());
     };
 
     let resp = http::Response::builder().status(StatusCode::OK).body(())?;
@@ -236,7 +258,7 @@ where
 
             // 暂且先用这种方式校验权限，这种方式不够安全
             // 后续改成quic连接级的证书校验
-            if !verify_password(username, passwd) {
+            if !verify_password(username, password) {
                 println!("Authentication failed");
                 libc::exit(1);
             }

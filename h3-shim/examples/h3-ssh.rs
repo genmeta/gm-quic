@@ -42,13 +42,8 @@ pub struct Options {
 
     #[structopt(long, short = 'u', help = "Username for SSH authentication")]
     username: String,
-    #[structopt(
-        long,
-        short = 'p',
-        default_value = None,
-        help = "Password for SSH authentication"
-    )]
-    password: Option<String>,
+    #[structopt(long, short = 'p', help = "Password for SSH authentication")]
+    password: String,
 }
 
 #[cfg_attr(test, allow(unused))]
@@ -185,19 +180,18 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
         }
     });
 
-    let path_and_query = format!(
-        "/ssh/{}{}",
-        options.username,
-        options
-            .password
-            .map_or("".to_string(), |p| format!("?password={}", p)),
-    );
     let uri = http::Uri::builder()
         .scheme("https")
         .authority(options.host)
-        .path_and_query(path_and_query)
+        .path_and_query("/ssh")
         .build()
         .map_err(|e| format!("failed to build uri: {}", e))?;
+
+    // 构建 Basic Auth 头
+    use base64::Engine;
+    let credentials = format!("{}:{}", options.username, options.password);
+    let b64_encoded = base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes());
+    let auth_header = format!("Basic {}", b64_encoded);
 
     let auth = uri.authority().ok_or("uri must have a host")?.clone();
     let port = auth.port_u16().unwrap_or(443);
@@ -232,7 +226,11 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
     };
 
     info!(%uri, "request");
-    let request = http::Request::builder().method("PUT").uri(uri).body(())?;
+    let request = http::Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header("Authorization", auth_header)
+        .body(())?;
 
     // sending request results in a bidirectional stream,
     // which is also used for receiving response
