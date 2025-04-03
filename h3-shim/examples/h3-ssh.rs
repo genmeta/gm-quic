@@ -1,4 +1,4 @@
-use std::{io::Write, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{io::Write, path::PathBuf, time::Duration};
 
 use bytes::Buf;
 use clap::Parser;
@@ -10,7 +10,7 @@ use crossterm::{
 use futures::{SinkExt, StreamExt, channel::mpsc, future};
 use gm_quic::ToCertificate;
 use serde::{Deserialize, Serialize};
-use tracing::{info, trace};
+use tracing::info;
 
 static ALPN: &[u8] = b"h3";
 
@@ -35,14 +35,12 @@ pub struct Options {
     )]
     ca: PathBuf,
 
-    #[structopt(long, short = 'b', default_value = "[::]:0")]
-    bind: Vec<SocketAddr>,
     #[structopt(long, short = 'H', help = "host:port")]
     host: String,
 
-    #[structopt(long, short = 'u', help = "Username for SSH authentication")]
+    #[structopt(long, short, help = "Username for SSH authentication")]
     username: String,
-    #[structopt(long, short = 'p', help = "Password for SSH authentication")]
+    #[structopt(long, short, help = "Password for SSH authentication")]
     password: String,
 }
 
@@ -59,11 +57,6 @@ async fn main() -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
 }
 
 pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
-    // DNS lookup
-    // 初始化终端
-    // execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
-    terminal::enable_raw_mode()?;
-
     // 创建通道用于异步通信
     let (tx, mut rx) = mpsc::channel::<TerminalMessage>(32);
 
@@ -204,16 +197,14 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
     let mut roots = rustls::RootCertStore::empty();
     roots.add_parsable_certificates(options.ca.to_certificate());
 
-    trace!(bind = ?options.bind, "QuicClient");
     let quic_client = ::gm_quic::QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()
         .with_alpns([ALPN])
         .with_parameters(client_parameters())
         .enable_sslkeylog()
-        .bind(&options.bind[..])?
         .build();
-    info!(%addr, "connect to server");
+    info!(server_name = auth.host(), %addr, "connect to server");
     let conn = quic_client.connect(auth.host(), addr)?;
 
     // create h3 client
@@ -237,6 +228,10 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
     let mut stream = h3_client.send_request(request).await?;
     let response = stream.recv_response().await?;
     info!(?response, "received");
+
+    // 初始化终端
+    // execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+    terminal::enable_raw_mode()?;
 
     let (mut sender, mut receiver) = stream.split();
     // read from stdin and write to the stream

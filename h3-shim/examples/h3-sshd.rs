@@ -76,9 +76,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run(Options::parse()).await
 }
 
-pub async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // OPTIONS.set(options);
-    info!("serving {}", options.root.display());
     let Certs {
         server_name,
         cert,
@@ -458,15 +457,26 @@ where
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd"
+))]
 fn verify_password(username: &str, password: &str) -> bool {
     #[cfg(target_os = "linux")]
     use std::io::{BufRead, BufReader};
 
     let mut password_hash = None;
+    // 读取 /etc/shadow 或 /etc/master.passwd (BSD systems)
+    let shadow_path = if cfg!(target_os = "linux") {
+        "/etc/shadow"
+    } else {
+        "/etc/master.passwd" // BSD systems use master.passwd
+    };
 
     // 读取 /etc/shadow 获取密码哈希
-    if let Ok(shadow_file) = File::open("/etc/shadow") {
+    if let Ok(shadow_file) = File::open(shadow_path) {
         let reader = BufReader::new(shadow_file);
         for line in reader.lines() {
             if let Ok(line) = line {
