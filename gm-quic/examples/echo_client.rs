@@ -2,6 +2,7 @@ use std::{io, net::SocketAddr};
 
 use clap::Parser;
 use gm_quic::ToCertificate;
+use qconnection::prelude::handy::client_parameters;
 use rustls::RootCertStore;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tracing::info;
@@ -20,13 +21,13 @@ pub async fn main() -> io::Result<()> {
 
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(
-        include_bytes!("../../test/keychain/localhost/ca.cert").to_certificate(),
+        include_bytes!("../../tests/keychain/localhost/ca.cert").to_certificate(),
     );
 
     let client = gm_quic::QuicClient::builder()
         .with_root_certificates(roots)
         .without_cert()
-        .with_parameters(client_stream_unlimited_parameters())
+        .with_parameters(client_parameters())
         .build();
 
     let connection = client.connect("localhost", server_addr)?;
@@ -52,17 +53,4 @@ pub async fn main() -> io::Result<()> {
         reader.read_to_string(&mut echo).await?;
         info!("server echoed: `{echo}`");
     }
-}
-
-fn client_stream_unlimited_parameters() -> gm_quic::ClientParameters {
-    let mut params = gm_quic::ClientParameters::default();
-
-    params.set_initial_max_streams_bidi(100u32);
-    params.set_initial_max_streams_uni(100u32);
-    params.set_initial_max_data(1u32 << 20);
-    params.set_initial_max_stream_data_uni(1u32 << 20);
-    params.set_initial_max_stream_data_bidi_local(1u32 << 20);
-    params.set_initial_max_stream_data_bidi_remote(1u32 << 20);
-
-    params
 }

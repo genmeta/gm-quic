@@ -1,9 +1,8 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
-use gm_quic::QuicClient;
-use rustls::pki_types::{CertificateDer, pem::PemObject};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use gm_quic::{QuicClient, ToCertificate, handy::client_parameters};
+use tokio::io::AsyncWriteExt;
 
 /// cargo run --example client -- \
 ///     --domain quit.test.net \
@@ -18,8 +17,8 @@ struct Options {
     addr: SocketAddr,
     #[clap(long, required = true)]
     root: PathBuf,
-    #[arg(long, default_value = "0.0.0.0:0")]
-    bind: SocketAddr,
+    #[arg(long, default_values = ["0.0.0.0:0", "[::1]:0"])]
+    bind: Vec<SocketAddr>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -32,26 +31,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut root_cert_store = rustls::RootCertStore::empty();
-
-    let root = std::fs::read(options.root).expect("failed to read certificate file");
-    let root_cert = match CertificateDer::from_pem_slice(&root) {
-        Ok(root_cert) => vec![root_cert],
-        Err(_) => vec![CertificateDer::from(root)],
-    };
-
-    root_cert_store.add_parsable_certificates(root_cert);
+    root_cert_store.add_parsable_certificates(options.root.to_certificate());
 
     let client = QuicClient::builder()
-        .bind(options.bind)?
+        .bind(options.bind.as_slice())?
         .reuse_connection()
         .prefer_versions([0x00000001u32])
         .with_root_certificates(Arc::new(root_cert_store))
         .without_cert()
+        .with_parameters(client_parameters())
+        .with_alpns([b"hq-29" as &[u8]])
         .enable_sslkeylog()
-        .with_alpns([b"hq-29".as_ref()].iter().map(|s| s.to_vec()))
         .build();
 
-    let quic_conn = client.connect(options.domain, options.addr).unwrap();
+    let quic_conn = client
+        .connect(options.domain.clone(), options.addr)
+        .unwrap();
     loop {
         let mut input = String::new();
         _ = std::io::stdin().read_line(&mut input).unwrap();
@@ -66,23 +61,23 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
+        eprintln!("Sending request");
         let (_sid, (mut stream_reader, mut stream_writer)) = quic_conn
             .open_bi_stream()
             .await?
             .expect("very very hard to exhaust the available stream ids");
-        tokio::spawn(async move {
-            // 模拟发送一个请求
-            let request = format!("GET {}\r\n", input.trim());
-            eprintln!("Request: {request}");
-            stream_writer.write_all(request.as_bytes()).await.unwrap();
-            stream_writer.shutdown().await.unwrap();
+        // 模拟发送一个请求
+        let request = format!("GET /{content}");
+        eprintln!("Request: \n{request}");
+        stream_writer.write_all(request.as_bytes()).await.unwrap();
+        stream_writer.shutdown().await.unwrap();
 
-            // 读取响应
-            let mut response = String::new();
-            let n = stream_reader.read_to_string(&mut response).await?;
-            eprintln!("Response {n} bytes: {response}");
-            Ok::<(), std::io::Error>(())
-        });
+        // 读取响应
+        eprintln!("Response: \n");
+        tokio::io::copy(&mut stream_reader, &mut tokio::io::stdout())
+            .await
+            .unwrap();
+        eprintln!("\nResponse end");
     }
     Ok(())
 }

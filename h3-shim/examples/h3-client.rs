@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use futures::future;
-use gm_quic::ToCertificate;
+use gm_quic::{ToCertificate, handy::client_parameters};
 use tokio::io::AsyncWriteExt;
 
 static ALPN: &[u8] = b"h3";
@@ -99,17 +99,4 @@ pub async fn run(options: Options) -> Result<()> {
     tokio::try_join!(driver, request,)?;
 
     Ok(())
-}
-
-fn client_parameters() -> gm_quic::ClientParameters {
-    let mut params = gm_quic::ClientParameters::default();
-
-    params.set_initial_max_streams_bidi(100u32);
-    params.set_initial_max_streams_uni(100u32);
-    params.set_initial_max_data(1u32 << 20);
-    params.set_initial_max_stream_data_uni(1u32 << 20);
-    params.set_initial_max_stream_data_bidi_local(1u32 << 20);
-    params.set_initial_max_stream_data_bidi_remote(1u32 << 20);
-
-    params
 }

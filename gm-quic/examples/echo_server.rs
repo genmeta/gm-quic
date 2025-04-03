@@ -1,6 +1,7 @@
 use std::{io, net::SocketAddr, sync::Arc};
 
 use clap::Parser;
+use qconnection::prelude::handy::server_parameters;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{Instrument, info, info_span};
 
@@ -18,10 +19,10 @@ pub async fn main() -> io::Result<()> {
     let server = gm_quic::QuicServer::builder()
         .without_client_cert_verifier()
         .with_single_cert(
-            include_bytes!("../../test/keychain/localhost/server.cert"),
-            include_bytes!("../../test/keychain/localhost/server.key"),
+            include_bytes!("../../tests/keychain/localhost/server.cert"),
+            include_bytes!("../../tests/keychain/localhost/server.key"),
         )
-        .with_parameters(server_stream_unlimited_parameters())
+        .with_parameters(server_parameters())
         .listen(Options::parse().bind)?;
 
     info!("listen on {:?}", server.addresses());
@@ -29,19 +30,6 @@ pub async fn main() -> io::Result<()> {
     launch(server).await?;
 
     Ok(())
-}
-
-pub fn server_stream_unlimited_parameters() -> gm_quic::ServerParameters {
-    let mut params = gm_quic::ServerParameters::default();
-
-    params.set_initial_max_streams_bidi(100u32);
-    params.set_initial_max_streams_uni(100u32);
-    params.set_initial_max_data(1u32 << 20);
-    params.set_initial_max_stream_data_uni(1u32 << 20);
-    params.set_initial_max_stream_data_bidi_local(1u32 << 20);
-    params.set_initial_max_stream_data_bidi_remote(1u32 << 20);
-
-    params
 }
 
 #[tracing::instrument(name = "server_listen", skip(server), ret)]

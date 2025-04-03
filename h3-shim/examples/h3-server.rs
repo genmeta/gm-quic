@@ -1,7 +1,8 @@
-use std::{net::SocketAddr, ops::Deref, path::PathBuf, sync::Arc, time::Duration};
+use std::{net::SocketAddr, ops::Deref, path::PathBuf, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
+use gm_quic::handy::server_parameters;
 use h3::{error::ErrorLevel, quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
 use tokio::{fs::File, io::AsyncReadExt};
@@ -107,20 +108,6 @@ pub async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Sen
     Ok(())
 }
 
-fn server_parameters() -> gm_quic::ServerParameters {
-    let mut params = gm_quic::ServerParameters::default();
-
-    params.set_initial_max_streams_bidi(100u32);
-    params.set_initial_max_streams_uni(100u32);
-    params.set_initial_max_data(1u32 << 20);
-    params.set_initial_max_stream_data_uni(1u32 << 20);
-    params.set_initial_max_stream_data_bidi_local(1u32 << 20);
-    params.set_initial_max_stream_data_bidi_remote(1u32 << 20);
-    params.set_max_idle_timeout(Duration::from_secs(30));
-
-    params
-}
-
 async fn handle_connection<T>(
     serve_root: Arc<PathBuf>,
     mut connection: h3::server::Connection<T, Bytes>,
@@ -186,4 +173,12 @@ where
 
     stream.finish().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_name() {}
 }

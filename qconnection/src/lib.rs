@@ -21,7 +21,7 @@ pub mod prelude {
 
     #[allow(unused_imports)]
     pub mod handy {
-        pub use qbase::{sid::handy::*, token::handy::*};
+        pub use qbase::{param::handy::*, sid::handy::*, token::handy::*};
         pub use qinterface::handy::*;
     }
 
@@ -177,10 +177,6 @@ impl Components {
     pub fn del_path(&self, pathway: &Pathway) {
         self.paths.remove(pathway, "application removed");
     }
-
-    pub fn origin_dcid(&self) -> io::Result<cid::ConnectionId> {
-        Ok(self.parameters.get_origin_dcid()?)
-    }
 }
 
 type ConnectionState = RwLock<Result<Components, Termination>>;
@@ -281,7 +277,7 @@ impl Connection {
     }
 
     pub fn origin_dcid(&self) -> io::Result<cid::ConnectionId> {
-        self.try_map_components(|core_conn| core_conn.origin_dcid())?
+        self.try_map_components(|core_conn| Ok(core_conn.parameters.get_origin_dcid()?))?
     }
 }
 

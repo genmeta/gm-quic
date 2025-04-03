@@ -3,26 +3,12 @@ mod echo_server {
     include!("../examples/echo_server.rs");
 }
 
-fn client_stream_unlimited_parameters() -> crate::ClientParameters {
-    let mut params = crate::ClientParameters::default();
-
-    params.set_initial_max_streams_bidi(100u32);
-    params.set_initial_max_streams_uni(100u32);
-    params.set_initial_max_data(1u32 << 20);
-    params.set_initial_max_stream_data_uni(1u32 << 20);
-    params.set_initial_max_stream_data_bidi_local(1u32 << 20);
-    params.set_initial_max_stream_data_bidi_remote(1u32 << 20);
-
-    params
-}
-
 use std::{
     io,
     sync::{Arc, LazyLock},
     time::Duration,
 };
 
-use echo_server::server_stream_unlimited_parameters;
 use qlog::telemetry::{Log, handy::*};
 use rustls::RootCertStore;
 use tokio::{
@@ -31,7 +17,10 @@ use tokio::{
 };
 use tracing::{debug, error, info, info_span};
 
-use crate::ToCertificate;
+use crate::{
+    ToCertificate,
+    handy::{client_parameters, server_parameters},
+};
 
 static LOGGER: LazyLock<Arc<dyn Log + Send + Sync>> = LazyLock::new(|| {
     Arc::new(DefaultSeqLogger::new(std::path::PathBuf::from(
@@ -67,10 +56,10 @@ async fn parallel_stream() -> io::Result<()> {
     let server = crate::QuicServer::builder()
         .without_client_cert_verifier()
         .with_single_cert(
-            include_bytes!("../../test/keychain/localhost/server.cert"),
-            include_bytes!("../../test/keychain/localhost/server.key"),
+            include_bytes!("../../tests/keychain/localhost/server.cert"),
+            include_bytes!("../../tests/keychain/localhost/server.key"),
         )
-        .with_parameters(server_stream_unlimited_parameters())
+        .with_parameters(server_parameters())
         .with_qlog(LOGGER.clone())
         .listen("0.0.0.0:0")?;
 
@@ -80,14 +69,14 @@ async fn parallel_stream() -> io::Result<()> {
 
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(
-        include_bytes!("../../test/keychain/localhost/ca.cert").to_certificate(),
+        include_bytes!("../../tests/keychain/localhost/ca.cert").to_certificate(),
     );
 
     let client = Arc::new(
         crate::QuicClient::builder()
             .with_root_certificates(roots)
             .without_cert()
-            .with_parameters(client_stream_unlimited_parameters())
+            .with_parameters(client_parameters())
             .with_qlog(LOGGER.clone())
             .build(),
     );
@@ -185,8 +174,8 @@ async fn limited_streams() -> io::Result<()> {
     let server = crate::QuicServer::builder()
         .without_client_cert_verifier()
         .with_single_cert(
-            include_bytes!("../../test/keychain/localhost/server.cert"),
-            include_bytes!("../../test/keychain/localhost/server.key"),
+            include_bytes!("../../tests/keychain/localhost/server.cert"),
+            include_bytes!("../../tests/keychain/localhost/server.key"),
         )
         .with_parameters(server_stream_limited_parameters())
         .with_qlog(LOGGER.clone())
@@ -198,7 +187,7 @@ async fn limited_streams() -> io::Result<()> {
 
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(
-        include_bytes!("../../test/keychain/localhost/ca.cert").to_certificate(),
+        include_bytes!("../../tests/keychain/localhost/ca.cert").to_certificate(),
     );
 
     let client = Arc::new(
@@ -264,8 +253,8 @@ async fn disable_keep_alive() {
     let server = crate::QuicServer::builder()
         .without_client_cert_verifier()
         .with_single_cert(
-            include_bytes!("../../test/keychain/localhost/server.cert"),
-            include_bytes!("../../test/keychain/localhost/server.key"),
+            include_bytes!("../../tests/keychain/localhost/server.cert"),
+            include_bytes!("../../tests/keychain/localhost/server.key"),
         )
         // .defer_idle_timeout(disabled_keep_alive)
         .with_parameters(parameters)
@@ -277,7 +266,7 @@ async fn disable_keep_alive() {
 
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(
-        include_bytes!("../../test/keychain/localhost/ca.cert").to_certificate(),
+        include_bytes!("../../tests/keychain/localhost/ca.cert").to_certificate(),
     );
     let client = Arc::new(
         crate::QuicClient::builder()
@@ -309,8 +298,8 @@ async fn enable_keep_alive() {
     let server = crate::QuicServer::builder()
         .without_client_cert_verifier()
         .with_single_cert(
-            include_bytes!("../../test/keychain/localhost/server.cert"),
-            include_bytes!("../../test/keychain/localhost/server.key"),
+            include_bytes!("../../tests/keychain/localhost/server.cert"),
+            include_bytes!("../../tests/keychain/localhost/server.key"),
         )
         .with_parameters(parameters)
         .with_qlog(LOGGER.clone())
@@ -321,7 +310,7 @@ async fn enable_keep_alive() {
 
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(
-        include_bytes!("../../test/keychain/localhost/ca.cert").to_certificate(),
+        include_bytes!("../../tests/keychain/localhost/ca.cert").to_certificate(),
     );
     let client = Arc::new(
         crate::QuicClient::builder()

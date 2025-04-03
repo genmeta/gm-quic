@@ -1,0 +1,28 @@
+[package]
+name = "interop"
+version.workspace = true
+edition.workspace = true
+readme.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "client"
+path = "src/client.rs"
+
+[[bin]]
+name = "server"
+path = "src/server.rs"
+
+[dependencies]
+bytes = { workspace = true }
+gm-quic = { workspace = true }
+h3 = { workspace = true }
+h3-shim = { workspace = true }
+http = { workspace = true }
+rustls = { workspace = true, features = ["ring", "logging"] }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

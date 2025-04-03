@@ -11,6 +11,7 @@ members = [
     "qconnection",
     "gm-quic",
     "h3-shim",
+    "interop",     # https://github.com/quic-interop/quic-interop-runner
 ]
 default-members = [
     "qbase",
@@ -20,6 +21,8 @@ default-members = [
     "qinterface",
     "qconnection",
     "gm-quic",
+    "h3-shim",
+
 ]
 
 [workspace.package]
@@ -55,15 +58,16 @@ tracing = "0.1"
 
 # h3 for h3-shim only , windows-sys, nix and libc for qudp only
 # they are not the default members of the workspace
-# h3 = "?"
 # windows-sys = "?"
 # libc = "0.2"
 # nix = "?"
 
 # dev-dependencies, for examples
-indicatif = { version = "0.17", features = ["tokio"] }
 clap = { version = "4", features = ["derive"] }
+h3 = "0.0.7"
+h3-datagram = "0.0.1"
 http = "1"
+indicatif = { version = "0.17", features = ["tokio"] }
 tracing-subscriber = "0.3"
 
 # members
@@ -76,6 +80,8 @@ qudp = { path = "./qudp", version = "0.1.0" }
 qinterface = { path = "./qinterface", version = "0.1.0" }
 qunreliable = { path = "./qunreliable", version = "0.1.0" }
 gm-quic = { path = "./gm-quic", version = "0.1.0" }
+h3-shim = { path = "./h3-shim", version = "0.1.0" }
+
 
 [profile.bench]
 debug = true
