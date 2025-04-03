@@ -147,11 +147,21 @@ impl<TX> Drop for Reader<TX> {
         let mut recver = self.0.recver();
         let inner = recver.deref_mut();
         if let Ok(receiving_state) = inner {
-            debug_assert!(
-                !(matches!(receiving_state, Recver::Recv(state) if !state.is_stopped())
-                    || matches!(receiving_state, Recver::SizeKnown(state) if !state.is_stopped())),
-                "The receiving stream must be stopped with error before dropped!"
-            );
+            match receiving_state {
+                Recver::Recv(r) if !r.is_stopped() => {
+                    tracing::warn!(
+                        "The receiving {} is not stopped with error before dropped!",
+                        r.stream_id(),
+                    );
+                }
+                Recver::SizeKnown(r) if !r.is_stopped() => {
+                    tracing::warn!(
+                        "The receiving {} is not stopped with error before dropped!",
+                        r.stream_id()
+                    );
+                }
+                _ => (),
+            }
         }
     }
 }

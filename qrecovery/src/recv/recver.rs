@@ -135,6 +135,10 @@ impl<TX> Recv<TX> {
         }
     }
 
+    pub(super) fn stream_id(&self) -> StreamId {
+        self.stream_id
+    }
+
     pub(super) fn recv(&mut self, stream_frame: &StreamFrame, body: Bytes) -> Result<usize, Error> {
         let data_start = stream_frame.offset();
 
@@ -213,6 +217,10 @@ pub struct SizeKnown<TX> {
 }
 
 impl<TX> SizeKnown<TX> {
+    pub(super) fn stream_id(&self) -> StreamId {
+        self.stream_id
+    }
+
     pub(super) fn recv(&mut self, stream_frame: &StreamFrame, data: Bytes) -> Result<usize, Error> {
         let data_start = stream_frame.offset();
         let data_end = data_start + data.len() as u64;

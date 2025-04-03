@@ -272,34 +272,45 @@ impl AppError {
 
 impl From<Error> for std::io::Error {
     fn from(e: Error) -> Self {
-        tracing::error!("   Cause by: quic error={e}");
+        if e.kind != ErrorKind::Application {
+            tracing::error!("   Cause by: quic error={e}");
+        }
         Self::new(std::io::ErrorKind::BrokenPipe, e)
     }
 }
 
 impl From<Error> for ConnectionCloseFrame {
     fn from(e: Error) -> Self {
-        tracing::error!("   Cause by: error occur at quic layer {:?}", e);
+        if e.kind != ErrorKind::Application {
+            tracing::error!("   Cause by: error occur at quic layer {:?}", e);
+        }
         Self::new_quic(e.kind, e.frame_type, e.reason)
     }
 }
 
 impl From<AppError> for ConnectionCloseFrame {
     fn from(e: AppError) -> Self {
-        tracing::error!("   Cause by: closed by app layer {:?}", e);
+        tracing::info!("closed by app layer with error: {:?}", e);
         Self::new_app(e.error_code, e.reason)
     }
 }
 
 impl From<ConnectionCloseFrame> for Error {
     fn from(frame: ConnectionCloseFrame) -> Self {
-        tracing::error!("   Cause by: received ConnectionCloseFrame: {:?}", frame);
         match frame {
-            ConnectionCloseFrame::Quic(frame) => Self::new(
-                frame.error_kind(),
-                frame.frame_type(),
-                frame.reason().to_owned(),
-            ),
+            ConnectionCloseFrame::Quic(frame) => {
+                if frame.error_kind() != ErrorKind::Application {
+                    tracing::error!(
+                        "   Cause by: error occured from peer at quic layer {:?}",
+                        frame
+                    );
+                }
+                Self::new(
+                    frame.error_kind(),
+                    frame.frame_type(),
+                    frame.reason().to_owned(),
+                )
+            }
             ConnectionCloseFrame::App(frame) => Self::with_default_fty(
                 ErrorKind::Application,
                 format!(

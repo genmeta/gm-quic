@@ -62,6 +62,10 @@ impl<TX> ReadySender<TX> {
         }
     }
 
+    pub(super) fn stream_id(&self) -> StreamId {
+        self.stream_id
+    }
+
     /// 非阻塞写，如果没有多余的发送缓冲区，将返回WouldBlock错误。
     /// 但什么时候可写，是没通知的，只能不断去尝试写，直到写入成功。
     /// 仅供展示学习
@@ -194,6 +198,10 @@ pub struct SendingSender<TX> {
 type StreamData<'s> = (u64, bool, (&'s [u8], &'s [u8]), bool);
 
 impl<TX> SendingSender<TX> {
+    pub(super) fn stream_id(&self) -> StreamId {
+        self.stream_id
+    }
+
     pub(super) fn poll_write(
         &mut self,
         cx: &mut Context<'_>,
