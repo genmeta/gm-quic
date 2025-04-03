@@ -3,9 +3,9 @@ use std::{net::SocketAddr, path::PathBuf};
 use clap::Parser;
 use gm_quic::QuicServer;
 
-// cargo run --example server -- \
-//      --cert quic/examples/keychain/quic.test.net/quic-test-net-ECC.crt \
-//      --key  quic/examples/keychain/quic.test.net/quic-test-net-ECC.key \
+// cargo run --package gm-quic --example server -- \
+//      --cert test/keychain/quic.test.net/quic-test-net-ECC.crt \
+//      --key  test/keychain/quic.test.net/quic-test-net-ECC.key \
 //      --bind 127.0.0.1:4433
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

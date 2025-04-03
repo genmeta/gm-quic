@@ -36,6 +36,7 @@ async fn h3_test() {
             "[::1]:4433".parse().unwrap(),
         ],
         certs: server_example::Certs {
+            server_name: "localhost".to_string(),
             cert: PathBuf::from("examples/server.cert"),
             key: PathBuf::from("examples/server.key"),
         },

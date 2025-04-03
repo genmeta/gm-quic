@@ -28,46 +28,36 @@ enum TerminalMessage {
 
 #[derive(Parser, Debug)]
 #[structopt(name = "server")]
-pub struct Options {
-    #[structopt(
-        name = "dir",
-        short,
-        long,
-        help = "Root directory of the files to serve. \
-                If omitted, server will respond OK.",
-        default_value = "./"
-    )]
-    pub root: PathBuf,
-
+struct Options {
     #[structopt(
         short,
         long,
         default_values = ["127.0.0.1:4433", "[::1]:4433"],
         help = "What address:port to listen for new connections"
     )]
-    pub listen: Vec<SocketAddr>,
-
+    listen: Vec<SocketAddr>,
     #[structopt(flatten)]
-    pub certs: Certs,
+    certs: Certs,
 }
 
 #[derive(Parser, Debug)]
-pub struct Certs {
+struct Certs {
+    #[structopt(long, short, default_value = "localhost", help = "Server name.")]
+    server_name: String,
     #[structopt(
         long,
         short,
         default_value = "h3-shim/examples/server.cert",
         help = "Certificate for TLS. If present, `--key` is mandatory."
     )]
-    pub cert: PathBuf,
-
+    cert: PathBuf,
     #[structopt(
         long,
         short,
         default_value = "h3-shim/examples/server.key",
         help = "Private key for the certificate."
     )]
-    pub key: PathBuf,
+    key: PathBuf,
 }
 
 // static OPTIONS: OnceLock<Options> = OnceLock::new();
@@ -89,14 +79,18 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 pub async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // OPTIONS.set(options);
     info!("serving {}", options.root.display());
-    let Certs { cert, key } = options.certs;
+    let Certs {
+        server_name,
+        cert,
+        key,
+    } = options.certs;
 
     let quic_server = ::gm_quic::QuicServer::builder()
         .with_supported_versions([1u32])
         .without_client_cert_verifier()
         .with_parameters(server_parameters())
         .enable_sni()
-        .add_host("localhost", cert.as_path(), key.as_path())
+        .add_host(server_name, cert.as_path(), key.as_path())
         .with_alpns([ALPN.to_vec()])
         .listen(&options.listen[..])?;
     info!("listen on {:?}", quic_server.addresses());

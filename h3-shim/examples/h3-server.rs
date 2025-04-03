@@ -19,7 +19,6 @@ pub struct Options {
         default_value = "./"
     )]
     pub root: PathBuf,
-
     #[structopt(
         short,
         long,
@@ -27,13 +26,14 @@ pub struct Options {
         help = "What address:port to listen for new connections"
     )]
     pub listen: Vec<SocketAddr>,
-
     #[structopt(flatten)]
     pub certs: Certs,
 }
 
 #[derive(Parser, Debug)]
 pub struct Certs {
+    #[structopt(long, short, default_value = "localhost", help = "Server name.")]
+    pub server_name: String,
     #[structopt(
         long,
         short,
@@ -41,7 +41,6 @@ pub struct Certs {
         help = "Certificate for TLS. If present, `--key` is mandatory."
     )]
     pub cert: PathBuf,
-
     #[structopt(
         long,
         short,
@@ -72,14 +71,18 @@ pub async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Sen
     if !root.is_dir() {
         return Err(format!("{}: is not a readable directory", root.display()).into());
     }
-    let Certs { cert, key } = options.certs;
+    let Certs {
+        server_name,
+        cert,
+        key,
+    } = options.certs;
 
     let quic_server = ::gm_quic::QuicServer::builder()
         .with_supported_versions([1u32])
         .without_client_cert_verifier()
         .with_parameters(server_parameters())
         .enable_sni()
-        .add_host("localhost", cert.as_path(), key.as_path())
+        .add_host(server_name, cert.as_path(), key.as_path())
         .with_alpns([ALPN.to_vec()])
         .listen(&options.listen[..])?;
     info!("listen on {:?}", quic_server.addresses());
