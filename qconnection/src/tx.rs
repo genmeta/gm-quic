@@ -27,13 +27,10 @@ use qbase::{
 };
 use qcongestion::{ArcCC, Transport};
 use qlog::quic::{QuicFrame, QuicFramesCollector, transport::PacketSent};
-use qrecovery::{
-    journal::{ArcSentJournal, NewPacketGuard},
-    reliable::GuaranteedFrame,
-};
+use qrecovery::journal::{ArcSentJournal, NewPacketGuard};
 
 use crate::{
-    ArcDcidCell, ArcReliableFrameDeque, Credit,
+    ArcDcidCell, ArcReliableFrameDeque, Credit, GuaranteedFrame,
     path::{AntiAmplifier, Constraints, SendBuffer},
     space::{Spaces, data::DataSpace},
 };

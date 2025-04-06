@@ -5,24 +5,11 @@ use std::{
 };
 
 use bytes::BufMut;
-use enum_dispatch::enum_dispatch;
 use qbase::{
-    frame::{CryptoFrame, EncodeFrame, FrameFeture, ReliableFrame, SendFrame, StreamFrame},
+    frame::{EncodeFrame, FrameFeture, SendFrame},
     net::tx::{ArcSendWakers, Signals},
     packet::MarshalFrame,
 };
-
-/// The kind of frame which guaratend to be received by peer.
-///
-/// The bundle of [`StreamFrame`], [`CryptoFrame`] and [`ReliableFrame`].
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[enum_dispatch(EncodeFrame, GetFrameType)]
-pub enum GuaranteedFrame {
-    Stream(StreamFrame),
-    Crypto(CryptoFrame),
-    Reliable(ReliableFrame),
-    // Add ExtensionFrame here if needed.
-}
 
 /// A deque for data space to send reliable frames.
 ///

@@ -65,22 +65,12 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
         let mut tx = tx.clone();
         async move {
             let (cols, rows) = terminal::size().unwrap();
-            _ = tx
-                .send(TerminalMessage::WindowSize {
-                    rows: rows as u16,
-                    cols: cols as u16,
-                })
-                .await;
+            _ = tx.send(TerminalMessage::WindowSize { rows, cols }).await;
             let mut events = EventStream::new();
             while let Some(Ok(event)) = events.next().await {
                 match event {
                     Event::Resize(cols, rows) => {
-                        _ = tx
-                            .send(TerminalMessage::WindowSize {
-                                rows: rows as u16,
-                                cols: cols as u16,
-                            })
-                            .await;
+                        _ = tx.send(TerminalMessage::WindowSize { rows, cols }).await;
                     }
                     Event::Key(KeyEvent {
                         code, modifiers, ..

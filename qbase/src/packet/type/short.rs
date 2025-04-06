@@ -8,7 +8,7 @@ const SHORT_HEADER_BIT: u8 = 0x00;
 /// The type of the 1-Rtt packet.
 /// For simplicity, the spin bit is also one part of the 1-Rtt packet type.
 #[derive(Debug, Clone, Copy, Deref, PartialEq, Eq)]
-pub struct OneRtt(#[deref] pub(crate) SpinBit);
+pub struct OneRtt(#[deref] pub SpinBit);
 
 impl From<u8> for OneRtt {
     fn from(value: u8) -> Self {

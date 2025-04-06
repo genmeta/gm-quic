@@ -41,12 +41,13 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+use enum_dispatch::enum_dispatch;
 use events::ArcEventBroker;
 use path::ArcPathContexts;
 use prelude::HeartbeatConfig;
 use qbase::{
     cid, flow,
-    frame::{ConnectionCloseFrame, ReliableFrame},
+    frame::{ConnectionCloseFrame, CryptoFrame, ReliableFrame, StreamFrame},
     net::route::{Link, Pathway},
     param::{ArcParameters, ParameterId},
     sid::StreamId,
@@ -58,7 +59,7 @@ use qinterface::{
     router::{QuicProto, RouterRegistry},
 };
 use qrecovery::{
-    recv, reliable, send,
+    journal, recv, reliable, send,
     streams::{self, Ext},
 };
 #[cfg(feature = "unreliable")]
@@ -67,6 +68,24 @@ use space::Spaces;
 use state::ConnState;
 use termination::Termination;
 use tls::ArcTlsSession;
+
+/// The kind of frame which guaratend to be received by peer.
+///
+/// The bundle of [`StreamFrame`], [`CryptoFrame`] and [`ReliableFrame`].
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[enum_dispatch(EncodeFrame, FrameFeture)]
+pub enum GuaranteedFrame {
+    Stream(StreamFrame),
+    Crypto(CryptoFrame),
+    Reliable(ReliableFrame),
+}
+
+/// For initial space, only reliable transmission of crypto frames is required.
+pub type InitialJournal = journal::Journal<CryptoFrame>;
+/// For handshake space, only reliable transmission of crypto frames is required.
+pub type HandshakeJournal = journal::Journal<CryptoFrame>;
+/// For data space, reliable transmission of [`GuaranteedFrame`] (crypto frames, stream frames and reliable frames) is required.
+pub type DataJournal = journal::Journal<GuaranteedFrame>;
 
 pub type ArcReliableFrameDeque = reliable::ArcReliableFrameDeque<ReliableFrame>;
 pub type ArcLocalCids = cid::ArcLocalCids<RouterRegistry<ArcReliableFrameDeque>>;
