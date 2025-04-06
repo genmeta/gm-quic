@@ -156,10 +156,9 @@ impl PacketLayout {
         self.keys.key_phase().is_some()
     }
 
-    // todo:
     pub fn add_frame(&mut self, frame: &impl FrameFeture) {
-        self.ack_eliciting |= frame.specs().contain(Spec::NonAckEliciting);
-        self.in_flight |= frame.specs().contain(Spec::CongestionControlFree);
+        self.ack_eliciting |= !frame.specs().contain(Spec::NonAckEliciting);
+        self.in_flight |= !frame.specs().contain(Spec::CongestionControlFree);
         self.probe_new_path |= frame.specs().contain(Spec::ProbeNewPath);
     }
 }
@@ -341,10 +340,7 @@ where
     Self: WriteFrame<F>,
 {
     fn dump_frame(&mut self, frame: F) -> Option<F> {
-        let specs = frame.specs();
-        self.ack_eliciting |= !specs.contain(Spec::NonAckEliciting);
-        self.in_flight |= !specs.contain(Spec::CongestionControlFree);
-        self.probe_new_path |= specs.contain(Spec::ProbeNewPath);
+        self.add_frame(&frame);
         self.put_frame(&frame);
         Some(frame)
     }

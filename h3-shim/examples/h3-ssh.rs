@@ -40,8 +40,6 @@ pub struct Options {
 
     #[structopt(long, short, help = "Username for SSH authentication")]
     username: String,
-    #[structopt(long, short, help = "Password for SSH authentication")]
-    password: String,
 }
 
 #[cfg_attr(test, allow(unused))]
@@ -57,6 +55,8 @@ async fn main() -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
 }
 
 pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
+    let password = rpassword::prompt_password("Please input password: ")
+        .map_err(|e| format!("failed to read password: {}", e))?;
     // 创建通道用于异步通信
     let (tx, mut rx) = mpsc::channel::<TerminalMessage>(32);
 
@@ -172,7 +172,7 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
 
     // 构建 Basic Auth 头
     use base64::Engine;
-    let credentials = format!("{}:{}", options.username, options.password);
+    let credentials = format!("{}:{}", options.username, password);
     let b64_encoded = base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes());
     let auth_header = format!("Basic {}", b64_encoded);
 
