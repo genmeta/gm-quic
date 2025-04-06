@@ -39,6 +39,19 @@ impl EndpointAddr {
             EndpointAddr::Agent { agent, .. } => *agent,
         }
     }
+
+    pub fn encoding_size(&self) -> usize {
+        let addr_size = |addr: &SocketAddr| {
+            if addr.is_ipv6() { 2 + 16 } else { 2 + 4 }
+        };
+        match self {
+            EndpointAddr::Direct { addr } => addr_size(addr),
+            EndpointAddr::Agent {
+                agent,
+                outer: inner,
+            } => addr_size(agent) + addr_size(inner),
+        }
+    }
 }
 
 impl fmt::Display for EndpointAddr {
@@ -78,11 +91,11 @@ impl FromStr for EndpointAddr {
     }
 }
 
-pub trait PutEndpointAddr {
+pub trait WriteEndpointAddr {
     fn put_endpoint_addr(&mut self, endpoint: EndpointAddr);
 }
 
-impl<T: BufMut> PutEndpointAddr for T {
+impl<T: BufMut> WriteEndpointAddr for T {
     fn put_endpoint_addr(&mut self, endpoint: EndpointAddr) {
         match endpoint {
             EndpointAddr::Direct { addr } => self.put_socket_addr(&addr),
@@ -97,11 +110,26 @@ impl<T: BufMut> PutEndpointAddr for T {
     }
 }
 
-pub trait PutSocketAddr {
+pub fn be_endpoint_addr(
+    input: &[u8],
+    is_relay: bool,
+    is_ipv6: bool,
+) -> nom::IResult<&[u8], EndpointAddr> {
+    if is_relay {
+        let (remain, agent) = be_socket_addr(input, is_ipv6)?;
+        let (remain, outer) = be_socket_addr(remain, is_ipv6)?;
+        Ok((remain, EndpointAddr::Agent { agent, outer }))
+    } else {
+        let (remain, addr) = be_socket_addr(input, is_ipv6)?;
+        Ok((remain, EndpointAddr::Direct { addr }))
+    }
+}
+
+pub trait WriteSocketAddr {
     fn put_socket_addr(&mut self, addr: &SocketAddr);
 }
 
-impl<T: BufMut> PutSocketAddr for T {
+impl<T: BufMut> WriteSocketAddr for T {
     fn put_socket_addr(&mut self, addr: &SocketAddr) {
         self.put_u16(addr.port());
         match addr.ip() {
