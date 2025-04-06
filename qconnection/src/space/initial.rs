@@ -35,17 +35,14 @@ use qlog::{
     },
     telemetry::Instrument,
 };
-use qrecovery::{
-    crypto::CryptoStream,
-    journal::{ArcRcvdJournal, InitialJournal},
-};
+use qrecovery::{crypto::CryptoStream, journal::ArcRcvdJournal};
 use rustls::quic::Keys;
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
 use super::{AckInitialSpace, pipe};
 use crate::{
-    Components,
+    Components, InitialJournal,
     events::{ArcEventBroker, EmitEvent, Event},
     path::Path,
     termination::ClosingState,

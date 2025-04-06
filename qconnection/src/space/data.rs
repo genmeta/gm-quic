@@ -38,18 +38,14 @@ use qlog::{
     },
     telemetry::Instrument,
 };
-use qrecovery::{
-    crypto::CryptoStream,
-    journal::{ArcRcvdJournal, DataJournal},
-    reliable::GuaranteedFrame,
-};
+use qrecovery::{crypto::CryptoStream, journal::ArcRcvdJournal};
 #[cfg(feature = "unreliable")]
 use qunreliable::DatagramFlow;
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
 use crate::{
-    ArcReliableFrameDeque, Components, DataStreams,
+    ArcReliableFrameDeque, Components, DataJournal, DataStreams, GuaranteedFrame,
     events::{ArcEventBroker, EmitEvent, Event},
     path::{Path, SendBuffer},
     space::{AckDataSpace, FlowControlledDataStreams, pipe},

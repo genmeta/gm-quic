@@ -1,10 +1,16 @@
 use std::{
     fmt,
-    net::{AddrParseError, SocketAddr},
+    net::{AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     ops::Deref,
     str::FromStr,
 };
 
+use bytes::BufMut;
+use nom::{
+    IResult, Parser,
+    combinator::{flat_map, map},
+    number::streaming::{be_u16, be_u32, be_u128},
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -69,6 +75,53 @@ impl FromStr for EndpointAddr {
             let addr = s.trim().parse()?;
             Ok(EndpointAddr::direct(addr))
         }
+    }
+}
+
+pub trait PutEndpointAddr {
+    fn put_endpoint_addr(&mut self, endpoint: EndpointAddr);
+}
+
+impl<T: BufMut> PutEndpointAddr for T {
+    fn put_endpoint_addr(&mut self, endpoint: EndpointAddr) {
+        match endpoint {
+            EndpointAddr::Direct { addr } => self.put_socket_addr(&addr),
+            EndpointAddr::Agent {
+                agent,
+                outer: inner,
+            } => {
+                self.put_socket_addr(&agent);
+                self.put_socket_addr(&inner);
+            }
+        }
+    }
+}
+
+pub trait PutSocketAddr {
+    fn put_socket_addr(&mut self, addr: &SocketAddr);
+}
+
+impl<T: BufMut> PutSocketAddr for T {
+    fn put_socket_addr(&mut self, addr: &SocketAddr) {
+        self.put_u16(addr.port());
+        match addr.ip() {
+            IpAddr::V4(ipv4) => self.put_u32(ipv4.into()),
+            IpAddr::V6(ipv6) => self.put_u128(ipv6.into()),
+        }
+    }
+}
+
+pub fn be_socket_addr(input: &[u8], is_ipv6: bool) -> IResult<&[u8], SocketAddr> {
+    flat_map(be_u16, |port| {
+        map(be_ip_addr(is_ipv6), move |ip| SocketAddr::new(ip, port))
+    })
+    .parse(input)
+}
+
+pub fn be_ip_addr(is_v6: bool) -> impl Fn(&[u8]) -> IResult<&[u8], IpAddr> {
+    move |input| match is_v6 {
+        true => map(be_u128, |ip| IpAddr::V6(Ipv6Addr::from(ip))).parse(input),
+        false => map(be_u32, |ip| IpAddr::V4(Ipv4Addr::from(ip))).parse(input),
     }
 }
 

@@ -31,17 +31,14 @@ use qlog::{
     },
     telemetry::Instrument,
 };
-use qrecovery::{
-    crypto::CryptoStream,
-    journal::{ArcRcvdJournal, HandshakeJournal},
-};
+use qrecovery::{crypto::CryptoStream, journal::ArcRcvdJournal};
 use rustls::quic::Keys;
 use tokio::sync::mpsc;
 use tracing::Instrument as _;
 
 use super::AckHandshakeSpace;
 use crate::{
-    Components,
+    Components, HandshakeJournal,
     events::{ArcEventBroker, EmitEvent, Event},
     path::Path,
     space::pipe,

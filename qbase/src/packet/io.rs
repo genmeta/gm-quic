@@ -155,6 +155,13 @@ impl PacketLayout {
     pub fn is_short_header(&self) -> bool {
         self.keys.key_phase().is_some()
     }
+
+    // todo:
+    pub fn add_frame(&mut self, frame: &impl FrameFeture) {
+        self.ack_eliciting |= frame.specs().contain(Spec::NonAckEliciting);
+        self.in_flight |= frame.specs().contain(Spec::CongestionControlFree);
+        self.probe_new_path |= frame.specs().contain(Spec::ProbeNewPath);
+    }
 }
 
 #[derive(Deref, DerefMut)]

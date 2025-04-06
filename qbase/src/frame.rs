@@ -188,8 +188,6 @@ pub trait FrameFeture {
     fn belongs_to(&self, packet_type: Type) -> bool;
     /// Return the specs of the frame type
     fn specs(&self) -> u8;
-    /// Return if the frame type is ack-eliciting
-    fn is_ack_eliciting(&self) -> bool;
 }
 
 impl<T: GetFrameType> FrameFeture for T {
@@ -199,10 +197,6 @@ impl<T: GetFrameType> FrameFeture for T {
 
     fn specs(&self) -> u8 {
         self.frame_type().specs()
-    }
-
-    fn is_ack_eliciting(&self) -> bool {
-        self.frame_type().is_ack_eliciting()
     }
 }
 
@@ -275,13 +269,6 @@ impl FrameFeture for FrameType {
             FrameType::ConnectionClose(_) => n | c,
             _ => 0,
         }
-    }
-
-    fn is_ack_eliciting(&self) -> bool {
-        !matches!(
-            self,
-            Self::Padding | Self::Ack(..) | Self::ConnectionClose(..)
-        )
     }
 }
 
@@ -619,12 +606,12 @@ mod tests {
         // Read PADDING frame
         let (frame, frame_type) = reader.next().unwrap().unwrap();
         assert!(matches!(frame, Frame::Padding(_)));
-        assert!(!frame_type.is_ack_eliciting());
+        assert!(frame_type.specs().contain(Spec::NonAckEliciting));
 
         // Read PING frame
         let (frame, frame_type) = reader.next().unwrap().unwrap();
         assert!(matches!(frame, Frame::Ping(_)));
-        assert!(frame_type.is_ack_eliciting());
+        assert!(!frame_type.specs().contain(Spec::NonAckEliciting));
 
         // No more frames
         assert!(reader.next().is_none());

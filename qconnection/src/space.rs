@@ -16,13 +16,12 @@ use qlog::{quic::transport::PacketsAcked, telemetry::Instrument};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
     journal::{ArcSentJournal, Journal},
-    reliable::GuaranteedFrame,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::Instrument as _;
 
 use crate::{
-    Components, DataStreams, FlowController,
+    Components, DataStreams, FlowController, GuaranteedFrame,
     events::{ArcEventBroker, EmitEvent, Event},
     termination::ClosingState,
 };
