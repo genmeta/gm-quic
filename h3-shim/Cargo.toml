@@ -41,7 +41,7 @@ tokio = { workspace = true, features = ["io-std", "fs"] }
 tracing = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
-pam = "0.7"
+pam = "0.8"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dev-dependencies]
 pwhash = "1"
