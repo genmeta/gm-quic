@@ -33,10 +33,15 @@ impl EndpointAddr {
         EndpointAddr::Agent { agent, outer }
     }
 
+    /// Returns the outer address of this EndpointAddr
+    ///
+    /// Note: Before successful hole punching with this Endpoint, packets should be sent to the address
+    /// returned by deref() to establish communication. Once hole punching is successful or about to
+    /// begin, use the address returned by this function.
     pub fn addr(&self) -> SocketAddr {
         match self {
             EndpointAddr::Direct { addr } => *addr,
-            EndpointAddr::Agent { agent, .. } => *agent,
+            EndpointAddr::Agent { outer, .. } => *outer,
         }
     }
 

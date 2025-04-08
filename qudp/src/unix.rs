@@ -13,7 +13,7 @@ use nix::{
 };
 use socket2::Socket;
 
-use crate::{DEFAULT_TTL, Io, PacketHeader, UdpSocketController};
+use crate::{DEFAULT_TTL, DatagramHeader, Io, UdpSocketController};
 
 const OPTION_ON: bool = true;
 const OPTION_OFF: bool = false;
@@ -58,7 +58,7 @@ impl Io for UdpSocketController {
         target_os = "freebsd",
         target_os = "netbsd"
     ))]
-    fn sendmsg(&self, buffers: &[IoSlice<'_>], hdr: &PacketHeader) -> io::Result<usize> {
+    fn sendmsg(&self, buffers: &[IoSlice<'_>], hdr: &DatagramHeader) -> io::Result<usize> {
         use nix::sys::socket::{MsgFlags, SockaddrIn, SockaddrIn6};
 
         use super::BATCH_SIZE;
@@ -124,7 +124,7 @@ impl Io for UdpSocketController {
         target_os = "watchos",
         target_os = "tvos"
     ))]
-    fn sendmsg(&self, slices: &[IoSlice<'_>], send_hdr: &PacketHeader) -> io::Result<usize> {
+    fn sendmsg(&self, slices: &[IoSlice<'_>], send_hdr: &DatagramHeader) -> io::Result<usize> {
         use nix::sys::socket::{MsgFlags, SockaddrIn, SockaddrIn6};
         let mut sent_packet = 0;
         for slice in slices.iter() {
@@ -169,7 +169,7 @@ impl Io for UdpSocketController {
     fn recvmsg(
         &self,
         bufs: &mut [std::io::IoSliceMut<'_>],
-        recv_hdrs: &mut [PacketHeader],
+        recv_hdrs: &mut [DatagramHeader],
     ) -> io::Result<usize> {
         use nix::sys::socket::{MsgFlags, recvmmsg};
 
@@ -206,7 +206,7 @@ impl Io for UdpSocketController {
 
         for recv_msg in res {
             let src_addr = recv_msg.address.unwrap().to_socketaddr();
-            let mut recv_hdr = PacketHeader {
+            let mut recv_hdr = DatagramHeader {
                 src: src_addr,
                 dst: recv_hdrs[count].dst,
                 ttl: 0,
@@ -233,7 +233,7 @@ impl Io for UdpSocketController {
     fn recvmsg(
         &self,
         bufs: &mut [std::io::IoSliceMut<'_>],
-        recv_hdrs: &mut [PacketHeader],
+        recv_hdrs: &mut [DatagramHeader],
     ) -> io::Result<usize> {
         use nix::sys::socket::{MsgFlags, recvmsg};
         let mut cmsg_space = cmsg_space!(libc::in_pktinfo, libc::in6_pktinfo, libc::c_int);
@@ -267,7 +267,7 @@ impl Io for UdpSocketController {
     }
 }
 
-fn parse_cmsg(cmsg: ControlMessageOwned, hdr: &mut PacketHeader) {
+fn parse_cmsg(cmsg: ControlMessageOwned, hdr: &mut DatagramHeader) {
     match cmsg {
         ControlMessageOwned::Ipv4PacketInfo(pktinfo) => {
             let ip = IpAddr::V4(Ipv4Addr::from(pktinfo.ipi_addr.s_addr.to_ne_bytes()));

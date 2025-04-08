@@ -10,7 +10,7 @@ use libc::c_uchar;
 use socket2::Socket;
 use windows_sys::Win32::Networking::WinSock::{self, SOCKET};
 
-use crate::{DEFAULT_TTL, Io, PacketHeader, UdpSocketController};
+use crate::{DEFAULT_TTL, Io, UdpSocketController};
 
 const CMSG_LEN: usize = 128;
 #[derive(Copy, Clone)]
@@ -54,7 +54,7 @@ impl Io for UdpSocketController {
     fn sendmsg(
         &self,
         bufs: &[std::io::IoSlice<'_>],
-        hdr: &crate::PacketHeader,
+        hdr: &crate::DatagramHeader,
     ) -> std::io::Result<usize> {
         let dst = socket2::SockAddr::from(hdr.dst);
         let mut count = 0;
@@ -183,7 +183,7 @@ impl Io for UdpSocketController {
     fn recvmsg(
         &self,
         bufs: &mut [std::io::IoSliceMut<'_>],
-        hdr: &mut [crate::PacketHeader],
+        hdr: &mut [crate::DatagramHeader],
     ) -> std::io::Result<usize> {
         let wsa_recvmsg_ptr = WSARECVMSG_PTR.expect("valid function pointer for WSARecvMsg");
 
@@ -261,7 +261,7 @@ impl Io for UdpSocketController {
         } else {
             self.local_addr()?
         };
-        hdr[0] = PacketHeader {
+        hdr[0] = crate::DatagramHeader {
             src: addr.unwrap(),
             dst,
             ttl: DEFAULT_TTL as u8,

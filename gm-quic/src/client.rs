@@ -131,7 +131,7 @@ impl QuicClient {
     ) -> io::Result<Arc<Connection>> {
         let quic_iface = match &self.bind_interfaces {
             None => {
-                let quic_iface = if server_ep.addr().is_ipv4() {
+                let quic_iface = if server_ep.is_ipv4() {
                     self.quic_iface_factory
                         .bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))?
                 } else {
@@ -145,8 +145,8 @@ impl QuicClient {
                 .iter()
                 .map(|entry| *entry.key())
                 .filter(|local_addr| {
-                    local_addr.is_ipv4() == server_ep.addr().is_ipv4()
-                        || local_addr.is_ipv6() == server_ep.addr().is_ipv6()
+                    local_addr.is_ipv4() == server_ep.is_ipv4()
+                        || local_addr.is_ipv6() == server_ep.is_ipv6()
                 })
                 .find_map(|local_addr| {
                     if self.reuse_address {
@@ -162,7 +162,7 @@ impl QuicClient {
         };
 
         let local_addr = quic_iface.local_addr()?;
-        let link = Link::new(local_addr, server_ep.addr());
+        let link = Link::new(local_addr, *server_ep);
         //  TODO: 是否要outer addr，agent addr
         let pathway = Pathway::new(EndpointAddr::direct(local_addr), server_ep);
 

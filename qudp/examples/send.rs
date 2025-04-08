@@ -1,7 +1,7 @@
 use std::io::IoSlice;
 
 use clap::{Parser, command};
-use qudp::{PacketHeader, UdpSocketController};
+use qudp::{DatagramHeader, UdpSocketController};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -30,7 +30,7 @@ async fn main() {
     let socket = UdpSocketController::bind(addr).expect("failed to create socket");
     let dst = args.dst.parse().unwrap();
 
-    let send_hdr = PacketHeader::new(
+    let send_hdr = DatagramHeader::new(
         socket.local_addr().expect("failed to get local addr"),
         dst,
         64,

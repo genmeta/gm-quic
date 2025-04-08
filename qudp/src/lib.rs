@@ -23,7 +23,7 @@ cfg_if::cfg_if! {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct PacketHeader {
+pub struct DatagramHeader {
     pub src: SocketAddr,
     pub dst: SocketAddr,
     pub ttl: u8,
@@ -33,7 +33,7 @@ pub struct PacketHeader {
     pub seg_size: u16,
 }
 
-impl PacketHeader {
+impl DatagramHeader {
     pub fn new(src: SocketAddr, dst: SocketAddr, ttl: u8, ecn: Option<u8>, seg_size: u16) -> Self {
         Self {
             src,
@@ -44,7 +44,7 @@ impl PacketHeader {
         }
     }
 }
-impl Default for PacketHeader {
+impl Default for DatagramHeader {
     fn default() -> Self {
         Self {
             src: SocketAddr::from(([0, 0, 0, 0], 0)),
@@ -85,7 +85,7 @@ impl UdpSocketController {
         &self,
         cx: &mut Context<'_>,
         bufs: &[IoSlice<'_>],
-        hdr: &PacketHeader,
+        hdr: &DatagramHeader,
     ) -> Poll<io::Result<usize>> {
         let mut sent = 0;
         while sent < bufs.len() {
@@ -107,7 +107,7 @@ impl UdpSocketController {
         &self,
         cx: &mut Context,
         bufs: &mut [IoSliceMut<'_>],
-        hdrs: &mut [PacketHeader],
+        hdrs: &mut [DatagramHeader],
     ) -> Poll<io::Result<usize>> {
         loop {
             ready!(self.io.poll_recv_ready(cx)?);
@@ -125,13 +125,14 @@ impl UdpSocketController {
 pub trait Io {
     fn config(io: &socket2::Socket, addr: SocketAddr) -> io::Result<()>;
 
-    fn sendmsg(&self, bufs: &[IoSlice<'_>], hdr: &PacketHeader) -> io::Result<usize>;
+    fn sendmsg(&self, bufs: &[IoSlice<'_>], hdr: &DatagramHeader) -> io::Result<usize>;
 
-    fn recvmsg(&self, bufs: &mut [IoSliceMut<'_>], hdr: &mut [PacketHeader]) -> io::Result<usize>;
+    fn recvmsg(&self, bufs: &mut [IoSliceMut<'_>], hdr: &mut [DatagramHeader])
+    -> io::Result<usize>;
 }
 
 impl UdpSocketController {
-    pub fn send<'a>(&'a self, iovecs: &'a [IoSlice<'a>], header: PacketHeader) -> Send<'a> {
+    pub fn send<'a>(&'a self, iovecs: &'a [IoSlice<'a>], header: DatagramHeader) -> Send<'a> {
         Send {
             usc: self,
             iovecs,
@@ -146,7 +147,7 @@ impl UdpSocketController {
                 .map(|_| [0u8; 1500].to_vec())
                 .collect::<Vec<_>>(),
             headers: (0..BATCH_SIZE)
-                .map(|_| PacketHeader::default())
+                .map(|_| DatagramHeader::default())
                 .collect::<Vec<_>>(),
         }
     }
@@ -155,7 +156,7 @@ impl UdpSocketController {
 pub struct Send<'a> {
     pub usc: &'a UdpSocketController,
     pub iovecs: &'a [IoSlice<'a>],
-    pub header: PacketHeader,
+    pub header: DatagramHeader,
 }
 
 impl Future for Send<'_> {
@@ -170,7 +171,7 @@ impl Future for Send<'_> {
 pub struct Receiver<'u> {
     pub usc: &'u UdpSocketController,
     pub iovecs: Vec<Vec<u8>>,
-    pub headers: Vec<PacketHeader>,
+    pub headers: Vec<DatagramHeader>,
 }
 
 impl Receiver<'_> {

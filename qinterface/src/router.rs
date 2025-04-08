@@ -126,15 +126,10 @@ impl QuicProto {
                     recv_bufs.resize_with(max_segments, || {
                         Bytes::from_owner(vec![0u8; max_segment_size]).into()
                     });
-                    let mut bufs = recv_bufs
-                        .iter_mut()
-                        .map(|b| {
-                            b.resize(max_segment_size, 0);
-                            io::IoSliceMut::new(b.as_mut())
-                        })
-                        .collect::<Vec<_>>();
                     recv_hdrs.resize_with(max_segments, PacketHeader::empty);
-                    interface.inner.poll_recv(cx, &mut bufs, &mut recv_hdrs)
+                    interface
+                        .inner
+                        .poll_recv(cx, &mut recv_bufs, &mut recv_hdrs)
                 });
 
                 for (datagram, header) in receive
