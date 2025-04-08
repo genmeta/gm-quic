@@ -1,11 +1,12 @@
 #[cfg(feature = "qudp")]
 mod qudp {
     use std::{
-        io,
+        io::{self, IoSliceMut},
         net::SocketAddr,
         task::{Context, Poll, ready},
     };
 
+    use bytes::BytesMut;
     use qbase::net::{Link, Pathway, ToEndpointAddr};
     use qudp::{BATCH_SIZE, UdpSocketController};
 
@@ -32,7 +33,7 @@ mod qudp {
         ) -> Poll<io::Result<usize>> {
             debug_assert_eq!(hdr.ecn(), None);
             debug_assert_eq!(hdr.link().src(), self.local_addr()?);
-            let hdr = qudp::PacketHeader::new(
+            let hdr = qudp::DatagramHeader::new(
                 hdr.link().src(),
                 hdr.link().dst(),
                 hdr.ttl(),
@@ -45,12 +46,18 @@ mod qudp {
         fn poll_recv(
             &self,
             cx: &mut Context,
-            pkts: &mut [io::IoSliceMut],
+            pkts: &mut Vec<BytesMut>,
             qbase_hdrs: &mut [PacketHeader],
         ) -> Poll<io::Result<usize>> {
             let mut hdrs = Vec::with_capacity(qbase_hdrs.len());
-            hdrs.resize_with(qbase_hdrs.len(), qudp::PacketHeader::default);
-            let rcvd = ready!(UdpSocketController::poll_recv(self, cx, pkts, &mut hdrs))?;
+            hdrs.resize_with(qbase_hdrs.len(), qudp::DatagramHeader::default);
+            let mut bufs = pkts
+                .iter_mut()
+                .map(|p| IoSliceMut::new(p.as_mut()))
+                .collect::<Vec<_>>();
+            let rcvd = ready!(UdpSocketController::poll_recv(
+                self, cx, &mut bufs, &mut hdrs
+            ))?;
 
             for (idx, qudp_hdr) in hdrs[..rcvd].iter().enumerate() {
                 let dst = self.local_addr()?;

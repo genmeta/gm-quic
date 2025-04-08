@@ -114,7 +114,7 @@ impl PacketContains {
     pub fn include(self, frame_type: FrameType) -> Self {
         match frame_type {
             FrameType::Ping if self != PacketContains::EffectivePayload => Self::JustPing,
-            fty if fty.specs().contain(Spec::NonAckEliciting) => Self::EffectivePayload,
+            fty if !fty.specs().contain(Spec::NonAckEliciting) => Self::EffectivePayload,
             _ => self,
         }
     }

@@ -12,6 +12,7 @@ use std::{
     task::{Context, Poll},
 };
 
+use bytes::BytesMut;
 use qbase::net::route::PacketHeader;
 
 pub trait QuicInterface: Send + Sync {
@@ -31,7 +32,7 @@ pub trait QuicInterface: Send + Sync {
     fn poll_recv(
         &self,
         cx: &mut Context,
-        pkts: &mut [io::IoSliceMut],
+        pkts: &mut Vec<BytesMut>,
         hdrs: &mut [PacketHeader],
     ) -> Poll<io::Result<usize>>;
 }
