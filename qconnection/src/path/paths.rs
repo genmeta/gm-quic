@@ -82,7 +82,7 @@ impl ArcPathContexts {
     }
 
     pub fn get(&self, pathway: &Pathway) -> Option<Arc<Path>> {
-        self.paths.get(pathway).map(|path_ref| path_ref.clone())
+        self.paths.get(pathway).map(|p| p.path.clone())
     }
 
     pub fn remove(&self, pathway: &Pathway, reason: &str) {
@@ -104,6 +104,10 @@ impl ArcPathContexts {
 
     pub fn max_pto_duration(&self) -> Option<Duration> {
         self.paths.iter().map(|p| p.cc().get_pto(Epoch::Data)).max()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Arc<Path>> {
+        self.paths.iter().map(|p| p.path.clone())
     }
 
     pub fn discard_initial_and_handshake_space(&self) {

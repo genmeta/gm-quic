@@ -1,5 +1,4 @@
 use std::{
-    convert::Infallible,
     io,
     ops::ControlFlow,
     sync::{Arc, atomic::Ordering},
@@ -149,7 +148,7 @@ impl Burst {
     ) -> Poll<io::Result<Vec<usize>>> {
         let (buffers, transaction) = match self.prepare(buffers) {
             Ok(Some((buffers, transaction))) => (buffers, transaction),
-            Ok(None) => return Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe))),
+            Ok(None) => return Poll::Pending, // 发送任务结束。阻止路径因为连接关闭而被移除
             Err(siginals) => {
                 self.path.tx_waker.wait_for(cx, siginals);
                 return Poll::Pending;
@@ -167,7 +166,7 @@ impl Burst {
         }
     }
 
-    pub async fn launch(self) -> io::Result<Infallible> {
+    pub async fn launch(self) -> io::Result<()> {
         let mut buffers = vec![];
         loop {
             let segment_lens =

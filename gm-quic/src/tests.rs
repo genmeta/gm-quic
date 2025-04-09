@@ -59,21 +59,21 @@ where
     })
 }
 
+async fn echo_stream(mut reader: StreamReader, mut writer: StreamWriter) -> io::Result<()> {
+    io::copy(&mut reader, &mut writer).await?;
+    writer.shutdown().await?;
+    tracing::debug!("stream copy done");
+
+    io::Result::Ok(())
+}
+
 pub async fn serve_echo(server: Arc<QuicServer>) -> io::Result<()> {
-    async fn handle_stream(mut reader: StreamReader, mut writer: StreamWriter) -> io::Result<()> {
-        io::copy(&mut reader, &mut writer).await?;
-        writer.shutdown().await?;
-        tracing::debug!("stream copy done");
-
-        io::Result::Ok(())
-    }
-
     loop {
         let (connection, pathway) = server.accept().await?;
         tracing::info!(source = ?pathway.remote(), "accepted new connection");
         tokio::spawn(async move {
             while let Ok(Some((_sid, (reader, writer)))) = connection.accept_bi_stream().await {
-                tokio::spawn(handle_stream(reader, writer));
+                tokio::spawn(echo_stream(reader, writer));
             }
         });
     }
@@ -141,6 +141,60 @@ fn single_stream() {
         Ok(())
     };
     run_serially(|| launch_echo_server(server_parameters()), launch_client).unwrap();
+}
+
+#[test]
+fn empty_stream() -> Result<(), Error> {
+    let launch_client = |server_addr| async move {
+        let client = launch_test_client(client_parameters());
+        let connection = client.connect("localhost", server_addr)?;
+        send_and_verify_echo(&connection, b"").await?;
+
+        Ok(())
+    };
+    run_serially(|| launch_echo_server(server_parameters()), launch_client)
+}
+
+#[test]
+fn shutdown() -> Result<(), Error> {
+    async fn serve_only_one_stream(server: Arc<QuicServer>) -> io::Result<()> {
+        loop {
+            let (connection, pathway) = server.accept().await?;
+            tracing::info!(source = ?pathway.remote(), "accepted new connection");
+            tokio::spawn(async move {
+                let (_sid, (reader, writer)) = connection.accept_bi_stream().await?.unwrap();
+                echo_stream(reader, writer).await?;
+                connection.close("no error".into(), 0);
+                Result::<(), Error>::Ok(())
+            });
+        }
+    }
+
+    let launch_server = || {
+        let server = QuicServer::builder()
+            .without_client_cert_verifier()
+            .with_single_cert(
+                include_bytes!("../../tests/keychain/localhost/server.cert"),
+                include_bytes!("../../tests/keychain/localhost/server.key"),
+            )
+            .with_parameters(server_parameters())
+            .with_qlog(QLOGGER.clone())
+            .listen("127.0.0.1:0".parse::<SocketAddr>()?)?;
+        Ok((server.clone(), serve_only_one_stream(server)))
+    };
+    let launch_client = |server_addr| async move {
+        let client = launch_test_client(client_parameters());
+        let connection = client.connect("localhost", server_addr)?;
+        connection.handshaked().await; // 可有可无
+
+        assert!(
+            send_and_verify_echo(&connection, b"").await.is_err()
+                || send_and_verify_echo(&connection, b"").await.is_err()
+        );
+
+        Result::Ok(())
+    };
+    run_serially(launch_server, launch_client)
 }
 
 const PARALLEL_ECHO_CONNS: usize = 2;
@@ -224,18 +278,6 @@ fn limited_streams() -> Result<(), Error> {
             .await
             .into_iter()
             .collect::<Result<(), Error>>()?;
-
-        Ok(())
-    };
-    run_serially(|| launch_echo_server(server_parameters()), launch_client)
-}
-
-#[test]
-fn empty_stream() -> Result<(), Error> {
-    let launch_client = |server_addr| async move {
-        let client = launch_test_client(client_parameters());
-        let connection = client.connect("localhost", server_addr)?;
-        send_and_verify_echo(&connection, b"").await?;
 
         Ok(())
     };

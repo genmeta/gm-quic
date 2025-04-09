@@ -4,11 +4,12 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use qbase::{cid::ConnectionId, error::Error, frame::ConnectionCloseFrame, net::route::Pathway};
 use qinterface::queue::RcvdPacketQueue;
+use tokio::time::Instant;
 
 use crate::{ArcLocalCids, Components, path::ArcPathContexts};
 
@@ -25,7 +26,7 @@ pub struct ClosingState {
 impl ClosingState {
     pub fn new(ccf: ConnectionCloseFrame, components: &Components) -> Self {
         Self {
-            last_recv_time: Mutex::new(tokio::time::Instant::now().into_std()),
+            last_recv_time: Mutex::new(Instant::now()),
             rcvd_packets: AtomicUsize::new(0),
             scid: components.cid_registry.local.initial_scid(),
             dcid: components.cid_registry.remote.latest_dcid(),
@@ -42,11 +43,33 @@ impl ClosingState {
         if self.rcvd_packets.load(Ordering::Acquire) >= 3
             || last_recv_time_guard.elapsed() > Duration::from_secs(1)
         {
-            *last_recv_time_guard = tokio::time::Instant::now().into_std();
+            *last_recv_time_guard = tokio::time::Instant::now();
             self.rcvd_packets.store(0, Ordering::Release);
             true
         } else {
             false
+        }
+    }
+
+    pub async fn try_send<W>(&self, mut write: W)
+    where
+        W: FnMut(
+            &mut [u8],
+            Option<ConnectionId>,
+            Option<ConnectionId>,
+            &ConnectionCloseFrame,
+        ) -> Option<usize>,
+    {
+        for path in self.paths.iter() {
+            let mut datagram = vec![0; path.mtu() as _];
+            match write(&mut datagram, self.scid, self.dcid, &self.ccf) {
+                Some(written) if written > 0 => {
+                    _ = path
+                        .send_packets(&[io::IoSlice::new(&datagram[..written])])
+                        .await;
+                }
+                _ => {}
+            };
         }
     }
 

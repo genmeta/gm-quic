@@ -298,6 +298,18 @@ impl Connection {
     pub fn origin_dcid(&self) -> io::Result<cid::ConnectionId> {
         self.try_map_components(|core_conn| Ok(core_conn.parameters.get_origin_dcid()?))?
     }
+
+    pub async fn handshaked(&self) {
+        if let Ok(f) = self.try_map_components(|core_conn| core_conn.state.handshaked()) {
+            f.await
+        }
+    }
+
+    pub async fn terminated(&self) {
+        if let Ok(f) = self.try_map_components(|core_conn| core_conn.state.terminated()) {
+            f.await
+        }
+    }
 }
 
 impl Drop for Connection {
