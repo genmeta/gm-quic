@@ -1,10 +1,7 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 use clap::{Parser, ValueEnum};
-use gm_quic::ToCertificate;
+use gm_quic::{ToCertificate, handy::client_parameters};
 use http::Uri;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rustls::RootCertStore;
@@ -13,7 +10,7 @@ use tracing::{Instrument, info_span};
 
 #[derive(Parser, Clone)]
 struct Options {
-    #[structopt(
+    #[arg(
         long,
         short = 'r',
         help = "number of requests per connection",
@@ -159,20 +156,6 @@ async fn run(options: Options) -> Result<(), Error> {
     tracing::info!(target: "counting" ,success_queries ,total_time ,qps, "done!");
 
     Ok(())
-}
-
-fn client_parameters() -> gm_quic::ClientParameters {
-    let mut params = gm_quic::ClientParameters::default();
-
-    params.set_initial_max_streams_bidi(100u32);
-    params.set_initial_max_streams_uni(100u32);
-    params.set_initial_max_data(1u32 << 20);
-    params.set_initial_max_stream_data_uni(1u32 << 20);
-    params.set_initial_max_stream_data_bidi_local(1u32 << 20);
-    params.set_initial_max_stream_data_bidi_remote(1u32 << 20);
-    params.set_max_idle_timeout(Duration::from_secs(10));
-
-    params
 }
 
 async fn for_each_connection(

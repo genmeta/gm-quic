@@ -66,6 +66,19 @@ pub struct QuicServer {
 }
 
 impl QuicServer {
+    pub fn add_interface(&self, iface: Arc<dyn QuicInterface>) -> io::Result<()> {
+        let local_addr = iface.local_addr()?;
+        Interfaces::add(iface.clone())?;
+        self.bind_interfaces.insert(local_addr, iface);
+        qlog::event!(
+            ServerListening {
+                socket_addr: local_addr,
+            },
+            use_strict_mode = self.use_strict_mode,
+        );
+        Ok(())
+    }
+
     /// Start to build a QuicServer.
     pub fn builder() -> QuicServerBuilder<TlsServerConfigBuilder<WantsVerifier>> {
         QuicServerBuilder {
@@ -548,6 +561,7 @@ impl QuicServerBuilder<TlsServerConfig> {
         let mut server = SERVER.write().unwrap();
         if let Some(server) = server.upgrade() {
             if !server.listener.is_closed() {
+                tracing::error!("There is already a active server running");
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     "There is already a active server running",

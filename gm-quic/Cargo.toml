@@ -30,24 +30,12 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 clap = { workspace = true }
+http = { workspace = true }
 qlog = { workspace = true, features = ["enabled"] }
 rustls = { workspace = true, features = ["ring"] }
+rustls-native-certs = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-std"] }
 
 [dev-dependencies.tracing-subscriber]
 workspace = true
 features = ["env-filter", "time"]
-
-[[example]]
-name = "http_client"
-path = "examples/http/client.rs"
-
-[[example]]
-name = "http_server"
-path = "examples/http/server.rs"
-
-[[example]]
-name = "echo_server"
-
-[[example]]
-name = "echo_client"

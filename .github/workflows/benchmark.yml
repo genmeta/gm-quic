@@ -46,7 +46,7 @@ jobs:
       - name: Install dependencies
         run: |
           brew update
-          brew install matplotlib
+          brew install python-matplotlib
       - name: Run benchmarks
         run: |
           python3 benchmark/launch.py run

@@ -7,8 +7,9 @@ use crossterm::{
     execute,
     terminal::{self},
 };
-use futures::{SinkExt, StreamExt, channel::mpsc, future};
+use futures::{SinkExt, StreamExt, channel::mpsc};
 use gm_quic::ToCertificate;
+use http::uri::Authority;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -25,21 +26,18 @@ enum TerminalMessage {
 }
 
 #[derive(Parser, Debug)]
-#[structopt(name = "server")]
-pub struct Options {
-    #[structopt(
+#[command(name = "server")]
+struct Options {
+    #[arg(
         long,
         short,
-        default_value = "h3-shim/examples/ca.cert",
+        default_value = "tests/keychain/localhost/ca.cert",
         help = "Certificate of CA who issues the server certificate"
     )]
     ca: PathBuf,
 
-    #[structopt(long, short = 'H', help = "host:port")]
-    host: String,
-
-    #[structopt(long, short, help = "Username for SSH authentication")]
-    username: String,
+    #[arg(help = "user:password@host:port")]
+    auth: Authority,
 }
 
 #[cfg_attr(test, allow(unused))]
@@ -54,9 +52,21 @@ async fn main() -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
     run(Options::parse()).await
 }
 
-pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
-    let password = rpassword::prompt_password("Please input password: ")
-        .map_err(|e| format!("failed to read password: {}", e))?;
+async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
+    let mut username_password = options
+        .auth
+        .as_str()
+        .split('@')
+        .next()
+        .ok_or("missing user@password")?
+        .split(':');
+    let username = username_password.next().ok_or("missing username")?;
+    let password = match username_password.next() {
+        Some(password) => password.to_string(),
+        None => rpassword::prompt_password(format!("Please input password for {username}: "))
+            .map_err(|e| format!("failed to read password: {}", e))?,
+    };
+
     // 创建通道用于异步通信
     let (tx, mut rx) = mpsc::channel::<TerminalMessage>(32);
 
@@ -165,20 +175,20 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
 
     let uri = http::Uri::builder()
         .scheme("https")
-        .authority(options.host)
+        .authority(options.auth.clone())
         .path_and_query("/ssh")
         .build()
         .map_err(|e| format!("failed to build uri: {}", e))?;
 
     // 构建 Basic Auth 头
     use base64::Engine;
-    let credentials = format!("{}:{}", options.username, password);
+
+    let credentials = format!("{}:{}", username, password);
     let b64_encoded = base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes());
     let auth_header = format!("Basic {}", b64_encoded);
 
-    let auth = uri.authority().ok_or("uri must have a host")?.clone();
-    let port = auth.port_u16().unwrap_or(443);
-    let addr = tokio::net::lookup_host((auth.host(), port))
+    let port = options.auth.port_u16().unwrap_or(443);
+    let addr = tokio::net::lookup_host((options.auth.host(), port))
         .await?
         .next()
         .ok_or("dns found no addresses")?;
@@ -194,17 +204,13 @@ pub async fn run(options: Options) -> Result<(), Box<dyn core::error::Error + Se
         .with_parameters(client_parameters())
         .enable_sslkeylog()
         .build();
-    info!(server_name = auth.host(), %addr, "connect to server");
-    let conn = quic_client.connect(auth.host(), addr)?;
+    info!(server_name = options.auth.host(), %addr, "connect to server");
+    let conn = quic_client.connect(options.auth.host(), addr)?;
 
     // create h3 client
     let gm_quic_conn = h3_shim::QuicConnection::new(conn).await;
     let (mut conn, mut h3_client) = h3::client::new(gm_quic_conn).await?;
-    let conn_close_monitor = async move {
-        future::poll_fn(|cx| conn.poll_close(cx)).await?;
-        // tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        Ok::<_, Box<dyn std::error::Error + 'static + Send + Sync>>(())
-    };
+    let conn_close_monitor = conn.wait_idle();
 
     info!(%uri, "request");
     let request = http::Request::builder()

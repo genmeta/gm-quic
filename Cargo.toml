@@ -20,6 +20,7 @@ default-members = [
     "qinterface",
     "qconnection",
     "gm-quic",
+    "h3-shim",
 ]
 
 [workspace.package]
@@ -45,7 +46,7 @@ nom = "8"
 pin-project-lite = "0.2"
 rand = "0.9"
 rustls = { version = "0.23", default-features = false, features = ["std"] }
-serde = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_with = "3"
 socket2 = "0.5"
@@ -55,15 +56,17 @@ tracing = "0.1"
 
 # h3 for h3-shim only , windows-sys, nix and libc for qudp only
 # they are not the default members of the workspace
-# h3 = "?"
 # windows-sys = "?"
 # libc = "0.2"
 # nix = "?"
 
 # dev-dependencies, for examples
-indicatif = { version = "0.17", features = ["tokio"] }
 clap = { version = "4", features = ["derive"] }
+h3 = "0.0.7"
+h3-datagram = "0.0.1"
 http = "1"
+indicatif = { version = "0.17", features = ["tokio"] }
+rustls-native-certs = "0.8"
 tracing-subscriber = "0.3"
 
 # members
@@ -76,6 +79,8 @@ qudp = { path = "./qudp", version = "0.1.0" }
 qinterface = { path = "./qinterface", version = "0.1.0" }
 qunreliable = { path = "./qunreliable", version = "0.1.0" }
 gm-quic = { path = "./gm-quic", version = "0.1.0" }
+h3-shim = { path = "./h3-shim", version = "0.1.0" }
+
 
 [profile.bench]
 debug = true

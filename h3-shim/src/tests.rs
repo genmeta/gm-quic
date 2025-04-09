@@ -1,62 +1,52 @@
-use std::path::PathBuf;
+use std::{
+    net::SocketAddr,
+    sync::{Arc, LazyLock, Once},
+    time::Duration,
+};
 
-use tracing::{Instrument, info_span};
+use gm_quic::QuicServer;
+use tokio::{runtime::Runtime, sync::Mutex, time};
 
-mod client_example {
-    use crate as h3_shim;
-    include!("../examples/h3-client.rs");
-}
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
-mod server_example {
-    use crate as h3_shim;
-    include!("../examples/h3-server.rs");
-}
+#[allow(unused)]
+pub fn run_serially<C, S>(
+    launch_server: impl FnOnce() -> Result<(Arc<QuicServer>, S), Error>,
+    launch_client: impl FnOnce(SocketAddr) -> C,
+) -> Result<(), Error>
+where
+    C: Future<Output = Result<(), Error>> + 'static,
+    S: Future<Output: Send> + Send + 'static,
+{
+    static SUBSCRIBER: Once = Once::new();
 
-#[tokio::test(flavor = "current_thread")]
-async fn h3_test() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        // .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
-        .with_max_level(tracing::Level::DEBUG)
-        .with_writer(std::io::stdout)
-        // .pretty()
-        // .with_ansi(false)
-        .init();
-    // CryptoProvider ring is installed automatically.
+    SUBSCRIBER.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .init()
+    });
 
-    let client_opt = client_example::Options {
-        ca: PathBuf::from("examples/ca.cert"),
-        uri: "https://localhost:4433/Cargo.toml".to_string(),
-    };
+    static RT: LazyLock<Runtime> = LazyLock::new(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create runtime")
+    });
 
-    let server_opt = server_example::Options {
-        root: PathBuf::from("./"),
-        listen: vec![
-            "127.0.0.1:4433".parse().unwrap(),
-            "[::1]:4433".parse().unwrap(),
-        ],
-        certs: server_example::Certs {
-            server_name: "localhost".to_string(),
-            cert: PathBuf::from("examples/server.cert"),
-            key: PathBuf::from("examples/server.key"),
-        },
-    };
+    RT.block_on(async move {
+        static LOCK: LazyLock<Arc<Mutex<()>>> = LazyLock::new(Default::default);
+        let _lock = LOCK.lock().await;
 
-    let client = async move {
-        client_example::run(client_opt)
-            .instrument(info_span!("client"))
+        let (server, server_task) = launch_server()?;
+        let server_task = tokio::task::spawn(server_task);
+        let server_addr = *server.addresses().iter().next().expect("no address");
+        time::timeout(Duration::from_secs(10), launch_client(server_addr))
             .await
-            .expect("client failed");
-    };
-
-    let server = async move {
-        // give it a litte time to enter draining state...
-        let test_time = std::time::Duration::from_secs(2);
-        let run = server_example::run(server_opt).instrument(info_span!("server"));
-        match tokio::time::timeout(test_time, run).await {
-            Ok(result) => result.expect("server failed"),
-            Err(_finish) => { /* ok */ }
-        }
-    };
-    tokio::join!(server, client);
+            .expect("test timeout")?;
+        server.shutdown();
+        server_task.abort();
+        Ok(())
+    })
 }
+
+// TODO
