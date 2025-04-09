@@ -25,6 +25,10 @@ impl AppCloseFrame {
     pub fn reason(&self) -> &str {
         &self.reason
     }
+
+    pub fn conceal(&mut self) {
+        self.reason = Cow::Borrowed("");
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,8 +77,8 @@ pub enum ConnectionCloseFrame {
 
 const CONNECTION_CLOSE_FRAME_TYPE: u8 = 0x1c;
 
-const QUIC_LAYER: u8 = 1;
-const APP_LAYER: u8 = 0;
+const QUIC_LAYER: u8 = 0;
+const APP_LAYER: u8 = 1;
 
 impl super::GetFrameType for ConnectionCloseFrame {
     fn frame_type(&self) -> FrameType {
@@ -195,20 +199,18 @@ impl<T: bytes::BufMut> super::io::WriteFrame<ConnectionCloseFrame> for T {
                 use crate::varint::WriteVarInt;
                 self.put_u8(CONNECTION_CLOSE_FRAME_TYPE | APP_LAYER);
                 self.put_varint(&frame.error_code);
-                self.put_varint(&VarInt::from_u32(frame.reason.len() as u32));
-                let remaining = self.remaining_mut();
-                let reason = frame.reason.as_bytes();
-                self.put_slice(&reason[..reason.len().min(remaining)]);
+                let len = frame.reason.len().min(self.remaining_mut());
+                self.put_varint(&VarInt::from_u32(len as u32));
+                self.put_slice(&frame.reason.as_bytes()[..len]);
             }
             ConnectionCloseFrame::Quic(frame) => {
                 use crate::varint::WriteVarInt;
                 self.put_u8(CONNECTION_CLOSE_FRAME_TYPE | QUIC_LAYER);
                 self.put_varint(&frame.error_kind.into());
                 self.put_varint(&frame.frame_type.into());
-                self.put_varint(&VarInt::from_u32(frame.reason.len() as u32));
-                let remaining = self.remaining_mut();
-                let reason = frame.reason.as_bytes();
-                self.put_slice(&reason[..reason.len().min(remaining)]);
+                let len = frame.reason.len().min(self.remaining_mut());
+                self.put_varint(&VarInt::from_u32(len as u32));
+                self.put_slice(&frame.reason.as_bytes()[..len]);
             }
         }
     }
@@ -240,7 +242,7 @@ mod tests {
         use super::connection_close_frame_at_layer;
         use crate::varint::be_varint;
         let buf = vec![
-            super::CONNECTION_CLOSE_FRAME_TYPE,
+            super::CONNECTION_CLOSE_FRAME_TYPE | super::APP_LAYER,
             0x0c,
             5,
             b'w',
@@ -250,8 +252,10 @@ mod tests {
             b'g',
         ];
         let (input, frame) = flat_map(be_varint, |frame_type| {
-            if frame_type.into_inner() == super::CONNECTION_CLOSE_FRAME_TYPE as u64 {
-                connection_close_frame_at_layer(0)
+            if frame_type.into_inner()
+                == (super::CONNECTION_CLOSE_FRAME_TYPE | super::APP_LAYER) as u64
+            {
+                connection_close_frame_at_layer(super::APP_LAYER)
             } else {
                 panic!("wrong frame type: {}", frame_type)
             }

@@ -278,13 +278,14 @@ impl<'b> PacketWriter<'b> {
         let payload_len = packet.payload_len();
         let tag_len = packet.keys.pk().tag_len();
 
-        if payload_len + tag_len < 20 {
-            unreachable!("packet is too small, and it should be padding before this step");
-        }
-
         let (actual_pn, encoded_pn) = packet.pn;
         let pn_len = encoded_pn.size();
         let pkt_size = packet.cursor + tag_len;
+
+        assert!(
+            payload_len + tag_len >= 20,
+            "The payload needs at least 20 bytes to have enough samples to remove the packet header protection."
+        );
 
         if packet.is_short_header() {
             let key_phase = packet.keys.key_phase().unwrap();

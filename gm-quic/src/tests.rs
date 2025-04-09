@@ -126,6 +126,7 @@ fn launch_test_client(parameters: ClientParameters) -> Arc<QuicClient> {
         .with_parameters(parameters)
         .without_cert()
         .with_qlog(QLOGGER.clone())
+        .enable_sslkeylog()
         .build();
 
     Arc::new(client)

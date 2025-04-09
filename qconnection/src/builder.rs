@@ -47,7 +47,7 @@ use crate::{
     prelude::HeartbeatConfig,
     space::{self, Spaces, data::DataSpace, handshake::HandshakeSpace, initial::InitialSpace},
     state::ConnState,
-    termination::ClosingState,
+    termination::Terminator,
     tls::{self, ArcTlsSession},
 };
 
@@ -613,7 +613,6 @@ impl Components {
             self.proto.del_router_entry(&origin_dcid.into());
         }
         self.parameters.on_conn_error(&error);
-        let closing_state = Arc::new(ClosingState::new(ccf, &self));
 
         tokio::spawn({
             let local_cids = self.cid_registry.local.clone();
@@ -628,10 +627,15 @@ impl Components {
             .in_current_span()
         });
 
-        self.spaces
-            .close(closing_state.clone(), self.event_broker.clone());
+        let terminator = Arc::new(Terminator::new(ccf, &self));
+        tokio::spawn(
+            self.spaces
+                .close(terminator, self.rcvd_pkt_q.clone(), self.event_broker)
+                .instrument_in_current()
+                .in_current_span(),
+        );
 
-        Termination::closing(error, self.cid_registry.local, closing_state)
+        Termination::closing(error, self.cid_registry.local, self.rcvd_pkt_q)
     }
 
     pub fn enter_draining(self, ccf: ConnectionCloseFrame) -> Termination {
@@ -639,7 +643,7 @@ impl Components {
             owner: Owner::Local,
             ccf: &ccf // TODO: trigger
         });
-        let error = ccf.into();
+        let error = ccf.clone().into();
         self.spaces.data().on_conn_error(&error);
         self.flow_ctrl.on_conn_error(&error);
         self.tls_session.on_conn_error(&error);
@@ -665,7 +669,14 @@ impl Components {
             .in_current_span()
         });
 
-        self.rcvd_pkt_q.close_all();
+        let terminator = Arc::new(Terminator::new(ccf, &self));
+        tokio::spawn(
+            self.spaces
+                .drain(terminator, self.rcvd_pkt_q)
+                .instrument_in_current()
+                .in_current_span(),
+        );
+
         Termination::draining(error, self.cid_registry.local)
     }
 }

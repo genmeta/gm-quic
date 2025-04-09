@@ -13,17 +13,16 @@ use tokio::time::Instant;
 
 use crate::{ArcLocalCids, Components, path::ArcPathContexts};
 
-pub struct ClosingState {
+pub struct Terminator {
     last_recv_time: Mutex<Instant>,
     rcvd_packets: AtomicUsize,
     scid: Option<ConnectionId>,
     dcid: Option<ConnectionId>,
     ccf: ConnectionCloseFrame,
     paths: ArcPathContexts,
-    rcvd_pkt_q: Arc<RcvdPacketQueue>,
 }
 
-impl ClosingState {
+impl Terminator {
     pub fn new(ccf: ConnectionCloseFrame, components: &Components) -> Self {
         Self {
             last_recv_time: Mutex::new(Instant::now()),
@@ -32,7 +31,6 @@ impl ClosingState {
             dcid: components.cid_registry.remote.latest_dcid(),
             ccf,
             paths: components.paths.clone(),
-            rcvd_pkt_q: components.rcvd_pkt_q.clone(),
         }
     }
 
@@ -96,15 +94,11 @@ impl ClosingState {
             _ => {}
         };
     }
-
-    pub fn rcvd_pkt_q(&self) -> &RcvdPacketQueue {
-        &self.rcvd_pkt_q
-    }
 }
 
 #[derive(Clone)]
 enum State {
-    Closing(Arc<ClosingState>),
+    Closing(Arc<RcvdPacketQueue>),
     Draining,
 }
 
@@ -118,7 +112,7 @@ pub struct Termination {
 }
 
 impl Termination {
-    pub fn closing(error: Error, local_cids: ArcLocalCids, state: Arc<ClosingState>) -> Self {
+    pub fn closing(error: Error, local_cids: ArcLocalCids, state: Arc<RcvdPacketQueue>) -> Self {
         Self {
             error,
             _local_cids: local_cids,
@@ -139,8 +133,8 @@ impl Termination {
     }
 
     pub fn enter_draining(&mut self) {
-        if let State::Closing(rvd_pkt_buf) = mem::replace(&mut self.state, State::Draining) {
-            rvd_pkt_buf.rcvd_pkt_q.close_all();
+        if let State::Closing(rcvd_pkt_q) = mem::replace(&mut self.state, State::Draining) {
+            rcvd_pkt_q.close_all();
         }
     }
 }

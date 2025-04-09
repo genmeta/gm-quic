@@ -49,7 +49,7 @@ use crate::{
     events::{ArcEventBroker, EmitEvent, Event},
     path::{Path, SendBuffer},
     space::{AckDataSpace, FlowControlledDataStreams, pipe},
-    termination::ClosingState,
+    termination::Terminator,
     tx::{PacketBuffer, PaddablePacket, Transaction},
 };
 
@@ -683,27 +683,18 @@ impl ClosingDataSpace {
 pub fn spawn_deliver_and_parse_closing(
     mut packets: impl Stream<Item = ReceivedOneRttFrom> + Unpin + Send + 'static,
     space: ClosingDataSpace,
-    closing_state: Arc<ClosingState>,
+    terminator: Arc<Terminator>,
     event_broker: ArcEventBroker,
 ) {
     tokio::spawn(
         async move {
-            // try send ccf on all path
-            _ = closing_state
-                .try_send(|buf, _scid, dcid, ccf| {
-                    space
-                        .try_assemble_ccf_packet(dcid?, ccf, buf)
-                        .map(|layout| layout.sent_bytes())
-                })
-                .await;
-
             while let Some((packet, pathway, _socket)) = packets.next().await {
                 if let Some(ccf) = space.recv_packet(packet) {
                     event_broker.emit(Event::Closed(ccf.clone()));
                     return;
                 }
-                if closing_state.should_send() {
-                    _ = closing_state
+                if terminator.should_send() {
+                    _ = terminator
                         .try_send_with(pathway, |buf, _scid, dcid, ccf| {
                             space
                                 .try_assemble_ccf_packet(dcid?, ccf, buf)

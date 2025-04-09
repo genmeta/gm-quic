@@ -45,7 +45,7 @@ use crate::{
     Components, InitialJournal,
     events::{ArcEventBroker, EmitEvent, Event},
     path::Path,
-    termination::ClosingState,
+    termination::Terminator,
     tx::{PacketBuffer, PaddablePacket, Transaction},
 };
 
@@ -385,11 +385,19 @@ impl ClosingInitialSpace {
         ccf: &ConnectionCloseFrame,
         buf: &mut [u8],
     ) -> Option<FinalPacketLayout> {
-        let header = LongHeaderBuilder::with_cid(scid, dcid).handshake();
+        let header = LongHeaderBuilder::with_cid(dcid, scid).initial(vec![]);
         let pn = self.ccf_packet_pn;
         let mut packet_writer = PacketWriter::new_long(&header, buf, pn, self.keys.clone()).ok()?;
 
-        packet_writer.dump_frame(ccf.clone());
+        let ccf = match ccf.clone() {
+            ConnectionCloseFrame::App(mut app_close_frame) => {
+                app_close_frame.conceal();
+                ConnectionCloseFrame::App(app_close_frame)
+            }
+            ccf @ ConnectionCloseFrame::Quic(_) => ccf,
+        };
+
+        packet_writer.dump_frame(ccf);
 
         Some(packet_writer.encrypt_and_protect())
     }
@@ -398,27 +406,18 @@ impl ClosingInitialSpace {
 pub fn spawn_deliver_and_parse_closing(
     mut packets: impl Stream<Item = ReceivedFrom> + Unpin + Send + 'static,
     space: ClosingInitialSpace,
-    closing_state: Arc<ClosingState>,
+    terminator: Arc<Terminator>,
     event_broker: ArcEventBroker,
 ) {
     tokio::spawn(
         async move {
-            // try send ccf on all path
-            _ = closing_state
-                .try_send(|buf, scid, dcid, ccf| {
-                    space
-                        .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
-                        .map(|layout| layout.sent_bytes())
-                })
-                .await;
-
             while let Some((packet, pathway, _socket)) = packets.next().await {
                 if let Some(ccf) = space.recv_packet(packet) {
                     event_broker.emit(Event::Closed(ccf.clone()));
                     return;
                 }
-                if closing_state.should_send() {
-                    _ = closing_state
+                if terminator.should_send() {
+                    _ = terminator
                         .try_send_with(pathway, |buf, scid, dcid, ccf| {
                             space
                                 .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)

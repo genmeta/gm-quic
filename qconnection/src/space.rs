@@ -12,6 +12,7 @@ use qbase::{
         StreamFrame,
     },
 };
+use qinterface::queue::RcvdPacketQueue;
 use qlog::{quic::transport::PacketsAcked, telemetry::Instrument};
 use qrecovery::{
     crypto::{CryptoStream, CryptoStreamOutgoing},
@@ -23,7 +24,7 @@ use tracing::Instrument as _;
 use crate::{
     Components, DataStreams, FlowController, GuaranteedFrame,
     events::{ArcEventBroker, EmitEvent, Event},
-    termination::ClosingState,
+    termination::Terminator,
 };
 
 #[derive(Clone)]
@@ -58,44 +59,100 @@ impl Spaces {
         &self.data
     }
 
-    pub fn close(self, closing_state: Arc<ClosingState>, event_broker: ArcEventBroker) {
-        let received_packet_queue = closing_state.rcvd_pkt_q();
+    pub async fn close(
+        self,
+        terminator: Arc<Terminator>,
+        rcvd_pkt_q: Arc<RcvdPacketQueue>,
+        event_broker: ArcEventBroker,
+    ) {
         match self.initial.close() {
-            None => received_packet_queue.initial().close(),
+            None => rcvd_pkt_q.initial().close(),
             Some(space) => {
+                _ = terminator
+                    .try_send(|buf, scid, dcid, ccf| {
+                        space
+                            .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
+                            .map(|layout| layout.sent_bytes())
+                    })
+                    .await;
                 initial::spawn_deliver_and_parse_closing(
-                    received_packet_queue.initial().receiver(),
+                    rcvd_pkt_q.initial().receiver(),
                     space,
-                    closing_state.clone(),
+                    terminator.clone(),
                     event_broker.clone(),
                 );
             }
         }
 
-        received_packet_queue.zero_rtt().close();
+        rcvd_pkt_q.zero_rtt().close();
 
         match self.handshake.close() {
-            None => received_packet_queue.handshake().close(),
+            None => rcvd_pkt_q.handshake().close(),
             Some(space) => {
+                _ = terminator
+                    .try_send(|buf, scid, dcid, ccf| {
+                        space
+                            .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
+                            .map(|layout| layout.sent_bytes())
+                    })
+                    .await;
                 handshake::spawn_deliver_and_parse_closing(
-                    received_packet_queue.handshake().receiver(),
+                    rcvd_pkt_q.handshake().receiver(),
                     space,
-                    closing_state.clone(),
+                    terminator.clone(),
                     event_broker.clone(),
                 );
             }
         }
 
         match self.data.close() {
-            None => received_packet_queue.one_rtt().close(),
+            None => rcvd_pkt_q.one_rtt().close(),
             Some(space) => {
+                _ = terminator
+                    .try_send(|buf, _scid, dcid, ccf| {
+                        space
+                            .try_assemble_ccf_packet(dcid?, ccf, buf)
+                            .map(|layout| layout.sent_bytes())
+                    })
+                    .await;
                 data::spawn_deliver_and_parse_closing(
-                    received_packet_queue.one_rtt().receiver(),
+                    rcvd_pkt_q.one_rtt().receiver(),
                     space,
-                    closing_state.clone(),
+                    terminator.clone(),
                     event_broker.clone(),
                 );
             }
+        }
+    }
+
+    pub async fn drain(self, terminator: Arc<Terminator>, rcvd_pkt_q: Arc<RcvdPacketQueue>) {
+        rcvd_pkt_q.close_all();
+        if let Some(space) = self.initial.close() {
+            _ = terminator
+                .try_send(|buf, scid, dcid, ccf| {
+                    space
+                        .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
+                        .map(|layout| layout.sent_bytes())
+                })
+                .await;
+        }
+        if let Some(space) = self.handshake.close() {
+            _ = terminator
+                .try_send(|buf, scid, dcid, ccf| {
+                    space
+                        .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
+                        .map(|layout| layout.sent_bytes())
+                })
+                .await;
+        }
+        if let Some(space) = self.data.close() {
+            _ = terminator
+                .try_send(|buf, _scid, dcid, ccf| {
+                    space
+                        .try_assemble_ccf_packet(dcid?, ccf, buf)
+                        .map(|layout| layout.sent_bytes())
+                })
+                .await;
         }
     }
 }
