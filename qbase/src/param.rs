@@ -12,6 +12,7 @@ use crate::{
     sid::Role,
 };
 
+pub mod handy;
 mod util;
 pub use util::*;
 

@@ -114,8 +114,12 @@ impl<TX> ReadySender<TX> {
     }
 
     pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.flush_waker = Some(cx.waker().clone());
-        Poll::Pending
+        if self.sndbuf.is_all_rcvd() {
+            Poll::Ready(Ok(()))
+        } else {
+            self.flush_waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
     }
 
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {

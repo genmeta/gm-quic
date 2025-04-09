@@ -1,16 +1,18 @@
-use std::{net::SocketAddr, ops::Deref, path::PathBuf, sync::Arc, time::Duration};
+use std::{net::SocketAddr, ops::Deref, path::PathBuf, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
+use gm_quic::handy::server_parameters;
 use h3::{error::ErrorLevel, quic::BidiStream, server::RequestStream};
 use http::{Request, StatusCode};
+use qlog::telemetry::handy::{DefaultSeqLogger, NullLogger};
 use tokio::{fs::File, io::AsyncReadExt};
 use tracing::{error, info};
 
 #[derive(Parser, Debug)]
-#[structopt(name = "server")]
-pub struct Options {
-    #[structopt(
+#[command(name = "server")]
+struct Options {
+    #[arg(
         name = "dir",
         short,
         long,
@@ -18,43 +20,52 @@ pub struct Options {
                 If omitted, server will respond OK.",
         default_value = "./"
     )]
-    pub root: PathBuf,
-    #[structopt(
+    root: PathBuf,
+    #[arg(long, help = "Save the qlog to a dir", value_name = "PATH")]
+    qlog: Option<PathBuf>,
+    #[arg(
         short,
         long,
+        value_delimiter = ',',
         default_values = ["127.0.0.1:4433", "[::1]:4433"],
         help = "What address:port to listen for new connections"
     )]
-    pub listen: Vec<SocketAddr>,
-    #[structopt(flatten)]
-    pub certs: Certs,
+    listen: Vec<SocketAddr>,
+    #[arg(
+        long,
+        short,
+        value_delimiter = ',',
+        default_value = "h3",
+        help = "ALPNs to use for the connection"
+    )]
+    alpns: Vec<Vec<u8>>,
+    #[command(flatten)]
+    certs: Certs,
 }
 
 #[derive(Parser, Debug)]
-pub struct Certs {
-    #[structopt(long, short, default_value = "localhost", help = "Server name.")]
-    pub server_name: String,
-    #[structopt(
+struct Certs {
+    #[arg(long, short, default_value = "localhost", help = "Server name.")]
+    server_name: String,
+    #[arg(
         long,
         short,
-        default_value = "h3-shim/examples/server.cert",
+        default_value = "tests/keychain/localhost/server.cert",
         help = "Certificate for TLS. If present, `--key` is mandatory."
     )]
-    pub cert: PathBuf,
-    #[structopt(
+    cert: PathBuf,
+    #[arg(
         long,
         short,
-        default_value = "h3-shim/examples/server.key",
+        default_value = "tests/keychain/localhost/server.key",
         help = "Private key for the certificate."
     )]
-    pub key: PathBuf,
+    key: PathBuf,
 }
-
-static ALPN: &[u8] = b"h3";
 
 #[cfg_attr(test, allow(unused))]
 #[tokio::main(flavor = "current_thread")]
-pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
@@ -65,12 +76,18 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run(Options::parse()).await
 }
 
-pub async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("serving {}", options.root.display());
     let root = Arc::new(options.root);
     if !root.is_dir() {
         return Err(format!("{}: is not a readable directory", root.display()).into());
     }
+
+    let qlogger: Arc<dyn qlog::telemetry::Log + Send + Sync> = match options.qlog {
+        Some(dir) => Arc::new(DefaultSeqLogger::new(dir)),
+        None => Arc::new(NullLogger),
+    };
+
     let Certs {
         server_name,
         cert,
@@ -78,12 +95,12 @@ pub async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Sen
     } = options.certs;
 
     let quic_server = ::gm_quic::QuicServer::builder()
-        .with_supported_versions([1u32])
+        .with_qlog(qlogger)
         .without_client_cert_verifier()
         .with_parameters(server_parameters())
         .enable_sni()
         .add_host(server_name, cert.as_path(), key.as_path())
-        .with_alpns([ALPN.to_vec()])
+        .with_alpns(options.alpns)
         .listen(&options.listen[..])?;
     info!("listen on {:?}", quic_server.addresses());
 
@@ -105,20 +122,6 @@ pub async fn run(options: Options) -> Result<(), Box<dyn std::error::Error + Sen
     }
 
     Ok(())
-}
-
-fn server_parameters() -> gm_quic::ServerParameters {
-    let mut params = gm_quic::ServerParameters::default();
-
-    params.set_initial_max_streams_bidi(100u32);
-    params.set_initial_max_streams_uni(100u32);
-    params.set_initial_max_data(1u32 << 20);
-    params.set_initial_max_stream_data_uni(1u32 << 20);
-    params.set_initial_max_stream_data_bidi_local(1u32 << 20);
-    params.set_initial_max_stream_data_bidi_remote(1u32 << 20);
-    params.set_max_idle_timeout(Duration::from_secs(30));
-
-    params
 }
 
 async fn handle_connection<T>(
@@ -186,4 +189,12 @@ where
 
     stream.finish().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_name() {}
 }

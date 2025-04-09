@@ -701,7 +701,11 @@ impl Transaction<'_> {
                 Epoch::Data => spaces.data().try_assemble_ping_packet(self, spin, buf),
             };
             return middle_assembled_packet.map(|packet| {
-                let final_layout = packet.complete(buf);
+                let final_layout = if epoch == Epoch::Initial {
+                    packet.fill_and_complete(buf)
+                } else {
+                    packet.complete(buf)
+                };
                 self.cc.on_pkt_sent(
                     epoch,
                     final_layout.pn(),
