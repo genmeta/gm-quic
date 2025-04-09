@@ -26,12 +26,12 @@ jobs:
       - name: Zip benchmark results
         run: |
           cd benchmark
-          zip -r benchmark-results.zip output/
+          zip -r benchmark-results-linux.zip output/
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-results
-          path: benchmark/benchmark-results.zip
+          name: benchmark-results-linux
+          path: benchmark/benchmark-results-linux.zip
 
   macos-benchmark:
     runs-on: macos-latest
@@ -46,16 +46,16 @@ jobs:
       - name: Install dependencies
         run: |
           brew update
-          brew install python-matplotlib
+          brew install python-matplotlib go
       - name: Run benchmarks
         run: |
           python3 benchmark/launch.py run
       - name: Zip benchmark results
         run: |
           cd benchmark
-          zip -r benchmark-results.zip output/
+          zip -r benchmark-results-macos.zip output/
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-results
-          path: benchmark/benchmark-results.zip
+          name: benchmark-results-macos
+          path: benchmark/benchmark-results-macos.zip
