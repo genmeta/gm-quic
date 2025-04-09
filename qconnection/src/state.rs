@@ -97,12 +97,12 @@ impl ConnState {
                         QlogConnectionState::Granular(
                             GranularConnectionStates::HandshakeConfirmed,
                         ) => {
-                            self.handshaked.add_permits(Semaphore::MAX_PERMITS);
+                            self.handshaked.add_permits(1024);
                         }
                         QlogConnectionState::Granular(GranularConnectionStates::Closing)
                         | QlogConnectionState::Granular(GranularConnectionStates::Draining) => {
                             self.handshaked.close();
-                            self.terminated.add_permits(Semaphore::MAX_PERMITS);
+                            self.terminated.add_permits(1024);
                         }
                         _ => {}
                     }

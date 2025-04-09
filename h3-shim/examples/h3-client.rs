@@ -42,11 +42,20 @@ struct Options {
     #[arg(
         long,
         short = 'p',
-        help = "Progress bar mode",
+        action = clap::ArgAction::Set,
+        help = "enable progress bar",
         default_value = "true",
         value_enum
     )]
     progress: bool,
+    #[arg(
+        long,
+        action = clap::ArgAction::Set,
+        help = "enable ansi",
+        default_value = "true",
+        value_enum
+    )]
+    ansi: bool,
     #[arg(
         long,
         short = 'r',
@@ -73,10 +82,12 @@ struct Options {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    let options = Options::parse();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_ansi(options.ansi)
         .init();
-    if let Err(error) = run(Options::parse()).await {
+    if let Err(error) = run(options).await {
         tracing::error!(?error);
         std::process::exit(1);
     };
@@ -154,6 +165,7 @@ async fn run(options: Options) -> Result<(), Error> {
                 authority.clone(),
                 paths.clone(),
                 total_pb.clone(),
+                conns_pb.clone(),
                 options.save.clone(),
             ));
         }
@@ -191,6 +203,7 @@ async fn download_files_with_progress(
     authority: Authority,
     paths: impl Iterator<Item = String>,
     total_pb: ProgressBar,
+    conns_pb: ProgressBar,
     save: Option<PathBuf>,
 ) -> Result<usize, Error> {
     let (server_name, server_addr) = lookup(&authority).await?;
@@ -199,9 +212,11 @@ async fn download_files_with_progress(
     let (mut connection, send_request) =
         h3::client::new(h3_shim::QuicConnection::new(connection).await).await?;
     tokio::spawn(async move { connection.wait_idle().await });
+    conns_pb.inc_length(1);
 
     let mut requests = JoinSet::new();
     for path in paths {
+        total_pb.inc_length(1);
         let uri = {
             let mut parts = Parts::default();
             parts.scheme = Some(Scheme::HTTPS);
@@ -274,9 +289,4 @@ async fn lookup(auth: &Authority) -> Result<(&str, SocketAddr), Error> {
     let addr = *addrs.first().ok_or("dns found no ipv6 addresses")?;
     tracing::info!("DNS lookup for {:?}: {:?}", auth.host(), addr);
     Ok((auth.host(), addr))
-}
-
-#[test]
-fn feature() {
-    println!("{:?}", PathBuf::from_iter(["/tmp", "/a"]).display())
 }

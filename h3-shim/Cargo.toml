@@ -51,9 +51,6 @@ features = ["env-filter", "time"]
 name = "h3-server"
 
 [[example]]
-name = "h3-stress-client"
-
-[[example]]
 name = "h3-client"
 
 [[example]]

@@ -273,11 +273,13 @@ class H3Client:
 
         launch_client = [
             "cargo", "run", "--package", "h3-shim",
-            "--release", "--example", "h3-stress-client", "--",
+            "--release", "--example", "h3-client", "--",
                          "--conns", str(int(self.stress / file_size)),
                          "--reqs", str(self.requests),
                          "--roots", ecc_certs.root_cert,
-                         "--progress", "summary" if self.progress else "none",
+                         "--progress", "true" if self.progress else "false",
+                         "--ansi", "false",
+                         "--qlog", "/tmp/qlog",
                          f'https://localhost:{server_runner.listen_port}/{rand_files.gen(file_size)}'
         ]
 
@@ -468,7 +470,7 @@ if __name__ == "__main__":
     elif args.command == 'load':
         results = load_results(args.file)
     elif args.command == 'clean':
-        paths = [rand_files.path, ecc_certs.path]
+        paths = [rand_files.path, ecc_certs.path, output_dir]
         if args.all:
             paths.extend([go_quic_dir, tquic_dir, quinn_dir, quiche_dir])
         for path in paths:
