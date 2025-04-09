@@ -31,9 +31,7 @@ use qlog::{
     GroupID, VantagePointType,
     quic::{
         Owner,
-        connectivity::{
-            ConnectionClosed, ConnectionStateUpdated, GranularConnectionStates, PathAssigned,
-        },
+        connectivity::{ConnectionClosed, PathAssigned},
         transport::ParametersSet,
     },
     telemetry::{Instrument, Log, Span},
@@ -579,7 +577,7 @@ impl Components {
                         let reason: String = tokio::select! {
                             false = validate => "failed to validate".into(),
                             _ = idle_timeout => "idle timeout".into(),
-                            Err(e) = burst.launch() => format!("failed to send packets: {}", e),
+                            Err(e) = burst.launch() => format!("failed to send packets: {:?}", e),
                             _ = path.defer_idle_timeout(defer_idle_timeout) => "failed to defer idle timeout".into(),
                         };
                         Err(reason)
@@ -625,10 +623,6 @@ impl Components {
                 tokio::time::sleep(pto_duration * 3).await;
                 local_cids.clear();
                 event_broker.emit(Event::Terminated);
-                qlog::event!(ConnectionStateUpdated {
-                    old: GranularConnectionStates::Closing,
-                    new: GranularConnectionStates::Closed,
-                });
             }
             .instrument_in_current()
             .in_current_span()
@@ -666,10 +660,6 @@ impl Components {
                 tokio::time::sleep(pto_duration * 3).await;
                 local_cids.clear();
                 event_broker.emit(Event::Terminated);
-                qlog::event!(ConnectionStateUpdated {
-                    old: GranularConnectionStates::Draining,
-                    new: GranularConnectionStates::Closed,
-                });
             }
             .instrument_in_current()
             .in_current_span()

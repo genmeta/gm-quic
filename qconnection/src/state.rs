@@ -12,15 +12,30 @@ use qlog::quic::{
     },
     transport::ParametersSet,
 };
+use tokio::sync::Semaphore;
 
 use crate::Components;
 
-#[derive(Default, Clone)]
-pub struct ConnState(Arc<AtomicU8>);
+#[derive(Clone)]
+pub struct ConnState {
+    state: Arc<AtomicU8>,
+    handshaked: Arc<Semaphore>,
+    terminated: Arc<Semaphore>,
+}
+
+impl Default for ConnState {
+    fn default() -> Self {
+        Self {
+            state: Default::default(),
+            handshaked: Arc::new(Semaphore::new(0)),
+            terminated: Arc::new(Semaphore::new(0)),
+        }
+    }
+}
 
 impl ConnState {
     pub fn new() -> Self {
-        Self(Arc::new(AtomicU8::new(0)))
+        Self::default()
     }
 
     /// Attempt to set the connection state from None to `BaseConnectionStates::Attempted`.
@@ -31,7 +46,7 @@ impl ConnState {
     pub fn try_entry_attempted(&self, components: &Components, link: Link) -> Result<bool, Error> {
         let attempted = encode(BaseConnectionStates::Attempted.into());
         let success = self
-            .0
+            .state
             .compare_exchange(0, attempted, Ordering::AcqRel, Ordering::Acquire)
             .is_ok();
 
@@ -64,12 +79,12 @@ impl ConnState {
     /// Try to update the connection state, return the old state if successful.
     pub fn update(&self, state: QlogConnectionState) -> Option<QlogConnectionState> {
         let new_state_code = encode(state);
-        let mut old_state_code = self.0.load(Ordering::Acquire);
+        let mut old_state_code = self.state.load(Ordering::Acquire);
         loop {
             if new_state_code <= old_state_code {
                 return None;
             }
-            match self.0.compare_exchange(
+            match self.state.compare_exchange(
                 old_state_code,
                 new_state_code,
                 Ordering::AcqRel,
@@ -78,6 +93,19 @@ impl ConnState {
                 Ok(_old_state_code) => {
                     let old_state = decode(old_state_code)
                         .expect("conenction failed before first path initialized");
+                    match state {
+                        QlogConnectionState::Granular(
+                            GranularConnectionStates::HandshakeConfirmed,
+                        ) => {
+                            self.handshaked.add_permits(Semaphore::MAX_PERMITS);
+                        }
+                        QlogConnectionState::Granular(GranularConnectionStates::Closing)
+                        | QlogConnectionState::Granular(GranularConnectionStates::Draining) => {
+                            self.handshaked.close();
+                            self.terminated.add_permits(Semaphore::MAX_PERMITS);
+                        }
+                        _ => {}
+                    }
                     qlog::event!(ConnectionStateUpdated {
                         new: state,
                         old: old_state
@@ -86,6 +114,21 @@ impl ConnState {
                 }
                 Err(current_state_code) => old_state_code = current_state_code,
             }
+        }
+    }
+
+    pub fn handshaked(&self) -> impl Future<Output = ()> + Send + use<> {
+        let handshaked = self.handshaked.clone();
+        async move { _ = handshaked.acquire().await }
+    }
+
+    pub fn terminated(&self) -> impl Future<Output = ()> + Send + use<> {
+        let terminated = self.terminated.clone();
+        async move {
+            _ = terminated
+                .acquire()
+                .await
+                .expect("terminated semaphore should never be closed")
         }
     }
 }

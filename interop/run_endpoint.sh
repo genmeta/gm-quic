@@ -27,7 +27,7 @@ run_client() {
 
     # Start the client
     echo "Starting client with parameters: $CLIENT_PARAMS"
-    $binary --alpns hq-interop --qlog-dir $QLOGDIR \
+    $binary --alpns hq-interop --qlog $QLOGDIR \
         --skip-verify --save /downloads $CLIENT_PARAMS $REQUESTS
 }
 
@@ -48,7 +48,7 @@ run_server() {
     esac
     # Start the server
     echo "Starting server with parameters: $SERVER_PARAMS"
-    $binary --alpns hq-interop --qlog-dir $QLOGDIR \
+    $binary --alpns hq-interop --qlog $QLOGDIR \
         -c /certs/cert.pem -k /certs/server.key -d /www $SERVER_PARAMS
 }
 

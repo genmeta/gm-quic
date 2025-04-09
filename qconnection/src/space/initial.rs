@@ -403,6 +403,15 @@ pub fn spawn_deliver_and_parse_closing(
 ) {
     tokio::spawn(
         async move {
+            // try send ccf on all path
+            _ = closing_state
+                .try_send(|buf, scid, dcid, ccf| {
+                    space
+                        .try_assemble_ccf_packet(scid?, dcid?, ccf, buf)
+                        .map(|layout| layout.sent_bytes())
+                })
+                .await;
+
             while let Some((packet, pathway, _socket)) = packets.next().await {
                 if let Some(ccf) = space.recv_packet(packet) {
                     event_broker.emit(Event::Closed(ccf.clone()));
